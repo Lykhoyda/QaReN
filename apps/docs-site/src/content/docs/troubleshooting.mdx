@@ -20,7 +20,9 @@ Refusals exit `4` and mean the run could not start or could not decide; failures
 | `SCENARIO_INVALID`         | The configuration does not parse or fails validation            | Fix the key a validation detail names; see [Configuration](../configuration/)    |
 | `DEV_CLIENT_SCHEME_REQUIRED` | `devClientScheme` is missing or malformed                      | Set it to the app's registered URI scheme                                                   |
 | `NODE_UNSUPPORTED`         | Node is older than 24                                            | Point `nodePath` at Node 24 or newer                                                        |
-| `PNPM_PROCESS_GROUP_UNSUPPORTED` | The pnpm launcher did not prove process-group preservation | Follow the [launcher compatibility contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#doctor) and the `pnpm-source` row in `qaren doctor` |
+| `PNPM_PROCESS_GROUP_UNSUPPORTED` | A completed pnpm exec probe did not prove process-group preservation | Follow the [launcher compatibility contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#doctor) and the `pnpm-source` row in `qaren doctor` |
+| `PNPM_PROBE_TIMED_OUT` | The pnpm exec probe timed out on every attempt within the dependency-install budget; the launcher was not judged | Re-run when the machine is less loaded, or run `qaren doctor`; `failure.detail` lists the attempts |
+| `GITHUB_AUTH_UNAVAILABLE` | PR lookup could not use GitHub authentication | Follow the [GitHub authentication contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#test-a-pull-request) |
 | `DISK_BUDGET_EXCEEDED`     | Under 1 GiB free for the run storage root or the app, or under about 10 GiB for a clean iOS build | Free space on the volume `failure.detail` names, then re-run                                |
 
 ## Devices
@@ -56,6 +58,8 @@ The screen layer's own codes appear at the start of `failure.detail` or in the r
 | ---------------------------- | ----------------------------------------------------------------------------- |
 | `TARGET_AMBIGUOUS`           | A quoted target, or a phrase target's scrolled-out name matches, matched two or more elements; each candidate is listed by kind, `testID` and frame. Use a unique `testID` or label. |
 | `TARGET_NOT_FOUND`           | A target did not resolve on screen                                            |
+| `TARGET_REACT_ONLY`          | A quoted wait repeatedly found only a React-mounted match without native visibility; follow the [wait evidence and recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence) for diagnostic fields, iOS scroll recovery and next steps |
+| `TARGET_WAIT_TIMEOUT`        | A wait's first capture did not complete; follow the [wait evidence and recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence) for deadline details and next steps |
 | `CHECK_UNSURE`               | A literal check could not be decided from a fresh capture                     |
 | `VISIBILITY_UNSURE`          | A wait ended with the target's visibility still unsure                        |
 | `SCREEN_EVIDENCE_INCOMPLETE` | The captured screen was not complete enough to act on safely                  |
@@ -70,7 +74,7 @@ The screen layer's own codes appear at the start of `failure.detail` or in the r
 | `CLEANUP_INCOMPLETE`  | `qaren cleanup` could not resolve some resources                     | Re-run `qaren cleanup <run-id> --json`                           |
 | `OWNERSHIP_UNPROVEN`  | The run's processes were not proven gone                             | Run `qaren cleanup <run-id>`, then re-run `qaren pr`             |
 | `RUN_CANCELLED`       | The run was cancelled                                                | Re-run when ready; the cleanup map names anything retained       |
-| `PR_UNAVAILABLE`      | `gh` could not read the pull request                                 | Check `gh auth status` and the pull request, then re-run         |
+| `PR_UNAVAILABLE`      | Pull request lookup, comment creation or label edit failed; failed `qaren pr` lookups also check authentication | Follow the [GitHub authentication contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#test-a-pull-request) |
 
 ## Incomplete teardown
 

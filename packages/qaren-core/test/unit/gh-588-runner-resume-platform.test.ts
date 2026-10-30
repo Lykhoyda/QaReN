@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildRunnerResume } from '../../dist/handlers/maestro-run.js';
 
-test('GH-588: an iOS failure carries the real rn-fast-runner health verdict', async () => {
+test('GH-588: an iOS failure carries the real qaren-ios-runner health verdict', async () => {
   assert.deepEqual(await buildRunnerResume('ios', async () => true), {
     attempted: true,
     healthy: true,

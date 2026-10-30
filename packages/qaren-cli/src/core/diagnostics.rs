@@ -223,6 +223,8 @@ const STAGES: &[&str] = &[
     "keyboard",
     "relaunch",
     "admission",
+    "manifest-probe",
+    "dev-client-relaunch",
     "runner-post-mortem",
     "dispatch-bind",
     "dispatch-native",
@@ -659,10 +661,14 @@ impl Sink {
             return;
         };
         if self.file.is_none()
-            && matches!(
+            && (matches!(
                 event["kind"].as_str(),
                 Some("target-miss" | "media-withheld" | "label-provenance")
-            )
+            ) || (event["kind"] == "metric"
+                && matches!(
+                    event["stage"].as_str(),
+                    Some("manifest-probe" | "dev-client-relaunch")
+                )))
         {
             self.file = private_file(&self.path);
         }

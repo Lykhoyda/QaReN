@@ -25,6 +25,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runInNewContext } from 'node:vm';
 import {
   assertPreparedCandidate,
   assertVersion,
@@ -59,8 +60,8 @@ const sweepWorkflow = loadWorkflow(
 const ADVERTISED = '0.76.6';
 const VERSION = '0.76.7';
 const TAG = `v${VERSION}`;
-const IOS_ZIP = `rn-fast-runner-${VERSION}-sim.zip`;
-const ANDROID_ZIP = `rn-android-runner-${VERSION}.zip`;
+const IOS_ZIP = `qaren-ios-runner-${VERSION}-sim.zip`;
+const ANDROID_ZIP = `qaren-android-runner-${VERSION}.zip`;
 const QAREN_ARM64_TGZ = `qaren-${VERSION}-darwin-arm64.tar.gz`;
 const IOS_BYTES = 'ios-runner-zip-bytes';
 const ANDROID_BYTES = 'android-runner-zip-bytes';
@@ -102,11 +103,11 @@ function manifestFor(
         version,
         assets: {
           ios: [
-            { name: `rn-fast-runner-${version}-sim.zip`, sha256: sha256(ios), bytes: ios.length },
+            { name: `qaren-ios-runner-${version}-sim.zip`, sha256: sha256(ios), bytes: ios.length },
           ],
           android: [
             {
-              name: `rn-android-runner-${version}.zip`,
+              name: `qaren-android-runner-${version}.zip`,
               sha256: sha256(android),
               bytes: android.length,
             },
@@ -237,10 +238,10 @@ test('the full pair with exact names is required', () => {
       ),
     /exactly one android asset/,
   );
-  const renamed = manifestFor().replace(IOS_ZIP, 'rn-fast-runner-latest-sim.zip');
+  const renamed = manifestFor().replace(IOS_ZIP, 'qaren-ios-runner-latest-sim.zip');
   assert.throws(
     () => assertPreparedCandidate(candidate({ repoManifest: renamed, pluginManifest: renamed })),
-    /ios asset is rn-fast-runner-latest-sim\.zip, expected rn-fast-runner-0\.76\.7-sim\.zip/,
+    /ios asset is qaren-ios-runner-latest-sim\.zip, expected qaren-ios-runner-0\.76\.7-sim\.zip/,
   );
 });
 
@@ -344,8 +345,8 @@ test('only exact SemVer releases are accepted as versions', () => {
 
 test('expected release asset names stay pinned to the client download contract', () => {
   assert.deepEqual(expectedRunnerAssets('1.0.9'), {
-    ios: 'rn-fast-runner-1.0.9-sim.zip',
-    android: 'rn-android-runner-1.0.9.zip',
+    ios: 'qaren-ios-runner-1.0.9-sim.zip',
+    android: 'qaren-android-runner-1.0.9.zip',
     qaren: {
       'darwin-arm64': 'qaren-1.0.9-darwin-arm64.tar.gz',
     },
@@ -542,8 +543,8 @@ function createFixture(options: FixtureOptions = {}): Fixture {
   );
   for (const path of MANIFEST_PATHS)
     write(seed, path, manifestFor(ADVERTISED, 'old-ios', 'old-android'));
-  write(seed, 'packages/rn-fast-runner/README.md', 'ios runner sources\n');
-  write(seed, 'packages/rn-android-runner/README.md', 'android runner sources\n');
+  write(seed, 'packages/qaren-ios-runner/README.md', 'ios runner sources\n');
+  write(seed, 'packages/qaren-android-runner/README.md', 'android runner sources\n');
   write(seed, 'README.md', 'unrelated repository content\n');
   write(seed, '.changeset/pending.md', "---\n'qaren': patch\n---\n\nA change.\n");
   for (const script of [
@@ -925,12 +926,12 @@ test('the qaren crate version bump is a generated path', () => {
 
 test('a candidate whose native runner sources differ from main is refused even on a generated path', () => {
   const fixture = createFixture({
-    candidateExtraFiles: { 'packages/rn-android-runner/package.json': '{"version": "0.2.0"}\n' },
+    candidateExtraFiles: { 'packages/qaren-android-runner/package.json': '{"version": "0.2.0"}\n' },
   });
   try {
     const run = runVersionStep(fixture, CANDIDATE_STEP);
     assert.equal(run.ok, false);
-    assert.match(run.failed!.stderr, /native inputs under packages\/rn-android-runner differ/);
+    assert.match(run.failed!.stderr, /native inputs under packages\/qaren-android-runner differ/);
   } finally {
     fixture.cleanup();
   }
@@ -1051,7 +1052,7 @@ test('a missing retained zip is a partial handoff and refuses', () => {
       env: baseEnv(fixture),
     });
     assert.equal(run.ok, false);
-    assert.match(run.failed!.stderr, /retained rn-android-runner-0\.76\.7\.zip is missing/);
+    assert.match(run.failed!.stderr, /retained qaren-android-runner-0\.76\.7\.zip is missing/);
   } finally {
     fixture.cleanup();
   }
@@ -1095,14 +1096,14 @@ function treeCtx(fixture: Fixture, ref: string): Record<string, string> {
       '--git-dir',
       fixture.origin,
       'rev-parse',
-      `${ref}:packages/rn-fast-runner`,
+      `${ref}:packages/qaren-ios-runner`,
     ).trim(),
     'needs.prepare.outputs.android-tree': git(
       fixture.root,
       '--git-dir',
       fixture.origin,
       'rev-parse',
-      `${ref}:packages/rn-android-runner`,
+      `${ref}:packages/qaren-android-runner`,
     ).trim(),
   };
 }
@@ -1637,7 +1638,7 @@ function publishedFixture(options: FixtureOptions = {}): Fixture {
   return fixture;
 }
 
-test('with the release public and Build & Test green on H, exactly H is squash-merged', () => {
+test('with the release public and Build & Test green on H, exactly H lands as a merge commit', () => {
   const fixture = publishedFixture();
   try {
     const state = fixture.gh.state();
@@ -1646,9 +1647,7 @@ test('with the release public and Build & Test green on H, exactly H is squash-m
     const run = runMerge(fixture);
     assert.ok(run.ok, run.failed?.stderr);
     assert.equal(fixture.gh.state().prs[0].state, 'MERGED');
-    assert.ok(
-      ghCalls(fixture).includes(`pr merge --squash --match-head-commit ${fixture.head} 11`),
-    );
+    assert.ok(ghCalls(fixture).includes(`pr merge --merge --match-head-commit ${fixture.head} 11`));
     assert.ok(!ghCalls(fixture).some((c) => c.includes('--auto')), 'never auto-merge');
   } finally {
     fixture.cleanup();
@@ -1773,6 +1772,235 @@ test('a tag that no longer points at H refuses the merge', () => {
     assert.match(run.failed!.stderr, /points at b{40}, not the candidate/);
   } finally {
     fixture.cleanup();
+  }
+});
+
+// --- sync-develop: the main -> develop sync lands as a merge commit ---
+
+const REQUIRED_CHECKS = ['Build & Test', 'Lint & format', 'Require changeset'];
+
+function requiredChecks(conclusions: Record<string, string> = {}): GhCheckRun[] {
+  return REQUIRED_CHECKS.map((name) => ({
+    ...check(conclusions[name] ?? 'success'),
+    name,
+  }));
+}
+
+// main carries the merged release H; develop is still at the release base.
+function syncFixture({
+  headChecks,
+  developAtMain,
+  ...options
+}: FixtureOptions & { headChecks?: GhCheckRun[]; developAtMain?: boolean } = {}): Fixture {
+  const fixture = createFixture({
+    prepared: true,
+    prs: [versionPr({ state: 'MERGED' })],
+    ...options,
+  });
+  const head = fixture.head!;
+  git(fixture.root, '--git-dir', fixture.origin, 'update-ref', 'refs/heads/main', head);
+  git(
+    fixture.root,
+    '--git-dir',
+    fixture.origin,
+    'update-ref',
+    'refs/heads/develop',
+    developAtMain ? head : fixture.base,
+  );
+  const state = fixture.gh.state();
+  state.checks[head] = headChecks ?? requiredChecks();
+  writeFileSync(join(fixture.root, 'gh-state', 'state.json'), JSON.stringify(state));
+  return fixture;
+}
+
+function runSync(fixture: Fixture) {
+  return runJobSteps({
+    workflow: release,
+    jobId: 'sync-develop',
+    cwd: fixture.root,
+    ctx: releaseCtx(fixture),
+    env: { ...baseEnv(fixture), READINESS_WAIT_MINUTES: '0', READINESS_POLL_SECONDS: '0' },
+  });
+}
+
+function syncPr(fixture: Fixture) {
+  return fixture.gh
+    .state()
+    .prs.find(
+      (pr) => pr.headRefName === 'main' && pr.headRepo == null && pr.baseRefName === 'develop',
+    );
+}
+
+test('after the release merge, main is synced into develop with a merge commit', () => {
+  const fixture = syncFixture();
+  try {
+    const run = runSync(fixture);
+    assert.ok(run.ok, run.failed?.stderr);
+    const pr = syncPr(fixture)!;
+    assert.equal(pr.title, `Sync main into develop after v${VERSION}`);
+    assert.equal(pr.state, 'MERGED');
+    assert.equal(pr.mergeMethod, 'merge');
+    assert.ok(
+      ghCalls(fixture).includes(
+        `pr merge --merge --match-head-commit ${fixture.head} ${pr.number}`,
+      ),
+    );
+    assert.ok(!ghCalls(fixture).some((c) => c.includes('--squash') || c.includes('--admin')));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('an open sync PR is reused, never duplicated', () => {
+  const fixture = syncFixture({
+    prs: [
+      versionPr({ state: 'MERGED' }),
+      { number: 12, headRefName: 'main', baseRefName: 'develop', state: 'OPEN', autoMerge: null },
+    ],
+  });
+  try {
+    const run = runSync(fixture);
+    assert.ok(run.ok, run.failed?.stderr);
+    assert.ok(!ghCalls(fixture).some((c) => c.startsWith('pr create')));
+    assert.equal(syncPr(fixture)!.number, 12);
+    assert.equal(syncPr(fixture)!.state, 'MERGED');
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+for (const autoMerge of ['squash', 'merge']) {
+  for (const ready of [false, true]) {
+    test(`a reused sync PR retires ${autoMerge} auto-merge before checking readiness (${ready})`, () => {
+      const fixture = syncFixture({
+        headChecks: ready ? requiredChecks() : [],
+        prs: [
+          versionPr({ state: 'MERGED' }),
+          { number: 12, headRefName: 'main', baseRefName: 'develop', state: 'OPEN', autoMerge },
+        ],
+      });
+      try {
+        const run = runSync(fixture);
+        assert.equal(run.ok, ready, run.failed?.stderr);
+        const pr = syncPr(fixture)!;
+        assert.equal(pr.autoMerge, null);
+        assert.equal(pr.state, ready ? 'MERGED' : 'OPEN');
+        assert.equal(pr.mergeMethod, ready ? 'merge' : undefined);
+        const calls = ghCalls(fixture);
+        const disabled = calls.indexOf('pr merge --disable-auto 12');
+        assert.ok(disabled >= 0);
+        assert.ok(disabled < calls.findIndex((call) => call.includes('check-runs')));
+        assert.ok(!calls.some((call) => call.startsWith('pr create')));
+      } finally {
+        fixture.cleanup();
+      }
+    });
+  }
+}
+
+test('a fork PR from a branch named main is never taken for the sync', () => {
+  const fork: GhPullRequest = {
+    number: 12,
+    headRefName: 'main',
+    headRepo: 'someone/QaReN',
+    headRefOid: 'f'.repeat(40),
+    baseRefName: 'develop',
+    state: 'OPEN',
+    autoMerge: null,
+  };
+  const fixture = syncFixture({ prs: [versionPr({ state: 'MERGED' }), fork] });
+  try {
+    const run = runSync(fixture);
+    assert.ok(run.ok, run.failed?.stderr);
+    assert.equal(fixture.gh.state().prs.find((pr) => pr.number === 12)!.state, 'OPEN');
+    assert.equal(syncPr(fixture)!.state, 'MERGED');
+    assert.ok(!ghCalls(fixture).some((c) => c.startsWith('pr merge') && c.endsWith(' 12')));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('develop that already contains main opens and merges nothing', () => {
+  const fixture = syncFixture({ developAtMain: true });
+  try {
+    const run = runSync(fixture);
+    assert.ok(run.ok, run.failed?.stderr);
+    assert.match(stepStdout(run, 'Open the main to develop sync PR'), /already in develop/);
+    assert.ok(!ghCalls(fixture).some((c) => c.startsWith('pr create') || c.startsWith('pr merge')));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('a red required check on the sync PR fails naming the PR and merges nothing', () => {
+  const fixture = syncFixture({ headChecks: requiredChecks({ 'Lint & format': 'failure' }) });
+  try {
+    const run = runSync(fixture);
+    assert.equal(run.ok, false);
+    assert.match(
+      run.failed!.stderr,
+      /::error::Lint & format on sync PR https:\/\/github\.com\/Lykhoyda\/QaReN\/pull\/\d+ .* concluded failure/,
+    );
+    assert.ok(!ghCalls(fixture).some((c) => c.startsWith('pr merge')));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('a sync PR whose CI awaits approval times out with the approve/rerun instruction', () => {
+  const fixture = syncFixture({ headChecks: [] });
+  try {
+    const run = runSync(fixture);
+    assert.equal(run.ok, false);
+    assert.match(
+      run.failed!.stderr,
+      /::error::sync PR https:\/\/github\.com\/.*\/pull\/\d+ has no successful/,
+    );
+    assert.match(run.failed!.stderr, /Approve and run/);
+    assert.ok(!ghCalls(fixture).some((c) => c.startsWith('pr merge')));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('a conflicting sync PR fails without waiting, squashing or forcing', () => {
+  const fixture = syncFixture({
+    prs: [
+      versionPr({ state: 'MERGED' }),
+      {
+        number: 12,
+        headRefName: 'main',
+        baseRefName: 'develop',
+        state: 'OPEN',
+        mergeable: 'CONFLICTING',
+        autoMerge: null,
+      },
+    ],
+  });
+  try {
+    const run = runSync(fixture);
+    assert.equal(run.ok, false);
+    assert.match(run.failed!.stderr, /::error::sync PR .*\/pull\/12 conflicts with develop/);
+    assert.ok(!ghCalls(fixture).some((c) => c.includes('check-runs') || c.startsWith('pr merge')));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('the sync runs only after a successful release merge and unless cancelled', () => {
+  assert.deepEqual(release.jobs['sync-develop'].needs, ['version', 'merge']);
+  const condition = release.jobs['sync-develop'].if!.replace(/^\$\{\{\s*|\s*\}\}$/g, '');
+  const outcomes = ['success', 'failure', 'cancelled', 'skipped'];
+  for (const version of outcomes) {
+    for (const merge of outcomes) {
+      for (const cancelled of [false, true]) {
+        const actual = runInNewContext(condition, {
+          cancelled: () => cancelled,
+          needs: { version: { result: version }, merge: { result: merge } },
+        });
+        assert.equal(actual, !cancelled && merge === 'success', `${version}/${merge}/${cancelled}`);
+      }
+    }
   }
 });
 
@@ -1902,7 +2130,7 @@ test('a stale root, tampered bytes, a wrong length, a missing zip, a draft or a 
         delete s.releases[TAG].assets[ANDROID_ZIP];
         writeFileSync(join(f.root, 'gh-state', 'state.json'), JSON.stringify(s));
       },
-      /carries no rn-android-runner/,
+      /carries no qaren-android-runner/,
     ],
     [
       'draft',
@@ -2334,9 +2562,9 @@ test('end to end: the first main commit advertising V carries V’s trust root a
     writeFileSync(join(fixture.root, 'gh-state', 'state.json'), JSON.stringify(state));
     const merged = runMerge(fixture, atHead);
     assert.ok(merged.ok, merged.failed?.stderr);
-    assert.ok(ghCalls(fixture).includes(`pr merge --squash --match-head-commit ${head} 11`));
+    assert.ok(ghCalls(fixture).includes(`pr merge --merge --match-head-commit ${head} 11`));
 
-    // The squash lands exactly H's tree on main, so H is what an install made
+    // The merge commit lands exactly H's tree on main, so H is what an install made
     // the instant the version becomes visible reads.
     assert.equal(fixture.gh.state().prs[0].state, 'MERGED');
     assert.equal(originRef(fixture, 'refs/heads/main'), fixture.base, 'nothing else reached main');
@@ -2365,7 +2593,7 @@ test('end to end: the first main commit advertising V carries V’s trust root a
       assert.equal(bytes.length, asset.bytes, asset.name);
     }
     trace(
-      `merged           squash --match-head-commit ${head.slice(0, 12)} -> main advertises ${advertisedVersion(fixture, head)}, root ${root.version}`,
+      `merged           --merge --match-head-commit ${head.slice(0, 12)} -> main advertises ${advertisedVersion(fixture, head)}, root ${root.version}`,
     );
     trace(`  bundled root   ${root.ios}`);
     trace(`                 ${root.android}`);

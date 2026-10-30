@@ -25,7 +25,10 @@ name: Release
 #                the manifest, read every byte back, then publish
 #   merge     -> require the PR head to still be H, tag vV -> H, the existing
 #                CI "Build & Test" check green on H (its core-tests job asserts
-#                the public assets), then squash-merge H with --match-head-commit
+#                the public assets), then merge H with a merge commit and
+#                --match-head-commit
+#   sync      -> open (or reuse) the main -> develop sync PR and merge it with a
+#                merge commit once develop's required checks pass on it
 #
 # GH #292: the Version PR is created with GITHUB_TOKEN, so its ci.yml run parks
 # at action_required until a maintainer approves it. The merge job waits a
@@ -44,6 +47,9 @@ name: Release
 # PREREQUISITES (must be enabled in repo settings — cannot be set from this file):
 #   - Settings > Actions > General > "Allow GitHub Actions to create and approve pull requests"
 #   - Branch protection on main requiring the "Build & Test" status check.
+#   - main allows merge commits only; develop allows merge commits for sync PRs
+#     and squash merges for feature PRs.
+#   - develop requires "Build & Test", "Lint & format" and "Require changeset".
 
 on:
   push:
@@ -182,7 +188,7 @@ jobs:
             echo "::error::candidate $P changes paths a version bump never generates: $FOREIGN" >&2
             exit 1
           fi
-          for TREE in packages/rn-fast-runner packages/rn-android-runner; do
+          for TREE in packages/qaren-ios-runner packages/qaren-android-runner; do
             if [ "$(git rev-parse "$P:$TREE")" != "$(git rev-parse "$BASE:$TREE")" ]; then
               echo "::error::native inputs under $TREE differ between main and the candidate" >&2
               exit 1
@@ -252,16 +258,16 @@ jobs:
             got=$(wc -c < "$zip" | tr -d ' ')
             [ "$got" = "$bytes" ] || { echo "::error::$1: retained length $got != producer $bytes" >&2; exit 1; }
           }
-          check "rn-fast-runner-$VERSION-sim.zip" "$IOS_SHA256" "$IOS_BYTES"
-          check "rn-android-runner-$VERSION.zip" "$ANDROID_SHA256" "$ANDROID_BYTES"
+          check "qaren-ios-runner-$VERSION-sim.zip" "$IOS_SHA256" "$IOS_BYTES"
+          check "qaren-android-runner-$VERSION.zip" "$ANDROID_SHA256" "$ANDROID_BYTES"
           check "qaren-$VERSION-darwin-arm64.tar.gz" "$QAREN_ARM64_SHA256" "$QAREN_ARM64_BYTES"
 
       - name: Generate the trust root and its distributed copy from the retained bytes
         run: |
           node scripts/build-runner-manifest.mts \
             --version "$VERSION" \
-            --ios "handoff/rn-fast-runner-$VERSION-sim.zip" \
-            --android "handoff/rn-android-runner-$VERSION.zip" \
+            --ios "handoff/qaren-ios-runner-$VERSION-sim.zip" \
+            --android "handoff/qaren-android-runner-$VERSION.zip" \
             --qaren-darwin-arm64 "handoff/qaren-$VERSION-darwin-arm64.tar.gz" \
             --out runner-manifest.json
           # packages/qaren-plugin is the one directory every host installs.
@@ -338,8 +344,8 @@ jobs:
           [ "$(git rev-parse HEAD^)" = "$CANDIDATE" ] || { echo "::error::release head $HEAD is not one commit on top of the candidate $CANDIDATE" >&2; exit 1; }
           DELTA=$(git diff --name-only HEAD^ HEAD | sort | tr '\n' ' ')
           [ "$DELTA" = "packages/qaren-plugin/runner-manifest.json runner-manifest.json " ] || { echo "::error::release head $HEAD changes '$DELTA' beyond the trust root" >&2; exit 1; }
-          [ "$(git rev-parse HEAD:packages/rn-fast-runner)" = "$IOS_TREE" ] || { echo "::error::iOS runner sources differ from what the producer built" >&2; exit 1; }
-          [ "$(git rev-parse HEAD:packages/rn-android-runner)" = "$ANDROID_TREE" ] || { echo "::error::Android runner sources differ from what the producer built" >&2; exit 1; }
+          [ "$(git rev-parse HEAD:packages/qaren-ios-runner)" = "$IOS_TREE" ] || { echo "::error::iOS runner sources differ from what the producer built" >&2; exit 1; }
+          [ "$(git rev-parse HEAD:packages/qaren-android-runner)" = "$ANDROID_TREE" ] || { echo "::error::Android runner sources differ from what the producer built" >&2; exit 1; }
           node scripts/runner-manifest-publication.mts --stage prepared \
             --candidate-sha "$HEAD" \
             --plugin-version "$(jq -r '.version' packages/qaren-plugin/.claude-plugin/plugin.json)" \
@@ -620,7 +626,7 @@ jobs:
 
       - name: Merge exactly the candidate
         run: |
-          gh pr merge --squash --match-head-commit "$HEAD" "$PR_NUMBER"
+          gh pr merge --merge --match-head-commit "$HEAD" "$PR_NUMBER"
           MERGED=$(gh pr view "$PR_NUMBER" --json state,mergeCommit --jq '"\(.state) \(.mergeCommit.oid // "")"')
           case "$MERGED" in
             "MERGED "?*) ;;
@@ -628,3 +634,106 @@ jobs:
           esac
           echo "PR #$PR_NUMBER: $MERGED"
           echo "- merged: PR #$PR_NUMBER head $HEAD as ${MERGED#* }" >> "$GITHUB_STEP_SUMMARY"
+
+  # Release and sync PRs always land as merge commits, so develop keeps main's
+  # history. A separate job: re-running it after a failure never re-checks the
+  # already-merged version PR.
+  sync-develop:
+    needs: [version, merge]
+    if: ${{ !cancelled() && needs.merge.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Open the main to develop sync PR
+        id: open
+        run: |
+          AHEAD=$(gh api "repos/{owner}/{repo}/compare/develop...main" --jq '.ahead_by')
+          if [ "$AHEAD" = 0 ]; then
+            echo "main is already in develop — nothing to sync"
+            echo "- sync: develop already contains main" >> "$GITHUB_STEP_SUMMARY"
+            printf 'number=\nurl=\nhead=\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A fork's "main" branch matches --head main too; only this repository's main is the sync.
+          PR=$(gh pr list --head main --base develop --state open --json number,isCrossRepository,autoMergeRequest \
+            --jq '[.[] | select(.isCrossRepository == false)] | first // empty')
+          NUMBER=$(jq -r '.number // empty' <<< "$PR")
+          if [ -n "$(jq -r '.autoMergeRequest // empty' <<< "$PR")" ]; then
+            gh pr merge --disable-auto "$NUMBER"
+          fi
+          MAIN=$(gh api "repos/{owner}/{repo}/git/ref/heads/main" --jq '.object.sha')
+          if [ -z "$NUMBER" ]; then
+            URL=$(gh pr create --head main --base develop \
+              --title "Sync main into develop after v$VERSION" \
+              --body "Brings the v$VERSION release commits from main back into develop. Opened and merged with a merge commit by the release workflow; never squash it.")
+            NUMBER=${URL##*/}
+          fi
+          URL=$(gh pr view "$NUMBER" --json url --jq '.url')
+          SYNC_HEAD=$(gh pr view "$NUMBER" --json headRefOid --jq '.headRefOid')
+          if [ "$SYNC_HEAD" != "$MAIN" ]; then
+            echo "::error::sync PR $URL head $SYNC_HEAD is not main ($MAIN) — refusing to merge it" >&2
+            exit 1
+          fi
+          printf 'number=%s\nurl=%s\nhead=%s\n' "$NUMBER" "$URL" "$SYNC_HEAD" >> "$GITHUB_OUTPUT"
+          echo "sync PR: $URL"
+
+      - name: Wait for develop's required checks on the sync PR
+        env:
+          NUMBER: ${{ steps.open.outputs.number }}
+          URL: ${{ steps.open.outputs.url }}
+          HEAD: ${{ steps.open.outputs.head }}
+        run: |
+          [ -n "$NUMBER" ] || exit 0
+          if [ "$(gh pr view "$NUMBER" --json mergeable --jq '.mergeable')" = CONFLICTING ]; then
+            echo "::error::sync PR $URL conflicts with develop — resolve it with a merge commit (never squash or force), then re-run this workflow's failed jobs" >&2
+            exit 1
+          fi
+          WAIT_MINUTES=${READINESS_WAIT_MINUTES:-45}
+          DEADLINE=$(( $(date +%s) + WAIT_MINUTES * 60 ))
+          while :; do
+            PENDING=""
+            for NAME in "Build & Test" "Lint & format" "Require changeset"; do
+              RUN=$(gh api "repos/{owner}/{repo}/commits/$HEAD/check-runs?filter=latest&per_page=100" \
+                --jq "[.check_runs[] | select(.app.slug == \"github-actions\" and .name == \"$NAME\")] | first // empty | \"\\(.status) \\(.conclusion) \\(.html_url)\"")
+              case "${RUN%% *}:$(cut -d' ' -f2 <<< "$RUN")" in
+                completed:success) ;;
+                completed:*)
+                  echo "::error::$NAME on sync PR $URL ($HEAD) concluded $(cut -d' ' -f2 <<< "$RUN") (${RUN##* }) — fix or rerun that CI run, then re-run this workflow's failed jobs; never squash the sync" >&2
+                  exit 1
+                  ;;
+                *) PENDING="$PENDING; $NAME: ${RUN:-no check run}" ;;
+              esac
+            done
+            [ -n "$PENDING" ] || break
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "::error::sync PR $URL has no successful required checks on $HEAD yet (${PENDING#; }). Approve its queued CI run (\"Approve and run\"), rerun it, or close and reopen the PR if no run started, then re-run this workflow's failed jobs" >&2
+              exit 1
+            fi
+            sleep "${READINESS_POLL_SECONDS:-60}"
+          done
+          echo "develop's required checks succeeded on $HEAD"
+
+      - name: Merge the sync PR with a merge commit
+        env:
+          NUMBER: ${{ steps.open.outputs.number }}
+          URL: ${{ steps.open.outputs.url }}
+          HEAD: ${{ steps.open.outputs.head }}
+        run: |
+          [ -n "$NUMBER" ] || exit 0
+          if ! gh pr merge --merge --match-head-commit "$HEAD" "$NUMBER"; then
+            echo "::error::sync PR $URL did not merge — merge it with a merge commit (never squash or force), then re-run this workflow's failed jobs" >&2
+            exit 1
+          fi
+          MERGED=$(gh pr view "$NUMBER" --json state,mergeCommit --jq '"\(.state) \(.mergeCommit.oid // "")"')
+          case "$MERGED" in
+            "MERGED "?*) ;;
+            *) echo "::error::sync PR $URL did not merge ($MERGED)" >&2; exit 1 ;;
+          esac
+          echo "sync PR $URL: $MERGED"
+          echo "- sync: $URL merged as ${MERGED#* }" >> "$GITHUB_STEP_SUMMARY"

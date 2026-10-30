@@ -4,7 +4,7 @@ description: QaReN is a QA engineer for your coding agent. It tries your React N
 template: splash
 hero:
   title: A QA engineer for your coding agent
-  tagline: Claude Code, Codex or Cursor writes the React Native change. QaReN tries it in your app on an iOS simulator and comes back with PASS or FAIL, and the evidence behind it.
+  tagline: Ask your agent to QA a change. It writes a plan; QaReN runs that plan in your app on an iOS simulator and comes back with PASS or FAIL and the evidence.
   image:
     html: |
       <figure class="qa-run" aria-label="An example run: four plan steps pass and the verdict is PASS">
@@ -26,7 +26,7 @@ hero:
       variant: minimal
 ---
 
-import { Card, CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
+import { Card, CardGrid, Steps } from '@astrojs/starlight/components';
 import AgentInstallPrompt from '../../components/AgentInstallPrompt.mdx';
 
 ## Get started
@@ -97,22 +97,12 @@ happened.
 
 ## Built for
 
-- **Your coding agent:** Claude Code, Codex or Cursor, through the QaReN plugin.
+- **Your coding agent:** Claude Code, Codex or Cursor, through the QaReN plugin. Other agents are untested.
 - **Your app:** an Expo React Native app that uses `expo-dev-client` and pnpm.
-- **Your Mac:** an Apple silicon Mac with Xcode. QaReN 2.0 sets up and checks on an iOS
-  simulator.
-- **Android:** coming in 2.1.
+- **Your Mac:** an Apple silicon Mac with Xcode.
+- **Devices:** iOS simulator on an Apple silicon Mac. Android emulator runs are documented in the [reference](check/#android); setup prepares iOS only.
 
 ## How it works
 
-Under the hood, QaReN is the `qaren` command-line tool. The plugin teaches your agent to
-drive it, and you can run the same commands yourself.
-
-<CardGrid>
-  <LinkCard title="The qaren CLI" description="Every command, its flags and what it refuses." href="cli/" />
-  <LinkCard title="Check a plan" description="qaren check, devices, the receipt and exit codes." href="check/" />
-  <LinkCard title="Test a pull request" description="qaren pr, screen recording and qaren publish." href="pull-requests/" />
-  <LinkCard title="Write a plan" description="The plan grammar and what a check reads." href="plans/" />
-  <LinkCard title="Saved blocks" description="How passing blocks are saved, replayed and patched." href="saved-blocks/" />
-  <LinkCard title="Use it from your agent" description="The plugin's skills in Claude Code, Codex and Cursor." href="plugin/" />
-</CardGrid>
+Under the hood, QaReN is the `qaren` command. Your agent drives it; the
+[reference](cli/) lists every verb, flag and code.

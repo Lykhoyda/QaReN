@@ -7,7 +7,7 @@ import {
   probeFastRunnerLivenessDetailed,
   consumePendingFastRunnerArtifactNote,
   _resetStaleHittableWarnForTest,
-} from '../../dist/runners/rn-fast-runner-client.js';
+} from '../../dist/runners/qaren-ios-runner-client.js';
 import { REQUIRED_IOS_COMMANDS, REQUIRED_IOS_FEATURES } from '../../dist/runners/protocol.js';
 
 const STATE = { pid: 1, port: 22088, deviceId: 'U1', bundleId: 'com.example' };

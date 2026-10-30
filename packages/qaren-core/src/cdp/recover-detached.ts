@@ -3,7 +3,7 @@ import { execFile as execFileCb } from '../domain/cancellation.js';
 import { promisify } from 'node:util';
 import type { CDPClient } from '../cdp-client.js';
 import { getActiveSession } from '../agent-device-wrapper.js';
-import { stopFastRunner as defaultStopFastRunner } from '../runners/rn-fast-runner-client.js';
+import { stopFastRunner as defaultStopFastRunner } from '../runners/qaren-ios-runner-client.js';
 import { probeFreshness } from './recovery.js';
 import { probeAppInstalled } from './app-installed-probe.js';
 import type { SnapshotHint } from './app-installed-probe.js';

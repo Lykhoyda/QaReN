@@ -2,7 +2,7 @@
 // fastSwipe(), whose /command body omitted appBundleId. The runner treats a
 // missing appBundleId as "no target" (executeOnMain clears currentApp), so it
 // activated its OWN host app and dragged on a blank screen — every coordinate
-// drag foreground-stole RnFastRunner and no-op'd with ok:true. Device-proven
+// drag foreground-stole QarenIosRunner and no-op'd with ok:true. Device-proven
 // on the Phase B contract fixture (rows 1-11 static across 14 "ok" scrolls).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,7 +10,7 @@ import {
   fastSwipe,
   _setFastRunnerStateForTest,
   _setFetchForTest,
-} from '../../dist/runners/rn-fast-runner-client.js';
+} from '../../dist/runners/qaren-ios-runner-client.js';
 import {
   createDeviceScrollHandler,
   createDeviceSwipeHandler,

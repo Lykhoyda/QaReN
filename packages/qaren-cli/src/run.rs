@@ -248,8 +248,7 @@ fn pr_failure(detail: String) -> Failure {
     )
 }
 
-// Failures before the run record exists come back as Err; everything after is
-// folded into the record and torn down so nothing outlives the run.
+// Only pre-record failures may escape without teardown.
 fn run_inner(
     runner: &mut dyn Runner,
     req: &RunRequest,
@@ -502,18 +501,50 @@ fn run_inner(
         }
     }
     prepare::check_prereqs(runner, &scenario, req.android_home.as_deref())?;
-    let pnpm = runner.run(&crate::adapters::pnpm::group_probe_spec(&cand.project_root));
-    if !pnpm.ok() || pnpm.stdout != crate::adapters::pnpm::GROUP_OK {
-        return Err(Failure::new(
-            "prereqs",
-            FailureCode::PnpmProcessGroupUnsupported,
-            format!(
-                "{}; its exec launch did not prove that it preserves QaReN's process group ({})",
-                crate::adapters::pnpm::source_detail(runner),
-                pnpm.summary()
-            ),
-            crate::adapters::pnpm::GROUP_FIX,
-        ));
+    let probe = crate::adapters::pnpm::prove_group(
+        runner,
+        &crate::adapters::pnpm::group_probe_spec(&cand.project_root),
+        crate::adapters::pnpm::PROBE_ATTEMPTS,
+        config.deadlines.install_deps_seconds,
+    );
+    ensure_running(runner, "prereqs")?;
+    match probe.outcome {
+        crate::adapters::pnpm::GroupOutcome::Proved => {}
+        crate::adapters::pnpm::GroupOutcome::Unproven => {
+            return Err(Failure::new(
+                "prereqs",
+                FailureCode::PnpmProcessGroupUnsupported,
+                format!(
+                    "{}; its exec launch did not prove that it preserves QaReN's process group ({})",
+                    crate::adapters::pnpm::source_detail(runner),
+                    probe.attempts.last().unwrap().output.summary()
+                ),
+                crate::adapters::pnpm::GROUP_FIX,
+            ));
+        }
+        crate::adapters::pnpm::GroupOutcome::TimedOut => {
+            let durations: Vec<String> = probe
+                .attempts
+                .iter()
+                .map(|a| a.output.duration_ms.to_string())
+                .collect();
+            let load = match crate::core::host_load_1m() {
+                Some(load) => format!("host 1-minute load {load:.1}"),
+                None => "host load unavailable".to_string(),
+            };
+            return Err(Failure::new(
+                "prereqs",
+                FailureCode::PnpmProbeTimedOut,
+                format!(
+                    "{}; its exec probe timed out on {} attempt(s) ({} ms) within {} ms and proved nothing about process groups; the host is likely busy ({load})",
+                    crate::adapters::pnpm::source_detail(runner),
+                    probe.attempts.len(),
+                    durations.join(", "),
+                    probe.elapsed_ms
+                ),
+                "re-run qaren check when the machine is less loaded, or run qaren doctor",
+            ));
+        }
     }
     std::fs::create_dir_all(&req.runs_root).map_err(|e| {
         Failure::new(
@@ -612,13 +643,14 @@ fn run_inner(
         failure: None,
         history: Vec::new(),
         terminal: None,
+        build_lock: None,
     };
     if let Err(f) = record.save(&req.runs_root) {
         return Err(lease::release_or_annotate(&lease, f));
     }
     run_claim.as_mut().unwrap().record_owned = true;
     *unowned_worktree = None;
-    let mut ctx = Ctx {
+    let ctx = Ctx {
         runner,
         runs_root: req.runs_root.clone(),
         native_cache_root: req.native_cache_root.clone(),
@@ -635,811 +667,853 @@ fn run_inner(
         manifest_warm: None,
         lane_owned: req.platform == Platform::Ios
             && (req.boot_device || req.restart_device || req.fresh_install),
+        build_deadline_ms: None,
     };
-    let finish_failed =
-        |ctx: Ctx, failure: Failure| finish_failed(ctx, &node, &req.runtime_dir, failure, false);
-    if let Some(earlier) = &recovered {
-        ctx.notes
-            .push(("recovered_run".to_string(), earlier.clone()));
-    }
-    if let Some(run_id) = &lease.released_orphan {
-        ctx.notes.push((
-            "device_lease".to_string(),
-            lease::orphan_note(&lease.lock_dir, run_id),
-        ));
-    }
-    let t = ctx.mark("preflight", started_ms);
-    events::stage("preflight", StageState::Passed, None, None);
-    events::stage("deps", StageState::Running, None, None);
-    if let Err(f) = ensure_running(&*ctx.runner, "deps") {
-        return Ok(finish_failed(ctx, f));
-    }
-
-    if recovered.is_some() && req.platform == Platform::Ios {
-        let refreshed = match resolve_device(
-            ctx.runner,
-            req.platform,
-            Some(&device.id),
-            req.boot_device || req.restart_device,
-            req.shutdown_device_on_exit,
-            req.android_home.as_deref(),
-        ) {
-            Ok(refreshed) => refreshed,
-            Err(f) => return Ok(finish_failed(ctx, f)),
+    // Returning a receipt prevents ? from escaping this resource-owning scope.
+    let held = move |mut ctx: Ctx<'_>| -> Receipt {
+        let finish_failed = |ctx: Ctx, failure: Failure| {
+            finish_failed(ctx, &node, &req.runtime_dir, failure, false)
         };
-        if refreshed.ios != device.ios {
-            return Ok(finish_failed(
-                ctx,
-                Failure::new(
-                    "device",
-                    FailureCode::DeviceUnavailable,
-                    "selected simulator runtime or device type changed during lease recovery",
-                    "check the exact --device UUID and simulator inventory, then re-run",
-                ),
+        if probe.attempts.len() > 1 {
+            for (i, attempt) in probe.attempts.iter().enumerate() {
+                let label = format!("pnpm-group-probe_attempt_{}", i + 1);
+                ctx.timings
+                    .push((label.clone(), attempt.output.duration_ms));
+                let what = if attempt.output.timed_out {
+                    format!("timed out after {}ms", attempt.output.duration_ms)
+                } else {
+                    "process group proved".to_string()
+                };
+                ctx.notes.push((
+                    label,
+                    format!("{what}; timeout_seconds={}", attempt.timeout_seconds),
+                ));
+            }
+        }
+        if let Some(earlier) = &recovered {
+            ctx.notes
+                .push(("recovered_run".to_string(), earlier.clone()));
+        }
+        if let Some(run_id) = &lease.released_orphan {
+            ctx.notes.push((
+                "device_lease".to_string(),
+                lease::orphan_note(&lease.lock_dir, run_id),
             ));
         }
-        device.needs_boot = refreshed.needs_boot;
-    }
-
-    let ios_lifecycle = req.boot_device || req.restart_device || req.shutdown_device_on_exit;
-    if req.platform == Platform::Ios && (req.fresh_install || ios_lifecycle) {
-        if let Err(f) = core::fresh_install_admission(
-            ctx.runner,
-            &node,
-            &req.runtime_dir,
-            &project_root,
-            &device.id,
-            None,
-        ) {
-            return Ok(finish_failed(ctx, f));
-        }
-    }
-    if req.platform == Platform::Ios {
-        if let Err(f) = prepare::install_deps(&mut ctx) {
-            return Ok(finish_failed(ctx, f));
-        }
-        if let Err(f) = ios::require_build(
-            ctx.runner,
-            &ctx.record.candidate.project_root,
-            ctx.record.scenario.build.ios_workspace.as_ref(),
-        ) {
-            return Ok(finish_failed(ctx, f));
-        }
-    }
-    // Last proof before anything destructive; ios_lifecycle options are iOS-only.
-    if req.fresh_install || ios_lifecycle {
-        if let Err(f) = core::fresh_install_admission(
-            ctx.runner,
-            &node,
-            &req.runtime_dir,
-            &project_root,
-            &device.id,
-            android_env.as_ref(),
-        ) {
-            return Ok(finish_failed(ctx, f));
-        }
-    }
-    if req.shutdown_device_on_exit {
+        let t = ctx.mark("preflight", started_ms);
+        events::stage("preflight", StageState::Passed, None, None);
+        events::stage("deps", StageState::Running, None, None);
         if let Err(f) = ensure_running(&*ctx.runner, "deps") {
-            return Ok(finish_failed(ctx, f));
+            return finish_failed(ctx, f);
         }
-        let prev = ctx.record.resources.borrowed_ios_stop();
-        if let Err(f) = ctx.record.resources.arm_borrowed_ios_stop() {
-            return Ok(finish_failed(ctx, f));
+
+        if recovered.is_some() && req.platform == Platform::Ios {
+            let refreshed = match resolve_device(
+                ctx.runner,
+                req.platform,
+                Some(&device.id),
+                req.boot_device || req.restart_device,
+                req.shutdown_device_on_exit,
+                req.android_home.as_deref(),
+            ) {
+                Ok(refreshed) => refreshed,
+                Err(f) => return finish_failed(ctx, f),
+            };
+            if refreshed.ios != device.ios {
+                return finish_failed(
+                    ctx,
+                    Failure::new(
+                        "device",
+                        FailureCode::DeviceUnavailable,
+                        "selected simulator runtime or device type changed during lease recovery",
+                        "check the exact --device UUID and simulator inventory, then re-run",
+                    ),
+                );
+            }
+            device.needs_boot = refreshed.needs_boot;
         }
-        if let Err(f) = ctx.save() {
-            ctx.record.resources.revert_borrowed_ios_stop(prev);
-            return Ok(finish_failed(ctx, f));
-        }
-    }
-    if req.boot_device || req.restart_device {
-        let mut restart_shutdown_unresolved = false;
-        if let Err(f) = boot_selected_device(
-            &mut ctx,
-            &device,
-            req.restart_device,
-            &mut restart_shutdown_unresolved,
-        ) {
-            return Ok(self::finish_failed(
-                ctx,
+
+        let ios_lifecycle = req.boot_device || req.restart_device || req.shutdown_device_on_exit;
+        if req.platform == Platform::Ios && (req.fresh_install || ios_lifecycle) {
+            if let Err(f) = core::fresh_install_admission(
+                ctx.runner,
                 &node,
                 &req.runtime_dir,
-                f,
-                restart_shutdown_unresolved && !req.shutdown_device_on_exit,
-            ));
-        }
-    }
-    if req.fresh_install {
-        if let Err(f) = reset_app(&mut ctx, &device.id, &config.app_id, android_env.as_ref()) {
-            return Ok(finish_failed(ctx, f));
-        }
-    }
-
-    if req.platform == Platform::Android {
-        if let Err(f) = prepare::install_deps(&mut ctx) {
-            return Ok(finish_failed(ctx, f));
-        }
-    }
-    let t = ctx.mark("deps", t);
-    events::stage("deps", StageState::Passed, None, None);
-    if let Err(f) = ensure_running(&*ctx.runner, "build") {
-        return Ok(finish_failed(ctx, f));
-    }
-    events::stage("build_decision", StageState::Running, None, None);
-
-    let plan_decision = match prepare::plan_build(&mut ctx) {
-        Ok(plan) => plan,
-        Err(f) => return Ok(finish_failed(ctx, f)),
-    };
-    ctx.record.build = Some(plan_decision.clone());
-    if plan_decision.decision == BuildDecision::Clean && req.platform == Platform::Ios {
-        let shortfall = match tightest_volume(ctx.runner, &[&req.runs_root, &project_root]) {
-            Ok((kb, path)) => clean_ios_build_shortfall(kb, path),
-            Err(f) => return Ok(finish_failed(ctx, f)),
-        };
-        if let Some(detail) = shortfall {
-            // The receipt's next action becomes `qaren cleanup` once resources are owned, so the detail carries the remedy.
-            let detail = format!("{detail}; {FREE_DISK_FIX}");
-            let f = Failure::new(
-                "build",
-                FailureCode::DiskBudgetExceeded,
-                detail,
-                FREE_DISK_FIX,
-            );
-            return Ok(finish_failed(ctx, f));
-        }
-    }
-    if plan_decision.decision != BuildDecision::Reuse {
-        if let Err(f) = prepare::claim_build_lock(&mut ctx, &req.lock_root) {
-            return Ok(finish_failed(ctx, f));
-        }
-    }
-    ctx.record.phase = Phase::ResourcesAllocated;
-    if let Err(f) = ctx.save() {
-        return Ok(finish_failed(ctx, f));
-    }
-    let t = ctx.mark("plan", t);
-    let decision = plan_decision.decision.as_str();
-    events::stage("build_decision", StageState::Passed, Some(decision), None);
-
-    if plan_decision.decision == BuildDecision::Reuse {
-        events::stage("prebuild", StageState::Skipped, None, None);
-        events::stage("native_build", StageState::Skipped, None, None);
-        events::stage("install_launch_ready", StageState::Running, None, None);
-        if let Err(f) = prepare::run_reuse_path(&mut ctx, &plan_decision, t) {
-            return Ok(finish_failed(ctx, f));
-        }
-        events::stage("install_launch_ready", StageState::Passed, None, None);
-    } else {
-        if plan_decision.decision == BuildDecision::Clean {
-            events::stage("prebuild", StageState::Running, None, None);
-            if let Err(f) = prepare::run_clean_preparation(&mut ctx, &plan_decision) {
-                return Ok(finish_failed(ctx, f));
+                &project_root,
+                &device.id,
+                None,
+            ) {
+                return finish_failed(ctx, f);
             }
-            events::stage("prebuild", StageState::Passed, None, None);
-        } else {
-            events::stage("prebuild", StageState::Skipped, None, None);
         }
-        events::stage("native_build", StageState::Running, None, None);
-        if let Err(f) = prepare::build_and_ready(&mut ctx) {
-            return Ok(finish_failed(ctx, f));
+        if req.platform == Platform::Ios {
+            if let Err(f) = prepare::install_deps(&mut ctx) {
+                return finish_failed(ctx, f);
+            }
+            if let Err(f) = ios::require_build(
+                ctx.runner,
+                &ctx.record.candidate.project_root,
+                ctx.record.scenario.build.ios_workspace.as_ref(),
+            ) {
+                return finish_failed(ctx, f);
+            }
         }
-        // build_and_ready splits native_build from install, as on iOS.
-        events::stage("install_launch_ready", StageState::Passed, None, None);
-    }
-    let t = ctx.mark("build_and_ready", t);
-    events::stage("verify", StageState::Running, None, None);
-    let fp = match prepare::recheck_fingerprint(&mut ctx, &plan_decision) {
-        Ok(fp) => fp,
-        Err(f) => return Ok(finish_failed(ctx, f)),
-    };
-    if plan_decision.decision != BuildDecision::Reuse {
-        if let Err(f) = prepare::record_build_result(&mut ctx, &fp) {
-            return Ok(finish_failed(ctx, f));
+        // Last proof before anything destructive; ios_lifecycle options are iOS-only.
+        if req.fresh_install || ios_lifecycle {
+            if let Err(f) = core::fresh_install_admission(
+                ctx.runner,
+                &node,
+                &req.runtime_dir,
+                &project_root,
+                &device.id,
+                android_env.as_ref(),
+            ) {
+                return finish_failed(ctx, f);
+            }
         }
-        prepare::release_build_lock(&mut ctx);
-    }
-    let t = ctx.mark("verify", t);
-    events::stage("verify", StageState::Passed, None, None);
-    if let Err(f) = ensure_running(&*ctx.runner, "walk") {
-        return Ok(finish_failed(ctx, f));
-    }
+        if req.shutdown_device_on_exit {
+            if let Err(f) = ensure_running(&*ctx.runner, "deps") {
+                return finish_failed(ctx, f);
+            }
+            let prev = ctx.record.resources.borrowed_ios_stop();
+            if let Err(f) = ctx.record.resources.arm_borrowed_ios_stop() {
+                return finish_failed(ctx, f);
+            }
+            if let Err(f) = ctx.save() {
+                ctx.record.resources.revert_borrowed_ios_stop(prev);
+                return finish_failed(ctx, f);
+            }
+        }
+        if req.boot_device || req.restart_device {
+            let mut restart_shutdown_unresolved = false;
+            if let Err(f) = boot_selected_device(
+                &mut ctx,
+                &device,
+                req.restart_device,
+                &mut restart_shutdown_unresolved,
+            ) {
+                return self::finish_failed(
+                    ctx,
+                    &node,
+                    &req.runtime_dir,
+                    f,
+                    restart_shutdown_unresolved && !req.shutdown_device_on_exit,
+                );
+            }
+        }
+        if req.fresh_install {
+            if let Err(f) = reset_app(&mut ctx, &device.id, &config.app_id, android_env.as_ref()) {
+                return finish_failed(ctx, f);
+            }
+        }
 
-    if pr_state.is_some() {
-        if let Err(detail) = candidate::verify_unchanged(ctx.runner, &ctx.record.candidate) {
-            let f = Failure::new(
-                "pr",
-                FailureCode::CandidateDrifted,
-                format!("the pull request worktree changed before the walk: {detail}"),
-                "re-run qaren pr; nothing may modify the run's worktree",
-            );
-            return Ok(finish_failed(ctx, f));
+        if req.platform == Platform::Android {
+            if let Err(f) = prepare::install_deps(&mut ctx) {
+                return finish_failed(ctx, f);
+            }
         }
-    }
-    ctx.record.phase = Phase::Walking;
-    let at = timefmt::iso8601_utc(ctx.runner.now_epoch_ms());
-    ctx.record.push_history(at, "walking");
-    if let Err(f) = ctx.save() {
-        return Ok(finish_failed(ctx, f));
-    }
-    // In `qaren pr` the app root is the PR worktree's, so blocks replay and save there.
-    let app_root = match app_root_for(&req.config_path, &project_root) {
-        Ok(root) => root,
-        Err(f) => return Ok(finish_failed(ctx, f)),
-    };
-    let status_before = worktree_status(ctx.runner, &app_root);
-    if let Err(f) = ensure_running(ctx.runner, "walk") {
-        return Ok(finish_failed(ctx, f));
-    }
-    // ⑧: the recording starts before the walk so it shows the first step.
-    let mut video = None;
-    // Taken before the spawn, so the trim offset can only cut later than the true admission frame.
-    let recording_from = ctx.runner.now_epoch_ms();
-    if resolved_inputs.has_inputs()
-        && (config.video != record::VideoPolicy::NonStrict || crate::redact::private_output_mode())
-    {
-        events::stage("recording", StageState::Skipped, None, None);
-        video = Some(VideoStatus::Unavailable(
-            "runtime inputs withhold recording".to_string(),
-        ));
-    } else if pr_state.is_some() {
-        if device
-            .android
-            .as_ref()
-            .is_some_and(|emulator| emulator.api_level < 34)
+        let t = ctx.mark("deps", t);
+        events::stage("deps", StageState::Passed, None, None);
+        if let Err(f) = ensure_running(&*ctx.runner, "build") {
+            return finish_failed(ctx, f);
+        }
+        events::stage("build_decision", StageState::Running, None, None);
+
+        let plan_decision = match prepare::plan_build(&mut ctx) {
+            Ok(plan) => plan,
+            Err(f) => return finish_failed(ctx, f),
+        };
+        ctx.record.build = Some(plan_decision.clone());
+        if plan_decision.decision == BuildDecision::Clean && req.platform == Platform::Ios {
+            let shortfall = match tightest_volume(ctx.runner, &[&req.runs_root, &project_root]) {
+                Ok((kb, path)) => clean_ios_build_shortfall(kb, path),
+                Err(f) => return finish_failed(ctx, f),
+            };
+            if let Some(detail) = shortfall {
+                // The receipt's next action becomes `qaren cleanup` once resources are owned, so the detail carries the remedy.
+                let detail = format!("{detail}; {FREE_DISK_FIX}");
+                let f = Failure::new(
+                    "build",
+                    FailureCode::DiskBudgetExceeded,
+                    detail,
+                    FREE_DISK_FIX,
+                );
+                return finish_failed(ctx, f);
+            }
+        }
+        // iOS claims its build lock inside build_ios_locked, so the lock covers only the build.
+        let ios_build = plan_decision.decision != BuildDecision::Reuse && req.platform == Platform::Ios;
+        if plan_decision.decision != BuildDecision::Reuse && !ios_build {
+            if let Err(f) = prepare::claim_build_lock(&mut ctx, &req.lock_root) {
+                return finish_failed(ctx, f);
+            }
+        }
+        ctx.record.phase = Phase::ResourcesAllocated;
+        if let Err(f) = ctx.save() {
+            return finish_failed(ctx, f);
+        }
+        let t = ctx.mark("plan", t);
+        let decision = plan_decision.decision.as_str();
+        events::stage("build_decision", StageState::Passed, Some(decision), None);
+
+        if plan_decision.decision == BuildDecision::Reuse {
+            events::stage("prebuild", StageState::Skipped, None, None);
+            events::stage("native_build", StageState::Skipped, None, None);
+            events::stage("install_launch_ready", StageState::Running, None, None);
+            if let Err(f) = prepare::run_reuse_path(&mut ctx, &plan_decision, t) {
+                return finish_failed(ctx, f);
+            }
+            events::stage("install_launch_ready", StageState::Passed, None, None);
+        } else if ios_build {
+            let built = match prepare::build_ios_locked(&mut ctx, &plan_decision, &req.lock_root) {
+                Ok(built) => built,
+                Err(f) => return finish_failed(ctx, f),
+            };
+            events::stage("install_launch_ready", StageState::Running, None, None);
+            let now = ctx.runner.now_epoch_ms();
+            if let Err(f) = prepare::run_reuse_path(&mut ctx, &built, now) {
+                return finish_failed(ctx, f);
+            }
+            events::stage("install_launch_ready", StageState::Passed, None, None);
+        } else {
+            if plan_decision.decision == BuildDecision::Clean {
+                events::stage("prebuild", StageState::Running, None, None);
+                if let Err(f) = prepare::run_clean_preparation(&mut ctx, &plan_decision) {
+                    return finish_failed(ctx, f);
+                }
+                events::stage("prebuild", StageState::Passed, None, None);
+            } else {
+                events::stage("prebuild", StageState::Skipped, None, None);
+            }
+            events::stage("native_build", StageState::Running, None, None);
+            if let Err(f) = prepare::build_and_ready(&mut ctx) {
+                return finish_failed(ctx, f);
+            }
+            // build_and_ready splits native_build from install, as on iOS.
+            events::stage("install_launch_ready", StageState::Passed, None, None);
+        }
+        let t = ctx.mark("build_and_ready", t);
+        events::stage("verify", StageState::Running, None, None);
+        let fp = match prepare::recheck_fingerprint(&mut ctx, &plan_decision) {
+            Ok(fp) => fp,
+            Err(f) => return finish_failed(ctx, f),
+        };
+        if plan_decision.decision != BuildDecision::Reuse && !ios_build {
+            if let Err(f) = prepare::record_build_result(&mut ctx, &fp) {
+                return finish_failed(ctx, f);
+            }
+            prepare::release_build_lock(&mut ctx);
+        }
+        let t = ctx.mark("verify", t);
+        events::stage("verify", StageState::Passed, None, None);
+        if let Err(f) = ensure_running(&*ctx.runner, "walk") {
+            return finish_failed(ctx, f);
+        }
+
+        if pr_state.is_some() {
+            if let Err(detail) = candidate::verify_unchanged(ctx.runner, &ctx.record.candidate) {
+                let f = Failure::new(
+                    "pr",
+                    FailureCode::CandidateDrifted,
+                    format!("the pull request worktree changed before the walk: {detail}"),
+                    "re-run qaren pr; nothing may modify the run's worktree",
+                );
+                return finish_failed(ctx, f);
+            }
+        }
+        ctx.record.phase = Phase::Walking;
+        let at = timefmt::iso8601_utc(ctx.runner.now_epoch_ms());
+        ctx.record.push_history(at, "walking");
+        if let Err(f) = ctx.save() {
+            return finish_failed(ctx, f);
+        }
+        // In `qaren pr` the app root is the PR worktree's, so blocks replay and save there.
+        let app_root = match app_root_for(&req.config_path, &project_root) {
+            Ok(root) => root,
+            Err(f) => return finish_failed(ctx, f),
+        };
+        let status_before = worktree_status(ctx.runner, &app_root);
+        if let Err(f) = ensure_running(ctx.runner, "walk") {
+            return finish_failed(ctx, f);
+        }
+        // ⑧: the recording starts before the walk so it shows the first step.
+        let mut video = None;
+        // Taken before the spawn, so the trim offset can only cut later than the true admission frame.
+        let recording_from = ctx.runner.now_epoch_ms();
+        if resolved_inputs.has_inputs()
+            && (config.video != record::VideoPolicy::NonStrict
+                || crate::redact::private_output_mode())
         {
             events::stage("recording", StageState::Skipped, None, None);
             video = Some(VideoStatus::Unavailable(
-                "Android API <34 stops screen recording at 180 s".into(),
+                "runtime inputs withhold recording".to_string(),
             ));
-        } else {
-            events::stage("recording", StageState::Running, None, None);
-            let adb = ctx.record.resources.adb_path.clone();
-            let target = match &device.android {
-                Some(emulator) => record::RecordTarget::Android {
-                    adb: adb.as_deref().expect("borrowed emulator adb path"),
-                    port: emulator.server_port,
-                    serial: &emulator.serial,
-                },
-                None => record::RecordTarget::Ios(&device.id),
-            };
-            if let Err(status) = record::start(ctx.runner, &mut ctx.record, &ctx.runs_root, target)
-            {
-                events::stage("recording", StageState::Failed, None, None);
-                video = Some(status);
-            }
-        }
-    } else {
-        events::stage("recording", StageState::Skipped, None, None);
-    }
-    if req.platform == Platform::Ios && resolved_inputs.has_inputs() {
-        ctx.notes.push((
-            "platform_log".to_string(),
-            "the simulator system log may record displayed field text; see Runtime inputs"
-                .to_string(),
-        ));
-    }
-    if let Err(f) = ensure_running(ctx.runner, "walk") {
-        return Ok(finish_failed(ctx, f));
-    }
-    let core_request = CoreRequest {
-        run_id: run_id.clone(),
-        t0: ctx.runner.now_epoch_ms(),
-        walk_budget_ms: req.budgets.walk_seconds.saturating_mul(1000),
-        attach_budget_ms: ctx
-            .record
-            .scenario
-            .deadlines
-            .attach_seconds
-            .saturating_mul(1000),
-        plan: plan.clone(),
-        prepared,
-        preflight_calls: preflight_jev
-            .as_ref()
-            .map(|j| j.call_details.clone())
-            .unwrap_or_default(),
-        platform: platform_str(req.platform).to_string(),
-        app_id: config.app_id.clone(),
-        app_root: app_root.clone(),
-        run_dir: run_dir.clone(),
-        lease: lease.wire(),
-        login_block: config.login_block.clone(),
-        video_policy: config.video,
-        login_marker: config.login_marker.clone(),
-        target: CoreTarget {
-            device_id: device.id.clone(),
-            device_name: device.name.clone(),
-            metro_port: config.metro_port,
-            metro_url_for_device: format!("http://127.0.0.1:{}", config.metro_port),
-            worktree: project_root.clone(),
-            metro_bundle_requests: ctx
-                .bundle_requests_at_launch
-                .zip(ctx.record.resources.metro.as_ref())
-                .map(|(at_launch, metro)| core::MetroBundleRequests {
-                    path: crate::exec::log::bundle_requests_path(&metro.log),
-                    at_launch,
-                }),
-            manifest_warm: ctx.manifest_warm.clone(),
-            warm_lane: ctx.record.resources.lane.is_some(),
-        },
-    };
-    let spec = core::spawn_spec(
-        &node,
-        &req.runtime_dir,
-        &project_root,
-        &lease.wire(),
-        config.metro_port,
-        android_env.as_ref(),
-    );
-    // Ownership needs proven absence first: a host already up on this simulator is never the run's.
-    let presence =
-        (req.platform == Platform::Ios).then(|| ios::probe_runner_hosts(ctx.runner, &device.id));
-    if presence == Some(ios::RunnerHostPresence::Unknown) {
-        ctx.notes
-            .push(("runner_host_probe".to_string(), "unknown".to_string()));
-    }
-    let runner_host = (presence == Some(ios::RunnerHostPresence::Absent)).then(|| {
-        crate::runrecord::RunnerHostResource {
-            udid: device.id.clone(),
-            bundle_ids: vec![
-                ios::RUNNER_HOST_BUNDLE_ID.to_string(),
-                ios::RUNNER_TEST_HOST_BUNDLE_ID.to_string(),
-            ],
-        }
-    });
-    let core_log = run_dir.join("logs").join("core.log");
-    events::core_t0(core_request.t0);
-    events::stage("attach", StageState::Running, None, None);
-    let runner_started_at = ctx.runner.now_epoch_ms();
-    let core_child = match core::spawn_private(
-        ctx.runner,
-        &spec,
-        &core_log,
-        &core_request,
-        (resolved_inputs.has_inputs() || login_snapshot.is_some()).then_some(&resolved_inputs),
-        login_snapshot.as_ref(),
-    ) {
-        Ok(child) => child,
-        Err(f) => return Ok(finish_failed(ctx, f)),
-    };
-    ctx.record.resources.core = Some(crate::runrecord::CoreResource {
-        pgid: core_child.pid,
-        identity: capture_pid_identity(ctx.runner, core_child.pid),
-    });
-    ctx.record.resources.runner_host = runner_host;
-    if let Err(f) = ctx.save() {
-        core::abort(core_child);
-        return Ok(finish_failed(ctx, f));
-    }
-    let mut driver_notes = Vec::new();
-    let mut outcome = {
-        let record = &mut ctx.record;
-        let runs_root = &ctx.runs_root;
-        let udid = device.id.clone();
-        core::wait(ctx.runner, core_child, req.budgets, &mut |runner, pid| {
-            match runner_driver(runner, pid, &udid) {
-                Some(driver) => {
-                    record.resources.runner_drivers.push(driver);
-                    if let Err(f) = record.save(runs_root) {
-                        driver_notes.push(format!("runner driver {pid} not persisted: {}", f.detail));
-                    }
-                }
-                None => driver_notes.push(format!(
-                    "runner driver {pid} is not a proven xcodebuild group leader for this simulator; not recorded"
-                )),
-            }
-        })
-    };
-    for note in driver_notes {
-        ctx.notes.push(("runner_driver".to_string(), note));
-    }
-    match &outcome.verdict {
-        Verdict::Pass => events::close_running(StageState::Passed, None, &["recording"]),
-        Verdict::Fail => {
-            let code = outcome.failure.as_ref().map(|f| f.code);
-            let code = Failure::new("walk", code.unwrap_or(FailureCode::PlanStepFailed), "", "");
-            events::close_running(StageState::Failed, Some(&code.code_str()), &["recording"]);
-        }
-        Verdict::Refused { code, .. } => {
-            events::stage("steps", StageState::Failed, Some(code), None);
-            events::close_running(StageState::Failed, Some(code), &["recording"]);
-        }
-    }
-    // The core admits a warm lane only after it observed the app's first screen; an earlier refusal never reached it.
-    if let Some(lane) = ctx.record.resources.lane.as_mut() {
-        lane.first_screen = match &outcome.verdict {
-            _ if outcome.admitted => Some(true),
-            Verdict::Refused { code, .. } if code == "LANE_NOT_WARM" => Some(false),
-            _ => None,
-        };
-    }
-    let t = ctx.mark("walk", t);
-    let drift = match (status_before, worktree_status(ctx.runner, &app_root)) {
-        (Some(before), Some(after)) => worktree_drift(&before, &after),
-        _ => Vec::new(),
-    };
-    if let Some(exit) = outcome.exit {
-        ctx.notes.push(("core_exit".to_string(), exit.to_string()));
-    }
-
-    // Captured before teardown removes the candidate worktree.
-    let verified = candidate::verify_unchanged(ctx.runner, &ctx.record.candidate);
-    let final_verification = FinalVerification {
-        tested: ctx.record.candidate.git_sha.clone(),
-        matched: verified.is_ok(),
-        detail: verified.clone().err(),
-    };
-    match verified {
-        Ok(()) => ctx
-            .notes
-            .push(("candidate_drift".to_string(), "none".to_string())),
-        Err(detail)
-            if outcome
-                .failure
+        } else if pr_state.is_some() {
+            if device
+                .android
                 .as_ref()
-                .is_some_and(|failure| failure.code == FailureCode::RunCancelled) =>
-        {
-            ctx.notes.push(("candidate_drift".to_string(), detail));
-        }
-        Err(detail) => {
-            outcome.verdict = Verdict::Fail;
-            outcome.ledger.verdict = "FAIL".to_string();
-            outcome.failure = Some(Failure::new(
-                "verify",
-                FailureCode::CandidateDrifted,
-                format!("the candidate changed during the walk: {detail}"),
-                "re-run the check against an unchanged candidate",
-            ));
-            ctx.notes.push(("candidate_drift".to_string(), detail));
-        }
-    }
-    // The canonical plan copy goes to .qaren/plans only, never into run evidence.
-    outcome.ledger.video_policy = config.video;
-    outcome.ledger.video_policy_source = Some(video_policy_source.clone());
-    let recipe = outcome.ledger.recipe.take();
-    let ledger_path = run_dir.join("ledger.json");
-    if let Err(e) = std::fs::write(
-        &ledger_path,
-        crate::redact::durable_json(&outcome.ledger).unwrap_or_default(),
-    ) {
-        ctx.notes.push((
-            "ledger".to_string(),
-            format!("could not persist {}: {e}", ledger_path.display()),
-        ));
-    }
-    let mut hints = Vec::new();
-    let written = outcome.ledger.blocks_written.as_deref().unwrap_or_default();
-    let slugs: std::collections::BTreeSet<_> = written
-        .iter()
-        .chain(
-            outcome
-                .ledger
-                .blocks
-                .iter()
-                .filter(|block| block.source == "replayed")
-                .map(|block| &block.key),
-        )
-        .collect();
-    for slug in slugs {
-        if let Some(hint) = crate::actions::login_hint(
-            ctx.runner,
-            &app_root,
-            slug,
-            platform_str(req.platform),
-            &config,
-            pr_state.is_none() || !written.contains(slug),
-        ) {
-            hints.push(hint);
-        }
-    }
-    if pr_state.is_none()
-        && !written.is_empty()
-        && crate::actions::corpus_location(ctx.runner, &app_root)
-            == (crate::actions::CorpusLocation::Linked { local: true })
-    {
-        hints.push(crate::actions::corpus_hint(written.len()));
-    }
-    let mut early_cleanup = Vec::new();
-    let mut blocks = Vec::new();
-    if pr_state.is_some() {
-        if ctx.record.resources.recorder.is_some() {
-            let outcome = record::stop(ctx.runner, &mut ctx.record, &ctx.runs_root);
-            let state = if outcome.clean() {
-                StageState::Passed
-            } else {
-                StageState::Failed
-            };
-            if video.is_none() {
-                events::stage("recording", state, None, None);
-            }
-            if !outcome.clean() && video.is_none() {
+                .is_some_and(|emulator| emulator.api_level < 34)
+            {
+                events::stage("recording", StageState::Skipped, None, None);
                 video = Some(VideoStatus::Unavailable(
-                    "the recorder did not stop cleanly".into(),
+                    "Android API <34 stops screen recording at 180 s".into(),
                 ));
+            } else {
+                events::stage("recording", StageState::Running, None, None);
+                let adb = ctx.record.resources.adb_path.clone();
+                let target = match &device.android {
+                    Some(emulator) => record::RecordTarget::Android {
+                        adb: adb.as_deref().expect("borrowed emulator adb path"),
+                        port: emulator.server_port,
+                        serial: &emulator.serial,
+                    },
+                    None => record::RecordTarget::Ios(&device.id),
+                };
+                if let Err(status) =
+                    record::start(ctx.runner, &mut ctx.record, &ctx.runs_root, target)
+                {
+                    events::stage("recording", StageState::Failed, None, None);
+                    video = Some(status);
+                }
             }
-            early_cleanup.push(("recorder".to_string(), outcome.render()));
+        } else {
+            events::stage("recording", StageState::Skipped, None, None);
         }
-        let refused;
-        (blocks, refused) = worktree::copy_blocks(
-            ctx.runner,
-            &project_root,
-            outcome.ledger.blocks_written.as_deref().unwrap_or_default(),
-            &run_dir.join("blocks"),
-        );
-        if !refused.is_empty() {
+        if req.platform == Platform::Ios && resolved_inputs.has_inputs() {
             ctx.notes.push((
-                "blocks_not_saved".to_string(),
-                format!("could not preserve {}", refused.join(", ")),
+                "platform_log".to_string(),
+                "the simulator system log may record displayed field text; see Runtime inputs"
+                    .to_string(),
             ));
         }
-    }
-
-    let runner_simulator = ctx
-        .record
-        .resources
-        .ios_simulator
-        .as_ref()
-        .filter(|_| !ctx.record.resources.runner_drivers.is_empty())
-        .map(|sim| sim.udid.clone());
-    let (mut cleanup, all_clean, ownership_proven) = teardown(
-        &mut ctx,
-        &node,
-        &req.runtime_dir,
-        outcome.group_survived,
-        false,
-    );
-    cleanup.splice(..0, early_cleanup);
-    let t = ctx.mark("teardown", t);
-    if let Some(udid) = runner_simulator {
-        if let Some(note) = springboard_crash_after(ctx.runner, &udid, runner_started_at) {
-            let at = timefmt::iso8601_utc(ctx.runner.now_epoch_ms());
-            ctx.record
-                .push_history(at, &format!("lane health: springboard_crash: {note}"));
-            ctx.notes.push(("springboard_crash".to_string(), note));
+        if let Err(f) = ensure_running(ctx.runner, "walk") {
+            return finish_failed(ctx, f);
         }
-        ctx.mark("springboard_scan", t);
-    }
-
-    let report_path = match report::write(
-        &run_dir,
-        &ReportInput {
-            run_id: &run_id,
-            platform: platform_str(req.platform),
-            app_id: &config.app_id,
-            device: &device.name,
-            ledger: &outcome.ledger,
-        },
-    ) {
-        Ok(path) => path,
-        Err(f) => return Ok(ctx.fail(f)),
-    };
-
-    if let Some(entry) = outcome.ledger.media_withheld.as_ref().and_then(|media| {
-        if config.video == record::VideoPolicy::NonStrict {
-            media.video.as_ref().or(media.screenshots.as_ref())
-        } else {
-            media.screenshots.as_ref().or(media.video.as_ref())
-        }
-    }) {
-        ctx.notes
-            .push(("media_withheld".to_string(), entry.receipt_note()));
-    }
-    let (mut result, mut failure) = match &outcome.verdict {
-        Verdict::Pass => (ReceiptResult::Pass, None),
-        Verdict::Fail => {
-            let failure = outcome.failure.clone().unwrap_or_else(|| {
-                let (step, seen) = outcome
-                    .ledger
-                    .failure
-                    .as_ref()
-                    .map(|f| (f.step, f.seen.clone()))
-                    .unwrap_or((0, "the plan did not pass".to_string()));
-                Failure::new(
-                    "walk",
-                    FailureCode::PlanStepFailed,
-                    format!("line {step}: {seen}"),
-                    "read the report, fix the app or the plan, then re-run",
-                )
-            });
-            (ReceiptResult::Fail, Some(failure))
-        }
-        Verdict::Refused { code, message } => (
-            ReceiptResult::Refused,
-            Some(outcome.failure.clone().unwrap_or_else(|| {
-                Failure::new(
-                    "prove",
-                    refusal_code(code),
-                    format!("{code}: {message}"),
-                    "resolve the refusal, then re-run",
-                )
-            })),
-        ),
-    };
-    let mut tested_older_commit = None;
-    let mut published_video = None;
-    if let Some(pr) = &pr_state {
-        let raw = record::raw_capture(&run_dir.join("media"));
-        let video = video.unwrap_or_else(|| record::finalize(ctx.runner, &run_dir));
-        ctx.notes.push(("video".to_string(), video.to_string()));
-        if video == VideoStatus::Available {
-            if let Some(bytes) = reclaim_raw_capture(&run_dir) {
-                ctx.notes.push((
-                    "reclaimed".to_string(),
-                    format!(
-                        "media/{}: {bytes} bytes",
-                        raw.file_name().unwrap().to_string_lossy()
-                    ),
-                ));
-            }
-        }
-        // Only the uploaded copy starts at the admitted app, or after a pre-plan login; the local recording stays complete.
-        let video = if video == VideoStatus::Available || outcome.ledger.publication_interrupted {
-            let offset = outcome
-                .ledger
-                .publish_from_ms
-                .or(outcome.ledger.admitted_at_ms)
-                .map(|at| at.saturating_sub(recording_from));
-            // Row t is relative to t0, taken after the recording started, so it can only cut before the true last-row frame.
-            let end = outcome.ledger.steps.iter().map(|s| s.t).max();
-            record::publication_copy(
-                ctx.runner,
-                &run_dir,
-                offset,
-                end,
-                outcome.ledger.publication_interrupted,
-            )
-        } else {
-            video
-        };
-        // ⑭: a head that moved during the run means an older commit was tested.
-        match github::pr_view(ctx.runner, &pr.info.url, &pr.repo_root) {
-            Ok(now) if now.head_ref_oid != pr.info.head_ref_oid => {
-                tested_older_commit = Some(pr.info.head_ref_oid.clone());
-            }
-            Ok(_) => {}
-            Err(f) => ctx
-                .notes
-                .push(("pr_head_recheck".to_string(), f.detail.to_string())),
-        }
-        published_video = Some(video);
-    }
-
-    let cancelled = match ensure_running(ctx.runner, "finalize") {
-        Err(late) => {
-            if failure.as_ref().map(|f| f.code) != Some(FailureCode::RunCancelled) {
-                result = ReceiptResult::Refused;
-                failure = Some(late);
-            }
-            true
-        }
-        Ok(()) => failure.as_ref().map(|f| f.code) == Some(FailureCode::RunCancelled),
-    };
-    ctx.record.terminal = Some(TerminalResult {
-        verdict: outcome.ledger.verdict.clone(),
-        cancelled,
-        final_verification,
-        ownership_proven,
-    });
-    ctx.record.failure = failure.clone();
-    ctx.record.phase = if all_clean {
-        Phase::Cleaned
-    } else {
-        Phase::Walking
-    };
-    let at = timefmt::iso8601_utc(ctx.runner.now_epoch_ms());
-    let note: Vec<String> = cleanup.iter().map(|(n, o)| format!("{n}={o}")).collect();
-    ctx.record
-        .push_history(at, &format!("check finished: {}", note.join(" ")));
-    if let Err(f) = ctx.save() {
-        return Ok(ctx.fail(f));
-    }
-    if let (Some(pr), Some(video)) = (&pr_state, published_video) {
-        let video_publication = outcome.ledger.video_publication.clone().unwrap_or_default();
-        let pr_record = PrRunRecord {
-            number: pr.info.number,
-            url: pr.info.url.clone(),
-            head_ref_oid: pr.info.head_ref_oid.clone(),
-            head_ref_name: pr.info.head_ref_name.clone(),
-            is_cross_repository: pr.info.is_cross_repository,
-            repo_root: pr.repo_root.clone(),
-            app_rel: pr.app_rel.clone(),
+        let core_request = CoreRequest {
+            run_id: run_id.clone(),
+            t0: ctx.runner.now_epoch_ms(),
+            walk_budget_ms: req.budgets.walk_seconds.saturating_mul(1000),
+            attach_budget_ms: ctx
+                .record
+                .scenario
+                .deadlines
+                .attach_seconds
+                .saturating_mul(1000),
+            plan: plan.clone(),
+            prepared,
+            preflight_calls: preflight_jev
+                .as_ref()
+                .map(|j| j.call_details.clone())
+                .unwrap_or_default(),
             platform: platform_str(req.platform).to_string(),
             app_id: config.app_id.clone(),
-            device: device.name.clone(),
-            plan_sha256: sha256_hex(plan.as_bytes()),
-            video,
-            video_withholding_reason: video_publication.withholding_reason().map(str::to_string),
-            video_publication,
+            app_root: app_root.clone(),
+            run_dir: run_dir.clone(),
+            lease: lease.wire(),
+            login_block: config.login_block.clone(),
             video_policy: config.video,
-            video_policy_source: Some(video_policy_source),
-            non_strict_publication: outcome.ledger.non_strict_publication.clone(),
-            tested_older_commit: tested_older_commit.is_some(),
-            blocks,
-            identity_values: identity_values(&device, config.metro_port, &ctx.record.resources),
+            login_marker: config.login_marker.clone(),
+            target: CoreTarget {
+                device_id: device.id.clone(),
+                device_name: device.name.clone(),
+                metro_port: config.metro_port,
+                metro_url_for_device: format!("http://127.0.0.1:{}", config.metro_port),
+                worktree: project_root.clone(),
+                metro_bundle_requests: ctx
+                    .bundle_requests_at_launch
+                    .zip(ctx.record.resources.metro.as_ref())
+                    .map(|(at_launch, metro)| core::MetroBundleRequests {
+                        path: crate::exec::log::bundle_requests_path(&metro.log),
+                        at_launch,
+                    }),
+                manifest_warm: ctx.manifest_warm.clone(),
+                warm_lane: ctx.record.resources.lane.is_some(),
+            },
         };
-        let bytes = serde_json::to_vec_pretty(&pr_record).unwrap_or_default();
-        if let Err(late) = ensure_running(ctx.runner, "publish") {
-            result = ReceiptResult::Refused;
-            failure = Some(late);
-            ctx.record.terminal.as_mut().unwrap().cancelled = true;
-            ctx.record.failure = failure.clone();
-            if let Err(f) = ctx.save() {
-                return Ok(ctx.fail(f));
+        let spec = core::spawn_spec(
+            &node,
+            &req.runtime_dir,
+            &project_root,
+            &lease.wire(),
+            config.metro_port,
+            android_env.as_ref(),
+        );
+        // Ownership needs proven absence first: a host already up on this simulator is never the run's.
+        let presence = (req.platform == Platform::Ios)
+            .then(|| ios::probe_runner_hosts(ctx.runner, &device.id));
+        if presence == Some(ios::RunnerHostPresence::Unknown) {
+            ctx.notes
+                .push(("runner_host_probe".to_string(), "unknown".to_string()));
+        }
+        let runner_host = (presence == Some(ios::RunnerHostPresence::Absent)).then(|| {
+            crate::runrecord::RunnerHostResource {
+                udid: device.id.clone(),
+                bundle_ids: vec![
+                    ios::RUNNER_HOST_BUNDLE_ID.to_string(),
+                    ios::RUNNER_TEST_HOST_BUNDLE_ID.to_string(),
+                ],
             }
-        } else if !ctx.record.terminal.as_ref().unwrap().cancelled {
-            if let Err(e) = std::fs::write(run_dir.join("pr.json"), bytes) {
-                ctx.notes
-                    .push(("pr_record".to_string(), format!("could not persist: {e}")));
+        });
+        let core_log = run_dir.join("logs").join("core.log");
+        events::core_t0(core_request.t0);
+        events::stage("attach", StageState::Running, None, None);
+        let runner_started_at = ctx.runner.now_epoch_ms();
+        let core_child = match core::spawn_private(
+            ctx.runner,
+            &spec,
+            &core_log,
+            &core_request,
+            (resolved_inputs.has_inputs() || login_snapshot.is_some()).then_some(&resolved_inputs),
+            login_snapshot.as_ref(),
+        ) {
+            Ok(child) => child,
+            Err(f) => return finish_failed(ctx, f),
+        };
+        ctx.record.resources.core = Some(crate::runrecord::CoreResource {
+            pgid: core_child.pid,
+            identity: capture_pid_identity(ctx.runner, core_child.pid),
+        });
+        ctx.record.resources.runner_host = runner_host;
+        if let Err(f) = ctx.save() {
+            core::abort(core_child);
+            return finish_failed(ctx, f);
+        }
+        let mut driver_notes = Vec::new();
+        let mut outcome = {
+            let record = &mut ctx.record;
+            let runs_root = &ctx.runs_root;
+            let udid = device.id.clone();
+            core::wait(ctx.runner, core_child, req.budgets, &mut |runner, pid| {
+                match runner_driver(runner, pid, &udid) {
+                    Some(driver) => {
+                        record.resources.runner_drivers.push(driver);
+                        if let Err(f) = record.save(runs_root) {
+                            driver_notes.push(format!("runner driver {pid} not persisted: {}", f.detail));
+                        }
+                    }
+                    None => driver_notes.push(format!(
+                        "runner driver {pid} is not a proven xcodebuild group leader for this simulator; not recorded"
+                    )),
+                }
+            })
+        };
+        for note in driver_notes {
+            ctx.notes.push(("runner_driver".to_string(), note));
+        }
+        match &outcome.verdict {
+            Verdict::Pass => events::close_running(StageState::Passed, None, &["recording"]),
+            Verdict::Fail => {
+                let code = outcome.failure.as_ref().map(|f| f.code);
+                let code =
+                    Failure::new("walk", code.unwrap_or(FailureCode::PlanStepFailed), "", "");
+                events::close_running(StageState::Failed, Some(&code.code_str()), &["recording"]);
+            }
+            Verdict::Refused { code, .. } => {
+                events::stage("steps", StageState::Failed, Some(code), None);
+                events::close_running(StageState::Failed, Some(code), &["recording"]);
             }
         }
-    }
-    let terminal = ctx.record.terminal.as_ref();
-    let walk = match result {
-        _ if terminal.is_none_or(|t| t.cancelled) => recipes::Walk::Other,
-        ReceiptResult::Pass => recipes::Walk::Pass,
-        ReceiptResult::Fail if terminal.is_some_and(|t| t.final_verification.matched) => {
-            let step = outcome.ledger.failure.as_ref().and_then(|f| f.kind)
-                == Some(crate::core::FailureKind::Step);
-            if outcome.failure.is_none() && step {
-                recipes::Walk::StepFailure
+        // The core admits a warm lane only after it observed the app's first screen; an earlier refusal never reached it.
+        if let Some(lane) = ctx.record.resources.lane.as_mut() {
+            lane.first_screen = match &outcome.verdict {
+                _ if outcome.admitted => Some(true),
+                Verdict::Refused { code, .. } if code == "LANE_NOT_WARM" => Some(false),
+                _ => None,
+            };
+        }
+        let t = ctx.mark("walk", t);
+        let drift = match (status_before, worktree_status(ctx.runner, &app_root)) {
+            (Some(before), Some(after)) => worktree_drift(&before, &after),
+            _ => Vec::new(),
+        };
+        if let Some(exit) = outcome.exit {
+            ctx.notes.push(("core_exit".to_string(), exit.to_string()));
+        }
+
+        // Captured before teardown removes the candidate worktree.
+        let verified = candidate::verify_unchanged(ctx.runner, &ctx.record.candidate);
+        let final_verification = FinalVerification {
+            tested: ctx.record.candidate.git_sha.clone(),
+            matched: verified.is_ok(),
+            detail: verified.clone().err(),
+        };
+        match verified {
+            Ok(()) => ctx
+                .notes
+                .push(("candidate_drift".to_string(), "none".to_string())),
+            Err(detail)
+                if outcome
+                    .failure
+                    .as_ref()
+                    .is_some_and(|failure| failure.code == FailureCode::RunCancelled) =>
+            {
+                ctx.notes.push(("candidate_drift".to_string(), detail));
+            }
+            Err(detail) => {
+                outcome.verdict = Verdict::Fail;
+                outcome.ledger.verdict = "FAIL".to_string();
+                outcome.failure = Some(Failure::new(
+                    "verify",
+                    FailureCode::CandidateDrifted,
+                    format!("the candidate changed during the walk: {detail}"),
+                    "re-run the check against an unchanged candidate",
+                ));
+                ctx.notes.push(("candidate_drift".to_string(), detail));
+            }
+        }
+        // The canonical plan copy goes to .qaren/plans only, never into run evidence.
+        outcome.ledger.video_policy = config.video;
+        outcome.ledger.video_policy_source = Some(video_policy_source.clone());
+        let recipe = outcome.ledger.recipe.take();
+        let ledger_path = run_dir.join("ledger.json");
+        if let Err(e) = std::fs::write(
+            &ledger_path,
+            crate::redact::durable_json(&outcome.ledger).unwrap_or_default(),
+        ) {
+            ctx.notes.push((
+                "ledger".to_string(),
+                format!("could not persist {}: {e}", ledger_path.display()),
+            ));
+        }
+        let mut hints = Vec::new();
+        let written = outcome.ledger.blocks_written.as_deref().unwrap_or_default();
+        let slugs: std::collections::BTreeSet<_> = written
+            .iter()
+            .chain(
+                outcome
+                    .ledger
+                    .blocks
+                    .iter()
+                    .filter(|block| block.source == "replayed")
+                    .map(|block| &block.key),
+            )
+            .collect();
+        for slug in slugs {
+            if let Some(hint) = crate::actions::login_hint(
+                ctx.runner,
+                &app_root,
+                slug,
+                platform_str(req.platform),
+                &config,
+                pr_state.is_none() || !written.contains(slug),
+            ) {
+                hints.push(hint);
+            }
+        }
+        if pr_state.is_none()
+            && !written.is_empty()
+            && crate::actions::corpus_location(ctx.runner, &app_root)
+                == (crate::actions::CorpusLocation::Linked { local: true })
+        {
+            hints.push(crate::actions::corpus_hint(written.len()));
+        }
+        let mut early_cleanup = Vec::new();
+        let mut blocks = Vec::new();
+        if pr_state.is_some() {
+            if ctx.record.resources.recorder.is_some() {
+                let outcome = record::stop(ctx.runner, &mut ctx.record, &ctx.runs_root);
+                let state = if outcome.clean() {
+                    StageState::Passed
+                } else {
+                    StageState::Failed
+                };
+                if video.is_none() {
+                    events::stage("recording", state, None, None);
+                }
+                if !outcome.clean() && video.is_none() {
+                    video = Some(VideoStatus::Unavailable(
+                        "the recorder did not stop cleanly".into(),
+                    ));
+                }
+                early_cleanup.push(("recorder".to_string(), outcome.render()));
+            }
+            let refused;
+            (blocks, refused) = worktree::copy_blocks(
+                ctx.runner,
+                &project_root,
+                outcome.ledger.blocks_written.as_deref().unwrap_or_default(),
+                &run_dir.join("blocks"),
+            );
+            if !refused.is_empty() {
+                ctx.notes.push((
+                    "blocks_not_saved".to_string(),
+                    format!("could not preserve {}", refused.join(", ")),
+                ));
+            }
+        }
+
+        let runner_simulator = ctx
+            .record
+            .resources
+            .ios_simulator
+            .as_ref()
+            .filter(|_| !ctx.record.resources.runner_drivers.is_empty())
+            .map(|sim| sim.udid.clone());
+        let (mut cleanup, all_clean, ownership_proven) = teardown(
+            &mut ctx,
+            &node,
+            &req.runtime_dir,
+            outcome.group_survived,
+            false,
+        );
+        cleanup.splice(..0, early_cleanup);
+        let t = ctx.mark("teardown", t);
+        if let Some(udid) = runner_simulator {
+            if let Some(note) = springboard_crash_after(ctx.runner, &udid, runner_started_at) {
+                let at = timefmt::iso8601_utc(ctx.runner.now_epoch_ms());
+                ctx.record
+                    .push_history(at, &format!("lane health: springboard_crash: {note}"));
+                ctx.notes.push(("springboard_crash".to_string(), note));
+            }
+            ctx.mark("springboard_scan", t);
+        }
+
+        let report_path = match report::write(
+            &run_dir,
+            &ReportInput {
+                run_id: &run_id,
+                platform: platform_str(req.platform),
+                app_id: &config.app_id,
+                device: &device.name,
+                ledger: &outcome.ledger,
+            },
+        ) {
+            Ok(path) => path,
+            Err(f) => return ctx.fail(f),
+        };
+
+        if let Some(entry) = outcome.ledger.media_withheld.as_ref().and_then(|media| {
+            if config.video == record::VideoPolicy::NonStrict {
+                media.video.as_ref().or(media.screenshots.as_ref())
             } else {
-                recipes::Walk::OtherFailure
+                media.screenshots.as_ref().or(media.video.as_ref())
+            }
+        }) {
+            ctx.notes
+                .push(("media_withheld".to_string(), entry.receipt_note()));
+        }
+        let (mut result, mut failure) = match &outcome.verdict {
+            Verdict::Pass => (ReceiptResult::Pass, None),
+            Verdict::Fail => {
+                let failure = outcome.failure.clone().unwrap_or_else(|| {
+                    let (step, seen) = outcome
+                        .ledger
+                        .failure
+                        .as_ref()
+                        .map(|f| (f.step, f.seen.clone()))
+                        .unwrap_or((0, "the plan did not pass".to_string()));
+                    Failure::new(
+                        "walk",
+                        FailureCode::PlanStepFailed,
+                        format!("line {step}: {seen}"),
+                        "read the report, fix the app or the plan, then re-run",
+                    )
+                });
+                (ReceiptResult::Fail, Some(failure))
+            }
+            Verdict::Refused { code, message } => (
+                ReceiptResult::Refused,
+                Some(outcome.failure.clone().unwrap_or_else(|| {
+                    Failure::new(
+                        "prove",
+                        refusal_code(code),
+                        format!("{code}: {message}"),
+                        "resolve the refusal, then re-run",
+                    )
+                })),
+            ),
+        };
+        let mut tested_older_commit = None;
+        let mut published_video = None;
+        if let Some(pr) = &pr_state {
+            let raw = record::raw_capture(&run_dir.join("media"));
+            let video = video.unwrap_or_else(|| record::finalize(ctx.runner, &run_dir));
+            ctx.notes.push(("video".to_string(), video.to_string()));
+            if video == VideoStatus::Available {
+                if let Some(bytes) = reclaim_raw_capture(&run_dir) {
+                    ctx.notes.push((
+                        "reclaimed".to_string(),
+                        format!(
+                            "media/{}: {bytes} bytes",
+                            raw.file_name().unwrap().to_string_lossy()
+                        ),
+                    ));
+                }
+            }
+            // Only the uploaded copy starts at the admitted app, or after a pre-plan login; the local recording stays complete.
+            let video = if video == VideoStatus::Available || outcome.ledger.publication_interrupted
+            {
+                let offset = outcome
+                    .ledger
+                    .publish_from_ms
+                    .or(outcome.ledger.admitted_at_ms)
+                    .map(|at| at.saturating_sub(recording_from));
+                // Row t is relative to t0, taken after the recording started, so it can only cut before the true last-row frame.
+                let end = outcome.ledger.steps.iter().map(|s| s.t).max();
+                record::publication_copy(
+                    ctx.runner,
+                    &run_dir,
+                    offset,
+                    end,
+                    outcome.ledger.publication_interrupted,
+                )
+            } else {
+                video
+            };
+            // ⑭: a head that moved during the run means an older commit was tested.
+            match github::pr_view(ctx.runner, &pr.info.url, &pr.repo_root) {
+                Ok(now) if now.head_ref_oid != pr.info.head_ref_oid => {
+                    tested_older_commit = Some(pr.info.head_ref_oid.clone());
+                }
+                Ok(_) => {}
+                Err(f) => ctx
+                    .notes
+                    .push(("pr_head_recheck".to_string(), f.detail.to_string())),
+            }
+            published_video = Some(video);
+        }
+
+        let cancelled = match ensure_running(ctx.runner, "finalize") {
+            Err(late) => {
+                if failure.as_ref().map(|f| f.code) != Some(FailureCode::RunCancelled) {
+                    result = ReceiptResult::Refused;
+                    failure = Some(late);
+                }
+                true
+            }
+            Ok(()) => failure.as_ref().map(|f| f.code) == Some(FailureCode::RunCancelled),
+        };
+        ctx.record.terminal = Some(TerminalResult {
+            verdict: outcome.ledger.verdict.clone(),
+            cancelled,
+            final_verification,
+            ownership_proven,
+        });
+        ctx.record.failure = failure.clone();
+        ctx.record.phase = if all_clean {
+            Phase::Cleaned
+        } else {
+            Phase::Walking
+        };
+        let at = timefmt::iso8601_utc(ctx.runner.now_epoch_ms());
+        let note: Vec<String> = cleanup.iter().map(|(n, o)| format!("{n}={o}")).collect();
+        ctx.record
+            .push_history(at, &format!("check finished: {}", note.join(" ")));
+        if let Err(f) = ctx.save() {
+            return ctx.fail(f);
+        }
+        if let (Some(pr), Some(video)) = (&pr_state, published_video) {
+            let video_publication = outcome.ledger.video_publication.clone().unwrap_or_default();
+            let pr_record = PrRunRecord {
+                number: pr.info.number,
+                url: pr.info.url.clone(),
+                head_ref_oid: pr.info.head_ref_oid.clone(),
+                head_ref_name: pr.info.head_ref_name.clone(),
+                is_cross_repository: pr.info.is_cross_repository,
+                repo_root: pr.repo_root.clone(),
+                app_rel: pr.app_rel.clone(),
+                platform: platform_str(req.platform).to_string(),
+                app_id: config.app_id.clone(),
+                device: device.name.clone(),
+                plan_sha256: sha256_hex(plan.as_bytes()),
+                video,
+                video_withholding_reason: video_publication
+                    .withholding_reason()
+                    .map(str::to_string),
+                video_publication,
+                video_policy: config.video,
+                video_policy_source: Some(video_policy_source),
+                non_strict_publication: outcome.ledger.non_strict_publication.clone(),
+                tested_older_commit: tested_older_commit.is_some(),
+                blocks,
+                identity_values: identity_values(&device, config.metro_port, &ctx.record.resources),
+                proof_in_description: config.proof_in_description == Some(true),
+            };
+            let bytes = serde_json::to_vec_pretty(&pr_record).unwrap_or_default();
+            if let Err(late) = ensure_running(ctx.runner, "publish") {
+                result = ReceiptResult::Refused;
+                failure = Some(late);
+                ctx.record.terminal.as_mut().unwrap().cancelled = true;
+                ctx.record.failure = failure.clone();
+                if let Err(f) = ctx.save() {
+                    return ctx.fail(f);
+                }
+            } else if !ctx.record.terminal.as_ref().unwrap().cancelled {
+                if let Err(e) = std::fs::write(run_dir.join("pr.json"), bytes) {
+                    ctx.notes
+                        .push(("pr_record".to_string(), format!("could not persist: {e}")));
+                }
             }
         }
-        _ => recipes::Walk::Other,
-    };
-    let facts = recipes::RunFacts {
-        pr: pr_state.is_some(),
-        save_plans: config.save_plans != Some(false),
-        in_book: recipes::in_book(&app_root, &req.plan_file),
-        walk,
-        recipe: recipe.as_ref(),
-        has_input_values: matches!(&recipe, Some(recipes::RecipeCandidate::Markdown { markdown, .. })
-            if crate::redact::redact_inputs(markdown) != *markdown),
-    };
-    let candidate = ctx.record.candidate.clone();
-    let platform = platform_str(req.platform);
-    let recipe = match recipes::decide(&facts, || {
-        recipes::base_identity(&mut *ctx.runner, &candidate)
-    }) {
-        recipes::Decision::Nothing => None,
-        recipes::Decision::Report(outcome) => Some(outcome),
-        recipes::Decision::Save { slug, markdown } => {
-            Some(recipes::save(&app_root, slug, markdown))
+        let terminal = ctx.record.terminal.as_ref();
+        let walk = match result {
+            _ if terminal.is_none_or(|t| t.cancelled) => recipes::Walk::Other,
+            ReceiptResult::Pass => recipes::Walk::Pass,
+            ReceiptResult::Fail if terminal.is_some_and(|t| t.final_verification.matched) => {
+                let step = outcome.ledger.failure.as_ref().and_then(|f| f.kind)
+                    == Some(crate::core::FailureKind::Step);
+                if outcome.failure.is_none() && step {
+                    recipes::Walk::StepFailure
+                } else {
+                    recipes::Walk::OtherFailure
+                }
+            }
+            _ => recipes::Walk::Other,
+        };
+        let facts = recipes::RunFacts {
+            pr: pr_state.is_some(),
+            save_plans: config.save_plans != Some(false),
+            in_book: recipes::in_book(&app_root, &req.plan_file),
+            walk,
+            recipe: recipe.as_ref(),
+            has_input_values: matches!(&recipe, Some(recipes::RecipeCandidate::Markdown { markdown, .. })
+                if crate::redact::redact_inputs(markdown) != *markdown),
+        };
+        let candidate = ctx.record.candidate.clone();
+        let platform = platform_str(req.platform);
+        let recipe = match recipes::decide(&facts, || {
+            recipes::base_identity(&mut *ctx.runner, &candidate)
+        }) {
+            recipes::Decision::Nothing => None,
+            recipes::Decision::Report(outcome) => Some(outcome),
+            recipes::Decision::Save { slug, markdown } => {
+                Some(recipes::save(&app_root, slug, markdown))
+            }
+            recipes::Decision::Mark { broken: true } => {
+                Some(recipes::flag(&req.plan_file, platform, &plan))
+            }
+            recipes::Decision::Mark { broken: false } => {
+                Some(recipes::clear(&req.plan_file, platform, &plan))
+            }
+        };
+        let mut receipt = finish_receipt(ctx, result, failure);
+        receipt.recipe = recipe;
+        receipt.tested_older_commit = tested_older_commit;
+        receipt.ledger = Some(report::summarize(&outcome.ledger));
+        receipt.blocks_written = outcome.ledger.blocks_written.clone().unwrap_or_default();
+        receipt.hints = hints;
+        receipt.blocks_not_saved = outcome
+            .ledger
+            .blocks
+            .iter()
+            .filter(|block| block.saved == Some(false))
+            .map(|block| crate::receipt::BlockNotSaved {
+                block: block.key.clone(),
+                reason: block.unsavable.clone().unwrap_or_default(),
+            })
+            .collect();
+        receipt.worktree_drift = drift;
+        receipt.artifacts.insert("report".to_string(), report_path);
+        receipt.artifacts.insert("ledger".to_string(), ledger_path);
+        for (name, rendered) in cleanup {
+            receipt.cleanup.insert(name, rendered);
         }
-        recipes::Decision::Mark { broken: true } => {
-            Some(recipes::flag(&req.plan_file, platform, &plan))
+        if !all_clean {
+            receipt.next_action = format!("qaren cleanup {run_id} --json");
         }
-        recipes::Decision::Mark { broken: false } => {
-            Some(recipes::clear(&req.plan_file, platform, &plan))
-        }
+        receipt
     };
-    let mut receipt = finish_receipt(ctx, result, failure);
-    receipt.recipe = recipe;
-    receipt.tested_older_commit = tested_older_commit;
-    receipt.ledger = Some(report::summarize(&outcome.ledger));
-    receipt.blocks_written = outcome.ledger.blocks_written.clone().unwrap_or_default();
-    receipt.hints = hints;
-    receipt.blocks_not_saved = outcome
-        .ledger
-        .blocks
-        .iter()
-        .filter(|block| block.saved == Some(false))
-        .map(|block| crate::receipt::BlockNotSaved {
-            block: block.key.clone(),
-            reason: block.unsavable.clone().unwrap_or_default(),
-        })
-        .collect();
-    receipt.worktree_drift = drift;
-    receipt.artifacts.insert("report".to_string(), report_path);
-    receipt.artifacts.insert("ledger".to_string(), ledger_path);
-    for (name, rendered) in cleanup {
-        receipt.cleanup.insert(name, rendered);
-    }
-    if !all_clean {
-        receipt.next_action = format!("qaren cleanup {run_id} --json");
-    }
-    Ok(receipt)
+    Ok(held(ctx))
 }
 
 // A report lands up to 45 s after the crash; finding one is lane health and never changes the result.

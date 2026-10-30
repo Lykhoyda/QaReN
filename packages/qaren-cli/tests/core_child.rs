@@ -2050,7 +2050,7 @@ fn a_step_start_carrying_anything_but_its_identity_is_a_protocol_violation() {
 #[test]
 fn a_runner_driver_is_recorded_only_as_this_simulator_s_own_group_leader() {
     let command = "/usr/bin/xcodebuild test-without-building -project R.xcodeproj -destination platform=iOS Simulator,id=AAAA-1111";
-    let real = "xcodebuild test-without-building -project /p/RnFastRunner/RnFastRunner.xcodeproj -scheme RnFastRunner -destination platform=iOS Simulator,id=2E24DCF0-C991-4EB0-80CC-CCFEB9042A73 -derivedDataPath /p/build/DerivedData -only-testing:RnFastRunnerUITests/RnFastRunnerTests/testCommand";
+    let real = "xcodebuild test-without-building -project /p/QarenIosRunner/QarenIosRunner.xcodeproj -scheme QarenIosRunner -destination platform=iOS Simulator,id=2E24DCF0-C991-4EB0-80CC-CCFEB9042A73 -derivedDataPath /p/build/DerivedData -only-testing:QarenIosRunnerUITests/QarenIosRunnerTests/testCommand";
     assert!(qaren::redact::OutputText::from_output(real)
         .as_str()
         .contains("2E24DCF0-C991-4EB0-80CC-CCFEB9042A73"));
@@ -2396,4 +2396,53 @@ fn media_diagnostics_reach_the_private_sink_with_unused_or_absent_inputs() {
             std::fs::remove_dir_all(repo).unwrap();
         });
     }
+}
+
+#[test]
+fn manifest_probe_and_relaunch_timings_reach_the_run_receipt() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    let verify = || {
+        let repo = common::temp_repo();
+        let events = [
+            serde_json::json!({
+                "kind": "metric", "stage": "manifest-probe", "edge": "end", "outcome": "failed",
+                "at": 10000, "ms": 10000, "count": 1, "method": "timeout"
+            }),
+            serde_json::json!({
+                "kind": "metric", "stage": "manifest-probe", "edge": "end", "outcome": "ok",
+                "at": 12000, "ms": 1000, "count": 2, "method": "unknown"
+            }),
+            serde_json::json!({
+                "kind": "metric", "stage": "dev-client-relaunch", "edge": "end", "outcome": "ok",
+                "at": 13000, "ms": 500, "count": 1, "relaunch": "ready"
+            }),
+        ];
+        let mut stdout = String::new();
+        for (i, event) in events.iter().enumerate() {
+            stdout.push_str(&envelope(i as u64 + 2, "diagnostic", &event.to_string()));
+            stdout.push('\n');
+        }
+        stdout.push_str(&envelope(5, "result", &pass_ledger(&[])));
+        stdout.push('\n');
+        let mut mock = MockRunner::new();
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+        let result = run_child(&mut mock, &repo.join("core.log"));
+        assert_eq!(result.verdict, Verdict::Pass);
+        let stored = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
+        let actual: Vec<serde_json::Value> = stored
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(actual, events);
+    };
+    verify();
+    with_input_scope(
+        Arc::new(InputValues::from_entries([(
+            OsString::from("QAREN_INPUT_PASSWORD"),
+            OsString::from("synthetic-password"),
+        )])),
+        verify,
+    );
 }

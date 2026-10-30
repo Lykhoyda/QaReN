@@ -1,9 +1,9 @@
-// Story 06 Phase B (#387): the rn-fast-runner warm-launch ready gate is
+// Story 06 Phase B (#387): the qaren-ios-runner warm-launch ready gate is
 // overridable via RN_FAST_RUNNER_READY_TIMEOUT_MS so a slow CI simulator (where
 // install+launch+attach of the XCUITest runner can exceed 30s) can widen it.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveReadyTimeoutMs } from '../../dist/runners/rn-fast-runner-client.js';
+import { resolveReadyTimeoutMs } from '../../dist/runners/qaren-ios-runner-client.js';
 
 function withEnv(value: string | undefined, fn: () => void) {
   const prev = process.env.RN_FAST_RUNNER_READY_TIMEOUT_MS;

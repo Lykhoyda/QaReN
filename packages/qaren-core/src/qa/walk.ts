@@ -1,6 +1,6 @@
 import { QaDispatchError } from '../domain/qa-dispatch.js';
 import { ownedLogin, parseInputPreflight } from './input-preflight.js';
-import { readAndroidLabelProvenance } from '../runners/rn-android-runner-client.js';
+import { readAndroidLabelProvenance } from '../runners/qaren-android-runner-client.js';
 import { ObservedPrivacy } from './privacy.js';
 import { InputPrivacyRefusal, withInputs, currentInputs, type RunInputs } from './inputs.js';
 import {
@@ -52,11 +52,12 @@ import {
   observeAppProcess,
   observeRunnerDrivers,
   observeRunnerRelaunches,
-} from '../runners/rn-fast-runner-client.js';
+} from '../runners/qaren-ios-runner-client.js';
 import type { ToolResult } from '../utils.js';
 import { HandlerError, adapt, describeError, fillEvidence, unwrap } from './adapt.js';
 import {
   AppProcessGoneError,
+  boundedCapture,
   captureScreen,
   nativeDevOverlayUncleared,
   postAdmissionSnapshots,
@@ -470,7 +471,12 @@ async function openSession(
       ['type-call', 'type-readback', 'relayout-retap', 'settle', 'keyboard'].includes(event.stage)
     )
       event = { ...event, line: currentLine };
-    if (currentInputs()?.hasInputs) diagnostic({ kind: 'metric', ...event });
+    if (
+      currentInputs()?.hasInputs ||
+      event.stage === 'manifest-probe' ||
+      event.stage === 'dev-client-relaunch'
+    )
+      diagnostic({ kind: 'metric', ...event });
     else process.stderr.write(redactApiKey(formatTimingEvent(event)));
   });
   const cdp = new CDPClient(target.metroPort);
@@ -539,15 +545,20 @@ async function openSession(
         // Same launch the CLI made: once Metro answers the manifest in time, terminate and open the dev client on its Metro.
         ...(platform === 'ios'
           ? {
-              relaunch: async (deadline: number) => {
-                const url = devClientLaunchUrl(target);
-                const manifest = await awaitDevClientManifest(url, deadline);
-                log(
-                  `relaunching after the manifest answered in ${manifest.ms} ms (attempt ${manifest.attempts})`,
+              manifest: async (deadline, retry) => {
+                const manifest = await awaitDevClientManifest(
+                  devClientLaunchUrl(target),
+                  deadline,
+                  retry,
                 );
-                bundleRequests?.relaunching();
-                await relaunchIosDevClient(appId, target.deviceId, url);
+                log(
+                  `QaReN manifest probe answered in ${manifest.ms} ms (attempt ${manifest.attempts})`,
+                );
                 return manifest;
+              },
+              relaunch: async () => {
+                bundleRequests?.relaunching();
+                await relaunchIosDevClient(appId, target.deviceId, devClientLaunchUrl(target));
               },
               appAlive: async () => {
                 const alive = await isAppRunning('ios', appId, undefined, target.deviceId);
@@ -596,6 +607,7 @@ async function openSession(
         prove: () => prove({ evaluate: (expr) => cdp.evaluate(expr) }, target),
         close,
         observe: (decision, facts) => timing(admissionMetric(decision, facts, attachStage, now())),
+        timing: (event) => timing({ ...event, at: now() }),
       },
       stop,
     ).catch(logRefusal),
@@ -714,26 +726,29 @@ async function openSession(
     },
     captureScreen: (options) =>
       stop.track(() =>
-        captureScreen({
-          appId,
-          requirePrivateInputs: true,
-          observation: options?.observation,
-          platformPresence: options?.platformPresence,
-          now,
-          timing: options?.timing,
-          warn: log,
-          native: (presenceBudgetMs) =>
-            rawSnapshot(
-              options?.platformPresence,
-              presenceBudgetMs,
-              options?.timing ? { now, observe: options.timing } : undefined,
-            ).catch((error: unknown) => {
-              if (error instanceof HandlerError && error.meta?.reason === 'app-not-running')
-                throw new AppProcessGoneError();
-              throw error;
-            }),
-          react: () => captureReact(options?.platformPresence === true),
-        }),
+        boundedCapture(options?.budgetMs, () =>
+          captureScreen({
+            appId,
+            requirePrivateInputs: true,
+            observation: options?.observation,
+            platformPresence: options?.platformPresence,
+            budgetMs: options?.budgetMs,
+            now,
+            timing: options?.timing,
+            warn: log,
+            native: (presenceBudgetMs) =>
+              rawSnapshot(
+                options?.platformPresence,
+                presenceBudgetMs,
+                options?.timing ? { now, observe: options.timing } : undefined,
+              ).catch((error: unknown) => {
+                if (error instanceof HandlerError && error.meta?.reason === 'app-not-running')
+                  throw new AppProcessGoneError();
+                throw error;
+              }),
+            react: () => captureReact(options?.platformPresence === true),
+          }),
+        ),
       ),
     press: (ref, qaContext) =>
       act(() => press({ ref, qaContext, qaTiming: { now, observe: timing } }), false, {

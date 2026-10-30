@@ -1,7 +1,7 @@
 // DISPATCH_OCCLUSION_GUARD_V1: an Android runner without the occlusion guard is stale and rebuilt.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyAndroidHealth } from '../../dist/runners/rn-android-runner-client.js';
+import { classifyAndroidHealth } from '../../dist/runners/qaren-android-runner-client.js';
 import {
   REQUIRED_ANDROID_COMMANDS,
   REQUIRED_ANDROID_FEATURES,

@@ -24,7 +24,7 @@ import {
   _setFastRunnerStateForTest,
   _setFetchForTest,
   _setCapabilitiesForTest,
-} from '../../../dist/runners/rn-fast-runner-client.js';
+} from '../../../dist/runners/qaren-ios-runner-client.js';
 import {
   REQUIRED_IOS_COMMANDS,
   REQUIRED_IOS_FEATURES,

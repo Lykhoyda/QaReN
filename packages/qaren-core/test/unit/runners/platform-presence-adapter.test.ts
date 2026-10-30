@@ -11,7 +11,7 @@ import {
   getFastRunnerState,
   runIOS,
   readIOSLabelProvenance,
-} from '../../../dist/runners/rn-fast-runner-client.js';
+} from '../../../dist/runners/qaren-ios-runner-client.js';
 import {
   clearRefMap,
   getCachedMetadata,
@@ -23,6 +23,7 @@ import {
 import { buildRunIOSArgs, healStaleRef } from '../../../dist/agent-device-wrapper.js';
 import { REQUIRED_IOS_COMMANDS, REQUIRED_IOS_FEATURES } from '../../../dist/runners/protocol.js';
 import { parseEnvelope } from '../../helpers/result-helpers.js';
+import { withCancellation } from '../../../dist/domain/cancellation.js';
 
 const rect = { x: 10, y: 20, width: 100, height: 40 };
 
@@ -387,6 +388,32 @@ test('presence cannot synthesize generation freshness or retain old refs from a 
     assert.equal(result.meta?.snapshotVerdict.refMapUpdated, false);
     assert.equal(result.meta?.snapshotVerdict.state, 'degraded');
   }
+});
+
+test('a snapshot decoded after its caller deadline publishes no refs', async () => {
+  let started!: () => void;
+  const decoding = new Promise<void>((resolve) => (started = resolve));
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  _setFetchForTest(async () =>
+    Object.assign(Response.json({}), {
+      // The reply arrived in time; only its decoding crosses the deadline.
+      json: async () => {
+        started();
+        await released;
+        return { ok: true, data: { nodes: [{ index: 7, type: 'Button', rect }] } };
+      },
+    }),
+  );
+  const caller = new AbortController();
+  const deadline = new Error('caller deadline');
+  const pending = withCancellation(caller.signal, () => runIOS({ command: 'snapshot' }));
+  await decoding;
+  caller.abort(deadline);
+  release();
+  await assert.rejects(pending, (error) => error === deadline);
+  assert.equal(hasRefMap(), false);
+  assert.equal(refCenter('@e7'), null);
 });
 
 test('default snapshots retain legacy coordinate refs when keyboard state is missing', async () => {

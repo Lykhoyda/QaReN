@@ -25,8 +25,8 @@ import {
   fastSwipe,
   stopFastRunner,
   adoptPersistedFastRunnerState,
-} from '../runners/rn-fast-runner-client.js';
-import { stopAndroidRunner } from '../runners/rn-android-runner-client.js';
+} from '../runners/qaren-ios-runner-client.js';
+import { stopAndroidRunner } from '../runners/qaren-android-runner-client.js';
 import {
   surfaceKeyboardGuard,
   healKeyboardOccludedTap,
@@ -617,7 +617,7 @@ export function createDeviceFindHandler(
     }
 
     return failResult(
-      `device_find requires an in-tree runner — iOS (rn-fast-runner) or Android with RN_ANDROID_RUNNER unset/non-zero (rn-android-runner). Active session: ${(activeSession as { platform?: string } | null)?.platform ?? 'none'}.`,
+      `device_find requires an in-tree runner — iOS (qaren-ios-runner) or Android with RN_ANDROID_RUNNER unset/non-zero (qaren-android-runner). Active session: ${(activeSession as { platform?: string } | null)?.platform ?? 'none'}.`,
       {
         code: 'IN_TREE_RUNNER_REQUIRED',
         platform: (activeSession as { platform?: string } | null)?.platform ?? null,
@@ -2746,7 +2746,7 @@ export function createDeviceScrollIntoViewHandler(): (
       return scrollIntoViewWithRunner(args);
     }
     return failResult(
-      `device_scrollintoview requires an in-tree runner — iOS (rn-fast-runner) or Android with RN_ANDROID_RUNNER unset/non-zero (rn-android-runner). Active session: ${session?.platform ?? 'none'}.`,
+      `device_scrollintoview requires an in-tree runner — iOS (qaren-ios-runner) or Android with RN_ANDROID_RUNNER unset/non-zero (qaren-android-runner). Active session: ${session?.platform ?? 'none'}.`,
       { code: 'IN_TREE_RUNNER_REQUIRED', platform: session?.platform ?? null },
     );
   });
@@ -2757,7 +2757,7 @@ export function createDeviceScrollIntoViewHandler(): (
  * TS orchestrator for device_scrollintoview. Loops snapshot → find → check
  * viewport → swipe up to MAX_ITERATIONS times. Uses runNative for both
  * the `snapshot` and `swipe` verbs so the in-tree iOS short-circuit
- * (rn-fast-runner) and the Android short-circuit (rn-android-runner, env-gated)
+ * (qaren-ios-runner) and the Android short-circuit (qaren-android-runner, env-gated)
  * both apply transparently — no daemon, no upstream agent-device runner.
  */
 async function scrollIntoViewWithRunner(args: ScrollIntoViewArgs): Promise<ToolResult> {
@@ -3014,11 +3014,7 @@ export function createDeviceFocusNextHandler(): (
   });
 }
 
-// --- TS-side orchestrators for `find` and `scrollintoview` (GH #105 / rn-device iOS-MVP) ---
-//
-// These pure helpers replace what the external CLI tier used to do on iOS.
-// The runner (rn-fast-runner) exposes raw `tap` / `swipe` / `snapshot` but not
-// `find` or `scrollintoview` — we own that orchestration here. See spec §3.4.
+// The runner exposes gestures and snapshots; find and scroll targeting stay here.
 
 /**
  * GH #105 / rn-device iOS-MVP: TypeScript implementation of `find`.

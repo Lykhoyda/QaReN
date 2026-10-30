@@ -3,12 +3,16 @@ title: Test a pull request
 description: Walk a plan at a pull request's head with qaren pr, then post the result with qaren publish.
 ---
 
+Your agent writes the plan and runs `qaren pr`; it publishes the result only after you confirm. Here is what it means.
+
 ```sh
 qaren pr <number|url> --plan-file plan.md --device <simulator-UUID> --json
 qaren publish <run-id> --json
 ```
 
-Both use the GitHub CLI, so `gh` must be installed and signed in.
+Both require the GitHub CLI (`gh`); follow the authoritative
+[GitHub authentication contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#test-a-pull-request)
+for token-only CI, stored authentication and lookup refusals.
 
 :::caution
 Plans, reports and recordings of a private app stay private. Publication removes machine
@@ -65,6 +69,12 @@ Publish posts one comment with:
 The host name, home directory, user name, absolute paths, device IDs, serials, ports and
 private network addresses are removed from the comment. Publish then removes the `needs-qa`
 label, but only when the pull request's head is still the tested commit.
+
+### The description
+
+For the opt-in description section, video eligibility, marker recovery, retry outcomes and
+concurrent-edit limits, follow the authoritative
+[publication contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#test-a-pull-request).
 
 ### Saved blocks
 

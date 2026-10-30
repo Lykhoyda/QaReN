@@ -1,6 +1,8 @@
 mod common;
 
-use qaren::adapters::pnpm::{group_probe_spec, source, GROUP_OK};
+use qaren::adapters::pnpm::{
+    group_probe_spec, prove_group, source, GroupOutcome, GroupProof, GROUP_OK, PROBE_ATTEMPTS,
+};
 use qaren::commands::doctor::{doctor, Status};
 use qaren::exec::{CmdOutput, MockRunner, RealRunner, Runner};
 use std::os::unix::fs::{symlink, PermissionsExt};
@@ -180,4 +182,111 @@ fn source_reports_first_executable_path_entry_and_its_resolved_target() {
         .insert("PATH".into(), format!("{}:/usr/bin", bin.display()));
     assert_eq!(source(&runner), Some((bin.join("pnpm"), target)));
     std::fs::remove_dir_all(root).unwrap();
+}
+
+fn timed_out() -> CmdOutput {
+    CmdOutput {
+        timed_out: true,
+        duration_ms: 30_000,
+        ..Default::default()
+    }
+}
+
+// Each scripted probe call advances the clock 30 s; pauses advance it by their length.
+fn prove(outputs: Vec<CmdOutput>, budget_seconds: u64) -> (MockRunner, GroupProof) {
+    let mut runner = MockRunner::new();
+    runner.advance_on = Some(("QAREN_PNPM_LAUNCH_GROUP".into(), 30_000));
+    for output in outputs {
+        runner.expect_run("QAREN_PNPM_LAUNCH_GROUP", output);
+    }
+    let proof = prove_group(
+        &mut runner,
+        &group_probe_spec(std::path::Path::new("/app")),
+        PROBE_ATTEMPTS,
+        budget_seconds,
+    );
+    (runner, proof)
+}
+
+fn bounds(runner: &MockRunner) -> Vec<u64> {
+    runner.calls.iter().map(|c| c.timeout_seconds).collect()
+}
+
+#[test]
+fn proved_first_try_runs_once() {
+    let (runner, proof) = prove(vec![CmdOutput::success(GROUP_OK)], 900);
+    assert_eq!(proof.outcome, GroupOutcome::Proved);
+    assert_eq!(proof.attempts.len(), 1);
+    assert_eq!(bounds(&runner), [30]);
+}
+
+#[test]
+fn wrong_group_is_unproven_without_retry() {
+    let (runner, proof) = prove(vec![CmdOutput::failed(1, "")], 900);
+    assert_eq!(proof.outcome, GroupOutcome::Unproven);
+    assert_eq!(proof.attempts.len(), 1);
+    assert_eq!(runner.remaining(), 0);
+}
+
+#[test]
+fn probe_timeout_once_then_proved_doubles_the_bound() {
+    let (runner, proof) = prove(vec![timed_out(), CmdOutput::success(GROUP_OK)], 900);
+    assert_eq!(proof.outcome, GroupOutcome::Proved);
+    assert_eq!(proof.attempts.len(), 2);
+    assert_eq!(bounds(&runner), [30, 60]);
+    assert_eq!(proof.elapsed_ms, 61_000);
+    assert_eq!(runner.remaining(), 0);
+}
+
+#[test]
+fn probe_timing_out_every_attempt_stops_at_the_cap() {
+    let (runner, proof) = prove(vec![timed_out(), timed_out(), timed_out()], 900);
+    assert_eq!(proof.outcome, GroupOutcome::TimedOut);
+    assert_eq!(proof.attempts.len(), 3);
+    assert_eq!(bounds(&runner), [30, 60, 120]);
+    assert_eq!(proof.elapsed_ms, 93_000);
+    assert_eq!(runner.remaining(), 0);
+}
+
+#[test]
+fn probe_clips_the_second_bound_to_the_remaining_budget() {
+    let (runner, proof) = prove(vec![timed_out(), timed_out()], 60);
+    assert_eq!(proof.outcome, GroupOutcome::TimedOut);
+    assert_eq!(bounds(&runner), [30, 29]);
+    assert_eq!(proof.elapsed_ms, 61_000);
+}
+
+#[test]
+fn probe_admits_no_retry_under_one_second() {
+    let (runner, proof) = prove(vec![timed_out(), timed_out()], 61);
+    assert_eq!(bounds(&runner), [30, 30]);
+    assert_eq!(proof.elapsed_ms, 61_000);
+    let (runner, proof) = prove(vec![timed_out(), timed_out(), timed_out()], 64);
+    assert_eq!(bounds(&runner), [30, 33, 1]);
+    assert_eq!(proof.elapsed_ms, 93_000);
+}
+
+#[test]
+fn probe_timeout_then_finished_failure_is_unproven() {
+    let (runner, proof) = prove(vec![timed_out(), CmdOutput::failed(1, "")], 900);
+    assert_eq!(proof.outcome, GroupOutcome::Unproven);
+    assert_eq!(proof.attempts.len(), 2);
+    assert_eq!(runner.remaining(), 0);
+}
+
+#[test]
+fn probe_stops_on_cancellation_between_attempts() {
+    let mut runner = MockRunner::new();
+    runner.advance_on = Some(("QAREN_PNPM_LAUNCH_GROUP".into(), 30_000));
+    runner.cancel_after = Some(("QAREN_PNPM_LAUNCH_GROUP".into(), "interrupted".into()));
+    runner.expect_run("QAREN_PNPM_LAUNCH_GROUP", timed_out());
+    let proof = prove_group(
+        &mut runner,
+        &group_probe_spec(std::path::Path::new("/app")),
+        PROBE_ATTEMPTS,
+        900,
+    );
+    assert_eq!(proof.outcome, GroupOutcome::TimedOut);
+    assert_eq!(proof.attempts.len(), 1);
+    assert_eq!(proof.elapsed_ms, 30_000);
 }

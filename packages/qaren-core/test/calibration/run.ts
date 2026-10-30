@@ -22,7 +22,7 @@ import { hash, planPath, policy, schedule, target } from './schedule.ts';
 const root = realpathSync(fileURLToPath(new URL('../../../..', import.meta.url)));
 const cli = join(root, 'packages/qaren-cli/target/debug/qaren');
 const runtime = join(root, 'packages/qaren-core/dist');
-const native = join(root, 'packages/rn-fast-runner/build/DerivedData/Build/Products');
+const native = join(root, 'packages/qaren-ios-runner/build/DerivedData/Build/Products');
 const json = (path: string) => JSON.parse(readFileSync(path, 'utf8'));
 const write = (path: string, value: unknown) =>
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx', mode: 0o600 });

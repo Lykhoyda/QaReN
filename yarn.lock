@@ -4907,9 +4907,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"qaren-android-runner@workspace:packages/rn-android-runner":
+"qaren-android-runner@workspace:packages/qaren-android-runner":
   version: 0.0.0-use.local
-  resolution: "qaren-android-runner@workspace:packages/rn-android-runner"
+  resolution: "qaren-android-runner@workspace:packages/qaren-android-runner"
   languageName: unknown
   linkType: soft
 
@@ -4937,9 +4937,9 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"qaren-ios-runner@workspace:packages/rn-fast-runner":
+"qaren-ios-runner@workspace:packages/qaren-ios-runner":
   version: 0.0.0-use.local
-  resolution: "qaren-ios-runner@workspace:packages/rn-fast-runner"
+  resolution: "qaren-ios-runner@workspace:packages/qaren-ios-runner"
   languageName: unknown
   linkType: soft
 

@@ -6,7 +6,7 @@ import {
   _setFastRunnerStateForTest,
   _setFetchForTest,
   runIOS,
-} from '../../dist/runners/rn-fast-runner-client.js';
+} from '../../dist/runners/qaren-ios-runner-client.js';
 import { buildRunIOSArgs } from '../../dist/agent-device-wrapper.js';
 import { REQUIRED_IOS_FEATURES } from '../../dist/runners/protocol.js';
 

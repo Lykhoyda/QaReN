@@ -11,12 +11,12 @@ import {
 import {
   _setFastRunnerStateForTest,
   markStalePrebuiltRunner,
-} from '../../dist/runners/rn-fast-runner-client.js';
+} from '../../dist/runners/qaren-ios-runner-client.js';
 import { getPluginVersion } from '../../dist/runners/protocol.js';
 
 const V = '2.0.0-beta.3';
-const LOCAL_DD = '/runtime/rn-fast-runner/build/DerivedData';
-const LOCAL_XCTESTRUN = join(LOCAL_DD, 'Build/Products/RnFastRunner.xctestrun');
+const LOCAL_DD = '/runtime/qaren-ios-runner/build/DerivedData';
+const LOCAL_XCTESTRUN = join(LOCAL_DD, 'Build/Products/QarenIosRunner.xctestrun');
 const MISSING_FEATURES = {
   liveness: 'stale',
   staleReason: 'missing-features',
@@ -25,10 +25,10 @@ const MISSING_FEATURES = {
 
 function prebuiltCache() {
   const cacheDir = join('/cache', V, 'ios');
-  const zip = join(cacheDir, `rn-fast-runner-${V}-sim.zip`);
+  const zip = join(cacheDir, `qaren-ios-runner-${V}-sim.zip`);
   const files = new Set<string>([
     zip,
-    join(cacheDir, 'products/Build/Products/RnFastRunner.xctestrun'),
+    join(cacheDir, 'products/Build/Products/QarenIosRunner.xctestrun'),
   ]);
   const calls = { fetch: 0 };
   const deps = {
@@ -36,7 +36,7 @@ function prebuiltCache() {
     readManifest: () => ({
       version: V,
       assets: {
-        ios: [{ name: `rn-fast-runner-${V}-sim.zip`, sha256: 'GOOD', bytes: 1 }],
+        ios: [{ name: `qaren-ios-runner-${V}-sim.zip`, sha256: 'GOOD', bytes: 1 }],
         android: [],
       },
     }),

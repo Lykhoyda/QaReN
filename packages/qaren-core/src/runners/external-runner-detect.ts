@@ -149,7 +149,7 @@ export function isIosExternalRunnerProcessLine(line: string): boolean {
   return false;
 }
 
-const RN_FAST_RUNNER_RE = /RnFastRunner/i;
+const RN_FAST_RUNNER_RE = /QarenIosRunner|QaReN-Runner/i;
 
 const IOS_PS_OPTIONS = { timeout: 2_000, encoding: 'utf8' as const };
 const MAX_ADMISSION_CANDIDATES = 64;
@@ -226,7 +226,8 @@ function isIosStrictRunnerProcessLine(line: string): boolean {
   // Legacy shell detection scans argv; strict admission cannot attribute those path mentions.
   if (SHELL_WRAPPERS.test(executable)) return false;
   if (isIosExternalRunnerProcessLine(line)) return true;
-  if (/^(?:RnFastRunner[^/]*|XCTRunner|.*UITests-Runner)$/i.test(executable)) return true;
+  if (/^(?:QarenIosRunner[^/]*|QaReN-Runner|XCTRunner|.*UITests-Runner)$/i.test(executable))
+    return true;
   return (
     /^xcodebuild$/i.test(executable) &&
     /(?:^|\s)(?:test|test-without-building)(?:\s|$)/.test(command)
@@ -289,11 +290,11 @@ function isUnscopedMcpControl(line: string): boolean {
 
 // The kernel inspector embeds this same specification; neither predicate establishes device scope.
 export const IOS_PATH_PATTERN_SPEC = String.raw`{
-  "exact": ["maestro", "maestro-driver-iosuitests-runner", "webdriveragent", "webdriveragentrunner", "webdriveragent-runner", "webdriveragentrunner-runner", "xctrunner", "xcodebuild"],
-  "prefix": "rnfastrunner",
+  "exact": ["maestro", "maestro-driver-iosuitests-runner", "webdriveragent", "webdriveragentrunner", "webdriveragent-runner", "webdriveragentrunner-runner", "xctrunner", "xcodebuild", "qaren-runner"],
+  "prefix": "qareniosrunner",
   "wordExtension": "maestro.",
   "suffixes": ["uitestsrunner", "uitests-runner"],
-  "containers": ["uitestsrunner.app", "uitests-runner.app", "xctrunner.app"],
+  "containers": ["uitestsrunner.app", "uitests-runner.app", "xctrunner.app", "qaren-runner.app"],
   "java": "java",
   "javaEntrypoint": "maestro.cli."
 }`;

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { shouldReuseRunner } from '../../dist/runners/rn-fast-runner-client.js';
+import { shouldReuseRunner } from '../../dist/runners/qaren-ios-runner-client.js';
 
 const LEASE = `session-a:${'f'.repeat(32)}`;
 process.env.QAREN_DEVICE_LEASE = LEASE;

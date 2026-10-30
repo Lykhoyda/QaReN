@@ -41,8 +41,8 @@ export const QAREN_PLATFORMS = ['darwin-arm64'];
 export function expectedRunnerAssets(version) {
   assertVersion(version);
   return {
-    ios: `rn-fast-runner-${version}-sim.zip`,
-    android: `rn-android-runner-${version}.zip`,
+    ios: `qaren-ios-runner-${version}-sim.zip`,
+    android: `qaren-android-runner-${version}.zip`,
     qaren: Object.fromEntries(
       QAREN_PLATFORMS.map((platform) => [platform, `qaren-${version}-${platform}.tar.gz`]),
     ),

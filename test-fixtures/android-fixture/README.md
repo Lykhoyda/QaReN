@@ -17,10 +17,10 @@ NOT resize when the keyboard opens, so the bottom bar stays genuinely occluded.
 
 ## Build / install
 
-Reuses rn-android-runner's Gradle wrapper (no second wrapper jar in the repo):
+Reuses qaren-android-runner's Gradle wrapper (no second wrapper jar in the repo):
 
 ```bash
-scripts/rn-android-runner/gradlew -p test-fixtures/android-fixture :app:assembleDebug
+packages/qaren-android-runner/gradlew -p test-fixtures/android-fixture :app:assembleDebug
 adb shell settings put secure show_ime_with_hard_keyboard 1
 adb install -r test-fixtures/android-fixture/app/build/outputs/apk/debug/app-debug.apk
 ```

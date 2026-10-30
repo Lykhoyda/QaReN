@@ -120,19 +120,35 @@ pub fn release_orphan(
     held: &LockHolder,
     liveness: Option<PidLiveness>,
 ) -> bool {
+    release_orphan_with(runner, lock_dir, held, liveness, false, None)
+}
+
+// `require_group`: a holder that never recorded its build group may have died after spawning it, so it is kept.
+fn release_orphan_with(
+    runner: &mut dyn Runner,
+    lock_dir: &Path,
+    held: &LockHolder,
+    liveness: Option<PidLiveness>,
+    require_group: bool,
+    deadline_ms: Option<u64>,
+) -> bool {
     if !matches!(
         liveness,
         Some(PidLiveness::Dead | PidLiveness::AliveForeign)
-    ) || !records_gone(held)
+    ) || (require_group && held.group.is_none())
+        || !records_gone(held)
     {
         return false;
     }
     let pid_reused = liveness == Some(PidLiveness::AliveForeign);
     if held.group.is_some_and(|pgid| {
         !(pid_reused && held.identity.as_ref().is_some_and(|i| i.pid == pgid))
-            && crate::adapters::metro::group_presence(runner, pgid)
+            && crate::adapters::metro::group_presence_until(runner, pgid, deadline_ms)
                 != crate::adapters::metro::GroupPresence::Absent
     }) {
+        return false;
+    }
+    if deadline_ms.is_some_and(|deadline| runner.monotonic_ms() >= deadline) {
         return false;
     }
     matches!(
@@ -171,7 +187,38 @@ pub fn claim_reclaiming_orphan(
     holder: &LockHolder,
     policy: LockPolicy,
 ) -> (LockOutcome, Option<String>) {
-    let outcome = buildplan::claim_lock(runner, lock_root, name, holder, policy);
+    claim_reclaiming(runner, lock_root, name, holder, policy, false, None)
+}
+
+// The iOS native-build lock: an orphan is released only once its recorded build group is proven gone.
+pub fn claim_reclaiming_build_orphan(
+    runner: &mut dyn Runner,
+    lock_root: &Path,
+    name: &str,
+    holder: &LockHolder,
+    deadline_ms: Option<u64>,
+) -> (LockOutcome, Option<String>) {
+    claim_reclaiming(
+        runner,
+        lock_root,
+        name,
+        holder,
+        LockPolicy::Strict,
+        true,
+        deadline_ms,
+    )
+}
+
+fn claim_reclaiming(
+    runner: &mut dyn Runner,
+    lock_root: &Path,
+    name: &str,
+    holder: &LockHolder,
+    policy: LockPolicy,
+    require_group: bool,
+    deadline_ms: Option<u64>,
+) -> (LockOutcome, Option<String>) {
+    let outcome = buildplan::claim_lock_until(runner, lock_root, name, holder, policy, deadline_ms);
     let LockOutcome::Contended {
         holder: Some(held),
         liveness,
@@ -180,16 +227,18 @@ pub fn claim_reclaiming_orphan(
     else {
         return (outcome, None);
     };
-    if !release_orphan(
+    if !release_orphan_with(
         runner,
         &buildplan::lock_dir(lock_root, name),
         held,
         *liveness,
+        require_group,
+        deadline_ms,
     ) {
         return (outcome, None);
     }
     let orphan = Some(held.run_id.clone());
-    match buildplan::claim_lock(runner, lock_root, name, holder, policy) {
+    match buildplan::claim_lock_until(runner, lock_root, name, holder, policy, deadline_ms) {
         LockOutcome::Claimed { .. } => (
             LockOutcome::Claimed {
                 adopted_stale: true,
@@ -197,6 +246,67 @@ pub fn claim_reclaiming_orphan(
             orphan,
         ),
         other => (other, orphan),
+    }
+}
+
+// Safe holder facts for diagnostics: no home, path, token, PID or command leaves here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HolderFacts {
+    pub alive: Option<bool>,
+    // shortcut: presence of the recorded build group stands in for a per-process heavy-build count; None without a group.
+    pub build_process: Option<bool>,
+    // UTC age of the claim; None for an unreadable or future timestamp.
+    pub hold_s: Option<u64>,
+}
+
+pub fn holder_facts(
+    runner: &mut dyn Runner,
+    held: &LockHolder,
+    liveness: Option<PidLiveness>,
+) -> HolderFacts {
+    holder_facts_until(runner, held, liveness, None)
+}
+
+pub(crate) fn holder_facts_until(
+    runner: &mut dyn Runner,
+    held: &LockHolder,
+    liveness: Option<PidLiveness>,
+    deadline_ms: Option<u64>,
+) -> HolderFacts {
+    use crate::adapters::metro::{group_presence_until, GroupPresence};
+    let now = runner.now_epoch_ms();
+    HolderFacts {
+        alive: match liveness {
+            Some(PidLiveness::AliveMatching) => Some(true),
+            Some(PidLiveness::Dead | PidLiveness::AliveForeign) => Some(false),
+            _ => None,
+        },
+        build_process: held.group.and_then(|pgid| {
+            match group_presence_until(runner, pgid, deadline_ms) {
+                GroupPresence::Present => Some(true),
+                GroupPresence::Absent => Some(false),
+                GroupPresence::Unknown => None,
+            }
+        }),
+        hold_s: timefmt::parse_iso8601_utc(&held.at)
+            .and_then(|at| now.checked_sub(at))
+            .map(|ms| ms / 1000),
+    }
+}
+
+pub fn rough_duration(seconds: u64) -> String {
+    if seconds >= 60 {
+        format!("{} min", seconds / 60)
+    } else {
+        format!("{seconds} s")
+    }
+}
+
+pub fn yes_no(fact: Option<bool>) -> &'static str {
+    match fact {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "unknown",
     }
 }
 
