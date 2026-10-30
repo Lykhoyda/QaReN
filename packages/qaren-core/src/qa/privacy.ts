@@ -846,10 +846,10 @@ export class ObservedPrivacy {
     for (const value of inputValues(screen)) this.observed.add(value);
     for (const value of inputValues(screen, true)) this.concealed.add(value);
     if (this.filled) {
-      const rows = codeBoxRows(
-        screen,
-        [...this.filledValues, ...this.privateSet().values.map((value) => value.text)],
-      );
+      const rows = codeBoxRows(screen, [
+        ...this.filledValues,
+        ...this.privateSet().values.map((value) => value.text),
+      ]);
       this.codeRows.set(screen, rows);
       for (const value of this.filledValues)
         if (chars(value) < SHORT && rows.some((row) => row.map(boxText).join('') === value))

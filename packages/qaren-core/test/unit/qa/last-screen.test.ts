@@ -179,7 +179,10 @@ test('structurally protected code labels are masked in both failure projections'
     assert.deepEqual(privacy.screenText(observed), ['[code]']);
     const target = { phrase: 'A', quoted: 'A', exact: 'text' as const };
     const now = screenNow(observed, target, 0, false, privacy);
-    assert.deepEqual(now.controls.map((c) => c.label), [MASK, MASK, MASK, MASK]);
+    assert.deepEqual(
+      now.controls.map((c) => c.label),
+      [MASK, MASK, MASK, MASK],
+    );
     const diagnostic = targetMissDiagnostic(target, observed, 1, false, privacy);
     assert.equal(diagnostic.candidates[0].label, MASK);
   }
@@ -257,7 +260,10 @@ test('no primary mark is emitted for unmatched or privacy-masked labels', () => 
     if (masked) privacy.observePrivateFill('Continue');
     privacy.observe(observed);
     const now = screenNow(observed, { phrase: 'Missing', quoted: 'Missing' }, 0, false, privacy);
-    assert.equal(now.controls.some((c) => c.primary !== undefined), false);
+    assert.equal(
+      now.controls.some((c) => c.primary !== undefined),
+      false,
+    );
     assert.equal(now.controls[0].label, masked ? MASK : 'Go');
   }
 });
