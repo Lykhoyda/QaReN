@@ -20,6 +20,13 @@ owns the guided onboarding procedure; [Check a plan](#check-a-plan) covers manua
 qaren doctor [--json] [--config .qaren/config.yaml] [--device <simulator-UUID>]
 ```
 
+On macOS, `ios-toolchain-match` compares the selected Swift compiler with public
+simulator interfaces in installed `expo-modules-core` and `expo-modules-jsi`
+XCFrameworks. A newer compiler produces a warning, not a compatibility verdict;
+missing or ambiguous evidence remains unknown. Doctor reads static app config
+without executing it. `native-cache-root` explains a cold cache or unavailable
+storage before a build; neither check installs Pods or changes storage.
+
 Doctor prints the running binary's version, path, build, runtime and the
 [`QAREN_HOME`](#release-and-source-builds-side-by-side) in use, then one
 `PASS`, `WARN`, `FAIL` or `SKIP` row per check, each problem with its manual fix.
@@ -3638,9 +3645,39 @@ dynamic or template-literal arguments, escaped literals and other unsupported
 syntax make the fingerprint **incomplete**, forbidding cached reuse (visible
 in decision evidence). Unresolvable local refs and `workspace:` dependencies
 in any of those sections also make it incomplete.
-On iOS the value also binds the selected Xcode (`xcodebuild -version`), so a
-build is never reused across Xcode versions, and an unavailable Xcode makes the
-fingerprint incomplete. Android binds the manifest hash alone.
+On iOS the value also binds the selected Xcode, the full compiler-build identity
+from `xcrun swift --version`, and requested Expo/RNCore build modes. Unknown
+identity or mode makes the fingerprint incomplete. New toolchain keys invalidate
+old cache keys once, preserving their entries. Android binds the manifest hash alone.
+
+`DEVELOPER_DIR` and `TOOLCHAINS` select the inherited toolchain. The inherited
+`EXPO_USE_PRECOMPILED_MODULES=0` and `RCT_USE_PREBUILT_RNCORE=0` switches select
+source builds when the app's Podfile honors them; they take effect at pod
+installation, not by changing existing Pods. Requested mode and observed Pods
+linkage are separate: ambiguous or mismatched linkage prevents publication.
+
+An Expo interface build failure retains `BUILD_FAILED`. Only a proven newer host
+compiler adds `cause=toolchain-newer-than-prebuilt`; unproven versions receive
+conditional interface guidance. Follow `next_action`: ask the app owner before
+regenerating generated native files, reinstall Pods with the selected environment
+for tracked native source, update compatible Expo patch versions, or select a
+compatible already-installed Xcode with `DEVELOPER_DIR`. Preserve tracked source
+and manual native changes. A successful recovery `qaren prepare` is Ready and
+still owns resources: complete `qaren cleanup <recovery-run-id> --json` before
+retrying the original command with the same environment. Stop on incomplete
+cleanup. Blind retries, device restarts and cache deletion do not fix a compiler mismatch.
+
+Receipts report normalized `toolchain`, `precompiled_modules_requested`,
+`native_cache` hit/miss reasons, and `rebuild_estimate=estimate unavailable`.
+The advisory last-success record lives in
+`$QAREN_HOME/state/native-cache/<version>/<opaque-key>.json`; it contains hashes
+and normalized identity, never raw app paths or config. It is updated only after
+verified publication under the native build lock and never authorizes reuse.
+Missing or corrupt history is reported as unavailable. If the configured cache
+volume disappears, restore it or explicitly select a mounted private absolute
+`QAREN_NATIVE_CACHE_ROOT`; QaReN refuses before building rather than creating a
+replacement directory on another filesystem. Loss during publication preserves
+the successful build's run-local products and prior history.
 
 **Expo native identity (iOS).** When the app's `package.json` declares `expo` in
 `dependencies`, `devDependencies`, `optionalDependencies` or `peerDependencies`,

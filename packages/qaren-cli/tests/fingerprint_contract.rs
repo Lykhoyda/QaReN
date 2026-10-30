@@ -13,6 +13,7 @@ fn prior_fingerprint() -> NativeFingerprint {
         parts: Default::default(),
         expo_fingerprint_ms: None,
         expo_unavailable: None,
+        ios_identity: None,
     }
 }
 
@@ -1012,7 +1013,18 @@ fn static_config_without_expo_binds_the_xcode_version() {
     let fp = fingerprint(&root);
     assert!(fp.complete, "{:?}", fp.incompleteness);
     assert_eq!(fp.expo_fingerprint_ms, None);
-    assert_eq!(fp.parts.keys().collect::<Vec<_>>(), ["rnfp", "toolchain"]);
+    assert_eq!(
+        fp.parts.keys().collect::<Vec<_>>(),
+        [
+            "rnfp",
+            "toolchain",
+            "toolchain.expo-mode",
+            "toolchain.jsi-mode",
+            "toolchain.rncore-mode",
+            "toolchain.swift",
+            "toolchain.xcode"
+        ]
+    );
     assert_ne!(fp.parts["rnfp"], fp.value);
     assert_eq!(
         matching_build(&root, &fp, "ios").decision,
@@ -1024,6 +1036,7 @@ fn static_config_without_expo_binds_the_xcode_version() {
         "xcodebuild -version",
         CmdOutput::success("Xcode 27.1\nBuild version 27B5\n"),
     );
+    common::script_swift(&mut runner);
     let other_xcode = compute(&mut runner, &root, &root, "ios").unwrap();
     assert_eq!(other_xcode.parts["rnfp"], fp.parts["rnfp"]);
     assert_ne!(other_xcode.value, fp.value);
@@ -1044,12 +1057,21 @@ fn static_expo_config_binds_the_evaluated_native_inputs() {
     assert!(fp.complete, "{:?}", fp.incompleteness);
     assert_eq!(
         fp.parts.keys().collect::<Vec<_>>(),
-        ["expo", "rnfp", "toolchain"]
+        [
+            "expo",
+            "rnfp",
+            "toolchain",
+            "toolchain.expo-mode",
+            "toolchain.jsi-mode",
+            "toolchain.rncore-mode",
+            "toolchain.swift",
+            "toolchain.xcode"
+        ]
     );
     assert_eq!(fp.parts["expo"], format!("expo:{EXPO_H}"));
     assert_eq!(
         fp.value,
-        "rnfp1:f5dfeed325ed9c3a20232ae15a6fb6edc278d9288b75ef2db9e838c990dd72cf"
+        "rnfp1:88ce93548f0c7fffb4cfb152591c9615121a905ecd8332ff920e799f418488d7"
     );
     assert!(fp.expo_fingerprint_ms.is_some());
     assert_eq!(
@@ -1082,7 +1104,18 @@ fn static_expo_fallback_stays_complete_and_can_reuse_its_native_identity() {
             common::script_xcode(m);
         });
         assert!(fp.complete, "{section}: {:?}", fp.incompleteness);
-        assert_eq!(fp.parts.keys().collect::<Vec<_>>(), ["rnfp", "toolchain"]);
+        assert_eq!(
+            fp.parts.keys().collect::<Vec<_>>(),
+            [
+                "rnfp",
+                "toolchain",
+                "toolchain.expo-mode",
+                "toolchain.jsi-mode",
+                "toolchain.rncore-mode",
+                "toolchain.swift",
+                "toolchain.xcode"
+            ]
+        );
         assert!(fp
             .expo_unavailable
             .as_deref()
@@ -1113,6 +1146,7 @@ fn static_config_without_xcode_never_reuses() {
         "xcodebuild -version",
         CmdOutput::failed(1, "no developer dir"),
     );
+    common::script_swift(&mut runner);
     let fp = compute(&mut runner, &root, &root, "ios").unwrap();
     assert!(!fp.complete);
     assert!(fp.incompleteness[0].starts_with("toolchain identity unavailable"));
@@ -1141,15 +1175,24 @@ fn evaluated_dynamic_config_clears_only_its_own_incompleteness_and_reuses() {
     assert!(fp.complete, "{:?}", fp.incompleteness);
     assert_eq!(
         fp.parts.keys().collect::<Vec<_>>(),
-        ["expo", "rnfp", "toolchain"]
+        [
+            "expo",
+            "rnfp",
+            "toolchain",
+            "toolchain.expo-mode",
+            "toolchain.jsi-mode",
+            "toolchain.rncore-mode",
+            "toolchain.swift",
+            "toolchain.xcode"
+        ]
     );
     assert_eq!(fp.parts["expo"], format!("expo:{EXPO_H}"));
     assert_ne!(fp.value, fp.parts["rnfp"]);
     assert!(fp.expo_fingerprint_ms.is_some());
     assert_eq!(
         runner.private_inputs.len(),
-        2,
-        "both Expo commands use private capture"
+        4,
+        "all four Expo and compiler calls use private capture"
     );
     let plan = matching_build(&root, &fp, "ios");
     assert_eq!(
@@ -1386,6 +1429,7 @@ fn unavailable_toolchain_identity_forbids_reuse() {
             "xcodebuild -version",
             CmdOutput::failed(1, "no developer dir"),
         );
+        common::script_swift(m);
     });
     assert!(!fp.complete);
     assert_eq!(fp.incompleteness.len(), 1);
@@ -1445,6 +1489,7 @@ fn evaluated_config_output_never_reaches_fingerprint_or_decision() {
             );
             if stderr.is_empty() {
                 m.expect_run("xcodebuild -version", CmdOutput::success(XCODE));
+                common::script_swift(m);
             }
         });
         let plan = matching_build(&root, &fp, "ios");
@@ -1478,6 +1523,7 @@ fn a_pnpm_dependency_check_preamble_on_stdout_is_ignored() {
             )),
         );
         m.expect_run("xcodebuild -version", CmdOutput::success(XCODE));
+        common::script_swift(m);
     });
     assert!(fp.complete, "{:?}", fp.incompleteness);
     assert_eq!(fp, evaluated(&root, EXPO_H, XCODE));

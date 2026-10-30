@@ -102,6 +102,28 @@ fn matching_fingerprint_with_verified_artifact_and_scheme_reuses() {
 }
 
 #[test]
+fn a_proven_toolchain_change_cleans_derived_outputs_for_tracked_native_source() {
+    for part in ["toolchain.xcode", "toolchain.swift"] {
+        let worktree = temp_dir();
+        let mut old = state(&worktree, FP);
+        old.fingerprint_parts.insert(part.into(), "a".repeat(64));
+        let current = std::collections::BTreeMap::from([(part.into(), "b".repeat(64))]);
+        let mut selected = inputs(&worktree, "rnfp1:new");
+        selected.native_dir_in_candidate = true;
+        selected.fingerprint_parts = &current;
+        let plan = decide(&selected, &StateStatus::Loaded(Box::new(old)), None);
+        assert_eq!(plan.decision, BuildDecision::Clean);
+        assert!(!plan.regenerate_native_dir);
+        let unrecorded = decide(
+            &selected,
+            &StateStatus::Loaded(Box::new(state(&worktree, FP))),
+            None,
+        );
+        assert_eq!(unrecorded.decision, BuildDecision::Incremental);
+    }
+}
+
+#[test]
 fn stale_artifact_content_is_never_reused() {
     let worktree = temp_dir();
     let plan = decide(
