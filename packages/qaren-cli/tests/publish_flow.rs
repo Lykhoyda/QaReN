@@ -361,9 +361,7 @@ fn a_rerun_after_the_comment_posts_no_second_comment() {
     first
         .0
         .expect_run("gh pr view", CmdOutput::failed(1, "network down"));
-    first
-        .0
-        .expect_run("gh auth status", CmdOutput::success(""));
+    first.0.expect_run("gh auth status", CmdOutput::success(""));
     let receipt = publish(&mut first, &runs, RUN, &machine());
     assert_eq!(receipt.result, ReceiptResult::Failed);
     assert_eq!(

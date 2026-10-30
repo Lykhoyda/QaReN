@@ -133,11 +133,22 @@ pub enum GroupPresence {
 }
 
 pub fn group_presence(runner: &mut dyn Runner, pgid: i32) -> GroupPresence {
+    group_presence_until(runner, pgid, None)
+}
+
+pub(crate) fn group_presence_until(
+    runner: &mut dyn Runner,
+    pgid: i32,
+    deadline_ms: Option<u64>,
+) -> GroupPresence {
+    let Some(seconds) = crate::runrecord::probe_seconds_left(runner, deadline_ms) else {
+        return GroupPresence::Unknown;
+    };
     let output = runner.run(&CmdSpec::new(
         "ps-groups",
         "ps",
         &["-A", "-o", "pid=", "-o", "pgid=", "-o", "stat="],
-        10,
+        seconds,
     ));
     if !output.ok()
         || !output.stderr.is_empty()
