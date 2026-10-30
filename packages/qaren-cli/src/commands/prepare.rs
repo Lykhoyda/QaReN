@@ -2082,7 +2082,7 @@ pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
     let repo_root = ctx.record.candidate.repo_root.clone();
     let project_root = ctx.record.candidate.project_root.clone();
     let history_root = ctx.native_cache_state_root.clone();
-    let history = (platform == "ios")
+    let mut history = (platform == "ios")
         .then(|| {
             buildplan::LastSuccess::load(
                 &history_root,
@@ -2112,11 +2112,17 @@ pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
             &ctx.native_cache_root,
             ctx.native_cache_mount_probe,
         ) {
-            Ok(anchor)
+            Ok(anchor) => {
                 if history
                     .as_ref()
-                    .is_none_or(|h| h.mount_hash == anchor.mount_hash) =>
-            {
+                    .is_some_and(|h| h.mount_hash != anchor.mount_hash)
+                {
+                    history = None;
+                    ctx.notes.push((
+                        "native_cache_history".into(),
+                        "history unavailable (cache volume identity changed)".into(),
+                    ));
+                }
                 if anchor.availability == buildplan::CacheAvailability::RootAbsent {
                     ctx.notes
                         .push(("native_cache".into(), "miss (root absent)".into()));
@@ -2124,7 +2130,7 @@ pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
                 }
                 ctx.native_cache_anchor = Some(anchor);
             }
-            _ => {
+            Err(_) => {
                 ctx.native_cache_refusal = true;
                 ctx.notes.extend([
                     (
@@ -2652,6 +2658,7 @@ pub(crate) fn run_clean_preparation(ctx: &mut Ctx, plan: &BuildPlan) -> Result<(
     ensure_running(ctx.runner, "build")?;
     let platform = platform_dir(ctx.record.scenario.platform);
     let project_root = ctx.record.candidate.project_root.clone();
+    let native_dir_existed = project_root.join(platform).exists();
     if plan.regenerate_native_dir
         || (platform == "ios"
             && !project_root.join("ios").exists()
@@ -2686,7 +2693,11 @@ pub(crate) fn run_clean_preparation(ctx: &mut Ctx, plan: &BuildPlan) -> Result<(
         }
         ctx.notes.push((
             "clean_preparation".to_string(),
-            format!("deleted and regenerated the generated {platform}/ dir, including its installed native dependencies and build outputs, via expo prebuild --clean"),
+            if native_dir_existed {
+                format!("deleted and regenerated the generated {platform}/ dir, including its installed native dependencies and build outputs, via expo prebuild --clean")
+            } else {
+                format!("generated the absent {platform}/ dir and installed its native dependencies via expo prebuild --clean")
+            },
         ));
         return Ok(());
     }
@@ -3503,14 +3514,14 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
             && ctx
                 .linkage_before_build
                 .as_ref()
-                .is_some_and(|before| before.digest == linkage.digest && before == &linkage);
+                .is_some_and(|before| before == &linkage);
         ctx.note_toolchain(if proven {
             linkage.expo
         } else {
             crate::ios_toolchain::Mode::Unknown
         });
         if !proven {
-            ctx.notes.push(("artifact_cache".into(), "skipped: installed Pods linkage is unknown, changed, or differs from requested mode; retain run-local products and ask the app owner to regenerate pods with the selected environment before rebuilding".into()));
+            ctx.notes.push(("artifact_cache".into(), "skipped: installed Pods linkage is unknown, changed, or differs from requested mode; retain run-local products, verify the installed Pods match the selected environment and retry once with stable linkage; if settings differ, ask the app owner to regenerate pods before rebuilding".into()));
             return Ok(());
         }
         if ctx

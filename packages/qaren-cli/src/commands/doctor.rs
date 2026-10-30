@@ -389,7 +389,12 @@ fn ios_toolchain_match(
     let host = observation.compiler.swift.as_ref().expect("checked Swift");
     for interface in &observation.interfaces {
         if host > &interface.swift {
-            return Check::warn(ID, format!("host Swift {host} is newer than the compiler for {} ({}); precompiled interface compatibility needs checking", interface.package, interface.swift), ios_toolchain::SOURCE_FIX);
+            let fix = if modes.expo == Mode::Off && interface.package == "expo-modules-jsi" {
+                ios_toolchain::JSI_SOURCE_FIX
+            } else {
+                ios_toolchain::SOURCE_FIX
+            };
+            return Check::warn(ID, format!("host Swift {host} is newer than the compiler for {} ({}); precompiled interface compatibility needs checking", interface.package, interface.swift), fix);
         }
         if host < &interface.swift {
             return Check::warn(
@@ -1725,7 +1730,11 @@ mod tests {
         let check = ios_toolchain_match(&mut runner, &app, Some(compiler));
         assert_eq!(check.status, Status::Warn);
         assert!(check.detail.contains("expo-modules-jsi"));
-        assert!(check.fix.unwrap().contains("DEVELOPER_DIR"));
+        let fix = check.fix.unwrap();
+        assert!(fix.contains("DEVELOPER_DIR"));
+        assert!(fix.contains("patch versions"));
+        assert!(!fix.contains("regenerate pods"));
+        assert!(!fix.contains("select source-built"));
     }
 
     #[test]

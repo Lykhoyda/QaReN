@@ -3646,6 +3646,17 @@ old cache keys once, preserving their entries. Android binds the manifest hash a
 source builds when the app's Podfile honors them; they take effect at pod
 installation, not by changing existing Pods. Requested mode and observed Pods
 linkage are separate: ambiguous or mismatched linkage prevents publication.
+Unrecognized Podfiles (including custom Expo or bare React Native configurations)
+and JSI podspecs keep the affected mode unknown and disable cache reuse; the
+fingerprint diagnostic names the mode and input to verify with the app owner.
+
+For a first iOS build of an Expo app without `ios/`, CLI-owned `prepare`, `check`
+and `pr` run an owned `expo prebuild --clean` before compilation to establish
+native dependency linkage. This shares the build deadline. Tracked native source
+is preserved: install Pods with the selected environment before building to
+permit publication on the first build. If `expo run:ios` creates Pods during a
+tracked-native build, the build can succeed but publication is skipped until a
+subsequent build proves the same linkage before and after compilation.
 
 An Expo interface build failure retains `BUILD_FAILED`. Only a proven newer host
 compiler adds `cause=toolchain-newer-than-prebuilt`; unproven versions receive
@@ -3664,7 +3675,7 @@ The advisory last-success record lives in
 `$QAREN_HOME/state/native-cache/<version>/<opaque-key>.json`; it contains hashes
 and normalized identity, never raw app paths or config. It is updated only after
 verified publication under the native build lock and never authorizes reuse.
-Missing or corrupt history is reported as unavailable. If the configured cache
+Missing, corrupt or foreign-volume history is reported as unavailable and does not refuse a build on a valid mounted cache. If the configured cache
 volume disappears, restore it or explicitly select a mounted private absolute
 `QAREN_NATIVE_CACHE_ROOT`; QaReN refuses before building rather than creating a
 replacement directory on another filesystem. Loss during publication preserves

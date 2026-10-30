@@ -7,7 +7,7 @@ use std::path::Path;
 mod probe;
 pub(crate) use probe::has_expo_dependency;
 pub(crate) use probe::inspect_for_doctor;
-pub(crate) use probe::requested_modes_for_build;
+pub(crate) use probe::resolved_modes_for_build;
 pub use probe::{inspect, requested_modes, Linkage, NativeBuildConfig, RequestedModes};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -142,6 +142,7 @@ pub struct Observation {
 
 pub const UNKNOWN_FIX: &str =
     "verify the selected Xcode and installed Expo packages, then re-run qaren doctor --json";
+pub const JSI_SOURCE_FIX: &str = "Expo module source builds are already selected; update expo-modules-jsi and expo-modules-core to compatible Expo patch versions, or select a compatible installed Xcode with DEVELOPER_DIR, then re-run qaren doctor --json";
 pub const SOURCE_FIX: &str = "select source-built Expo modules and regenerate pods, update the app's Expo patch versions, or select a compatible installed Xcode with DEVELOPER_DIR; re-run qaren doctor --json";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,7 +255,8 @@ pub fn classify_failure(log: &str, observation: Option<&Observation>) -> Option<
             .iter()
             .find_map(|marker| SwiftVersion::from_compiler(line.split_once(marker)?.1))
             .or_else(|| {
-                let mut versions = observation?
+                let mut versions = observation
+                    .filter(|o| !o.incomplete)?
                     .interfaces
                     .iter()
                     .filter(|i| i.package == package)

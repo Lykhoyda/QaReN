@@ -1528,3 +1528,35 @@ fn a_pnpm_dependency_check_preamble_on_stdout_is_ignored() {
     assert!(fp.complete, "{:?}", fp.incompleteness);
     assert_eq!(fp, evaluated(&root, EXPO_H, XCODE));
 }
+
+#[test]
+fn unresolved_modes_name_the_affected_native_inputs_without_their_contents() {
+    let root = common::temp_repo();
+    std::fs::write(
+        root.join("package.json"),
+        r#"{"dependencies":{"react-native":"0.84.0"}}"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("ios")).unwrap();
+    std::fs::write(root.join("ios/Podfile"), "private_custom_pod_configuration").unwrap();
+    std::fs::create_dir_all(root.join("node_modules/expo-modules-jsi/apple")).unwrap();
+    std::fs::write(
+        root.join("node_modules/expo-modules-jsi/apple/ExpoModulesJSI.podspec"),
+        "private_podspec_configuration",
+    )
+    .unwrap();
+    let mut runner = MockRunner::new();
+    runner.expect_run(
+        "ls-files",
+        CmdOutput::success("package.json\0ios/Podfile\0"),
+    );
+    common::script_xcode(&mut runner);
+    let fp = compute(&mut runner, &root, &root, "ios").unwrap();
+    assert!(!fp.complete);
+    let reason = fp.incompleteness.join("; ");
+    assert!(reason.contains("rncore mode unknown: ios/Podfile"));
+    assert!(reason.contains("jsi mode unknown: expo-modules-jsi/apple/ExpoModulesJSI.podspec"));
+    assert!(!reason.contains("private_custom"));
+    assert!(!reason.contains("private_podspec"));
+    assert_eq!(runner.remaining(), 0);
+}

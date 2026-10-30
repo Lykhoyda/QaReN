@@ -809,18 +809,19 @@ pub fn compute(
             incompleteness.push(format!("Expo fingerprint unavailable: {reason}"));
         }
     }
+    let mut mode_unknown = Vec::new();
     let ios_identity = (platform_dir == "ios"
         && (dynamic_config.is_none() || expo_unavailable.is_none()))
     .then(|| {
-        (
-            crate::ios_toolchain::CompilerIdentity::collect(runner),
-            crate::ios_toolchain::requested_modes_for_build(
-                runner,
-                project_root,
-                evaluated_mode,
-                !inputs.iter().any(|rel| rel.starts_with("ios/")),
-            ),
-        )
+        let compiler = crate::ios_toolchain::CompilerIdentity::collect(runner);
+        let (modes, unknown) = crate::ios_toolchain::resolved_modes_for_build(
+            runner,
+            project_root,
+            evaluated_mode,
+            !inputs.iter().any(|rel| rel.starts_with("ios/")),
+        );
+        mode_unknown = unknown;
+        (compiler, modes)
     });
     let toolchain = ios_identity.as_ref().map(|(compiler, modes)| {
         if compiler.complete() && modes.complete() {
@@ -829,12 +830,15 @@ pub fn compute(
                     .expect("toolchain identity"),
             ))
         } else {
-            Err("selected compiler or requested native build mode is unknown".to_string())
+            if !compiler.complete() {
+                mode_unknown.push("selected Xcode/Swift compiler identity is unknown; verify DEVELOPER_DIR and TOOLCHAINS, then re-run qaren doctor --json");
+            }
+            Err(mode_unknown.join("; "))
         }
     });
     if let Some(Err(reason)) = &toolchain {
         incompleteness.push(format!(
-            "toolchain identity unavailable ({reason}); reuse across an unknown Xcode is unprovable"
+            "toolchain identity unavailable ({reason}); reuse with unresolved toolchain or mode inputs is unprovable"
         ));
     }
     if inputs.contains("app.json") {

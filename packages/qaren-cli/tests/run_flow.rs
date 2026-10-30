@@ -2149,6 +2149,62 @@ fn simultaneous_checks_on_distinct_devices_do_not_collide_at_the_same_millisecon
 }
 
 #[test]
+fn first_expo_check_prebuilds_an_absent_native_directory_before_compilation() {
+    let (repo, app) = app_repo();
+    std::fs::write(
+        app.join("package.json"),
+        r#"{"dependencies":{"expo":"56.0.0"}}"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(app.join("node_modules/expo-modules-core")).unwrap();
+    let files = "test-app/package.json\0test-app/pnpm-lock.yaml\0";
+    let mut mock = MockRunner::new();
+    mock.environment
+        .insert("EXPO_USE_PRECOMPILED_MODULES".into(), "0".into());
+    mock.ios_prebuild_mode = Some(false);
+    script_preflight(&mut mock, &repo);
+    common::script_ios_deps(&mut mock);
+    mock.expect_run("ls-files", CmdOutput::success(files));
+    common::script_expo_fingerprint(&mut mock, "abc123", common::XCODE_VERSION);
+    mock.expect_run("df", df_ok());
+    mock.expect_spawn_piped("expo prebuild", 5000, "", Some(0));
+    mock.expect_run("ps", CmdOutput::success(LSTART));
+    mock.expect_run("ps", CmdOutput::success("qaren-build"));
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    common::script_finite_ios_build(&mut mock);
+    mock.expect_run("ps", CmdOutput::success(LSTART));
+    mock.expect_run("ps", CmdOutput::success("S"));
+    mock.expect_run("lsof", CmdOutput::success("6001"));
+    mock.expect_run("ps", CmdOutput::success("6000"));
+    mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    mock.expect_run(
+        "simctl get_app_container",
+        CmdOutput::success("/containers/app"),
+    );
+    mock.expect_run(
+        "simctl spawn",
+        CmdOutput::success("512\t0\tUIKitApplication:com.rndevagent.testapp[abc]"),
+    );
+    mock.expect_run("simctl spawn", CmdOutput::success(common::APP_RUNNING));
+    mock.expect_run("ls-files", CmdOutput::success(files));
+    common::script_expo_fingerprint(&mut mock, "abc123", common::XCODE_VERSION);
+    script_drift_status(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+    script_core_identity(&mut mock);
+    script_teardown(&mut mock);
+    let receipt = run(&mut mock, &request(&repo, &app, 30));
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert!(receipt.outcomes["clean_preparation"].starts_with("generated the absent ios/"));
+    assert_subsequence(
+        &labels(&mock),
+        &["expo-prebuild", "expo-run-ios", "core-walk"],
+    );
+    assert!(receipt.outcomes["artifact_cache"].contains("published"));
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
 fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
     let (repo, app) = app_repo();
     let mut mock = MockRunner::new();
