@@ -3038,7 +3038,7 @@ mod last_screen_tests {
         serde_json::from_value(json!({
             "step": 2,
             "seen": "TARGET_NOT_FOUND: \"Submit\" is not on screen",
-            "suggestion": "the target of line 2 was not on the last observed screen, which lists 1 enabled controls (ids: \"qa-next\"); consider reading that screen in source and inserting the missing step before line 2",
+            "suggestion": "the target of line 2 was not on the last observed screen, which lists 1 enabled controls in failure.screen; consider reading that screen in source and inserting the missing step before line 2",
             "subreason": "absent",
             "screen": screen,
         }))

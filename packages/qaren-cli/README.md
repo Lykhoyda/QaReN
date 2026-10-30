@@ -1103,8 +1103,9 @@ own matches first, with role, testID, label, enabled, hittable and off-screen
 state, the capture's age (`ageMs`) and whether a device action ran after it
 (`afterDispatch`); `counts` covers every control. Labels follow the same
 privacy rules as `failure.seen`: masked by value, and masked whole beside a
-secure field or a secret input, where testIDs remain. `suggestion` is one plan
-edit for the miss reason that names controls only by testID, and it becomes
+secure field or a secret input, where testIDs remain; a testID holding a
+protected value is masked whole. `suggestion` is one plan edit for the miss
+reason; it carries no app text and points to `failure.screen`, and it becomes
 `next_action`. It describes what was observed and never proposes a Wait for an
 enabled state, because a quoted Wait passes on a disabled control. When one of
 the last 20 `check` runs failed the same plan line with the same code and
