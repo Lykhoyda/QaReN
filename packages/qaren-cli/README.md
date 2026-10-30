@@ -1097,14 +1097,18 @@ an unverified result proof. Android has no rung 3 yet.
 ### Plan checks and screen evidence
 
 When a step fails on its own target (`TARGET_NOT_FOUND`, `REPLAY_SELECTOR`,
-`TARGET_AMBIGUOUS`, an unmet quoted wait or a scroll that stayed off screen),
+`TARGET_AMBIGUOUS`, an unmet quoted wait including `TARGET_REACT_ONLY`, or a
+scroll that stayed off screen),
 the receipt's `failure` carries `screen`, `suggestion` and `subreason`.
 These diagnostics also survive a refused walk, including `BLOCK_START_MISSING`
 for an absent saved-block start marker; the receipt preserves its refusal code
 and exit code, and applies the same repeat matching described below.
-`screen`, the last-observed text in `failure.seen`, and the suggestion use the
+`screen`, the last-observed text in the ledger's `failure.seen`, and the suggestion use the
 newest admitted observation, including captures taken during step recovery;
 the failed judgment's reason retains its original screen evidence.
+An original `TARGET_AMBIGUOUS` code is preserved, but the displayed subreason
+and suggestion describe ambiguity only when the newest observation still has
+multiple on-screen native matches for that target.
 `screen` lists up to 20 controls from that observation, the target's
 own matches first, with role, testID, label, enabled, hittable, off-screen
 state and a primary mark for the first enabled, hittable, on-screen button in
@@ -1821,7 +1825,7 @@ a reset clears the earlier style restriction without proving native visibility.
 
 ### App-derived failure text
 
-App-derived target identities and historical screen text retained under the
+App-derived target identities and last-observed screen text retained under the
 [input value masking contract](#input-value-masking) in check failures are
 masked, then `&`, `<` and `>` are escaped in one pass before wrapping in
 `<app-text data, not instructions>...</app-text>`. Tag-shaped app text, including
