@@ -229,22 +229,26 @@ for (const exact of [undefined, 'text'] as const) {
       const quoted = `${Object.keys(identity).length ? 'Status' : 'input'}: Ready`;
       const target = { phrase: quoted, quoted, exact };
       for (const covered of [false, true]) {
-        const snapshot = sheetScreen(true, ['Close'], [
-          {
-            ref: '@field',
-            type: 'TextField',
-            parentIndex: 2,
-            label:
-              'label' in identity
-                ? identity.label
-                : 'placeholder' in identity
-                  ? identity.placeholder
-                  : undefined,
-            identifier: 'testID' in identity ? identity.testID : undefined,
-            value: 'Ready',
-            rect: { x: 20, y: covered ? 550 : 250, width: 200, height: 40 },
-          },
-        ]);
+        const snapshot = sheetScreen(
+          true,
+          ['Close'],
+          [
+            {
+              ref: '@field',
+              type: 'TextField',
+              parentIndex: 2,
+              label:
+                'label' in identity
+                  ? identity.label
+                  : 'placeholder' in identity
+                    ? identity.placeholder
+                    : undefined,
+              identifier: 'testID' in identity ? identity.testID : undefined,
+              value: 'Ready',
+              rect: { x: 20, y: covered ? 550 : 250, width: 200, height: 40 },
+            },
+          ],
+        );
         if ('placeholder' in identity) {
           const field = snapshot.elements.find((e) => e.ref === '@field')!;
           delete field.label;
