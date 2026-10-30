@@ -23,8 +23,14 @@ qaren doctor [--json] [--config .qaren/config.yaml] [--device <simulator-UUID>]
 On macOS, `ios-toolchain-match` compares the selected Swift compiler with public
 simulator interfaces in installed `expo-modules-core` and `expo-modules-jsi`
 XCFrameworks. A newer compiler produces a warning, not a compatibility verdict;
-missing or ambiguous evidence remains unknown. Doctor reads static app config
-without executing it. `native-cache-root` explains a cold cache or unavailable
+incomplete or ambiguous evidence remains unknown. Doctor skips the
+`expo-modules-core` interface comparison only when installed Pods prove source
+linkage; an export alone is insufficient. Requested source mode with unproven
+installed linkage warns to regenerate Pods. `expo-modules-jsi` interfaces are
+still checked. A `SKIP` means compiler compatibility was not assessed.
+Doctor reads static app config
+without executing it. See [native build recovery](#native-fingerprint-build-selection)
+for the remedies. `native-cache-root` explains a cold cache or unavailable
 storage before a build; neither check installs Pods or changes storage.
 
 Doctor prints the running binary's version, path, build, runtime and the
@@ -3656,7 +3662,10 @@ installation, not by changing existing Pods.
 
 An Expo interface build failure retains `BUILD_FAILED`. Only a proven newer host
 compiler adds `cause=toolchain-newer-than-prebuilt`; unproven versions receive
-conditional interface guidance. Follow `next_action`: ask the app owner before
+conditional interface guidance. The observed cause and recovery advice remain
+available when build-group cleanup is incomplete; complete the requested
+`qaren cleanup <run-id> --json` before attempting recovery.
+Follow `next_action`: ask the app owner before
 regenerating generated native files, reinstall Pods with the selected environment
 for tracked native source, update compatible Expo patch versions, or select a
 compatible already-installed Xcode with `DEVELOPER_DIR`. Preserve tracked source
@@ -3664,6 +3673,11 @@ and manual native changes. A successful recovery `qaren prepare` is Ready and
 still owns resources: complete `qaren cleanup <recovery-run-id> --json` before
 retrying the original command with the same environment. Stop on incomplete
 cleanup. Blind retries, device restarts and cache deletion do not fix a compiler mismatch.
+
+If installed Pods already prove Expo module source linkage and the failing
+interface is `expo-modules-jsi`, repeating the source rebuild is not the next
+step: update compatible `expo-modules-jsi` and `expo-modules-core` patch versions
+or select a compatible installed Xcode with `DEVELOPER_DIR`.
 
 Receipts report normalized `toolchain` information: selected Xcode, Swift version,
 and observed Expo module linkage. Unknown evidence remains unknown. Doctor warns
