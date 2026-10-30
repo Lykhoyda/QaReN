@@ -1023,12 +1023,45 @@ pub fn fresh_install_admission(
             else { "strict foreign-flow admission did not prove the selected device clear" },
             output.exit_code, output.timed_out, summary.deadline_exceeded,
         );
-        return Err(summary.refusal(Failure::new(
-            "fresh_install",
-            if busy { FailureCode::DeviceBusy } else { FailureCode::FreshInstallAdmissionUnknown },
-            detail,
-            "wait for the foreign process owner to finish, then re-run the check; do not signal or adopt the process",
-        ).with_recovery(crate::failure::RecoveryReason::ForeignAdmissionUnresolved)));
+        let foreign = !summary.deadline_exceeded
+            && !output.timed_out
+            && output.exit_code == Some(4)
+            && validated.as_ref().is_some_and(|e| {
+                e.pid.is_some()
+                    && matches!(
+                        (status, &e.reason),
+                        (Some("busy"), AdmissionProbeReason::DriverOnSelectedDevice)
+                            | (
+                                Some("unknown"),
+                                AdmissionProbeReason::DriverIdentityUnproven
+                                    | AdmissionProbeReason::ExecutableIdentityUnproven
+                            )
+                    )
+            });
+        let (recovery, next_action) = if foreign {
+            (
+                crate::failure::RecoveryReason::ForeignAdmissionUnresolved,
+                "wait for the foreign process owner to finish, then re-run the check; do not signal or adopt the process",
+            )
+        } else {
+            (
+                crate::failure::RecoveryReason::IdentityUnavailable,
+                "run qaren doctor; restore process observation and the qaren runtime, resolve the reported probe or deadline failure, then re-run the check; do not signal or adopt unproven processes",
+            )
+        };
+        return Err(summary.refusal(
+            Failure::new(
+                "fresh_install",
+                if busy {
+                    FailureCode::DeviceBusy
+                } else {
+                    FailureCode::FreshInstallAdmissionUnknown
+                },
+                detail,
+                next_action,
+            )
+            .with_recovery(recovery),
+        ));
     }
 }
 

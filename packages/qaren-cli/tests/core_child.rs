@@ -175,6 +175,15 @@ fn fresh_admission_reprobe_is_one_new_whole_scan_and_uses_only_the_terminal_verd
             Some(FailureCode::FreshInstallAdmissionUnknown),
             "envelope_mismatch",
         ),
+        (admission_output("busy", "scan_corrupt"), Some(FailureCode::DeviceBusy), "scan_corrupt"),
+        (admission_output("unknown", "scan_unavailable"), Some(FailureCode::FreshInstallAdmissionUnknown), "scan_unavailable"),
+        (admission_output("unknown", "observer_unavailable"), Some(FailureCode::FreshInstallAdmissionUnknown), "observer_unavailable"),
+        (admission_output("unknown", "observer_failed"), Some(FailureCode::FreshInstallAdmissionUnknown), "observer_failed"),
+        (admission_output("unknown", "observer_timeout"), Some(FailureCode::FreshInstallAdmissionUnknown), "observer_timeout"),
+        (admission_output("unknown", "scan_failed"), Some(FailureCode::FreshInstallAdmissionUnknown), "scan_failed"),
+        (admission_output("unknown", "scan_timeout"), Some(FailureCode::FreshInstallAdmissionUnknown), "scan_timeout"),
+        (admission_output("unknown", "candidate_budget_exceeded"), Some(FailureCode::FreshInstallAdmissionUnknown), "candidate_budget_exceeded"),
+        (admission_output("unknown", "deadline_exceeded"), Some(FailureCode::FreshInstallAdmissionUnknown), "deadline_exceeded"),
         (admission_output("invalid", "executable_identity_unproven"), Some(FailureCode::FreshInstallAdmissionUnknown), "invalid_status"),
         (CmdOutput { exit_code: Some(4), ..admission_output("clear", "scan_failed") }, Some(FailureCode::FreshInstallAdmissionUnknown), "clear_exit_mismatch"),
         (CmdOutput { stdout: r#"{"v":1,"platform":"ios","deviceId":"AAAA-1111","status":"unknown","evidence":{"reason":"/private/secret"}}"#.into(), ..admission_output("unknown", "scan_failed") }, Some(FailureCode::FreshInstallAdmissionUnknown), "invalid_evidence"),
@@ -199,15 +208,21 @@ fn fresh_admission_reprobe_is_one_new_whole_scan_and_uses_only_the_terminal_verd
                 assert!(
                     !recovery.destroys_state && !recovery.requires_user_ok && !recovery.automatic
                 );
-                assert_eq!(
-                    recovery.action,
-                    qaren::failure::RecoveryAction::WaitForOwner
-                );
-                assert_eq!(
-                    recovery.ladder.iter().map(|s| s.rung).collect::<Vec<_>>(),
-                    vec![0, 1, 2, 3, 4, 5]
-                );
-                assert!(recovery.ladder[1..5].iter().all(|s| !s.applicable));
+                if matches!(reason, "executable_identity_unproven" | "driver_on_selected_device") {
+                    assert_eq!(recovery.action, qaren::failure::RecoveryAction::WaitForOwner);
+                    assert_eq!(recovery.next_rung, Some(0));
+                    assert_eq!(
+                        recovery.ladder.iter().map(|s| s.rung).collect::<Vec<_>>(),
+                        vec![0, 1, 2, 3, 4, 5]
+                    );
+                    assert!(recovery.ladder[1..5].iter().all(|s| !s.applicable));
+                } else {
+                    assert_eq!(recovery.action, qaren::failure::RecoveryAction::RestoreProcessObservation);
+                    assert_eq!(recovery.reason, qaren::failure::RecoveryReason::IdentityUnavailable);
+                    assert_eq!(recovery.next_rung, Some(1));
+                    assert!(failure.next_action.contains("qaren doctor"));
+                    assert!(!failure.next_action.contains("wait for the foreign"));
+                }
                 admission_failure_summary(&failure)
             }
         };
@@ -262,10 +277,18 @@ fn fresh_admission_reprobe_requires_a_matching_typed_identity_refusal_with_a_pid
     let mut timeout = identity;
     timeout.timed_out = true;
     cases.push(timeout);
-    for output in cases {
+    for (index, output) in cases.into_iter().enumerate() {
         let mut mock = MockRunner::new();
         mock.expect_run("fresh-install-preflight.js", output);
         let failure = admit(&mut mock, None).unwrap_err();
+        assert_eq!(
+            failure.recovery.as_ref().unwrap().action,
+            if index < 2 {
+                qaren::failure::RecoveryAction::WaitForOwner
+            } else {
+                qaren::failure::RecoveryAction::RestoreProcessObservation
+            }
+        );
         assert_eq!(admission_failure_summary(&failure)["attempts"], 1);
         assert_eq!(mock.calls.len(), 1);
         assert_eq!(mock.remaining(), 0);
@@ -304,6 +327,11 @@ fn fresh_admission_reprobe_shares_the_original_allowance_and_rejects_late_result
         } else {
             let failure = result.unwrap_err();
             assert_eq!(failure.code, FailureCode::FreshInstallAdmissionUnknown);
+            assert_eq!(
+                failure.recovery.as_ref().unwrap().action,
+                qaren::failure::RecoveryAction::RestoreProcessObservation
+            );
+            assert!(failure.next_action.contains("qaren doctor"));
             assert!(failure.detail.contains("admission allowance expired"));
             assert!(failure.detail.contains("deadline_exceeded=true"));
             if allowance == 0 || allowance == 600 {

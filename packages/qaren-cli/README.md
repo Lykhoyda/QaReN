@@ -2395,15 +2395,22 @@ raw process arguments, paths and subprocess output are not included. Missing,
 invalid or mismatched evidence is reported as `unavailable`, `invalid_evidence`,
 `envelope_mismatch` or `invalid_response`. Expiry before dispatch reports
 `not_run`; a late response retains its observed status with `deadline_exceeded=true`.
-These diagnostics do not relax
-admission: wait for the foreign process owner to finish, then re-run; do not
-signal or adopt it. The recovery ladder marks automatic re-probing exhausted
-or ineligible, rules out app/runner/device restarts and rebuilds as ways to
-prove foreign identity, and offers cleanup and prepare only after foreign
-state is independently clear. Any retained resources still require this run's
-own cleanup; a fresh install requires separate authorization for app-data loss.
-Admission recovery uses L0-L5 with `action: wait-owner` and `next_rung: 0`;
-other recovery reasons retain their existing 1-based rungs.
+These diagnostics do not relax admission. A validated busy verdict or
+foreign-process identity refusal advises waiting for the foreign process owner
+to finish, then re-running; do not signal or adopt it. That recovery ladder
+marks automatic re-probing exhausted or ineligible, rules out app/runner/device
+restarts and rebuilds as ways to prove foreign identity, and offers cleanup and
+prepare only after foreign state is independently clear. It uses L0-L5 with
+`action: wait-owner` and `next_rung: 0`.
+
+Observation, runtime, malformed-response and allowance-expiry failures instead
+advise running `qaren doctor`, restoring process observation and the QaReN
+runtime, and resolving the reported probe or deadline failure before re-running.
+They use `reason: identity_unavailable`, `action: restore_process_observation`
+and `next_rung: 1`; waiting for a foreign owner cannot repair these failures.
+Any retained resources still require this run's own cleanup, recorded separately
+in recovery; a fresh install requires separate authorization for app-data loss.
+Other recovery reasons retain their existing 1-based rungs.
 
 Runs and evidence live under `$QAREN_HOME/runs/<run-id>/` (`~/.qaren` by default).
 Device and

@@ -112,16 +112,16 @@ impl<'a> Ctx<'a> {
             } else {
                 None
             };
-        // A contention refusal keeps naming the holder; the run's own cleanup is carried by its recovery.
         if self.record.resources.any_owned()
             && !matches!(
                 failure.code,
                 FailureCode::ArtifactInstallFailed | FailureCode::BuildContended
             )
-            && failure
-                .recovery
-                .as_ref()
-                .is_none_or(|r| r.reason != RecoveryReason::ForeignAdmissionUnresolved)
+            && failure.recovery.as_ref().is_none_or(|r| {
+                r.reason != RecoveryReason::ForeignAdmissionUnresolved
+                    && !(failure.phase == "fresh_install"
+                        && r.reason == RecoveryReason::IdentityUnavailable)
+            })
         {
             failure.next_action = crate::redact::OutputText::from_output(&format!(
                 "qaren cleanup {} --json",

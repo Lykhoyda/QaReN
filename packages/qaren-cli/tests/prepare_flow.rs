@@ -5466,50 +5466,72 @@ fn borrowed_dry_run_plans_the_exact_target_without_creating_leasing_or_recording
 }
 
 #[test]
-fn borrowed_prepare_refuses_a_foreign_driver_before_dependencies_and_retains_the_lease() {
-    let repo = common::temp_repo();
-    let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
-    let mut mock = MockRunner::new();
-    script_borrowed_until_lease(&mut mock, &repo, "Booted");
-    mock.expect_run("lsof", free_port());
-    mock.expect_run(
-        "simctl list devices -j",
-        CmdOutput::success(&borrowed_inventory("Booted")),
-    );
-    mock.expect_run(
+fn fresh_admission_prepare_preserves_cause_specific_recovery_and_retains_the_lease() {
+    for foreign in [true, false] {
+        let repo = common::temp_repo();
+        let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
+        let mut mock = MockRunner::new();
+        script_borrowed_until_lease(&mut mock, &repo, "Booted");
+        mock.expect_run("lsof", free_port());
+        mock.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&borrowed_inventory("Booted")),
+        );
+        mock.expect_run(
         "fresh-install-preflight.js --platform ios --device",
         CmdOutput {
             exit_code: Some(4),
             ..CmdOutput::success(
-                &serde_json::json!({"v":1,"platform":"ios","deviceId":BORROWED,"status":"busy"})
+                &serde_json::json!({"v":1,"platform":"ios","deviceId":BORROWED,
+                    "status":if foreign { "busy" } else { "unknown" },
+                    "evidence":{"reason":if foreign { "driver_on_selected_device" } else { "scan_unavailable" },"pid":812}})
                     .to_string(),
             )
         },
     );
 
-    let receipt = prepare(&mut mock, &borrowed_args(&scenario_path, true));
+        let receipt = prepare(&mut mock, &borrowed_args(&scenario_path, true));
 
-    assert_eq!(receipt.result, ReceiptResult::Refused);
-    assert_eq!(
-        receipt.failure.as_ref().unwrap().code,
-        FailureCode::DeviceBusy
-    );
-    assert_eq!(mock.remaining(), 0);
-    assert!(!labels(&mock).iter().any(|l| l == "pnpm-install"));
-    assert_no_simulator_power(&mock);
-    let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
-    assert_eq!(record.phase, Phase::Failed);
-    assert_eq!(
-        qaren::buildplan::read_holder(&record.resources.lease.as_ref().unwrap().lock_dir)
-            .unwrap()
-            .run_id,
-        receipt.run_id
-    );
-    assert!(receipt.next_action.contains("wait for the foreign process owner"));
-    let recovery = receipt.failure.as_ref().unwrap().recovery.as_ref().unwrap();
-    assert!(recovery.own_cleanup_required);
-    assert_eq!(recovery.own_run_id.as_deref(), Some(receipt.run_id.as_str()));
-    assert_eq!(recovery.action, qaren::failure::RecoveryAction::WaitForOwner);
+        assert_eq!(receipt.result, ReceiptResult::Refused);
+        assert_eq!(
+            receipt.failure.as_ref().unwrap().code,
+            if foreign {
+                FailureCode::DeviceBusy
+            } else {
+                FailureCode::FreshInstallAdmissionUnknown
+            }
+        );
+        assert_eq!(mock.remaining(), 0);
+        assert!(!labels(&mock).iter().any(|l| l == "pnpm-install"));
+        assert_no_simulator_power(&mock);
+        let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
+        assert_eq!(record.phase, Phase::Failed);
+        assert_eq!(
+            qaren::buildplan::read_holder(&record.resources.lease.as_ref().unwrap().lock_dir)
+                .unwrap()
+                .run_id,
+            receipt.run_id
+        );
+        assert!(receipt.next_action.contains(if foreign {
+            "wait for the foreign process owner"
+        } else {
+            "qaren doctor"
+        }));
+        let recovery = receipt.failure.as_ref().unwrap().recovery.as_ref().unwrap();
+        assert!(recovery.own_cleanup_required);
+        assert_eq!(
+            recovery.own_run_id.as_deref(),
+            Some(receipt.run_id.as_str())
+        );
+        assert_eq!(
+            recovery.action,
+            if foreign {
+                qaren::failure::RecoveryAction::WaitForOwner
+            } else {
+                qaren::failure::RecoveryAction::RestoreProcessObservation
+            }
+        );
+    }
 }
 
 #[test]
