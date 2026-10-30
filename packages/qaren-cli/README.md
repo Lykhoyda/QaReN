@@ -1425,7 +1425,8 @@ scroll until it is visible before re-running.
 After two ordinary absence observations of that React-only match on one unchanged
 screen, the wait makes exactly one presence capture to read React's layout, bounded
 by the wait's remaining time; later polls stay ordinary, and a recovery retry does
-not repeat that read. Every capture in a quoted wait ends by the wait's deadline. If
+not repeat that read. Every polling capture in a quoted wait ends by the wait's
+deadline. If
 the layout read or any capture is cut off there, or the match was seen React-only
 but never classified, the wait fails with `TARGET_REACT_ONLY` reporting
 `layout=unavailable`, a `cause` (`acquisition-deadline` or `wait-deadline`), the
@@ -1447,9 +1448,11 @@ detail labels the layout `react layout before scroll`. A later
 visible native match passes normally. Missing or partially
 clipped layout preserves polling until the deadline; stored-ID replay and block
 start preconditions do not use this early failure or automatic scroll.
-Apart from those deadline endings, which already spent the wait's time,
-either unmet ending first gets [step recovery](#step-recovery), so a quoted wait
-behind a blocking screen or system dialog runs once more with its full budget.
+After a classified React-only miss, [step recovery](#step-recovery) may capture
+only within the wait's remaining time. If that capture reaches the deadline, or
+no time remains, the React-only failure reason stands. Other eligible unmet quoted
+waits retain ordinary recovery. When recovery clears a blocking screen or system
+dialog, the wait runs once more with its full budget.
 Scroll-until-text uses the same visibility verdict
 within its scroll and time budgets. Literal checks re-ask from a fresh capture
 and use `CHECK_UNSURE` if uncertainty remains. This is distinct from acquisition
@@ -2699,7 +2702,8 @@ and never triggers recovery.
 
 An action without success evidence after its one retry, a step target that
 does not resolve, a definite failed check, an unmet quoted wait, or a phrase check still
-unsure after its re-ask gets a deterministic recovery, then the step runs once more from a fresh
+unsure after its re-ask gets a deterministic recovery, subject to the
+[quoted-wait deadline limits](#plan-checks-and-screen-evidence), then the step runs once more from a fresh
 capture. If it fails again, a second recovery may decline a different system prompt or app
 interruption once the first is proven gone. An app interruption with the same decline label
 fails with `the app interruption did not disappear`; a different kind of interruption or
