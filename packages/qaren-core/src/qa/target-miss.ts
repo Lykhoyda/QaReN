@@ -133,6 +133,7 @@ export interface ScreenNow {
     role: Kind;
     id?: string;
     label?: string;
+    primary?: true;
     enabled: boolean;
     hittable: boolean;
     offscreen: boolean;
@@ -167,6 +168,16 @@ export function screenNow(
           element.semantic?.press === 'supported' ||
           element.semantic?.fill === 'supported'),
     );
+  const primary = all.find(
+    (element) =>
+      element.kind === 'button' &&
+      !semanticDisabled(element) &&
+      element.hittable &&
+      !element.offscreen &&
+      ['continue', 'next', 'done', 'submit', 'confirm', 'ok', 'save'].includes(
+        (withheld ? MASK : privacy.redactElementLabel(element)).trim().toLowerCase(),
+      ),
+  );
   // The target's own matches lead, so the cap never hides them; counts disclose what the cap left out.
   const ordered = [
     ...all.filter((e) => names(target, e)),
@@ -183,6 +194,7 @@ export function screenNow(
         : 'incomplete',
     controls: ordered.slice(0, MISS_CANDIDATES).map((element) => ({
       role: element.kind,
+      ...(element === primary ? { primary: true as const } : {}),
       // An identifier holding any private value is masked whole.
       ...(element.testID
         ? {

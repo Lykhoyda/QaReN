@@ -221,3 +221,40 @@ test('semantic disabled and read-only controls are disabled in receipts and advi
     assert.match(ledger.failure!.suggestion!, /on screen and disabled/);
   }
 });
+
+test('the primary mark follows screen order and the fixed labels, regardless of target ordering', () => {
+  for (const label of ['Continue', 'Next', 'Done', 'Submit', 'Confirm', 'OK', 'Save']) {
+    const observed = screen([
+      control('@disabled', label, { disabled: true }),
+      control('@covered', label, { hittable: false }),
+      control('@hidden', label, { offscreen: true }),
+      control('@link', label, { kind: 'link' }),
+      control('@first', `  ${label.toUpperCase()}  `),
+      control('@target', 'Save', { testID: 'target' }),
+    ]);
+    const now = screenNow(
+      observed,
+      { phrase: 'target', quoted: 'target', exact: 'id' },
+      0,
+      false,
+      new ObservedPrivacy(),
+    );
+    assert.equal(now.controls[0].id, 'target');
+    assert.deepEqual(
+      now.controls.filter((c) => c.primary).map((c) => c.label),
+      [`  ${label.toUpperCase()}  `],
+    );
+  }
+});
+
+test('no primary mark is emitted for unmatched or privacy-masked labels', () => {
+  for (const masked of [false, true]) {
+    const observed = screen([control('@go', masked ? 'Continue' : 'Go')]);
+    const privacy = new ObservedPrivacy();
+    if (masked) privacy.observePrivateFill('Continue');
+    privacy.observe(observed);
+    const now = screenNow(observed, { phrase: 'Missing', quoted: 'Missing' }, 0, false, privacy);
+    assert.equal(now.controls.some((c) => c.primary !== undefined), false);
+    assert.equal(now.controls[0].label, masked ? MASK : 'Go');
+  }
+});

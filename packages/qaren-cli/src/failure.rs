@@ -132,6 +132,8 @@ pub struct ScreenControl {
     pub id: Option<OutputText>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<OutputText>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub primary: bool,
     pub enabled: bool,
     pub hittable: bool,
     pub offscreen: bool,
