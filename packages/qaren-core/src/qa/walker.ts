@@ -2209,7 +2209,14 @@ async function walkBlockScoped(
           let scrolled:
             | { before: Screen; signature: string; container: Element; act: ActResult }
             | undefined;
-          let found = await visible(observation, held?.decision);
+          let found = false;
+          try {
+            found = await visible(observation, held?.decision);
+          } catch (error) {
+            // The first check's evidence refresh is bounded like every poll; judge what was observed.
+            if (!(error instanceof CaptureDeadline)) throw error;
+            expired = true;
+          }
           while (!found && deps.now() < deadline) {
             const lone = fresh ? reactOnlyTarget(item.target, observation.screen) : undefined;
             fresh = false;

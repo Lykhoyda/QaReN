@@ -7,7 +7,7 @@ import { reactOnlyMiss } from '../../../dist/qa/resolve.js';
 import { runPlan, WAIT_BUDGET_MS, WAIT_POLL_MS } from '../../../dist/qa/walker.js';
 import { CaptureDeadline } from '../../../dist/qa/capture.js';
 import type { ActResult } from '../../../dist/qa/walker.js';
-import { scriptedJudge, walker } from './judgment-fixtures.ts';
+import { element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
 
 // A text field inside a wrapper view inside a 600-point scroll view, in a window whose native origin
 // is 20 points down; React lays everything out in window points, the field at fieldY.
@@ -442,6 +442,27 @@ test("recovery after a React-only refusal captures inside the wait's deadline", 
     WAIT_BUDGET_MS - 2 * WAIT_POLL_MS,
   ]);
   assert.equal(f.deps.now(), WAIT_BUDGET_MS);
+  assert.deepEqual(f.actions, []);
+});
+
+test('a first visibility check whose evidence refresh runs out of time ends as a wait failure', async () => {
+  // Each judgment outlives the evidence it read, so the first check keeps refreshing its capture.
+  const f: ReturnType<typeof walker> = walker(
+    [],
+    scriptedJudge(() => {
+      void f.deps.sleep(11_000);
+      return { visibility_1: { type: 'noul', noul: 0.5 } };
+    }),
+  );
+  let captures = 0;
+  f.deps.captureScreen = async (options) => {
+    if (++captures === 1) return screen([element('@save', 'Save')]);
+    await f.deps.sleep(options!.budgetMs!);
+    throw new CaptureDeadline();
+  };
+  const r = await runPlan(parsePlan('1. Wait for the save control').blocks!, f.deps);
+  assert.equal(r.verdict, 'FAIL');
+  assert.ok(captures >= 2, 'the refresh capture ran');
   assert.deepEqual(f.actions, []);
 });
 
