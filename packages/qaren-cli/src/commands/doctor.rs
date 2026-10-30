@@ -378,18 +378,21 @@ fn ios_toolchain_match(
         return Check::skip(ID, "iOS compiler inspection requires macOS");
     };
     let modes = ios_toolchain::requested_modes(runner, app, None);
-    let observation = ios_toolchain::inspect_for_doctor(runner, app, compiler, modes.expo);
+    let linkage = ios_toolchain::Linkage::inspect(app);
+    let source_requested = modes.expo == Mode::Off && ios_toolchain::has_expo_dependency(app);
+    let unknown_fix = if source_requested && linkage.expo != Mode::Off {
+        ios_toolchain::SOURCE_FIX
+    } else {
+        ios_toolchain::UNKNOWN_FIX
+    };
+    let observation = ios_toolchain::inspect_for_doctor(runner, app, compiler, &linkage);
     if observation.compiler.swift.is_none() {
-        return Check::warn(
-            ID,
-            "iOS compiler compatibility unknown",
-            ios_toolchain::UNKNOWN_FIX,
-        );
+        return Check::warn(ID, "iOS compiler compatibility unknown", unknown_fix);
     }
     let host = observation.compiler.swift.as_ref().expect("checked Swift");
     for interface in &observation.interfaces {
         if host > &interface.swift {
-            let fix = if modes.expo == Mode::Off && interface.package == "expo-modules-jsi" {
+            let fix = if linkage.expo == Mode::Off && interface.package == "expo-modules-jsi" {
                 ios_toolchain::JSI_SOURCE_FIX
             } else {
                 ios_toolchain::SOURCE_FIX
@@ -400,19 +403,25 @@ fn ios_toolchain_match(
             return Check::warn(
                 ID,
                 "host Swift is older than an inspected Expo interface compiler",
-                ios_toolchain::UNKNOWN_FIX,
+                unknown_fix,
             );
         }
     }
-    if observation.incomplete || modes.expo == Mode::Unknown {
+    if source_requested && linkage.expo != Mode::Off {
         return Check::warn(
             ID,
-            "iOS compiler compatibility unknown",
-            ios_toolchain::UNKNOWN_FIX,
+            "Expo module source builds requested, but installed Pods source linkage is unproven; regenerate pods before building",
+            ios_toolchain::SOURCE_FIX,
         );
     }
-    if modes.expo == Mode::Off {
-        return Check::pass(ID, "Expo module source builds selected for the next pod install; existing Pods must be regenerated for this setting to take effect");
+    if observation.incomplete || modes.expo == Mode::Unknown {
+        return Check::warn(ID, "iOS compiler compatibility unknown", unknown_fix);
+    }
+    if linkage.expo == Mode::Off {
+        return Check::pass(
+            ID,
+            "Installed Pods use Expo module source builds; source linkage is proven",
+        );
     }
     if observation.interfaces.is_empty() {
         return Check::skip(
@@ -1733,7 +1742,7 @@ mod tests {
                 Status::Warn,
                 "compatibility unknown",
             ),
-            ("6.3.1", true, Status::Pass, "source builds selected"),
+            ("6.3.1", true, Status::Warn, "is newer than"),
         ] {
             let s = Scratch::new("compiler-row");
             let app = s.dir("app");
@@ -1745,9 +1754,7 @@ mod tests {
                     .environment
                     .insert("EXPO_USE_PRECOMPILED_MODULES".into(), "0".into());
             }
-            if !source {
-                plist_probe(&mut runner);
-            }
+            plist_probe(&mut runner);
             let compiler = crate::ios_toolchain::CompilerIdentity {
                 swift: crate::ios_toolchain::SwiftVersion::parse("6.4"),
                 ..Default::default()
@@ -1765,29 +1772,140 @@ mod tests {
         }
     }
 
+    fn pods_linkage_fixture(s: &Scratch, precompiled: bool) {
+        s.file(
+            "app/ios/Pods/Local Podspecs/ExpoModulesCore.podspec.json",
+            if precompiled {
+                r#"{"name":"ExpoModulesCore","vendored_frameworks":["ExpoModulesCore.xcframework"]}"#
+            } else {
+                r#"{"name":"ExpoModulesCore","source_files":["ios/**/*.swift"]}"#
+            },
+        );
+        s.file(
+            "app/ios/Pods/Target Support Files/ExpoModulesCore/ExpoModulesCore.debug.xcconfig",
+            if precompiled {
+                "FRAMEWORK_SEARCH_PATHS = XCFrameworkIntermediates/ExpoModulesCore\n"
+            } else {
+                "PODS_TARGET_SRCROOT = ${PODS_ROOT}/../../node_modules/expo-modules-core\n"
+            },
+        );
+    }
+
+    #[test]
+    fn source_request_requires_installed_source_linkage_before_suppressing_core_diagnostics() {
+        for linkage in ["precompiled", "missing", "ambiguous", "source"] {
+            for version in [None, Some("6.3.1"), Some("6.4")] {
+                for matching_jsi in [false, true] {
+                    let s = Scratch::new("installed-pods-compiler");
+                    let app = s.dir("app");
+                    s.file("app/package.json", r#"{"dependencies":{"expo":"56.0.0"}}"#);
+                    if let Some(version) = version {
+                        interface_fixture(&s, "expo-modules-core", version);
+                    }
+                    if linkage != "missing" {
+                        pods_linkage_fixture(&s, linkage == "precompiled");
+                    }
+                    if linkage == "ambiguous" {
+                        s.file("app/ios/Pods/Target Support Files/ExpoModulesCore/ExpoModulesCore.debug.xcconfig", "custom linkage\n");
+                    }
+                    if matching_jsi {
+                        interface_fixture(&s, "expo-modules-jsi", "6.4");
+                    }
+                    let before = s.tree();
+                    let mut runner = MockRunner::new();
+                    runner
+                        .environment
+                        .insert("EXPO_USE_PRECOMPILED_MODULES".into(), "0".into());
+                    if version.is_some() && linkage != "source" {
+                        plist_probe(&mut runner);
+                    }
+                    if matching_jsi {
+                        plist_probe(&mut runner);
+                    }
+                    let compiler = crate::ios_toolchain::CompilerIdentity {
+                        swift: crate::ios_toolchain::SwiftVersion::parse("6.4"),
+                        ..Default::default()
+                    };
+                    let check = ios_toolchain_match(&mut runner, &app, Some(compiler));
+                    assert_eq!(
+                        check.status,
+                        if linkage == "source" {
+                            Status::Pass
+                        } else {
+                            Status::Warn
+                        },
+                        "{linkage} {version:?} {matching_jsi}: {check:?}"
+                    );
+                    if linkage == "source" {
+                        assert!(check.detail.contains("source linkage is proven"));
+                        assert!(check.fix.is_none());
+                    } else {
+                        assert!(check.fix.as_ref().unwrap().contains("regenerate pods"));
+                        if version == Some("6.3.1") {
+                            assert!(check.detail.contains("expo-modules-core"));
+                            assert!(check.detail.contains("is newer than"));
+                        }
+                    }
+                    assert_eq!(runner.remaining(), 0);
+                    assert!(runner
+                        .calls
+                        .iter()
+                        .all(|spec| spec.label == "expo-xcframework-plist"));
+                    assert_eq!(s.tree(), before);
+                }
+            }
+        }
+    }
+
     #[test]
     fn source_selection_does_not_suppress_an_independent_jsi_interface_warning() {
-        let s = Scratch::new("jsi-compiler");
+        for source_proven in [false, true] {
+            let s = Scratch::new("jsi-compiler");
+            let app = s.dir("app");
+            s.file("app/package.json", r#"{"dependencies":{"expo":"56.0.0"}}"#);
+            interface_fixture(&s, "expo-modules-jsi", "6.3.1");
+            if source_proven {
+                pods_linkage_fixture(&s, false);
+            }
+            let mut runner = MockRunner::new();
+            runner
+                .environment
+                .insert("EXPO_USE_PRECOMPILED_MODULES".into(), "0".into());
+            plist_probe(&mut runner);
+            let compiler = crate::ios_toolchain::CompilerIdentity {
+                swift: crate::ios_toolchain::SwiftVersion::parse("6.4"),
+                ..Default::default()
+            };
+            let check = ios_toolchain_match(&mut runner, &app, Some(compiler));
+            assert_eq!(check.status, Status::Warn);
+            assert!(check.detail.contains("expo-modules-jsi"));
+            let fix = check.fix.unwrap();
+            assert!(fix.contains("DEVELOPER_DIR"));
+            assert!(fix.contains("patch versions"));
+            assert_eq!(fix.contains("regenerate pods"), !source_proven);
+            assert!(!fix.contains("select source-built"));
+        }
+    }
+
+    #[test]
+    fn an_app_without_expo_does_not_get_a_pod_regeneration_warning() {
+        let s = Scratch::new("no-expo-compiler");
         let app = s.dir("app");
-        s.file("app/package.json", r#"{"dependencies":{"expo":"56.0.0"}}"#);
-        interface_fixture(&s, "expo-modules-jsi", "6.3.1");
+        s.file(
+            "app/package.json",
+            r#"{"dependencies":{"react-native":"0.84.0"}}"#,
+        );
         let mut runner = MockRunner::new();
-        runner
-            .environment
-            .insert("EXPO_USE_PRECOMPILED_MODULES".into(), "0".into());
-        plist_probe(&mut runner);
         let compiler = crate::ios_toolchain::CompilerIdentity {
             swift: crate::ios_toolchain::SwiftVersion::parse("6.4"),
             ..Default::default()
         };
+        let before = s.tree();
         let check = ios_toolchain_match(&mut runner, &app, Some(compiler));
-        assert_eq!(check.status, Status::Warn);
-        assert!(check.detail.contains("expo-modules-jsi"));
-        let fix = check.fix.unwrap();
-        assert!(fix.contains("DEVELOPER_DIR"));
-        assert!(fix.contains("patch versions"));
-        assert!(!fix.contains("regenerate pods"));
-        assert!(!fix.contains("select source-built"));
+        assert_eq!(check.status, Status::Skip);
+        assert!(check.fix.is_none());
+        assert!(runner.calls.is_empty());
+        assert_eq!(s.tree(), before);
     }
 
     #[test]

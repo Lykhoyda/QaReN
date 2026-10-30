@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 mod probe;
+pub(crate) use probe::has_expo_dependency;
 pub(crate) use probe::inspect_for_doctor;
 pub use probe::{inspect, requested_modes, Linkage, NativeBuildConfig, RequestedModes};
 

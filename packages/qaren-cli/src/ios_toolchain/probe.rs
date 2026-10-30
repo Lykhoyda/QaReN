@@ -92,6 +92,10 @@ fn contains_expo(package: &Value) -> bool {
     })
 }
 
+pub(crate) fn has_expo_dependency(app: &Path) -> bool {
+    json_at(app, "package.json").is_some_and(|package| contains_expo(&package))
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestedModes {
     pub expo: Mode,
@@ -357,13 +361,13 @@ pub(crate) fn inspect_for_doctor(
     runner: &mut dyn Runner,
     app: &Path,
     compiler: CompilerIdentity,
-    mode: Mode,
+    linkage: &Linkage,
 ) -> Observation {
     inspect_packages(
         runner,
         app,
         compiler,
-        if mode == Mode::Off {
+        if linkage.expo == Mode::Off {
             &PACKAGES[1..]
         } else {
             &PACKAGES
