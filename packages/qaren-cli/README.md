@@ -3538,7 +3538,7 @@ is unreachable from the session's global adb server). Cleanup is unchanged:
 qaren removes exactly the allocation it recorded and never touches the
 session's Metro or build. The full chain, ownership table, trust boundary,
 and temporary policy live in
-[`docs/qa/cooperative-qa.md`](https://github.com/Lykhoyda/rn-dev-agent-workspace/blob/main/docs/qa/cooperative-qa.md).
+[`docs/qa/cooperative-qa.md`](https://github.com/Lykhoyda/qaren-workspace/blob/main/docs/qa/cooperative-qa.md).
 
 ### Project-scoped real apps
 
@@ -4031,7 +4031,7 @@ prepare 37s / 48 subprocesses → `ready`, status 8/8, cleanup removed all six
 resources, idempotent re-cleanup `cleaned`. The same independent
 post-cleanup verification passed again. Receipts, device screenshots, and
 the rendered proof card live in
-[`docs/proof/2026-08-12-qaren-exact-head/`](https://github.com/Lykhoyda/rn-dev-agent-workspace/blob/main/docs/proof/2026-08-12-qaren-exact-head/PROOF.md);
+[`docs/proof/2026-08-12-rn-qa-exact-head/`](https://github.com/Lykhoyda/qaren-workspace/blob/main/docs/proof/2026-08-12-rn-qa-exact-head/PROOF.md);
 every receipt there is pinned to the head that produced it (`f3e1e43`), which
 predates the later corrections documented above — lease release keyed on the
 tunnel port, worktree-fingerprint drift, monotonic deadlines, the atomic
@@ -4042,7 +4042,7 @@ run-id claim, and persist-before-allocate.
 Clean and incremental iOS simulator journeys were measured at candidate
 `75a8e76` (`git_dirty: false`) once the internal Data volume recovered to
 ~26 GiB free. Receipts, screenshots, and short videos:
-[`docs/proof/2026-08-17-qaren-issue-24/`](https://github.com/Lykhoyda/rn-dev-agent-workspace/blob/main/docs/proof/2026-08-17-qaren-issue-24/PROOF.md).
+[`docs/proof/2026-08-17-rn-qa-issue-24/`](https://github.com/Lykhoyda/qaren-workspace/blob/main/docs/proof/2026-08-17-rn-qa-issue-24/PROOF.md).
 
 | journey | prepare total | deps | allocate | build_and_ready | decision |
 | --- | --- | --- | --- | --- | --- |
