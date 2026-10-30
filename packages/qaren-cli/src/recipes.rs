@@ -140,7 +140,7 @@ fn broken(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn unmarked(text: &str) -> String {
+pub(crate) fn unmarked(text: &str) -> String {
     text.split_inclusive('\n')
         .filter(|line| {
             let line = line.trim();

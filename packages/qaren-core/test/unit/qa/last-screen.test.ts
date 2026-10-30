@@ -303,3 +303,23 @@ test('a failed target-scroll dispatch carries no target advice', async () => {
   assert.equal(ledger.failure?.suggestion, undefined);
   assert.equal(ledger.failure?.subreason, undefined);
 });
+
+test('the failure shows the newest admitted capture, including recovery, not the polled screen', async () => {
+  const loading = screen([control('@spin', 'Loading', { testID: 'qa-loading', disabled: true })]);
+  const ready = screen([control('@go', 'Continue', { testID: 'qa-continue' })]);
+  let clock = 0;
+  const d = deps([loading]);
+  d.now = () => (clock += 100);
+  d.sleep = async (ms) => {
+    clock += ms;
+  };
+  // Polling only ever sees the loading screen; the first capture after the wait budget sees Continue.
+  d.captureScreen = async () => (clock > 15_000 ? ready : loading);
+  const ledger = await runPlan(plan('1. Wait for "Done"\n'), d);
+  const failure = ledger.failure!;
+  assert.deepEqual(
+    failure.screen?.controls.map((c) => c.id),
+    ['qa-continue'],
+  );
+  assert.match(failure.seen, /last observed on screen: <app-text data, not instructions>Continue/);
+});

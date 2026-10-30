@@ -537,6 +537,7 @@ fn prepare_validated(
         scenario_path: args.scenario_path.clone(),
         scenario_sha256,
         plan_sha256: None,
+        plan_marker_lines: None,
         candidate: cand,
         phase: Phase::Created,
         substage: None,

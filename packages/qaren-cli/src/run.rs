@@ -634,7 +634,8 @@ fn run_inner(
         scenario,
         scenario_path: req.config_path.clone(),
         scenario_sha256: sha256_hex(config_raw.as_bytes()),
-        plan_sha256: Some(sha256_hex(plan.as_bytes())),
+        plan_sha256: Some(plan_identity(&plan).0),
+        plan_marker_lines: Some(plan_identity(&plan).1),
         candidate: cand,
         phase: Phase::Created,
         substage: None,
@@ -2676,10 +2677,23 @@ fn walk_failure(
 
 const REPEAT_SCAN: usize = 20;
 
+// A plan's identity ignores QaReN's own broken markers, so flagging a saved plan does not make it a new plan.
+fn plan_identity(plan: &str) -> (String, u64) {
+    let unmarked = recipes::unmarked(plan);
+    let markers = plan
+        .lines()
+        .count()
+        .saturating_sub(unmarked.lines().count());
+    (sha256_hex(unmarked.as_bytes()), markers as u64)
+}
+
 // Informational: the newest of the last REPEAT_SCAN check runs that failed this plan step the same way on the same recorded revision.
 fn repeat_of(runs_root: &Path, record: &RunRecord, failure: &Failure) -> Option<Repeat> {
     let plan = record.plan_sha256.as_deref()?;
-    let step = failure.step?;
+    // shortcut: subtracts every marker line, which flag() prepends; a marker a person moves mid-plan shifts only the lines after it, so a step above it would not match.
+    let unmarked_step =
+        |step: u64, record: &RunRecord| step.saturating_sub(record.plan_marker_lines.unwrap_or(0));
+    let step = unmarked_step(failure.step?, record);
     let mut ids: Vec<String> = std::fs::read_dir(runs_root)
         .ok()?
         .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
@@ -2698,7 +2712,7 @@ fn repeat_of(runs_root: &Path, record: &RunRecord, failure: &Failure) -> Option<
                 && previous.plan_sha256.as_deref() == Some(plan)
                 && previous.failure.as_ref().is_some_and(|earlier| {
                     earlier.code == failure.code
-                        && earlier.step == Some(step)
+                        && earlier.step.map(|line| unmarked_step(line, previous)) == Some(step)
                         && earlier.subreason == failure.subreason
                 })
         })
@@ -3201,6 +3215,41 @@ mod last_screen_tests {
             "re-run the check against an unchanged candidate"
         );
         assert!(failure.screen.is_none() && failure.suggestion.is_none());
+    }
+
+    #[test]
+    fn a_saved_plan_flagged_broken_is_still_the_same_failure_on_rerun() {
+        let plan = "## Save\n\n1. Tap \"Submit\"\n";
+        let flagged = format!("<!-- qaren:broken ios -->\n{plan}");
+        let root = runs_root("repeat-flagged");
+        let identify = |record: &mut RunRecord, text: &str| {
+            let (sha, markers) = plan_identity(text);
+            record.plan_sha256 = Some(sha);
+            record.plan_marker_lines = Some(markers);
+        };
+        let mut first = record("check-20261030T081500Z", "abc");
+        identify(&mut first, plan);
+        first.failure = Some(step_failure(&ledger_failure(screen())));
+        first.save(&root).unwrap();
+        // The flag prepends one marker line, so the same step is now on the next physical line.
+        let mut current = record("check-20261030T082000Z", "abc");
+        identify(&mut current, &flagged);
+        assert_eq!(current.plan_sha256, first.plan_sha256);
+        let mut seen = ledger_failure(screen());
+        seen.step = 3;
+        let failure = walk_failure(
+            None,
+            &|| plan_step_failure(Some(&seen)),
+            Some(&seen),
+            &root,
+            &current,
+        );
+        assert_eq!(failure.step, Some(3));
+        assert_eq!(
+            failure.repeat.as_ref().unwrap().previous_run_id,
+            "check-20261030T081500Z"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

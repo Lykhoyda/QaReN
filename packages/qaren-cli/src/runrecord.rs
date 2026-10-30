@@ -538,6 +538,9 @@ pub struct RunRecord {
     // The walked plan's hash; absent on prepare records and on records from before it was kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_sha256: Option<String>,
+    // QaReN's own broken-plan marker lines in the walked plan; repeat matching subtracts them from step lines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_marker_lines: Option<u64>,
     pub candidate: Candidate,
     pub phase: Phase,
     // The install/launch substage in flight, kept after a failure so receipts and status name it.

@@ -527,6 +527,8 @@ async function walkBlockScoped(
   let latestObservation = 0;
   // When each screen was captured, and the observation the last device action was dispatched on.
   const captured = new WeakMap<Screen, { at: number; id: number }>();
+  // The newest observation that passed admission, recovery's captures included.
+  let newest: Screen | undefined;
   let dispatchedOn = 0;
   let recoveries = 0;
   let metadataOnly = false;
@@ -657,6 +659,7 @@ async function walkBlockScoped(
           reason: 'NATIVE_PRESENCE_UNUSABLE',
         });
       admitted = true;
+      newest = latest;
       metadataOnly = false;
       emitCaptureDiagnostics(latest);
       return { screen: latest, timing, id, platformPresence };
@@ -1199,6 +1202,9 @@ async function walkBlockScoped(
     const target = item.kind === 'check' ? undefined : stepTarget(item);
     if (target?.quoted !== undefined) emitQuotedTargetDiagnostic(screen, target.quoted, item.line);
     const row = base(item, attempt);
+    // The judgment stays on the judged screen; what the author is shown is the newest admitted observation.
+    const last =
+      newest && (captured.get(newest)?.id ?? 0) > (captured.get(screen)?.id ?? 0) ? newest : screen;
     const waitOrScroll = item.kind === 'wait' || item.kind === 'scroll';
     let lastScreen: Pick<LedgerFailure, 'screen' | 'suggestion' | 'subreason'> = {};
     if (target && (waitOrScroll || targetCode)) {
@@ -1221,13 +1227,18 @@ async function walkBlockScoped(
           }
           deps.targetMiss?.(diagnostic);
         }
-        const seen = captured.get(screen);
+        const seen = captured.get(last);
         if (seen && targetCode) {
-          const now = screenNow(screen, target, row.t - seen.at, dispatchedOn === seen.id, privacy);
-          const subreason = targetCode === 'TARGET_AMBIGUOUS' ? 'ambiguous' : diagnostic.reason;
+          const lastReason =
+            last === screen
+              ? diagnostic.reason
+              : targetMissDiagnostic(target, last, item.line, item.kind === 'scroll', privacy)
+                  .reason;
+          const now = screenNow(last, target, row.t - seen.at, dispatchedOn === seen.id, privacy);
+          const subreason = targetCode === 'TARGET_AMBIGUOUS' ? 'ambiguous' : lastReason;
           lastScreen = {
             screen: now,
-            suggestion: missSuggestion(subreason, target, screen, now, item.line),
+            suggestion: missSuggestion(subreason, target, last, now, item.line),
             subreason,
           };
         }
@@ -1235,7 +1246,7 @@ async function walkBlockScoped(
         // Diagnostics cannot change the failed step's outcome.
       }
     }
-    const withheld = privacy.textWithheld(screen);
+    const withheld = privacy.textWithheld(last);
     emit({
       ...row,
       ...(ref ? { ref } : {}),
@@ -1255,7 +1266,7 @@ async function walkBlockScoped(
           ...segments(reason),
           '; last observed on screen: ',
           {
-            app: privacy.screenText(screen).slice(0, 40).join(' | '),
+            app: privacy.screenText(last).slice(0, 40).join(' | '),
             ...(withheld ? { withheld } : {}),
           },
         ],
