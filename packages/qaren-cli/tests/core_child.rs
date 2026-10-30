@@ -231,8 +231,10 @@ fn fresh_admission_reprobe_is_one_new_whole_scan_and_uses_only_the_terminal_verd
         assert_eq!(summary["attempts"], 2);
         assert_eq!(summary["elapsedMs"], 500);
         assert_eq!(summary["deadlineExceeded"], false);
+        let mut retry_spec = mock.calls[0].clone();
+        retry_spec.timeout_seconds = 29;
         assert_eq!(
-            mock.calls[0], mock.calls[1],
+            retry_spec, mock.calls[1],
             "the same whole-device scan runs again, with no PID adoption"
         );
         assert_eq!(mock.remaining(), 0);
@@ -349,13 +351,13 @@ fn fresh_admission_reprobe_shares_the_original_allowance_and_rejects_late_result
         if expected_attempts > 0 {
             assert_eq!(
                 mock.calls[0].timeout_seconds,
-                allowance.min(30_000).div_ceil(1000)
+                allowance.min(30_000) / 1000
             );
         }
         if expected_attempts == 2 {
             assert_eq!(
                 mock.calls[1].timeout_seconds,
-                (allowance.min(30_000) - per_read - 500).div_ceil(1000)
+                (allowance.min(30_000) - per_read - 500) / 1000
             );
         }
     }
