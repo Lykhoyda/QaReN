@@ -2382,7 +2382,14 @@ fn a_cancelled_walk_is_a_refusal_that_still_tears_down_and_releases_the_lease() 
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     script_provision(&mut mock);
-    let one_row = format!("{}\n", envelope(2, "row", &row(1, "step")));
+    let evidence = serde_json::json!({"subreason":"selection_unverified","heldPress":"not_tried_unsafe","outsideTargetChange":false,"captures":2});
+    let result =
+        serde_json::json!({"verdict":"REFUSED","code":"RUN_CANCELLED","pressEvidence":evidence});
+    let one_row = format!(
+        "{}\n{}\n",
+        envelope(2, "row", &row(1, "step")),
+        envelope(3, "result", &result.to_string())
+    );
     script_drift_status(&mut mock);
     script_host_probe(&mut mock, UDID, hosts_absent());
     mock.expect_spawn_piped("walk.js", 9000, &one_row, None);
@@ -2402,6 +2409,11 @@ fn a_cancelled_walk_is_a_refusal_that_still_tears_down_and_releases_the_lease() 
     let failure = receipt.failure.as_ref().unwrap();
     assert_eq!(failure.code, FailureCode::RunCancelled);
     assert_eq!(failure.phase, "walk");
+    assert_eq!(failure.next_action.as_str(), "rerun_when_ready");
+    assert!(failure.recovery.is_some());
+    let durable: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&receipt.artifacts["ledger"]).unwrap()).unwrap();
+    assert_eq!(durable["pressEvidence"], evidence);
     assert!(
         failure.detail.contains("received SIGTERM"),
         "{}",
@@ -9956,4 +9968,107 @@ fn part_a_dependency_failure_only_tears_down_infrastructure() {
         assert!(mock.piped_stdin.is_empty());
         assert_eq!(mock.remaining(), 0);
     }
+}
+
+#[test]
+fn unverified_selection_receipts_keep_evidence_guidance_and_ordered_recovery() {
+    for code in [
+        "PRESS_NOT_REGISTERED",
+        "NATIVE_CAPTURE_UNAVAILABLE",
+        "ITEM_DEADLINE_EXCEEDED",
+        "EVIDENCE_EXPIRED",
+        "RUN_CANCELLED",
+    ] {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        let evidence = serde_json::json!({"subreason":"selection_unverified","heldPress":"not_tried_unsafe","outsideTargetChange":true,"captures":2});
+        let ledger = serde_json::json!({
+            "verdict":"REFUSED", "code":code,
+            "message":"Selection could not be verified; no second press was sent.",
+            "path":"replay", "blocks":[{"key":"plan","outcome":"fail","source":"replayed"}],
+            "steps":[], "jev":{"calls":0,"medianMs":0}, "llmTurns":0,"escapes":0,"recoveries":0,
+            "pressEvidence":evidence,
+            "failure":{"step":1,"seen":"Selection could not be verified; no second press was sent."}
+        });
+        script_recipe_walk(&mut mock, &repo, &ledger.to_string(), 4);
+        let receipt = run(&mut mock, &request(&repo, &app, 30));
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Refused,
+            "{code}: {:?}",
+            receipt.failure
+        );
+        let failure = receipt.failure.as_ref().unwrap();
+        if code == "PRESS_NOT_REGISTERED" {
+            assert_eq!(failure.code, FailureCode::PressNotRegistered);
+            assert!(failure.code.is_refusal());
+        }
+        let expected = if code == "PRESS_NOT_REGISTERED" {
+            "rerun_then_ask_app_team_expose_selection_in_row_list"
+        } else if code == "NATIVE_CAPTURE_UNAVAILABLE" {
+            "reprepare_after_capture_recovery"
+        } else {
+            "rerun_when_ready"
+        };
+        assert_eq!(failure.next_action.as_str(), expected);
+        let recovery = serde_json::to_value(failure).unwrap()["recovery"].clone();
+        assert_eq!(recovery["action"], expected);
+        assert_eq!(
+            recovery["destroys_state"],
+            code == "NATIVE_CAPTURE_UNAVAILABLE"
+        );
+        assert_eq!(
+            recovery["requires_user_ok"],
+            code == "NATIVE_CAPTURE_UNAVAILABLE"
+        );
+        assert_eq!(
+            recovery["next_rung"],
+            if code == "NATIVE_CAPTURE_UNAVAILABLE" {
+                serde_json::json!(2)
+            } else {
+                serde_json::Value::Null
+            }
+        );
+        assert_eq!(recovery["ladder"].as_array().unwrap().len(), 5);
+        for (index, rung) in recovery["ladder"].as_array().unwrap().iter().enumerate() {
+            assert_eq!(rung["rung"], index + 1);
+            assert_eq!(
+                rung["status"],
+                if code == "NATIVE_CAPTURE_UNAVAILABLE" && index > 0 {
+                    "available"
+                } else {
+                    "skipped"
+                }
+            );
+        }
+        let durable: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&receipt.artifacts["ledger"]).unwrap())
+                .unwrap();
+        assert_eq!(durable["pressEvidence"], evidence);
+        assert!(durable.get("recipe").is_none());
+        assert!(durable["failure"].get("kind").is_none());
+        assert!(!receipt.to_json().contains("CANARY"));
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn first_capture_fault_requires_reprepare_after_the_walk_has_exited() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    let ledger = serde_json::json!({"verdict":"REFUSED","code":"NATIVE_CAPTURE_UNAVAILABLE","message":"Native capture unavailable.","pressEvidence":{"subreason":"target_identity_unavailable","heldPress":"not_tried_unsafe","outsideTargetChange":false,"captures":1}});
+    script_recipe_walk(&mut mock, &repo, &ledger.to_string(), 4);
+    let receipt = run(&mut mock, &request(&repo, &app, 30));
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(
+        failure.next_action.as_str(),
+        "reprepare_after_capture_recovery"
+    );
+    let recovery = serde_json::to_value(failure).unwrap()["recovery"].clone();
+    assert_eq!(recovery["next_rung"], 2);
+    assert_eq!(recovery["destroys_state"], true);
+    assert_eq!(recovery["requires_user_ok"], true);
+    assert_eq!(recovery["ladder"][0]["action"], "held_press");
+    assert_eq!(recovery["ladder"][0]["status"], "skipped");
+    assert_eq!(mock.remaining(), 0);
 }

@@ -3606,7 +3606,7 @@ fn a_build_that_outlives_the_window_is_still_stopped_and_releases_the_lock() {
     let failure = receipt.failure.as_ref().unwrap();
     assert_eq!(failure.code, FailureCode::BuildFailed, "{failure:?}");
     assert_eq!(
-        failure.recovery.as_ref().unwrap().reason,
+        failure.build_recovery().unwrap().reason,
         qaren::failure::RecoveryReason::BuildBudgetExhausted
     );
     let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
@@ -3632,7 +3632,7 @@ fn build_budget_expiry_after_build_releases_lock_without_publication() {
     let failure = receipt.failure.unwrap();
     assert_eq!(failure.code, FailureCode::BuildFailed);
     assert_eq!(
-        failure.recovery.unwrap().reason,
+        failure.build_recovery().unwrap().reason,
         qaren::failure::RecoveryReason::BuildBudgetExhausted
     );
     let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
@@ -6844,7 +6844,7 @@ fn a_cancel_while_waiting_for_the_build_lock_never_takes_it() {
     let failure = receipt.failure.as_ref().unwrap();
     assert_eq!(failure.code, FailureCode::RunCancelled);
     assert_eq!(failure.phase, "build_lock_wait");
-    let recovery = failure.recovery.as_ref().unwrap();
+    let recovery = failure.build_recovery().unwrap();
     assert_eq!(
         recovery.reason,
         qaren::failure::RecoveryReason::RunCancelled
@@ -6930,7 +6930,7 @@ fn an_ios_build_claim_without_its_own_process_identity_refuses_before_claiming()
     let failure = receipt.failure.as_ref().unwrap();
     assert_eq!(failure.code, FailureCode::PrereqMissing, "{failure:?}");
     assert_eq!(
-        failure.recovery.as_ref().unwrap().reason,
+        failure.build_recovery().unwrap().reason,
         qaren::failure::RecoveryReason::IdentityUnavailable
     );
     assert!(!repo.join(".locks/native-build-ios").exists());
@@ -6973,7 +6973,7 @@ fn an_unresolved_build_lock_release_stops_before_install_and_keeps_the_lock() {
     );
     assert_eq!(failure.phase, "build_lock");
     assert_eq!(
-        failure.recovery.as_ref().unwrap().reason,
+        failure.build_recovery().unwrap().reason,
         qaren::failure::RecoveryReason::OwnershipUnresolved
     );
     assert_eq!(
@@ -7029,13 +7029,13 @@ fn build_probe_timeouts_prioritize_expiry_over_candidate_drift() {
             assert_eq!(failure.code, FailureCode::BuildFailed);
             assert_eq!(failure.phase, "build");
             assert_eq!(
-                failure.recovery.unwrap().reason,
+                failure.build_recovery().unwrap().reason,
                 RecoveryReason::BuildBudgetExhausted
             );
         } else {
             assert_eq!(failure.code, FailureCode::CandidateDrifted);
             assert_eq!(
-                failure.recovery.unwrap().reason,
+                failure.build_recovery().unwrap().reason,
                 RecoveryReason::CandidateDrifted
             );
         }

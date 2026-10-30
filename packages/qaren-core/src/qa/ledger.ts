@@ -1,3 +1,4 @@
+import type { PressEvidence } from './selection-press.js';
 import type { MediaLatch, WithholdCause } from './privacy.js';
 export type RowOutcome = 'pass' | 'fail' | 'retry';
 
@@ -79,6 +80,7 @@ export interface BlockResult {
 }
 
 export interface Ledger {
+  pressEvidence?: PressEvidence;
   verdict: 'PASS' | 'FAIL';
   videoPublication?: 'eligible' | 'withheld-fill' | 'withheld-privacy' | 'unknown';
   videoPolicy?: 'strict' | 'non-strict' | 'undeclared';

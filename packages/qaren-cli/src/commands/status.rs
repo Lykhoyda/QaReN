@@ -88,7 +88,7 @@ pub fn status(runner: &mut dyn Runner, runs_root: &Path, run_id: &str) -> Receip
         receipt.outcomes.insert(name, value.to_string());
     }
     receipt.build_lock = record.build_lock.clone();
-    receipt.recovery = failure.as_ref().and_then(|f| f.recovery.as_deref().cloned());
+    receipt.recovery = failure.as_ref().and_then(|f| f.build_recovery().cloned());
     receipt.failure = failure;
     if let Some(substage) = &record.substage {
         receipt

@@ -47,6 +47,7 @@ and [iOS admission diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/p
 | ------------------------ | ---------------------------------------------------------------- | ------------------------------------------------------- |
 | `PLAN_STEP_FAILED`       | A step or check failed; the detail names the line and what was seen | Read the report, fix the app or the plan, then re-run |
 | `CORE_REFUSED`           | The screen layer refused; the detail starts with its own code    | Resolve that refusal, then re-run                       |
+| `PRESS_NOT_REGISTERED`   | The selection effect could not be verified                       | Follow the [press evidence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#occluded-taps-and-focus) |
 | `BLOCK_START_MISSING`    | The block's declared start was absent; this is a typed refusal with exit code 4 | Follow the [saved-block contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#saved-blocks) |
 | `WALK_DEADLINE_EXCEEDED` | The walk ran out of time                                         | Raise `QAREN_WALK_SECONDS`, or split the plan           |
 | `CANDIDATE_DRIFTED`      | The working tree changed during the run                          | Re-run against an unchanged checkout                    |

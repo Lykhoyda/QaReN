@@ -1,3 +1,11 @@
+import {
+  selectionPressCandidate,
+  outsideTargetChange,
+  PRESS_NOT_REGISTERED_REASON,
+  PRESS_OUTSIDE_CHANGE_REASON,
+  selectionPressGuidance,
+  type PressEvidence,
+} from './selection-press.js';
 import { cropPng, stablePixelChange, type PixelCrop, type PixelScale } from './tap-pixels.js';
 import {
   applyLabelProvenance,
@@ -177,6 +185,8 @@ export interface ActResult {
 }
 
 export interface WalkerDeps {
+  platform?: BlockPlatform;
+  pressReadback?(evidence: PressEvidence | undefined): void;
   readLabelProvenance?(
     refs: string[],
     deadline: number,
@@ -338,6 +348,7 @@ export interface WalkOutcome {
   rows: WalkRow[];
   failure?: WalkFailure;
   refusal?: { code: string; message: string };
+  pressEvidence?: PressEvidence;
   // Replay only: the line whose stored selector failed before mutation authorization.
   miss?: number;
   // Fill lines that typed into a private input; their block is never saved.
@@ -2569,6 +2580,9 @@ async function walkBlockScoped(
         const maxAttempts = recovered.has(item) || opts.singleAttempt ? 1 : 2;
         for (let attempt = 1; attempt <= maxAttempts && !outcome; attempt += 1) {
           currentAttempt = attempt;
+          let selectionTarget: Element | undefined;
+          let selectionDeadline = Infinity;
+          let selectionStartedAt = 0;
           const settling = (item.kind === 'press' || item.kind === 'fill') && sequence.momentum;
           const held = cached?.item === item && !settling ? cached : undefined;
           let before: Observation;
@@ -2915,6 +2929,17 @@ async function walkBlockScoped(
                   if (shot.crop) pixelBaseline = { target, crop: shot.crop };
                 }
               }
+              selectionTarget =
+                item.kind === 'press' &&
+                deps.platform === 'ios' &&
+                element &&
+                selectionPressCandidate(element, before.screen)
+                  ? element
+                  : undefined;
+              if (selectionTarget) {
+                selectionDeadline = observationDeadline(before.timing);
+                selectionStartedAt = deps.now();
+              }
               act = await mutate(item, before, async (context) => {
                 return item.kind === 'press'
                   ? deps.press(ref!, context)
@@ -3042,16 +3067,115 @@ async function walkBlockScoped(
             }
           }
           if (outcome || typedUnverified) break;
-          const after = await captureOnce(
-            item,
-            false,
-            false,
-            before.platformPresence ? 'provenance' : 'resolve',
-          );
-          // NOTE: a not-ok result is not a verdict; an act that timed out may still have landed.
-          let changed = screenSignature(after.screen) !== screenSignature(before.screen);
-          usable(after, item);
+          const readback = () =>
+            captureOnce(item, false, false, before.platformPresence ? 'provenance' : 'resolve');
+          let after: Observation;
+          let selectionProven = false;
+          let selectionExited = false;
+          if (selectionTarget && !(!act!.ok && act!.mutation === 'none')) {
+            const targetPresent = (screen: Screen): boolean =>
+              screen.elements.some((candidate) => sameIdentity(candidate, selectionTarget!));
+            const boundTarget = (screen: Screen): Element | undefined => {
+              const matches = screen.elements.filter((candidate) =>
+                sameIdentity(candidate, selectionTarget!),
+              );
+              return matches.length === 1 && matches[0].ref === selectionTarget!.ref
+                ? matches[0]
+                : undefined;
+            };
+            let observed: Observation | undefined;
+            let current: Element | undefined;
+            let captures: 1 | 2 = 1;
+            const evidence = (): PressEvidence => ({
+              subreason: current ? 'selection_unverified' : 'target_identity_unavailable',
+              heldPress: 'not_tried_unsafe',
+              outsideTargetChange:
+                observed !== undefined &&
+                outsideTargetChange(before.screen, observed.screen, selectionTarget!, current),
+              captures,
+            });
+            const refusePress = (code: string, message: string): WalkOutcome => {
+              const pressEvidence = evidence();
+              deps.pressReadback?.(pressEvidence);
+              emit({ ...base(item, attempt), outcome: 'fail', reason: message });
+              return {
+                block: { key: block.slug, outcome: 'fail', source: 'discovered' },
+                rows,
+                ...(privateFills.length ? { privateFills } : {}),
+                ...(recoveries ? { recoveries } : {}),
+                failure: { step: item.line, seen: message },
+                refusal: { code, message },
+                pressEvidence,
+              };
+            };
+            try {
+              deps.pressReadback?.(evidence());
+              observed = await withDeadline(
+                performance.now() + Math.max(0, selectionDeadline - deps.now()),
+                new EvidenceExpired(true),
+                readback,
+              );
+              usable(observed, item, selectionDeadline);
+              current = boundTarget(observed.screen);
+              if (!act!.proven && targetPresent(observed.screen) && current?.selected !== true) {
+                deps.pressReadback?.(evidence());
+                observed = await withDeadline(
+                  performance.now() + Math.max(0, selectionDeadline - deps.now()),
+                  new EvidenceExpired(true),
+                  () => {
+                    captures = 2;
+                    deps.pressReadback?.(evidence());
+                    return readback();
+                  },
+                );
+                usable(observed, item, selectionDeadline);
+                current = boundTarget(observed.screen);
+              }
+            } catch (error) {
+              if (isAbort(error)) throw error;
+              if (error instanceof NativeCaptureError)
+                return refusePress(error.code, new NativeCaptureError().message);
+              if (error instanceof PrivateInputCaptureError)
+                return refusePress(error.code, new PrivateInputCaptureError().message);
+              if (error instanceof ResolutionError) return refusePress(error.code, error.message);
+              if (error instanceof EvidenceExpired)
+                return refusePress(
+                  error.itemExpired ? 'ITEM_DEADLINE_EXCEEDED' : 'EVIDENCE_EXPIRED',
+                  error.message,
+                );
+              if (error instanceof QaDispatchError) return refusePress(error.code, error.message);
+              throw error;
+            }
+            selectionExited = !targetPresent(observed.screen);
+            if (!selectionExited && !act!.proven && current?.selected !== true) {
+              return refusePress(
+                'PRESS_NOT_REGISTERED',
+                `${evidence().outsideTargetChange ? PRESS_OUTSIDE_CHANGE_REASON : PRESS_NOT_REGISTERED_REASON} ${selectionPressGuidance(captures, observed.timing.completedAt - selectionStartedAt)}`,
+              );
+            }
+            deps.pressReadback?.(undefined);
+            after = observed;
+            selectionProven = current?.selected === true;
+          } else {
+            after = await readback();
+            usable(after, item);
+          }
+          // A capture delta cannot stand in for bound selection on these controls.
+          let changed =
+            selectionTarget && !selectionExited && !(!act!.ok && act!.mutation === 'none')
+              ? selectionProven
+              : screenSignature(after.screen) !== screenSignature(before.screen);
+          const afterTarget = element && after.screen.elements.find((e) => e.ref === element!.ref);
+          // shortcut: single-choice and multi-select are indistinguishable from capture evidence; revisit if a role fact lands
+          const alreadySelected =
+            item.kind === 'press' &&
+            !changed &&
+            act!.ok &&
+            !act!.error &&
+            element?.selected === true &&
+            afterTarget?.selected === true;
           if (
+            !alreadySelected &&
             !changed &&
             item.kind === 'press' &&
             act!.proven === false &&
@@ -3117,7 +3241,9 @@ async function walkBlockScoped(
           if (
             !noMutationRefusal &&
             !dialogRefused &&
-            (item.kind === 'fill' ? (act!.ok && act!.proven) || unverified : act!.proven || changed)
+            (item.kind === 'fill'
+              ? (act!.ok && act!.proven) || unverified
+              : act!.proven || changed || alreadySelected)
           ) {
             const target = stepTarget(item);
             if (act!.dialog)
@@ -3151,16 +3277,18 @@ async function walkBlockScoped(
                           `UNVERIFIED_FILL: the field's final value ${act!.evidence === 'masked' ? 'reads back masked' : 'could not be read back'}, so the fill was not verified`,
                         ),
                       }
-                    : alertOnly
-                      ? {
-                          unverifiedPress: true,
-                          reason: redact(
-                            alertEffect === 'uncaptured'
-                              ? 'UNVERIFIED_PRESS: nothing behind the alert or sheet was captured while it was open; any of its buttons closes it, so the press was not verified'
-                              : 'UNVERIFIED_PRESS: the alert or sheet closed and nothing behind it changed; any of its buttons closes it, so the press was not verified',
-                          ),
-                        }
-                      : {}),
+                    : alreadySelected
+                      ? { reason: redact('already selected, no change') }
+                      : alertOnly
+                        ? {
+                            unverifiedPress: true,
+                            reason: redact(
+                              alertEffect === 'uncaptured'
+                                ? 'UNVERIFIED_PRESS: nothing behind the alert or sheet was captured while it was open; any of its buttons closes it, so the press was not verified'
+                                : 'UNVERIFIED_PRESS: the alert or sheet closed and nothing behind it changed; any of its buttons closes it, so the press was not verified',
+                            ),
+                          }
+                        : {}),
             });
             break;
           }
@@ -3215,7 +3343,6 @@ async function walkBlockScoped(
           const stillness = settledFrame
             ? `; the target's frame held still at ${settledFrame} before this dispatch`
             : '';
-          const afterTarget = element && after.screen.elements.find((e) => e.ref === element!.ref);
           // Selection evidence only when a capture reports the target selected; the runner never reports "unselected".
           const reported = (e: Element) =>
             e.selected === true ? 'selected' : 'not reported selected';
@@ -3681,6 +3808,7 @@ export async function runPlan(
             ...ledger,
             code: refusal.code,
             message: refusal.message,
+            ...(outcome?.pressEvidence ? { pressEvidence: outcome.pressEvidence } : {}),
             verdict: 'REFUSED',
             videoPublication: 'unknown',
           }
