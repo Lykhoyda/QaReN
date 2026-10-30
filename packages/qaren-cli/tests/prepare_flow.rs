@@ -3672,6 +3672,197 @@ fn missing_cache_volume_refuses_before_allocating_or_building() {
     assert_eq!(mock.remaining(), 0);
 }
 
+fn seed_advisory_history(args: &PrepareArgs, mount_hash: String) -> (std::path::PathBuf, Vec<u8>) {
+    use qaren::ios_toolchain::{CompilerIdentity, Mode, RequestedModes, SwiftVersion};
+    let record = qaren::buildplan::LastSuccess {
+        schema: 1,
+        fingerprint: format!("rnfp1:{}", "a".repeat(64)),
+        parts: Default::default(),
+        compiler: CompilerIdentity {
+            xcode: Some("27.0/27A1".into()),
+            swift: SwiftVersion::parse("6.4"),
+            xcode_hash: Some("b".repeat(64)),
+            swift_hash: Some("c".repeat(64)),
+        },
+        requested: RequestedModes {
+            expo: Mode::Off,
+            rncore: Mode::Off,
+            jsi: Mode::Off,
+        },
+        mount_hash,
+        completed_at: "2026-10-30T00:00:00Z".into(),
+        artifact_sha256: "d".repeat(64),
+    };
+    record
+        .save_with_probe(
+            &args.native_cache_state_root,
+            &args.native_cache_root,
+            "ios",
+            "com.rndevagent.testapp",
+            common::fixture_mount,
+        )
+        .unwrap();
+    let path = std::fs::read_dir(
+        args.native_cache_state_root
+            .join("native-cache")
+            .join(qaren::VERSION),
+    )
+    .unwrap()
+    .next()
+    .unwrap()
+    .unwrap()
+    .path();
+    let bytes = std::fs::read(&path).unwrap();
+    (path, bytes)
+}
+
+#[test]
+fn foreign_advisory_volume_identity_does_not_refuse_a_valid_cold_build() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let args = prepare_args(&scenario, false, None);
+    seed_advisory_history(&args, "f".repeat(64));
+    let mut mock = MockRunner::new();
+    script_ios_prepare(&mut mock, &repo, CmdOutput::success(""));
+    let receipt = prepare(&mut mock, &args);
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(receipt.outcomes["native_cache"], "miss (root absent)");
+    assert_eq!(
+        receipt.outcomes["native_cache_history"],
+        "history unavailable (cache volume identity changed)"
+    );
+    assert!(args.native_cache_root.is_dir());
+    let history = qaren::buildplan::LastSuccess::load(
+        &args.native_cache_state_root,
+        &args.native_cache_root,
+        "ios",
+        "com.rndevagent.testapp",
+    )
+    .unwrap();
+    assert_ne!(history.mount_hash, "f".repeat(64));
+    assert_eq!(history.fingerprint, receipt.build.unwrap().fingerprint);
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn cache_volume_loss_after_build_retains_products_and_prior_history() {
+    fn disappears(
+        file: &std::fs::File,
+        path: &std::path::Path,
+    ) -> Result<String, qaren::buildplan::CacheAvailability> {
+        if path.file_name().is_some_and(|name| name == ".native-store")
+            && path.parent().unwrap().join("cache-volume-lost").exists()
+        {
+            Err(qaren::buildplan::CacheAvailability::VolumeUnmounted)
+        } else {
+            common::fixture_mount(file, path)
+        }
+    }
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut args = prepare_args(&scenario, false, None);
+    args.native_cache_mount_probe = disappears;
+    let hash = common::fixture_mount(
+        &std::fs::File::open(&repo).unwrap(),
+        &args.native_cache_root,
+    )
+    .unwrap();
+    let (history_path, prior) = seed_advisory_history(&args, hash);
+    let marker = repo.join("cache-volume-lost");
+    let mut mock = MockRunner::new();
+    mock.observe = Some(Box::new(move |spec| {
+        if spec.label == "simctl-install" {
+            std::fs::write(&marker, "lost").unwrap();
+        }
+    }));
+    script_ios_prepare(&mut mock, &repo, CmdOutput::success(""));
+    let receipt = prepare(&mut mock, &args);
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{:?}",
+        receipt.failure
+    );
+    assert!(receipt.outcomes["artifact_cache"].contains("native cache volume unavailable"));
+    assert!(receipt.outcomes["artifact_cache"].contains("restore"));
+    assert!(repo
+        .join(&receipt.run_id)
+        .join("ios-build/testapp.app")
+        .is_dir());
+    assert!(!args.native_cache_root.exists());
+    assert_eq!(std::fs::read(history_path).unwrap(), prior);
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn tracked_native_pods_created_during_build_require_a_stable_followup_for_publication() {
+    let repo = common::temp_repo();
+    let app = repo.join("test-app");
+    std::fs::write(
+        app.join("package.json"),
+        r#"{"dependencies":{"expo":"56.0.0"}}"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(app.join("node_modules/expo-modules-core")).unwrap();
+    std::fs::create_dir_all(app.join("ios")).unwrap();
+    let podfile = include_str!("fixtures/ios-standard-podfile.txt");
+    std::fs::write(app.join("ios/Podfile"), podfile).unwrap();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let args = prepare_args(&scenario, false, None);
+    let mut mock = MockRunner::new();
+    mock.environment
+        .insert("EXPO_USE_PRECOMPILED_MODULES".into(), "0".into());
+    let install_app = app.clone();
+    mock.observe = Some(Box::new(move |spec| {
+        if spec.label == "simctl-install" {
+            common::write_core_pods(&install_app, false);
+        }
+    }));
+    let fp = |m: &mut MockRunner| {
+        m.expect_run(
+            "ls-files",
+            CmdOutput::success(
+                "test-app/package.json\0test-app/pnpm-lock.yaml\0test-app/ios/Podfile\0",
+            ),
+        );
+        common::script_expo_fingerprint(m, "abc123", common::XCODE_VERSION);
+    };
+    script_ios_prepare_fingerprints(
+        &mut mock,
+        &repo,
+        CmdOutput::success(""),
+        fp,
+        fp,
+        |m| m.expect_run("simctl install", CmdOutput::success("")),
+        common::script_ios_launch,
+    );
+    let receipt = prepare(&mut mock, &args);
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{:?}",
+        receipt.failure
+    );
+    assert!(receipt.outcomes["artifact_cache"].contains("retry once with stable linkage"));
+    assert!(!args.native_cache_root.exists());
+    assert!(buildplan_history_absent(&args));
+    assert!(repo
+        .join(&receipt.run_id)
+        .join("ios-build/testapp.app")
+        .is_dir());
+    assert_eq!(
+        std::fs::read_to_string(app.join("ios/Podfile")).unwrap(),
+        podfile
+    );
+    assert!(!mock.calls.iter().any(|spec| spec.label == "expo-prebuild"));
+    assert_eq!(mock.remaining(), 0);
+}
+
 #[test]
 fn first_source_build_publishes_a_stable_key_reusable_without_local_pods() {
     use qaren::buildplan::{self, BuildDecision, DecisionInputs, StateStatus};
@@ -3717,6 +3908,7 @@ fn first_source_build_publishes_a_stable_key_reusable_without_local_pods() {
         receipt.failure
     );
     assert_eq!(mock.remaining(), 0);
+    assert!(receipt.outcomes["clean_preparation"].starts_with("generated the absent ios/"));
     assert!(receipt.outcomes["toolchain"].ends_with("precompiled_modules=off"));
     assert_eq!(receipt.outcomes["precompiled_modules_requested"], "off");
     let history = buildplan::LastSuccess::load(

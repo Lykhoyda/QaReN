@@ -394,3 +394,34 @@ fn unrelated_output_and_unproven_inequality_never_claim_a_newer_host() {
     let log = "ExpoModulesCore.swiftinterface: error: is not supported by the compiler (built with Apple Swift version 6.4; compiler is Apple Swift version 6.3.1)";
     assert_eq!(classify_failure(log, None).unwrap().cause(), None);
 }
+
+#[test]
+fn incomplete_interface_observations_never_supply_missing_version_proof() {
+    use qaren::ios_toolchain::{Interface, Observation};
+    let mut observation = Observation {
+        compiler: compiler(),
+        interfaces: vec![Interface {
+            package: "expo-modules-core",
+            swift: SwiftVersion::parse("6.3.1").unwrap(),
+        }],
+        incomplete: true,
+    };
+    let log = "ExpoModulesCore.swiftinterface: error: this SDK is not supported by the compiler";
+    assert_eq!(
+        classify_failure(log, Some(&observation)).unwrap().cause(),
+        None
+    );
+    observation.incomplete = false;
+    assert_eq!(
+        classify_failure(log, Some(&observation)).unwrap().cause(),
+        Some("toolchain-newer-than-prebuilt")
+    );
+    observation.incomplete = true;
+    let explicit = include_str!("fixtures/ios-toolchain-mismatch.txt");
+    assert_eq!(
+        classify_failure(explicit, Some(&observation))
+            .unwrap()
+            .cause(),
+        Some("toolchain-newer-than-prebuilt")
+    );
+}
