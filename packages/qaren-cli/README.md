@@ -2368,14 +2368,42 @@ belong to a later run. This observation never changes the run result,
 and an absent note does not prove that SpringBoard stayed healthy.
 
 Cleanup proves owned process-group and exact-simulator runner-host absence
-before releasing the lease. When the leased simulator had no runner host as the
+before releasing the lease, even when the driver's original group has disappeared.
+Driver retirement must be saved before host, simulator or lease cleanup proceeds;
+a failed save retains ownership. Temporary simulator deletion also requires producer
+and host absence. Borrowed simulators normally remain intact; a previously authorized
+borrowed stop or pooled shutdown loses volatile state, and temporary deletion loses
+app data. A final record-save failure reports failure and the actual lease outcome.
+
+`cleanup.runner_driver` keeps its string result (`removed` after a successful reap).
+Optional `cleanup_details.runner_driver` records aggregate and per-driver results,
+attempted signals and matched identity evidence without process ids, commands or paths.
+Retained-driver failures synchronize `failure.next_action` and top-level `next_action`
+with `failure.recovery` (`key: ios_runner_cleanup`), extending the existing recovery
+ladder. Follow that advice: explicit owned-runner cleanup is the supported recovery;
+standalone simulator shutdown is unavailable, and rebuilding cannot clear a surviving
+driver. Missing proof means retain and report; storage failures require restoring
+write access before one cleanup retry. Fresh preparation follows proven absence.
+
+When the leased simulator had no runner host as the
 core started, the run records the host as its own. Cleanup observes host absence
 after core and driver cleanup; a bundle id alone cannot prove that an automation
 session has finished initializing and does not authorize host termination.
 The core starts the runner's `xcodebuild` driver in its own
 process group and announces it; the CLI records that group with the driver's
 identity and interrupts that driver alone only while that identity still
-matches. Refused or unresolved core or driver cleanup leaves the host untouched
+matches. Automatic teardown, dead-holder reclaim and native-suite cancellation
+send only INT and wait up to 30 one-second polls. Explicit `qaren cleanup <run-id> --json`
+may then send TERM to that positive recorded PID, wait 1500 ms, and, if fresh proof
+still matches, send KILL and wait 300 ms. Each explicit signal requires a fresh
+same-birth, non-zombie process, the exact lossless recorded command and native argv,
+a matching complete runner invocation for the recorded simulator, the run's held
+device lease, and proven owner/core exit. Current and legacy runner commands are
+eligible only when their full historical bytes remain available; redacted,
+truncated or ambiguous identities refuse. Unknown or foreign processes and helper
+groups are never escalation targets.
+
+Refused or unresolved core or driver cleanup leaves the host untouched
 and retains the lease. A host that was already running, or any
 present or unknown host after that, retains the lease. Cleanup rechecks an unknown
 host observation up to three times, 200 ms apart, keeping the inventory and scoped
@@ -4182,6 +4210,9 @@ now encoded once and replayed deterministically.
 - **Process-birth precision:** the [cleanup contract](#preparation-ownership-and-safety-rules)
   uses `ps lstart` for CLI process groups, allowing owned launcher exec
   transitions; same-second PID reuse on macOS remains a residual risk.
+  Explicit runner recovery additionally compares the complete historical command
+  and current native argv, but same-second reuse with an identical command and the
+  observation-to-signal race remain possible under the trusted-record model.
 - **ANDROID_HOME is an environment prerequisite.** The resolved adb path is
   validated at prepare time and recorded in the run record; status/cleanup
   reuse the recorded path, never the ambient env.

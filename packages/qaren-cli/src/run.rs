@@ -1507,8 +1507,17 @@ fn run_inner(
         for (name, rendered) in cleanup {
             receipt.cleanup.insert(name, rendered);
         }
-        if !all_clean {
-            receipt.next_action = format!("qaren cleanup {run_id} --json");
+        if !all_clean
+            && receipt
+                .recovery
+                .as_ref()
+                .is_none_or(|r| r.key.as_deref() != Some("ios_runner_cleanup"))
+        {
+            let next = format!("qaren cleanup {run_id} --json");
+            if let Some(failure) = &mut receipt.failure {
+                failure.next_action = crate::redact::OutputText::from_output(&next);
+            }
+            receipt.next_action = next;
         }
         receipt
     };
