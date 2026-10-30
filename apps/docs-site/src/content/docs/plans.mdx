@@ -66,6 +66,11 @@ verification and the `(any method)` label, see the authoritative
 A dialog step needs exactly one unconditional
 action: `Accept the dialog if it appears` and `Do not dismiss the alert` refuse.
 
+A press is a real tap. It passes when the app proves it or the screen changes, including a
+control's selected state; a successful tap on a control that is already selected and stays
+selected passes with the evidence `already selected, no change`, and a toggle passes on its new
+state. A refused or errored tap on an unchanged screen gets no such pass.
+
 ## Runtime inputs
 
 A fill can take its value from the environment instead of the plan, so a login block with
