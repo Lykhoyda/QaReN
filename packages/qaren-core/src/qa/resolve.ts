@@ -900,7 +900,9 @@ export function reactOnlyViewport(element: Element): {
     : [];
   const container = chain.find(isScrollContainer);
   const frame = container ?? chain.find(isWindow);
-  const bounds = frame && elementFrame(frame);
+  const own = frame && elementFrame(frame);
+  // What the user sees of the container: its frame inside the bounds of the ancestors that clip it.
+  const bounds = own && clip(own, elementViewport(frame!));
   const rect = facts?.rect;
   if (!rect || !bounds || rect.width <= 0 || rect.height <= 0)
     return { where: 'unknown', container };

@@ -20,6 +20,8 @@ interface Form {
   native?: 'complete' | 'incomplete';
   // A second, unrelated scroll view below the form, which scroll-until would pick as its band.
   otherScroll?: boolean;
+  // The scroll view's height; taller than the 844-point window, the window clips it.
+  scrollHeight?: number;
 }
 
 function form(presence: boolean, f: Form = {}) {
@@ -32,7 +34,7 @@ function form(presence: boolean, f: Form = {}) {
       parentIndex: 0,
       type: 'ScrollView',
       identifier: 'form-scroll',
-      rect: { x: 0, y: O, width: 390, height: 600 },
+      rect: { x: 0, y: O, width: 390, height: f.scrollHeight ?? 600 },
     },
     {
       ref: '@p',
@@ -75,7 +77,7 @@ function form(presence: boolean, f: Form = {}) {
     accessibility: { accessible: a as 'true' | 'absent', authoredLabel: 'absent' as const },
     rect:
       hostIndex === 0
-        ? { x: 0, y: 0, width: 390, height: 600 }
+        ? { x: 0, y: 0, width: 390, height: f.scrollHeight ?? 600 }
         : { x: 16, y, width: 358, height: 48 },
     text: { kind: 'none' as const },
   });
@@ -154,6 +156,14 @@ async function wait(forms: Form[], plan = '1. Wait for "name-field" to appear', 
 }
 
 const seen = (r: Awaited<ReturnType<typeof wait>>) => r.result.failure?.seen ?? '';
+
+test('a field past the window but inside a taller scroll view is not inside its viewport', async () => {
+  // The window clips the 1000-point scroll view at 864; the field starts at 944.
+  const r = await wait([{ scrollHeight: 1000, fieldY: 924 }]);
+  assert.doesNotMatch(seen(r), / inside its viewport;/);
+  assert.match(seen(r), / below its viewport;/);
+  assert.notEqual(r.elapsed, 2 * WAIT_POLL_MS);
+});
 
 test('a field swallowed by an accessible wrapper inside the viewport refuses early with its facts', async () => {
   const r = await wait([{}]);
