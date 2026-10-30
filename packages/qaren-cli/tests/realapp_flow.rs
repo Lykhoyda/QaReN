@@ -43,8 +43,6 @@ fn args(repo: &Path, scenario_path: &Path, android_home: Option<String>) -> Prep
         android_home,
         lock_root: repo.join(".locks"),
         native_cache_root: repo.join(".native-store"),
-        native_cache_state_root: repo.join(".runtime-state"),
-        native_cache_mount_probe: common::fixture_mount,
         runs_root: repo.to_path_buf(),
         device: None,
         boot_device: false,

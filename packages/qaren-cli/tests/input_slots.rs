@@ -172,8 +172,6 @@ fn missing_check_and_pr_inputs_refuse_before_device_run_claim_or_worktree_alloca
             lock_root: repo.join("locks"),
             runs_root: repo.join("runs"),
             native_cache_root: repo.join("native"),
-            native_cache_state_root: repo.join(".runtime-state"),
-            native_cache_mount_probe: common::fixture_mount,
             android_home: None,
             budgets: Budgets {
                 walk_seconds: 30,
@@ -406,8 +404,6 @@ fn a_pr_head_login_block_cannot_request_inputs_the_owner_never_declared() {
             lock_root: repo.join("locks"),
             runs_root: repo.join("runs"),
             native_cache_root: repo.join("native"),
-            native_cache_state_root: repo.join(".runtime-state"),
-            native_cache_mount_probe: common::fixture_mount,
             android_home: None,
             budgets: Budgets {
                 walk_seconds: 30,
@@ -505,8 +501,6 @@ fn privacy_preflight_refusal_is_distinct_from_invalid_inputs() {
             lock_root: repo.join("locks"),
             runs_root: repo.join("runs"),
             native_cache_root: repo.join("native"),
-            native_cache_state_root: repo.join(".runtime-state"),
-            native_cache_mount_probe: common::fixture_mount,
             android_home: None,
             budgets: Budgets {
                 walk_seconds: 30,
@@ -609,8 +603,6 @@ fn fixture_inventory_metadata_and_preflight_must_agree_before_device_selection()
             lock_root: repo.join("locks"),
             runs_root: repo.join("runs"),
             native_cache_root: repo.join("native"),
-            native_cache_state_root: repo.join(".runtime-state"),
-            native_cache_mount_probe: common::fixture_mount,
             android_home: None,
             budgets: Budgets {
                 walk_seconds: 30,

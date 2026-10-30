@@ -1,13 +1,10 @@
 use crate::candidate::sha256_hex;
 use crate::exec::Runner;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::path::Path;
 
 mod probe;
-pub(crate) use probe::has_expo_dependency;
 pub(crate) use probe::inspect_for_doctor;
-pub(crate) use probe::resolved_modes_for_build;
 pub use probe::{inspect, requested_modes, Linkage, NativeBuildConfig, RequestedModes};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -70,7 +67,6 @@ pub struct CompilerIdentity {
     pub xcode: Option<String>,
     pub swift: Option<SwiftVersion>,
     pub xcode_hash: Option<String>,
-    pub swift_hash: Option<String>,
 }
 
 impl CompilerIdentity {
@@ -80,7 +76,6 @@ impl CompilerIdentity {
         let text = swift.stdout().trim();
         if swift.clean() && !text.is_empty() && text.len() <= 16384 {
             identity.swift = SwiftVersion::from_compiler(text);
-            identity.swift_hash = Some(sha256_hex(text.as_bytes()));
         }
         identity
     }
@@ -105,25 +100,7 @@ impl CompilerIdentity {
             swift: None,
             xcode_hash: (xcode.clean() && !xcode_text.is_empty() && xcode_text.len() <= 16384)
                 .then(|| sha256_hex(xcode_text.as_bytes())),
-            swift_hash: None,
         }
-    }
-
-    pub fn parts(&self) -> BTreeMap<String, String> {
-        [
-            ("toolchain.xcode", &self.xcode_hash),
-            ("toolchain.swift", &self.swift_hash),
-        ]
-        .into_iter()
-        .filter_map(|(key, hash)| Some((key.into(), hash.clone()?)))
-        .collect()
-    }
-
-    pub fn complete(&self) -> bool {
-        self.xcode.is_some()
-            && self.swift.is_some()
-            && self.xcode_hash.is_some()
-            && self.swift_hash.is_some()
     }
 }
 
@@ -143,7 +120,7 @@ pub struct Observation {
 pub const UNKNOWN_FIX: &str =
     "verify the selected Xcode and installed Expo packages, then re-run qaren doctor --json";
 pub const JSI_SOURCE_FIX: &str = "Expo module source builds are already selected; update expo-modules-jsi and expo-modules-core to compatible Expo patch versions, or select a compatible installed Xcode with DEVELOPER_DIR, then re-run qaren doctor --json";
-pub const SOURCE_FIX: &str = "select source-built Expo modules and regenerate pods, update the app's Expo patch versions, or select a compatible installed Xcode with DEVELOPER_DIR; re-run qaren doctor --json";
+pub const SOURCE_FIX: &str = "export EXPO_USE_PRECOMPILED_MODULES=0 and regenerate pods to build Expo modules from source, update the app's Expo patch versions, or select a compatible installed Xcode with DEVELOPER_DIR; re-run qaren doctor --json";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InterfaceFailure {

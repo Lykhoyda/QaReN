@@ -36,7 +36,7 @@ approval before native regeneration and preserve tracked source. After a recover
 prepare is Ready, finish its cleanup before retrying the original QA command with
 the same environment. Restarting a device or deleting cache cannot repair this cause.
 
-For `PREREQ_MISSING` with `cause=native-cache-volume-unavailable`, remount the
+For a doctor `native-cache-root` warning, remount the
 configured volume or explicitly set `QAREN_NATIVE_CACHE_ROOT` to a mounted private
 absolute directory, then re-run `qaren doctor --json` and the original command.
 See the [native build contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#native-fingerprint-build-selection).

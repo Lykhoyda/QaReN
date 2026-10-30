@@ -76,13 +76,8 @@ fn pool_root() -> Result<PathBuf, String> {
     qaren_home().map(|home| home.join("pool"))
 }
 
-fn build_roots() -> Result<(PathBuf, PathBuf, PathBuf, PathBuf), String> {
-    Ok((
-        lock_root()?,
-        runs_root()?,
-        native_cache_root()?,
-        qaren_home()?.join("state"),
-    ))
+fn build_roots() -> Result<(PathBuf, PathBuf, PathBuf), String> {
+    Ok((lock_root()?, runs_root()?, native_cache_root()?))
 }
 
 fn env_seconds(name: &str, default: u64) -> u64 {
@@ -439,7 +434,7 @@ fn main_inner(args: Vec<String>) -> ExitCode {
             qaren::progress::enable();
             qaren::events::init();
             match build_roots() {
-                Ok((lock_root, runs_root, native_cache_root, native_cache_state_root)) => {
+                Ok((lock_root, runs_root, native_cache_root)) => {
                     let project_root =
                         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
                     let request = RunRequest {
@@ -461,8 +456,6 @@ fn main_inner(args: Vec<String>) -> ExitCode {
                         lock_root,
                         runs_root,
                         native_cache_root,
-                        native_cache_state_root,
-                        native_cache_mount_probe: qaren::buildplan::mounted_filesystem_identity,
                         android_home: std::env::var("ANDROID_HOME").ok(),
                         budgets: check_budgets(),
                         pr: (verb == "pr").then(|| run::PrTarget {
@@ -484,7 +477,7 @@ fn main_inner(args: Vec<String>) -> ExitCode {
             Err(detail) => failed_receipt("publish", roots_failure(detail), &runner),
         },
         "prepare" => match build_roots().and_then(|roots| Ok((roots, pool_root()?))) {
-            Ok(((lock_root, runs_root, native_cache_root, native_cache_state_root), pool_root)) => {
+            Ok(((lock_root, runs_root, native_cache_root), pool_root)) => {
                 let prepare_args = prepare::PrepareArgs {
                     scenario_path: PathBuf::from(&positional[1]),
                     dry_run,
@@ -492,8 +485,6 @@ fn main_inner(args: Vec<String>) -> ExitCode {
                     lock_root,
                     runs_root,
                     native_cache_root,
-                    native_cache_state_root,
-                    native_cache_mount_probe: qaren::buildplan::mounted_filesystem_identity,
                     device,
                     boot_device,
                     pool_root,

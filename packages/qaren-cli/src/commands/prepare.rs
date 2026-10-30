@@ -30,8 +30,6 @@ pub struct PrepareArgs {
     pub lock_root: PathBuf,
     pub runs_root: PathBuf,
     pub native_cache_root: PathBuf,
-    pub native_cache_state_root: PathBuf,
-    pub native_cache_mount_probe: buildplan::MountProbe,
     // Exact existing iOS simulator UUID to borrow under the device lease instead of creating one.
     pub device: Option<String>,
     pub boot_device: bool,
@@ -62,15 +60,10 @@ pub(crate) struct Ctx<'a> {
     pub(crate) runner: &'a mut dyn Runner,
     pub(crate) runs_root: PathBuf,
     pub(crate) native_cache_root: PathBuf,
-    pub(crate) native_cache_state_root: PathBuf,
-    pub(crate) native_cache_mount_probe: buildplan::MountProbe,
     pub(crate) native_store_entry: Option<buildplan::NativeStoreEntry>,
-    pub(crate) native_cache_anchor: Option<buildplan::NativeCacheAnchor>,
     pub(crate) ios_observation: Option<crate::ios_toolchain::Observation>,
-    pub(crate) requested_modes: Option<crate::ios_toolchain::RequestedModes>,
     pub(crate) linkage_before_build: Option<crate::ios_toolchain::Linkage>,
     pub(crate) ios_generated_native: bool,
-    pub(crate) native_cache_refusal: bool,
     pub(crate) record: RunRecord,
     pub(crate) started_ms: u64,
     pub(crate) timings: Vec<(String, u64)>,
@@ -142,10 +135,7 @@ impl<'a> Ctx<'a> {
                 .iter()
                 .rev()
                 .find(|(key, _)| {
-                    (key == "build_failure_next_action" && failure.code == FailureCode::BuildFailed)
-                        || (key == "native_cache_next_action"
-                            && self.native_cache_refusal
-                            && failure.code == FailureCode::PrereqMissing)
+                    key == "build_failure_next_action" && failure.code == FailureCode::BuildFailed
                 })
                 .map(|(_, value)| format!("; only after cleanup completes: {value}"))
                 .unwrap_or_default();
@@ -156,9 +146,7 @@ impl<'a> Ctx<'a> {
         }
         // Contention is a refusal even after the run record exists: nothing
         // broke, qaren declined to take a claimed resource.
-        let result = if failure.code.is_refusal()
-            || (self.native_cache_refusal && failure.code == FailureCode::PrereqMissing)
-        {
+        let result = if failure.code.is_refusal() {
             ReceiptResult::Refused
         } else {
             ReceiptResult::Failed
@@ -202,8 +190,7 @@ pub(crate) fn finish_receipt(ctx: Ctx, result: ReceiptResult, failure: Option<Fa
     let now = ctx.runner.now_epoch_ms();
     let phase = ctx.record.phase.as_str().to_string();
     let next_action = match (&result, &failure) {
-        (_, Some(f)) if (ctx.native_cache_refusal && f.code == FailureCode::PrereqMissing)
-            || (f.code == FailureCode::BuildFailed && ctx.notes.iter().any(|(key, _)| key == "build_failure_next_action")) => f.next_action.to_string(),
+        (_, Some(f)) if f.code == FailureCode::BuildFailed && ctx.notes.iter().any(|(key, _)| key == "build_failure_next_action") => f.next_action.to_string(),
         (ReceiptResult::Pass | ReceiptResult::Fail, _) => {
             format!("read the report under {}", RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id).display())
         }
@@ -592,15 +579,10 @@ fn prepare_validated(
         runner,
         runs_root: args.runs_root.clone(),
         native_cache_root: args.native_cache_root.clone(),
-        native_cache_state_root: args.native_cache_state_root.clone(),
-        native_cache_mount_probe: args.native_cache_mount_probe,
         native_store_entry: None,
-        native_cache_anchor: None,
         ios_observation: None,
-        requested_modes: None,
         linkage_before_build: None,
         ios_generated_native: false,
-        native_cache_refusal: false,
         record,
         started_ms,
         timings: Vec::new(),
@@ -2081,98 +2063,19 @@ pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
     let platform = platform_dir(ctx.record.scenario.platform);
     let repo_root = ctx.record.candidate.repo_root.clone();
     let project_root = ctx.record.candidate.project_root.clone();
-    let history_root = ctx.native_cache_state_root.clone();
-    let mut history = (platform == "ios")
-        .then(|| {
-            buildplan::LastSuccess::load(
-                &history_root,
-                &ctx.native_cache_root,
-                platform,
-                &ctx.record.candidate.app_id,
-            )
-        })
-        .flatten();
-    if platform == "ios" {
-        ctx.notes.extend([
-            (
-                "toolchain".into(),
-                "xcode=unknown; swift=unknown; precompiled_modules=unknown".into(),
-            ),
-            ("precompiled_modules_requested".into(), "unknown".into()),
-        ]);
-        buildplan::open_native_store_root(&ctx.native_cache_root, false)
-            .map_err(cache_root_failure)?;
-        ctx.notes
-            .push(("rebuild_estimate".into(), "estimate unavailable".into()));
-        if history.is_none() {
-            ctx.notes
-                .push(("native_cache_history".into(), "history unavailable".into()));
-        }
-        match buildplan::anchor_native_cache_with(
-            &ctx.native_cache_root,
-            ctx.native_cache_mount_probe,
-        ) {
-            Ok(anchor) => {
-                if history
-                    .as_ref()
-                    .is_some_and(|h| h.mount_hash != anchor.mount_hash)
-                {
-                    history = None;
-                    ctx.notes.push((
-                        "native_cache_history".into(),
-                        "history unavailable (cache volume identity changed)".into(),
-                    ));
-                }
-                if anchor.availability == buildplan::CacheAvailability::RootAbsent {
-                    ctx.notes
-                        .push(("native_cache".into(), "miss (root absent)".into()));
-                    ctx.notes.push(("native_cache_next_action".into(), "allow the cold build on the mounted configured volume; no cache relocation is required".into()));
-                }
-                ctx.native_cache_anchor = Some(anchor);
-            }
-            Err(_) => {
-                ctx.native_cache_refusal = true;
-                ctx.notes.extend([
-                    (
-                        "native_cache".into(),
-                        "unavailable (volume unmounted or uninspectable)".into(),
-                    ),
-                    ("recovery_next_rung".into(), "restore-cache-volume".into()),
-                    ("recovery_requires_user_ok".into(), "true".into()),
-                    ("recovery_destroys_state".into(), "false".into()),
-                    (
-                        "native_cache_next_action".into(),
-                        buildplan::CACHE_VOLUME_FIX.into(),
-                    ),
-                ]);
-                return Err(Failure::new("build_decision", FailureCode::PrereqMissing,
-                    "cause=native-cache-volume-unavailable; native build cache volume unavailable; cache reuse cannot be checked",
-                    buildplan::CACHE_VOLUME_FIX));
-            }
-        }
-    }
     let fp = fingerprint::compute(ctx.runner, &repo_root, &project_root, platform)?
         .with_ios_workspace(ctx.record.scenario.build.ios_workspace.as_ref());
     let state = buildplan::load_state(&repo_root, platform, &ctx.record.candidate.app_id);
-    if let Some((compiler, requested)) = &fp.ios_identity {
+    if let Some(compiler) = &fp.ios_compiler {
         ctx.ios_generated_native = !fp.native_dir_in_candidate;
         ctx.ios_observation = Some(crate::ios_toolchain::inspect(
             ctx.runner,
             &project_root,
             compiler.clone(),
         ));
-        ctx.requested_modes = Some(requested.clone());
-        let linkage = crate::ios_toolchain::Linkage::inspect(&project_root);
-        ctx.note_toolchain(linkage.expo);
-        ctx.notes.push((
-            "precompiled_modules_requested".into(),
-            requested.expo.as_str().into(),
-        ));
+        ctx.note_toolchain(crate::ios_toolchain::Linkage::inspect(&project_root).expo);
     }
-    let CachedLookup {
-        artifact: store,
-        invalid,
-    } = cached_artifact(
+    let store = cached_artifact(
         &ctx.native_cache_root,
         platform,
         &ctx.record.candidate.app_id,
@@ -2217,45 +2120,7 @@ pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
         native_dir_in_candidate: fp.native_dir_in_candidate,
     };
     ctx.notes.extend(fingerprint_notes(&fp));
-    let plan = buildplan::decide(&inputs, &state, store);
-    if platform == "ios" {
-        let changed: Vec<_> = history
-            .as_ref()
-            .map(|h| {
-                fp.parts
-                    .iter()
-                    .filter_map(|(key, value)| {
-                        (key != "toolchain" && h.parts.get(key).is_some_and(|old| old != value))
-                            .then_some(key.as_str())
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        if !changed.is_empty() {
-            ctx.notes
-                .push(("native_cache_changed_fields".into(), changed.join(", ")));
-        }
-        if plan.decision == BuildDecision::Reuse {
-            ctx.notes.push(("native_cache".into(), "hit".into()));
-        } else if !ctx.notes.iter().any(|(key, _)| key == "native_cache") {
-            let reason = if inputs.force_clean {
-                "forced-clean".into()
-            } else if !fp.complete {
-                "incomplete-input".into()
-            } else if invalid {
-                "artifact-invalid".into()
-            } else if !changed.is_empty() {
-                format!("fingerprint changed: {}", changed.join(", "))
-            } else if history.is_none() {
-                "no-entry; history unavailable".into()
-            } else {
-                "no verified entry".into()
-            };
-            ctx.notes
-                .push(("native_cache".into(), format!("miss ({reason})")));
-        }
-    }
-    Ok(plan)
+    Ok(buildplan::decide(&inputs, &state, store))
 }
 
 fn cache_root_failure(reason: String) -> Failure {
@@ -2267,21 +2132,6 @@ fn cache_root_failure(reason: String) -> Failure {
     )
 }
 
-#[derive(Default)]
-struct CachedLookup {
-    artifact: Option<(StoreRecord, ArtifactStatus)>,
-    invalid: bool,
-}
-
-impl CachedLookup {
-    fn from_artifact(artifact: Option<(StoreRecord, ArtifactStatus)>) -> Self {
-        let invalid = artifact
-            .as_ref()
-            .is_some_and(|(_, status)| *status != ArtifactStatus::Verified);
-        Self { artifact, invalid }
-    }
-}
-
 fn cached_artifact(
     store_root: &Path,
     platform: &str,
@@ -2289,27 +2139,27 @@ fn cached_artifact(
     fp: &NativeFingerprint,
     state: &StateStatus,
     notes: &mut Vec<(String, String)>,
-) -> Result<CachedLookup, Failure> {
+) -> Result<Option<(StoreRecord, ArtifactStatus)>, Failure> {
     if platform != "ios" {
         let StateStatus::Loaded(s) = state else {
-            return Ok(CachedLookup::default());
+            return Ok(None);
         };
         let Some(artifact) = s.artifact.clone().filter(|_| s.fingerprint == fp.value) else {
-            return Ok(CachedLookup::default());
+            return Ok(None);
         };
         let status = verify_artifact(&artifact);
-        return Ok(CachedLookup::from_artifact(Some((
+        return Ok(Some((
             StoreRecord {
                 artifact,
                 built_at: s.built_at.clone(),
                 candidate_sha: s.candidate_sha.clone(),
             },
             status,
-        ))));
+        )));
     }
     let root = buildplan::open_native_store_root(store_root, false).map_err(cache_root_failure)?;
     let Some(root) = root.filter(|_| fp.complete) else {
-        return Ok(CachedLookup::default());
+        return Ok(None);
     };
     let dir = buildplan::store_dir(store_root, platform, app_id, &fp.value);
     let read: Result<Option<(StoreRecord, ArtifactStatus)>, String> = (|| {
@@ -2324,13 +2174,10 @@ fn cached_artifact(
         Ok(Some((record, status)))
     })();
     match read {
-        Ok(record) => Ok(CachedLookup::from_artifact(record)),
+        Ok(record) => Ok(record),
         Err(reason) => {
             notes.push(("native_store".into(), format!("ignored: {reason}")));
-            Ok(CachedLookup {
-                artifact: None,
-                invalid: true,
-            })
+            Ok(None)
         }
     }
 }
@@ -2658,12 +2505,7 @@ pub(crate) fn run_clean_preparation(ctx: &mut Ctx, plan: &BuildPlan) -> Result<(
     ensure_running(ctx.runner, "build")?;
     let platform = platform_dir(ctx.record.scenario.platform);
     let project_root = ctx.record.candidate.project_root.clone();
-    let native_dir_existed = project_root.join(platform).exists();
-    if plan.regenerate_native_dir
-        || (platform == "ios"
-            && !project_root.join("ios").exists()
-            && crate::ios_toolchain::has_expo_dependency(&project_root))
-    {
+    if plan.regenerate_native_dir {
         let spec = native_prebuild_spec(
             &project_root,
             platform,
@@ -2693,11 +2535,7 @@ pub(crate) fn run_clean_preparation(ctx: &mut Ctx, plan: &BuildPlan) -> Result<(
         }
         ctx.notes.push((
             "clean_preparation".to_string(),
-            if native_dir_existed {
-                format!("deleted and regenerated the generated {platform}/ dir, including its installed native dependencies and build outputs, via expo prebuild --clean")
-            } else {
-                format!("generated the absent {platform}/ dir and installed its native dependencies via expo prebuild --clean")
-            },
+            format!("deleted and regenerated the generated {platform}/ dir, including its installed native dependencies and build outputs, via expo prebuild --clean"),
         ));
         return Ok(());
     }
@@ -3505,34 +3343,6 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
     let repo_root = ctx.record.candidate.repo_root.clone();
     let project_root = ctx.record.candidate.project_root.clone();
     let app_id = ctx.record.candidate.app_id.clone();
-    if platform == "ios" {
-        let linkage = crate::ios_toolchain::Linkage::inspect(&project_root);
-        let proven = ctx
-            .requested_modes
-            .as_ref()
-            .is_some_and(|requested| linkage.matches(requested))
-            && ctx
-                .linkage_before_build
-                .as_ref()
-                .is_some_and(|before| before == &linkage);
-        ctx.note_toolchain(if proven {
-            linkage.expo
-        } else {
-            crate::ios_toolchain::Mode::Unknown
-        });
-        if !proven {
-            ctx.notes.push(("artifact_cache".into(), "skipped: installed Pods linkage is unknown, changed, or differs from requested mode; retain run-local products, verify the installed Pods match the selected environment and retry once with stable linkage; if settings differ, ask the app owner to regenerate pods before rebuilding".into()));
-            return Ok(());
-        }
-        if ctx
-            .native_cache_anchor
-            .as_ref()
-            .is_none_or(|anchor| anchor.recheck().is_err())
-        {
-            ctx.notes.push(("artifact_cache".into(), "skipped: native cache volume unavailable; retain run-local products and restore the configured cache volume before retrying publication".into()));
-            return Ok(());
-        }
-    }
     let verified = ctx.record.build.as_ref().and_then(|p| p.artifact.clone());
     let source = if platform == "ios" {
         verified
@@ -3578,11 +3388,8 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
     let mut private_entry = None;
     let copied = if ios {
         (|| {
-            let root = buildplan::open_native_store_root_from_anchor(
-                ctx.native_cache_anchor
-                    .as_ref()
-                    .ok_or("native cache root: no mounted anchor")?,
-            )?;
+            let root = buildplan::open_native_store_root(&ctx.native_cache_root, true)?
+                .ok_or("native cache root: unavailable")?;
             let entry = root
                 .entry(
                     bucket
@@ -3712,17 +3519,16 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
         candidate_sha: ctx.record.candidate.git_sha.clone(),
     };
     let mut publication_failed = false;
-    let mut publication_new = false;
     let published = match (ios, fp.complete) {
         (false, _) => {
             "cached the built dev client for fingerprint-matched reuse in this worktree".to_string()
         }
         (true, false) => "kept this run's copy; an incomplete fingerprint is never published for reuse".to_string(),
         (true, true) => match buildplan::publish_store_record(private_entry.as_ref().expect("private iOS entry"), &record) {
-            Ok(true) => { publication_new = true; format!(
+            Ok(true) => format!(
                 "published the built dev client to the machine store at {}",
                 bucket.display()
-            ) },
+            ),
             Ok(false) => format!(
                 "kept this run's copy; the machine store already holds a build of this fingerprint at {}",
                 bucket.display()
@@ -3733,49 +3539,10 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
             },
         },
     };
-    if ios
-        && ctx
-            .native_cache_anchor
-            .as_ref()
-            .is_none_or(|anchor| anchor.recheck().is_err())
-    {
-        publication_failed = true;
-        ctx.notes.push(("native_cache_publication".into(), "publication skipped: cache volume identity was lost; retained run-local products; restore the configured volume before retrying".into()));
-    }
     ctx.notes.push(("artifact_cache".into(), published));
     if publication_failed {
         ensure_running(ctx.runner, "native_cache")?;
         return Ok(());
-    }
-    if ios && fp.complete && publication_new && ctx.record.resources.build_lock.is_some() {
-        if let (Some((compiler, requested)), Some(anchor)) =
-            (&fp.ios_identity, &ctx.native_cache_anchor)
-        {
-            let history = buildplan::LastSuccess {
-                schema: 1,
-                fingerprint: fp.value.clone(),
-                parts: fp.parts.clone(),
-                compiler: compiler.clone(),
-                requested: requested.clone(),
-                mount_hash: anchor.mount_hash.clone(),
-                completed_at: record.built_at.clone(),
-                artifact_sha256: record.artifact.sha256.clone(),
-            };
-            let state_root = ctx.native_cache_state_root.clone();
-            if history
-                .save_with_probe(
-                    &state_root,
-                    &ctx.native_cache_root,
-                    platform,
-                    &app_id,
-                    ctx.native_cache_mount_probe,
-                )
-                .is_err()
-            {
-                ctx.notes
-                    .push(("native_cache_history".into(), "history unavailable".into()));
-            }
-        }
     }
     if !ios {
         let keep = bucket
@@ -4139,7 +3906,6 @@ fn run_finite_build(ctx: &mut Ctx, spec: &CmdSpec) -> Result<(), Failure> {
             failure.next_action = crate::redact::OutputText::from_output(&format!("dependency output was withheld; check the declared registry auth environment names and registry setup, then qaren cleanup {} --json", ctx.record.run_id));
         } else if started
             && exit.is_some_and(|code| code != 0)
-            && matches!(outcome, super::cleanup::Outcome::Absent)
             && ctx.record.scenario.platform == Platform::Ios
         {
             if let Some(diagnostic) = inspect_interface_failure(&log, ctx.ios_observation.as_ref())
@@ -4723,8 +4489,7 @@ fn dry_run_receipt(
                 &fp,
                 &state,
                 &mut notes,
-            )?
-            .artifact;
+            )?;
             receipt.outcomes.extend(notes);
             let inputs = buildplan::DecisionInputs {
                 platform,

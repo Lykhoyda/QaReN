@@ -17,7 +17,6 @@ fn compiler() -> CompilerIdentity {
         xcode: Some("27.0/27A1".into()),
         swift: SwiftVersion::parse("6.4"),
         xcode_hash: Some("a".repeat(64)),
-        swift_hash: Some("b".repeat(64)),
     }
 }
 
@@ -129,7 +128,7 @@ fn requested_mode_is_separate_from_installed_pods() {
         .insert("EXPO_USE_PRECOMPILED_MODULES".into(), "0".into());
     let desired = requested_modes(&runner, &root, None);
     assert_eq!(desired.expo, Mode::Off);
-    assert!(!Linkage::inspect(&root).matches(&desired));
+    assert_eq!(Linkage::inspect(&root).expo, Mode::Unknown);
     write(&root, "app.config.ts", "export default {};");
     assert_eq!(requested_modes(&runner, &root, None).expo, Mode::Unknown);
     assert_eq!(
@@ -160,72 +159,6 @@ fn requested_mode_is_separate_from_installed_pods() {
 }
 
 #[test]
-fn linkage_requires_matching_target_support_evidence_and_detects_both_transitions() {
-    let root = common::temp_repo();
-    write(
-        &root,
-        "package.json",
-        r#"{"dependencies":{"expo":"56.0.0"}}"#,
-    );
-    let mut runner = MockRunner::new();
-    let on = requested_modes(&runner, &root, None);
-    runner
-        .environment
-        .insert("EXPO_USE_PRECOMPILED_MODULES".into(), "0".into());
-    let off = requested_modes(&runner, &root, None);
-    let path = "ios/Pods/Local Podspecs/ExpoModulesCore.podspec.json";
-    let support = "ios/Pods/Target Support Files/ExpoModulesCore/ExpoModulesCore.debug.xcconfig";
-    write(
-        &root,
-        path,
-        r#"{"name":"ExpoModulesCore","vendored_frameworks":["ExpoModulesCore.xcframework"]}"#,
-    );
-    write(
-        &root,
-        support,
-        "FRAMEWORK_SEARCH_PATHS = XCFrameworkIntermediates/ExpoModulesCore\n",
-    );
-    let prebuilt = Linkage::inspect(&root);
-    assert!(prebuilt.matches(&on));
-    assert!(!prebuilt.matches(&off));
-    write(
-        &root,
-        path,
-        r#"{"name":"ExpoModulesCore","source_files":["ios/**/*.swift"]}"#,
-    );
-    write(
-        &root,
-        support,
-        "PODS_TARGET_SRCROOT = ${PODS_ROOT}/../../node_modules/expo-modules-core\n",
-    );
-    let source = Linkage::inspect(&root);
-    assert!(source.matches(&off));
-    assert!(!source.matches(&on));
-    assert_ne!(prebuilt.digest, source.digest);
-    write(&root, support, "custom linkage\n");
-    assert_eq!(Linkage::inspect(&root).expo, Mode::Unknown);
-}
-
-#[test]
-fn the_full_private_compiler_build_shapes_identity_without_publishing_raw_output() {
-    let mut identities = Vec::new();
-    for tag in ["A", "B"] {
-        let mut runner = MockRunner::new();
-        runner.expect_run(
-            "xcodebuild -version",
-            CmdOutput::success("Xcode 27.0\nBuild version 27A1\n"),
-        );
-        runner.expect_run("xcrun swift --version", CmdOutput::success(&format!("Apple Swift version 6.4 (swiftlang-{tag} clang-{tag})\nTarget: arm64-apple-macosx\n")));
-        identities.push(CompilerIdentity::collect(&mut runner));
-    }
-    assert_eq!(identities[0].swift, identities[1].swift);
-    assert_ne!(identities[0].parts(), identities[1].parts());
-    let json = serde_json::to_string(&identities).unwrap();
-    assert!(!json.contains("swiftlang"));
-    assert!(!json.contains("Target:"));
-}
-
-#[test]
 fn static_plugin_modes_conflicts_and_invalid_env_are_explicit() {
     let root = common::temp_repo();
     write(
@@ -241,7 +174,6 @@ fn static_plugin_modes_conflicts_and_invalid_env_are_explicit() {
     let mut runner = MockRunner::new();
     let selected = requested_modes(&runner, &root, None);
     assert_eq!(selected.expo, Mode::Off);
-    assert_eq!(selected.rncore, Mode::Off);
     runner
         .environment
         .insert("EXPO_USE_PRECOMPILED_MODULES".into(), "true".into());
@@ -311,7 +243,6 @@ fn missing_or_ambiguous_public_simulator_headers_are_unknown() {
     .unwrap();
     let mut runner = MockRunner::new();
     assert!(inspect(&mut runner, &root, compiler()).incomplete);
-    assert_eq!(requested_modes(&runner, &root, None).jsi, Mode::Unknown);
     assert!(runner.calls.is_empty());
 }
 
