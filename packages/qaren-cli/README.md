@@ -2417,8 +2417,8 @@ A failed iOS walk is held for inspection. After the app was admitted, an uncance
 `TARGET_*` refusal reported by the core (not one QaReN synthesizes after a deadline kill or a
 missing result) is eligible. Teardown still stops the build, core, runner driver, runner host and recorder and
 releases the build lock. It skips stopping Metro (`metro=held: …`), skips any armed simulator
-stop, and keeps the device lease (`device_lease=held: …`). The app keeps running against a
-live Metro. `run.json` and the receipt record `held` (`since`, `reason`, `retained`), the `end`
+stop, and keeps the device lease (`device_lease=held: …`). Teardown never terminates the app,
+so if it is still running it keeps its live Metro; the hold does not restart an app that already exited. `run.json` and the receipt record `held` (`since`, `reason`, `retained`), the `end`
 event carries `held: true`, and the record stays in the walking phase. `qaren status <run-id>`
 reports the hold beside its live probes, and `qaren doctor --device <udid>` adds the holding run
 to the `ios-lane` row. The hold ends with `qaren cleanup <run-id>`, or with the next run on that

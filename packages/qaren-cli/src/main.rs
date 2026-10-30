@@ -403,9 +403,11 @@ fn main_inner(args: Vec<String>) -> ExitCode {
         );
         if let Some(udid) = device.as_deref() {
             let mut row = doctor::lane_row(&mut runner, &home, udid);
-            if let Some(note) = build_roots().ok().and_then(|(lock_root, runs_root, _)| {
-                doctor::held_note(&lock_root, &runs_root, udid)
-            }) {
+            if let Some(note) = lock_root()
+                .ok()
+                .zip(runs_root().ok())
+                .and_then(|(lock_root, runs_root)| doctor::held_note(&lock_root, &runs_root, udid))
+            {
                 row.detail.push_str(&note);
             }
             report.checks.push(row);

@@ -147,7 +147,8 @@ stays usable, so you can look at the screen the plan stopped on. The receipt say
 retained, and `next_action` is `qaren cleanup <run-id> --json`. `qaren status <run-id>` shows the
 hold and live probes, and `qaren doctor --device <udid>` names the run holding that simulator. A hold
 ends with `qaren cleanup <run-id>` or when the next run on that device reclaims it. It never times
-out.
+out. The held Metro keeps its port, so a run on another simulator with the same `metroPort`
+refuses `METRO_PORT_OCCUPIED` and names the held run to clean up first.
 
 | Setting | Effect |
 | --- | --- |
@@ -157,7 +158,8 @@ out.
 | Neither | `check` holds, `pr` does not |
 
 Android never holds; `--hold` there adds the receipt note `hold unsupported on android`. A passing
-run, a cancelled run and other refusals tear down as before.
+run, a cancelled run and other refusals tear down as before. A held `pr` run cannot be published,
+even after cleanup; re-run `qaren pr` to publish.
 
 ## Time budgets
 

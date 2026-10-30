@@ -3024,7 +3024,8 @@ fn a_child_refusal_is_a_typed_refusal_with_the_child_code() {
         let mut req = request(&repo, &app, 30);
         req.device = Some(UDID.into());
         // An admitted target-class refusal would hold; this test pins the normal teardown.
-        req.hold = Some(false);
+        // Before admission the default policy must tear down on its own.
+        req.hold = admitted.then_some(false);
         let (receipt, events) = run_with_events(&mut mock, &req);
         let identity = &events.iter().find(|e| e["event"] == "run").unwrap()["payload"];
         assert_eq!(identity["harness"], "claude");
