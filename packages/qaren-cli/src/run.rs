@@ -643,6 +643,7 @@ fn run_inner(
         failure: None,
         history: Vec::new(),
         terminal: None,
+        build_lock: None,
     };
     if let Err(f) = record.save(&req.runs_root) {
         return Err(lease::release_or_annotate(&lease, f));
@@ -666,6 +667,7 @@ fn run_inner(
         manifest_warm: None,
         lane_owned: req.platform == Platform::Ios
             && (req.boot_device || req.restart_device || req.fresh_install),
+        build_deadline_ms: None,
     };
     // Returning a receipt prevents ? from escaping this resource-owning scope.
     let held = move |mut ctx: Ctx<'_>| -> Receipt {
@@ -839,7 +841,9 @@ fn run_inner(
                 return finish_failed(ctx, f);
             }
         }
-        if plan_decision.decision != BuildDecision::Reuse {
+        // iOS claims its build lock inside build_ios_locked, so the lock covers only the build.
+        let ios_build = plan_decision.decision != BuildDecision::Reuse && req.platform == Platform::Ios;
+        if plan_decision.decision != BuildDecision::Reuse && !ios_build {
             if let Err(f) = prepare::claim_build_lock(&mut ctx, &req.lock_root) {
                 return finish_failed(ctx, f);
             }
@@ -857,6 +861,17 @@ fn run_inner(
             events::stage("native_build", StageState::Skipped, None, None);
             events::stage("install_launch_ready", StageState::Running, None, None);
             if let Err(f) = prepare::run_reuse_path(&mut ctx, &plan_decision, t) {
+                return finish_failed(ctx, f);
+            }
+            events::stage("install_launch_ready", StageState::Passed, None, None);
+        } else if ios_build {
+            let built = match prepare::build_ios_locked(&mut ctx, &plan_decision, &req.lock_root) {
+                Ok(built) => built,
+                Err(f) => return finish_failed(ctx, f),
+            };
+            events::stage("install_launch_ready", StageState::Running, None, None);
+            let now = ctx.runner.now_epoch_ms();
+            if let Err(f) = prepare::run_reuse_path(&mut ctx, &built, now) {
                 return finish_failed(ctx, f);
             }
             events::stage("install_launch_ready", StageState::Passed, None, None);
@@ -883,7 +898,7 @@ fn run_inner(
             Ok(fp) => fp,
             Err(f) => return finish_failed(ctx, f),
         };
-        if plan_decision.decision != BuildDecision::Reuse {
+        if plan_decision.decision != BuildDecision::Reuse && !ios_build {
             if let Err(f) = prepare::record_build_result(&mut ctx, &fp) {
                 return finish_failed(ctx, f);
             }
