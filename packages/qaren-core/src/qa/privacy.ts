@@ -1048,6 +1048,12 @@ export class ObservedPrivacy {
     return matchPrivate(text, this.privateSet(), 'identifier').text;
   }
 
+  redactElementLabel(element: Element): string {
+    return this.codeElements.has(element) || isPossibleInput(element)
+      ? MASK
+      : this.redact(element.label ?? '');
+  }
+
   redact(text: string): string {
     return matchPrivate(text, this.privateSet(), 'durable').text;
   }

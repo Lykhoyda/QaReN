@@ -1,6 +1,6 @@
 import type { Target } from './plan.js';
-import type { Element, Kind, Screen } from './screen.js';
-import { ObservedPrivacy, MASK, isPossibleInput } from './privacy.js';
+import { semanticDisabled, type Element, type Kind, type Screen } from './screen.js';
+import { ObservedPrivacy, MASK } from './privacy.js';
 import { scrollUntilBand } from './resolve.js';
 import { isRecord } from './questions.js';
 
@@ -92,7 +92,7 @@ export function targetMissDiagnostic(
     }
     candidates.push({
       ...(identifier ? { identifier: display(identifier) } : {}),
-      ...(label ? { label: withheld || isPossibleInput(element) ? MASK : display(label) } : {}),
+      ...(label ? { label: withheld ? MASK : shown(privacy.redactElementLabel(element)) } : {}),
       match: direct ? 'exact' : contained ? 'inside-label' : 'near',
       aggregated:
         target.exact !== 'id' &&
@@ -160,7 +160,13 @@ export function screenNow(
   const withheld = privacy.textWithheld(screen) !== undefined;
   const all = screen.elements
     .slice(0, SCAN_LIMIT)
-    .filter((element) => CONTROL_KINDS.has(element.kind) && !element.ref.startsWith('react:'));
+    .filter(
+      (element) =>
+        !element.ref.startsWith('react:') &&
+        (CONTROL_KINDS.has(element.semantic?.nativePresence?.kind ?? element.kind) ||
+          element.semantic?.press === 'supported' ||
+          element.semantic?.fill === 'supported'),
+    );
   // The target's own matches lead, so the cap never hides them; counts disclose what the cap left out.
   const ordered = [
     ...all.filter((e) => names(target, e)),
@@ -188,17 +194,16 @@ export function screenNow(
         : {}),
       ...(element.label
         ? {
-            label:
-              withheld || isPossibleInput(element) ? MASK : shown(privacy.redact(element.label)),
+            label: withheld ? MASK : shown(privacy.redactElementLabel(element)),
           }
         : {}),
-      enabled: !element.disabled,
+      enabled: !semanticDisabled(element),
       hittable: element.hittable,
       offscreen: element.offscreen,
     })),
     counts: {
       controls: all.length,
-      enabled: all.filter((e) => !e.disabled).length,
+      enabled: all.filter((e) => !semanticDisabled(e)).length,
       hidden: all.filter((e) => e.offscreen).length,
     },
   };
@@ -222,7 +227,7 @@ export function missSuggestion(
       const matches = screen.elements.filter((e) => !e.offscreen && names(target, e));
       const state = !matches.length
         ? undefined
-        : matches.every((e) => e.disabled)
+        : matches.every(semanticDisabled)
           ? 'disabled'
           : matches.every((e) => !e.hittable)
             ? 'not hittable'

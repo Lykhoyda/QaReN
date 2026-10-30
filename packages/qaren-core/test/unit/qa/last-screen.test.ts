@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
-import { MASK } from '../../../dist/qa/privacy.js';
+import { MASK, ObservedPrivacy } from '../../../dist/qa/privacy.js';
+import { screenNow, targetMissDiagnostic } from '../../../dist/qa/target-miss.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import type { WalkerDeps } from '../../../dist/qa/walker.js';
 import type { Element, Screen } from '../../../dist/qa/screen.js';
@@ -157,4 +158,66 @@ test('a secret input value never appears in the screen, suggestion or ledger', a
   assert.equal(ledger.failure?.step, 2);
   assert.ok(ledger.failure?.screen?.controls.some((c) => c.id === MASK));
   assert.ok(!JSON.stringify(ledger).includes(value));
+});
+
+test('structurally protected code labels are masked in both failure projections', () => {
+  const privacy = new ObservedPrivacy();
+  privacy.didFill('ABCD');
+  for (const kind of ['button', 'cell'] as const) {
+    const observed = screen(
+      [...'ABCD'].map((label, i) =>
+        control(`@box${i}`, label, {
+          kind,
+          rect: { x: i * 48, y: 100, width: 32, height: 40 },
+        }),
+      ),
+    );
+    privacy.observe(observed);
+    assert.deepEqual(privacy.screenText(observed), ['[code]']);
+    const target = { phrase: 'A', quoted: 'A', exact: 'text' as const };
+    const now = screenNow(observed, target, 0, false, privacy);
+    assert.deepEqual(now.controls.map((c) => c.label), [MASK, MASK, MASK, MASK]);
+    const diagnostic = targetMissDiagnostic(target, observed, 1, false, privacy);
+    assert.equal(diagnostic.candidates[0].label, MASK);
+  }
+});
+
+test('semantic press and fill controls appear in the receipt and enabled advice', async () => {
+  for (const capability of ['press', 'fill'] as const) {
+    const observed = screen([
+      control('@continue', 'Continue', {
+        kind: 'other',
+        semantic: {
+          press: 'unsupported',
+          fill: 'unsupported',
+          visibility: 'visible',
+          [capability]: 'supported',
+        },
+      }),
+    ]);
+    const ledger = await runPlan(plan('1. Tap "Submit"\n'), deps([observed]));
+    assert.equal(ledger.failure?.screen?.controls[0].label, 'Continue');
+    assert.deepEqual(ledger.failure?.screen?.counts, { controls: 1, enabled: 1, hidden: 0 });
+    assert.match(ledger.failure!.suggestion!, /lists 1 enabled controls/);
+  }
+});
+
+test('semantic disabled and read-only controls are disabled in receipts and advice', async () => {
+  for (const capability of ['press', 'fill'] as const) {
+    const observed = screen([
+      control('@agree', 'Agree', {
+        semantic: {
+          press: 'unsupported',
+          fill: 'unsupported',
+          visibility: 'visible',
+          [capability]: 'supported',
+          disabled: true,
+        },
+      }),
+    ]);
+    const ledger = await runPlan(plan('1. Tap "Agree"\n'), deps([observed]));
+    assert.equal(ledger.failure?.screen?.controls[0].enabled, false);
+    assert.equal(ledger.failure?.screen?.counts.enabled, 0);
+    assert.match(ledger.failure!.suggestion!, /on screen and disabled/);
+  }
 });

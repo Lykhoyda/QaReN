@@ -2696,7 +2696,8 @@ fn repeat_of(runs_root: &Path, record: &RunRecord, failure: &Failure) -> Option<
         .take(REPEAT_SCAN)
         .filter_map(|id| RunRecord::load(runs_root, &id).ok())
         .filter(|previous| {
-            previous.candidate.app_id == record.candidate.app_id
+            previous.scenario.platform == record.scenario.platform
+                && previous.candidate.app_id == record.candidate.app_id
                 && previous.candidate.git_sha == record.candidate.git_sha
                 && previous.candidate.worktree_fingerprint == record.candidate.worktree_fingerprint
                 && previous.plan_sha256.as_deref() == Some(plan)
@@ -3116,6 +3117,19 @@ mod last_screen_tests {
         assert_eq!(repeat.count, 1);
         assert!(repeat_note(&failure, &repeat)
             .starts_with("same failure, plan unchanged: run check-20261030T081500Z"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_different_platform_is_no_repeat() {
+        let root = runs_root("repeat-platform");
+        save_failed(&root, "check-20261030T081500Z", "abc");
+        let mut current = record("check-20261030T082000Z", "abc");
+        current.scenario.platform = Platform::Android;
+        let failure = plan_step_failure(Some(&ledger_failure(screen())));
+        assert!(repeat_of(&root, &current, &failure).is_none());
+        current.scenario.platform = Platform::Ios;
+        assert!(repeat_of(&root, &current, &failure).is_some());
         let _ = std::fs::remove_dir_all(root);
     }
 
