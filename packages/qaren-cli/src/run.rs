@@ -1279,20 +1279,26 @@ fn run_inner(
             ctx.notes
                 .push(("media_withheld".to_string(), entry.receipt_note()));
         }
-        let (mut result, failure) = match &outcome.verdict {
+        let boundary = |core: &dyn Fn() -> Failure| {
+            walk_failure(
+                outcome.failure.clone(),
+                core,
+                outcome.ledger.failure.as_ref(),
+                &ctx.runs_root,
+                &ctx.record,
+            )
+        };
+        let (mut result, mut failure) = match &outcome.verdict {
             Verdict::Pass => (ReceiptResult::Pass, None),
             Verdict::Fail => (
                 ReceiptResult::Fail,
-                Some(
-                    outcome
-                        .failure
-                        .clone()
-                        .unwrap_or_else(|| plan_step_failure(outcome.ledger.failure.as_ref())),
-                ),
+                Some(boundary(&|| {
+                    plan_step_failure(outcome.ledger.failure.as_ref())
+                })),
             ),
             Verdict::Refused { code, message } => (
                 ReceiptResult::Refused,
-                Some(outcome.failure.clone().unwrap_or_else(|| {
+                Some(boundary(&|| {
                     Failure::new(
                         "prove",
                         refusal_code(code),
@@ -1302,14 +1308,6 @@ fn run_inner(
                 })),
             ),
         };
-        let mut failure = failure.map(|failure| {
-            walk_failure(
-                failure,
-                outcome.ledger.failure.as_ref(),
-                &ctx.runs_root,
-                &ctx.record,
-            )
-        });
         let mut tested_older_commit = None;
         let mut published_video = None;
         if let Some(pr) = &pr_state {
@@ -2647,11 +2645,17 @@ fn plan_step_failure(ledger: Option<&core::LedgerFailure>) -> Failure {
 
 // Forward target diagnostics while preserving the failure code and matching repeats.
 fn walk_failure(
-    mut failure: Failure,
+    cli: Option<Failure>,
+    core: &dyn Fn() -> Failure,
     ledger: Option<&core::LedgerFailure>,
     runs_root: &Path,
     record: &RunRecord,
 ) -> Failure {
+    // A CLI-owned cause (deadline, cancellation, candidate drift) supersedes the walk and keeps its own guidance.
+    let (mut failure, ledger) = match cli {
+        Some(failure) => (failure, None),
+        None => (core(), ledger),
+    };
     if let Some(seen) = ledger.filter(|seen| {
         seen.screen.is_some() || seen.suggestion.is_some() || seen.subreason.is_some()
     }) {
@@ -3069,7 +3073,8 @@ mod last_screen_tests {
     fn step_failure(seen: &core::LedgerFailure) -> Failure {
         let record = record("check-20261030T090000Z", "abc");
         walk_failure(
-            plan_step_failure(Some(seen)),
+            None,
+            &|| plan_step_failure(Some(seen)),
             Some(seen),
             Path::new("/nonexistent-qaren-runs"),
             &record,
@@ -3149,7 +3154,7 @@ mod last_screen_tests {
             )
         };
         let mut first = record("check-20261030T081500Z", "abc");
-        let failure = walk_failure(refusal(), Some(&seen), &root, &first);
+        let failure = walk_failure(None, &refusal, Some(&seen), &root, &first);
         assert_eq!(failure.code, FailureCode::BlockStartMissing);
         assert_eq!(failure.subreason.as_deref(), Some("absent"));
         assert!(failure.screen.is_some());
@@ -3158,7 +3163,8 @@ mod last_screen_tests {
         first.failure = Some(failure);
         first.save(&root).unwrap();
         let again = walk_failure(
-            refusal(),
+            None,
+            &refusal,
             Some(&seen),
             &root,
             &record("check-20261030T082000Z", "abc"),
@@ -3172,6 +3178,29 @@ mod last_screen_tests {
             .next_action
             .starts_with("same failure, plan unchanged: run check-20261030T081500Z"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_cli_owned_failure_keeps_its_own_guidance_over_the_step_suggestion() {
+        let drift = Failure::new(
+            "verify",
+            FailureCode::CandidateDrifted,
+            "the candidate changed during the walk",
+            "re-run the check against an unchanged candidate",
+        );
+        let failure = walk_failure(
+            Some(drift),
+            &|| unreachable!("a CLI-owned failure supersedes the walk verdict"),
+            Some(&ledger_failure(screen())),
+            Path::new("/nonexistent-qaren-runs"),
+            &record("check-20261030T090000Z", "abc"),
+        );
+        assert_eq!(failure.code, FailureCode::CandidateDrifted);
+        assert_eq!(
+            failure.next_action.as_str(),
+            "re-run the check against an unchanged candidate"
+        );
+        assert!(failure.screen.is_none() && failure.suggestion.is_none());
     }
 
     #[test]
