@@ -9605,6 +9605,8 @@ fn unsafe_native_root_fails_check_and_releases_the_existing_device_lease() {
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(common::IOS_NATIVE_FILES));
+    common::script_xcode(&mut mock);
     let receipt = run(&mut mock, &req);
     assert_eq!(
         receipt.result,
