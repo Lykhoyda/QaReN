@@ -366,7 +366,11 @@ impl Runner for DeadlineRunner<'_> {
     fn env_names(&self) -> Vec<String> {
         self.inner.env_names()
     }
+    // Non-interruptible commands are teardown and identity reads (CleanupRunner): an expired window must never block them.
     fn execute(&mut self, spec: &CmdSpec, interruptible: bool) -> CmdOutput {
+        if !interruptible {
+            return self.inner.execute(spec, false);
+        }
         match self.capped(spec) {
             Some(spec) => self.inner.execute(&spec, interruptible),
             None => Self::expired(),
@@ -378,6 +382,9 @@ impl Runner for DeadlineRunner<'_> {
         input: &[u8],
         interruptible: bool,
     ) -> PrivateOutput {
+        if !interruptible {
+            return self.inner.execute_private(spec, input, false);
+        }
         match self.capped(spec) {
             Some(spec) => self.inner.execute_private(&spec, input, interruptible),
             None => PrivateOutput(Self::expired()),
@@ -1364,6 +1371,35 @@ mod deadline_tests {
         assert!(runner.spawn_piped(&spec, Path::new("unused")).is_err());
         assert_eq!(inner.calls.len(), 4);
         assert!(inner.calls.iter().all(|spec| spec.timeout_seconds == 1));
+        assert_eq!(inner.remaining(), 0);
+    }
+
+    #[test]
+    fn an_expired_build_window_never_blocks_build_teardown() {
+        let mut inner = MockRunner::new();
+        inner.expect_run("ps -A", CmdOutput::success("1 1 S\n5000 5000 S\n"));
+        inner.expect_run("/bin/kill -TERM -- -5000", CmdOutput::success(""));
+        let deadline_ms = inner.monotonic_ms();
+        let mut runner = DeadlineRunner {
+            inner: &mut inner,
+            deadline_ms,
+        };
+        assert!(
+            runner
+                .run(&CmdSpec::new("productive", "must-not-start", &[], 60))
+                .timed_out
+        );
+        let mut cleanup = CleanupRunner(&mut runner);
+        let inventory = cleanup.run(&CmdSpec::new("ps-groups", "ps", &["-A"], 10));
+        let kill = cleanup.run(&CmdSpec::new(
+            "kill-group",
+            "/bin/kill",
+            &["-TERM", "--", "-5000"],
+            10,
+        ));
+        assert!(inventory.ok() && kill.ok());
+        assert_eq!(inner.calls.len(), 2);
+        assert!(inner.calls.iter().all(|spec| spec.timeout_seconds == 10));
         assert_eq!(inner.remaining(), 0);
     }
 }
