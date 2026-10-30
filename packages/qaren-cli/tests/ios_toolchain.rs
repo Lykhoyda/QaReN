@@ -356,3 +356,23 @@ fn incomplete_interface_observations_never_supply_missing_version_proof() {
         Some("toolchain-newer-than-prebuilt")
     );
 }
+
+#[test]
+fn expo_interface_failure_classification_does_not_depend_on_surrounding_log_size() {
+    let padding = "unrelated build output\n".repeat(450_000);
+    for diagnostic in [
+        include_str!("fixtures/ios-toolchain-mismatch.txt"),
+        "ExpoModulesJSI.swiftinterface: error: cannot find type '__ObjC::expo'\n",
+    ] {
+        let expected = classify_failure(diagnostic, None).unwrap();
+        for log in [
+            format!("{diagnostic}{padding}"),
+            format!("{padding}{diagnostic}{padding}"),
+            format!("{padding}{diagnostic}"),
+        ] {
+            assert!(log.len() > 8 * 1024 * 1024);
+            assert_eq!(classify_failure(&log, None), Some(expected.clone()));
+        }
+    }
+    assert!(classify_failure(&padding, None).is_none());
+}

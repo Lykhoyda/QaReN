@@ -200,9 +200,6 @@ impl InterfaceFailure {
 }
 
 pub fn classify_failure(log: &str, observation: Option<&Observation>) -> Option<InterfaceFailure> {
-    if log.len() > 8 * 1024 * 1024 {
-        return None;
-    }
     for line in log.lines() {
         let Some((before_error, _)) = line.split_once("error:") else {
             continue;
