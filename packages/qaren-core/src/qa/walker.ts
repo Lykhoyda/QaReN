@@ -2844,7 +2844,10 @@ async function walkBlockScoped(
             captureOnce(item, false, false, before.platformPresence ? 'provenance' : 'resolve');
           let after: Observation;
           let selectionProven = false;
+          let selectionExited = false;
           if (selectionTarget && !(!act!.ok && act!.mutation === 'none')) {
+            const targetPresent = (screen: Screen): boolean =>
+              screen.elements.some((candidate) => sameIdentity(candidate, selectionTarget!));
             const boundTarget = (screen: Screen): Element | undefined => {
               const matches = screen.elements.filter((candidate) =>
                 sameIdentity(candidate, selectionTarget!),
@@ -2880,10 +2883,14 @@ async function walkBlockScoped(
             };
             try {
               deps.pressReadback?.(evidence());
-              observed = await readback();
+              observed = await withDeadline(
+                performance.now() + Math.max(0, selectionDeadline - deps.now()),
+                new EvidenceExpired(true),
+                readback,
+              );
               usable(observed, item, selectionDeadline);
               current = boundTarget(observed.screen);
-              if (!act!.proven && current?.selected !== true) {
+              if (!act!.proven && targetPresent(observed.screen) && current?.selected !== true) {
                 deps.pressReadback?.(evidence());
                 observed = await withDeadline(
                   performance.now() + Math.max(0, selectionDeadline - deps.now()),
@@ -2912,7 +2919,8 @@ async function walkBlockScoped(
               if (error instanceof QaDispatchError) return refusePress(error.code, error.message);
               throw error;
             }
-            if (!act!.proven && current?.selected !== true) {
+            selectionExited = !targetPresent(observed.screen);
+            if (!selectionExited && !act!.proven && current?.selected !== true) {
               return refusePress(
                 'PRESS_NOT_REGISTERED',
                 evidence().outsideTargetChange
@@ -2929,7 +2937,7 @@ async function walkBlockScoped(
           }
           // A capture delta cannot stand in for bound selection on these controls.
           let changed =
-            selectionTarget && !(!act!.ok && act!.mutation === 'none')
+            selectionTarget && !selectionExited && !(!act!.ok && act!.mutation === 'none')
               ? selectionProven
               : screenSignature(after.screen) !== screenSignature(before.screen);
           const afterTarget = element && after.screen.elements.find((e) => e.ref === element!.ref);

@@ -34,7 +34,8 @@ export function selectionPressCandidate(element: Element, screen: Screen): boole
     return false;
   const container = nearestScroll(element);
   const target = frame(element);
-  if (!container || !target) return false;
+  const row = container && frame(container);
+  if (!row || !target || row.height > 3 * target.height) return false;
   return screen.elements.some((peer) => {
     if (
       peer === element ||

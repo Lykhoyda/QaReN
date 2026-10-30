@@ -735,11 +735,16 @@ same-label owning ancestor in the retained snapshot contains the label and the
 live frame equals that owner's frame; the tap goes to the unchanged point. A later
 screen change cannot turn a proven no-mutation refusal into a passing action.
 For an iOS native-backed button not reported selected, inside a scroll container
-with a visible enabled button beside it on the same row, QaReN requires the same
-reference and identity to report selected after the press. The walker also accepts
+no taller than three times the target's height and with a visible enabled button
+beside it on the same row, QaReN requires the same reference and identity to report
+selected after the press while that identity remains on screen. If no element
+with that identity remains after the tap, the existing screen-change contract
+applies, allowing navigation or replacement to pass. The walker also accepts
 authoritative effect proof, but the current iOS press adapter does not supply it;
 selection readback is the supported evidence for these controls. It takes one immediate read-only re-capture for delayed selection
-within the item deadline. An unrelated screen change or pixel highlight cannot
+within the pre-tap observation's remaining lifetime: the earlier of 10 seconds
+after that capture completes and 32 seconds after it starts. Neither readback
+renews this window. An unrelated screen change or pixel highlight cannot
 pass this candidate. Otherwise it refuses `PRESS_NOT_REGISTERED` (exit 4), with
 closed `pressEvidence` describing identity/selection uncertainty, outside-target
 semantic change, one or two capture attempts, and `heldPress: not_tried_unsafe`.
@@ -756,9 +761,14 @@ The fixed next action is
 recovery ladder skips held press as unsafe and app/Metro/runner restart, device
 restart, native rebuild, and cleanup/fresh prepare as unable to verify the
 selection contract. A capture fault instead makes those later recovery options
-available, restricted to owned resources and explicit approval for state loss;
-no recovery action runs automatically. Deadline or cancellation asks for a rerun
-when ready. Controls outside this heuristic keep the existing press contract;
+available, restricted to owned resources and explicit approval for state loss,
+with `reprepare_after_capture_recovery` as the next action. The walker has exited,
+so no receipt offers another read within that walk's observation window.
+No recovery action runs automatically. Deadline or cancellation returns
+`rerun_when_ready`. If teardown retains resources, the receipt's top-level
+`qaren cleanup <run> --json` action takes precedence: it releases owned resources
+without performing the ladder's cleanup-and-fresh-prepare rung.
+Controls outside this heuristic keep the existing press contract;
 unselected controls outside it remain a verification gap.
 
 Outside that candidate, an unproven press passes when the screen changes. That comparison includes each

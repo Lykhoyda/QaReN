@@ -347,8 +347,6 @@ pub struct PressRecovery {
 pub enum PressRecoveryAction {
     AskAppTeamDisableHorizontalListScrollingOrExposeSelection,
     ReprepareAfterCaptureRecovery,
-    RetryCaptureWithinBudget,
-    ReadOnlyRecapture,
     RerunWhenReady,
     HeldPress,
     RestartAppMetroRunner,
@@ -371,7 +369,6 @@ pub enum PressRecoveryReason {
     AppSelectionContractUnchanged,
     CaptureRecoveryOwnResourcesOnly,
     ReadbackExhausted,
-    ReadbackRemaining,
     Cancelled,
     NotApplicable,
 }
@@ -387,17 +384,14 @@ pub struct PressRecoveryRung {
 }
 
 impl Failure {
-    pub fn with_press_recovery(mut self, code: &str, captures: u8) -> Self {
+    pub fn with_press_recovery(mut self, code: &str) -> Self {
         use PressRecoveryAction::*;
         use PressRecoveryReason::*;
         use PressRecoveryStatus::*;
         let capture = code == "NATIVE_CAPTURE_UNAVAILABLE";
         let selection = code == "PRESS_NOT_REGISTERED";
-        let read_remains = capture && captures == 1;
         let action = if selection {
             AskAppTeamDisableHorizontalListScrollingOrExposeSelection
-        } else if read_remains {
-            RetryCaptureWithinBudget
         } else if capture {
             ReprepareAfterCaptureRecovery
         } else {
@@ -408,20 +402,13 @@ impl Failure {
                 "ask_app_team_disable_horizontal_list_scrolling_or_expose_selection"
             }
             ReprepareAfterCaptureRecovery => "reprepare_after_capture_recovery",
-            RetryCaptureWithinBudget => "retry_capture_within_budget",
             _ => "rerun_when_ready",
         });
         self.recovery = Some(Box::new(FailureRecovery::Press(PressRecovery {
-            next_rung: if read_remains {
-                Some(1)
-            } else if capture {
-                Some(2)
-            } else {
-                None
-            },
+            next_rung: if capture { Some(2) } else { None },
             action,
-            destroys_state: capture && !read_remains,
-            requires_user_ok: capture && !read_remains,
+            destroys_state: capture,
+            requires_user_ok: capture,
             ladder: [
                 HeldPress,
                 RestartAppMetroRunner,
@@ -433,20 +420,14 @@ impl Failure {
             .enumerate()
             .map(|(index, action)| PressRecoveryRung {
                 rung: index as u8 + 1,
-                action: if read_remains && index == 0 {
-                    ReadOnlyRecapture
-                } else {
-                    action
-                },
-                status: if capture && (index > 0 || read_remains) {
+                action,
+                status: if capture && index > 0 {
                     Available
                 } else {
                     Skipped
                 },
                 reason: if index == 0 {
-                    if read_remains {
-                        ReadbackRemaining
-                    } else if selection || capture {
+                    if selection || capture {
                         RetrySafeSemanticsUnavailable
                     } else if code == "RUN_CANCELLED" {
                         Cancelled

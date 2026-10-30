@@ -475,7 +475,7 @@ fn press_failure_recovery_round_trips_without_build_metadata() {
         "unverified",
         "read",
     )
-    .with_press_recovery("PRESS_NOT_REGISTERED", 2);
+    .with_press_recovery("PRESS_NOT_REGISTERED");
     let value = serde_json::to_value(&failure).unwrap();
     assert_eq!(
         value["recovery"]["action"],

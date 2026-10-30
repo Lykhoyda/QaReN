@@ -252,12 +252,51 @@ test('the authoritative-effect contract seam accepts proof when its target disap
   assert.equal(presses(f), 1);
 });
 
-for (const change of ['missing', 'reused-ref', 'new-ref', 'ambiguous']) {
-  test(`${change} cannot stand in for the bound target`, async () => {
-    const after = rowChips(true, true);
+for (const change of ['missing', 'reused-ref']) {
+  test(`${change} exits selection proof when the target identity is gone`, async () => {
+    const after = rowChips(false, true);
     const target = after.elements.find((e) => e.ref === '@chip')!;
     if (change === 'missing') after.elements = after.elements.filter((e) => e !== target);
     if (change === 'reused-ref') target.testID = 'replacement';
+    const f = rowFake([rowChips(), after]);
+    const outcome = await walkBlock(rowTap, f.deps);
+    assert.equal(outcome.block.outcome, 'pass');
+    assert.equal(outcome.pressEvidence, undefined);
+    assert.equal(presses(f), 1);
+    assert.equal(f.calls.filter((call) => call === 'capture').length, 2);
+  });
+}
+
+for (const effect of ['navigation', 'validation']) {
+  test(`a Save button in a vertical form passes on ${effect} with one tap`, async () => {
+    const form = (outside = false) => {
+      const screen = rowChips(false, outside);
+      const container = screen.elements.find((e) => e.ref === '@list')!;
+      elementFrame(container)!.height = 600;
+      const save = screen.elements.find((e) => e.ref === '@chip')!;
+      save.label = 'Save';
+      const cancel = screen.elements.find((e) => e.ref === '@peer')!;
+      cancel.label = 'Cancel';
+      return screen;
+    };
+    const before = form();
+    assert.equal(
+      selectionPressCandidate(before.elements.find((e) => e.ref === '@chip')!, before),
+      false,
+    );
+    const f = rowFake([before, effect === 'navigation' ? chips(undefined) : form(true)]);
+    const outcome = await walkBlock(rowTap, f.deps);
+    assert.equal(outcome.block.outcome, 'pass');
+    assert.equal(outcome.pressEvidence, undefined);
+    assert.equal(presses(f), 1);
+    assert.equal(f.calls.filter((call) => call === 'capture').length, 2);
+  });
+}
+
+for (const change of ['new-ref', 'ambiguous']) {
+  test(`${change} cannot stand in for the bound target`, async () => {
+    const after = rowChips(true, true);
+    const target = after.elements.find((e) => e.ref === '@chip')!;
     if (change === 'new-ref') target.ref = '@new';
     if (change === 'ambiguous') after.elements.push({ ...target, ref: '@duplicate' });
     const f = rowFake([rowChips(), after]);
@@ -304,6 +343,8 @@ test('candidate classification requires a visible enabled horizontal peer and fi
     'vertical',
     'overlap',
     'bad-frame',
+    'tall-container',
+    'bad-container-frame',
     'selected',
     'react',
   ]) {
@@ -317,10 +358,22 @@ test('candidate classification requires a visible enabled horizontal peer and fi
     if (missing === 'vertical') elementFrame(peer)!.y += 100;
     if (missing === 'overlap') elementFrame(peer)!.x = 30;
     if (missing === 'bad-frame') elementFrame(target)!.width = NaN;
+    if (missing === 'tall-container')
+      elementFrame(screen.elements.find((e) => e.ref === '@list')!)!.height = 133;
+    if (missing === 'bad-container-frame')
+      elementFrame(screen.elements.find((e) => e.ref === '@list')!)!.height = NaN;
     if (missing === 'selected') target.selected = true;
     if (missing === 'react') target.ref = 'react:chip';
     assert.equal(selectionPressCandidate(target, screen), false, missing);
   }
+});
+
+test('a scroll container exactly three target heights tall is a candidate', () => {
+  const screen = rowChips();
+  const target = screen.elements.find((e) => e.ref === '@chip')!;
+  const container = screen.elements.find((e) => e.ref === '@list')!;
+  elementFrame(container)!.height = 3 * elementFrame(target)!.height;
+  assert.equal(selectionPressCandidate(target, screen), true);
 });
 
 test('non-iOS row buttons retain the screen change contract', async () => {
@@ -436,6 +489,59 @@ test('a stalled recapture is interrupted by the pinned deadline timer', async ()
   assert.equal(outcome.refusal?.code, 'ITEM_DEADLINE_EXCEEDED');
   assert.equal(outcome.pressEvidence?.captures, 2);
   assert.equal(presses(f), 1);
+});
+
+test('a stalled first readback is interrupted by the pinned deadline timer', async () => {
+  const f = rowFake([rowChips()]);
+  let clock = 0;
+  let count = 0;
+  f.deps.now = () => clock;
+  const press = f.deps.press;
+  f.deps.press = async (...args) => {
+    const result = await press(...args);
+    clock = 9_980;
+    return result;
+  };
+  f.deps.captureScreen = async () => {
+    if (++count === 2) return new Promise<Screen>(() => {});
+    return rowChips();
+  };
+  const outcome = await walkBlock(rowTap, f.deps);
+  assert.equal(outcome.refusal?.code, 'ITEM_DEADLINE_EXCEEDED');
+  assert.equal(outcome.pressEvidence?.captures, 1);
+  assert.equal(presses(f), 1);
+  assert.equal(count, 2);
+});
+
+test('an uncertain failed tap cannot pass on an outside change or be retried', async () => {
+  const f = rowFake(
+    [rowChips(), rowChips(false, true)],
+    [{ ok: false, proven: false, mutation: 'possible', error: 'RUNNER_TIMEOUT' }],
+  );
+  const outcome = await walkBlock(rowTap, f.deps);
+  assert.equal(outcome.refusal?.code, 'PRESS_NOT_REGISTERED');
+  assert.equal(outcome.pressEvidence?.captures, 2);
+  assert.equal(outcome.pressEvidence?.outsideTargetChange, true);
+  assert.equal(presses(f), 1);
+});
+
+test('a first-readback capture fault keeps its code and closed one-capture evidence', async () => {
+  const f = rowFake([rowChips()]);
+  let count = 0;
+  f.deps.captureScreen = async () => {
+    if (++count === 2) throw new NativeCaptureError();
+    return rowChips();
+  };
+  const outcome = await walkBlock(rowTap, f.deps);
+  assert.equal(outcome.refusal?.code, 'NATIVE_CAPTURE_UNAVAILABLE');
+  assert.deepEqual(outcome.pressEvidence, {
+    subreason: 'target_identity_unavailable',
+    heldPress: 'not_tried_unsafe',
+    outsideTargetChange: false,
+    captures: 1,
+  });
+  assert.equal(presses(f), 1);
+  assert.equal(count, 2);
 });
 
 test('proven no-mutation refusals retain their existing outcome without selection evidence', async () => {

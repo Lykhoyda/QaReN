@@ -10053,19 +10053,22 @@ fn unverified_selection_receipts_keep_evidence_guidance_and_ordered_recovery() {
 }
 
 #[test]
-fn first_capture_fault_prefers_read_only_recovery_when_a_read_remains() {
+fn first_capture_fault_requires_reprepare_after_the_walk_has_exited() {
     let (repo, app) = app_repo();
     let mut mock = MockRunner::new();
     let ledger = serde_json::json!({"verdict":"REFUSED","code":"NATIVE_CAPTURE_UNAVAILABLE","message":"Native capture unavailable.","pressEvidence":{"subreason":"target_identity_unavailable","heldPress":"not_tried_unsafe","outsideTargetChange":false,"captures":1}});
     script_recipe_walk(&mut mock, &repo, &ledger.to_string(), 4);
     let receipt = run(&mut mock, &request(&repo, &app, 30));
     let failure = receipt.failure.as_ref().unwrap();
-    assert_eq!(failure.next_action.as_str(), "retry_capture_within_budget");
+    assert_eq!(
+        failure.next_action.as_str(),
+        "reprepare_after_capture_recovery"
+    );
     let recovery = serde_json::to_value(failure).unwrap()["recovery"].clone();
-    assert_eq!(recovery["next_rung"], 1);
-    assert_eq!(recovery["destroys_state"], false);
-    assert_eq!(recovery["requires_user_ok"], false);
-    assert_eq!(recovery["ladder"][0]["action"], "read_only_recapture");
-    assert_eq!(recovery["ladder"][0]["status"], "available");
+    assert_eq!(recovery["next_rung"], 2);
+    assert_eq!(recovery["destroys_state"], true);
+    assert_eq!(recovery["requires_user_ok"], true);
+    assert_eq!(recovery["ladder"][0]["action"], "held_press");
+    assert_eq!(recovery["ladder"][0]["status"], "skipped");
     assert_eq!(mock.remaining(), 0);
 }
