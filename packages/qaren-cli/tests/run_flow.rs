@@ -3056,6 +3056,61 @@ fn a_child_refusal_is_a_typed_refusal_with_the_child_code() {
 }
 
 #[test]
+fn every_core_refusal_code_ends_through_teardown() {
+    for (code, expected) in [
+        ("METRO_ORIGIN_MISMATCH", FailureCode::MetroOriginMismatch),
+        ("PLAN_INPUT_MISSING", FailureCode::PlanInputMissing),
+        ("PLAN_UNPARSEABLE", FailureCode::PlanUnparseable),
+        ("BLOCK_START_MISSING", FailureCode::BlockStartMissing),
+        ("LANE_NOT_WARM", FailureCode::LaneNotWarm),
+        ("JEV_AUTH_FAILED", FailureCode::JevAuthFailed),
+        ("JEV_REQUEST_INVALID", FailureCode::JevRequestInvalid),
+        ("JEV_UNREACHABLE", FailureCode::JevUnreachable),
+        ("RUN_CANCELLED", FailureCode::RunCancelled),
+        ("OTHER", FailureCode::CoreRefused),
+    ] {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        script_preflight(&mut mock, &repo);
+        script_provision(&mut mock);
+        script_drift_status(&mut mock);
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        let refusal = serde_json::json!({
+            "verdict": "REFUSED", "code": code, "message": "walk refused"
+        });
+        let stdout = format!(
+            "{}\n{}\n",
+            envelope(2, "admitted", "{}"),
+            envelope(3, "result", &refusal.to_string())
+        );
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(4));
+        script_core_identity(&mut mock);
+        script_teardown(&mut mock);
+
+        let (receipt, events) = run_with_events(&mut mock, &request(&repo, &app, 30));
+        assert_eq!(receipt.result, ReceiptResult::Refused, "{code}");
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(failure.code, expected, "{code}");
+        assert_eq!(failure.detail, format!("{code}: walk refused"), "{code}");
+        assert_eq!(receipt.cleanup["device_lease"], "removed", "{code}");
+        let cleanup = events
+            .iter()
+            .position(|event| {
+                event["event"] == "stage"
+                    && event["payload"]["name"] == "cleanup"
+                    && event["payload"]["state"] == "passed"
+            })
+            .unwrap_or_else(|| panic!("{code}: no completed cleanup stage"));
+        let end = events
+            .iter()
+            .position(|event| event["event"] == "end")
+            .unwrap();
+        assert!(cleanup < end, "{code}");
+        assert_eq!(mock.remaining(), 0, "{code}");
+    }
+}
+
+#[test]
 fn an_unresolved_metro_group_retains_the_device_lease_for_cleanup() {
     let (repo, app) = app_repo();
     let mut mock = MockRunner::new();
