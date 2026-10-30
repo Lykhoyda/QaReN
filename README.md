@@ -194,8 +194,9 @@ qaren publish <run-id> --json
 
 `qaren publish` needs an authenticated `gh`. Read
 [Test a pull request](packages/qaren-cli/README.md#test-a-pull-request) before running
-it: it comments on the pull request, can push saved blocks to its branch and can remove the
-`needs-qa` label, and its redaction does not make private material safe to post.
+it: it comments on the pull request, can update its description when opted in, can push saved
+blocks to its branch and can remove the `needs-qa` label, and its redaction does not make
+private material safe to post.
 
 Run `qaren doctor` to diagnose the host, the install and rn-dev-agent 1.x leftovers; see
 [Doctor](packages/qaren-cli/README.md#doctor). A source
