@@ -27,19 +27,9 @@ Refusals exit `4` and mean the run could not start or could not decide; failures
 
 ## Devices
 
-For `BUILD_FAILED` with `cause=toolchain-newer-than-prebuilt`, the selected Swift
-compiler is newer than the compiler for a failing Expo interface. Follow the
-receipt's `next_action`: select source-built modules with
-`EXPO_USE_PRECOMPILED_MODULES=0` at pod installation, use compatible Expo patch
-versions, or select a compatible installed Xcode with `DEVELOPER_DIR`. Obtain
-approval before native regeneration and preserve tracked source. After a recovery
-prepare is Ready, finish its cleanup before retrying the original QA command with
-the same environment. Restarting a device or deleting cache cannot repair this cause.
-
-For a doctor `native-cache-root` warning, remount the
-configured volume or explicitly set `QAREN_NATIVE_CACHE_ROOT` to a mounted private
-absolute directory, then re-run `qaren doctor --json` and the original command.
-See the [native build contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#native-fingerprint-build-selection).
+For `BUILD_FAILED` with `cause=toolchain-newer-than-prebuilt` or a doctor
+`native-cache-root` warning, follow the receipt or doctor's next action and the
+[native build recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#native-fingerprint-build-selection).
 
 For `FRESH_INSTALL_ADMISSION_UNKNOWN` or a strict-admission `DEVICE_BUSY`, read the
 probe diagnostics in `failure.detail`; see the authoritative
