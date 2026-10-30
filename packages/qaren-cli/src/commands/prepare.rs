@@ -191,6 +191,18 @@ pub(crate) fn finish_receipt(ctx: Ctx, result: ReceiptResult, failure: Option<Fa
     for (name, value) in &ctx.notes {
         receipt.outcomes.insert(name.clone(), value.clone());
     }
+    receipt.held = ctx.record.held.clone();
+    let failure = failure.map(|mut failure| {
+        if let Some(held) = &receipt.held {
+            let run_id = &ctx.record.run_id;
+            failure.next_action = crate::redact::OutputText::from_output(&format!(
+                "{}; {} were retained at the last observed screen: look, run qaren status {run_id} for live probes, then qaren cleanup {run_id} --json",
+                failure.next_action,
+                held.retained.join(", ")
+            ));
+        }
+        failure
+    });
     receipt.failure = failure;
     receipt.next_action = next_action;
     receipt.commands_executed = ctx.runner.commands_executed();
@@ -535,6 +547,7 @@ fn prepare_validated(
         failure: None,
         history: Vec::new(),
         terminal: None,
+        held: None,
     };
     if let Err(f) = record.save(&args.runs_root) {
         return Err(match &record.resources.lease {

@@ -207,6 +207,7 @@ pub fn base_record(
         failure: None,
         history: Vec::new(),
         terminal: None,
+        held: None,
     }
 }
 

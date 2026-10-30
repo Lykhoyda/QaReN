@@ -553,6 +553,16 @@ pub struct RunRecord {
     pub history: Vec<HistoryEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal: Option<TerminalResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<Held>,
+}
+
+// A failed walk's resources kept in the reached state until qaren cleanup or a reclaim by the next run on the device.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Held {
+    pub since: String,
+    pub reason: String,
+    pub retained: Vec<String>,
 }
 
 // Written once, after video finalization and teardown; publication trusts nothing else.

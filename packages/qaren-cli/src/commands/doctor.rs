@@ -407,6 +407,30 @@ fn ios_runtimes(runner: &mut dyn Runner, configured: Option<&str>) -> Check {
     }
 }
 
+// Read only: names a failed run that keeps this simulator's lease for inspection.
+pub fn held_note(lock_root: &Path, runs_root: &Path, udid: &str) -> Option<String> {
+    let name = crate::lease::lock_name(crate::scenario::Platform::Ios, udid);
+    let holder = crate::buildplan::read_holder(&crate::buildplan::lock_dir(lock_root, &name))?;
+    // The lock root can be shared across QaReN homes; the record lives in the holder's.
+    let holder_runs = holder
+        .qaren_home
+        .clone()
+        .or_else(|| holder.home.as_ref().map(|home| home.join(".qaren")))
+        .map(|qaren_home| qaren_home.join("runs"));
+    let runs_root = holder_runs.as_deref().unwrap_or(runs_root);
+    let record = crate::runrecord::RunRecord::load(runs_root, &holder.run_id).ok()?;
+    let held = record
+        .held
+        .filter(|_| record.phase == crate::runrecord::Phase::Walking)?;
+    Some(format!(
+        " ({} since {}, run {}; {} releases it)",
+        held.reason,
+        held.since,
+        holder.run_id,
+        crate::lease::cleanup_command(&holder.run_id, &holder)
+    ))
+}
+
 // Read only: the named simulator's locale and keyboard against the pinned lane; nothing is written.
 pub fn lane_row(runner: &mut dyn Runner, home: &Path, udid: &str) -> Check {
     let exports: Vec<Option<String>> = ios::lane_read_specs(udid)

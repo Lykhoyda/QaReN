@@ -3,7 +3,8 @@
 `qaren check` owns a QA run against the current app worktree: it leases a
 borrowed iOS simulator or Android emulator, prepares the app and Metro,
 starts the TypeScript screen child, walks a Markdown plan, writes evidence,
-and tears down owned resources.
+and tears down owned resources (by default a failed iOS walk holds Metro and the lease
+for inspection until `qaren cleanup`; see [iOS admission and cleanup](#ios-admission-and-cleanup)).
 This file is the CLI reference; the product introduction and the agent path are in the [root README](../../README.md).
 The scenario-based preparation verbs remain available for explicit iOS,
 NUC Android and USB Android setup experiments.
@@ -2411,6 +2412,24 @@ another process is not checked, since a reused pid proves its old group is gone.
 `run.json` releases that run's locks under the same proof, and the receipt of a run
 that released an orphaned lock notes it.
 Do not delete locks to bypass unresolved ownership.
+
+A failed iOS walk is held for inspection. After the app was admitted, an uncancelled `FAIL` or
+`TARGET_*` refusal reported by the core (not one QaReN synthesizes after a deadline kill or a
+missing result) is eligible. Teardown still stops the build, core, runner driver, runner host and recorder and
+releases the build lock. It skips stopping Metro (`metro=held: …`), skips any armed simulator
+stop, and keeps the device lease (`device_lease=held: …`). The app keeps running against a
+live Metro. `run.json` and the receipt record `held` (`since`, `reason`, `retained`), the `end`
+event carries `held: true`, and the record stays in the walking phase. `qaren status <run-id>`
+reports the hold beside its live probes, and `qaren doctor --device <udid>` adds the holding run
+to the `ios-lane` row. The hold ends with `qaren cleanup <run-id>`, or with the next run on that
+device, which reclaims the dead holder through the same cleanup. `--hold` and `--no-hold` decide
+outright. Without either, a non-empty `CI`, a `## Cleanup` plan heading or
+`--shutdown-device-on-exit` keeps the normal teardown; otherwise `QAREN_HOLD_ON_FAIL=1` or `0`
+decides for both `check` and `pr`, and the default is to hold for `check` and not for `pr`. See
+[check](../../apps/docs-site/src/content/docs/check.mdx) for the table. A held `pr` run keeps its
+worktree and records its producers as unproven, so `qaren publish` refuses it even after cleanup;
+re-run `qaren pr` to publish. When another run's Metro port is taken by a held run, the
+`METRO_PORT_OCCUPIED` refusal names that run's cleanup command. Android never holds.
 
 The iOS runner's XCTest result bundles under `Logs/Test` in both its local
 DerivedData and current-version prebuilt cache are removed after successful
