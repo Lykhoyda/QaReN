@@ -6946,3 +6946,58 @@ fn an_unresolved_build_lock_release_stops_before_install_and_keeps_the_lock() {
         .iter()
         .any(|c| c.label == "simctl-install"));
 }
+
+#[test]
+fn build_probe_timeouts_prioritize_expiry_over_candidate_drift() {
+    use qaren::failure::RecoveryReason;
+    for elapsed_ms in [1000, 30_000] {
+        let repo = common::temp_repo();
+        let scenario = write_scenario(
+            &repo,
+            &format!(
+                "{}deadlines:\n  build_seconds: 30\n",
+                ios_scenario_yaml(8791)
+            ),
+        );
+        let mut mock = MockRunner::new();
+        script_validation(&mut mock, &repo, IOS_TOOLS);
+        mock.expect_run("lsof", free_port());
+        mock.expect_run("ps", CmdOutput::success(LSTART));
+        mock.expect_run("ps", CmdOutput::success("qaren prepare"));
+        common::script_ios_deps(&mut mock);
+        mock.expect_run("ls-files", CmdOutput::success(""));
+        common::script_xcode(&mut mock);
+        mock.expect_run("simctl create", CmdOutput::success(UDID));
+        mock.expect_run("simctl bootstatus", CmdOutput::success("finished"));
+        common::script_finite_ios_build_only(&mut mock, "expo run:ios");
+        mock.expect_run("git", CmdOutput::success(&"b".repeat(40)));
+        mock.expect_run(
+            "git",
+            CmdOutput {
+                timed_out: true,
+                duration_ms: elapsed_ms,
+                ..Default::default()
+            },
+        );
+        mock.advance_on = Some(("status --porcelain".into(), elapsed_ms));
+        let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+        let failure = receipt.failure.unwrap();
+        if elapsed_ms == 30_000 {
+            assert_eq!(failure.code, FailureCode::BuildFailed);
+            assert_eq!(failure.phase, "build");
+            assert_eq!(
+                failure.recovery.unwrap().reason,
+                RecoveryReason::BuildBudgetExhausted
+            );
+        } else {
+            assert_eq!(failure.code, FailureCode::CandidateDrifted);
+            assert_eq!(
+                failure.recovery.unwrap().reason,
+                RecoveryReason::CandidateDrifted
+            );
+        }
+        assert_eq!(mock.remaining(), 0);
+        assert!(!repo.join(".locks/native-build-ios").exists());
+        assert!(!mock.calls.iter().any(|spec| spec.label == "simctl-install"));
+    }
+}

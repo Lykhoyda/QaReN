@@ -3676,6 +3676,7 @@ pub(crate) fn record_build_result(
                 entry.check_artifact(&existing.artifact)?;
             }
             let expected = &verified.as_ref().expect("verified iOS artifact").sha256;
+            ensure_build_budget(ctx).map_err(|failure| failure.detail.to_string())?;
             let copy = entry.copy_app(
                 ctx.runner,
                 &src,
@@ -3856,6 +3857,7 @@ pub(crate) fn record_build_result(
     let (Some(source), cached) = (verified, artifact) else {
         return Ok(None);
     };
+    ensure_build_budget(ctx)?;
     ctx.record.build.as_mut().expect("build planned").artifact = Some(cached);
     if let Err(e) = ctx.save() {
         ctx.record.build.as_mut().expect("build planned").artifact = Some(source);
@@ -4136,6 +4138,9 @@ fn run_finite_build(ctx: &mut Ctx, spec: &CmdSpec) -> Result<(), Failure> {
             .push(("build_lock_group".to_string(), detail.clone()));
     }
     let started = known
+        && ctx
+            .build_deadline_ms
+            .is_none_or(|deadline| ctx.runner.monotonic_ms() < deadline)
         && grouped.is_ok()
         && ctx.runner.cancellation().is_none()
         && child
@@ -4224,7 +4229,7 @@ pub(crate) fn build_ios_locked(
     lock_root: &Path,
 ) -> Result<BuildPlan, Failure> {
     claim_build_lock(ctx, lock_root)?;
-    let result = (|| {
+    let result = with_build_window(ctx, |ctx| {
         ensure_build_budget(ctx)?;
         if plan.decision == BuildDecision::Clean {
             crate::events::stage("prebuild", StageState::Running, None, None);
@@ -4245,9 +4250,46 @@ pub(crate) fn build_ios_locked(
         // Publication refuses to commit after expiry; spending the budget inside it still fails the build.
         ensure_build_budget(ctx)?;
         Ok(retirement)
-    })();
+    });
     finish_ios_build(ctx, result, retire_ios_build_output)?;
     Ok(ctx.record.build.clone().expect("build planned"))
+}
+
+fn with_build_window<T>(
+    ctx: &mut Ctx,
+    operation: impl FnOnce(&mut Ctx) -> Result<T, Failure>,
+) -> Result<T, Failure> {
+    let mut runner = crate::exec::DeadlineRunner {
+        inner: ctx.runner,
+        deadline_ms: ctx.build_deadline_ms.expect("iOS build window started"),
+    };
+    let mut scoped = Ctx {
+        runner: &mut runner,
+        runs_root: ctx.runs_root.clone(),
+        native_cache_root: ctx.native_cache_root.clone(),
+        native_store_entry: ctx.native_store_entry.take(),
+        record: ctx.record.clone(),
+        started_ms: ctx.started_ms,
+        timings: std::mem::take(&mut ctx.timings),
+        notes: std::mem::take(&mut ctx.notes),
+        verb: ctx.verb,
+        bundle_requests_at_launch: ctx.bundle_requests_at_launch,
+        manifest_warm: ctx.manifest_warm.take(),
+        lane_owned: ctx.lane_owned,
+        build_deadline_ms: ctx.build_deadline_ms,
+    };
+    let result = operation(&mut scoped);
+    let budget = ensure_build_budget(&mut scoped);
+    ctx.record = scoped.record;
+    ctx.native_store_entry = scoped.native_store_entry;
+    ctx.timings = scoped.timings;
+    ctx.notes = scoped.notes;
+    ctx.bundle_requests_at_launch = scoped.bundle_requests_at_launch;
+    ctx.manifest_warm = scoped.manifest_warm;
+    ctx.lane_owned = scoped.lane_owned;
+    ctx.build_deadline_ms = scoped.build_deadline_ms;
+    budget?;
+    result
 }
 
 fn finish_ios_build(

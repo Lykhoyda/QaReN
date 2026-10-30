@@ -332,6 +332,92 @@ pub trait Runner {
     }
 }
 
+pub(crate) struct DeadlineRunner<'a> {
+    pub(crate) inner: &'a mut dyn Runner,
+    pub(crate) deadline_ms: u64,
+}
+
+impl DeadlineRunner<'_> {
+    fn capped(&self, spec: &CmdSpec) -> Option<CmdSpec> {
+        let remaining = self.deadline_ms.saturating_sub(self.inner.monotonic_ms());
+        if remaining == 0 {
+            return None;
+        }
+        let mut spec = spec.clone();
+        spec.timeout_seconds = spec.timeout_seconds.min(remaining.div_ceil(1000));
+        Some(spec)
+    }
+
+    fn expired() -> CmdOutput {
+        CmdOutput {
+            timed_out: true,
+            ..Default::default()
+        }
+    }
+}
+
+impl Runner for DeadlineRunner<'_> {
+    fn env_var(&self, name: &str) -> Option<String> {
+        self.inner.env_var(name)
+    }
+    fn env_var_os(&self, name: &str) -> Option<OsString> {
+        self.inner.env_var_os(name)
+    }
+    fn env_names(&self) -> Vec<String> {
+        self.inner.env_names()
+    }
+    fn execute(&mut self, spec: &CmdSpec, interruptible: bool) -> CmdOutput {
+        match self.capped(spec) {
+            Some(spec) => self.inner.execute(&spec, interruptible),
+            None => Self::expired(),
+        }
+    }
+    fn execute_private(
+        &mut self,
+        spec: &CmdSpec,
+        input: &[u8],
+        interruptible: bool,
+    ) -> PrivateOutput {
+        match self.capped(spec) {
+            Some(spec) => self.inner.execute_private(&spec, input, interruptible),
+            None => PrivateOutput(Self::expired()),
+        }
+    }
+    fn spawn_group_unchecked(&mut self, spec: &CmdSpec, log: &Path) -> std::io::Result<Spawned> {
+        let spec = self.capped(spec).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "build window expired")
+        })?;
+        self.inner.spawn_group_unchecked(&spec, log)
+    }
+    fn spawn_piped_unchecked(&mut self, spec: &CmdSpec, log: &Path) -> std::io::Result<PipedChild> {
+        let spec = self.capped(spec).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "build window expired")
+        })?;
+        self.inner.spawn_piped_unchecked(&spec, log)
+    }
+    fn sleep(&mut self, duration: Duration) {
+        self.inner.sleep(duration)
+    }
+    fn now_epoch_ms(&self) -> u64 {
+        self.inner.now_epoch_ms()
+    }
+    fn monotonic_ms(&self) -> u64 {
+        self.inner.monotonic_ms()
+    }
+    fn commands_executed(&self) -> u64 {
+        self.inner.commands_executed()
+    }
+    fn cancellation(&self) -> Option<String> {
+        self.inner.cancellation()
+    }
+    fn try_reap(&mut self, pid: i32) -> bool {
+        self.inner.try_reap(pid)
+    }
+    fn adb_server_version(&self, port: u16) -> Result<u32, String> {
+        self.inner.adb_server_version(port)
+    }
+}
+
 pub(crate) struct CleanupRunner<'a>(pub(crate) &'a mut dyn Runner);
 
 impl Runner for CleanupRunner<'_> {
@@ -1211,5 +1297,73 @@ impl Runner for MockRunner {
                 call.rendered().contains(after.as_str())
             })
             .then(|| reason.clone())
+    }
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+
+    #[test]
+    fn build_window_caps_fingerprint_and_all_spawn_paths() {
+        let mut inner = MockRunner::new();
+        inner
+            .environment
+            .insert("TOKEN_NAME".into(), "synthetic".into());
+        inner.expect_run("fingerprint:generate", CmdOutput::success("{}"));
+        inner.expect_run("private-probe", CmdOutput::success("private"));
+        inner.expect_spawn(
+            "group",
+            Spawned {
+                pid: 101,
+                pgid: 101,
+            },
+        );
+        inner.expect_spawn_piped("piped", 102, "", Some(0));
+        let deadline_ms = inner.monotonic_ms() + 1000;
+        let mut runner = DeadlineRunner {
+            inner: &mut inner,
+            deadline_ms,
+        };
+        assert_eq!(runner.env_var("TOKEN_NAME").as_deref(), Some("synthetic"));
+        assert!(runner.env_names().contains(&"TOKEN_NAME".into()));
+        assert!(runner
+            .run(&CmdSpec::new(
+                "fingerprint",
+                "node",
+                &["fingerprint:generate", "--platform", "ios"],
+                120
+            ))
+            .ok());
+        assert!(runner
+            .run_private(&CmdSpec::new("private", "private-probe", &[], 20), b"input")
+            .clean());
+        runner
+            .spawn_group(
+                &CmdSpec::new("group", "group", &[], 60),
+                Path::new("unused"),
+            )
+            .unwrap();
+        runner
+            .spawn_piped(
+                &CmdSpec::new("piped", "piped", &[], 60),
+                Path::new("unused"),
+            )
+            .unwrap();
+        runner.sleep(Duration::from_secs(1));
+        let spec = CmdSpec::new("expired", "must-not-start", &[], 60);
+        assert!(runner.run(&spec).timed_out);
+        assert!(runner.run_private(&spec, b"").timed_out());
+        assert_eq!(
+            runner
+                .spawn_group(&spec, Path::new("unused"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        assert!(runner.spawn_piped(&spec, Path::new("unused")).is_err());
+        assert_eq!(inner.calls.len(), 4);
+        assert!(inner.calls.iter().all(|spec| spec.timeout_seconds == 1));
+        assert_eq!(inner.remaining(), 0);
     }
 }
