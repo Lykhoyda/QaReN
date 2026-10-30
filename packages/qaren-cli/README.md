@@ -2083,19 +2083,34 @@ sequence runs again after a successful dev-menu recovery, except that Android do
 Refresh again, because that would reload the app mid-walk.
 Apps without the preferences module skip the floating-button setting change but still require
 native clearance evidence. The shared clearance mechanism accepts only a complete
-native snapshot with a non-dev surface in front, including system or app dialogs.
-Failed or incomplete reads remain unknown and retry within the attach budget
-measured from the overlay check, without extending the walk deadline, at intervals of at least
-250 ms. A failed or unconfirmed floating-button hide is attempted up to three
-times, with each preference evaluation capped at the platform's normal timeout.
-The walk refuses before the first step with one of four codes:
-`DEV_MENU_HIDE_UNVERIFIED_READ_FAILED` for unavailable clearance evidence,
-`DEV_MENU_HIDE_UNVERIFIED_NOT_HIDDEN` for dev chrome still shown,
-`DEV_MENU_HIDE_UNVERIFIED_EVALUATE_TIMEOUT` for a timed-out preference call, or
-`DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED` for a failed preference readback.
-Mid-walk recovery includes reconnect and uses the existing 15-second wait budget
-per attempt. Each refusal provides a concrete next action; unknown evidence never
-admits the walk.
+native snapshot with a non-dev surface in front, including system or app dialogs;
+step 1 handles any such dialog. Failed or incomplete reads remain unknown and retry within the attach budget
+measured from the overlay check, capped by the remaining walk budget with its
+one-second delivery reserve. Reads are separated by 250 ms waits, shortened only
+at the deadline. A failed or unconfirmed floating-button hide is attempted up to
+three times, with each preference evaluation capped at the smaller of the
+remaining budget and the platform's normal timeout.
+
+Overlay-proof refusals before step 1 use outer code `CORE_REFUSED`;
+`failure.detail` names the inner code and includes value-free read and evaluation
+counts, elapsed time and the last error class. Classification uses the final
+read attempt, so a failed or pending read after visible dev chrome is unknown,
+not proof that the chrome remains shown:
+
+| Inner code | What happened | What to do after required cleanup |
+| --- | --- | --- |
+| `DEV_MENU_HIDE_UNVERIFIED_READ_FAILED` | Clearance evidence remained unavailable, incomplete or pending at the deadline | Re-run once without `--fresh-install` or `--restart-device`; if build work is active, wait for it to finish first |
+| `DEV_MENU_HIDE_UNVERIFIED_NOT_HIDDEN` | The final complete native read still showed development-menu chrome | Re-run once without `--fresh-install`; if it persists, report the value-free refusal |
+| `DEV_MENU_HIDE_UNVERIFIED_EVALUATE_TIMEOUT` | The floating-button preference evaluation timed out or had insufficient remaining time | Re-run once without `--fresh-install` or `--restart-device`; if build work is active, wait for it to finish first |
+| `DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED` | The floating-button preference call or its hidden-state readback failed | Re-run once without `--fresh-install`; if it persists, report the value-free refusal |
+
+Follow `failure.next_action`. Unknown reads alone do not justify restarting the
+app or device, rebuilding, or resetting app data. Stop and report the refusal if
+the single re-run also refuses. Unknown evidence never admits the walk.
+Mid-walk recovery shares one 15-second budget per attempt across reconnect,
+settings and clearance reads, capped by the remaining walk deadline.
+Cancellation and typed app-exit outcomes propagate without becoming overlay-proof
+failures.
 
 ### Warm lane
 
