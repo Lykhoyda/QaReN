@@ -437,3 +437,16 @@ test('parser and preflight withhold private heading slugs while preserving opera
   const ordinary = parsePlan('### Account\n✓ "Ready"\n### Account\n✓ "Ready"');
   assert.equal(ordinary.refused?.[0].reason, 'another block is already named "account"');
 });
+
+test('Part A preflight prepares only QA actions and defers Cleanup', async () => {
+  const markdown = '## QA\n1. Tap "Create"\n## Cleanup\n1. Visit the delete control';
+  const result = await preflightPlan(markdown, throwingJudge());
+  assert.ok(result.ok);
+  assert.equal(result.jevRequired, false);
+  assert.deepEqual(Object.keys(result.prepared).sort(), ['blocks', 'hash']);
+  assert.deepEqual(
+    result.prepared.blocks.flatMap((block) => block.items.map((item) => item.raw)),
+    ['1. Tap "Create"'],
+  );
+  assert.deepEqual(readPreparedPlan(markdown, result.prepared), result.prepared.blocks);
+});
