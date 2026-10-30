@@ -5,7 +5,7 @@ import {
   androidIsWindowUpdatingProbe,
   _setFetchForTest,
   _setAndroidRunnerStateForTest,
-} from '../../dist/runners/rn-android-runner-client.js';
+} from '../../dist/runners/qaren-android-runner-client.js';
 import {
   REQUIRED_ANDROID_COMMANDS,
   REQUIRED_ANDROID_FEATURES,

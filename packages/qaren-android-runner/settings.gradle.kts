@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "RnAndroidRunner"
+rootProject.name = "QarenAndroidRunner"
 include(":app")

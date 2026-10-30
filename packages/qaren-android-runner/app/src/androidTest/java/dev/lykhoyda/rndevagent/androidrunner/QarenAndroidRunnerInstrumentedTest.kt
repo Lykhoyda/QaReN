@@ -21,7 +21,7 @@ import java.net.URL
 
 @LargeTest
 @RunWith(AndroidJUnit4::class)
-class RnAndroidRunnerInstrumentedTest {
+class QarenAndroidRunnerInstrumentedTest {
     private lateinit var server: CommandServer
     private var port: Int = 0
 
@@ -59,8 +59,8 @@ class RnAndroidRunnerInstrumentedTest {
         server = CommandServer(port, pluginVersion, authority)
         server.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
 
-        Log.i("RnAndroidRunner", "RN_ANDROID_RUNNER_LISTENER_READY")
-        Log.i("RnAndroidRunner", "RN_ANDROID_RUNNER_PORT=$port")
+        Log.i("QarenAndroidRunner", "RN_ANDROID_RUNNER_LISTENER_READY")
+        Log.i("QarenAndroidRunner", "RN_ANDROID_RUNNER_PORT=$port")
     }
 
     @Test

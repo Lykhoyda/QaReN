@@ -18,6 +18,7 @@ import {
   forwardedInputOf,
   isScrollContainer,
   isWindow,
+  reactOnlyFactsOf,
   scrollContainerType,
   semanticActionView,
   semanticDisabled,
@@ -879,6 +880,113 @@ export function presenceMiss(target: Target, screen: Screen): string | undefined
     return why && `the element carrying the identifier "${quoted}" ${why}: ${list(ids)}`;
   }
   return `no captured element carries the identifier "${quoted}"`;
+}
+
+// The one identity carrying a quoted id when it is React-only; a native carrier drops its twin first.
+export function reactOnlyTarget(target: Target, screen: Screen): Element | undefined {
+  if (target.quoted === undefined || target.exact === 'text') return undefined;
+  const ids = idIdentities(target.quoted, screen);
+  return ids.length === 1 && ids[0].tag === 'react-only' ? ids[0].element : undefined;
+}
+
+// React's layout against the nearest native scroll container, else the window; a partial overlap is unknown.
+export function reactOnlyViewport(element: Element): {
+  where: 'inside' | 'below' | 'above' | 'unknown';
+  container?: Element;
+} {
+  const facts = reactOnlyFactsOf(element);
+  const chain = facts?.nativeAncestor
+    ? [facts.nativeAncestor, ...ancestorsOf(facts.nativeAncestor)]
+    : [];
+  const container = chain.find(isScrollContainer);
+  const frame = container ?? chain.find(isWindow);
+  const own = frame && elementFrame(frame);
+  // What the user sees of the container: its frame inside the bounds of the ancestors that clip it.
+  const bounds = own && clip(own, elementViewport(frame!));
+  const rect = facts?.rect;
+  if (!rect || !bounds || rect.width <= 0 || rect.height <= 0)
+    return { where: 'unknown', container };
+  const where =
+    rect.y >= bounds.y + bounds.height
+      ? 'below'
+      : rect.y + rect.height <= bounds.y
+        ? 'above'
+        : rect.y >= bounds.y &&
+            rect.x >= bounds.x &&
+            rect.y + rect.height <= bounds.y + bounds.height &&
+            rect.x + rect.width <= bounds.x + bounds.width
+          ? 'inside'
+          : 'unknown';
+  return { where, container };
+}
+
+// Identifiers, kinds and frames only, as describeCandidate prints; never a label, placeholder or value.
+export function reactOnlyMiss(
+  target: Target,
+  screen: Screen,
+  observations: number,
+  attempt: 'scroll' | 'none',
+): string | undefined {
+  const element = reactOnlyTarget(target, screen);
+  if (!element) return undefined;
+  const facts = reactOnlyFactsOf(element);
+  const rect = facts?.rect;
+  const accessible = facts?.accessibleAncestor;
+  return [
+    `TARGET_REACT_ONLY: "${target.quoted}" is mounted in React but absent from the native capture across ${observations} observations`,
+    describeCandidate(element),
+    // The layout is read once, before any scroll; after one it is history, not the current screen.
+    `react layout${attempt === 'scroll' ? ' before scroll' : ''}=${
+      rect
+        ? `${[rect.x, rect.y, rect.width, rect.height].map(Math.round).join(',')} ${reactOnlyViewport(element).where} its viewport`
+        : 'none'
+    }`,
+    `accessible ancestor=${
+      !accessible
+        ? 'none'
+        : accessible.element
+          ? describeCandidate(accessible.element)
+          : 'unmatched'
+    }`,
+    `nearest native ancestor=${facts?.nativeAncestor ? describeCandidate(facts.nativeAncestor) : 'none'}`,
+    `host=${facts?.host ?? 'none'}`,
+    `attempt=${attempt}`,
+    'next step: wait on a visible element instead (the native wrapper or on-screen text), or expose the field to accessibility; if it sits below the fold, scroll until it first; then re-run',
+  ].join('; ');
+}
+
+export interface ReactOnlyWaitCounts {
+  budgetMs: number;
+  // A capture this wait made ran out of its time, rather than the wait simply ending.
+  expired: boolean;
+  lastStage: 'readiness' | 'native' | 'react' | 'join' | 'unknown';
+  observations: number;
+  reactOnlyObservations: number;
+  presenceAttempts: number;
+  elapsedMs: number;
+  enrichmentWaitMs: number;
+  requestedPresenceBudgetMs: number;
+  attempt: 'scroll' | 'none';
+}
+
+// A React-only sighting without the layout read that would classify it: counts and timings only.
+export function reactOnlyTimeout(c: ReactOnlyWaitCounts): string {
+  return [
+    `TARGET_REACT_ONLY: target did not appear within ${c.budgetMs}ms`,
+    'previously observed in React but absent from the native capture',
+    'frame=unknown',
+    'layout=unavailable',
+    `cause=${c.expired ? 'acquisition-deadline' : 'wait-deadline'}`,
+    `last_stage=${c.lastStage}`,
+    `observations=${c.observations}`,
+    `react_only_observations=${c.reactOnlyObservations}`,
+    `presence_attempts=${c.presenceAttempts}`,
+    `elapsed_ms=${Math.round(c.elapsedMs)}`,
+    `enrichment_wait_ms=${Math.round(c.enrichmentWaitMs)}`,
+    `requested_presence_budget_ms=${c.requestedPresenceBudgetMs}`,
+    `attempt=${c.attempt}`,
+    `next_action=${c.expired ? 'inspect_capture_health' : 'inspect_wait_target'}`,
+  ].join('; ');
 }
 
 export function aggregateTargetVisible(target: Target, screen: Screen): boolean {

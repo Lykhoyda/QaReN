@@ -1,10 +1,11 @@
 import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-export type NativeRunnerName = 'qaren-ios-runner' | 'rn-android-runner';
+export type NativeRunnerName = 'qaren-ios-runner' | 'qaren-android-runner';
 
 const LEGACY_NATIVE_RUNNER_NAMES: Partial<Record<NativeRunnerName, string>> = {
   'qaren-ios-runner': 'rn-fast-runner',
+  'qaren-android-runner': 'rn-android-runner',
 };
 
 function compactUnique(paths: Array<string | undefined>): string[] {

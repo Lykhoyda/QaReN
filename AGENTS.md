@@ -26,11 +26,11 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
   `using-qaren` and `feedback` are written for the 2.0 CLI. Its `package.json`
   is the version source for changesets and `qaren` is the only released package.
 - `packages/qaren-ios-runner/` (package `qaren-ios-runner`) and
-  `packages/rn-android-runner/` (package `qaren-android-runner`): native
+  `packages/qaren-android-runner/` (package `qaren-android-runner`): native
   runner sources.
 - `apps/docs-site/` (package `qaren-docs`): deliverable QaReN documentation site.
 - Engineering processes, plans, stories, audits and research live in the
-  workspace [`docs/`](https://github.com/Lykhoyda/rn-dev-agent-workspace/tree/main/docs/);
+  workspace [`docs/`](https://github.com/Lykhoyda/qaren-workspace/tree/main/docs/);
   never add a top-level `docs/` tree here. Captain-approved architecture records
   belong in [Anton Factory `architect-docs`](https://github.com/Lykhoyda/anton-factory/tree/main/architect-docs/);
   link to either owner instead of copying.
@@ -96,7 +96,7 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
 - Host surface: edit `packages/qaren-plugin/` in place. There is no mirror,
   no generated host copy and no sync gate.
 - Native runners: edit `packages/qaren-ios-runner/` or
-  `packages/rn-android-runner/`.
+  `packages/qaren-android-runner/`.
 - Docs site: edit `apps/docs-site/`, then `corepack yarn build:docs`.
 
 Doctrine for the kept handlers, each with one owner:

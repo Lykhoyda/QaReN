@@ -495,6 +495,81 @@ fn a_proven_dead_holder_without_run_records_is_reclaimed() {
 }
 
 #[test]
+fn the_ios_build_lock_reclaims_a_recordless_dead_holder_only_after_its_recorded_group_is_gone() {
+    use qaren::exec::{CmdOutput, MockRunner};
+    const BIRTH: &str = "Mon Oct 19 09:00:00 2026";
+    let fixture = Fixture::new("build-orphan");
+    let kept = fixture.child_dir("kept-home");
+    fs::create_dir_all(kept.join(".qaren/runs/old-build")).unwrap();
+    fs::write(kept.join(".qaren/runs/old-build/run.json"), "{}").unwrap();
+    // (case, home, recorded group, group inventory, reclaimed)
+    let deleted = fixture.path().join("deleted-home");
+    for (case, home, group, inventory, reclaimed) in [
+        (
+            "group-gone",
+            deleted.clone(),
+            Some(777),
+            Some(CmdOutput::success("1 1 S\n")),
+            true,
+        ),
+        ("no-group", deleted.clone(), None, None, false),
+        (
+            "group-live",
+            deleted.clone(),
+            Some(777),
+            Some(CmdOutput::success("1 1 S\n800 777 S\n")),
+            false,
+        ),
+        (
+            "group-unknown",
+            deleted.clone(),
+            Some(777),
+            Some(CmdOutput::failed(1, "inventory unavailable")),
+            false,
+        ),
+        ("records-kept", kept.clone(), Some(777), None, false),
+    ] {
+        let root = fixture.child_dir(&format!("build-{case}"));
+        let mut old = sample_holder("old-build");
+        old.identity = Some(qaren::runrecord::PidIdentity {
+            pid: 4343,
+            started_at: BIRTH.to_string(),
+            command: qaren::redact::OutputText::from_output("qaren prepare"),
+        });
+        old.home = Some(home);
+        old.group = group;
+        must_claim_with(&mut MockRunner::new(), &root, "native-build-ios", &old);
+        let mut mock = MockRunner::new();
+        mock.expect_run("ps -p 4343 -o lstart=", CmdOutput::success(""));
+        if let Some(inventory) = inventory {
+            mock.expect_run("ps -A", inventory);
+        }
+        let outcome = lease::claim_reclaiming_build_orphan(
+            &mut mock,
+            &root,
+            "native-build-ios",
+            &sample_holder("new-build"),
+            None,
+        );
+        assert_eq!(mock.remaining(), 0, "{case}");
+        let held = buildplan::read_holder(&root.join("native-build-ios")).unwrap();
+        if reclaimed {
+            assert!(
+                matches!(outcome, (LockOutcome::Claimed { .. }, Some(ref orphan)) if orphan == "old-build"),
+                "{case}: {outcome:?}"
+            );
+            assert_eq!(held.run_id, "new-build", "{case}");
+        } else {
+            assert!(
+                matches!(outcome, (LockOutcome::Contended { .. }, None)),
+                "{case}: {outcome:?}"
+            );
+            assert_eq!(held.run_id, "old-build", "{case}");
+        }
+    }
+}
+
+#[test]
 fn a_killed_owner_with_a_live_build_group_keeps_the_build_lock() {
     use std::os::unix::process::CommandExt;
     let fixture = Fixture::new("build-group");

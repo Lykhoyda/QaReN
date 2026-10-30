@@ -155,7 +155,7 @@ const IOS_MANIFEST = {
   version: '2.0.0-beta.3',
   assets: {
     ios: [{ name: 'qaren-ios-runner-2.0.0-beta.3-sim.zip', sha256: 'GOOD', bytes: 4_200_000 }],
-    android: [{ name: 'rn-android-runner-2.0.0-beta.3.zip', sha256: 'GOOD', bytes: 5_100_000 }],
+    android: [{ name: 'qaren-android-runner-2.0.0-beta.3.zip', sha256: 'GOOD', bytes: 5_100_000 }],
   },
 };
 // Paths are relative to the extraction (products) dir the fake unzip receives.

@@ -114,7 +114,7 @@ test('CDPClient.disconnect tolerates multiplexer.stop() rejecting (best-effort c
   assert.equal(client.isProxyActive, false, 'proxy state cleared despite stop() rejecting');
 });
 
-// D661 regression rationale: https://github.com/Lykhoyda/rn-dev-agent-workspace/blob/main/docs/DECISIONS.md?plain=1#L3040
+// D661 regression rationale: https://github.com/Lykhoyda/qaren-workspace/blob/main/docs/DECISIONS.md?plain=1#L3040
 
 function plantConnectedTarget(client, hermesUrl) {
   client._connectedTarget = {

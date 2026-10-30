@@ -45,6 +45,7 @@ that can conflict with a session or is hygiene; `SKIP` is not applicable.
 | `host-memory`, `host-devices` | Free memory, memory pressure, booted simulators and running Android emulators; conservative concurrent lane headroom on macOS and Linux |
 | `simulator-service` | A five-second `simctl list devices -j` probe on macOS; attributable uninterruptible simulator process evidence when unresponsive |
 | `host-load` | One-, five- and fifteen-minute load averages, logical CPU count and sampled CPU idle; warns about readiness deadlines under load |
+| `native-build-lock` | Read-only iOS [build-lock observation](#native-fingerprint-build-selection); never claims or reclaims the lock |
 | `android-sdk`, `android-avd` | When `android` is configured: `ANDROID_HOME`, an executable `adb` file (never run; its version is not checked), the emulator binary and the configured AVD via `emulator -list-avds` |
 | `qaren-path` | The first `qaren` on `PATH` is this binary and the installed build; later copies warn, and so does a separate install that `PATH` runs instead (another `QAREN_HOME` or the other release or source-build line) |
 | `installed-build` | The runtime under `$QAREN_HOME/runtime/<version>/` and the runtime `check` would use (`QAREN_RUNTIME` when set) are complete; a binary outside it that `PATH` runs instead of an install fails |
@@ -1233,7 +1234,7 @@ the requested capture budget. The version-2 capture uses `android-a11y-live`,
 [presence validator](../qaren-core/src/qa/native-presence.ts) requires matching
 app, capture and generation identities, the requested budget and complete,
 in-budget evidence. An incomplete capture resets every node to `unknown`.
-The [Android cover rule](../rn-android-runner/app/src/main/java/dev/lykhoyda/rndevagent/androidrunner/PresenceRules.kt)
+The [Android cover rule](../qaren-android-runner/app/src/main/java/dev/lykhoyda/rndevagent/androidrunner/PresenceRules.kt)
 requires the node's visible centre to be clear of higher windows and of unrelated
 enabled, visible, clickable nodes of its window drawn above it; its own ancestors
 and descendants do not count as native covers. Transparent chrome that
@@ -1448,14 +1449,57 @@ covered rows and other scroll origins still get one clearance swipe. See the
 [scroll-until direction regressions](../qaren-core/test/unit/qa/scroll-until-direction.test.ts).
 
 Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`
-when the final evidence remains unsure. A quoted wait with at least two definite
-absence observations sharing one screen signature fails at its deadline with
+when the final evidence remains unsure. Initial captures, polling captures and
+evidence-refresh captures, including a refresh during the first visibility check,
+share the wait's deadline for both quoted and phrase targets. A wait whose first
+capture never completes fails with `TARGET_WAIT_TIMEOUT` and
+`cause=capture-deadline`, with `next_action=inspect_capture_health`. If a later
+refresh reaches the deadline, the wait ends
+from its completed observations; a phrase wait whose visibility remains undecided
+ends with `VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED`.
+A quoted wait with at least two definite
+absence observations sharing one screen signature normally fails at its deadline with
 “did not appear”; it does not report expired evidence for that stable absence.
 For a quoted value that is not a stored text selector, the failure adds why from
 identifiers and frames only: no captured element carries the identifier, several
 do, or the one that does is React-only, offscreen or has its centre covered.
-Either unmet ending first gets [step recovery](#step-recovery), so a quoted wait
-behind a blocking screen or system dialog runs once more with its full budget.
+When those stable absence observations identify one React-only match, the quoted
+wait fails with `TARGET_REACT_ONLY` (`PLAN_STEP_FAILED`, exit 1). Its detail uses
+identifiers, kinds and frames, without labels, placeholders or field values, to
+report the React layout against its viewport, accessible and nearest native
+ancestors, any scroll attempt and a next step. Unavailable layout is reported as
+`none`; React mounting alone never proves native visibility. Wait on a visible
+native wrapper or on-screen text, expose the field to accessibility, or explicitly
+scroll until it is visible before re-running.
+After two ordinary absence observations of that React-only match on one unchanged
+screen, the wait makes exactly one presence capture to read React's layout, bounded
+by the wait's remaining time; later polls stay ordinary, and a recovery retry does
+not repeat that read. If a React-only match was observed but never classified,
+including when the layout read or a later capture is cut off at the deadline,
+the wait fails with `TARGET_REACT_ONLY` reporting
+`layout=unavailable`, a `cause` (`acquisition-deadline` or `wait-deadline`), the
+last capture stage, observation and presence-read counts, timings, and
+`next_action=inspect_capture_health` or `inspect_wait_target`, with no recovery,
+screenshot or further capture. Neither this ending nor `TARGET_WAIT_TIMEOUT`
+marks the plan step itself as wrong.
+On iOS, that complete React layout and native presence evidence can end the wait early
+when the absence observations on one unchanged app screen show the
+field wholly inside its viewport under an accessible ancestor. The viewport is
+the nearest native scroll container clipped by its ancestors, or the native
+window when there is no scroll container. A field wholly above or below that
+clipped viewport can instead receive one scroll
+within the wait's original budget, only when the safe drag band belongs to that
+container. Scrolling does not renew or shorten the wait's budget; a field that
+remains below or above the viewport keeps polling until the deadline, and its final
+detail labels the layout `react layout before scroll`. A later
+visible native match passes normally. Missing or partially
+clipped layout preserves polling until the deadline; stored-ID replay and block
+start preconditions do not use this early failure or automatic scroll.
+After a classified React-only miss, [step recovery](#step-recovery) may capture
+only within the wait's remaining time. If that capture reaches the deadline, or
+no time remains, the React-only failure reason stands. Other eligible unmet quoted
+waits retain ordinary recovery. When recovery clears a blocking screen or system
+dialog, the wait runs once more with its full budget.
 Scroll-until-text uses the same visibility verdict
 within its scroll and time budgets. Literal checks re-ask from a fresh capture
 and use `CHECK_UNSURE` if uncertainty remains. This is distinct from acquisition
@@ -2447,7 +2491,10 @@ before the holder died or re-created by an orphaned build writing its output, do
 count. Before a native build or native suite is let past its start gate, its process
 group is recorded in the holder, as is a `qaren` process's own group when it leads
 one; that group must also have no live members, otherwise the refusal names the lock
-and the `pgrep -g` check to wait on. A `qaren` group whose leader pid now belongs to
+and the `pgrep -g` check to wait on. The iOS native-build lock additionally
+requires that group to have been recorded before the next claim releases it: its
+holder may have died after starting a build it had not yet recorded, so such an
+orphan is kept until an explicit `qaren cleanup <run-id>` for that run releases it. A `qaren` group whose leader pid now belongs to
 another process is not checked, since a reused pid proves its old group is gone. `qaren cleanup <run-id>` for a run with no
 `run.json` releases that run's locks under the same proof, and the receipt of a run
 that released an orphaned lock notes it.
@@ -2644,11 +2691,21 @@ refuses `APP_PROCESS_UNKNOWN`; a runner built from an older checkout needs a reb
 
 The simulator shows `QaReN` (host) and `QaReN-Runner` (test runner); both remain
 installed in 2.0.4. The native source package is now `qaren-ios-runner`.
-An old `rn-fast-runner` directory cannot supply this version's runner. If startup
-reports a pre-2.0.4 runner directory, [update the installed release](../../README.md#keep-it-working)
+For pre-2.0.4 source directories, see the [runner migration guidance](#android-runner).
+
+### Android runner
+
+The emulator lists the runner as `QaReN Android Runner`; its package id is
+unchanged, so 2.0.4 updates an installed runner in place. The native source
+package is now `qaren-android-runner`. Old build output under
+`packages/rn-android-runner/` can be deleted.
+
+For either platform, old `rn-fast-runner` (iOS) and `rn-android-runner` (Android)
+directories cannot supply this version's runner. If startup reports a pre-2.0.4
+runner directory, [update the installed release](../../README.md#keep-it-working)
 or use a fresh source checkout. Unset stale `QAREN_NATIVE_RUNNER_ROOT` or
-`QAREN_ROOT` overrides if they point at the old layout; no compatibility alias is
-provided.
+`QAREN_ROOT` overrides if they point at the old layout; no compatibility alias
+or shim is provided.
 
 ### Saved plans
 
@@ -2706,7 +2763,8 @@ and never triggers recovery.
 
 An action without success evidence after its one retry, a step target that
 does not resolve, a definite failed check, an unmet quoted wait, or a phrase check still
-unsure after its re-ask gets a deterministic recovery, then the step runs once more from a fresh
+unsure after its re-ask gets a deterministic recovery, subject to the
+[quoted-wait deadline limits](#plan-checks-and-screen-evidence), then the step runs once more from a fresh
 capture. If it fails again, a second recovery may decline a different system prompt or app
 interruption once the first is proven gone. An app interruption with the same decline label
 fails with `the app interruption did not disappear`; a different kind of interruption or
@@ -3226,6 +3284,26 @@ a recorded port number also masks the same number elsewhere in the text. It then
 removes the `needs-qa` label only if the current head is the tested head; otherwise
 `publication.json` and the receipt record `retained-head-changed`.
 
+With `proofInDescription: true` in the app config when `qaren pr` runs (the choice is
+persisted in `pr.json`; publish never re-reads the config), `qaren publish` also writes one
+section between `<!-- qaren-proof:start -->` and `<!-- qaren-proof:end -->` lines into the
+pull request description: the verdict, the tested commit, a link to the comment, and the
+video. The video is the asset the comment upload already produced, used only when the comment
+attached it under the [video publication rules](#video-publication); a withheld or missing
+video shows the comment's own video sentence and no URL. Publishing a new `qaren pr` run
+replaces an existing section instead of adding one; re-publishing a run whose section was
+already written leaves it unchanged. Text outside the markers is kept byte for byte relative to the body
+publish last read; publish makes up to three reads and writes only after two consecutive
+reads agree. GitHub offers no conditional edit, so a human edit landing between that read and the write
+can still be lost. The comment is always posted first, and a skipped description leaves the
+receipt `Published` with `outcomes.description` naming why. Head-drift skips are final when
+the head is neither the tested commit nor this run's verified saved-block writeback commit.
+If the description kept changing, GitHub refused an edit or read, or the comment could not
+be read back, re-run `qaren publish` to retry the description. The ambiguous-marker
+skip is final for that run: fix the marker pair so one QaReN start line precedes one end line,
+then publish from a new `qaren pr` run; this run's comment already holds the proof and video. Upgrade every
+CLI/CI runtime before adding the key; older versions refuse it.
+
 A saved block is published only verbatim, and only when the walk met the strict
 [video publication rules](#video-publication) and the
 machine redaction would leave the block unchanged. Any other block stays in the
@@ -3384,8 +3462,9 @@ validates the scenario + candidate and emits the planned command sequence
 prepare ──► validate (scenario schema, candidate git sha, lockfile sha256)
         ──► prereqs  (tools present, metro port free)
         ──► plan     native fingerprint + machine store + cache state ──► reuse | incremental | clean
-                     (decision + evidence recorded; non-reuse takes the
-                      host-level build serialization lock)
+                     (decision + evidence recorded; Android non-reuse takes the
+                      host-level build serialization lock here, iOS after
+                      allocation and only around build and publication)
         ──► allocate  iOS:  reuse, create or fall back to a temporary simulator
                             (see iOS simulator pool); with
                             --new, create + boot a temporary qaren-<run-id>;
@@ -3559,13 +3638,13 @@ ios:
 
 For `prepare`, the same pair belongs under `build.ios_workspace` in the scenario, alongside `build.owner: cli`. Workspace paths are relative to the app root, remain under `ios/`, and must resolve through plain directories to an existing `.xcworkspace` with a plain `contents.xcworkspacedata` file. No scheme discovery, Expo upgrade or automatic fallback after a failed build occurs. An iOS section in shared `check` config does not select this route for Android.
 
-Both CLI-owned iOS routes start a separate owned Metro process group after native-directory preparation and before finite compilation, letting Metro start while the build runs. Verified cached-app reuse starts Metro before installation instead, without spawning it again. Installation still requires a verified simulator bundle; launch waits for proven Metro ownership, `/status` readiness and dev-client manifest warmup. Dry-run command lists reflect this ordering. Failed iOS `prepare` attempts clean up early Metro and report the outcome in `cleanup.metro`; unresolved ownership remains recorded for [cleanup](#ios-admission-and-cleanup).
+Both CLI-owned iOS routes finish the protected build before starting a separate owned Metro process group; see [build serialization](#native-fingerprint-build-selection) for the lock boundary. They then follow the cached-app reuse path, which starts Metro before installation without spawning it again. Installation still requires a verified simulator bundle; launch waits for proven Metro ownership, `/status` readiness and dev-client manifest warmup. Failed iOS `prepare` attempts clean up any started Metro and report the outcome in `cleanup.metro`; unresolved ownership remains recorded for [cleanup](#ios-admission-and-cleanup). The iOS non-reuse dry-run list still places Metro before compilation; use the lifecycle described here for execution ordering.
 
 The workspace route runs `xcrun xcodebuild` in Debug against the generic iOS Simulator destination, with certificate-free ad-hoc simulator signing (`CODE_SIGN_IDENTITY=-`, no team or provisioning profile) so entitlements such as keychain access survive, and the React Native packager launch disabled. Products and DerivedData are isolated under the run directory. The existing finite-build process group and lock remain authoritative; only a clean exit with proven group shutdown can proceed to single-bundle verification, exact-device installation and launch. A missing or ambiguous app, wrong bundle/platform/scheme or unsupported dev-client launcher still fails before installation. Workspace and scheme selection, and the build-settings revision, participate in the native cache fingerprint, so an earlier unsigned workspace build is not reused; see [Native-fingerprint build selection](#native-fingerprint-build-selection) for the shared store and toolchain binding used by both routes.
 
 **Native preparation remains explicit.** Supply a workspace whose native dependencies and generated inputs are ready for Xcode. QaReN retains its existing clean/incremental policy: an unproven generated native directory is regenerated through owned `expo prebuild --clean`, then the workspace is revalidated before compilation; a git-visible native tree is not regenerated. The workspace route adds no CocoaPods synchronization or codegen command of its own, and workspace existence is not proof that those inputs are current after a dependency update. A build failure is reported, not retried through another backend.
 
-After verified cache publication and proven build-group shutdown, successful workspace builds retire their run-local products and DerivedData. Failed builds, failed publication or unresolved cleanup retain outputs; symlinked retirement roots are not followed. Unknown build-group cleanup continues to retain the build lock and device lease for `qaren cleanup`.
+After verified cache publication and proven build-group shutdown, successful workspace builds retire their run-local products and DerivedData. The Expo route retires its run-local source app. Retirement requires the cached artifact reference to be saved and the build lock to be released with that release persisted first. Failed builds, failed publication or unresolved release or persistence retain outputs; symlinked retirement roots are not followed. Unknown build-group cleanup continues to retain the build lock and device lease for `qaren cleanup`.
 
 ### Cooperative handoff mode (`build.owner: qaren`)
 
@@ -3588,7 +3667,7 @@ is unreachable from the session's global adb server). Cleanup is unchanged:
 qaren removes exactly the allocation it recorded and never touches the
 session's Metro or build. The full chain, ownership table, trust boundary,
 and temporary policy live in
-[`docs/qa/cooperative-qa.md`](https://github.com/Lykhoyda/rn-dev-agent-workspace/blob/main/docs/qa/cooperative-qa.md).
+[`docs/qa/cooperative-qa.md`](https://github.com/Lykhoyda/qaren-workspace/blob/main/docs/qa/cooperative-qa.md).
 
 ### Project-scoped real apps
 
@@ -3842,14 +3921,40 @@ state. An ambiguous artifact (zero or several bundles) skips caching with a reco
 reason, never a guess. Only a saved state permits ownership rebinding.
 
 **Build serialization.** Native builds (incremental and clean) take a
-host-level `native-build-<platform>` lock before allocation. A live holder
-is a structured refusal (`BUILD_CONTENDED`, exit 4). Android can adopt a
-provably dead holder's lock. iOS refuses an existing lock until its run's
-cleanup proves the finite build group retired, or until an
-[orphaned lock](#ios-admission-and-cleanup)'s recorded group has no live members;
-a dead CLI alone is insufficient.
-The lock is released after preparation or by cleanup only when owned build
-authority is retired.
+host-level `native-build-<platform>` lock. On iOS the lock covers only the
+build: `prepare`, `check` and `pr` claim it after the device is allocated and
+release it once the artifact is verified, the pre-publication candidate and
+fingerprint checks pass and cache publication is persisted, before
+[run-owned output retirement](#cli-owned-ios-build-routes); Metro, install,
+launch and readiness run afterwards, and the final drift checks still run
+after readiness. A contended iOS claim waits, polling every second, within the
+same build budget (`deadlines.build_seconds`) that the prebuild, build,
+verification and publication then share; see the
+[deadline contract](../../apps/docs-site/src/content/docs/configuration.mdx#deadlines)
+for subprocess caps and the teardown exception. A synchronous cache copy already
+in progress is not interrupted; its completion is checked against the window
+before publication. Output retirement
+and readiness run outside this window. Running that budget out while waiting is a refusal (`BUILD_CONTENDED`,
+exit 4) whose next action names the holder run, whether it is alive, whether
+its recorded build group still runs, and how long this run waited, for example
+`BUILD_CONTENDED: native-build-ios is held by run <id> (alive: yes; no build process for 9 min); waited 600 s of the budget. Next: wait for that run or re-run once later; if the holder is dead, run its qaren cleanup from its home (its resources only).`
+After 120 s of a live holder with no build group running the wait notes
+`holder_idle_after_build`; a live or unproven holder is never taken. Running
+the budget out after the claim is `BUILD_FAILED`. The receipt's `build_lock`
+reports `holder`, `waited_s`, `holder_alive`, `holder_build_process`,
+`hold_s`, `no_build_observed_s` and `observation` (`none`, `observed` or
+`unreadable`), never a home, lock path, token, PID or command, and failures on
+these paths carry a `recovery` object with the ordered recovery ladder and
+whether this run must clean up its own resources. `qaren doctor` reports the
+lock's current state as `native-build-lock` without claiming it. A run that
+cannot observe its own process identity refuses `PREREQ_MISSING` before
+claiming. An unresolved release stops the run (`RUN_RECORD_UPDATE_FAILED`)
+and the lock stays recorded for `qaren cleanup`.
+Android claims before allocation, refuses a live holder at once and can adopt
+a provably dead holder's lock. iOS recovery follows the
+[cleanup and orphaned-lock proof rules](#ios-admission-and-cleanup).
+The lock is released after publication (iOS), after preparation (Android) or
+by cleanup, only when owned build authority is retired.
 
 **Credential-authorized dependency prewarming.** Under `deps.policy:
 require-prewarm`, `qaren prewarm <scenario>` is the one deliberate network
@@ -4081,7 +4186,7 @@ prepare 37s / 48 subprocesses → `ready`, status 8/8, cleanup removed all six
 resources, idempotent re-cleanup `cleaned`. The same independent
 post-cleanup verification passed again. Receipts, device screenshots, and
 the rendered proof card live in
-[`docs/proof/2026-08-12-qaren-exact-head/`](https://github.com/Lykhoyda/rn-dev-agent-workspace/blob/main/docs/proof/2026-08-12-qaren-exact-head/PROOF.md);
+[`docs/proof/2026-08-12-rn-qa-exact-head/`](https://github.com/Lykhoyda/qaren-workspace/blob/main/docs/proof/2026-08-12-rn-qa-exact-head/PROOF.md);
 every receipt there is pinned to the head that produced it (`f3e1e43`), which
 predates the later corrections documented above — lease release keyed on the
 tunnel port, worktree-fingerprint drift, monotonic deadlines, the atomic
@@ -4092,7 +4197,7 @@ run-id claim, and persist-before-allocate.
 Clean and incremental iOS simulator journeys were measured at candidate
 `75a8e76` (`git_dirty: false`) once the internal Data volume recovered to
 ~26 GiB free. Receipts, screenshots, and short videos:
-[`docs/proof/2026-08-17-qaren-issue-24/`](https://github.com/Lykhoyda/rn-dev-agent-workspace/blob/main/docs/proof/2026-08-17-qaren-issue-24/PROOF.md).
+[`docs/proof/2026-08-17-rn-qa-issue-24/`](https://github.com/Lykhoyda/qaren-workspace/blob/main/docs/proof/2026-08-17-rn-qa-issue-24/PROOF.md).
 
 | journey | prepare total | deps | allocate | build_and_ready | decision |
 | --- | --- | --- | --- | --- | --- |
