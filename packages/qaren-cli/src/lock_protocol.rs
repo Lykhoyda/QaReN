@@ -138,7 +138,10 @@ pub fn probe_machine_parent(parent: Result<&Path, String>, privileged: bool) -> 
     let root = match open_lock_root(parent, false) {
         Ok(OpenRoot::Ready(root)) => root,
         Ok(OpenRoot::Missing { canonical }) => {
-            return MachineParent::Unavailable(format!("lock parent {} is missing", canonical.display()));
+            return MachineParent::Unavailable(format!(
+                "lock parent {} is missing",
+                canonical.display()
+            ));
         }
         Err(WalkError::Missing(detail) | WalkError::Unsafe(detail)) => {
             return MachineParent::Unavailable(detail);
@@ -216,14 +219,22 @@ pub fn claim_lock(
     holder: &LockHolder,
     policy: LockPolicy,
 ) -> LockOutcome {
+    claim_lock_until(runner, lock_root, name, holder, policy, None)
+}
+
+pub(crate) fn claim_lock_until(
+    runner: &mut dyn Runner,
+    lock_root: &Path,
+    name: &str,
+    holder: &LockHolder,
+    policy: LockPolicy,
+    deadline_ms: Option<u64>,
+) -> LockOutcome {
     let euid = effective_uid();
     let root = match open_lock_root(lock_root, true) {
         Ok(OpenRoot::Ready(dir)) => dir,
         Ok(OpenRoot::Missing { canonical }) => {
-            return LockOutcome::Error(format!(
-                "cannot resolve lock root {}",
-                canonical.display()
-            ));
+            return LockOutcome::Error(format!("cannot resolve lock root {}", canonical.display()));
         }
         Err(error) => return LockOutcome::Error(error.detail()),
     };
@@ -233,6 +244,13 @@ pub fn claim_lock(
     let leaf = root.canonical.join(name);
     let mut adopted_stale = false;
     for _ in 0..2 {
+        if deadline_ms.is_some_and(|deadline| runner.monotonic_ms() >= deadline) {
+            return LockOutcome::Contended {
+                holder: read_owned_holder_at(&root, OsStr::new(name), euid),
+                liveness: None,
+                detail: "the build-lock wait budget was exhausted".into(),
+            };
+        }
         match publish_claim(&root, name, holder, euid) {
             Ok(()) => return LockOutcome::Claimed { adopted_stale },
             Err(PublishFault::Exists) => {}
@@ -259,7 +277,9 @@ pub fn claim_lock(
                 let liveness = existing
                     .as_ref()
                     .and_then(|held| held.identity.as_ref())
-                    .map(|identity| probe_pid_identity(runner, identity));
+                    .map(|identity| {
+                        crate::runrecord::probe_pid_identity_until(runner, identity, deadline_ms)
+                    });
                 if policy == LockPolicy::AdoptDead
                     && existing.is_some()
                     && matches!(
@@ -280,8 +300,9 @@ pub fn claim_lock(
                         Take::Lost => continue,
                         Take::Restored(isolated) => {
                             return LockOutcome::Contended {
-                                holder: isolated
-                                    .or_else(|| read_owned_holder_at(&root, OsStr::new(name), euid)),
+                                holder: isolated.or_else(|| {
+                                    read_owned_holder_at(&root, OsStr::new(name), euid)
+                                }),
                                 liveness: None,
                                 detail: format!(
                                     "lock {} was re-claimed while adopting a stale holder",
@@ -400,7 +421,8 @@ pub fn release_lock(dir: &Path, expected_holder: &str, expected_run_id: &str) ->
             if isolated.is_some() {
                 ReleaseOutcome::Foreign(format!(
                     "lock {} is {described}, not {:?}",
-                    leaf.display(), expected_holder
+                    leaf.display(),
+                    expected_holder
                 ))
             } else {
                 ReleaseOutcome::Refused(format!(
@@ -766,9 +788,8 @@ fn open_slash(euid: u32) -> Result<OpenDir, WalkError> {
         )));
     }
     let file = unsafe { File::from_raw_fd(fd) };
-    let meta = fstat_file(&file).map_err(|error| {
-        WalkError::Failed(format!("cannot inspect /: {}", error.message))
-    })?;
+    let meta = fstat_file(&file)
+        .map_err(|error| WalkError::Failed(format!("cannot inspect /: {}", error.message)))?;
     if !is_dir(meta.mode) {
         return Err(WalkError::Failed("/ is not a directory".to_string()));
     }
@@ -790,7 +811,11 @@ fn open_slash(euid: u32) -> Result<OpenDir, WalkError> {
     Ok(dir)
 }
 
-fn create_private_component(parent: &OpenDir, name: &OsStr, euid: u32) -> Result<OpenDir, WalkError> {
+fn create_private_component(
+    parent: &OpenDir,
+    name: &OsStr,
+    euid: u32,
+) -> Result<OpenDir, WalkError> {
     validate_component(parent, name).map_err(WalkError::Failed)?;
     let c_name = c_component(name).map_err(WalkError::Failed)?;
     clear_errno();
@@ -833,7 +858,11 @@ fn create_private_component(parent: &OpenDir, name: &OsStr, euid: u32) -> Result
     Ok(created)
 }
 
-fn accept_existing_private(parent: &OpenDir, name: &OsStr, euid: u32) -> Result<OpenDir, WalkError> {
+fn accept_existing_private(
+    parent: &OpenDir,
+    name: &OsStr,
+    euid: u32,
+) -> Result<OpenDir, WalkError> {
     match lookup(parent, name)? {
         Lookup::Directory(dir)
             if dir.uid == euid && dir.mode & 0o022 == 0 && final_root_trusted(&dir, euid) =>
@@ -867,7 +896,8 @@ fn blocks_machine_parent(parent: &Path, missing: &[OsString]) -> bool {
     prospective == machine
         || next == machine
         || machine.starts_with(&next)
-        || ((prospective == machine || prospective.starts_with(machine)) && !parent.starts_with(machine))
+        || ((prospective == machine || prospective.starts_with(machine))
+            && !parent.starts_with(machine))
 }
 
 fn parent_allows_private_create(parent: &OpenDir, euid: u32) -> bool {
@@ -916,7 +946,11 @@ fn classify_leaf(root: &OpenDir, name: &OsStr, euid: u32) -> Leaf {
         return Leaf::Untrusted;
     }
     match open_directory(root, name, &c_name, &snap) {
-        Ok(dir) if dir.dev == snap.dev && dir.ino == snap.ino && owned_private(dir.uid, dir.mode, euid) => {
+        Ok(dir)
+            if dir.dev == snap.dev
+                && dir.ino == snap.ino
+                && owned_private(dir.uid, dir.mode, euid) =>
+        {
             Leaf::Owned(dir)
         }
         Ok(_) => Leaf::Untrusted,
@@ -930,7 +964,12 @@ fn owned_private(uid: u32, mode: u32, euid: u32) -> bool {
     uid == euid && mode & 0o022 == 0
 }
 
-fn publish_claim(root: &OpenDir, name: &str, holder: &LockHolder, euid: u32) -> Result<(), PublishFault> {
+fn publish_claim(
+    root: &OpenDir,
+    name: &str,
+    holder: &LockHolder,
+    euid: u32,
+) -> Result<(), PublishFault> {
     let staging = fresh_name("claim", name);
     let created = match mkdir_exclusive(root, OsStr::new(&staging)) {
         Ok(dir) => dir,
@@ -1008,10 +1047,12 @@ fn take_leaf(
     }
     match rename_lock_noreplace(root, &tombstone, &leaf) {
         Ok(()) => Take::Restored(isolated),
-        Err(error) if rename_is_collision(error) || rename_is_unsupported(error) => Take::Preserved {
-            holder: isolated,
-            path: root.canonical.join(tombstone),
-        },
+        Err(error) if rename_is_collision(error) || rename_is_unsupported(error) => {
+            Take::Preserved {
+                holder: isolated,
+                path: root.canonical.join(tombstone),
+            }
+        }
         Err(_) => Take::Preserved {
             holder: isolated,
             path: root.canonical.join(tombstone),
@@ -1067,7 +1108,8 @@ fn unlink_same(root: &OpenDir, name: &OsStr, claim: &OpenDir) -> Result<(), Remo
     let Ok(meta) = stat_at(root.fd(), &c_name, true) else {
         return Err(RemoveFault::Preserved);
     };
-    if meta.dev != claim.dev || meta.ino != claim.ino || meta.uid != claim.uid || !is_dir(meta.mode) {
+    if meta.dev != claim.dev || meta.ino != claim.ino || meta.uid != claim.uid || !is_dir(meta.mode)
+    {
         return Err(RemoveFault::Preserved);
     }
     clear_errno();
@@ -1174,28 +1216,44 @@ pub fn record_holder_group(
 ) -> Result<(), String> {
     let euid = effective_uid();
     let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
-        return Err(format!("lock path {} has no parent directory", dir.display()));
+        return Err(format!(
+            "lock path {} has no parent directory",
+            dir.display()
+        ));
     };
     let root = match open_lock_root(parent, false).map_err(WalkError::detail)? {
         OpenRoot::Ready(root) => root,
         OpenRoot::Missing { .. } => return Err(format!("lock {} is missing", dir.display())),
     };
     let Leaf::Owned(claim) = classify_leaf(&root, name, euid) else {
-        return Err(format!("lock {} is not a trusted same-user claim", dir.display()));
+        return Err(format!(
+            "lock {} is not a trusted same-user claim",
+            dir.display()
+        ));
     };
     let mut held = read_owned_holder(&claim, euid)
         .filter(|held| held.holder == expected_holder && held.run_id == expected_run_id)
-        .ok_or_else(|| format!("lock {} is not held by run {expected_run_id}", dir.display()))?;
+        .ok_or_else(|| {
+            format!(
+                "lock {} is not held by run {expected_run_id}",
+                dir.display()
+            )
+        })?;
     held.group = Some(pgid);
     let staged = fresh_name("holder", "json");
     let c_staged = c_component(OsStr::new(&staged))?;
     let c_holder = c_component(OsStr::new("holder.json"))?;
     let written = write_holder(&claim, &staged, &held, euid).and_then(|()| {
         clear_errno();
-        if unsafe { libc::renameat(claim.fd(), c_staged.as_ptr(), claim.fd(), c_holder.as_ptr()) } == 0 {
+        if unsafe { libc::renameat(claim.fd(), c_staged.as_ptr(), claim.fd(), c_holder.as_ptr()) }
+            == 0
+        {
             Ok(())
         } else {
-            Err(format!("cannot record lock holder group: {}", errno_message(last_errno())))
+            Err(format!(
+                "cannot record lock holder group: {}",
+                errno_message(last_errno())
+            ))
         }
     });
     if written.is_err() {
@@ -1249,9 +1307,7 @@ fn mkdir_exclusive(parent: &OpenDir, name: &OsStr) -> Result<OpenDir, MkdirExclu
         )));
     }
     match lookup(parent, name) {
-        Ok(Lookup::Directory(dir))
-            if dir.uid == effective_uid() && dir.mode & 0o777 == 0o700 =>
-        {
+        Ok(Lookup::Directory(dir)) if dir.uid == effective_uid() && dir.mode & 0o777 == 0o700 => {
             Ok(dir)
         }
         Ok(Lookup::Directory(dir)) => {
@@ -1328,7 +1384,11 @@ fn name_limit(fd: i32) -> Result<usize, String> {
 
 fn c_component(name: &OsStr) -> Result<CString, String> {
     let bytes = name.as_bytes();
-    if bytes.is_empty() || bytes.contains(&0) || bytes.contains(&b'/') || name == "." || name == ".."
+    if bytes.is_empty()
+        || bytes.contains(&0)
+        || bytes.contains(&b'/')
+        || name == "."
+        || name == ".."
     {
         return Err("lock name is not a single path component".to_string());
     }
@@ -1456,7 +1516,11 @@ struct StatFault {
 
 fn stat_at(dirfd: i32, name: &CStr, nofollow: bool) -> Result<Meta, StatFault> {
     let mut raw: libc::stat = unsafe { std::mem::zeroed() };
-    let flags = if nofollow { libc::AT_SYMLINK_NOFOLLOW } else { 0 };
+    let flags = if nofollow {
+        libc::AT_SYMLINK_NOFOLLOW
+    } else {
+        0
+    };
     clear_errno();
     if unsafe { libc::fstatat(dirfd, name.as_ptr(), &mut raw, flags) } != 0 {
         let code = last_errno();
@@ -1759,17 +1823,25 @@ mod lock_protocol_tests {
         let off = Some(OsStr::new("0"));
         let legacy = configured_lock_root(None, off, Some(home)).unwrap();
         assert_eq!(legacy, PathBuf::from("/tmp/qaren-home-a/.qaren/locks"));
-        assert_ne!(legacy, configured_lock_root(None, off, Some(other)).unwrap());
+        assert_ne!(
+            legacy,
+            configured_lock_root(None, off, Some(other)).unwrap()
+        );
         let machine = machine_lock_parent().unwrap().to_path_buf();
         assert_eq!(resolve_lock_root(None).unwrap(), machine);
         for value in [None, Some(OsStr::new("")), Some(OsStr::new("1"))] {
-            assert_eq!(configured_lock_root(None, value, Some(home)).unwrap(), machine);
+            assert_eq!(
+                configured_lock_root(None, value, Some(home)).unwrap(),
+                machine
+            );
             assert_eq!(configured_lock_root(None, value, None).unwrap(), machine);
         }
         assert!(configured_lock_root(None, Some(OsStr::new("true")), Some(home)).is_err());
         assert!(configured_lock_root(None, off, None).is_err());
         assert!(configured_lock_root(Some(OsStr::new("relative/locks")), off, Some(home)).is_err());
-        assert!(configured_lock_root(Some(OsStr::new("relative/locks")), None, Some(home)).is_err());
+        assert!(
+            configured_lock_root(Some(OsStr::new("relative/locks")), None, Some(home)).is_err()
+        );
         assert!(configured_lock_root(Some(OsStr::new("")), None, Some(home)).is_err());
         let dotted = OsStr::new("/tmp/../tmp/locks");
         assert!(configured_lock_root(Some(dotted), off, Some(home)).is_err());
@@ -1793,14 +1865,21 @@ mod lock_protocol_tests {
             let (root, warning) =
                 select_lock_root(None, None, home, || rename_probe_outcome(errno)).unwrap();
             assert_eq!(root, PathBuf::from("/tmp/qaren-rename-home/.qaren/locks"));
-            assert!(warning.unwrap().contains("exclusive lock rename is unsupported"));
-            let refused =
-                select_lock_root(None, Some(OsStr::new("1")), home, || rename_probe_outcome(errno))
-                    .unwrap_err();
-            assert!(refused.starts_with("machine lock root is unusable"), "{refused}");
+            assert!(warning
+                .unwrap()
+                .contains("exclusive lock rename is unsupported"));
+            let refused = select_lock_root(None, Some(OsStr::new("1")), home, || {
+                rename_probe_outcome(errno)
+            })
+            .unwrap_err();
+            assert!(
+                refused.starts_with("machine lock root is unusable"),
+                "{refused}"
+            );
         }
         for errno in [libc::EACCES, libc::EPERM, libc::EIO, libc::ENOSPC] {
-            let refused = select_lock_root(None, None, home, || rename_probe_outcome(errno)).unwrap_err();
+            let refused =
+                select_lock_root(None, None, home, || rename_probe_outcome(errno)).unwrap_err();
             assert!(refused.contains("cannot rename lock"), "{refused}");
         }
     }
@@ -1811,7 +1890,9 @@ mod lock_protocol_tests {
         let on = Some(OsStr::new("1"));
         for probe in [
             MachineParent::Failed("cannot stage lock: Permission denied".into()),
-            MachineParent::Unavailable("the caller is root, setuid or holds Linux capabilities".into()),
+            MachineParent::Unavailable(
+                "the caller is root, setuid or holds Linux capabilities".into(),
+            ),
         ] {
             let refused = select_lock_root(None, on, home, || probe).unwrap_err();
             let advice = lock_root_next_action(&refused).unwrap();
@@ -1826,8 +1907,13 @@ mod lock_protocol_tests {
             MachineParent::Unavailable("lock parent /run/lock is missing".into())
         })
         .unwrap_err();
-        assert!(lock_root_next_action(&homeless).unwrap().starts_with("set HOME"));
-        assert_eq!(lock_root_next_action("cannot create native cache root"), None);
+        assert!(lock_root_next_action(&homeless)
+            .unwrap()
+            .starts_with("set HOME"));
+        assert_eq!(
+            lock_root_next_action("cannot create native cache root"),
+            None
+        );
     }
 
     #[test]
@@ -1837,7 +1923,10 @@ mod lock_protocol_tests {
             std::process::id(),
             crate::timefmt::epoch_ms()
         ));
-        std::fs::DirBuilder::new().mode(0o700).create(&root_path).unwrap();
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&root_path)
+            .unwrap();
         let root = match open_lock_root(&root_path, false).unwrap() {
             OpenRoot::Ready(dir) => dir,
             OpenRoot::Missing { .. } => panic!("fixture directory is missing"),

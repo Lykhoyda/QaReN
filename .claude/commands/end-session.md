@@ -12,7 +12,7 @@ knowledge by owner, and returns reviewable handoffs without writing to another r
 
 | Owner | Canonical destination | Content |
 |---|---|---|
-| rn-dev-agent-workspace | [Engineering docs](https://github.com/Lykhoyda/rn-dev-agent-workspace/tree/main/docs/) | Process, planning, routine engineering decisions, bugs, stories, specifications, diagnostics, comparisons, and research |
+| qaren-workspace | [Engineering docs](https://github.com/Lykhoyda/qaren-workspace/tree/main/docs/) | Process, planning, routine engineering decisions, bugs, stories, specifications, diagnostics, comparisons, and research |
 | Anton Factory | [architect-docs](https://github.com/Lykhoyda/anton-factory/tree/main/architect-docs/) | Captain-approved architecture vision, ADRs, authority contracts, settled decisions, evidence indexes, and architecture changelogs |
 | rn-dev-agent | `apps/docs-site` | Public product and user documentation only |
 
@@ -43,7 +43,7 @@ not replace evidence gathering.
 ### Step 0 — Establish read-only sources
 
 - Use the canonical GitHub links above as the durable destinations.
-- If `../rn-dev-agent-workspace` exists, it may be inspected read-only for current IDs,
+- If `../qaren-workspace` exists, it may be inspected read-only for current IDs,
   formats, prior entries, and deduplication. Never modify it.
 - If Anton Factory is accessible, inspect architect-docs read-only to identify accepted
   architecture records and established handoff format. Never modify it.
@@ -72,7 +72,7 @@ For each candidate, choose exactly one primary owner:
 Session knowledge
 ├── Public product/user guidance ──► rn-dev-agent apps/docs-site
 ├── Captain-approved settled architecture ──► Anton Factory architect-docs
-└── Everything else engineering-related ──► rn-dev-agent-workspace docs
+└── Everything else engineering-related ──► qaren-workspace docs
 ```
 
 Draft workspace handoffs for:

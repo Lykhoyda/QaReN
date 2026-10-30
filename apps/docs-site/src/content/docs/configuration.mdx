@@ -95,6 +95,21 @@ exited or Metro has received no bundle request since launch.
 | `device_boot_seconds`  | `420`             |
 | `attach_seconds`       | `120`             |
 
+When an iOS run needs a native build, `build_seconds` is one window that
+starts when the run asks for the machine's native-build lock: waiting for
+another run's build, prebuild and pods, the native build, its verification and its cache
+publication, including persistence, all share it. Build subprocess timeouts are
+capped to the remaining window, and no new build command starts after expiry.
+Non-interruptible teardown commands and their process-identity reads keep their
+own timeouts and can run after expiry to stop the build and prove its group gone;
+unresolved cleanup retains ownership for `qaren cleanup`.
+A synchronous cache copy already in progress
+is not interrupted; its completion is checked before publication. Output
+retirement runs outside this window. A run that spends it waiting refuses
+`BUILD_CONTENDED` and names the run holding the lock. As for a cached build,
+install, launch and readiness then share a fresh `build_seconds` window, and
+Metro startup has a separate one.
+
 Each limit is a whole number of seconds from 30 through 7200 inclusive.
 Omit the block, write `deadlines: {}`, or write a bare
 `deadlines:` to keep every default. A field that is present overrides only
