@@ -211,6 +211,14 @@ impl FakeRunner {
                 if self.fault == "host_unknown" || (self.fault == "host_unknown_after" && !self.host_terminations.is_empty()) {
                     return CmdOutput::failed(1, "refused");
                 }
+                if self.fault == "host_core_changed" {
+                    let mut record = RunRecord::load(&self.root, "orphan-run").unwrap();
+                    record.resources.core_cleanup = Some(qaren::runrecord::CoreCleanupEvidence {
+                        run_id: record.run_id.clone(), pgid: 9000, at: "now".into(),
+                        outcome: GroupCleanupResult::Unresolved,
+                    });
+                    record.save(&self.root).unwrap();
+                }
                 if self.fault == "host_lease_changed"
                     || (self.fault == "host_lease_changed_after" && !self.host_terminations.is_empty())
                 {
@@ -729,6 +737,8 @@ fn missing_lease_without_host_checkpoint_refuses_even_when_phase_is_cleaned() {
     let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
     assert_eq!(receipt.result, ReceiptResult::Refused);
     assert!(receipt.cleanup["runner_host"].contains("lease proof is missing"));
+    assert_eq!(receipt.recovery.as_ref().unwrap().reason, RecoveryReason::LeaseUnproven);
+    assert_eq!(receipt.recovery.as_ref().unwrap().action, RecoveryAction::RetainAndReport);
     assert!(lease.lock_dir.exists());
     assert!(fake.mock.calls.is_empty());
     assert!(!RunRecord::load(&root, "orphan-run").unwrap().resources.runner_host_absent);
@@ -851,7 +861,7 @@ fn automatic_host_cleanup_never_terminates_and_keeps_its_existing_advice() {
 fn failed_explicit_host_cleanup_retains_the_lease_and_selects_exact_shutdown_advice() {
     for (fault, attempts) in [
         ("host_foreign", 0), ("host_unknown", 0), ("host_truncated", 0),
-        ("host_lease_changed", 0), ("host_token_changed", 0),
+        ("host_lease_changed", 0), ("host_token_changed", 0), ("host_core_changed", 0),
         ("host_terminate_error", 1), ("host_terminate_stderr", 1),
         ("host_terminate_timeout", 1), ("host_lease_changed_after", 1),
         ("host_survives", 1), ("host_unknown_after", 1),
@@ -869,10 +879,18 @@ fn failed_explicit_host_cleanup_retains_the_lease_and_selects_exact_shutdown_adv
         let failure = receipt.failure.unwrap();
         assert_eq!(failure.next_action.as_str(), receipt.next_action);
         let recovery = failure.recovery.unwrap();
-        assert_eq!(recovery.reason, RecoveryReason::HostCleanupFailed, "{fault}");
-        assert_eq!(recovery.action, RecoveryAction::RequestExactSimulatorShutdown, "{fault}");
-        assert_eq!(recovery.next_rung, Some(3));
-        assert!(recovery.destroys_state && recovery.requires_user_ok);
+        if matches!(fault, "host_lease_changed" | "host_token_changed" | "host_lease_changed_after" | "host_core_changed") {
+            let expected_reason = if fault == "host_core_changed" { RecoveryReason::CoreUnproven } else { RecoveryReason::LeaseUnproven };
+            assert_eq!(recovery.reason, expected_reason, "{fault}");
+            assert_eq!(recovery.action, RecoveryAction::RetainAndReport);
+            assert_eq!(recovery.next_rung, None);
+            assert!(!recovery.destroys_state && !recovery.requires_user_ok);
+        } else {
+            assert_eq!(recovery.reason, RecoveryReason::HostCleanupFailed, "{fault}");
+            assert_eq!(recovery.action, RecoveryAction::RequestExactSimulatorShutdown, "{fault}");
+            assert_eq!(recovery.next_rung, Some(3));
+            assert!(recovery.destroys_state && recovery.requires_user_ok);
+        }
     }
 }
 
@@ -917,7 +935,7 @@ fn invalid_explicit_host_authority_never_terminates() {
         assert!(fake.host_terminations.is_empty(), "{fault}");
         assert!(fake.signals.is_empty(), "{fault}");
         assert!(record.resources.lease.unwrap().lock_dir.exists(), "{fault}");
-        let expected = if matches!(fault, "wrong-device" | "empty-token") {
+        let expected = if matches!(fault, "wrong-device" | "empty-token" | "wrong-host-device") {
             RecoveryAction::RetainAndReport
         } else {
             RecoveryAction::RequestExactSimulatorShutdown
@@ -938,5 +956,41 @@ fn explicit_host_cleanup_preserves_a_holder_that_changes_between_bundles() {
     assert_eq!(fake.host_terminations, [RUNNER_HOST_BUNDLE_ID]);
     let holder = qaren::buildplan::read_holder(&record.resources.lease.unwrap().lock_dir).unwrap();
     assert_eq!(holder.holder, "later-holder");
-    assert_eq!(receipt.recovery.unwrap().action, RecoveryAction::RequestExactSimulatorShutdown);
+    assert_eq!(receipt.recovery.unwrap().action, RecoveryAction::RetainAndReport);
+}
+
+#[test]
+fn a_running_app_without_a_qaren_host_does_not_block_explicit_cleanup() {
+    let (_, record, mut fake) = fixture("QarenIosRunner");
+    fake.alive = false;
+    fake.fault = "host_foreign";
+    let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
+    assert_eq!(receipt.result, ReceiptResult::Cleaned);
+    assert_eq!(receipt.cleanup["runner_host"], "absent");
+    assert!(fake.host_terminations.is_empty());
+    assert!(!record.resources.lease.unwrap().lock_dir.exists());
+}
+
+#[test]
+fn explicit_host_cleanup_refuses_a_live_or_unknown_owner_after_recorded_driver_retirement() {
+    for fault in ["owner_live", "owner_unknown"] {
+        let (root, _, mut fake) = fixture("QarenIosRunner");
+        fake.alive = false;
+        fake.host_bundles = vec![qaren::adapters::ios::RUNNER_HOST_BUNDLE_ID];
+        fake.fault = "host_survives";
+        assert_ne!(fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver).result, ReceiptResult::Cleaned);
+        let mut record = RunRecord::load(&root, "orphan-run").unwrap();
+        assert!(record.resources.runner_drivers.is_empty());
+        record.resources.device_borrowed = false;
+        record.save(&root).unwrap();
+        let attempts = fake.host_terminations.len();
+        fake.fault = fault;
+        let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
+        assert_eq!(receipt.result, ReceiptResult::Refused, "{fault}");
+        assert_eq!(fake.host_terminations.len(), attempts);
+        assert!(!fake.simulator_deleted);
+        assert!(record.resources.lease.unwrap().lock_dir.exists());
+        assert_eq!(receipt.recovery.as_ref().unwrap().reason, RecoveryReason::OwnerUnproven);
+        assert_eq!(receipt.recovery.unwrap().action, RecoveryAction::RetainAndReport);
+    }
 }

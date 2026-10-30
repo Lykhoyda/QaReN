@@ -2393,6 +2393,9 @@ shutdown of only that simulator, obtain approval first if it is lent, then retry
 QaReN has no standalone shutdown command. Missing driver proof means retain and report;
 storage failures require restoring
 write access before one cleanup retry. Fresh preparation follows proven absence.
+Any unclean teardown keeps its original failure code and points `next_action` to
+this run's cleanup. Lost lease or owner proof selects retain-and-report advice,
+never simulator shutdown.
 
 When the leased simulator had no runner host as the
 core started, the run records the host as its own. Cleanup observes host absence

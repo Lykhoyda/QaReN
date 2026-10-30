@@ -1415,13 +1415,17 @@ fn cleanup_owned_runner_host(
     }
 }
 
-fn runner_host_reap_proven(record: &RunRecord, runs_root: &Path) -> bool {
+fn runner_host_reap_proof(
+    runner: &mut dyn Runner,
+    record: &RunRecord,
+    runs_root: &Path,
+) -> Result<(), crate::failure::RecoveryReason> {
+    use crate::failure::RecoveryReason;
     let Ok(saved) = RunRecord::load(runs_root, &record.run_id) else {
-        return false;
+        return Err(RecoveryReason::LeaseUnproven);
     };
     let drivers_retired = |record: &RunRecord| {
         record.resources.runner_drivers.is_empty()
-            && runner::core_quiescent(record)
             && record
                 .resources
                 .runner_driver_cleanup
@@ -1440,34 +1444,52 @@ fn runner_host_reap_proven(record: &RunRecord, runs_root: &Path) -> bool {
                         })
                 })
     };
-    runner::device_lease_matches(record, &saved)
-        && drivers_retired(record)
-        && drivers_retired(&saved)
-        && record.resources.runner_host.as_ref().is_none_or(|host| {
-            record
-                .resources
-                .ios_simulator
-                .as_ref()
-                .is_some_and(|sim| host.udid == sim.udid)
-        })
+    if !runner::device_lease_matches(record, &saved) {
+        return Err(RecoveryReason::LeaseUnproven);
+    }
+    let Some(owner) = saved.prepare.as_ref() else {
+        return Err(RecoveryReason::OwnerUnproven);
+    };
+    if !matches!(
+        probe_pid_identity(runner, owner),
+        PidLiveness::Dead | PidLiveness::AliveForeign
+    ) {
+        return Err(RecoveryReason::OwnerUnproven);
+    }
+    if !runner::core_quiescent(record) || !runner::core_quiescent(&saved) {
+        return Err(RecoveryReason::CoreUnproven);
+    }
+    if !drivers_retired(record) || !drivers_retired(&saved) {
+        return Err(RecoveryReason::HostCleanupFailed);
+    }
+    if record.resources.runner_host.as_ref().is_some_and(|host| {
+        record
+            .resources
+            .ios_simulator
+            .as_ref()
+            .is_none_or(|sim| host.udid != sim.udid)
+    }) {
+        return Err(RecoveryReason::LeaseUnproven);
+    }
+    Ok(())
 }
 
 fn cleanup_explicit_runner_hosts(
     runner: &mut dyn Runner,
-    record: &RunRecord,
+    record: &mut RunRecord,
     runs_root: &Path,
     udid: &str,
 ) -> Outcome {
     let Some(inventory) = ios::probe_runner_host_inventory(runner, udid) else {
         return Outcome::Unresolved("runner host inventory is unreadable; left untouched".into());
     };
+    if inventory.bundle_ids.is_empty() {
+        return Outcome::Absent;
+    }
     if inventory.foreign_app {
         return Outcome::Refused(
             "runner host inventory includes another application; left untouched".into(),
         );
-    }
-    if inventory.bundle_ids.is_empty() {
-        return Outcome::Absent;
     }
     for (index, bundle) in inventory.bundle_ids.into_iter().enumerate() {
         if index > 0 {
@@ -1485,9 +1507,10 @@ fn cleanup_explicit_runner_hosts(
                 continue;
             }
         }
-        if !runner_host_reap_proven(record, runs_root) {
+        if let Err(reason) = runner_host_reap_proof(runner, record, runs_root) {
+            mark_runner_reason(record, reason);
             return Outcome::Refused(
-                "runner host lease or driver retirement proof is unproven; left untouched".into(),
+                "runner host cleanup authority is unproven; left untouched".into(),
             );
         }
         let output = runner.run(&ios::terminate_spec(udid, bundle));
@@ -1498,10 +1521,9 @@ fn cleanup_explicit_runner_hosts(
         }
     }
     let presence = settled_runner_hosts(runner, udid, true);
-    if !runner_host_reap_proven(record, runs_root) {
-        return Outcome::Refused(
-            "runner host lease or driver retirement proof changed; lease retained".into(),
-        );
+    if let Err(reason) = runner_host_reap_proof(runner, record, runs_root) {
+        mark_runner_reason(record, reason);
+        return Outcome::Refused("runner host cleanup authority changed; lease retained".into());
     }
     match presence {
         ios::RunnerHostPresence::Absent => Outcome::Removed,
@@ -1739,7 +1761,7 @@ fn cleanup_runner_host_with_policy(
 ) -> Option<Outcome> {
     let mut cleanup_runner = crate::exec::CleanupRunner(runner);
     let runner: &mut dyn Runner = &mut cleanup_runner;
-    let sim = record.resources.ios_simulator.as_ref()?;
+    let udid = record.resources.ios_simulator.as_ref()?.udid.clone();
     if record.resources.core.is_none()
         && record.resources.core_cleanup.is_none()
         && record.resources.runner_host.is_none()
@@ -1763,6 +1785,9 @@ fn cleanup_runner_host_with_policy(
         return if completed {
             None
         } else {
+            if policy == RunnerCleanupPolicy::ReapRecordedDriver {
+                mark_runner_reason(record, crate::failure::RecoveryReason::LeaseUnproven);
+            }
             Some(Outcome::Refused(
                 "runner host lease proof is missing; left untouched".into(),
             ))
@@ -1774,6 +1799,9 @@ fn cleanup_runner_host_with_policy(
         return if completed {
             None
         } else {
+            if policy == RunnerCleanupPolicy::ReapRecordedDriver {
+                mark_runner_reason(record, crate::failure::RecoveryReason::LeaseUnproven);
+            }
             Some(Outcome::Refused(
                 "runner host lease proof does not match; left untouched".into(),
             ))
@@ -1802,11 +1830,11 @@ fn cleanup_runner_host_with_policy(
         ));
     }
     let outcome = if policy == RunnerCleanupPolicy::ReapRecordedDriver {
-        cleanup_explicit_runner_hosts(runner, record, runs_root, &sim.udid)
+        cleanup_explicit_runner_hosts(runner, record, runs_root, &udid)
     } else {
         match record.resources.runner_host.as_ref() {
-            Some(host) if host.udid == sim.udid => cleanup_owned_runner_host(runner, host),
-            _ => cleanup_scoped_runner_hosts(runner, &sim.udid),
+            Some(host) if host.udid == udid => cleanup_owned_runner_host(runner, host),
+            _ => cleanup_scoped_runner_hosts(runner, &udid),
         }
     };
     record.resources.runner_host_absent = outcome.clean();
