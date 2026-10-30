@@ -1,4 +1,4 @@
-import { withDeadline } from './domain/cancellation.js';
+import { withDeadline, throwIfCancelled, sleep } from './domain/cancellation.js';
 import WebSocket from 'ws';
 import { RingBuffer, DeviceBufferManager, makeDeviceKey } from './ring-buffer.js';
 import { getNetworkBufferManager } from './cdp/network-buffer-manager.js';
@@ -8,7 +8,7 @@ import { detectBridge } from './bridge-detector.js';
 import { logger } from './logger.js';
 import { performSetup, waitForReact } from './cdp/setup.js';
 import { HELPERS_VERSION, INJECTED_HELPERS } from './injected-helpers.js';
-import { resetState, setActiveFlag, clearActiveFlag, sleep } from './cdp/state.js';
+import { resetState, setActiveFlag, clearActiveFlag } from './cdp/state.js';
 import type { ResettableState } from './cdp/state.js';
 import { defaultTimeout, timeoutForMethod } from './cdp/timeout-config.js';
 import type { Platform } from './cdp/timeout-config.js';
@@ -61,6 +61,13 @@ import type {
   CDPClientState,
   EvaluateResult,
 } from './types.js';
+
+function evaluationErrorKind(error: unknown): NonNullable<EvaluateResult['errorKind']> {
+  if (error instanceof CDPRequestTimeoutError) return 'timeout';
+  if (error instanceof CDPProtocolError) return 'protocol';
+  if (error instanceof CDPTargetClosedError) return 'target_closed';
+  return 'other';
+}
 
 export interface AuthoritativeSessionPolicy {
   port: number;
@@ -1117,15 +1124,15 @@ export class CDPClient {
           result.exceptionDetails.text ??
           result.exceptionDetails.exception?.description ??
           'Unknown evaluation error',
+        errorKind: 'evaluation',
       };
     }
     return { value: result?.result?.value };
   }
 
   private async evaluateAsync(expression: string, timeoutMs?: number): Promise<EvaluateResult> {
-    // Hermes CDP doesn't support awaitPromise — use global slot + polling
-    // Values are JSON-serialized inside Hermes to handle non-serializable objects
-    // A deferred cleanup timer ensures the slot is removed even if the caller times out
+    // Hermes needs an expiring async slot because CDP awaitPromise is unsupported.
+    throwIfCancelled();
     const timeout = timeoutMs ?? defaultTimeout(this.effectivePlatform);
     const deadline = Date.now() + timeout;
     const slot = '__rn_agent_async_' + ++this.slotId + '_' + Date.now();
@@ -1153,6 +1160,13 @@ export class CDPClient {
       exceptionDetails?: { text?: string; exception?: { description?: string } };
     };
     try {
+      throwIfCancelled();
+      if (Date.now() >= deadline)
+        return {
+          error: 'Async evaluation deadline expired',
+          errorKind: 'timeout',
+          requestDispatched: false,
+        };
       initResult = (await this.sendWithTimeout(
         'Runtime.evaluate',
         {
@@ -1165,7 +1179,9 @@ export class CDPClient {
         },
       )) as typeof initResult;
     } catch (error) {
+      throwIfCancelled();
       return {
+        errorKind: evaluationErrorKind(error),
         error: `Async evaluation initialization failed: ${error instanceof Error ? error.message : String(error)}`,
         requestDispatched: requestDispatched && !(error instanceof CDPProtocolError),
       };
@@ -1177,6 +1193,7 @@ export class CDPClient {
           initResult.exceptionDetails.text ??
           initResult.exceptionDetails.exception?.description ??
           'Unknown evaluation error',
+        errorKind: 'evaluation',
       };
     }
     let asyncStartValue: unknown;
@@ -1188,20 +1205,23 @@ export class CDPClient {
       asyncStartValue = undefined;
     }
 
-    const clearAsyncSlot = () => {
-      void this.sendWithTimeout(
-        'Runtime.evaluate',
-        {
-          expression: `delete globalThis['${slot}']`,
-          returnByValue: true,
-        },
-        1000,
-      ).catch(() => {});
+    const clearAsyncSlot = async () => {
+      throwIfCancelled();
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return;
+      try {
+        await this.sendWithTimeout(
+          'Runtime.evaluate',
+          { expression: `delete globalThis['${slot}']`, returnByValue: true },
+          Math.min(1000, remaining),
+        );
+      } catch {
+        throwIfCancelled();
+      }
     };
 
-    // B45 fix: Use absolute deadline to guarantee total wall-clock stays within timeout.
-    // Each poll gets only the remaining time (min 500ms) to avoid overshooting.
     while (Date.now() < deadline) {
+      throwIfCancelled();
       const remaining = deadline - Date.now();
       if (remaining < 500) break;
       const pollTimeout = Math.min(remaining - 100, 1500);
@@ -1217,29 +1237,34 @@ export class CDPClient {
           pollTimeout,
         )) as { result?: { value?: unknown } };
       } catch (error) {
-        clearAsyncSlot();
+        throwIfCancelled();
+        await clearAsyncSlot();
         return {
           value: asyncStartValue,
+          errorKind: evaluationErrorKind(error),
           error: `Async evaluation polling failed: ${error instanceof Error ? error.message : String(error)}`,
         };
       }
 
       const val = check?.result?.value as { v?: string; e?: string } | undefined;
       if (val && typeof val === 'object') {
-        clearAsyncSlot();
+        throwIfCancelled();
+        await clearAsyncSlot();
 
-        if ('e' in val) return { value: asyncStartValue, error: String(val.e) };
+        if ('e' in val)
+          return { value: asyncStartValue, error: String(val.e), errorKind: 'evaluation' };
         try {
           return { value: JSON.parse(val.v as string) };
         } catch {
           return { value: val.v };
         }
       }
-      await sleep(100);
+      await sleep(Math.min(100, Math.max(0, deadline - Date.now())));
     }
 
-    clearAsyncSlot();
+    throwIfCancelled();
     return {
+      errorKind: 'timeout',
       value: asyncStartValue,
       error: 'Promise did not resolve within ' + timeout + 'ms',
     };

@@ -381,7 +381,7 @@ async function metro(t: TestContext, answer: RequestListener): Promise<string> {
     server.closeAllConnections();
     server.close();
   });
-  return `http://127.0.0.1:${(server.address() as AddressInfo).port}/?disableOnboarding=1`;
+  return `http://127.0.0.1:${(server.address() as AddressInfo).port}/?disableOnboarding=1&__expo_disable_onboarding=1&__expo_disable_fab=1&__expo_disable_auto_launch=1`;
 }
 
 test('a relaunch waits for two consecutive manifest answers inside half the dev client request timeout', async (t) => {
@@ -396,7 +396,12 @@ test('a relaunch waits for two consecutive manifest answers inside half the dev 
     res.end('{}');
   });
   assert.deepEqual(await awaitDevClientManifest(url, 60_000), { ms: 1_000, attempts: 5 });
-  const request = ['GET', '/?disableOnboarding=1', 'ios', 'application/expo+json,application/json'];
+  const request = [
+    'GET',
+    '/?disableOnboarding=1&__expo_disable_onboarding=1&__expo_disable_fab=1&__expo_disable_auto_launch=1',
+    'ios',
+    'application/expo+json,application/json',
+  ];
   assert.deepEqual(seen, Array(5).fill(request));
 });
 

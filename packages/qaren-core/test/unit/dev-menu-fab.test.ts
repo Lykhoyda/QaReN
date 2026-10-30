@@ -11,7 +11,7 @@ import { failResult, okResult, warnResult, type ToolResult } from '../../dist/ut
 import { createMockClient } from '../helpers/mock-cdp-client.js';
 import { parseEnvelope } from '../helpers/result-helpers.js';
 import { RunCancelledError, withCancellation } from '../../dist/domain/cancellation.js';
-import { nativeDevOverlayUncleared, type NativeObservation } from '../../dist/qa/capture.js';
+import { nativeDevOverlayObservation, type NativeObservation } from '../../dist/qa/capture.js';
 
 function run(preferences?: Record<string, unknown>) {
   const calls: { awaitPromise?: boolean; value?: unknown }[] = [];
@@ -88,21 +88,21 @@ for (const [name, preferences] of [
     const { calls, result } = run(preferences);
     const env = parseEnvelope(await result);
     assert.equal(env.ok, false);
-    assert.equal(env.code, 'DEV_MENU_HIDE_UNVERIFIED');
+    assert.equal(env.code, 'DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED');
     if (name !== 'a rejected preferences call') assert.equal(calls[0].value, 'unverified');
     assert.match(
       env.error ?? '',
       name === 'a rejected preferences call'
-        ? /the preferences call failed or timed out/
+        ? /the preferences call failed/
         : /the preferences did not read back hidden/,
     );
   });
 }
 
-test('D4: the walk hides the floating button before the other dev-menu actions', () => {
+test('D4: the walk closes an open menu before changing preferences', () => {
   assert.deepEqual(
     [...WALK_DEV_SETTINGS],
-    ['hideDevMenuFab', 'disableDevMenu', 'disableFastRefresh', 'hideDevMenu'],
+    ['hideDevMenu', 'hideDevMenuFab', 'disableDevMenu', 'disableFastRefresh'],
   );
 });
 
@@ -161,377 +161,221 @@ function nativeOverlay(surface: string): NativeObservation {
   };
 }
 
+type Overlay = ReturnType<typeof nativeDevOverlayObservation>;
+
 function overlays(
-  results: Partial<Record<DevAction, () => ToolResult>>,
-  overlayReads: Array<boolean | NativeObservation> = [false],
-  stopAfter?: DevAction,
+  reads: Array<Overlay | Error> = [{ state: 'clear', front: 'app' }],
+  settings: Partial<Record<DevAction, () => ToolResult>> = {},
+  budgetMs = 2000,
 ) {
   const calls: string[] = [];
+  const sleeps: number[] = [];
   const controller = new AbortController();
-  const done = withCancellation(controller.signal, () =>
-    clearDevOverlays({
-      async devSettings({ action }) {
-        calls.push(action);
-        if (action === stopAfter) controller.abort(new RunCancelledError());
-        return (results[action] ?? (() => okResult({ action, executed: true })))();
-      },
-      async devOverlayUncleared() {
-        calls.push('read');
-        const observation = overlayReads.length > 1 ? overlayReads.shift()! : overlayReads[0];
-        return typeof observation === 'boolean'
-          ? observation
-          : nativeDevOverlayUncleared(observation);
-      },
-      log: (message) => calls.push(`log ${message}`),
-      sleep: async () => {},
-    }),
-  );
-  return { calls, done };
-}
-
-const unverifiedFab = () =>
-  failResult(
-    'The Expo dev-client floating button could not be confirmed hidden.',
-    'DEV_MENU_HIDE_UNVERIFIED',
-  );
-
-const timedOutFab = () =>
-  failResult(
-    'The Expo dev-client floating button could not be confirmed hidden: the preferences call failed or timed out.',
-    'DEV_MENU_HIDE_UNVERIFIED',
-  );
-
-test('overlays: a timed-out floating-button hide is retried and the walk proceeds when the retry hides it', async () => {
-  let attempts = 0;
-  const { calls, done } = overlays({
-    hideDevMenuFab: () =>
-      attempts++ === 0 ? timedOutFab() : okResult({ action: 'hideDevMenuFab', executed: true }),
-  });
-  assert.equal(parseEnvelope(await done).ok, true);
-  assert.deepEqual(calls, [
-    'hideDevMenuFab',
-    'hideDevMenuFab',
-    'disableDevMenu',
-    'disableFastRefresh',
-    'hideDevMenu',
-    'read',
-  ]);
-});
-
-for (const [name, reads] of [
-  ['report the button hidden', [false]],
-  ['show the button', [true]],
-] as [string, boolean[]][]) {
-  test(`overlays: a floating-button hide that keeps failing refuses after the retries even when the reads ${name}`, async () => {
-    const { calls, done } = overlays({ hideDevMenuFab: unverifiedFab }, reads);
-    const env = parseEnvelope(await done);
-    assert.equal(env.ok, false);
-    assert.equal(env.code, 'DEV_MENU_HIDE_UNVERIFIED');
-    assert.match(env.error, /^The Expo dev-client floating button could not be confirmed hidden/);
-    assert.deepEqual(calls, ['hideDevMenuFab', 'hideDevMenuFab', 'hideDevMenuFab']);
-  });
-}
-
-test('overlays: a timed-out floating-button hide that keeps failing refuses with its reason', async () => {
-  const { calls, done } = overlays({ hideDevMenuFab: timedOutFab }, [false]);
-  const env = parseEnvelope(await done);
-  assert.equal(env.ok, false);
-  assert.equal(env.code, 'DEV_MENU_HIDE_UNVERIFIED');
-  assert.match(
-    env.error,
-    /^The Expo dev-client floating button could not be confirmed hidden: .*the preferences call failed or timed out/,
-  );
-  assert.deepEqual(calls, ['hideDevMenuFab', 'hideDevMenuFab', 'hideDevMenuFab']);
-});
-
-test('overlays: the preserved timeout reason reaches the refusal', async () => {
-  const { done } = overlays({ hideDevMenuFab: timedOutFab }, [true]);
-  const env = parseEnvelope(await done);
-  assert.equal(env.code, 'DEV_MENU_HIDE_UNVERIFIED');
-  assert.match(env.error, /the preferences call failed or timed out/);
-});
-
-test('overlays: an app without the preferences module passes and is still verified natively', async () => {
-  const { calls, done } = overlays({
-    hideDevMenuFab: () => warnResult({ action: 'hideDevMenuFab', executed: false }, 'no module'),
-  });
-  assert.equal(parseEnvelope(await done).ok, true);
-  assert.deepEqual(calls, [
-    'hideDevMenuFab',
-    'disableDevMenu',
-    'disableFastRefresh',
-    'hideDevMenu',
-    'read',
-  ]);
-});
-
-test('overlays: failed actions can pass only when native evidence proves clearance', async () => {
-  const { calls, done } = overlays(
-    {
-      disableDevMenu: () => failResult('Dev settings error: gone'),
-      hideDevMenu: () => failResult('not hidden', 'DEV_MENU_HIDE_FAILED'),
+  let clock = Math.ceil(performance.now());
+  const deps = {
+    deadline: clock + budgetMs,
+    now: () => clock,
+    async devSettings({ action, timeoutMs }: { action: DevAction; timeoutMs?: number }) {
+      assert.ok(timeoutMs! <= budgetMs);
+      calls.push(action);
+      return settings[action]?.() ?? okResult({ action, executed: true });
     },
-    [nativeOverlay('app')],
-  );
-  assert.equal(parseEnvelope(await done).ok, true);
-  assert.equal(calls.filter((c) => c.startsWith('log ')).length, 2);
-  assert.equal(calls.at(-1), 'read');
+    async observeDevOverlay(): Promise<Overlay> {
+      calls.push('read');
+      const result = reads.length > 1 ? reads.shift()! : reads[0];
+      if (result instanceof Error) throw result;
+      return result;
+    },
+    log: (message: string) => calls.push(`log ${message}`),
+    async sleep(ms: number) {
+      sleeps.push(ms);
+      clock += ms;
+    },
+  };
+  const run = (recover = false) =>
+    withCancellation(controller.signal, () =>
+      recover ? recoverDevOverlays(deps) : clearDevOverlays(deps),
+    );
+  return { calls, sleeps, deps, controller, run };
+}
+
+const clear: Overlay = { state: 'clear', front: 'app' };
+const unknown: Overlay = { state: 'unknown', error: 'coverage_incomplete' };
+const shown: Overlay = { state: 'shown', front: 'dev-fab' };
+
+test('overlays: a failed read and incomplete evidence retry until complete app evidence', async () => {
+  const fixture = overlays([new Error('private runner error'), unknown, clear]);
+  assert.equal(parseEnvelope(await fixture.run()).ok, true);
+  assert.equal(fixture.calls.filter((call) => call === 'read').length, 3);
+  assert.deepEqual(fixture.sleeps, [250, 250]);
+  assert.deepEqual(fixture.calls.slice(0, 4), [...WALK_DEV_SETTINGS]);
 });
 
-for (const surface of ['expo_dev_menu', 'react_native_dev_menu']) {
-  test(`overlays: ${surface} closing after the hide passes clearance`, async () => {
-    const { calls, done } = overlays({}, [nativeOverlay(surface), nativeOverlay('app')]);
-    const env = parseEnvelope(await done);
-    assert.equal(env.ok, true);
-    assert.equal(env.data.executed, true);
-    assert.deepEqual(calls, [
-      'hideDevMenuFab',
-      'disableDevMenu',
-      'disableFastRefresh',
-      'hideDevMenu',
-      'read',
-      'read',
-    ]);
-  });
+test('overlays: four incomplete reads do not exhaust the remaining startup budget', async () => {
+  const fixture = overlays([unknown, unknown, unknown, unknown, clear]);
+  assert.equal(parseEnvelope(await fixture.run()).ok, true);
+  assert.equal(fixture.calls.filter((call) => call === 'read').length, 5);
+});
 
-  test(`overlays: ${surface} still open after a failed hide is re-read and refused`, async () => {
-    const { calls, done } = overlays(
-      { hideDevMenu: () => failResult('not hidden', 'DEV_MENU_HIDE_FAILED') },
-      [nativeOverlay(surface)],
+test('overlays: complete chrome at deadline refuses as NOT_HIDDEN', async () => {
+  const fixture = overlays([shown], {}, 500);
+  const env = parseEnvelope(await fixture.run());
+  assert.equal(env.code, 'DEV_MENU_HIDE_UNVERIFIED_NOT_HIDDEN');
+  assert.match(env.error, /front=dev-fab/);
+  assert.equal(fixture.calls.filter((call) => call === 'read').length, 2);
+});
+
+test('overlays: shown then unknown at deadline reports the latest evidence', async () => {
+  const fixture = overlays([shown, unknown], {}, 500);
+  const env = parseEnvelope(await fixture.run());
+  assert.equal(env.code, 'DEV_MENU_HIDE_UNVERIFIED_READ_FAILED');
+  assert.match(env.error, /last_error=coverage_incomplete/);
+  assert.doesNotMatch(env.error, /front=dev/);
+});
+
+test('overlays: permanent failed reads expose only their class and stop at the deadline', async () => {
+  const fixture = overlays([new Error('private runner error')], {}, 620);
+  const env = parseEnvelope(await fixture.run());
+  assert.equal(env.code, 'DEV_MENU_HIDE_UNVERIFIED_READ_FAILED');
+  assert.match(env.error, /reads=3; evaluations=1; elapsed_ms=620; last_error=other/);
+  assert.doesNotMatch(env.error, /private runner error/);
+  assert.deepEqual(fixture.sleeps, [250, 250, 120]);
+});
+
+test('overlays: fading chrome is retried and still needs complete clear evidence', async () => {
+  assert.equal(parseEnvelope(await overlays([shown, shown, clear]).run()).ok, true);
+});
+
+for (const [surface, changes, state] of [
+  ['app', {}, 'clear'],
+  ['expo_dev_menu', {}, 'shown'],
+  ['react_native_dev_menu', {}, 'shown'],
+  ['app', { truncated: true }, 'unknown'],
+  ['app', { snapshotVerdict: undefined }, 'unknown'],
+  ['unknown', {}, 'unknown'],
+  ['unrecognized', {}, 'unknown'],
+  ['dev_client_picker', {}, 'unknown'],
+] as const) {
+  test(`observation: ${surface} with ${JSON.stringify(changes)} is ${state}`, () => {
+    assert.equal(
+      nativeDevOverlayObservation({ ...nativeOverlay(surface), ...changes }).state,
+      state,
     );
-    const env = parseEnvelope(await done);
-    assert.equal(env.ok, false);
-    assert.equal(env.code, 'DEV_MENU_HIDE_UNVERIFIED');
-    assert.equal(calls.filter((call) => call === 'read').length, 4);
-    assert.equal(calls.filter((call) => call === 'hideDevMenu').length, 1);
   });
 }
 
-test('overlays: incomplete or unknown native evidence never proves clearance', async () => {
-  for (const observation of [
-    { ...nativeOverlay('app'), truncated: true },
-    { ...nativeOverlay('app'), snapshotVerdict: undefined },
-  ]) {
-    const { done } = overlays({}, [observation]);
-    assert.equal(parseEnvelope(await done).code, 'DEV_MENU_HIDE_UNVERIFIED');
+for (const subreason of ['EVALUATE_TIMEOUT', 'EVALUATE_FAILED'] as const) {
+  test(`overlays: three failing FAB evaluations preserve ${subreason}`, async () => {
+    const fixture = overlays([clear], {
+      hideDevMenuFab: () =>
+        failResult('private evaluation detail', `DEV_MENU_HIDE_UNVERIFIED_${subreason}`),
+    });
+    const env = parseEnvelope(await fixture.run());
+    assert.equal(env.code, `DEV_MENU_HIDE_UNVERIFIED_${subreason}`);
+    assert.doesNotMatch(env.error, /private evaluation detail/);
+    assert.equal(fixture.calls.filter((call) => call === 'hideDevMenuFab').length, 3);
+    assert.ok(!fixture.calls.includes('read'));
+  });
+}
+
+test('overlays: transient FAB evaluation failure retries before native proof', async () => {
+  let attempt = 0;
+  const fixture = overlays([clear], {
+    hideDevMenuFab: () =>
+      attempt++ === 0
+        ? failResult('timeout', 'DEV_MENU_HIDE_UNVERIFIED_EVALUATE_TIMEOUT')
+        : okResult({ executed: true }),
+  });
+  assert.equal(parseEnvelope(await fixture.run()).ok, true);
+  assert.equal(attempt, 2);
+});
+
+test('overlays: an unavailable preferences module still requires native proof', async () => {
+  const fixture = overlays([clear], {
+    hideDevMenuFab: () => warnResult({ executed: false }, 'no module'),
+  });
+  assert.equal(parseEnvelope(await fixture.run()).ok, true);
+  assert.equal(fixture.calls.at(-1), 'read');
+});
+
+test('overlays: cancellation blocks the next action', async () => {
+  const fixture = overlays();
+  fixture.deps.devSettings = async ({ action }) => {
+    fixture.calls.push(action);
+    fixture.controller.abort(new RunCancelledError());
+    return okResult({ executed: true });
+  };
+  await assert.rejects(fixture.run(), /RUN_CANCELLED/);
+  assert.deepEqual(fixture.calls, ['hideDevMenu']);
+});
+
+test('overlays: authority errors are never treated as uncertain reads', async () => {
+  const { SessionAuthorityError } = await import('../../dist/domain/authority-error.js');
+  const authority = new SessionAuthorityError('SESSION_OWNER_LOST', 'owner gone');
+  const fixture = overlays([authority]);
+  await assert.rejects(fixture.run(), (error) => error === authority);
+});
+
+test('recovery: complete clear evidence and a no-op hide stay a no-op', async () => {
+  const fixture = overlays([clear], {
+    hideDevMenu: () => okResult({ executed: false }),
+  });
+  assert.equal(parseEnvelope(await fixture.run(true)).data.executed, false);
+  assert.deepEqual(fixture.calls, ['read', 'hideDevMenu']);
+});
+
+test('recovery: unknown evidence re-proves clearance after hiding', async () => {
+  const fixture = overlays([unknown, clear]);
+  assert.equal(parseEnvelope(await fixture.run(true)).ok, true);
+  assert.equal(fixture.calls.filter((call) => call === 'hideDevMenu').length, 1);
+  assert.equal(fixture.calls.at(-1), 'read');
+});
+
+test('Android: Fast Refresh reload is marked and proven; recovery never repeats it', async () => {
+  for (const recover of [false, true]) {
+    const fixture = overlays(recover ? [shown, clear] : [clear]);
+    const deps = {
+      ...fixture.deps,
+      fastRefreshReload: {
+        async mark() {
+          fixture.calls.push('mark');
+        },
+        async settled() {
+          fixture.calls.push('settled');
+        },
+      },
+    };
+    assert.equal(
+      parseEnvelope(await (recover ? recoverDevOverlays(deps) : clearDevOverlays(deps))).ok,
+      true,
+    );
+    if (recover) {
+      assert.ok(!fixture.calls.includes('disableFastRefresh'));
+      assert.ok(!fixture.calls.includes('mark'));
+    } else {
+      const mark = fixture.calls.indexOf('mark');
+      assert.deepEqual(fixture.calls.slice(mark, mark + 3), [
+        'mark',
+        'disableFastRefresh',
+        'settled',
+      ]);
+    }
   }
 });
 
-test('overlays: a stop between actions halts before the next action', async () => {
-  const { calls, done } = overlays({}, [false], 'hideDevMenuFab');
-  await assert.rejects(done, /RUN_CANCELLED/);
-  assert.deepEqual(calls, ['hideDevMenuFab']);
-});
-
-test('overlays: a floating button that stays on screen refuses with the unverified code', async () => {
-  const { calls, done } = overlays({}, [true]);
-  const env = parseEnvelope(await done);
-  assert.equal(env.ok, false);
-  assert.equal(env.code, 'DEV_MENU_HIDE_UNVERIFIED');
-  assert.ok(calls.filter((c) => c === 'read').length > 1);
-});
-
-test('overlays: a verification read that fails refuses with the unverified code and its reason', async () => {
-  const calls: string[] = [];
-  const env = parseEnvelope(
-    await clearDevOverlays({
-      devSettings: async ({ action }) => okResult({ action, executed: true }),
-      async devOverlayUncleared() {
-        calls.push('read');
-        throw new Error('NATIVE_CAPTURE_FAILED: runner gone');
+test('Android: an unproven reload aborts before native proof', async () => {
+  const fixture = overlays();
+  await assert.rejects(
+    clearDevOverlays({
+      ...fixture.deps,
+      fastRefreshReload: {
+        async mark() {},
+        async settled() {
+          throw new Error('reload unproven');
+        },
       },
-      log: () => {},
-      sleep: async () => {},
     }),
+    /reload unproven/,
   );
-  assert.equal(env.ok, false);
-  assert.equal(env.code, 'DEV_MENU_HIDE_UNVERIFIED');
-  assert.match(env.error, /runner gone/);
-  assert.ok(calls.length > 1);
-});
-
-test('overlays: a floating button still fading out is re-read until it is gone', async () => {
-  const { done } = overlays({}, [true, true, false]);
-  assert.equal(parseEnvelope(await done).ok, true);
-});
-
-for (const [name, result] of [
-  ['a lost connection', () => failResult('CDP not connected', 'NOT_CONNECTED')],
-  [
-    'a thrown evaluate',
-    () => {
-      throw new Error('WebSocket closed');
-    },
-  ],
-] as [string, () => ToolResult][]) {
-  test(`overlays: ${name} on every floating-button hide refuses with the unverified code`, async () => {
-    const { calls, done } = overlays({ hideDevMenuFab: result }, [false]);
-    const env = parseEnvelope(await done);
-    assert.equal(env.ok, false);
-    assert.equal(env.code, 'DEV_MENU_HIDE_UNVERIFIED');
-    assert.match(
-      env.error,
-      name === 'a lost connection' ? /CDP not connected/ : /WebSocket closed/,
-    );
-    assert.deepEqual(calls, ['hideDevMenuFab', 'hideDevMenuFab', 'hideDevMenuFab']);
-  });
-}
-
-function recovery(hide: () => ToolResult, initialOverlay: boolean | NativeObservation) {
-  const calls: string[] = [];
-  let reads = 0;
-  const done = recoverDevOverlays({
-    async devSettings({ action }) {
-      calls.push(action);
-      return action === 'hideDevMenu' && calls.filter((c) => c === 'hideDevMenu').length === 1
-        ? hide()
-        : okResult({ action, executed: true });
-    },
-    async devOverlayUncleared() {
-      calls.push('read');
-      if (reads++ !== 0) return nativeDevOverlayUncleared(nativeOverlay('app'));
-      return typeof initialOverlay === 'boolean'
-        ? initialOverlay
-        : nativeDevOverlayUncleared(initialOverlay);
-    },
-    log: () => {},
-    sleep: async () => {},
-  });
-  return { calls, done };
-}
-
-const noMenu = () =>
-  okResult({ action: 'hideDevMenu', executed: false, outcome: 'no_menu_present' });
-
-test('recovery: a hidden dev menu re-runs the overlay clearing', async () => {
-  const { calls, done } = recovery(
-    () => okResult({ action: 'hideDevMenu', executed: true }),
-    false,
-  );
-  assert.equal(parseEnvelope(await done).ok, true);
-  assert.deepEqual(calls, [
-    'read',
-    'hideDevMenu',
-    'hideDevMenuFab',
-    'disableDevMenu',
-    'disableFastRefresh',
-    'hideDevMenu',
-    'read',
-  ]);
-});
-
-test('recovery: a floating button in front is cleared even with no menu to hide', async () => {
-  const { calls, done } = recovery(noMenu, true);
-  const env = parseEnvelope(await done);
-  assert.equal(env.ok, true);
-  assert.equal(env.data.executed, true);
-  assert.ok(calls.includes('hideDevMenuFab'));
-});
-
-for (const surface of ['expo_dev_menu', 'react_native_dev_menu']) {
-  test(`recovery: ${surface} must re-prove clearance even after a no-op hide`, async () => {
-    const { calls, done } = recovery(noMenu, nativeOverlay(surface));
-    const env = parseEnvelope(await done);
-    assert.equal(env.ok, true);
-    assert.equal(env.data.executed, true);
-    assert.ok(calls.includes('hideDevMenuFab'));
-    assert.equal(calls.filter((call) => call === 'read').length, 2);
-  });
-}
-
-test('recovery: nothing to hide stays a no-op the walker does not count', async () => {
-  const { calls, done } = recovery(noMenu, false);
-  assert.equal(parseEnvelope(await done).data.executed, false);
-  assert.deepEqual(calls, ['read', 'hideDevMenu']);
-});
-
-test('recovery: a failed dev-menu hide is returned as it is', async () => {
-  const { calls, done } = recovery(
-    () => failResult('not hidden', 'DEV_MENU_HIDE_UNVERIFIED'),
-    true,
-  );
-  assert.equal(parseEnvelope(await done).code, 'DEV_MENU_HIDE_UNVERIFIED');
-  assert.deepEqual(calls, ['read', 'hideDevMenu']);
-});
-
-// Android reloads the JS bundle whenever hot loading is set; the walk must not read the reloading app.
-function reloading(
-  disable: () => ToolResult = () => okResult({ action: 'disableFastRefresh', executed: true }),
-  settled: () => Promise<void> = async () => {},
-) {
-  const calls: string[] = [];
-  const deps = {
-    async devSettings({ action }: { action: DevAction }) {
-      calls.push(action);
-      return action === 'disableFastRefresh' ? disable() : okResult({ action, executed: true });
-    },
-    async devOverlayUncleared() {
-      calls.push('read');
-      return false;
-    },
-    log: (message: string) => calls.push(`log ${message}`),
-    sleep: async () => {},
-    fastRefreshReload: {
-      async mark() {
-        calls.push('mark');
-      },
-      async settled() {
-        calls.push('settled');
-        await settled();
-      },
-    },
-  };
-  return { calls, deps };
-}
-
-test('overlays: a reloading Fast Refresh setting is marked before and proven settled before the menu hide and reads', async () => {
-  const { calls, deps } = reloading();
-  assert.equal(parseEnvelope(await clearDevOverlays(deps)).ok, true);
-  assert.deepEqual(calls, [
-    'hideDevMenuFab',
-    'disableDevMenu',
-    'mark',
-    'disableFastRefresh',
-    'settled',
-    'hideDevMenu',
-    'read',
-  ]);
-});
-
-for (const [name, disable] of [
-  ['unavailable', () => warnResult({ action: 'disableFastRefresh', executed: false }, 'none')],
-  ['failed', () => failResult('Dev settings error: gone')],
-] as [string, () => ToolResult][]) {
-  test(`overlays: an ${name} Fast Refresh setting reloads nothing, so nothing waits on a reload`, async () => {
-    const { calls, deps } = reloading(disable);
-    assert.equal(parseEnvelope(await clearDevOverlays(deps)).ok, true);
-    assert.ok(!calls.includes('settled'), calls.join());
-    assert.equal(calls.at(-1), 'read');
-  });
-}
-
-test('overlays: a reload that is never proven settled refuses before any later action or step', async () => {
-  const { calls, deps } = reloading(undefined, async () => {
-    throw Object.assign(new Error('the reload never finished'), { code: 'CDP_NOT_CONNECTED' });
-  });
-  await assert.rejects(clearDevOverlays(deps), /the reload never finished/);
-  assert.equal(calls.at(-1), 'settled');
-});
-
-test('recovery: a reloading Fast Refresh setting is not sent again mid-walk', async () => {
-  const { calls, deps } = reloading();
-  let reads = 0;
-  deps.devOverlayUncleared = async () => {
-    calls.push('read');
-    return reads++ === 0;
-  };
-  assert.equal(parseEnvelope(await recoverDevOverlays(deps)).ok, true);
-  assert.deepEqual(calls, [
-    'read',
-    'hideDevMenu',
-    'hideDevMenuFab',
-    'disableDevMenu',
-    'hideDevMenu',
-    'read',
-  ]);
+  assert.ok(!fixture.calls.includes('read'));
 });

@@ -1954,7 +1954,7 @@ fn assert_ios_ready(mock: &MockRunner, repo: &std::path::Path, receipt: qaren::r
             UDID,
             "com.rndevagent.testapp",
             "--initialUrl",
-            "http://127.0.0.1:8791/?disableOnboarding=1"
+            "http://127.0.0.1:8791/?disableOnboarding=1&__expo_disable_onboarding=1&__expo_disable_fab=1&__expo_disable_auto_launch=1"
         ]
     );
 }

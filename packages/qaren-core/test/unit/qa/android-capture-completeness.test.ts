@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
-import { captureScreen, nativeDevOverlayUncleared } from '../../../dist/qa/capture.js';
+import { captureScreen, nativeDevOverlayObservation } from '../../../dist/qa/capture.js';
 import { keyboardCoversElement } from '../../../dist/qa/screen.js';
 import { NativeSnapshotIncomplete } from '../../../dist/qa/private-input.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
@@ -367,13 +367,13 @@ test('scrolled-out pager pages past the viewport edge keep the walk-start overla
       qaReadOnly: true,
     }),
   );
-  assert.equal(
-    nativeDevOverlayUncleared({
+  assert.deepEqual(
+    nativeDevOverlayObservation({
       ...envelope.data,
       snapshotVerdict: envelope.meta.snapshotVerdict,
       surface: 'app',
     }),
-    false,
+    { state: 'clear', front: 'app' },
   );
 
   const screen = await capture(data);

@@ -290,6 +290,16 @@ impl Failure {
         self
     }
 
+    pub fn core_refusal_next_action(code: &str) -> &'static str {
+        match code {
+            "DEV_MENU_HIDE_UNVERIFIED_READ_FAILED" | "DEV_MENU_HIDE_UNVERIFIED_EVALUATE_TIMEOUT" =>
+                "re-run once without --fresh-install or --restart-device; if build work is active, wait for it to finish first",
+            "DEV_MENU_HIDE_UNVERIFIED_NOT_HIDDEN" | "DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED" =>
+                "re-run once without --fresh-install; if it persists, report the value-free refusal",
+            _ => "resolve the refusal, then re-run",
+        }
+    }
+
     pub fn cancelled(phase: &str, reason: &str) -> Self {
         Failure::new(
             phase,
