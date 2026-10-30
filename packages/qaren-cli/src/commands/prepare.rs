@@ -5288,11 +5288,16 @@ mod launch_tests {
 
     #[test]
     fn recording_a_build_releases_lock_before_retirement() {
+        use std::os::unix::fs::DirBuilderExt;
+
         for workspace in [false, true] {
-            let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("target")
-                .join(format!("retirement-{}-{workspace}", std::process::id()));
-            std::fs::create_dir(&root).unwrap();
+            let root = std::env::temp_dir()
+                .join(format!("qaren-retirement-{}-{workspace}", std::process::id()));
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(&root)
+                .unwrap();
+            let root = root.canonicalize().unwrap();
             let mut scenario: Scenario =
                 serde_yaml::from_str(include_str!("../../scenarios/ios-simulator.yaml")).unwrap();
             if workspace {
@@ -5403,7 +5408,7 @@ mod launch_tests {
                 expo_unavailable: None,
             };
             let retirement = record_build_result(&mut ctx, &fp).unwrap();
-            assert!(retirement.is_some());
+            assert!(retirement.is_some(), "{:?}", ctx.notes);
             assert!(lock_dir.is_dir());
             assert!(app.is_dir());
             finish_ios_build(&mut ctx, Ok(retirement), |ctx, source| {
