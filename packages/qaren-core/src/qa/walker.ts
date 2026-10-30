@@ -3,6 +3,7 @@ import {
   outsideTargetChange,
   PRESS_NOT_REGISTERED_REASON,
   PRESS_OUTSIDE_CHANGE_REASON,
+  selectionPressGuidance,
   type PressEvidence,
 } from './selection-press.js';
 import { cropPng, stablePixelChange, type PixelCrop, type PixelScale } from './tap-pixels.js';
@@ -2359,6 +2360,7 @@ async function walkBlockScoped(
           currentAttempt = attempt;
           let selectionTarget: Element | undefined;
           let selectionDeadline = Infinity;
+          let selectionStartedAt = 0;
           const settling = (item.kind === 'press' || item.kind === 'fill') && sequence.momentum;
           const held = cached?.item === item && !settling ? cached : undefined;
           let before: Observation;
@@ -2712,7 +2714,10 @@ async function walkBlockScoped(
                 selectionPressCandidate(element, before.screen)
                   ? element
                   : undefined;
-              if (selectionTarget) selectionDeadline = observationDeadline(before.timing);
+              if (selectionTarget) {
+                selectionDeadline = observationDeadline(before.timing);
+                selectionStartedAt = deps.now();
+              }
               act = await mutate(item, before, async (context) => {
                 return item.kind === 'press'
                   ? deps.press(ref!, context)
@@ -2923,9 +2928,7 @@ async function walkBlockScoped(
             if (!selectionExited && !act!.proven && current?.selected !== true) {
               return refusePress(
                 'PRESS_NOT_REGISTERED',
-                evidence().outsideTargetChange
-                  ? PRESS_OUTSIDE_CHANGE_REASON
-                  : PRESS_NOT_REGISTERED_REASON,
+                `${evidence().outsideTargetChange ? PRESS_OUTSIDE_CHANGE_REASON : PRESS_NOT_REGISTERED_REASON} ${selectionPressGuidance(captures, observed.timing.completedAt - selectionStartedAt)}`,
               );
             }
             deps.pressReadback?.(undefined);

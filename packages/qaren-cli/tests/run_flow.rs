@@ -10004,7 +10004,7 @@ fn unverified_selection_receipts_keep_evidence_guidance_and_ordered_recovery() {
             assert!(failure.code.is_refusal());
         }
         let expected = if code == "PRESS_NOT_REGISTERED" {
-            "ask_app_team_disable_horizontal_list_scrolling_or_expose_selection"
+            "rerun_then_ask_app_team_expose_selection_in_row_list"
         } else if code == "NATIVE_CAPTURE_UNAVAILABLE" {
             "reprepare_after_capture_recovery"
         } else {

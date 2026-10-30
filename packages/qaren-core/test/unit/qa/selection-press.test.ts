@@ -236,6 +236,25 @@ test('row buttons refuse outside semantic changes after one tap and one read-onl
   assert.doesNotMatch(JSON.stringify(outcome), /CANARY_OUTSIDE/);
 });
 
+test('selection refusal gives the exact recovery guidance with observed count and duration', async () => {
+  const f = rowFake([rowChips()]);
+  let clock = 0;
+  f.deps.now = () => clock;
+  const capture = f.deps.captureScreen;
+  f.deps.captureScreen = async (...args) => {
+    clock += 25;
+    return capture(...args);
+  };
+  const outcome = await walkBlock(rowTap, f.deps);
+  assert.equal(outcome.refusal?.code, 'PRESS_NOT_REGISTERED');
+  assert.ok(
+    outcome.refusal.message.endsWith(
+      "The tap did not change the control's selected state (2 observations over 50 ms); the control sits in a row-shaped scrolling list, which can swallow synthetic taps. Next: re-run once; if it repeats on the same control, ask the app team to make the selection reachable for automated taps (for example by disabling the list's own scrolling for this set) or to expose the selected state another way.",
+    ),
+  );
+  assert.equal(presses(f), 1);
+});
+
 for (const delayed of [false, true]) {
   test(`bound selection passes with ${delayed ? 'delayed' : 'immediate'} readback and one tap`, async () => {
     const f = rowFake([rowChips(), ...(delayed ? [rowChips()] : []), rowChips(true)]);

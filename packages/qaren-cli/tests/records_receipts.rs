@@ -479,7 +479,7 @@ fn press_failure_recovery_round_trips_without_build_metadata() {
     let value = serde_json::to_value(&failure).unwrap();
     assert_eq!(
         value["recovery"]["action"],
-        "ask_app_team_disable_horizontal_list_scrolling_or_expose_selection"
+        "rerun_then_ask_app_team_expose_selection_in_row_list"
     );
     assert_eq!(value["recovery"]["ladder"].as_array().unwrap().len(), 5);
     assert!(value["recovery"].get("reason").is_none());

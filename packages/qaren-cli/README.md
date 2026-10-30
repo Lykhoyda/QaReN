@@ -753,11 +753,14 @@ This is a structural heuristic: capture does not prove horizontal scrolling,
 its responder behavior, or a selected-state contract. iOS omits false selected
 state, so an invisible successful toggle and a swallowed tap look alike. QaReN
 sends no second tap or held press that could undo the toggle. The refusal does
-not prove that the app callback failed. For a control in a scrolling horizontal
-list, ask the app team to disable scrolling for this set or expose selection
-through accessibility state; inspect selection semantics before retrying.
-The fixed next action is
-`ask_app_team_disable_horizontal_list_scrolling_or_expose_selection`. Its ordered
+not prove that the app callback failed. The fixed next action is
+`rerun_then_ask_app_team_expose_selection_in_row_list`. The refusal includes this
+guidance, with N post-tap observations and M milliseconds from tap dispatch to
+the final readback:
+
+> The tap did not change the control's selected state (N observations over M ms); the control sits in a row-shaped scrolling list, which can swallow synthetic taps. Next: re-run once; if it repeats on the same control, ask the app team to make the selection reachable for automated taps (for example by disabling the list's own scrolling for this set) or to expose the selected state another way.
+
+Its ordered
 recovery ladder skips held press as unsafe and app/Metro/runner restart, device
 restart, native rebuild, and cleanup/fresh prepare as unable to verify the
 selection contract. A capture fault instead makes those later recovery options

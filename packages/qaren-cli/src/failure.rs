@@ -345,7 +345,7 @@ pub struct PressRecovery {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PressRecoveryAction {
-    AskAppTeamDisableHorizontalListScrollingOrExposeSelection,
+    RerunThenAskAppTeamExposeSelectionInRowList,
     ReprepareAfterCaptureRecovery,
     RerunWhenReady,
     HeldPress,
@@ -391,15 +391,15 @@ impl Failure {
         let capture = code == "NATIVE_CAPTURE_UNAVAILABLE";
         let selection = code == "PRESS_NOT_REGISTERED";
         let action = if selection {
-            AskAppTeamDisableHorizontalListScrollingOrExposeSelection
+            RerunThenAskAppTeamExposeSelectionInRowList
         } else if capture {
             ReprepareAfterCaptureRecovery
         } else {
             RerunWhenReady
         };
         self.next_action = OutputText::from_output(match action {
-            AskAppTeamDisableHorizontalListScrollingOrExposeSelection => {
-                "ask_app_team_disable_horizontal_list_scrolling_or_expose_selection"
+            RerunThenAskAppTeamExposeSelectionInRowList => {
+                "rerun_then_ask_app_team_expose_selection_in_row_list"
             }
             ReprepareAfterCaptureRecovery => "reprepare_after_capture_recovery",
             _ => "rerun_when_ready",

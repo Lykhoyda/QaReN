@@ -91,3 +91,6 @@ export const PRESS_NOT_REGISTERED_REASON =
   'Selection could not be verified; no second press was sent because the first press may already have changed an unobservable selection.';
 export const PRESS_OUTSIDE_CHANGE_REASON =
   'Selection could not be verified; captured target semantics were unchanged while other captured screen semantics changed; no second press was sent.';
+
+export const selectionPressGuidance = (captures: 1 | 2, elapsedMs: number): string =>
+  `The tap did not change the control's selected state (${captures} observations over ${Math.max(0, Math.round(elapsedMs))} ms); the control sits in a row-shaped scrolling list, which can swallow synthetic taps. Next: re-run once; if it repeats on the same control, ask the app team to make the selection reachable for automated taps (for example by disabling the list's own scrolling for this set) or to expose the selected state another way.`;
