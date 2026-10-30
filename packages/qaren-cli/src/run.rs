@@ -1279,43 +1279,37 @@ fn run_inner(
             ctx.notes
                 .push(("media_withheld".to_string(), entry.receipt_note()));
         }
-        let (mut result, mut failure) = match &outcome.verdict {
+        let (mut result, failure) = match &outcome.verdict {
             Verdict::Pass => (ReceiptResult::Pass, None),
-            Verdict::Fail => {
-                let failure = outcome
-                    .failure
-                    .clone()
-                    .unwrap_or_else(|| plan_step_failure(outcome.ledger.failure.as_ref()));
-                (
-                    ReceiptResult::Fail,
-                    Some(walk_failure(
-                        failure,
-                        outcome.ledger.failure.as_ref(),
-                        &ctx.runs_root,
-                        &ctx.record,
-                    )),
-                )
-            }
-            Verdict::Refused { code, message } => {
-                let failure = outcome.failure.clone().unwrap_or_else(|| {
+            Verdict::Fail => (
+                ReceiptResult::Fail,
+                Some(
+                    outcome
+                        .failure
+                        .clone()
+                        .unwrap_or_else(|| plan_step_failure(outcome.ledger.failure.as_ref())),
+                ),
+            ),
+            Verdict::Refused { code, message } => (
+                ReceiptResult::Refused,
+                Some(outcome.failure.clone().unwrap_or_else(|| {
                     Failure::new(
                         "prove",
                         refusal_code(code),
                         format!("{code}: {message}"),
                         "resolve the refusal, then re-run",
                     )
-                });
-                (
-                    ReceiptResult::Refused,
-                    Some(walk_failure(
-                        failure,
-                        outcome.ledger.failure.as_ref(),
-                        &ctx.runs_root,
-                        &ctx.record,
-                    )),
-                )
-            }
+                })),
+            ),
         };
+        let mut failure = failure.map(|failure| {
+            walk_failure(
+                failure,
+                outcome.ledger.failure.as_ref(),
+                &ctx.runs_root,
+                &ctx.record,
+            )
+        });
         let mut tested_older_commit = None;
         let mut published_video = None;
         if let Some(pr) = &pr_state {
@@ -2631,7 +2625,7 @@ impl Drop for RunDirClaim {
     }
 }
 
-// A failed plan step; the core's suggested plan edit, when it gave one, is the next action.
+// A failed plan step; walk_failure adds the core's target diagnostics.
 fn plan_step_failure(ledger: Option<&core::LedgerFailure>) -> Failure {
     let Some(seen) = ledger else {
         return Failure::new(
@@ -2645,31 +2639,28 @@ fn plan_step_failure(ledger: Option<&core::LedgerFailure>) -> Failure {
         "walk",
         FailureCode::PlanStepFailed,
         format!("line {}: {}", seen.step, seen.seen),
-        match &seen.suggestion {
-            Some(suggestion) => suggestion.to_string(),
-            None => "read the report, fix the app or the plan, then re-run".to_string(),
-        },
+        "read the report, fix the app or the plan, then re-run",
     );
     failure.step = Some(seen.step);
-    failure.subreason = seen.subreason.clone();
-    failure.screen = seen.screen.clone();
-    failure.suggestion = seen.suggestion.clone();
     failure
 }
 
+// Forward target diagnostics while preserving the failure code and matching repeats.
 fn walk_failure(
     mut failure: Failure,
     ledger: Option<&core::LedgerFailure>,
     runs_root: &Path,
     record: &RunRecord,
 ) -> Failure {
-    if let Some(seen) = ledger {
+    if let Some(seen) = ledger.filter(|seen| {
+        seen.screen.is_some() || seen.suggestion.is_some() || seen.subreason.is_some()
+    }) {
         failure.step = Some(seen.step);
         failure.subreason = seen.subreason.clone();
         failure.screen = seen.screen.clone();
-        failure.suggestion = seen.suggestion.clone();
         if let Some(suggestion) = &seen.suggestion {
-            failure.next_action = OutputText::from_output(&suggestion.to_string());
+            failure.next_action = suggestion.clone();
+            failure.suggestion = Some(suggestion.clone());
         }
     }
     if let Some(repeat) = repeat_of(runs_root, record, &failure) {
@@ -3074,15 +3065,26 @@ mod last_screen_tests {
         root
     }
 
+    // A plan step failure after the shared boundary, with no earlier runs to repeat.
+    fn step_failure(seen: &core::LedgerFailure) -> Failure {
+        let record = record("check-20261030T090000Z", "abc");
+        walk_failure(
+            plan_step_failure(Some(seen)),
+            Some(seen),
+            Path::new("/nonexistent-qaren-runs"),
+            &record,
+        )
+    }
+
     fn save_failed(root: &Path, run_id: &str, git_sha: &str) {
         let mut earlier = record(run_id, git_sha);
-        earlier.failure = Some(plan_step_failure(Some(&ledger_failure(screen()))));
+        earlier.failure = Some(step_failure(&ledger_failure(screen())));
         earlier.save(root).unwrap();
     }
 
     #[test]
     fn a_target_failure_carries_its_screen_and_suggests_the_plan_edit() {
-        let failure = plan_step_failure(Some(&ledger_failure(screen())));
+        let failure = step_failure(&ledger_failure(screen()));
         assert_eq!(failure.code, FailureCode::PlanStepFailed);
         assert_eq!(failure.step, Some(2));
         assert_eq!(failure.subreason.as_deref(), Some("absent"));
@@ -3099,7 +3101,7 @@ mod last_screen_tests {
         let mut seen = ledger_failure(json!({"ageMs": "soon"}));
         assert!(seen.screen.is_none());
         seen.suggestion = None;
-        let failure = plan_step_failure(Some(&seen));
+        let failure = step_failure(&seen);
         assert_eq!(
             failure.next_action.as_str(),
             "read the report, fix the app or the plan, then re-run"
@@ -3111,7 +3113,7 @@ mod last_screen_tests {
         let root = runs_root("repeat-same");
         save_failed(&root, "check-20261030T081500Z", "abc");
         let current = record("check-20261030T082000Z", "abc");
-        let failure = plan_step_failure(Some(&ledger_failure(screen())));
+        let failure = step_failure(&ledger_failure(screen()));
         let repeat = repeat_of(&root, &current, &failure).unwrap();
         assert_eq!(repeat.previous_run_id, "check-20261030T081500Z");
         assert_eq!(repeat.count, 1);
@@ -3126,10 +3128,49 @@ mod last_screen_tests {
         save_failed(&root, "check-20261030T081500Z", "abc");
         let mut current = record("check-20261030T082000Z", "abc");
         current.scenario.platform = Platform::Android;
-        let failure = plan_step_failure(Some(&ledger_failure(screen())));
+        let failure = step_failure(&ledger_failure(screen()));
         assert!(repeat_of(&root, &current, &failure).is_none());
         current.scenario.platform = Platform::Ios;
         assert!(repeat_of(&root, &current, &failure).is_some());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_refused_block_start_keeps_its_code_and_carries_the_screen_and_its_repeat() {
+        let root = runs_root("repeat-block-start");
+        let mut seen = ledger_failure(screen());
+        seen.seen = "BLOCK_START_MISSING: the block's quoted start marker is not on screen".into();
+        let refusal = || {
+            Failure::new(
+                "prove",
+                refusal_code("BLOCK_START_MISSING"),
+                "BLOCK_START_MISSING: the block's quoted start marker is not on screen",
+                "resolve the refusal, then re-run",
+            )
+        };
+        let mut first = record("check-20261030T081500Z", "abc");
+        let failure = walk_failure(refusal(), Some(&seen), &root, &first);
+        assert_eq!(failure.code, FailureCode::BlockStartMissing);
+        assert_eq!(failure.subreason.as_deref(), Some("absent"));
+        assert!(failure.screen.is_some());
+        assert!(failure.repeat.is_none());
+        assert!(failure.next_action.starts_with("the target of line 2"));
+        first.failure = Some(failure);
+        first.save(&root).unwrap();
+        let again = walk_failure(
+            refusal(),
+            Some(&seen),
+            &root,
+            &record("check-20261030T082000Z", "abc"),
+        );
+        assert_eq!(again.code, FailureCode::BlockStartMissing);
+        assert_eq!(
+            again.repeat.as_ref().unwrap().previous_run_id,
+            "check-20261030T081500Z"
+        );
+        assert!(again
+            .next_action
+            .starts_with("same failure, plan unchanged: run check-20261030T081500Z"));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3138,7 +3179,7 @@ mod last_screen_tests {
         let root = runs_root("repeat-revision");
         save_failed(&root, "check-20261030T081500Z", "abc");
         let current = record("check-20261030T082000Z", "def");
-        let failure = plan_step_failure(Some(&ledger_failure(screen())));
+        let failure = step_failure(&ledger_failure(screen()));
         assert!(repeat_of(&root, &current, &failure).is_none());
         let _ = std::fs::remove_dir_all(root);
     }
