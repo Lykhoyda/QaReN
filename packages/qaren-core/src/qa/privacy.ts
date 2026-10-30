@@ -848,7 +848,7 @@ export class ObservedPrivacy {
     if (this.filled) {
       const rows = codeBoxRows(
         screen,
-        this.privateSet().values.map((value) => value.text),
+        [...this.filledValues, ...this.privateSet().values.map((value) => value.text)],
       );
       this.codeRows.set(screen, rows);
       for (const value of this.filledValues)
