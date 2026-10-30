@@ -162,7 +162,9 @@ test('a field past the window but inside a taller scroll view is not inside its 
   const r = await wait([{ scrollHeight: 1000, fieldY: 924 }]);
   assert.doesNotMatch(seen(r), / inside its viewport;/);
   assert.match(seen(r), / below its viewport;/);
-  assert.notEqual(r.elapsed, 2 * WAIT_POLL_MS);
+  assert.deepEqual(r.actions, ['scroll down']);
+  assert.match(seen(r), /; attempt=scroll; /);
+  assert.equal(r.elapsed, WAIT_BUDGET_MS);
 });
 
 test('a field swallowed by an accessible wrapper inside the viewport refuses early with its facts', async () => {
