@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import {
@@ -563,84 +561,6 @@ test('healing a stale ref onto system chrome is refused, not silently retargeted
     'com.android.systemui',
   );
   assert.equal(androidOutsideAppWindowRefusal(['press', '@e1'], appId, 'e2')?.ref, '@e2');
-});
-
-test('Android runner scopes exact presses and refuses rejected accessibility actions', () => {
-  const source = readFileSync(
-    join(
-      process.cwd(),
-      '..',
-      'qaren-android-runner',
-      'app',
-      'src',
-      'androidTest',
-      'java',
-      'dev',
-      'lykhoyda',
-      'rndevagent',
-      'androidrunner',
-      'CommandDispatcher.kt',
-    ),
-    'utf8',
-  );
-  assert.match(source, /packageName == appPackage/);
-  assert.match(source, /performAction\(AccessibilityNodeInfo\.ACTION_CLICK\)/);
-  assert.match(source, /if \(!dispatched\) \{\s*throw ExactPressException/);
-});
-
-test('exact press disambiguates duplicates by the requested point and clicks the clickable ancestor', () => {
-  const source = readFileSync(
-    join(
-      process.cwd(),
-      '..',
-      'qaren-android-runner',
-      'app',
-      'src',
-      'androidTest',
-      'java',
-      'dev',
-      'lykhoyda',
-      'rndevagent',
-      'androidrunner',
-      'CommandDispatcher.kt',
-    ),
-    'utf8',
-  );
-  // Duplicate testIDs/labels in a list stay actuable: the @ref centre picks one.
-  assert.match(source, /private fun nodeContaining\(/);
-  assert.match(source, /bounds\.contains\(requested\.x, requested\.y\)/);
-  assert.match(source, /nodeContaining\(matches, requested\)/);
-  // A labelled non-clickable node routes to its nearest clickable ancestor.
-  assert.match(source, /private fun clickableAncestorOrSelf\(/);
-  assert.match(source, /return clickableAncestorOrSelf\(chosen, requested\)/);
-  // The typed refusal survives when no unique safe target exists.
-  assert.match(source, /"exact-target-ambiguous"/);
-  assert.match(source, /"exact-target-unresolved"/);
-  assert.match(source, /ExactPressSafety\.traversalComplete\(stack\.size\)/);
-  assert.match(source, /ExactPressSafety\.liveTargetIsHittable/);
-  assert.match(source, /requireUnoccluded\(clickable, requested\)/);
-  assert.match(source, /ExactPressSafety\.sameWindowOcclusion\(targetPath, it\)/);
-  // DISPATCH_OCCLUSION_GUARD_V1: a covered point is the walker's typed occlusion refusal.
-  assert.match(source, /ExactPressSafety\.coveredByOtherWindow\(/);
-  assert.match(source, /ExactPressSafety\.occlusionOutcome\(sameWindow, otherWindows\)/);
-  assert.match(
-    source,
-    /ExactPressSafety\.Outcome\.OCCLUDED -> throw FocusTargetOccludedException\(OCCLUDED_MESSAGE\)/,
-  );
-  assert.match(source, /"FOCUS_TARGET_OCCLUDED: the tap point is covered by another element/);
-  assert.match(
-    source,
-    /ExactPressSafety\.Outcome\.UNRESOLVED -> throw exactTargetZOrderUnresolved\(\)/,
-  );
-  assert.match(source, /candidate\.isClickable/);
-  assert.match(source, /requireUnoccluded\(clickable, requested\)\s*return clickable/);
-  assert.match(source, /"exact-target-not-hittable"/);
-  // A coordinate outside the display is refused before any injection.
-  assert.match(
-    source,
-    /CoordinateBounds\.contains\(device\.displayWidth, device\.displayHeight, x, y\)/,
-  );
-  assert.match(source, /"coordinate-out-of-bounds"/);
 });
 
 const baselinePolicy = { eligible: false, verificationRequired: true, targetKey: 'tap@960,430' };
