@@ -10,6 +10,7 @@ import {
 import { failResult, okResult, warnResult, type ToolResult } from '../../dist/utils.js';
 import { createMockClient } from '../helpers/mock-cdp-client.js';
 import { parseEnvelope } from '../helpers/result-helpers.js';
+import { describeError } from '../../dist/qa/adapt.js';
 import { RunCancelledError, withCancellation } from '../../dist/domain/cancellation.js';
 import { nativeDevOverlayObservation, type NativeObservation } from '../../dist/qa/capture.js';
 
@@ -428,4 +429,17 @@ test('recovery: a failed menu hide is returned unchanged', async () => {
   const failed = failResult('menu close failed', 'DEV_MENU_HIDE_FAILED');
   const fixture = overlays([shown], { hideDevMenu: () => failed });
   assert.equal(await fixture.run(true), failed);
+});
+
+test('overlays: proven startup app exit preserves its public refusal code and next step', async () => {
+  const { AppProcessGoneError } = await import('../../dist/domain/app-process.js');
+  const fixture = overlays([new AppProcessGoneError()]);
+  try {
+    await fixture.run();
+    assert.fail('app exit cannot admit the walk');
+  } catch (error) {
+    const result = describeError(error);
+    assert.equal(result.code, 'APP_PROCESS_CHANGED');
+    assert.match(result.message, /inspect the crash report and re-run the plan/);
+  }
 });

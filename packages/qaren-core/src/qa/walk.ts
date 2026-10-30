@@ -342,6 +342,7 @@ function act(
       }
     },
     (error) => {
+      if (error instanceof AppProcessGoneError) throw error;
       logActionSettle(
         error instanceof HandlerError
           ? error.meta
