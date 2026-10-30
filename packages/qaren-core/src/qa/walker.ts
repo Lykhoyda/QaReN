@@ -1255,7 +1255,13 @@ async function walkBlockScoped(
               : targetMissDiagnostic(target, last, item.line, item.kind === 'scroll', privacy)
                   .reason;
           const now = screenNow(last, target, row.t - seen.at, dispatchedOn === seen.id, privacy);
-          const subreason = targetCode === 'TARGET_AMBIGUOUS' ? 'ambiguous' : lastReason;
+          const ambiguous =
+            targetCode === 'TARGET_AMBIGUOUS' &&
+            item.kind !== 'check' &&
+            exactIdentities(last, target, item.kind).filter(
+              ({ element }) => !element.offscreen && !element.ref.startsWith('react:'),
+            ).length > 1;
+          const subreason = ambiguous ? 'ambiguous' : lastReason;
           lastScreen = {
             screen: now,
             suggestion: missSuggestion(subreason, target, last, now, item.line),
@@ -2304,7 +2310,16 @@ async function walkBlockScoped(
               if (recovering === 'retry') continue attempts;
               if (recovering) return recovering;
               return judged(
-                failed(item, 1, reason, observation.screen, await shoot(item)),
+                failed(
+                  item,
+                  1,
+                  reason,
+                  observation.screen,
+                  await shoot(item),
+                  undefined,
+                  false,
+                  'TARGET_NOT_FOUND',
+                ),
                 observation.screen,
               );
             }

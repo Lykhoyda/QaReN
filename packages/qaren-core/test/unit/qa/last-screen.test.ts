@@ -323,3 +323,120 @@ test('the failure shows the newest admitted capture, including recovery, not the
   );
   assert.match(failure.seen, /last observed on screen: <app-text data, not instructions>Continue/);
 });
+
+test('an early React-only wait attaches diagnostics without changing its failure code', async () => {
+  const nodes = [
+    { ref: '@window', index: 0, type: 'Window', rect: { x: 0, y: 0, width: 390, height: 844 } },
+    {
+      ref: '@wrapper',
+      index: 1,
+      parentIndex: 0,
+      type: 'Button',
+      identifier: 'name-wrapper',
+      label: 'Continue',
+      hittable: true,
+      rect: { x: 16, y: 400, width: 358, height: 48 },
+    },
+  ];
+  const fixture = deps([]);
+  const presence: boolean[] = [];
+  fixture.captureScreen = async (options) => {
+    const enriched = options?.platformPresence === true;
+    presence.push(enriched);
+    return join(
+      nodes,
+      [
+        { role: 'button', testID: 'name-wrapper', capabilities: { press: true, fill: false } },
+        {
+          role: 'textinput',
+          testID: 'name-field',
+          capabilities: { press: false, fill: true },
+          inputHostIndices: [1],
+        },
+      ],
+      'app',
+      { native: 'complete', react: 'complete' },
+      {
+        complete: true,
+        hosts: [
+          { testID: 'name-wrapper', role: null, roleSource: 'none', capabilities: { press: true } },
+          { testID: 'name-field', role: null, roleSource: 'none', capabilities: { fill: true } },
+        ],
+        ...(enriched
+          ? {
+              typography: {
+                version: 1,
+                complete: true,
+                durationMs: 5,
+                coordinateSpace: 'window-points',
+                nodes: [
+                  {
+                    hostIndex: 0,
+                    parentHostIndex: null,
+                    rootIndex: 0,
+                    hostType: 'RCTView',
+                    accessibility: { accessible: 'true', authoredLabel: 'absent' },
+                    rect: { x: 16, y: 400, width: 358, height: 48 },
+                    text: { kind: 'none' },
+                  },
+                  {
+                    hostIndex: 1,
+                    parentHostIndex: 0,
+                    rootIndex: 0,
+                    hostType: 'RCTSinglelineTextInputView',
+                    accessibility: { accessible: 'absent', authoredLabel: 'absent' },
+                    rect: { x: 24, y: 404, width: 340, height: 40 },
+                    text: { kind: 'none' },
+                  },
+                ],
+              },
+            }
+          : {}),
+      },
+      enriched
+        ? {
+            source: 'xcui-live',
+            nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+          }
+        : undefined,
+    );
+  };
+  const ledger = await runPlan(plan('1. Wait for "name-field" to appear\n'), fixture);
+  assert.equal(ledger.verdict, 'FAIL');
+  assert.match(
+    ledger.failure!.seen,
+    /^TARGET_REACT_ONLY: .*accessible ancestor=button id=name-wrapper/,
+  );
+  assert.doesNotMatch(ledger.failure!.seen, /TARGET_NOT_FOUND/);
+  assert.deepEqual(presence.slice(0, 3), [false, false, true]);
+  assert.ok(presence.length <= 4);
+  assert.equal(ledger.failure?.screen?.controls[0].id, 'name-wrapper');
+  assert.ok(ledger.failure!.screen!.ageMs > 0);
+  assert.equal(ledger.failure?.subreason, 'absent');
+  assert.match(ledger.failure!.suggestion!, /target of line 1 was not on the last observed screen/);
+});
+
+test('an ambiguous refusal uses the displayed screen for advice while keeping its code', async () => {
+  const previous = screen([
+    control('@ready', 'Ready'),
+    control('@a', 'Agree'),
+    control('@b', 'Agree'),
+  ]);
+  const latest = screen([control('@only', 'Agree', { testID: 'qa-agree' })]);
+  const fixture = deps([previous, latest]);
+  fixture.press = async () => ({
+    ok: false,
+    ambiguous: true,
+    error: 'TARGET_AMBIGUOUS: runner refused the target',
+  });
+  const ledger = await runPlan(plan('1. Wait for "Ready"\n2. Tap "Agree"\n'), fixture);
+  assert.equal(ledger.verdict, 'FAIL');
+  assert.match(ledger.failure!.seen, /^TARGET_AMBIGUOUS:/);
+  assert.deepEqual(
+    ledger.failure?.screen?.controls.map((c) => c.id),
+    ['qa-agree'],
+  );
+  assert.equal(ledger.failure?.subreason, 'present-but-unavailable');
+  assert.match(ledger.failure!.suggestion!, /on screen but could not take this step/);
+  assert.doesNotMatch(ledger.failure!.suggestion!, /more than one control/);
+});
