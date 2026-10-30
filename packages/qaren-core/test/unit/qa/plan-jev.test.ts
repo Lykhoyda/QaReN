@@ -444,8 +444,9 @@ test('Part A preflight prepares only QA actions and defers Cleanup', async () =>
   assert.ok(result.ok);
   assert.equal(result.jevRequired, false);
   assert.deepEqual(Object.keys(result.prepared).sort(), ['blocks', 'hash']);
-  assert.deepEqual(result.prepared.blocks.flatMap((block) => block.items.map((item) => item.raw)), [
-    '1. Tap "Create"',
-  ]);
+  assert.deepEqual(
+    result.prepared.blocks.flatMap((block) => block.items.map((item) => item.raw)),
+    ['1. Tap "Create"'],
+  );
   assert.deepEqual(readPreparedPlan(markdown, result.prepared), result.prepared.blocks);
 });
