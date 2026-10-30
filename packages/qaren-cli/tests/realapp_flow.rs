@@ -661,7 +661,7 @@ fn assert_ios_prepare_reuses_cached_client(workspace: bool) {
             UDID,
             "com.rndevagent.testapp",
             "--initialUrl",
-            "http://127.0.0.1:8791/?disableOnboarding=1&__expo_disable_onboarding=1&__expo_disable_fab=1&__expo_disable_auto_launch=1"
+            "http://127.0.0.1:8791/?disableOnboarding=1"
         ]
     );
     // The cold manifest is answered once before the dev client asks for it.

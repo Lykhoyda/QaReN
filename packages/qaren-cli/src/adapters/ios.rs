@@ -694,7 +694,7 @@ pub fn launch_spec(udid: &str, app_id: &str, metro_port: u16) -> CmdSpec {
             app_id,
             "--initialUrl",
             // Expo stores its dev-menu tutorial finished, so it never covers a fresh install.
-            &super::devclient::metro_launch_url(metro_port),
+            &format!("http://127.0.0.1:{metro_port}/?disableOnboarding=1"),
         ],
         60,
     )
