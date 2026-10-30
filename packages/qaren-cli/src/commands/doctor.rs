@@ -379,7 +379,9 @@ fn ios_toolchain_match(
     };
     let modes = ios_toolchain::requested_modes(runner, app, None);
     let linkage = ios_toolchain::Linkage::inspect(app);
-    let source_requested = modes.expo == Mode::Off && ios_toolchain::has_expo_dependency(app);
+    let source_requested = ios_toolchain::has_expo_dependency(app)
+        && (modes.expo == Mode::Off
+            || runner.env_var("EXPO_USE_PRECOMPILED_MODULES").as_deref() == Some("0"));
     let unknown_fix = if source_requested && linkage.expo != Mode::Off {
         ios_toolchain::SOURCE_FIX
     } else {
@@ -1858,6 +1860,45 @@ mod tests {
     }
 
     #[test]
+    fn source_export_keeps_regeneration_guidance_with_unknown_config() {
+        for (path, contents) in [
+            ("app/app.config.ts", "export default {};\n"),
+            ("app/ios/Podfile", "custom pod installation\n"),
+        ] {
+            for interface in [false, true] {
+                let s = Scratch::new("source-export-unknown-config");
+                let app = s.dir("app");
+                s.file("app/package.json", r#"{"dependencies":{"expo":"56.0.0"}}"#);
+                s.file(path, contents);
+                if interface {
+                    interface_fixture(&s, "expo-modules-core", "6.4");
+                }
+                let before = s.tree();
+                let mut runner = MockRunner::new();
+                runner
+                    .environment
+                    .insert("EXPO_USE_PRECOMPILED_MODULES".into(), "0".into());
+                if interface {
+                    plist_probe(&mut runner);
+                }
+                let compiler = crate::ios_toolchain::CompilerIdentity {
+                    swift: crate::ios_toolchain::SwiftVersion::parse("6.4"),
+                    ..Default::default()
+                };
+                let check = ios_toolchain_match(&mut runner, &app, Some(compiler));
+                assert_eq!(check.status, Status::Warn, "{path} {interface}: {check:?}");
+                assert!(check.fix.as_ref().unwrap().contains("regenerate pods"));
+                assert_eq!(runner.remaining(), 0);
+                assert!(runner
+                    .calls
+                    .iter()
+                    .all(|spec| spec.label == "expo-xcframework-plist"));
+                assert_eq!(s.tree(), before);
+            }
+        }
+    }
+
+    #[test]
     fn source_selection_does_not_suppress_an_independent_jsi_interface_warning() {
         for source_proven in [false, true] {
             let s = Scratch::new("jsi-compiler");
@@ -1896,6 +1937,9 @@ mod tests {
             r#"{"dependencies":{"react-native":"0.84.0"}}"#,
         );
         let mut runner = MockRunner::new();
+        runner
+            .environment
+            .insert("EXPO_USE_PRECOMPILED_MODULES".into(), "0".into());
         let compiler = crate::ios_toolchain::CompilerIdentity {
             swift: crate::ios_toolchain::SwiftVersion::parse("6.4"),
             ..Default::default()
