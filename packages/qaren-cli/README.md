@@ -1098,6 +1098,9 @@ an unverified result proof. Android has no rung 3 yet.
 When a step fails on its own target (`TARGET_NOT_FOUND`, `REPLAY_SELECTOR`,
 `TARGET_AMBIGUOUS`, an unmet quoted wait or a scroll that stayed off screen),
 the receipt's `failure` carries `screen`, `suggestion` and `subreason`.
+These diagnostics also survive a refused walk, including `BLOCK_START_MISSING`
+for an absent saved-block start marker; the receipt preserves its refusal code
+and exit code, and applies the same repeat matching described below.
 `screen` lists up to 20 controls from the last observed screen, the target's
 own matches first, with role, testID, label, enabled, hittable, off-screen
 state and a primary mark for the first enabled, hittable, on-screen button in

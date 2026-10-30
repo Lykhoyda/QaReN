@@ -162,7 +162,7 @@ pub struct Failure {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<OutputText>,
     pub next_action: OutputText,
-    // Plan step failures only: the failed line and, for a target-class failure, its miss reason and screen.
+    // Failed or refused walk steps: the line and, for a target-class failure, its miss reason and screen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
