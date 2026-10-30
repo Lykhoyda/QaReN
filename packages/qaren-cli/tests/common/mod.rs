@@ -207,6 +207,7 @@ pub fn base_record(
         failure: None,
         history: Vec::new(),
         terminal: None,
+        build_lock: None,
     }
 }
 
@@ -262,43 +263,57 @@ pub fn script_ios_deps(mock: &mut MockRunner) {
     mock.expect_run("expo run:ios --help", CmdOutput::success(IOS_BUILD_HELP));
 }
 
-pub fn script_finite_ios_build(mock: &mut MockRunner) {
-    script_finite_ios_build_with(mock, "expo run:ios");
+// `prepublish` scripts the drift checks that run under the build lock before cache publication.
+pub fn script_finite_ios_build(mock: &mut MockRunner, prepublish: impl FnOnce(&mut MockRunner)) {
+    script_finite_ios_build_with(mock, "expo run:ios", prepublish);
 }
 
-pub fn script_finite_ios_build_with(mock: &mut MockRunner, command: &str) {
-    script_finite_ios_build_defaults(mock, command, CmdOutput::success(""));
-}
-
-pub fn script_finite_ios_build_defaults(mock: &mut MockRunner, command: &str, defaults: CmdOutput) {
-    script_finite_ios_build_install(mock, command, defaults, |m| {
-        m.expect_run("simctl install", CmdOutput::success(""))
-    });
-}
-
-pub fn script_finite_ios_build_install(
+pub fn script_finite_ios_build_with(
     mock: &mut MockRunner,
     command: &str,
-    defaults: CmdOutput,
-    install: impl FnOnce(&mut MockRunner),
+    prepublish: impl FnOnce(&mut MockRunner),
 ) {
-    script_finite_ios_build_launch(mock, command, defaults, install, script_ios_launch);
+    script_finite_ios_build_launch(
+        mock,
+        command,
+        CmdOutput::success(""),
+        prepublish,
+        |m| m.expect_run("simctl install", CmdOutput::success("")),
+        script_ios_launch,
+    );
 }
 
 pub fn script_finite_ios_build_launch(
     mock: &mut MockRunner,
     command: &str,
     defaults: CmdOutput,
+    prepublish: impl FnOnce(&mut MockRunner),
     install: impl FnOnce(&mut MockRunner),
     launch: impl FnOnce(&mut MockRunner),
 ) {
-    script_ios_metro_spawn(mock);
+    script_finite_ios_build_only(mock, command);
+    prepublish(mock);
+    script_ios_after_publish(mock, defaults, install, launch);
+}
+
+// The gated native build and its artifact verification, all under the build lock.
+pub fn script_finite_ios_build_only(mock: &mut MockRunner, command: &str) {
     mock.expect_spawn_piped(command, 5000, "", Some(0));
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:00:00 2026"));
     mock.expect_run("ps", CmdOutput::success("qaren-build"));
     mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
     script_ios_app_verification(mock);
+}
+
+// After the lock is released: re-verify the published artifact, start Metro, install and launch.
+pub fn script_ios_after_publish(
+    mock: &mut MockRunner,
+    defaults: CmdOutput,
+    install: impl FnOnce(&mut MockRunner),
+    launch: impl FnOnce(&mut MockRunner),
+) {
     script_ios_app_verification(mock);
+    script_ios_metro_spawn(mock);
     install(mock);
     script_ios_metro_wait_and_launch_with(mock, defaults, launch);
 }
@@ -399,6 +414,8 @@ pub struct IosBuildRunner {
     pub hardware_keyboard_stuck: bool,
     pub hardware_keyboard_missing: bool,
     pub hardware_keyboard_read: Option<CmdOutput>,
+    // The build lock the last native build ran under, checked again when Metro starts.
+    build_lock_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -494,17 +511,8 @@ impl std::io::Write for BuildStart {
                 ..
             })
         ));
-        if matches!(self.label.as_str(), "expo-run-ios" | "xcodebuild-ios") {
-            let metro = record
-                .resources
-                .metro
-                .as_ref()
-                .expect("Metro recorded before native build starts");
-            assert_eq!(metro.spawned.pgid, 6000);
-            assert!(metro.identity.is_some());
-        } else {
-            assert!(record.resources.metro.is_none());
-        }
+        // Metro starts only after the build lock is released.
+        assert!(record.resources.metro.is_none());
         let lock = record.resources.build_lock.unwrap();
         assert_eq!(
             qaren::buildplan::read_holder(&lock.lock_dir)
@@ -585,11 +593,6 @@ impl qaren::exec::Runner for IosBuildRunner {
     fn execute(&mut self, spec: &qaren::exec::CmdSpec, interruptible: bool) -> CmdOutput {
         if let Some(observe) = self.observe.as_mut() {
             observe(spec);
-        }
-        if spec.label == "simctl-launchctl" {
-            if let Some(path) = self.cache_publication_fault.take() {
-                std::fs::write(path, "block cache publication").unwrap();
-            }
         }
         if self
             .timeouts
@@ -702,6 +705,25 @@ impl qaren::exec::Runner for IosBuildRunner {
         spec: &qaren::exec::CmdSpec,
         log: &std::path::Path,
     ) -> std::io::Result<qaren::exec::Spawned> {
+        // iOS Metro starts only after the run has released the native-build lock.
+        if spec.label == "expo-start" {
+            let run_dir = log.parent().unwrap().parent().unwrap();
+            let record: RunRecord =
+                serde_json::from_slice(&std::fs::read(run_dir.join("run.json")).unwrap()).unwrap();
+            if record.scenario.platform == qaren::scenario::Platform::Ios {
+                assert!(
+                    record.resources.build_lock.is_none(),
+                    "Metro started while the run recorded the build lock"
+                );
+                if let Some(dir) = &self.build_lock_dir {
+                    assert!(
+                        qaren::buildplan::read_holder(dir)
+                            .is_none_or(|held| held.run_id != record.run_id),
+                        "Metro started while the build lock still named this run"
+                    );
+                }
+            }
+        }
         self.inner.spawn_group_unchecked(spec, log)
     }
     fn spawn_piped_unchecked(
@@ -736,6 +758,12 @@ impl qaren::exec::Runner for IosBuildRunner {
                 "build executable unavailable",
             ));
         }
+        // After the plan admitted the store root, before the build publishes into it.
+        if matches!(spec.label.as_str(), "expo-run-ios" | "xcodebuild-ios") {
+            if let Some(path) = self.cache_publication_fault.take() {
+                std::fs::write(path, "block cache publication").unwrap();
+            }
+        }
         let mut child = self.inner.spawn_piped_unchecked(spec, log)?;
         if matches!(
             spec.label.as_str(),
@@ -748,6 +776,7 @@ impl qaren::exec::Runner for IosBuildRunner {
                 record.resources.build_process(),
                 Some(qaren::runrecord::BuildProcess::SpawnPending)
             ));
+            self.build_lock_dir = record.resources.build_lock.map(|lock| lock.lock_dir);
             if let Some(text) = &self.build_log {
                 std::fs::write(log, qaren::redact::redact_secrets(text)).unwrap();
             }

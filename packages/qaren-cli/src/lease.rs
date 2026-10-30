@@ -120,10 +120,22 @@ pub fn release_orphan(
     held: &LockHolder,
     liveness: Option<PidLiveness>,
 ) -> bool {
+    release_orphan_with(runner, lock_dir, held, liveness, false)
+}
+
+// `require_group`: a holder that never recorded its build group may have died after spawning it, so it is kept.
+fn release_orphan_with(
+    runner: &mut dyn Runner,
+    lock_dir: &Path,
+    held: &LockHolder,
+    liveness: Option<PidLiveness>,
+    require_group: bool,
+) -> bool {
     if !matches!(
         liveness,
         Some(PidLiveness::Dead | PidLiveness::AliveForeign)
-    ) || !records_gone(held)
+    ) || (require_group && held.group.is_none())
+        || !records_gone(held)
     {
         return false;
     }
@@ -171,6 +183,27 @@ pub fn claim_reclaiming_orphan(
     holder: &LockHolder,
     policy: LockPolicy,
 ) -> (LockOutcome, Option<String>) {
+    claim_reclaiming(runner, lock_root, name, holder, policy, false)
+}
+
+// The iOS native-build lock: an orphan is released only once its recorded build group is proven gone.
+pub fn claim_reclaiming_build_orphan(
+    runner: &mut dyn Runner,
+    lock_root: &Path,
+    name: &str,
+    holder: &LockHolder,
+) -> (LockOutcome, Option<String>) {
+    claim_reclaiming(runner, lock_root, name, holder, LockPolicy::Strict, true)
+}
+
+fn claim_reclaiming(
+    runner: &mut dyn Runner,
+    lock_root: &Path,
+    name: &str,
+    holder: &LockHolder,
+    policy: LockPolicy,
+    require_group: bool,
+) -> (LockOutcome, Option<String>) {
     let outcome = buildplan::claim_lock(runner, lock_root, name, holder, policy);
     let LockOutcome::Contended {
         holder: Some(held),
@@ -180,11 +213,12 @@ pub fn claim_reclaiming_orphan(
     else {
         return (outcome, None);
     };
-    if !release_orphan(
+    if !release_orphan_with(
         runner,
         &buildplan::lock_dir(lock_root, name),
         held,
         *liveness,
+        require_group,
     ) {
         return (outcome, None);
     }
@@ -197,6 +231,58 @@ pub fn claim_reclaiming_orphan(
             orphan,
         ),
         other => (other, orphan),
+    }
+}
+
+// Safe holder facts for diagnostics: no home, path, token, PID or command leaves here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HolderFacts {
+    pub alive: Option<bool>,
+    // shortcut: presence of the recorded build group stands in for a per-process heavy-build count; None without a group.
+    pub build_process: Option<bool>,
+    // UTC age of the claim; None for an unreadable or future timestamp.
+    pub hold_s: Option<u64>,
+}
+
+pub fn holder_facts(
+    runner: &mut dyn Runner,
+    held: &LockHolder,
+    liveness: Option<PidLiveness>,
+) -> HolderFacts {
+    use crate::adapters::metro::{group_presence, GroupPresence};
+    let now = runner.now_epoch_ms();
+    HolderFacts {
+        alive: match liveness {
+            Some(PidLiveness::AliveMatching) => Some(true),
+            Some(PidLiveness::Dead | PidLiveness::AliveForeign) => Some(false),
+            _ => None,
+        },
+        build_process: held
+            .group
+            .and_then(|pgid| match group_presence(runner, pgid) {
+                GroupPresence::Present => Some(true),
+                GroupPresence::Absent => Some(false),
+                GroupPresence::Unknown => None,
+            }),
+        hold_s: timefmt::parse_iso8601_utc(&held.at)
+            .and_then(|at| now.checked_sub(at))
+            .map(|ms| ms / 1000),
+    }
+}
+
+pub fn rough_duration(seconds: u64) -> String {
+    if seconds >= 60 {
+        format!("{} min", seconds / 60)
+    } else {
+        format!("{seconds} s")
+    }
+}
+
+pub fn yes_no(fact: Option<bool>) -> &'static str {
+    match fact {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "unknown",
     }
 }
 

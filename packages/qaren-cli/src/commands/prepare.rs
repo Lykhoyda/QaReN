@@ -7,16 +7,16 @@ use crate::cancel::ensure_running;
 use crate::candidate;
 use crate::events::StageState;
 use crate::exec::{CmdSpec, Runner};
-use crate::failure::{Failure, FailureCode};
+use crate::failure::{Failure, FailureCode, RecoveryReason};
 use crate::fingerprint::{self, NativeFingerprint};
 use crate::handoff::{self, ExpectedReceipt, HandoffDocument, HandoffState, HANDOFF_SCHEMA};
 use crate::pool::{self, PoolMember};
 use crate::receipt::{Receipt, ReceiptResult};
 use crate::redact::redact_secrets;
 use crate::runrecord::{
-    capture_pid_identity, probe_pid_identity, AppInstallResource, BuildLockResource, FarmResource,
-    IosSimResource, MetroResource, Phase, PidLiveness, RunRecord, TunnelResource,
-    UsbDeviceResource, RUN_SCHEMA,
+    capture_pid_identity, probe_pid_identity, AppInstallResource, BuildLockObservation,
+    BuildLockResource, FarmResource, IosSimResource, LockObservation, MetroResource, Phase,
+    PidLiveness, RunRecord, TunnelResource, UsbDeviceResource, RUN_SCHEMA,
 };
 use crate::scenario::{BuildOwner, BuildStrategy, DepsPolicy, IosSpec, Platform, Scenario};
 use crate::timefmt;
@@ -72,6 +72,8 @@ pub(crate) struct Ctx<'a> {
     pub(crate) manifest_warm: Option<crate::core::ManifestWarm>,
     // The run owns this exact iOS simulator and pins its locale and keyboard before launch.
     pub(crate) lane_owned: bool,
+    // Monotonic end of the iOS build window: lock wait, prebuild, build, verification and publication share it.
+    pub(crate) build_deadline_ms: Option<u64>,
 }
 
 impl<'a> Ctx<'a> {
@@ -107,11 +109,23 @@ impl<'a> Ctx<'a> {
             } else {
                 None
             };
-        if self.record.resources.any_owned() && failure.code != FailureCode::ArtifactInstallFailed {
+        // A contention refusal keeps naming the holder; the run's own cleanup is carried by its recovery.
+        if self.record.resources.any_owned()
+            && !matches!(
+                failure.code,
+                FailureCode::ArtifactInstallFailed | FailureCode::BuildContended
+            )
+        {
             failure.next_action = crate::redact::OutputText::from_output(&format!(
                 "qaren cleanup {} --json",
                 self.record.run_id
             ));
+        }
+        if self.record.resources.any_owned() {
+            failure.recovery = failure
+                .recovery
+                .take()
+                .map(|r| Box::new(r.with_own_cleanup(&self.record.run_id)));
         }
         // Contention is a refusal even after the run record exists: nothing
         // broke, qaren declined to take a claimed resource.
@@ -188,9 +202,11 @@ pub(crate) fn finish_receipt(ctx: Ctx, result: ReceiptResult, failure: Option<Fa
     receipt.core_cleanup = ctx.record.resources.core_cleanup.clone();
     receipt.fresh_install = ctx.record.resources.fresh_install.clone();
     receipt.lane = ctx.record.resources.lane.clone();
+    receipt.build_lock = ctx.record.build_lock.clone();
     for (name, value) in &ctx.notes {
         receipt.outcomes.insert(name.clone(), value.clone());
     }
+    receipt.recovery = failure.as_ref().and_then(|f| f.recovery.as_deref().cloned());
     receipt.failure = failure;
     receipt.next_action = next_action;
     receipt.commands_executed = ctx.runner.commands_executed();
@@ -535,6 +551,7 @@ fn prepare_validated(
         failure: None,
         history: Vec::new(),
         terminal: None,
+        build_lock: None,
     };
     if let Err(f) = record.save(&args.runs_root) {
         return Err(match &record.resources.lease {
@@ -556,6 +573,7 @@ fn prepare_validated(
         bundle_requests_at_launch: None,
         manifest_warm: None,
         lane_owned: scenario.platform == Platform::Ios,
+        build_deadline_ms: None,
     };
     let t = ctx.mark("validate", started_ms);
     if let Some(earlier) = recovered {
@@ -661,7 +679,10 @@ fn prepare_validated(
     }
     let t = ctx.mark("plan", t);
 
-    if plan.decision != BuildDecision::Reuse {
+    // iOS claims its build lock after allocation, inside build_ios_locked; Android claims here.
+    let ios_build =
+        plan.decision != BuildDecision::Reuse && ctx.record.scenario.platform == Platform::Ios;
+    if plan.decision != BuildDecision::Reuse && !ios_build {
         if let Err(f) = claim_build_lock(&mut ctx, &args.lock_root) {
             return Ok(ctx.fail(f));
         }
@@ -694,6 +715,15 @@ fn prepare_validated(
         if let Err(f) = run_reuse_path(&mut ctx, &plan, t) {
             return Ok(ctx.fail(f));
         }
+    } else if ios_build {
+        let built = match build_ios_locked(&mut ctx, &plan, &args.lock_root) {
+            Ok(built) => built,
+            Err(f) => return Ok(ctx.fail(f)),
+        };
+        let now = ctx.runner.now_epoch_ms();
+        if let Err(f) = run_reuse_path(&mut ctx, &built, now) {
+            return Ok(ctx.fail(f));
+        }
     } else {
         if plan.decision == BuildDecision::Clean {
             if let Err(f) = run_clean_preparation(&mut ctx, &plan) {
@@ -715,7 +745,7 @@ fn prepare_validated(
     };
     let t = ctx.mark("verify", t);
 
-    if plan.decision != BuildDecision::Reuse {
+    if plan.decision != BuildDecision::Reuse && !ios_build {
         if let Err(f) = record_build_result(&mut ctx, &fp) {
             return Ok(ctx.fail(f));
         }
@@ -2190,6 +2220,9 @@ pub(crate) fn claim_build_lock(ctx: &mut Ctx, lock_root: &Path) -> Result<(), Fa
         platform_dir(ctx.record.scenario.platform)
     );
     let holder = lock_holder_for(ctx);
+    if ctx.record.scenario.platform == Platform::Ios {
+        return claim_ios_build_lock(ctx, lock_root, &name, holder);
+    }
     // Persisted before the claim so an interrupted prepare leaves the intent
     // discoverable; a foreign holder at cleanup time proves the claim never
     // succeeded (only this run can write its own holder).
@@ -2244,6 +2277,258 @@ pub(crate) fn claim_build_lock(ctx: &mut Ctx, lock_root: &Path) -> Result<(), Fa
             format!("cannot operate the build serialization lock: {detail}"),
             buildplan::LOCK_ROOT_ADVICE,
         )),
+    }
+}
+
+const LOCK_POLL_MS: u64 = 1000;
+const LOCK_PROGRESS_MS: u64 = 5000;
+const HOLDER_IDLE_ADVISORY_MS: u64 = 120_000;
+
+// Bounded wait for the iOS build lock within the build window. A live or unproven holder is
+// never taken; a dead one is reclaimed only through the group-proven orphan rule.
+fn claim_ios_build_lock(
+    ctx: &mut Ctx,
+    lock_root: &Path,
+    name: &str,
+    holder: LockHolder,
+) -> Result<(), Failure> {
+    if holder.identity.is_none() {
+        return Err(Failure::new(
+            "build_lock",
+            FailureCode::PrereqMissing,
+            "this run's process identity could not be observed, so it cannot hold the native-build lock",
+            "Restore process identity observation, then re-run prepare.",
+        )
+        .with_recovery(RecoveryReason::IdentityUnavailable));
+    }
+    // Persisted before the claim so an interrupted prepare leaves the intent discoverable.
+    ctx.record.resources.build_lock = Some(BuildLockResource {
+        lock_dir: buildplan::lock_dir(lock_root, name),
+        holder: holder.holder.clone(),
+    });
+    ctx.save()
+        .map_err(|f| f.with_recovery(RecoveryReason::PersistenceFailed))?;
+    let start = ctx.runner.monotonic_ms();
+    let deadline = start.saturating_add(
+        ctx.record
+            .scenario
+            .deadlines
+            .build_seconds
+            .saturating_mul(1000),
+    );
+    ctx.build_deadline_ms = Some(deadline);
+    let mut wait = LockWait::default();
+    loop {
+        if let Err(f) = ensure_running(ctx.runner, "build_lock_wait") {
+            wait.finish(ctx, start, StageState::Failed);
+            return Err(f.with_recovery(RecoveryReason::RunCancelled));
+        }
+        // Budget expiry before the claim starts no new work.
+        if wait.waiting && ctx.runner.monotonic_ms() >= deadline {
+            wait.finish(ctx, start, StageState::Failed);
+            return Err(wait.refusal(name, ctx.record.scenario.deadlines.build_seconds));
+        }
+        let (outcome, orphan) =
+            crate::lease::claim_reclaiming_build_orphan(ctx.runner, lock_root, name, &holder);
+        match outcome {
+            LockOutcome::Claimed { .. } => {
+                if let Some(run_id) = orphan {
+                    ctx.notes.push((
+                        "build_lock".to_string(),
+                        crate::lease::orphan_note(&buildplan::lock_dir(lock_root, name), &run_id),
+                    ));
+                }
+                wait.finish(ctx, start, StageState::Passed);
+                return Ok(());
+            }
+            LockOutcome::Contended {
+                holder: existing,
+                liveness,
+                ..
+            } => {
+                wait.observe(ctx, existing.as_ref(), liveness, start);
+                let remaining = deadline.saturating_sub(ctx.runner.monotonic_ms());
+                ctx.runner
+                    .sleep(Duration::from_millis(LOCK_POLL_MS.min(remaining)));
+            }
+            LockOutcome::Error(detail) => {
+                wait.finish(ctx, start, StageState::Failed);
+                return Err(Failure::new(
+                    "plan",
+                    FailureCode::RunRecordUpdateFailed,
+                    format!("cannot operate the build serialization lock: {detail}"),
+                    buildplan::LOCK_ROOT_ADVICE,
+                ));
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct LockWait {
+    observed: BuildLockObservation,
+    waiting: bool,
+    holder_token: Option<String>,
+    reported_ms: u64,
+    idle_since_ms: Option<u64>,
+    advised: bool,
+}
+
+impl LockWait {
+    fn observe(
+        &mut self,
+        ctx: &mut Ctx,
+        existing: Option<&LockHolder>,
+        liveness: Option<PidLiveness>,
+        start: u64,
+    ) {
+        let token = existing.map(|held| held.holder.clone());
+        let transition = self.waiting && token != self.holder_token;
+        let facts = existing.map(|held| crate::lease::holder_facts(ctx.runner, held, liveness));
+        let alive = facts.and_then(|f| f.alive);
+        let build_process = facts.and_then(|f| f.build_process);
+        let now = ctx.runner.monotonic_ms();
+        if transition {
+            self.idle_since_ms = None;
+            self.advised = false;
+        }
+        if alive == Some(true) && build_process == Some(false) {
+            self.idle_since_ms.get_or_insert(now);
+        } else {
+            self.idle_since_ms = None;
+        }
+        self.observed = BuildLockObservation {
+            holder: existing
+                .map(|held| held.run_id.clone())
+                .filter(|run_id| crate::runrecord::validate_run_id(run_id).is_ok()),
+            waited_s: now.saturating_sub(start) / 1000,
+            holder_alive: alive,
+            holder_build_process: build_process,
+            hold_s: facts.and_then(|f| f.hold_s),
+            no_build_observed_s: self
+                .idle_since_ms
+                .map_or(0, |since| now.saturating_sub(since) / 1000),
+            observation: if existing.is_some() {
+                LockObservation::Observed
+            } else {
+                LockObservation::Unreadable
+            },
+        };
+        let idle = !self.advised
+            && self
+                .idle_since_ms
+                .is_some_and(|since| now.saturating_sub(since) >= HOLDER_IDLE_ADVISORY_MS);
+        let code = if idle {
+            "holder_idle_after_build"
+        } else {
+            match alive {
+                Some(true) => "holder_alive",
+                Some(false) => "holder_dead",
+                None => "holder_unknown",
+            }
+        };
+        if !self.waiting {
+            self.waiting = true;
+            crate::progress::started("build-lock-wait", false);
+            crate::events::stage("build_lock_wait", StageState::Running, Some(code), None);
+            self.reported_ms = now;
+        } else if transition || idle || now.saturating_sub(self.reported_ms) >= LOCK_PROGRESS_MS {
+            crate::events::stage(
+                "build_lock_wait",
+                StageState::Running,
+                Some(code),
+                Some(now.saturating_sub(start)),
+            );
+            self.reported_ms = now;
+        }
+        if idle {
+            self.advised = true;
+            ctx.notes.push((
+                "build_lock".to_string(),
+                format!(
+                    "holder_idle_after_build: run {} is alive and has shown no build process for {} s; it is never taken while alive",
+                    self.observed.holder.as_deref().unwrap_or("unknown"),
+                    self.observed.no_build_observed_s
+                ),
+            ));
+        }
+        self.holder_token = token;
+        ctx.record.build_lock = Some(self.observed.clone());
+    }
+
+    fn finish(&mut self, ctx: &mut Ctx, start: u64, state: StageState) {
+        let elapsed = ctx.runner.monotonic_ms().saturating_sub(start);
+        self.observed.waited_s = elapsed / 1000;
+        ctx.record.build_lock = Some(self.observed.clone());
+        if self.waiting {
+            crate::events::stage("build_lock_wait", state, None, Some(elapsed));
+            crate::progress::finished("build-lock-wait", state == StageState::Passed);
+        }
+    }
+
+    fn refusal(&self, name: &str, budget_s: u64) -> Failure {
+        let seen = &self.observed;
+        let holder = seen.holder.as_deref().unwrap_or("unknown");
+        let alive = crate::lease::yes_no(seen.holder_alive);
+        let build = match seen.holder_build_process {
+            Some(true) => "build process running".to_string(),
+            Some(false) if seen.no_build_observed_s > 0 => format!(
+                "no build process for {}",
+                crate::lease::rough_duration(seen.no_build_observed_s)
+            ),
+            Some(false) => "no build process".to_string(),
+            None => "build process unknown".to_string(),
+        };
+        let held = seen
+            .hold_s
+            .map_or("unknown".to_string(), crate::lease::rough_duration);
+        Failure::new(
+            "build_lock_wait",
+            FailureCode::BuildContended,
+            format!(
+                "{name} is held by run {holder} (alive: {alive}; {build}; held {held}); waited {} s of the {budget_s} s build budget",
+                seen.waited_s
+            ),
+            format!(
+                "BUILD_CONTENDED: {name} is held by run {holder} (alive: {alive}; {build}); waited {} s of the budget. Next: wait for that run or re-run once later; if the holder is dead, run its qaren cleanup from its home (its resources only).",
+                seen.waited_s
+            ),
+        )
+        .with_recovery(RecoveryReason::BudgetExhausted)
+    }
+}
+
+// Releases only once the build group is proven gone; an unresolved release stops the run and is never reported free.
+fn release_ios_build_lock(ctx: &mut Ctx) -> Result<(), Failure> {
+    let unresolved = |ctx: &Ctx, reason: &str| {
+        Failure::new(
+            "build_lock",
+            FailureCode::RunRecordUpdateFailed,
+            format!("the native-build lock could not be released: {reason}"),
+            format!(
+                "Restore writable run storage and process observation, then run qaren cleanup {} --json and prepare again; keep unproven resources.",
+                ctx.record.run_id
+            ),
+        )
+        .with_recovery(RecoveryReason::OwnershipUnresolved)
+    };
+    let Some(lock) = ctx.record.resources.build_lock.clone() else {
+        return Ok(());
+    };
+    if !ctx.record.resources.can_release_build_ownership() {
+        return Err(unresolved(ctx, "the build group is not proven gone"));
+    }
+    match buildplan::release_lock(&lock.lock_dir, &lock.holder, &ctx.record.run_id) {
+        buildplan::ReleaseOutcome::Removed
+        | buildplan::ReleaseOutcome::Absent
+        | buildplan::ReleaseOutcome::Foreign(_) => {
+            ctx.record.resources.build_lock = None;
+            ctx.build_deadline_ms = None;
+            ctx.save()
+                .map_err(|f| f.with_recovery(RecoveryReason::PersistenceFailed))
+        }
+        buildplan::ReleaseOutcome::Refused(reason)
+        | buildplan::ReleaseOutcome::Unresolved(reason) => Err(unresolved(ctx, &reason)),
     }
 }
 
@@ -2465,7 +2750,7 @@ pub(crate) fn run_clean_preparation(ctx: &mut Ctx, plan: &BuildPlan) -> Result<(
         let spec = native_prebuild_spec(
             &project_root,
             platform,
-            ctx.record.scenario.deadlines.build_seconds,
+            build_seconds_left(ctx),
             &ctx.record.scenario.deps.registry_auth_env,
         );
         let prebuild = if ctx.record.scenario.platform == Platform::Ios {
@@ -3618,6 +3903,7 @@ fn candidate_drift(run_id: &str, detail: String) -> Failure {
         detail,
         format!("qaren cleanup {run_id} --json, then re-run prepare on a stable checkout"),
     )
+    .with_recovery(RecoveryReason::CandidateDrifted)
 }
 
 fn check_tunnel_port_free(runner: &mut dyn Runner, port: u16) -> Result<(), Failure> {
@@ -3816,7 +4102,8 @@ fn run_finite_build(ctx: &mut Ctx, spec: &CmdSpec) -> Result<(), Failure> {
         let deadline = ctx
             .runner
             .monotonic_ms()
-            .saturating_add(spec.timeout_seconds.saturating_mul(1000));
+            .saturating_add(spec.timeout_seconds.saturating_mul(1000))
+            .min(ctx.build_deadline_ms.unwrap_or(u64::MAX));
         loop {
             if let Some(reason) = ctx.runner.cancellation() {
                 cancelled = Some(reason);
@@ -3844,10 +4131,19 @@ fn run_finite_build(ctx: &mut Ctx, spec: &CmdSpec) -> Result<(), Failure> {
         spec.label.clone(),
         format!("exit={exit:?}; group={}", outcome.render()),
     ));
+    let windowed = ctx.build_deadline_ms.is_some();
     if let Some(reason) = cancelled.or_else(|| ctx.runner.cancellation()) {
-        return Err(Failure::cancelled("build", &reason));
+        let failure = Failure::cancelled("build", &reason);
+        return Err(if windowed {
+            failure.with_recovery(RecoveryReason::RunCancelled)
+        } else {
+            failure
+        });
     }
     if !started || exit != Some(0) || !matches!(outcome, super::cleanup::Outcome::Absent) {
+        let budget_spent = ctx
+            .build_deadline_ms
+            .is_some_and(|deadline| ctx.runner.monotonic_ms() >= deadline);
         let mut failure = build_failure(
             ctx,
             format!(
@@ -3861,9 +4157,128 @@ fn run_finite_build(ctx: &mut Ctx, spec: &CmdSpec) -> Result<(), Failure> {
         if crate::redact::is_registry_child(&spec.label) && !spec.registry_auth_env.is_empty() {
             failure.next_action = crate::redact::OutputText::from_output(&format!("dependency output was withheld; check the declared registry auth environment names and registry setup, then qaren cleanup {} --json", ctx.record.run_id));
         }
+        if windowed {
+            failure = failure.with_recovery(if budget_spent && exit.is_none() {
+                RecoveryReason::BuildBudgetExhausted
+            } else {
+                RecoveryReason::BuildProcessFailed
+            });
+        }
         return Err(failure);
     }
     Ok(())
+}
+
+// The iOS native-build lock covers only the build, its verification, the pre-publication drift
+// checks and cache publication; Metro, install, launch and readiness run after its release.
+pub(crate) fn build_ios_locked(
+    ctx: &mut Ctx,
+    plan: &BuildPlan,
+    lock_root: &Path,
+) -> Result<BuildPlan, Failure> {
+    claim_build_lock(ctx, lock_root)?;
+    if plan.decision == BuildDecision::Clean {
+        crate::events::stage("prebuild", StageState::Running, None, None);
+        run_clean_preparation(ctx, plan)?;
+        crate::events::stage("prebuild", StageState::Passed, None, None);
+    } else {
+        crate::events::stage("prebuild", StageState::Skipped, None, None);
+    }
+    crate::events::stage("native_build", StageState::Running, None, None);
+    build_ios(ctx)?;
+    crate::events::stage("native_build", StageState::Passed, None, None);
+    ensure_build_budget(ctx)?;
+    if ctx.verb == "prepare" {
+        recheck_candidate(ctx)?;
+    }
+    let fp = recheck_fingerprint(ctx, plan)?;
+    ensure_build_budget(ctx)?;
+    record_build_result(ctx, &fp)?;
+    release_ios_build_lock(ctx)?;
+    // Publication may have replaced the artifact with its cached copy and retired ios-build.
+    Ok(ctx.record.build.clone().expect("build planned"))
+}
+
+fn build_ios(ctx: &mut Ctx) -> Result<(), Failure> {
+    ensure_running(ctx.runner, "build")?;
+    let project_root = ctx.record.candidate.project_root.clone();
+    if let Some(workspace) = ctx.record.scenario.build.ios_workspace.as_ref() {
+        ios::validate_workspace(&project_root, workspace)?;
+    }
+    let output = RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id).join("ios-build");
+    std::fs::create_dir(&output)
+        .map_err(|_| build_failure(ctx, "cannot exclusively create iOS build output directory"))?;
+    let build = ios::build_spec(
+        &project_root,
+        &output,
+        build_seconds_left(ctx),
+        ctx.record.scenario.build.ios_workspace.as_ref(),
+    );
+    run_finite_build(ctx, &build)?;
+    if ctx.record.scenario.build.ios_workspace.is_some() {
+        let built =
+            ios::built_app(&ios::workspace_products(&output)).map_err(|e| build_failure(ctx, e))?;
+        let name = built.file_name().expect("app has a name").to_owned();
+        std::fs::rename(&built, output.join(name)).map_err(|e| {
+            build_failure(
+                ctx,
+                format!("cannot move the built app into the output: {e}"),
+            )
+        })?;
+    }
+    let app = ios::built_app(&output).map_err(|e| build_failure(ctx, e))?;
+    let artifact = ios::verify_app(
+        ctx.runner,
+        &app,
+        &ctx.record.candidate.app_id,
+        ctx.record
+            .scenario
+            .candidate
+            .dev_client_scheme
+            .as_deref()
+            .expect("scheme validated"),
+    )
+    .map_err(|e| build_failure(ctx, e))?;
+    ctx.record.build.as_mut().expect("build planned").artifact = Some(artifact);
+    ctx.save()
+}
+
+// Seconds left in the build window, never more than the scenario's own build deadline.
+fn build_seconds_left(ctx: &Ctx) -> u64 {
+    let full = ctx.record.scenario.deadlines.build_seconds;
+    ctx.build_deadline_ms.map_or(full, |deadline| {
+        deadline
+            .saturating_sub(ctx.runner.monotonic_ms())
+            .div_ceil(1000)
+            .min(full)
+    })
+}
+
+fn ensure_build_budget(ctx: &mut Ctx) -> Result<(), Failure> {
+    ensure_running(ctx.runner, "build")?;
+    if ctx
+        .build_deadline_ms
+        .is_some_and(|deadline| ctx.runner.monotonic_ms() >= deadline)
+    {
+        return Err(build_budget_failure(
+            ctx,
+            "the build budget was exhausted before the build was published",
+        ));
+    }
+    Ok(())
+}
+
+fn build_budget_failure(ctx: &Ctx, detail: &str) -> Failure {
+    Failure::new(
+        "build",
+        FailureCode::BuildFailed,
+        detail,
+        format!(
+            "Inspect the build result; when this run's owned build group is retired, run qaren cleanup {} --json, then prepare again.",
+            ctx.record.run_id
+        ),
+    )
+    .with_recovery(RecoveryReason::BuildBudgetExhausted)
 }
 
 pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
@@ -3872,55 +4287,7 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
     let deadline = ctx.record.scenario.deadlines.build_seconds;
     let project_root = ctx.record.candidate.project_root.clone();
     let spec = match ctx.record.scenario.platform {
-        Platform::Ios => {
-            if let Some(workspace) = ctx.record.scenario.build.ios_workspace.as_ref() {
-                ios::validate_workspace(&project_root, workspace)?;
-            }
-            let output = RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id).join("ios-build");
-            std::fs::create_dir(&output).map_err(|_| {
-                build_failure(ctx, "cannot exclusively create iOS build output directory")
-            })?;
-            let build = ios::build_spec(
-                &project_root,
-                &output,
-                deadline,
-                ctx.record.scenario.build.ios_workspace.as_ref(),
-            );
-            spawn_metro_only(ctx)?;
-            run_finite_build(ctx, &build)?;
-            if ctx.record.scenario.build.ios_workspace.is_some() {
-                let built = ios::built_app(&ios::workspace_products(&output))
-                    .map_err(|e| build_failure(ctx, e))?;
-                let name = built.file_name().expect("app has a name").to_owned();
-                std::fs::rename(&built, output.join(name)).map_err(|e| {
-                    build_failure(
-                        ctx,
-                        format!("cannot move the built app into the output: {e}"),
-                    )
-                })?;
-            }
-            let app = ios::built_app(&output).map_err(|e| build_failure(ctx, e))?;
-            let artifact = ios::verify_app(
-                ctx.runner,
-                &app,
-                &ctx.record.candidate.app_id,
-                ctx.record
-                    .scenario
-                    .candidate
-                    .dev_client_scheme
-                    .as_deref()
-                    .expect("scheme validated"),
-            )
-            .map_err(|e| build_failure(ctx, e))?;
-            let mut plan = ctx.record.build.clone().expect("build planned");
-            plan.artifact = Some(artifact);
-            ctx.record.build = Some(plan.clone());
-            ctx.save()?;
-            crate::events::stage("native_build", StageState::Passed, None, None);
-            crate::events::stage("install_launch_ready", StageState::Running, None, None);
-            run_reuse_path(ctx, &plan, ctx.runner.now_epoch_ms())?;
-            return Ok(());
-        }
+        Platform::Ios => unreachable!("iOS builds run under build_ios_locked"),
         Platform::Android => {
             if let Some(emulator) = ctx.record.resources.android_emulator.clone() {
                 if !project_root.join("android").is_dir() {
