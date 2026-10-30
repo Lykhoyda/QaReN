@@ -6,7 +6,7 @@ import {
   _setFetchForTest as setAndroidFetch,
   _resetCapabilitiesForTest as resetAndroidCaps,
   _setAndroidRunnerStateForTest,
-} from '../../dist/runners/rn-android-runner-client.js';
+} from '../../dist/runners/qaren-android-runner-client.js';
 import { buildIosProbes, buildAndroidProbes } from '../../dist/lifecycle/settle.js';
 import {
   runIOS,

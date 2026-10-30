@@ -8,7 +8,7 @@ import { detectPlatform } from './platform-utils.js';
 import { extractMutationDisposition, fetchSnapshotNodes } from './device-interact.js';
 import type { SnapshotFetchResult } from './device-interact.js';
 import { hasActiveSession, getActiveSession, runNative } from '../agent-device-wrapper.js';
-import { getAndroidRunnerCapabilities } from '../runners/rn-android-runner-client.js';
+import { getAndroidRunnerCapabilities } from '../runners/qaren-android-runner-client.js';
 import { shouldRejectMaestroDeviceAuthority } from '../domain/maestro-device-authority.js';
 
 // iOS dialog button labels. Note: "Don't Allow" uses U+2019 typographic apostrophe,
@@ -378,7 +378,7 @@ async function handleSystemDialog(
         tappedLabel: runner.matchedLabel,
         tappedRect: runner.tappedRect,
         dialogTitle: runner.dialogTitle,
-        via: platform === 'ios' ? 'qaren-ios-runner' : 'rn-android-runner',
+        via: platform === 'ios' ? 'qaren-ios-runner' : 'qaren-android-runner',
       },
       { meta: { verify: 'exact' } },
     );

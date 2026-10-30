@@ -9,15 +9,16 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 const root = mkdtempSync(join(tmpdir(), 'qaren-android-identity-'));
-const runner = join(root, 'rn-android-runner');
+const runner = join(root, 'qaren-android-runner');
 const appApk = join(runner, 'app/build/outputs/apk/debug/app-debug.apk');
 const testApk = join(runner, 'app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk');
 mkdirSync(dirname(appApk), { recursive: true });
 mkdirSync(dirname(testApk), { recursive: true });
+writeFileSync(join(runner, 'gradlew'), '');
 const previousRoot = process.env.QAREN_NATIVE_RUNNER_ROOT;
 process.env.QAREN_NATIVE_RUNNER_ROOT = root;
 const { startAndroidRunner, _setAndroidRunnerStateForTest } =
-  await import('../../dist/runners/rn-android-runner-client.js');
+  await import('../../dist/runners/qaren-android-runner-client.js');
 if (previousRoot === undefined) delete process.env.QAREN_NATIVE_RUNNER_ROOT;
 else process.env.QAREN_NATIVE_RUNNER_ROOT = previousRoot;
 
