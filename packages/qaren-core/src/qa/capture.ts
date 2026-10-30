@@ -1,6 +1,6 @@
 import { HandlerError } from './adapt.js';
 import { systemModalDiagnostic } from '../domain/system-modal-diagnostic.js';
-import { sleep, withDeadline } from '../domain/cancellation.js';
+import { isAbort, sleep, throwIfCancelled, withDeadline } from '../domain/cancellation.js';
 import { SETTLE_DEFAULT_BUDGET_MS } from '../lifecycle/settle.js';
 import { WAIT_POLL_MS } from './walker.js';
 import { diagnosticField, privateSnapshotDiagnostics } from './snapshot-diagnostics.js';
@@ -51,6 +51,21 @@ export class AppProcessGoneError extends Error {
     super('the app process is not running');
     this.name = 'AppProcessGoneError';
   }
+}
+
+// A wait's capture ran out of the wait's remaining time; the walker owns what that means.
+export class CaptureDeadline extends Error {
+  constructor() {
+    super('the capture did not complete before the wait deadline');
+    this.name = 'CaptureDeadline';
+  }
+}
+
+// Inside the run stop's scope, so the deadline reaches every cancellable read beneath it.
+export function boundedCapture<T>(budgetMs: number | undefined, op: () => Promise<T>): Promise<T> {
+  return budgetMs === undefined
+    ? op()
+    : withDeadline(performance.now() + budgetMs, new CaptureDeadline(), op);
 }
 
 export interface NativeObservation {
@@ -131,6 +146,8 @@ export interface CaptureDeps {
   timing?: TimingObserver;
   requirePrivateInputs?: boolean;
   appId?: string;
+  // A wait's remaining time: it caps the presence budget and allows one presence read.
+  budgetMs?: number;
   now?(): number;
   native(presenceBudgetMs: number): Promise<NativeObservation>;
   react(): Promise<ReactObservation>;
@@ -535,6 +552,7 @@ export async function captureScreen(deps: CaptureDeps): Promise<Screen> {
     return await capture(deps);
   } catch (error) {
     if (
+      isAbort(error) ||
       error instanceof NativeCaptureError ||
       error instanceof NativeSnapshotIncomplete ||
       error instanceof AppProcessGoneError
@@ -556,7 +574,10 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
   const mode = deps.platformPresence === true ? 'platform-presence' : 'ordinary';
   const now = deps.now ?? (() => performance.now());
   const started = now();
-  let presenceBudgetMs = NATIVE_PRESENCE_BUDGET_MS;
+  let presenceBudgetMs =
+    deps.budgetMs === undefined
+      ? NATIVE_PRESENCE_BUDGET_MS
+      : Math.max(1, Math.min(NATIVE_PRESENCE_BUDGET_MS, Math.floor(deps.budgetMs)));
   let native: NativeObservation = {};
   let retryDeadline: number | undefined;
   for (;;) {
@@ -577,6 +598,7 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
             ),
       );
     } catch (error) {
+      if (isAbort(error)) throw error;
       if (error === retryRefusal && retryRefusal instanceof NativeSnapshotIncomplete)
         throw retryRefusal;
       if (error instanceof AppProcessGoneError) throw error;
@@ -594,7 +616,9 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
       (!deps.requirePrivateInputs ||
         !(
           retryableEmptyCapture(native) ||
-          (deps.platformPresence === true && retryablePresenceCapture(native))
+          (deps.platformPresence === true &&
+            deps.budgetMs === undefined &&
+            retryablePresenceCapture(native))
         ))
     )
       break;
@@ -613,6 +637,8 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
     }
     presenceBudgetMs = Math.min(NATIVE_PRESENCE_BUDGET_MS, readBudget);
   }
+  // A read finishing after its scope ended publishes nothing more.
+  throwIfCancelled();
   if (deps.timing) observeNativeTiming(native.presenceCapture, deps.timing, now());
   if (deps.warn) {
     try {
@@ -644,6 +670,7 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
     react = await measureTiming(deps.timing, now, 'react-private', () => deps.react());
     if (react.reconnected === true) reactConnection = 'reconnected';
   } catch (error) {
+    if (isAbort(error)) throw error;
     if (error instanceof ReactCaptureIncomplete && error.reason === 'disconnected')
       reactConnection = 'lost';
     if (error instanceof ReactCaptureIncomplete && error.reason === 'reconnected')
@@ -652,6 +679,7 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
     const detail = error instanceof ReactCaptureIncomplete ? ` (${error.detail})` : '';
     reactWarning = `interactive digest unavailable${detail}; React coverage is unknown`;
   }
+  throwIfCancelled();
   const joinedAt = deps.timing ? now() : 0;
   observeTiming(deps.timing, { stage: 'join-private', edge: 'start', outcome: 'ok', at: joinedAt });
   let joined = false;

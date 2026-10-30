@@ -5,6 +5,7 @@ import { join } from '../../../dist/qa/screen.js';
 import type { DigestEntry, Front, NativeNode, ReactHostEvidence } from '../../../dist/qa/screen.js';
 import { reactOnlyMiss } from '../../../dist/qa/resolve.js';
 import { runPlan, WAIT_BUDGET_MS, WAIT_POLL_MS } from '../../../dist/qa/walker.js';
+import { CaptureDeadline } from '../../../dist/qa/capture.js';
 import type { ActResult } from '../../../dist/qa/walker.js';
 import { scriptedJudge, walker } from './judgment-fixtures.ts';
 
@@ -142,8 +143,10 @@ async function wait(forms: Form[], plan = '1. Wait for "name-field" to appear', 
     act,
   );
   const presence: boolean[] = [];
+  const budgets: (number | undefined)[] = [];
   f.deps.captureScreen = async (options) => {
     presence.push(options?.platformPresence === true);
+    budgets.push(options?.budgetMs);
     return form(
       options?.platformPresence === true,
       forms[Math.min(presence.length - 1, forms.length - 1)],
@@ -152,8 +155,18 @@ async function wait(forms: Form[], plan = '1. Wait for "name-field" to appear', 
   const blocks = parsePlan(plan).blocks!;
   const started = f.deps.now();
   const result = await runPlan(blocks, f.deps);
-  return { result, presence, actions: f.actions, elapsed: f.deps.now() - started, blocks, f };
+  return {
+    result,
+    presence,
+    budgets,
+    actions: f.actions,
+    elapsed: f.deps.now() - started,
+    blocks,
+    f,
+  };
 }
+
+const enrichments = (r: { presence: boolean[] }) => r.presence.filter(Boolean).length;
 
 const seen = (r: Awaited<ReturnType<typeof wait>>) => r.result.failure?.seen ?? '';
 
@@ -161,10 +174,12 @@ test('a field past the window but inside a taller scroll view is not inside its 
   // The window clips the 1000-point scroll view at 864; the field starts at 944.
   const r = await wait([{ scrollHeight: 1000, fieldY: 924 }]);
   assert.doesNotMatch(seen(r), / inside its viewport;/);
-  assert.match(seen(r), / below its viewport;/);
+  // Layout read before the scroll is history, never a claim about the current screen.
+  assert.match(seen(r), /; react layout before scroll=24,944,340,40 below its viewport;/);
   assert.deepEqual(r.actions, ['scroll down']);
   assert.match(seen(r), /; attempt=scroll; /);
   assert.equal(r.elapsed, WAIT_BUDGET_MS);
+  assert.equal(enrichments(r), 1);
 });
 
 test('a field swallowed by an accessible wrapper inside the viewport refuses early with its facts', async () => {
@@ -175,8 +190,11 @@ test('a field swallowed by an accessible wrapper inside the viewport refuses ear
     /^TARGET_REACT_ONLY: "name-field" is mounted in React but absent from the native capture across 2 observations; input id=name-field frame=unknown react-only; react layout=24,424,340,40 inside its viewport; accessible ancestor=button id=name-wrapper frame=16,420,358,48 native; nearest native ancestor=button id=name-wrapper frame=16,420,358,48 native; host=2; attempt=none; next step: /,
   );
   assert.deepEqual(r.actions, []);
-  assert.deepEqual(r.presence, [false, true, true]);
+  // Two cheap misses on one screen, then the one capture that reads React's layout.
+  assert.deepEqual(r.presence, [false, false, true]);
   assert.equal(r.elapsed, 2 * WAIT_POLL_MS);
+  for (const [i, budget] of r.budgets.entries())
+    assert.equal(budget, WAIT_BUDGET_MS - i * WAIT_POLL_MS);
 });
 
 test('the refusal names no label, placeholder or value', async () => {
@@ -201,7 +219,7 @@ test('a field below the fold of its scroll view gets one scroll and passes on na
   const r = await wait([below, below, below, { accessible: false, nativeField: true }]);
   assert.equal(r.result.verdict, 'PASS', seen(r));
   assert.deepEqual(r.actions, ['scroll down']);
-  assert.deepEqual(r.presence, [false, true, true, true]);
+  assert.deepEqual(r.presence, [false, false, true, false]);
 });
 
 test('a field still React-only after its one scroll ends with the typed reason at the deadline', async () => {
@@ -214,6 +232,8 @@ test('a field still React-only after its one scroll ends with the typed reason a
   );
   assert.deepEqual(r.actions, ['scroll down']);
   assert.equal(r.elapsed, WAIT_BUDGET_MS);
+  assert.equal(enrichments(r), 1);
+  assert.ok(r.presence.slice(r.presence.indexOf(true) + 1).every((p) => !p));
 });
 
 test('a field above its scroll view scrolls up, and never through another container', async () => {
@@ -242,6 +262,7 @@ test('without React layout facts the wait keeps its budget and ends with the typ
   assert.match(seen(r), /; host=2; attempt=none; next step: /);
   assert.deepEqual(r.actions, []);
   assert.equal(r.elapsed, WAIT_BUDGET_MS);
+  assert.equal(enrichments(r), 1);
 });
 
 test('a field that turns native before the deadline still passes', async () => {
@@ -253,6 +274,7 @@ test('a field that turns native before the deadline still passes', async () => {
   ]);
   assert.equal(r.result.verdict, 'PASS', seen(r));
   assert.deepEqual(r.actions, []);
+  assert.deepEqual(r.presence, [false, false, true, false]);
 });
 
 test('incomplete native coverage, a dialog in front, a stored id or a block start never refuse early', async () => {
@@ -312,4 +334,125 @@ test("a native carrier keeps today's miss text and requests no React facts", asy
     ),
     undefined,
   );
+});
+
+// Each capture gets the wait's remaining time; a presence capture runs `slow(budget)` instead.
+async function slowWait(
+  slow: (budget: number, f: ReturnType<typeof walker>) => Promise<Form | void>,
+) {
+  const f = walker(
+    [],
+    scriptedJudge(() => assert.fail('a quoted wait is model-free')),
+  );
+  const presence: boolean[] = [];
+  f.deps.captureScreen = async (options) => {
+    presence.push(options?.platformPresence === true);
+    const late = options?.platformPresence ? await slow(options.budgetMs!, f) : undefined;
+    return form(options?.platformPresence === true, late ?? {});
+  };
+  const result = await runPlan(parsePlan('1. Wait for "name-field" to appear').blocks!, f.deps);
+  return { result, presence, actions: f.actions, elapsed: f.deps.now(), f };
+}
+
+test('a layout read cut off at the wait deadline keeps the React-only observation, not visibility uncertainty', async () => {
+  const r = await slowWait(async (budget, f) => {
+    await f.deps.sleep(budget);
+    throw new CaptureDeadline();
+  });
+  assert.equal(r.result.verdict, 'FAIL');
+  assert.match(
+    seen(r),
+    /^TARGET_REACT_ONLY: target did not appear within 15000ms; previously observed in React but absent from the native capture; frame=unknown; layout=unavailable; cause=acquisition-deadline; /,
+  );
+  assert.match(
+    seen(r),
+    /; observations=2; react_only_observations=2; presence_attempts=1; elapsed_ms=15000; enrichment_wait_ms=14000; requested_presence_budget_ms=14000; attempt=none; next_action=inspect_capture_health;/,
+  );
+  assert.doesNotMatch(seen(r), /VISIBILITY_UNSURE/);
+  assert.deepEqual(r.presence, [false, false, true]);
+  assert.deepEqual(r.actions, []);
+  assert.equal(r.elapsed, WAIT_BUDGET_MS);
+  // Expired acquisition is capture health, not a broken step.
+  assert.notEqual(r.result.failure?.kind, 'step');
+});
+
+test('a layout read that lands past the deadline is discarded the same way', async () => {
+  // Even a native field in that late capture is not evidence for this wait; it lands inside the capture limit.
+  const r = await slowWait(async (budget, f) => {
+    await f.deps.sleep(budget + 1_000);
+    return { accessible: false, nativeField: true };
+  });
+  assert.equal(r.result.verdict, 'FAIL');
+  assert.match(seen(r), /^TARGET_REACT_ONLY: .*; cause=acquisition-deadline; /);
+  assert.deepEqual(r.presence, [false, false, true]);
+  assert.deepEqual(r.actions, []);
+});
+
+test('native evidence landing just inside the deadline still passes', async () => {
+  const r = await slowWait(async (budget, f) => {
+    await f.deps.sleep(budget - 100);
+    return { accessible: false, nativeField: true };
+  });
+  assert.equal(r.result.verdict, 'PASS', seen(r));
+  assert.deepEqual(r.presence, [false, false, true]);
+});
+
+test('an ordinary poll cut off at the deadline names the stage it was in', async () => {
+  const f = walker(
+    [],
+    scriptedJudge(() => assert.fail('model-free')),
+  );
+  f.deps.timing = () => undefined;
+  let captures = 0;
+  f.deps.captureScreen = async (options) => {
+    // The first sighting is React-only; the next capture never gets past runner readiness.
+    if (++captures === 1) return form(false);
+    options!.timing!({ stage: 'native-readiness', edge: 'start', outcome: 'ok', at: f.deps.now() });
+    await f.deps.sleep(options!.budgetMs!);
+    throw new CaptureDeadline();
+  };
+  const r = await runPlan(parsePlan('1. Wait for "name-field" to appear').blocks!, f.deps);
+  assert.match(
+    r.failure?.seen ?? '',
+    /^TARGET_REACT_ONLY: .*; cause=acquisition-deadline; last_stage=readiness; observations=1; react_only_observations=1; presence_attempts=0; .*; next_action=inspect_capture_health;/,
+  );
+  assert.equal(f.deps.now(), WAIT_BUDGET_MS);
+});
+
+test('a refused layout read leaves the cheap polls to run to the deadline', async () => {
+  const g = walker(
+    [],
+    scriptedJudge(() => assert.fail('model-free')),
+  );
+  const presence: boolean[] = [];
+  g.deps.captureScreen = async (options) => {
+    presence.push(options?.platformPresence === true);
+    const screen = form(options?.platformPresence === true);
+    return options?.platformPresence
+      ? { ...screen, coverage: { native: 'incomplete', react: 'complete' } }
+      : screen;
+  };
+  const refused = await runPlan(parsePlan('1. Wait for "name-field" to appear').blocks!, g.deps);
+  assert.equal(g.deps.now(), WAIT_BUDGET_MS);
+  assert.match(refused.failure?.seen ?? '', /^TARGET_REACT_ONLY: .*; cause=wait-deadline; /);
+  assert.match(refused.failure?.seen ?? '', /; next_action=inspect_wait_target;/);
+  assert.equal(presence.filter(Boolean).length, 1);
+});
+
+test('a wait whose first capture never completes reports the capture deadline', async () => {
+  const f = walker(
+    [],
+    scriptedJudge(() => assert.fail('model-free')),
+  );
+  f.deps.captureScreen = async (options) => {
+    await f.deps.sleep(options!.budgetMs!);
+    throw new CaptureDeadline();
+  };
+  const r = await runPlan(parsePlan('1. Wait for "name-field" to appear').blocks!, f.deps);
+  assert.equal(r.verdict, 'FAIL');
+  assert.match(
+    r.failure?.seen ?? '',
+    /^TARGET_WAIT_TIMEOUT: target was not observed within 15000ms; no capture completed before the wait deadline; cause=capture-deadline; elapsed_ms=15000; next_action=inspect_capture_health;/,
+  );
+  assert.deepEqual(f.actions, []);
 });

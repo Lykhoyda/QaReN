@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { captureScreen } from '../../../dist/qa/capture.js';
+import { boundedCapture, CaptureDeadline, captureScreen } from '../../../dist/qa/capture.js';
+import { createStop } from '../../../dist/qa/stop.js';
 import { validateNativePresence } from '../../../dist/qa/native-presence.js';
 import { CAPTURE_BUDGET_MS, NATIVE_PRESENCE_BUDGET_MS } from '../../../dist/qa/timing.js';
 import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
@@ -147,4 +148,54 @@ test('expired acquisition is never usable even without a React digest', async ()
   assert.equal(screen.coverage?.native, 'incomplete');
   assert.ok(screen.nativeCaptureCauses?.includes('capture-over-budget'));
   assert.ok('refuse' in visibilityView(screen));
+});
+
+test('a wait-bounded capture rejects at its budget inside the run stop and does nothing after it', async () => {
+  const stop = createStop();
+  let release!: () => void;
+  const nativeDone = new Promise<void>((resolve) => (release = resolve));
+  let reactReads = 0;
+  const warnings: string[] = [];
+  // The native read ignores the abort, as a synchronous XCTest read does.
+  const pending = stop.track(() =>
+    boundedCapture(20, () =>
+      captureScreen({
+        appId: 'com.test',
+        platformPresence: true,
+        budgetMs: 20,
+        warn: (line) => warnings.push(line),
+        native: async () => {
+          await nativeDone;
+          return nativeCapture();
+        },
+        react: async () => {
+          reactReads++;
+          return {};
+        },
+      }),
+    ),
+  );
+  await assert.rejects(pending, CaptureDeadline);
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(reactReads, 0);
+  assert.deepEqual(warnings, []);
+  // No time left dispatches nothing; an unbounded capture is untouched.
+  let reads = 0;
+  await assert.rejects(
+    stop.track(() =>
+      boundedCapture(0, async () => {
+        reads++;
+      }),
+    ),
+    CaptureDeadline,
+  );
+  assert.equal(reads, 0);
+  assert.equal(await stop.track(() => boundedCapture(undefined, async () => 'done')), 'done');
+  // A run stop still wins over the wait deadline.
+  stop.begin();
+  await assert.rejects(
+    stop.track(() => boundedCapture(1_000, async () => 'late')),
+    /RUN_CANCELLED/,
+  );
 });

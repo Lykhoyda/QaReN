@@ -1422,19 +1422,33 @@ ancestors, any scroll attempt and a next step. Unavailable layout is reported as
 `none`; React mounting alone never proves native visibility. Wait on a visible
 native wrapper or on-screen text, expose the field to accessibility, or explicitly
 scroll until it is visible before re-running.
-On iOS, complete React layout and native presence evidence can end the wait early
-when two like-for-like absence observations on one unchanged app screen show the
+After two ordinary absence observations of that React-only match on one unchanged
+screen, the wait makes exactly one presence capture to read React's layout, bounded
+by the wait's remaining time; later polls stay ordinary, and a recovery retry does
+not repeat that read. Every capture in a quoted wait ends by the wait's deadline. If
+the layout read or any capture is cut off there, or the match was seen React-only
+but never classified, the wait fails with `TARGET_REACT_ONLY` reporting
+`layout=unavailable`, a `cause` (`acquisition-deadline` or `wait-deadline`), the
+last capture stage, observation and presence-read counts, timings, and
+`next_action=inspect_capture_health` or `inspect_wait_target`, with no recovery,
+screenshot or further capture. A wait whose first capture never completes fails with
+`TARGET_WAIT_TIMEOUT` and `cause=capture-deadline`. Neither ending marks the plan
+step itself as wrong.
+On iOS, that complete React layout and native presence evidence can end the wait early
+when the absence observations on one unchanged app screen show the
 field wholly inside its viewport under an accessible ancestor. The viewport is
 the nearest native scroll container clipped by its ancestors, or the native
 window when there is no scroll container. A field wholly above or below that
 clipped viewport can instead receive one scroll
 within the wait's original budget, only when the safe drag band belongs to that
 container. Scrolling does not renew or shorten the wait's budget; a field that
-remains below or above the viewport keeps polling until the deadline. A later
+remains below or above the viewport keeps polling until the deadline, and its final
+detail labels the layout `react layout before scroll`. A later
 visible native match passes normally. Missing or partially
 clipped layout preserves polling until the deadline; stored-ID replay and block
 start preconditions do not use this early failure or automatic scroll.
-Either unmet ending first gets [step recovery](#step-recovery), so a quoted wait
+Apart from those deadline endings, which already spent the wait's time,
+either unmet ending first gets [step recovery](#step-recovery), so a quoted wait
 behind a blocking screen or system dialog runs once more with its full budget.
 Scroll-until-text uses the same visibility verdict
 within its scroll and time budgets. Literal checks re-ask from a fresh capture

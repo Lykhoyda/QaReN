@@ -935,7 +935,8 @@ export function reactOnlyMiss(
   return [
     `TARGET_REACT_ONLY: "${target.quoted}" is mounted in React but absent from the native capture across ${observations} observations`,
     describeCandidate(element),
-    `react layout=${
+    // The layout is read once, before any scroll; after one it is history, not the current screen.
+    `react layout${attempt === 'scroll' ? ' before scroll' : ''}=${
       rect
         ? `${[rect.x, rect.y, rect.width, rect.height].map(Math.round).join(',')} ${reactOnlyViewport(element).where} its viewport`
         : 'none'
@@ -951,6 +952,40 @@ export function reactOnlyMiss(
     `host=${facts?.host ?? 'none'}`,
     `attempt=${attempt}`,
     'next step: wait on a visible element instead (the native wrapper or on-screen text), or expose the field to accessibility; if it sits below the fold, scroll until it first; then re-run',
+  ].join('; ');
+}
+
+export interface ReactOnlyWaitCounts {
+  budgetMs: number;
+  // A capture this wait made ran out of its time, rather than the wait simply ending.
+  expired: boolean;
+  lastStage: 'readiness' | 'native' | 'react' | 'join' | 'unknown';
+  observations: number;
+  reactOnlyObservations: number;
+  presenceAttempts: number;
+  elapsedMs: number;
+  enrichmentWaitMs: number;
+  requestedPresenceBudgetMs: number;
+  attempt: 'scroll' | 'none';
+}
+
+// A React-only sighting without the layout read that would classify it: counts and timings only.
+export function reactOnlyTimeout(c: ReactOnlyWaitCounts): string {
+  return [
+    `TARGET_REACT_ONLY: target did not appear within ${c.budgetMs}ms`,
+    'previously observed in React but absent from the native capture',
+    'frame=unknown',
+    'layout=unavailable',
+    `cause=${c.expired ? 'acquisition-deadline' : 'wait-deadline'}`,
+    `last_stage=${c.lastStage}`,
+    `observations=${c.observations}`,
+    `react_only_observations=${c.reactOnlyObservations}`,
+    `presence_attempts=${c.presenceAttempts}`,
+    `elapsed_ms=${Math.round(c.elapsedMs)}`,
+    `enrichment_wait_ms=${Math.round(c.enrichmentWaitMs)}`,
+    `requested_presence_budget_ms=${c.requestedPresenceBudgetMs}`,
+    `attempt=${c.attempt}`,
+    `next_action=${c.expired ? 'inspect_capture_health' : 'inspect_wait_target'}`,
   ].join('; ');
 }
 
