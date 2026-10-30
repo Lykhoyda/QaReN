@@ -1976,6 +1976,14 @@ probes filter output before capture, allowing large debug images without raising
 the 16 MiB capture limit; failed probes or missing required evidence still refuse.
 The verification contract is owned by [`src/adapters/ios.rs`](src/adapters/ios.rs).
 
+Once the run record is saved, `check` and `pr` attempt ownership-gated resource
+teardown before returning a receipt, including after preparation failures, core
+refusals and failed or timed-out walks. The receipt's `cleanup` map reports
+resource outcomes; unresolved ownership can retain resources and the device
+lease for `qaren cleanup <run-id>`. This is infrastructure teardown: it does not
+execute remaining plan steps to delete app or staging-account data created by
+the walk.
+
 Signals or a vanished caller stop the run with `RUN_CANCELLED`. The CLI checks
 cancellation before forward operations, including Git probes, recorder start,
 installation, fresh-install data removal, simulator boot, Metro/core launch,
