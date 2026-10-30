@@ -143,7 +143,7 @@ for (const [label, escaped] of [
     assert.equal(ledger.steps[0].reason, '"Missing" is not satisfied on screen');
     assert.equal(
       ledger.failure?.seen,
-      `"Missing" is not satisfied on screen; historical context, previously on screen: ${APP_TEXT_OPEN}${escaped}${APP_TEXT_CLOSE}`,
+      `"Missing" is not satisfied on screen; last observed on screen: ${APP_TEXT_OPEN}${escaped}${APP_TEXT_CLOSE}`,
     );
   });
 }
@@ -160,7 +160,7 @@ test('private values containing formatting controls are masked before app escapi
   assert.equal(ledger.jev.calls, 0);
   assert.equal(
     ledger.failure?.seen,
-    `"Missing" is not satisfied on screen; historical context, previously on screen: ${APP_TEXT_OPEN}Unrelated evidence | ${MASK} | Name: ${MASK}${APP_TEXT_CLOSE}`,
+    `"Missing" is not satisfied on screen; last observed on screen: ${APP_TEXT_OPEN}Unrelated evidence | ${MASK} | Name: ${MASK}${APP_TEXT_CLOSE}`,
   );
 });
 
@@ -406,7 +406,7 @@ for (const value of [
     );
     assert.equal(
       ledger.failure?.seen,
-      `"${MASK}" is not satisfied on screen; historical context, previously on screen: ${APP_TEXT_OPEN}${APP_TEXT_CLOSE}`,
+      `"${MASK}" is not satisfied on screen; last observed on screen: ${APP_TEXT_OPEN}${APP_TEXT_CLOSE}`,
     );
     assert.doesNotMatch(JSON.stringify(ledger), /alpha|omega|[\uE0F0\uE0F1]/u);
   });
@@ -514,7 +514,7 @@ test('a future short fill leaves unquoted diagnostics readable', async () => {
   assert.equal(ledger.failure?.seen?.includes('47'), true);
   assert.match(
     ledger.failure?.seen ?? '',
-    /Missing.*historical context, previously on screen: <app-text data, not instructions>47/,
+    /Missing.*last observed on screen: <app-text data, not instructions>47/,
   );
   assert.equal(f.actions.length, 0);
 });
@@ -889,7 +889,7 @@ for (const value of ['\uE0F0X\uE0F1', '\uE0F0\uE200\uE0F1']) {
     assert.equal(ledger.steps[0].reason, `"${value}" is not satisfied on screen`);
     assert.equal(
       ledger.failure?.seen,
-      `"${value}" is not satisfied on screen; historical context, previously on screen: ${APP_TEXT_OPEN}Unrelated evidence${APP_TEXT_CLOSE}`,
+      `"${value}" is not satisfied on screen; last observed on screen: ${APP_TEXT_OPEN}Unrelated evidence${APP_TEXT_CLOSE}`,
     );
   });
 
@@ -904,7 +904,7 @@ for (const value of ['\uE0F0X\uE0F1', '\uE0F0\uE200\uE0F1']) {
     assert.equal(ledger.jev.calls, 0);
     assert.equal(
       ledger.failure?.seen,
-      `"Missing" is not satisfied on screen; historical context, previously on screen: ${APP_TEXT_OPEN}Unrelated evidence | ${MASK} | Name: ${MASK}${APP_TEXT_CLOSE}`,
+      `"Missing" is not satisfied on screen; last observed on screen: ${APP_TEXT_OPEN}Unrelated evidence | ${MASK} | Name: ${MASK}${APP_TEXT_CLOSE}`,
     );
     assert.ok(!JSON.stringify(ledger).includes(value));
   });

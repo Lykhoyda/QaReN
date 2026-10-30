@@ -535,6 +535,9 @@ pub struct RunRecord {
     pub scenario: Scenario,
     pub scenario_path: PathBuf,
     pub scenario_sha256: String,
+    // The walked plan's hash; absent on prepare records and on records from before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_sha256: Option<String>,
     pub candidate: Candidate,
     pub phase: Phase,
     // The install/launch substage in flight, kept after a failure so receipts and status name it.
