@@ -219,6 +219,48 @@ for (const exact of [undefined, 'id'] as const) {
 }
 
 for (const exact of [undefined, 'text'] as const) {
+  for (const identity of [
+    { label: 'Status' },
+    { placeholder: 'Status' },
+    { testID: 'Status' },
+    {},
+  ] as const) {
+    test(`composed input text vetoes recovery only when uncovered (${exact}, ${JSON.stringify(identity)})`, () => {
+      const quoted = `${Object.keys(identity).length ? 'Status' : 'input'}: Ready`;
+      const target = { phrase: quoted, quoted, exact };
+      for (const covered of [false, true]) {
+        const snapshot = sheetScreen(true, ['Close'], [
+          {
+            ref: '@field',
+            type: 'TextField',
+            parentIndex: 2,
+            label:
+              'label' in identity
+                ? identity.label
+                : 'placeholder' in identity
+                  ? identity.placeholder
+                  : undefined,
+            identifier: 'testID' in identity ? identity.testID : undefined,
+            value: 'Ready',
+            rect: { x: 20, y: covered ? 550 : 250, width: 200, height: 40 },
+          },
+        ]);
+        if ('placeholder' in identity) {
+          const field = snapshot.elements.find((e) => e.ref === '@field')!;
+          delete field.label;
+          field.placeholder = identity.placeholder;
+        }
+        assert.ok(snapshot.visibleText.includes(quoted));
+        for (const targets of [[target], [{ phrase: 'absent', quoted: 'absent' }, target]]) {
+          assert.deepEqual(
+            dismissCandidate(snapshot, targets),
+            covered ? { label: 'Close' } : undefined,
+          );
+        }
+      }
+    });
+  }
+
   test(`input-value text vetoes recovery only when uncovered (${exact})`, () => {
     const target = { phrase: 'Ready', quoted: 'Ready', exact };
     for (const covered of [false, true]) {

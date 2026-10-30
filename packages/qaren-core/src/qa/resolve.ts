@@ -873,7 +873,11 @@ export function targetOnScreen(screen: Screen, target: Target): boolean {
     literalEvidence(screen, quoted, 'contains').verdict !== 'fail' &&
     screen.elements.some(
       (e) =>
-        (e.label?.includes(quoted) || e.value?.includes(quoted)) &&
+        (e.label?.includes(quoted) ||
+          e.value?.includes(quoted) ||
+          (e.kind === 'input' &&
+            e.value !== undefined &&
+            `${e.label ?? e.placeholder ?? e.testID ?? 'input'}: ${e.value}`.includes(quoted))) &&
         !e.offscreen &&
         !centreCovered(e, screen),
     )
