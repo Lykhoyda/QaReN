@@ -1408,7 +1408,15 @@ covered rows and other scroll origins still get one clearance swipe. See the
 [scroll-until direction regressions](../qaren-core/test/unit/qa/scroll-until-direction.test.ts).
 
 Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`
-when the final evidence remains unsure. A quoted wait with at least two definite
+when the final evidence remains unsure. Initial captures, polling captures and
+evidence-refresh captures, including a refresh during the first visibility check,
+share the wait's deadline for both quoted and phrase targets. A wait whose first
+capture never completes fails with `TARGET_WAIT_TIMEOUT` and
+`cause=capture-deadline`, with `next_action=inspect_capture_health`. If a later
+refresh reaches the deadline, the wait ends
+from its completed observations; a phrase wait whose visibility remains undecided
+ends with `VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED`.
+A quoted wait with at least two definite
 absence observations sharing one screen signature normally fails at its deadline with
 “did not appear”; it does not report expired evidence for that stable absence.
 For a quoted value that is not a stored text selector, the failure adds why from
@@ -1425,16 +1433,14 @@ scroll until it is visible before re-running.
 After two ordinary absence observations of that React-only match on one unchanged
 screen, the wait makes exactly one presence capture to read React's layout, bounded
 by the wait's remaining time; later polls stay ordinary, and a recovery retry does
-not repeat that read. Every polling capture in a quoted wait ends by the wait's
-deadline. If
-the layout read or any capture is cut off there, or the match was seen React-only
-but never classified, the wait fails with `TARGET_REACT_ONLY` reporting
+not repeat that read. If a React-only match was observed but never classified,
+including when the layout read or a later capture is cut off at the deadline,
+the wait fails with `TARGET_REACT_ONLY` reporting
 `layout=unavailable`, a `cause` (`acquisition-deadline` or `wait-deadline`), the
 last capture stage, observation and presence-read counts, timings, and
 `next_action=inspect_capture_health` or `inspect_wait_target`, with no recovery,
-screenshot or further capture. A wait whose first capture never completes fails with
-`TARGET_WAIT_TIMEOUT` and `cause=capture-deadline`. Neither ending marks the plan
-step itself as wrong.
+screenshot or further capture. Neither this ending nor `TARGET_WAIT_TIMEOUT`
+marks the plan step itself as wrong.
 On iOS, that complete React layout and native presence evidence can end the wait early
 when the absence observations on one unchanged app screen show the
 field wholly inside its viewport under an accessible ancestor. The viewport is
