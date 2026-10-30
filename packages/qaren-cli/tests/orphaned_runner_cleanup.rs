@@ -72,6 +72,7 @@ fn fixture(family: &str) -> (PathBuf, RunRecord, FakeRunner) {
         root: root.clone(),
         sleeps: vec![],
         observations: 0,
+        step_inventory_reads: 0,
     };
     (root, record, fake)
 }
@@ -86,6 +87,7 @@ struct FakeRunner {
     root: PathBuf,
     sleeps: Vec<Duration>,
     observations: usize,
+    step_inventory_reads: usize,
 }
 
 impl FakeRunner {
@@ -171,6 +173,14 @@ impl FakeRunner {
                 "PID Status Label\n1 0 com.apple.SpringBoard\n"
             }) },
             _ if spec.args.iter().any(|s| s == "-A") => {
+                if (self.fault == "exit_between_steps" && self.signals.len() == 2)
+                    || (self.fault == "exit_before_int" && self.signals.is_empty())
+                {
+                    self.step_inventory_reads += 1;
+                    if self.step_inventory_reads == 2 {
+                        self.alive = false;
+                    }
+                }
                 if self.fault == "inventory_unknown" {
                     return CmdOutput::failed(1, "denied");
                 }
@@ -237,6 +247,21 @@ impl Runner for FakeRunner {
     }
     fn commands_executed(&self) -> u64 {
         self.mock.commands_executed()
+    }
+}
+
+#[test]
+fn exit_between_signal_steps_completes_after_fresh_absence_proof() {
+    for (fault, signals, result) in [
+        ("exit_between_steps", vec!["-INT", "-TERM"], "removed"),
+        ("exit_before_int", vec![], "absent"),
+    ] {
+        let (_root, _record, mut fake) = fixture("QarenIosRunner");
+        fake.fault = fault;
+        let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
+        assert_eq!(receipt.result, ReceiptResult::Cleaned);
+        assert_eq!(fake.signals, signals);
+        assert_eq!(receipt.cleanup["runner_driver"], result);
     }
 }
 

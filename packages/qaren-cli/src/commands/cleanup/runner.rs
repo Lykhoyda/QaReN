@@ -312,8 +312,29 @@ fn reap_inner(
     }
     let mut signals = Vec::new();
     for signal in [RunnerSignal::Int, RunnerSignal::Term, RunnerSignal::Kill] {
-        if metro::group_presence(runner, driver.pgid) != metro::GroupPresence::Present {
-            return refused(RecoveryReason::InventoryUnknown, signals);
+        match metro::group_presence(runner, driver.pgid) {
+            metro::GroupPresence::Present => {}
+            metro::GroupPresence::Unknown => {
+                return refused(RecoveryReason::InventoryUnknown, signals)
+            }
+            metro::GroupPresence::Absent => {
+                return match absence(runner, driver) {
+                    Ok(()) => RunnerDriverDetail {
+                        result: if signals.len() > 1 {
+                            RunnerDriverResult::Reaped
+                        } else if signals.is_empty() {
+                            RunnerDriverResult::Absent
+                        } else {
+                            RunnerDriverResult::Removed
+                        },
+                        identity_matched: !signals.is_empty(),
+                        signals,
+                        reason: None,
+                        liveness: None,
+                    },
+                    Err(reason) => refused(reason, signals),
+                };
+            }
         }
         if let Err(reason) = live_proof(runner, record, runs_root, driver) {
             return refused(reason, signals);
