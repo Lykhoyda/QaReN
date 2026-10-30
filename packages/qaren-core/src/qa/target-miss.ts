@@ -178,7 +178,7 @@ export function screenNow(
         (withheld ? MASK : privacy.redactElementLabel(element)).trim().toLowerCase(),
       ),
   );
-  // The target's own matches lead, so the cap never hides them; counts disclose what the cap left out.
+  // Target matches lead; a primary beyond the cap takes the final slot.
   const ordered = [
     ...all.filter((e) => names(target, e)),
     ...all.filter((e) => !names(target, e) && !e.offscreen),
