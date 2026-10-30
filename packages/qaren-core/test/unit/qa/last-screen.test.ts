@@ -93,7 +93,8 @@ test('an absent target suggests inserting a step and names enabled controls by i
   assert.equal(failure.subreason, 'absent');
   // The capture after the press is newer than the dispatch.
   assert.equal(failure.screen?.afterDispatch, false);
-  assert.match(failure.suggestion!, /lists 1 enabled controls \(ids: "qa-next"\); .*before line 2/);
+  assert.match(failure.suggestion!, /lists 1 enabled controls in failure\.screen; .*before line 2/);
+  assert.doesNotMatch(failure.suggestion!, /qa-next/);
 });
 
 test('a label shared by two controls suggests a unique testID', async () => {
@@ -154,6 +155,6 @@ test('a secret input value never appears in the screen, suggestion or ledger', a
     ),
   );
   assert.equal(ledger.failure?.step, 2);
-  assert.ok(ledger.failure?.screen);
+  assert.ok(ledger.failure?.screen?.controls.some((c) => c.id === MASK));
   assert.ok(!JSON.stringify(ledger).includes(value));
 });

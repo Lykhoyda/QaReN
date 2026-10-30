@@ -141,7 +141,6 @@ export interface ScreenNow {
 }
 
 const CONTROL_KINDS: ReadonlySet<Kind> = new Set(['button', 'input', 'switch', 'link', 'cell']);
-const SUGGESTED_IDS = 5;
 
 const shown = (text: string): string =>
   text.slice(0, MISS_TEXT).replace(/[\uD800-\uDFFF]/gu, '\uFFFD');
@@ -178,7 +177,15 @@ export function screenNow(
         : 'incomplete',
     controls: ordered.slice(0, MISS_CANDIDATES).map((element) => ({
       role: element.kind,
-      ...(element.testID ? { id: shown(privacy.redactIdentifier(element.testID)) } : {}),
+      // An identifier holding any private value is masked whole.
+      ...(element.testID
+        ? {
+            id:
+              privacy.redactIdentifier(element.testID) === element.testID
+                ? shown(element.testID)
+                : MASK,
+          }
+        : {}),
       ...(element.label
         ? {
             label:
@@ -197,7 +204,7 @@ export function screenNow(
   };
 }
 
-// One deterministic plan edit per miss reason; it states observations and names controls by identifier only.
+// One deterministic plan edit per miss reason; it states observations and carries no app text.
 export function missSuggestion(
   reason: TargetMissDiagnostic['reason'] | 'ambiguous',
   target: Target,
@@ -227,10 +234,8 @@ export function missSuggestion(
           : `on the last observation the target of ${step} was on screen but could not take this step; compare its role and state in failure.screen with the step`;
     }
     case 'absent': {
-      const enabled = now.controls.filter((c) => c.enabled && !c.offscreen);
-      const ids = enabled.flatMap((c) => (c.id && c.id !== MASK ? [JSON.stringify(c.id)] : []));
-      const named = ids.length ? ` (ids: ${ids.slice(0, SUGGESTED_IDS).join(', ')})` : '';
-      return `the target of ${step} was not on the last observed screen, which lists ${enabled.length} enabled controls${named}; consider reading that screen in source and inserting the missing step before ${step}`;
+      const enabled = now.controls.filter((c) => c.enabled && !c.offscreen).length;
+      return `the target of ${step} was not on the last observed screen, which lists ${enabled} enabled controls in failure.screen; consider reading that screen in source and inserting the missing step before ${step}`;
     }
     case 'only-in-aggregated-label':
       return `the target of ${step} is only part of a larger label; quote the container's testID instead`;
