@@ -5,7 +5,7 @@ import {
   _setFetchForTest,
   _setRunnerStateForTest,
   _setHttpTimeoutForTest,
-} from '../../dist/runners/rn-fast-runner-client.js';
+} from '../../dist/runners/qaren-ios-runner-client.js';
 
 function state() {
   return {

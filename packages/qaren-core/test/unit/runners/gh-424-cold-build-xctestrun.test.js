@@ -1,13 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveRunnerStartPlan } from '../../../dist/runners/rn-fast-runner-client.js';
+import { resolveRunnerStartPlan } from '../../../dist/runners/qaren-ios-runner-client.js';
 
 const BASE = {
-  projectPath: '/p/RnFastRunner.xcodeproj',
-  scheme: 'RnFastRunner',
+  projectPath: '/p/QarenIosRunner.xcodeproj',
+  scheme: 'QarenIosRunner',
   deviceId: 'UDID-123',
   derivedDataPath: '/p/build/DerivedData',
-  onlyTesting: 'RnFastRunnerUITests/RnFastRunnerTests/testCommand',
+  onlyTesting: 'QarenIosRunnerUITests/QarenIosRunnerTests/testCommand',
 };
 
 test('warm start plan is a single test-without-building launch', () => {
@@ -16,11 +16,11 @@ test('warm start plan is a single test-without-building launch', () => {
   assert.equal(plan[0].action, 'test-without-building');
   assert.equal(plan[0].args[0], 'test-without-building');
   assert.ok(plan[0].args.includes('-project'));
-  assert.ok(plan[0].args.includes('/p/RnFastRunner.xcodeproj'));
+  assert.ok(plan[0].args.includes('/p/QarenIosRunner.xcodeproj'));
   assert.ok(plan[0].args.includes('platform=iOS Simulator,id=UDID-123'));
   assert.ok(plan[0].args.includes('/p/build/DerivedData'));
   assert.ok(
-    plan[0].args.includes('-only-testing:RnFastRunnerUITests/RnFastRunnerTests/testCommand'),
+    plan[0].args.includes('-only-testing:QarenIosRunnerUITests/QarenIosRunnerTests/testCommand'),
   );
 });
 
@@ -32,7 +32,7 @@ test('cold start plan builds the test product first, then launches warm (GH #424
   assert.equal(build.action, 'build-for-testing');
   assert.equal(build.args[0], 'build-for-testing');
   assert.ok(build.args.includes('-project'));
-  assert.ok(build.args.includes('RnFastRunner'));
+  assert.ok(build.args.includes('QarenIosRunner'));
   assert.ok(build.args.includes('platform=iOS Simulator,id=UDID-123'));
   assert.ok(build.args.includes('/p/build/DerivedData'));
   assert.ok(
@@ -43,7 +43,7 @@ test('cold start plan builds the test product first, then launches warm (GH #424
   assert.equal(launch.action, 'test-without-building');
   assert.equal(launch.args[0], 'test-without-building');
   assert.ok(
-    launch.args.includes('-only-testing:RnFastRunnerUITests/RnFastRunnerTests/testCommand'),
+    launch.args.includes('-only-testing:QarenIosRunnerUITests/QarenIosRunnerTests/testCommand'),
   );
 });
 

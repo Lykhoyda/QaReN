@@ -4,7 +4,7 @@
 // verification.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildInstrumentVersionArgs } from '../../dist/runners/rn-android-runner-client.js';
+import { buildInstrumentVersionArgs } from '../../dist/runners/qaren-android-runner-client.js';
 
 test('gh-383: buildInstrumentVersionArgs emits -e RN_PLUGIN_VERSION when known', () => {
   assert.deepEqual(buildInstrumentVersionArgs('0.58.0'), ['-e', 'RN_PLUGIN_VERSION', '0.58.0']);

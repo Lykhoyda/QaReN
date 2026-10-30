@@ -12,7 +12,7 @@ import {
   _setFetchForTest,
   _setRunnerStateForTest,
   runIOS,
-} from '../../../dist/runners/rn-fast-runner-client.js';
+} from '../../../dist/runners/qaren-ios-runner-client.js';
 import { parseEnvelope } from '../../helpers/result-helpers.js';
 import { buildFiber, createSandbox } from '../helpers/inject-harness.js';
 import { choice, scriptedJudge, walker } from './judgment-fixtures.ts';

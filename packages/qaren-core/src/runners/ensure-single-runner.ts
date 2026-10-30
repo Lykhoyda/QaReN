@@ -79,7 +79,7 @@ export function selectLegacyRunnerPids(psOutput: string, udid: string): number[]
   const pids: number[] = [];
   for (const line of psOutput.split('\n')) {
     if (!line.includes('AgentDeviceRunner')) continue;
-    if (line.includes('RnFastRunner')) continue;
+    if (line.includes('QarenIosRunner') || line.includes('QaReN-Runner')) continue;
     if (!udid || !line.includes(udid)) continue;
     const m = line.trim().match(/^(\d+)\b/);
     if (m) pids.push(Number(m[1]));

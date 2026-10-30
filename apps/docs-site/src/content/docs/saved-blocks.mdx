@@ -3,6 +3,8 @@ title: Saved blocks
 description: How a passing block is saved, replayed on the next run, and patched when the app changes.
 ---
 
+Your agent runs the plan; QaReN saves each passing block and replays it on the next run. Here is what it means.
+
 A block that passes is saved, unless one of the [conditions below](#when-a-block-is-not-saved)
 applies, so the next run can replay it by the exact identities
 it used instead of resolving each target again.

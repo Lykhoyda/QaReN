@@ -2,8 +2,8 @@ name: CodeQL
 
 # Advanced CodeQL setup. Replaces the repo's previous "default setup" because
 # autobuild can't locate our nested Swift Xcode project at
-# packages/rn-fast-runner/RnFastRunner/RnFastRunner.xcodeproj or our nested
-# Android Gradle project at packages/rn-android-runner/. This workflow runs
+# packages/qaren-ios-runner/QarenIosRunner/QarenIosRunner.xcodeproj or our nested
+# Android Gradle project at packages/qaren-android-runner/. This workflow runs
 # each language's correct build command and lets CodeQL trace the resulting
 # artifacts.
 #
@@ -34,6 +34,8 @@ jobs:
   # PR → only when Swift/Xcode files (or this workflow) changed; push/schedule → always.
   changes:
     name: Detect changed languages
+    # Skip the Version Packages PR (and with it `analyze`); its merge push to main runs the full scan.
+    if: github.head_ref != 'changeset-release/main' || github.base_ref != 'main' || github.event.pull_request.user.login != 'github-actions[bot]' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-slim
     outputs:
       swift: ${{ steps.detect.outputs.swift }}
@@ -57,7 +59,7 @@ jobs:
           # PR: run Swift only when Swift sources, the Xcode project, or this
           # workflow itself changed. BASE_SHA comes via env (injection-safe).
           if git diff --name-only "$BASE_SHA"...HEAD \
-             | grep -qE '^packages/rn-fast-runner/|^\.github/workflows/codeql\.yml$'; then
+             | grep -qE '^packages/qaren-ios-runner/|^\.github/workflows/codeql\.yml$'; then
             echo "swift=true" >> "$GITHUB_OUTPUT"
           else
             echo "swift=false" >> "$GITHUB_OUTPUT"
@@ -116,24 +118,24 @@ jobs:
           build-mode: ${{ matrix.build-mode }}
           config-file: ${{ matrix.config-file }}
 
-      - name: Build rn-android-runner
+      - name: Build qaren-android-runner
         if: ${{ matrix.language == 'java-kotlin' }}
-        working-directory: packages/rn-android-runner
+        working-directory: packages/qaren-android-runner
         run: ./gradlew :app:assembleDebugAndroidTest --no-daemon
 
       # Use the macos-15 runner's preinstalled Xcode (16.x); skip the slow
       # `maxim-lobanov/setup-xcode` action. Build for the iphonesimulator SDK
       # without requiring a specific device — CodeQL only needs the compile
       # commands traced, not a runnable test bundle.
-      - name: Build rn-fast-runner
+      - name: Build qaren-ios-runner
         if: ${{ matrix.language == 'swift' && needs.changes.outputs.swift == 'true' }}
-        working-directory: packages/rn-fast-runner/RnFastRunner
+        working-directory: packages/qaren-ios-runner/QarenIosRunner
         run: |
           set -euo pipefail
           xcodebuild -version
           xcodebuild build \
-            -project RnFastRunner.xcodeproj \
-            -scheme RnFastRunner \
+            -project QarenIosRunner.xcodeproj \
+            -scheme QarenIosRunner \
             -sdk iphonesimulator \
             -configuration Debug \
             -derivedDataPath ../build/DerivedData \

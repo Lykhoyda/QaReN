@@ -155,8 +155,8 @@ export const RUNNER_MARKERS = {
   markerListenerFailed: 'RN_FAST_RUNNER_LISTENER_FAILED',
   markerSendFailed: 'RN_FAST_RUNNER_SEND_FAILED',
   markerIssueContained: 'RN_FAST_RUNNER_ISSUE_CONTAINED',
-  markerTestIssue: ': error: -[RnFastRunnerUITests.RnFastRunnerTests testCommand]',
-  markerTestFailed: "-[RnFastRunnerUITests.RnFastRunnerTests testCommand]' failed",
+  markerTestIssue: ': error: -[QaReN.QarenIosRunnerTests testCommand]',
+  markerTestFailed: "-[QaReN.QarenIosRunnerTests testCommand]' failed",
 } as const;
 export type RunnerMarkerCounts = Record<keyof typeof RUNNER_MARKERS, number>;
 const POST_MORTEM_WORDS = {

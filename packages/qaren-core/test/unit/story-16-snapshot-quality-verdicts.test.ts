@@ -24,7 +24,7 @@ import {
   runIOS,
   _setRunnerStateForTest,
   _setFetchForTest,
-} from '../../dist/runners/rn-fast-runner-client.js';
+} from '../../dist/runners/qaren-ios-runner-client.js';
 
 // ── VM sandbox for the injected helpers ─────────────────────────────
 

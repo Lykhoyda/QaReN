@@ -4,13 +4,13 @@ import type { ToolResult } from '../utils.js';
 import type { QaDispatchContext } from '../domain/qa-dispatch.js';
 import type { FlatNode } from '../fast-runner-ref-map.js';
 import { hashSnapshotNodes } from './settle-hash.js';
-import { runIOS } from '../runners/rn-fast-runner-client.js';
+import { runIOS } from '../runners/qaren-ios-runner-client.js';
 import {
   androidIsWindowUpdatingProbe,
   androidSnapshotNodesViaProbe,
   getAndroidRunnerHostPort,
   runAndroid,
-} from '../runners/rn-android-runner-client.js';
+} from '../runners/qaren-android-runner-client.js';
 
 export type SettleMethod = 'window-gate' | 'snapshot-eq' | 'timeout';
 

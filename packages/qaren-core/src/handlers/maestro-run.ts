@@ -65,7 +65,7 @@ import {
 import {
   fastHealthCheck as defaultFastHealthCheck,
   stopFastRunner as defaultStopFastRunner,
-} from '../runners/rn-fast-runner-client.js';
+} from '../runners/qaren-ios-runner-client.js';
 import {
   ExactAndroidDeviceRequiredError,
   releaseAndroidInteractionSlot as defaultReleaseAndroidSlot,
@@ -621,7 +621,7 @@ export interface MaestroRunDeps {
 }
 
 export interface NativeVisionEvidence {
-  source: 'rn-fast-runner-snapshot';
+  source: 'qaren-ios-runner-snapshot';
   nodeCount: number;
   visibleSelectors: NativeProofSelector[];
   runtimeMajor: number | null;
@@ -786,7 +786,7 @@ export interface RunnerResumeEvidence {
 
 /**
  * Read-only verification of the already-parked runner. The probe is the iOS
- * rn-fast-runner's, so on Android it would report an unhealthy runner that was
+ * qaren-ios-runner's, so on Android it would report an unhealthy runner that was
  * never involved in the run — omit the evidence there instead of lying.
  */
 export async function buildRunnerResume(

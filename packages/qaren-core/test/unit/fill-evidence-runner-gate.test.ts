@@ -6,7 +6,7 @@ import {
   _setFastRunnerStateForTest,
   _setFetchForTest,
   runIOS,
-} from '../../dist/runners/rn-fast-runner-client.js';
+} from '../../dist/runners/qaren-ios-runner-client.js';
 import {
   classifyRunnerCompatibility,
   REQUIRED_ANDROID_COMMANDS,
@@ -183,7 +183,7 @@ test('Android reusable runner with missing fill evidence emits the bounded rebui
     _setFetchForTest: setFetch,
     startAndroidRunner,
     AndroidCommandsStaleError,
-  } = await import('../../dist/runners/rn-android-runner-client.js');
+  } = await import('../../dist/runners/qaren-android-runner-client.js');
   _setAndroidRunnerStateForTest({
     schemaVersion: 1,
     pid: process.pid,

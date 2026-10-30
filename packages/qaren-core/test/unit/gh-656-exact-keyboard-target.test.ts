@@ -17,7 +17,7 @@ import {
   _setFastRunnerStateForTest,
   _setFetchForTest,
   runIOS,
-} from '../../dist/runners/rn-fast-runner-client.js';
+} from '../../dist/runners/qaren-ios-runner-client.js';
 import {
   classifyRunnerCompatibility,
   _setPluginVersionForTest,

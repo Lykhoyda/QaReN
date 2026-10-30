@@ -24,14 +24,14 @@ import {
   markAndroidRunnerRebuildCleanupUnverified,
   releaseAndroidRunnerRebuildLock,
   _setFetchForTest,
-} from '../../dist/runners/rn-android-runner-client.js';
+} from '../../dist/runners/qaren-android-runner-client.js';
 import {
   classifyRunnerCompatibility,
   REQUIRED_ANDROID_COMMANDS,
 } from '../../dist/runners/protocol.js';
 
 const runnerSource = readFileSync(
-  new URL('../../src/runners/rn-android-runner-client.ts', import.meta.url),
+  new URL('../../src/runners/qaren-android-runner-client.ts', import.meta.url),
   'utf8',
 );
 const noAndroidRebuildCleanup = async () => {};

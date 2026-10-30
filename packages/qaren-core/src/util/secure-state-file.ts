@@ -50,9 +50,7 @@ export function deleteStateFile(path: string): void {
   }
 }
 
-// GH #383: the pre-relocation fixed shared paths. Read ONCE (leniently) so a
-// live pre-upgrade runner can be discovered → classified legacy → reaped;
-// deleted only after a successful relaunch persists the new per-device file.
+// Historical paths, read and delete only after a successful per-device relaunch.
 const LEGACY_TMP_STATE_FILES: Record<'ios' | 'android', string> = {
   ios: '/tmp/rn-fast-runner-state.json',
   android: '/tmp/rn-android-runner-state.json',

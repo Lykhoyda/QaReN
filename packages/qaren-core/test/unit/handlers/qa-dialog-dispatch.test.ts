@@ -432,7 +432,7 @@ for (const alertClosed of [true, false]) {
       assert.equal(env.meta?.verify, 'exact');
       assert.equal(env.data.tappedLabel, 'Don’t allow');
       assert.deepEqual(env.data.tappedRect, RECT);
-      assert.equal(env.data.via, 'rn-android-runner');
+      assert.equal(env.data.via, 'qaren-android-runner');
     } else {
       assert.equal(env.ok, false);
       assert.equal(env.code, 'DIALOG_TAP_UNPROVEN');

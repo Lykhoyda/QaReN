@@ -68,9 +68,9 @@ test('the removed positional alert verb is not a known mutating command', () => 
 });
 
 test('ambiguity: pre-send and protocol failures are NOT ambiguous', () => {
-  assert.equal(isAmbiguousTransportFailure('rn-android-runner not started'), false);
+  assert.equal(isAmbiguousTransportFailure('qaren-android-runner not started'), false);
   assert.equal(
-    isAmbiguousTransportFailure('rn-fast-runner not started — run device_snapshot'),
+    isAmbiguousTransportFailure('qaren-ios-runner not started — run device_snapshot'),
     false,
   );
   assert.equal(
@@ -79,14 +79,14 @@ test('ambiguity: pre-send and protocol failures are NOT ambiguous', () => {
   );
   assert.equal(
     isAmbiguousTransportFailure(
-      'RUNNER_TIMEOUT: rn-fast-runner did not respond to "tap" within 10000ms',
+      'RUNNER_TIMEOUT: qaren-ios-runner did not respond to "tap" within 10000ms',
     ),
     true,
   );
   assert.equal(isAmbiguousTransportFailure('fetch failed'), true);
   assert.equal(isAmbiguousTransportFailure('socket hang up'), true);
   assert.equal(
-    isAmbiguousTransportFailure('rn-android-runner returned a non-JSON response body'),
+    isAmbiguousTransportFailure('qaren-android-runner returned a non-JSON response body'),
     true,
   );
 });

@@ -3,6 +3,8 @@ title: Test a pull request
 description: Walk a plan at a pull request's head with qaren pr, then post the result with qaren publish.
 ---
 
+Your agent writes the plan and runs `qaren pr`; it publishes the result only after you confirm. Here is what it means.
+
 ```sh
 qaren pr <number|url> --plan-file plan.md --device <simulator-UUID> --json
 qaren publish <run-id> --json

@@ -17,7 +17,7 @@ const KOTLIN_DISPATCHER = join(
   '..',
   '..',
   'packages',
-  'rn-android-runner',
+  'qaren-android-runner',
   'app',
   'src',
   'androidTest',

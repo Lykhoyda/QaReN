@@ -14,7 +14,7 @@ const PS = [
   '  501 /Users/x/Library/.../AgentDeviceRunner.app/AgentDeviceRunner -udid UDID-A',
   '  502 /Users/x/Library/.../AgentDeviceRunnerUITests-Runner.app/... -udid UDID-A',
   '  777 /Users/x/Library/.../AgentDeviceRunner.app/AgentDeviceRunner -udid UDID-OTHER',
-  '  900 /Users/x/.../RnFastRunnerUITests-Runner.app/... -udid UDID-A',
+  '  900 /Users/x/.../AgentDeviceRunner-cache/QaReN-Runner.app/QaReN-Runner -udid UDID-A',
   '  123 /usr/bin/node /some/unrelated/process',
 ].join('\n');
 
@@ -22,7 +22,7 @@ test('GH#202 selectLegacyRunnerPids: only AgentDeviceRunner procs on the target 
   assert.deepEqual(selectLegacyRunnerPids(PS, 'UDID-A').sort(), [501, 502]);
 });
 
-test('GH#202 selectLegacyRunnerPids: skips other simulators and never our RnFastRunner', () => {
+test('GH#202 selectLegacyRunnerPids: skips other simulators and never our QarenIosRunner', () => {
   assert.deepEqual(selectLegacyRunnerPids(PS, 'UDID-OTHER'), [777]);
   assert.ok(!selectLegacyRunnerPids(PS, 'UDID-A').includes(900));
 });
@@ -30,11 +30,11 @@ test('GH#202 selectLegacyRunnerPids: skips other simulators and never our RnFast
 // Field-verified (PR #205): simulator apps run from
 // /CoreSimulator/Devices/<UDID>/data/Containers/... so the UDID is embedded in
 // the process argv as a path segment (no `-udid` flag). The substring matcher
-// must catch a real leak in that form, and still exclude our own RnFastRunner.
+// must catch a real leak in that form, and still exclude our own QarenIosRunner.
 test('GH#202 selectLegacyRunnerPids: matches the real CoreSimulator container-path UDID (no -udid flag)', () => {
   const udid = '78F7D2A1-1022-4BCE-8787-C0E130EF9831';
   const legacy = `  601 /Users/x/Library/Developer/CoreSimulator/Devices/${udid}/data/Containers/Bundle/Application/ABC/AgentDeviceRunner.app/AgentDeviceRunner`;
-  const ours = `  602 /Users/x/Library/Developer/CoreSimulator/Devices/${udid}/data/Containers/Bundle/Application/DEF/RnFastRunner.app/RnFastRunner`;
+  const ours = `  602 /Users/x/Library/Developer/CoreSimulator/Devices/${udid}/data/Containers/Bundle/Application/DEF/QarenIosRunner.app/QarenIosRunner`;
   assert.deepEqual(selectLegacyRunnerPids(`${legacy}\n${ours}`, udid), [601]);
 });
 

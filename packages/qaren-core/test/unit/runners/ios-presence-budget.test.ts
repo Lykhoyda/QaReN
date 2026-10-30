@@ -4,11 +4,11 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 const native = new URL(
-  '../../../../rn-fast-runner/RnFastRunner/RnFastRunnerUITests/',
+  '../../../../qaren-ios-runner/QarenIosRunner/QarenIosRunnerUITests/',
   import.meta.url,
 );
 const read = (name: string) =>
-  readFileSync(new URL(`RnFastRunnerTests+${name}.swift`, native), 'utf8');
+  readFileSync(new URL(`QarenIosRunnerTests+${name}.swift`, native), 'utf8');
 function section(source: string, start: string, end: string): string {
   const from = source.indexOf(start);
   const to = source.indexOf(end, from);

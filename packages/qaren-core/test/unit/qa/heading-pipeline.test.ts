@@ -11,7 +11,7 @@ import {
   _setRunnerStateForTest,
   _setCapabilitiesForTest,
   runIOS,
-} from '../../../dist/runners/rn-fast-runner-client.js';
+} from '../../../dist/runners/qaren-ios-runner-client.js';
 import { REQUIRED_IOS_COMMANDS, REQUIRED_IOS_FEATURES } from '../../../dist/runners/protocol.js';
 import { parseEnvelope } from '../../helpers/result-helpers.js';
 import { createMockClient } from '../../helpers/mock-cdp-client.js';

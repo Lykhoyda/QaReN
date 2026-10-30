@@ -182,9 +182,7 @@ export type AutoRepairRefusedReason =
   // genuine refusals so MTTR analysis (#105) can see "user disabled
   // repair" as operationally healthy vs. budget/edit/match refusals.
   | 'USER_DISABLED'
-  // GH #317: rn-fast-runner saw the selector but Maestro/WDA reported it not
-  // visible (empty a11y tree). A transport limitation, not testID drift —
-  // repair is correctly refused and replay is blocked on this runtime.
+  // Native visibility failure is a transport limitation, so selector repair stays refused.
   | 'TRANSPORT_BLIND'
   // Internal/unexpected: parseEnvelope failed, repair-action returned
   // an unmapped error code, or the orchestrator hit a defensive path.

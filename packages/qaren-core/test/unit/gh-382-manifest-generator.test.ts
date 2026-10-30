@@ -18,10 +18,10 @@ function withTempFile(name, content, fn) {
 }
 
 test('hashAsset: name/bytes/sha256 reflect the file on disk', () => {
-  const content = Buffer.from('rn-fast-runner prebuilt payload\n');
-  withTempFile('rn-fast-runner-0.62.3-sim.zip', content, (p) => {
+  const content = Buffer.from('qaren-ios-runner prebuilt payload\n');
+  withTempFile('qaren-ios-runner-0.62.3-sim.zip', content, (p) => {
     const asset = hashAsset(p);
-    assert.equal(asset.name, 'rn-fast-runner-0.62.3-sim.zip');
+    assert.equal(asset.name, 'qaren-ios-runner-0.62.3-sim.zip');
     assert.equal(asset.bytes, content.byteLength);
     assert.equal(asset.sha256, createHash('sha256').update(content).digest('hex'));
     assert.match(asset.sha256, /^[a-f0-9]{64}$/);
@@ -30,7 +30,7 @@ test('hashAsset: name/bytes/sha256 reflect the file on disk', () => {
 
 test('assembleManifest: version + per-platform assets + optional xcodeBuildVersion', () => {
   const content = Buffer.from('payload');
-  withTempFile('rn-android-runner-0.62.3.zip', content, (androidZip) => {
+  withTempFile('qaren-android-runner-0.62.3.zip', content, (androidZip) => {
     const manifest = assembleManifest({
       version: '0.62.3',
       xcodeBuildVersion: '15.4',
@@ -40,7 +40,7 @@ test('assembleManifest: version + per-platform assets + optional xcodeBuildVersi
     assert.equal(manifest.xcodeBuildVersion, '15.4');
     assert.deepEqual(manifest.assets.ios, []);
     assert.equal(manifest.assets.android.length, 1);
-    assert.equal(manifest.assets.android[0].name, 'rn-android-runner-0.62.3.zip');
+    assert.equal(manifest.assets.android[0].name, 'qaren-android-runner-0.62.3.zip');
     assert.equal(
       manifest.assets.android[0].sha256,
       createHash('sha256').update(content).digest('hex'),

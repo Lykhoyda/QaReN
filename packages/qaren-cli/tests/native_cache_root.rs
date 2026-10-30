@@ -87,6 +87,30 @@ fn fixed_uid_default_and_exact_override_are_pure_os_paths() {
 }
 
 #[test]
+fn publication_never_commits_once_the_build_budget_is_spent() {
+    let fixture = common::temp_repo();
+    let root = fixture.join("store");
+    let e = entry(&root);
+    let record = seed(&e, &source(&fixture, "fixture"), "run");
+    // Spent before validation, then spent between validation and the commit.
+    for allowed in [0, 1] {
+        let calls = std::cell::Cell::new(0);
+        let in_budget = || {
+            calls.set(calls.get() + 1);
+            calls.get() <= allowed
+        };
+        assert_eq!(
+            publish_store_record_within(&e, &record, &in_budget).unwrap_err(),
+            BUILD_BUDGET_SPENT,
+            "{allowed}"
+        );
+        assert!(!e.path().join("artifact.json").exists(), "{allowed}");
+    }
+    assert!(publish_store_record_within(&e, &record, &|| true).unwrap());
+    assert!(e.path().join("artifact.json").exists());
+}
+
+#[test]
 fn missing_reads_create_nothing_and_overrides_partition_the_store() {
     let fixture = common::temp_repo();
     let a = fixture.join("a");

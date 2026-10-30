@@ -4,7 +4,7 @@ import {
   _setFastRunnerStateForTest,
   _setFetchForTest,
   reapStaleFastRunner,
-} from '../../dist/runners/rn-fast-runner-client.js';
+} from '../../dist/runners/qaren-ios-runner-client.js';
 
 const STATE = {
   pid: 12345,

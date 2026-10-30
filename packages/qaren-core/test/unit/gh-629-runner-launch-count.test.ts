@@ -16,7 +16,7 @@ import { randomUUID } from 'node:crypto';
 // stand-in before importing: startFastRunner then fails at project resolution,
 // which is upstream of both the build steps and spawn().
 const runnerRoot = mkdtempSync(join(tmpdir(), 'gh-629-runner-root-'));
-mkdirSync(join(runnerRoot, 'rn-fast-runner'), { recursive: true });
+mkdirSync(join(runnerRoot, 'qaren-ios-runner'), { recursive: true });
 process.env.QAREN_NATIVE_RUNNER_ROOT = runnerRoot;
 
 const {
@@ -24,7 +24,7 @@ const {
   getRunnerLaunchCount,
   awaitSpawnedRunnerExit,
   _setFastRunnerStateForTest,
-} = await import('../../dist/runners/rn-fast-runner-client.js');
+} = await import('../../dist/runners/qaren-ios-runner-client.js');
 
 test.after(() => {
   rmSync(runnerRoot, { recursive: true, force: true });
@@ -38,7 +38,7 @@ test('a start that fails before the launch step does not advance the launch coun
   try {
     await assert.rejects(
       startFastRunner(randomUUID().toUpperCase(), 'com.example.gh629'),
-      /RnFastRunner\.xcodeproj not found/,
+      /QarenIosRunner\.xcodeproj not found/,
     );
     assert.equal(
       getRunnerLaunchCount(),

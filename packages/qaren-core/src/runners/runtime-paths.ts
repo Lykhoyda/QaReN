@@ -1,6 +1,13 @@
 import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
+export type NativeRunnerName = 'qaren-ios-runner' | 'qaren-android-runner';
+
+const LEGACY_NATIVE_RUNNER_NAMES: Partial<Record<NativeRunnerName, string>> = {
+  'qaren-ios-runner': 'rn-fast-runner',
+  'qaren-android-runner': 'rn-android-runner',
+};
+
 function compactUnique(paths: Array<string | undefined>): string[] {
   const out: string[] = [];
   for (const path of paths) {
@@ -18,10 +25,7 @@ function isDirectory(path: string): boolean {
   }
 }
 
-export function candidateNativeRunnerDirs(
-  runnerName: 'rn-fast-runner' | 'rn-android-runner',
-  baseDir = import.meta.dirname,
-): string[] {
+function candidateDirsFor(runnerName: string, baseDir: string): string[] {
   const runnerRoot = process.env.QAREN_NATIVE_RUNNER_ROOT;
   const repoRoot = process.env.QAREN_ROOT;
 
@@ -35,8 +39,27 @@ export function candidateNativeRunnerDirs(
   ]);
 }
 
+export function candidateNativeRunnerDirs(
+  runnerName: NativeRunnerName,
+  baseDir = import.meta.dirname,
+): string[] {
+  return candidateDirsFor(runnerName, baseDir);
+}
+
+export function legacyNativeRunnerDirHint(
+  runnerName: NativeRunnerName,
+  baseDir = import.meta.dirname,
+): string | undefined {
+  const legacyName = LEGACY_NATIVE_RUNNER_NAMES[runnerName];
+  if (!legacyName) return undefined;
+  const legacyDir = candidateDirsFor(legacyName, baseDir).find(isDirectory);
+  return legacyDir
+    ? `found pre-2.0.4 runner directory ${legacyDir}; this version cannot use it: install the current runner (qaren update, or a fresh source checkout) or unset QAREN_NATIVE_RUNNER_ROOT/QAREN_ROOT`
+    : undefined;
+}
+
 export function resolveNativeRunnerDir(
-  runnerName: 'rn-fast-runner' | 'rn-android-runner',
+  runnerName: NativeRunnerName,
   baseDir = import.meta.dirname,
 ): string {
   const candidates = candidateNativeRunnerDirs(runnerName, baseDir);
