@@ -2317,7 +2317,14 @@ fn a_cancelled_walk_is_a_refusal_that_still_tears_down_and_releases_the_lease() 
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     script_provision(&mut mock);
-    let one_row = format!("{}\n", envelope(2, "row", &row(1, "step")));
+    let evidence = serde_json::json!({"subreason":"selection_unverified","heldPress":"not_tried_unsafe","outsideTargetChange":false,"captures":2});
+    let result =
+        serde_json::json!({"verdict":"REFUSED","code":"RUN_CANCELLED","pressEvidence":evidence});
+    let one_row = format!(
+        "{}\n{}\n",
+        envelope(2, "row", &row(1, "step")),
+        envelope(3, "result", &result.to_string())
+    );
     script_drift_status(&mut mock);
     script_host_probe(&mut mock, UDID, hosts_absent());
     mock.expect_spawn_piped("walk.js", 9000, &one_row, None);
@@ -2337,6 +2344,11 @@ fn a_cancelled_walk_is_a_refusal_that_still_tears_down_and_releases_the_lease() 
     let failure = receipt.failure.as_ref().unwrap();
     assert_eq!(failure.code, FailureCode::RunCancelled);
     assert_eq!(failure.phase, "walk");
+    assert_eq!(failure.next_action.as_str(), "rerun_when_ready");
+    assert!(failure.recovery.is_some());
+    let durable: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&receipt.artifacts["ledger"]).unwrap()).unwrap();
+    assert_eq!(durable["pressEvidence"], evidence);
     assert!(
         failure.detail.contains("received SIGTERM"),
         "{}",
@@ -9934,6 +9946,14 @@ fn unverified_selection_receipts_keep_evidence_guidance_and_ordered_recovery() {
         let recovery = serde_json::to_value(failure).unwrap()["recovery"].clone();
         assert_eq!(recovery["action"], expected);
         assert_eq!(
+            recovery["destroys_state"],
+            code == "NATIVE_CAPTURE_UNAVAILABLE"
+        );
+        assert_eq!(
+            recovery["requires_user_ok"],
+            code == "NATIVE_CAPTURE_UNAVAILABLE"
+        );
+        assert_eq!(
             recovery["next_rung"],
             if code == "NATIVE_CAPTURE_UNAVAILABLE" {
                 serde_json::json!(2)
@@ -9962,4 +9982,22 @@ fn unverified_selection_receipts_keep_evidence_guidance_and_ordered_recovery() {
         assert!(!receipt.to_json().contains("CANARY"));
         assert_eq!(mock.remaining(), 0);
     }
+}
+
+#[test]
+fn first_capture_fault_prefers_read_only_recovery_when_a_read_remains() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    let ledger = serde_json::json!({"verdict":"REFUSED","code":"NATIVE_CAPTURE_UNAVAILABLE","message":"Native capture unavailable.","pressEvidence":{"subreason":"target_identity_unavailable","heldPress":"not_tried_unsafe","outsideTargetChange":false,"captures":1}});
+    script_recipe_walk(&mut mock, &repo, &ledger.to_string(), 4);
+    let receipt = run(&mut mock, &request(&repo, &app, 30));
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.next_action.as_str(), "retry_capture_within_budget");
+    let recovery = serde_json::to_value(failure).unwrap()["recovery"].clone();
+    assert_eq!(recovery["next_rung"], 1);
+    assert_eq!(recovery["destroys_state"], false);
+    assert_eq!(recovery["requires_user_ok"], false);
+    assert_eq!(recovery["ladder"][0]["action"], "read_only_recapture");
+    assert_eq!(recovery["ladder"][0]["status"], "available");
+    assert_eq!(mock.remaining(), 0);
 }

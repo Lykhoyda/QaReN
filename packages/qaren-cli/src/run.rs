@@ -1308,7 +1308,7 @@ fn run_inner(
                 })),
             ),
         };
-        if outcome.ledger.press_evidence.is_some() {
+        if let Some(evidence) = &outcome.ledger.press_evidence {
             if let (Some(failure), Verdict::Refused { code, .. }) = (&mut failure, &outcome.verdict) {
                 if matches!(
                     code.as_str(),
@@ -1318,7 +1318,7 @@ fn run_inner(
                         | "EVIDENCE_EXPIRED"
                         | "RUN_CANCELLED"
                 ) {
-                    *failure = failure.clone().with_press_recovery(code);
+                    *failure = failure.clone().with_press_recovery(code, evidence.captures);
                 }
             }
         }

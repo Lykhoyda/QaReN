@@ -71,7 +71,8 @@ For real-tap verification, including already-selected controls and selection tog
 
 For native iOS buttons not reported selected inside a scroll container with a
 visible enabled sibling on the same row, a tap needs selection on the same
-reference and identity or an authoritative app effect. QaReN takes one read-only
+reference and identity. The walker accepts authoritative effect proof too, but the
+current iOS press adapter does not supply it. QaReN takes one read-only
 re-capture within the deadline for delayed selection, then refuses
 `PRESS_NOT_REGISTERED` (exit 4) if it cannot verify the effect. Unrelated screen
 changes and pixel highlights cannot pass this heuristic. The receipt retains

@@ -735,12 +735,13 @@ live frame equals that owner's frame; the tap goes to the unchanged point. A lat
 screen change cannot turn a proven no-mutation refusal into a passing action.
 For an iOS native-backed button not reported selected, inside a scroll container
 with a visible enabled button beside it on the same row, QaReN requires the same
-reference and identity to report selected after the press, or an authoritative
-app effect. It takes one immediate read-only re-capture for delayed selection
+reference and identity to report selected after the press. The walker also accepts
+authoritative effect proof, but the current iOS press adapter does not supply it;
+selection readback is the supported evidence for these controls. It takes one immediate read-only re-capture for delayed selection
 within the item deadline. An unrelated screen change or pixel highlight cannot
 pass this candidate. Otherwise it refuses `PRESS_NOT_REGISTERED` (exit 4), with
 closed `pressEvidence` describing identity/selection uncertainty, outside-target
-semantic change, one or two readbacks, and `heldPress: not_tried_unsafe`.
+semantic change, one or two capture attempts, and `heldPress: not_tried_unsafe`.
 
 This is a structural heuristic: capture does not prove horizontal scrolling,
 its responder behavior, or a selected-state contract. iOS omits false selected

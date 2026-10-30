@@ -1360,8 +1360,16 @@ fn interpret(
             failure.code,
             FailureCode::RunCancelled | FailureCode::CoreRefused
         ) {
+            let mut ledger = synthesized_ledger(&inbox.rows, "REFUSED", &seen);
+            if failure.code == FailureCode::RunCancelled {
+                ledger.press_evidence = inbox
+                    .result
+                    .as_ref()
+                    .and_then(|result| result.get("pressEvidence"))
+                    .and_then(parse_press_evidence);
+            }
             return (
-                synthesized_ledger(&inbox.rows, "REFUSED", &seen),
+                ledger,
                 Verdict::Refused {
                     code: if failure.code == FailureCode::RunCancelled {
                         "RUN_CANCELLED"
@@ -1408,9 +1416,7 @@ fn interpret(
         );
     }
     if let Some(evidence) = result.get("pressEvidence") {
-        let valid = serde_json::from_value::<PressEvidence>(evidence.clone())
-            .is_ok_and(|evidence| matches!(evidence.captures, 1 | 2));
-        if !valid {
+        if parse_press_evidence(evidence).is_none() {
             let (ledger, verdict, failure) = missing(
                 &inbox.rows,
                 "invalid press evidence".to_string(),
@@ -1470,6 +1476,12 @@ fn interpret(
             FailureCode::CoreResultMissing,
         ),
     }
+}
+
+fn parse_press_evidence(value: &Value) -> Option<PressEvidence> {
+    serde_json::from_value::<PressEvidence>(value.clone())
+        .ok()
+        .filter(|evidence| matches!(evidence.captures, 1 | 2))
 }
 
 fn refusal_ledger(result: &Value, rows: &[Row], seen: &str) -> Result<Ledger, String> {

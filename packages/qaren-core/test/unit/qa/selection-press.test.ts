@@ -1,3 +1,4 @@
+import { choice, scriptedJudge } from './judgment-fixtures.ts';
 import { resultForWalk, exitCodeFor, createWriter } from '../../../dist/qa/wire.js';
 import { renderReason } from '../../../dist/qa/untrusted.js';
 // A control whose only visible change is its selected state proves its press by that change alone.
@@ -245,7 +246,7 @@ for (const delayed of [false, true]) {
   });
 }
 
-test('a candidate with an authoritative effect passes when its target disappears', async () => {
+test('the authoritative-effect contract seam accepts proof when its target disappears', async () => {
   const f = rowFake([rowChips(), chips(undefined)], [{ ok: true, proven: true }]);
   assert.equal((await walkBlock(rowTap, f.deps)).block.outcome, 'pass');
   assert.equal(presses(f), 1);
@@ -419,4 +420,85 @@ test('the terminal refusal keeps closed evidence through finalization and wire s
   assert.deepEqual(result.pressEvidence, ledger.pressEvidence);
   assert.doesNotMatch(lines[0], /CANARY_OUTSIDE/);
   assert.equal(presses(f), 1);
+});
+
+test('a stalled recapture is interrupted by the pinned deadline timer', async () => {
+  const f = rowFake([rowChips()]);
+  let clock = 0;
+  let count = 0;
+  f.deps.now = () => clock;
+  f.deps.captureScreen = async () => {
+    if (++count === 2) clock = 9_980;
+    if (count === 3) return new Promise<Screen>(() => {});
+    return rowChips();
+  };
+  const outcome = await walkBlock(rowTap, f.deps);
+  assert.equal(outcome.refusal?.code, 'ITEM_DEADLINE_EXCEEDED');
+  assert.equal(outcome.pressEvidence?.captures, 2);
+  assert.equal(presses(f), 1);
+});
+
+test('proven no-mutation refusals retain their existing outcome without selection evidence', async () => {
+  const f = rowFake(
+    [rowChips()],
+    Array.from({ length: 2 }, () => ({
+      ok: false,
+      proven: false,
+      mutation: 'none' as const,
+      error: 'OWNERSHIP_UNPROVEN',
+    })),
+  );
+  const outcome = await walkBlock(rowTap, f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(outcome.pressEvidence, undefined);
+  assert.match(
+    renderReason(outcome.failure!.seen, (text) => text),
+    /OWNERSHIP_UNPROVEN/,
+  );
+});
+
+test('a first-readback system dialog never enters recovery or repeats the candidate tap', async () => {
+  const initial = rowChips();
+  for (const element of initial.elements)
+    element.semantic = {
+      press: element.kind === 'button' ? 'supported' : 'unsupported',
+      fill: 'unsupported',
+      visibility: element.hittable ? 'visible' : 'hidden',
+    };
+  const dialog: Screen = { ...rowChips(), front: 'dialog' };
+  const f = rowFake([initial, dialog]);
+  f.deps.judge = scriptedJudge((questions) => ({ target_1: choice(questions.target_1) }));
+  let recoveries = 0;
+  f.deps.dialog = async () => {
+    recoveries++;
+    return { ok: true, proven: true };
+  };
+  const outcome = await walkBlock(block('1. Tap the choice chip\n'), f.deps);
+  assert.equal(outcome.refusal?.code, 'SYSTEM_DIALOG_INTERRUPTED', JSON.stringify(outcome));
+  assert.equal(outcome.pressEvidence?.captures, 1);
+  assert.equal(presses(f), 1);
+  assert.equal(recoveries, 0);
+});
+
+test('a later selection refusal retains earlier private fill accounting', async () => {
+  const screen = rowChips();
+  screen.elements.push({
+    ref: '@input',
+    kind: 'input',
+    nativeKind: 'input',
+    testID: 'input',
+    label: 'Input',
+    hittable: true,
+    disabled: false,
+    secure: true,
+    offscreen: false,
+  });
+  const f = rowFake([screen]);
+  const outcome = await walkBlock(
+    block('1. Fill "input" with "SYNTHETIC_CANARY"\n2. Tap "chip"\n'),
+    f.deps,
+  );
+  assert.equal(outcome.refusal?.code, 'PRESS_NOT_REGISTERED');
+  assert.deepEqual(outcome.privateFills, [1]);
+  assert.doesNotMatch(JSON.stringify(outcome.failure), /SYNTHETIC_CANARY/);
 });

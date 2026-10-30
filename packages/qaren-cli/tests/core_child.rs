@@ -2490,3 +2490,28 @@ fn press_evidence_survives_refusal_normalization_with_closed_fields() {
     }
     assert_eq!(run_result(&serde_json::json!({"verdict":"REFUSED","code":"PRESS_NOT_REGISTERED","pressEvidence":evidence}), 0).verdict, Verdict::Fail);
 }
+
+#[test]
+fn signal_cancellation_preserves_validated_press_evidence_from_the_child_result() {
+    let repo = common::temp_repo();
+    let evidence = serde_json::json!({"subreason":"selection_unverified","heldPress":"not_tried_unsafe","outsideTargetChange":false,"captures":2});
+    let result =
+        serde_json::json!({"verdict":"REFUSED","code":"RUN_CANCELLED","pressEvidence":evidence});
+    let mut mock = MockRunner::new();
+    mock.expect_spawn_piped_holding(
+        "walk.js",
+        9000,
+        &format!("{}\n", envelope(2, "result", &result.to_string())),
+        None,
+        HoldStdout::UntilKill,
+    );
+    mock.cancel_at_ms = Some((mock.monotonic_ms() + 50, "received SIGTERM".into()));
+    let outcome = run_child(&mut mock, &repo.join("core.log"));
+    assert!(matches!(&outcome.verdict, Verdict::Refused { code, .. } if code == "RUN_CANCELLED"));
+    assert_eq!(outcome.failure.unwrap().code, FailureCode::RunCancelled);
+    assert_eq!(
+        serde_json::to_value(outcome.ledger).unwrap()["pressEvidence"],
+        evidence
+    );
+    assert!(*mock.piped_terminated[0].lock().unwrap());
+}
