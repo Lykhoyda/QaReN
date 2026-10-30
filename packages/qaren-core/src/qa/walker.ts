@@ -2006,7 +2006,13 @@ async function walkBlockScoped(
       },
       deps.login?.marker,
       planTargets,
-    );
+    ).catch((error: unknown) => {
+      if (error instanceof AppProcessGoneError) {
+        sequence.publicationInterrupted = true;
+        throw processChanged();
+      }
+      throw error;
+    });
     if (!result) return undefined;
     if ('handled' in result && !declineAttempted) recoveries += 1;
     if ('handled' in result) {
