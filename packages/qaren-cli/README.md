@@ -733,7 +733,33 @@ may resolve live to that control: it agrees only when the same-type,
 same-label owning ancestor in the retained snapshot contains the label and the
 live frame equals that owner's frame; the tap goes to the unchanged point. A later
 screen change cannot turn a proven no-mutation refusal into a passing action.
-An unproven press passes when the screen changes. That comparison includes each
+For an iOS native-backed button not reported selected, inside a scroll container
+with a visible enabled button beside it on the same row, QaReN requires the same
+reference and identity to report selected after the press, or an authoritative
+app effect. It takes one immediate read-only re-capture for delayed selection
+within the item deadline. An unrelated screen change or pixel highlight cannot
+pass this candidate. Otherwise it refuses `PRESS_NOT_REGISTERED` (exit 4), with
+closed `pressEvidence` describing identity/selection uncertainty, outside-target
+semantic change, one or two readbacks, and `heldPress: not_tried_unsafe`.
+
+This is a structural heuristic: capture does not prove horizontal scrolling,
+its responder behavior, or a selected-state contract. iOS omits false selected
+state, so an invisible successful toggle and a swallowed tap look alike. QaReN
+sends no second tap or held press that could undo the toggle. The refusal does
+not prove that the app callback failed. For a control in a scrolling horizontal
+list, ask the app team to disable scrolling for this set or expose selection
+through accessibility state; inspect selection semantics before retrying.
+The fixed next action is
+`ask_app_team_disable_horizontal_list_scrolling_or_expose_selection`. Its ordered
+recovery ladder skips held press as unsafe and app/Metro/runner restart, device
+restart, native rebuild, and cleanup/fresh prepare as unable to verify the
+selection contract. A capture fault instead makes those later recovery options
+available, restricted to owned resources and explicit approval for state loss;
+no recovery action runs automatically. Deadline or cancellation asks for a rerun
+when ready. Controls outside this heuristic keep the existing press contract;
+unselected controls outside it remain a verification gap.
+
+Outside that candidate, an unproven press passes when the screen changes. That comparison includes each
 control's selected state (the iOS selected trait or Android accessibility
 selection), so a selected state appearing or disappearing proves a press. With
 an unchanged comparison, a successful tap on a control that was already selected

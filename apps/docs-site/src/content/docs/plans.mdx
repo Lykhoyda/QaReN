@@ -69,6 +69,26 @@ action: `Accept the dialog if it appears` and `Do not dismiss the alert` refuse.
 For real-tap verification, including already-selected controls and selection toggles, see the
 [press evidence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence).
 
+For native iOS buttons not reported selected inside a scroll container with a
+visible enabled sibling on the same row, a tap needs selection on the same
+reference and identity or an authoritative app effect. QaReN takes one read-only
+re-capture within the deadline for delayed selection, then refuses
+`PRESS_NOT_REGISTERED` (exit 4) if it cannot verify the effect. Unrelated screen
+changes and pixel highlights cannot pass this heuristic. The receipt retains
+closed `pressEvidence` and an ordered recovery ladder.
+
+The heuristic cannot prove scrolling direction or why a touch was swallowed.
+iOS omits false selected state, so an invisible successful toggle may look
+unchanged: QaReN never repeats that tap or sends a held press. Ask the app team
+to disable horizontal scrolling for this set or expose selection through
+accessibility state, and inspect the semantics before retrying. Restarting,
+rebuilding or resetting cannot by themselves repair that selection contract.
+Capture faults retain their own code and offer recovery on owned resources with
+approval for state loss; deadlines and cancellation request a rerun when ready.
+Controls outside the heuristic retain their current behavior; their unreported
+selection effects remain a verification gap.
+
+
 ## Runtime inputs
 
 A fill can take its value from the environment instead of the plan, so a login block with

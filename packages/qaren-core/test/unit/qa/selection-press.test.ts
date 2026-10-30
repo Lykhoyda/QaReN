@@ -1,3 +1,4 @@
+import { resultForWalk, exitCodeFor, createWriter } from '../../../dist/qa/wire.js';
 import { renderReason } from '../../../dist/qa/untrusted.js';
 // A control whose only visible change is its selected state proves its press by that change alone.
 import assert from 'node:assert/strict';
@@ -5,7 +6,12 @@ import { test } from 'node:test';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { join, screenSignature } from '../../../dist/qa/screen.js';
 import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
-import { walkBlock } from '../../../dist/qa/walker.js';
+import { NativeCaptureError } from '../../../dist/qa/capture.js';
+import { QaDispatchError } from '../../../dist/domain/qa-dispatch.js';
+import { withCancellation, RunCancelledError } from '../../../dist/domain/cancellation.js';
+import { selectionPressCandidate } from '../../../dist/qa/selection-press.js';
+import { elementFrame } from '../../../dist/qa/screen.js';
+import { walkBlock, runPlan } from '../../../dist/qa/walker.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
 
 function chips(selected: 'Male' | 'Female' | undefined, refPrefix = '@'): Screen {
@@ -151,4 +157,266 @@ test('a press on a control never reported selected fails with the reason it had 
     renderReason(outcome.failure?.seen ?? '', (text) => text),
     /selected/,
   );
+});
+
+function rowChips(selected = false, outside = false): Screen {
+  return {
+    ...join(
+      [
+        {
+          index: 0,
+          ref: '@app',
+          type: 'Application',
+          rect: { x: 0, y: 0, width: 400, height: 800 },
+        },
+        {
+          index: 1,
+          parentIndex: 0,
+          ref: '@list',
+          type: 'ScrollView',
+          rect: { x: 0, y: 200, width: 400, height: 100 },
+        },
+        {
+          index: 2,
+          parentIndex: 1,
+          ref: '@chip',
+          type: 'Button',
+          identifier: 'chip',
+          label: 'Choice',
+          hittable: true,
+          rect: { x: 20, y: 220, width: 100, height: 44 },
+          ...(selected ? { selected: true } : {}),
+        },
+        {
+          index: 3,
+          parentIndex: 1,
+          ref: '@peer',
+          type: 'Button',
+          label: 'Peer',
+          hittable: true,
+          rect: { x: 140, y: 220, width: 100, height: 44 },
+        },
+        {
+          index: 4,
+          parentIndex: 0,
+          ref: '@outside',
+          type: 'StaticText',
+          label: outside ? 'CANARY_OUTSIDE_AFTER' : 'CANARY_OUTSIDE_BEFORE',
+          rect: { x: 20, y: 400, width: 200, height: 44 },
+        },
+      ],
+      [],
+    ),
+    coverage: { native: 'complete', react: 'complete' },
+  };
+}
+const rowTap = block('1. Tap "chip"\n');
+const rowFake = (screens: Screen[], results: ActResult[] = []) => {
+  const f = fake(screens, results);
+  f.deps.platform = 'ios';
+  return f;
+};
+const presses = (f: ReturnType<typeof fake>) =>
+  f.calls.filter((call) => call.startsWith('press')).length;
+
+test('row buttons refuse outside semantic changes after one tap and one read-only recapture', async () => {
+  const f = rowFake([rowChips(), rowChips(false, true)]);
+  const outcome = await walkBlock(rowTap, f.deps);
+  assert.equal(outcome.refusal?.code, 'PRESS_NOT_REGISTERED');
+  assert.deepEqual(outcome.pressEvidence, {
+    subreason: 'selection_unverified',
+    heldPress: 'not_tried_unsafe',
+    outsideTargetChange: true,
+    captures: 2,
+  });
+  assert.equal(presses(f), 1);
+  assert.equal(f.calls.filter((call) => call === 'capture').length, 3);
+  assert.equal(outcome.failure?.kind, undefined);
+  assert.doesNotMatch(JSON.stringify(outcome), /CANARY_OUTSIDE/);
+});
+
+for (const delayed of [false, true]) {
+  test(`bound selection passes with ${delayed ? 'delayed' : 'immediate'} readback and one tap`, async () => {
+    const f = rowFake([rowChips(), ...(delayed ? [rowChips()] : []), rowChips(true)]);
+    const outcome = await walkBlock(rowTap, f.deps);
+    assert.equal(outcome.block.outcome, 'pass');
+    assert.equal(presses(f), 1);
+    assert.equal(f.calls.filter((call) => call === 'capture').length, delayed ? 3 : 2);
+  });
+}
+
+test('a candidate with an authoritative effect passes when its target disappears', async () => {
+  const f = rowFake([rowChips(), chips(undefined)], [{ ok: true, proven: true }]);
+  assert.equal((await walkBlock(rowTap, f.deps)).block.outcome, 'pass');
+  assert.equal(presses(f), 1);
+});
+
+for (const change of ['missing', 'reused-ref', 'new-ref', 'ambiguous']) {
+  test(`${change} cannot stand in for the bound target`, async () => {
+    const after = rowChips(true, true);
+    const target = after.elements.find((e) => e.ref === '@chip')!;
+    if (change === 'missing') after.elements = after.elements.filter((e) => e !== target);
+    if (change === 'reused-ref') target.testID = 'replacement';
+    if (change === 'new-ref') target.ref = '@new';
+    if (change === 'ambiguous') after.elements.push({ ...target, ref: '@duplicate' });
+    const f = rowFake([rowChips(), after]);
+    const outcome = await walkBlock(rowTap, f.deps);
+    assert.equal(outcome.refusal?.code, 'PRESS_NOT_REGISTERED');
+    assert.equal(outcome.pressEvidence?.subreason, 'target_identity_unavailable');
+    assert.equal(presses(f), 1);
+  });
+}
+
+test('style-only selection stays on after an honest refusal, including saved-block replay', async () => {
+  for (const mode of ['walk', 'replay'] as const) {
+    const f = rowFake([rowChips()]);
+    let selected = false;
+    f.deps.press = async () => {
+      selected = !selected;
+      return { ok: true, proven: false };
+    };
+    const outcome = await walkBlock(rowTap, f.deps, 0, [], undefined, undefined, { mode });
+    assert.equal(outcome.refusal?.code, 'PRESS_NOT_REGISTERED');
+    assert.equal(selected, true);
+  }
+});
+
+test('a selected row target retains the dependency behavior', async () => {
+  for (const [after, reason] of [
+    [rowChips(true), 'already selected, no change'],
+    [rowChips(true, true), undefined],
+    [rowChips(), undefined],
+  ] as const) {
+    const f = rowFake([rowChips(true), after]);
+    const outcome = await walkBlock(rowTap, f.deps);
+    assert.equal(outcome.block.outcome, 'pass');
+    assert.equal(outcome.rows[0].reason, reason);
+    assert.equal(presses(f), 1);
+  }
+});
+
+test('candidate classification requires a visible enabled horizontal peer and finite frames', () => {
+  for (const missing of [
+    'peer-disabled',
+    'peer-hidden',
+    'peer-offscreen',
+    'vertical',
+    'overlap',
+    'bad-frame',
+    'selected',
+    'react',
+  ]) {
+    const screen = rowChips();
+    const target = screen.elements.find((e) => e.ref === '@chip')!;
+    const peer = screen.elements.find((e) => e.ref === '@peer')!;
+    assert.equal(selectionPressCandidate(target, screen), true);
+    if (missing === 'peer-disabled') peer.disabled = true;
+    if (missing === 'peer-hidden') peer.hittable = false;
+    if (missing === 'peer-offscreen') peer.offscreen = true;
+    if (missing === 'vertical') elementFrame(peer)!.y += 100;
+    if (missing === 'overlap') elementFrame(peer)!.x = 30;
+    if (missing === 'bad-frame') elementFrame(target)!.width = NaN;
+    if (missing === 'selected') target.selected = true;
+    if (missing === 'react') target.ref = 'react:chip';
+    assert.equal(selectionPressCandidate(target, screen), false, missing);
+  }
+});
+
+test('non-iOS row buttons retain the screen change contract', async () => {
+  const f = rowFake([rowChips(), rowChips(false, true)]);
+  f.deps.platform = 'android';
+  assert.equal((await walkBlock(rowTap, f.deps)).block.outcome, 'pass');
+});
+
+for (const code of ['NATIVE_CAPTURE_UNAVAILABLE', 'RUN_CANCELLED']) {
+  test(`the extra read preserves ${code} and never repeats the tap`, async () => {
+    const f = rowFake([rowChips()]);
+    const capture = f.deps.captureScreen;
+    let count = 0;
+    f.deps.captureScreen = async (...args) => {
+      if (++count === 3)
+        throw code === 'NATIVE_CAPTURE_UNAVAILABLE'
+          ? new NativeCaptureError()
+          : new QaDispatchError(code);
+      return capture(...args);
+    };
+    const outcome = await walkBlock(rowTap, f.deps);
+    assert.equal(outcome.refusal?.code, code);
+    assert.equal(outcome.pressEvidence?.captures, 2);
+    assert.equal(presses(f), 1);
+  });
+}
+
+test('signal cancellation during the extra read retains only closed evidence for the exit owner', async () => {
+  const controller = new AbortController();
+  const f = rowFake([rowChips()]);
+  let evidence: unknown;
+  f.deps.pressReadback = (value) => {
+    evidence = value;
+  };
+  let count = 0;
+  f.deps.captureScreen = async () => {
+    if (++count === 3) {
+      controller.abort(new RunCancelledError());
+      controller.signal.throwIfAborted();
+    }
+    return rowChips();
+  };
+  await assert.rejects(
+    withCancellation(controller.signal, () => walkBlock(rowTap, f.deps)),
+    { name: 'AbortError' },
+  );
+  assert.deepEqual(evidence, {
+    subreason: 'selection_unverified',
+    heldPress: 'not_tried_unsafe',
+    outsideTargetChange: false,
+    captures: 2,
+  });
+  assert.equal(presses(f), 1);
+});
+
+for (const during of ['first-readback', 'recapture'] as const) {
+  test(`the pre-tap lifetime expires during ${during} without renewal or another tap`, async () => {
+    const f = rowFake([rowChips()]);
+    let clock = 0;
+    let count = 0;
+    f.deps.now = () => clock;
+    f.deps.captureScreen = async () => {
+      count++;
+      clock =
+        during === 'first-readback'
+          ? count === 2
+            ? 10_001
+            : 0
+          : count === 2
+            ? 9_000
+            : count === 3
+              ? 10_001
+              : 0;
+      return rowChips(during === 'first-readback' ? count === 2 : count === 3);
+    };
+    const outcome = await walkBlock(rowTap, f.deps);
+    assert.equal(outcome.refusal?.code, 'ITEM_DEADLINE_EXCEEDED');
+    assert.equal(outcome.pressEvidence?.captures, during === 'first-readback' ? 1 : 2);
+    assert.equal(presses(f), 1);
+    assert.equal(count, during === 'first-readback' ? 2 : 3);
+  });
+}
+
+test('the terminal refusal keeps closed evidence through finalization and wire serialization', async () => {
+  const f = rowFake([rowChips(), rowChips(false, true)]);
+  const ledger = await runPlan([rowTap], f.deps);
+  assert.equal(ledger.verdict, 'REFUSED');
+  assert.equal(ledger.recipe, undefined);
+  assert.equal(ledger.failure?.kind, undefined);
+  assert.equal(ledger.pressEvidence?.outsideTargetChange, true);
+  const payload = resultForWalk(ledger, 'synthetic-lease');
+  assert.equal(exitCodeFor(payload), 4);
+  const lines: string[] = [];
+  assert.equal(createWriter((line) => lines.push(line), 'synthetic-run').result(payload), 4);
+  const result = JSON.parse(lines[0]).payload;
+  assert.equal(result.code, 'PRESS_NOT_REGISTERED');
+  assert.deepEqual(result.pressEvidence, ledger.pressEvidence);
+  assert.doesNotMatch(lines[0], /CANARY_OUTSIDE/);
+  assert.equal(presses(f), 1);
 });

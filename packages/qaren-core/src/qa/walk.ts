@@ -1,3 +1,4 @@
+import type { PressEvidence } from './selection-press.js';
 import { QaDispatchError } from '../domain/qa-dispatch.js';
 import { ownedLogin, parseInputPreflight } from './input-preflight.js';
 import { readAndroidLabelProvenance } from '../runners/rn-android-runner-client.js';
@@ -708,6 +709,7 @@ async function openSession(
 
   const captureReact = createQaReactCapture(cdp);
   const deps: WalkerDeps = {
+    platform,
     note: log,
     mediaWithheld: diagnostic,
     videoPolicy: request.videoPolicy ?? 'undeclared',
@@ -959,6 +961,7 @@ async function mainRequest(
   };
   // The one exit owner; once stopping, no verdict other than the cancellation is reported.
   let written: 0 | 1 | 4 | undefined;
+  let pressReadback: PressEvidence | undefined;
   const finish = async (payload: ResultPayload, close?: () => Promise<void>): Promise<never> => {
     if (currentInputs()?.hasInputs && close) {
       try {
@@ -985,6 +988,9 @@ async function mainRequest(
                 ? stop.signal.reason.message
                 : 'the run was cancelled',
             lease: request.lease,
+            ...(pressReadback && !(stop.signal.reason instanceof InputPrivacyRefusal)
+              ? { pressEvidence: pressReadback }
+              : {}),
             jev: payload.jev,
           }
         : payload,
@@ -1084,6 +1090,9 @@ async function mainRequest(
       );
     if (refusal) return refuse('LANE_NOT_WARM', refusal, () => opened.close());
   }
+  opened.deps.pressReadback = (evidence) => {
+    pressReadback = evidence;
+  };
   writer.admitted();
   try {
     const ledger = await stop.track(() =>

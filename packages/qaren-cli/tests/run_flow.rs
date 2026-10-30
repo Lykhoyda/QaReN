@@ -9889,3 +9889,77 @@ fn part_a_dependency_failure_only_tears_down_infrastructure() {
         assert_eq!(mock.remaining(), 0);
     }
 }
+
+#[test]
+fn unverified_selection_receipts_keep_evidence_guidance_and_ordered_recovery() {
+    for code in [
+        "PRESS_NOT_REGISTERED",
+        "NATIVE_CAPTURE_UNAVAILABLE",
+        "ITEM_DEADLINE_EXCEEDED",
+        "EVIDENCE_EXPIRED",
+        "RUN_CANCELLED",
+    ] {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        let evidence = serde_json::json!({"subreason":"selection_unverified","heldPress":"not_tried_unsafe","outsideTargetChange":true,"captures":2});
+        let ledger = serde_json::json!({
+            "verdict":"REFUSED", "code":code,
+            "message":"Selection could not be verified; no second press was sent.",
+            "path":"replay", "blocks":[{"key":"plan","outcome":"fail","source":"replayed"}],
+            "steps":[], "jev":{"calls":0,"medianMs":0}, "llmTurns":0,"escapes":0,"recoveries":0,
+            "pressEvidence":evidence,
+            "failure":{"step":1,"seen":"Selection could not be verified; no second press was sent."}
+        });
+        script_recipe_walk(&mut mock, &repo, &ledger.to_string(), 4);
+        let receipt = run(&mut mock, &request(&repo, &app, 30));
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Refused,
+            "{code}: {:?}",
+            receipt.failure
+        );
+        let failure = receipt.failure.as_ref().unwrap();
+        if code == "PRESS_NOT_REGISTERED" {
+            assert_eq!(failure.code, FailureCode::PressNotRegistered);
+            assert!(failure.code.is_refusal());
+        }
+        let expected = if code == "PRESS_NOT_REGISTERED" {
+            "ask_app_team_disable_horizontal_list_scrolling_or_expose_selection"
+        } else if code == "NATIVE_CAPTURE_UNAVAILABLE" {
+            "reprepare_after_capture_recovery"
+        } else {
+            "rerun_when_ready"
+        };
+        assert_eq!(failure.next_action.as_str(), expected);
+        let recovery = serde_json::to_value(failure).unwrap()["recovery"].clone();
+        assert_eq!(recovery["action"], expected);
+        assert_eq!(
+            recovery["next_rung"],
+            if code == "NATIVE_CAPTURE_UNAVAILABLE" {
+                serde_json::json!(2)
+            } else {
+                serde_json::Value::Null
+            }
+        );
+        assert_eq!(recovery["ladder"].as_array().unwrap().len(), 5);
+        for (index, rung) in recovery["ladder"].as_array().unwrap().iter().enumerate() {
+            assert_eq!(rung["rung"], index + 1);
+            assert_eq!(
+                rung["status"],
+                if code == "NATIVE_CAPTURE_UNAVAILABLE" && index > 0 {
+                    "available"
+                } else {
+                    "skipped"
+                }
+            );
+        }
+        let durable: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&receipt.artifacts["ledger"]).unwrap())
+                .unwrap();
+        assert_eq!(durable["pressEvidence"], evidence);
+        assert!(durable.get("recipe").is_none());
+        assert!(durable["failure"].get("kind").is_none());
+        assert!(!receipt.to_json().contains("CANARY"));
+        assert_eq!(mock.remaining(), 0);
+    }
+}

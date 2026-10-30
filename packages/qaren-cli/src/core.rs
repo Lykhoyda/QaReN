@@ -209,6 +209,8 @@ pub struct MediaWithheld {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Ledger {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub press_evidence: Option<PressEvidence>,
     pub verdict: String,
     #[serde(
         default,
@@ -263,6 +265,28 @@ pub struct Ledger {
         deserialize_with = "passive"
     )]
     pub recipe: Option<crate::recipes::RecipeCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PressEvidence {
+    pub subreason: PressSubreason,
+    pub held_press: HeldPress,
+    pub outside_target_change: bool,
+    pub captures: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PressSubreason {
+    SelectionUnverified,
+    TargetIdentityUnavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum HeldPress {
+    NotTriedUnsafe,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1383,6 +1407,27 @@ fn interpret(
             FailureCode::CoreResultMissing,
         );
     }
+    if let Some(evidence) = result.get("pressEvidence") {
+        let valid = serde_json::from_value::<PressEvidence>(evidence.clone())
+            .is_ok_and(|evidence| matches!(evidence.captures, 1 | 2));
+        if !valid {
+            let (ledger, verdict, failure) = missing(
+                &inbox.rows,
+                "invalid press evidence".to_string(),
+                FailureCode::CoreResultMissing,
+            );
+            return (
+                ledger,
+                verdict,
+                failure.map(|mut failure| {
+                    failure.next_action = crate::redact::OutputText::from_output(
+                        "install_matching_runtime_then_rerun",
+                    );
+                    failure
+                }),
+            );
+        }
+    }
     if verdict == "REFUSED" {
         let code = (result
             .get("code")
@@ -1445,6 +1490,7 @@ fn refusal_ledger(result: &Value, rows: &[Row], seen: &str) -> Result<Ledger, St
         "recoveries",
         "failure",
         "blocksWritten",
+        "pressEvidence",
     ] {
         if let Some(value) = result.get(field) {
             if value.is_null() {
@@ -1517,6 +1563,7 @@ fn synthesized_failure(rows: &[Row], seen: &str) -> LedgerFailure {
 pub fn synthesized_ledger(rows: &[Row], verdict: &str, seen: &str) -> Ledger {
     let steps: Vec<Row> = rows.to_vec();
     Ledger {
+        press_evidence: None,
         verdict: verdict.to_string(),
         video_publication: None,
         video_policy: Default::default(),

@@ -1308,6 +1308,20 @@ fn run_inner(
                 })),
             ),
         };
+        if outcome.ledger.press_evidence.is_some() {
+            if let (Some(failure), Verdict::Refused { code, .. }) = (&mut failure, &outcome.verdict) {
+                if matches!(
+                    code.as_str(),
+                    "PRESS_NOT_REGISTERED"
+                        | "NATIVE_CAPTURE_UNAVAILABLE"
+                        | "ITEM_DEADLINE_EXCEEDED"
+                        | "EVIDENCE_EXPIRED"
+                        | "RUN_CANCELLED"
+                ) {
+                    *failure = failure.clone().with_press_recovery(code);
+                }
+            }
+        }
         let mut tested_older_commit = None;
         let mut published_video = None;
         if let Some(pr) = &pr_state {
@@ -1653,6 +1667,7 @@ pub fn worktree_drift(before: &BTreeSet<String>, after: &BTreeSet<String>) -> Ve
 
 fn refusal_code(code: &str) -> FailureCode {
     match code {
+        "PRESS_NOT_REGISTERED" => FailureCode::PressNotRegistered,
         "METRO_ORIGIN_MISMATCH" => FailureCode::MetroOriginMismatch,
         "PLAN_INPUT_MISSING" => FailureCode::PlanInputMissing,
         "PLAN_UNPARSEABLE" => FailureCode::PlanUnparseable,
