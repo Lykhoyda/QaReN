@@ -5517,7 +5517,7 @@ fn fresh_admission_prepare_preserves_cause_specific_recovery_and_retains_the_lea
         } else {
             "qaren doctor"
         }));
-        let recovery = receipt.failure.as_ref().unwrap().recovery.as_ref().unwrap();
+        let recovery = receipt.failure.as_ref().unwrap().build_recovery().unwrap();
         assert!(recovery.own_cleanup_required);
         assert_eq!(
             recovery.own_run_id.as_deref(),

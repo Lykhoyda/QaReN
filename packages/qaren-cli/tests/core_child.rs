@@ -204,7 +204,7 @@ fn fresh_admission_reprobe_is_one_new_whole_scan_and_uses_only_the_terminal_verd
                     .next_action
                     .as_str()
                     .contains("do not signal or adopt"));
-                let recovery = failure.recovery.as_ref().unwrap();
+                let recovery = failure.build_recovery().unwrap();
                 assert!(
                     !recovery.destroys_state && !recovery.requires_user_ok && !recovery.automatic
                 );
@@ -284,7 +284,7 @@ fn fresh_admission_reprobe_requires_a_matching_typed_identity_refusal_with_a_pid
         mock.expect_run("fresh-install-preflight.js", output);
         let failure = admit(&mut mock, None).unwrap_err();
         assert_eq!(
-            failure.recovery.as_ref().unwrap().action,
+            failure.build_recovery().unwrap().action,
             if index < 2 {
                 qaren::failure::RecoveryAction::WaitForOwner
             } else {
@@ -330,7 +330,7 @@ fn fresh_admission_reprobe_shares_the_original_allowance_and_rejects_late_result
             let failure = result.unwrap_err();
             assert_eq!(failure.code, FailureCode::FreshInstallAdmissionUnknown);
             assert_eq!(
-                failure.recovery.as_ref().unwrap().action,
+                failure.build_recovery().unwrap().action,
                 qaren::failure::RecoveryAction::RestoreProcessObservation
             );
             assert!(failure.next_action.contains("qaren doctor"));
@@ -384,7 +384,7 @@ fn fresh_admission_cancellation_before_scan_after_scan_during_delay_and_after_re
         let failure = admit(&mut mock, None).unwrap_err();
         assert_eq!(failure.code, FailureCode::RunCancelled);
         assert_eq!(
-            failure.recovery.as_ref().unwrap().reason,
+            failure.build_recovery().unwrap().reason,
             qaren::failure::RecoveryReason::RunCancelled
         );
         let summary = admission_failure_summary(&failure);
@@ -423,7 +423,7 @@ fn fresh_admission_android_busy_without_pid_evidence_waits_for_owner_without_rep
     )
     .unwrap_err();
     assert_eq!(failure.code, FailureCode::DeviceBusy);
-    let recovery = failure.recovery.as_ref().unwrap();
+    let recovery = failure.build_recovery().unwrap();
     assert_eq!(
         recovery.reason,
         qaren::failure::RecoveryReason::ForeignAdmissionUnresolved

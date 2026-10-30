@@ -117,7 +117,7 @@ impl<'a> Ctx<'a> {
                 failure.code,
                 FailureCode::ArtifactInstallFailed | FailureCode::BuildContended
             )
-            && failure.recovery.as_ref().is_none_or(|r| {
+            && failure.build_recovery().is_none_or(|r| {
                 r.reason != RecoveryReason::ForeignAdmissionUnresolved
                     && !(failure.phase == "fresh_install"
                         && r.reason == RecoveryReason::IdentityUnavailable)

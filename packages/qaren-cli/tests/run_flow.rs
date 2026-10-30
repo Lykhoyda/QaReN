@@ -5203,6 +5203,11 @@ fn fresh_install_reset_build_readiness_walk_and_teardown_share_one_durable_lease
     let receipt = run(&mut runner, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     assert_eq!(receipt.outcomes["fresh_install"], "proven_absent");
+    for key in ["admission_before_deps", "admission_before_mutation"] {
+        let summary: serde_json::Value = serde_json::from_str(&receipt.outcomes[key]).unwrap();
+        assert_eq!(summary["attempts"], 1);
+        assert_eq!(summary["terminalReason"], "clear");
+    }
     let lane = receipt
         .lane
         .as_ref()
@@ -10114,7 +10119,7 @@ fn fresh_install_reprobe_keeps_the_final_busy_verdict_at_both_admission_points()
             .next_action
             .contains("wait for the foreign process owner"));
         assert_eq!(
-            failure.recovery.as_ref().unwrap().action,
+            failure.build_recovery().unwrap().action,
             qaren::failure::RecoveryAction::WaitForOwner
         );
         assert!(failure
