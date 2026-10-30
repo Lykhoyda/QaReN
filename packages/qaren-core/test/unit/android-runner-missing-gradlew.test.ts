@@ -65,7 +65,8 @@ async function startWithoutGradlew(t: TestContext): Promise<{ error: Error; comm
 
 test('a runner directory without gradlew refuses before any build, install or lock', async (t) => {
   const { error, commands } = await startWithoutGradlew(t);
-  assert.equal(error.message, `Android runner not found at ${runner} (no gradlew).`);
+  // A leftover packages/rn-android-runner in the checkout may append the legacy hint.
+  assert.ok(error.message.startsWith(`Android runner not found at ${runner} (no gradlew).`));
   assert.deepEqual(commands, ['adb -s missing-gradlew-fixture get-state']);
   assert.equal(existsSync(join(runner, 'app', 'build')), false);
 });
