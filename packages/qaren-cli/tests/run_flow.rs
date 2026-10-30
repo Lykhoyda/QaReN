@@ -1765,7 +1765,7 @@ fn assert_direct_ios_launch(mock: &MockRunner) {
             UDID,
             "com.rndevagent.testapp",
             "--initialUrl",
-            "http://127.0.0.1:8791/?disableOnboarding=1"
+            "http://127.0.0.1:8791/?disableOnboarding=1&__expo_disable_onboarding=1&__expo_disable_fab=1&__expo_disable_auto_launch=1"
         ]
     );
     assert_subsequence(
@@ -3143,6 +3143,23 @@ fn every_core_refusal_code_ends_through_teardown() {
         ("JEV_UNREACHABLE", FailureCode::JevUnreachable),
         ("RUN_CANCELLED", FailureCode::RunCancelled),
         ("OTHER", FailureCode::CoreRefused),
+        ("DEV_MENU_HIDE_UNVERIFIED", FailureCode::CoreRefused),
+        (
+            "DEV_MENU_HIDE_UNVERIFIED_READ_FAILED",
+            FailureCode::CoreRefused,
+        ),
+        (
+            "DEV_MENU_HIDE_UNVERIFIED_NOT_HIDDEN",
+            FailureCode::CoreRefused,
+        ),
+        (
+            "DEV_MENU_HIDE_UNVERIFIED_EVALUATE_TIMEOUT",
+            FailureCode::CoreRefused,
+        ),
+        (
+            "DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED",
+            FailureCode::CoreRefused,
+        ),
     ] {
         let (repo, app) = app_repo();
         let mut mock = MockRunner::new();
@@ -3167,6 +3184,15 @@ fn every_core_refusal_code_ends_through_teardown() {
         let failure = receipt.failure.as_ref().unwrap();
         assert_eq!(failure.code, expected, "{code}");
         assert_eq!(failure.detail, format!("{code}: walk refused"), "{code}");
+        let expected_action = match code {
+            "DEV_MENU_HIDE_UNVERIFIED_READ_FAILED" | "DEV_MENU_HIDE_UNVERIFIED_EVALUATE_TIMEOUT" =>
+                "re-run once without --fresh-install or --restart-device; if build work is active, wait for it to finish first",
+            "DEV_MENU_HIDE_UNVERIFIED_NOT_HIDDEN" | "DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED" =>
+                "re-run once without --fresh-install; if it persists, report the value-free refusal",
+            _ => "resolve the refusal, then re-run",
+        };
+        assert_eq!(failure.next_action, expected_action, "{code}");
+
         assert_eq!(receipt.cleanup["device_lease"], "removed", "{code}");
         let cleanup = events
             .iter()

@@ -4,7 +4,11 @@ import {
   sleep,
   cancellationSignal,
   throwIfCancelled,
+  withDeadline,
 } from '../domain/cancellation.js';
+import type { DevOverlayObservation, DevOverlayReadError } from '../domain/dev-overlay.js';
+import { SessionAuthorityError } from '../domain/authority-error.js';
+import { CDPRequestTimeoutError, CDPTargetClosedError } from '../cdp/transport.js';
 import type { CDPClient } from '../cdp-client.js';
 import { okResult, failResult, warnResult, withConnection, type ToolResult } from '../utils.js';
 import {
@@ -23,16 +27,14 @@ type DevAction =
   | 'hideDevMenu'
   | 'hideDevMenuFab';
 
-// Walk start: hide Expo's floating dev-menu button first, then shake, hot reloading (so QaReN's own writes cannot refresh the app mid-recording) and any open menu.
+// Close an open menu before changing its preferences.
 export const WALK_DEV_SETTINGS = [
+  'hideDevMenu',
   'hideDevMenuFab',
   'disableDevMenu',
   'disableFastRefresh',
-  'hideDevMenu',
 ] as const;
 
-// The floating button fades out over ~0.3 s after its preference flips.
-const DEV_FAB_READS = 4;
 const DEV_FAB_READ_INTERVAL_MS = 250;
 // A loaded host can time out the preferences call once; a hide that keeps failing still refuses.
 const DEV_FAB_HIDE_ATTEMPTS = 3;
@@ -46,92 +48,166 @@ export interface FastRefreshReload {
 }
 
 export interface DevOverlayDependencies {
-  devSettings(args: { action: (typeof WALK_DEV_SETTINGS)[number] }): Promise<ToolResult>;
-  devOverlayUncleared(): Promise<boolean>;
+  devSettings(args: {
+    action: (typeof WALK_DEV_SETTINGS)[number];
+    timeoutMs?: number;
+  }): Promise<ToolResult>;
+  observeDevOverlay(): Promise<DevOverlayObservation>;
+  deadline: number;
+  now?(): number;
   log(message: string): void;
   sleep?(ms: number): Promise<void>;
   fastRefreshReload?: FastRefreshReload;
 }
 
-function envelopeError(result: ToolResult): string {
+type OverlaySubreason = 'READ_FAILED' | 'NOT_HIDDEN' | 'EVALUATE_TIMEOUT' | 'EVALUATE_FAILED';
+
+function envelopeCode(result: ToolResult): unknown {
   try {
-    const { error } = JSON.parse(result.content[0]?.text ?? '') as { error?: unknown };
-    return typeof error === 'string' ? error : 'failed';
+    return JSON.parse(result.content[0]?.text ?? '').code;
   } catch {
-    return 'failed';
+    return undefined;
   }
+}
+
+function readErrorClass(error: unknown): DevOverlayReadError {
+  if (
+    error instanceof CDPRequestTimeoutError ||
+    (error instanceof DOMException && error.name === 'TimeoutError')
+  )
+    return 'timeout';
+  if (error instanceof CDPTargetClosedError) return 'transport';
+  return 'other';
+}
+
+function rethrowCancellationOrAuthority(error: unknown): void {
+  if (isAbort(error) || error instanceof SessionAuthorityError) throw error;
 }
 
 export function clearDevOverlays(deps: DevOverlayDependencies): Promise<ToolResult> {
   return clearOverlays(deps, WALK_DEV_SETTINGS);
 }
 
-// The one walk-start and post-recovery proof that no Expo dev chrome is in front of the app.
 async function clearOverlays(
   deps: DevOverlayDependencies,
   actions: readonly (typeof WALK_DEV_SETTINGS)[number][],
+  recovering = false,
 ): Promise<ToolResult> {
-  const pause = deps.sleep ?? sleep;
-  for (const action of actions) {
-    const attempts = action === 'hideDevMenuFab' ? DEV_FAB_HIDE_ATTEMPTS : 1;
-    let error: string | undefined;
-    for (let attempt = 0; attempt < attempts; attempt++) {
-      throwIfCancelled();
-      if (attempt > 0) await pause(DEV_FAB_READ_INTERVAL_MS);
-      const reload = action === 'disableFastRefresh' ? deps.fastRefreshReload : undefined;
-      await reload?.mark();
-      const result = await deps.devSettings({ action }).catch((thrown: unknown) => {
-        if (isAbort(thrown)) throw thrown;
-        return thrown instanceof Error ? thrown.message : String(thrown);
-      });
-      error =
-        typeof result === 'string' ? result : result.isError ? envelopeError(result) : undefined;
-      if (typeof result !== 'string' && !result.isError && envelopeData(result)?.executed === true)
-        await reload?.settled();
-      if (error === undefined) break;
-    }
-    if (error === undefined) continue;
-    if (action === 'hideDevMenuFab')
-      return failResult(
-        `The Expo dev-client floating button could not be confirmed hidden: ${error}`,
-        'DEV_MENU_HIDE_UNVERIFIED',
-        { action: 'clearDevOverlays', outcome: 'DEV_MENU_HIDE_UNVERIFIED' },
-      );
-    deps.log(`${action}: ${error}`);
-  }
-  let readError: string | undefined;
-  for (let read = 0; read < DEV_FAB_READS; read++) {
+  const now = deps.now ?? (() => performance.now());
+  const started = now();
+  const expired = new Error('dev-overlay admission deadline');
+  const witness: {
+    phase: 'read' | 'evaluate' | 'other';
+    observation: DevOverlayObservation;
+  } = { phase: 'read', observation: { state: 'unknown', error: 'timeout' } };
+  let readAttempts = 0;
+  let evaluateAttempts = 0;
+  let lastError: DevOverlayReadError | 'evaluation' | 'none' = 'none';
+  const remaining = () => Math.max(0, deps.deadline - now());
+  const pause = async () => {
+    const ms = Math.min(DEV_FAB_READ_INTERVAL_MS, remaining());
+    if (ms > 0) await (deps.sleep ?? sleep)(ms);
     throwIfCancelled();
-    const shown = await deps.devOverlayUncleared().catch((thrown: unknown) => {
-      if (isAbort(thrown)) throw thrown;
-      readError = thrown instanceof Error ? thrown.message : String(thrown);
-      return true;
-    });
-    if (!shown) return okResult({ action: 'clearDevOverlays', executed: true });
-    if (read + 1 < DEV_FAB_READS) await pause(DEV_FAB_READ_INTERVAL_MS);
+  };
+  const refused = (subreason: OverlaySubreason) =>
+    failResult(
+      `Dev-overlay proof: ${subreason.toLowerCase()}; reads=${readAttempts}; evaluations=${evaluateAttempts}; elapsed_ms=${Math.max(0, Math.round(now() - started))}; last_error=${lastError}${witness.observation.state === 'shown' ? `; front=${witness.observation.front}` : ''}.`,
+      `DEV_MENU_HIDE_UNVERIFIED_${subreason}`,
+      { action: 'clearDevOverlays' },
+    );
+  const read = async () => {
+    witness.phase = 'read';
+    witness.observation = { state: 'unknown', error: 'timeout' };
+    readAttempts++;
+    try {
+      witness.observation = await deps.observeDevOverlay();
+    } catch (error) {
+      rethrowCancellationOrAuthority(error);
+      witness.observation = { state: 'unknown', error: readErrorClass(error) };
+    }
+    throwIfCancelled();
+    lastError = witness.observation.state === 'unknown' ? witness.observation.error : 'none';
+    return witness.observation;
+  };
+  const operation = async () => {
+    if (recovering) {
+      const initial = await read();
+      const hidden = await deps.devSettings({ action: 'hideDevMenu', timeoutMs: remaining() });
+      throwIfCancelled();
+      if (hidden.isError || (initial.state === 'clear' && envelopeData(hidden)?.executed === false))
+        return hidden;
+    }
+    for (const action of actions) {
+      const attempts = action === 'hideDevMenuFab' ? DEV_FAB_HIDE_ATTEMPTS : 1;
+      let failed = false;
+      let subreason: OverlaySubreason = 'EVALUATE_FAILED';
+      for (let attempt = 0; attempt < attempts; attempt++) {
+        throwIfCancelled();
+        if (remaining() <= 0) throw expired;
+        if (attempt > 0) await pause();
+        if (remaining() <= 0) throw expired;
+        witness.phase = action === 'hideDevMenuFab' ? 'evaluate' : 'other';
+        if (witness.phase === 'evaluate') evaluateAttempts++;
+        const reload = action === 'disableFastRefresh' ? deps.fastRefreshReload : undefined;
+        await reload?.mark();
+        let result: ToolResult;
+        try {
+          result = await deps.devSettings({ action, timeoutMs: remaining() });
+        } catch (error) {
+          rethrowCancellationOrAuthority(error);
+          lastError = readErrorClass(error);
+          result = failResult(
+            'Dev settings failed',
+            lastError === 'timeout'
+              ? 'DEV_MENU_HIDE_UNVERIFIED_EVALUATE_TIMEOUT'
+              : 'DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED',
+          );
+        }
+        throwIfCancelled();
+        failed = result.isError === true;
+        if (!failed && envelopeData(result)?.executed === true) await reload?.settled();
+        if (!failed) break;
+        subreason =
+          envelopeCode(result) === 'DEV_MENU_HIDE_UNVERIFIED_EVALUATE_TIMEOUT'
+            ? 'EVALUATE_TIMEOUT'
+            : 'EVALUATE_FAILED';
+        lastError = subreason === 'EVALUATE_TIMEOUT' ? 'timeout' : 'evaluation';
+      }
+      if (!failed) continue;
+      if (action === 'hideDevMenuFab') return refused(subreason);
+      deps.log(`${action}: failed`);
+    }
+    witness.phase = 'read';
+    while (remaining() > 0) {
+      if ((await read()).state === 'clear')
+        return okResult({ action: 'clearDevOverlays', executed: true });
+      await pause();
+    }
+    throw expired;
+  };
+  try {
+    return await withDeadline(deps.deadline, expired, operation);
+  } catch (error) {
+    throwIfCancelled();
+    if (error !== expired) throw error;
+    if (witness.phase === 'evaluate') {
+      lastError = 'timeout';
+      return refused('EVALUATE_TIMEOUT');
+    }
+    if (witness.observation.state === 'shown') return refused('NOT_HIDDEN');
+    lastError = witness.observation.state === 'unknown' ? witness.observation.error : 'timeout';
+    return refused('READ_FAILED');
   }
-  throwIfCancelled();
-  return failResult(
-    `The Expo dev overlays could not be proven gone${readError ? `: ${readError}` : '.'}`,
-    'DEV_MENU_HIDE_UNVERIFIED',
-    { action: 'clearDevOverlays', outcome: 'DEV_MENU_HIDE_UNVERIFIED' },
-  );
 }
 
-export async function recoverDevOverlays(deps: DevOverlayDependencies): Promise<ToolResult> {
-  const overlayUncleared = await deps.devOverlayUncleared().catch((thrown: unknown) => {
-    if (isAbort(thrown)) throw thrown;
-    return true;
-  });
-  const hidden = await deps.devSettings({ action: 'hideDevMenu' });
-  if (hidden.isError || (!overlayUncleared && envelopeData(hidden)?.executed === false))
-    return hidden;
-  // Hot loading stays off once the walk start set it; setting it again on Android would reload the app mid-walk.
+export function recoverDevOverlays(deps: DevOverlayDependencies): Promise<ToolResult> {
   return clearOverlays(
     deps,
-    deps.fastRefreshReload
-      ? WALK_DEV_SETTINGS.filter((action) => action !== 'disableFastRefresh')
-      : WALK_DEV_SETTINGS,
+    WALK_DEV_SETTINGS.filter(
+      (action) =>
+        action !== 'hideDevMenu' && (!deps.fastRefreshReload || action !== 'disableFastRefresh'),
+    ),
+    true,
   );
 }
 
@@ -235,7 +311,7 @@ export function createDevSettingsHandler(
   getClient: () => CDPClient,
   dependencies: DevSettingsHandlerDependencies = {},
 ) {
-  const handler = async (args: { action: DevAction }, client: CDPClient) => {
+  const handler = async (args: { action: DevAction; timeoutMs?: number }, client: CDPClient) => {
     if (args.action === 'hideDevMenu') {
       const probe = dependencies.probeForegroundSurface;
       const before = probe
@@ -277,7 +353,9 @@ export function createDevSettingsHandler(
     }
 
     if (args.action === 'hideDevMenuFab') {
-      const result = await interruptible(() => client.evaluate(HIDE_DEV_MENU_FAB, true));
+      const result = await interruptible(() =>
+        client.evaluate(HIDE_DEV_MENU_FAB, true, args.timeoutMs),
+      );
       if (result.value === 'no_method_available')
         return warnResult(
           { action: args.action, executed: false },
@@ -285,9 +363,11 @@ export function createDevSettingsHandler(
         );
       if (result.error || result.value !== 'ok')
         return failResult(
-          `The Expo dev-client floating button could not be confirmed hidden: ${result.error ? 'the preferences call failed or timed out' : 'the preferences did not read back hidden'}.`,
-          'DEV_MENU_HIDE_UNVERIFIED',
-          { action: args.action, outcome: 'DEV_MENU_HIDE_UNVERIFIED' },
+          `The Expo dev-client floating button could not be confirmed hidden: ${result.error ? 'the preferences call failed' : 'the preferences did not read back hidden'}.`,
+          result.errorKind === 'timeout'
+            ? 'DEV_MENU_HIDE_UNVERIFIED_EVALUATE_TIMEOUT'
+            : 'DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED',
+          { action: args.action },
         );
       await interruptible(() => dependencies.settleAfterHide?.() ?? sleep(300));
       return okResult({ action: args.action, executed: true, outcome: 'hidden' });
@@ -296,7 +376,7 @@ export function createDevSettingsHandler(
     const expression = ACTION_EXPRESSIONS[args.action];
 
     try {
-      const result = await interruptible(() => client.evaluate(expression));
+      const result = await interruptible(() => client.evaluate(expression, false, args.timeoutMs));
       if (result.error) {
         return failResult(`Dev settings error: ${result.error}`);
       }
@@ -323,8 +403,14 @@ export function createDevSettingsHandler(
   };
   const helperIndependent = withConnection(getClient, handler, { requireHelpers: false });
   const helperAware = withConnection(getClient, handler);
-  return (args: { action: DevAction }) =>
-    args.action === 'hideDevMenu' || args.action === 'hideDevMenuFab'
+  return (args: { action: DevAction; timeoutMs?: number }) => {
+    // Walk admission owns connection recovery and the remaining startup deadline.
+    if (args.timeoutMs !== undefined) {
+      throwIfCancelled();
+      return handler(args, getClient());
+    }
+    return args.action === 'hideDevMenu' || args.action === 'hideDevMenuFab'
       ? helperIndependent(args)
       : helperAware(args);
+  };
 }

@@ -1,3 +1,4 @@
+import type { DevOverlayObservation } from '../domain/dev-overlay.js';
 import { HandlerError } from './adapt.js';
 import { systemModalDiagnostic } from '../domain/system-modal-diagnostic.js';
 import { isAbort, sleep, throwIfCancelled, withDeadline } from '../domain/cancellation.js';
@@ -506,11 +507,18 @@ export function nativeCaptureCoverage(observation: NativeObservation): Coverage[
     : 'unknown';
 }
 
-export function nativeDevOverlayUncleared(observation: NativeObservation): boolean {
+export function nativeDevOverlayObservation(observation: NativeObservation): DevOverlayObservation {
+  const coverage = nativeCaptureCoverage(observation);
+  if (coverage !== 'complete')
+    return {
+      state: 'unknown',
+      error: coverage === 'incomplete' ? 'coverage_incomplete' : 'coverage_unknown',
+    };
   const front = frontFromSurface(observation.surface, observation.nodes ?? []);
-  return (
-    nativeCaptureCoverage(observation) !== 'complete' || front === 'dev-fab' || front === 'dev-menu'
-  );
+  if (front === 'dev-fab' || front === 'dev-menu') return { state: 'shown', front };
+  if (front !== 'app' || observation.surface !== 'app')
+    return { state: 'unknown', error: 'unknown_front' };
+  return { state: 'clear', front };
 }
 
 function reactCaptureCoverage(observation: ReactObservation): Coverage['react'] {

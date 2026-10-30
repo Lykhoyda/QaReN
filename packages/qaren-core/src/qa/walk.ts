@@ -60,7 +60,7 @@ import {
   AppProcessGoneError,
   boundedCapture,
   captureScreen,
-  nativeDevOverlayUncleared,
+  nativeDevOverlayObservation,
   postAdmissionSnapshots,
   type NativeObservation,
 } from './capture.js';
@@ -509,6 +509,7 @@ async function openSession(
   const remainingMs = () => Math.max(0, request.walkBudgetMs - now() - 1000);
   const bundleRequests =
     target.metroBundleRequests && launchBundleRequests(target.metroBundleRequests);
+  let admissionDeadline = performance.now() + remainingMs();
   let attachStage: 'wait_targets' | 'connect_exact' | undefined;
   const logRefusal = (error: unknown): never => {
     logAdmissionRefusal(error, attachStage, log);
@@ -523,6 +524,7 @@ async function openSession(
         ...(target.manifestWarm ? { launchWarm: target.manifestWarm } : {}),
         remainingMs,
         attach: async (deadline) => {
+          admissionDeadline = deadline;
           attachStage = 'wait_targets';
           await waitForExactPortTargets(
             target.metroPort,
@@ -659,8 +661,7 @@ async function openSession(
         appId,
       ),
   });
-  const devOverlayUncleared = async (): Promise<boolean> =>
-    nativeDevOverlayUncleared(await rawSnapshot());
+  const observeDevOverlay = async () => nativeDevOverlayObservation(await rawSnapshot());
   // Android reloads the bundle when hot loading is set: step 1 must read the reloaded, re-proven app.
   const reload =
     platform === 'android'
@@ -673,7 +674,8 @@ async function openSession(
       : undefined;
   const overlays = {
     devSettings,
-    devOverlayUncleared,
+    observeDevOverlay,
+    deadline: admissionDeadline,
     log,
     ...(reload
       ? {

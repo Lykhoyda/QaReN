@@ -1319,7 +1319,7 @@ fn run_inner(
                         "prove",
                         refusal_code(code),
                         format!("{code}: {message}"),
-                        "resolve the refusal, then re-run",
+                        Failure::core_refusal_next_action(code),
                     )
                 })),
             ),

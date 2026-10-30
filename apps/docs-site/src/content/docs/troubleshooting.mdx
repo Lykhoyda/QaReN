@@ -25,6 +25,27 @@ Refusals exit `4` and mean the run could not start or could not decide; failures
 | `GITHUB_AUTH_UNAVAILABLE` | PR lookup could not use GitHub authentication | Follow the [GitHub authentication contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#test-a-pull-request) |
 | `DISK_BUDGET_EXCEEDED`     | Under 1 GiB free for the run storage root or the app, or under about 10 GiB for a clean iOS build | Free space on the volume `failure.detail` names, then re-run                                |
 
+## Development overlays before step 1
+
+QaReN distinguishes an unreadable dev-overlay snapshot from visible development-menu
+chrome. It retries uncertain reads within the remaining startup budget and admits
+the walk only after complete native evidence shows the app in front.
+
+These refusals use outer code `CORE_REFUSED`; `failure.detail` names the inner code.
+Follow `failure.next_action` after any required cleanup:
+
+| Inner code suffix | What happened | What to do |
+| --- | --- | --- |
+| `DEV_MENU_HIDE_UNVERIFIED_READ_FAILED` | Reads failed, remained incomplete, or could not identify the app before the deadline | Re-run once without `--fresh-install` or `--restart-device`; if build work is active, wait for it to finish first |
+| `DEV_MENU_HIDE_UNVERIFIED_NOT_HIDDEN` | Complete native evidence still showed development-menu chrome | Re-run once without `--fresh-install`; if it persists, report the value-free refusal |
+| `DEV_MENU_HIDE_UNVERIFIED_EVALUATE_TIMEOUT` | The dev-menu preference call timed out | Re-run once without `--fresh-install` or `--restart-device`; if build work is active, wait for it to finish first |
+| `DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED` | The preference call or its hidden-state readback failed | Re-run once without `--fresh-install`; if it persists, report the value-free refusal |
+
+A fresh install may show the development-build dev menu on first launch; QaReN
+disables it at launch on supported versions and still verifies clearance.
+Unknown reads alone do not justify restarting the app or device, rebuilding, or
+resetting app data. Stop and report the refusal if the single re-run also refuses.
+
 ## Devices
 
 For `FRESH_INSTALL_ADMISSION_UNKNOWN` or a strict-admission `DEVICE_BUSY`, read the

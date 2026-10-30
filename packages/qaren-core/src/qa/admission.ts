@@ -470,7 +470,7 @@ export function launchBundleRequests(
 
 // The dev client opens this run's own Metro, never a server its launcher remembers.
 export const devClientLaunchUrl = (target: { metroUrlForDevice: string }): string =>
-  `${target.metroUrlForDevice}/?disableOnboarding=1`;
+  `${target.metroUrlForDevice}/?disableOnboarding=1&__expo_disable_onboarding=1&__expo_disable_fab=1&__expo_disable_auto_launch=1`;
 
 // The dev client waits this long for each manifest answer, then stays on its launcher without requesting a bundle.
 export const DEV_CLIENT_REQUEST_TIMEOUT_MS = 10_000;
