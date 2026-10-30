@@ -1208,14 +1208,7 @@ fn script_preflight_to_pnpm(
 
 #[test]
 fn incompatible_pnpm_refuses_before_claim_install_or_metro_launch() {
-    for output in [
-        CmdOutput::failed(1, ""),
-        CmdOutput::success("unproven\n"),
-        CmdOutput {
-            timed_out: true,
-            ..Default::default()
-        },
-    ] {
+    for output in [CmdOutput::failed(1, ""), CmdOutput::success("unproven\n")] {
         let (repo, app) = app_repo();
         let mut mock = MockRunner::new();
         script_preflight_to_pnpm(
@@ -1237,6 +1230,129 @@ fn incompatible_pnpm_refuses_before_claim_install_or_metro_launch() {
         assert!(!repo.join(".locks").exists());
         assert!(!mock.calls.iter().any(|spec| spec.label == "pnpm-install"));
     }
+}
+
+fn probe_timed_out() -> CmdOutput {
+    CmdOutput {
+        timed_out: true,
+        duration_ms: 30_000,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn busy_host_probe_timeout_refuses_with_its_own_code() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    mock.advance_on = Some(("QAREN_PNPM_LAUNCH_GROUP".into(), 30_000));
+    script_preflight_to_pnpm(
+        &mut mock,
+        &repo,
+        "simctl list devices booted",
+        &booted_json(),
+        UNTRACKED_PLAN,
+        probe_timed_out(),
+    );
+    mock.expect_run("QAREN_PNPM_LAUNCH_GROUP", probe_timed_out());
+    mock.expect_run("QAREN_PNPM_LAUNCH_GROUP", probe_timed_out());
+    let receipt = run(&mut mock, &request(&repo, &app, 30));
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert!(FailureCode::PnpmProbeTimedOut.is_refusal());
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(
+        serde_json::to_value(failure.code).unwrap(),
+        "PNPM_PROBE_TIMED_OUT"
+    );
+    assert!(failure.detail.contains("3 attempt"), "{}", failure.detail);
+    assert!(failure.next_action.contains("less loaded"));
+    assert!(!failure.next_action.contains("pnpm version"));
+    let probe_bounds: Vec<u64> = mock
+        .calls
+        .iter()
+        .filter(|spec| spec.label == "pnpm-group-probe")
+        .map(|spec| spec.timeout_seconds)
+        .collect();
+    assert_eq!(probe_bounds, [30, 60, 120]);
+    assert_eq!(mock.remaining(), 0);
+    assert!(!repo.join(".locks").exists());
+    assert!(!mock.calls.iter().any(|spec| spec.label == "pnpm-install"));
+}
+
+#[test]
+fn probe_timeout_once_then_proved_continues_and_records_the_retry() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight_to_pnpm(
+        &mut mock,
+        &repo,
+        "simctl list devices booted",
+        &booted_json(),
+        UNTRACKED_PLAN,
+        probe_timed_out(),
+    );
+    mock.expect_run(
+        "QAREN_PNPM_LAUNCH_GROUP",
+        CmdOutput::success(qaren::adapters::pnpm::GROUP_OK),
+    );
+    mock.expect_run("df", df_ok());
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n")); // self lstart
+    mock.expect_run("ps", CmdOutput::success("qaren check\n")); // self command
+    mock.expect_run("lsof", free_port());
+    script_provision(&mut mock);
+    script_drift_status(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+    script_core_identity(&mut mock);
+    script_teardown(&mut mock);
+
+    let receipt = run(&mut mock, &request(&repo, &app, 30));
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Pass,
+        "failure: {:?}",
+        receipt.failure
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert!(receipt.outcomes["pnpm-group-probe_attempt_1"].starts_with("timed out after 30000ms"));
+    assert_eq!(
+        receipt.outcomes["pnpm-group-probe_attempt_2"],
+        "process group proved; timeout_seconds=60"
+    );
+    assert_eq!(receipt.timings_ms["pnpm-group-probe_attempt_1"], 30_000);
+}
+
+#[test]
+fn probe_budget_exhaustion_stops_before_the_last_attempt() {
+    let (repo, app) = app_repo();
+    let config = app.join(".qaren").join("config.yaml");
+    let mut yaml = std::fs::read_to_string(&config).unwrap();
+    yaml.push_str("deadlines:\n  install_deps_seconds: 60\n");
+    std::fs::write(&config, yaml).unwrap();
+    let mut mock = MockRunner::new();
+    mock.advance_on = Some(("QAREN_PNPM_LAUNCH_GROUP".into(), 30_000));
+    script_preflight_to_pnpm(
+        &mut mock,
+        &repo,
+        "simctl list devices booted",
+        &booted_json(),
+        UNTRACKED_PLAN,
+        probe_timed_out(),
+    );
+    mock.expect_run("QAREN_PNPM_LAUNCH_GROUP", probe_timed_out());
+    let receipt = run(&mut mock, &request(&repo, &app, 30));
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::PnpmProbeTimedOut);
+    assert!(failure.detail.contains("2 attempt"), "{}", failure.detail);
+    let probe_bounds: Vec<u64> = mock
+        .calls
+        .iter()
+        .filter(|spec| spec.label == "pnpm-group-probe")
+        .map(|spec| spec.timeout_seconds)
+        .collect();
+    assert_eq!(probe_bounds, [30, 29]);
+    assert_eq!(mock.remaining(), 0);
 }
 
 #[test]
@@ -2051,6 +2167,7 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
     assert_eq!(receipt.cleanup["simulator"], "kept");
     assert_eq!(receipt.cleanup["device_lease"], "removed");
     assert_eq!(receipt.outcomes["candidate_drift"], "none");
+    assert!(!receipt.outcomes.contains_key("pnpm-group-probe_attempt_1"));
 
     let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
     assert!(report.starts_with("# QaReN check: PASS"));

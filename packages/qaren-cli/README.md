@@ -39,7 +39,7 @@ that can conflict with a session or is hygiene; `SKIP` is not applicable.
 |---|---|
 | `xcode`, `ios-runtime` | `xcodebuild -version`; an available iOS simulator runtime, and the configured `ios.runtime` by name or identifier |
 | `node`, `pnpm` | `QAREN_NODE` or `node` on `PATH` is 24 or newer; a configured `nodePath` is only checked to be an executable file, never run; `pnpm` runs |
-| `pnpm-source` | The first executable `pnpm` on `PATH` and its resolved source; an offline exec probe in the app root must prove process-group preservation to pass, otherwise the row warns with the fix for `PNPM_PROCESS_GROUP_UNSUPPORTED` |
+| `pnpm-source` | The first executable `pnpm` on `PATH` and its resolved source; an offline exec probe in the app root must prove process-group preservation to pass, otherwise the row warns with the fix for `PNPM_PROCESS_GROUP_UNSUPPORTED`; a probe that times out warns as `PNPM_PROBE_TIMED_OUT` with a re-run step instead of version advice |
 | `corepack`, `cocoapods` | `corepack` and `pod` run (warnings) |
 | `disk` | The volumes holding the current directory and your home have the roughly 10 GiB free a clean iOS build needs (warning) |
 | `host-memory`, `host-devices` | Free memory, memory pressure, booted simulators and running Android emulators; conservative concurrent lane headroom on macOS and Linux |
@@ -73,13 +73,29 @@ pnpm that Corepack enabled but has not yet downloaded fails until you run
 `(cd / && pnpm --version)` once with network access; the fix line says so.
 
 Before claiming resources, `qaren check` runs a finite `pnpm exec` probe in the
-app directory. If the launcher changes the process group or the probe cannot
-prove group preservation, check refuses with `PNPM_PROCESS_GROUP_UNSUPPORTED`
-(exit 4). Select a compatible pnpm version whose `exec` preserves process groups
-(the Corepack pnpm 11.5.2 JavaScript launcher is supported). For a bootstrap shim,
-put the matching installed executable ahead of the shim on that command's `PATH`.
-Selecting the native executable alone does not fix a pnpm version whose own
-`exec` changes groups. Metro still must belong to the exact group QaReN started.
+app directory. A completed probe that fails to prove group preservation refuses
+with `PNPM_PROCESS_GROUP_UNSUPPORTED` (exit 4). Select a compatible pnpm version
+whose `exec` preserves process groups (the Corepack pnpm 11.5.2 JavaScript launcher
+is supported). For a bootstrap shim, put the matching installed executable ahead
+of the shim on that command's `PATH`. Selecting the native executable alone does
+not fix a pnpm version whose own `exec` changes groups.
+
+Timeouts do not establish incompatibility. The probe's retries are bounded by
+`deadlines.install_deps_seconds`
+(a separate clock from the dependency install, which keeps its full allowance):
+a timed-out probe is retried up to three times in total with a doubled nominal
+bound (30, 60, 120 s, each floored to the whole seconds remaining) and a short
+pause, and a retry is only admitted while at least a second remains; command
+cleanup can add a few seconds beyond that. A probe that still times out refuses
+with `PNPM_PROBE_TIMED_OUT` (exit 4); it proves nothing about the launcher, and a
+busy host is the likely cause, so re-run when the machine is less loaded or run
+`qaren doctor`. A run that continues after more than one attempt records each as
+`outcomes.pnpm-group-probe_attempt_<n>` and `timings_ms.pnpm-group-probe_attempt_<n>`;
+the refusal lists the attempts in `failure.detail`. Doctor makes one offline
+attempt with a 30 s bound and no retries; a timeout warns in `pnpm-source` with
+the measured duration and `PNPM_PROBE_TIMED_OUT`, without recommending a different
+pnpm version. Host load alone never refuses `check`. Metro still must belong to
+the exact group QaReN started.
 
 ### Host budget
 
