@@ -549,6 +549,7 @@ fn the_ios_build_lock_reclaims_a_recordless_dead_holder_only_after_its_recorded_
             &root,
             "native-build-ios",
             &sample_holder("new-build"),
+            None,
         );
         assert_eq!(mock.remaining(), 0, "{case}");
         let held = buildplan::read_holder(&root.join("native-build-ios")).unwrap();

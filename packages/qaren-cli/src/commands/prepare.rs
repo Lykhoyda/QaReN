@@ -2295,7 +2295,7 @@ fn claim_ios_build_lock(
     ctx: &mut Ctx,
     lock_root: &Path,
     name: &str,
-    holder: LockHolder,
+    mut holder: LockHolder,
 ) -> Result<(), Failure> {
     if holder.identity.is_none() {
         return Err(Failure::new(
@@ -2333,8 +2333,14 @@ fn claim_ios_build_lock(
             wait.finish(ctx, start, StageState::Failed);
             return Err(wait.refusal(name, ctx.record.scenario.deadlines.build_seconds));
         }
-        let (outcome, orphan) =
-            crate::lease::claim_reclaiming_build_orphan(ctx.runner, lock_root, name, &holder);
+        holder.at = timefmt::iso8601_utc(ctx.runner.now_epoch_ms());
+        let (outcome, orphan) = crate::lease::claim_reclaiming_build_orphan(
+            ctx.runner,
+            lock_root,
+            name,
+            &holder,
+            Some(deadline),
+        );
         match outcome {
             LockOutcome::Claimed { .. } => {
                 if let Some(run_id) = orphan {
@@ -2389,7 +2395,9 @@ impl LockWait {
     ) {
         let token = existing.map(|held| held.holder.clone());
         let transition = self.waiting && token != self.holder_token;
-        let facts = existing.map(|held| crate::lease::holder_facts(ctx.runner, held, liveness));
+        let facts = existing.map(|held| {
+            crate::lease::holder_facts_until(ctx.runner, held, liveness, ctx.build_deadline_ms)
+        });
         let alive = facts.and_then(|f| f.alive);
         let build_process = facts.and_then(|f| f.build_process);
         let now = ctx.runner.monotonic_ms();
@@ -2521,6 +2529,10 @@ fn release_ios_build_lock(ctx: &mut Ctx) -> Result<(), Failure> {
         return Ok(());
     };
     if !ctx.record.resources.can_release_build_ownership() {
+        ctx.notes.push((
+            "build_lock_release".into(),
+            "retained: the build group is not proven gone".into(),
+        ));
         return Err(unresolved(ctx, "the build group is not proven gone"));
     }
     match buildplan::release_lock(&lock.lock_dir, &lock.holder, &ctx.record.run_id) {
@@ -2529,11 +2541,24 @@ fn release_ios_build_lock(ctx: &mut Ctx) -> Result<(), Failure> {
         | buildplan::ReleaseOutcome::Foreign(_) => {
             ctx.record.resources.build_lock = None;
             ctx.build_deadline_ms = None;
-            ctx.save()
-                .map_err(|f| f.with_recovery(RecoveryReason::PersistenceFailed))
+            if let Err(f) = ctx.save() {
+                ctx.record.resources.build_lock = Some(lock);
+                ctx.notes.push((
+                    "build_lock_release".into(),
+                    "retained: lock release could not be persisted".into(),
+                ));
+                return Err(f.with_recovery(RecoveryReason::PersistenceFailed));
+            }
+            Ok(())
         }
         buildplan::ReleaseOutcome::Refused(reason)
-        | buildplan::ReleaseOutcome::Unresolved(reason) => Err(unresolved(ctx, &reason)),
+        | buildplan::ReleaseOutcome::Unresolved(reason) => {
+            ctx.notes.push((
+                "build_lock_release".into(),
+                "retained: lock release was refused or unresolved".into(),
+            ));
+            Err(unresolved(ctx, &reason))
+        }
     }
 }
 
@@ -3669,6 +3694,9 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
                 }
             })
     };
+    if ios {
+        ensure_build_budget(ctx)?;
+    }
     let sha256 = match copied {
         Ok(hash) => hash,
         Err(reason) => {
@@ -3730,6 +3758,9 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
             .push(("artifact_cache".into(), format!("skipped: {e}")));
         return Ok(());
     }
+    if ios {
+        ensure_build_budget(ctx)?;
+    }
     if let Err(e) = buildplan::save_json(&path, &state) {
         if !ios {
             let _ = std::fs::remove_dir_all(&dest_dir);
@@ -3764,13 +3795,19 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
         built_at,
         candidate_sha: ctx.record.candidate.git_sha.clone(),
     };
+    if ios {
+        ensure_build_budget(ctx)?;
+    }
     let mut publication_failed = false;
+    let deadline = ctx.build_deadline_ms;
+    let runner: &dyn Runner = &*ctx.runner;
+    let in_budget = || deadline.is_none_or(|deadline| runner.monotonic_ms() < deadline);
     let published = match (ios, fp.complete) {
         (false, _) => {
             "cached the built dev client for fingerprint-matched reuse in this worktree".to_string()
         }
         (true, false) => "kept this run's copy; an incomplete fingerprint is never published for reuse".to_string(),
-        (true, true) => match buildplan::publish_store_record(private_entry.as_ref().expect("private iOS entry"), &record) {
+        (true, true) => match buildplan::publish_store_record_within(private_entry.as_ref().expect("private iOS entry"), &record, &in_budget) {
             Ok(true) => format!(
                 "published the built dev client to the machine store at {}",
                 bucket.display()
@@ -4174,33 +4211,36 @@ fn run_finite_build(ctx: &mut Ctx, spec: &CmdSpec) -> Result<(), Failure> {
     Ok(())
 }
 
-// The iOS native-build lock covers only the build, its verification, the pre-publication drift
-// checks and cache publication; Metro, install, launch and readiness run after its release.
 pub(crate) fn build_ios_locked(
     ctx: &mut Ctx,
     plan: &BuildPlan,
     lock_root: &Path,
 ) -> Result<BuildPlan, Failure> {
     claim_build_lock(ctx, lock_root)?;
-    if plan.decision == BuildDecision::Clean {
-        crate::events::stage("prebuild", StageState::Running, None, None);
-        run_clean_preparation(ctx, plan)?;
-        crate::events::stage("prebuild", StageState::Passed, None, None);
-    } else {
-        crate::events::stage("prebuild", StageState::Skipped, None, None);
-    }
-    crate::events::stage("native_build", StageState::Running, None, None);
-    build_ios(ctx)?;
-    crate::events::stage("native_build", StageState::Passed, None, None);
-    ensure_build_budget(ctx)?;
-    if ctx.verb == "prepare" {
+    let result = (|| {
+        ensure_build_budget(ctx)?;
+        if plan.decision == BuildDecision::Clean {
+            crate::events::stage("prebuild", StageState::Running, None, None);
+            run_clean_preparation(ctx, plan)?;
+            crate::events::stage("prebuild", StageState::Passed, None, None);
+        } else {
+            crate::events::stage("prebuild", StageState::Skipped, None, None);
+        }
+        ensure_build_budget(ctx)?;
+        crate::events::stage("native_build", StageState::Running, None, None);
+        build_ios(ctx)?;
+        crate::events::stage("native_build", StageState::Passed, None, None);
+        ensure_build_budget(ctx)?;
         recheck_candidate(ctx)?;
-    }
-    let fp = recheck_fingerprint(ctx, plan)?;
-    ensure_build_budget(ctx)?;
-    record_build_result(ctx, &fp)?;
-    release_ios_build_lock(ctx)?;
-    // Publication may have replaced the artifact with its cached copy and retired ios-build.
+        let fp = recheck_fingerprint(ctx, plan)?;
+        ensure_build_budget(ctx)?;
+        record_build_result(ctx, &fp)?;
+        // Publication refuses to commit after expiry; spending the budget inside it still fails the build.
+        ensure_build_budget(ctx)
+    })();
+    let released = release_ios_build_lock(ctx);
+    result?;
+    released?;
     Ok(ctx.record.build.clone().expect("build planned"))
 }
 
@@ -4220,6 +4260,7 @@ fn build_ios(ctx: &mut Ctx) -> Result<(), Failure> {
         ctx.record.scenario.build.ios_workspace.as_ref(),
     );
     run_finite_build(ctx, &build)?;
+    ensure_build_budget(ctx)?;
     if ctx.record.scenario.build.ios_workspace.is_some() {
         let built =
             ios::built_app(&ios::workspace_products(&output)).map_err(|e| build_failure(ctx, e))?;
@@ -4244,6 +4285,7 @@ fn build_ios(ctx: &mut Ctx) -> Result<(), Failure> {
             .expect("scheme validated"),
     )
     .map_err(|e| build_failure(ctx, e))?;
+    ensure_build_budget(ctx)?;
     ctx.record.build.as_mut().expect("build planned").artifact = Some(artifact);
     ctx.save()
 }

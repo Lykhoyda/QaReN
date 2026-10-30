@@ -822,13 +822,41 @@ pub fn probe_pid_identity(runner: &mut dyn Runner, recorded: &PidIdentity) -> Pi
     probe_pid_birth(runner, recorded).0
 }
 
+pub(crate) fn probe_pid_identity_until(
+    runner: &mut dyn Runner,
+    recorded: &PidIdentity,
+    deadline_ms: Option<u64>,
+) -> PidLiveness {
+    probe_pid_birth_until(runner, recorded, deadline_ms).0
+}
+
+pub(crate) fn probe_seconds_left(runner: &dyn Runner, deadline_ms: Option<u64>) -> Option<u64> {
+    let seconds = deadline_ms
+        .map_or(10, |deadline| {
+            deadline.saturating_sub(runner.monotonic_ms()) / 1000
+        })
+        .min(10);
+    (seconds > 0).then_some(seconds)
+}
+
 // Also reports whether the recorded birth still holds the pid, alive or as an unreaped zombie, so it cannot be reused.
 pub fn probe_pid_birth(runner: &mut dyn Runner, recorded: &PidIdentity) -> (PidLiveness, bool) {
+    probe_pid_birth_until(runner, recorded, None)
+}
+
+fn probe_pid_birth_until(
+    runner: &mut dyn Runner,
+    recorded: &PidIdentity,
+    deadline_ms: Option<u64>,
+) -> (PidLiveness, bool) {
+    let Some(seconds) = probe_seconds_left(runner, deadline_ms) else {
+        return (PidLiveness::Unknown, false);
+    };
     let started = runner.run(&CmdSpec::new(
         "ps-lstart",
         "ps",
         &["-p", &recorded.pid.to_string(), "-o", "lstart="],
-        10,
+        seconds,
     ));
     if started.timed_out || started.exit_code.is_none() || !started.stderr.trim().is_empty() {
         return (PidLiveness::Unknown, false);
@@ -843,11 +871,14 @@ pub fn probe_pid_birth(runner: &mut dyn Runner, recorded: &PidIdentity) -> (PidL
     }
     // A zombie keeps its lstart but is dead: unreaped child of a live
     // parent (e.g. a build that exited while prepare still polls it).
+    let Some(seconds) = probe_seconds_left(runner, deadline_ms) else {
+        return (PidLiveness::Unknown, false);
+    };
     let stat = runner.run(&CmdSpec::new(
         "ps-stat",
         "ps",
         &["-p", &recorded.pid.to_string(), "-o", "stat="],
-        10,
+        seconds,
     ));
     if !stat.ok() {
         return (PidLiveness::Unknown, false);

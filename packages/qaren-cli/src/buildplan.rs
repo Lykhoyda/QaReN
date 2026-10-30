@@ -1,6 +1,6 @@
 use crate::exec::Runner;
 use crate::redact::OutputText;
-use crate::runrecord::{probe_pid_identity, PidIdentity, PidLiveness};
+use crate::runrecord::{PidIdentity, PidLiveness};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -570,11 +570,25 @@ pub fn publish_store_record(
     entry: &NativeStoreEntry,
     record: &StoreRecord,
 ) -> Result<bool, String> {
+    publish_store_record_within(entry, record, &|| true)
+}
+
+pub const BUILD_BUDGET_SPENT: &str = "the build budget was exhausted before publication";
+
+// `in_budget` is checked before validating an existing entry and again before the record is committed.
+pub fn publish_store_record_within(
+    entry: &NativeStoreEntry,
+    record: &StoreRecord,
+    in_budget: &dyn Fn() -> bool,
+) -> Result<bool, String> {
     resolve_native_cache_root(Some(record.artifact.path.as_os_str()), unsafe {
         libc::geteuid()
     })?;
     store_mutation_allowed()?;
     entry.recheck()?;
+    if !in_budget() {
+        return Err(BUILD_BUDGET_SPENT.into());
+    }
     if let Some(existing) = load_store_record(entry)? {
         entry.check_artifact(&existing.artifact)?;
         return Ok(false);
@@ -609,6 +623,9 @@ pub fn publish_store_record(
     let result = (|| {
         file.write_all(&body).map_err(|_| ENTRY_UNSAFE)?;
         let from = store_name(&tmp)?;
+        if !in_budget() {
+            return Err(BUILD_BUDGET_SPENT.into());
+        }
         let linked = unsafe {
             libc::linkat(
                 entry.dir.file.as_raw_fd(),
