@@ -79,9 +79,9 @@ The fields you read most:
 | `failure.code`         | The typed failure or refusal code                                          |
 | `failure.detail`       | What happened                                                              |
 | `next_action`          | What to do next                                                            |
-| `failure.screen`       | For a target-class step failure: the last observed screen's controls (role, testID, masked label, enabled, hittable, primary mark for the first enabled, hittable, on-screen button in screen order whose masked label, trimmed and case-insensitive, is Continue, Next, Done, Submit, Confirm, OK or Save), its age and whether an action ran after it |
-| `failure.suggestion`   | One plan edit for that failure; it is also `next_action`                   |
-| `failure.repeat`       | An earlier run that failed the same line the same way on the same plan and recorded revision |
+| `failure.screen`       | Last-observed controls for a target-class failure; see the [screen evidence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence) for states, primary selection, bounds, privacy and age |
+| `failure.suggestion`   | Suggested plan edit; see the [screen evidence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence) for its relationship to `next_action` |
+| `failure.repeat`       | Earlier matching failure; matching and notice rules follow the [screen evidence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence) |
 | `artifacts.report`     | The path of `report.md`                                                    |
 | `ledger`               | The verdict, the walk path, step and Jev counts, recoveries                |
 | `ledger.blocks`        | Counts of `replayed`, `patched` and `discovered` blocks reached by the run |
