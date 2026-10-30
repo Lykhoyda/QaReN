@@ -462,6 +462,8 @@ test('a first visibility check whose evidence refresh runs out of time ends as a
   };
   const r = await runPlan(parsePlan('1. Wait for the save control').blocks!, f.deps);
   assert.equal(r.verdict, 'FAIL');
+  assert.match(r.failure?.seen ?? '', /VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED/);
+  assert.equal(f.deps.now(), 65_000);
   assert.ok(captures >= 2, 'the refresh capture ran');
   assert.deepEqual(f.actions, []);
 });
