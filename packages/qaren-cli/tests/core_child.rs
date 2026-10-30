@@ -308,6 +308,7 @@ fn fresh_admission_reprobe_shares_the_original_allowance_and_rejects_late_result
             assert!(failure.detail.contains("deadline_exceeded=true"));
             if allowance == 0 || allowance == 600 {
                 assert!(failure.detail.contains("probe_status=not_run"));
+                assert!(failure.detail.contains("timed_out=false"));
                 assert!(!failure.detail.contains("invalid_response"));
             }
             admission_failure_summary(&failure)

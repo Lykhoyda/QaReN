@@ -2383,7 +2383,8 @@ that completed, even if a later gate refuses. Refusals carry the same summary in
 `initialReason`, `terminalReason`, `attempts`, `elapsedMs` and `deadlineExceeded`.
 Elapsed time includes child completion/reaping, which may outlast the admission
 allowance; `deadlineExceeded` prevents acceptance of that result. The final
-scan owns the terminal reason, including `DEVICE_BUSY` if it proves a driver.
+scan owns the terminal reason, including `DEVICE_BUSY` if it proves a driver
+within the allowance.
 
 When the strict admission probe refuses with `FRESH_INSTALL_ADMISSION_UNKNOWN`
 or `DEVICE_BUSY`, it includes `probe_status`, `probe_evidence`, `exit_code`,

@@ -913,10 +913,7 @@ pub fn fresh_install_admission(
         }
         let dispatched = !summary.deadline_exceeded;
         let output = if !dispatched {
-            CmdOutput {
-                timed_out: true,
-                ..Default::default()
-            }
+            CmdOutput::default()
         } else {
             summary.attempts += 1;
             DeadlineRunner {
