@@ -358,6 +358,8 @@ pub struct Resources {
     pub recorder: Option<RecorderResource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runner_host: Option<RunnerHostResource>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub runner_host_absent: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runner_drivers: Vec<RunnerDriverResource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -897,8 +899,6 @@ fn probe_pid_birth_until(
 pub struct RunnerDriverCleanup {
     pub details: RunnerDriverDetails,
     pub retired: Vec<bool>,
-    #[serde(default)]
-    pub host_absent: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

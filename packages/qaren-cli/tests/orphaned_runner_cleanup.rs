@@ -555,7 +555,7 @@ fn host_absence_storage_failure_retains_the_device_and_lease() {
         assert!(record.resources.lease.unwrap().lock_dir.exists());
         assert!(!RunRecord::load(&root, "orphan-run")
             .unwrap()
-            .resources.runner_driver_cleanup.unwrap().host_absent);
+            .resources.runner_host_absent);
         std::fs::remove_dir(fake.storage_block()).unwrap();
     }
 }
@@ -646,6 +646,25 @@ fn final_save_retry_leaves_a_subsequent_lease_holder_untouched() {
     assert_eq!(retry.result, ReceiptResult::Cleaned);
     assert_eq!(std::fs::read(next_lease.lock_dir.join("holder.json")).unwrap(), before);
     assert_eq!(fake.signals, ["-INT", "-TERM", "-KILL"]);
+}
+
+#[test]
+fn missing_lease_without_host_checkpoint_refuses_even_when_phase_is_cleaned() {
+    let (root, mut record, mut fake) = fixture("QarenIosRunner");
+    record.resources.runner_drivers.clear();
+    let lease = record.resources.lease.take().unwrap();
+    record.resources.runner_host = Some(qaren::runrecord::RunnerHostResource {
+        udid: DEVICE.into(),
+        bundle_ids: vec!["dev.lykhoyda.rndevagent.fastrunner".into()],
+    });
+    record.phase = Phase::Cleaned;
+    record.save(&root).unwrap();
+    let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert!(receipt.cleanup["runner_host"].contains("lease proof is missing"));
+    assert!(lease.lock_dir.exists());
+    assert!(fake.mock.calls.is_empty());
+    assert!(!RunRecord::load(&root, "orphan-run").unwrap().resources.runner_host_absent);
 }
 
 #[test]

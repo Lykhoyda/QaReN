@@ -388,33 +388,8 @@ pub fn cleanup_with_policy(
         }
     }
 
-    if let Some(outcome) = cleanup_runner_host(runner, &record) {
+    if let Some(outcome) = cleanup_runner_host(runner, &mut record, runs_root) {
         outcomes.push(("runner_host".to_string(), outcome));
-    }
-    if record.resources.runner_driver_cleanup.is_some()
-        && outcomes
-            .iter()
-            .any(|(leg, outcome)| leg == "runner_host" && outcome.clean())
-    {
-        record
-            .resources
-            .runner_driver_cleanup
-            .as_mut()
-            .unwrap()
-            .host_absent = true;
-        if record.save(runs_root).is_err() {
-            record
-                .resources
-                .runner_driver_cleanup
-                .as_mut()
-                .unwrap()
-                .host_absent = false;
-            mark_runner_reason(&mut record, crate::failure::RecoveryReason::StorageFailed);
-            outcomes.push((
-                "runner_host".to_string(),
-                Outcome::Unresolved("runner host absence could not be persisted".into()),
-            ));
-        }
     }
 
     let owner_alive = !guarded_simulator
@@ -1505,12 +1480,12 @@ fn cleanup_runner_drivers_with_policy(
             .collect();
         (details, retired) = merged.into_iter().unzip();
     }
+    record.resources.runner_host_absent = false;
     let previous_drivers = std::mem::replace(&mut record.resources.runner_drivers, kept);
     let aggregate = aggregate_driver_details(details);
     record.resources.runner_driver_cleanup = Some(RunnerDriverCleanup {
         details: aggregate,
         retired,
-        host_absent: false,
     });
     if record.save(runs_root).is_err() {
         record.resources.runner_drivers = previous_drivers;
@@ -1637,7 +1612,11 @@ pub(crate) fn cleanup_ios_automation_group(
     runner::outcome(&runner::graceful(runner, identity, pgid))
 }
 
-pub(crate) fn cleanup_runner_host(runner: &mut dyn Runner, record: &RunRecord) -> Option<Outcome> {
+pub(crate) fn cleanup_runner_host(
+    runner: &mut dyn Runner,
+    record: &mut RunRecord,
+    runs_root: &Path,
+) -> Option<Outcome> {
     let mut cleanup_runner = crate::exec::CleanupRunner(runner);
     let runner: &mut dyn Runner = &mut cleanup_runner;
     let sim = record.resources.ios_simulator.as_ref()?;
@@ -1649,38 +1628,31 @@ pub(crate) fn cleanup_runner_host(runner: &mut dyn Runner, record: &RunRecord) -
     {
         return None;
     }
+    let completed = record.resources.runner_host_absent
+        && record.resources.runner_drivers.is_empty()
+        && runner::core_quiescent(record)
+        && record.resources.runner_driver_cleanup.as_ref().is_none_or(|e| {
+            e.retired.len() == e.details.drivers.len() && e.retired.iter().all(|retired| *retired)
+        });
     let Some(lease) = record.resources.lease.as_ref() else {
-        if record.phase == Phase::Cleaned
-            && record.resources.core.is_none()
-            && record.resources.runner_drivers.is_empty()
-        {
-            return None;
-        }
-        return Some(Outcome::Refused(
-            "runner host lease proof is missing; left untouched".into(),
-        ));
+        return if completed {
+            None
+        } else {
+            Some(Outcome::Refused(
+                "runner host lease proof is missing; left untouched".into(),
+            ))
+        };
     };
     let held = crate::buildplan::read_holder(&lease.lock_dir)
         .is_some_and(|h| h.holder == lease.holder && h.run_id == record.run_id);
     if !held {
-        if record.resources.runner_drivers.is_empty()
-            && runner::core_quiescent(record)
-            && record
-                .resources
-                .runner_driver_cleanup
-                .as_ref()
-                .is_some_and(|e| {
-                    e.host_absent
-                        && !e.retired.is_empty()
-                        && e.retired.len() == e.details.drivers.len()
-                        && e.retired.iter().all(|retired| *retired)
-                })
-        {
-            return None;
-        }
-        return Some(Outcome::Refused(
-            "runner host lease proof does not match; left untouched".into(),
-        ));
+        return if completed {
+            None
+        } else {
+            Some(Outcome::Refused(
+                "runner host lease proof does not match; left untouched".into(),
+            ))
+        };
     }
     if record.resources.core.is_some()
         || record
@@ -1704,10 +1676,19 @@ pub(crate) fn cleanup_runner_host(runner: &mut dyn Runner, record: &RunRecord) -
             "runner driver quiescence is unproven; runner host left untouched".into(),
         ));
     }
-    Some(match record.resources.runner_host.as_ref() {
+    let outcome = match record.resources.runner_host.as_ref() {
         Some(host) if host.udid == sim.udid => cleanup_owned_runner_host(runner, host),
         _ => cleanup_scoped_runner_hosts(runner, &sim.udid),
-    })
+    };
+    record.resources.runner_host_absent = outcome.clean();
+    if outcome.clean() && record.save(runs_root).is_err() {
+        record.resources.runner_host_absent = false;
+        mark_runner_reason(record, crate::failure::RecoveryReason::StorageFailed);
+        return Some(Outcome::Unresolved(
+            "runner host absence could not be persisted".into(),
+        ));
+    }
+    Some(outcome)
 }
 
 // Releases what a run put on a borrowed emulator: its Metro reverse and the core's runner.
