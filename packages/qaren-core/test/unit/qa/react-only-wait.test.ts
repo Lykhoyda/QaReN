@@ -168,8 +168,7 @@ async function wait(forms: Form[], plan = '1. Wait for "name-field" to appear', 
 
 const enrichments = (r: { presence: boolean[] }) => r.presence.filter(Boolean).length;
 
-const seen = (r: Pick<Awaited<ReturnType<typeof wait>>, 'result'>) =>
-  r.result.failure?.seen ?? '';
+const seen = (r: Pick<Awaited<ReturnType<typeof wait>>, 'result'>) => r.result.failure?.seen ?? '';
 
 test('a field past the window but inside a taller scroll view is not inside its viewport', async () => {
   // The window clips the 1000-point scroll view at 864; the field starts at 944.
@@ -438,7 +437,10 @@ test("recovery after a React-only refusal captures inside the wait's deadline", 
   };
   const r = await runPlan(parsePlan('1. Wait for "name-field" to appear').blocks!, f.deps);
   assert.match(r.failure?.seen ?? '', /^TARGET_REACT_ONLY: "name-field" is mounted in React /);
-  assert.deepEqual(presence, [WAIT_BUDGET_MS - 2 * WAIT_POLL_MS, WAIT_BUDGET_MS - 2 * WAIT_POLL_MS]);
+  assert.deepEqual(presence, [
+    WAIT_BUDGET_MS - 2 * WAIT_POLL_MS,
+    WAIT_BUDGET_MS - 2 * WAIT_POLL_MS,
+  ]);
   assert.equal(f.deps.now(), WAIT_BUDGET_MS);
   assert.deepEqual(f.actions, []);
 });
