@@ -3805,9 +3805,11 @@ fingerprint checks pass and cache publication is persisted, before
 launch and readiness run afterwards, and the final drift checks still run
 after readiness. A contended iOS claim waits, polling every second, within the
 same build budget (`deadlines.build_seconds`) that the prebuild, build,
-verification and publication then share; each subprocess gets only the time
-left. A synchronous cache copy already in progress is not interrupted; its
-completion is checked against the window before publication. Output retirement
+verification and publication then share; see the
+[deadline contract](../../apps/docs-site/src/content/docs/configuration.mdx#deadlines)
+for subprocess caps and the teardown exception. A synchronous cache copy already
+in progress is not interrupted; its completion is checked against the window
+before publication. Output retirement
 and readiness run outside this window. Running that budget out while waiting is a refusal (`BUILD_CONTENDED`,
 exit 4) whose next action names the holder run, whether it is alive, whether
 its recorded build group still runs, and how long this run waited, for example
