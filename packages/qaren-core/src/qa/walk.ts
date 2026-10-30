@@ -1025,12 +1025,16 @@ async function mainRequest(
   if (process.env.QAREN_DEVICE_LEASE !== request.lease) {
     return refuse('LEASE_MISMATCH', 'QAREN_DEVICE_LEASE does not match the request lease');
   }
-  const blocks = readPreparedPlan(request.plan, request.prepared);
+  let blocks = readPreparedPlan(request.plan, request.prepared);
   if (!blocks)
     return refuse(
       'PLAN_UNPARSEABLE',
       'the prepared plan is missing, invalid or does not match the preflight bytes',
     );
+
+  if (request.cleanupOnly) {
+    blocks = request.prepared?.cleanup ?? [];
+  }
 
   for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, () => halt(signal));
   watchParent(
@@ -1091,12 +1095,13 @@ async function mainRequest(
         blocks,
         opened.deps,
         request.preflightCalls,
-        {
+        request.cleanupOnly ? undefined : {
           appRoot: request.appRoot,
           platform: request.platform,
           appId: request.appId,
         },
         planTitle(request.plan),
+        request.cleanupOnly === true,
       ),
     );
     return finish(

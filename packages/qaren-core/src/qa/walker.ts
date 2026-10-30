@@ -3285,7 +3285,11 @@ export async function runPlan(
   preflightCalls: readonly JevCall[] = [],
   store?: BlockStore,
   title?: string,
+  bestEffort = false,
 ): Promise<WalkResult> {
+  if (bestEffort) {
+    blocks = blocks.flatMap((block) => block.items.map((item) => ({ ...block, items: [item] })));
+  }
   return measureTiming(deps.timing, deps.now, 'walk', async () => {
     const walking = withRowTiming(deps);
     const results: BlockResult[] = [];
@@ -3514,6 +3518,7 @@ export async function runPlan(
       }
       return result;
     };
+    let firstFailure: WalkOutcome | undefined;
     for (const block of blocks) {
       const stored = store && storedFor(block, store);
       if (store && stored) {
@@ -3553,7 +3558,9 @@ export async function runPlan(
       steps.push(...outcome.rows);
       if (outcome.failure) {
         results.push(outcome.block);
-        return finish(outcome);
+        if (!bestEffort) return finish(outcome);
+        firstFailure ??= outcome;
+        continue;
       }
       results.push(
         store
@@ -3561,7 +3568,7 @@ export async function runPlan(
           : outcome.block,
       );
     }
-    return finish();
+    return finish(firstFailure);
   });
 }
 

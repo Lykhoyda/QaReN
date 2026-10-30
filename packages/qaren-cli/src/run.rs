@@ -228,10 +228,10 @@ fn run_scoped(runner: &mut dyn Runner, req: &RunRequest) -> Receipt {
         receipt.commands_executed = runner.commands_executed();
     }
     receipt.preflight_jev = preflight_jev;
-    receipt.cleanup.insert(
-        "plan".to_string(),
-        "not_run: plan cleanup is not supported".to_string(),
-    );
+    receipt
+        .cleanup
+        .entry("plan".to_string())
+        .or_insert_with(|| "not_run: run admission did not complete".to_string());
     receipt
 }
 
@@ -558,6 +558,7 @@ fn run_inner(
             "check the run directory permissions",
         )
     })?;
+    let app_root = app_root_for(&req.config_path, &project_root)?;
     preflight_disk(runner, &req.runs_root, &project_root)?;
 
     if run_claim.is_none() {
@@ -653,6 +654,49 @@ fn run_inner(
     }
     run_claim.as_mut().unwrap().record_owned = true;
     *unowned_worktree = None;
+    let core_request = CoreRequest {
+        cleanup_only: false,
+        run_id: run_id.clone(),
+        t0: runner.now_epoch_ms(),
+        walk_budget_ms: req.budgets.walk_seconds.saturating_mul(1000),
+        attach_budget_ms: record
+            .scenario
+            .deadlines
+            .attach_seconds
+            .saturating_mul(1000),
+        plan: plan.clone(),
+        prepared: prepared.clone(),
+        preflight_calls: preflight_jev
+            .as_ref()
+            .map(|j| j.call_details.clone())
+            .unwrap_or_default(),
+        platform: platform_str(req.platform).to_string(),
+        app_id: config.app_id.clone(),
+        app_root: app_root.clone(),
+        run_dir: run_dir.clone(),
+        lease: lease.wire(),
+        login_block: config.login_block.clone(),
+        video_policy: config.video,
+        login_marker: config.login_marker.clone(),
+        target: CoreTarget {
+            device_id: device.id.clone(),
+            device_name: device.name.clone(),
+            metro_port: config.metro_port,
+            metro_url_for_device: format!("http://127.0.0.1:{}", config.metro_port),
+            worktree: project_root.clone(),
+            metro_bundle_requests: None,
+            manifest_warm: None,
+            warm_lane: false,
+        },
+    };
+    let spec = core::spawn_spec(
+        &node,
+        &req.runtime_dir,
+        &project_root,
+        &lease.wire(),
+        config.metro_port,
+        android_env.as_ref(),
+    );
     let ctx = Ctx {
         runner,
         runs_root: req.runs_root.clone(),
@@ -673,8 +717,21 @@ fn run_inner(
     };
     // Returning a receipt prevents ? from escaping this resource-owning scope.
     let held = move |mut ctx: Ctx<'_>| -> Receipt {
-        let finish_failed = |ctx: Ctx, failure: Failure| {
-            finish_failed(ctx, &node, &req.runtime_dir, failure, false)
+        let cleanup_plan = |ctx: &mut Ctx| {
+            run_plan_cleanup(
+                ctx,
+                &spec,
+                &core_request,
+                &resolved_inputs,
+                login_snapshot.as_ref(),
+                req.budgets,
+            )
+        };
+        let finish_failed = |mut ctx: Ctx, failure: Failure| {
+            let plan_outcome = cleanup_plan(&mut ctx);
+            let mut receipt = finish_failed(ctx, &node, &req.runtime_dir, failure, false);
+            receipt.cleanup.insert("plan".to_string(), plan_outcome);
+            receipt
         };
         if probe.attempts.len() > 1 {
             for (i, attempt) in probe.attempts.iter().enumerate() {
@@ -916,11 +973,6 @@ fn run_inner(
         if let Err(f) = ctx.save() {
             return finish_failed(ctx, f);
         }
-        // In `qaren pr` the app root is the PR worktree's, so blocks replay and save there.
-        let app_root = match app_root_for(&req.config_path, &project_root) {
-            Ok(root) => root,
-            Err(f) => return finish_failed(ctx, f),
-        };
         let status_before = worktree_status(ctx.runner, &app_root);
         if let Err(f) = ensure_running(ctx.runner, "walk") {
             return finish_failed(ctx, f);
@@ -978,55 +1030,17 @@ fn run_inner(
         if let Err(f) = ensure_running(ctx.runner, "walk") {
             return finish_failed(ctx, f);
         }
-        let core_request = CoreRequest {
-            run_id: run_id.clone(),
-            t0: ctx.runner.now_epoch_ms(),
-            walk_budget_ms: req.budgets.walk_seconds.saturating_mul(1000),
-            attach_budget_ms: ctx
-                .record
-                .scenario
-                .deadlines
-                .attach_seconds
-                .saturating_mul(1000),
-            plan: plan.clone(),
-            prepared,
-            preflight_calls: preflight_jev
-                .as_ref()
-                .map(|j| j.call_details.clone())
-                .unwrap_or_default(),
-            platform: platform_str(req.platform).to_string(),
-            app_id: config.app_id.clone(),
-            app_root: app_root.clone(),
-            run_dir: run_dir.clone(),
-            lease: lease.wire(),
-            login_block: config.login_block.clone(),
-            video_policy: config.video,
-            login_marker: config.login_marker.clone(),
-            target: CoreTarget {
-                device_id: device.id.clone(),
-                device_name: device.name.clone(),
-                metro_port: config.metro_port,
-                metro_url_for_device: format!("http://127.0.0.1:{}", config.metro_port),
-                worktree: project_root.clone(),
-                metro_bundle_requests: ctx
-                    .bundle_requests_at_launch
-                    .zip(ctx.record.resources.metro.as_ref())
-                    .map(|(at_launch, metro)| core::MetroBundleRequests {
-                        path: crate::exec::log::bundle_requests_path(&metro.log),
-                        at_launch,
-                    }),
-                manifest_warm: ctx.manifest_warm.clone(),
-                warm_lane: ctx.record.resources.lane.is_some(),
-            },
-        };
-        let spec = core::spawn_spec(
-            &node,
-            &req.runtime_dir,
-            &project_root,
-            &lease.wire(),
-            config.metro_port,
-            android_env.as_ref(),
-        );
+        let mut walk_request = core_request.clone();
+        walk_request.t0 = ctx.runner.now_epoch_ms();
+        walk_request.target.metro_bundle_requests = ctx
+            .bundle_requests_at_launch
+            .zip(ctx.record.resources.metro.as_ref())
+            .map(|(at_launch, metro)| core::MetroBundleRequests {
+                path: crate::exec::log::bundle_requests_path(&metro.log),
+                at_launch,
+            });
+        walk_request.target.manifest_warm = ctx.manifest_warm.clone();
+        walk_request.target.warm_lane = ctx.record.resources.lane.is_some();
         // Ownership needs proven absence first: a host already up on this simulator is never the run's.
         let presence = (req.platform == Platform::Ios)
             .then(|| ios::probe_runner_hosts(ctx.runner, &device.id));
@@ -1044,14 +1058,14 @@ fn run_inner(
             }
         });
         let core_log = run_dir.join("logs").join("core.log");
-        events::core_t0(core_request.t0);
+        events::core_t0(walk_request.t0);
         events::stage("attach", StageState::Running, None, None);
         let runner_started_at = ctx.runner.now_epoch_ms();
         let core_child = match core::spawn_private(
             ctx.runner,
             &spec,
             &core_log,
-            &core_request,
+            &walk_request,
             (resolved_inputs.has_inputs() || login_snapshot.is_some()).then_some(&resolved_inputs),
             login_snapshot.as_ref(),
         ) {
@@ -1238,6 +1252,7 @@ fn run_inner(
             .as_ref()
             .filter(|_| !ctx.record.resources.runner_drivers.is_empty())
             .map(|sim| sim.udid.clone());
+        let plan_outcome = cleanup_plan(&mut ctx);
         let (mut cleanup, all_clean, ownership_proven) = teardown(
             &mut ctx,
             &node,
@@ -1245,6 +1260,7 @@ fn run_inner(
             outcome.group_survived,
             false,
         );
+        cleanup.push(("plan".to_string(), plan_outcome));
         cleanup.splice(..0, early_cleanup);
         let t = ctx.mark("teardown", t);
         if let Some(udid) = runner_simulator {
@@ -1917,6 +1933,86 @@ pub fn runner_driver(
         pgid: pid,
         identity,
     })
+}
+
+fn run_plan_cleanup(
+    ctx: &mut Ctx,
+    spec: &CmdSpec,
+    request: &CoreRequest,
+    inputs: &crate::redact::ResolvedInputs<'_>,
+    login_snapshot: Option<&Value>,
+    budgets: Budgets,
+) -> String {
+    if request
+        .prepared
+        .get("cleanup")
+        .and_then(Value::as_array)
+        .is_none_or(|blocks| blocks.is_empty())
+    {
+        return "not_run: no Cleanup actions supplied".to_string();
+    }
+    if let Some(outcome) = cleanup_core(ctx.runner, &mut ctx.record, &ctx.runs_root, false) {
+        if !outcome.clean() {
+            return "not_run: core quiescence unproven".to_string();
+        }
+    }
+    let mut request = request.clone();
+    request.cleanup_only = true;
+    request.t0 = ctx.runner.now_epoch_ms();
+    request.walk_budget_ms = budgets.walk_seconds.min(60).saturating_mul(1000);
+    request.attach_budget_ms = request.attach_budget_ms.min(request.walk_budget_ms);
+    let mut runner = crate::exec::CleanupRunner(ctx.runner);
+    if request.platform == "ios" && ctx.record.resources.runner_host.is_none() {
+        if ios::probe_runner_hosts(&mut runner, &request.target.device_id)
+            == ios::RunnerHostPresence::Absent
+        {
+            ctx.record.resources.runner_host = Some(crate::runrecord::RunnerHostResource {
+                udid: request.target.device_id.clone(),
+                bundle_ids: vec![
+                    ios::RUNNER_HOST_BUNDLE_ID.to_string(),
+                    ios::RUNNER_TEST_HOST_BUNDLE_ID.to_string(),
+                ],
+            });
+        }
+    }
+    let child = match core::spawn_private(
+        &mut runner,
+        spec,
+        &request.run_dir.join("logs/plan-cleanup.log"),
+        &request,
+        Some(inputs),
+        login_snapshot,
+    ) {
+        Ok(child) => child,
+        Err(_) => return "failed: cleanup child could not start".to_string(),
+    };
+    ctx.record.resources.core = Some(crate::runrecord::CoreResource {
+        pgid: child.pid,
+        identity: capture_pid_identity(&mut runner, child.pid),
+    });
+    if ctx.record.save(&ctx.runs_root).is_err() {
+        core::abort(child);
+        return "failed: cleanup ownership could not be saved".to_string();
+    }
+    let outcome = core::wait(
+        &mut runner,
+        child,
+        Budgets {
+            walk_seconds: budgets.walk_seconds.min(60),
+            step_seconds: budgets.step_seconds.min(30),
+        },
+        &mut |runner, pid| {
+            if let Some(driver) = runner_driver(runner, pid, &request.target.device_id) {
+                ctx.record.resources.runner_drivers.push(driver);
+                let _ = ctx.record.save(&ctx.runs_root);
+            }
+        },
+    );
+    match outcome.verdict {
+        Verdict::Pass => "passed".to_string(),
+        Verdict::Fail => "failed: cleanup actions did not complete".to_string(),
+        Verdict::Refused { code, .. } => format!("refused: {code}"),
+    }
 }
 
 fn finish_failed(
