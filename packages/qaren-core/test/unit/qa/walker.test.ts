@@ -1365,14 +1365,3 @@ for (const retrySucceeds of [false, true]) {
     );
   });
 }
-
-test('cleanup continues after a failed action and retains the failure', async () => {
-  const f = fake([screen(['Home'])], { back: { ok: true, proven: true } });
-  const cleanup = block('### Cleanup\nstarts on: "missing-id"\n1. Go back');
-  const result = await runPlan([cleanup], f.deps, [], undefined, undefined, true);
-  assert.equal(result.verdict, 'REFUSED');
-  assert.ok(f.calls.includes('back'));
-  assert.equal(result.blocks.length, 2);
-  assert.equal(result.blocks[0].outcome, 'fail');
-  assert.equal(result.blocks[1].outcome, 'pass');
-});

@@ -101,8 +101,8 @@ export function planDiagnostics(refused: RefusedLine[]): PlanDiagnostic[] {
 }
 
 export type ParsedPlan =
-  | { blocks: Block[]; cleanup?: Block[]; refused?: undefined }
-  | { blocks?: undefined; cleanup?: undefined; refused: RefusedLine[] };
+  | { blocks: Block[]; refused?: undefined }
+  | { blocks?: undefined; refused: RefusedLine[] };
 
 const QUOTED = /"([^"]+)"|“([^”]+)”/;
 
@@ -387,34 +387,36 @@ function scanPlan(
   inventory = false,
 ): ParsedPlan {
   const visible = visibleLines(markdown.split(/\r?\n/));
-  const hasQa = visible.some((text) => /^##\s+QA\s*$/i.test(text));
-  let section: 'qa' | 'cleanup' | undefined = hasQa ? undefined : 'qa';
+  let start = 0;
+  let end = visible.length;
+  const qa = visible.findIndex((text) => /^##\s+QA\s*$/i.test(text));
+  if (qa >= 0) {
+    start = qa + 1;
+    const next = visible.findIndex((text, i) => i >= start && isSectionHeading(text));
+    end = next >= 0 ? next : visible.length;
+  }
   const title = titleOf(visible) ?? 'plan';
 
   const blocks: Block[] = [];
-  const cleanup: Block[] = [];
   const refused: RefusedLine[] = [];
   let current: Block | null = null;
   let declaredAt: number | null = null;
   const fullSlugs = new Set<string>();
-  const cleanupSlugs = new Set<string>();
   const open = (heading: string, line: number, text: string): Block => {
-    const destination = section === 'cleanup' ? cleanup : blocks;
-    const slugs = section === 'cleanup' ? cleanupSlugs : fullSlugs;
     const fullSlug = normalizedSlug(heading);
     const slug = inventory ? fullSlug : slugify(heading);
-    if (slugs.has(fullSlug)) {
+    if (fullSlugs.has(fullSlug)) {
       refused.push({ line, text, reason: `another block is already named "${slug}"` });
-    } else if (destination.some((b) => b.slug === slug)) {
+    } else if (blocks.some((b) => b.slug === slug)) {
       refused.push({
         line,
         text,
         reason: `distinct block titles produce the same action ID "${slug}"`,
       });
     }
-    slugs.add(fullSlug);
+    fullSlugs.add(fullSlug);
     current = { slug, title: heading, items: [], planHash: '' };
-    destination.push(current);
+    blocks.push(current);
     return current;
   };
   const closeDeclared = (): void => {
@@ -431,23 +433,10 @@ function scanPlan(
       });
     }
   };
-  for (let i = 0; i < visible.length; i += 1) {
+  for (let i = start; i < end; i += 1) {
     const line = i + 1;
     const text = visible[i];
     if (!text) continue;
-    if (isSectionHeading(text)) {
-      if (!hasQa && section === 'qa' && !/^##\s+Cleanup\s*$/i.test(text)) continue;
-      closeDeclared();
-      current = null;
-      declaredAt = null;
-      section = /^##\s+Cleanup\s*$/i.test(text)
-        ? 'cleanup'
-        : /^##\s+QA\s*$/i.test(text)
-          ? 'qa'
-          : undefined;
-      continue;
-    }
-    if (!section) continue;
     const heading = HEADING.exec(text);
     if (heading) {
       closeDeclared();
@@ -461,7 +450,7 @@ function scanPlan(
     if (text.startsWith('#')) continue;
     const startsOn = STARTS_ON.exec(text);
     if (startsOn) {
-      const block = current ?? open(section === 'cleanup' ? 'Cleanup' : title, line, text);
+      const block = current ?? open(title, line, text);
       if (block.items.some((item) => item.kind !== 'wait' || !item.precondition)) {
         refused.push({ line, text, reason: "starts on must come before the block's steps" });
         continue;
@@ -484,7 +473,7 @@ function scanPlan(
       refused.push({ line, text, reason: 'not a numbered step or a ✓ line' });
       continue;
     }
-    const block = current ?? open(section === 'cleanup' ? 'Cleanup' : title, line, text);
+    const block = current ?? open(title, line, text);
     if (check) {
       const match = /^(?:"([^"]+)"|“([^”]+)”)$/.exec(check[1].trim());
       const quoted = match ? (match[1] ?? match[2]) : undefined;
@@ -516,10 +505,9 @@ function scanPlan(
     }
   }
   closeDeclared();
-  const allBlocks = [...blocks, ...cleanup];
-  encountered?.push(...allBlocks.flatMap((block) => block.items));
+  encountered?.push(...blocks.flatMap((block) => block.items));
   const declarations = new Map<string, string | undefined>();
-  for (const item of allBlocks.flatMap((b) => b.items)) {
+  for (const item of blocks.flatMap((b) => b.items)) {
     if (item.kind !== 'fill' || item.input === undefined) continue;
     if (declarations.has(item.input) && declarations.get(item.input) !== item.sensitivity)
       refused.push({
@@ -530,9 +518,9 @@ function scanPlan(
     declarations.set(item.input, item.sensitivity);
   }
   const slots = new Set(
-    allBlocks.flatMap((b) => b.items.flatMap((i) => (i.kind === 'fill' && i.input ? [i.input] : []))),
+    blocks.flatMap((b) => b.items.flatMap((i) => (i.kind === 'fill' && i.input ? [i.input] : []))),
   );
-  for (const item of allBlocks.flatMap((b) => b.items))
+  for (const item of blocks.flatMap((b) => b.items))
     if (item.kind === 'echo' && !slots.has(item.input))
       refused.push({
         line: item.line,
@@ -545,12 +533,12 @@ function scanPlan(
         ? refused
         : projectRefusals(
             refused,
-            allBlocks.flatMap((block) =>
+            blocks.flatMap((block) =>
               block.items.flatMap((item) =>
                 item.kind === 'fill' && item.text !== undefined ? [item.text] : [],
               ),
             ),
-            allBlocks.map((block) => block.title),
+            blocks.map((block) => block.title),
           ),
     };
   const filled = blocks.filter((b) =>
@@ -565,10 +553,9 @@ function scanPlan(
         .filter(([, sensitivity]) => sensitivity === 'non-secret')
         .map(([name]) => name)
         .sort();
-    for (const block of [...filled, ...cleanup])
-      block.planHash = planHash(block.items, nonSecretInputs);
+    for (const block of filled) block.planHash = planHash(block.items, nonSecretInputs);
   }
-  return { blocks: filled, ...(cleanup.length ? { cleanup } : {}) };
+  return { blocks: filled };
 }
 
 const VERBS = {
@@ -716,32 +703,22 @@ export function maskQuotedValues(text: string): string {
 export interface PreparedPlan {
   hash: string;
   blocks: Block[];
-  cleanup?: Block[];
 }
 
-export function preparePlan(
-  markdown: string,
-  blocks: Block[],
-  cleanup: Block[] = [],
-): PreparedPlan {
+export function preparePlan(markdown: string, blocks: Block[]): PreparedPlan {
   assertInputHashSafe(markdown);
-  return {
-    hash: createHash('sha256').update(markdown).digest('hex'),
-    blocks,
-    ...(cleanup.length ? { cleanup } : {}),
-  };
+  return { hash: createHash('sha256').update(markdown).digest('hex'), blocks };
 }
 
 export function readPreparedPlan(markdown: string, value: unknown): Block[] | undefined {
   if (
     !isRecord(value) ||
     value.hash !== preparePlan(markdown, []).hash ||
-    !Array.isArray(value.blocks) ||
-    (value.cleanup !== undefined && !Array.isArray(value.cleanup))
+    !Array.isArray(value.blocks)
   )
     return undefined;
   const resolved = new Map<number, Step | Check>();
-  for (const block of [...value.blocks, ...(value.cleanup ?? [])]) {
+  for (const block of value.blocks) {
     if (!isRecord(block) || !Array.isArray(block.items)) return undefined;
     for (const item of block.items) {
       if (
@@ -760,9 +737,7 @@ export function readPreparedPlan(markdown: string, value: unknown): Block[] | un
     }
   }
   const parsed = scanPlan(markdown, resolved);
-  return parsed.blocks &&
-    isDeepStrictEqual(JSON.parse(JSON.stringify(parsed.blocks)), value.blocks) &&
-    isDeepStrictEqual(JSON.parse(JSON.stringify(parsed.cleanup ?? [])), value.cleanup ?? [])
+  return parsed.blocks && isDeepStrictEqual(JSON.parse(JSON.stringify(parsed.blocks)), value.blocks)
     ? parsed.blocks
     : undefined;
 }

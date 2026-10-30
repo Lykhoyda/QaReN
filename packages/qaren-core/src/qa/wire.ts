@@ -53,7 +53,6 @@ export interface WireRequest {
   walkBudgetMs: number;
   attachBudgetMs: number;
   plan: string;
-  cleanupOnly?: true;
   prepared?: PreparedPlan;
   preflightCalls?: JevCall[];
   platform: 'ios' | 'android';
@@ -203,7 +202,6 @@ export function parsePublicRequest(line: string): WireRequest {
   const target = p?.target as Partial<WireTarget> | undefined;
   const bad =
     !p ||
-    (p.cleanupOnly !== undefined && p.cleanupOnly !== true) ||
     typeof p.runId !== 'string' ||
     !p.runId ||
     !Number.isSafeInteger(p.t0) ||
@@ -257,7 +255,6 @@ export function parsePublicRequest(line: string): WireRequest {
     'walkBudgetMs',
     'attachBudgetMs',
     'plan',
-    'cleanupOnly',
     'prepared',
     'preflightCalls',
     'platform',

@@ -36,7 +36,7 @@ export async function preflightPlan(markdown: string, judge: Judge): Promise<Pre
     if (parsed.refused) return unparseable(parsed.refused, judge);
     return {
       ok: true,
-      prepared: preparePlan(markdown, parsed.blocks, parsed.cleanup),
+      prepared: preparePlan(markdown, parsed.blocks),
       jev: summarizeJev(judge.calls),
       jevRequired: false,
     };
@@ -50,7 +50,7 @@ export async function preflightPlan(markdown: string, judge: Judge): Promise<Pre
     if (parsed.refused) return unparseable(parsed.refused, judge);
     return {
       ok: true,
-      prepared: preparePlan(markdown, parsed.blocks, parsed.cleanup),
+      prepared: preparePlan(markdown, parsed.blocks),
       jev: summarizeJev(judge.calls),
       jevRequired: true,
     };

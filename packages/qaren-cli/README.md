@@ -1996,15 +1996,10 @@ Once the run record is saved, `check` and `pr` attempt ownership-gated resource
 teardown before returning a receipt, including after preparation failures, core
 refusals and failed or timed-out walks. The receipt's `cleanup` map reports
 resource outcomes; unresolved ownership can retain resources and the device
-lease for `qaren cleanup <run-id>`. Before infrastructure teardown, an admitted
-run attempts the plan's `## Cleanup` actions in a separate screen session, even
-after a preparation failure, walk refusal or cancellation. Cleanup continues
-best effort after an action fails, with a maximum 60-second walk budget and
-30-second inactivity budget. It does not save cleanup actions for replay.
-The receipt's `cleanup.plan` reports `passed`, `failed: ...`, `refused: ...`, or
-`not_run: ...` (no actions, incomplete admission, or unproven core quiescence).
-Cleanup preserves the original check result and holds the device lease until
-resource teardown completes.
+lease for `qaren cleanup <run-id>`. This is infrastructure teardown: it does not
+execute remaining plan steps to delete app or staging-account data created by
+the walk. Bounded plan cleanup and its receipt outcome remain deferred to Part B
+for 2.0.5.
 
 Signals or a vanished caller stop the run with `RUN_CANCELLED`. The CLI checks
 cancellation before forward operations, including Git probes, recorder start,

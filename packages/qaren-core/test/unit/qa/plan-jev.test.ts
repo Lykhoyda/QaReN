@@ -438,65 +438,14 @@ test('parser and preflight withhold private heading slugs while preserving opera
   assert.equal(ordinary.refused?.[0].reason, 'another block is already named "account"');
 });
 
-test('preflight retains Cleanup actions separately and verifies the prepared handoff', async () => {
-  const markdown = [
-    '# Disposable record',
-    '## QA',
-    '1. Tap "Create record"',
-    '## Cleanup',
-    '### Delete the record',
-    '1. Tap "Delete record"',
-    '✓ "Record deleted"',
-    '## Notes',
-    'This is not executable.',
-  ].join('\n');
+test('Part A preflight prepares only QA actions and defers Cleanup', async () => {
+  const markdown = '## QA\n1. Tap "Create"\n## Cleanup\n1. Visit the delete control';
   const result = await preflightPlan(markdown, throwingJudge());
   assert.ok(result.ok);
   assert.equal(result.jevRequired, false);
-  const { prepared } = result;
-  assert.deepEqual(prepared.blocks.flatMap((b) => b.items.map((i) => i.raw)), [
-    '1. Tap "Create record"',
+  assert.deepEqual(Object.keys(result.prepared).sort(), ['blocks', 'hash']);
+  assert.deepEqual(result.prepared.blocks.flatMap((block) => block.items.map((item) => item.raw)), [
+    '1. Tap "Create"',
   ]);
-  assert.deepEqual(prepared.cleanup?.[0].items.map((i) => [i.line, i.raw]), [
-    [6, '1. Tap "Delete record"'],
-    [7, '✓ "Record deleted"'],
-  ]);
-  assert.match(prepared.cleanup![0].planHash, /^[a-f0-9]{64}$/);
-  const wire = JSON.parse(JSON.stringify(prepared));
-  assert.deepEqual(readPreparedPlan(markdown, wire), prepared.blocks);
-  delete wire.cleanup;
-  assert.equal(readPreparedPlan(markdown, wire), undefined);
-  const altered = structuredClone(prepared);
-  altered.cleanup![0].items[0].kind = 'back';
-  assert.equal(readPreparedPlan(markdown, altered), undefined);
-});
-
-test('Cleanup actions use Jev fallback and preserve its result in the prepared handoff', async () => {
-  const markdown = '## QA\n1. Tap "Create"\n## Cleanup\n1. Visit the delete control';
-  const judge = scriptedJudge((questions) =>
-    Object.fromEntries(Object.entries(questions).map(([id, q]) => [
-      id,
-      id === 'preflight' ? { type: 'noul', noul: 0.99 } : choice(q, 'press'),
-    ])),
-  );
-  const result = await preflightPlan(markdown, judge);
-  assert.ok(result.ok);
-  assert.equal(result.jevRequired, true);
-  assert.deepEqual(result.prepared.cleanup?.[0].items[0], {
-    kind: 'press',
-    target: { phrase: 'Visit the delete control' },
-    line: 4,
-    raw: '1. Visit the delete control',
-    source: 'jev',
-  });
   assert.deepEqual(readPreparedPlan(markdown, result.prepared), result.prepared.blocks);
-});
-
-test('malformed Cleanup actions refuse preflight rather than silently disappearing', async () => {
-  const result = await preflightPlan(
-    '## QA\n1. Tap "Create"\n## Cleanup\n1. Fill "Name" with input invalid-name',
-    throwingJudge(),
-  );
-  assert.ok(!result.ok && result.code === 'PLAN_UNPARSEABLE');
-  assert.equal(result.refused?.[0].line, 4);
 });

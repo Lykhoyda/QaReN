@@ -27,8 +27,6 @@ pub struct CoreRequest {
     pub walk_budget_ms: u64,
     pub attach_budget_ms: u64,
     pub plan: String,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub cleanup_only: bool,
     pub prepared: Value,
     pub preflight_calls: Vec<JevCall>,
     pub platform: String,

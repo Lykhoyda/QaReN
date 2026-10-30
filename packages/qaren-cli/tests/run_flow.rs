@@ -33,16 +33,9 @@ fn script_plan_requiring(
     mock.environment
         .insert("TYPESAFE_API_KEY".into(), TEST_KEY.into());
     let plan = std::fs::read(repo.join("test-app/plan.md")).unwrap();
-    let mut output = serde_json::json!({"ok":true,"prepared":{
+    let output = serde_json::json!({"ok":true,"prepared":{
         "hash":qaren::candidate::sha256_hex(&plan),"blocks":[]
     },"jev":probe_json()});
-    if String::from_utf8_lossy(&plan).contains("## Cleanup") {
-        output["prepared"]["cleanup"] = serde_json::json!([{
-            "slug":"cleanup", "title":"Cleanup", "planHash":"fixture", "items":[{
-                "kind":"back", "line":5, "raw":"1. Go back", "source":"grammar"
-            }]
-        }]);
-    }
     let config = std::fs::read_to_string(repo.join("test-app/.qaren/config.yaml")).unwrap();
     let login = config
         .lines()
@@ -2099,106 +2092,6 @@ fn simultaneous_checks_on_distinct_devices_do_not_collide_at_the_same_millisecon
         std::fs::read_to_string(occupied_file).unwrap(),
         "foreign occupant"
     );
-}
-
-#[test]
-fn a_dependency_failure_attempts_plan_cleanup_before_releasing_the_lease() {
-    for (cancelled, cleanup_passes) in [(false, true), (false, false), (true, true)] {
-        let (repo, app) = app_repo();
-        std::fs::write(
-            app.join("plan.md"),
-            "## QA\n1. Go back\n\n## Cleanup\n1. Go back\n",
-        ).unwrap();
-        let mut mock = MockRunner::new();
-        script_preflight(&mut mock, &repo);
-        mock.expect_run(
-            "pnpm install --frozen-lockfile",
-            CmdOutput::failed(1, "fixture stop"),
-        );
-
-        if cancelled {
-            mock.cancel_after = Some((
-                "pnpm install --frozen-lockfile".to_string(),
-                "fixture cancellation".to_string(),
-            ));
-        }
-        script_host_probe(&mut mock, UDID, hosts_absent());
-        let stdout = if cleanup_passes {
-            pass_stdout()
-        } else {
-            format!("{}\n", envelope(2, "result", &format!(
-                r#"{{"verdict":"REFUSED","code":"CORE_REFUSED","message":"fixture cleanup refusal","lease":{}}}"#,
-                serde_json::to_string("fixture-lease").unwrap()
-            )))
-        };
-        mock.expect_spawn_piped(
-            "walk.js", 9000, &stdout, Some(if cleanup_passes { 0 } else { 4 }),
-        );
-        script_core_identity(&mut mock);
-        mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
-        script_host_probe(&mut mock, UDID, hosts_absent());
-        let receipt = run(&mut mock, &request(&repo, &app, 30));
-
-        assert_eq!(
-            receipt.failure.as_ref().unwrap().code,
-            if cancelled {
-                FailureCode::RunCancelled
-            } else {
-                FailureCode::DepsInstallFailed
-            }
-        );
-        assert_eq!(receipt.cleanup["device_lease"], "removed");
-        let json: serde_json::Value = serde_json::from_str(&receipt.to_json()).unwrap();
-        assert_eq!(
-            json["cleanup"]["plan"],
-            if cleanup_passes { "passed" } else { "refused: CORE_REFUSED" },
-        );
-        let sent: serde_json::Value = serde_json::from_str(&mock.piped_stdin_text(0)).unwrap();
-        assert_eq!(sent["payload"]["cleanupOnly"], true);
-        assert_eq!(
-            sent["payload"]["prepared"]["cleanup"][0]["items"][0]["kind"],
-            "back",
-        );
-        assert_eq!(mock.remaining(), 0);
-    }
-}
-
-#[test]
-fn a_completed_walk_attempts_plan_cleanup_before_resource_teardown() {
-    let (repo, app) = app_repo();
-    std::fs::write(
-        app.join("plan.md"),
-        "## QA\n1. Go back\n\n## Cleanup\n1. Go back\n",
-    ).unwrap();
-    let mut mock = MockRunner::new();
-    script_preflight(&mut mock, &repo);
-    script_provision(&mut mock);
-    script_drift_status(&mut mock);
-    script_host_probe(&mut mock, UDID, hosts_absent());
-    mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
-    script_core_identity(&mut mock);
-    script_drift_status(&mut mock);
-    script_final_verification(&mut mock);
-    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n6000 6000 S\n"));
-    mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
-    script_core_identity(&mut mock);
-    script_teardown_resources(
-        &mut mock,
-        CmdOutput::success("1 1 S\n6000 6000 S\n"),
-        false,
-        UDID,
-        Some(hosts_absent()),
-    );
-
-    let receipt = run(&mut mock, &request(&repo, &app, 30));
-
-    assert_eq!(receipt.result, ReceiptResult::Pass);
-    assert_eq!(receipt.cleanup["plan"], "passed");
-    assert_eq!(receipt.cleanup["device_lease"], "removed");
-    assert_eq!(mock.remaining(), 0);
-    let sent: serde_json::Value =
-        serde_json::from_str(&mock.piped_stdin_text(mock.piped_stdin.len() - 1)).unwrap();
-    assert_eq!(sent["payload"]["cleanupOnly"], true);
 }
 
 #[test]
@@ -9955,5 +9848,44 @@ fn video_declaration_reaches_the_child_and_durable_run_outputs() {
             }
             assert_eq!(mock.remaining(), 0);
         }
+    }
+}
+
+#[test]
+fn part_a_dependency_failure_only_tears_down_infrastructure() {
+    for cancelled in [false, true] {
+        let (repo, app) = app_repo();
+        std::fs::write(
+            app.join("plan.md"),
+            "## QA\n1. Go back\n\n## Cleanup\n1. Go back\n",
+        )
+        .unwrap();
+        let mut mock = MockRunner::new();
+        script_preflight(&mut mock, &repo);
+        mock.expect_run(
+            "pnpm install --frozen-lockfile",
+            CmdOutput::failed(1, "fixture stop"),
+        );
+        if cancelled {
+            mock.cancel_after = Some((
+                "pnpm install --frozen-lockfile".to_string(),
+                "fixture cancellation".to_string(),
+            ));
+        }
+
+        let receipt = run(&mut mock, &request(&repo, &app, 30));
+
+        assert_eq!(
+            receipt.failure.as_ref().unwrap().code,
+            if cancelled {
+                FailureCode::RunCancelled
+            } else {
+                FailureCode::DepsInstallFailed
+            }
+        );
+        assert_eq!(receipt.cleanup["device_lease"], "removed");
+        assert!(!receipt.cleanup.contains_key("plan"));
+        assert!(mock.piped_stdin.is_empty());
+        assert_eq!(mock.remaining(), 0);
     }
 }
