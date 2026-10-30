@@ -177,6 +177,7 @@ pub fn base_record(
         scenario,
         scenario_path: repo_root.join("scenario.yaml"),
         scenario_sha256: "0".repeat(64),
+        plan_sha256: None,
         candidate: Candidate {
             repo_root: repo_root.to_path_buf(),
             project_root: repo_root.join("test-app"),

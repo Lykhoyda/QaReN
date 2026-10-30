@@ -11,13 +11,14 @@ use crate::config::CheckConfig;
 use crate::core::{self, Budgets, CoreRequest, CoreTarget, Verdict};
 use crate::events::{self, StageState};
 use crate::exec::{CmdSpec, Runner};
-use crate::failure::{Failure, FailureCode};
+use crate::failure::{Failure, FailureCode, Repeat};
 use crate::github::{self, PrInfo};
 use crate::lease;
 use crate::publish::PrRunRecord;
 use crate::receipt::{Receipt, ReceiptResult};
 use crate::recipes;
 use crate::record::{self, VideoStatus};
+use crate::redact::OutputText;
 use crate::report::{self, ReportInput};
 use crate::runrecord::{
     capture_pid_identity, BorrowedEmulatorResource, FinalVerification, IosSimResource, Phase,
@@ -633,6 +634,7 @@ fn run_inner(
         scenario,
         scenario_path: req.config_path.clone(),
         scenario_sha256: sha256_hex(config_raw.as_bytes()),
+        plan_sha256: Some(sha256_hex(plan.as_bytes())),
         candidate: cand,
         phase: Phase::Created,
         substage: None,
@@ -1280,33 +1282,39 @@ fn run_inner(
         let (mut result, mut failure) = match &outcome.verdict {
             Verdict::Pass => (ReceiptResult::Pass, None),
             Verdict::Fail => {
-                let failure = outcome.failure.clone().unwrap_or_else(|| {
-                    let (step, seen) = outcome
-                        .ledger
-                        .failure
-                        .as_ref()
-                        .map(|f| (f.step, f.seen.clone()))
-                        .unwrap_or((0, "the plan did not pass".to_string()));
-                    Failure::new(
-                        "walk",
-                        FailureCode::PlanStepFailed,
-                        format!("line {step}: {seen}"),
-                        "read the report, fix the app or the plan, then re-run",
-                    )
-                });
-                (ReceiptResult::Fail, Some(failure))
+                let failure = outcome
+                    .failure
+                    .clone()
+                    .unwrap_or_else(|| plan_step_failure(outcome.ledger.failure.as_ref()));
+                (
+                    ReceiptResult::Fail,
+                    Some(walk_failure(
+                        failure,
+                        outcome.ledger.failure.as_ref(),
+                        &ctx.runs_root,
+                        &ctx.record,
+                    )),
+                )
             }
-            Verdict::Refused { code, message } => (
-                ReceiptResult::Refused,
-                Some(outcome.failure.clone().unwrap_or_else(|| {
+            Verdict::Refused { code, message } => {
+                let failure = outcome.failure.clone().unwrap_or_else(|| {
                     Failure::new(
                         "prove",
                         refusal_code(code),
                         format!("{code}: {message}"),
                         "resolve the refusal, then re-run",
                     )
-                })),
-            ),
+                });
+                (
+                    ReceiptResult::Refused,
+                    Some(walk_failure(
+                        failure,
+                        outcome.ledger.failure.as_ref(),
+                        &ctx.runs_root,
+                        &ctx.record,
+                    )),
+                )
+            }
         };
         let mut tested_older_commit = None;
         let mut published_video = None;
@@ -2623,6 +2631,104 @@ impl Drop for RunDirClaim {
     }
 }
 
+// A failed plan step; the core's suggested plan edit, when it gave one, is the next action.
+fn plan_step_failure(ledger: Option<&core::LedgerFailure>) -> Failure {
+    let Some(seen) = ledger else {
+        return Failure::new(
+            "walk",
+            FailureCode::PlanStepFailed,
+            "line 0: the plan did not pass",
+            "read the report, fix the app or the plan, then re-run",
+        );
+    };
+    let mut failure = Failure::new(
+        "walk",
+        FailureCode::PlanStepFailed,
+        format!("line {}: {}", seen.step, seen.seen),
+        match &seen.suggestion {
+            Some(suggestion) => suggestion.to_string(),
+            None => "read the report, fix the app or the plan, then re-run".to_string(),
+        },
+    );
+    failure.step = Some(seen.step);
+    failure.subreason = seen.subreason.clone();
+    failure.screen = seen.screen.clone();
+    failure.suggestion = seen.suggestion.clone();
+    failure
+}
+
+fn walk_failure(
+    mut failure: Failure,
+    ledger: Option<&core::LedgerFailure>,
+    runs_root: &Path,
+    record: &RunRecord,
+) -> Failure {
+    if let Some(seen) = ledger {
+        failure.step = Some(seen.step);
+        failure.subreason = seen.subreason.clone();
+        failure.screen = seen.screen.clone();
+        failure.suggestion = seen.suggestion.clone();
+        if let Some(suggestion) = &seen.suggestion {
+            failure.next_action = OutputText::from_output(&suggestion.to_string());
+        }
+    }
+    if let Some(repeat) = repeat_of(runs_root, record, &failure) {
+        failure.next_action = OutputText::from_output(&repeat_note(&failure, &repeat));
+        failure.repeat = Some(repeat);
+    }
+    failure
+}
+
+const REPEAT_SCAN: usize = 20;
+
+// Informational: the newest of the last REPEAT_SCAN check runs that failed this plan step the same way on the same recorded revision.
+fn repeat_of(runs_root: &Path, record: &RunRecord, failure: &Failure) -> Option<Repeat> {
+    let plan = record.plan_sha256.as_deref()?;
+    let step = failure.step?;
+    let mut ids: Vec<String> = std::fs::read_dir(runs_root)
+        .ok()?
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|id| id.starts_with("check-") && *id != record.run_id)
+        .collect();
+    ids.sort_unstable_by(|a, b| b.cmp(a));
+    let same: Vec<String> = ids
+        .into_iter()
+        .take(REPEAT_SCAN)
+        .filter_map(|id| RunRecord::load(runs_root, &id).ok())
+        .filter(|previous| {
+            previous.candidate.app_id == record.candidate.app_id
+                && previous.candidate.git_sha == record.candidate.git_sha
+                && previous.candidate.worktree_fingerprint == record.candidate.worktree_fingerprint
+                && previous.plan_sha256.as_deref() == Some(plan)
+                && previous.failure.as_ref().is_some_and(|earlier| {
+                    earlier.code == failure.code
+                        && earlier.step == Some(step)
+                        && earlier.subreason == failure.subreason
+                })
+        })
+        .map(|previous| previous.run_id)
+        .collect();
+    Some(Repeat {
+        previous_run_id: same.first()?.clone(),
+        count: same.len() as u64,
+        same_recorded_revision: true,
+    })
+}
+
+fn repeat_note(failure: &Failure, repeat: &Repeat) -> String {
+    let next = failure.next_action.as_str();
+    if failure.subreason.as_deref() == Some("evidence-incomplete") {
+        return format!(
+            "{next}; the same failure was recorded in run {}",
+            repeat.previous_run_id
+        );
+    }
+    format!(
+        "same failure, plan unchanged: run {} failed the same step the same way on this plan and recorded revision, so a re-run without a plan edit or a changed build is unlikely to differ; {next}",
+        repeat.previous_run_id
+    )
+}
+
 fn claim_run_dir(runs_root: &Path, base_id: &str) -> Result<RunDirClaim, Failure> {
     let cannot = |what: &Path, e: std::io::Error| {
         Failure::new(
@@ -2920,5 +3026,106 @@ fn preflight_inputs(
             },
         ),
         _ => Err(unavailable()),
+    }
+}
+
+#[cfg(test)]
+mod last_screen_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn ledger_failure(screen: Value) -> core::LedgerFailure {
+        serde_json::from_value(json!({
+            "step": 2,
+            "seen": "TARGET_NOT_FOUND: \"Submit\" is not on screen",
+            "suggestion": "the target of line 2 was not on the last observed screen, which lists 1 enabled controls (ids: \"qa-next\"); consider reading that screen in source and inserting the missing step before line 2",
+            "subreason": "absent",
+            "screen": screen,
+        }))
+        .unwrap()
+    }
+
+    fn screen() -> Value {
+        json!({
+            "ageMs": 300, "afterDispatch": false, "front": "app", "coverage": "complete",
+            "controls": [{"role": "button", "id": "qa-next", "label": "Next",
+                "enabled": true, "hittable": true, "offscreen": false}],
+            "counts": {"controls": 1, "enabled": 1, "hidden": 0}
+        })
+    }
+
+    fn record(run_id: &str, git_sha: &str) -> RunRecord {
+        serde_json::from_value(json!({
+            "schema": RUN_SCHEMA, "run_id": run_id, "created_at": "2026-10-30T08:15:00Z",
+            "scenario": {"schema": "qaren/1", "name": "test", "platform": "ios",
+                "candidate": {"project_root": ".", "app_id": "test", "revision": "HEAD"}},
+            "scenario_path": "scenario.yaml", "scenario_sha256": "0", "plan_sha256": "plan",
+            "candidate": {"repo_root": ".", "project_root": ".", "app_id": "test",
+                "git_sha": git_sha, "git_dirty": false, "lockfile_sha256": null},
+            "phase": "cleaned", "prepare": null
+        }))
+        .unwrap()
+    }
+
+    fn runs_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("qaren-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        root
+    }
+
+    fn save_failed(root: &Path, run_id: &str, git_sha: &str) {
+        let mut earlier = record(run_id, git_sha);
+        earlier.failure = Some(plan_step_failure(Some(&ledger_failure(screen()))));
+        earlier.save(root).unwrap();
+    }
+
+    #[test]
+    fn a_target_failure_carries_its_screen_and_suggests_the_plan_edit() {
+        let failure = plan_step_failure(Some(&ledger_failure(screen())));
+        assert_eq!(failure.code, FailureCode::PlanStepFailed);
+        assert_eq!(failure.step, Some(2));
+        assert_eq!(failure.subreason.as_deref(), Some("absent"));
+        assert!(failure
+            .next_action
+            .starts_with("the target of line 2 was not on the last observed screen"));
+        let control = &failure.screen.as_ref().unwrap().controls[0];
+        assert_eq!(control.id.as_deref(), Some("qa-next"));
+        assert!(control.enabled);
+    }
+
+    #[test]
+    fn a_malformed_screen_is_dropped_and_the_fixed_next_action_stays_without_a_suggestion() {
+        let mut seen = ledger_failure(json!({"ageMs": "soon"}));
+        assert!(seen.screen.is_none());
+        seen.suggestion = None;
+        let failure = plan_step_failure(Some(&seen));
+        assert_eq!(
+            failure.next_action.as_str(),
+            "read the report, fix the app or the plan, then re-run"
+        );
+    }
+
+    #[test]
+    fn the_same_failure_on_the_same_plan_and_revision_is_a_repeat() {
+        let root = runs_root("repeat-same");
+        save_failed(&root, "check-20261030T081500Z", "abc");
+        let current = record("check-20261030T082000Z", "abc");
+        let failure = plan_step_failure(Some(&ledger_failure(screen())));
+        let repeat = repeat_of(&root, &current, &failure).unwrap();
+        assert_eq!(repeat.previous_run_id, "check-20261030T081500Z");
+        assert_eq!(repeat.count, 1);
+        assert!(repeat_note(&failure, &repeat)
+            .starts_with("same failure, plan unchanged: run check-20261030T081500Z"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_different_recorded_revision_is_no_repeat() {
+        let root = runs_root("repeat-revision");
+        save_failed(&root, "check-20261030T081500Z", "abc");
+        let current = record("check-20261030T082000Z", "def");
+        let failure = plan_step_failure(Some(&ledger_failure(screen())));
+        assert!(repeat_of(&root, &current, &failure).is_none());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

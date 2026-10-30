@@ -92,7 +92,12 @@ import type {
   MediaWithheldDiagnostic,
   FillPrivacyDiagnostic,
 } from './diagnostics.js';
-import { targetMissDiagnostic, type TargetMissDiagnostic } from './target-miss.js';
+import {
+  missSuggestion,
+  screenNow,
+  targetMissDiagnostic,
+  type TargetMissDiagnostic,
+} from './target-miss.js';
 import {
   type MediaLatch,
   concealsScreen,
@@ -314,6 +319,13 @@ const dialogInFront = (phrase?: string) =>
         : `"${phrase}" is behind a system dialog; nothing of the app can be scrolled to or reached until the dialog is answered`,
   });
 
+// Refusals about the step's own target; their failure carries the last observed screen.
+const TARGET_CODES: ReadonlySet<string> = new Set([
+  'TARGET_NOT_FOUND',
+  'REPLAY_SELECTOR',
+  'TARGET_AMBIGUOUS',
+]);
+
 export const WAIT_BUDGET_MS = 15_000;
 export const WAIT_POLL_MS = 500;
 export const SCROLL_ATTEMPTS = 6;
@@ -513,6 +525,9 @@ async function walkBlockScoped(
   let fillHandlerRefused = false;
   let itemStartedAt = 0;
   let latestObservation = 0;
+  // When each screen was captured, and the observation the last device action was dispatched on.
+  const captured = new WeakMap<Screen, { at: number; id: number }>();
+  let dispatchedOn = 0;
   let recoveries = 0;
   let metadataOnly = false;
   const captureScreen: WalkerDeps['captureScreen'] = async (options) => {
@@ -592,6 +607,8 @@ async function walkBlockScoped(
           ...(platformPresence ? { platformPresence: true } : {}),
           ...(timingObserver ? { timing: timingObserver } : {}),
         });
+        // Stamped at the capture's start until admission records its completion.
+        captured.set(latest, { at: startedAt, id });
       } catch (error) {
         if (isAbort(error)) throw error;
         if (error instanceof AppProcessGoneError) throw processChanged();
@@ -614,6 +631,7 @@ async function walkBlockScoped(
         });
       assertActive();
       const timing = admitObservation(startedAt, deps.now());
+      if (timing) captured.set(latest, { at: timing.completedAt, id });
       if (!timing)
         throw new ResolutionError({
           refuse: 'SCREEN_EVIDENCE_INCOMPLETE',
@@ -1041,6 +1059,7 @@ async function walkBlockScoped(
             ms: deps.now() - preparedAt,
           });
         super.check();
+        dispatchedOn = observation.id;
       }
     })(observationDeadline(observation.timing, deadline), deps.now, deps.cancelled, item.line);
     try {
@@ -1174,34 +1193,51 @@ async function walkBlockScoped(
     screenshot: string | undefined,
     ref?: string,
     miss = false,
+    // The refusal code when a step failed on its target; false when the walk ended for another cause.
+    targetCode?: string | false,
   ): WalkOutcome => {
-    const quoted = item.kind === 'check' ? undefined : stepTarget(item)?.quoted;
-    if (quoted !== undefined) emitQuotedTargetDiagnostic(screen, quoted, item.line);
-    if ((item.kind === 'wait' || item.kind === 'scroll') && stepTarget(item)) {
+    const target = item.kind === 'check' ? undefined : stepTarget(item);
+    if (target?.quoted !== undefined) emitQuotedTargetDiagnostic(screen, target.quoted, item.line);
+    const row = base(item, attempt);
+    const waitOrScroll = item.kind === 'wait' || item.kind === 'scroll';
+    let lastScreen: Pick<LedgerFailure, 'screen' | 'suggestion' | 'subreason'> = {};
+    if (target && (waitOrScroll || targetCode)) {
       try {
         const diagnostic = targetMissDiagnostic(
-          stepTarget(item)!,
+          target,
           screen,
           item.line,
           item.kind === 'scroll',
           privacy,
         );
-        if (
-          !miss &&
-          !(item.kind === 'wait' && item.precondition) &&
-          diagnostic.reason !== 'evidence-incomplete'
-        ) {
-          const detail = `; target visibility: ${diagnostic.reason}`;
-          reason = typeof reason === 'string' ? reason + detail : [...segments(reason), detail];
+        if (waitOrScroll) {
+          if (
+            !miss &&
+            !(item.kind === 'wait' && item.precondition) &&
+            diagnostic.reason !== 'evidence-incomplete'
+          ) {
+            const detail = `; target visibility: ${diagnostic.reason}`;
+            reason = typeof reason === 'string' ? reason + detail : [...segments(reason), detail];
+          }
+          deps.targetMiss?.(diagnostic);
         }
-        deps.targetMiss?.(diagnostic);
+        const seen = captured.get(screen);
+        if (seen && targetCode !== false) {
+          const now = screenNow(screen, target, row.t - seen.at, dispatchedOn === seen.id, privacy);
+          const subreason = targetCode === 'TARGET_AMBIGUOUS' ? 'ambiguous' : diagnostic.reason;
+          lastScreen = {
+            screen: now,
+            suggestion: missSuggestion(subreason, target, screen, now, item.line),
+            subreason,
+          };
+        }
       } catch {
         // Diagnostics cannot change the failed step's outcome.
       }
     }
     const withheld = privacy.textWithheld(screen);
     emit({
-      ...base(item, attempt),
+      ...row,
       ...(ref ? { ref } : {}),
       ...(screenshot ? { screenshot } : {}),
       outcome: miss ? 'retry' : 'fail',
@@ -1217,13 +1253,14 @@ async function walkBlockScoped(
         step: item.line,
         seen: [
           ...segments(reason),
-          '; historical context, previously on screen: ',
+          '; last observed on screen: ',
           {
             app: privacy.screenText(screen).slice(0, 40).join(' | '),
             ...(withheld ? { withheld } : {}),
           },
         ],
         ...(screenshot ? { screenshot } : {}),
+        ...lastScreen,
       },
     };
   };
@@ -1996,6 +2033,7 @@ async function walkBlockScoped(
         );
       // The recovery acted on the device, so a later selector miss is not a pre-mutation re-walk.
       mutationStarted = true;
+      dispatchedOn = fresh.id;
       const proof = result.handled === 'dialog' ? dialogAct?.dialog : undefined;
       if (proof)
         deps.note?.(
@@ -3116,6 +3154,7 @@ async function walkBlockScoped(
           shot,
           undefined,
           miss,
+          error instanceof ResolutionError && TARGET_CODES.has(error.code) ? error.code : false,
         );
         return {
           ...(error instanceof ResolutionError && error.missing

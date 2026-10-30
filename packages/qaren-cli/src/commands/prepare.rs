@@ -155,12 +155,23 @@ impl FailureCodeStr for Failure {
     }
 }
 
+// A step failure with a suggested plan edit or an earlier identical failure leads with that next step.
+fn report_next_action(report: String, failure: Option<&Failure>) -> String {
+    match failure {
+        Some(f) if f.suggestion.is_some() || f.repeat.is_some() => {
+            format!("{}; {report}", f.next_action.as_str())
+        }
+        _ => report,
+    }
+}
+
 pub(crate) fn finish_receipt(ctx: Ctx, result: ReceiptResult, failure: Option<Failure>) -> Receipt {
     let now = ctx.runner.now_epoch_ms();
     let phase = ctx.record.phase.as_str().to_string();
     let next_action = match (&result, &failure) {
         (ReceiptResult::Pass | ReceiptResult::Fail, _) => {
-            format!("read the report under {}", RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id).display())
+            let report = format!("read the report under {}", RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id).display());
+            report_next_action(report, failure.as_ref())
         }
         (ReceiptResult::Ready, _) if ctx.record.phase == Phase::HandedOff => format!(
             "run the qaren managed build/bind chain against the allocated device (docs/qa/cooperative-qa.md), then: qaren complete {} <build-log> --json",
@@ -525,6 +536,7 @@ fn prepare_validated(
         scenario: scenario.clone(),
         scenario_path: args.scenario_path.clone(),
         scenario_sha256,
+        plan_sha256: None,
         candidate: cand,
         phase: Phase::Created,
         substage: None,
@@ -4816,6 +4828,27 @@ fn launch_failure(
 mod launch_tests {
     use super::*;
     use crate::exec::CmdOutput;
+
+    #[test]
+    fn a_step_failure_with_a_suggestion_or_a_repeat_leads_the_receipt_next_action() {
+        let report = || "read the report under /runs/check-1".to_string();
+        let mut failure =
+            Failure::new("walk", FailureCode::PlanStepFailed, "line 2", "edit line 2");
+        assert_eq!(report_next_action(report(), Some(&failure)), report());
+        failure.repeat = Some(crate::failure::Repeat {
+            previous_run_id: "check-0".into(),
+            count: 1,
+            same_recorded_revision: true,
+        });
+        assert_eq!(
+            report_next_action(report(), Some(&failure)),
+            "edit line 2; read the report under /runs/check-1"
+        );
+        failure.repeat = None;
+        failure.suggestion = Some(crate::redact::OutputText::from_output("edit line 2"));
+        assert!(report_next_action(report(), Some(&failure)).starts_with("edit line 2; "));
+        assert_eq!(report_next_action(report(), None), report());
+    }
 
     #[test]
     fn artifact_install_failure_distinguishes_invalid_artifact_timeout_and_install_error() {

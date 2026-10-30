@@ -68,6 +68,10 @@ export interface LedgerFailure {
   screenshot?: string;
   // Set only when a plan step's own judgment failed; no other failure may mark a saved plan broken.
   kind?: 'step';
+  // Target-class failures only: the last observed screen, one suggested plan edit and the miss reason.
+  screen?: ScreenNow;
+  suggestion?: string;
+  subreason?: TargetMissDiagnostic['reason'] | 'ambiguous';
 }
 
 export interface BlockResult {
@@ -204,4 +208,5 @@ export function screenshotName(index: number, line: number): string {
   return `screenshots/${String(index).padStart(2, '0')}-line${line}.png`;
 }
 import type { JevCall } from './questions.js';
+import type { ScreenNow, TargetMissDiagnostic } from './target-miss.js';
 import { summarizeSpeed, type LedgerSpeed, type RowTiming } from './row-timing.js';

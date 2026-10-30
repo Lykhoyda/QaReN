@@ -1095,6 +1095,24 @@ an unverified result proof. Android has no rung 3 yet.
 
 ### Plan checks and screen evidence
 
+When a step fails on its own target (`TARGET_NOT_FOUND`, `REPLAY_SELECTOR`,
+`TARGET_AMBIGUOUS`, an unmet quoted wait or a scroll that stayed off screen),
+the receipt's `failure` carries `screen`, `suggestion` and `subreason`.
+`screen` lists up to 20 controls from the last observed screen, the target's
+own matches first, with role, testID, label, enabled, hittable and off-screen
+state, the capture's age (`ageMs`) and whether a device action ran after it
+(`afterDispatch`); `counts` covers every control. Labels follow the same
+privacy rules as `failure.seen`: masked by value, and masked whole beside a
+secure field or a secret input, where testIDs remain. `suggestion` is one plan
+edit for the miss reason that names controls only by testID, and it becomes
+`next_action`. It describes what was observed and never proposes a Wait for an
+enabled state, because a quoted Wait passes on a disabled control. When one of
+the last 20 `check` runs failed the same plan line with the same code and
+subreason on the same app, recorded revision and plan hash, `failure.repeat`
+names it and `next_action` leads with "same failure, plan unchanged". The scan
+is informational and reads the run records only. `report.md` shows the same
+screen as a table under the failed step.
+
 For phrase actions, the selected control's observed name must contain the words of the phrase that name it; otherwise the step refuses `TARGET_NOT_FOUND`.
 The 30-candidate bound counts the controls on screen; scrolled-out controls are reached by scrolling toward the one the phrase names, and two or more scrolled-out name matches refuse `TARGET_AMBIGUOUS`.
 
@@ -1850,7 +1868,7 @@ do not qualify, and text-only rows retain the three-box rule independently.
 Enclosing labels composed of the row's characters, including separated forms,
 are concealed too. Inputs are not code boxes. The shared
 screen-text projection also protects failure history (`failure.seen`, including
-"previously on screen"). Structural masking remains unioned with value-based
+"last observed on screen"). Structural masking remains unioned with value-based
 fragment masking.
 
 Opaque tokens preserve complete-value identity for model comparisons. An
