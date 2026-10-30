@@ -89,9 +89,12 @@ impl<'a> Ctx<'a> {
     }
 
     pub(crate) fn fail(mut self, mut failure: Failure) -> Receipt {
-        failure = ensure_running(self.runner, &failure.phase)
-            .err()
-            .unwrap_or(failure);
+        // An already-cancelled failure keeps its own recovery.
+        if failure.code != FailureCode::RunCancelled {
+            failure = ensure_running(self.runner, &failure.phase)
+                .err()
+                .unwrap_or(failure);
+        }
         let metro_cleanup =
             if self.verb == "prepare" && self.record.scenario.platform == Platform::Ios {
                 self.record.resources.metro.clone().map(|metro| {
@@ -206,7 +209,9 @@ pub(crate) fn finish_receipt(ctx: Ctx, result: ReceiptResult, failure: Option<Fa
     for (name, value) in &ctx.notes {
         receipt.outcomes.insert(name.clone(), value.clone());
     }
-    receipt.recovery = failure.as_ref().and_then(|f| f.recovery.as_deref().cloned());
+    receipt.recovery = failure
+        .as_ref()
+        .and_then(|f| f.recovery.as_deref().cloned());
     receipt.failure = failure;
     receipt.next_action = next_action;
     receipt.commands_executed = ctx.runner.commands_executed();
@@ -4260,25 +4265,18 @@ fn ensure_build_budget(ctx: &mut Ctx) -> Result<(), Failure> {
         .build_deadline_ms
         .is_some_and(|deadline| ctx.runner.monotonic_ms() >= deadline)
     {
-        return Err(build_budget_failure(
-            ctx,
+        return Err(Failure::new(
+            "build",
+            FailureCode::BuildFailed,
             "the build budget was exhausted before the build was published",
-        ));
+            format!(
+                "Inspect the build result; when this run's owned build group is retired, run qaren cleanup {} --json, then prepare again.",
+                ctx.record.run_id
+            ),
+        )
+        .with_recovery(RecoveryReason::BuildBudgetExhausted));
     }
     Ok(())
-}
-
-fn build_budget_failure(ctx: &Ctx, detail: &str) -> Failure {
-    Failure::new(
-        "build",
-        FailureCode::BuildFailed,
-        detail,
-        format!(
-            "Inspect the build result; when this run's owned build group is retired, run qaren cleanup {} --json, then prepare again.",
-            ctx.record.run_id
-        ),
-    )
-    .with_recovery(RecoveryReason::BuildBudgetExhausted)
 }
 
 pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {

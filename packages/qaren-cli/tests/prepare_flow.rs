@@ -6676,6 +6676,85 @@ fn a_contended_ios_build_refuses_after_its_budget_naming_the_holder_and_next_ste
 }
 
 #[test]
+fn a_cancel_while_waiting_for_the_build_lock_never_takes_it() {
+    let repo = common::temp_repo();
+    let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let lock = seed_build_holder(&repo);
+    let mut mock = MockRunner::new();
+    script_ios_prepare_to_claim(&mut mock, &repo);
+    script_live_idle_holder_polls(&mut mock, 2);
+    mock.cancel_at_ms = Some((1_770_000_002_000, "received SIGINT".into()));
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario_path, false, None));
+
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::RunCancelled);
+    assert_eq!(failure.phase, "build_lock_wait");
+    let recovery = failure.recovery.as_ref().unwrap();
+    assert_eq!(
+        recovery.reason,
+        qaren::failure::RecoveryReason::RunCancelled
+    );
+    // The run still owns its simulator, so its own cleanup is the next rung.
+    assert!(recovery.own_cleanup_required);
+    assert_eq!(receipt.build_lock.as_ref().unwrap().waited_s, 2);
+    assert!(!labels(&mock).iter().any(|l| l == "expo-run-ios"));
+    assert_eq!(
+        qaren::buildplan::read_holder(&lock).unwrap().run_id,
+        "holder-run"
+    );
+}
+
+#[test]
+fn a_new_holder_during_the_wait_restarts_the_no_build_observation() {
+    let repo = common::temp_repo();
+    let scenario_path = write_scenario(
+        &repo,
+        &format!(
+            "{}deadlines:\n  build_seconds: 30\n",
+            ios_scenario_yaml(8791)
+        ),
+    );
+    let lock = seed_build_holder(&repo);
+    let mut mock = MockRunner::new();
+    script_ios_prepare_to_claim(&mut mock, &repo);
+    script_live_idle_holder_polls(&mut mock, 30);
+    // During the tenth poll the first holder finishes and a second run claims the lock.
+    let swapped = lock.clone();
+    let mut polls = 0;
+    mock.observe = Some(Box::new(move |spec| {
+        if spec.label == "ps-groups" {
+            polls += 1;
+            if polls == 10 {
+                let mut next = qaren::buildplan::read_holder(&swapped).unwrap();
+                next.holder = "qaren-second-run".into();
+                next.run_id = "second-run".into();
+                qaren::buildplan::save_json(&swapped.join("holder.json"), &next).unwrap();
+            }
+        }
+    }));
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario_path, false, None));
+
+    assert_eq!(mock.remaining(), 0);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::BuildContended);
+    assert!(
+        failure
+            .next_action
+            .contains("held by run second-run (alive: yes; no build process for 19 s)"),
+        "{}",
+        failure.next_action
+    );
+    let seen = receipt.build_lock.as_ref().unwrap();
+    assert_eq!(seen.holder.as_deref(), Some("second-run"));
+    assert_eq!(seen.no_build_observed_s, 19);
+    assert_eq!(seen.waited_s, 30);
+}
+
+#[test]
 fn an_ios_build_claim_without_its_own_process_identity_refuses_before_claiming() {
     let repo = common::temp_repo();
     let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
