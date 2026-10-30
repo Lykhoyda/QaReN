@@ -3942,22 +3942,41 @@ fn inspect_interface_failure(
     log: &Path,
     observation: Option<&crate::ios_toolchain::Observation>,
 ) -> Option<crate::ios_toolchain::InterfaceFailure> {
-    use std::io::Read;
+    use std::io::{BufRead, BufReader, Read};
     use std::os::unix::fs::OpenOptionsExt;
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(log)
         .ok()?;
-    if !file.metadata().ok()?.is_file() {
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() {
         return None;
     }
-    let mut bytes = Vec::new();
-    file.take(8 * 1024 * 1024 + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    let text = std::str::from_utf8(&bytes).ok()?;
-    crate::ios_toolchain::classify_failure(text, observation)
+    let mut reader = BufReader::new(file.take(metadata.len()));
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let length = (&mut reader)
+            .take(64 * 1024 + 1)
+            .read_until(b'\n', &mut line)
+            .ok()?;
+        if length == 0 {
+            return None;
+        }
+        if length > 64 * 1024 {
+            if !line.ends_with(b"\n") {
+                reader.skip_until(b'\n').ok()?;
+            }
+            continue;
+        }
+        if let Some(failure) = std::str::from_utf8(&line)
+            .ok()
+            .and_then(|text| crate::ios_toolchain::classify_failure(text, observation))
+        {
+            return Some(failure);
+        }
+    }
 }
 
 pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
