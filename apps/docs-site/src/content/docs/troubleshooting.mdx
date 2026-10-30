@@ -42,8 +42,6 @@ Follow `failure.next_action` after any required cleanup:
 | `DEV_MENU_HIDE_UNVERIFIED_EVALUATE_TIMEOUT` | The dev-menu preference call timed out | Re-run once without `--fresh-install` or `--restart-device`; if build work is active, wait for it to finish first |
 | `DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED` | The preference call or its hidden-state readback failed | Re-run once without `--fresh-install`; if it persists, report the value-free refusal |
 
-A fresh install may show the development-build dev menu on first launch; QaReN
-disables it at launch on supported versions and still verifies clearance.
 Unknown reads alone do not justify restarting the app or device, rebuilding, or
 resetting app data. Stop and report the refusal if the single re-run also refuses.
 

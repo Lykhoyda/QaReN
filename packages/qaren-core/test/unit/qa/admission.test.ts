@@ -887,10 +887,7 @@ test('the relaunch opens the run’s own Metro, never a launcher-remembered serv
     '00000000-0000-0000-0000-000000000001',
     devClientLaunchUrl({ metroUrlForDevice: 'http://127.0.0.1:19341' }),
   );
-  assert.deepEqual(argv.slice(-2), [
-    '--initialUrl',
-    'http://127.0.0.1:19341/?disableOnboarding=1&__expo_disable_onboarding=1&__expo_disable_fab=1&__expo_disable_auto_launch=1',
-  ]);
+  assert.deepEqual(argv.slice(-2), ['--initialUrl', 'http://127.0.0.1:19341/?disableOnboarding=1']);
   assert.doesNotMatch(argv.join(' '), /8791/, 'a stale recent entry never reaches the relaunch');
 });
 
