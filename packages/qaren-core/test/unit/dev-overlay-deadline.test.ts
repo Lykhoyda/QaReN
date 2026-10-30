@@ -8,8 +8,14 @@ import {
   CDPRequestTimeoutError,
   CDPTargetClosedError,
 } from '../../dist/cdp/transport.js';
-import { clearDevOverlays, createDevSettingsHandler } from '../../dist/handlers/dev-settings.js';
+import {
+  clearDevOverlays,
+  recoverDevOverlays,
+  createDevSettingsHandler,
+} from '../../dist/handlers/dev-settings.js';
 import { RunCancelledError, withCancellation } from '../../dist/domain/cancellation.js';
+import { devOverlayDeadline } from '../../dist/domain/dev-overlay.js';
+import { WAIT_BUDGET_MS } from '../../dist/qa/walker.js';
 import { okResult } from '../../dist/utils.js';
 import { parseEnvelope } from '../helpers/result-helpers.js';
 
@@ -204,7 +210,7 @@ test('a walk preference timeout cannot trigger connection recovery after expiry'
     },
   });
   const handler = createDevSettingsHandler(() => client);
-  await assert.rejects(handler({ action: 'hideDevMenuFab', timeoutMs: 1 }), /RUN_CANCELLED/);
+  await assert.rejects(handler({ action: 'hideDevMenuFab', timeoutMs: 1000 }), /RUN_CANCELLED/);
   assert.equal(reconnects, 0);
 });
 
@@ -220,4 +226,113 @@ test('typed preference timeout differs from a false readback', async () => {
     );
     assert.equal(env.code, `DEV_MENU_HIDE_UNVERIFIED_EVALUATE_${timeout ? 'TIMEOUT' : 'FAILED'}`);
   }
+});
+
+for (const platform of ['ios', 'android'] as const) {
+  for (const action of ['hideDevMenuFab', 'disableDevMenu', 'disableFastRefresh'] as const) {
+    test(`${platform} ${action} retains the platform evaluation timeout`, async () => {
+      const client = new CDPClient();
+      const timeouts: number[] = [];
+      Object.assign(client, {
+        _connectedTarget: { platform },
+        evaluate: async (_expression: string, _async: boolean, timeout: number) => {
+          timeouts.push(timeout);
+          return { value: 'ok' };
+        },
+      });
+      const handler = createDevSettingsHandler(() => client, { settleAfterHide: async () => {} });
+      await handler({ action, timeoutMs: 1_199_000 });
+      await handler({ action, timeoutMs: 800 });
+      assert.deepEqual(timeouts, [platform === 'android' ? 10_000 : 5000, 800]);
+    });
+  }
+}
+
+test('FAB evaluation is not dispatched without enough time for a poll', async () => {
+  const client = new CDPClient();
+  Object.assign(client, { evaluate: async () => assert.fail('no unconfirmable mutation') });
+  const result = await createDevSettingsHandler(() => client)({
+    action: 'hideDevMenuFab',
+    timeoutMs: 499,
+  });
+  assert.equal(parseEnvelope(result).code, 'DEV_MENU_HIDE_UNVERIFIED_EVALUATE_TIMEOUT');
+});
+
+for (const recovery of [false, true]) {
+  test(`${recovery ? 'recovery' : 'admission'} unknown reads stop at the existing budget`, async () => {
+    const budget = recovery ? WAIT_BUDGET_MS : 120_000;
+    let clock = Math.ceil(performance.now());
+    const start = clock;
+    const deadline = devOverlayDeadline(clock, budget, clock + 1_199_000);
+    let reads = 0;
+    let reconnects = 0;
+    const deps = {
+      deadline,
+      now: () => clock,
+      reconnect: async () => {
+        reconnects++;
+        clock += 1000;
+      },
+      devSettings: async () => okResult({ executed: true }),
+      observeDevOverlay: async () => {
+        reads++;
+        return { state: 'unknown', error: 'coverage_incomplete' } as const;
+      },
+      sleep: async (ms: number) => {
+        clock += ms;
+      },
+      log() {},
+    };
+    const result = await (recovery ? recoverDevOverlays(deps) : clearDevOverlays(deps));
+    const env = parseEnvelope(result);
+    assert.equal(env.code, 'DEV_MENU_HIDE_UNVERIFIED_READ_FAILED');
+    assert.equal(clock - start, budget);
+    assert.equal(reconnects, recovery ? 1 : 0);
+    assert.match(
+      env.error!,
+      new RegExp(`reads=${reads};.*elapsed_ms=${budget}; last_error=coverage_incomplete`),
+    );
+    assert.equal(devOverlayDeadline(start, budget, start + 100), start + 100);
+  });
+}
+
+test('reconnect shares the recovery deadline and cannot resume work after expiry', async () => {
+  let release!: () => void;
+  let calls = 0;
+  const result = await recoverDevOverlays({
+    deadline: performance.now() + 30,
+    reconnect: () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    devSettings: async () => {
+      calls++;
+      return okResult({ executed: true });
+    },
+    observeDevOverlay: async () => {
+      calls++;
+      return { state: 'clear', front: 'app' };
+    },
+    log() {},
+  });
+  assert.equal(parseEnvelope(result).code, 'DEV_MENU_HIDE_UNVERIFIED_READ_FAILED');
+  release();
+  await flush();
+  assert.equal(calls, 0);
+});
+
+test('reconnect failure returns the value-free read failure without overlay effects', async () => {
+  const result = await recoverDevOverlays({
+    deadline: performance.now() + 1000,
+    reconnect: async () => {
+      throw new CDPTargetClosedError('private connection detail');
+    },
+    devSettings: async () => assert.fail('no settings after failed reconnect'),
+    observeDevOverlay: async () => assert.fail('no reads after failed reconnect'),
+    log() {},
+  });
+  const env = parseEnvelope(result);
+  assert.equal(env.code, 'DEV_MENU_HIDE_UNVERIFIED_READ_FAILED');
+  assert.match(env.error!, /reads=0;.*last_error=transport/);
+  assert.doesNotMatch(env.error!, /private connection detail/);
 });

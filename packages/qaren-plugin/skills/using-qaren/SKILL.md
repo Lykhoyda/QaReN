@@ -21,8 +21,9 @@ Report the receipt's `result` and `run_id`. When `result` is not `pass`, quote `
 
 For `CORE_REFUSED` with a `DEV_MENU_HIDE_UNVERIFIED_*` inner code in `failure.detail`,
 follow `failure.next_action` after cleanup. QaReN retries unreadable or incomplete
-overlay evidence within the startup budget; only complete app evidence admits
-step 1. For `READ_FAILED` or `EVALUATE_TIMEOUT`, re-run once without
+overlay evidence within the attach budget measured from the overlay check;
+complete native evidence of a non-dev surface admits step 1, which handles any
+system or app dialog. For `READ_FAILED` or `EVALUATE_TIMEOUT`, re-run once without
 `--fresh-install` or `--restart-device`; if build work is active, wait for it to
 finish first. For `NOT_HIDDEN` or `EVALUATE_FAILED`, re-run once without
 `--fresh-install`; if it persists, report the value-free refusal. Unknown reads

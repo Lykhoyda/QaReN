@@ -252,9 +252,9 @@ for (const [surface, changes, state] of [
   ['react_native_dev_menu', {}, 'shown'],
   ['app', { truncated: true }, 'unknown'],
   ['app', { snapshotVerdict: undefined }, 'unknown'],
-  ['unknown', {}, 'unknown'],
-  ['unrecognized', {}, 'unknown'],
-  ['dev_client_picker', {}, 'unknown'],
+  ['unknown', {}, 'clear'],
+  ['unrecognized', {}, 'clear'],
+  ['dev_client_picker', {}, 'clear'],
 ] as const) {
   test(`observation: ${surface} with ${JSON.stringify(changes)} is ${state}`, () => {
     assert.equal(
@@ -378,4 +378,54 @@ test('Android: an unproven reload aborts before native proof', async () => {
     /reload unproven/,
   );
   assert.ok(!fixture.calls.includes('read'));
+});
+
+test('observation: a complete permission dialog is clear for overlay admission', async () => {
+  const observation = nativeDevOverlayObservation({
+    ...nativeOverlay('unknown'),
+    nodes: [{ ref: 'e0', index: 0, type: 'Alert', packageName: 'com.apple.springboard' }],
+  });
+  assert.deepEqual(observation, { state: 'clear', front: 'dialog' });
+  assert.equal(parseEnvelope(await overlays([observation]).run()).ok, true);
+});
+
+test('observation: keyboard and known foreign surfaces do not become dev chrome', () => {
+  for (const type of ['Keyboard', 'Application'])
+    assert.equal(
+      nativeDevOverlayObservation({
+        ...nativeOverlay('unknown'),
+        nodes: [{ ref: 'e0', index: 0, type, packageName: 'com.android.permissioncontroller' }],
+      }).state,
+      'clear',
+    );
+});
+
+test('overlays: a proven app exit is terminal and never retried as unknown', async () => {
+  const { AppProcessGoneError } = await import('../../dist/domain/app-process.js');
+  const gone = new AppProcessGoneError();
+  const fixture = overlays([gone]);
+  await assert.rejects(fixture.run(), (error) => error === gone);
+  assert.equal(fixture.calls.filter((call) => call === 'read').length, 1);
+  assert.deepEqual(fixture.sleeps, []);
+});
+
+for (const subreason of ['EVALUATE_TIMEOUT', 'EVALUATE_FAILED'] as const) {
+  test(`overlays: deadline between FAB attempts preserves ${subreason}`, async () => {
+    const fixture = overlays(
+      [clear],
+      {
+        hideDevMenuFab: () => failResult('opaque', `DEV_MENU_HIDE_UNVERIFIED_${subreason}`),
+      },
+      200,
+    );
+    const env = parseEnvelope(await fixture.run());
+    assert.equal(env.code, `DEV_MENU_HIDE_UNVERIFIED_${subreason}`);
+    assert.equal(fixture.calls.filter((call) => call === 'hideDevMenuFab').length, 1);
+  });
+}
+
+test('recovery: a failed menu hide is returned unchanged', async () => {
+  const failed = failResult('menu close failed', 'DEV_MENU_HIDE_FAILED');
+  const fixture = overlays([shown], { hideDevMenu: () => failed });
+  assert.equal(await fixture.run(true), failed);
 });

@@ -1,3 +1,4 @@
+import { devOverlayDeadline } from '../domain/dev-overlay.js';
 import { QaDispatchError } from '../domain/qa-dispatch.js';
 import { ownedLogin, parseInputPreflight } from './input-preflight.js';
 import { readAndroidLabelProvenance } from '../runners/qaren-android-runner-client.js';
@@ -93,7 +94,7 @@ import {
   logAdmissionRefusal,
   metroDevicePin,
 } from './admission.js';
-import { type ActResult, type WalkerDeps, loginBlock, runPlan } from './walker.js';
+import { type ActResult, type WalkerDeps, WAIT_BUDGET_MS, loginBlock, runPlan } from './walker.js';
 import { loadBlock, readBlock } from './blocks.js';
 import {
   type ResultPayload,
@@ -508,7 +509,7 @@ async function openSession(
   const remainingMs = () => Math.max(0, request.walkBudgetMs - now() - 1000);
   const bundleRequests =
     target.metroBundleRequests && launchBundleRequests(target.metroBundleRequests);
-  let admissionDeadline = performance.now() + remainingMs();
+  const walkDeadline = performance.now() + remainingMs();
   let attachStage: 'wait_targets' | 'connect_exact' | undefined;
   const logRefusal = (error: unknown): never => {
     logAdmissionRefusal(error, attachStage, log);
@@ -523,7 +524,6 @@ async function openSession(
         ...(target.manifestWarm ? { launchWarm: target.manifestWarm } : {}),
         remainingMs,
         attach: async (deadline) => {
-          admissionDeadline = deadline;
           attachStage = 'wait_targets';
           await waitForExactPortTargets(
             target.metroPort,
@@ -629,29 +629,35 @@ async function openSession(
     presenceBudgetMs?: number,
     qaTiming?: TimingContext,
   ) => {
-    const result = await admittedSnapshots.snapshot({
-      action: 'snapshot',
-      qaReadOnly: true,
-      qaTiming,
-      ...(platformPresence ? { platformPresence: true, presenceBudgetMs } : {}),
-    });
-    const { data, meta } = unwrap<
-      NativeObservation & { presenceCapture?: unknown; snapshotGeneration?: unknown }
-    >(result);
-    return {
-      appProcessIdentifier: data.appProcessIdentifier,
-      pointScale: data.pointScale,
-      keyboardVisible: data.keyboardVisible,
-      nodes: data.nodes,
-      presenceCapture: data.presenceCapture,
-      snapshotGeneration: data.snapshotGeneration,
-      truncated: data.truncated,
-      normalizationDroppedNodes: data.normalizationDroppedNodes,
-      snapshotVerdict: meta?.snapshotVerdict,
-      systemModal: meta?.systemModal,
-      snapshotDiagnostics: data.snapshotDiagnostics,
-      surface: typeof meta?.foregroundSurface === 'string' ? meta.foregroundSurface : undefined,
-    };
+    try {
+      const result = await admittedSnapshots.snapshot({
+        action: 'snapshot',
+        qaReadOnly: true,
+        qaTiming,
+        ...(platformPresence ? { platformPresence: true, presenceBudgetMs } : {}),
+      });
+      const { data, meta } = unwrap<
+        NativeObservation & { presenceCapture?: unknown; snapshotGeneration?: unknown }
+      >(result);
+      return {
+        appProcessIdentifier: data.appProcessIdentifier,
+        pointScale: data.pointScale,
+        keyboardVisible: data.keyboardVisible,
+        nodes: data.nodes,
+        presenceCapture: data.presenceCapture,
+        snapshotGeneration: data.snapshotGeneration,
+        truncated: data.truncated,
+        normalizationDroppedNodes: data.normalizationDroppedNodes,
+        snapshotVerdict: meta?.snapshotVerdict,
+        systemModal: meta?.systemModal,
+        snapshotDiagnostics: data.snapshotDiagnostics,
+        surface: typeof meta?.foregroundSurface === 'string' ? meta.foregroundSurface : undefined,
+      };
+    } catch (error) {
+      if (error instanceof HandlerError && error.meta?.reason === 'app-not-running')
+        throw new AppProcessGoneError();
+      throw error;
+    }
   };
   const devSettings = createDevSettingsHandler(getClient, {
     probeForegroundSurface: async () =>
@@ -674,7 +680,6 @@ async function openSession(
   const overlays = {
     devSettings,
     observeDevOverlay,
-    deadline: admissionDeadline,
     log,
     ...(reload
       ? {
@@ -689,7 +694,12 @@ async function openSession(
       : {}),
   };
   try {
-    unwrap(await clearDevOverlays(overlays));
+    unwrap(
+      await clearDevOverlays({
+        ...overlays,
+        deadline: devOverlayDeadline(performance.now(), request.attachBudgetMs, walkDeadline),
+      }),
+    );
   } catch (error) {
     await close();
     throw error;
@@ -743,11 +753,7 @@ async function openSession(
                 options?.platformPresence,
                 presenceBudgetMs,
                 options?.timing ? { now, observe: options.timing } : undefined,
-              ).catch((error: unknown) => {
-                if (error instanceof HandlerError && error.meta?.reason === 'app-not-running')
-                  throw new AppProcessGoneError();
-                throw error;
-              }),
+              ),
             react: () => captureReact(options?.platformPresence === true),
           }),
         ),
@@ -821,7 +827,21 @@ async function openSession(
     labelProvenanceDiagnostic: diagnostic,
     fillPrivacy: diagnostic,
     loginOutcome: (outcome) => diagnostic({ kind: 'login-outcome', outcome }),
-    hideDevMenu: () => act(() => recoverDevOverlays(overlays), false),
+    hideDevMenu: () =>
+      act(() => {
+        const deadline = devOverlayDeadline(performance.now(), WAIT_BUDGET_MS, walkDeadline);
+        return recoverDevOverlays({
+          ...overlays,
+          deadline,
+          reconnect: () =>
+            cdp.withAttachDeadline(deadline, async () => {
+              while (cdp.reconnectState.active) await sleep(250);
+              cancellationSignal();
+              if (!cdp.isConnected) await cdp.autoConnect();
+              cancellationSignal();
+            }),
+        });
+      }, false),
     ...(login ? { login } : {}),
     sleep,
     row: emitRow,

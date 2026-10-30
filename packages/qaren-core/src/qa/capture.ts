@@ -1,3 +1,5 @@
+import { AppProcessGoneError } from '../domain/app-process.js';
+export { AppProcessGoneError } from '../domain/app-process.js';
 import type { DevOverlayObservation } from '../domain/dev-overlay.js';
 import { HandlerError } from './adapt.js';
 import { systemModalDiagnostic } from '../domain/system-modal-diagnostic.js';
@@ -43,14 +45,6 @@ export class NativeCaptureError extends Error {
   constructor() {
     super('Native capture is unavailable.');
     this.name = 'NativeCaptureError';
-  }
-}
-
-// The runner saw the app process gone; content-free, so it may leave capture unmasked.
-export class AppProcessGoneError extends Error {
-  constructor() {
-    super('the app process is not running');
-    this.name = 'AppProcessGoneError';
   }
 }
 
@@ -516,8 +510,6 @@ export function nativeDevOverlayObservation(observation: NativeObservation): Dev
     };
   const front = frontFromSurface(observation.surface, observation.nodes ?? []);
   if (front === 'dev-fab' || front === 'dev-menu') return { state: 'shown', front };
-  if (front !== 'app' || observation.surface !== 'app')
-    return { state: 'unknown', error: 'unknown_front' };
   return { state: 'clear', front };
 }
 
