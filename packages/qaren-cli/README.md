@@ -22,7 +22,9 @@ qaren doctor [--json] [--config .qaren/config.yaml] [--device <simulator-UUID>]
 
 On macOS, `ios-toolchain-match` compares the selected Swift compiler with public
 simulator interfaces in installed `expo-modules-core` and `expo-modules-jsi`
-XCFrameworks. A newer compiler produces a warning, not a compatibility verdict;
+XCFrameworks, including hoisted packages and packages resolved through the app's
+Expo installation. Failed or conflicting package resolution remains unknown.
+A newer compiler produces a warning, not a compatibility verdict;
 incomplete or ambiguous evidence remains unknown. Doctor skips the
 `expo-modules-core` interface comparison only when installed Pods prove source
 linkage; an export alone is insufficient. Requested source mode with unproven
@@ -36,7 +38,8 @@ storage before a build; neither check installs Pods or changes storage.
 Doctor prints the running binary's version, path, build, runtime and the
 [`QAREN_HOME`](#release-and-source-builds-side-by-side) in use, then one
 `PASS`, `WARN`, `FAIL` or `SKIP` row per check, each problem with its manual fix.
-It only reads files and runs bounded version, process-group, inventory and host-statistics probes:
+It only reads files and runs bounded version, package-resolution, process-group,
+inventory and host-statistics probes:
 it never writes, deletes, starts a device or restarts a service. It does not run ADB
 or start an ADB server. In text and JSON output, Doctor never prints
 file contents, environment variable values, credentials or any other config value;
