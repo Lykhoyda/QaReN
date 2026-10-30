@@ -25,9 +25,9 @@ plan preflight -> device selection -> lease + durable run record
 
 The plan is parsed first, so an unparseable plan or a missing Jev key refuses before any
 device is touched. The run then leases the device, prepares the app and its own Metro,
-walks the plan and tears down what it started. By default, the simulator or emulator
-stays running and the installed app stays. By default a failed iOS walk holds Metro and the device
-lease until `qaren cleanup` (see [Leases, cancellation and cleanup](#leases-cancellation-and-cleanup)).
+walks the plan and cleans up owned resources. By default, the simulator or emulator
+stays running and the installed app stays. Failed iOS checks can hold resources for inspection;
+see [Leases, cancellation and cleanup](#leases-cancellation-and-cleanup).
 See [CLI-owned iOS build routes](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#cli-owned-ios-build-routes)
 for iOS startup ordering.
 
@@ -139,27 +139,9 @@ A signal, or the calling process going away, ends the run as `RUN_CANCELLED` aft
 When teardown cannot prove a resource is gone, the lease stays and the receipt says so:
 run `qaren cleanup <run-id>`. Never delete lock files to get around it.
 
-After the app was admitted, an iOS `check` whose walk reports `FAIL` or a `TARGET_*` refusal holds
-Metro, the simulator and the device lease at the reached screen instead of tearing them down.
-Failures before admission, deadline kills and other refusals tear down as before. The app
-stays usable, so you can look at the screen the plan stopped on. The receipt says so:
-`cleanup` reads `held: retained for inspection; …` for Metro and the lease, `held` lists what was
-retained, and `next_action` is `qaren cleanup <run-id> --json`. `qaren status <run-id>` shows the
-hold and live probes, and `qaren doctor --device <udid>` names the run holding that simulator. A hold
-ends with `qaren cleanup <run-id>` or when the next run on that device reclaims it. It never times
-out. The held Metro keeps its port, so a run on another simulator with the same `metroPort`
-refuses `METRO_PORT_OCCUPIED`.
-
-| Setting | Effect |
-| --- | --- |
-| `check --hold` / `check --no-hold` | Hold or tear down, overriding everything below; both together is a usage error |
-| `CI` set to a non-empty value, a `## Cleanup` heading in the plan, or `--shutdown-device-on-exit` | Never hold unless `--hold` is given |
-| `QAREN_HOLD_ON_FAIL=1` or `0` | Hold on or off for `check` |
-| Neither | `check` holds |
-
-Android never holds; `--hold` there adds the receipt note `hold unsupported on android`. A passing
-run, a cancelled run and other refusals tear down as before. `qaren pr` always uses normal teardown;
-`--hold` and `--no-hold` are valid only for `check`.
+Failed iOS checks can keep the reached state for inspection. See the authoritative
+[iOS admission and cleanup contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup)
+for eligibility, `--hold` / `--no-hold`, environment overrides, receipt fields and releasing a hold.
 
 ## Time budgets
 

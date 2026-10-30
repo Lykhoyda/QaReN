@@ -2422,12 +2422,22 @@ so if it is still running it keeps its live Metro; the hold does not restart an 
 event carries `held: true`, and the record stays in the walking phase. `qaren status <run-id>`
 reports the hold beside its live probes, and `qaren doctor --device <udid>` adds the holding run
 to the `ios-lane` row. The hold ends with `qaren cleanup <run-id>`, or with the next run on that
-device, which reclaims the dead holder through the same cleanup. `--hold` and `--no-hold` decide
-outright. Without either, a non-empty `CI`, a `## Cleanup` plan heading or
-`--shutdown-device-on-exit` keeps the normal teardown; otherwise `QAREN_HOLD_ON_FAIL=1` or `0`
-decides for `check`, which holds by default. These flags apply only to `check`; `pr` always
-uses normal teardown. See [check](../../apps/docs-site/src/content/docs/check.mdx) for the table.
-A held Metro keeps its port; another run using that port refuses `METRO_PORT_OCCUPIED`. Android never holds.
+device, which reclaims the dead holder through the same cleanup. Holds do not expire.
+The receipt's `next_action` is `qaren cleanup <run-id> --json`.
+
+`--hold` and `--no-hold` apply only to `check`; `pr` always uses normal teardown and rejects them.
+Android never holds; `--hold` there adds the receipt note `hold unsupported on android`.
+Passing runs, cancelled runs, failures before admission, deadline kills and other refusals
+use normal teardown. For eligible failed iOS checks, precedence is:
+
+| Setting | Effect |
+| --- | --- |
+| `--hold` / `--no-hold` | Hold or tear down, overriding everything below; both together is a usage error |
+| Non-empty `CI`, a `## Cleanup` plan heading, or `--shutdown-device-on-exit` | Normal teardown |
+| `QAREN_HOLD_ON_FAIL=0` | Normal teardown |
+| `QAREN_HOLD_ON_FAIL=1` or unset | Hold |
+
+A held Metro keeps its port; another run using that port refuses `METRO_PORT_OCCUPIED`.
 
 The iOS runner's XCTest result bundles under `Logs/Test` in both its local
 DerivedData and current-version prebuilt cache are removed after successful

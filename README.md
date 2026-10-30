@@ -31,8 +31,9 @@ agent.
 Under the hood, QaReN is the `qaren` command-line tool and a plugin that teaches Claude
 Code, Codex and Cursor to drive it. `qaren check` borrows a booted iOS simulator, builds and
 installs the app from your working tree, starts Metro, walks a plan on the device, writes
-evidence at the artifact paths in its receipt and tears down what it started. `qaren pr` does
-the same for a pull request's head and tries to record the screen; `qaren publish`
+evidence at the artifact paths in its receipt and cleans up owned resources. Failed iOS checks
+can keep the reached state for inspection; see the [iOS cleanup contract](packages/qaren-cli/README.md#ios-admission-and-cleanup).
+`qaren pr` tests a pull request's head with normal teardown and tries to record the screen; `qaren publish`
 comments the result on the pull request and can push saved blocks to its branch. Eligible
 passing blocks are saved under `.qaren/actions/` and replayed on later runs.
 
