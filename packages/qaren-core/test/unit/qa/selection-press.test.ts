@@ -8,7 +8,7 @@ import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
 import { walkBlock } from '../../../dist/qa/walker.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
 
-function chips(selected: 'Male' | 'Female' | undefined): Screen {
+function chips(selected: 'Male' | 'Female' | undefined, refPrefix = '@'): Screen {
   const nodes: NativeNode[] = [
     { ref: '@app', index: 0, type: 'Application', rect: { x: 0, y: 0, width: 400, height: 800 } },
     {
@@ -19,7 +19,7 @@ function chips(selected: 'Male' | 'Female' | undefined): Screen {
       rect: { x: 0, y: 0, width: 400, height: 800 },
     },
     ...(['Male', 'Female'] as const).map((label, i) => ({
-      ref: `@${label.toLowerCase()}`,
+      ref: `${refPrefix}${label.toLowerCase()}`,
       index: 2 + i,
       parentIndex: 1,
       type: 'Button',
@@ -84,11 +84,59 @@ test('a press whose only effect is selecting the chip passes on its first attemp
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
 });
 
-test('a press on an already selected chip proves nothing and fails with its selection before and after', async () => {
+test('a press on an already selected control passes with the evidence already selected, no change (single-choice or an untoggled multi-select alike)', async () => {
   const f = fake([chips('Male')]);
+  const outcome = await walkBlock(block('1. Tap "gender_m"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass', outcome.failure?.seen);
+  assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
+  assert.equal(
+    renderReason(outcome.rows[0].reason ?? '', (text) => text),
+    'already selected, no change',
+  );
+});
+
+test('a selected control found under a different ref after the tap is not the same control and does not pass on that attempt', async () => {
+  const f = fake([chips('Male'), chips('Male', '@new-')]);
+  const outcome = await walkBlock(block('1. Tap "gender_m"\n'), f.deps);
+  assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 2);
+  assert.equal(outcome.rows[0].outcome, 'retry');
+});
+
+test('a press that deselects the chip passes on its first attempt', async () => {
+  const f = fake([chips('Male'), chips(undefined)]);
+  const outcome = await walkBlock(block('1. Tap "gender_m"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass', outcome.failure?.seen);
+  assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
+});
+
+test('a not-ok press on an already selected chip still fails with its selection before and after', async () => {
+  const f = fake(
+    [chips('Male')],
+    [
+      { ok: false, proven: false },
+      { ok: false, proven: false },
+    ],
+  );
   const outcome = await walkBlock(block('1. Tap "gender_m"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 2);
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /the target stayed selected/,
+  );
+});
+
+test('a press with a runner error on an already selected chip still fails with its selection before and after', async () => {
+  const error = 'RUNNER_TIMEOUT: the tap was not confirmed';
+  const f = fake(
+    [chips('Male')],
+    [
+      { ok: true, proven: false, error },
+      { ok: true, proven: false, error },
+    ],
+  );
+  const outcome = await walkBlock(block('1. Tap "gender_m"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
   assert.match(
     renderReason(outcome.failure?.seen ?? '', (text) => text),
     /the target stayed selected/,

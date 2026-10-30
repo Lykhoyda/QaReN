@@ -717,9 +717,13 @@ may resolve live to that control: it agrees only when the same-type,
 same-label owning ancestor in the retained snapshot contains the label and the
 live frame equals that owner's frame; the tap goes to the unchanged point. A later
 screen change cannot turn a proven no-mutation refusal into a passing action.
-An unproven press passes only when the screen changes. That comparison includes
-each control's selected state (the iOS selected trait or Android accessibility
-selection), so becoming selected can prove a press.
+An unproven press passes when the screen changes. That comparison includes each
+control's selected state (the iOS selected trait or Android accessibility
+selection), so a selected state appearing or disappearing proves a press. With
+an unchanged comparison, a successful tap on a control that was already selected
+and, by the same element, is still selected afterwards passes with the evidence
+`already selected, no change`; the tap is still sent, and a refused or errored
+tap gets no such pass.
 When that comparison is unchanged and the runner explicitly reports the press
 unproven, QaReN can also verify a stable visible change within the tapped
 control's bounds, even when it exposes no accessibility state.
@@ -748,8 +752,9 @@ inputs, no metadata-only capture and no active screenshot withholding. They use
 temporary files under the run directory that are removed after reading, and are
 not retained with ledger screenshots. Missing, failed or unsupported captures,
 ineligible targets and insufficient pixel change provide no proof; the existing
-retry and failure behavior remains. A press that leaves the screen unchanged
-still fails, naming whether the target stayed selected.
+retry and failure behavior remains. A press without pixel proof that leaves a
+control not reported selected unchanged still fails, naming whether the target
+was reported selected before and after.
 
 Before its one retry, the walker re-captures until the same target (resolved
 through the same exact-identity rules as the step) holds one native frame

@@ -2829,7 +2829,18 @@ async function walkBlockScoped(
           // NOTE: a not-ok result is not a verdict; an act that timed out may still have landed.
           let changed = screenSignature(after.screen) !== screenSignature(before.screen);
           usable(after, item);
+          const afterTarget = element && after.screen.elements.find((e) => e.ref === element!.ref);
+          // A real tap on a control that was selected before and still is proves nothing further; it passes.
+          // shortcut: single-choice and multi-select are indistinguishable from capture evidence; revisit if a role fact lands
+          const alreadySelected =
+            item.kind === 'press' &&
+            !changed &&
+            act!.ok &&
+            !act!.error &&
+            element?.selected === true &&
+            afterTarget?.selected === true;
           if (
+            !alreadySelected &&
             !changed &&
             item.kind === 'press' &&
             act!.proven === false &&
@@ -2895,7 +2906,9 @@ async function walkBlockScoped(
           if (
             !noMutationRefusal &&
             !dialogRefused &&
-            (item.kind === 'fill' ? (act!.ok && act!.proven) || unverified : act!.proven || changed)
+            (item.kind === 'fill'
+              ? (act!.ok && act!.proven) || unverified
+              : act!.proven || changed || alreadySelected)
           ) {
             const target = stepTarget(item);
             if (act!.dialog)
@@ -2929,16 +2942,18 @@ async function walkBlockScoped(
                           `UNVERIFIED_FILL: the field's final value ${act!.evidence === 'masked' ? 'reads back masked' : 'could not be read back'}, so the fill was not verified`,
                         ),
                       }
-                    : alertOnly
-                      ? {
-                          unverifiedPress: true,
-                          reason: redact(
-                            alertEffect === 'uncaptured'
-                              ? 'UNVERIFIED_PRESS: nothing behind the alert or sheet was captured while it was open; any of its buttons closes it, so the press was not verified'
-                              : 'UNVERIFIED_PRESS: the alert or sheet closed and nothing behind it changed; any of its buttons closes it, so the press was not verified',
-                          ),
-                        }
-                      : {}),
+                    : alreadySelected
+                      ? { reason: redact('already selected, no change') }
+                      : alertOnly
+                        ? {
+                            unverifiedPress: true,
+                            reason: redact(
+                              alertEffect === 'uncaptured'
+                                ? 'UNVERIFIED_PRESS: nothing behind the alert or sheet was captured while it was open; any of its buttons closes it, so the press was not verified'
+                                : 'UNVERIFIED_PRESS: the alert or sheet closed and nothing behind it changed; any of its buttons closes it, so the press was not verified',
+                            ),
+                          }
+                        : {}),
             });
             break;
           }
@@ -2993,7 +3008,6 @@ async function walkBlockScoped(
           const stillness = settledFrame
             ? `; the target's frame held still at ${settledFrame} before this dispatch`
             : '';
-          const afterTarget = element && after.screen.elements.find((e) => e.ref === element!.ref);
           // Selection evidence only when a capture reports the target selected; the runner never reports "unselected".
           const reported = (e: Element) =>
             e.selected === true ? 'selected' : 'not reported selected';
