@@ -424,3 +424,22 @@ fn receipt_hints_are_optional_and_use_the_durable_redaction_owner() {
     assert_eq!(parsed.hints[0].code, "LOGIN_BLOCK_CANDIDATE");
     assert_eq!(parsed.next_action, receipt.next_action);
 }
+
+#[test]
+fn receipts_and_records_from_before_build_lock_observation_still_load() {
+    let old = r#"{"schema":"qaren/1","verb":"prepare","run_id":"r1","result":"refused","phase":"failed","emitted_at":"now","commands_executed":0,"failure":{"phase":"plan","code":"BUILD_CONTENDED","detail":"held","next_action":"wait"},"next_action":"wait"}"#;
+    let parsed: Receipt = serde_json::from_str(old).unwrap();
+    assert!(parsed.build_lock.is_none() && parsed.recovery.is_none());
+    assert!(parsed.failure.unwrap().recovery.is_none());
+    let record = common::base_record(
+        std::path::Path::new("/s"),
+        &common::ios_scenario_yaml(8791),
+        "r1",
+        Phase::Failed,
+    );
+    let mut value = serde_json::to_value(&record).unwrap();
+    assert!(value.get("build_lock").is_none(), "absent until observed");
+    value.as_object_mut().unwrap().remove("build_lock");
+    let reloaded: RunRecord = serde_json::from_value(value).unwrap();
+    assert!(reloaded.build_lock.is_none());
+}

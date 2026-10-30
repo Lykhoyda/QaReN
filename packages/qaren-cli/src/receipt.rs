@@ -120,6 +120,10 @@ pub struct Receipt {
     pub artifacts: BTreeMap<String, PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<Failure>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<crate::failure::Recovery>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_lock: Option<crate::runrecord::BuildLockObservation>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub cleanup: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -177,6 +181,8 @@ impl Receipt {
             commands_executed: 0,
             artifacts: BTreeMap::new(),
             failure: None,
+            recovery: None,
+            build_lock: None,
             cleanup: BTreeMap::new(),
             core_cleanup: None,
             fresh_install: None,

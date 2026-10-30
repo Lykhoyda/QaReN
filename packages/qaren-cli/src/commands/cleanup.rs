@@ -741,6 +741,7 @@ fn finish_cleanup(
     receipt.candidate = Some(record.candidate.clone());
     receipt.device = Some(super::device_identity(&record));
     receipt.build = record.build.clone();
+    receipt.build_lock = record.build_lock.clone();
     receipt.core_cleanup = record.resources.core_cleanup.clone();
     receipt.fresh_install = record.resources.fresh_install.clone();
     receipt.lane = record.resources.lane.clone();

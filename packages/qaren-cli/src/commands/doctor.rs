@@ -431,6 +431,75 @@ pub fn held_note(lock_root: &Path, runs_root: &Path, udid: &str) -> Option<Strin
     ))
 }
 
+const BUILD_LOCK_FIX: &str = "a check or prepare waits for it within its build budget; if the holder is dead, run its qaren cleanup from its home (its resources only)";
+
+// One read-only sample of the iOS native-build lock: never claims, reclaims or refuses.
+pub fn build_lock_row(runner: &mut dyn Runner, lock_root: Result<PathBuf, String>) -> Check {
+    const ID: &str = "native-build-lock";
+    let root = match lock_root {
+        Ok(root) => root,
+        Err(error) => {
+            return Check::warn(
+                ID,
+                format!("the native-build lock state is unknown: {error}"),
+                BUILD_LOCK_FIX,
+            )
+        }
+    };
+    let namespace = if crate::buildplan::machine_lock_parent().is_ok_and(|parent| parent == root) {
+        "machine"
+    } else {
+        "private"
+    };
+    let dir = crate::buildplan::lock_dir(&root, "native-build-ios");
+    match std::fs::symlink_metadata(&dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Check::pass(
+                ID,
+                format!("native-build-ios is free ({namespace} namespace)"),
+            );
+        }
+        Err(e) => {
+            return Check::warn(
+                ID,
+                format!("native-build-ios state is unknown: {e} ({namespace} namespace)"),
+                BUILD_LOCK_FIX,
+            );
+        }
+        Ok(_) => {}
+    }
+    let Some(held) = crate::buildplan::read_holder(&dir) else {
+        return Check::warn(
+            ID,
+            format!("native-build-ios is held; its holder is unreadable ({namespace} namespace)"),
+            BUILD_LOCK_FIX,
+        );
+    };
+    let liveness = held
+        .identity
+        .as_ref()
+        .map(|identity| crate::runrecord::probe_pid_identity(runner, identity));
+    let facts = crate::lease::holder_facts(runner, &held, liveness);
+    let run_id = if crate::runrecord::validate_run_id(&held.run_id).is_ok() {
+        held.run_id.as_str()
+    } else {
+        "unknown"
+    };
+    // A single sample shows whether a build runs now, never for how long none has.
+    Check::warn(
+        ID,
+        format!(
+            "native-build-ios is held by run {run_id} (alive: {}; build process now: {}; held {}) ({namespace} namespace)",
+            crate::lease::yes_no(facts.alive),
+            crate::lease::yes_no(facts.build_process),
+            facts
+                .hold_s
+                .map_or("unknown".to_string(), crate::lease::rough_duration),
+        ),
+        BUILD_LOCK_FIX,
+    )
+}
+
 // Read only: the named simulator's locale and keyboard against the pinned lane; nothing is written.
 pub fn lane_row(runner: &mut dyn Runner, home: &Path, udid: &str) -> Check {
     let exports: Vec<Option<String>> = ios::lane_read_specs(udid)
@@ -3264,6 +3333,72 @@ mod lane_row_tests {
         runner.expect_run("defaults export", CmdOutput::failed(149, "not booted"));
         let row = lane_row(&mut runner, Path::new("/home"), UDID);
         assert_eq!(row.status, Status::Warn);
+    }
+}
+
+#[cfg(test)]
+mod build_lock_row_tests {
+    use super::*;
+    use crate::buildplan::{claim_lock, LockHolder, LockOutcome, LockPolicy};
+    use crate::exec::{CmdOutput, MockRunner};
+
+    #[test]
+    fn build_lock_row_reports_safe_holder_facts_and_never_takes_the_lock() {
+        let root =
+            std::env::temp_dir().join(format!("qaren-doctor-build-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let mut runner = MockRunner::new();
+        let free = build_lock_row(&mut runner, Ok(root.clone()));
+        assert_eq!(free.status, Status::Pass, "{}", free.detail);
+        assert!(free.detail.contains("private namespace"));
+
+        let holder = LockHolder {
+            holder: "qaren-holder-run".into(),
+            run_id: "holder-run".into(),
+            identity: Some(crate::runrecord::PidIdentity {
+                pid: 4242,
+                started_at: "Wed Aug 12 10:00:00 2026".into(),
+                command: crate::redact::OutputText::from_output("qaren check"),
+            }),
+            at: crate::timefmt::iso8601_utc(runner.now_epoch_ms() - 540_000),
+            home: Some(root.join("other-home")),
+            qaren_home: None,
+            group: Some(777),
+        };
+        assert!(matches!(
+            claim_lock(
+                &mut runner,
+                &root,
+                "native-build-ios",
+                &holder,
+                LockPolicy::Strict
+            ),
+            LockOutcome::Claimed { .. }
+        ));
+        runner.expect_run("lstart=", CmdOutput::success("Wed Aug 12 10:00:00 2026"));
+        runner.expect_run("stat=", CmdOutput::success("S"));
+        runner.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+        let held = build_lock_row(&mut runner, Ok(root.clone()));
+        assert_eq!(runner.remaining(), 0);
+        assert_eq!(held.status, Status::Warn);
+        assert_eq!(
+            held.detail,
+            "native-build-ios is held by run holder-run (alive: yes; build process now: no; held 9 min) (private namespace)"
+        );
+        assert_eq!(
+            crate::buildplan::read_holder(&root.join("native-build-ios"))
+                .unwrap()
+                .run_id,
+            "holder-run"
+        );
+
+        std::fs::write(root.join("native-build-ios/holder.json"), "{").unwrap();
+        let unreadable = build_lock_row(&mut runner, Ok(root.clone()));
+        assert_eq!(unreadable.status, Status::Warn);
+        assert!(unreadable.detail.contains("unreadable"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
 

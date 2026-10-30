@@ -388,7 +388,10 @@ fn workspace_cache_persistence_reuses_only_the_same_workspace_and_scheme() {
         } else {
             mock.expect_run("ls-files", CmdOutput::success(common::IOS_NATIVE_FILES));
             common::script_xcode(&mut mock);
-            common::script_finite_ios_build_with(&mut mock, "xcodebuild");
+            common::script_finite_ios_build_with(&mut mock, "xcodebuild", |m| {
+                script_candidate_recheck(m);
+                script_fingerprint_recheck(m, common::IOS_NATIVE_FILES)
+            });
             script_ready_recheck(&mut mock, common::IOS_NATIVE_FILES);
         }
         script_drift_status(&mut mock);
@@ -694,6 +697,46 @@ fn a_clean_ios_build_refuses_before_building_when_its_volume_is_short_of_space()
 }
 
 #[test]
+fn a_check_whose_candidate_moves_during_the_build_never_publishes_and_releases_the_lock() {
+    let (repo, app) = app_repo();
+    let req = request(&repo, &app, 30);
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    common::script_ios_deps(&mut mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_clean_build_plan(&mut mock);
+    common::script_finite_ios_build_only(&mut mock, "expo run:ios");
+    // HEAD moved during the build: the recheck under the lock refuses publication.
+    mock.expect_run("rev-parse HEAD", CmdOutput::success(&"d".repeat(40)));
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::CandidateDrifted,
+        "{:?}",
+        receipt.failure
+    );
+    assert!(!mock.calls.iter().any(|c| matches!(
+        c.label.as_str(),
+        "simctl-install" | "expo-start" | "core-walk"
+    )));
+    assert!(matches!(
+        qaren::buildplan::load_state(&repo, "ios", "com.rndevagent.testapp"),
+        qaren::buildplan::StateStatus::Missing
+    ));
+    let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+    let fingerprint = record.build.as_ref().unwrap().fingerprint.clone();
+    assert!(
+        common::stored_record(&req.native_cache_root, "ios", &fingerprint).is_none(),
+        "no machine-store record was published"
+    );
+    assert!(record.resources.build_lock.is_none());
+    assert!(!req.lock_root.join("native-build-ios").exists());
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
 fn pre_spawn_build_error_retires_pending_before_releasing_ownership() {
     let (repo, app) = app_repo();
     let req = request(&repo, &app, 30);
@@ -703,9 +746,7 @@ fn pre_spawn_build_error_retires_pending_before_releasing_ownership() {
     common::script_ios_deps(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
-    common::script_ios_metro_spawn(&mut mock);
 
-    common::script_ios_metro_cleanup(&mut mock);
     let receipt = run(&mut mock, &req);
     assert_eq!(receipt.result, ReceiptResult::Failed);
     assert_eq!(receipt.failure.unwrap().code, FailureCode::BuildFailed);
@@ -721,11 +762,11 @@ fn pre_spawn_build_error_retires_pending_before_releasing_ownership() {
     assert_eq!(receipt.cleanup["device_lease"], "removed");
     assert!(mock.piped_stdin.is_empty());
     assert_eq!(mock.remaining(), 0);
-    assert_eq!(receipt.cleanup["metro"], "removed");
+    assert!(!receipt.cleanup.contains_key("metro"));
 }
 
 #[test]
-fn unproven_early_metro_refuses_to_start_a_native_build_and_retains_its_lease() {
+fn unproven_metro_after_the_build_refuses_install_and_retains_its_lease() {
     for workspace in [false, true] {
         let (repo, app) = app_repo();
         if workspace {
@@ -749,6 +790,22 @@ fn unproven_early_metro_refuses_to_start_a_native_build_and_retains_its_lease() 
             }),
         );
         script_clean_build_plan(&mut mock);
+        let native_files = if workspace {
+            common::IOS_NATIVE_FILES
+        } else {
+            ""
+        };
+        common::script_finite_ios_build_only(
+            &mut mock,
+            if workspace {
+                "xcodebuild"
+            } else {
+                "expo run:ios"
+            },
+        );
+        script_candidate_recheck(&mut mock);
+        script_fingerprint_recheck(&mut mock, native_files);
+        common::script_ios_app_verification(&mut mock);
         mock.expect_spawn(
             "expo start",
             Spawned {
@@ -768,23 +825,20 @@ fn unproven_early_metro_refuses_to_start_a_native_build_and_retains_its_lease() 
         assert!(receipt.cleanup["device_lease"].starts_with("unresolved:"));
         assert!(!mock.calls.iter().any(|c| matches!(
             c.label.as_str(),
-            "expo-run-ios"
-                | "xcodebuild-ios"
-                | "simctl-install"
-                | "simctl-launch"
-                | "core-walk"
-                | "kill-group"
+            "simctl-install" | "simctl-launch" | "core-walk" | "kill-group"
         )));
         let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
         assert!(record.resources.metro.unwrap().identity.is_none());
         assert!(record.resources.lease.unwrap().lock_dir.exists());
+        // The build lock was released before Metro started.
         assert!(record.resources.build_lock.is_none());
+        assert!(!req.lock_root.join("native-build-ios").exists());
         assert_eq!(mock.remaining(), 0);
     }
 }
 
 #[test]
-fn metro_exit_during_a_native_build_prevents_launch_and_cleans_up_both_stages() {
+fn metro_exit_after_install_prevents_launch_and_cleans_up_both_stages() {
     let (repo, app) = app_repo();
     let req = request(&repo, &app, 30);
     let mut mock = MockRunner::new();
@@ -792,13 +846,11 @@ fn metro_exit_during_a_native_build_prevents_launch_and_cleans_up_both_stages() 
     common::script_ios_deps(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
+    common::script_finite_ios_build_only(&mut mock, "expo run:ios");
+    script_candidate_recheck(&mut mock);
+    script_fingerprint_recheck(&mut mock, "");
+    common::script_ios_app_verification(&mut mock);
     common::script_ios_metro_spawn(&mut mock);
-    mock.expect_spawn_piped("expo run:ios", 5000, "", Some(0));
-    mock.expect_run("ps", CmdOutput::success(LSTART));
-    mock.expect_run("ps", CmdOutput::success("qaren-build"));
-    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
-    common::script_ios_app_verification(&mut mock);
-    common::script_ios_app_verification(&mut mock);
     mock.expect_run("simctl install", CmdOutput::success(""));
     mock.expect_run("ps", CmdOutput::failed(1, ""));
     mock.expect_run("ps", CmdOutput::failed(1, ""));
@@ -832,12 +884,10 @@ fn invalid_spawned_build_group_retains_pending_and_both_locks_without_starting()
     common::script_ios_deps(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
-    common::script_ios_metro_spawn(&mut mock);
     mock.expect_spawn_piped("expo run:ios", 1, "", Some(0));
     mock.expect_run("ps", CmdOutput::success(LSTART));
     mock.expect_run("ps", CmdOutput::success("qaren-build"));
 
-    common::script_ios_metro_cleanup(&mut mock);
     let receipt = run(&mut mock, &req);
 
     assert_eq!(receipt.result, ReceiptResult::Failed);
@@ -855,11 +905,7 @@ fn invalid_spawned_build_group_retains_pending_and_both_locks_without_starting()
         c.label.as_str(),
         "simctl-install" | "simctl-launch" | "core-walk"
     )));
-    assert!(mock
-        .calls
-        .iter()
-        .filter(|c| c.label == "kill-group")
-        .all(|c| c.args.last().unwrap() == "-6000"));
+    assert!(!mock.calls.iter().any(|c| c.label == "kill-group"));
     assert_eq!(mock.remaining(), 0);
 }
 
@@ -878,10 +924,6 @@ fn failed_spawn_retirement_save_or_interruption_retains_pending_and_both_locks()
         common::script_ios_deps(&mut mock);
         mock.expect_run("ls-files", CmdOutput::success(""));
         script_clean_build_plan(&mut mock);
-        common::script_ios_metro_spawn(&mut mock);
-        if !matches!(fault, BuildSpawnFault::Interrupted) {
-            common::script_ios_metro_cleanup(&mut mock);
-        }
         let outcome =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&mut mock, &req)));
         match fault {
@@ -947,7 +989,6 @@ fn finite_build_failures_never_install_or_walk_and_unproven_groups_retain_both_l
             }),
         );
         script_clean_build_plan(&mut mock);
-        common::script_ios_metro_spawn(&mut mock);
         mock.expect_spawn_piped(
             if workspace {
                 "xcodebuild"
@@ -1013,7 +1054,6 @@ fn finite_build_failures_never_install_or_walk_and_unproven_groups_retain_both_l
             mock.expect_run("otool -L", CmdOutput::success("test.app/binary:\n"));
             mock.expect_run("nm", CmdOutput::success("_main\n"));
         }
-        common::script_ios_metro_cleanup(&mut mock);
         let receipt = run(&mut mock, &req);
         assert_eq!(receipt.result, ReceiptResult::Failed, "{mode}");
         assert_eq!(
@@ -1472,10 +1512,34 @@ fn script_provision_after_deps(mock: &mut MockRunner) {
 }
 
 fn script_provision_build(mock: &mut MockRunner, command: &str, native_files: &str) {
+    script_provision_candidate(mock, command, native_files, &"b".repeat(40), UNTRACKED_PLAN);
+}
+
+fn script_provision_candidate(
+    mock: &mut MockRunner,
+    command: &str,
+    native_files: &str,
+    head: &str,
+    status: &str,
+) {
     mock.expect_run("ls-files", CmdOutput::success(native_files));
     script_clean_build_plan(mock);
-    common::script_finite_ios_build_with(mock, command);
+    common::script_finite_ios_build_with(mock, command, |m| {
+        m.expect_run("rev-parse HEAD", CmdOutput::success(head));
+        m.expect_run("--porcelain", CmdOutput::success(status));
+        script_fingerprint_recheck(m, native_files)
+    });
     script_ready_recheck(mock, native_files);
+}
+
+fn script_candidate_recheck(mock: &mut qaren::exec::MockRunner) {
+    mock.expect_run("rev-parse HEAD", CmdOutput::success(&"b".repeat(40)));
+    mock.expect_run("--porcelain", CmdOutput::success(UNTRACKED_PLAN));
+}
+
+fn script_fingerprint_recheck(mock: &mut qaren::exec::MockRunner, native_files: &str) {
+    mock.expect_run("ls-files", CmdOutput::success(native_files));
+    common::script_xcode(mock);
 }
 
 // A clean iOS build re-reads free disk after the build plan.
@@ -1746,7 +1810,8 @@ fn script_recipe_walk_after_preflight(
     exit: i32,
     status: &str,
 ) {
-    script_provision(mock);
+    common::script_ios_deps(mock);
+    script_provision_candidate(mock, "expo run:ios", "", &"b".repeat(40), status);
     mock.expect_run("(exclude).qaren/actions", CmdOutput::success(""));
     script_host_probe(mock, UDID, hosts_absent());
     mock.expect_spawn_piped(
@@ -2570,7 +2635,6 @@ fn a_cancel_during_the_build_stops_it_with_proof_and_releases_both_locks() {
     common::script_ios_deps(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
-    common::script_ios_metro_spawn(&mut mock);
     mock.expect_spawn_piped("expo run:ios", 5000, "", None);
     mock.expect_run("ps", CmdOutput::success(LSTART));
     mock.expect_run("ps", CmdOutput::success("qaren-build"));
@@ -2586,7 +2650,6 @@ fn a_cancel_during_the_build_stops_it_with_proof_and_releases_both_locks() {
     mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
     mock.cancel_after = Some(("-p 5000".into(), "received SIGINT".into()));
 
-    common::script_ios_metro_cleanup(&mut mock);
     let receipt = run(&mut mock, &req);
 
     assert_eq!(receipt.result, ReceiptResult::Refused);
@@ -7474,6 +7537,11 @@ fn script_pr_preflight_requiring(
     mock.expect_run("lsof", free_port());
 }
 
+fn script_pr_provision(mock: &mut MockRunner) {
+    common::script_ios_deps(mock);
+    script_provision_candidate(mock, "expo run:ios", "", PR_HEAD, "");
+}
+
 fn script_pr_provenance_recheck(mock: &mut MockRunner) {
     mock.expect_run("git", CmdOutput::success(&format!("{PR_HEAD}\n")));
     mock.expect_run("git", CmdOutput::success(""));
@@ -7606,7 +7674,7 @@ fn pr_runtime_input_recording_obeys_video_policy_and_secret_inventory() {
             &["PASSWORD"],
             if non_secret { &["PASSWORD"] } else { &[] },
         );
-        script_provision(mock);
+        script_pr_provision(mock);
         script_pr_provenance_recheck(mock);
         script_drift_status(mock);
         if records {
@@ -7713,7 +7781,7 @@ fn recording_start_failures_remain_failed_through_cleanup_and_the_viewer() {
         };
         let mock = &mut runner.inner;
         script_pr_preflight(mock, &repo, &wt);
-        script_provision(mock);
+        script_pr_provision(mock);
         script_pr_provenance_recheck(mock);
         script_drift_status(mock);
         if retained {
@@ -7817,7 +7885,7 @@ fn cancelled_pr_walks_with_or_without_source_drift_cannot_publish() {
         };
         let mock = &mut runner.inner;
         script_pr_preflight(mock, &repo, &wt);
-        script_provision(mock);
+        script_pr_provision(mock);
         script_pr_provenance_recheck(mock);
         script_drift_status(mock);
         script_recorder_start(mock);
@@ -7889,7 +7957,7 @@ fn pr_walk_result(candidate_drift: bool, collision: bool) {
     };
     let mock = &mut runner.inner;
     script_pr_preflight(mock, &repo, &wt);
-    script_provision(mock);
+    script_pr_provision(mock);
     script_pr_provenance_recheck(mock);
     script_drift_status(mock);
     script_recorder_start(mock);
@@ -8049,7 +8117,7 @@ fn a_core_failure_on_a_pr_run_still_stops_the_recorder_and_removes_the_worktree(
     };
     let mock = &mut runner.inner;
     script_pr_preflight(mock, &repo, &wt);
-    script_provision(mock);
+    script_pr_provision(mock);
     script_pr_provenance_recheck(mock);
     script_drift_status(mock);
     script_recorder_start(mock);
@@ -8108,7 +8176,7 @@ fn a_pr_run_retains_its_worktree_when_metro_cleanup_is_unproven() {
     };
     let mock = &mut runner.inner;
     script_pr_preflight(mock, &repo, &wt);
-    script_provision(mock);
+    script_pr_provision(mock);
     script_pr_provenance_recheck(mock);
     script_drift_status(mock);
     script_recorder_start(mock);
@@ -8155,7 +8223,7 @@ fn a_pr_run_keeps_the_unbound_metros_surviving_child_worktree() {
     };
     let mock = &mut runner.inner;
     script_pr_preflight(mock, &repo, &wt);
-    script_provision(mock);
+    script_pr_provision(mock);
     script_pr_provenance_recheck(mock);
     script_drift_status(mock);
     script_recorder_start(mock);
@@ -8233,7 +8301,7 @@ fn pr_receipt_reports_the_final_recorder_cleanup_retry() {
         };
         let mock = &mut runner.inner;
         script_pr_preflight(mock, &repo, &wt);
-        script_provision(mock);
+        script_pr_provision(mock);
         script_pr_provenance_recheck(mock);
         script_drift_status(mock);
         script_recorder_start(mock);
@@ -8349,7 +8417,7 @@ fn cancelled_pr_startup_never_dispatches_the_core_and_cleans_up() {
         };
         let mock = &mut runner.inner;
         script_pr_preflight(mock, &repo, &wt);
-        script_provision(mock);
+        script_pr_provision(mock);
         script_pr_provenance_recheck(mock);
         if recorder_started {
             script_drift_status(mock);
@@ -8440,7 +8508,7 @@ fn a_late_cancellation_is_the_terminal_result_and_publication_refuses() {
         };
         let mock = &mut runner.inner;
         script_pr_preflight(mock, &repo, &wt);
-        script_provision(mock);
+        script_pr_provision(mock);
         script_pr_provenance_recheck(mock);
         script_drift_status(mock);
         script_recorder_start(mock);
@@ -8664,7 +8732,7 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
             mock.advance_on = Some(("ps -p 7100".into(), 559));
         }
         script_pr_preflight(mock, &repo, &wt);
-        script_provision(mock);
+        script_pr_provision(mock);
         script_pr_provenance_recheck(mock);
         script_drift_status(mock);
         script_recorder_start(mock);
@@ -8800,7 +8868,7 @@ fn cancellation_during_terminal_save_withholds_the_publish_handoff() {
     );
     let mock = &mut runner.0.inner;
     script_pr_preflight(mock, &repo, &wt);
-    script_provision(mock);
+    script_pr_provision(mock);
     script_pr_provenance_recheck(mock);
     script_drift_status(mock);
     script_recorder_start(mock);
@@ -9760,7 +9828,7 @@ fn script_check_with_boot(mock: &mut MockRunner, repo: &Path) {
 
 fn script_pr_pass(mock: &mut MockRunner, repo: &Path, wt: &Path) {
     script_pr_preflight(mock, repo, wt);
-    script_provision(mock);
+    script_pr_provision(mock);
     script_pr_provenance_recheck(mock);
     script_drift_status(mock);
     script_recorder_start(mock);

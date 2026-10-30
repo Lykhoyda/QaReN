@@ -401,6 +401,9 @@ fn main_inner(args: Vec<String>) -> ExitCode {
             runtime_dir(),
             config.as_deref().map(std::path::Path::new),
         );
+        report
+            .checks
+            .push(doctor::build_lock_row(&mut runner, lock_root()));
         if let Some(udid) = device.as_deref() {
             let mut row = doctor::lane_row(&mut runner, &home, udid);
             if let Some(note) = lock_root()
