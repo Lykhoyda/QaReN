@@ -394,6 +394,51 @@ fn fresh_admission_cancellation_before_scan_after_scan_during_delay_and_after_re
 }
 
 #[test]
+fn fresh_admission_android_busy_without_pid_evidence_waits_for_owner_without_reprobing() {
+    let mut mock = MockRunner::new();
+    mock.expect_run(
+        "fresh-install-preflight.js",
+        CmdOutput {
+            exit_code: Some(4),
+            stdout: r#"{"v":1,"platform":"android","deviceId":"emulator-5554","status":"busy"}"#
+                .into(),
+            ..Default::default()
+        },
+    );
+    let android = core::AndroidEnv {
+        serial: "emulator-5554".into(),
+        server_port: 5038,
+        platform_tools: "/android/platform-tools".into(),
+    };
+    let failure = core::fresh_install_admission(
+        &mut mock,
+        Path::new("/node"),
+        Path::new("/runtime"),
+        Path::new("/app"),
+        "emulator-5554",
+        Some(&android),
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(failure.code, FailureCode::DeviceBusy);
+    let recovery = failure.recovery.as_ref().unwrap();
+    assert_eq!(
+        recovery.reason,
+        qaren::failure::RecoveryReason::ForeignAdmissionUnresolved
+    );
+    assert_eq!(
+        recovery.action,
+        qaren::failure::RecoveryAction::WaitForOwner
+    );
+    assert!(failure
+        .next_action
+        .contains("wait for the foreign process owner"));
+    assert_eq!(admission_failure_summary(&failure)["attempts"], 1);
+    assert_eq!(mock.calls.len(), 1);
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
 fn fresh_admission_android_never_reprobes_ios_identity_evidence() {
     let mut mock = MockRunner::new();
     let mut output = admission_output("unknown", "executable_identity_unproven");
