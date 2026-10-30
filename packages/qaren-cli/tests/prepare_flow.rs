@@ -36,6 +36,8 @@ fn prepare_args(
         // shared build-serialization lock name.
         lock_root: scenario_path.parent().unwrap().join(".locks"),
         native_cache_root: scenario_path.parent().unwrap().join(".native-store"),
+        native_cache_state_root: scenario_path.parent().unwrap().join(".runtime-state"),
+        native_cache_mount_probe: common::fixture_mount,
         runs_root: scenario_path.parent().unwrap().to_path_buf(),
         device: None,
         boot_device: false,
@@ -3557,6 +3559,302 @@ fn build_process_death_fails_with_log_evidence() {
 }
 
 #[test]
+fn expo_interface_failure_keeps_the_cause_and_remedy_after_owned_metro_cleanup() {
+    for explicit_versions in [true, false] {
+        let repo = common::temp_repo();
+        let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
+        let mut mock = MockRunner::new();
+        script_validation(&mut mock, &repo, IOS_TOOLS);
+        mock.expect_run("lsof", free_port());
+        mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
+        mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
+        common::script_ios_deps(&mut mock);
+        mock.expect_run("ls-files", CmdOutput::success(""));
+        common::script_xcode(&mut mock);
+        mock.expect_run("simctl create", CmdOutput::success(&format!("{UDID}\n")));
+        mock.expect_run("simctl bootstatus", CmdOutput::success(""));
+        let diagnostic = if explicit_versions {
+            include_str!("fixtures/ios-toolchain-mismatch.txt")
+        } else {
+            "ExpoModulesJSI.swiftinterface: error: cannot find type '__ObjC::expo'\n"
+        };
+        mock.build_log = Some(format!(
+            "{diagnostic}{}",
+            "unrelated build tail\n".repeat(40)
+        ));
+        common::script_ios_metro_spawn(&mut mock);
+        mock.expect_spawn_piped("expo run:ios", 5000, "", Some(65));
+        mock.expect_run("ps", CmdOutput::success(LSTART));
+        mock.expect_run("ps", CmdOutput::success("qaren-build"));
+        mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+        common::script_ios_metro_cleanup(&mut mock);
+        let receipt = prepare(&mut mock, &prepare_args(&scenario_path, false, None));
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(failure.code, FailureCode::BuildFailed);
+        assert_eq!(receipt.cleanup["metro"], "removed");
+        assert_eq!(receipt.next_action, failure.next_action.to_string());
+        assert!(receipt
+            .next_action
+            .contains("EXPO_USE_PRECOMPILED_MODULES=0"));
+        assert!(receipt.next_action.contains("only after cleanup completes"));
+        assert_eq!(
+            receipt.outcomes["recovery_next_rung"],
+            if explicit_versions {
+                "source-rebuild"
+            } else {
+                "inspect-interface-compatibility"
+            }
+        );
+        assert!(receipt.outcomes["recovery_unavailable_rungs"].contains("restart-device"));
+        if explicit_versions {
+            assert_eq!(
+                receipt.outcomes["build_failure_cause"],
+                "toolchain-newer-than-prebuilt"
+            );
+            assert!(failure.detail.contains("6.3.1"));
+            assert!(failure.detail.contains("6.4"));
+            assert!(failure
+                .evidence
+                .iter()
+                .all(|tail| !tail.contains("ExpoModulesCore")));
+        } else {
+            assert!(!receipt.outcomes.contains_key("build_failure_cause"));
+            assert!(failure.detail.contains("compatibility is unproven"));
+        }
+        let json = serde_json::to_value(&receipt).unwrap();
+        assert_eq!(json["failure"]["code"], "BUILD_FAILED");
+        assert_eq!(json["next_action"], json["failure"]["next_action"]);
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn missing_cache_volume_refuses_before_allocating_or_building() {
+    fn unavailable(
+        _: &std::fs::File,
+        _: &std::path::Path,
+    ) -> Result<String, qaren::buildplan::CacheAvailability> {
+        Err(qaren::buildplan::CacheAvailability::VolumeUnmounted)
+    }
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut args = prepare_args(&scenario, false, None);
+    args.native_cache_mount_probe = unavailable;
+    let mut mock = MockRunner::new();
+    script_validation(&mut mock, &repo, IOS_TOOLS);
+    mock.expect_run("lsof", free_port());
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
+    mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
+    common::script_ios_deps(&mut mock);
+    let receipt = prepare(&mut mock, &args);
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::PrereqMissing
+    );
+    assert!(receipt
+        .failure
+        .as_ref()
+        .unwrap()
+        .detail
+        .contains("native-cache-volume-unavailable"));
+    assert_eq!(
+        receipt.outcomes["recovery_next_rung"],
+        "restore-cache-volume"
+    );
+    assert_eq!(receipt.outcomes["recovery_destroys_state"], "false");
+    assert!(receipt.next_action.contains("remount"));
+    assert!(!mock.calls.iter().any(|spec| matches!(
+        spec.label.as_str(),
+        "expo-run-ios" | "expo-prebuild" | "simctl-create"
+    )));
+    assert!(!args.native_cache_root.exists());
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn first_source_build_publishes_a_stable_key_reusable_without_local_pods() {
+    use qaren::buildplan::{self, BuildDecision, DecisionInputs, StateStatus};
+    let repo = common::temp_repo();
+    let app = repo.join("test-app");
+    std::fs::write(
+        app.join("package.json"),
+        r#"{"dependencies":{"expo":"56.0.0"}}"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(app.join("node_modules/expo-modules-core")).unwrap();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let args = prepare_args(&scenario, false, None);
+    let files = "test-app/package.json\0test-app/pnpm-lock.yaml\0";
+    let fp_script = |m: &mut MockRunner| {
+        m.expect_run("ls-files", CmdOutput::success(files));
+        common::script_expo_fingerprint(m, "abc123", common::XCODE_VERSION);
+    };
+    let mut mock = MockRunner::new();
+    mock.environment
+        .insert("EXPO_USE_PRECOMPILED_MODULES".into(), "0".into());
+    mock.ios_prebuild_mode = Some(false);
+    script_validation(&mut mock, &repo, IOS_TOOLS);
+    mock.expect_run("lsof", free_port());
+    mock.expect_run("ps", CmdOutput::success(LSTART));
+    mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
+    common::script_ios_deps(&mut mock);
+    fp_script(&mut mock);
+    mock.expect_run("simctl create", CmdOutput::success(&format!("{UDID}\n")));
+    mock.expect_run("simctl bootstatus", CmdOutput::success(""));
+    mock.expect_spawn_piped("expo prebuild", 5000, "", Some(0));
+    mock.expect_run("ps", CmdOutput::success(LSTART));
+    mock.expect_run("ps", CmdOutput::success("qaren-build"));
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    common::script_finite_ios_build(&mut mock);
+    script_ios_readiness(&mut mock);
+    fp_script(&mut mock);
+    let receipt = prepare(&mut mock, &args);
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert!(receipt.outcomes["toolchain"].ends_with("precompiled_modules=off"));
+    assert_eq!(receipt.outcomes["precompiled_modules_requested"], "off");
+    let history = buildplan::LastSuccess::load(
+        &args.native_cache_state_root,
+        &args.native_cache_root,
+        "ios",
+        "com.rndevagent.testapp",
+    )
+    .unwrap();
+    assert_eq!(
+        history.fingerprint,
+        receipt.build.as_ref().unwrap().fingerprint
+    );
+    let other = common::temp_repo();
+    let other_app = other.join("test-app");
+    std::fs::write(
+        other_app.join("package.json"),
+        std::fs::read(app.join("package.json")).unwrap(),
+    )
+    .unwrap();
+    std::fs::create_dir_all(other_app.join("node_modules/expo-modules-core")).unwrap();
+    let mut runner = MockRunner::new();
+    runner
+        .environment
+        .insert("EXPO_USE_PRECOMPILED_MODULES".into(), "0".into());
+    fp_script(&mut runner);
+    let fp = qaren::fingerprint::compute(&mut runner, &other, &other_app, "ios").unwrap();
+    assert_eq!(fp.value, history.fingerprint);
+    assert!(!other_app.join("ios").exists());
+    let root = buildplan::open_native_store_root(&args.native_cache_root, false)
+        .unwrap()
+        .unwrap();
+    let path = buildplan::store_dir(
+        &args.native_cache_root,
+        "ios",
+        "com.rndevagent.testapp",
+        &fp.value,
+    );
+    let entry = root
+        .entry(path.strip_prefix(&args.native_cache_root).unwrap(), false)
+        .unwrap()
+        .unwrap();
+    let stored = buildplan::load_store_record(&entry).unwrap().unwrap();
+    let status = entry.artifact_status(&stored.artifact).unwrap();
+    let inputs = DecisionInputs {
+        platform: "ios",
+        app_id: "com.rndevagent.testapp",
+        worktree_root: &other,
+        candidate_sha: "new-candidate",
+        fingerprint: &fp.value,
+        fingerprint_parts: &fp.parts,
+        fingerprint_complete: fp.complete,
+        incompleteness: &fp.incompleteness,
+        expo_unavailable: fp.expo_unavailable.as_deref(),
+        scheme: Some("rndatest"),
+        force_clean: false,
+        native_dir_exists: false,
+        native_dir_in_candidate: false,
+    };
+    assert_eq!(
+        buildplan::decide(&inputs, &StateStatus::Missing, Some((stored, status))).decision,
+        BuildDecision::Reuse
+    );
+}
+
+#[test]
+fn stale_workspace_pods_in_either_mode_never_publish_a_mislabeled_artifact() {
+    for requested in [false, true] {
+        let repo = common::temp_repo();
+        let app = repo.join("test-app");
+        std::fs::write(
+            app.join("package.json"),
+            r#"{"dependencies":{"expo":"56.0.0"}}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(app.join("ios")).unwrap();
+        let podfile = include_str!("fixtures/ios-standard-podfile.txt");
+        std::fs::write(app.join("ios/Podfile"), podfile).unwrap();
+        common::write_core_pods(&app, !requested);
+        let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+        let args = prepare_args(&scenario, false, None);
+        let files = "test-app/package.json\0test-app/pnpm-lock.yaml\0test-app/ios/Podfile\0";
+        let fp_script = |m: &mut MockRunner| {
+            m.expect_run("ls-files", CmdOutput::success(files));
+            common::script_expo_fingerprint(m, "abc123", common::XCODE_VERSION);
+        };
+        let mut mock = MockRunner::new();
+        mock.environment.insert(
+            "EXPO_USE_PRECOMPILED_MODULES".into(),
+            if requested { "1" } else { "0" }.into(),
+        );
+        script_ios_prepare_fingerprints(
+            &mut mock,
+            &repo,
+            CmdOutput::success(""),
+            fp_script,
+            fp_script,
+            |m| m.expect_run("simctl install", CmdOutput::success("")),
+            common::script_ios_launch,
+        );
+        let receipt = prepare(&mut mock, &args);
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Ready,
+            "{:?}",
+            receipt.failure
+        );
+        assert!(receipt.outcomes["artifact_cache"].contains("differs from requested mode"));
+        assert_eq!(
+            receipt.outcomes["precompiled_modules_requested"],
+            if requested { "on" } else { "off" }
+        );
+        assert!(receipt.outcomes["toolchain"].ends_with("precompiled_modules=unknown"));
+        assert!(!args.native_cache_root.exists());
+        assert!(buildplan_history_absent(&args));
+        assert_eq!(
+            std::fs::read_to_string(app.join("ios/Podfile")).unwrap(),
+            podfile
+        );
+        assert!(repo
+            .join(&receipt.run_id)
+            .join("ios-build/testapp.app")
+            .is_dir());
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+fn buildplan_history_absent(args: &PrepareArgs) -> bool {
+    qaren::buildplan::LastSuccess::load(
+        &args.native_cache_state_root,
+        &args.native_cache_root,
+        "ios",
+        "com.rndevagent.testapp",
+    )
+    .is_none()
+}
+
+#[test]
 fn recording_a_build_retires_run_output_and_publishes_to_the_machine_store_without_pruning() {
     let repo = common::temp_repo();
     let scenario_path = write_scenario(
@@ -5342,8 +5640,10 @@ fn unsafe_native_root_fails_normal_prepare_and_read_only_dry_run() {
             mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
             common::script_ios_deps(&mut mock);
         }
-        mock.expect_run("ls-files", CmdOutput::success(""));
-        common::script_xcode(&mut mock);
+        if dry_run {
+            mock.expect_run("ls-files", CmdOutput::success(""));
+            common::script_xcode(&mut mock);
+        }
         let receipt = prepare(&mut mock, &args);
         assert_eq!(receipt.result, ReceiptResult::Failed);
         assert_eq!(

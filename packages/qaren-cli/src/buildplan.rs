@@ -7,6 +7,13 @@ use std::path::{Path, PathBuf};
 
 include!("lock_protocol.rs");
 
+mod diagnostics;
+pub use diagnostics::{
+    anchor_native_cache, anchor_native_cache_with, mounted_filesystem_identity,
+    open_native_store_root_from_anchor, CacheAvailability, LastSuccess, MountProbe,
+    NativeCacheAnchor, CACHE_VOLUME_FIX,
+};
+
 pub const CACHE_SCHEMA: &str = "qaren-native-cache/2";
 pub const PREWARM_SCHEMA: &str = "qaren-deps-prewarm/1";
 
@@ -1080,6 +1087,16 @@ pub fn decide(
         .filter(|part| !state.fingerprint_parts.contains_key(*part))
         .map(String::as_str)
         .collect();
+    if inputs.platform == "ios"
+        && changed
+            .iter()
+            .any(|part| matches!(*part, "toolchain.xcode" | "toolchain.swift"))
+    {
+        return clean(
+            "selected Xcode or compiler identity changed; clean derived native outputs before rebuilding".into(),
+            vec![format!("native inputs changed: {}", changed.join(", "))],
+        );
+    }
     let uncomparable = match inputs.expo_unavailable {
         _ if !changed.is_empty() => None,
         Some(cause) => Some(format!(

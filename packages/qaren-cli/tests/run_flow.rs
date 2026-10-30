@@ -161,6 +161,8 @@ fn request(repo: &Path, app: &Path, step_seconds: u64) -> RunRequest {
         node: Some(PathBuf::from("/usr/local/bin/node")),
         lock_root: repo.join(".locks"),
         native_cache_root: repo.join(".native-store"),
+        native_cache_state_root: repo.join(".runtime-state"),
+        native_cache_mount_probe: common::fixture_mount,
         runs_root: repo.join("runs"),
         android_home: None,
         budgets: Budgets {
@@ -1067,6 +1069,58 @@ fn finite_build_failures_never_install_or_walk_and_unproven_groups_retain_both_l
             let run_dir = req.runs_root.join(run_id());
             assert_xcode_products_retained(&run_dir);
         }
+    }
+}
+
+#[test]
+fn compiler_cause_and_recovery_survive_clean_and_incomplete_check_teardown() {
+    for incomplete in [false, true] {
+        let (repo, app) = app_repo();
+        let req = request(&repo, &app, 30);
+        let mut mock = MockRunner::new();
+        mock.build_log = Some(include_str!("fixtures/ios-toolchain-mismatch.txt").into());
+        script_preflight(&mut mock, &repo);
+        common::script_ios_deps(&mut mock);
+        mock.expect_run("ls-files", CmdOutput::success(""));
+        script_clean_build_plan(&mut mock);
+        common::script_ios_metro_spawn(&mut mock);
+        mock.expect_spawn_piped("expo run:ios", 5000, "", Some(65));
+        mock.expect_run("ps", CmdOutput::success(LSTART));
+        mock.expect_run("ps", CmdOutput::success("qaren-build"));
+        mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+        if incomplete {
+            mock.expect_run("ps", CmdOutput::failed(1, ""));
+            mock.expect_run("lsof", CmdOutput::success("unattributed"));
+        } else {
+            common::script_ios_metro_cleanup(&mut mock);
+        }
+        let receipt = run(&mut mock, &req);
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(failure.code, FailureCode::BuildFailed);
+        assert_eq!(
+            receipt.outcomes["build_failure_cause"],
+            "toolchain-newer-than-prebuilt"
+        );
+        assert_eq!(receipt.next_action, failure.next_action.to_string());
+        assert!(receipt.next_action.contains("host Swift 6.4"));
+        assert!(receipt.next_action.contains("expo-modules-core"));
+        assert!(receipt
+            .next_action
+            .contains("EXPO_USE_PRECOMPILED_MODULES=0"));
+        let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+        assert_eq!(record.resources.lease.is_some(), incomplete);
+        if incomplete {
+            assert!(receipt
+                .next_action
+                .starts_with(&format!("qaren cleanup {} --json", receipt.run_id)));
+        } else {
+            assert_eq!(receipt.cleanup["device_lease"], "removed");
+        }
+        assert!(!mock
+            .calls
+            .iter()
+            .any(|c| matches!(c.label.as_str(), "simctl-install" | "core-walk")));
+        assert_eq!(mock.remaining(), 0);
     }
 }
 
@@ -9553,8 +9607,6 @@ fn unsafe_native_root_fails_check_and_releases_the_existing_device_lease() {
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
-    mock.expect_run("ls-files", CmdOutput::success(common::IOS_NATIVE_FILES));
-    common::script_xcode(&mut mock);
     let receipt = run(&mut mock, &req);
     assert_eq!(
         receipt.result,

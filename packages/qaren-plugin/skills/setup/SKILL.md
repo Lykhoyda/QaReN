@@ -20,6 +20,11 @@ The plugin root is two directories above this skill's base directory. Resolve on
 5. Any other refusal: stop and quote the installer's message.
 
 Run `<qaren path> doctor` before setup continues. Stop on a `FAIL` and give its fix.
+Present `ios-toolchain-match` and `native-cache-root` warnings before building.
+`DEVELOPER_DIR`, `TOOLCHAINS`, `EXPO_USE_PRECOMPILED_MODULES` and
+`RCT_USE_PREBUILT_RNCORE` are inherited. Native source/precompiled switches take
+effect at pod installation; changing an export does not change existing Pods.
+Follow the returned action and obtain approval before regenerating native files.
 Present `host-memory`, `host-devices`, `simulator-service` and `host-load` warnings
 with their next steps before the smoke run; use the conservative lane recommendation
 in the [host budget](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#host-budget).

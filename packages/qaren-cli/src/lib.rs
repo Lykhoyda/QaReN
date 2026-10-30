@@ -15,6 +15,7 @@ pub mod flow;
 pub mod github;
 pub mod handoff;
 pub mod host_capacity;
+pub mod ios_toolchain;
 pub mod lease;
 pub mod native;
 pub mod native_suite;

@@ -70,6 +70,7 @@ pub fn script_expo_fingerprint(mock: &mut MockRunner, hash: &str, xcode: &str) {
         )),
     );
     mock.expect_run("xcodebuild -version", CmdOutput::success(xcode));
+    script_swift(mock);
 }
 
 pub fn stored_record(
@@ -125,6 +126,7 @@ pub const XCODE_VERSION: &str = "Xcode 27.0\nBuild version 27A266a\n";
 
 pub fn script_xcode(mock: &mut MockRunner) {
     mock.expect_run("xcodebuild -version", CmdOutput::success(XCODE_VERSION));
+    script_swift(mock);
 }
 
 pub fn script_expo_fingerprint_unresolvable(mock: &mut MockRunner) {
@@ -386,6 +388,7 @@ pub struct IosBuildRunner {
     pub ambiguous_app: bool,
     pub workspace_mutation: Option<WorkspaceMutation>,
     pub build_log: Option<String>,
+    pub ios_prebuild_mode: Option<bool>,
     pub build_spawn_fault: Option<BuildSpawnFault>,
     pub symlink_build_root: Option<&'static str>,
     // Answers the next app-container probe with the last installed bundle path.
@@ -480,6 +483,7 @@ struct BuildStart {
     xcode: bool,
     ambiguous_app: bool,
     workspace_mutation: Option<WorkspaceMutation>,
+    ios_prebuild_mode: Option<bool>,
 }
 
 impl std::io::Write for BuildStart {
@@ -540,6 +544,17 @@ impl std::io::Write for BuildStart {
                 }
                 _ => {}
             }
+        }
+        if let Some(prebuilt) = self.ios_prebuild_mode {
+            let app = &record.candidate.project_root;
+            std::fs::create_dir_all(app.join("ios")).unwrap();
+            std::fs::write(
+                app.join("ios/Podfile"),
+                include_str!("../fixtures/ios-standard-podfile.txt"),
+            )
+            .unwrap();
+            std::fs::write(app.join("ios/Podfile.properties.json"), "{}").unwrap();
+            write_core_pods(app, prebuilt);
         }
         if let Some(output) = &self.output {
             write_ios_app(&output.join("testapp.app"));
@@ -773,6 +788,9 @@ impl qaren::exec::Runner for IosBuildRunner {
                 workspace_mutation: (spec.label == "expo-prebuild")
                     .then(|| self.workspace_mutation.clone())
                     .flatten(),
+                ios_prebuild_mode: (spec.label == "expo-prebuild")
+                    .then_some(self.ios_prebuild_mode)
+                    .flatten(),
             });
         }
         Ok(child)
@@ -789,6 +807,32 @@ impl qaren::exec::Runner for IosBuildRunner {
     fn cancellation(&self) -> Option<String> {
         self.inner.cancellation()
     }
+}
+
+pub fn write_core_pods(app: &std::path::Path, prebuilt: bool) {
+    let spec = if prebuilt {
+        serde_json::json!({"name":"ExpoModulesCore","vendored_frameworks":["ExpoModulesCore.xcframework"]})
+    } else {
+        serde_json::json!({"name":"ExpoModulesCore","source_files":["ios/**/*.swift"]})
+    };
+    let spec_dir = app.join("ios/Pods/Local Podspecs");
+    std::fs::create_dir_all(&spec_dir).unwrap();
+    std::fs::write(
+        spec_dir.join("ExpoModulesCore.podspec.json"),
+        serde_json::to_vec(&spec).unwrap(),
+    )
+    .unwrap();
+    let support = app.join("ios/Pods/Target Support Files/ExpoModulesCore");
+    std::fs::create_dir_all(&support).unwrap();
+    std::fs::write(
+        support.join("ExpoModulesCore.debug.xcconfig"),
+        if prebuilt {
+            "FRAMEWORK_SEARCH_PATHS = XCFrameworkIntermediates/ExpoModulesCore\n"
+        } else {
+            "PODS_TARGET_SRCROOT = ${PODS_ROOT}/../../node_modules/expo-modules-core\n"
+        },
+    )
+    .unwrap();
 }
 
 pub fn invalid_registry_auth_lists() -> Vec<serde_json::Value> {
@@ -847,4 +891,19 @@ pub fn assert_registry_specs(calls: &[qaren::exec::CmdSpec]) {
             assert!(spec.registry_auth_env.is_empty(), "{}", spec.label);
         }
     }
+}
+
+pub fn script_swift(mock: &mut MockRunner) {
+    mock.expect_run("xcrun swift --version", CmdOutput::success("Apple Swift version 6.4 (swiftlang-fixture clang-fixture)\nTarget: arm64-apple-macosx\n"));
+}
+
+pub fn fixture_mount(
+    file: &std::fs::File,
+    _path: &std::path::Path,
+) -> Result<String, qaren::buildplan::CacheAvailability> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file
+        .metadata()
+        .map_err(|_| qaren::buildplan::CacheAvailability::Uninspectable)?;
+    Ok(qaren::candidate::sha256_hex(&metadata.dev().to_le_bytes()))
 }
