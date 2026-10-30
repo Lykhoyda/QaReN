@@ -473,16 +473,17 @@ fn app_text(raw: &str) -> String {
 fn last_screen_table(screen: &ScreenNow) -> String {
     let yes = |flag: bool| if flag { "yes" } else { "no" };
     let mut out = format!(
-        "\nLast observed screen ({} ms old, after an action: {}):\n\n| Role | Id | Label | Enabled | Hittable | Off screen |\n|---|---|---|---|---|---|\n",
+        "\nLast observed screen ({} ms old, after an action: {}):\n\n| Role | Id | Label | Primary | Enabled | Hittable | Off screen |\n|---|---|---|---|---|---|---|\n",
         screen.age_ms,
         yes(screen.after_dispatch)
     );
     for control in &screen.controls {
         out.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {} |\n",
             prose(&control.role),
             control.id.as_deref().map(app_text).unwrap_or_default(),
             control.label.as_deref().map(app_text).unwrap_or_default(),
+            yes(control.primary),
             yes(control.enabled),
             yes(control.hittable),
             yes(control.offscreen)

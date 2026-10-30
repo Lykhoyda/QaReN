@@ -1099,8 +1099,10 @@ When a step fails on its own target (`TARGET_NOT_FOUND`, `REPLAY_SELECTOR`,
 `TARGET_AMBIGUOUS`, an unmet quoted wait or a scroll that stayed off screen),
 the receipt's `failure` carries `screen`, `suggestion` and `subreason`.
 `screen` lists up to 20 controls from the last observed screen, the target's
-own matches first, with role, testID, label, enabled, hittable and off-screen
-state, the capture's age (`ageMs`) and whether a device action ran after it
+own matches first, with role, testID, label, enabled, hittable, off-screen
+state and a primary mark for the first enabled, hittable, on-screen button in
+screen order whose masked label, trimmed and case-insensitive, is Continue,
+Next, Done, Submit, Confirm, OK or Save, the capture's age (`ageMs`) and whether a device action ran after it
 (`afterDispatch`); `counts` covers every control. Labels follow the same
 privacy rules as `failure.seen`: masked by value, and masked whole beside a
 secure field or a secret input, where testIDs remain; a testID holding a

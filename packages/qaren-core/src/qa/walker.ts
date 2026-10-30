@@ -1533,8 +1533,17 @@ async function walkBlockScoped(
   > => {
     const quoted = item.target.quoted!;
     secretFill(item, target.element);
-    const nothingTyped = (reason: string, screen: Screen): WalkOutcome =>
-      failed(item, attempt, `${reason}; nothing was typed`, screen, undefined);
+    const nothingTyped = (reason: string, screen: Screen, targetCode?: string): WalkOutcome =>
+      failed(
+        item,
+        attempt,
+        `${reason}; nothing was typed`,
+        screen,
+        undefined,
+        undefined,
+        false,
+        targetCode,
+      );
     const proofMode = before.screen.keyboardVisible === true && deps.reactFocused !== undefined;
     if (before.screen.keyboardVisible !== false && !proofMode)
       return nothingTyped(
@@ -1571,6 +1580,7 @@ async function walkBlockScoped(
             ? `${tap.error}; "${quoted}" stayed off screen after one scroll`
             : `"${quoted}" stayed off screen after one scroll: its centre is past the visible area or under the keyboard`,
           before.screen,
+          'TARGET_NOT_FOUND',
         );
       const scroll = await mutate(item, before, (context) =>
         deps.scroll(
@@ -1591,6 +1601,7 @@ async function walkBlockScoped(
         return nothingTyped(
           'TARGET_NOT_FOUND: the refused wrapper stayed off screen after one scroll',
           afterScroll.screen,
+          'TARGET_NOT_FOUND',
         );
       return keyboardFallback(
         item,
@@ -1604,6 +1615,7 @@ async function walkBlockScoped(
       return nothingTyped(
         `${tap.error ?? 'the tap was not dispatched'}; tapping "${quoted}" failed`,
         before.screen,
+        tap.ambiguous ? 'TARGET_AMBIGUOUS' : undefined,
       );
     const readyBy = deps.now() + KEYBOARD_READY_MS;
     let after = await settledCapture(item);
@@ -1626,7 +1638,12 @@ async function walkBlockScoped(
     if (after.screen.keyboardVisible !== true)
       return nothingTyped(`tapping "${quoted}" raised no keyboard`, after.screen);
     const again = binding?.kind === 'fallback' ? binding.fallback : undefined;
-    if (!again) return nothingTyped(`the tap on "${quoted}" changed the screen`, after.screen);
+    if (!again)
+      return nothingTyped(
+        `the tap on "${quoted}" changed the screen`,
+        after.screen,
+        'TARGET_NOT_FOUND',
+      );
     if (proofMode && !(await focusProven('tap', again.oracleTestID)))
       return nothingTyped(
         `the keyboard was already up and focus on "${quoted}" is not proven`,
@@ -2546,6 +2563,9 @@ async function walkBlockScoped(
                       `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}`,
                       before.screen,
                       await shoot(item),
+                      undefined,
+                      false,
+                      'TARGET_NOT_FOUND',
                     );
                     break;
                   }
@@ -2594,6 +2614,9 @@ async function walkBlockScoped(
                       `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}`,
                       before.screen,
                       await shoot(item),
+                      undefined,
+                      false,
+                      'TARGET_NOT_FOUND',
                     );
                     break;
                   }
@@ -2655,6 +2678,8 @@ async function walkBlockScoped(
                     before.screen,
                     await shoot(item),
                     ref,
+                    false,
+                    'TARGET_NOT_FOUND',
                   );
                   const originalFrame = refusedIdentity && elementFrame(refusedIdentity);
                   const currentFrame = elementFrame(element);
@@ -2753,6 +2778,8 @@ async function walkBlockScoped(
                   before.screen,
                   undefined,
                   ref,
+                  false,
+                  'TARGET_AMBIGUOUS',
                 );
                 break;
               }
@@ -2786,6 +2813,8 @@ async function walkBlockScoped(
                     before.screen,
                     await shoot(item),
                     ref,
+                    false,
+                    'TARGET_NOT_FOUND',
                   );
                   break;
                 }
@@ -2828,6 +2857,9 @@ async function walkBlockScoped(
                     `${act.error}; no unique eligible keyboard fallback target after the strict refusal; nothing was typed`,
                     before.screen,
                     undefined,
+                    undefined,
+                    false,
+                    'TARGET_NOT_FOUND',
                   );
                   break;
                 }
