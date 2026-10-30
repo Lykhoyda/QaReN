@@ -2095,6 +2095,31 @@ fn simultaneous_checks_on_distinct_devices_do_not_collide_at_the_same_millisecon
 }
 
 #[test]
+fn a_dependency_failure_reports_that_plan_cleanup_did_not_run() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    mock.expect_run(
+        "pnpm install --frozen-lockfile",
+        CmdOutput::failed(1, "fixture stop"),
+    );
+
+    let receipt = run(&mut mock, &request(&repo, &app, 30));
+
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::DepsInstallFailed
+    );
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    let json: serde_json::Value = serde_json::from_str(&receipt.to_json()).unwrap();
+    assert_eq!(
+        json["cleanup"]["plan"],
+        "not_run: plan cleanup is not supported"
+    );
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
 fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
     let (repo, app) = app_repo();
     let mut mock = MockRunner::new();

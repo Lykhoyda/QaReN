@@ -228,6 +228,10 @@ fn run_scoped(runner: &mut dyn Runner, req: &RunRequest) -> Receipt {
         receipt.commands_executed = runner.commands_executed();
     }
     receipt.preflight_jev = preflight_jev;
+    receipt.cleanup.insert(
+        "plan".to_string(),
+        "not_run: plan cleanup is not supported".to_string(),
+    );
     receipt
 }
 

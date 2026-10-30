@@ -1998,7 +1998,9 @@ refusals and failed or timed-out walks. The receipt's `cleanup` map reports
 resource outcomes; unresolved ownership can retain resources and the device
 lease for `qaren cleanup <run-id>`. This is infrastructure teardown: it does not
 execute remaining plan steps to delete app or staging-account data created by
-the walk.
+the walk. Every `check` and `pr` receipt reports
+`cleanup.plan: "not_run: plan cleanup is not supported"`, including failures
+before the walk starts.
 
 Signals or a vanished caller stop the run with `RUN_CANCELLED`. The CLI checks
 cancellation before forward operations, including Git probes, recorder start,
