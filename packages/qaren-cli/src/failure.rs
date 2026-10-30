@@ -120,7 +120,11 @@ pub struct Failure {
     pub phase: String,
     pub code: FailureCode,
     pub detail: OutputText,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_evidence",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub evidence: Vec<OutputText>,
     pub next_action: OutputText,
     // Boxed so every Result<_, Failure> keeps its size.
@@ -144,6 +148,22 @@ impl FailureRecovery {
     }
 }
 
+fn deserialize_evidence<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<OutputText>, D::Error> {
+    Vec::<String>::deserialize(deserializer).map(|notes| {
+        notes
+            .into_iter()
+            .map(
+                |note| match crate::core::AdmissionSummary::from_note(&note) {
+                    Some(summary) => OutputText::from_admission(&summary),
+                    None => OutputText::from_output(&note),
+                },
+            )
+            .collect()
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecoveryReason {
@@ -153,6 +173,7 @@ pub enum RecoveryReason {
     OwnershipUnresolved,
     PersistenceFailed,
     IdentityUnavailable,
+    ForeignAdmissionUnresolved,
     CandidateDrifted,
     RunCancelled,
 }
@@ -161,6 +182,8 @@ pub enum RecoveryReason {
 #[serde(rename_all = "snake_case")]
 pub enum RecoveryAction {
     WaitForHolder,
+    #[serde(rename = "wait-owner")]
+    WaitForOwner,
     CleanupSelf,
     RestoreStorage,
     RestoreProcessObservation,
@@ -176,7 +199,7 @@ pub struct RecoveryRung {
     pub instruction: String,
 }
 
-// The ordered ladder, least destructive first: retry, restart app/Metro/runner, restart device, rebuild, own cleanup.
+// Foreign admission uses L0-L5; other recovery reasons retain their 1-based rungs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Recovery {
     pub reason: RecoveryReason,
@@ -225,6 +248,7 @@ impl Recovery {
                 "run qaren cleanup <own-run-id> --json, then prepare again on a stable checkout",
             ),
             RunCancelled => ("re-run when ready; nothing resumes automatically", None, cleanup),
+            ForeignAdmissionUnresolved => return Self::foreign_admission(),
         };
         let first_applicable = matches!(reason, BudgetExhausted | IdentityUnavailable);
         let ladder = vec![
@@ -237,6 +261,7 @@ impl Recovery {
         let (next_rung, action) = match reason {
             BudgetExhausted => (Some(1), RecoveryAction::WaitForHolder),
             IdentityUnavailable => (Some(1), RecoveryAction::RestoreProcessObservation),
+            ForeignAdmissionUnresolved => unreachable!("foreign admission has a dedicated ladder"),
             OwnershipUnresolved | PersistenceFailed => (Some(5), RecoveryAction::RestoreStorage),
             BuildBudgetExhausted | BuildProcessFailed | CandidateDrifted => {
                 (Some(5), RecoveryAction::CleanupSelf)
@@ -254,6 +279,27 @@ impl Recovery {
             own_cleanup_required: false,
             own_run_id: None,
             ladder,
+        }
+    }
+
+    fn foreign_admission() -> Self {
+        Self {
+            reason: RecoveryReason::ForeignAdmissionUnresolved,
+            next_rung: Some(0),
+            action: RecoveryAction::WaitForOwner,
+            automatic: false,
+            destroys_state: false,
+            requires_user_ok: false,
+            own_cleanup_required: false,
+            own_run_id: None,
+            ladder: vec![
+                RecoveryRung::step(0, true, false, "bounded re-probe exhausted or ineligible; wait for the foreign process owner to finish, then re-run; do not signal or adopt it"),
+                RecoveryRung::step(1, false, false, "restarting this run's app, Metro or runner cannot prove a foreign process clear"),
+                RecoveryRung::step(2, false, false, "restarting the selected device cannot resolve foreign process identity"),
+                RecoveryRung::step(3, false, false, "rebuilding native code cannot resolve foreign process identity"),
+                RecoveryRung::step(4, false, false, "own cleanup cannot clear foreign state"),
+                RecoveryRung::step(5, true, true, "only after foreign state is independently clear: qaren cleanup <own-run-id> --json; require every owned leg resolved, then qaren prepare <scenario> --device <device> --json and clean that recovery run before retrying; a fresh install needs separate authorization and user approval for app-data loss"),
+            ],
         }
     }
 

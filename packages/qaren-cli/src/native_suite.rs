@@ -89,7 +89,9 @@ fn admit(runner: &mut dyn Runner, device: &str) -> Result<(), String> {
         checkout(),
         device,
         None,
+        None,
     )
+    .map(|_| ())
     .map_err(|_| "strict device admission did not prove the simulator clear".into())
 }
 

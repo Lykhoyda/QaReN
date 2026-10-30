@@ -1983,7 +1983,8 @@ borrowed server. A matching UIAutomator, agent-device, Maestro or instrumentatio
 process refuses `DEVICE_BUSY`, excluding QaReN's own runner package. A scan
 error, timeout or empty output refuses `FRESH_INSTALL_ADMISSION_UNKNOWN`.
 Both refusals occur before uninstall. This flow never boots, wipes or restarts
-the emulator. For iOS, see [iOS admission and cleanup](#ios-admission-and-cleanup).
+the emulator. For refusal diagnostics and recovery on either platform, and iOS
+admission rules, see [iOS admission and cleanup](#ios-admission-and-cleanup).
 
 ### iOS simulator lifecycle
 
@@ -2370,14 +2371,51 @@ instead of admitting a partial scan. The limits and classification rules are
 owned by the [strict scanner](../qaren-core/src/runners/external-runner-detect.ts)
 and [kernel observer](src/process_observation.rs).
 
+On iOS, a matching `unknown/executable_identity_unproven` response naming a
+foreign PID gets one new whole-device scan after at most 500 ms. Both scans
+share the original 30-second admission allowance, clipped to a smaller caller
+deadline when supplied; a late clear result never admits. Busy, malformed and
+other unknown responses do not trigger a retry. Every scan keeps the same
+kernel identity checks and never signals or adopts a foreign process.
+
+Check and prepare receipts include `admission_before_deps` and
+`admission_before_mutation` summaries in `outcomes` for the admission points
+that completed, even if a later gate refuses. Refusals carry the same summary in `failure.evidence`: `probe`,
+`initialReason`, `terminalReason`, `attempts`, `elapsedMs` and `deadlineExceeded`.
+Elapsed time includes child completion/reaping, which may outlast the admission
+allowance; `deadlineExceeded` prevents acceptance of that result. The final
+scan owns the terminal reason, including `DEVICE_BUSY` if it proves a driver
+within the allowance.
+
 When the strict admission probe refuses with `FRESH_INSTALL_ADMISSION_UNKNOWN`
-or `DEVICE_BUSY`, it includes `probe_status`, `probe_evidence`, `exit_code` and `timed_out` in
+or `DEVICE_BUSY`, it includes `probe_status`, `probe_evidence`, `exit_code`,
+`timed_out` and `deadline_exceeded` in
 `failure.detail`, retained in the receipt and `run.json`. Valid probe evidence
 contains an allowlisted reason and, when available, a PID or candidate count;
 raw process arguments, paths and subprocess output are not included. Missing,
 invalid or mismatched evidence is reported as `unavailable`, `invalid_evidence`,
-`envelope_mismatch` or `invalid_response`. These diagnostics do not relax
-admission: resolve the refusal and start a new run.
+`envelope_mismatch` or `invalid_response`. Expiry before dispatch reports
+`not_run`; a late response retains its observed status with `deadline_exceeded=true`.
+These diagnostics do not relax admission. Within the allowance, a matching
+Android `busy` response with exit code 4 advises waiting for the foreign process
+owner even though Android supplies no PID evidence. On iOS, that advice requires
+exit code 4 and validated PID evidence for `busy/driver_on_selected_device` or
+`unknown/driver_identity_unproven` or `unknown/executable_identity_unproven`.
+Neither platform uses this advice for a timed-out response. Wait for the owner
+to finish, then re-run; do not signal or adopt the process. That recovery ladder
+marks automatic re-probing exhausted or ineligible, rules out app/runner/device
+restarts and rebuilds as ways to prove foreign identity, and offers cleanup and
+prepare only after foreign state is independently clear. It uses L0-L5 with
+`action: wait-owner` and `next_rung: 0`.
+
+Observation, runtime, malformed-response and allowance-expiry failures instead
+advise running `qaren doctor`, restoring process observation and the QaReN
+runtime, and resolving the reported probe or deadline failure before re-running.
+They use `reason: identity_unavailable`, `action: restore_process_observation`
+and `next_rung: 1`; waiting for a foreign owner cannot repair these failures.
+Any retained resources still require this run's own cleanup, recorded separately
+in recovery; a fresh install requires separate authorization for app-data loss.
+Other recovery reasons retain their existing 1-based rungs.
 
 Runs and evidence live under `$QAREN_HOME/runs/<run-id>/` (`~/.qaren` by default).
 Device and

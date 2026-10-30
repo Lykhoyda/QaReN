@@ -228,6 +228,9 @@ impl Runner for Witness {
         }
         self.mock.now_epoch_ms()
     }
+    fn monotonic_ms(&self) -> u64 {
+        self.mock.monotonic_ms()
+    }
     fn commands_executed(&self) -> u64 {
         self.mock.commands_executed()
     }

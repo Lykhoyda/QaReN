@@ -735,15 +735,19 @@ fn run_inner(
 
         let ios_lifecycle = req.boot_device || req.restart_device || req.shutdown_device_on_exit;
         if req.platform == Platform::Ios && (req.fresh_install || ios_lifecycle) {
-            if let Err(f) = core::fresh_install_admission(
+            match core::fresh_install_admission(
                 ctx.runner,
                 &node,
                 &req.runtime_dir,
                 &project_root,
                 &device.id,
                 None,
+                None,
             ) {
-                return finish_failed(ctx, f);
+                Ok(summary) => ctx
+                    .notes
+                    .push(("admission_before_deps".into(), summary.note())),
+                Err(f) => return finish_failed(ctx, f),
             }
         }
         if req.platform == Platform::Ios {
@@ -760,15 +764,19 @@ fn run_inner(
         }
         // Last proof before anything destructive; ios_lifecycle options are iOS-only.
         if req.fresh_install || ios_lifecycle {
-            if let Err(f) = core::fresh_install_admission(
+            match core::fresh_install_admission(
                 ctx.runner,
                 &node,
                 &req.runtime_dir,
                 &project_root,
                 &device.id,
                 android_env.as_ref(),
+                None,
             ) {
-                return finish_failed(ctx, f);
+                Ok(summary) => ctx
+                    .notes
+                    .push(("admission_before_mutation".into(), summary.note())),
+                Err(f) => return finish_failed(ctx, f),
             }
         }
         if req.shutdown_device_on_exit {
@@ -1955,9 +1963,13 @@ fn finish_failed(
     failure: Failure,
     retain_device_lease: bool,
 ) -> Receipt {
-    let failure = ensure_running(ctx.runner, &failure.phase)
-        .err()
-        .unwrap_or(failure);
+    let failure = if failure.code == FailureCode::RunCancelled && failure.phase == "fresh_install" {
+        failure
+    } else {
+        ensure_running(ctx.runner, &failure.phase)
+            .err()
+            .unwrap_or(failure)
+    };
     events::close_running(StageState::Failed, Some(&failure.code_str()), &[]);
     let (cleanup, _, _) = teardown(&mut ctx, node, runtime_dir, false, retain_device_lease);
     let mut receipt = ctx.fail(failure);
