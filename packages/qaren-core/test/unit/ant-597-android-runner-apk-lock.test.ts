@@ -32,7 +32,7 @@ if (!process.env.QAREN_APK_LOCK_TEST_CHILD) {
   });
 } else {
   const root = process.env.QAREN_APK_LOCK_TEST_CHILD;
-  const runner = join(root, 'rn-android-runner');
+  const runner = join(root, 'qaren-android-runner');
   const app = join(runner, 'app/build/outputs/apk/debug/app-debug.apk');
   const instrumentation = join(
     runner,
@@ -40,9 +40,10 @@ if (!process.env.QAREN_APK_LOCK_TEST_CHILD) {
   );
   mkdirSync(dirname(app), { recursive: true });
   mkdirSync(dirname(instrumentation), { recursive: true });
+  writeFileSync(join(runner, 'gradlew'), '');
   process.env.QAREN_NATIVE_RUNNER_ROOT = root;
   process.env.QAREN_DEVICE_LEASE = 'test-check:0123456789abcdef';
-  const client = await import('../../dist/runners/rn-android-runner-client.js');
+  const client = await import('../../dist/runners/qaren-android-runner-client.js');
   const bytes = Buffer.from('expected runner build');
   const provisioned = new Error('provisioning complete');
 

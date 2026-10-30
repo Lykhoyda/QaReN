@@ -14,7 +14,7 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'
 const DISPATCHER = join(
   REPO_ROOT,
   'packages',
-  'rn-android-runner',
+  'qaren-android-runner',
   'app',
   'src',
   'androidTest',

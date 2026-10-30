@@ -6,7 +6,7 @@ import {
   isAndroidConnectionFailure,
   _setFetchForTest,
   _setAndroidRunnerStateForTest,
-} from '../../dist/runners/rn-android-runner-client.js';
+} from '../../dist/runners/qaren-android-runner-client.js';
 import {
   REQUIRED_ANDROID_COMMANDS,
   REQUIRED_ANDROID_FEATURES,
@@ -59,10 +59,10 @@ test('#243 isAndroidConnectionFailure matches both startAndroidRunner + postComm
     true,
   );
   assert.equal(isAndroidConnectionFailure('connect ECONNREFUSED 127.0.0.1:22089'), true);
-  assert.equal(isAndroidConnectionFailure('rn-android-runner not started'), true);
+  assert.equal(isAndroidConnectionFailure('qaren-android-runner not started'), true);
   assert.equal(
     isAndroidConnectionFailure(
-      'RUNNER_TIMEOUT: rn-android-runner did not respond to "snapshot" within 10000ms',
+      'RUNNER_TIMEOUT: qaren-android-runner did not respond to "snapshot" within 10000ms',
     ),
     false,
   );

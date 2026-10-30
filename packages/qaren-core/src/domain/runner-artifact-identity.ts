@@ -16,7 +16,9 @@ export function assertRunnerAssetName(
   platform: RunnerPlatform,
 ): void {
   const expected =
-    platform === 'ios' ? `qaren-ios-runner-${version}-sim.zip` : `rn-android-runner-${version}.zip`;
+    platform === 'ios'
+      ? `qaren-ios-runner-${version}-sim.zip`
+      : `qaren-android-runner-${version}.zip`;
   if (name !== expected) {
     throw new RunnerArtifactMismatchError(
       version,

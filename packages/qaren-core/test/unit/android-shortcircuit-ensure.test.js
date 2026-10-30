@@ -52,7 +52,7 @@ test('Android short-circuit has RN_ANDROID_RUNNER_DOWN on startAndroidRunner rej
   // The catch around startAndroidRunner must map to RN_ANDROID_RUNNER_DOWN
   assert.match(
     source,
-    /rn-android-runner did not start[\s\S]{0,100}RN_ANDROID_RUNNER_DOWN|RN_ANDROID_RUNNER_DOWN[\s\S]{0,100}rn-android-runner did not start/,
+    /qaren-android-runner did not start[\s\S]{0,100}RN_ANDROID_RUNNER_DOWN|RN_ANDROID_RUNNER_DOWN[\s\S]{0,100}qaren-android-runner did not start/,
     'wrapper must return RN_ANDROID_RUNNER_DOWN when startAndroidRunner rejects',
   );
 });
@@ -73,7 +73,7 @@ test('Android short-circuit still imports and calls runAndroid after ensure', ()
   // named imports + the multiline import() while still requiring runAndroid.
   assert.match(
     source,
-    /const \{ runAndroid[\s\S]{0,80}\}\s*=\s*await import\(\s*['"]\.\/runners\/rn-android-runner-client\.js['"]/,
+    /const \{ runAndroid[\s\S]{0,80}\}\s*=\s*await import\(\s*['"]\.\/runners\/qaren-android-runner-client\.js['"]/,
     'runAndroid import must remain inside the Android short-circuit',
   );
 });
@@ -83,7 +83,7 @@ test('Android short-circuit still imports and calls runAndroid after ensure', ()
 import {
   resolveAndroidSerial,
   parseAdbDevicesSerials,
-} from '../../dist/runners/rn-android-runner-client.js';
+} from '../../dist/runners/qaren-android-runner-client.js';
 
 test('resolveAndroidSerial: respects explicit deviceId passed directly', async () => {
   const result = await resolveAndroidSerial('emulator-5554');

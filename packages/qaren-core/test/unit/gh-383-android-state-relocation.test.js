@@ -6,7 +6,7 @@ import {
   parsePersistedAndroidState,
   parseLegacyAndroidState,
   _setAndroidRunnerStateForTest,
-} from '../../dist/runners/rn-android-runner-client.js';
+} from '../../dist/runners/qaren-android-runner-client.js';
 import { getStateDir } from '../../dist/util/secure-state-file.js';
 
 afterEach(() => _setAndroidRunnerStateForTest(null));

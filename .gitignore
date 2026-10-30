@@ -43,6 +43,11 @@ packages/rn-fast-runner/**/DerivedData/
 packages/rn-fast-runner/**/project.xcworkspace/xcshareddata/
 
 # Gradle build artifacts for the Android runner
+packages/qaren-android-runner/.gradle/
+packages/qaren-android-runner/.kotlin/
+packages/qaren-android-runner/**/build/
+
+# pre-2.0.4 Android runner build output; drop in 2.1
 packages/rn-android-runner/.gradle/
 packages/rn-android-runner/.kotlin/
 packages/rn-android-runner/**/build/

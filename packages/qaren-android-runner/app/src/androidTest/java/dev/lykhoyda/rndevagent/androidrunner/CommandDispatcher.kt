@@ -278,7 +278,7 @@ class CommandDispatcher(
             val accessible = device.wait(Until.hasObject(By.pkg(appPackage)), 10_000)
             if (!accessible) {
                 throw AccessibilityUnavailableException(
-                    "App $appPackage is foreground but absent from UIAutomator accessibility after 10000ms; restart the rn-android-runner session or fix the app's accessibility exposure"
+                    "App $appPackage is foreground but absent from UIAutomator accessibility after 10000ms; restart the qaren-android-runner session or fix the app's accessibility exposure"
                 )
             }
         }
@@ -428,7 +428,7 @@ class CommandDispatcher(
         try {
             val enumerated = enumerateQa(appPackage, handles)
                 ?: throw AccessibilityUnavailableException(
-                    "App $appPackage is foreground but absent from UIAutomator accessibility after 10000ms; restart the rn-android-runner session or fix the app's accessibility exposure"
+                    "App $appPackage is foreground but absent from UIAutomator accessibility after 10000ms; restart the qaren-android-runner session or fix the app's accessibility exposure"
                 )
             val (windows, assembled, exhausted) = enumerated
             qaSnapshotGeneration += 1
@@ -1863,7 +1863,7 @@ class CommandDispatcher(
     }
 
     private fun screenshot(): JSONObject {
-        val file = File(instrumentation.targetContext.cacheDir, "rn-android-runner-screenshot.png")
+        val file = File(instrumentation.targetContext.cacheDir, "qaren-android-runner-screenshot.png")
         if (!device.takeScreenshot(file)) {
             throw IllegalStateException("UiDevice.takeScreenshot returned false")
         }
