@@ -800,7 +800,8 @@ retry and failure behavior remains. A press without pixel proof that leaves a
 control not reported selected unchanged still fails, naming whether the target
 was reported selected before and after.
 
-Before its one retry, the walker re-captures until the same target (resolved
+For presses outside the selection heuristic, before its one retry the walker
+re-captures until the same target (resolved
 through the same exact-identity rules as the step) holds one native frame
 across two captures, within the
 existing settle readbacks, and the retry dispatches only that target at its
@@ -2689,6 +2690,9 @@ flagging; listing still works. Saved files stay untracked until you commit them,
 nested in its repository they do not make the next run's candidate dirty.
 
 ### Step recovery
+
+Selection-proof refusals bypass step recovery; follow the
+[press evidence contract](#occluded-taps-and-focus) before retrying.
 
 An observed React Native red box fails the current step immediately, including
 during login replay, with error-screen evidence in `failure.seen` projected through
