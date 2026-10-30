@@ -1,6 +1,6 @@
 import { QaDispatchError } from '../domain/qa-dispatch.js';
 import { ownedLogin, parseInputPreflight } from './input-preflight.js';
-import { readAndroidLabelProvenance } from '../runners/rn-android-runner-client.js';
+import { readAndroidLabelProvenance } from '../runners/qaren-android-runner-client.js';
 import { ObservedPrivacy } from './privacy.js';
 import { InputPrivacyRefusal, withInputs, currentInputs, type RunInputs } from './inputs.js';
 import {

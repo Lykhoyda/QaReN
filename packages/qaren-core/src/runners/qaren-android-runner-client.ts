@@ -60,7 +60,7 @@ import {
   classifyRunnerCompatibility,
 } from './protocol.js';
 import { artifactProvenanceToState, resolveAndroidRunnerArtifacts } from './runner-artifacts.js';
-import { resolveNativeRunnerDir } from './runtime-paths.js';
+import { legacyNativeRunnerDirHint, resolveNativeRunnerDir } from './runtime-paths.js';
 import {
   decideRecovery,
   generateCommandId,
@@ -84,13 +84,13 @@ const READY_TIMEOUT_MS = 30_000;
 const INSTRUMENTATION =
   'dev.lykhoyda.rndevagent.androidrunner.test/androidx.test.runner.AndroidJUnitRunner';
 const MAIN_LOOP_CLASS =
-  'dev.lykhoyda.rndevagent.androidrunner.RnAndroidRunnerInstrumentedTest#mainLoop';
+  'dev.lykhoyda.rndevagent.androidrunner.QarenAndroidRunnerInstrumentedTest#mainLoop';
 const HEALTH_POLL_INTERVAL_MS = 150;
 const HEALTH_PROBE_TIMEOUT_MS = 1_000;
 
 // The in-tree runner ships as a Gradle project. Provisioning refreshes its
 // expected APKs before comparing installed bytes, then installs only if needed.
-const RN_ANDROID_RUNNER_DIR = resolveNativeRunnerDir('rn-android-runner');
+const RN_ANDROID_RUNNER_DIR = resolveNativeRunnerDir('qaren-android-runner');
 const GRADLEW = join(RN_ANDROID_RUNNER_DIR, 'gradlew');
 const APK_APP = join(
   RN_ANDROID_RUNNER_DIR,
@@ -536,8 +536,15 @@ async function ensureAndroidRunnerInstalled(
     throwIfCancelled(opts.signal);
     if (isAbort(err)) throw err;
     throw new Error(
-      `rn-android-runner: target device not online (adb get-state) — boot the emulator / connect the device. ` +
+      `qaren-android-runner: target device not online (adb get-state) — boot the emulator / connect the device. ` +
         `${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  if (!existsSync(GRADLEW)) {
+    const hint = legacyNativeRunnerDirHint('qaren-android-runner');
+    throw new Error(
+      `Android runner not found at ${RN_ANDROID_RUNNER_DIR} (no gradlew).${hint ? ` ${hint}` : ''}`,
     );
   }
 
@@ -583,7 +590,7 @@ async function ensureAndroidRunnerInstalled(
           throwIfCancelled(opts.signal);
           if (isAbort(err)) throw err;
           throw new Error(
-            `rn-android-runner source build failed (gradlew assembleDebug assembleDebugAndroidTest in ${RN_ANDROID_RUNNER_DIR}). ` +
+            `qaren-android-runner source build failed (gradlew assembleDebug assembleDebugAndroidTest in ${RN_ANDROID_RUNNER_DIR}). ` +
               `Ensure the Android SDK + a JDK are installed and on PATH. ${err instanceof Error ? err.message : String(err)}`,
             { cause: err },
           );
@@ -631,7 +638,7 @@ async function ensureAndroidRunnerInstalled(
         throwIfCancelled(opts.signal);
         if (isAbort(err)) throw err;
         throw new Error(
-          `rn-android-runner APK install failed (adb install -r). Is the emulator/device online? ` +
+          `qaren-android-runner APK install failed (adb install -r). Is the emulator/device online? ` +
             `${err instanceof Error ? err.message : String(err)}`,
           { cause: err },
         );
@@ -1007,7 +1014,7 @@ export class AndroidCommandsStaleError extends Error {
     super(
       `RUNNER_COMMANDS_STALE: ${
         detail ??
-        `installed rn-android-runner lacks required commands ` +
+        `installed qaren-android-runner lacks required commands ` +
           `(missing: ${missing.join(', ') || 'unknown'}). Re-open the device session ` +
           `(device_snapshot action=open appId=${bundleId ?? '<your.app.id>'} platform=android) to rebuild it.`
       }`,
@@ -1781,7 +1788,7 @@ async function startAndroidRunnerAttempt(
           }
           reject(
             new Error(
-              `RUNNER_PROTOCOL_MISMATCH: installed rn-android-runner speaks protocol ` +
+              `RUNNER_PROTOCOL_MISMATCH: installed qaren-android-runner speaks protocol ` +
                 `${info.protocolVersion ?? 'none'} (bridge expects ${RUNNER_PROTOCOL_VERSION}). ` +
                 `Rebuild + reinstall the runner APKs: cd ${RN_ANDROID_RUNNER_DIR} && ` +
                 `./gradlew :app:assembleDebug :app:assembleDebugAndroidTest, then adb install -r both APKs.`,
@@ -1876,7 +1883,7 @@ async function sendCommandOnce(
     throwIfCancelled();
     if ((err as { name?: string } | undefined)?.name === 'AbortError') {
       throw new Error(
-        `RUNNER_TIMEOUT: rn-android-runner did not respond to "${String(body.command)}" within ${timeoutMs}ms`,
+        `RUNNER_TIMEOUT: qaren-android-runner did not respond to "${String(body.command)}" within ${timeoutMs}ms`,
       );
     }
     throw err;
@@ -1888,7 +1895,7 @@ async function sendCommandOnce(
     parsed = (await resp.json()) as RunnerResponse;
   } catch {
     throwIfCancelled();
-    throw new Error('rn-android-runner returned a non-JSON response body');
+    throw new Error('qaren-android-runner returned a non-JSON response body');
   }
   // GH #383: mirror the iOS /command v-stamp check — a runner hot-swapped to an
   // incompatible wire protocol mid-session is caught here (the reuse gate only
@@ -1943,7 +1950,7 @@ async function postCommandWithRecovery(
   qaContext?: QaDispatchContext,
 ): Promise<{ resp: RunnerResponse; recovery?: TransportRecovery }> {
   const state = runnerState;
-  if (!state) throw new Error('rn-android-runner not started');
+  if (!state) throw new Error('qaren-android-runner not started');
   const commandId = generateCommandId();
   const timeoutMs = commandTimeoutMs(body);
   try {
@@ -2243,7 +2250,7 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
     // "fetch failed". RUNNER_TIMEOUT (a wedged-but-bound instrument) is NOT a connection
     // failure and is rethrown unchanged.
     if (isAndroidConnectionFailure(m)) {
-      return failResult(`rn-android-runner is not reachable: ${m}`, 'RN_ANDROID_RUNNER_DOWN', {
+      return failResult(`qaren-android-runner is not reachable: ${m}`, 'RN_ANDROID_RUNNER_DOWN', {
         hint: 'The runner could not start or bind its port (e.g. just restarted after a Maestro flow). Retry the command; if it persists, ensure the emulator is booted and the app is installed.',
       });
     }
@@ -2297,7 +2304,7 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
       // truth — fail with mutation:'possible' so only the arbiter's exact
       // read-back can promote it. Never echoes the requested text.
       return failResult(
-        'rn-android-runner type hit the window-idle timeout after dispatching the mutation; the field value is unverified',
+        'qaren-android-runner type hit the window-idle timeout after dispatching the mutation; the field value is unverified',
         'TYPE_IDLE_TIMEOUT',
         { mutation: 'possible', runnerTimeoutShim: true, ...recoveryMeta },
       );
@@ -2400,7 +2407,7 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
         ...freshness,
         pointScale: data.pointScale ?? presencePointScale,
       });
-      const snapshotVerdict = buildSnapshotVerdict('rn-android-runner', flat.length, outcome);
+      const snapshotVerdict = buildSnapshotVerdict('qaren-android-runner', flat.length, outcome);
       const producerDropped = data.normalizationDroppedNodes;
       const dropped =
         typeof producerDropped === 'number' &&
@@ -2455,7 +2462,7 @@ function errMessage(err: unknown): string {
 }
 
 export function isAndroidConnectionFailure(message: string): boolean {
-  return /fetch failed|ECONNREFUSED|ECONNRESET|socket hang up|rn-android-runner not started|did not become ready|Android runner instrumentation exited before readiness|Failed to spawn Android runner instrumentation/i.test(
+  return /fetch failed|ECONNREFUSED|ECONNRESET|socket hang up|qaren-android-runner not started|did not become ready|Android runner instrumentation exited before readiness|Failed to spawn Android runner instrumentation/i.test(
     message,
   );
 }

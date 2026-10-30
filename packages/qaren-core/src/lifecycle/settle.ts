@@ -10,7 +10,7 @@ import {
   androidSnapshotNodesViaProbe,
   getAndroidRunnerHostPort,
   runAndroid,
-} from '../runners/rn-android-runner-client.js';
+} from '../runners/qaren-android-runner-client.js';
 
 export type SettleMethod = 'window-gate' | 'snapshot-eq' | 'timeout';
 

@@ -8,7 +8,7 @@ import {
   classifyAndroidHealth,
   probeAndroidRunnerHealthInfo,
   runAndroid,
-} from '../../dist/runners/rn-android-runner-client.js';
+} from '../../dist/runners/qaren-android-runner-client.js';
 import { buildRunAndroidArgs } from '../../dist/agent-device-wrapper.js';
 import {
   REQUIRED_ANDROID_COMMANDS,

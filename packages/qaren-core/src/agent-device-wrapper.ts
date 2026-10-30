@@ -716,7 +716,7 @@ function decorateExactTargetIOS(
 }
 
 function decorateExactTargetAndroid(
-  android: import('./runners/rn-android-runner-client.js').RunAndroidArgs,
+  android: import('./runners/qaren-android-runner-client.js').RunAndroidArgs,
   exact: ExactTargetOpts,
 ): ToolResult | null {
   if (android.command === 'verifyInput' && exact.operationToken) {
@@ -772,8 +772,8 @@ function positionalArgs(cliArgs: string[]): string[] {
 export function buildRunAndroidArgs(
   cliArgs: string[],
   bundleId?: string,
-): import('./runners/rn-android-runner-client.js').RunAndroidArgs {
-  type RunAndroidArgs = import('./runners/rn-android-runner-client.js').RunAndroidArgs;
+): import('./runners/qaren-android-runner-client.js').RunAndroidArgs {
+  type RunAndroidArgs = import('./runners/qaren-android-runner-client.js').RunAndroidArgs;
   const cmd = cliArgs[0];
   const positionals = positionalArgs(cliArgs);
   const withBundle = bundleId ? { bundleId } : {};
@@ -992,7 +992,7 @@ export function rebuildHealedAndroidArgs(
   healedRef: string,
   bundleId: string | undefined,
   includeSystemUi: boolean,
-): import('./runners/rn-android-runner-client.js').RunAndroidArgs {
+): import('./runners/qaren-android-runner-client.js').RunAndroidArgs {
   const reboundArgs = [...cliArgs];
   reboundArgs[1] = healedRef.startsWith('@') ? healedRef : `@${healedRef}`;
   if (includeSystemUi && !reboundArgs.includes('--include-system-ui')) {
@@ -1481,7 +1481,7 @@ export async function settleAfterMutationWithOutcome(
       ? deps.capabilities(ctx.platform)
       : ctx.platform === 'ios'
         ? (await import('./runners/qaren-ios-runner-client.js')).getFastRunnerCapabilities()
-        : (await import('./runners/rn-android-runner-client.js')).getAndroidRunnerCapabilities();
+        : (await import('./runners/qaren-android-runner-client.js')).getAndroidRunnerCapabilities();
     const probes = deps.probes
       ? deps.probes(ctx.platform, ctx.appId)
       : ctx.platform === 'ios'
@@ -2065,7 +2065,7 @@ export async function runNative(
     // fallback (like iOS simctl) — don't gate it on the runner.
     if (cliArgs[0] !== 'screenshot' && !qa) {
       const { resolveAndroidSerial, startAndroidRunner, consumePendingAndroidUpgradeNote } =
-        await import('./runners/rn-android-runner-client.js');
+        await import('./runners/qaren-android-runner-client.js');
       const serial = activeSession?.deviceId ?? (await resolveAndroidSerial());
       if (!serial) {
         return failResult(
@@ -2093,11 +2093,11 @@ export async function runNative(
         if (msg.startsWith('RUNNER_OWNERSHIP_MISMATCH')) {
           return failResult(msg, 'RUNNER_OWNERSHIP_MISMATCH');
         }
-        return failResult(`rn-android-runner did not start: ${msg}`, 'RN_ANDROID_RUNNER_DOWN');
+        return failResult(`qaren-android-runner did not start: ${msg}`, 'RN_ANDROID_RUNNER_DOWN');
       }
     }
     const { runAndroid, consumePendingAndroidUpgradeNote } =
-      await import('./runners/rn-android-runner-client.js');
+      await import('./runners/qaren-android-runner-client.js');
     const outsideApp = androidOutsideAppWindowRefusal(cliArgs, appId);
     if (outsideApp) return outsideAppWindowFailResult(outsideApp);
     let android = buildRunAndroidArgs(cliArgs, appId);
