@@ -542,19 +542,23 @@ fn pnpm_source(runner: &mut dyn Runner, project_root: &Path) -> Check {
             "put an installed pnpm executable on PATH",
         );
     }
-    let output = runner.run(
-        &pnpm::group_probe_spec(project_root)
-            .env("COREPACK_ENABLE_NETWORK", "0")
-            .env("COREPACK_ENABLE_AUTO_PIN", "0"),
-    );
-    if output.ok() && output.stdout == pnpm::GROUP_OK {
-        Check::pass("pnpm-source", detail)
-    } else {
-        Check::warn(
+    let spec = pnpm::group_probe_spec(project_root)
+        .env("COREPACK_ENABLE_NETWORK", "0")
+        .env("COREPACK_ENABLE_AUTO_PIN", "0");
+    let probe = pnpm::prove_group(runner, &spec, 1, spec.timeout_seconds);
+    let output = &probe.attempts[0].output;
+    match probe.outcome {
+        pnpm::GroupOutcome::Proved => Check::pass("pnpm-source", detail),
+        pnpm::GroupOutcome::Unproven => Check::warn(
             "pnpm-source",
             format!("{detail}; PNPM_PROCESS_GROUP_UNSUPPORTED: exec did not prove process-group preservation ({})", output.summary()),
             pnpm::GROUP_FIX,
-        )
+        ),
+        pnpm::GroupOutcome::TimedOut => Check::warn(
+            "pnpm-source",
+            format!("{detail}; PNPM_PROBE_TIMED_OUT: the exec probe timed out after {} ms and proved nothing about process groups; the host is likely busy", output.duration_ms),
+            "re-run qaren doctor when the machine is less loaded; qaren check retries this probe with longer bounds before refusing",
+        ),
     }
 }
 
@@ -1580,6 +1584,43 @@ mod tests {
         assert!(runner.calls[0]
             .env
             .contains(&("COREPACK_ENABLE_NETWORK".into(), "0".into())));
+    }
+
+    #[test]
+    fn pnpm_source_timed_out_probe_warns_without_version_advice() {
+        let scratch = Scratch::new("pnpm-source-timeout");
+        let target = scratch.exe("corepack/dist/pnpm.js");
+        let entry = scratch.link("bin/pnpm", &target);
+        let mut runner = MockRunner::new();
+        runner
+            .environment
+            .insert("PATH".into(), entry.parent().unwrap().display().to_string());
+        runner.expect_run(
+            "QAREN_PNPM_LAUNCH_GROUP",
+            CmdOutput {
+                timed_out: true,
+                duration_ms: 30_056,
+                ..Default::default()
+            },
+        );
+        let check = pnpm_source(&mut runner, &scratch.0);
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.detail.contains("PNPM_PROBE_TIMED_OUT"));
+        assert!(check.detail.contains("30056"));
+        assert!(check.detail.contains(entry.to_str().unwrap()));
+        assert!(check.detail.contains(target.to_str().unwrap()));
+        assert!(!check.detail.contains("PNPM_PROCESS_GROUP_UNSUPPORTED"));
+        let fix = check.fix.unwrap();
+        assert!(fix.contains("less loaded"));
+        assert!(!fix.contains("select a pnpm version"));
+        assert_eq!(runner.calls.len(), 1);
+        assert_eq!(runner.calls[0].timeout_seconds, 30);
+        assert!(runner.calls[0]
+            .env
+            .contains(&("COREPACK_ENABLE_NETWORK".into(), "0".into())));
+        assert!(runner.calls[0]
+            .env
+            .contains(&("COREPACK_ENABLE_AUTO_PIN".into(), "0".into())));
     }
 
     fn df(available_kb: u64) -> CmdOutput {
