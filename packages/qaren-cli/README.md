@@ -2438,6 +2438,8 @@ use normal teardown. For eligible failed iOS checks, precedence is:
 | `QAREN_HOLD_ON_FAIL=1` or unset | Hold |
 
 A held Metro keeps its port; another run using that port refuses `METRO_PORT_OCCUPIED`.
+iOS runs start Metro with `--localhost`, so a held Metro serves only this machine's
+loopback (the simulator reaches it on `127.0.0.1`); Android runs keep their `adb reverse` path.
 
 The iOS runner's XCTest result bundles under `Logs/Test` in both its local
 DerivedData and current-version prebuilt cache are removed after successful

@@ -2541,7 +2541,11 @@ pub(crate) fn run_clean_preparation(ctx: &mut Ctx, plan: &BuildPlan) -> Result<(
 fn spawn_metro_only(ctx: &mut Ctx) -> Result<(), Failure> {
     let port = qaren_metro_port(&ctx.record.scenario);
     let project_root = ctx.record.candidate.project_root.clone();
-    let spec = metro::start_spec(&project_root, port);
+    let spec = metro::start_spec(
+        &project_root,
+        port,
+        ctx.record.scenario.platform == Platform::Ios,
+    );
     let metro_log = RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id)
         .join("logs")
         .join("metro.log");
@@ -4489,7 +4493,7 @@ fn dry_run_receipt(
                     ..Default::default()
                 });
             }
-            planned.push(metro::start_spec(&cand.project_root, port));
+            planned.push(metro::start_spec(&cand.project_root, port, true));
             planned.push(ios::build_spec(
                 &cand.project_root,
                 Path::new("<run_dir>/ios-build"),
@@ -4639,7 +4643,7 @@ fn dry_run_receipt(
         match scenario.platform {
             Platform::Ios => {
                 let udid = borrowed.map_or("<udid>", |sim| sim.udid.as_str());
-                planned.push(metro::start_spec(&cand.project_root, port));
+                planned.push(metro::start_spec(&cand.project_root, port, true));
                 planned.push(ios::install_app_spec(udid, &artifact_path));
                 planned.push(metro::request_probe_spec(port));
                 planned.push(metro::manifest_spec(port, "ios"));
@@ -4669,7 +4673,7 @@ fn dry_run_receipt(
                     &artifact_path,
                 ));
                 planned.push(android::adb_reverse_spec(adb, server_port, &serial, port));
-                planned.push(metro::start_spec(&cand.project_root, port));
+                planned.push(metro::start_spec(&cand.project_root, port, false));
                 planned.push(metro::manifest_spec(port, "android"));
                 planned.push(android::am_start_deeplink_spec(
                     adb,

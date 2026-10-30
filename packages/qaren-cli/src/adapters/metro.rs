@@ -3,18 +3,19 @@ use std::path::Path;
 
 // Metro without a native build: the dev server this process group owns is the
 // same cleanup contract as the expo run:* owner.
-pub fn start_spec(project_root: &Path, port: u16) -> CmdSpec {
-    CmdSpec::new(
-        "expo-start",
-        "pnpm",
-        &["exec", "expo", "start", "--port", &port.to_string()],
-        0,
-    )
-    .cwd(project_root)
-    .env_remove("CI")
-    .env("EXPO_NO_TELEMETRY", "1")
-    // Metro logs each request on receipt here, before any dependency-graph wait; the drain counts bundle requests.
-    .env("DEBUG", crate::exec::log::METRO_REQUEST_LOG)
+// The iOS simulator reaches Metro on 127.0.0.1, so iOS binds to loopback; Android keeps its adb-reverse path.
+pub fn start_spec(project_root: &Path, port: u16, localhost: bool) -> CmdSpec {
+    let port = port.to_string();
+    let mut args = vec!["exec", "expo", "start", "--port", &port];
+    if localhost {
+        args.push("--localhost");
+    }
+    CmdSpec::new("expo-start", "pnpm", &args, 0)
+        .cwd(project_root)
+        .env_remove("CI")
+        .env("EXPO_NO_TELEMETRY", "1")
+        // Metro logs each request on receipt here, before any dependency-graph wait; the drain counts bundle requests.
+        .env("DEBUG", crate::exec::log::METRO_REQUEST_LOG)
 }
 
 // Expo serves `/` and `/status` itself; only Metro's own handler logs this path, arming the drained count before launch.

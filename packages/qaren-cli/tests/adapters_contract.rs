@@ -1576,14 +1576,25 @@ fn app_removal_parsers_are_strict() {
 
 #[test]
 fn metro_never_passes_ci_into_app_config_evaluation() {
-    let spec = metro::start_spec(Path::new("/repo/app"), 8791);
+    let spec = metro::start_spec(Path::new("/repo/app"), 8791, true);
     assert_eq!(spec.unset, ["CI"]);
     assert!(!spec.env.iter().any(|(k, _)| k == "CI"));
 }
 
 #[test]
+fn ios_metro_binds_to_loopback_and_android_metro_keeps_its_reverse_path() {
+    let ios = metro::start_spec(Path::new("/repo/app"), 8791, true);
+    let android = metro::start_spec(Path::new("/repo/app"), 8791, false);
+    assert_eq!(
+        ios.args,
+        ["exec", "expo", "start", "--port", "8791", "--localhost"]
+    );
+    assert_eq!(android.args, ["exec", "expo", "start", "--port", "8791"]);
+}
+
+#[test]
 fn metro_logs_each_request_on_receipt_to_the_drained_stderr() {
-    let spec = metro::start_spec(Path::new("/repo/app"), 8791);
+    let spec = metro::start_spec(Path::new("/repo/app"), 8791, true);
     assert!(spec.env.contains(&(
         "DEBUG".to_string(),
         qaren::exec::log::METRO_REQUEST_LOG.to_string()
