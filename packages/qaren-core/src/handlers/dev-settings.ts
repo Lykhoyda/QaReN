@@ -7,6 +7,8 @@ import {
   withDeadline,
 } from '../domain/cancellation.js';
 import type { DevOverlayObservation, DevOverlayReadError } from '../domain/dev-overlay.js';
+import { AppProcessGoneError } from '../domain/app-process.js';
+import { defaultTimeout } from '../cdp/timeout-config.js';
 import { SessionAuthorityError } from '../domain/authority-error.js';
 import { CDPRequestTimeoutError, CDPTargetClosedError } from '../cdp/transport.js';
 import type { CDPClient } from '../cdp-client.js';
@@ -54,6 +56,7 @@ export interface DevOverlayDependencies {
   }): Promise<ToolResult>;
   observeDevOverlay(): Promise<DevOverlayObservation>;
   deadline: number;
+  reconnect?(): Promise<void>;
   now?(): number;
   log(message: string): void;
   sleep?(ms: number): Promise<void>;
@@ -81,7 +84,12 @@ function readErrorClass(error: unknown): DevOverlayReadError {
 }
 
 function rethrowCancellationOrAuthority(error: unknown): void {
-  if (isAbort(error) || error instanceof SessionAuthorityError) throw error;
+  if (
+    isAbort(error) ||
+    error instanceof SessionAuthorityError ||
+    error instanceof AppProcessGoneError
+  )
+    throw error;
 }
 
 export function clearDevOverlays(deps: DevOverlayDependencies): Promise<ToolResult> {
@@ -97,11 +105,12 @@ async function clearOverlays(
   const started = now();
   const expired = new Error('dev-overlay admission deadline');
   const witness: {
-    phase: 'read' | 'evaluate' | 'other';
+    phase: 'read' | 'evaluate' | 'evaluate_retry' | 'other';
     observation: DevOverlayObservation;
   } = { phase: 'read', observation: { state: 'unknown', error: 'timeout' } };
   let readAttempts = 0;
   let evaluateAttempts = 0;
+  let lastEvaluationSubreason: OverlaySubreason = 'EVALUATE_FAILED';
   let lastError: DevOverlayReadError | 'evaluation' | 'none' = 'none';
   const remaining = () => Math.max(0, deps.deadline - now());
   const pause = async () => {
@@ -131,6 +140,14 @@ async function clearOverlays(
   };
   const operation = async () => {
     if (recovering) {
+      try {
+        await deps.reconnect?.();
+      } catch (error) {
+        rethrowCancellationOrAuthority(error);
+        lastError = readErrorClass(error);
+        return refused('READ_FAILED');
+      }
+      throwIfCancelled();
       const initial = await read();
       const hidden = await deps.devSettings({ action: 'hideDevMenu', timeoutMs: remaining() });
       throwIfCancelled();
@@ -172,6 +189,10 @@ async function clearOverlays(
             ? 'EVALUATE_TIMEOUT'
             : 'EVALUATE_FAILED';
         lastError = subreason === 'EVALUATE_TIMEOUT' ? 'timeout' : 'evaluation';
+        if (action === 'hideDevMenuFab') {
+          lastEvaluationSubreason = subreason;
+          witness.phase = 'evaluate_retry';
+        }
       }
       if (!failed) continue;
       if (action === 'hideDevMenuFab') return refused(subreason);
@@ -190,6 +211,7 @@ async function clearOverlays(
   } catch (error) {
     throwIfCancelled();
     if (error !== expired) throw error;
+    if (witness.phase === 'evaluate_retry') return refused(lastEvaluationSubreason);
     if (witness.phase === 'evaluate') {
       lastError = 'timeout';
       return refused('EVALUATE_TIMEOUT');
@@ -312,6 +334,10 @@ export function createDevSettingsHandler(
   dependencies: DevSettingsHandlerDependencies = {},
 ) {
   const handler = async (args: { action: DevAction; timeoutMs?: number }, client: CDPClient) => {
+    const timeoutMs = Math.min(
+      args.timeoutMs ?? Infinity,
+      defaultTimeout(client.connectedTarget?.platform),
+    );
     if (args.action === 'hideDevMenu') {
       const probe = dependencies.probeForegroundSurface;
       const before = probe
@@ -353,9 +379,13 @@ export function createDevSettingsHandler(
     }
 
     if (args.action === 'hideDevMenuFab') {
-      const result = await interruptible(() =>
-        client.evaluate(HIDE_DEV_MENU_FAB, true, args.timeoutMs),
-      );
+      if (timeoutMs < 500)
+        return failResult(
+          'Insufficient time to verify the dev-menu preferences.',
+          'DEV_MENU_HIDE_UNVERIFIED_EVALUATE_TIMEOUT',
+          { action: args.action },
+        );
+      const result = await interruptible(() => client.evaluate(HIDE_DEV_MENU_FAB, true, timeoutMs));
       if (result.value === 'no_method_available')
         return warnResult(
           { action: args.action, executed: false },
@@ -376,7 +406,7 @@ export function createDevSettingsHandler(
     const expression = ACTION_EXPRESSIONS[args.action];
 
     try {
-      const result = await interruptible(() => client.evaluate(expression, false, args.timeoutMs));
+      const result = await interruptible(() => client.evaluate(expression, false, timeoutMs));
       if (result.error) {
         return failResult(`Dev settings error: ${result.error}`);
       }

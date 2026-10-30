@@ -2113,10 +2113,10 @@ Before each iOS launch, `prepare` writes the app's Expo dev-menu preferences wit
 `simctl spawn <udid> defaults write <app-id>`: no floating action button, no menu
 at launch, onboarding finished. A failed write is recorded as
 `dev_menu_defaults: unconfirmed` and the launch continues. At walk start the core
-also hides the floating button through Expo's `DevMenuPreferences` module and
-reads the setting back, disables the shake gesture, attempts to disable Fast
-Refresh through `DevSettings.setHotLoadingEnabled(false)`, and closes an open
-menu. Disabling Fast Refresh prevents saved-block YAML writes in the app folder
+closes an open menu first, hides the floating button through Expo's
+`DevMenuPreferences` module and reads the setting back, disables the shake
+gesture, and attempts to disable Fast Refresh through
+`DevSettings.setHotLoadingEnabled(false)`. Disabling Fast Refresh prevents saved-block YAML writes in the app folder
 from triggering the dev client's `Refreshing...` banner during recording. This
 attempt is best-effort: an unavailable or throwing API does not itself refuse
 the walk, and native overlay clearance does not prove Fast Refresh is disabled.
@@ -2134,11 +2134,19 @@ sequence runs again after a successful dev-menu recovery, except that Android do
 Refresh again, because that would reload the app mid-walk.
 Apps without the preferences module skip the floating-button setting change but still require
 native clearance evidence. The shared clearance mechanism accepts only a complete
-native snapshot with neither a floating button nor an open dev menu in front,
-briefly re-reading while overlays settle. A failed or unconfirmed floating-button
-hide is attempted up to three times; if every attempt fails, or complete
-clearance evidence is not obtained within the reads, the walk refuses with
-`DEV_MENU_HIDE_UNVERIFIED` before the first step.
+native snapshot with a non-dev surface in front, including system or app dialogs.
+Failed or incomplete reads remain unknown and retry within the attach budget
+measured from the overlay check, without extending the walk deadline, at intervals of at least
+250 ms. A failed or unconfirmed floating-button hide is attempted up to three
+times, with each preference evaluation capped at the platform's normal timeout.
+The walk refuses before the first step with one of four codes:
+`DEV_MENU_HIDE_UNVERIFIED_READ_FAILED` for unavailable clearance evidence,
+`DEV_MENU_HIDE_UNVERIFIED_NOT_HIDDEN` for dev chrome still shown,
+`DEV_MENU_HIDE_UNVERIFIED_EVALUATE_TIMEOUT` for a timed-out preference call, or
+`DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED` for a failed preference readback.
+Mid-walk recovery includes reconnect and uses the existing 15-second wait budget
+per attempt. Each refusal provides a concrete next action; unknown evidence never
+admits the walk.
 
 ### Warm lane
 
