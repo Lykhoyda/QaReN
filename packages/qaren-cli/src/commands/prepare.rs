@@ -190,7 +190,6 @@ pub(crate) fn finish_receipt(ctx: Ctx, result: ReceiptResult, failure: Option<Fa
     let now = ctx.runner.now_epoch_ms();
     let phase = ctx.record.phase.as_str().to_string();
     let next_action = match (&result, &failure) {
-        (_, Some(f)) if f.code == FailureCode::BuildFailed && ctx.notes.iter().any(|(key, _)| key == "build_failure_next_action") => f.next_action.to_string(),
         (ReceiptResult::Pass | ReceiptResult::Fail, _) => {
             format!("read the report under {}", RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id).display())
         }
@@ -3955,6 +3954,7 @@ fn inspect_interface_failure(
     }
     let mut reader = BufReader::new(file.take(metadata.len()));
     let mut line = Vec::new();
+    let mut fallback = None;
     loop {
         line.clear();
         let length = (&mut reader)
@@ -3962,7 +3962,7 @@ fn inspect_interface_failure(
             .read_until(b'\n', &mut line)
             .ok()?;
         if length == 0 {
-            return None;
+            return fallback;
         }
         if length > 64 * 1024 {
             if !line.ends_with(b"\n") {
@@ -3974,7 +3974,10 @@ fn inspect_interface_failure(
             .ok()
             .and_then(|text| crate::ios_toolchain::classify_failure(text, observation))
         {
-            return Some(failure);
+            if failure.cause().is_some() {
+                return Some(failure);
+            }
+            fallback.get_or_insert(failure);
         }
     }
 }

@@ -401,13 +401,17 @@ fn ios_toolchain_match(
             };
             return Check::warn(ID, format!("host Swift {host} is newer than the compiler for {} ({}); precompiled interface compatibility needs checking", interface.package, interface.swift), fix);
         }
-        if host < &interface.swift {
-            return Check::warn(
-                ID,
-                "host Swift is older than an inspected Expo interface compiler",
-                unknown_fix,
-            );
-        }
+    }
+    if observation
+        .interfaces
+        .iter()
+        .any(|interface| host < &interface.swift)
+    {
+        return Check::warn(
+            ID,
+            "host Swift is older than an inspected Expo interface compiler",
+            unknown_fix,
+        );
     }
     if source_requested && linkage.expo != Mode::Off {
         return Check::warn(
@@ -1698,6 +1702,57 @@ mod tests {
 
     fn plist_probe(runner: &mut MockRunner) {
         runner.expect_run("plutil -convert", CmdOutput::success(r#"{"AvailableLibraries":[{"LibraryIdentifier":"simulator","SupportedPlatform":"ios","SupportedPlatformVariant":"simulator"}]}"#));
+    }
+
+    #[test]
+    fn successful_compiler_probes_accept_private_stderr_notices() {
+        let mut runner = MockRunner::new();
+        for (command, stdout) in [
+            ("xcodebuild -version", "Xcode 27.0\nBuild version 27A1\n"),
+            (
+                "xcrun swift --version",
+                "Apple Swift version 6.4 (swiftlang-test clang-test)\n",
+            ),
+        ] {
+            runner.expect_run(
+                command,
+                CmdOutput {
+                    stderr: "private DVT notice\n".into(),
+                    ..CmdOutput::success(stdout)
+                },
+            );
+        }
+        let compiler = crate::ios_toolchain::CompilerIdentity::collect(&mut runner);
+        let check = xcode(Some(&compiler));
+        assert_eq!(check.status, Status::Pass);
+        assert_eq!(
+            compiler.swift,
+            crate::ios_toolchain::SwiftVersion::parse("6.4")
+        );
+        assert!(compiler.xcode_hash.is_some());
+        assert!(!check.detail.contains("private"));
+        assert_eq!(runner.remaining(), 0);
+    }
+
+    #[test]
+    fn newer_host_warning_wins_when_another_interface_needs_a_newer_compiler() {
+        let s = Scratch::new("mixed-interface-compilers");
+        let app = s.dir("app");
+        s.file("app/package.json", r#"{"dependencies":{"expo":"56.0.0"}}"#);
+        interface_fixture(&s, "expo-modules-core", "6.5");
+        interface_fixture(&s, "expo-modules-jsi", "6.3.1");
+        let mut runner = MockRunner::new();
+        plist_probe(&mut runner);
+        plist_probe(&mut runner);
+        let compiler = crate::ios_toolchain::CompilerIdentity {
+            swift: crate::ios_toolchain::SwiftVersion::parse("6.4"),
+            ..Default::default()
+        };
+        let check = ios_toolchain_match(&mut runner, &app, Some(compiler));
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.detail.contains("is newer than"));
+        assert!(check.detail.contains("expo-modules-jsi"));
+        assert_eq!(runner.remaining(), 0);
     }
 
     #[cfg(target_os = "macos")]

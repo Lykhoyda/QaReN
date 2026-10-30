@@ -312,6 +312,19 @@ fn signatures_without_version_proof_get_conditional_guidance() {
 }
 
 #[test]
+fn proven_mismatch_wins_over_an_earlier_unproven_interface_failure() {
+    let unproven = "ExpoModulesJSI.swiftinterface: error: cannot find type '__ObjC::expo'\n";
+    let proven = include_str!("fixtures/ios-toolchain-mismatch.txt");
+    let failure = classify_failure(&format!("{unproven}{proven}"), None).unwrap();
+    assert_eq!(failure.cause(), Some("toolchain-newer-than-prebuilt"));
+    assert!(failure.detail().contains("expo-modules-core"));
+    assert_eq!(
+        failure.recovery(false, Mode::Unknown).next_rung,
+        "source-rebuild"
+    );
+}
+
+#[test]
 fn unrelated_output_and_unproven_inequality_never_claim_a_newer_host() {
     for log in [
         "ExpoModulesCore warning: something unrelated\nOther.swiftinterface: error: is not supported by the compiler",
