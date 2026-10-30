@@ -2377,27 +2377,32 @@ deadline when supplied; a late clear result never admits. Busy, malformed and
 other unknown responses do not trigger a retry. Every scan keeps the same
 kernel identity checks and never signals or adopts a foreign process.
 
-Successful check and prepare receipts include `admission_before_deps` and
+Check and prepare receipts include `admission_before_deps` and
 `admission_before_mutation` summaries in `outcomes` for the admission points
-that ran. Refusals carry the same summary in `failure.evidence`: `probe`,
+that completed, even if a later gate refuses. Refusals carry the same summary in `failure.evidence`: `probe`,
 `initialReason`, `terminalReason`, `attempts`, `elapsedMs` and `deadlineExceeded`.
 Elapsed time includes child completion/reaping, which may outlast the admission
 allowance; `deadlineExceeded` prevents acceptance of that result. The final
 scan owns the terminal reason, including `DEVICE_BUSY` if it proves a driver.
 
 When the strict admission probe refuses with `FRESH_INSTALL_ADMISSION_UNKNOWN`
-or `DEVICE_BUSY`, it includes `probe_status`, `probe_evidence`, `exit_code` and `timed_out` in
+or `DEVICE_BUSY`, it includes `probe_status`, `probe_evidence`, `exit_code`,
+`timed_out` and `deadline_exceeded` in
 `failure.detail`, retained in the receipt and `run.json`. Valid probe evidence
 contains an allowlisted reason and, when available, a PID or candidate count;
 raw process arguments, paths and subprocess output are not included. Missing,
 invalid or mismatched evidence is reported as `unavailable`, `invalid_evidence`,
-`envelope_mismatch` or `invalid_response`. These diagnostics do not relax
+`envelope_mismatch` or `invalid_response`. Expiry before dispatch reports
+`not_run`; a late response retains its observed status with `deadline_exceeded=true`.
+These diagnostics do not relax
 admission: wait for the foreign process owner to finish, then re-run; do not
 signal or adopt it. The recovery ladder marks automatic re-probing exhausted
 or ineligible, rules out app/runner/device restarts and rebuilds as ways to
 prove foreign identity, and offers cleanup and prepare only after foreign
 state is independently clear. Any retained resources still require this run's
 own cleanup; a fresh install requires separate authorization for app-data loss.
+Admission recovery uses L0-L5 with `action: wait-owner` and `next_rung: 0`;
+other recovery reasons retain their existing 1-based rungs.
 
 Runs and evidence live under `$QAREN_HOME/runs/<run-id>/` (`~/.qaren` by default).
 Device and

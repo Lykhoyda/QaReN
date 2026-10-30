@@ -782,10 +782,10 @@ struct AdmissionProbeEvidence {
     candidates: Option<u32>,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AdmissionSummary {
-    probe: &'static str,
+    probe: String,
     initial_reason: String,
     terminal_reason: String,
     attempts: u8,
@@ -798,10 +798,34 @@ impl AdmissionSummary {
         serde_json::to_string(self).expect("admission summary is serializable")
     }
 
+    pub(crate) fn from_note(note: &str) -> Option<Self> {
+        let summary: Self = serde_json::from_str(note).ok()?;
+        let closed_reason = |reason: &str| {
+            [
+                "not_started",
+                "clear",
+                "cancelled",
+                "unavailable",
+                "invalid_evidence",
+                "envelope_mismatch",
+                "invalid_response",
+                "invalid_status",
+                "clear_exit_mismatch",
+            ]
+            .contains(&reason)
+                || serde_json::from_value::<AdmissionProbeReason>(json!(reason)).is_ok()
+        };
+        (summary.probe == "fresh-install-admission"
+            && summary.attempts <= 2
+            && closed_reason(&summary.initial_reason)
+            && closed_reason(&summary.terminal_reason))
+        .then_some(summary)
+    }
+
     fn refusal(&self, mut failure: Failure) -> Failure {
         failure
             .evidence
-            .push(crate::redact::OutputText::from_output(&self.note()));
+            .push(crate::redact::OutputText::from_admission(self));
         failure
     }
 }
@@ -821,7 +845,7 @@ pub fn fresh_install_admission(
         .unwrap_or(u64::MAX)
         .min(started.saturating_add(30_000));
     let mut summary = AdmissionSummary {
-        probe: "fresh-install-admission",
+        probe: "fresh-install-admission".into(),
         initial_reason: "not_started".into(),
         terminal_reason: "not_started".into(),
         attempts: 0,
@@ -877,13 +901,18 @@ pub fn fresh_install_admission(
         None => spec,
     };
     loop {
-        summary.elapsed_ms = runner.monotonic_ms().saturating_sub(started);
-        summary.deadline_exceeded = runner.monotonic_ms() >= deadline_ms;
+        let now = runner.monotonic_ms();
+        summary.elapsed_ms = now.saturating_sub(started);
+        summary.deadline_exceeded = now >= deadline_ms;
         if let Some(reason) = runner.cancellation() {
             summary.terminal_reason = "cancelled".into();
-            return Err(summary.refusal(Failure::cancelled("fresh_install", &reason)));
+            return Err(summary.refusal(
+                Failure::cancelled("fresh_install", &reason)
+                    .with_recovery(crate::failure::RecoveryReason::RunCancelled),
+            ));
         }
-        let output = if summary.deadline_exceeded {
+        let dispatched = !summary.deadline_exceeded;
+        let output = if !dispatched {
             CmdOutput {
                 timed_out: true,
                 ..Default::default()
@@ -896,11 +925,15 @@ pub fn fresh_install_admission(
             }
             .run(&spec)
         };
-        summary.elapsed_ms = runner.monotonic_ms().saturating_sub(started);
-        summary.deadline_exceeded = runner.monotonic_ms() >= deadline_ms;
+        let now = runner.monotonic_ms();
+        summary.elapsed_ms = now.saturating_sub(started);
+        summary.deadline_exceeded = now >= deadline_ms;
         if let Some(reason) = runner.cancellation() {
             summary.terminal_reason = "cancelled".into();
-            return Err(summary.refusal(Failure::cancelled("fresh_install", &reason)));
+            return Err(summary.refusal(
+                Failure::cancelled("fresh_install", &reason)
+                    .with_recovery(crate::failure::RecoveryReason::RunCancelled),
+            ));
         }
         let value = serde_json::from_str::<Value>(&output.stdout).ok();
         let matched = value.as_ref().filter(|v| {
@@ -916,6 +949,7 @@ pub fn fresh_install_admission(
             .and_then(|v| serde_json::from_value::<AdmissionProbeEvidence>(v.clone()).ok())
             .filter(|e| e.pid != Some(0) && e.candidates.is_none_or(|n| n <= 1_048_576));
         let evidence = match matched.and_then(|v| v.get("evidence")) {
+            _ if !dispatched => "not_run".into(),
             Some(_) => validated
                 .as_ref()
                 .and_then(|e| serde_json::to_string(e).ok())
@@ -965,7 +999,10 @@ pub fn fresh_install_admission(
         if retry {
             if let Some(reason) = runner.cancellation() {
                 summary.terminal_reason = "cancelled".into();
-                return Err(summary.refusal(Failure::cancelled("fresh_install", &reason)));
+                return Err(summary.refusal(
+                    Failure::cancelled("fresh_install", &reason)
+                        .with_recovery(crate::failure::RecoveryReason::RunCancelled),
+                ));
             }
             let remaining = deadline_ms.saturating_sub(runner.monotonic_ms());
             runner.sleep(Duration::from_millis(500.min(remaining)));
@@ -976,16 +1013,18 @@ pub fn fresh_install_admission(
             && output.exit_code == Some(4)
             && status == Some("busy");
         let probe_status = match status {
+            _ if !dispatched => "not_run",
             Some("clear") => "clear",
             Some("busy") => "busy",
             Some("unknown") => "unknown",
             _ => "invalid",
         };
         let detail = format!(
-            "{}; probe_status={probe_status}; probe_evidence={evidence}; exit_code={:?}; timed_out={}",
-            if busy { "a foreign automation flow is active on the selected device" }
+            "{}; probe_status={probe_status}; probe_evidence={evidence}; exit_code={:?}; timed_out={}; deadline_exceeded={}",
+            if summary.deadline_exceeded { "admission allowance expired" }
+            else if busy { "a foreign automation flow is active on the selected device" }
             else { "strict foreign-flow admission did not prove the selected device clear" },
-            output.exit_code, output.timed_out,
+            output.exit_code, output.timed_out, summary.deadline_exceeded,
         );
         return Err(summary.refusal(Failure::new(
             "fresh_install",

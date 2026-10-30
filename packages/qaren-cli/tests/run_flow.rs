@@ -10111,6 +10111,13 @@ fn fresh_install_reprobe_keeps_the_final_busy_verdict_at_both_admission_points()
         let failure = receipt.failure.unwrap();
         assert_eq!(failure.code, FailureCode::DeviceBusy);
         assert!(failure
+            .next_action
+            .contains("wait for the foreign process owner"));
+        assert_eq!(
+            failure.recovery.as_ref().unwrap().action,
+            qaren::failure::RecoveryAction::WaitForOwner
+        );
+        assert!(failure
             .detail
             .as_str()
             .contains("driver_on_selected_device"));

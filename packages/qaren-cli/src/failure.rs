@@ -120,7 +120,11 @@ pub struct Failure {
     pub phase: String,
     pub code: FailureCode,
     pub detail: OutputText,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_evidence",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub evidence: Vec<OutputText>,
     pub next_action: OutputText,
     // Boxed so every Result<_, Failure> keeps its size.
@@ -142,6 +146,22 @@ impl FailureRecovery {
             Self::Press(recovery) => Self::Press(recovery),
         }
     }
+}
+
+fn deserialize_evidence<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<OutputText>, D::Error> {
+    Vec::<String>::deserialize(deserializer).map(|notes| {
+        notes
+            .into_iter()
+            .map(
+                |note| match crate::core::AdmissionSummary::from_note(&note) {
+                    Some(summary) => OutputText::from_admission(&summary),
+                    None => OutputText::from_output(&note),
+                },
+            )
+            .collect()
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,7 +199,7 @@ pub struct RecoveryRung {
     pub instruction: String,
 }
 
-// The ordered ladder, least destructive first: retry, restart app/Metro/runner, restart device, rebuild, own cleanup.
+// Foreign admission uses L0-L5; other recovery reasons retain their 1-based rungs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Recovery {
     pub reason: RecoveryReason,
@@ -241,7 +261,7 @@ impl Recovery {
         let (next_rung, action) = match reason {
             BudgetExhausted => (Some(1), RecoveryAction::WaitForHolder),
             IdentityUnavailable => (Some(1), RecoveryAction::RestoreProcessObservation),
-            ForeignAdmissionUnresolved => (None, RecoveryAction::WaitForOwner),
+            ForeignAdmissionUnresolved => unreachable!("foreign admission has a dedicated ladder"),
             OwnershipUnresolved | PersistenceFailed => (Some(5), RecoveryAction::RestoreStorage),
             BuildBudgetExhausted | BuildProcessFailed | CandidateDrifted => {
                 (Some(5), RecoveryAction::CleanupSelf)

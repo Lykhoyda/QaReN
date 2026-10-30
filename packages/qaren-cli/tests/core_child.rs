@@ -304,6 +304,12 @@ fn fresh_admission_reprobe_shares_the_original_allowance_and_rejects_late_result
         } else {
             let failure = result.unwrap_err();
             assert_eq!(failure.code, FailureCode::FreshInstallAdmissionUnknown);
+            assert!(failure.detail.contains("admission allowance expired"));
+            assert!(failure.detail.contains("deadline_exceeded=true"));
+            if allowance == 0 || allowance == 600 {
+                assert!(failure.detail.contains("probe_status=not_run"));
+                assert!(!failure.detail.contains("invalid_response"));
+            }
             admission_failure_summary(&failure)
         };
         assert_eq!(summary["terminalReason"], terminal);
@@ -346,6 +352,10 @@ fn fresh_admission_cancellation_before_scan_after_scan_during_delay_and_after_re
         }
         let failure = admit(&mut mock, None).unwrap_err();
         assert_eq!(failure.code, FailureCode::RunCancelled);
+        assert_eq!(
+            failure.recovery.as_ref().unwrap().reason,
+            qaren::failure::RecoveryReason::RunCancelled
+        );
         let summary = admission_failure_summary(&failure);
         assert_eq!(summary["attempts"], reads);
         assert_eq!(summary["terminalReason"], "cancelled");
@@ -381,6 +391,98 @@ fn fresh_admission_android_never_reprobes_ios_identity_evidence() {
     assert_eq!(admission_failure_summary(&failure)["attempts"], 1);
     assert_eq!(mock.calls.len(), 1);
     assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn fresh_admission_closed_summary_survives_runtime_input_word_collisions() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    let inputs = Arc::new(InputValues::from_entries([
+        (
+            OsString::from("QAREN_INPUT_PASSWORD"),
+            OsString::from("executable_identity_unproven"),
+        ),
+        (OsString::from("QAREN_INPUT_CODE"), OsString::from("clear")),
+    ]));
+    with_input_scope(inputs, || {
+        let mut mock = MockRunner::new();
+        for _ in 0..2 {
+            mock.expect_run(
+                "fresh-install-preflight.js",
+                admission_output("unknown", "executable_identity_unproven"),
+            );
+        }
+        let failure = admit(&mut mock, None).unwrap_err();
+        let summary = admission_failure_summary(&failure);
+        assert_eq!(summary["initialReason"], "executable_identity_unproven");
+        let json = qaren::redact::durable_json(&failure).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let summary: serde_json::Value =
+            serde_json::from_str(saved["evidence"][0].as_str().unwrap()).unwrap();
+        assert_eq!(summary["terminalReason"], "executable_identity_unproven");
+        let restored: qaren::failure::Failure = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            admission_failure_summary(&restored)["terminalReason"],
+            "executable_identity_unproven"
+        );
+        mock.expect_run(
+            "fresh-install-preflight.js",
+            admission_output("clear", "scan_failed"),
+        );
+        let note = admit(&mut mock, None).unwrap().note();
+        let receipt = serde_json::json!({"outcomes":{"admission_before_deps":note, "admission_before_mutation":note}, "failure":failure});
+        let saved: serde_json::Value =
+            serde_json::from_str(&qaren::redact::durable_json(&receipt).unwrap()).unwrap();
+        for key in ["admission_before_deps", "admission_before_mutation"] {
+            let summary: serde_json::Value =
+                serde_json::from_str(saved["outcomes"][key].as_str().unwrap()).unwrap();
+            assert_eq!(summary["terminalReason"], "clear");
+        }
+        let summary: serde_json::Value =
+            serde_json::from_str(saved["failure"]["evidence"][0].as_str().unwrap()).unwrap();
+        assert_eq!(summary["initialReason"], "executable_identity_unproven");
+    });
+}
+
+#[test]
+fn fresh_admission_projection_never_exempts_unvalidated_note_payloads() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    let inputs = Arc::new(InputValues::from_entries([
+        (
+            OsString::from("QAREN_INPUT_PASSWORD"),
+            OsString::from("private-admission-canary"),
+        ),
+        (OsString::from("QAREN_INPUT_CODE"), OsString::from("clear")),
+    ]));
+    with_input_scope(inputs, || {
+        for field in ["probe", "initialReason", "terminalReason", "extra"] {
+            let mut note = serde_json::json!({"probe":"fresh-install-admission","initialReason":"clear","terminalReason":"clear","attempts":1,"elapsedMs":0,"deadlineExceeded":false});
+            note[field] = "private-admission-canary".into();
+            let note = note.to_string();
+            let receipt = serde_json::json!({"outcomes":{"admission_before_deps":note}, "failure":{"evidence":[note]}});
+            let output = qaren::redact::durable_json(&receipt).unwrap();
+            assert!(!output.contains("private-admission-canary"));
+            let mut failure = qaren::failure::Failure::new(
+                "fresh_install",
+                FailureCode::FreshInstallAdmissionUnknown,
+                "unknown",
+                "retry later",
+            );
+            let mut value = serde_json::to_value(&failure).unwrap();
+            value["evidence"] = serde_json::json!([note]);
+            failure = serde_json::from_value(value).unwrap();
+            assert!(!failure.evidence[0].contains("private-admission-canary"));
+        }
+        let note = serde_json::json!({"probe":"fresh-install-admission","initialReason":"clear","terminalReason":"clear","attempts":3,"elapsedMs":0,"deadlineExceeded":false}).to_string();
+        let output = qaren::redact::durable_json(
+            &serde_json::json!({"outcomes":{"admission_before_deps":note}}),
+        )
+        .unwrap();
+        assert!(!output.contains("clear"));
+    });
 }
 
 fn request() -> CoreRequest {

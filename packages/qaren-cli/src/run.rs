@@ -1963,7 +1963,7 @@ fn finish_failed(
     failure: Failure,
     retain_device_lease: bool,
 ) -> Receipt {
-    let failure = if failure.code == FailureCode::RunCancelled {
+    let failure = if failure.code == FailureCode::RunCancelled && failure.phase == "fresh_install" {
         failure
     } else {
         ensure_running(ctx.runner, &failure.phase)
