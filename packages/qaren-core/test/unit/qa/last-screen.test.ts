@@ -5,6 +5,7 @@ import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
 import { MASK, ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { screenNow, targetMissDiagnostic } from '../../../dist/qa/target-miss.js';
 import { runPlan } from '../../../dist/qa/walker.js';
+import { join } from '../../../dist/qa/screen.js';
 import type { WalkerDeps } from '../../../dist/qa/walker.js';
 import type { Element, Screen } from '../../../dist/qa/screen.js';
 
@@ -164,13 +165,15 @@ test('structurally protected code labels are masked in both failure projections'
   const privacy = new ObservedPrivacy();
   privacy.didFill('ABCD');
   for (const kind of ['button', 'cell'] as const) {
-    const observed = screen(
-      [...'ABCD'].map((label, i) =>
-        control(`@box${i}`, label, {
-          kind,
-          rect: { x: i * 48, y: 100, width: 32, height: 40 },
-        }),
-      ),
+    const observed = join(
+      [...'ABCD'].map((label, i) => ({
+        ref: `@box${i}`,
+        type: kind === 'button' ? 'Button' : 'Cell',
+        label,
+        hittable: true,
+        rect: { x: i * 48, y: 100, width: 32, height: 40 },
+      })),
+      [],
     );
     privacy.observe(observed);
     assert.deepEqual(privacy.screenText(observed), ['[code]']);
