@@ -10,12 +10,32 @@ pub fn start_spec(project_root: &Path, port: u16, localhost: bool) -> CmdSpec {
     if localhost {
         args.push("--localhost");
     }
-    CmdSpec::new("expo-start", "pnpm", &args, 0)
+    let spec = CmdSpec::new("expo-start", "pnpm", &args, 0)
         .cwd(project_root)
         .env_remove("CI")
         .env("EXPO_NO_TELEMETRY", "1")
         // Metro logs each request on receipt here, before any dependency-graph wait; the drain counts bundle requests.
-        .env("DEBUG", crate::exec::log::METRO_REQUEST_LOG)
+        .env("DEBUG", crate::exec::log::METRO_REQUEST_LOG);
+    if !localhost {
+        return spec;
+    }
+    // Node resolves `localhost` to ::1 first, so --localhost alone listens on IPv6 while every probe and the app use 127.0.0.1.
+    let inherited = std::env::var("NODE_OPTIONS").ok();
+    spec.env(
+        "NODE_OPTIONS",
+        &ipv4_first_node_options(inherited.as_deref()),
+    )
+}
+
+// Appends to the caller's NODE_OPTIONS instead of replacing it.
+pub fn ipv4_first_node_options(inherited: Option<&str>) -> String {
+    match inherited
+        .map(str::trim)
+        .filter(|options| !options.is_empty())
+    {
+        Some(options) => format!("{options} --dns-result-order=ipv4first"),
+        None => "--dns-result-order=ipv4first".to_string(),
+    }
 }
 
 // Expo serves `/` and `/status` itself; only Metro's own handler logs this path, arming the drained count before launch.

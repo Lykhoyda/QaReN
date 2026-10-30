@@ -1590,6 +1590,33 @@ fn ios_metro_binds_to_loopback_and_android_metro_keeps_its_reverse_path() {
         ["exec", "expo", "start", "--port", "8791", "--localhost"]
     );
     assert_eq!(android.args, ["exec", "expo", "start", "--port", "8791"]);
+    // The probes and the app's initialUrl use 127.0.0.1, so iOS Metro must resolve localhost to IPv4 first.
+    let node_options = ios
+        .env
+        .iter()
+        .find(|(k, _)| k == "NODE_OPTIONS")
+        .map(|(_, v)| v.as_str());
+    assert!(
+        node_options.is_some_and(|v| v.ends_with("--dns-result-order=ipv4first")),
+        "{node_options:?}"
+    );
+    assert!(!android.env.iter().any(|(k, _)| k == "NODE_OPTIONS"));
+}
+
+#[test]
+fn ipv4_first_is_appended_to_the_callers_node_options() {
+    assert_eq!(
+        metro::ipv4_first_node_options(None),
+        "--dns-result-order=ipv4first"
+    );
+    assert_eq!(
+        metro::ipv4_first_node_options(Some("  ")),
+        "--dns-result-order=ipv4first"
+    );
+    assert_eq!(
+        metro::ipv4_first_node_options(Some("--max-old-space-size=4096")),
+        "--max-old-space-size=4096 --dns-result-order=ipv4first"
+    );
 }
 
 #[test]
