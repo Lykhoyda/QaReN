@@ -1983,7 +1983,8 @@ borrowed server. A matching UIAutomator, agent-device, Maestro or instrumentatio
 process refuses `DEVICE_BUSY`, excluding QaReN's own runner package. A scan
 error, timeout or empty output refuses `FRESH_INSTALL_ADMISSION_UNKNOWN`.
 Both refusals occur before uninstall. This flow never boots, wipes or restarts
-the emulator. For iOS, see [iOS admission and cleanup](#ios-admission-and-cleanup).
+the emulator. For refusal diagnostics and recovery on either platform, and iOS
+admission rules, see [iOS admission and cleanup](#ios-admission-and-cleanup).
 
 ### iOS simulator lifecycle
 
@@ -2395,9 +2396,13 @@ raw process arguments, paths and subprocess output are not included. Missing,
 invalid or mismatched evidence is reported as `unavailable`, `invalid_evidence`,
 `envelope_mismatch` or `invalid_response`. Expiry before dispatch reports
 `not_run`; a late response retains its observed status with `deadline_exceeded=true`.
-These diagnostics do not relax admission. A validated busy verdict or
-foreign-process identity refusal advises waiting for the foreign process owner
-to finish, then re-running; do not signal or adopt it. That recovery ladder
+These diagnostics do not relax admission. Within the allowance, a matching
+Android `busy` response with exit code 4 advises waiting for the foreign process
+owner even though Android supplies no PID evidence. On iOS, that advice requires
+exit code 4 and validated PID evidence for `busy/driver_on_selected_device` or
+`unknown/driver_identity_unproven` or `unknown/executable_identity_unproven`.
+Neither platform uses this advice for a timed-out response. Wait for the owner
+to finish, then re-run; do not signal or adopt the process. That recovery ladder
 marks automatic re-probing exhausted or ineligible, rules out app/runner/device
 restarts and rebuilds as ways to prove foreign identity, and offers cleanup and
 prepare only after foreign state is independently clear. It uses L0-L5 with
