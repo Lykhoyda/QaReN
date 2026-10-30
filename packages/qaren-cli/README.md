@@ -1409,7 +1409,7 @@ covered rows and other scroll origins still get one clearance swipe. See the
 
 Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`
 when the final evidence remains unsure. A quoted wait with at least two definite
-absence observations sharing one screen signature fails at its deadline with
+absence observations sharing one screen signature normally fails at its deadline with
 “did not appear”; it does not report expired evidence for that stable absence.
 For a quoted value that is not a stored text selector, the failure adds why from
 identifiers and frames only: no captured element carries the identifier, several
@@ -1424,10 +1424,14 @@ native wrapper or on-screen text, expose the field to accessibility, or explicit
 scroll until it is visible before re-running.
 On iOS, complete React layout and native presence evidence can end the wait early
 when two like-for-like absence observations on one unchanged app screen show the
-field wholly inside its viewport under an accessible ancestor. A field wholly
-above or below its own native scroll container can instead receive one scroll
+field wholly inside its viewport under an accessible ancestor. The viewport is
+the nearest native scroll container clipped by its ancestors, or the native
+window when there is no scroll container. A field wholly above or below that
+clipped viewport can instead receive one scroll
 within the wait's original budget, only when the safe drag band belongs to that
-container. A later visible native match passes normally. Missing or partially
+container. Scrolling does not renew or shorten the wait's budget; a field that
+remains below or above the viewport keeps polling until the deadline. A later
+visible native match passes normally. Missing or partially
 clipped layout preserves polling until the deadline; stored-ID replay and block
 start preconditions do not use this early failure or automatic scroll.
 Either unmet ending first gets [step recovery](#step-recovery), so a quoted wait
