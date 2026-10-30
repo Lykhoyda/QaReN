@@ -2398,8 +2398,9 @@ count. Before a native build or native suite is let past its start gate, its pro
 group is recorded in the holder, as is a `qaren` process's own group when it leads
 one; that group must also have no live members, otherwise the refusal names the lock
 and the `pgrep -g` check to wait on. The iOS native-build lock additionally
-requires that group to have been recorded: its holder may have died after starting
-a build it had not yet recorded, so such an orphan is kept. A `qaren` group whose leader pid now belongs to
+requires that group to have been recorded before the next claim releases it: its
+holder may have died after starting a build it had not yet recorded, so such an
+orphan is kept until an explicit `qaren cleanup <run-id>` for that run releases it. A `qaren` group whose leader pid now belongs to
 another process is not checked, since a reused pid proves its old group is gone. `qaren cleanup <run-id>` for a run with no
 `run.json` releases that run's locks under the same proof, and the receipt of a run
 that released an orphaned lock notes it.
