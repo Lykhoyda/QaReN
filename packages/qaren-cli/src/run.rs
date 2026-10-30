@@ -76,7 +76,7 @@ pub fn hold_on_fail(
     shutdown_on_exit: bool,
     plan: &str,
 ) -> bool {
-    if platform != Platform::Ios {
+    if pr || platform != Platform::Ios {
         return false;
     }
     if let Some(explicit) = explicit {
@@ -98,11 +98,7 @@ pub fn hold_on_fail(
     if env("CI").is_some_and(|ci| !ci.is_empty()) || declares_cleanup || shutdown_on_exit {
         return false;
     }
-    match env("QAREN_HOLD_ON_FAIL").as_deref() {
-        Some("1") => true,
-        Some("0") => false,
-        _ => !pr,
-    }
+    env("QAREN_HOLD_ON_FAIL").as_deref() != Some("0")
 }
 
 // The core runtime: QAREN_RUNTIME, else the installed <exe>/../runtime, else the source checkout.
@@ -1757,11 +1753,11 @@ mod hold_tests {
             &'a str,
             bool,
         );
-        let rows: [Row; 15] = [
+        let rows: [Row; 17] = [
             (None, None, None, ios, false, false, PLAN, true),
             (None, None, None, ios, true, false, PLAN, false),
             (Some(false), None, None, ios, false, false, PLAN, false),
-            (Some(true), None, None, ios, true, false, PLAN, true),
+            (Some(true), None, None, ios, true, false, PLAN, false),
             (
                 Some(true),
                 Some("true"),
@@ -1807,7 +1803,9 @@ mod hold_tests {
             ),
             (None, None, Some("1"), ios, false, true, PLAN, false),
             (None, None, Some("0"), ios, false, false, PLAN, false),
-            (None, None, Some("1"), ios, true, false, PLAN, true),
+            (None, None, Some("1"), ios, true, false, PLAN, false),
+            (Some(true), None, Some("1"), ios, true, false, PLAN, false),
+            (None, None, Some("1"), ios, false, false, PLAN, true),
             (Some(true), None, None, android, false, false, PLAN, false),
         ];
         for (i, (explicit, ci, env_hold, platform, pr, shutdown, plan, expected)) in

@@ -2413,7 +2413,7 @@ another process is not checked, since a reused pid proves its old group is gone.
 that released an orphaned lock notes it.
 Do not delete locks to bypass unresolved ownership.
 
-A failed iOS walk is held for inspection. After the app was admitted, an uncancelled `FAIL` or
+A failed iOS `check` walk is held for inspection. After the app was admitted, an uncancelled `FAIL` or
 `TARGET_*` refusal reported by the core (not one QaReN synthesizes after a deadline kill or a
 missing result) is eligible. Teardown still stops the build, core, runner driver, runner host and recorder and
 releases the build lock. It skips stopping Metro (`metro=held: …`), skips any armed simulator
@@ -2425,11 +2425,9 @@ to the `ios-lane` row. The hold ends with `qaren cleanup <run-id>`, or with the 
 device, which reclaims the dead holder through the same cleanup. `--hold` and `--no-hold` decide
 outright. Without either, a non-empty `CI`, a `## Cleanup` plan heading or
 `--shutdown-device-on-exit` keeps the normal teardown; otherwise `QAREN_HOLD_ON_FAIL=1` or `0`
-decides for both `check` and `pr`, and the default is to hold for `check` and not for `pr`. See
-[check](../../apps/docs-site/src/content/docs/check.mdx) for the table. A held `pr` run keeps its
-worktree and records its producers as unproven, so `qaren publish` refuses it even after cleanup;
-re-run `qaren pr` to publish. A held Metro keeps its port; another run using that port
-refuses `METRO_PORT_OCCUPIED`. Android never holds.
+decides for `check`, which holds by default. These flags apply only to `check`; `pr` always
+uses normal teardown. See [check](../../apps/docs-site/src/content/docs/check.mdx) for the table.
+A held Metro keeps its port; another run using that port refuses `METRO_PORT_OCCUPIED`. Android never holds.
 
 The iOS runner's XCTest result bundles under `Logs/Test` in both its local
 DerivedData and current-version prebuilt cache are removed after successful

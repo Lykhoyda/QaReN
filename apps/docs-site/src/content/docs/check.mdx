@@ -152,14 +152,14 @@ refuses `METRO_PORT_OCCUPIED`.
 
 | Setting | Effect |
 | --- | --- |
-| `--hold` / `--no-hold` | Hold or tear down, overriding everything below; both together is a usage error |
+| `check --hold` / `check --no-hold` | Hold or tear down, overriding everything below; both together is a usage error |
 | `CI` set to a non-empty value, a `## Cleanup` heading in the plan, or `--shutdown-device-on-exit` | Never hold unless `--hold` is given |
-| `QAREN_HOLD_ON_FAIL=1` or `0` | Hold on or off for both `check` and `pr` |
-| Neither | `check` holds, `pr` does not |
+| `QAREN_HOLD_ON_FAIL=1` or `0` | Hold on or off for `check` |
+| Neither | `check` holds |
 
 Android never holds; `--hold` there adds the receipt note `hold unsupported on android`. A passing
-run, a cancelled run and other refusals tear down as before. A held `pr` run cannot be published,
-even after cleanup; re-run `qaren pr` to publish.
+run, a cancelled run and other refusals tear down as before. `qaren pr` always uses normal teardown;
+`--hold` and `--no-hold` are valid only for `check`.
 
 ## Time budgets
 
