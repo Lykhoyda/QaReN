@@ -897,6 +897,8 @@ fn probe_pid_birth_until(
 pub struct RunnerDriverCleanup {
     pub details: RunnerDriverDetails,
     pub retired: Vec<bool>,
+    #[serde(default)]
+    pub host_absent: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

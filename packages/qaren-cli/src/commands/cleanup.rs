@@ -391,6 +391,31 @@ pub fn cleanup_with_policy(
     if let Some(outcome) = cleanup_runner_host(runner, &record) {
         outcomes.push(("runner_host".to_string(), outcome));
     }
+    if record.resources.runner_driver_cleanup.is_some()
+        && outcomes
+            .iter()
+            .any(|(leg, outcome)| leg == "runner_host" && outcome.clean())
+    {
+        record
+            .resources
+            .runner_driver_cleanup
+            .as_mut()
+            .unwrap()
+            .host_absent = true;
+        if record.save(runs_root).is_err() {
+            record
+                .resources
+                .runner_driver_cleanup
+                .as_mut()
+                .unwrap()
+                .host_absent = false;
+            mark_runner_reason(&mut record, crate::failure::RecoveryReason::StorageFailed);
+            outcomes.push((
+                "runner_host".to_string(),
+                Outcome::Unresolved("runner host absence could not be persisted".into()),
+            ));
+        }
+    }
 
     let owner_alive = !guarded_simulator
         && (record.resources.recorder.is_some() || record.resources.pr_worktree.is_some())
@@ -924,7 +949,7 @@ fn finish_cleanup(
         receipt.failure = Some(Failure::new(
             "cleanup",
             FailureCode::RunRecordUpdateFailed,
-            "runner retirement could not be persisted; ownership was retained",
+            "runner cleanup evidence could not be persisted; ownership was retained",
             "restore run record storage",
         ));
     }
@@ -1482,6 +1507,7 @@ fn cleanup_runner_drivers_with_policy(
     record.resources.runner_driver_cleanup = Some(RunnerDriverCleanup {
         details: aggregate,
         retired,
+        host_absent: false,
     });
     if record.save(runs_root).is_err() {
         record.resources.runner_drivers = previous_drivers;
@@ -1634,6 +1660,21 @@ pub(crate) fn cleanup_runner_host(runner: &mut dyn Runner, record: &RunRecord) -
     let held = crate::buildplan::read_holder(&lease.lock_dir)
         .is_some_and(|h| h.holder == lease.holder && h.run_id == record.run_id);
     if !held {
+        if record.resources.runner_drivers.is_empty()
+            && runner::core_quiescent(record)
+            && record
+                .resources
+                .runner_driver_cleanup
+                .as_ref()
+                .is_some_and(|e| {
+                    e.host_absent
+                        && !e.retired.is_empty()
+                        && e.retired.len() == e.details.drivers.len()
+                        && e.retired.iter().all(|retired| *retired)
+                })
+        {
+            return None;
+        }
         return Some(Outcome::Refused(
             "runner host lease proof does not match; left untouched".into(),
         ));

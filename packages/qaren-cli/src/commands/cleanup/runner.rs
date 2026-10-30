@@ -111,7 +111,7 @@ fn driver_liveness(runner: &mut dyn Runner, identity: &PidIdentity) -> PidLivene
     }
 }
 
-fn core_quiescent(record: &RunRecord) -> bool {
+pub(super) fn core_quiescent(record: &RunRecord) -> bool {
     record.resources.core.is_none()
         && record.resources.core_cleanup.as_ref().is_none_or(|e| {
             e.run_id == record.run_id

@@ -166,7 +166,7 @@ impl FakeRunner {
                 .to_string(),
             ),
             "simctl-launchctl" => {
-                if self.fault == "final_storage" && !self.storage_block().exists() { std::fs::create_dir(self.storage_block()).unwrap(); }
+                if self.fault == "host_storage" && !self.storage_block().exists() { std::fs::create_dir(self.storage_block()).unwrap(); }
                 CmdOutput::success(if self.fault == "host_remaining" {
                 "PID Status Label\n42 0 dev.lykhoyda.rndevagent.fastrunner\n"
             } else {
@@ -240,6 +240,12 @@ impl Runner for FakeRunner {
         self.mock.sleep(duration);
     }
     fn now_epoch_ms(&self) -> u64 {
+        if self.fault == "final_storage" && !self.storage_block().exists() {
+            let record = RunRecord::load(&self.root, "orphan-run").unwrap();
+            if record.resources.lease.as_ref().is_some_and(|lease| !lease.lock_dir.exists()) {
+                std::fs::create_dir(self.storage_block()).unwrap();
+            }
+        }
         if self.fault == "retirement_only" && self.storage_block().exists() {
             std::fs::remove_dir(self.storage_block()).unwrap();
         }
@@ -526,6 +532,25 @@ fn retirement_storage_failure_retains_driver_device_and_lease_even_if_final_save
 }
 
 #[test]
+fn host_absence_storage_failure_retains_the_device_and_lease() {
+    for borrowed in [true, false] {
+        let (root, mut record, mut fake) = fixture("QarenIosRunner");
+        record.resources.device_borrowed = borrowed;
+        record.save(&root).unwrap();
+        fake.fault = "host_storage";
+        let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
+        assert_eq!(receipt.result, ReceiptResult::Failed);
+        assert_eq!(receipt.failure.unwrap().code, FailureCode::RunRecordUpdateFailed);
+        assert_ne!(receipt.cleanup["device_lease"], "removed");
+        assert!(record.resources.lease.unwrap().lock_dir.exists());
+        assert!(!RunRecord::load(&root, "orphan-run")
+            .unwrap()
+            .resources.runner_driver_cleanup.unwrap().host_absent);
+        std::fs::remove_dir(fake.storage_block()).unwrap();
+    }
+}
+
+#[test]
 fn final_save_failure_reports_the_lease_that_was_actually_released() {
     let (_, record, mut fake) = fixture("QarenIosRunner");
     fake.fault = "final_storage";
@@ -542,6 +567,30 @@ fn final_save_failure_reports_the_lease_that_was_actually_released() {
         RecoveryAction::RepairRecordStorage
     );
     std::fs::remove_dir(fake.storage_block()).unwrap();
+    fake.fault = "";
+    let retry = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
+    assert_eq!(retry.result, ReceiptResult::Cleaned);
+    assert_eq!(fake.signals, ["-INT", "-TERM", "-KILL"]);
+}
+
+#[test]
+fn final_save_retry_leaves_a_subsequent_lease_holder_untouched() {
+    let (root, _, mut fake) = fixture("QarenIosRunner");
+    fake.fault = "final_storage";
+    assert_eq!(
+        fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver).result,
+        ReceiptResult::Failed
+    );
+    std::fs::remove_dir(fake.storage_block()).unwrap();
+    let next_lease = qaren::lease::acquire(
+        &mut MockRunner::new(), &root.join("locks"), Platform::Ios, DEVICE, "next-run", None,
+    ).unwrap();
+    let before = std::fs::read(next_lease.lock_dir.join("holder.json")).unwrap();
+    fake.fault = "host_remaining";
+    let retry = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
+    assert_eq!(retry.result, ReceiptResult::Cleaned);
+    assert_eq!(std::fs::read(next_lease.lock_dir.join("holder.json")).unwrap(), before);
+    assert_eq!(fake.signals, ["-INT", "-TERM", "-KILL"]);
 }
 
 #[test]
