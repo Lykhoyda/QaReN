@@ -135,7 +135,7 @@ test('a floating dev-menu button that stays fails with the reason', async () => 
 
 const homeTarget: Target = { phrase: 'home', quoted: 'home', exact: 'id' };
 
-function sheetScreen(covered = true, declines = ['Close']): Screen {
+function sheetScreen(covered = true, declines = ['Close'], extraNodes: NativeNode[] = []): Screen {
   const rect = { x: 0, y: 0, width: 400, height: 800 };
   const nodes: NativeNode[] = [
     { ref: '@app', type: 'Application', rect },
@@ -154,6 +154,7 @@ function sheetScreen(covered = true, declines = ['Close']): Screen {
       label: 'Welcome Home',
       rect: { x: 20, y: covered ? 500 : 200, width: 200, height: 40 },
     },
+    ...extraNodes,
     ...(declines.length
       ? [
           {
@@ -192,6 +193,59 @@ test('an uncovered id target still vetoes recovery', () => {
   assert.equal(targetEvidence(homeTarget, snapshot), 'pass');
   assert.equal(dismissCandidate(snapshot, [homeTarget]), undefined);
 });
+
+for (const exact of [undefined, 'id'] as const) {
+  test(`an uncovered id carrier with an offscreen twin still vetoes recovery (${exact})`, () => {
+    const snapshot = sheetScreen(
+      false,
+      ['Close'],
+      [
+        {
+          ref: '@offscreen-home',
+          type: 'StaticText',
+          parentIndex: 2,
+          identifier: 'home',
+          rect: { x: 20, y: 900, width: 200, height: 40 },
+        },
+      ],
+    );
+    const carriers = snapshot.elements.filter((e) => e.testID === 'home');
+    assert.equal(carriers.length, 2);
+    assert.equal(carriers[0].offscreen, false);
+    assert.equal(centreCovered(carriers[0], snapshot), false);
+    assert.equal(carriers[1].offscreen, true);
+    assert.equal(dismissCandidate(snapshot, [{ ...homeTarget, exact }]), undefined);
+  });
+}
+
+for (const exact of [undefined, 'text'] as const) {
+  test(`input-value text vetoes recovery only when uncovered (${exact})`, () => {
+    const target = { phrase: 'Ready', quoted: 'Ready', exact };
+    for (const covered of [false, true]) {
+      const snapshot = sheetScreen(
+        true,
+        ['Close'],
+        [
+          {
+            ref: '@field',
+            type: 'TextField',
+            parentIndex: 2,
+            label: 'Status',
+            value: 'Ready',
+            rect: { x: 20, y: covered ? 550 : 250, width: 200, height: 40 },
+          },
+        ],
+      );
+      const field = snapshot.elements.find((e) => e.ref === '@field')!;
+      assert.equal(field.value, 'Ready');
+      assert.equal(centreCovered(field, snapshot), covered);
+      assert.deepEqual(
+        dismissCandidate(snapshot, [target]),
+        covered ? { label: 'Close' } : undefined,
+      );
+    }
+  });
+}
 
 test('a later target covered by the scrim does not veto recovery', () => {
   assert.deepEqual(

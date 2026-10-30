@@ -861,12 +861,21 @@ function idSeen(id: string | undefined, screen: Screen): boolean {
 export function targetOnScreen(screen: Screen, target: Target): boolean {
   const quoted = target.quoted;
   if (quoted === undefined) return true;
-  if (target.exact !== 'text' && idSeen(quoted, screen)) return true;
+  if (
+    target.exact !== 'text' &&
+    idIdentities(quoted, screen).some(
+      ({ element }) => !element.offscreen && !centreCovered(element, screen),
+    )
+  )
+    return true;
   return (
     target.exact !== 'id' &&
     literalEvidence(screen, quoted, 'contains').verdict !== 'fail' &&
     screen.elements.some(
-      (e) => e.label?.includes(quoted) && !e.offscreen && !centreCovered(e, screen),
+      (e) =>
+        (e.label?.includes(quoted) || e.value?.includes(quoted)) &&
+        !e.offscreen &&
+        !centreCovered(e, screen),
     )
   );
 }
