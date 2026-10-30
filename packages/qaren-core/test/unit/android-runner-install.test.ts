@@ -5,7 +5,7 @@ import {
   resolveAndroidInstallAction,
   buildAdbInstallArgs,
   buildGradleAssembleArgs,
-} from '../../dist/runners/rn-android-runner-client.js';
+} from '../../dist/runners/qaren-android-runner-client.js';
 
 const INSTR = 'dev.lykhoyda.rndevagent.androidrunner.test/androidx.test.runner.AndroidJUnitRunner';
 

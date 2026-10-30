@@ -16,7 +16,7 @@ import { runPlan } from '../../../dist/qa/walker.js';
 import {
   _setAndroidRunnerStateForTest,
   _setFetchForTest as setAndroidFetch,
-} from '../../../dist/runners/rn-android-runner-client.js';
+} from '../../../dist/runners/qaren-android-runner-client.js';
 import {
   _setCapabilitiesForTest,
   _setFastRunnerStateForTest,

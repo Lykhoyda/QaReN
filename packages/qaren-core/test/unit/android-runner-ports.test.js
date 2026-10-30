@@ -5,7 +5,7 @@ import {
   buildAdbForwardRemoveArgs,
   buildInstrumentPortArgs,
   parseAdbDevicesSerials,
-} from '../../dist/runners/rn-android-runner-client.js';
+} from '../../dist/runners/qaren-android-runner-client.js';
 
 test('Android ports: adb forward maps probed hostPort → fixed devicePort', () => {
   assert.deepEqual(buildAdbForwardArgs('emulator-5554', 41001, 22089), [

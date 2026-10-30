@@ -13,6 +13,6 @@
         </intent>
     </queries>
     <application
-        android:label="rn-dev-agent Android runner"
+        android:label="QaReN Android Runner"
         android:theme="@android:style/Theme.Material.Light.NoActionBar" />
 </manifest>

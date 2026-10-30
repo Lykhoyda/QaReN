@@ -3179,6 +3179,8 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       clearRefMap();
       dirtySnapshotPlatforms.add('ios');
     }
+    // A snapshot whose caller's deadline or run already ended publishes no refs.
+    throwIfCancelled();
     if (Array.isArray(data.nodes)) {
       const inventory = qaReadOnly ? snapshotInventory() : undefined;
       const flat = mapRunnerNodesToFlat(data.nodes, false, inventory);

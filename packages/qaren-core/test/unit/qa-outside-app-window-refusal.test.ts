@@ -3,7 +3,7 @@ import { afterEach, test } from 'node:test';
 import { _setActiveSessionForTest, runNative } from '../../dist/agent-device-wrapper.js';
 import { QaDispatchContext } from '../../dist/domain/qa-dispatch.js';
 import { clearRefMap, updateRefMapFromFlat } from '../../dist/fast-runner-ref-map.js';
-import { _setFetchForTest } from '../../dist/runners/rn-android-runner-client.js';
+import { _setFetchForTest } from '../../dist/runners/qaren-android-runner-client.js';
 
 const appId = 'com.example.app';
 const appHome = {

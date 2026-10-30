@@ -1245,7 +1245,7 @@ the requested capture budget. The version-2 capture uses `android-a11y-live`,
 [presence validator](../qaren-core/src/qa/native-presence.ts) requires matching
 app, capture and generation identities, the requested budget and complete,
 in-budget evidence. An incomplete capture resets every node to `unknown`.
-The [Android cover rule](../rn-android-runner/app/src/main/java/dev/lykhoyda/rndevagent/androidrunner/PresenceRules.kt)
+The [Android cover rule](../qaren-android-runner/app/src/main/java/dev/lykhoyda/rndevagent/androidrunner/PresenceRules.kt)
 requires the node's visible centre to be clear of higher windows and of unrelated
 enabled, visible, clickable nodes of its window drawn above it; its own ancestors
 and descendants do not count as native covers. Transparent chrome that
@@ -1460,14 +1460,57 @@ covered rows and other scroll origins still get one clearance swipe. See the
 [scroll-until direction regressions](../qaren-core/test/unit/qa/scroll-until-direction.test.ts).
 
 Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`
-when the final evidence remains unsure. A quoted wait with at least two definite
-absence observations sharing one screen signature fails at its deadline with
+when the final evidence remains unsure. Initial captures, polling captures and
+evidence-refresh captures, including a refresh during the first visibility check,
+share the wait's deadline for both quoted and phrase targets. A wait whose first
+capture never completes fails with `TARGET_WAIT_TIMEOUT` and
+`cause=capture-deadline`, with `next_action=inspect_capture_health`. If a later
+refresh reaches the deadline, the wait ends
+from its completed observations; a phrase wait whose visibility remains undecided
+ends with `VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED`.
+A quoted wait with at least two definite
+absence observations sharing one screen signature normally fails at its deadline with
 “did not appear”; it does not report expired evidence for that stable absence.
 For a quoted value that is not a stored text selector, the failure adds why from
 identifiers and frames only: no captured element carries the identifier, several
 do, or the one that does is React-only, offscreen or has its centre covered.
-Either unmet ending first gets [step recovery](#step-recovery), so a quoted wait
-behind a blocking screen or system dialog runs once more with its full budget.
+When those stable absence observations identify one React-only match, the quoted
+wait fails with `TARGET_REACT_ONLY` (`PLAN_STEP_FAILED`, exit 1). Its detail uses
+identifiers, kinds and frames, without labels, placeholders or field values, to
+report the React layout against its viewport, accessible and nearest native
+ancestors, any scroll attempt and a next step. Unavailable layout is reported as
+`none`; React mounting alone never proves native visibility. Wait on a visible
+native wrapper or on-screen text, expose the field to accessibility, or explicitly
+scroll until it is visible before re-running.
+After two ordinary absence observations of that React-only match on one unchanged
+screen, the wait makes exactly one presence capture to read React's layout, bounded
+by the wait's remaining time; later polls stay ordinary, and a recovery retry does
+not repeat that read. If a React-only match was observed but never classified,
+including when the layout read or a later capture is cut off at the deadline,
+the wait fails with `TARGET_REACT_ONLY` reporting
+`layout=unavailable`, a `cause` (`acquisition-deadline` or `wait-deadline`), the
+last capture stage, observation and presence-read counts, timings, and
+`next_action=inspect_capture_health` or `inspect_wait_target`, with no recovery,
+screenshot or further capture. Neither this ending nor `TARGET_WAIT_TIMEOUT`
+marks the plan step itself as wrong.
+On iOS, that complete React layout and native presence evidence can end the wait early
+when the absence observations on one unchanged app screen show the
+field wholly inside its viewport under an accessible ancestor. The viewport is
+the nearest native scroll container clipped by its ancestors, or the native
+window when there is no scroll container. A field wholly above or below that
+clipped viewport can instead receive one scroll
+within the wait's original budget, only when the safe drag band belongs to that
+container. Scrolling does not renew or shorten the wait's budget; a field that
+remains below or above the viewport keeps polling until the deadline, and its final
+detail labels the layout `react layout before scroll`. A later
+visible native match passes normally. Missing or partially
+clipped layout preserves polling until the deadline; stored-ID replay and block
+start preconditions do not use this early failure or automatic scroll.
+After a classified React-only miss, [step recovery](#step-recovery) may capture
+only within the wait's remaining time. If that capture reaches the deadline, or
+no time remains, the React-only failure reason stands. Other eligible unmet quoted
+waits retain ordinary recovery. When recovery clears a blocking screen or system
+dialog, the wait runs once more with its full budget.
 Scroll-until-text uses the same visibility verdict
 within its scroll and time budgets. Literal checks re-ask from a fresh capture
 and use `CHECK_UNSURE` if uncertainty remains. This is distinct from acquisition
@@ -2658,11 +2701,21 @@ refuses `APP_PROCESS_UNKNOWN`; a runner built from an older checkout needs a reb
 
 The simulator shows `QaReN` (host) and `QaReN-Runner` (test runner); both remain
 installed in 2.0.4. The native source package is now `qaren-ios-runner`.
-An old `rn-fast-runner` directory cannot supply this version's runner. If startup
-reports a pre-2.0.4 runner directory, [update the installed release](../../README.md#keep-it-working)
+For pre-2.0.4 source directories, see the [runner migration guidance](#android-runner).
+
+### Android runner
+
+The emulator lists the runner as `QaReN Android Runner`; its package id is
+unchanged, so 2.0.4 updates an installed runner in place. The native source
+package is now `qaren-android-runner`. Old build output under
+`packages/rn-android-runner/` can be deleted.
+
+For either platform, old `rn-fast-runner` (iOS) and `rn-android-runner` (Android)
+directories cannot supply this version's runner. If startup reports a pre-2.0.4
+runner directory, [update the installed release](../../README.md#keep-it-working)
 or use a fresh source checkout. Unset stale `QAREN_NATIVE_RUNNER_ROOT` or
-`QAREN_ROOT` overrides if they point at the old layout; no compatibility alias is
-provided.
+`QAREN_ROOT` overrides if they point at the old layout; no compatibility alias
+or shim is provided.
 
 ### Saved plans
 
@@ -2723,7 +2776,8 @@ and never triggers recovery.
 
 An action without success evidence after its one retry, a step target that
 does not resolve, a definite failed check, an unmet quoted wait, or a phrase check still
-unsure after its re-ask gets a deterministic recovery, then the step runs once more from a fresh
+unsure after its re-ask gets a deterministic recovery, subject to the
+[quoted-wait deadline limits](#plan-checks-and-screen-evidence), then the step runs once more from a fresh
 capture. If it fails again, a second recovery may decline a different system prompt or app
 interruption once the first is proven gone. An app interruption with the same decline label
 fails with `the app interruption did not disappear`; a different kind of interruption or
@@ -3242,6 +3296,26 @@ ignores ASCII case and rejects matches next to ASCII letters, digits or hyphens;
 a recorded port number also masks the same number elsewhere in the text. It then
 removes the `needs-qa` label only if the current head is the tested head; otherwise
 `publication.json` and the receipt record `retained-head-changed`.
+
+With `proofInDescription: true` in the app config when `qaren pr` runs (the choice is
+persisted in `pr.json`; publish never re-reads the config), `qaren publish` also writes one
+section between `<!-- qaren-proof:start -->` and `<!-- qaren-proof:end -->` lines into the
+pull request description: the verdict, the tested commit, a link to the comment, and the
+video. The video is the asset the comment upload already produced, used only when the comment
+attached it under the [video publication rules](#video-publication); a withheld or missing
+video shows the comment's own video sentence and no URL. Publishing a new `qaren pr` run
+replaces an existing section instead of adding one; re-publishing a run whose section was
+already written leaves it unchanged. Text outside the markers is kept byte for byte relative to the body
+publish last read; publish makes up to three reads and writes only after two consecutive
+reads agree. GitHub offers no conditional edit, so a human edit landing between that read and the write
+can still be lost. The comment is always posted first, and a skipped description leaves the
+receipt `Published` with `outcomes.description` naming why. Head-drift skips are final when
+the head is neither the tested commit nor this run's verified saved-block writeback commit.
+If the description kept changing, GitHub refused an edit or read, or the comment could not
+be read back, re-run `qaren publish` to retry the description. The ambiguous-marker
+skip is final for that run: fix the marker pair so one QaReN start line precedes one end line,
+then publish from a new `qaren pr` run; this run's comment already holds the proof and video. Upgrade every
+CLI/CI runtime before adding the key; older versions refuse it.
 
 A saved block is published only verbatim, and only when the walk met the strict
 [video publication rules](#video-publication) and the

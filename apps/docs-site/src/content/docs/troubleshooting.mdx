@@ -59,6 +59,8 @@ The screen layer's own codes appear at the start of `failure.detail` or in the r
 | ---------------------------- | ----------------------------------------------------------------------------- |
 | `TARGET_AMBIGUOUS`           | A quoted target, or a phrase target's scrolled-out name matches, matched two or more elements; each candidate is listed by kind, `testID` and frame. Use a unique `testID` or label. |
 | `TARGET_NOT_FOUND`           | A target did not resolve on screen                                            |
+| `TARGET_REACT_ONLY`          | A quoted wait repeatedly found only a React-mounted match without native visibility; follow the [wait evidence and recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence) for diagnostic fields, iOS scroll recovery and next steps |
+| `TARGET_WAIT_TIMEOUT`        | A wait's first capture did not complete; follow the [wait evidence and recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence) for deadline details and next steps |
 | `CHECK_UNSURE`               | A literal check could not be decided from a fresh capture                     |
 | `VISIBILITY_UNSURE`          | A wait ended with the target's visibility still unsure                        |
 | `SCREEN_EVIDENCE_INCOMPLETE` | The captured screen was not complete enough to act on safely                  |
