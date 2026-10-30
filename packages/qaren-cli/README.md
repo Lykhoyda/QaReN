@@ -2578,22 +2578,21 @@ refuses `APP_PROCESS_UNKNOWN`; a runner built from an older checkout needs a reb
 
 The simulator shows `QaReN` (host) and `QaReN-Runner` (test runner); both remain
 installed in 2.0.4. The native source package is now `qaren-ios-runner`.
-An old `rn-fast-runner` directory cannot supply this version's runner. If startup
-reports a pre-2.0.4 runner directory, [update the installed release](../../README.md#keep-it-working)
-or use a fresh source checkout. Unset stale `QAREN_NATIVE_RUNNER_ROOT` or
-`QAREN_ROOT` overrides if they point at the old layout; no compatibility alias is
-provided.
+For pre-2.0.4 source directories, see the [runner migration guidance](#android-runner).
 
 ### Android runner
 
 The emulator lists the runner as `QaReN Android Runner`; its package id is
 unchanged, so 2.0.4 updates an installed runner in place. The native source
-package is now `qaren-android-runner`. An old `rn-android-runner` directory
-cannot supply this version's runner. If startup reports a pre-2.0.4 runner
-directory, [update the installed release](../../README.md#keep-it-working) or use
-a fresh source checkout, and unset stale `QAREN_NATIVE_RUNNER_ROOT` or
-`QAREN_ROOT` overrides. Old build output under `packages/rn-android-runner/` can
-be deleted.
+package is now `qaren-android-runner`. Old build output under
+`packages/rn-android-runner/` can be deleted.
+
+For either platform, old `rn-fast-runner` (iOS) and `rn-android-runner` (Android)
+directories cannot supply this version's runner. If startup reports a pre-2.0.4
+runner directory, [update the installed release](../../README.md#keep-it-working)
+or use a fresh source checkout. Unset stale `QAREN_NATIVE_RUNNER_ROOT` or
+`QAREN_ROOT` overrides if they point at the old layout; no compatibility alias
+or shim is provided.
 
 ### Saved plans
 
