@@ -3579,6 +3579,9 @@ fn expo_interface_failure_keeps_the_cause_and_remedy_after_owned_metro_cleanup()
             } else {
                 "ExpoModulesJSI.swiftinterface: error: cannot find type '__ObjC::expo'\n"
             };
+            let diagnostic = format!(
+                "ExpoModulesJSI.swiftinterface: error: cannot find type '__ObjC::expo'\n{diagnostic}"
+            );
             let padding = "unrelated build output\n".repeat(450_000);
             let body = match placement {
                 "head" => format!("{diagnostic}{padding}"),

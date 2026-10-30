@@ -1504,7 +1504,10 @@ fn diagnostic_compiler_and_mode_inputs_preserve_the_existing_cache_key() {
         runner.expect_run("ls-files", CmdOutput::success(""));
         runner.expect_run(
             "xcodebuild -version",
-            CmdOutput::success(common::XCODE_VERSION),
+            CmdOutput {
+                stderr: "DVT notice\n".into(),
+                ..CmdOutput::success(common::XCODE_VERSION)
+            },
         );
         runner.expect_run(
             "xcrun swift --version",

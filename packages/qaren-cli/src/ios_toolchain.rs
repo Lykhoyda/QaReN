@@ -75,7 +75,11 @@ impl CompilerIdentity {
         let mut identity = Self::collect_xcode(runner);
         let swift = runner.run_private(&crate::adapters::ios::swift_version_spec(), &[]);
         let text = swift.stdout().trim();
-        if swift.clean() && !text.is_empty() && text.len() <= 16384 {
+        if swift.exit_code() == Some(0)
+            && !swift.timed_out()
+            && !text.is_empty()
+            && text.len() <= 16384
+        {
             identity.swift = SwiftVersion::from_compiler(text);
         }
         identity
@@ -96,10 +100,11 @@ impl CompilerIdentity {
             (token(version) && token(build) && lines.next().is_none())
                 .then(|| format!("{version}/{build}"))
         })();
+        let succeeded = xcode.exit_code() == Some(0) && !xcode.timed_out();
         Self {
-            xcode: xcode.clean().then_some(normalized).flatten(),
+            xcode: succeeded.then_some(normalized).flatten(),
             swift: None,
-            xcode_hash: (xcode.clean() && !xcode_text.is_empty() && xcode_text.len() <= 16384)
+            xcode_hash: (succeeded && !xcode_text.is_empty() && xcode_text.len() <= 16384)
                 .then(|| sha256_hex(xcode_text.as_bytes())),
         }
     }
@@ -200,6 +205,7 @@ impl InterfaceFailure {
 }
 
 pub fn classify_failure(log: &str, observation: Option<&Observation>) -> Option<InterfaceFailure> {
+    let mut fallback = None;
     for line in log.lines() {
         let Some((before_error, _)) = line.split_once("error:") else {
             continue;
@@ -243,11 +249,15 @@ pub fn classify_failure(log: &str, observation: Option<&Observation>) -> Option<
             .split_once("compiler is")
             .and_then(|(_, s)| SwiftVersion::from_compiler(s))
             .or_else(|| observation?.compiler.swift.clone());
-        return Some(InterfaceFailure {
+        let failure = InterfaceFailure {
             package,
             host,
             built,
-        });
+        };
+        if failure.cause().is_some() {
+            return Some(failure);
+        }
+        fallback.get_or_insert(failure);
     }
-    None
+    fallback
 }
