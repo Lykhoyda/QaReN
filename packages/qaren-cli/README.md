@@ -736,16 +736,20 @@ live frame equals that owner's frame; the tap goes to the unchanged point. A lat
 screen change cannot turn a proven no-mutation refusal into a passing action.
 For an iOS native-backed button not reported selected, inside a scroll container
 no taller than three times the target's height and with a visible enabled button
-beside it on the same row, QaReN requires the same reference and identity to report
-selected after the press while that identity remains on screen. If no element
+beside it on the same row, QaReN requires exactly one match for the target's
+identity, retaining its original reference and reporting selected after the press,
+while that identity remains on screen. Identity is kind plus testID when present,
+otherwise kind plus label on an element without a testID. If no element
 with that identity remains after the tap, the existing screen-change contract
 applies, allowing navigation or replacement to pass. The walker also accepts
 authoritative effect proof, but the current iOS press adapter does not supply it;
-selection readback is the supported evidence for these controls. It takes one immediate read-only re-capture for delayed selection
+selection readback is the supported evidence for these controls. After the first
+post-tap capture, if the identity remains without bound selection or effect proof,
+it takes one additional immediate read-only capture for delayed selection
 within the pre-tap observation's remaining lifetime: the earlier of 10 seconds
 after that capture completes and 32 seconds after it starts. Neither readback
-renews this window. An unrelated screen change or pixel highlight cannot
-pass this candidate. Otherwise it refuses `PRESS_NOT_REGISTERED` (exit 4), with
+renews this window. While the identity remains, an unrelated screen change or
+pixel highlight cannot pass this candidate. Otherwise it refuses `PRESS_NOT_REGISTERED` (exit 4), with
 closed `pressEvidence` describing identity/selection uncertainty, outside-target
 semantic change, one or two capture attempts, and `heldPress: not_tried_unsafe`.
 
