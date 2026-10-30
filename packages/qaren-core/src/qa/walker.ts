@@ -1802,6 +1802,7 @@ async function walkBlockScoped(
     item: Item,
     attempt: number,
     reason: string,
+    until?: number,
   ): Promise<'retry' | WalkOutcome | undefined> => {
     const first = recovered.get(item);
     if (opts.recover === false || !deps.hideDevMenu) return undefined;
@@ -1809,8 +1810,13 @@ async function walkBlockScoped(
     loginReplayed = false;
     let fresh: Observation;
     try {
-      fresh = await capture(undefined, true, true);
+      // A wait's recovery capture shares the wait's deadline; out of time, the wait's reason stands.
+      fresh =
+        until === undefined
+          ? await capture(undefined, true, true)
+          : await captureOnce(undefined, true, true, 'resolve', until);
     } catch (error) {
+      if (error instanceof CaptureDeadline) return undefined;
       if (
         !deps.presenceUnavailable ||
         !(error instanceof ResolutionError) ||
@@ -2219,7 +2225,7 @@ async function walkBlockScoped(
             const view = proven ? reactOnlyViewport(lone) : undefined;
             if (view?.where === 'inside' && reactOnlyFactsOf(lone!)?.accessibleAncestor) {
               const reason = reactOnlyMiss(item.target, observation.screen, absent, waitAttempt)!;
-              const recovering = await recovery(item, 1, reason);
+              const recovering = await recovery(item, 1, reason, deadline);
               if (recovering === 'retry') continue attempts;
               if (recovering) return recovering;
               return judged(
@@ -2392,7 +2398,8 @@ async function walkBlockScoped(
               (unchanged
                 ? `"${item.target.quoted}" did not appear within ${budget / 1000}s; the screen did not change across ${absent} observations`
                 : ITEM_DEADLINE_EXCEEDED);
-            const recovering = await recovery(item, 1, reason);
+            // A classified React-only miss already spent its layout read; recovery gets no fresh time for another.
+            const recovering = await recovery(item, 1, reason, reactOnly ? deadline : undefined);
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
             if (unchanged) {

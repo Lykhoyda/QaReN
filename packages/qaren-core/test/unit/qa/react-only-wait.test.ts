@@ -168,7 +168,8 @@ async function wait(forms: Form[], plan = '1. Wait for "name-field" to appear', 
 
 const enrichments = (r: { presence: boolean[] }) => r.presence.filter(Boolean).length;
 
-const seen = (r: Awaited<ReturnType<typeof wait>>) => r.result.failure?.seen ?? '';
+const seen = (r: Pick<Awaited<ReturnType<typeof wait>>, 'result'>) =>
+  r.result.failure?.seen ?? '';
 
 test('a field past the window but inside a taller scroll view is not inside its viewport', async () => {
   // The window clips the 1000-point scroll view at 864; the field starts at 944.
@@ -338,7 +339,7 @@ test("a native carrier keeps today's miss text and requests no React facts", asy
 
 // Each capture gets the wait's remaining time; a presence capture runs `slow(budget)` instead.
 async function slowWait(
-  slow: (budget: number, f: ReturnType<typeof walker>) => Promise<Form | void>,
+  slow: (budget: number, f: ReturnType<typeof walker>) => Promise<Form | undefined>,
 ) {
   const f = walker(
     [],
@@ -417,6 +418,29 @@ test('an ordinary poll cut off at the deadline names the stage it was in', async
     /^TARGET_REACT_ONLY: .*; cause=acquisition-deadline; last_stage=readiness; observations=1; react_only_observations=1; presence_attempts=0; .*; next_action=inspect_capture_health;/,
   );
   assert.equal(f.deps.now(), WAIT_BUDGET_MS);
+});
+
+test("recovery after a React-only refusal captures inside the wait's deadline", async () => {
+  const f = walker(
+    [],
+    scriptedJudge(() => assert.fail('model-free')),
+  );
+  f.deps.hideDevMenu = async () => ({ ok: true, proven: true });
+  const presence: (number | undefined)[] = [];
+  f.deps.captureScreen = async (options) => {
+    if (!options?.platformPresence) return form(false);
+    presence.push(options.budgetMs);
+    if (presence.length === 1) return form(true);
+    // Recovery's own presence capture is as slow as the one QA saw.
+    assert.ok(options.budgetMs !== undefined && options.budgetMs > 0, 'recovery is bounded');
+    await f.deps.sleep(options.budgetMs);
+    throw new CaptureDeadline();
+  };
+  const r = await runPlan(parsePlan('1. Wait for "name-field" to appear').blocks!, f.deps);
+  assert.match(r.failure?.seen ?? '', /^TARGET_REACT_ONLY: "name-field" is mounted in React /);
+  assert.deepEqual(presence, [WAIT_BUDGET_MS - 2 * WAIT_POLL_MS, WAIT_BUDGET_MS - 2 * WAIT_POLL_MS]);
+  assert.equal(f.deps.now(), WAIT_BUDGET_MS);
+  assert.deepEqual(f.actions, []);
 });
 
 test('a refused layout read leaves the cheap polls to run to the deadline', async () => {

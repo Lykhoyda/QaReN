@@ -180,7 +180,7 @@ test('a wait-bounded capture rejects at its budget inside the run stop and does 
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(reactReads, 0);
   assert.deepEqual(warnings, []);
-  // No time left dispatches nothing; an unbounded capture is untouched.
+  // No time left dispatches nothing, and an unbounded capture is untouched.
   let reads = 0;
   await assert.rejects(
     stop.track(() =>

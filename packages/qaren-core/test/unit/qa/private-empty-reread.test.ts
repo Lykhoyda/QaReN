@@ -97,6 +97,7 @@ test('incomplete presence waits for a fresh complete capture even without privat
   assert.equal(reactReads, 1);
 });
 
+// A wait gives its layout read one chance; the walker's deadline owns any retry.
 test('a wait-budgeted presence capture makes exactly one native read inside that budget', async () => {
   const budgets: number[] = [];
   const result = await captureScreen({

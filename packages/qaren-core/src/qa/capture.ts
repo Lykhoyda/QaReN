@@ -61,7 +61,7 @@ export class CaptureDeadline extends Error {
   }
 }
 
-// Inside the run stop's scope, so the deadline reaches every cancellable read beneath it.
+// Called inside the run stop's scope, so the deadline reaches every cancellable read beneath it.
 export function boundedCapture<T>(budgetMs: number | undefined, op: () => Promise<T>): Promise<T> {
   return budgetMs === undefined
     ? op()
