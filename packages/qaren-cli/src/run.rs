@@ -502,18 +502,50 @@ fn run_inner(
         }
     }
     prepare::check_prereqs(runner, &scenario, req.android_home.as_deref())?;
-    let pnpm = runner.run(&crate::adapters::pnpm::group_probe_spec(&cand.project_root));
-    if !pnpm.ok() || pnpm.stdout != crate::adapters::pnpm::GROUP_OK {
-        return Err(Failure::new(
-            "prereqs",
-            FailureCode::PnpmProcessGroupUnsupported,
-            format!(
-                "{}; its exec launch did not prove that it preserves QaReN's process group ({})",
-                crate::adapters::pnpm::source_detail(runner),
-                pnpm.summary()
-            ),
-            crate::adapters::pnpm::GROUP_FIX,
-        ));
+    let probe = crate::adapters::pnpm::prove_group(
+        runner,
+        &crate::adapters::pnpm::group_probe_spec(&cand.project_root),
+        crate::adapters::pnpm::PROBE_ATTEMPTS,
+        config.deadlines.install_deps_seconds,
+    );
+    ensure_running(runner, "prereqs")?;
+    match probe.outcome {
+        crate::adapters::pnpm::GroupOutcome::Proved => {}
+        crate::adapters::pnpm::GroupOutcome::Unproven => {
+            return Err(Failure::new(
+                "prereqs",
+                FailureCode::PnpmProcessGroupUnsupported,
+                format!(
+                    "{}; its exec launch did not prove that it preserves QaReN's process group ({})",
+                    crate::adapters::pnpm::source_detail(runner),
+                    probe.attempts.last().unwrap().output.summary()
+                ),
+                crate::adapters::pnpm::GROUP_FIX,
+            ));
+        }
+        crate::adapters::pnpm::GroupOutcome::TimedOut => {
+            let durations: Vec<String> = probe
+                .attempts
+                .iter()
+                .map(|a| a.output.duration_ms.to_string())
+                .collect();
+            let load = match crate::core::host_load_1m() {
+                Some(load) => format!("host 1-minute load {load:.1}"),
+                None => "host load unavailable".to_string(),
+            };
+            return Err(Failure::new(
+                "prereqs",
+                FailureCode::PnpmProbeTimedOut,
+                format!(
+                    "{}; its exec probe timed out on {} attempt(s) ({} ms) within {} ms and proved nothing about process groups; the host is likely busy ({load})",
+                    crate::adapters::pnpm::source_detail(runner),
+                    probe.attempts.len(),
+                    durations.join(", "),
+                    probe.elapsed_ms
+                ),
+                "re-run qaren check when the machine is less loaded, or run qaren doctor",
+            ));
+        }
     }
     std::fs::create_dir_all(&req.runs_root).map_err(|e| {
         Failure::new(
@@ -638,6 +670,22 @@ fn run_inner(
     };
     let finish_failed =
         |ctx: Ctx, failure: Failure| finish_failed(ctx, &node, &req.runtime_dir, failure, false);
+    if probe.attempts.len() > 1 {
+        for (i, attempt) in probe.attempts.iter().enumerate() {
+            let label = format!("pnpm-group-probe_attempt_{}", i + 1);
+            ctx.timings
+                .push((label.clone(), attempt.output.duration_ms));
+            let what = if attempt.output.timed_out {
+                format!("timed out after {}ms", attempt.output.duration_ms)
+            } else {
+                "process group proved".to_string()
+            };
+            ctx.notes.push((
+                label,
+                format!("{what}; timeout_seconds={}", attempt.timeout_seconds),
+            ));
+        }
+    }
     if let Some(earlier) = &recovered {
         ctx.notes
             .push(("recovered_run".to_string(), earlier.clone()));
