@@ -1,4 +1,4 @@
-use crate::exec::{CmdSpec, Runner};
+use crate::exec::{CmdOutput, CmdSpec, DeadlineRunner, Runner};
 use crate::failure::{Failure, FailureCode};
 use crate::redact::redact_secrets;
 use serde::{Deserialize, Serialize};
@@ -745,7 +745,7 @@ pub fn preflight_spec(node: &Path, runtime_dir: &Path, plan_file: &Path) -> CmdS
     )
 }
 
-#[derive(serde::Deserialize, serde::Serialize)]
+#[derive(PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 enum AdmissionProbeReason {
     InvalidDevice,
@@ -782,6 +782,30 @@ struct AdmissionProbeEvidence {
     candidates: Option<u32>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdmissionSummary {
+    probe: &'static str,
+    initial_reason: String,
+    terminal_reason: String,
+    attempts: u8,
+    elapsed_ms: u64,
+    deadline_exceeded: bool,
+}
+
+impl AdmissionSummary {
+    pub fn note(&self) -> String {
+        serde_json::to_string(self).expect("admission summary is serializable")
+    }
+
+    fn refusal(&self, mut failure: Failure) -> Failure {
+        failure
+            .evidence
+            .push(crate::redact::OutputText::from_output(&self.note()));
+        failure
+    }
+}
+
 // None admits an iOS simulator; Some scans the borrowed emulator through the run's adb server.
 pub fn fresh_install_admission(
     runner: &mut dyn Runner,
@@ -790,7 +814,20 @@ pub fn fresh_install_admission(
     worktree: &Path,
     device_id: &str,
     android: Option<&AndroidEnv>,
-) -> Result<(), Failure> {
+    caller_deadline_ms: Option<u64>,
+) -> Result<AdmissionSummary, Failure> {
+    let started = runner.monotonic_ms();
+    let deadline_ms = caller_deadline_ms
+        .unwrap_or(u64::MAX)
+        .min(started.saturating_add(30_000));
+    let mut summary = AdmissionSummary {
+        probe: "fresh-install-admission",
+        initial_reason: "not_started".into(),
+        terminal_reason: "not_started".into(),
+        attempts: 0,
+        elapsed_ms: 0,
+        deadline_exceeded: false,
+    };
     let script = runtime_dir
         .join("qa/fresh-install-preflight.js")
         .to_string_lossy()
@@ -805,11 +842,15 @@ pub fn fresh_install_admission(
                 .filter(|path| path.is_absolute())
                 .and_then(|path| path.into_os_string().into_string().ok())
                 .ok_or_else(|| {
-                    Failure::new(
-                        "fresh_install",
-                        FailureCode::FreshInstallAdmissionUnknown,
-                        "native process observer is unavailable",
-                        "ensure the qaren executable is available and re-run",
+                    summary.terminal_reason = "observer_unavailable".into();
+                    summary.refusal(
+                        Failure::new(
+                            "fresh_install",
+                            FailureCode::FreshInstallAdmissionUnknown,
+                            "native process observer is unavailable",
+                            "ensure the qaren executable is available and re-run",
+                        )
+                        .with_recovery(crate::failure::RecoveryReason::IdentityUnavailable),
                     )
                 })?,
         ),
@@ -831,60 +872,128 @@ pub fn fresh_install_admission(
         30,
     )
     .cwd(worktree);
-    let output = runner.run(&match android {
+    let spec = match android {
         Some(android) => with_android_env(spec, android),
         None => spec,
-    });
-    let value = serde_json::from_str::<Value>(&output.stdout).ok();
-    let matched = value.as_ref().filter(|v| {
-        v.get("v").and_then(Value::as_u64) == Some(1)
-            && v.get("platform").and_then(Value::as_str) == Some(platform)
-            && v.get("deviceId").and_then(Value::as_str) == Some(device_id)
-    });
-    let status = matched
-        .and_then(|v| v.get("status"))
-        .and_then(Value::as_str);
-    if output.ok() && status == Some("clear") {
-        return Ok(());
+    };
+    loop {
+        summary.elapsed_ms = runner.monotonic_ms().saturating_sub(started);
+        summary.deadline_exceeded = runner.monotonic_ms() >= deadline_ms;
+        if let Some(reason) = runner.cancellation() {
+            summary.terminal_reason = "cancelled".into();
+            return Err(summary.refusal(Failure::cancelled("fresh_install", &reason)));
+        }
+        let output = if summary.deadline_exceeded {
+            CmdOutput {
+                timed_out: true,
+                ..Default::default()
+            }
+        } else {
+            summary.attempts += 1;
+            DeadlineRunner {
+                inner: runner,
+                deadline_ms,
+            }
+            .run(&spec)
+        };
+        summary.elapsed_ms = runner.monotonic_ms().saturating_sub(started);
+        summary.deadline_exceeded = runner.monotonic_ms() >= deadline_ms;
+        if let Some(reason) = runner.cancellation() {
+            summary.terminal_reason = "cancelled".into();
+            return Err(summary.refusal(Failure::cancelled("fresh_install", &reason)));
+        }
+        let value = serde_json::from_str::<Value>(&output.stdout).ok();
+        let matched = value.as_ref().filter(|v| {
+            v.get("v").and_then(Value::as_u64) == Some(1)
+                && v.get("platform").and_then(Value::as_str) == Some(platform)
+                && v.get("deviceId").and_then(Value::as_str) == Some(device_id)
+        });
+        let status = matched
+            .and_then(|v| v.get("status"))
+            .and_then(Value::as_str);
+        let validated = matched
+            .and_then(|v| v.get("evidence"))
+            .and_then(|v| serde_json::from_value::<AdmissionProbeEvidence>(v.clone()).ok())
+            .filter(|e| e.pid != Some(0) && e.candidates.is_none_or(|n| n <= 1_048_576));
+        let evidence = match matched.and_then(|v| v.get("evidence")) {
+            Some(_) => validated
+                .as_ref()
+                .and_then(|e| serde_json::to_string(e).ok())
+                .unwrap_or_else(|| "invalid_evidence".into()),
+            None if matched.is_some() => "unavailable".into(),
+            None if value.is_some() => "envelope_mismatch".into(),
+            None => "invalid_response".into(),
+        };
+        let clear = output.ok() && status == Some("clear") && !summary.deadline_exceeded;
+        summary.terminal_reason = if summary.deadline_exceeded {
+            "deadline_exceeded".into()
+        } else if clear {
+            "clear".into()
+        } else if output.timed_out {
+            "scan_timeout".into()
+        } else if matched.is_some() && !matches!(status, Some("clear" | "unknown" | "busy")) {
+            "invalid_status".into()
+        } else if status == Some("clear") {
+            "clear_exit_mismatch".into()
+        } else {
+            validated
+                .as_ref()
+                .map(|e| {
+                    serde_json::to_value(&e.reason)
+                        .unwrap()
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                })
+                .unwrap_or_else(|| evidence.clone())
+        };
+        if summary.initial_reason == "not_started" && summary.attempts > 0 {
+            summary.initial_reason = summary.terminal_reason.clone();
+        }
+        if clear {
+            return Ok(summary);
+        }
+        let retry = android.is_none()
+            && summary.attempts == 1
+            && !summary.deadline_exceeded
+            && !output.timed_out
+            && output.exit_code == Some(4)
+            && status == Some("unknown")
+            && validated.as_ref().is_some_and(|e| {
+                e.reason == AdmissionProbeReason::ExecutableIdentityUnproven && e.pid.is_some()
+            });
+        if retry {
+            if let Some(reason) = runner.cancellation() {
+                summary.terminal_reason = "cancelled".into();
+                return Err(summary.refusal(Failure::cancelled("fresh_install", &reason)));
+            }
+            let remaining = deadline_ms.saturating_sub(runner.monotonic_ms());
+            runner.sleep(Duration::from_millis(500.min(remaining)));
+            continue;
+        }
+        let busy = !summary.deadline_exceeded
+            && !output.timed_out
+            && output.exit_code == Some(4)
+            && status == Some("busy");
+        let probe_status = match status {
+            Some("clear") => "clear",
+            Some("busy") => "busy",
+            Some("unknown") => "unknown",
+            _ => "invalid",
+        };
+        let detail = format!(
+            "{}; probe_status={probe_status}; probe_evidence={evidence}; exit_code={:?}; timed_out={}",
+            if busy { "a foreign automation flow is active on the selected device" }
+            else { "strict foreign-flow admission did not prove the selected device clear" },
+            output.exit_code, output.timed_out,
+        );
+        return Err(summary.refusal(Failure::new(
+            "fresh_install",
+            if busy { FailureCode::DeviceBusy } else { FailureCode::FreshInstallAdmissionUnknown },
+            detail,
+            "wait for the foreign process owner to finish, then re-run the check; do not signal or adopt the process",
+        ).with_recovery(crate::failure::RecoveryReason::ForeignAdmissionUnresolved)));
     }
-    let busy = !output.timed_out && output.exit_code == Some(4) && status == Some("busy");
-    let evidence = match matched.and_then(|v| v.get("evidence")) {
-        Some(value) => serde_json::from_value::<AdmissionProbeEvidence>(value.clone())
-            .ok()
-            .filter(|e| e.pid != Some(0) && e.candidates.is_none_or(|n| n <= 1_048_576))
-            .and_then(|e| serde_json::to_string(&e).ok())
-            .unwrap_or_else(|| "invalid_evidence".into()),
-        None if matched.is_some() => "unavailable".into(),
-        None if value.is_some() => "envelope_mismatch".into(),
-        None => "invalid_response".into(),
-    };
-    let probe_status = match status {
-        Some("clear") => "clear",
-        Some("busy") => "busy",
-        Some("unknown") => "unknown",
-        _ => "invalid",
-    };
-    let detail = format!(
-        "{}; probe_status={probe_status}; probe_evidence={evidence}; exit_code={:?}; timed_out={}",
-        if busy {
-            "a foreign automation flow is active on the selected device"
-        } else {
-            "strict foreign-flow admission did not prove the selected device clear"
-        },
-        output.exit_code,
-        output.timed_out,
-    );
-    Err(Failure::new(
-        "fresh_install",
-        if busy {
-            FailureCode::DeviceBusy
-        } else {
-            FailureCode::FreshInstallAdmissionUnknown
-        },
-        &detail,
-        "stop other automation drivers and ensure the runtime supports strict fresh-install preflight, \
-         then re-run",
-    ))
 }
 
 enum Msg {

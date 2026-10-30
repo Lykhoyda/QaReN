@@ -2370,6 +2370,21 @@ instead of admitting a partial scan. The limits and classification rules are
 owned by the [strict scanner](../qaren-core/src/runners/external-runner-detect.ts)
 and [kernel observer](src/process_observation.rs).
 
+On iOS, a matching `unknown/executable_identity_unproven` response naming a
+foreign PID gets one new whole-device scan after at most 500 ms. Both scans
+share the original 30-second admission allowance, clipped to a smaller caller
+deadline when supplied; a late clear result never admits. Busy, malformed and
+other unknown responses do not trigger a retry. Every scan keeps the same
+kernel identity checks and never signals or adopts a foreign process.
+
+Successful check and prepare receipts include `admission_before_deps` and
+`admission_before_mutation` summaries in `outcomes` for the admission points
+that ran. Refusals carry the same summary in `failure.evidence`: `probe`,
+`initialReason`, `terminalReason`, `attempts`, `elapsedMs` and `deadlineExceeded`.
+Elapsed time includes child completion/reaping, which may outlast the admission
+allowance; `deadlineExceeded` prevents acceptance of that result. The final
+scan owns the terminal reason, including `DEVICE_BUSY` if it proves a driver.
+
 When the strict admission probe refuses with `FRESH_INSTALL_ADMISSION_UNKNOWN`
 or `DEVICE_BUSY`, it includes `probe_status`, `probe_evidence`, `exit_code` and `timed_out` in
 `failure.detail`, retained in the receipt and `run.json`. Valid probe evidence
@@ -2377,7 +2392,12 @@ contains an allowlisted reason and, when available, a PID or candidate count;
 raw process arguments, paths and subprocess output are not included. Missing,
 invalid or mismatched evidence is reported as `unavailable`, `invalid_evidence`,
 `envelope_mismatch` or `invalid_response`. These diagnostics do not relax
-admission: resolve the refusal and start a new run.
+admission: wait for the foreign process owner to finish, then re-run; do not
+signal or adopt it. The recovery ladder marks automatic re-probing exhausted
+or ineligible, rules out app/runner/device restarts and rebuilds as ways to
+prove foreign identity, and offers cleanup and prepare only after foreign
+state is independently clear. Any retained resources still require this run's
+own cleanup; a fresh install requires separate authorization for app-data loss.
 
 Runs and evidence live under `$QAREN_HOME/runs/<run-id>/` (`~/.qaren` by default).
 Device and

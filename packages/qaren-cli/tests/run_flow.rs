@@ -10072,3 +10072,70 @@ fn first_capture_fault_requires_reprepare_after_the_walk_has_exited() {
     assert_eq!(recovery["ladder"][0]["status"], "skipped");
     assert_eq!(mock.remaining(), 0);
 }
+
+#[test]
+fn fresh_install_reprobe_keeps_the_final_busy_verdict_at_both_admission_points() {
+    for after_deps in [false, true] {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        script_preflight(&mut mock, &repo);
+        if after_deps {
+            script_admission(&mut mock);
+            common::script_ios_deps(&mut mock);
+        }
+        for (status, reason) in [
+            ("unknown", "executable_identity_unproven"),
+            ("busy", "driver_on_selected_device"),
+        ] {
+            mock.expect_run(
+                "fresh-install-preflight.js",
+                CmdOutput {
+                    exit_code: Some(4),
+                    stdout:
+                        serde_json::json!({"v":1,"platform":"ios","deviceId":UDID,"status":status,
+                    "evidence":{"reason":reason,"pid":812}})
+                        .to_string(),
+                    ..Default::default()
+                },
+            );
+        }
+        let mut req = request(&repo, &app, 30);
+        req.fresh_install = true;
+        let receipt = run(&mut mock, &req);
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Refused,
+            "{}",
+            receipt.to_json()
+        );
+        let failure = receipt.failure.unwrap();
+        assert_eq!(failure.code, FailureCode::DeviceBusy);
+        assert!(failure
+            .detail
+            .as_str()
+            .contains("driver_on_selected_device"));
+        assert_eq!(mock.remaining(), 0);
+        assert!(!mock.calls.iter().any(|c| matches!(
+            c.label.as_str(),
+            "simctl-uninstall" | "simctl-install" | "expo-run-ios"
+        )));
+    }
+}
+
+#[test]
+fn fresh_install_cancelled_admission_retains_its_attempt_summary() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    script_admission(&mut mock);
+    mock.cancel_after = Some(("fresh-install-preflight.js".into(), "cancelled".into()));
+    let mut req = request(&repo, &app, 30);
+    req.fresh_install = true;
+    let receipt = run(&mut mock, &req);
+    let failure = receipt.failure.unwrap();
+    assert_eq!(failure.code, FailureCode::RunCancelled);
+    let summary: serde_json::Value = serde_json::from_str(failure.evidence[0].as_str()).unwrap();
+    assert_eq!(summary["attempts"], 1);
+    assert_eq!(summary["terminalReason"], "cancelled");
+    assert_eq!(mock.remaining(), 0);
+}

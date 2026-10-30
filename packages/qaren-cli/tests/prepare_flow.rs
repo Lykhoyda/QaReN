@@ -5505,7 +5505,11 @@ fn borrowed_prepare_refuses_a_foreign_driver_before_dependencies_and_retains_the
             .run_id,
         receipt.run_id
     );
-    assert!(receipt.next_action.contains("qaren cleanup"));
+    assert!(receipt.next_action.contains("wait for the foreign process owner"));
+    let recovery = receipt.failure.as_ref().unwrap().recovery.as_ref().unwrap();
+    assert!(recovery.own_cleanup_required);
+    assert_eq!(recovery.own_run_id.as_deref(), Some(receipt.run_id.as_str()));
+    assert_eq!(recovery.action, qaren::failure::RecoveryAction::WaitForOwner);
 }
 
 #[test]
@@ -7042,5 +7046,61 @@ fn build_probe_timeouts_prioritize_expiry_over_candidate_drift() {
         assert_eq!(mock.remaining(), 0);
         assert!(!repo.join(".locks/native-build-ios").exists());
         assert!(!mock.calls.iter().any(|spec| spec.label == "simctl-install"));
+    }
+}
+
+#[test]
+fn borrowed_prepare_reprobes_identity_before_and_after_dependencies() {
+    for retry_phase in 0..2 {
+        let repo = common::temp_repo();
+        let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
+        let mut mock = MockRunner::new();
+        script_borrowed_until_lease(&mut mock, &repo, "Booted");
+        mock.expect_run("lsof", free_port());
+        mock.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&borrowed_inventory("Booted")),
+        );
+        for phase in 0..2 {
+            if retry_phase == phase {
+                let mut unknown = admission_for(BORROWED, "unknown");
+                let mut value: serde_json::Value = serde_json::from_str(&unknown.stdout).unwrap();
+                value["evidence"] =
+                    serde_json::json!({"reason":"executable_identity_unproven","pid":812});
+                unknown.stdout = value.to_string();
+                mock.expect_run("fresh-install-preflight.js", unknown);
+            }
+            mock.expect_run("fresh-install-preflight.js", clear_admission());
+            if phase == 0 {
+                common::script_ios_deps(&mut mock);
+            }
+        }
+        script_borrowed_after_boot(&mut mock, &borrowed_inventory("Booted"));
+        observe_borrowed_custody(&mut mock, &repo);
+        let receipt = prepare(&mut mock, &borrowed_args(&scenario_path, false));
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Ready,
+            "{}",
+            receipt.to_json()
+        );
+        assert_eq!(mock.remaining(), 0);
+        let key = if retry_phase == 0 {
+            "admission_before_deps"
+        } else {
+            "admission_before_mutation"
+        };
+        let summary: serde_json::Value = serde_json::from_str(&receipt.outcomes[key]).unwrap();
+        assert_eq!(summary["attempts"], 2);
+        assert_eq!(summary["elapsedMs"], 500);
+        assert_eq!(summary["terminalReason"], "clear");
+        assert_eq!(
+            labels(&mock)
+                .iter()
+                .filter(|s| *s == "fresh-install-admission")
+                .count(),
+            3
+        );
+        assert_no_simulator_power(&mock);
     }
 }
