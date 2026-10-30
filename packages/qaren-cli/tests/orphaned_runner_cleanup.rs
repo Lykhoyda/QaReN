@@ -66,6 +66,7 @@ fn fixture(family: &str) -> (PathBuf, RunRecord, FakeRunner) {
         mock: MockRunner::new(),
         argv: argv(family),
         alive: true,
+        simulator_deleted: false,
         exit_after: 3,
         signals: vec![],
         fault: "",
@@ -81,6 +82,7 @@ struct FakeRunner {
     mock: MockRunner,
     argv: Vec<String>,
     alive: bool,
+    simulator_deleted: bool,
     exit_after: usize,
     signals: Vec<String>,
     fault: &'static str,
@@ -158,6 +160,14 @@ impl FakeRunner {
                     value["pid"] = 7001.into();
                 }
                 CmdOutput::success(&value.to_string())
+            }
+            "simctl-list" if self.simulator_deleted => {
+                CmdOutput::success(r#"{"devices":{"rt":[]}}"#)
+            }
+            "simctl-shutdown" => CmdOutput::success(""),
+            "simctl-delete" => {
+                self.simulator_deleted = true;
+                CmdOutput::success("")
             }
             "simctl-list" => CmdOutput::success(
                 &serde_json::json!({"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-27-0":[{"udid":DEVICE,
@@ -571,6 +581,51 @@ fn final_save_failure_reports_the_lease_that_was_actually_released() {
     let retry = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
     assert_eq!(retry.result, ReceiptResult::Cleaned);
     assert_eq!(fake.signals, ["-INT", "-TERM", "-KILL"]);
+}
+
+#[test]
+fn temporary_simulator_cleanup_is_idempotent_after_success_or_final_save_failure() {
+    for fault in ["", "final_storage"] {
+        let (root, mut record, mut fake) = fixture("QarenIosRunner");
+        record.resources.device_borrowed = false;
+        record.resources.runner_host = Some(qaren::runrecord::RunnerHostResource {
+            udid: DEVICE.into(),
+            bundle_ids: vec!["dev.lykhoyda.rndevagent.fastrunner".into()],
+        });
+        record.save(&root).unwrap();
+        fake.fault = fault;
+        let first = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
+        assert_eq!(
+            first.result,
+            if fault.is_empty() {
+                ReceiptResult::Cleaned
+            } else {
+                ReceiptResult::Failed
+            }
+        );
+        assert!(fake.simulator_deleted);
+        assert_eq!(first.cleanup["device_lease"], "removed");
+        if !fault.is_empty() {
+            assert_eq!(
+                first.failure.unwrap().code,
+                FailureCode::RunRecordUpdateFailed
+            );
+            std::fs::remove_dir(fake.storage_block()).unwrap();
+        }
+        fake.fault = "";
+        let previous_calls = fake.mock.calls.len();
+        let retry = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
+        assert_eq!(retry.result, ReceiptResult::Cleaned, "{}", retry.to_json());
+        assert_eq!(retry.cleanup["simulator"], "absent");
+        assert!(fake.mock.calls[previous_calls..].iter().all(|call| {
+            !matches!(call.label.as_str(), "kill-group" | "simctl-shutdown" | "simctl-delete")
+        }));
+        assert_eq!(fake.signals, ["-INT", "-TERM", "-KILL"]);
+        assert_eq!(
+            RunRecord::load(&root, "orphan-run").unwrap().phase,
+            Phase::Cleaned
+        );
+    }
 }
 
 #[test]

@@ -76,6 +76,12 @@ fn interrupted_finite_build_retains_ownership_until_group_absence_is_proven() {
                 },
             );
         }
+        mock.expect_run(
+            "simctl list",
+            CmdOutput::success(
+                r#"{"devices":{"rt":[{"udid":"selected-device","name":"qaren-core-run","state":"Booted"}]}}"#,
+            ),
+        );
         let receipt = cleanup(&mut mock, &repo, "core-run");
         assert_eq!(receipt.result, ReceiptResult::Failed);
         assert!(receipt.cleanup["build_process"].starts_with("unresolved"));

@@ -446,24 +446,27 @@ pub fn cleanup_with_policy(
                         owner_alive,
                         runtime_context,
                     )
-                } else if !record.resources.can_release_build_ownership() {
-                    Outcome::Unresolved(
-                        "build process cleanup is unproven; simulator retained".into(),
-                    )
-                } else if !producers_quiescent(&outcomes)
-                    || record.resources.core.is_some()
-                    || !record.resources.runner_drivers.is_empty()
-                    || (had_runner
-                        && !outcomes
-                            .iter()
-                            .any(|(leg, outcome)| leg == "runner_host" && outcome.clean()))
-                {
-                    Outcome::Unresolved(
-                        "producer cleanup or runner host absence is unproven; simulator retained"
-                            .into(),
-                    )
                 } else {
-                    cleanup_simulator(runner, &sim.udid, &sim.name)
+                    let destruction_refusal = if !record.resources.can_release_build_ownership() {
+                        Some(Outcome::Unresolved(
+                            "build process cleanup is unproven; simulator retained".into(),
+                        ))
+                    } else if !producers_quiescent(&outcomes)
+                        || record.resources.core.is_some()
+                        || !record.resources.runner_drivers.is_empty()
+                        || (had_runner
+                            && !outcomes
+                                .iter()
+                                .any(|(leg, outcome)| leg == "runner_host" && outcome.clean()))
+                    {
+                        Some(Outcome::Unresolved(
+                            "producer cleanup or runner host absence is unproven; simulator retained"
+                                .into(),
+                        ))
+                    } else {
+                        None
+                    };
+                    cleanup_simulator(runner, &sim.udid, &sim.name, destruction_refusal)
                 };
                 outcomes.push(("simulator".to_string(), outcome));
             }
@@ -2389,7 +2392,12 @@ pub(crate) fn cleanup_borrowed_ios(
     outcome
 }
 
-fn cleanup_simulator(runner: &mut dyn Runner, udid: &str, expected_name: &str) -> Outcome {
+fn cleanup_simulator(
+    runner: &mut dyn Runner,
+    udid: &str,
+    expected_name: &str,
+    destruction_refusal: Option<Outcome>,
+) -> Outcome {
     let list = runner.run(&ios::list_devices_spec());
     if !list.ok() {
         return Outcome::Unresolved(format!("simctl list failed: {}", list.summary()));
@@ -2425,6 +2433,9 @@ fn cleanup_simulator(runner: &mut dyn Runner, udid: &str, expected_name: &str) -
             }
         }
     };
+    if let Some(refusal) = destruction_refusal {
+        return refusal;
+    }
     if state == "Booted" {
         let shutdown = runner.run(&ios::shutdown_spec(&resolved_udid));
         if !shutdown.ok() {
@@ -2714,7 +2725,7 @@ mod integrity_tests {
                 CmdOutput::success("12\t/owned/simulator/data\n"),
             );
             runner.expect_run("simctl delete AAAA-1111", CmdOutput::success(""));
-            let outcome = cleanup_simulator(&mut runner, udid, "qaren-run");
+            let outcome = cleanup_simulator(&mut runner, udid, "qaren-run", None);
             assert!(outcome.clean());
             assert_eq!(outcome.render(), "removed (reclaimed 12288 bytes)");
             assert_eq!(runner.remaining(), 0);
