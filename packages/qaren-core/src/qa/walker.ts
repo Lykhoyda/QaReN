@@ -1222,7 +1222,7 @@ async function walkBlockScoped(
           deps.targetMiss?.(diagnostic);
         }
         const seen = captured.get(screen);
-        if (seen && targetCode !== false) {
+        if (seen && targetCode) {
           const now = screenNow(screen, target, row.t - seen.at, dispatchedOn === seen.id, privacy);
           const subreason = targetCode === 'TARGET_AMBIGUOUS' ? 'ambiguous' : diagnostic.reason;
           lastScreen = {
@@ -2106,6 +2106,7 @@ async function walkBlockScoped(
         continue items;
       }
       let currentAttempt = 1;
+      let targetPending = false;
       resolvedBy = item.source === 'jev' && !replay ? 'jev' : 'exact';
       if (item.kind === 'fill' && !typed.includes(fillText(item))) typed.push(fillText(item));
       try {
@@ -2195,6 +2196,7 @@ async function walkBlockScoped(
             }
             observation = observed.observation;
             unsure = observed.unsure === true;
+            targetPending = !observed.found && item.target.quoted !== undefined;
             if (!observed.found && !unsure && item.target.quoted !== undefined) {
               absent += 1;
               absentScreens.add(screenSignature(observation.screen));
@@ -2229,6 +2231,9 @@ async function walkBlockScoped(
                   `${refusal.code}: ${refusal.message}`,
                   observation.screen,
                   await shoot(item),
+                  undefined,
+                  false,
+                  'TARGET_NOT_FOUND',
                 ),
                 refusal,
               };
@@ -2251,6 +2256,9 @@ async function walkBlockScoped(
                   miss ? `${reason}; ${miss}` : reason,
                   observation.screen,
                   await shoot(item),
+                  undefined,
+                  false,
+                  'TARGET_NOT_FOUND',
                 ),
                 observation.screen,
               );
@@ -2309,6 +2317,7 @@ async function walkBlockScoped(
             }
             observation = observed.observation;
             unsure = observed.unsure === true;
+            targetPending = !observed.found;
             return observed.found;
           };
           let found = await visible(observation, held?.decision);
@@ -2358,6 +2367,9 @@ async function walkBlockScoped(
                 act.error ?? 'scroll was not dispatched',
                 observation.screen,
                 await shoot(item),
+                undefined,
+                false,
+                false,
               );
           }
           if (!found && replayMiss) throw replayMiss;
@@ -2375,7 +2387,16 @@ async function walkBlockScoped(
           }
           const reason = `"${item.until.phrase}" did not come into view after ${SCROLL_ATTEMPTS} scrolls`;
           return judged(
-            failed(item, Math.max(attempts, 1), reason, observation.screen, shot),
+            failed(
+              item,
+              Math.max(attempts, 1),
+              reason,
+              observation.screen,
+              shot,
+              undefined,
+              false,
+              'TARGET_NOT_FOUND',
+            ),
             observation.screen,
           );
         }
@@ -3111,7 +3132,16 @@ async function walkBlockScoped(
           }
         }
         if (error instanceof RenderError)
-          return failed(item, currentAttempt, error.message, latest, undefined);
+          return failed(
+            item,
+            currentAttempt,
+            error.message,
+            latest,
+            undefined,
+            undefined,
+            false,
+            false,
+          );
         if (error instanceof PrivateInputCaptureError || error instanceof NativeCaptureError) {
           const nativeFailure = error instanceof NativeCaptureError;
           const safe = nativeFailure
@@ -3186,7 +3216,11 @@ async function walkBlockScoped(
           shot,
           undefined,
           miss,
-          error instanceof ResolutionError && TARGET_CODES.has(error.code) ? error.code : false,
+          error instanceof ResolutionError && TARGET_CODES.has(error.code)
+            ? error.code
+            : error instanceof EvidenceExpired && error.itemExpired && targetPending
+              ? 'TARGET_NOT_FOUND'
+              : false,
         );
         return {
           ...(error instanceof ResolutionError && error.missing

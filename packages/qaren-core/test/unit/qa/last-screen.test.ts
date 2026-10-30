@@ -258,3 +258,39 @@ test('no primary mark is emitted for unmatched or privacy-masked labels', () => 
     assert.equal(now.controls[0].label, masked ? MASK : 'Go');
   }
 });
+
+test('a primary beyond the control cap occupies the last slot with full counts', async () => {
+  const observed = screen([
+    ...Array.from({ length: 21 }, (_, i) => control(`@link${i}`, `Link ${i}`, { kind: 'link' })),
+    control('@save', 'Save', { testID: 'save' }),
+  ]);
+  const ledger = await runPlan(plan('1. Tap "Missing"\n'), deps([observed]));
+  const now = ledger.failure!.screen!;
+  assert.equal(now.controls.length, 20);
+  assert.equal(now.controls.at(-1)?.id, 'save');
+  assert.equal(now.controls.at(-1)?.primary, true);
+  assert.equal(now.counts.controls, 22);
+});
+
+test('an unmet quoted wait on changing screens carries target advice at its deadline', async () => {
+  const fixture = deps([pad()]);
+  let captures = 0;
+  fixture.captureScreen = async () => screen([control('@next', `Stage ${++captures}`)]);
+  const ledger = await runPlan(plan('1. Wait for "Done"\n'), fixture);
+  assert.equal(ledger.verdict, 'FAIL');
+  assert.match(ledger.failure!.seen, /ITEM_DEADLINE_EXCEEDED/);
+  assert.ok(ledger.failure?.screen);
+  assert.ok(ledger.failure?.suggestion);
+  assert.equal(ledger.failure?.subreason, 'absent');
+});
+
+test('a failed target-scroll dispatch carries no target advice', async () => {
+  const fixture = deps([pad()]);
+  fixture.scroll = async () => ({ ok: false, proven: false, error: 'scroll transport failed' });
+  const ledger = await runPlan(plan('1. Scroll down until "Done"\n'), fixture);
+  assert.equal(ledger.verdict, 'FAIL');
+  assert.match(ledger.failure!.seen, /scroll transport failed/);
+  assert.equal(ledger.failure?.screen, undefined);
+  assert.equal(ledger.failure?.suggestion, undefined);
+  assert.equal(ledger.failure?.subreason, undefined);
+});

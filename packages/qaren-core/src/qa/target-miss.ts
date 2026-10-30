@@ -184,6 +184,8 @@ export function screenNow(
     ...all.filter((e) => !names(target, e) && !e.offscreen),
     ...all.filter((e) => !names(target, e) && e.offscreen),
   ];
+  const controls = ordered.slice(0, MISS_CANDIDATES);
+  if (primary && !controls.includes(primary)) controls[controls.length - 1] = primary;
   return {
     ageMs: Math.max(0, Math.round(ageMs)),
     afterDispatch,
@@ -192,7 +194,7 @@ export function screenNow(
       (screen.captureCoverage?.native ?? screen.coverage?.native) === 'complete'
         ? 'complete'
         : 'incomplete',
-    controls: ordered.slice(0, MISS_CANDIDATES).map((element) => ({
+    controls: controls.map((element) => ({
       role: element.kind,
       ...(element === primary ? { primary: true as const } : {}),
       // An identifier holding any private value is masked whole.
