@@ -77,6 +77,62 @@ fn package_absent(app: &Path, package: &str) -> bool {
         .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
 }
 
+const RESOLVE_PACKAGE: &str = r#"
+const path = require('node:path');
+const roots = [process.argv[1]];
+try {
+  roots.push(path.dirname(require.resolve('expo/package.json', {paths: roots})));
+} catch (error) {
+  if (error.code !== 'MODULE_NOT_FOUND') throw error;
+}
+let root = null;
+for (const context of roots) {
+  try {
+    const resolved = path.dirname(require.resolve(process.argv[2] + '/package.json', {paths: [context]}));
+    if (root !== null && root !== resolved) throw new Error('ambiguous package resolution');
+    root = resolved;
+  } catch (error) {
+    if (error.code !== 'MODULE_NOT_FOUND') throw error;
+  }
+}
+process.stdout.write(JSON.stringify(root));
+"#;
+
+fn resolved_package_root(
+    runner: &mut dyn Runner,
+    app: &Path,
+    package: &str,
+) -> Result<Option<PathBuf>, ()> {
+    if let Some(root) = package_root(app, package) {
+        return Ok(Some(root));
+    }
+    let node = runner
+        .env_var("QAREN_NODE")
+        .filter(|node| !node.is_empty())
+        .unwrap_or_else(|| "node".into());
+    let output = runner.run_private(
+        &CmdSpec::new(
+            "expo-module-resolve",
+            &node,
+            &["-e", RESOLVE_PACKAGE, &app.to_string_lossy(), package],
+            2,
+        )
+        .cwd(app),
+        &[],
+    );
+    if output.exit_code() != Some(0) || output.timed_out() || output.stdout().len() > 16 * 1024 {
+        return Err(());
+    }
+    let root: Option<PathBuf> = serde_json::from_str(output.stdout()).map_err(|_| ())?;
+    root.map(|root| {
+        if !root.is_absolute() {
+            return Err(());
+        }
+        std::fs::canonicalize(root).map_err(|_| ())
+    })
+    .transpose()
+}
+
 fn contains_expo(package: &Value) -> bool {
     [
         "dependencies",
@@ -388,12 +444,22 @@ fn inspect_packages(
     let started = Instant::now();
     let mut visited = 0;
     let mut headers = 0;
+    let uses_expo = has_expo_dependency(app);
     for &(package, module) in packages {
+        if visited >= 256 || headers >= 32 || started.elapsed() >= Duration::from_secs(2) {
+            observation.incomplete = true;
+            break;
+        }
         let mut expected_slices = BTreeSet::new();
         let mut seen_slices = BTreeSet::new();
         let mut framework_found = false;
-        let Some(root) = package_root(app, package) else {
-            if !package_absent(app, package) {
+        let resolved = if uses_expo {
+            resolved_package_root(runner, app, package)
+        } else {
+            Ok(package_root(app, package))
+        };
+        let Ok(Some(root)) = resolved else {
+            if resolved.is_err() || !package_absent(app, package) {
                 observation.incomplete = true;
             }
             continue;
@@ -596,4 +662,95 @@ fn inspect_packages(
         observation.incomplete = true;
     }
     observation
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::exec::{CmdOutput, MockRunner, RealRunner};
+
+    #[test]
+    fn node_resolves_hoisted_and_expo_transitive_packages_and_rejects_conflicts() {
+        for layout in ["hoisted", "transitive", "conflicting"] {
+            let root = std::env::temp_dir().join(format!(
+                "qaren-resolve-{}-{}",
+                std::process::id(),
+                crate::exec::Runner::now_epoch_ms(&RealRunner::new())
+            ));
+            let app = root.join("apps/mobile");
+            std::fs::create_dir_all(&app).unwrap();
+            let expo = root.join("node_modules/.pnpm/expo@56/node_modules/expo");
+            std::fs::create_dir_all(&expo).unwrap();
+            std::fs::write(expo.join("package.json"), r#"{"name":"expo"}"#).unwrap();
+            std::os::unix::fs::symlink(&expo, root.join("node_modules/expo")).unwrap();
+            let package = if layout == "transitive" {
+                expo.parent().unwrap().join("expo-modules-core")
+            } else {
+                root.join("node_modules/expo-modules-core")
+            };
+            std::fs::create_dir_all(&package).unwrap();
+            std::fs::write(
+                package.join("package.json"),
+                r#"{"name":"expo-modules-core"}"#,
+            )
+            .unwrap();
+            if layout == "conflicting" {
+                let other = expo.parent().unwrap().join("expo-modules-core");
+                std::fs::create_dir_all(&other).unwrap();
+                std::fs::write(
+                    other.join("package.json"),
+                    r#"{"name":"expo-modules-core"}"#,
+                )
+                .unwrap();
+            }
+            assert_eq!(
+                resolved_package_root(&mut RealRunner::new(), &app, "expo-modules-core"),
+                if layout == "conflicting" {
+                    Err(())
+                } else {
+                    Ok(Some(package.canonicalize().unwrap()))
+                }
+            );
+            assert_eq!(
+                resolved_package_root(
+                    &mut RealRunner::new(),
+                    &app,
+                    &format!("qaren-test-absent-{}", std::process::id())
+                ),
+                Ok(None)
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn failed_or_invalid_resolution_is_unknown() {
+        for output in [
+            CmdOutput::failed(1, "private resolver error"),
+            CmdOutput {
+                timed_out: true,
+                ..CmdOutput::success("null")
+            },
+            CmdOutput::success("not json"),
+            CmdOutput::success(r#""relative/path""#),
+            CmdOutput::success(&" ".repeat(16 * 1024 + 1)),
+        ] {
+            let mut runner = MockRunner::new();
+            runner
+                .environment
+                .insert("QAREN_NODE".into(), "/selected/bin/node".into());
+            runner.expect_run("/selected/bin/node -e", output);
+            assert_eq!(
+                resolved_package_root(&mut runner, Path::new("/missing-app"), "expo-modules-core"),
+                Err(())
+            );
+            assert_eq!(runner.calls[0].label, "expo-module-resolve");
+            assert_eq!(runner.calls[0].timeout_seconds, 2);
+            assert_eq!(runner.calls[0].program, "/selected/bin/node");
+            assert_eq!(
+                runner.calls[0].cwd.as_deref(),
+                Some(Path::new("/missing-app"))
+            );
+        }
+    }
 }
