@@ -30,7 +30,7 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
   runner sources.
 - `apps/docs-site/` (package `qaren-docs`): deliverable QaReN documentation site.
 - Engineering processes, plans, stories, audits and research live in the
-  workspace [`docs/`](https://github.com/Lykhoyda/rn-dev-agent-workspace/tree/main/docs/);
+  workspace [`docs/`](https://github.com/Lykhoyda/qaren-workspace/tree/main/docs/);
   never add a top-level `docs/` tree here. Captain-approved architecture records
   belong in [Anton Factory `architect-docs`](https://github.com/Lykhoyda/anton-factory/tree/main/architect-docs/);
   link to either owner instead of copying.

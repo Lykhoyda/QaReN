@@ -553,6 +553,31 @@ pub struct RunRecord {
     pub history: Vec<HistoryEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal: Option<TerminalResult>,
+    // What this run saw of the native-build lock; ownership stays in resources.build_lock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_lock: Option<BuildLockObservation>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LockObservation {
+    #[default]
+    None,
+    Observed,
+    Unreadable,
+}
+
+// Safe holder facts only: no home, lock path, token, PID or command.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildLockObservation {
+    // The last contending run, absent when the claim was never contended.
+    pub holder: Option<String>,
+    pub waited_s: u64,
+    pub holder_alive: Option<bool>,
+    pub holder_build_process: Option<bool>,
+    pub hold_s: Option<u64>,
+    pub no_build_observed_s: u64,
+    pub observation: LockObservation,
 }
 
 // Written once, after video finalization and teardown; publication trusts nothing else.
@@ -797,13 +822,41 @@ pub fn probe_pid_identity(runner: &mut dyn Runner, recorded: &PidIdentity) -> Pi
     probe_pid_birth(runner, recorded).0
 }
 
+pub(crate) fn probe_pid_identity_until(
+    runner: &mut dyn Runner,
+    recorded: &PidIdentity,
+    deadline_ms: Option<u64>,
+) -> PidLiveness {
+    probe_pid_birth_until(runner, recorded, deadline_ms).0
+}
+
+pub(crate) fn probe_seconds_left(runner: &dyn Runner, deadline_ms: Option<u64>) -> Option<u64> {
+    let seconds = deadline_ms
+        .map_or(10, |deadline| {
+            deadline.saturating_sub(runner.monotonic_ms()) / 1000
+        })
+        .min(10);
+    (seconds > 0).then_some(seconds)
+}
+
 // Also reports whether the recorded birth still holds the pid, alive or as an unreaped zombie, so it cannot be reused.
 pub fn probe_pid_birth(runner: &mut dyn Runner, recorded: &PidIdentity) -> (PidLiveness, bool) {
+    probe_pid_birth_until(runner, recorded, None)
+}
+
+fn probe_pid_birth_until(
+    runner: &mut dyn Runner,
+    recorded: &PidIdentity,
+    deadline_ms: Option<u64>,
+) -> (PidLiveness, bool) {
+    let Some(seconds) = probe_seconds_left(runner, deadline_ms) else {
+        return (PidLiveness::Unknown, false);
+    };
     let started = runner.run(&CmdSpec::new(
         "ps-lstart",
         "ps",
         &["-p", &recorded.pid.to_string(), "-o", "lstart="],
-        10,
+        seconds,
     ));
     if started.timed_out || started.exit_code.is_none() || !started.stderr.trim().is_empty() {
         return (PidLiveness::Unknown, false);
@@ -818,11 +871,14 @@ pub fn probe_pid_birth(runner: &mut dyn Runner, recorded: &PidIdentity) -> (PidL
     }
     // A zombie keeps its lstart but is dead: unreaped child of a live
     // parent (e.g. a build that exited while prepare still polls it).
+    let Some(seconds) = probe_seconds_left(runner, deadline_ms) else {
+        return (PidLiveness::Unknown, false);
+    };
     let stat = runner.run(&CmdSpec::new(
         "ps-stat",
         "ps",
         &["-p", &recorded.pid.to_string(), "-o", "stat="],
-        10,
+        seconds,
     ));
     if !stat.ok() {
         return (PidLiveness::Unknown, false);
