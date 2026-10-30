@@ -3804,7 +3804,9 @@ launch and readiness run afterwards, and the final drift checks still run
 after readiness. A contended iOS claim waits, polling every second, within the
 same build budget (`deadlines.build_seconds`) that the prebuild, build,
 verification and publication then share; each subprocess gets only the time
-left. Running that budget out while waiting is a refusal (`BUILD_CONTENDED`,
+left. A synchronous cache copy already in progress is not interrupted; its
+completion is checked against the window before publication. Output retirement
+and readiness run outside this window. Running that budget out while waiting is a refusal (`BUILD_CONTENDED`,
 exit 4) whose next action names the holder run, whether it is alive, whether
 its recorded build group still runs, and how long this run waited, for example
 `BUILD_CONTENDED: native-build-ios is held by run <id> (alive: yes; no build process for 9 min); waited 600 s of the budget. Next: wait for that run or re-run once later; if the holder is dead, run its qaren cleanup from its home (its resources only).`
