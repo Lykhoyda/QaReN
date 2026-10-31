@@ -868,9 +868,11 @@ export function targetOnScreen(screen: Screen, target: Target): boolean {
     )
   )
     return true;
+  if (target.exact === 'id') return false;
+  const evidence = literalEvidence(screen, quoted, 'contains').verdict;
+  if (evidence === 'unsure') return true;
   return (
-    target.exact !== 'id' &&
-    literalEvidence(screen, quoted, 'contains').verdict !== 'fail' &&
+    evidence === 'pass' &&
     screen.elements.some(
       (e) =>
         (e.label?.includes(quoted) ||
