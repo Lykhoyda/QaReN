@@ -49,11 +49,14 @@ paths, key names and environment variable names. It exits 1 when any row fails,
 `{identity, checks: [{id, status, detail, fix?}], verdict}` and nothing else.
 
 `FAIL` means `qaren check` cannot run correctly on this host; `WARN` is anything
-that can conflict with a session or is hygiene; `SKIP` is not applicable.
+that can conflict with a session or is hygiene; `SKIP` means the check is not
+applicable or its subject was not assessed, as explained in the row's detail.
 
 | Row | Checks |
 |---|---|
 | `xcode`, `ios-runtime` | `xcodebuild -version`; an available iOS simulator runtime, and the configured `ios.runtime` by name or identifier |
+| `ios-toolchain-match` | Expo interface compiler comparison described above |
+| `native-cache-root` | Cache filesystem availability; see [native build recovery](#native-fingerprint-build-selection) |
 | `node`, `pnpm` | `QAREN_NODE` or `node` on `PATH` is 24 or newer; a configured `nodePath` is only checked to be an executable file, never run; `pnpm` runs |
 | `pnpm-source` | The first executable `pnpm` on `PATH` and its resolved source; an offline exec probe in the app root must prove process-group preservation to pass, otherwise the row warns with the fix for `PNPM_PROCESS_GROUP_UNSUPPORTED`; a probe that times out warns as `PNPM_PROBE_TIMED_OUT` with a re-run step instead of version advice |
 | `corepack`, `cocoapods` | `corepack` and `pod` run (warnings) |
