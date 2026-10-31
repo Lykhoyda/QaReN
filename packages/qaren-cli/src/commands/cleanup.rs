@@ -17,6 +17,8 @@ pub enum Outcome {
     Absent,
     // A borrowed resource this run never owned; left exactly as found.
     Kept,
+    // Kept alive for inspection after a failed walk; unclean so the lease and record stay with the run.
+    Held(String),
     Refused(String),
     Unresolved(String),
 }
@@ -29,6 +31,7 @@ impl Outcome {
             Outcome::RemovedBytes(None) => "removed (reclaimed bytes unknown)".into(),
             Outcome::Absent => "absent".to_string(),
             Outcome::Kept => "kept".to_string(),
+            Outcome::Held(reason) => format!("held: {reason}"),
             Outcome::Refused(reason) => format!("refused: {reason}"),
             Outcome::Unresolved(reason) => format!("unresolved: {reason}"),
         }

@@ -553,9 +553,19 @@ pub struct RunRecord {
     pub history: Vec<HistoryEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal: Option<TerminalResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<Held>,
     // What this run saw of the native-build lock; ownership stays in resources.build_lock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_lock: Option<BuildLockObservation>,
+}
+
+// A failed walk's resources kept in the reached state until qaren cleanup or a reclaim by the next run on the device.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Held {
+    pub since: String,
+    pub reason: String,
+    pub retained: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

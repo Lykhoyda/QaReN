@@ -3,7 +3,8 @@
 `qaren check` owns a QA run against the current app worktree: it leases a
 borrowed iOS simulator or Android emulator, prepares the app and Metro,
 starts the TypeScript screen child, walks a Markdown plan, writes evidence,
-and tears down owned resources.
+and tears down owned resources (by default a failed iOS walk holds Metro and the lease
+for inspection until `qaren cleanup`; see [iOS admission and cleanup](#ios-admission-and-cleanup)).
 This file is the CLI reference; the product introduction and the agent path are in the [root README](../../README.md).
 The scenario-based preparation verbs remain available for explicit iOS,
 NUC Android and USB Android setup experiments.
@@ -2006,8 +2007,9 @@ device. `--shutdown-device-on-exit` alone requires a `Booted` target; combine it
 `--boot-device` or `--restart-device` to accept a `Shutdown` target.
 
 Default cleanup leaves the borrowed simulator running and keeps the installed app.
-`--shutdown-device-on-exit --device <simulator-UUID>` independently opts into shutdown
-during teardown, including post-arm cancellation and dead-owner recovery. After strict
+`--shutdown-device-on-exit --device <simulator-UUID>` opts into shutdown
+during teardown, including post-arm cancellation and dead-owner recovery, subject to the
+[inspection hold precedence](#ios-admission-and-cleanup). After strict
 admission, the pending stop must be durably saved before lifecycle mutation; a failed
 save or cancellation before arming leaves simulator power unchanged. Shutdown preserves
 the simulator and its installed app and data. See [iOS admission and cleanup](#ios-admission-and-cleanup)
@@ -2089,7 +2091,8 @@ The verification contract is owned by [`src/adapters/ios.rs`](src/adapters/ios.r
 
 Once the run record is saved, `check` and `pr` attempt ownership-gated resource
 teardown before returning a receipt, including after preparation failures, core
-refusals and failed or timed-out walks. The receipt's `cleanup` map reports
+refusals and failed or timed-out walks, subject to the
+[failed iOS check inspection policy](#ios-admission-and-cleanup). The receipt's `cleanup` map reports
 resource outcomes; unresolved ownership can retain resources and the device
 lease for `qaren cleanup <run-id>`. This is infrastructure teardown: it does not
 execute remaining plan steps to delete app or staging-account data created by
@@ -2509,6 +2512,36 @@ another process is not checked, since a reused pid proves its old group is gone.
 `run.json` releases that run's locks under the same proof, and the receipt of a run
 that released an orphaned lock notes it.
 Do not delete locks to bypass unresolved ownership.
+
+A failed iOS `check` walk is held for inspection. After the app was admitted, an uncancelled `FAIL` or
+`TARGET_*` or `PRESS_NOT_REGISTERED` refusal reported by the core (not one QaReN synthesizes after a deadline kill or a
+missing result) is eligible. Teardown still stops the build, core, runner driver, runner host and recorder and
+releases the build lock. It skips stopping Metro (`metro=held: …`), skips any armed simulator
+stop, and keeps the device lease (`device_lease=held: …`). Teardown never terminates the app,
+so if it is still running it keeps its live Metro; the hold does not restart an app that already exited. `run.json` and the receipt record `held` (`since`, `reason`, `retained`), the `end`
+event carries `held: true`, and the record stays in the walking phase. `qaren status <run-id>`
+reports the hold beside its live probes, and `qaren doctor --device <udid>` adds the holding run
+to the `ios-lane` row. The hold ends with `qaren cleanup <run-id>`, or with the next run on that
+device, which reclaims the dead holder through the same cleanup. Holds do not expire.
+The receipt's `next_action` is `qaren cleanup <run-id> --json`.
+
+`--hold` and `--no-hold` apply only to `check`; `pr` always uses normal teardown and rejects them.
+Android never holds; `--hold` there adds the receipt note `hold unsupported on android`.
+Passing runs, cancelled runs, failures before admission, deadline kills and other refusals
+use normal teardown. For eligible failed iOS checks, precedence is:
+
+| Setting | Effect |
+| --- | --- |
+| `--hold` / `--no-hold` | Hold or tear down, overriding everything below; both together is a usage error |
+| Non-empty `CI`, a `## Cleanup` plan heading, or `--shutdown-device-on-exit` | Normal teardown |
+| `QAREN_HOLD_ON_FAIL=0` | Normal teardown |
+| `QAREN_HOLD_ON_FAIL=1` or unset | Hold |
+
+A held Metro keeps its port; another run using that port refuses `METRO_PORT_OCCUPIED`.
+iOS runs start Metro with `--localhost` and append `--dns-result-order=ipv4first` to its
+`NODE_OPTIONS`, so a held Metro listens only on `127.0.0.1`, where the readiness probes and the
+simulator reach it (Node otherwise resolves `localhost` to `::1` first); Android runs keep their
+`adb reverse` path.
 
 The iOS runner's XCTest result bundles under `Logs/Test` in both its local
 DerivedData and current-version prebuilt cache are removed after successful

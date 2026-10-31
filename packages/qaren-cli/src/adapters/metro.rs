@@ -3,18 +3,39 @@ use std::path::Path;
 
 // Metro without a native build: the dev server this process group owns is the
 // same cleanup contract as the expo run:* owner.
-pub fn start_spec(project_root: &Path, port: u16) -> CmdSpec {
-    CmdSpec::new(
-        "expo-start",
-        "pnpm",
-        &["exec", "expo", "start", "--port", &port.to_string()],
-        0,
+// The iOS simulator reaches Metro on 127.0.0.1, so iOS binds to loopback; Android keeps its adb-reverse path.
+pub fn start_spec(project_root: &Path, port: u16, localhost: bool) -> CmdSpec {
+    let port = port.to_string();
+    let mut args = vec!["exec", "expo", "start", "--port", &port];
+    if localhost {
+        args.push("--localhost");
+    }
+    let spec = CmdSpec::new("expo-start", "pnpm", &args, 0)
+        .cwd(project_root)
+        .env_remove("CI")
+        .env("EXPO_NO_TELEMETRY", "1")
+        // Metro logs each request on receipt here, before any dependency-graph wait; the drain counts bundle requests.
+        .env("DEBUG", crate::exec::log::METRO_REQUEST_LOG);
+    if !localhost {
+        return spec;
+    }
+    // Node resolves `localhost` to ::1 first, so --localhost alone listens on IPv6 while every probe and the app use 127.0.0.1.
+    let inherited = std::env::var("NODE_OPTIONS").ok();
+    spec.env(
+        "NODE_OPTIONS",
+        &ipv4_first_node_options(inherited.as_deref()),
     )
-    .cwd(project_root)
-    .env_remove("CI")
-    .env("EXPO_NO_TELEMETRY", "1")
-    // Metro logs each request on receipt here, before any dependency-graph wait; the drain counts bundle requests.
-    .env("DEBUG", crate::exec::log::METRO_REQUEST_LOG)
+}
+
+// Appends to the caller's NODE_OPTIONS instead of replacing it.
+pub fn ipv4_first_node_options(inherited: Option<&str>) -> String {
+    match inherited
+        .map(str::trim)
+        .filter(|options| !options.is_empty())
+    {
+        Some(options) => format!("{options} --dns-result-order=ipv4first"),
+        None => "--dns-result-order=ipv4first".to_string(),
+    }
 }
 
 // Expo serves `/` and `/status` itself; only Metro's own handler logs this path, arming the drained count before launch.

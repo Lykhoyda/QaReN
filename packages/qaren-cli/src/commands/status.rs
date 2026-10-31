@@ -130,6 +130,26 @@ pub fn status(runner: &mut dyn Runner, runs_root: &Path, run_id: &str) -> Receip
             .unwrap_or_else(|| format!("qaren cleanup {run_id} --json")),
         _ => "re-run status; if still unknown, inspect the run directory".to_string(),
     };
+    // Retention is the record's intent; the probe rows above say whether Metro and the lease are still live.
+    if let Some(held) = record
+        .held
+        .as_ref()
+        .filter(|_| record.phase == Phase::Walking)
+    {
+        receipt.outcomes.insert(
+            "held".to_string(),
+            format!(
+                "{} since {}: {}",
+                held.reason,
+                held.since,
+                held.retained.join(", ")
+            ),
+        );
+        receipt.next_action = format!(
+            "look at the simulator if needed, then qaren cleanup {run_id} --json to release Metro, the simulator and the device lease"
+        );
+        receipt.held = Some(held.clone());
+    }
     receipt.commands_executed = runner.commands_executed();
     super::attach_artifacts(&mut receipt, runs_root, &record);
     receipt

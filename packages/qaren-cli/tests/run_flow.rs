@@ -168,6 +168,7 @@ fn request(repo: &Path, app: &Path, step_seconds: u64) -> RunRequest {
             step_seconds,
         },
         pr: None,
+        hold: None,
     }
 }
 
@@ -3097,6 +3098,9 @@ fn a_child_refusal_is_a_typed_refusal_with_the_child_code() {
         );
         let mut req = request(&repo, &app, 30);
         req.device = Some(UDID.into());
+        // An admitted target-class refusal would hold; this test pins the normal teardown.
+        // Before admission the default policy must tear down on its own.
+        req.hold = admitted.then_some(false);
         let (receipt, events) = run_with_events(&mut mock, &req);
         let identity = &events.iter().find(|e| e["event"] == "run").unwrap()["payload"];
         assert_eq!(identity["harness"], "claude");
@@ -3128,6 +3132,296 @@ fn a_child_refusal_is_a_typed_refusal_with_the_child_code() {
         assert_eq!(mock.remaining(), 0);
         assert_eq!(receipt.cleanup["device_lease"], "removed");
     }
+}
+
+const HELD_FAIL: &str = r#"{"verdict":"FAIL","path":"walk","blocks":[{"key":"plan","outcome":"fail","source":"discovered"}],"steps":[],"jev":{"calls":0,"medianMs":0},"llmTurns":0,"escapes":0,"recoveries":0,"failure":{"step":2,"seen":"no Tasks","kind":"step"}}"#;
+
+fn script_held_walk(mock: &mut MockRunner, repo: &Path) {
+    script_held_result(mock, repo, HELD_FAIL, 1);
+}
+
+fn script_admitted_result(mock: &mut MockRunner, repo: &Path, result: &str, exit: i32) {
+    script_preflight(mock, repo);
+    script_provision(mock);
+    script_drift_status(mock);
+    script_host_probe(mock, UDID, hosts_absent());
+    let stdout = format!(
+        "{}\n{}\n",
+        envelope(2, "admitted", "{}"),
+        envelope(3, "result", result)
+    );
+    mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(exit));
+    script_core_identity(mock);
+}
+
+fn script_held_result(mock: &mut MockRunner, repo: &Path, result: &str, exit: i32) {
+    script_admitted_result(mock, repo, result, exit);
+    script_drift_status(mock);
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
+    mock.expect_run("git", CmdOutput::success(UNTRACKED_PLAN));
+    // The core group only; Metro is held, so none of its probes or signals run.
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n6000 6000 S\n"));
+    script_host_probe(mock, UDID, hosts_absent());
+}
+
+#[test]
+fn a_failed_ios_check_holds_metro_the_simulator_and_the_lease_for_inspection() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_held_walk(&mut mock, &repo);
+
+    let (receipt, events) = run_with_events(&mut mock, &request(&repo, &app, 30));
+
+    assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0, "{:?}", labels(&mock));
+    let release = format!("qaren cleanup {} releases it", run_id());
+    assert_eq!(
+        receipt.cleanup["metro"],
+        format!("held: retained for inspection; {release}")
+    );
+    assert_eq!(receipt.cleanup["simulator"], "kept");
+    assert_eq!(
+        receipt.cleanup["device_lease"],
+        format!("held: retained for inspection; {release}")
+    );
+    assert_eq!(
+        receipt.next_action,
+        format!("qaren cleanup {} --json", run_id())
+    );
+    let failure = receipt.failure.as_ref().unwrap();
+    assert!(
+        failure
+            .next_action
+            .contains(&format!("metro, simulator, device_lease were retained at the last observed screen: look, run qaren status {} for live probes", run_id())),
+        "{}",
+        failure.next_action
+    );
+    let held = receipt.held.as_ref().unwrap();
+    assert_eq!(held.reason, "retained for inspection");
+    assert_eq!(held.retained, ["metro", "simulator", "device_lease"]);
+    let record = RunRecord::load(&repo.join("runs"), &run_id()).unwrap();
+    assert_eq!(record.phase, Phase::Walking);
+    assert_eq!(record.held.as_ref(), Some(held));
+    assert!(record.resources.metro.is_some());
+    assert!(record.resources.lease.is_some());
+    let end = events.iter().find(|e| e["event"] == "end").unwrap();
+    assert_eq!(end["payload"]["held"], true);
+    assert_eq!(end["payload"]["cleanup"]["metro"], "held");
+}
+
+#[test]
+fn cancellation_after_held_cleanup_releases_resources_and_clears_the_hold() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_held_walk(&mut mock, &repo);
+    script_metro_teardown(&mut mock, UDID, Some(hosts_absent()));
+
+    let mut runner = CancelAfterRunSave(mock, repo.join("runs"), |r| r.held.is_some());
+    let receipt = run(&mut runner, &request(&repo, &app, 30));
+
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(receipt.failure.unwrap().code, FailureCode::RunCancelled);
+    assert!(receipt.held.is_none());
+    assert_eq!(receipt.cleanup["metro"], "removed");
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert_eq!(receipt.cleanup["simulator"], "kept");
+    let record = RunRecord::load(&repo.join("runs"), &run_id()).unwrap();
+    assert_eq!(record.phase, Phase::Cleaned);
+    assert!(record.held.is_none());
+    assert!(record.resources.metro.is_none());
+    assert!(record.resources.lease.is_none());
+    assert!(record.terminal.unwrap().cancelled);
+    assert_eq!(runner.0.remaining(), 0);
+}
+
+#[test]
+fn cancellation_after_a_held_terminal_save_releases_resources() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_held_walk(&mut mock, &repo);
+    script_metro_teardown(&mut mock, UDID, Some(hosts_absent()));
+    let mut runner = CancelAfterRunSave(mock, repo.join("runs"), |r| r.terminal.is_some());
+
+    let receipt = run(&mut runner, &request(&repo, &app, 30));
+
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(receipt.failure.unwrap().code, FailureCode::RunCancelled);
+    assert!(receipt.held.is_none());
+    assert_eq!(receipt.cleanup["metro"], "removed");
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    let record = RunRecord::load(&repo.join("runs"), &run_id()).unwrap();
+    assert_eq!(record.phase, Phase::Cleaned);
+    assert!(record.held.is_none());
+    assert!(record.resources.metro.is_none());
+    assert!(record.resources.lease.is_none());
+    assert!(record.terminal.unwrap().cancelled);
+    assert_eq!(runner.0.remaining(), 0);
+}
+
+#[test]
+fn only_a_target_class_refusal_holds() {
+    let target =
+        r#"{"verdict":"REFUSED","code":"TARGET_AMBIGUOUS","message":"two controls match"}"#;
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_held_result(&mut mock, &repo, target, 4);
+    let receipt = run(&mut mock, &request(&repo, &app, 30));
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(mock.remaining(), 0, "{:?}", labels(&mock));
+    assert!(receipt.cleanup["metro"].starts_with("held: "));
+    assert!(receipt.held.is_some());
+
+    let origin = r#"{"verdict":"REFUSED","code":"METRO_ORIGIN_MISMATCH","message":"scriptURL port 8081 != 8791"}"#;
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_admitted_result(&mut mock, &repo, origin, 4);
+    script_teardown(&mut mock);
+    let receipt = run(&mut mock, &request(&repo, &app, 30));
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(mock.remaining(), 0, "{:?}", labels(&mock));
+    assert_eq!(receipt.cleanup["metro"], "removed");
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert!(receipt.held.is_none());
+}
+
+#[test]
+fn an_admitted_press_not_registered_refusal_holds() {
+    let refusal = r#"{"verdict":"REFUSED","code":"PRESS_NOT_REGISTERED","message":"selection remains unobservable"}"#;
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_held_result(&mut mock, &repo, refusal, 4);
+
+    let receipt = run(&mut mock, &request(&repo, &app, 30));
+
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(mock.remaining(), 0, "{:?}", labels(&mock));
+    assert!(receipt.cleanup["metro"].starts_with("held: "));
+    assert_eq!(receipt.cleanup["simulator"], "kept");
+    assert!(receipt.cleanup["device_lease"].starts_with("held: "));
+    assert!(receipt.held.is_some());
+    let record = RunRecord::load(&repo.join("runs"), &run_id()).unwrap();
+    assert!(record.resources.metro.is_some());
+    assert!(record.resources.lease.is_some());
+    assert_eq!(record.held, receipt.held);
+}
+
+#[test]
+fn qaren_cleanup_releases_a_held_run() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_held_walk(&mut mock, &repo);
+    let req = request(&repo, &app, 30);
+    let receipt = run(&mut mock, &req);
+    assert!(receipt.held.is_some());
+    let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+    let owner_pid = record.prepare.as_ref().unwrap().pid;
+    let lease = record.resources.lease.unwrap();
+
+    let mut cleanup = MockRunner::new();
+    cleanup.expect_run(
+        &format!("ps -p {owner_pid} -o lstart="),
+        CmdOutput::success(""),
+    );
+    script_metro_teardown(&mut cleanup, UDID, Some(hosts_absent()));
+    let receipt = qaren::commands::cleanup::cleanup(&mut cleanup, &req.runs_root, &run_id());
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Cleaned,
+        "{:?}",
+        receipt.cleanup
+    );
+    assert_eq!(cleanup.remaining(), 0, "{:?}", labels(&cleanup));
+    assert_eq!(receipt.cleanup["metro"], "removed");
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert!(!lease.lock_dir.exists());
+    let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+    assert_eq!(record.phase, Phase::Cleaned);
+}
+
+#[test]
+fn a_stale_held_port_record_preserves_foreign_listener_advice() {
+    let (held_repo, held_app) = app_repo();
+    let mut holder = MockRunner::new();
+    script_held_walk(&mut holder, &held_repo);
+    let held_req = request(&held_repo, &held_app, 30);
+    assert!(run(&mut holder, &held_req).held.is_some());
+
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight_until_lease(&mut mock, &repo);
+    mock.expect_run("lsof", CmdOutput::success("12345\n"));
+    let mut req = request(&repo, &app, 30);
+    req.runs_root = held_req.runs_root;
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::MetroPortOccupied
+    );
+    assert!(receipt
+        .failure
+        .unwrap()
+        .next_action
+        .contains("foreign listener"));
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(holder.remaining(), 0);
+}
+
+#[test]
+fn status_reports_a_held_run_and_its_release_command() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_held_walk(&mut mock, &repo);
+    let req = request(&repo, &app, 30);
+    run(&mut mock, &req);
+
+    // Metro died meanwhile: the live probes say so while the record still names the hold.
+    let mut probes = MockRunner::new();
+    probes.expect_run("lsof", free_port());
+    probes.expect_run("simctl list devices -j", CmdOutput::failed(1, ""));
+    let receipt = qaren::commands::status::status(&mut probes, &req.runs_root, &run_id());
+
+    assert_eq!(probes.remaining(), 0, "{:?}", labels(&probes));
+    assert_eq!(receipt.outcomes["metro_port_owned"], "fail");
+    assert_eq!(receipt.outcomes["device_lease_held"], "pass");
+    assert!(
+        receipt.outcomes["held"].starts_with("retained for inspection since ")
+            && receipt.outcomes["held"].ends_with(": metro, simulator, device_lease"),
+        "{}",
+        receipt.outcomes["held"]
+    );
+    assert!(receipt.held.is_some());
+    assert!(
+        receipt.next_action.ends_with(&format!(
+            "qaren cleanup {} --json to release Metro, the simulator and the device lease",
+            run_id()
+        )),
+        "{}",
+        receipt.next_action
+    );
+}
+
+#[test]
+fn no_hold_keeps_the_normal_teardown_after_a_failed_check() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_admitted_result(&mut mock, &repo, HELD_FAIL, 1);
+    script_teardown(&mut mock);
+    let mut req = request(&repo, &app, 30);
+    req.hold = Some(false);
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(receipt.cleanup["metro"], "removed");
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert!(receipt.held.is_none());
+    let record = RunRecord::load(&repo.join("runs"), &run_id()).unwrap();
+    assert_eq!(record.phase, Phase::Cleaned);
+    assert!(record.held.is_none());
 }
 
 #[test]
@@ -8545,9 +8839,9 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
     }
 }
 
-struct CancelAfterTerminalSave(PrRunner, PathBuf);
+struct CancelAfterRunSave<T>(T, PathBuf, fn(&RunRecord) -> bool);
 
-impl Runner for CancelAfterTerminalSave {
+impl<T: Runner> Runner for CancelAfterRunSave<T> {
     fn env_var(&self, name: &str) -> Option<String> {
         self.0.env_var(name)
     }
@@ -8580,7 +8874,7 @@ impl Runner for CancelAfterTerminalSave {
     fn cancellation(&self) -> Option<String> {
         if RunRecord::load(&self.1, &run_id())
             .ok()
-            .is_some_and(|record| record.terminal.is_some())
+            .is_some_and(|record| (self.2)(&record))
         {
             Some("received SIGTERM".into())
         } else {
@@ -8593,7 +8887,7 @@ impl Runner for CancelAfterTerminalSave {
 fn cancellation_during_terminal_save_withholds_the_publish_handoff() {
     let (repo, app) = app_repo();
     let wt = repo.join("runs").join(run_id()).join("wt");
-    let mut runner = CancelAfterTerminalSave(
+    let mut runner = CancelAfterRunSave(
         PrRunner {
             inner: MockRunner::new(),
             app: app.clone(),
@@ -8603,6 +8897,7 @@ fn cancellation_during_terminal_save_withholds_the_publish_handoff() {
             worktree_config_planted: false,
         },
         repo.join("runs"),
+        |r| r.terminal.is_some(),
     );
     let mock = &mut runner.0.inner;
     script_pr_preflight(mock, &repo, &wt);

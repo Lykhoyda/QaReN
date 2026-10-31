@@ -61,6 +61,44 @@ pub struct RunRequest {
     pub budgets: Budgets,
     // `qaren pr`: the run happens on a detached worktree at this PR's head.
     pub pr: Option<PrTarget>,
+    // --hold / --no-hold; None leaves the decision to hold_on_fail.
+    pub hold: Option<bool>,
+}
+
+const HOLD_REASON: &str = "retained for inspection";
+
+// Whether a failed iOS walk keeps Metro, the simulator and the device lease instead of tearing down.
+pub fn hold_on_fail(
+    explicit: Option<bool>,
+    env: impl Fn(&str) -> Option<String>,
+    platform: Platform,
+    pr: bool,
+    shutdown_on_exit: bool,
+    plan: &str,
+) -> bool {
+    if pr || platform != Platform::Ios {
+        return false;
+    }
+    if let Some(explicit) = explicit {
+        return explicit;
+    }
+    // A plan that declares its own cleanup, or an asked-for exit shutdown, expects teardown; unattended CI has nobody to inspect.
+    // shortcut: a line scan also matches a heading inside a code fence; use the plan parser once plans gain a Cleanup section.
+    let declares_cleanup = plan.lines().any(|line| {
+        line.trim()
+            .strip_prefix("##")
+            .filter(|rest| !rest.starts_with('#'))
+            .is_some_and(|rest| {
+                rest.trim()
+                    .trim_end_matches('#')
+                    .trim()
+                    .eq_ignore_ascii_case("cleanup")
+            })
+    });
+    if env("CI").is_some_and(|ci| !ci.is_empty()) || declares_cleanup || shutdown_on_exit {
+        return false;
+    }
+    env("QAREN_HOLD_ON_FAIL").as_deref() != Some("0")
 }
 
 // The core runtime: QAREN_RUNTIME, else the installed <exe>/../runtime, else the source checkout.
@@ -643,6 +681,7 @@ fn run_inner(
         failure: None,
         history: Vec::new(),
         terminal: None,
+        held: None,
         build_lock: None,
     };
     if let Err(f) = record.save(&req.runs_root) {
@@ -1250,12 +1289,14 @@ fn run_inner(
             .as_ref()
             .filter(|_| !ctx.record.resources.runner_drivers.is_empty())
             .map(|sim| sim.udid.clone());
-        let (mut cleanup, all_clean, ownership_proven) = teardown(
+        let hold = hold_after_walk(&mut ctx, req, &plan, &outcome);
+        let (mut cleanup, mut all_clean, mut ownership_proven) = teardown(
             &mut ctx,
             &node,
             &req.runtime_dir,
             outcome.group_survived,
             false,
+            hold,
         );
         cleanup.splice(..0, early_cleanup);
         let t = ctx.mark("teardown", t);
@@ -1399,6 +1440,13 @@ fn run_inner(
             }
             Ok(()) => failure.as_ref().map(|f| f.code) == Some(FailureCode::RunCancelled),
         };
+        if cancelled && ctx.record.held.take().is_some() {
+            let (released, clean, proven) =
+                teardown(&mut ctx, &node, &req.runtime_dir, false, false, false);
+            cleanup.extend(released);
+            all_clean = clean;
+            ownership_proven = proven;
+        }
         ctx.record.terminal = Some(TerminalResult {
             verdict: outcome.ledger.verdict.clone(),
             cancelled,
@@ -1417,6 +1465,31 @@ fn run_inner(
             .push_history(at, &format!("check finished: {}", note.join(" ")));
         if let Err(f) = ctx.save() {
             return ctx.fail(f);
+        }
+        if let Err(late) = ensure_running(ctx.runner, "publish") {
+            if failure.as_ref().map(|f| f.code) != Some(FailureCode::RunCancelled) {
+                result = ReceiptResult::Refused;
+                failure = Some(late);
+            }
+            if ctx.record.held.take().is_some() {
+                let (released, clean, proven) =
+                    teardown(&mut ctx, &node, &req.runtime_dir, false, false, false);
+                cleanup.extend(released);
+                all_clean = clean;
+                ownership_proven = proven;
+            }
+            let terminal = ctx.record.terminal.as_mut().unwrap();
+            terminal.cancelled = true;
+            terminal.ownership_proven = ownership_proven;
+            ctx.record.phase = if all_clean {
+                Phase::Cleaned
+            } else {
+                Phase::Walking
+            };
+            ctx.record.failure = failure.clone();
+            if let Err(f) = ctx.save() {
+                return ctx.fail(f);
+            }
         }
         if let (Some(pr), Some(video)) = (&pr_state, published_video) {
             let video_publication = outcome.ledger.video_publication.clone().unwrap_or_default();
@@ -1446,15 +1519,7 @@ fn run_inner(
                 proof_in_description: config.proof_in_description == Some(true),
             };
             let bytes = serde_json::to_vec_pretty(&pr_record).unwrap_or_default();
-            if let Err(late) = ensure_running(ctx.runner, "publish") {
-                result = ReceiptResult::Refused;
-                failure = Some(late);
-                ctx.record.terminal.as_mut().unwrap().cancelled = true;
-                ctx.record.failure = failure.clone();
-                if let Err(f) = ctx.save() {
-                    return ctx.fail(f);
-                }
-            } else if !ctx.record.terminal.as_ref().unwrap().cancelled {
+            if !ctx.record.terminal.as_ref().unwrap().cancelled {
                 if let Err(e) = std::fs::write(run_dir.join("pr.json"), bytes) {
                     ctx.notes
                         .push(("pr_record".to_string(), format!("could not persist: {e}")));
@@ -1696,6 +1761,100 @@ fn refusal_code(code: &str) -> FailureCode {
         "JEV_UNREACHABLE" => FailureCode::JevUnreachable,
         "RUN_CANCELLED" => FailureCode::RunCancelled,
         _ => FailureCode::CoreRefused,
+    }
+}
+
+#[cfg(test)]
+mod hold_tests {
+    use super::*;
+
+    const PLAN: &str = "## QA\n\n1. Tap \"Tasks\"\n";
+    const CLEANUP_PLAN: &str = "## QA\n\n1. Tap \"Tasks\"\n\n## Cleanup ##\n\n1. Tap \"Delete\"\n";
+
+    #[test]
+    fn hold_precedence_matrix() {
+        let ios = Platform::Ios;
+        let android = Platform::Android;
+        // (explicit flag, CI, QAREN_HOLD_ON_FAIL, platform, pr, shutdown on exit, plan, expected)
+        type Row<'a> = (
+            Option<bool>,
+            Option<&'a str>,
+            Option<&'a str>,
+            Platform,
+            bool,
+            bool,
+            &'a str,
+            bool,
+        );
+        let rows: [Row; 17] = [
+            (None, None, None, ios, false, false, PLAN, true),
+            (None, None, None, ios, true, false, PLAN, false),
+            (Some(false), None, None, ios, false, false, PLAN, false),
+            (Some(true), None, None, ios, true, false, PLAN, false),
+            (
+                Some(true),
+                Some("true"),
+                None,
+                ios,
+                false,
+                false,
+                PLAN,
+                true,
+            ),
+            (
+                Some(true),
+                None,
+                None,
+                ios,
+                false,
+                false,
+                CLEANUP_PLAN,
+                true,
+            ),
+            (Some(true), None, None, ios, false, true, PLAN, true),
+            (None, Some("true"), None, ios, false, false, PLAN, false),
+            (None, Some("false"), None, ios, false, false, PLAN, false),
+            (
+                None,
+                Some("true"),
+                Some("1"),
+                ios,
+                false,
+                false,
+                PLAN,
+                false,
+            ),
+            (
+                None,
+                None,
+                Some("1"),
+                ios,
+                false,
+                false,
+                CLEANUP_PLAN,
+                false,
+            ),
+            (None, None, Some("1"), ios, false, true, PLAN, false),
+            (None, None, Some("0"), ios, false, false, PLAN, false),
+            (None, None, Some("1"), ios, true, false, PLAN, false),
+            (Some(true), None, Some("1"), ios, true, false, PLAN, false),
+            (None, None, Some("1"), ios, false, false, PLAN, true),
+            (Some(true), None, None, android, false, false, PLAN, false),
+        ];
+        for (i, (explicit, ci, env_hold, platform, pr, shutdown, plan, expected)) in
+            rows.into_iter().enumerate()
+        {
+            let env = |name: &str| match name {
+                "CI" => ci.map(str::to_string),
+                "QAREN_HOLD_ON_FAIL" => env_hold.map(str::to_string),
+                _ => None,
+            };
+            assert_eq!(
+                hold_on_fail(explicit, env, platform, pr, shutdown, plan),
+                expected,
+                "row {i}"
+            );
+        }
     }
 }
 
@@ -1959,12 +2118,54 @@ fn finish_failed(
         .err()
         .unwrap_or(failure);
     events::close_running(StageState::Failed, Some(&failure.code_str()), &[]);
-    let (cleanup, _, _) = teardown(&mut ctx, node, runtime_dir, false, retain_device_lease);
+    let (cleanup, _, _) = teardown(
+        &mut ctx,
+        node,
+        runtime_dir,
+        false,
+        retain_device_lease,
+        false,
+    );
     let mut receipt = ctx.fail(failure);
     for (name, rendered) in cleanup {
         receipt.cleanup.insert(name, rendered);
     }
     receipt
+}
+
+// Only a core-reported FAIL or target-class refusal after admission holds; a cancelled run gets normal teardown.
+fn hold_after_walk(
+    ctx: &mut Ctx,
+    req: &RunRequest,
+    plan: &str,
+    outcome: &core::CoreOutcome,
+) -> bool {
+    if req.hold == Some(true) && req.platform != Platform::Ios {
+        ctx.notes.push((
+            "hold".to_string(),
+            "hold unsupported on android".to_string(),
+        ));
+    }
+    let target_class = match &outcome.verdict {
+        Verdict::Fail => true,
+        Verdict::Refused { code, .. } => {
+            code.starts_with("TARGET_") || code == "PRESS_NOT_REGISTERED"
+        }
+        Verdict::Pass => false,
+    };
+    // A synthesized failure (deadline kill, missing result, contract violation) is not a plan deviation.
+    target_class
+        && outcome.failure.is_none()
+        && outcome.admitted
+        && ctx.runner.cancellation().is_none()
+        && hold_on_fail(
+            req.hold,
+            |name| ctx.runner.env_var(name),
+            req.platform,
+            req.pr.is_some(),
+            req.shutdown_device_on_exit,
+            plan,
+        )
 }
 
 // Returns rendered outcomes, whether every leg is clean, and whether the run's producers are proven gone.
@@ -1974,8 +2175,13 @@ fn teardown(
     runtime_dir: &Path,
     wait_unresolved: bool,
     retain_device_lease: bool,
+    hold: bool,
 ) -> (Vec<(String, String)>, bool, bool) {
     events::stage("cleanup", StageState::Running, None, None);
+    let held = Outcome::Held(format!(
+        "{HOLD_REASON}; qaren cleanup {} releases it",
+        ctx.record.run_id
+    ));
     let mut outcomes: Vec<(String, Outcome)> = Vec::new();
     if let Some(outcome) =
         crate::commands::cleanup::cleanup_build(ctx.runner, &mut ctx.record, &ctx.runs_root)
@@ -1987,13 +2193,20 @@ fn teardown(
     {
         outcomes.push(("core".to_string(), outcome));
     }
+    // A signal during core cleanup still gets the normal teardown.
+    let hold = hold && ctx.runner.cancellation().is_none();
     if let Some(m) = ctx.record.resources.metro.clone() {
-        let outcome = cleanup_process_group(
-            ctx.runner,
-            m.identity.as_ref(),
-            m.spawned.pgid,
-            Some(m.port),
-        );
+        // Held Metro stays recorded, so qaren cleanup or the next run's reclaim stops it.
+        let outcome = if hold {
+            held.clone()
+        } else {
+            cleanup_process_group(
+                ctx.runner,
+                m.identity.as_ref(),
+                m.spawned.pgid,
+                Some(m.port),
+            )
+        };
         if outcome.clean() {
             ctx.record.resources.metro = None;
         }
@@ -2016,14 +2229,21 @@ fn teardown(
     }
     prepare::release_build_lock(ctx);
     if ctx.record.resources.ios_simulator.is_some() {
-        let outcome = crate::commands::cleanup::cleanup_borrowed_ios(
-            ctx.runner,
-            &mut ctx.record,
-            &ctx.runs_root,
-            &outcomes,
-            false,
-            Some((node, runtime_dir)),
-        );
+        let outcome = if hold {
+            match ctx.record.resources.borrowed_ios_stop() {
+                crate::runrecord::BorrowedIosStop::Pending => held.clone(),
+                _ => Outcome::Kept,
+            }
+        } else {
+            crate::commands::cleanup::cleanup_borrowed_ios(
+                ctx.runner,
+                &mut ctx.record,
+                &ctx.runs_root,
+                &outcomes,
+                false,
+                Some((node, runtime_dir)),
+            )
+        };
         outcomes.push(("simulator".to_string(), outcome));
     }
     // Released while the lease is still this run's; an unclean leg below retains it.
@@ -2035,6 +2255,8 @@ fn teardown(
         let unclean = unclean_legs(&outcomes);
         let outcome = if retain_device_lease {
             Outcome::Unresolved("restart shutdown is unresolved; device lease retained".into())
+        } else if hold {
+            held.clone()
         } else if ctx.record.resources.can_release_build_ownership()
             && ctx.record.resources.can_release_borrowed_ios_stop()
             && unclean.is_empty()
@@ -2070,6 +2292,23 @@ fn teardown(
     };
     events::stage("cleanup", state, None, None);
     let producers_gone = crate::commands::cleanup::producers_quiescent(&outcomes);
+    if hold {
+        let resources = &ctx.record.resources;
+        let retained = [
+            ("metro", resources.metro.is_some()),
+            ("simulator", resources.ios_simulator.is_some()),
+            ("device_lease", resources.lease.is_some()),
+        ];
+        ctx.record.held = Some(crate::runrecord::Held {
+            since: timefmt::iso8601_utc(ctx.runner.now_epoch_ms()),
+            reason: HOLD_REASON.to_string(),
+            retained: retained
+                .into_iter()
+                .filter(|(_, kept)| *kept)
+                .map(|(name, _)| name.to_string())
+                .collect(),
+        });
+    }
     let _ = ctx.save();
     (
         outcomes.into_iter().map(|(n, o)| (n, o.render())).collect(),
