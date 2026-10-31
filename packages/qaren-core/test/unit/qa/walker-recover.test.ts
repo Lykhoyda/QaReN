@@ -5,7 +5,7 @@ import { renderReason } from '../../../dist/qa/untrusted.js';
 import type { WalkSequence } from '../../../dist/qa/walker.js';
 import type { Block } from '../../../dist/qa/plan.js';
 import type { Screen } from '../../../dist/qa/screen.js';
-import { NativeCaptureError } from '../../../dist/qa/capture.js';
+import { AppProcessGoneError, NativeCaptureError } from '../../../dist/qa/capture.js';
 import { InputPrivacyRefusal, RunInputs, withInputs } from '../../../dist/qa/inputs.js';
 import { loginBlock, runPlan, walkBlock } from '../../../dist/qa/walker.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
@@ -826,3 +826,24 @@ for (const kind of ['press', 'fill'] as const) {
     assert.equal(ledger.steps.filter((r) => r.outcome === 'retry').length, 0);
   });
 }
+
+test('app exit during dev-menu recovery terminates without retry or publication', async () => {
+  const covered = screen(['Settings'], 'dev-menu');
+  let hides = 0;
+  const f = fake([covered], {
+    hideDevMenu: async () => {
+      hides++;
+      throw new AppProcessGoneError();
+    },
+    screenshot: async () => assert.fail('no app-exit screenshot'),
+  });
+  const result = await runPlan([block('1. Tap "Missing"\n')], f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.match(
+    renderReason(result.failure?.seen ?? '', (text) => text),
+    /APP_PROCESS_CHANGED/,
+  );
+  assert.equal(result.publicationInterrupted, true);
+  assert.equal(hides, 1);
+  assert.equal(f.calls.filter((call) => call.startsWith('press ')).length, 0);
+});

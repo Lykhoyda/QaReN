@@ -219,6 +219,7 @@ export interface StatusResult {
 export interface EvaluateResult {
   value?: unknown;
   error?: string;
+  errorKind?: 'timeout' | 'protocol' | 'target_closed' | 'evaluation' | 'other';
   requestDispatched?: boolean;
 }
 
@@ -274,6 +275,10 @@ export type ToolErrorCode =
   | 'CONNECT_IN_FLIGHT' // GH #616: a reconnect/connect is in flight; force=true supersedes it
   | 'APP_DETACHED' // GH #208 (RC2/RC3): Metro up but 0 Hermes targets (app detached)
   | 'DEV_MENU_HIDE_UNVERIFIED'
+  | 'DEV_MENU_HIDE_UNVERIFIED_READ_FAILED'
+  | 'DEV_MENU_HIDE_UNVERIFIED_NOT_HIDDEN'
+  | 'DEV_MENU_HIDE_UNVERIFIED_EVALUATE_TIMEOUT'
+  | 'DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED'
   | 'APP_NOT_INSTALLED' // GH #262: relaunch failed and get_app_container confirms the bundle is missing
   | 'NOT_CONNECTED'
   | 'HELPERS_NOT_INJECTED'

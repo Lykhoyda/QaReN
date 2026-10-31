@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { frontFromSurface } from '../../../dist/qa/screen.js';
 import type { NativeNode } from '../../../dist/qa/screen.js';
-import { nativeDevOverlayUncleared } from '../../../dist/qa/capture.js';
+import { nativeDevOverlayObservation } from '../../../dist/qa/capture.js';
 
 // Value-free shapes inferred from expo-dev-menu 55/56 source (DevMenuFABWindow, DevMenuFABView),
 // not recorded from a device: QA returns the recorded window list.
@@ -42,14 +42,14 @@ const fabPill = [
 test('a full-screen pass-through window holding only the gear pill is the dev-menu button', () => {
   const nodes = tree(appContent, fabPill);
   assert.equal(frontFromSurface(undefined, nodes), 'dev-fab');
-  assert.equal(
-    nativeDevOverlayUncleared({
+  assert.deepEqual(
+    nativeDevOverlayObservation({
       nodes,
       truncated: false,
       normalizationDroppedNodes: 0,
       snapshotVerdict: { state: 'ok', nodeCount: nodes.length, refMapUpdated: true, reasons: [] },
     }),
-    true,
+    { state: 'shown', front: 'dev-fab' },
   );
 });
 
