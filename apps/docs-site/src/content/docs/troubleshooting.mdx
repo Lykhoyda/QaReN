@@ -81,8 +81,9 @@ The screen layer's own codes appear at the start of `failure.detail` or in the r
 
 When a run cannot prove that a process is gone, it keeps the device lease and records what it
 kept. A PR worktree it cannot remove stays recorded for `qaren cleanup` without holding the
-lease. The next run on that device refuses `DEVICE_BUSY` until the lease is
-released. Run:
+lease. For dead-holder reclamation and intentional inspection holds, see the
+[iOS admission and cleanup contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup).
+To request cleanup explicitly, run:
 
 ```sh
 qaren cleanup <run-id> --json

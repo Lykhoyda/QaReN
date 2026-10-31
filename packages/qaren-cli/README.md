@@ -2007,8 +2007,9 @@ device. `--shutdown-device-on-exit` alone requires a `Booted` target; combine it
 `--boot-device` or `--restart-device` to accept a `Shutdown` target.
 
 Default cleanup leaves the borrowed simulator running and keeps the installed app.
-`--shutdown-device-on-exit --device <simulator-UUID>` independently opts into shutdown
-during teardown, including post-arm cancellation and dead-owner recovery. After strict
+`--shutdown-device-on-exit --device <simulator-UUID>` opts into shutdown
+during teardown, including post-arm cancellation and dead-owner recovery, subject to the
+[inspection hold precedence](#ios-admission-and-cleanup). After strict
 admission, the pending stop must be durably saved before lifecycle mutation; a failed
 save or cancellation before arming leaves simulator power unchanged. Shutdown preserves
 the simulator and its installed app and data. See [iOS admission and cleanup](#ios-admission-and-cleanup)
