@@ -314,28 +314,88 @@ test('a covered target with two decline controls still refuses as ambiguous', ()
   assert.equal(candidate.refuse.code, 'INTERRUPTION_AMBIGUOUS');
 });
 
-test('a wait for an id behind the scrim dismisses Close once and then passes', async () => {
-  let snapshot = sheetScreen();
-  const f = walker(
-    [snapshot],
-    scriptedJudge(() => assert.fail('no model needed')),
+for (const exact of [undefined, 'text'] as const) {
+  test(`a text wait rejects proven coverage and preserves uncovered evidence (${exact})`, () => {
+    const target = { phrase: 'Welcome Home', quoted: 'Welcome Home', exact };
+    assert.equal(targetEvidence(target, sheetScreen()), 'fail');
+    assert.equal(targetEvidence(target, sheetScreen(false)), 'pass');
+    const unknown = screen('app', {
+      visibleText: ['Welcome Home'],
+      coverage: { native: 'complete', react: 'complete' },
+      elements: [{ ...sheetScreen().elements[3] }],
+    });
+    assert.equal(centreCovered(unknown.elements[0], unknown), false);
+    assert.equal(targetEvidence(target, unknown), 'pass');
+  });
+
+  test(`a composed-input wait rejects only proven coverage (${exact})`, () => {
+    const target = { phrase: 'Status: Ready', quoted: 'Status: Ready', exact };
+    for (const covered of [true, false]) {
+      const snapshot = sheetScreen(
+        true,
+        ['Close'],
+        [
+          {
+            ref: '@field',
+            type: 'TextField',
+            parentIndex: 2,
+            label: 'Status',
+            value: 'Ready',
+            rect: { x: 20, y: covered ? 550 : 250, width: 200, height: 40 },
+          },
+        ],
+      );
+      assert.equal(targetEvidence(target, snapshot), covered ? 'fail' : 'pass');
+    }
+  });
+}
+
+test('an uncovered text occurrence still satisfies a wait with a covered twin', () => {
+  const snapshot = sheetScreen(
+    true,
+    ['Close'],
+    [
+      {
+        ref: '@uncovered-home',
+        type: 'StaticText',
+        parentIndex: 2,
+        label: 'Welcome Home',
+        rect: { x: 20, y: 200, width: 200, height: 40 },
+      },
+    ],
   );
-  f.deps.captureScreen = async () => snapshot;
-  f.deps.hideDevMenu = async () => assert.fail('no dev menu');
-  f.deps.press = async (ref) => {
-    f.actions.push(`press ${ref}`);
-    snapshot = sheetScreen(true, []);
-    return { ok: true, proven: false, executed: true };
-  };
-  const result = await runPlan(parsePlan('1. Wait for "home"').blocks!, f.deps);
-  assert.equal(result.verdict, 'PASS', result.failure?.seen);
-  assert.deepEqual(f.actions, ['press @decline0']);
-  assert.equal(result.recoveries, 1);
-  const retry = result.steps.find((row) => row.outcome === 'retry');
-  assert.ok(retry?.operationId);
-  assert.deepEqual(
-    result.steps.filter((row) => row.operationId === retry.operationId).map((row) => row.outcome),
-    ['retry', 'pass'],
-  );
-  assert.match(retry.reason ?? '', /recovered: dismissed an app screen with Close/);
+  const target = { phrase: 'Welcome Home', quoted: 'Welcome Home' };
+  assert.equal(targetEvidence(target, snapshot), 'pass');
+  assert.throws(() => targetEvidence({ ...target, exact: 'text' }, snapshot), /TARGET_AMBIGUOUS/);
 });
+
+for (const [kind, quoted] of [
+  ['an id', 'home'],
+  ['text', 'Welcome Home'],
+] as const) {
+  test(`a wait for ${kind} behind the scrim dismisses Close once and then passes`, async () => {
+    let snapshot = sheetScreen();
+    const f = walker(
+      [snapshot],
+      scriptedJudge(() => assert.fail('no model needed')),
+    );
+    f.deps.captureScreen = async () => snapshot;
+    f.deps.hideDevMenu = async () => assert.fail('no dev menu');
+    f.deps.press = async (ref) => {
+      f.actions.push(`press ${ref}`);
+      snapshot = sheetScreen(true, []);
+      return { ok: true, proven: false, executed: true };
+    };
+    const result = await runPlan(parsePlan(`1. Wait for "${quoted}"`).blocks!, f.deps);
+    assert.equal(result.verdict, 'PASS', result.failure?.seen);
+    assert.deepEqual(f.actions, ['press @decline0']);
+    assert.equal(result.recoveries, 1);
+    const retry = result.steps.find((row) => row.outcome === 'retry');
+    assert.ok(retry?.operationId);
+    assert.deepEqual(
+      result.steps.filter((row) => row.operationId === retry.operationId).map((row) => row.outcome),
+      ['retry', 'pass'],
+    );
+    assert.match(retry.reason ?? '', /recovered: dismissed an app screen with Close/);
+  });
+}

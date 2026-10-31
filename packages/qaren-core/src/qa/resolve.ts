@@ -844,6 +844,15 @@ export function targetEvidence(target: Target, screen: Screen): LiteralVerdict {
         reason: `${count} identities match the stored text "${target.quoted}"`,
       });
   }
+  if (text === 'pass') {
+    const carriers = literalTextProjection(screen).elements.filter(
+      (e) =>
+        (e.kind === 'input' && e.value !== undefined
+          ? `${e.label ?? e.placeholder ?? e.testID ?? 'input'}: ${e.value}`
+          : e.label) === target.quoted,
+    );
+    if (carriers.length && carriers.every((e) => centreCovered(e, screen))) return 'fail';
+  }
   return text;
 }
 
