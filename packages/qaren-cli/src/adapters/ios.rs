@@ -412,7 +412,7 @@ pub struct RunnerHostInventory {
 }
 
 impl RunnerHostInventory {
-    fn presence(&self) -> RunnerHostPresence {
+    pub(crate) fn presence(&self) -> RunnerHostPresence {
         if self.bundle_ids.is_empty() {
             RunnerHostPresence::Absent
         } else {

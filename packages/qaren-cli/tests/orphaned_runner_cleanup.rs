@@ -885,6 +885,9 @@ fn failed_explicit_host_cleanup_retains_the_lease_and_selects_exact_shutdown_adv
         fake.fault = fault;
         let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
         assert_ne!(receipt.result, ReceiptResult::Cleaned, "{fault}");
+        if matches!(fault, "host_foreign_runner" | "host_foreign_prefix" | "host_unknown" | "host_malformed" | "host_truncated" | "host_unknown_after") {
+            assert_eq!(receipt.result, ReceiptResult::Refused, "{fault}");
+        }
         assert!(record.resources.lease.unwrap().lock_dir.exists(), "{fault}");
         assert!(!RunRecord::load(&root, "orphan-run").unwrap().resources.runner_host_absent, "{fault}");
         assert_eq!(fake.host_terminations.len(), attempts, "{fault}");
@@ -910,14 +913,17 @@ fn failed_explicit_host_cleanup_retains_the_lease_and_selects_exact_shutdown_adv
 #[test]
 fn explicit_host_cleanup_rechecks_inventory_before_the_second_bundle() {
     use qaren::adapters::ios::{RUNNER_HOST_BUNDLE_ID, RUNNER_TEST_HOST_BUNDLE_ID};
-    let (_, record, mut fake) = fixture("QarenIosRunner");
-    fake.alive = false;
-    fake.host_bundles = vec![RUNNER_HOST_BUNDLE_ID, RUNNER_TEST_HOST_BUNDLE_ID];
-    fake.fault = "host_foreign_runner_after";
-    let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
-    assert_ne!(receipt.result, ReceiptResult::Cleaned);
-    assert_eq!(fake.host_terminations, [RUNNER_HOST_BUNDLE_ID]);
-    assert!(record.resources.lease.unwrap().lock_dir.exists());
+    for fault in ["host_foreign_runner_after", "host_unknown_after"] {
+        let (_, record, mut fake) = fixture("QarenIosRunner");
+        fake.alive = false;
+        fake.host_bundles = vec![RUNNER_HOST_BUNDLE_ID, RUNNER_TEST_HOST_BUNDLE_ID];
+        fake.fault = fault;
+        let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
+        assert_eq!(receipt.result, ReceiptResult::Refused, "{fault}");
+        assert_eq!(fake.host_terminations, [RUNNER_HOST_BUNDLE_ID]);
+        assert!(record.resources.lease.unwrap().lock_dir.exists());
+        assert_eq!(receipt.recovery.unwrap().action, RecoveryAction::RequestExactSimulatorShutdown);
+    }
 }
 
 #[test]
@@ -1031,7 +1037,7 @@ fn foreign_or_unreadable_final_inventory_retains_the_lease_without_retry() {
         fake.fault = fault;
         fake.host_settle_remaining = 1;
         let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
-        assert_ne!(receipt.result, ReceiptResult::Cleaned);
+        assert_eq!(receipt.result, ReceiptResult::Refused, "{fault}");
         assert_eq!(fake.host_terminations, [qaren::adapters::ios::RUNNER_HOST_BUNDLE_ID]);
         assert!(record.resources.lease.unwrap().lock_dir.exists());
         assert_eq!(receipt.recovery.unwrap().action, RecoveryAction::RequestExactSimulatorShutdown);

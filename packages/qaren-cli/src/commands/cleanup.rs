@@ -1381,10 +1381,7 @@ fn settled_runner_hosts(
                 Some(inventory) if inventory.foreign_runner => {
                     return ios::RunnerHostPresence::Unknown
                 }
-                Some(inventory) if inventory.bundle_ids.is_empty() => {
-                    ios::RunnerHostPresence::Absent
-                }
-                Some(_) => ios::RunnerHostPresence::Present,
+                Some(inventory) => inventory.presence(),
                 None => return ios::RunnerHostPresence::Unknown,
             }
         } else {
@@ -1495,7 +1492,7 @@ fn cleanup_explicit_runner_hosts(
     udid: &str,
 ) -> Outcome {
     let Some(inventory) = ios::probe_runner_host_inventory(runner, udid) else {
-        return Outcome::Unresolved("runner host inventory is unreadable; left untouched".into());
+        return Outcome::Refused("runner host inventory is unreadable; left untouched".into());
     };
     if inventory.foreign_runner {
         return Outcome::Refused(
@@ -1508,7 +1505,7 @@ fn cleanup_explicit_runner_hosts(
     for (index, bundle) in inventory.bundle_ids.into_iter().enumerate() {
         if index > 0 {
             let Some(current) = ios::probe_runner_host_inventory(runner, udid) else {
-                return Outcome::Unresolved(
+                return Outcome::Refused(
                     "runner host inventory is unreadable; lease retained".into(),
                 );
             };
@@ -1546,8 +1543,8 @@ fn cleanup_explicit_runner_hosts(
         ios::RunnerHostPresence::Present => {
             Outcome::Unresolved("runner host remains after termination; lease retained".into())
         }
-        ios::RunnerHostPresence::Unknown => Outcome::Unresolved(
-            "runner host absence is unknown after termination; lease retained".into(),
+        ios::RunnerHostPresence::Unknown => Outcome::Refused(
+            "runner host inventory is unreadable or includes a foreign runner candidate after termination; lease retained".into(),
         ),
     }
 }
