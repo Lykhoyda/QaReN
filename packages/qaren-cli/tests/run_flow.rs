@@ -2382,7 +2382,14 @@ fn a_cancelled_walk_is_a_refusal_that_still_tears_down_and_releases_the_lease() 
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     script_provision(&mut mock);
-    let one_row = format!("{}\n", envelope(2, "row", &row(1, "step")));
+    let evidence = serde_json::json!({"subreason":"selection_unverified","heldPress":"not_tried_unsafe","outsideTargetChange":false,"captures":2});
+    let result =
+        serde_json::json!({"verdict":"REFUSED","code":"RUN_CANCELLED","pressEvidence":evidence});
+    let one_row = format!(
+        "{}\n{}\n",
+        envelope(2, "row", &row(1, "step")),
+        envelope(3, "result", &result.to_string())
+    );
     script_drift_status(&mut mock);
     script_host_probe(&mut mock, UDID, hosts_absent());
     mock.expect_spawn_piped("walk.js", 9000, &one_row, None);
@@ -2402,6 +2409,11 @@ fn a_cancelled_walk_is_a_refusal_that_still_tears_down_and_releases_the_lease() 
     let failure = receipt.failure.as_ref().unwrap();
     assert_eq!(failure.code, FailureCode::RunCancelled);
     assert_eq!(failure.phase, "walk");
+    assert_eq!(failure.next_action.as_str(), "rerun_when_ready");
+    assert!(failure.recovery.is_some());
+    let durable: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&receipt.artifacts["ledger"]).unwrap()).unwrap();
+    assert_eq!(durable["pressEvidence"], evidence);
     assert!(
         failure.detail.contains("received SIGTERM"),
         "{}",
@@ -7167,13 +7179,14 @@ impl Runner for PrRunner {
             }
             "simctl-launchctl" if self.fail_host_checkpoint => {
                 let root = self.app.parent().unwrap().join("runs");
-                if RunRecord::load(&root, &run_id())
-                    .is_ok_and(|record| {
-                        record.resources.core.is_none() && record.resources.core_cleanup.is_some()
-                    })
-                {
-                    std::fs::create_dir(RunRecord::run_dir(&root, &run_id())
-                        .join(format!(".run.json.tmp.{}", std::process::id()))).unwrap();
+                if RunRecord::load(&root, &run_id()).is_ok_and(|record| {
+                    record.resources.core.is_none() && record.resources.core_cleanup.is_some()
+                }) {
+                    std::fs::create_dir(
+                        RunRecord::run_dir(&root, &run_id())
+                            .join(format!(".run.json.tmp.{}", std::process::id())),
+                    )
+                    .unwrap();
                 }
             }
             _ => {}
@@ -7703,7 +7716,10 @@ fn pr_teardown_checkpoints_host_absence_before_releasing_ownership() {
         script_core_identity(mock);
         script_drift_status(mock);
         mock.expect_run("git", CmdOutput::success(&format!("{PR_HEAD}\n")));
-        mock.expect_run("git", CmdOutput::success("?? test-app/.qaren/actions/tasks.yaml\0"));
+        mock.expect_run(
+            "git",
+            CmdOutput::success("?? test-app/.qaren/actions/tasks.yaml\0"),
+        );
         script_recorder_stop(mock);
         script_pr_teardown_after_drift(mock);
         if !storage_failure {
@@ -7711,7 +7727,10 @@ fn pr_teardown_checkpoints_host_absence_before_releasing_ownership() {
             mock.expect_run("worktree remove --force", CmdOutput::failed(1, "busy"));
         }
         mock.expect_run("which ffmpeg", CmdOutput::failed(1, ""));
-        mock.expect_run("gh pr view https://github.com/o/r/pull/12", pr_view_json(PR_HEAD));
+        mock.expect_run(
+            "gh pr view https://github.com/o/r/pull/12",
+            pr_view_json(PR_HEAD),
+        );
         let receipt = run(&mut runner, &pr_request(&repo, &app));
         assert_eq!(runner.inner.remaining(), 0, "{}", receipt.to_json());
         assert!(wt.exists());
@@ -7719,18 +7738,34 @@ fn pr_teardown_checkpoints_host_absence_before_releasing_ownership() {
         assert_eq!(stored.phase, Phase::Walking);
         assert_eq!(stored.resources.runner_host_absent, !storage_failure);
         if storage_failure {
-            assert_eq!(receipt.failure.unwrap().code, FailureCode::RunRecordUpdateFailed);
+            assert_eq!(
+                receipt.failure.unwrap().code,
+                FailureCode::RunRecordUpdateFailed
+            );
             assert!(stored.resources.lease.unwrap().lock_dir.exists());
-            assert!(runner.inner.calls.iter().all(|call| call.label != "git-worktree-remove"));
-            std::fs::remove_dir(RunRecord::run_dir(&runs, &run_id())
-                .join(format!(".run.json.tmp.{}", std::process::id()))).unwrap();
+            assert!(runner
+                .inner
+                .calls
+                .iter()
+                .all(|call| call.label != "git-worktree-remove"));
+            std::fs::remove_dir(
+                RunRecord::run_dir(&runs, &run_id())
+                    .join(format!(".run.json.tmp.{}", std::process::id())),
+            )
+            .unwrap();
         } else {
             assert_eq!(receipt.cleanup["device_lease"], "removed");
             assert!(stored.resources.lease.is_none());
             let mut lease_runner = qaren::exec::MockRunner::new();
             let next = qaren::lease::acquire(
-                &mut lease_runner, &repo.join(".locks"), Platform::Ios, UDID, "next-run", None,
-            ).unwrap();
+                &mut lease_runner,
+                &repo.join(".locks"),
+                Platform::Ios,
+                UDID,
+                "next-run",
+                None,
+            )
+            .unwrap();
             let before = std::fs::read(next.lock_dir.join("holder.json")).unwrap();
             let mut retry = PrRunner {
                 inner: MockRunner::new(),
@@ -7743,14 +7778,27 @@ fn pr_teardown_checkpoints_host_absence_before_releasing_ownership() {
             };
             retry.inner.expect_run("lstart=", CmdOutput::success(""));
             retry.inner.expect_run("du -sk", CmdOutput::success("4\n"));
-            retry.inner.expect_run("worktree remove --force", CmdOutput::success(""));
+            retry
+                .inner
+                .expect_run("worktree remove --force", CmdOutput::success(""));
             let result = qaren::commands::cleanup::cleanup(&mut retry, &runs, &run_id());
-            assert_eq!(result.result, ReceiptResult::Cleaned, "{}", result.to_json());
+            assert_eq!(
+                result.result,
+                ReceiptResult::Cleaned,
+                "{}",
+                result.to_json()
+            );
             assert_eq!(retry.inner.remaining(), 0);
             assert!(!wt.exists());
-            assert_eq!(std::fs::read(next.lock_dir.join("holder.json")).unwrap(), before);
+            assert_eq!(
+                std::fs::read(next.lock_dir.join("holder.json")).unwrap(),
+                before
+            );
             assert!(retry.inner.calls.iter().all(|call| {
-                !matches!(call.label.as_str(), "kill-group" | "simctl-launchctl" | "simctl-shutdown" | "simctl-delete")
+                !matches!(
+                    call.label.as_str(),
+                    "kill-group" | "simctl-launchctl" | "simctl-shutdown" | "simctl-delete"
+                )
             }));
         }
     }
@@ -10063,4 +10111,107 @@ fn part_a_dependency_failure_only_tears_down_infrastructure() {
         assert!(mock.piped_stdin.is_empty());
         assert_eq!(mock.remaining(), 0);
     }
+}
+
+#[test]
+fn unverified_selection_receipts_keep_evidence_guidance_and_ordered_recovery() {
+    for code in [
+        "PRESS_NOT_REGISTERED",
+        "NATIVE_CAPTURE_UNAVAILABLE",
+        "ITEM_DEADLINE_EXCEEDED",
+        "EVIDENCE_EXPIRED",
+        "RUN_CANCELLED",
+    ] {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        let evidence = serde_json::json!({"subreason":"selection_unverified","heldPress":"not_tried_unsafe","outsideTargetChange":true,"captures":2});
+        let ledger = serde_json::json!({
+            "verdict":"REFUSED", "code":code,
+            "message":"Selection could not be verified; no second press was sent.",
+            "path":"replay", "blocks":[{"key":"plan","outcome":"fail","source":"replayed"}],
+            "steps":[], "jev":{"calls":0,"medianMs":0}, "llmTurns":0,"escapes":0,"recoveries":0,
+            "pressEvidence":evidence,
+            "failure":{"step":1,"seen":"Selection could not be verified; no second press was sent."}
+        });
+        script_recipe_walk(&mut mock, &repo, &ledger.to_string(), 4);
+        let receipt = run(&mut mock, &request(&repo, &app, 30));
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Refused,
+            "{code}: {:?}",
+            receipt.failure
+        );
+        let failure = receipt.failure.as_ref().unwrap();
+        if code == "PRESS_NOT_REGISTERED" {
+            assert_eq!(failure.code, FailureCode::PressNotRegistered);
+            assert!(failure.code.is_refusal());
+        }
+        let expected = if code == "PRESS_NOT_REGISTERED" {
+            "rerun_then_ask_app_team_expose_selection_in_row_list"
+        } else if code == "NATIVE_CAPTURE_UNAVAILABLE" {
+            "reprepare_after_capture_recovery"
+        } else {
+            "rerun_when_ready"
+        };
+        assert_eq!(failure.next_action.as_str(), expected);
+        let recovery = serde_json::to_value(failure).unwrap()["recovery"].clone();
+        assert_eq!(recovery["action"], expected);
+        assert_eq!(
+            recovery["destroys_state"],
+            code == "NATIVE_CAPTURE_UNAVAILABLE"
+        );
+        assert_eq!(
+            recovery["requires_user_ok"],
+            code == "NATIVE_CAPTURE_UNAVAILABLE"
+        );
+        assert_eq!(
+            recovery["next_rung"],
+            if code == "NATIVE_CAPTURE_UNAVAILABLE" {
+                serde_json::json!(2)
+            } else {
+                serde_json::Value::Null
+            }
+        );
+        assert_eq!(recovery["ladder"].as_array().unwrap().len(), 5);
+        for (index, rung) in recovery["ladder"].as_array().unwrap().iter().enumerate() {
+            assert_eq!(rung["rung"], index + 1);
+            assert_eq!(
+                rung["status"],
+                if code == "NATIVE_CAPTURE_UNAVAILABLE" && index > 0 {
+                    "available"
+                } else {
+                    "skipped"
+                }
+            );
+        }
+        let durable: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&receipt.artifacts["ledger"]).unwrap())
+                .unwrap();
+        assert_eq!(durable["pressEvidence"], evidence);
+        assert!(durable.get("recipe").is_none());
+        assert!(durable["failure"].get("kind").is_none());
+        assert!(!receipt.to_json().contains("CANARY"));
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn first_capture_fault_requires_reprepare_after_the_walk_has_exited() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    let ledger = serde_json::json!({"verdict":"REFUSED","code":"NATIVE_CAPTURE_UNAVAILABLE","message":"Native capture unavailable.","pressEvidence":{"subreason":"target_identity_unavailable","heldPress":"not_tried_unsafe","outsideTargetChange":false,"captures":1}});
+    script_recipe_walk(&mut mock, &repo, &ledger.to_string(), 4);
+    let receipt = run(&mut mock, &request(&repo, &app, 30));
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(
+        failure.next_action.as_str(),
+        "reprepare_after_capture_recovery"
+    );
+    let recovery = serde_json::to_value(failure).unwrap()["recovery"].clone();
+    assert_eq!(recovery["next_rung"], 2);
+    assert_eq!(recovery["destroys_state"], true);
+    assert_eq!(recovery["requires_user_ok"], true);
+    assert_eq!(recovery["ladder"][0]["action"], "held_press");
+    assert_eq!(recovery["ladder"][0]["status"], "skipped");
+    assert_eq!(mock.remaining(), 0);
 }

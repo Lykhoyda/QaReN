@@ -490,25 +490,13 @@ pub fn failing_screenshot(ledger: &Ledger) -> Option<String> {
     failure.screenshot.as_deref().and_then(screenshot_link)
 }
 
-pub fn render_pr_comment(
-    input: &ReportInput<'_>,
-    refusal: Option<&Failure>,
-    pr: &PrRun<'_>,
-    machine: &MachineIdentity,
-) -> String {
-    let summary = summarize(input.ledger);
-    // Sanitize raw text before Markdown escaping, which would otherwise split `cdp_` or a path.
-    let clean = |raw: &str| prose(&public(&redact_machine(raw, machine)));
-    let short: String = pr.tested_sha.chars().take(7).collect();
-    let mut out = String::new();
-    out.push_str(&comment_marker(input.run_id));
-    out.push('\n');
-    let verdict = match input.ledger.verdict.as_str() {
+fn verdict_label(ledger: &Ledger, refusal: Option<&Failure>) -> String {
+    let verdict = match ledger.verdict.as_str() {
         "PASS" => "PASS",
         "FAIL" => "FAIL",
         _ => "REFUSED",
     };
-    out.push_str(verdict);
+    let mut out = verdict.to_string();
     if verdict == "REFUSED" {
         if let Some(failure) = refusal {
             if let Ok(serde_json::Value::String(code)) = serde_json::to_value(&failure.code) {
@@ -516,20 +504,12 @@ pub fn render_pr_comment(
             }
         }
     }
-    out.push_str(&reconnect_note(&summary));
-    out.push_str("\n\n");
-    out.push_str(&format!(
-        "Tested: commit `{}` on {}",
-        prose(&short),
-        prose(input.platform)
-    ));
-    if pr.tested_older_commit {
-        out.push_str(
-            " — this tested an older commit; the pull request moved on while the run was going",
-        );
-    }
-    out.push_str("\n\n");
-    out.push_str(&format!("{}\n\n", clean(&video_policy_text(input.ledger))));
+    out
+}
+
+// The comment's video paragraphs; the description reuses them so the two cannot disagree.
+fn video_lines(input: &ReportInput<'_>, pr: &PrRun<'_>, clean: &dyn Fn(&str) -> String) -> String {
+    let mut out = String::new();
     if let Some(reason) = video_withholding(input.ledger, pr.video_publication) {
         out.push_str(&format!("Video withheld: {}\n\n", clean(&reason)));
         if input.ledger.video_policy == crate::record::VideoPolicy::Undeclared {
@@ -545,7 +525,7 @@ pub fn render_pr_comment(
         }
     } else {
         match pr.video {
-            VideoStatus::Available => out.push_str("Video of the walk is attached below.\n\n"),
+            VideoStatus::Available => out.push_str(VIDEO_ATTACHED),
             VideoStatus::TooLarge => {
                 out.push_str("Video: the recording was too large to attach.\n\n")
             }
@@ -554,6 +534,102 @@ pub fn render_pr_comment(
             }
         }
     }
+    out
+}
+
+const VIDEO_ATTACHED: &str = "Video of the walk is attached below.\n\n";
+pub const PROOF_START: &str = "<!-- qaren-proof:start -->";
+pub const PROOF_END: &str = "<!-- qaren-proof:end -->";
+
+// Only the URLs bypass `clean`: `public` would rewrite a repository path that contains `transport`.
+pub fn render_pr_description(
+    input: &ReportInput<'_>,
+    refusal: Option<&Failure>,
+    pr: &PrRun<'_>,
+    machine: &MachineIdentity,
+    comment_url: &str,
+    video_url: Option<&str>,
+) -> String {
+    let clean = |raw: &str| prose(&public(&redact_machine(raw, machine)));
+    let short: String = pr.tested_sha.chars().take(7).collect();
+    let video = match video_url {
+        Some(url) => url.to_string(),
+        None => video_lines(input, pr, &clean)
+            .replace(VIDEO_ATTACHED, "Video: attached to the QaReN comment.\n\n")
+            .trim_end()
+            .to_string(),
+    };
+    format!(
+        "{PROOF_START}\n**QA proof** · {} · commit `{}` on {} · [QaReN comment]({comment_url})\n\n{video}\n\n{PROOF_END}\n",
+        verdict_label(input.ledger, refusal),
+        prose(&short),
+        clean(input.platform)
+    )
+}
+
+// Replaces the one QaReN section or appends one; every byte outside it is kept as read.
+pub fn splice_proof_section(body: &str, section: &str) -> Result<(String, bool), &'static str> {
+    let (mut starts, mut ends) = (Vec::new(), Vec::new());
+    let mut at = 0;
+    for line in body.split_inclusive('\n') {
+        let text = line.strip_suffix('\n').unwrap_or(line);
+        let text = text.strip_suffix('\r').unwrap_or(text);
+        if text == PROOF_START {
+            starts.push(at);
+        } else if text == PROOF_END {
+            ends.push((at, at + line.len()));
+        }
+        at += line.len();
+    }
+    match (starts.as_slice(), ends.as_slice()) {
+        ([], []) => {
+            let separator =
+                if body.is_empty() || body.ends_with("\n\n") || body.ends_with("\r\n\r\n") {
+                    ""
+                } else if body.ends_with('\n') {
+                    "\n"
+                } else {
+                    "\n\n"
+                };
+            Ok((format!("{body}{separator}{section}"), false))
+        }
+        ([start], [(end_line, end)]) if end_line > start => Ok((
+            format!("{}{section}{}", &body[..*start], &body[*end..]),
+            true,
+        )),
+        _ => Err("markers ambiguous"),
+    }
+}
+
+pub fn render_pr_comment(
+    input: &ReportInput<'_>,
+    refusal: Option<&Failure>,
+    pr: &PrRun<'_>,
+    machine: &MachineIdentity,
+) -> String {
+    let summary = summarize(input.ledger);
+    // Sanitize raw text before Markdown escaping, which would otherwise split `cdp_` or a path.
+    let clean = |raw: &str| prose(&public(&redact_machine(raw, machine)));
+    let short: String = pr.tested_sha.chars().take(7).collect();
+    let mut out = String::new();
+    out.push_str(&comment_marker(input.run_id));
+    out.push('\n');
+    out.push_str(&verdict_label(input.ledger, refusal));
+    out.push_str(&reconnect_note(&summary));
+    out.push_str("\n\n");
+    out.push_str(&format!(
+        "Tested: commit `{}` on {}",
+        prose(&short),
+        prose(input.platform)
+    ));
+    if pr.tested_older_commit {
+        out.push_str(
+            " — this tested an older commit; the pull request moved on while the run was going",
+        );
+    }
+    out.push_str("\n\n");
+    out.push_str(&format!("{}\n\n", clean(&video_policy_text(input.ledger))));
+    out.push_str(&video_lines(input, pr, &clean));
     out.push_str("**Plan**\n\n");
     for row in walked(input) {
         out.push_str(&row_line_with(row, &clean));
@@ -1032,5 +1108,161 @@ mod tests {
             serde_json::to_value(&ledger.steps[0]).unwrap()["method"],
             "set-handler"
         );
+    }
+
+    #[test]
+    fn splice_proof_section_appends_or_replaces_and_keeps_every_other_byte() {
+        let s = format!("{PROOF_START}\nnew\n{PROOF_END}\n");
+        let old = format!("{PROOF_START}\nold\n{PROOF_END}");
+        let appended = |body: &str, sep: &str| (format!("{body}{sep}{s}"), false);
+        for (body, sep) in [
+            ("", ""),
+            ("Author", "\n\n"),
+            ("Author\n", "\n"),
+            ("Author\n\n", ""),
+            ("Author\r\n", "\n"),
+            ("Author\r\n\r\n", ""),
+        ] {
+            assert_eq!(
+                splice_proof_section(body, &s),
+                Ok(appended(body, sep)),
+                "{body:?}"
+            );
+        }
+        for (prefix, suffix) in [
+            ("Author\n\n", "\n\nAfter\n"),
+            ("Author\n\n", "\n"),
+            ("Author\n\n", ""),
+            ("", "\nAfter"),
+        ] {
+            let body = format!("{prefix}{old}{suffix}");
+            // The end marker's own line terminator belongs to the section.
+            let kept = suffix.strip_prefix('\n').unwrap_or(suffix);
+            assert_eq!(
+                splice_proof_section(&body, &s),
+                Ok((format!("{prefix}{s}{kept}"), true)),
+                "{body:?}"
+            );
+        }
+        let crlf = format!("A\r\n{PROOF_START}\r\nold\r\n{PROOF_END}\r\nB\r\n");
+        assert_eq!(
+            splice_proof_section(&crlf, &s),
+            Ok((format!("A\r\n{s}B\r\n"), true))
+        );
+        for body in [
+            format!("A\n{PROOF_START}\nB\n"),
+            format!("A\n{PROOF_END}\nB\n"),
+            format!("{PROOF_START}\n{PROOF_START}\n{PROOF_END}\n"),
+            format!("{PROOF_START}\n{PROOF_END}\n{PROOF_END}\n"),
+            format!("{PROOF_END}\n{PROOF_START}\n"),
+            format!("{PROOF_START}\n{PROOF_END}\n{PROOF_START}\n{PROOF_END}\n"),
+        ] {
+            assert_eq!(
+                splice_proof_section(&body, &s),
+                Err("markers ambiguous"),
+                "{body:?}"
+            );
+        }
+        // A marker that is not a whole line is author text.
+        let inline = format!("see `{PROOF_START}`\n");
+        assert_eq!(
+            splice_proof_section(&inline, &s),
+            Ok(appended(&inline, "\n"))
+        );
+    }
+
+    #[test]
+    fn the_description_carries_the_bare_video_url_or_the_comments_own_sentence() {
+        let ledger: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "PASS", "path": "walk", "blocks": [], "steps": [],
+            "jev": { "calls": 0, "medianMs": 0 }, "llmTurns": 0, "escapes": 0, "recoveries": 0,
+        }))
+        .unwrap();
+        let render = |platform: &str,
+                      video: &VideoStatus,
+                      publication: &VideoPublication,
+                      comment: &str,
+                      url: Option<&str>| {
+            render_pr_description(
+                &ReportInput {
+                    run_id: "check-test",
+                    platform,
+                    app_id: "com.example",
+                    device: "test-device",
+                    ledger: &ledger,
+                },
+                None,
+                &PrRun {
+                    tested_sha: "abcdef1234567",
+                    tested_older_commit: false,
+                    video,
+                    screenshot: None,
+                    plan_sha256: "plan-hash",
+                    video_publication: publication,
+                },
+                &MachineIdentity::default(),
+                comment,
+                url,
+            )
+        };
+        let video_paragraph = |section: &str| {
+            assert!(
+                section.starts_with(&format!("{PROOF_START}\n")),
+                "{section}"
+            );
+            assert!(
+                section.ends_with(&format!("\n\n{PROOF_END}\n")),
+                "{section}"
+            );
+            let (_, rest) = section.split_once("\n\n").unwrap();
+            rest.strip_suffix(&format!("\n\n{PROOF_END}\n"))
+                .unwrap()
+                .to_string()
+        };
+        let comment = "https://github.com/o/r/pull/12#issuecomment-1";
+        let asset = "https://github.com/user-attachments/assets/v1";
+        let eligible = VideoPublication::Eligible;
+        let section = render(
+            "ios",
+            &VideoStatus::Available,
+            &eligible,
+            comment,
+            Some(asset),
+        );
+        assert_eq!(
+            section,
+            format!("{PROOF_START}\n**QA proof** · PASS · commit `abcdef1` on ios · [QaReN comment]({comment})\n\n{asset}\n\n{PROOF_END}\n")
+        );
+        for (video, publication, expected) in [
+            (
+                VideoStatus::Available,
+                VideoPublication::Eligible,
+                "Video: attached to the QaReN comment.",
+            ),
+            (
+                VideoStatus::TooLarge,
+                VideoPublication::Eligible,
+                "Video: the recording was too large to attach.",
+            ),
+            (
+                VideoStatus::Available,
+                VideoPublication::WithheldFill,
+                "Video withheld: ",
+            ),
+        ] {
+            let paragraph = video_paragraph(&render("ios", &video, &publication, comment, None));
+            assert!(paragraph.starts_with(expected), "{paragraph}");
+            assert!(!paragraph.contains("https://"), "{paragraph}");
+        }
+        let section = render(
+            "transport-ios",
+            &VideoStatus::TooLarge,
+            &eligible,
+            "https://github.com/o/transport/pull/12#issuecomment-1",
+            None,
+        );
+        assert!(section
+            .contains("[QaReN comment](https://github.com/o/transport/pull/12#issuecomment-1)"));
+        assert!(section.contains(" on connection-ios · "), "{section}");
     }
 }

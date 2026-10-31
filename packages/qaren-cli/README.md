@@ -734,9 +734,57 @@ may resolve live to that control: it agrees only when the same-type,
 same-label owning ancestor in the retained snapshot contains the label and the
 live frame equals that owner's frame; the tap goes to the unchanged point. A later
 screen change cannot turn a proven no-mutation refusal into a passing action.
-An unproven press passes only when the screen changes. That comparison includes
-each control's selected state (the iOS selected trait or Android accessibility
-selection), so becoming selected can prove a press.
+For an iOS native-backed button not reported selected, inside a scroll container
+no taller than three times the target's height and with a visible enabled button
+beside it on the same row, QaReN requires exactly one match for the target's
+identity, retaining its original reference and reporting selected after the press,
+while that identity remains on screen. Identity is kind plus testID when present,
+otherwise kind plus label on an element without a testID. If no element
+with that identity remains after the tap, the existing screen-change contract
+applies, allowing navigation or replacement to pass. The walker also accepts
+authoritative effect proof, but the current iOS press adapter does not supply it;
+selection readback is the supported evidence for these controls. After the first
+post-tap capture, if the identity remains without bound selection or effect proof,
+it takes one additional immediate read-only capture for delayed selection
+within the pre-tap observation's remaining lifetime: the earlier of 10 seconds
+after that capture completes and 32 seconds after it starts. Neither readback
+renews this window. While the identity remains, an unrelated screen change or
+pixel highlight cannot pass this candidate. Otherwise it refuses `PRESS_NOT_REGISTERED` (exit 4), with
+closed `pressEvidence` describing identity/selection uncertainty, outside-target
+semantic change, one or two capture attempts, and `heldPress: not_tried_unsafe`.
+
+This is a structural heuristic: capture does not prove horizontal scrolling,
+its responder behavior, or a selected-state contract. iOS omits false selected
+state, so an invisible successful toggle and a swallowed tap look alike. QaReN
+sends no second tap or held press that could undo the toggle. The refusal does
+not prove that the app callback failed. The fixed next action is
+`rerun_then_ask_app_team_expose_selection_in_row_list`. The refusal includes this
+guidance, with N post-tap observations and M milliseconds from tap dispatch to
+the final readback:
+
+> The tap did not change the control's selected state (N observations over M ms); the control sits in a row-shaped scrolling list, which can swallow synthetic taps. Next: re-run once; if it repeats on the same control, ask the app team to make the selection reachable for automated taps (for example by disabling the list's own scrolling for this set) or to expose the selected state another way.
+
+Its ordered
+recovery ladder skips held press as unsafe and app/Metro/runner restart, device
+restart, native rebuild, and cleanup/fresh prepare as unable to verify the
+selection contract. A capture fault instead makes those later recovery options
+available, restricted to owned resources and explicit approval for state loss,
+with `reprepare_after_capture_recovery` as the next action. The walker has exited,
+so no receipt offers another read within that walk's observation window.
+No recovery action runs automatically. Deadline or cancellation returns
+`rerun_when_ready`. If teardown retains resources, the receipt's top-level
+`qaren cleanup <run> --json` action takes precedence: it releases owned resources
+without performing the ladder's cleanup-and-fresh-prepare rung.
+Controls outside this heuristic keep the existing press contract;
+unselected controls outside it remain a verification gap.
+
+Outside that candidate, an unproven press passes when the screen changes. That comparison includes each
+control's selected state (the iOS selected trait or Android accessibility
+selection), so a selected state appearing or disappearing proves a press. With
+an unchanged comparison, a successful tap on a control that was already selected
+and is still selected under the same element reference afterwards passes with
+the evidence `already selected, no change`; the tap is still sent, and a refused or errored
+tap gets no such pass.
 When that comparison is unchanged and the runner explicitly reports the press
 unproven, QaReN can also verify a stable visible change within the tapped
 control's bounds, even when it exposes no accessibility state.
@@ -749,8 +797,9 @@ agree on both axes. Before comparing pixels, QaReN re-finds the same target in
 the post-tap tree and requires its frame and scale to match the original baseline.
 One screenshot immediately before the first dispatch adds about 200 ms per
 eligible press; that baseline is retained across the retry. Only an otherwise
-unproven press with an unchanged screen comparison takes two after-shots,
-200 ms apart. After both shots, QaReN reads the tree again and re-finds the target;
+unproven press with an unchanged screen comparison that has not passed as already
+selected takes two after-shots, 200 ms apart. After both shots, QaReN reads the
+tree again and re-finds the target;
 a missing or ineligible target, or any change to its scale, x, y, width or height,
 withholds pixel proof, including a delayed reflow after the post-tap tree capture.
 The two control crops must agree and differ sufficiently from the
@@ -765,10 +814,12 @@ inputs, no metadata-only capture and no active screenshot withholding. They use
 temporary files under the run directory that are removed after reading, and are
 not retained with ledger screenshots. Missing, failed or unsupported captures,
 ineligible targets and insufficient pixel change provide no proof; the existing
-retry and failure behavior remains. A press that leaves the screen unchanged
-still fails, naming whether the target stayed selected.
+retry and failure behavior remains. A press without pixel proof that leaves a
+control not reported selected unchanged still fails, naming whether the target
+was reported selected before and after.
 
-Before its one retry, the walker re-captures until the same target (resolved
+For presses outside the selection heuristic, before its one retry the walker
+re-captures until the same target (resolved
 through the same exact-identity rules as the step) holds one native frame
 across two captures, within the
 existing settle readbacks, and the retry dispatches only that target at its
@@ -1409,14 +1460,57 @@ covered rows and other scroll origins still get one clearance swipe. See the
 [scroll-until direction regressions](../qaren-core/test/unit/qa/scroll-until-direction.test.ts).
 
 Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`
-when the final evidence remains unsure. A quoted wait with at least two definite
-absence observations sharing one screen signature fails at its deadline with
+when the final evidence remains unsure. Initial captures, polling captures and
+evidence-refresh captures, including a refresh during the first visibility check,
+share the wait's deadline for both quoted and phrase targets. A wait whose first
+capture never completes fails with `TARGET_WAIT_TIMEOUT` and
+`cause=capture-deadline`, with `next_action=inspect_capture_health`. If a later
+refresh reaches the deadline, the wait ends
+from its completed observations; a phrase wait whose visibility remains undecided
+ends with `VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED`.
+A quoted wait with at least two definite
+absence observations sharing one screen signature normally fails at its deadline with
 “did not appear”; it does not report expired evidence for that stable absence.
 For a quoted value that is not a stored text selector, the failure adds why from
 identifiers and frames only: no captured element carries the identifier, several
 do, or the one that does is React-only, offscreen or has its centre covered.
-Either unmet ending first gets [step recovery](#step-recovery), so a quoted wait
-behind a blocking screen or system dialog runs once more with its full budget.
+When those stable absence observations identify one React-only match, the quoted
+wait fails with `TARGET_REACT_ONLY` (`PLAN_STEP_FAILED`, exit 1). Its detail uses
+identifiers, kinds and frames, without labels, placeholders or field values, to
+report the React layout against its viewport, accessible and nearest native
+ancestors, any scroll attempt and a next step. Unavailable layout is reported as
+`none`; React mounting alone never proves native visibility. Wait on a visible
+native wrapper or on-screen text, expose the field to accessibility, or explicitly
+scroll until it is visible before re-running.
+After two ordinary absence observations of that React-only match on one unchanged
+screen, the wait makes exactly one presence capture to read React's layout, bounded
+by the wait's remaining time; later polls stay ordinary, and a recovery retry does
+not repeat that read. If a React-only match was observed but never classified,
+including when the layout read or a later capture is cut off at the deadline,
+the wait fails with `TARGET_REACT_ONLY` reporting
+`layout=unavailable`, a `cause` (`acquisition-deadline` or `wait-deadline`), the
+last capture stage, observation and presence-read counts, timings, and
+`next_action=inspect_capture_health` or `inspect_wait_target`, with no recovery,
+screenshot or further capture. Neither this ending nor `TARGET_WAIT_TIMEOUT`
+marks the plan step itself as wrong.
+On iOS, that complete React layout and native presence evidence can end the wait early
+when the absence observations on one unchanged app screen show the
+field wholly inside its viewport under an accessible ancestor. The viewport is
+the nearest native scroll container clipped by its ancestors, or the native
+window when there is no scroll container. A field wholly above or below that
+clipped viewport can instead receive one scroll
+within the wait's original budget, only when the safe drag band belongs to that
+container. Scrolling does not renew or shorten the wait's budget; a field that
+remains below or above the viewport keeps polling until the deadline, and its final
+detail labels the layout `react layout before scroll`. A later
+visible native match passes normally. Missing or partially
+clipped layout preserves polling until the deadline; stored-ID replay and block
+start preconditions do not use this early failure or automatic scroll.
+After a classified React-only miss, [step recovery](#step-recovery) may capture
+only within the wait's remaining time. If that capture reaches the deadline, or
+no time remains, the React-only failure reason stands. Other eligible unmet quoted
+waits retain ordinary recovery. When recovery clears a blocking screen or system
+dialog, the wait runs once more with its full budget.
 Scroll-until-text uses the same visibility verdict
 within its scroll and time budgets. Literal checks re-ask from a fresh capture
 and use `CHECK_UNSURE` if uncertainty remains. This is distinct from acquisition
@@ -2724,6 +2818,9 @@ nested in its repository they do not make the next run's candidate dirty.
 
 ### Step recovery
 
+Selection-proof refusals bypass step recovery; follow the
+[press evidence contract](#occluded-taps-and-focus) before retrying.
+
 An observed React Native red box fails the current step immediately, including
 during login replay, with error-screen evidence in `failure.seen` projected through
 the [input value masking contract](#input-value-masking).
@@ -2732,7 +2829,8 @@ and never triggers recovery.
 
 An action without success evidence after its one retry, a step target that
 does not resolve, a definite failed check, an unmet quoted wait, or a phrase check still
-unsure after its re-ask gets a deterministic recovery, then the step runs once more from a fresh
+unsure after its re-ask gets a deterministic recovery, subject to the
+[quoted-wait deadline limits](#plan-checks-and-screen-evidence), then the step runs once more from a fresh
 capture. If it fails again, a second recovery may decline a different system prompt or app
 interruption once the first is proven gone. An app interruption with the same decline label
 fails with `the app interruption did not disappear`; a different kind of interruption or
@@ -3251,6 +3349,26 @@ ignores ASCII case and rejects matches next to ASCII letters, digits or hyphens;
 a recorded port number also masks the same number elsewhere in the text. It then
 removes the `needs-qa` label only if the current head is the tested head; otherwise
 `publication.json` and the receipt record `retained-head-changed`.
+
+With `proofInDescription: true` in the app config when `qaren pr` runs (the choice is
+persisted in `pr.json`; publish never re-reads the config), `qaren publish` also writes one
+section between `<!-- qaren-proof:start -->` and `<!-- qaren-proof:end -->` lines into the
+pull request description: the verdict, the tested commit, a link to the comment, and the
+video. The video is the asset the comment upload already produced, used only when the comment
+attached it under the [video publication rules](#video-publication); a withheld or missing
+video shows the comment's own video sentence and no URL. Publishing a new `qaren pr` run
+replaces an existing section instead of adding one; re-publishing a run whose section was
+already written leaves it unchanged. Text outside the markers is kept byte for byte relative to the body
+publish last read; publish makes up to three reads and writes only after two consecutive
+reads agree. GitHub offers no conditional edit, so a human edit landing between that read and the write
+can still be lost. The comment is always posted first, and a skipped description leaves the
+receipt `Published` with `outcomes.description` naming why. Head-drift skips are final when
+the head is neither the tested commit nor this run's verified saved-block writeback commit.
+If the description kept changing, GitHub refused an edit or read, or the comment could not
+be read back, re-run `qaren publish` to retry the description. The ambiguous-marker
+skip is final for that run: fix the marker pair so one QaReN start line precedes one end line,
+then publish from a new `qaren pr` run; this run's comment already holds the proof and video. Upgrade every
+CLI/CI runtime before adding the key; older versions refuse it.
 
 A saved block is published only verbatim, and only when the walk met the strict
 [video publication rules](#video-publication) and the

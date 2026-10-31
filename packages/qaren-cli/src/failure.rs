@@ -64,6 +64,7 @@ pub enum FailureCode {
     PlanStepFailed,
     MetroOriginMismatch,
     CoreRefused,
+    PressNotRegistered,
     BlockStartMissing,
     JevUnreachable,
     JevAuthFailed,
@@ -103,6 +104,7 @@ impl FailureCode {
                 | FailureCode::DiskBudgetExceeded
                 | FailureCode::PlatformUnsupported
                 | FailureCode::MetroOriginMismatch
+                | FailureCode::PressNotRegistered
                 | FailureCode::CoreRefused
                 | FailureCode::BlockStartMissing
                 | FailureCode::JevUnreachable
@@ -123,7 +125,23 @@ pub struct Failure {
     pub next_action: OutputText,
     // Boxed so every Result<_, Failure> keeps its size.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recovery: Option<Box<Recovery>>,
+    pub recovery: Option<Box<FailureRecovery>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FailureRecovery {
+    Build(Recovery),
+    Press(PressRecovery),
+}
+
+impl FailureRecovery {
+    pub fn with_own_cleanup(self, run_id: &str) -> Self {
+        match self {
+            Self::Build(recovery) => Self::Build(recovery.with_own_cleanup(run_id)),
+            Self::Press(recovery) => Self::Press(recovery),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -393,8 +411,15 @@ impl Failure {
     }
 
     pub fn with_recovery(mut self, reason: impl Into<Recovery>) -> Self {
-        self.recovery = Some(Box::new(Recovery::new(reason)));
+        self.recovery = Some(Box::new(FailureRecovery::Build(Recovery::new(reason))));
         self
+    }
+
+    pub fn build_recovery(&self) -> Option<&Recovery> {
+        match self.recovery.as_deref() {
+            Some(FailureRecovery::Build(recovery)) => Some(recovery),
+            _ => None,
+        }
     }
 
     pub fn cancelled(phase: &str, reason: &str) -> Self {
@@ -411,6 +436,123 @@ impl Failure {
             .into_iter()
             .map(|line| OutputText::from_output(&line))
             .collect();
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PressRecovery {
+    pub next_rung: Option<u8>,
+    pub action: PressRecoveryAction,
+    pub destroys_state: bool,
+    pub requires_user_ok: bool,
+    pub ladder: Vec<PressRecoveryRung>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PressRecoveryAction {
+    RerunThenAskAppTeamExposeSelectionInRowList,
+    ReprepareAfterCaptureRecovery,
+    RerunWhenReady,
+    HeldPress,
+    RestartAppMetroRunner,
+    RestartDevice,
+    RebuildNative,
+    CleanupAndFreshPrepare,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PressRecoveryStatus {
+    Skipped,
+    Available,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PressRecoveryReason {
+    RetrySafeSemanticsUnavailable,
+    AppSelectionContractUnchanged,
+    CaptureRecoveryOwnResourcesOnly,
+    ReadbackExhausted,
+    Cancelled,
+    NotApplicable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PressRecoveryRung {
+    pub rung: u8,
+    pub action: PressRecoveryAction,
+    pub status: PressRecoveryStatus,
+    pub reason: PressRecoveryReason,
+    pub destroys_state: bool,
+    pub requires_user_ok: bool,
+}
+
+impl Failure {
+    pub fn with_press_recovery(mut self, code: &str) -> Self {
+        use PressRecoveryAction::*;
+        use PressRecoveryReason::*;
+        use PressRecoveryStatus::*;
+        let capture = code == "NATIVE_CAPTURE_UNAVAILABLE";
+        let selection = code == "PRESS_NOT_REGISTERED";
+        let action = if selection {
+            RerunThenAskAppTeamExposeSelectionInRowList
+        } else if capture {
+            ReprepareAfterCaptureRecovery
+        } else {
+            RerunWhenReady
+        };
+        self.next_action = OutputText::from_output(match action {
+            RerunThenAskAppTeamExposeSelectionInRowList => {
+                "rerun_then_ask_app_team_expose_selection_in_row_list"
+            }
+            ReprepareAfterCaptureRecovery => "reprepare_after_capture_recovery",
+            _ => "rerun_when_ready",
+        });
+        self.recovery = Some(Box::new(FailureRecovery::Press(PressRecovery {
+            next_rung: if capture { Some(2) } else { None },
+            action,
+            destroys_state: capture,
+            requires_user_ok: capture,
+            ladder: [
+                HeldPress,
+                RestartAppMetroRunner,
+                RestartDevice,
+                RebuildNative,
+                CleanupAndFreshPrepare,
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, action)| PressRecoveryRung {
+                rung: index as u8 + 1,
+                action,
+                status: if capture && index > 0 {
+                    Available
+                } else {
+                    Skipped
+                },
+                reason: if index == 0 {
+                    if selection || capture {
+                        RetrySafeSemanticsUnavailable
+                    } else if code == "RUN_CANCELLED" {
+                        Cancelled
+                    } else {
+                        ReadbackExhausted
+                    }
+                } else if capture {
+                    CaptureRecoveryOwnResourcesOnly
+                } else if selection {
+                    AppSelectionContractUnchanged
+                } else {
+                    NotApplicable
+                },
+                destroys_state: index > 0,
+                requires_user_ok: index > 0,
+            })
+            .collect(),
+        })));
         self
     }
 }

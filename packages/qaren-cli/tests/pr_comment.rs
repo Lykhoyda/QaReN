@@ -225,11 +225,7 @@ fn non_strict_secret_causes_get_specific_wording_and_eligible_inputs_get_the_esc
         assert!(local.contains("Video policy: non-strict (declared in .qaren/target.yaml)."));
         let hint = "If this value is test data, declare the input (test-pii) to allow the video.";
         for output in [&body, &local] {
-            assert_eq!(
-                output.contains(hint),
-                source == Some("input"),
-                "{output}"
-            );
+            assert_eq!(output.contains(hint), source == Some("input"), "{output}");
             assert!(output.contains("Video withheld:"), "{output}");
         }
         for policy in [VideoPolicy::Strict, VideoPolicy::Undeclared] {

@@ -9,7 +9,7 @@
     {
       "name": "qaren",
       "description": "QaReN: a QA companion for React Native harnesses — walks a plan on the simulator or emulator, records the run, and reports PASS/FAIL with video.",
-      "version": "2.0.3",
+      "version": "2.0.4",
       "source": "./packages/qaren-plugin",
       "category": "mobile-development",
       "homepage": "https://github.com/Lykhoyda/QaReN"

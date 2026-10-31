@@ -164,6 +164,68 @@ pub fn comment_create(
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrBody {
+    pub body: String,
+    pub head_ref_oid: String,
+}
+
+// The author's text is written back, so it is parsed as gh printed it, never redacted or trimmed.
+pub fn pr_body(runner: &mut dyn Runner, pr: &PrInfo, cwd: &Path) -> Result<PrBody, Failure> {
+    let output = runner.run(
+        &CmdSpec::new(
+            "gh-pr-view",
+            "gh",
+            &[
+                "pr",
+                "view",
+                &pr.number.to_string(),
+                "-R",
+                &pr.repo_or_fail()?,
+                "--json",
+                "body,headRefOid",
+            ],
+            60,
+        )
+        .cwd(cwd),
+    );
+    if !output.ok() {
+        return Err(gh_failure("pr view", output.summary()));
+    }
+    serde_json::from_str(&output.stdout)
+        .map_err(|e| gh_failure("pr view", format!("unreadable JSON: {e}")))
+}
+
+pub fn edit_body(
+    runner: &mut dyn Runner,
+    pr: &PrInfo,
+    body_file: &Path,
+    cwd: &Path,
+) -> Result<(), Failure> {
+    let output = runner.run(
+        &CmdSpec::new(
+            "gh-pr-edit",
+            "gh",
+            &[
+                "pr",
+                "edit",
+                &pr.number.to_string(),
+                "-R",
+                &pr.repo_or_fail()?,
+                "--body-file",
+                &body_file.to_string_lossy(),
+            ],
+            60,
+        )
+        .cwd(cwd),
+    );
+    if !output.ok() {
+        return Err(gh_failure("pr edit", output.summary()));
+    }
+    Ok(())
+}
+
 // A label the PR does not carry needs no call; Ok(false) says nothing was removed.
 pub fn remove_label(
     runner: &mut dyn Runner,
@@ -372,5 +434,73 @@ mod tests {
         pr.labels.clear();
         assert!(!remove_label(&mut mock, &pr, NEEDS_QA, Path::new("/repo")).unwrap());
         assert_eq!(mock.calls.len(), 1);
+    }
+
+    #[test]
+    fn pr_body_reads_exact_bytes() {
+        let mut mock = MockRunner::new();
+        let body = "Author\r\n\r\n- item ghp_notatoken\n\n";
+        mock.expect_run(
+            "gh pr view",
+            CmdOutput::success(
+                &serde_json::json!({"body": body, "headRefOid": "a".repeat(40)}).to_string(),
+            ),
+        );
+        let read = pr_body(&mut mock, &pr(&[]), Path::new("/repo")).unwrap();
+        assert_eq!(
+            mock.calls[0].args,
+            [
+                "pr",
+                "view",
+                "12",
+                "-R",
+                "github.com/o/r",
+                "--json",
+                "body,headRefOid"
+            ]
+        );
+        assert_eq!(read.body, body);
+        assert_eq!(read.head_ref_oid, "a".repeat(40));
+        mock.expect_run("gh pr view", CmdOutput::failed(1, "denied"));
+        assert_eq!(
+            pr_body(&mut mock, &pr(&[]), Path::new("/repo"))
+                .unwrap_err()
+                .code,
+            FailureCode::PrUnavailable
+        );
+    }
+
+    #[test]
+    fn edit_body_passes_the_body_file() {
+        let mut mock = MockRunner::new();
+        mock.expect_run("gh pr edit", CmdOutput::success(""));
+        edit_body(
+            &mut mock,
+            &pr(&[]),
+            Path::new("description.md"),
+            Path::new("/run"),
+        )
+        .unwrap();
+        assert_eq!(
+            mock.calls[0].args,
+            [
+                "pr",
+                "edit",
+                "12",
+                "-R",
+                "github.com/o/r",
+                "--body-file",
+                "description.md"
+            ]
+        );
+        assert_eq!(mock.calls[0].cwd.as_deref(), Some(Path::new("/run")));
+        mock.expect_run("gh pr edit", CmdOutput::failed(1, "denied"));
+        assert!(edit_body(
+            &mut mock,
+            &pr(&[]),
+            Path::new("description.md"),
+            Path::new("/run")
+        )
+        .is_err());
     }
 }
