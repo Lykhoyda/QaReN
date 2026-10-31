@@ -99,7 +99,7 @@ test('gh-383: runFlowParked passes deviceId to stopFastRunner so iOS park works 
 test('gh-383: runNative Android pre-flight failure consumes (discards) the pending upgrade note', () => {
   const preflight = wrapperSrc.slice(
     wrapperSrc.indexOf('await startAndroidRunner(serial, appId);'),
-    wrapperSrc.indexOf('rn-android-runner did not start'),
+    wrapperSrc.indexOf('qaren-android-runner did not start'),
   );
   assert.ok(preflight.length > 0, 'pre-flight catch must be locatable');
   assert.ok(

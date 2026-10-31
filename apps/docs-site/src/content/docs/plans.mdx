@@ -66,6 +66,9 @@ verification and the `(any method)` label, see the authoritative
 A dialog step needs exactly one unconditional
 action: `Accept the dialog if it appears` and `Do not dismiss the alert` refuse.
 
+For real-tap verification, including already-selected controls and selection toggles, see the
+[press evidence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#occluded-taps-and-focus).
+
 ## Runtime inputs
 
 A fill can take its value from the environment instead of the plan, so a login block with
@@ -177,7 +180,9 @@ Jev judges it against the captured screen.
 
 A failing check or an unmet quoted wait can enter [step recovery](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#step-recovery)
 before failing the plan. A literal check that still cannot be decided after a fresh
-capture ends `CHECK_UNSURE` if recovery cannot resolve it.
+capture ends `CHECK_UNSURE` if recovery cannot resolve it. For quoted-wait deadline
+limits and fields mounted in React but absent from the native screen, see the CLI reference's
+[wait evidence and recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence).
 
 ## When the plan needs `TYPESAFE_API_KEY`
 

@@ -42,7 +42,7 @@ export function expectedRunnerAssets(version) {
   assertVersion(version);
   return {
     ios: `qaren-ios-runner-${version}-sim.zip`,
-    android: `rn-android-runner-${version}.zip`,
+    android: `qaren-android-runner-${version}.zip`,
     qaren: Object.fromEntries(
       QAREN_PLATFORMS.map((platform) => [platform, `qaren-${version}-${platform}.tar.gz`]),
     ),

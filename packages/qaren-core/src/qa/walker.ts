@@ -1,3 +1,11 @@
+import {
+  selectionPressCandidate,
+  outsideTargetChange,
+  PRESS_NOT_REGISTERED_REASON,
+  PRESS_OUTSIDE_CHANGE_REASON,
+  selectionPressGuidance,
+  type PressEvidence,
+} from './selection-press.js';
 import { cropPng, stablePixelChange, type PixelCrop, type PixelScale } from './tap-pixels.js';
 import {
   applyLabelProvenance,
@@ -29,6 +37,7 @@ import {
   applicationFrame,
   isNativeInput,
   describe,
+  reactOnlyFactsOf,
 } from './screen.js';
 import {
   type Resolution,
@@ -55,6 +64,10 @@ import {
   aggregateTargetVisible,
   targetNeedsPresence,
   presenceMiss,
+  reactOnlyMiss,
+  reactOnlyTarget,
+  reactOnlyTimeout,
+  reactOnlyViewport,
   visibleSelector,
 } from './resolve.js';
 import { literalEvidence, type LiteralNearMiss } from './evidence.js';
@@ -109,6 +122,7 @@ import { renderReason, segments, type Reason } from './untrusted.js';
 import { NativeSnapshotIncomplete, PrivateInputCaptureError } from './private-input.js';
 import {
   AppProcessGoneError,
+  CaptureDeadline,
   emitCaptureDiagnostics,
   emitQuotedTargetDiagnostic,
   NativeCaptureError,
@@ -122,6 +136,7 @@ import {
   admitObservation,
   observationDeadline,
   observationUsable,
+  NATIVE_PRESENCE_BUDGET_MS,
   PHRASE_WAIT_BUDGET_MS,
   type ObservationTiming,
   observeTiming,
@@ -170,6 +185,8 @@ export interface ActResult {
 }
 
 export interface WalkerDeps {
+  platform?: BlockPlatform;
+  pressReadback?(evidence: PressEvidence | undefined): void;
   readLabelProvenance?(
     refs: string[],
     deadline: number,
@@ -187,6 +204,8 @@ export interface WalkerDeps {
     observation?: number;
     platformPresence?: boolean;
     timing?: TimingObserver;
+    // A wait's remaining time: the capture rejects with CaptureDeadline once it is spent.
+    budgetMs?: number;
   }): Promise<Screen>;
   press(ref: string, context: QaDispatchContext): Promise<ActResult>;
   fill(
@@ -329,6 +348,7 @@ export interface WalkOutcome {
   rows: WalkRow[];
   failure?: WalkFailure;
   refusal?: { code: string; message: string };
+  pressEvidence?: PressEvidence;
   // Replay only: the line whose stored selector failed before mutation authorization.
   miss?: number;
   // Fill lines that typed into a private input; their block is never saved.
@@ -512,9 +532,14 @@ async function walkBlockScoped(
   let fillHandlerAttempted = false;
   let fillHandlerRefused = false;
   let itemStartedAt = 0;
+  // A quoted wait's one layout read and one scroll, which a recovery retry does not refund.
+  let enrichment: { at: number; budget: number; waited?: number } | undefined;
+  let waitAttempt: 'scroll' | 'none' = 'none';
   let latestObservation = 0;
   let recoveries = 0;
   let metadataOnly = false;
+  // The capture stage last started, which a capture cut off at a wait deadline was in.
+  let captureStage: string | undefined;
   const captureScreen: WalkerDeps['captureScreen'] = async (options) => {
     const screen = await deps.captureScreen(options);
     const react = screen.reactConnection ?? screen.captureCoverage?.react;
@@ -563,9 +588,11 @@ async function walkBlockScoped(
     assertion = false,
     recovery = false,
     purpose: 'resolve' | 'provenance' = 'resolve',
+    until?: number,
   ): Promise<Observation> => {
     assertActive();
     cached = undefined;
+    captureStage = undefined;
     const target =
       step && ('target' in step ? step.target : step.kind === 'scroll' ? step.until : undefined);
     const requirePresence = assertion || (!!target && target.quoted === undefined);
@@ -575,7 +602,10 @@ async function walkBlockScoped(
     latestObservation = id;
     const captureLine = line;
     const timingObserver: TimingObserver | undefined = deps.timing
-      ? (event) => observeTiming(deps.timing, { ...event, line: captureLine, observation: id })
+      ? (event) => {
+          if (event.edge === 'start') captureStage = event.stage;
+          observeTiming(deps.timing, { ...event, line: captureLine, observation: id });
+        }
       : undefined;
     observeTiming(timingObserver, {
       stage: 'capture',
@@ -591,6 +621,7 @@ async function walkBlockScoped(
           observation: id,
           ...(platformPresence ? { platformPresence: true } : {}),
           ...(timingObserver ? { timing: timingObserver } : {}),
+          ...(until === undefined ? {} : { budgetMs: Math.max(0, until - startedAt) }),
         });
       } catch (error) {
         if (isAbort(error)) throw error;
@@ -1307,7 +1338,10 @@ async function walkBlockScoped(
           metric('refresh', observation);
           await pause(Math.min(WAIT_POLL_MS, Math.max(0, deadline - deps.now())));
           if (deps.now() >= deadline) throw new EvidenceExpired(true);
-          observation = await capture(item);
+          observation =
+            item.kind === 'wait'
+              ? await captureOnce(item, false, false, 'resolve', deadline)
+              : await capture(item);
           decision = undefined;
           continue;
         }
@@ -1779,6 +1813,7 @@ async function walkBlockScoped(
     item: Item,
     attempt: number,
     reason: string,
+    until?: number,
   ): Promise<'retry' | WalkOutcome | undefined> => {
     const first = recovered.get(item);
     if (opts.recover === false || !deps.hideDevMenu) return undefined;
@@ -1786,8 +1821,13 @@ async function walkBlockScoped(
     loginReplayed = false;
     let fresh: Observation;
     try {
-      fresh = await capture(undefined, true, true);
+      // A wait's recovery capture shares the wait's deadline; out of time, the wait's reason stands.
+      fresh =
+        until === undefined
+          ? await capture(undefined, true, true)
+          : await captureOnce(undefined, true, true, 'resolve', until);
     } catch (error) {
+      if (error instanceof CaptureDeadline) return undefined;
       if (
         !deps.presenceUnavailable ||
         !(error instanceof ResolutionError) ||
@@ -2032,6 +2072,8 @@ async function walkBlockScoped(
     fillMismatch = undefined;
     fillHandlerAttempted = false;
     fillHandlerRefused = false;
+    enrichment = undefined;
+    waitAttempt = 'none';
     itemStartedAt = deps.now();
     let pixelBaselineTaken = false;
     let pixelBaseline:
@@ -2113,14 +2155,30 @@ async function walkBlockScoped(
         if (item.kind === 'wait') {
           resolvedBy = item.target.quoted === undefined ? 'jev' : resolvedBy;
           const budget = item.target.quoted === undefined ? PHRASE_WAIT_BUDGET_MS : WAIT_BUDGET_MS;
-          const deadline = deps.now() + budget;
+          const waitStarted = deps.now();
+          const deadline = waitStarted + budget;
           const held = cached?.item === item ? cached : undefined;
-          let observation = held?.observation ?? (await capture(item));
+          let observation: Observation;
+          try {
+            observation =
+              held?.observation ?? (await captureOnce(item, false, false, 'resolve', deadline));
+          } catch (error) {
+            if (!(error instanceof CaptureDeadline)) throw error;
+            return failed(
+              item,
+              1,
+              `TARGET_WAIT_TIMEOUT: target was not observed within ${budget}ms; no capture completed before the wait deadline; cause=capture-deadline; elapsed_ms=${Math.round(deps.now() - waitStarted)}; next_action=inspect_capture_health`,
+              { elements: [], visibleText: [], front: 'app' },
+              undefined,
+            );
+          }
           cached = undefined;
           const probe = visibilityProbe(item, deadline);
           let replayMiss: ResolutionError | undefined;
           let unsure = false;
           let absent = 0;
+          let observations = 0;
+          let reactOnlyObservations = 0;
           const absentScreens = new Set<string>();
           const visible = async (s: Observation, initial?: ScreenDecision): Promise<boolean> => {
             let observed;
@@ -2140,23 +2198,164 @@ async function walkBlockScoped(
             }
             observation = observed.observation;
             unsure = observed.unsure === true;
-            if (!observed.found && !unsure && item.target.quoted !== undefined) {
+            observations += 1;
+            if (!observed.found && reactOnlyTarget(item.target, observation.screen))
+              reactOnlyObservations += 1;
+            // A presence capture can join the same screen differently: only cheap ones build the history.
+            if (
+              !observed.found &&
+              !unsure &&
+              item.target.quoted !== undefined &&
+              !observation.platformPresence
+            ) {
               absent += 1;
               absentScreens.add(screenSignature(observation.screen));
             }
             return observed.found;
           };
-          let found = await visible(observation, held?.decision);
+          // The one presence capture that reads React's layout, once a lone React-only identity holds still.
+          let facts: Observation | undefined;
+          let expired = false;
+          let fresh = false;
+          let scrolled:
+            | { before: Screen; signature: string; container: Element; act: ActResult }
+            | undefined;
+          let found = false;
+          try {
+            found = await visible(observation, held?.decision);
+          } catch (error) {
+            // The first check's evidence refresh is bounded like every poll; judge what was observed.
+            if (!(error instanceof CaptureDeadline)) throw error;
+            expired = true;
+          }
           while (!found && deps.now() < deadline) {
+            const lone = fresh ? reactOnlyTarget(item.target, observation.screen) : undefined;
+            fresh = false;
+            const proven =
+              lone &&
+              item.target.exact !== 'id' &&
+              !item.precondition &&
+              observation.screen.front === 'app' &&
+              (observation.screen.captureCoverage?.native ??
+                observation.screen.coverage?.native) === 'complete' &&
+              absent >= 2 &&
+              absentScreens.size === 1;
+            const view = proven ? reactOnlyViewport(lone) : undefined;
+            if (view?.where === 'inside' && reactOnlyFactsOf(lone!)?.accessibleAncestor) {
+              const reason = reactOnlyMiss(item.target, observation.screen, absent, waitAttempt)!;
+              const recovering = await recovery(item, 1, reason, deadline);
+              if (recovering === 'retry') continue attempts;
+              if (recovering) return recovering;
+              return judged(
+                failed(item, 1, reason, observation.screen, await shoot(item)),
+                observation.screen,
+              );
+            }
+            if (
+              waitAttempt === 'none' &&
+              view?.container &&
+              (view.where === 'below' || view.where === 'above') &&
+              // The swipe band must lie in the field's own scroll container.
+              scrollUntilContainer(item.target, observation.screen) === view.container
+            ) {
+              const before = observation.screen;
+              let act: ActResult | undefined;
+              try {
+                act = await mutate(
+                  item,
+                  observation,
+                  (context) =>
+                    deps.scroll(
+                      view.where === 'below' ? 'down' : 'up',
+                      context,
+                      undefined,
+                      scrollUntilBand(item.target, before),
+                    ),
+                  deadline,
+                );
+              } catch (error) {
+                // Stale evidence dispatched nothing; the next poll re-evaluates on a fresh capture.
+                if (isAbort(error) || !(error instanceof EvidenceExpired)) throw error;
+                if (error.itemExpired) break;
+              }
+              if (act) {
+                waitAttempt = 'scroll';
+                sequence.momentum = true;
+                // Movement is judged cheap capture against cheap capture, never against the layout read.
+                scrolled = {
+                  before,
+                  signature: [...absentScreens][0],
+                  container: view.container,
+                  act,
+                };
+                // The screen this scroll moves is expected to change; count observations afresh.
+                absent = 0;
+                absentScreens.clear();
+              }
+            }
+            const enrich =
+              !enrichment &&
+              !observation.platformPresence &&
+              !!reactOnlyTarget(item.target, observation.screen) &&
+              absent >= 2 &&
+              absentScreens.size === 1;
             await pause(Math.min(WAIT_POLL_MS, deadline - deps.now()));
             if (deps.now() >= deadline) break;
+            if (enrich)
+              enrichment = {
+                at: deps.now(),
+                budget: Math.max(
+                  1,
+                  Math.min(NATIVE_PRESENCE_BUDGET_MS, Math.floor(deadline - deps.now())),
+                ),
+              };
             try {
-              found = await visible(await capture(item));
+              const next = await captureOnce(
+                item,
+                false,
+                false,
+                enrich ? 'provenance' : 'resolve',
+                deadline,
+              );
+              const navigation =
+                scrolled &&
+                scrollNavigationChange(scrolled.before, next.screen, scrolled.container);
+              if (navigation)
+                throw new ResolutionError({ refuse: 'SCROLL_NAVIGATED', reason: navigation });
+              found = await visible(next);
+              if (enrich && observation.platformPresence) facts = observation;
+              fresh = facts === observation;
             } catch (error) {
-              // A capture finishing past the deadline is not evidence; judge the ones already made.
-              if (!(error instanceof EvidenceExpired) || !error.itemExpired) throw error;
+              if (enrich) enrichment!.waited = deps.now() - enrichment!.at;
+              // A capture cut off or finishing past the deadline is not evidence; judge the ones already made.
+              const late =
+                error instanceof CaptureDeadline ||
+                (error instanceof EvidenceExpired && error.itemExpired);
+              // A refused layout read leaves only missing facts: the cheap polls go on.
+              const refused =
+                enrich &&
+                error instanceof ResolutionError &&
+                error.code === 'SCREEN_EVIDENCE_INCOMPLETE';
+              if (!late && !refused) throw error;
+              if (refused && deps.now() < deadline) continue;
+              expired = enrich || error instanceof CaptureDeadline;
               break;
             }
+            if (enrich) enrichment!.waited = deps.now() - enrichment!.at;
+            if (
+              !found &&
+              scrolled &&
+              !scrolled.act.ok &&
+              screenSignature(observation.screen) === scrolled.signature
+            )
+              return failed(
+                item,
+                1,
+                scrolled.act.error ?? 'scroll was not dispatched',
+                observation.screen,
+                await shoot(item),
+              );
+            scrolled = undefined;
           }
           if (!found) {
             if (unsure) throw unresolvedText(item.target.quoted!);
@@ -2181,14 +2380,48 @@ async function walkBlockScoped(
             if (replayMiss) throw replayMiss;
             // Repeated literal absence on one unchanged screen is an observed result, not uncertainty.
             const unchanged = absent >= 2 && absentScreens.size === 1;
-            const reason = unchanged
-              ? `"${item.target.quoted}" did not appear within ${budget / 1000}s; the screen did not change across ${absent} observations`
-              : ITEM_DEADLINE_EXCEEDED;
-            const recovering = await recovery(item, 1, reason);
+            const reactOnly =
+              unchanged && facts && reactOnlyMiss(item.target, facts.screen, absent, waitAttempt);
+            // Seen React-only but never classified: report what was observed, with no further capture or media.
+            if (!reactOnly && reactOnlyObservations > 0)
+              return failed(
+                item,
+                1,
+                reactOnlyTimeout({
+                  budgetMs: budget,
+                  expired,
+                  lastStage:
+                    captureStage === 'native-readiness'
+                      ? 'readiness'
+                      : captureStage?.startsWith('native')
+                        ? 'native'
+                        : captureStage === 'react-private'
+                          ? 'react'
+                          : captureStage === 'join-private'
+                            ? 'join'
+                            : 'unknown',
+                  observations,
+                  reactOnlyObservations,
+                  presenceAttempts: enrichment ? 1 : 0,
+                  elapsedMs: deps.now() - waitStarted,
+                  enrichmentWaitMs: enrichment?.waited ?? 0,
+                  requestedPresenceBudgetMs: enrichment?.budget ?? 0,
+                  attempt: waitAttempt,
+                }),
+                observation.screen,
+                undefined,
+              );
+            const reason =
+              reactOnly ||
+              (unchanged
+                ? `"${item.target.quoted}" did not appear within ${budget / 1000}s; the screen did not change across ${absent} observations`
+                : ITEM_DEADLINE_EXCEEDED);
+            // A classified React-only miss already spent its layout read; recovery gets no fresh time for another.
+            const recovering = await recovery(item, 1, reason, reactOnly ? deadline : undefined);
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
             if (unchanged) {
-              const miss = presenceMiss(item.target, observation.screen);
+              const miss = !reactOnly && presenceMiss(item.target, observation.screen);
               return judged(
                 failed(
                   item,
@@ -2347,6 +2580,9 @@ async function walkBlockScoped(
         const maxAttempts = recovered.has(item) || opts.singleAttempt ? 1 : 2;
         for (let attempt = 1; attempt <= maxAttempts && !outcome; attempt += 1) {
           currentAttempt = attempt;
+          let selectionTarget: Element | undefined;
+          let selectionDeadline = Infinity;
+          let selectionStartedAt = 0;
           const settling = (item.kind === 'press' || item.kind === 'fill') && sequence.momentum;
           const held = cached?.item === item && !settling ? cached : undefined;
           let before: Observation;
@@ -2693,6 +2929,17 @@ async function walkBlockScoped(
                   if (shot.crop) pixelBaseline = { target, crop: shot.crop };
                 }
               }
+              selectionTarget =
+                item.kind === 'press' &&
+                deps.platform === 'ios' &&
+                element &&
+                selectionPressCandidate(element, before.screen)
+                  ? element
+                  : undefined;
+              if (selectionTarget) {
+                selectionDeadline = observationDeadline(before.timing);
+                selectionStartedAt = deps.now();
+              }
               act = await mutate(item, before, async (context) => {
                 return item.kind === 'press'
                   ? deps.press(ref!, context)
@@ -2820,16 +3067,115 @@ async function walkBlockScoped(
             }
           }
           if (outcome || typedUnverified) break;
-          const after = await captureOnce(
-            item,
-            false,
-            false,
-            before.platformPresence ? 'provenance' : 'resolve',
-          );
-          // NOTE: a not-ok result is not a verdict; an act that timed out may still have landed.
-          let changed = screenSignature(after.screen) !== screenSignature(before.screen);
-          usable(after, item);
+          const readback = () =>
+            captureOnce(item, false, false, before.platformPresence ? 'provenance' : 'resolve');
+          let after: Observation;
+          let selectionProven = false;
+          let selectionExited = false;
+          if (selectionTarget && !(!act!.ok && act!.mutation === 'none')) {
+            const targetPresent = (screen: Screen): boolean =>
+              screen.elements.some((candidate) => sameIdentity(candidate, selectionTarget!));
+            const boundTarget = (screen: Screen): Element | undefined => {
+              const matches = screen.elements.filter((candidate) =>
+                sameIdentity(candidate, selectionTarget!),
+              );
+              return matches.length === 1 && matches[0].ref === selectionTarget!.ref
+                ? matches[0]
+                : undefined;
+            };
+            let observed: Observation | undefined;
+            let current: Element | undefined;
+            let captures: 1 | 2 = 1;
+            const evidence = (): PressEvidence => ({
+              subreason: current ? 'selection_unverified' : 'target_identity_unavailable',
+              heldPress: 'not_tried_unsafe',
+              outsideTargetChange:
+                observed !== undefined &&
+                outsideTargetChange(before.screen, observed.screen, selectionTarget!, current),
+              captures,
+            });
+            const refusePress = (code: string, message: string): WalkOutcome => {
+              const pressEvidence = evidence();
+              deps.pressReadback?.(pressEvidence);
+              emit({ ...base(item, attempt), outcome: 'fail', reason: message });
+              return {
+                block: { key: block.slug, outcome: 'fail', source: 'discovered' },
+                rows,
+                ...(privateFills.length ? { privateFills } : {}),
+                ...(recoveries ? { recoveries } : {}),
+                failure: { step: item.line, seen: message },
+                refusal: { code, message },
+                pressEvidence,
+              };
+            };
+            try {
+              deps.pressReadback?.(evidence());
+              observed = await withDeadline(
+                performance.now() + Math.max(0, selectionDeadline - deps.now()),
+                new EvidenceExpired(true),
+                readback,
+              );
+              usable(observed, item, selectionDeadline);
+              current = boundTarget(observed.screen);
+              if (!act!.proven && targetPresent(observed.screen) && current?.selected !== true) {
+                deps.pressReadback?.(evidence());
+                observed = await withDeadline(
+                  performance.now() + Math.max(0, selectionDeadline - deps.now()),
+                  new EvidenceExpired(true),
+                  () => {
+                    captures = 2;
+                    deps.pressReadback?.(evidence());
+                    return readback();
+                  },
+                );
+                usable(observed, item, selectionDeadline);
+                current = boundTarget(observed.screen);
+              }
+            } catch (error) {
+              if (isAbort(error)) throw error;
+              if (error instanceof NativeCaptureError)
+                return refusePress(error.code, new NativeCaptureError().message);
+              if (error instanceof PrivateInputCaptureError)
+                return refusePress(error.code, new PrivateInputCaptureError().message);
+              if (error instanceof ResolutionError) return refusePress(error.code, error.message);
+              if (error instanceof EvidenceExpired)
+                return refusePress(
+                  error.itemExpired ? 'ITEM_DEADLINE_EXCEEDED' : 'EVIDENCE_EXPIRED',
+                  error.message,
+                );
+              if (error instanceof QaDispatchError) return refusePress(error.code, error.message);
+              throw error;
+            }
+            selectionExited = !targetPresent(observed.screen);
+            if (!selectionExited && !act!.proven && current?.selected !== true) {
+              return refusePress(
+                'PRESS_NOT_REGISTERED',
+                `${evidence().outsideTargetChange ? PRESS_OUTSIDE_CHANGE_REASON : PRESS_NOT_REGISTERED_REASON} ${selectionPressGuidance(captures, observed.timing.completedAt - selectionStartedAt)}`,
+              );
+            }
+            deps.pressReadback?.(undefined);
+            after = observed;
+            selectionProven = current?.selected === true;
+          } else {
+            after = await readback();
+            usable(after, item);
+          }
+          // A capture delta cannot stand in for bound selection on these controls.
+          let changed =
+            selectionTarget && !selectionExited && !(!act!.ok && act!.mutation === 'none')
+              ? selectionProven
+              : screenSignature(after.screen) !== screenSignature(before.screen);
+          const afterTarget = element && after.screen.elements.find((e) => e.ref === element!.ref);
+          // shortcut: single-choice and multi-select are indistinguishable from capture evidence; revisit if a role fact lands
+          const alreadySelected =
+            item.kind === 'press' &&
+            !changed &&
+            act!.ok &&
+            !act!.error &&
+            element?.selected === true &&
+            afterTarget?.selected === true;
           if (
+            !alreadySelected &&
             !changed &&
             item.kind === 'press' &&
             act!.proven === false &&
@@ -2895,7 +3241,9 @@ async function walkBlockScoped(
           if (
             !noMutationRefusal &&
             !dialogRefused &&
-            (item.kind === 'fill' ? (act!.ok && act!.proven) || unverified : act!.proven || changed)
+            (item.kind === 'fill'
+              ? (act!.ok && act!.proven) || unverified
+              : act!.proven || changed || alreadySelected)
           ) {
             const target = stepTarget(item);
             if (act!.dialog)
@@ -2929,16 +3277,18 @@ async function walkBlockScoped(
                           `UNVERIFIED_FILL: the field's final value ${act!.evidence === 'masked' ? 'reads back masked' : 'could not be read back'}, so the fill was not verified`,
                         ),
                       }
-                    : alertOnly
-                      ? {
-                          unverifiedPress: true,
-                          reason: redact(
-                            alertEffect === 'uncaptured'
-                              ? 'UNVERIFIED_PRESS: nothing behind the alert or sheet was captured while it was open; any of its buttons closes it, so the press was not verified'
-                              : 'UNVERIFIED_PRESS: the alert or sheet closed and nothing behind it changed; any of its buttons closes it, so the press was not verified',
-                          ),
-                        }
-                      : {}),
+                    : alreadySelected
+                      ? { reason: redact('already selected, no change') }
+                      : alertOnly
+                        ? {
+                            unverifiedPress: true,
+                            reason: redact(
+                              alertEffect === 'uncaptured'
+                                ? 'UNVERIFIED_PRESS: nothing behind the alert or sheet was captured while it was open; any of its buttons closes it, so the press was not verified'
+                                : 'UNVERIFIED_PRESS: the alert or sheet closed and nothing behind it changed; any of its buttons closes it, so the press was not verified',
+                            ),
+                          }
+                        : {}),
             });
             break;
           }
@@ -2993,7 +3343,6 @@ async function walkBlockScoped(
           const stillness = settledFrame
             ? `; the target's frame held still at ${settledFrame} before this dispatch`
             : '';
-          const afterTarget = element && after.screen.elements.find((e) => e.ref === element!.ref);
           // Selection evidence only when a capture reports the target selected; the runner never reports "unselected".
           const reported = (e: Element) =>
             e.selected === true ? 'selected' : 'not reported selected';
@@ -3459,6 +3808,7 @@ export async function runPlan(
             ...ledger,
             code: refusal.code,
             message: refusal.message,
+            ...(outcome?.pressEvidence ? { pressEvidence: outcome.pressEvidence } : {}),
             verdict: 'REFUSED',
             videoPublication: 'unknown',
           }

@@ -64,6 +64,7 @@ pub enum FailureCode {
     PlanStepFailed,
     MetroOriginMismatch,
     CoreRefused,
+    PressNotRegistered,
     BlockStartMissing,
     JevUnreachable,
     JevAuthFailed,
@@ -103,6 +104,7 @@ impl FailureCode {
                 | FailureCode::DiskBudgetExceeded
                 | FailureCode::PlatformUnsupported
                 | FailureCode::MetroOriginMismatch
+                | FailureCode::PressNotRegistered
                 | FailureCode::CoreRefused
                 | FailureCode::BlockStartMissing
                 | FailureCode::JevUnreachable
@@ -121,6 +123,167 @@ pub struct Failure {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<OutputText>,
     pub next_action: OutputText,
+    // Boxed so every Result<_, Failure> keeps its size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<Box<FailureRecovery>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FailureRecovery {
+    Build(Recovery),
+    Press(PressRecovery),
+}
+
+impl FailureRecovery {
+    pub fn with_own_cleanup(self, run_id: &str) -> Self {
+        match self {
+            Self::Build(recovery) => Self::Build(recovery.with_own_cleanup(run_id)),
+            Self::Press(recovery) => Self::Press(recovery),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryReason {
+    BudgetExhausted,
+    BuildBudgetExhausted,
+    BuildProcessFailed,
+    OwnershipUnresolved,
+    PersistenceFailed,
+    IdentityUnavailable,
+    CandidateDrifted,
+    RunCancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryAction {
+    WaitForHolder,
+    CleanupSelf,
+    RestoreStorage,
+    RestoreProcessObservation,
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryRung {
+    pub rung: u8,
+    pub applicable: bool,
+    pub destroys_state: bool,
+    pub requires_user_ok: bool,
+    pub instruction: String,
+}
+
+// The ordered ladder, least destructive first: retry, restart app/Metro/runner, restart device, rebuild, own cleanup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Recovery {
+    pub reason: RecoveryReason,
+    pub next_rung: Option<u8>,
+    pub action: RecoveryAction,
+    pub automatic: bool,
+    pub destroys_state: bool,
+    pub requires_user_ok: bool,
+    #[serde(default)]
+    pub own_cleanup_required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own_run_id: Option<String>,
+    pub ladder: Vec<RecoveryRung>,
+}
+
+const CANNOT_HELP: &str = "cannot help";
+
+impl Recovery {
+    pub fn new(reason: RecoveryReason) -> Self {
+        use RecoveryReason::*;
+        let cleanup = "run qaren cleanup <own-run-id> --json, then prepare again";
+        let (retry, rebuild, last): (&str, Option<&str>, &str) = match reason {
+            BudgetExhausted => (
+                "wait for the holding run, or re-run once later",
+                None,
+                "only if the holder is proven dead: run its qaren cleanup from its own home (its resources only), then prepare again",
+            ),
+            BuildBudgetExhausted | BuildProcessFailed => (
+                "do not repeat a build that exhausted its budget or failed to compile",
+                Some("rebuild only after correcting the reported build prerequisite"),
+                cleanup,
+            ),
+            OwnershipUnresolved | PersistenceFailed => (
+                "re-observe only within the remaining budget",
+                None,
+                "restore writable run storage and process observation, then run qaren cleanup <own-run-id> --json and prepare again; keep unproven resources",
+            ),
+            IdentityUnavailable => (
+                "restore process identity observation, then re-run",
+                None,
+                cleanup,
+            ),
+            CandidateDrifted => (
+                "do not rebuild an unstable candidate",
+                Some("rebuild only after a stable candidate is selected"),
+                "run qaren cleanup <own-run-id> --json, then prepare again on a stable checkout",
+            ),
+            RunCancelled => ("re-run when ready; nothing resumes automatically", None, cleanup),
+        };
+        let first_applicable = matches!(reason, BudgetExhausted | IdentityUnavailable);
+        let ladder = vec![
+            RecoveryRung::step(1, first_applicable, false, retry),
+            RecoveryRung::step(2, false, false, CANNOT_HELP),
+            RecoveryRung::step(3, false, false, CANNOT_HELP),
+            RecoveryRung::step(4, rebuild.is_some(), true, rebuild.unwrap_or(CANNOT_HELP)),
+            RecoveryRung::step(5, reason != RunCancelled, true, last),
+        ];
+        let (next_rung, action) = match reason {
+            BudgetExhausted => (Some(1), RecoveryAction::WaitForHolder),
+            IdentityUnavailable => (Some(1), RecoveryAction::RestoreProcessObservation),
+            OwnershipUnresolved | PersistenceFailed => (Some(5), RecoveryAction::RestoreStorage),
+            BuildBudgetExhausted | BuildProcessFailed | CandidateDrifted => {
+                (Some(5), RecoveryAction::CleanupSelf)
+            }
+            RunCancelled => (None, RecoveryAction::None),
+        };
+        let destructive = next_rung == Some(5);
+        Recovery {
+            reason,
+            next_rung,
+            action,
+            automatic: false,
+            destroys_state: destructive,
+            requires_user_ok: destructive,
+            own_cleanup_required: false,
+            own_run_id: None,
+            ladder,
+        }
+    }
+
+    // A run that still owns resources must clean them up itself; a cancelled run's next step becomes that cleanup.
+    pub fn with_own_cleanup(mut self, run_id: &str) -> Self {
+        self.own_cleanup_required = true;
+        self.own_run_id = Some(run_id.to_string());
+        if self.reason == RecoveryReason::RunCancelled {
+            self.next_rung = Some(5);
+            self.action = RecoveryAction::CleanupSelf;
+            self.destroys_state = true;
+            self.requires_user_ok = true;
+            if let Some(last) = self.ladder.last_mut() {
+                *last = RecoveryRung::step(5, true, true, &last.instruction);
+            }
+        }
+        self
+    }
+}
+
+impl RecoveryRung {
+    fn step(rung: u8, applicable: bool, destroys_state: bool, instruction: &str) -> Self {
+        RecoveryRung {
+            rung,
+            applicable,
+            destroys_state: applicable && destroys_state,
+            requires_user_ok: applicable && destroys_state,
+            instruction: instruction.to_string(),
+        }
+    }
 }
 
 impl Failure {
@@ -136,6 +299,19 @@ impl Failure {
             detail: OutputText::from_output(&detail.into()),
             evidence: Vec::new(),
             next_action: OutputText::from_output(&next_action.into()),
+            recovery: None,
+        }
+    }
+
+    pub fn with_recovery(mut self, reason: RecoveryReason) -> Self {
+        self.recovery = Some(Box::new(FailureRecovery::Build(Recovery::new(reason))));
+        self
+    }
+
+    pub fn build_recovery(&self) -> Option<&Recovery> {
+        match self.recovery.as_deref() {
+            Some(FailureRecovery::Build(recovery)) => Some(recovery),
+            _ => None,
         }
     }
 
@@ -153,6 +329,123 @@ impl Failure {
             .into_iter()
             .map(|line| OutputText::from_output(&line))
             .collect();
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PressRecovery {
+    pub next_rung: Option<u8>,
+    pub action: PressRecoveryAction,
+    pub destroys_state: bool,
+    pub requires_user_ok: bool,
+    pub ladder: Vec<PressRecoveryRung>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PressRecoveryAction {
+    RerunThenAskAppTeamExposeSelectionInRowList,
+    ReprepareAfterCaptureRecovery,
+    RerunWhenReady,
+    HeldPress,
+    RestartAppMetroRunner,
+    RestartDevice,
+    RebuildNative,
+    CleanupAndFreshPrepare,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PressRecoveryStatus {
+    Skipped,
+    Available,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PressRecoveryReason {
+    RetrySafeSemanticsUnavailable,
+    AppSelectionContractUnchanged,
+    CaptureRecoveryOwnResourcesOnly,
+    ReadbackExhausted,
+    Cancelled,
+    NotApplicable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PressRecoveryRung {
+    pub rung: u8,
+    pub action: PressRecoveryAction,
+    pub status: PressRecoveryStatus,
+    pub reason: PressRecoveryReason,
+    pub destroys_state: bool,
+    pub requires_user_ok: bool,
+}
+
+impl Failure {
+    pub fn with_press_recovery(mut self, code: &str) -> Self {
+        use PressRecoveryAction::*;
+        use PressRecoveryReason::*;
+        use PressRecoveryStatus::*;
+        let capture = code == "NATIVE_CAPTURE_UNAVAILABLE";
+        let selection = code == "PRESS_NOT_REGISTERED";
+        let action = if selection {
+            RerunThenAskAppTeamExposeSelectionInRowList
+        } else if capture {
+            ReprepareAfterCaptureRecovery
+        } else {
+            RerunWhenReady
+        };
+        self.next_action = OutputText::from_output(match action {
+            RerunThenAskAppTeamExposeSelectionInRowList => {
+                "rerun_then_ask_app_team_expose_selection_in_row_list"
+            }
+            ReprepareAfterCaptureRecovery => "reprepare_after_capture_recovery",
+            _ => "rerun_when_ready",
+        });
+        self.recovery = Some(Box::new(FailureRecovery::Press(PressRecovery {
+            next_rung: if capture { Some(2) } else { None },
+            action,
+            destroys_state: capture,
+            requires_user_ok: capture,
+            ladder: [
+                HeldPress,
+                RestartAppMetroRunner,
+                RestartDevice,
+                RebuildNative,
+                CleanupAndFreshPrepare,
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, action)| PressRecoveryRung {
+                rung: index as u8 + 1,
+                action,
+                status: if capture && index > 0 {
+                    Available
+                } else {
+                    Skipped
+                },
+                reason: if index == 0 {
+                    if selection || capture {
+                        RetrySafeSemanticsUnavailable
+                    } else if code == "RUN_CANCELLED" {
+                        Cancelled
+                    } else {
+                        ReadbackExhausted
+                    }
+                } else if capture {
+                    CaptureRecoveryOwnResourcesOnly
+                } else if selection {
+                    AppSelectionContractUnchanged
+                } else {
+                    NotApplicable
+                },
+                destroys_state: index > 0,
+                requires_user_ok: index > 0,
+            })
+            .collect(),
+        })));
         self
     }
 }

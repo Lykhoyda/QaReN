@@ -220,14 +220,11 @@ impl BundleRequests {
         let Some((_, request)) = line.split_once(REQUEST_RECEIVED) else {
             return Ok(());
         };
-        let bundle = request
-            .split_whitespace()
-            .next()
-            .is_some_and(|url| {
-                let path = url.split('?').next().unwrap_or(url);
-                let path = path.split("//&").next().unwrap_or(path);
-                path.ends_with(".bundle")
-            });
+        let bundle = request.split_whitespace().next().is_some_and(|url| {
+            let path = url.split('?').next().unwrap_or(url);
+            let path = path.split("//&").next().unwrap_or(path);
+            path.ends_with(".bundle")
+        });
         let count = self.count.unwrap_or(0) + u64::from(bundle);
         if self.count == Some(count) {
             return Ok(());

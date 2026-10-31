@@ -4,7 +4,7 @@ import {
   reapMismatchedAndroidRunner,
   shouldReapAndroidRunnerBeforeStart,
   shouldReuseAndroidRunner,
-} from '../../dist/runners/rn-android-runner-client.js';
+} from '../../dist/runners/qaren-android-runner-client.js';
 
 // Audit H4: parity with iOS shouldReuseRunner. A live Android runner bound to
 // emulator-A must NOT be reused to drive emulator-B (its adb forward + port

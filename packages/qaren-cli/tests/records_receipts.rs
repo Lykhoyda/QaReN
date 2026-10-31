@@ -424,3 +424,67 @@ fn receipt_hints_are_optional_and_use_the_durable_redaction_owner() {
     assert_eq!(parsed.hints[0].code, "LOGIN_BLOCK_CANDIDATE");
     assert_eq!(parsed.next_action, receipt.next_action);
 }
+
+#[test]
+fn receipts_and_records_from_before_build_lock_observation_still_load() {
+    let old = r#"{"schema":"qaren/1","verb":"prepare","run_id":"r1","result":"refused","phase":"failed","emitted_at":"now","commands_executed":0,"failure":{"phase":"plan","code":"BUILD_CONTENDED","detail":"held","next_action":"wait"},"next_action":"wait"}"#;
+    let parsed: Receipt = serde_json::from_str(old).unwrap();
+    assert!(parsed.build_lock.is_none() && parsed.recovery.is_none());
+    assert!(parsed.failure.unwrap().recovery.is_none());
+    let record = common::base_record(
+        std::path::Path::new("/s"),
+        &common::ios_scenario_yaml(8791),
+        "r1",
+        Phase::Failed,
+    );
+    let mut value = serde_json::to_value(&record).unwrap();
+    assert!(value.get("build_lock").is_none(), "absent until observed");
+    value.as_object_mut().unwrap().remove("build_lock");
+    let reloaded: RunRecord = serde_json::from_value(value).unwrap();
+    assert!(reloaded.build_lock.is_none());
+}
+
+#[test]
+fn build_failure_recovery_keeps_its_wire_shape_and_owned_cleanup() {
+    use qaren::failure::{Failure, Recovery, RecoveryReason};
+    let failure =
+        Failure::cancelled("build", "stopped").with_recovery(RecoveryReason::RunCancelled);
+    let value = serde_json::to_value(&failure).unwrap();
+    assert_eq!(
+        value["recovery"],
+        serde_json::to_value(Recovery::new(RecoveryReason::RunCancelled)).unwrap()
+    );
+    let mut restored: Failure = serde_json::from_value(value).unwrap();
+    restored.recovery = restored
+        .recovery
+        .take()
+        .map(|recovery| Box::new(recovery.with_own_cleanup("own-run")));
+    let recovery = restored.build_recovery().unwrap();
+    assert_eq!(recovery.reason, RecoveryReason::RunCancelled);
+    assert_eq!(recovery.next_rung, Some(5));
+    assert!(recovery.own_cleanup_required);
+    assert_eq!(recovery.own_run_id.as_deref(), Some("own-run"));
+}
+
+#[test]
+fn press_failure_recovery_round_trips_without_build_metadata() {
+    use qaren::failure::Failure;
+    let failure = Failure::new(
+        "walk",
+        FailureCode::PressNotRegistered,
+        "unverified",
+        "read",
+    )
+    .with_press_recovery("PRESS_NOT_REGISTERED");
+    let value = serde_json::to_value(&failure).unwrap();
+    assert_eq!(
+        value["recovery"]["action"],
+        "rerun_then_ask_app_team_expose_selection_in_row_list"
+    );
+    assert_eq!(value["recovery"]["ladder"].as_array().unwrap().len(), 5);
+    assert!(value["recovery"].get("reason").is_none());
+    let restored: Failure = serde_json::from_value(value.clone()).unwrap();
+    assert!(restored.build_recovery().is_none());
+    let recovery = restored.recovery.unwrap().with_own_cleanup("own-run");
+    assert_eq!(serde_json::to_value(recovery).unwrap(), value["recovery"]);
+}

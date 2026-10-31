@@ -183,7 +183,7 @@ test('Android reusable runner with missing fill evidence emits the bounded rebui
     _setFetchForTest: setFetch,
     startAndroidRunner,
     AndroidCommandsStaleError,
-  } = await import('../../dist/runners/rn-android-runner-client.js');
+  } = await import('../../dist/runners/qaren-android-runner-client.js');
   _setAndroidRunnerStateForTest({
     schemaVersion: 1,
     pid: process.pid,

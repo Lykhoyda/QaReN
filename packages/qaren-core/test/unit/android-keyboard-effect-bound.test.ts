@@ -9,7 +9,7 @@ const { createDevicePressHandler } = await import('../../dist/handlers/device-in
 const { updateRefMapFromFlat, clearRefMap, invalidateLastSnapshotHash } =
   await import('../../dist/fast-runner-ref-map.js');
 const { _setAndroidRunnerStateForTest, _setFetchForTest } =
-  await import('../../dist/runners/rn-android-runner-client.js');
+  await import('../../dist/runners/qaren-android-runner-client.js');
 const {
   REQUIRED_ANDROID_COMMANDS,
   REQUIRED_ANDROID_FEATURES,

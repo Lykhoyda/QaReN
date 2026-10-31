@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { stopAndroidRunner } from './rn-android-runner-client.js';
+import { stopAndroidRunner } from './qaren-android-runner-client.js';
 import { getAdbSerial } from '../agent-device-wrapper.js';
 
 const execFile = promisify(execFileCb);
@@ -15,7 +15,7 @@ const DAEMON_FILES = [DAEMON_JSON, DAEMON_LOCK];
 const ADB_TIMEOUT_MS = 5_000;
 
 // The two packages our in-tree Android runner installs (see
-// rn-android-runner-client.ts:18 — INSTRUMENTATION). Force-stopping these frees
+// qaren-android-runner-client.ts:18 — INSTRUMENTATION). Force-stopping these frees
 // the device-side UiAutomation slot for maestro-runner's UIAutomator2 server.
 // We force-stop ONLY these — never a foreign UIAutomator2 package (that overreach
 // is what killed the MCP server in the #237 repro's `pkill -f agent-device`).

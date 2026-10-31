@@ -96,6 +96,7 @@ fn run_dir(cross_repository: bool) -> (PathBuf, PathBuf) {
         tested_older_commit: false,
         blocks: vec!["tasks".into()],
         identity_values: Vec::new(),
+        proof_in_description: false,
     };
     std::fs::write(dir.join("pr.json"), serde_json::to_vec(&pr).unwrap()).unwrap();
     std::fs::write(
@@ -361,9 +362,7 @@ fn a_rerun_after_the_comment_posts_no_second_comment() {
     first
         .0
         .expect_run("gh pr view", CmdOutput::failed(1, "network down"));
-    first
-        .0
-        .expect_run("gh auth status", CmdOutput::success(""));
+    first.0.expect_run("gh auth status", CmdOutput::success(""));
     let receipt = publish(&mut first, &runs, RUN, &machine());
     assert_eq!(receipt.result, ReceiptResult::Failed);
     assert_eq!(
@@ -513,6 +512,579 @@ fn a_fork_pr_gets_the_yaml_comment_and_no_push() {
         .writeback
         .unwrap()
         .starts_with("attached "));
+}
+
+const COMMENT_URL: &str = "https://github.com/o/r/pull/12#issuecomment-1";
+const ASSET: &str = "https://github.com/user-attachments/assets/v1";
+const AUTHOR: &str = "Author\n\n- item\n";
+
+fn describe_pr(dir: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
+    let path = dir.join("pr.json");
+    let mut pr: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    pr["proofInDescription"] = true.into();
+    edit(&mut pr);
+    std::fs::write(path, pr.to_string()).unwrap();
+}
+
+// A publication that already has its comment and label, so only the description and writeback remain.
+fn resume(dir: &Path, video_attached: bool, writeback: Option<&str>) {
+    let publication = Publication {
+        rendered: true,
+        comment_attempted: true,
+        comment_url: Some(COMMENT_URL.into()),
+        label: Some("removed".into()),
+        video_attached,
+        writeback: writeback.map(Into::into),
+        ..Default::default()
+    };
+    std::fs::write(
+        dir.join("publication.json"),
+        serde_json::to_vec(&publication).unwrap(),
+    )
+    .unwrap();
+}
+
+fn view_at(head: &str) -> CmdOutput {
+    CmdOutput::success(&format!(
+        r#"{{"number":12,"url":"https://github.com/o/r/pull/12","headRefOid":"{head}","headRefName":"feat/tasks","isCrossRepository":false,"labels":[]}}"#
+    ))
+}
+
+// The posted comment as gh leaves it: the screenshot rewritten in place, the video appended last.
+fn comments_ending(last: &str) -> CmdOutput {
+    CmdOutput::success(
+        &serde_json::json!({"comments": [
+            {"body": "unrelated\n\nhttps://github.com/user-attachments/assets/other",
+             "url": "https://github.com/o/r/pull/12#issuecomment-0"},
+            {"body": format!("<!-- qaren-run: {RUN} -->\nFAIL\n\n![Failing step](https://github.com/user-attachments/assets/shot)\n\n{last}\n"),
+             "url": COMMENT_URL, "author": {"login": "publisher"}},
+        ]})
+        .to_string(),
+    )
+}
+
+fn body_at(body: &str, head: &str) -> CmdOutput {
+    CmdOutput::success(&serde_json::json!({"body": body, "headRefOid": head}).to_string())
+}
+
+fn script_description(
+    mock: &mut MockRunner,
+    comments: Option<CmdOutput>,
+    bodies: &[&str],
+    edit: Option<CmdOutput>,
+) {
+    mock.expect_run("gh pr view https://github.com/o/r/pull/12", view_at(TESTED));
+    if let Some(comments) = comments {
+        mock.expect_run("gh pr view 12 -R github.com/o/r --json comments", comments);
+    }
+    for body in bodies {
+        mock.expect_run(
+            "gh pr view 12 -R github.com/o/r --json body,headRefOid",
+            body_at(body, TESTED),
+        );
+    }
+    if let Some(edit) = edit {
+        mock.expect_run(
+            "gh pr edit 12 -R github.com/o/r --body-file description.md",
+            edit,
+        );
+    }
+}
+
+fn description(dir: &Path) -> String {
+    std::fs::read_to_string(dir.join("description.md")).unwrap()
+}
+
+// The owned section of a written description, and its video paragraph.
+fn proof_section(written: &str) -> (&str, &str) {
+    use qaren::report::{PROOF_END, PROOF_START};
+    let section = &written[written.find(PROOF_START).unwrap()..];
+    let end = format!("\n\n{PROOF_END}\n");
+    let (_, rest) = section.split_once("\n\n").unwrap();
+    (section, rest.strip_suffix(end.as_str()).unwrap())
+}
+
+fn edited(runner: &Git) -> bool {
+    runner
+        .0
+        .calls
+        .iter()
+        .any(|c| c.args.contains(&"--body-file".to_string()) && c.label == "gh-pr-edit")
+}
+
+#[test]
+fn description_is_written_after_the_comment() {
+    let (runs, dir) = run_dir(false);
+    describe_pr(&dir, |_| {});
+    let mut runner = Git(MockRunner::new());
+    script_comment_and_label(&mut runner.0);
+    script_description(
+        &mut runner.0,
+        Some(comments_ending(ASSET)),
+        &[AUTHOR, AUTHOR],
+        Some(CmdOutput::success("")),
+    );
+    script_commit(&mut runner.0);
+    runner
+        .0
+        .expect_run("git push origin", CmdOutput::success(""));
+
+    let receipt = publish(&mut runner, &runs, RUN, &machine());
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Published,
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(runner.0.remaining(), 0);
+    let written = description(&dir);
+    let (section, video) = proof_section(&written);
+    assert_eq!(written, format!("{AUTHOR}\n{section}"));
+    assert!(section.contains(&format!(
+        "**QA proof** · FAIL · commit `c0ffee0` on ios · [QaReN comment]({COMMENT_URL})"
+    )));
+    assert_eq!(video, ASSET);
+    assert_eq!(written.matches(ASSET).count(), 1);
+    let uploads = runner
+        .0
+        .calls
+        .iter()
+        .filter(|c| c.args.contains(&"./media/video-published.mp4".to_string()))
+        .count();
+    assert_eq!(uploads, 1);
+    let done = publication(&dir);
+    assert!(done.video_attached);
+    assert_eq!(done.description.as_deref(), Some("written"));
+    assert_eq!(receipt.outcomes["description"], "written");
+    assert!(receipt.next_action.contains("proof section"));
+}
+
+#[test]
+fn a_new_head_replaces_the_section() {
+    use qaren::report::{PROOF_END, PROOF_START};
+    let (runs, dir) = run_dir(false);
+    describe_pr(&dir, |_| {});
+    resume(&dir, true, Some("none"));
+    let before = "Author ![img](https://github.com/user-attachments/assets/author-image)\r\n\r\n";
+    let after = "\nTrailing\n";
+    let old = format!(
+        "{PROOF_START}\n**QA proof** · PASS · commit `0000000`\n\nhttps://github.com/user-attachments/assets/old\n\n{PROOF_END}\n"
+    );
+    let body = format!("{before}{old}{after}");
+    let mut runner = Git(MockRunner::new());
+    script_description(
+        &mut runner.0,
+        Some(comments_ending(ASSET)),
+        &[&body, &body],
+        Some(CmdOutput::success("")),
+    );
+
+    let receipt = publish(&mut runner, &runs, RUN, &machine());
+
+    assert_eq!(receipt.outcomes["description"], "replaced");
+    assert_eq!(runner.0.remaining(), 0);
+    let written = description(&dir);
+    let section = &written[written.find(PROOF_START).unwrap()
+        ..written.find(PROOF_END).unwrap() + PROOF_END.len() + 1];
+    assert_eq!(written, format!("{before}{section}{after}"));
+    assert_eq!(proof_section(section).1, ASSET);
+    assert_eq!(written.matches(PROOF_START).count(), 1);
+    assert!(!written.contains("assets/old"));
+}
+
+#[test]
+fn a_changing_body_is_reread_once_then_skipped() {
+    let (runs, dir) = run_dir(false);
+    describe_pr(&dir, |_| {});
+    resume(&dir, true, Some("none"));
+    let mut runner = Git(MockRunner::new());
+    script_description(
+        &mut runner.0,
+        Some(comments_ending(ASSET)),
+        &["A\n", "B\n", "B\n"],
+        Some(CmdOutput::success("")),
+    );
+    let receipt = publish(&mut runner, &runs, RUN, &machine());
+    assert_eq!(receipt.outcomes["description"], "written");
+    assert!(description(&dir).starts_with("B\n\n<!-- qaren-proof:start -->\n"));
+    assert_eq!(runner.0.remaining(), 0);
+
+    let (runs, dir) = run_dir(false);
+    describe_pr(&dir, |_| {});
+    resume(&dir, true, Some("none"));
+    let mut runner = Git(MockRunner::new());
+    script_description(
+        &mut runner.0,
+        Some(comments_ending(ASSET)),
+        &["A\n", "B\n", "C\n"],
+        None,
+    );
+    let receipt = publish(&mut runner, &runs, RUN, &machine());
+    assert_eq!(receipt.result, ReceiptResult::Published);
+    assert_eq!(
+        receipt.outcomes["description"],
+        "skipped (the description kept changing; re-run qaren publish)"
+    );
+    assert!(!edited(&runner));
+    assert_eq!(publication(&dir).description, None);
+    assert_eq!(runner.0.remaining(), 0);
+}
+
+#[test]
+fn a_withheld_video_never_reaches_the_description() {
+    let (runs, dir) = run_dir(false);
+    describe_pr(&dir, |pr| {
+        pr["videoPublication"] = serde_json::to_value(VideoPublication::WithheldFill).unwrap();
+    });
+    let mut runner = Git(MockRunner::new());
+    script_comment_and_label(&mut runner.0);
+    script_description(
+        &mut runner.0,
+        None,
+        &[AUTHOR, AUTHOR],
+        Some(CmdOutput::success("")),
+    );
+
+    let receipt = publish(&mut runner, &runs, RUN, &machine());
+
+    assert_eq!(receipt.outcomes["description"], "written");
+    assert_eq!(runner.0.remaining(), 0);
+    let comment = runner
+        .0
+        .calls
+        .iter()
+        .find(|c| c.label == "gh-pr-comment")
+        .unwrap();
+    assert!(comment
+        .args
+        .contains(&"./screenshots/01.png#Failing step".to_string()));
+    assert!(!comment
+        .args
+        .contains(&"./media/video-published.mp4".to_string()));
+    assert!(!publication(&dir).video_attached);
+    let written = description(&dir);
+    let (_, video) = proof_section(&written);
+    assert!(video.starts_with("Video withheld: "), "{video}");
+    assert!(!video.contains("https://"), "{video}");
+}
+
+#[test]
+fn a_trailing_url_is_ignored_unless_the_owner_attached_it() {
+    // An unknown policy or an unattached video never reads the comment back.
+    for (attached, policy) in [(true, "unknown"), (false, "strict")] {
+        let (runs, dir) = run_dir(false);
+        describe_pr(&dir, |pr| pr["videoPolicy"] = policy.into());
+        resume(&dir, attached, Some("none"));
+        let mut runner = Git(MockRunner::new());
+        script_description(
+            &mut runner.0,
+            None,
+            &[AUTHOR, AUTHOR],
+            Some(CmdOutput::success("")),
+        );
+        let receipt = publish(&mut runner, &runs, RUN, &machine());
+        assert_eq!(receipt.outcomes["description"], "written", "{policy}");
+        assert_eq!(runner.0.remaining(), 0);
+        let written = description(&dir);
+        let (_, video) = proof_section(&written);
+        assert!(!video.contains("https://"), "{video}");
+    }
+    // An edited tail that is not one bare https URL is not taken for the video.
+    for last in [
+        "![x](https://github.com/user-attachments/assets/x)",
+        "https://github.com/user-attachments/assets/a b",
+        COMMENT_URL,
+    ] {
+        let (runs, dir) = run_dir(false);
+        describe_pr(&dir, |_| {});
+        resume(&dir, true, Some("none"));
+        let mut runner = Git(MockRunner::new());
+        script_description(
+            &mut runner.0,
+            Some(comments_ending(last)),
+            &[AUTHOR, AUTHOR],
+            Some(CmdOutput::success("")),
+        );
+        publish(&mut runner, &runs, RUN, &machine());
+        assert_eq!(runner.0.remaining(), 0);
+        let written = description(&dir);
+        let (section, video) = proof_section(&written);
+        assert_eq!(video, "Video: attached to the QaReN comment.", "{last}");
+        assert!(!section.contains("assets/"), "{last}");
+    }
+}
+
+#[test]
+fn a_moved_head_skips_the_description() {
+    let moved = "d".repeat(40);
+    for (body_moved, writeback_commit) in [
+        (false, None),
+        (true, None),
+        (false, Some(COMMIT)),
+        (true, Some(COMMIT)),
+    ] {
+        let (runs, dir) = run_dir(false);
+        describe_pr(&dir, |_| {});
+        resume(&dir, true, Some("none"));
+        let mut state = publication(&dir);
+        state.writeback_commit = writeback_commit.map(Into::into);
+        std::fs::write(
+            dir.join("publication.json"),
+            serde_json::to_vec(&state).unwrap(),
+        )
+        .unwrap();
+        let mut runner = Git(MockRunner::new());
+        if body_moved {
+            script_description(&mut runner.0, Some(comments_ending(ASSET)), &[], None);
+            runner.0.expect_run(
+                "gh pr view 12 -R github.com/o/r --json body,headRefOid",
+                body_at(AUTHOR, &moved),
+            );
+        } else {
+            runner
+                .0
+                .expect_run("gh pr view https://github.com/o/r/pull/12", view_at(&moved));
+        }
+        let receipt = publish(&mut runner, &runs, RUN, &machine());
+        assert_eq!(receipt.result, ReceiptResult::Published);
+        assert_eq!(runner.0.remaining(), 0);
+        let skipped = "skipped (head moved; the comment carries the proof)";
+        assert_eq!(receipt.outcomes["description"], skipped);
+        assert_eq!(publication(&dir).description.as_deref(), Some(skipped));
+        assert!(!edited(&runner));
+        assert!(!dir.join("description.md").exists());
+    }
+}
+
+#[test]
+fn ambiguous_markers_skip_the_description_for_good() {
+    let (runs, dir) = run_dir(false);
+    describe_pr(&dir, |_| {});
+    resume(&dir, true, Some("none"));
+    let body = format!("Author\n{}\n", qaren::report::PROOF_START);
+    let mut runner = Git(MockRunner::new());
+    script_description(&mut runner.0, Some(comments_ending(ASSET)), &[&body], None);
+    let receipt = publish(&mut runner, &runs, RUN, &machine());
+    assert_eq!(receipt.result, ReceiptResult::Published);
+    assert_eq!(runner.0.remaining(), 0);
+    assert!(!edited(&runner));
+    assert_eq!(
+        receipt.outcomes["description"],
+        "skipped for this run (the description's QaReN markers are ambiguous; the comment carries the proof)"
+    );
+    let next_action = "fix the marker pair in the pull request description so one QaReN start line precedes one end line, then publish a new qaren pr run; this run's comment already carries the proof and video";
+    assert_eq!(receipt.next_action, next_action);
+    assert_eq!(
+        publication(&dir).description,
+        Some(receipt.outcomes["description"].clone())
+    );
+    let mut again = Git(MockRunner::new());
+    let resumed = publish(&mut again, &runs, RUN, &machine());
+    assert_eq!(resumed.result, ReceiptResult::Published);
+    assert_eq!(
+        resumed.outcomes["description"],
+        receipt.outcomes["description"]
+    );
+    assert_eq!(resumed.next_action, next_action);
+    assert!(again.0.calls.is_empty());
+}
+
+#[test]
+fn a_refused_edit_is_reported_not_failed() {
+    let (runs, dir) = run_dir(false);
+    describe_pr(&dir, |_| {});
+    let mut runner = Git(MockRunner::new());
+    script_comment_and_label(&mut runner.0);
+    script_description(
+        &mut runner.0,
+        Some(comments_ending(ASSET)),
+        &[AUTHOR, AUTHOR],
+        Some(CmdOutput::failed(1, "Resource not accessible")),
+    );
+    script_commit(&mut runner.0);
+    runner
+        .0
+        .expect_run("git push origin", CmdOutput::success(""));
+
+    let receipt = publish(&mut runner, &runs, RUN, &machine());
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Published,
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(runner.0.remaining(), 0);
+    assert_eq!(publication(&dir).label.as_deref(), Some("removed"));
+    assert_eq!(
+        receipt.outcomes["description"],
+        "skipped (the description could not be edited; check write access, then re-run qaren publish)"
+    );
+    assert!(!receipt.outcomes["description"].contains("Resource"));
+    assert_eq!(
+        receipt.next_action,
+        "re-run qaren publish to write the proof section into the description"
+    );
+    assert_eq!(publication(&dir).description, None);
+
+    let mut again = Git(MockRunner::new());
+    assert_eq!(publication(&dir).writeback_commit.as_deref(), Some(COMMIT));
+    assert_eq!(
+        publication(&dir).writeback,
+        Some(format!("committed {COMMIT}"))
+    );
+    again
+        .0
+        .expect_run("gh pr view https://github.com/o/r/pull/12", view_at(COMMIT));
+    again.0.expect_run(
+        "gh pr view 12 -R github.com/o/r --json comments",
+        comments_ending(ASSET),
+    );
+    for _ in 0..2 {
+        again.0.expect_run(
+            "gh pr view 12 -R github.com/o/r --json body,headRefOid",
+            body_at(AUTHOR, COMMIT),
+        );
+    }
+    again.0.expect_run(
+        "gh pr edit 12 -R github.com/o/r --body-file description.md",
+        CmdOutput::success(""),
+    );
+    let receipt = publish(&mut again, &runs, RUN, &machine());
+    assert_eq!(receipt.outcomes["description"], "written");
+    assert_eq!(again.0.remaining(), 0);
+    assert!(!again.0.calls.iter().any(|c| c.label == "gh-pr-comment"));
+}
+
+#[test]
+fn a_failed_read_is_a_retryable_skip() {
+    let (runs, dir) = run_dir(false);
+    describe_pr(&dir, |_| {});
+    resume(&dir, true, Some("none"));
+    let mut runner = Git(MockRunner::new());
+    runner.0.expect_run(
+        "gh pr view https://github.com/o/r/pull/12",
+        CmdOutput::failed(1, "network down"),
+    );
+    runner
+        .0
+        .expect_run("gh auth status", CmdOutput::success(""));
+    let receipt = publish(&mut runner, &runs, RUN, &machine());
+    assert_eq!(receipt.result, ReceiptResult::Published);
+    assert_eq!(
+        receipt.outcomes["description"],
+        "skipped (the pull request could not be read; re-run qaren publish)"
+    );
+
+    let mut runner = Git(MockRunner::new());
+    script_description(
+        &mut runner.0,
+        Some(CmdOutput::failed(1, "network down")),
+        &[],
+        None,
+    );
+    let receipt = publish(&mut runner, &runs, RUN, &machine());
+    assert_eq!(
+        receipt.outcomes["description"],
+        "skipped (the comment could not be read back; re-run qaren publish)"
+    );
+    assert_eq!(runner.0.remaining(), 0);
+    assert_eq!(publication(&dir).description, None);
+}
+
+#[test]
+fn a_fork_pr_is_described_like_any_other() {
+    let (runs, dir) = run_dir(true);
+    describe_pr(&dir, |_| {});
+    let mut runner = Git(MockRunner::new());
+    script_comment_and_label(&mut runner.0);
+    script_description(
+        &mut runner.0,
+        Some(comments_ending(ASSET)),
+        &[AUTHOR, AUTHOR],
+        Some(CmdOutput::success("")),
+    );
+    runner.0.expect_run(
+        "gh pr comment 12",
+        CmdOutput::success("https://github.com/o/r/pull/12#issuecomment-3\n"),
+    );
+
+    let receipt = publish(&mut runner, &runs, RUN, &machine());
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Published,
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(runner.0.remaining(), 0);
+    assert_eq!(receipt.outcomes["description"], "written");
+    assert!(publication(&dir)
+        .writeback
+        .unwrap()
+        .starts_with("attached "));
+}
+
+#[test]
+fn a_resumed_publication_only_describes() {
+    let (runs, dir) = run_dir(false);
+    describe_pr(&dir, |_| {});
+    resume(&dir, true, None);
+    let mut runner = Git(MockRunner::new());
+    script_description(
+        &mut runner.0,
+        Some(comments_ending(ASSET)),
+        &[AUTHOR, AUTHOR],
+        Some(CmdOutput::success("")),
+    );
+    script_commit(&mut runner.0);
+    runner
+        .0
+        .expect_run("git push origin", CmdOutput::success(""));
+
+    let receipt = publish(&mut runner, &runs, RUN, &machine());
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Published,
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(runner.0.remaining(), 0);
+    assert!(!runner
+        .0
+        .calls
+        .iter()
+        .any(|c| c.label == "gh-user" || c.label == "gh-pr-comment"));
+    assert_eq!(proof_section(&description(&dir)).1, ASSET);
+}
+
+#[test]
+fn without_the_key_nothing_changes() {
+    let (runs, dir) = run_dir(false);
+    // A pr.json written before the key existed.
+    let path = dir.join("pr.json");
+    let mut pr: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    pr.as_object_mut().unwrap().remove("proofInDescription");
+    std::fs::write(&path, pr.to_string()).unwrap();
+    let mut runner = Git(MockRunner::new());
+    script_comment_and_label(&mut runner.0);
+    script_commit(&mut runner.0);
+    runner
+        .0
+        .expect_run("git push origin", CmdOutput::success(""));
+
+    let receipt = publish(&mut runner, &runs, RUN, &machine());
+
+    assert_eq!(receipt.result, ReceiptResult::Published);
+    assert_eq!(runner.0.remaining(), 0);
+    assert!(!receipt.outcomes.contains_key("description"));
+    assert!(!edited(&runner));
+    assert_eq!(
+        receipt.next_action,
+        "nothing left; the pull request has the QA comment"
+    );
 }
 
 #[test]

@@ -310,9 +310,9 @@ export type ToolErrorCode =
   | 'APP_HAS_REDBOX' // React-tree proof cannot classify selectors while the app error screen is active
   | 'SNAPSHOT_FAILED' // agent-device snapshot returned ok:false (distinct from "not present")
   | 'RN_FAST_RUNNER_DOWN' // #210: iOS qaren-ios-runner not running and could not be auto-spawned (not prebuilt / no device)
-  | 'RN_ANDROID_RUNNER_DOWN' // #243: rn-android-runner not reachable (cold-start race / can't bind port)
+  | 'RN_ANDROID_RUNNER_DOWN' // #243: qaren-android-runner not reachable (cold-start race / can't bind port)
   | 'APP_LAUNCH_FAILED' // app launcher failed after the native runner was already ready
-  | 'SCREENSHOT_FAILED' // rn-android-runner screenshot response missing pngBase64 payload
+  | 'SCREENSHOT_FAILED' // qaren-android-runner screenshot response missing pngBase64 payload
   | 'PATH_NOT_FOUND' // expect_redux when getStoreState surfaces __agent_error
   | 'STORE_TRUNCATED' // expect_redux when store payload exceeded safeStringify cap
   // Phase 134.2: appId / packageName validation at adb shell boundary.
