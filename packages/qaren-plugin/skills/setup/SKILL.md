@@ -44,7 +44,7 @@ appId: <bundle identifier>
 devClientScheme: exp+<slug>
 ```
 
-Ask: “Which video privacy policy applies to this app when run from this checkout? strict (default: screens can show real people's data; today's privacy checks apply, a clean walk still publishes) or non-strict (screens show test data only; videos may be published unless a secret is detected on screen).” Write `video: <answer>` only after an explicit answer, preserving existing configuration. With no answer, write nothing and say `video policy not declared: strict rules apply; doctor will remind you.` Screenshots still use strict rules in this release. A secure field, even empty, withholds video in both modes; text-side SECRET masking and no readback remain unchanged.
+Before asking for a mode, read the authoritative [screenshot and video privacy policy](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#video-publication) and explain its limits. Ask: “Which screenshot and video privacy policy applies to this app when run from this checkout: strict (default) or non-strict (test data only)?” Write `video: <answer>` only after an explicit answer, preserving existing configuration. With no answer, write nothing and say `video policy not declared: strict rules apply; doctor will remind you.`
 
 The keys and their validation are owned by the CLI's [`config.rs`](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/src/config.rs).
 

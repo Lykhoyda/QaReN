@@ -227,4 +227,4 @@ Report bugs in [GitHub Issues](https://github.com/Lykhoyda/QaReN/issues) or with
 
 QaReN is released under the [MIT License](LICENSE).
 
-Video evidence uses strict privacy rules by default. Apps showing test data can declare `video: non-strict` in their selected config; detected SECRET causes still withhold video. See [Video publication](packages/qaren-cli/README.md#video-publication) for the policy and its limits.
+For screenshot and video privacy modes, defaults and limits, see [Video publication](packages/qaren-cli/README.md#video-publication).

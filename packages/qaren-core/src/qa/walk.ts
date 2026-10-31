@@ -786,25 +786,34 @@ async function openSession(
         false,
       ),
     async comparisonScreenshot() {
-      if (stop.stopping || currentInputs()?.hasInputs) return undefined;
+      const withheld = () =>
+        stop.stopping ||
+        (request.videoPolicy === 'non-strict'
+          ? currentInputs()?.hasStrictInputs
+          : currentInputs()?.hasInputs);
+      if (withheld()) return undefined;
       const directory = await mkdtemp(join(request.runDir, '.tap-pixels-'));
       try {
         return await stop.track(async () => {
           const path = join(directory, 'capture.png');
-          const shot = await captureQaScreenshot(platform, path, target.deviceId, appId);
-          return shot.ok && !stop.stopping && !currentInputs()?.hasInputs
-            ? await readFile(path)
-            : undefined;
+          const shot = await captureQaScreenshot(
+            platform,
+            path,
+            target.deviceId,
+            appId,
+            request.videoPolicy,
+          );
+          return shot.ok && !withheld() ? await readFile(path) : undefined;
         });
       } finally {
         await rm(directory, { recursive: true, force: true });
       }
     },
     async screenshot(name) {
-      if (stop.stopping || currentInputs()?.hasInputs) return undefined;
+      if (stop.stopping) return undefined;
       const path = join(request.runDir, name);
       const shot = await stop.track(() =>
-        captureQaScreenshot(platform, path, target.deviceId, appId),
+        captureQaScreenshot(platform, path, target.deviceId, appId, request.videoPolicy),
       );
       if (!shot.ok) log(`screenshot ${name} failed: ${shot.reason}`);
       return shot.ok ? name : undefined;

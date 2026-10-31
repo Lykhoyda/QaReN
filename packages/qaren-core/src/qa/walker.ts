@@ -383,8 +383,8 @@ export interface WalkSequence {
     line: number;
     windowLine?: number;
     secretWindow?: { cause: MediaLatch; line: number };
-    count: number;
   };
+  screenshots?: { cause: MediaLatch; line: number; count: number };
   operation?: number;
   publicationInterrupted?: boolean;
   momentum?: boolean;
@@ -401,10 +401,17 @@ function recordMediaLatch(
   line: number,
 ): void {
   const latch = privacy.latched();
-  if (latch && !sequence.latch) {
-    sequence.latch = { line, count: 0 };
+  if (latch && !sequence.latch) sequence.latch = { line };
+  const screenshotLatch = privacy.screenshotLatch(deps.videoPolicy);
+  if (screenshotLatch && !sequence.screenshots) {
+    sequence.screenshots = { cause: screenshotLatch, line, count: 0 };
     try {
-      deps.mediaWithheld?.({ kind: 'media-withheld', scope: 'screenshots', cause: latch, line });
+      deps.mediaWithheld?.({
+        kind: 'media-withheld',
+        scope: 'screenshots',
+        cause: screenshotLatch,
+        line,
+      });
     } catch {
       // Diagnostics cannot change the walk.
     }
@@ -885,7 +892,12 @@ async function walkBlockScoped(
     target: NonNullable<ReturnType<typeof pixelTarget>>,
   ): Promise<{ stable: boolean; crop?: PixelCrop; observation?: Observation }> => {
     assertActive();
-    const allowed = () => privacy.canScreenshot() && !metadataOnly && !currentInputs()?.hasInputs;
+    const allowed = () =>
+      !privacy.screenshotLatch(deps.videoPolicy) &&
+      !metadataOnly &&
+      !(deps.videoPolicy === 'non-strict'
+        ? currentInputs()?.hasStrictInputs
+        : currentInputs()?.hasInputs);
     if (!allowed() || !deps.comparisonScreenshot) return { stable: true };
     try {
       const before = await captureOnce(item);
@@ -1265,16 +1277,16 @@ async function walkBlockScoped(
       : outcome;
   const shoot = async (item: Item): Promise<string | undefined> => {
     assertActive();
-    if (!privacy.canScreenshot()) {
+    const latch = privacy.screenshotLatch(deps.videoPolicy);
+    if (latch) {
       recordMediaLatch(privacy, sequence, deps, line);
-      const latch = privacy.latched()!;
       metric('screenshot', undefined, {
         outcome: 'withheld',
         withheld: latch.reason,
         ...(latch.kind ? { kind: latch.kind } : {}),
         ...(latch.source ? { source: latch.source } : {}),
       });
-      sequence.latch!.count += 1;
+      sequence.screenshots!.count += 1;
       withheldRows.set(item.line, latch.reason);
       return undefined;
     }
@@ -1799,6 +1811,10 @@ async function walkBlockScoped(
       return { fail: ['the login block did not pass: ', ...segments(nested.failure.seen)] };
     if (!sequence.planPassed) {
       privacy.startWindow();
+      if (deps.videoPolicy === 'non-strict') {
+        const cause = privacy.screenshotLatch(deps.videoPolicy);
+        sequence.screenshots = cause ? { cause, line, count: 0 } : undefined;
+      }
       if (sequence.latch) {
         sequence.latch.windowLine = privacy.windowLatched() ? line : undefined;
         const cause = privacy.secretWindowLatched();
@@ -3773,14 +3789,18 @@ export async function runPlan(
         videoPublication: videoPublication(),
         videoPolicy,
         nonStrictPublication: nonStrictPublication(),
-        ...(sequence.latch
+        ...(sequence.screenshots || videoCause()
           ? {
               mediaWithheld: {
-                screenshots: {
-                  ...privacy.latched()!,
-                  line: sequence.latch.line,
-                  count: sequence.latch.count,
-                },
+                ...(sequence.screenshots
+                  ? {
+                      screenshots: {
+                        ...sequence.screenshots.cause,
+                        line: sequence.screenshots.line,
+                        count: sequence.screenshots.count,
+                      },
+                    }
+                  : {}),
                 ...(videoCause() ? { video: videoCause()! } : {}),
               },
             }
