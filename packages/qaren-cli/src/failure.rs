@@ -201,8 +201,8 @@ pub struct Recovery {
 
 const CANNOT_HELP: &str = "cannot help";
 
-impl Recovery {
-    pub fn new(reason: RecoveryReason) -> Self {
+impl From<RecoveryReason> for Recovery {
+    fn from(reason: RecoveryReason) -> Self {
         use RecoveryReason::*;
         let cleanup = "run qaren cleanup <own-run-id> --json, then prepare again";
         let (retry, rebuild, last): (&str, Option<&str>, &str) = match reason {
@@ -265,6 +265,12 @@ impl Recovery {
             own_run_id: None,
             ladder,
         }
+    }
+}
+
+impl Recovery {
+    pub fn new(recovery: impl Into<Self>) -> Self {
+        recovery.into()
     }
 
     pub fn ios_runner(
@@ -386,7 +392,7 @@ impl Failure {
         }
     }
 
-    pub fn with_recovery(mut self, reason: RecoveryReason) -> Self {
+    pub fn with_recovery(mut self, reason: impl Into<Recovery>) -> Self {
         self.recovery = Some(Box::new(Recovery::new(reason)));
         self
     }

@@ -2,7 +2,7 @@ mod common;
 
 use qaren::commands::cleanup::{cleanup_with_policy, RunnerCleanupPolicy};
 use qaren::exec::{CmdOutput, CmdSpec, MockRunner, PipedChild, PrivateOutput, Runner, Spawned};
-use qaren::failure::{FailureCode, RecoveryAction, RecoveryReason};
+use qaren::failure::{Failure, FailureCode, Recovery, RecoveryAction, RecoveryReason};
 use qaren::receipt::{Receipt, ReceiptResult};
 use qaren::runrecord::{
     GroupCleanupResult, IosSimResource, Phase, RunRecord, RunnerDriverResource,
@@ -13,6 +13,10 @@ use std::time::Duration;
 
 const BIRTH: &str = "Wed Aug 12 16:01:00 2026";
 const DEVICE: &str = "AAAABBBB-1111-2222-3333-444455556666";
+
+fn failure_recovery(failure: &Failure) -> Recovery {
+    serde_json::from_value(serde_json::to_value(&failure.recovery).unwrap()).unwrap()
+}
 
 fn argv(family: &str) -> Vec<String> {
     vec![
@@ -445,7 +449,7 @@ fn unknown_or_foreign_evidence_never_gets_a_signal_or_releases_the_lease() {
         assert!(lease.exists(), "{fault}");
         let failure = receipt.failure.unwrap();
         assert_eq!(receipt.next_action, failure.next_action.as_str());
-        let recovery = failure.recovery.unwrap();
+        let recovery = failure_recovery(&failure);
         assert_eq!(recovery.action, RecoveryAction::RetainAndReport);
         assert_eq!(recovery.next_rung, None);
         assert!(!recovery.ladder[2].applicable);
@@ -543,7 +547,7 @@ fn identity_loss_after_term_withholds_kill_and_keeps_ownership() {
     assert_eq!(fake.signals, ["-INT", "-TERM"]);
     assert!(record.resources.lease.unwrap().lock_dir.exists());
     assert_eq!(
-        receipt.failure.unwrap().recovery.unwrap().reason,
+        failure_recovery(receipt.failure.as_ref().unwrap()).reason,
         RecoveryReason::IdentityMismatch
     );
 }
@@ -580,7 +584,11 @@ fn automatic_cleanup_stays_graceful_and_projects_the_supported_next_step() {
     assert!(record.resources.lease.unwrap().lock_dir.exists());
     let failure = receipt.failure.unwrap();
     assert_eq!(failure.code, FailureCode::CleanupIncomplete);
-    assert_eq!(failure.recovery.unwrap().next_rung, Some(2));
+    let recovery = failure_recovery(&failure);
+    assert_eq!(recovery.next_rung, Some(2));
+    assert!(recovery.ladder[1]
+        .instruction
+        .contains("qaren cleanup orphan-run --json"));
     assert_eq!(receipt.next_action, failure.next_action.as_str());
 }
 
@@ -596,7 +604,7 @@ fn retirement_storage_failure_retains_driver_device_and_lease_even_if_final_save
         assert_eq!(receipt.result, ReceiptResult::Failed);
         assert_eq!(failure.code, FailureCode::RunRecordUpdateFailed);
         assert_eq!(
-            failure.recovery.as_ref().unwrap().reason,
+            failure_recovery(&failure).reason,
             RecoveryReason::StorageFailed
         );
         assert_eq!(failure.next_action.as_str(), receipt.next_action);
@@ -660,7 +668,7 @@ fn final_save_failure_reports_the_lease_that_was_actually_released() {
         FailureCode::RunRecordUpdateFailed
     );
     assert_eq!(
-        receipt.failure.unwrap().recovery.unwrap().action,
+        failure_recovery(receipt.failure.as_ref().unwrap()).action,
         RecoveryAction::RepairRecordStorage
     );
     std::fs::remove_dir(fake.storage_block()).unwrap();
@@ -807,7 +815,7 @@ fn simulator_runner_app_without_a_host_driver_has_a_terminal_supported_next_step
     assert!(record.resources.lease.unwrap().lock_dir.exists());
     let failure = receipt.failure.unwrap();
     assert_eq!(failure.code, FailureCode::OwnershipUnproven);
-    let recovery = failure.recovery.unwrap();
+    let recovery = failure_recovery(&failure);
     assert_eq!(recovery.reason, RecoveryReason::HostCleanupFailed);
     assert_eq!(recovery.action, RecoveryAction::RequestExactSimulatorShutdown);
     assert_eq!(recovery.next_rung, Some(3));
@@ -894,7 +902,7 @@ fn failed_explicit_host_cleanup_retains_the_lease_and_selects_exact_shutdown_adv
         assert!(fake.signals.is_empty(), "{fault}");
         let failure = receipt.failure.unwrap();
         assert_eq!(failure.next_action.as_str(), receipt.next_action);
-        let recovery = failure.recovery.unwrap();
+        let recovery = failure_recovery(&failure);
         if matches!(fault, "host_lease_changed" | "host_token_changed" | "host_lease_changed_after" | "host_core_changed") {
             let expected_reason = if fault == "host_core_changed" { RecoveryReason::CoreUnproven } else { RecoveryReason::LeaseUnproven };
             assert_eq!(recovery.reason, expected_reason, "{fault}");
