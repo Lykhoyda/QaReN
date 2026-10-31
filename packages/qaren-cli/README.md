@@ -2426,13 +2426,17 @@ groups are never escalation targets.
 Refused or unresolved core or driver cleanup leaves the host untouched
 and retains the lease. Automatic teardown also retains any present or unknown host.
 Explicit cleanup retains it unless the host recovery proof above succeeds.
-Cleanup rechecks an unknown
-host observation up to three times, 200 ms apart, keeping the inventory and scoped
-process-list commands' own 30- and 20-second limits. After terminating an owned host,
-the same bounded reads allow its exit to settle. An unanswered or malformed read
-never proves absence; a persistent unknown still requires later cleanup and retains
-the lease. When the pre-attach host
-probe cannot answer, the receipt records `runner_host_probe: unknown`. External cleanup of a leased
+Automatic teardown rechecks an unknown host observation up to three times,
+200 ms apart, keeping the inventory and scoped process-list commands' own 30- and
+20-second limits. Explicit cleanup refuses an unreadable inventory or foreign runner
+candidate immediately. After terminating an owned host, it polls a valid inventory
+up to three times, 200 ms apart, to allow its exit to settle. An unanswered or malformed
+read never proves absence and retains the lease. When the pre-attach host
+probe cannot answer, the receipt records `runner_host_probe: unknown`.
+External cleanup refuses the whole run without teardown or saving when a recorded
+core or runner driver has a proven live qaren owner. An unknown or missing owner
+refuses core and driver cleanup; other legs retain their own ownership gates.
+External cleanup of a leased
 borrowed iOS simulator refuses before producer mutation, lease release or saving unless
 the recorded qaren owner is proved gone, including restart-only and not-yet-armed runs.
 When `--shutdown-device-on-exit`
@@ -3983,15 +3987,8 @@ simulator can be borrowed instead; see
   forwarded port cannot expose the next lease. A `cleaned`
   verdict that cannot be persisted downgrades to `failed` with a retry.
   Anything unprovable is a structured refusal (`OWNERSHIP_UNPROVEN`, exit 4)
-  — never a guess. When a core is recorded and the recorded qaren owner's
-  process identity is proven still alive, `cleanup` refuses the whole run
-  before any resource teardown and leaves `run.json` unchanged; finish or
-  stop that run first. If the owner identity is unknown or missing, only
-  core cleanup is refused; other cleanup legs and record persistence proceed
-  under their existing ownership checks. A dead owner or reused owner PID
-  permits core cleanup under its existing process-group proofs. Runs without
-  a recorded core retain their existing cleanup behavior, including build
-  cleanup.
+  — never a guess. For owner-liveness checks and the stricter recorded iOS
+  runner recovery requirements, see the [iOS cleanup contract](#ios-admission-and-cleanup).
 - **Storage accounting preserves ownership.** Successful owned simulator
   deletion reports its measured data-directory bytes, or an unknown byte count
   if measurement was unavailable, including pending-allocation recovery.
