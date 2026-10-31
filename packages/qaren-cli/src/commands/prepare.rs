@@ -212,6 +212,7 @@ pub(crate) fn finish_receipt(ctx: Ctx, result: ReceiptResult, failure: Option<Fa
     receipt.recovery = failure.as_ref().and_then(|f| f.build_recovery().cloned());
     receipt.failure = failure;
     receipt.next_action = next_action;
+    super::cleanup::project_runner_recovery(&mut receipt, &ctx.record);
     receipt.commands_executed = ctx.runner.commands_executed();
     for (label, ms) in &ctx.timings {
         receipt.timings_ms.insert(label.clone(), *ms);

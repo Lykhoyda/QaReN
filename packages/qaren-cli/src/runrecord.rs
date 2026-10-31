@@ -358,8 +358,14 @@ pub struct Resources {
     pub recorder: Option<RecorderResource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runner_host: Option<RunnerHostResource>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub runner_host_absent: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runner_drivers: Vec<RunnerDriverResource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner_driver_cleanup: Option<RunnerDriverCleanup>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner_cleanup_cause: Option<crate::failure::RecoveryReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr_worktree: Option<PrWorktreeResource>,
     // A borrowed device is never deleted; iOS simulator stop requires an explicit bounded intent.
@@ -887,4 +893,62 @@ fn probe_pid_birth_until(
         return (PidLiveness::Dead, true);
     }
     (PidLiveness::AliveMatching, true)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunnerDriverCleanup {
+    pub details: RunnerDriverDetails,
+    pub retired: Vec<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunnerDriverDetails {
+    pub result: RunnerDriverResult,
+    pub signals: Vec<RunnerSignal>,
+    pub identity_matched: bool,
+    pub drivers: Vec<RunnerDriverDetail>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunnerDriverDetail {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liveness: Option<RunnerDriverLiveness>,
+    pub result: RunnerDriverResult,
+    pub signals: Vec<RunnerSignal>,
+    pub identity_matched: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<crate::failure::RecoveryReason>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunnerDriverResult {
+    Reaped,
+    Removed,
+    Absent,
+    Refused,
+    Unresolved,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum RunnerSignal {
+    Int,
+    Term,
+    Kill,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunnerDriverLiveness {
+    pub driver: RunnerPresence,
+    pub group: RunnerPresence,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunnerPresence {
+    Present,
+    Absent,
+    Foreign,
+    Unknown,
 }

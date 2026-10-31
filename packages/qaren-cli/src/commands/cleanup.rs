@@ -1,3 +1,6 @@
+mod runner;
+pub use runner::RunnerCleanupPolicy;
+
 use crate::adapters::{android, ios, metro};
 use crate::exec::{CmdOutput, CmdSpec, Runner};
 use crate::failure::{Failure, FailureCode};
@@ -135,7 +138,25 @@ pub fn cleanup_with_orphan_locks(
     run_id: &str,
     remove_app: Option<&str>,
 ) -> Receipt {
-    let mut receipt = cleanup_with(runner, runs_root, run_id, remove_app);
+    cleanup_with_orphan_locks_policy(
+        runner,
+        runs_root,
+        lock_root,
+        run_id,
+        remove_app,
+        RunnerCleanupPolicy::GracefulOnly,
+    )
+}
+
+pub fn cleanup_with_orphan_locks_policy(
+    runner: &mut dyn Runner,
+    runs_root: &Path,
+    lock_root: Option<&Path>,
+    run_id: &str,
+    remove_app: Option<&str>,
+    policy: RunnerCleanupPolicy,
+) -> Receipt {
+    let mut receipt = cleanup_with_policy(runner, runs_root, run_id, remove_app, None, policy);
     let unavailable = receipt
         .failure
         .as_ref()
@@ -221,6 +242,24 @@ pub fn cleanup_with_runtime(
     remove_app: Option<&str>,
     runtime_context: Option<(&Path, &Path)>,
 ) -> Receipt {
+    cleanup_with_policy(
+        runner,
+        runs_root,
+        run_id,
+        remove_app,
+        runtime_context,
+        RunnerCleanupPolicy::GracefulOnly,
+    )
+}
+
+pub fn cleanup_with_policy(
+    runner: &mut dyn Runner,
+    runs_root: &Path,
+    run_id: &str,
+    remove_app: Option<&str>,
+    runtime_context: Option<(&Path, &Path)>,
+    policy: RunnerCleanupPolicy,
+) -> Receipt {
     let mut cleanup_runner = crate::exec::CleanupRunner(runner);
     let runner: &mut dyn Runner = &mut cleanup_runner;
     let mut record = match RunRecord::load(runs_root, run_id) {
@@ -239,6 +278,7 @@ pub fn cleanup_with_runtime(
             return receipt;
         }
     };
+    record.resources.runner_cleanup_cause = None;
     if let Some(confirmation) = remove_app {
         if let Err(detail) = removal_confirmed(&record, confirmation) {
             let mut receipt = Receipt::new(
@@ -272,6 +312,8 @@ pub fn cleanup_with_runtime(
 
     let owner_refusal =
         || Outcome::Refused("the run's qaren process is alive or unproven gone".to_string());
+    let had_runner =
+        !record.resources.runner_drivers.is_empty() || record.resources.runner_host.is_some();
     let producers = record.resources.core.is_some() || !record.resources.runner_drivers.is_empty();
     // A held pool creation lock means the creator may still be counting, creating or enrolling.
     let guarded_simulator = !record.resources.can_release_borrowed_ios_stop()
@@ -287,6 +329,9 @@ pub fn cleanup_with_runtime(
         || (guarded_simulator
             && !matches!(owner, Some(PidLiveness::Dead | PidLiveness::AliveForeign)))
     {
+        if had_runner {
+            mark_runner_reason(&mut record, crate::failure::RecoveryReason::OwnerUnproven);
+        }
         return finish_cleanup(
             runner,
             runs_root,
@@ -333,8 +378,9 @@ pub fn cleanup_with_runtime(
     if !record.resources.runner_drivers.is_empty() {
         let owner_gone = matches!(owner, Some(PidLiveness::Dead | PidLiveness::AliveForeign));
         let outcome = if owner_gone {
-            cleanup_runner_drivers(runner, &mut record, runs_root)
+            cleanup_runner_drivers_with_policy(runner, &mut record, runs_root, policy)
         } else {
+            mark_runner_reason(&mut record, crate::failure::RecoveryReason::OwnerUnproven);
             Some(owner_refusal())
         };
         if let Some(outcome) = outcome {
@@ -342,7 +388,18 @@ pub fn cleanup_with_runtime(
         }
     }
 
-    if let Some(outcome) = cleanup_runner_host(runner, &record) {
+    if let Some(outcome) = cleanup_runner_host_with_policy(runner, &mut record, runs_root, policy) {
+        if policy == RunnerCleanupPolicy::ReapRecordedDriver
+            && !outcome.clean()
+            && record.resources.runner_drivers.is_empty()
+            && runner::core_quiescent(&record)
+            && record.resources.runner_cleanup_cause.is_none()
+        {
+            mark_runner_reason(
+                &mut record,
+                crate::failure::RecoveryReason::HostCleanupFailed,
+            );
+        }
         outcomes.push(("runner_host".to_string(), outcome));
     }
 
@@ -375,12 +432,27 @@ pub fn cleanup_with_runtime(
                         owner_alive,
                         runtime_context,
                     )
-                } else if !record.resources.can_release_build_ownership() {
-                    Outcome::Unresolved(
-                        "build process cleanup is unproven; simulator retained".into(),
-                    )
                 } else {
-                    cleanup_simulator(runner, &sim.udid, &sim.name)
+                    let destruction_refusal = if !record.resources.can_release_build_ownership() {
+                        Some(Outcome::Unresolved(
+                            "build process cleanup is unproven; simulator retained".into(),
+                        ))
+                    } else if !producers_quiescent(&outcomes)
+                        || record.resources.core.is_some()
+                        || !record.resources.runner_drivers.is_empty()
+                        || (had_runner
+                            && !outcomes
+                                .iter()
+                                .any(|(leg, outcome)| leg == "runner_host" && outcome.clean()))
+                    {
+                        Some(Outcome::Unresolved(
+                            "producer cleanup or runner host absence is unproven; simulator retained"
+                                .into(),
+                        ))
+                    } else {
+                        None
+                    };
+                    cleanup_simulator(runner, &sim.udid, &sim.name, destruction_refusal)
                 };
                 outcomes.push(("simulator".to_string(), outcome));
             }
@@ -693,13 +765,69 @@ fn finish_cleanup(
     outcomes: Vec<(String, Outcome)>,
     persist: bool,
 ) -> Receipt {
+    use crate::failure::RecoveryReason;
+    let runner_reason = record.resources.runner_cleanup_cause.or_else(|| {
+        record
+            .resources
+            .runner_driver_cleanup
+            .as_ref()
+            .and_then(|e| {
+                e.details
+                    .drivers
+                    .iter()
+                    .filter_map(|d| d.reason)
+                    .find(|r| {
+                        matches!(
+                            r,
+                            RecoveryReason::IdentityMismatch
+                                | RecoveryReason::IdentityUnknown
+                                | RecoveryReason::CommandIneligible
+                                | RecoveryReason::LeaseUnproven
+                                | RecoveryReason::OwnerUnproven
+                                | RecoveryReason::CoreUnproven
+                        )
+                    })
+                    .or_else(|| e.details.drivers.iter().find_map(|d| d.reason))
+            })
+    });
+    let independent_refusal = outcomes.iter().any(|(leg, outcome)| {
+        matches!(outcome, Outcome::Refused(_))
+            && (runner_reason.is_none()
+                || !matches!(
+                    leg.as_str(),
+                    "runner_driver" | "runner_host" | "device_lease" | "simulator"
+                ))
+    });
+    if runner_reason.is_none()
+        && (record.resources.runner_driver_cleanup.is_some()
+            || record.resources.runner_host.is_some())
+        && outcomes
+            .iter()
+            .any(|(leg, o)| leg == "runner_host" && !o.clean())
+    {
+        mark_runner_reason(record, RecoveryReason::HostRemaining);
+    }
     let all_clean = outcomes.iter().all(|(_, o)| o.clean());
     let any_refused = outcomes
         .iter()
         .any(|(_, o)| matches!(o, Outcome::Refused(_)));
     let result = if all_clean {
         ReceiptResult::Cleaned
-    } else if any_refused {
+    } else if independent_refusal
+        || (any_refused && runner_reason == Some(RecoveryReason::HostCleanupFailed))
+        || (any_refused && runner_reason.is_none())
+        || runner_reason.is_some_and(|r| {
+            matches!(
+                r,
+                RecoveryReason::IdentityMismatch
+                    | RecoveryReason::IdentityUnknown
+                    | RecoveryReason::CommandIneligible
+                    | RecoveryReason::LeaseUnproven
+                    | RecoveryReason::OwnerUnproven
+                    | RecoveryReason::CoreUnproven
+            )
+        })
+    {
         ReceiptResult::Refused
     } else {
         ReceiptResult::Failed
@@ -722,9 +850,7 @@ fn finish_cleanup(
     } else {
         Ok(())
     };
-    // A cleaned verdict that could not be made durable is not a cleaned run:
-    // the next status would read the stale phase and contradict this receipt.
-    // The receipt must also carry the durable phase, not the in-memory one.
+    // A failed save cannot make a cleaned phase durable.
     let result = match (&save_result, result) {
         (Err(_), ReceiptResult::Cleaned) => {
             record.phase = prev_phase;
@@ -808,7 +934,22 @@ fn finish_cleanup(
         )),
         _ => None,
     };
+    if record.resources.runner_cleanup_cause == Some(RecoveryReason::StorageFailed) {
+        receipt.result = ReceiptResult::Failed;
+        receipt.failure = Some(Failure::new(
+            "cleanup",
+            FailureCode::RunRecordUpdateFailed,
+            "runner cleanup evidence could not be persisted; ownership was retained",
+            "restore run record storage",
+        ));
+    }
     if let Err(save_failure) = save_result {
+        if record.resources.runner_driver_cleanup.is_some()
+            || !record.resources.runner_drivers.is_empty()
+        {
+            mark_runner_reason(record, RecoveryReason::StorageFailed);
+            receipt.result = ReceiptResult::Failed;
+        }
         receipt.outcomes.insert(
             "record_saved".to_string(),
             format!("failed: {}", save_failure.detail),
@@ -831,6 +972,7 @@ fn finish_cleanup(
             .map(|f| f.next_action.to_string())
             .unwrap_or_default(),
     };
+    project_runner_recovery(&mut receipt, record);
     receipt.commands_executed = runner.commands_executed();
     super::attach_artifacts(&mut receipt, runs_root, &record);
     receipt
@@ -1215,7 +1357,7 @@ fn remove_app_install(
 pub(crate) fn cleanup_scoped_runner_hosts(runner: &mut dyn Runner, udid: &str) -> Outcome {
     let mut cleanup_runner = crate::exec::CleanupRunner(runner);
     let runner: &mut dyn Runner = &mut cleanup_runner;
-    match settled_runner_hosts(runner, udid, false) {
+    match settled_runner_hosts(runner, udid, false, RunnerCleanupPolicy::GracefulOnly) {
         ios::RunnerHostPresence::Absent => Outcome::Absent,
         ios::RunnerHostPresence::Present => Outcome::Unresolved(
             "runner host present without exact process ownership; left untouched".into(),
@@ -1230,10 +1372,21 @@ fn settled_runner_hosts(
     runner: &mut dyn Runner,
     udid: &str,
     after_terminate: bool,
+    policy: RunnerCleanupPolicy,
 ) -> ios::RunnerHostPresence {
     let mut presence = ios::RunnerHostPresence::Unknown;
     for attempt in 0..3 {
-        presence = ios::probe_runner_hosts(runner, udid);
+        presence = if policy == RunnerCleanupPolicy::ReapRecordedDriver {
+            match ios::probe_runner_host_inventory(runner, udid) {
+                Some(inventory) if inventory.foreign_runner => {
+                    return ios::RunnerHostPresence::Unknown
+                }
+                Some(inventory) => inventory.presence(),
+                None => return ios::RunnerHostPresence::Unknown,
+            }
+        } else {
+            ios::probe_runner_hosts(runner, udid)
+        };
         if presence == ios::RunnerHostPresence::Absent
             || (presence == ios::RunnerHostPresence::Present && !after_terminate)
         {
@@ -1253,7 +1406,7 @@ fn cleanup_owned_runner_host(
 ) -> Outcome {
     let mut cleanup_runner = crate::exec::CleanupRunner(runner);
     let runner: &mut dyn Runner = &mut cleanup_runner;
-    match settled_runner_hosts(runner, &host.udid, false) {
+    match settled_runner_hosts(runner, &host.udid, false, RunnerCleanupPolicy::GracefulOnly) {
         ios::RunnerHostPresence::Absent => return Outcome::Absent,
         ios::RunnerHostPresence::Unknown => {
             return Outcome::Unresolved(
@@ -1262,7 +1415,7 @@ fn cleanup_owned_runner_host(
         }
         ios::RunnerHostPresence::Present => {}
     }
-    match settled_runner_hosts(runner, &host.udid, true) {
+    match settled_runner_hosts(runner, &host.udid, true, RunnerCleanupPolicy::GracefulOnly) {
         ios::RunnerHostPresence::Absent => Outcome::Absent,
         ios::RunnerHostPresence::Present => Outcome::Unresolved(
             "runner host remains; automation shutdown is unproven; left untouched".into(),
@@ -1273,117 +1426,399 @@ fn cleanup_owned_runner_host(
     }
 }
 
-// Each recorded driver group is signaled only while its recorded leader identity still matches.
+fn runner_host_reap_proof(
+    runner: &mut dyn Runner,
+    record: &RunRecord,
+    runs_root: &Path,
+) -> Result<(), crate::failure::RecoveryReason> {
+    use crate::failure::RecoveryReason;
+    let Ok(saved) = RunRecord::load(runs_root, &record.run_id) else {
+        return Err(RecoveryReason::LeaseUnproven);
+    };
+    let drivers_retired = |record: &RunRecord| {
+        record.resources.runner_drivers.is_empty()
+            && record
+                .resources
+                .runner_driver_cleanup
+                .as_ref()
+                .is_some_and(|e| {
+                    !e.retired.is_empty()
+                        && e.retired.len() == e.details.drivers.len()
+                        && e.retired.iter().all(|retired| *retired)
+                        && e.details.drivers.iter().all(|d| {
+                            matches!(
+                                d.result,
+                                crate::runrecord::RunnerDriverResult::Absent
+                                    | crate::runrecord::RunnerDriverResult::Removed
+                                    | crate::runrecord::RunnerDriverResult::Reaped
+                            )
+                        })
+                })
+    };
+    if !runner::device_lease_matches(record, &saved) {
+        return Err(RecoveryReason::LeaseUnproven);
+    }
+    let Some(owner) = saved.prepare.as_ref() else {
+        return Err(RecoveryReason::OwnerUnproven);
+    };
+    if !matches!(
+        probe_pid_identity(runner, owner),
+        PidLiveness::Dead | PidLiveness::AliveForeign
+    ) {
+        return Err(RecoveryReason::OwnerUnproven);
+    }
+    if !runner::core_quiescent(record) || !runner::core_quiescent(&saved) {
+        return Err(RecoveryReason::CoreUnproven);
+    }
+    if !drivers_retired(record) || !drivers_retired(&saved) {
+        return Err(RecoveryReason::HostCleanupFailed);
+    }
+    if record.resources.runner_host.as_ref().is_some_and(|host| {
+        record
+            .resources
+            .ios_simulator
+            .as_ref()
+            .is_none_or(|sim| host.udid != sim.udid)
+    }) {
+        return Err(RecoveryReason::LeaseUnproven);
+    }
+    Ok(())
+}
+
+fn cleanup_explicit_runner_hosts(
+    runner: &mut dyn Runner,
+    record: &mut RunRecord,
+    runs_root: &Path,
+    udid: &str,
+) -> Outcome {
+    let Some(inventory) = ios::probe_runner_host_inventory(runner, udid) else {
+        return Outcome::Refused("runner host inventory is unreadable; left untouched".into());
+    };
+    if inventory.foreign_runner {
+        return Outcome::Refused(
+            "runner host inventory includes a foreign runner candidate; left untouched".into(),
+        );
+    }
+    if inventory.bundle_ids.is_empty() {
+        return Outcome::Absent;
+    }
+    for (index, bundle) in inventory.bundle_ids.into_iter().enumerate() {
+        if index > 0 {
+            let Some(current) = ios::probe_runner_host_inventory(runner, udid) else {
+                return Outcome::Refused(
+                    "runner host inventory is unreadable; lease retained".into(),
+                );
+            };
+            if current.foreign_runner {
+                return Outcome::Refused(
+                    "runner host inventory includes a foreign runner candidate; lease retained"
+                        .into(),
+                );
+            }
+            if !current.bundle_ids.contains(&bundle) {
+                continue;
+            }
+        }
+        if let Err(reason) = runner_host_reap_proof(runner, record, runs_root) {
+            mark_runner_reason(record, reason);
+            return Outcome::Refused(
+                "runner host cleanup authority is unproven; left untouched".into(),
+            );
+        }
+        let output = runner.run(&ios::terminate_spec(udid, bundle));
+        if !output.ok() || !output.stderr.is_empty() {
+            return Outcome::Unresolved(
+                "runner host termination did not complete; lease retained".into(),
+            );
+        }
+    }
+    let presence =
+        settled_runner_hosts(runner, udid, true, RunnerCleanupPolicy::ReapRecordedDriver);
+    if let Err(reason) = runner_host_reap_proof(runner, record, runs_root) {
+        mark_runner_reason(record, reason);
+        return Outcome::Refused("runner host cleanup authority changed; lease retained".into());
+    }
+    match presence {
+        ios::RunnerHostPresence::Absent => Outcome::Removed,
+        ios::RunnerHostPresence::Present => {
+            Outcome::Unresolved("runner host remains after termination; lease retained".into())
+        }
+        ios::RunnerHostPresence::Unknown => Outcome::Refused(
+            "runner host inventory is unreadable or includes a foreign runner candidate after termination; lease retained".into(),
+        ),
+    }
+}
+
 pub(crate) fn cleanup_runner_drivers(
     runner: &mut dyn Runner,
     record: &mut RunRecord,
     runs_root: &Path,
 ) -> Option<Outcome> {
+    cleanup_runner_drivers_with_policy(runner, record, runs_root, RunnerCleanupPolicy::GracefulOnly)
+}
+
+fn cleanup_runner_drivers_with_policy(
+    runner: &mut dyn Runner,
+    record: &mut RunRecord,
+    runs_root: &Path,
+    policy: RunnerCleanupPolicy,
+) -> Option<Outcome> {
+    use crate::runrecord::{RunnerDriverCleanup, RunnerDriverResult};
     if record.resources.runner_drivers.is_empty() {
         return None;
     }
     let mut outcomes = Vec::new();
     let mut kept = Vec::new();
+    let mut details = Vec::new();
+    let mut retired = Vec::new();
     for driver in record.resources.runner_drivers.clone() {
-        let outcome = cleanup_ios_automation_group(runner, Some(&driver.identity), driver.pgid);
+        let detail = match policy {
+            RunnerCleanupPolicy::GracefulOnly => {
+                runner::graceful(runner, Some(&driver.identity), driver.pgid)
+            }
+            RunnerCleanupPolicy::ReapRecordedDriver => {
+                runner::reap(runner, record, runs_root, &driver)
+            }
+        };
+        let outcome = runner::outcome(&detail);
+        retired.push(outcome.clean());
         if !outcome.clean() {
             kept.push(driver);
         }
         outcomes.push(outcome);
+        details.push(detail);
     }
-    let previous = std::mem::replace(&mut record.resources.runner_drivers, kept);
+    let mut prior_retired = vec![false; details.len()];
+    if let Some(previous) = record.resources.runner_driver_cleanup.as_ref().filter(|p| {
+        p.retired.len() == p.details.drivers.len()
+            && p.retired.iter().filter(|retired| !**retired).count() == details.len()
+    }) {
+        prior_retired = previous.retired.clone();
+        let mut pending = details.into_iter().zip(retired);
+        let merged: Vec<_> = previous
+            .details
+            .drivers
+            .iter()
+            .zip(&previous.retired)
+            .map(|(old, retired)| {
+                if *retired {
+                    return (old.clone(), true);
+                }
+                let (mut detail, retired) = pending.next().unwrap();
+                detail.identity_matched = (old.signals.is_empty() || old.identity_matched)
+                    && (detail.signals.is_empty() || detail.identity_matched);
+                if runner::outcome(&detail).clean()
+                    && old.signals.iter().any(|s| {
+                        matches!(
+                            s,
+                            crate::runrecord::RunnerSignal::Term
+                                | crate::runrecord::RunnerSignal::Kill
+                        )
+                    })
+                {
+                    detail.result = RunnerDriverResult::Reaped;
+                }
+                let mut signals = old.signals.clone();
+                signals.extend(detail.signals);
+                detail.signals = signals;
+                (detail, retired)
+            })
+            .collect();
+        (details, retired) = merged.into_iter().unzip();
+    }
+    record.resources.runner_host_absent = false;
+    let previous_drivers = std::mem::replace(&mut record.resources.runner_drivers, kept);
+    let aggregate = aggregate_driver_details(details);
+    record.resources.runner_driver_cleanup = Some(RunnerDriverCleanup {
+        details: aggregate,
+        retired,
+    });
     if record.save(runs_root).is_err() {
-        record.resources.runner_drivers = previous;
+        record.resources.runner_drivers = previous_drivers;
+        let evidence = record.resources.runner_driver_cleanup.as_mut().unwrap();
+        evidence.retired = prior_retired;
+        mark_runner_reason(record, crate::failure::RecoveryReason::StorageFailed);
         return Some(Outcome::Unresolved(
             "runner driver retirement could not be persisted".into(),
         ));
     }
-    let removed = outcomes
-        .iter()
-        .any(|outcome| matches!(outcome, Outcome::Removed | Outcome::RemovedBytes(_)));
     Some(
         outcomes
             .into_iter()
-            .find(|outcome| !outcome.clean())
-            .unwrap_or(if removed {
-                Outcome::Removed
-            } else {
-                Outcome::Absent
+            .find(|o| !o.clean())
+            .unwrap_or_else(|| {
+                if record
+                    .resources
+                    .runner_driver_cleanup
+                    .as_ref()
+                    .unwrap()
+                    .details
+                    .result
+                    == RunnerDriverResult::Absent
+                {
+                    Outcome::Absent
+                } else {
+                    Outcome::Removed
+                }
             }),
     )
 }
 
-// Interrupt only the driver so XCTest can cancel its session before its helpers exit.
+fn aggregate_driver_details(
+    drivers: Vec<crate::runrecord::RunnerDriverDetail>,
+) -> crate::runrecord::RunnerDriverDetails {
+    use crate::runrecord::RunnerDriverResult::*;
+    let result = if drivers.iter().any(|d| d.result == Refused) {
+        Refused
+    } else if drivers.iter().any(|d| d.result == Unresolved) {
+        Unresolved
+    } else if drivers.iter().any(|d| d.result == Reaped) {
+        Reaped
+    } else if drivers.iter().any(|d| d.result == Removed) {
+        Removed
+    } else {
+        Absent
+    };
+    let signals = drivers
+        .iter()
+        .flat_map(|d| d.signals.iter().copied())
+        .collect();
+    let identity_matched = drivers
+        .iter()
+        .filter(|d| !d.signals.is_empty())
+        .all(|d| d.identity_matched);
+    crate::runrecord::RunnerDriverDetails {
+        result,
+        signals,
+        identity_matched,
+        drivers,
+    }
+}
+
+fn mark_runner_reason(record: &mut RunRecord, reason: crate::failure::RecoveryReason) {
+    record.resources.runner_cleanup_cause = Some(reason);
+}
+
+pub(crate) fn project_runner_recovery(receipt: &mut Receipt, record: &RunRecord) {
+    use crate::failure::{Recovery, RecoveryReason};
+    if let Some(evidence) = &record.resources.runner_driver_cleanup {
+        receipt.cleanup_details = Some(crate::receipt::CleanupDetails {
+            runner_driver: evidence.details.clone(),
+        });
+    }
+    let reason = record.resources.runner_cleanup_cause.or_else(|| {
+        record
+            .resources
+            .runner_driver_cleanup
+            .as_ref()
+            .and_then(|e| {
+                e.details
+                    .drivers
+                    .iter()
+                    .filter_map(|d| d.reason)
+                    .min_by_key(|reason| match reason {
+                        RecoveryReason::StorageFailed => 0,
+                        RecoveryReason::IdentityMismatch
+                        | RecoveryReason::IdentityUnknown
+                        | RecoveryReason::CommandIneligible
+                        | RecoveryReason::LeaseUnproven
+                        | RecoveryReason::OwnerUnproven
+                        | RecoveryReason::CoreUnproven => 1,
+                        _ => 2,
+                    })
+            })
+    });
+    let Some(reason) = reason else {
+        return;
+    };
+    let Some(failure) = &mut receipt.failure else {
+        return;
+    };
+    let destroys_state = record.resources.ios_simulator.is_some()
+        && (!record.resources.device_borrowed || !record.resources.can_release_borrowed_ios_stop());
+    let recovery = Recovery::ios_runner(
+        reason,
+        &record.run_id,
+        destroys_state,
+        false,
+        record.resources.device_borrowed,
+    );
+    failure.next_action =
+        crate::redact::OutputText::from_output(&recovery.runner_next_action(&record.run_id));
+    *failure = failure.clone().with_recovery(recovery.clone());
+    receipt.recovery = Some(recovery);
+    receipt.next_action = failure.next_action.to_string();
+}
+
 pub(crate) fn cleanup_ios_automation_group(
     runner: &mut dyn Runner,
     identity: Option<&PidIdentity>,
     pgid: i32,
 ) -> Outcome {
-    let mut cleanup_runner = crate::exec::CleanupRunner(runner);
-    let runner: &mut dyn Runner = &mut cleanup_runner;
-    if pgid < 2 {
-        return Outcome::Refused("invalid iOS automation process group".into());
-    }
-    runner.try_reap(pgid);
-    match metro::group_presence(runner, pgid) {
-        metro::GroupPresence::Absent => return Outcome::Absent,
-        metro::GroupPresence::Unknown => {
-            return Outcome::Unresolved("iOS automation group inventory is unknown".into())
-        }
-        metro::GroupPresence::Present => {}
-    }
-    let Some(identity) = identity.filter(|identity| identity.pid == pgid) else {
-        return Outcome::Unresolved("iOS automation driver identity is unproven".into());
-    };
-    if probe_pid_identity(runner, identity) != PidLiveness::AliveMatching {
-        runner.sleep(Duration::from_millis(300));
-        runner.try_reap(pgid);
-        return match metro::group_presence(runner, pgid) {
-            metro::GroupPresence::Absent => Outcome::Absent,
-            _ => Outcome::Unresolved("iOS automation driver ownership is unproven".into()),
-        };
-    }
-    if !crate::runrecord::probe_pid_birth(runner, identity).1 {
-        return Outcome::Unresolved("iOS automation driver birth changed; left untouched".into());
-    }
-    runner.run(&CmdSpec::new(
-        "kill-group",
-        "/bin/kill",
-        &["-INT", "--", &pgid.to_string()],
-        10,
-    ));
-    for _ in 0..30 {
-        runner.sleep(Duration::from_secs(1));
-        runner.try_reap(pgid);
-        match metro::group_presence(runner, pgid) {
-            metro::GroupPresence::Absent => return Outcome::Removed,
-            metro::GroupPresence::Unknown => break,
-            metro::GroupPresence::Present => {}
-        }
-        if probe_pid_identity(runner, identity) != PidLiveness::AliveMatching {
-            break;
-        }
-    }
-    Outcome::Unresolved(
-        "iOS automation did not finish graceful cancellation; left untouched".into(),
-    )
+    runner::outcome(&runner::graceful(runner, identity, pgid))
 }
 
-pub(crate) fn cleanup_runner_host(runner: &mut dyn Runner, record: &RunRecord) -> Option<Outcome> {
+pub(crate) fn cleanup_runner_host(
+    runner: &mut dyn Runner,
+    record: &mut RunRecord,
+    runs_root: &Path,
+) -> Option<Outcome> {
+    cleanup_runner_host_with_policy(runner, record, runs_root, RunnerCleanupPolicy::GracefulOnly)
+}
+
+fn cleanup_runner_host_with_policy(
+    runner: &mut dyn Runner,
+    record: &mut RunRecord,
+    runs_root: &Path,
+    policy: RunnerCleanupPolicy,
+) -> Option<Outcome> {
     let mut cleanup_runner = crate::exec::CleanupRunner(runner);
     let runner: &mut dyn Runner = &mut cleanup_runner;
-    let sim = record.resources.ios_simulator.as_ref()?;
+    let udid = record.resources.ios_simulator.as_ref()?.udid.clone();
     if record.resources.core.is_none()
         && record.resources.core_cleanup.is_none()
         && record.resources.runner_host.is_none()
+        && record.resources.runner_driver_cleanup.is_none()
+        && record.resources.runner_drivers.is_empty()
     {
         return None;
     }
-    let lease = record.resources.lease.as_ref()?;
+    let completed = record.resources.runner_host_absent
+        && record.resources.runner_drivers.is_empty()
+        && runner::core_quiescent(record)
+        && record
+            .resources
+            .runner_driver_cleanup
+            .as_ref()
+            .is_none_or(|e| {
+                e.retired.len() == e.details.drivers.len()
+                    && e.retired.iter().all(|retired| *retired)
+            });
+    let Some(lease) = record.resources.lease.as_ref() else {
+        return if completed {
+            None
+        } else {
+            if policy == RunnerCleanupPolicy::ReapRecordedDriver {
+                mark_runner_reason(record, crate::failure::RecoveryReason::LeaseUnproven);
+            }
+            Some(Outcome::Refused(
+                "runner host lease proof is missing; left untouched".into(),
+            ))
+        };
+    };
     let held = crate::buildplan::read_holder(&lease.lock_dir)
         .is_some_and(|h| h.holder == lease.holder && h.run_id == record.run_id);
     if !held {
-        return None;
+        return if completed {
+            None
+        } else {
+            if policy == RunnerCleanupPolicy::ReapRecordedDriver {
+                mark_runner_reason(record, crate::failure::RecoveryReason::LeaseUnproven);
+            }
+            Some(Outcome::Refused(
+                "runner host lease proof does not match; left untouched".into(),
+            ))
+        };
     }
     if record.resources.core.is_some()
         || record
@@ -1407,10 +1842,23 @@ pub(crate) fn cleanup_runner_host(runner: &mut dyn Runner, record: &RunRecord) -
             "runner driver quiescence is unproven; runner host left untouched".into(),
         ));
     }
-    Some(match record.resources.runner_host.as_ref() {
-        Some(host) if host.udid == sim.udid => cleanup_owned_runner_host(runner, host),
-        _ => cleanup_scoped_runner_hosts(runner, &sim.udid),
-    })
+    let outcome = if policy == RunnerCleanupPolicy::ReapRecordedDriver {
+        cleanup_explicit_runner_hosts(runner, record, runs_root, &udid)
+    } else {
+        match record.resources.runner_host.as_ref() {
+            Some(host) if host.udid == udid => cleanup_owned_runner_host(runner, host),
+            _ => cleanup_scoped_runner_hosts(runner, &udid),
+        }
+    };
+    record.resources.runner_host_absent = outcome.clean();
+    if outcome.clean() && record.save(runs_root).is_err() {
+        record.resources.runner_host_absent = false;
+        mark_runner_reason(record, crate::failure::RecoveryReason::StorageFailed);
+        return Some(Outcome::Unresolved(
+            "runner host absence could not be persisted".into(),
+        ));
+    }
+    Some(outcome)
 }
 
 // Releases what a run put on a borrowed emulator: its Metro reverse and the core's runner.
@@ -2095,7 +2543,12 @@ pub(crate) fn cleanup_borrowed_ios(
     outcome
 }
 
-fn cleanup_simulator(runner: &mut dyn Runner, udid: &str, expected_name: &str) -> Outcome {
+fn cleanup_simulator(
+    runner: &mut dyn Runner,
+    udid: &str,
+    expected_name: &str,
+    destruction_refusal: Option<Outcome>,
+) -> Outcome {
     let list = runner.run(&ios::list_devices_spec());
     if !list.ok() {
         return Outcome::Unresolved(format!("simctl list failed: {}", list.summary()));
@@ -2131,6 +2584,9 @@ fn cleanup_simulator(runner: &mut dyn Runner, udid: &str, expected_name: &str) -
             }
         }
     };
+    if let Some(refusal) = destruction_refusal {
+        return refusal;
+    }
     if state == "Booted" {
         let shutdown = runner.run(&ios::shutdown_spec(&resolved_udid));
         if !shutdown.ok() {
@@ -2274,6 +2730,21 @@ mod integrity_tests {
     }
 
     #[test]
+    fn missing_group_does_not_retire_a_live_recorded_driver() {
+        let mut runner = MockRunner::new();
+        let identity = PidIdentity {
+            pid: 9000,
+            started_at: BIRTH.into(),
+            command: crate::redact::OutputText::from_output("xcodebuild"),
+        };
+        runner.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+        runner.expect_run("lstart=", CmdOutput::success(BIRTH));
+        runner.expect_run("stat=", CmdOutput::success("S"));
+        assert!(!cleanup_ios_automation_group(&mut runner, Some(&identity), 9000).clean());
+        assert!(runner.calls.iter().all(|s| s.program != "/bin/kill"));
+    }
+
+    #[test]
     fn automation_cancellation_never_escalates_when_initialization_does_not_settle() {
         let mut runner = MockRunner::new();
         let identity = crate::runrecord::PidIdentity {
@@ -2405,7 +2876,7 @@ mod integrity_tests {
                 CmdOutput::success("12\t/owned/simulator/data\n"),
             );
             runner.expect_run("simctl delete AAAA-1111", CmdOutput::success(""));
-            let outcome = cleanup_simulator(&mut runner, udid, "qaren-run");
+            let outcome = cleanup_simulator(&mut runner, udid, "qaren-run", None);
             assert!(outcome.clean());
             assert_eq!(outcome.render(), "removed (reclaimed 12288 bytes)");
             assert_eq!(runner.remaining(), 0);

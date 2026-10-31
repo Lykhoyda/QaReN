@@ -2440,10 +2440,11 @@ the driver to exit before falling back to `SIGTERM`, then `SIGKILL` after a
 can skip the request or interrupt these waits. Unknown process identity refuses
 termination with `RUNNER_ADOPTION_REQUIRED` rather than authorizing signals.
 
-Before runner readiness, cleanup interrupts only the `xcodebuild` driver and
+Before runner readiness, graceful cleanup interrupts only the `xcodebuild` driver and
 waits for its exit without force-killing its initializing XCTest helpers. The
-native iOS suite and recorded-driver recovery use the same driver-only
-interrupt, allowing up to 30 seconds for graceful cancellation. If group absence
+native iOS suite and automatic recorded-driver teardown use the same driver-only
+interrupt, allowing up to 30 seconds for graceful cancellation. Explicit cleanup
+can escalate under the ownership requirements below. If group absence
 remains unproven, cleanup retains the resources and lease.
 A failed startup also retains its driver handle until exit is proven; a surviving
 driver blocks replacement with `RUNNER_ADOPTION_REQUIRED`.
@@ -2462,22 +2463,74 @@ belong to a later run. This observation never changes the run result,
 and an absent note does not prove that SpringBoard stayed healthy.
 
 Cleanup proves owned process-group and exact-simulator runner-host absence
-before releasing the lease. When the leased simulator had no runner host as the
+before releasing the lease, even when the driver's original group has disappeared.
+Driver retirement must be saved before host, simulator or lease cleanup proceeds;
+a failed save retains ownership. Both automatic teardown and explicit cleanup save
+positive runner-host absence proof before releasing the lease; a failed checkpoint
+retains ownership. A later cleanup can
+use that saved completion to finish remaining work, such as PR worktree removal,
+after the lease is gone or belongs to a later run, without touching that run's host.
+A missing lease alone never proves completion. Simulator shutdown or deletion still
+requires fresh ownership and absence checks. Temporary simulator deletion also
+requires producer and host absence. Borrowed simulators normally remain intact; a previously authorized
+borrowed stop or pooled shutdown loses volatile state, and temporary deletion loses
+app data. A final record-save failure reports failure and the actual lease outcome.
+
+`cleanup.runner_driver` keeps its string result (`removed` after a successful reap).
+Optional `cleanup_details.runner_driver` records aggregate and per-driver results,
+attempted signals and matched identity evidence without process ids, commands or paths.
+Retained-driver failures synchronize `failure.next_action` and top-level `next_action`
+with `failure.recovery` (`key: ios_runner_cleanup`), extending the existing recovery
+ladder. Follow that advice: explicit owned-runner cleanup is the supported recovery;
+rebuilding cannot clear a surviving driver. If explicit host recovery fails, request
+shutdown of only that simulator, obtain approval first if it is lent, then retry cleanup;
+QaReN has no standalone shutdown command. Missing driver proof means retain and report;
+storage failures require restoring
+write access before one cleanup retry. Fresh preparation follows proven absence.
+An unclean check keeps its original failure code. Its `next_action` follows runner
+recovery advice when present; otherwise it points to this run's cleanup. Lost lease
+or owner proof selects retain-and-report advice, never simulator shutdown.
+
+When the leased simulator had no runner host as the
 core started, the run records the host as its own. Cleanup observes host absence
-after core and driver cleanup; a bundle id alone cannot prove that an automation
-session has finished initializing and does not authorize host termination.
+after core and driver cleanup. Automatic teardown only observes host absence.
+Explicit cleanup may terminate the fixed runner host and test-host bundles only
+with a freshly matching exact-device lease and saved token, durable driver retirement,
+and a complete scoped host inventory without foreign runner candidates.
+Other apps, including the app under test, are ignored. A foreign runner candidate
+has a bundle ID ending in `.xctrunner` or starting with the QaReN runner host
+bundle ID without exactly matching either fixed runner bundle ID.
+It never terminates a configurable app bundle. Each matching constant is terminated
+at most once, followed by bounded absence probes and a durable host checkpoint.
+Any failed command, unreadable inventory or foreign runner candidate, or lost ownership retains the lease.
 The core starts the runner's `xcodebuild` driver in its own
 process group and announces it; the CLI records that group with the driver's
 identity and interrupts that driver alone only while that identity still
-matches. Refused or unresolved core or driver cleanup leaves the host untouched
-and retains the lease. A host that was already running, or any
-present or unknown host after that, retains the lease. Cleanup rechecks an unknown
-host observation up to three times, 200 ms apart, keeping the inventory and scoped
-process-list commands' own 30- and 20-second limits. After terminating an owned host,
-the same bounded reads allow its exit to settle. An unanswered or malformed read
-never proves absence; a persistent unknown still requires later cleanup and retains
-the lease. When the pre-attach host
-probe cannot answer, the receipt records `runner_host_probe: unknown`. External cleanup of a leased
+matches. Automatic teardown, dead-holder reclaim and native-suite cancellation
+send only INT and wait up to 30 one-second polls. Explicit `qaren cleanup <run-id> --json`
+may then send TERM to that positive recorded PID, wait 1500 ms, and, if fresh proof
+still matches, send KILL and wait 300 ms. Each explicit signal requires a fresh
+same-birth, non-zombie process, the exact lossless recorded command and native argv,
+a matching complete runner invocation for the recorded simulator, the run's held
+device lease, and proven owner/core exit. Current and legacy runner commands are
+eligible only when their full historical bytes remain available; redacted,
+truncated or ambiguous identities refuse. Unknown or foreign processes and helper
+groups are never escalation targets.
+
+Refused or unresolved core or driver cleanup leaves the host untouched
+and retains the lease. Automatic teardown also retains any present or unknown host.
+Explicit cleanup retains it unless the host recovery proof above succeeds.
+Automatic teardown rechecks an unknown host observation up to three times,
+200 ms apart, keeping the inventory and scoped process-list commands' own 30- and
+20-second limits. Explicit cleanup refuses an unreadable inventory or foreign runner
+candidate immediately. After terminating an owned host, it polls a valid inventory
+up to three times, 200 ms apart, to allow its exit to settle. An unanswered or malformed
+read never proves absence and retains the lease. When the pre-attach host
+probe cannot answer, the receipt records `runner_host_probe: unknown`.
+External cleanup refuses the whole run without teardown or saving when a recorded
+core or runner driver has a proven live qaren owner. An unknown or missing owner
+refuses core and driver cleanup; other legs retain their own ownership gates.
+External cleanup of a leased
 borrowed iOS simulator refuses before producer mutation, lease release or saving unless
 the recorded qaren owner is proved gone, including restart-only and not-yet-armed runs.
 When `--shutdown-device-on-exit`
@@ -4052,15 +4105,8 @@ simulator can be borrowed instead; see
   forwarded port cannot expose the next lease. A `cleaned`
   verdict that cannot be persisted downgrades to `failed` with a retry.
   Anything unprovable is a structured refusal (`OWNERSHIP_UNPROVEN`, exit 4)
-  — never a guess. When a core is recorded and the recorded qaren owner's
-  process identity is proven still alive, `cleanup` refuses the whole run
-  before any resource teardown and leaves `run.json` unchanged; finish or
-  stop that run first. If the owner identity is unknown or missing, only
-  core cleanup is refused; other cleanup legs and record persistence proceed
-  under their existing ownership checks. A dead owner or reused owner PID
-  permits core cleanup under its existing process-group proofs. Runs without
-  a recorded core retain their existing cleanup behavior, including build
-  cleanup.
+  — never a guess. For owner-liveness checks and the stricter recorded iOS
+  runner recovery requirements, see the [iOS cleanup contract](#ios-admission-and-cleanup).
 - **Storage accounting preserves ownership.** Successful owned simulator
   deletion reports its measured data-directory bytes, or an unknown byte count
   if measurement was unavailable, including pending-allocation recovery.
@@ -4300,6 +4346,9 @@ now encoded once and replayed deterministically.
 - **Process-birth precision:** the [cleanup contract](#preparation-ownership-and-safety-rules)
   uses `ps lstart` for CLI process groups, allowing owned launcher exec
   transitions; same-second PID reuse on macOS remains a residual risk.
+  Explicit runner recovery additionally compares the complete historical command
+  and current native argv, but same-second reuse with an identical command and the
+  observation-to-signal race remain possible under the trusted-record model.
 - **ANDROID_HOME is an environment prerequisite.** The resolved adb path is
   validated at prepare time and recorded in the run record; status/cleanup
   reuse the recorded path, never the ambient env.

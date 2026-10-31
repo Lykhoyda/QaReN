@@ -1070,6 +1070,7 @@ fn run_inner(
             Ok(child) => child,
             Err(f) => return finish_failed(ctx, f),
         };
+        ctx.record.resources.runner_host_absent = false;
         ctx.record.resources.core = Some(crate::runrecord::CoreResource {
             pgid: core_child.pid,
             identity: capture_pid_identity(ctx.runner, core_child.pid),
@@ -1524,8 +1525,17 @@ fn run_inner(
         for (name, rendered) in cleanup {
             receipt.cleanup.insert(name, rendered);
         }
-        if !all_clean {
-            receipt.next_action = format!("qaren cleanup {run_id} --json");
+        if !all_clean
+            && receipt
+                .recovery
+                .as_ref()
+                .is_none_or(|r| r.key.as_deref() != Some("ios_runner_cleanup"))
+        {
+            let next = format!("qaren cleanup {run_id} --json");
+            if let Some(failure) = &mut receipt.failure {
+                failure.next_action = crate::redact::OutputText::from_output(&next);
+            }
+            receipt.next_action = next;
         }
         receipt
     };
@@ -2006,7 +2016,9 @@ fn teardown(
     ) {
         outcomes.push(("runner_driver".to_string(), outcome));
     }
-    if let Some(outcome) = crate::commands::cleanup::cleanup_runner_host(ctx.runner, &ctx.record) {
+    if let Some(outcome) =
+        crate::commands::cleanup::cleanup_runner_host(ctx.runner, &mut ctx.record, &ctx.runs_root)
+    {
         outcomes.push(("runner_host".to_string(), outcome));
     }
     // A live recorder still addresses the device, so it gates the lease like the hosts do.

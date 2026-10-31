@@ -242,6 +242,7 @@ fn suite(runner: &mut MockRunner, exit: Option<i32>) {
 
 fn absent_group(runner: &mut MockRunner) {
     runner.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    runner.expect_run("ps -p 9000 -o lstart=", CmdOutput::success(""));
 }
 
 fn scoped_hosts(runner: &mut MockRunner, output: CmdOutput) {
@@ -265,6 +266,7 @@ fn scoped_cleanup_releases_despite_an_unrelated_controller_without_post_admissio
     preflight(&mut runner, "Booted");
     suite(&mut runner, Some(65));
     runner.expect_run("ps -A", CmdOutput::success("1 1 S\n777 777 S\n"));
+    runner.expect_run("ps -p 9000 -o lstart=", CmdOutput::success(""));
     absent_hosts(&mut runner);
     let record = native_suite::run(&mut runner, DEVICE).unwrap();
     assert_eq!(record.suite_exit, Some(65));
@@ -293,6 +295,7 @@ fn old_retained_suite_recovers_with_fresh_scoped_proof_and_preserves_exit_65() {
     qaren::buildplan::save_json(&record_path(&home), &old).unwrap();
     runner.expect_run("lstart=", CmdOutput::failed(1, ""));
     runner.expect_run("ps -A", CmdOutput::success("1 1 S\n777 777 S\n"));
+    runner.expect_run("ps -p 9000 -o lstart=", CmdOutput::success(""));
     absent_hosts(&mut runner);
     let recovered = native_suite::recover(&mut runner, &record.run_id).unwrap();
     assert_eq!(recovered.suite_exit, Some(65));
