@@ -45,7 +45,7 @@ and [iOS admission diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/p
 
 | Code                     | What happened                                                    | What to do                                              |
 | ------------------------ | ---------------------------------------------------------------- | ------------------------------------------------------- |
-| `PLAN_STEP_FAILED`       | A step or check failed; the detail names the line and what was seen | Read the report, fix the app or the plan, then re-run |
+| `PLAN_STEP_FAILED`       | A step or check failed; the detail names the line and what was seen | Follow `next_action` and the [screen evidence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence) for target diagnostics and repeat guidance |
 | `CORE_REFUSED`           | The screen layer refused; the detail starts with its own code    | Resolve that refusal, then re-run                       |
 | `PRESS_NOT_REGISTERED`   | The selection effect could not be verified                       | Follow the [press evidence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#occluded-taps-and-focus) |
 | `BLOCK_START_MISSING`    | The block's declared start was absent; this is a typed refusal with exit code 4 | Follow the [saved-block contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#saved-blocks) |
@@ -57,7 +57,7 @@ The screen layer's own codes appear at the start of `failure.detail` or in the r
 
 | Screen code                  | Meaning                                                                       |
 | ---------------------------- | ----------------------------------------------------------------------------- |
-| `TARGET_AMBIGUOUS`           | A quoted target, or a phrase target's scrolled-out name matches, matched two or more elements; each candidate is listed by kind, `testID` and frame. Use a unique `testID` or label. |
+| `TARGET_AMBIGUOUS`           | A quoted target, or a phrase target's scrolled-out name matches, matched two or more elements; interpret the latest controls and suggested edit using the [screen evidence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence). |
 | `TARGET_NOT_FOUND`           | A target did not resolve on screen                                            |
 | `TARGET_REACT_ONLY`          | A quoted wait repeatedly found only a React-mounted match without native visibility; follow the [wait evidence and recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence) for diagnostic fields, iOS scroll recovery and next steps |
 | `TARGET_WAIT_TIMEOUT`        | A wait's first capture did not complete; follow the [wait evidence and recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence) for deadline details and next steps |

@@ -658,6 +658,21 @@ pub struct LedgerFailure {
         deserialize_with = "passive"
     )]
     pub kind: Option<FailureKind>,
+    // Target-class failures only; a malformed screen is dropped rather than refusing the ledger.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub screen: Option<crate::failure::ScreenNow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggestion: Option<crate::redact::OutputText>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub subreason: Option<String>,
 }
 
 // Only a plan step's own judgment is a step failure; anything else, or an older core, has no kind.
@@ -1569,6 +1584,9 @@ fn synthesized_failure(rows: &[Row], seen: &str) -> LedgerFailure {
         seen: seen.to_string(),
         screenshot: last.and_then(|row| row.screenshot.clone()),
         kind: None,
+        screen: None,
+        suggestion: None,
+        subreason: None,
     }
 }
 

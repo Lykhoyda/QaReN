@@ -11,13 +11,14 @@ use crate::config::CheckConfig;
 use crate::core::{self, Budgets, CoreRequest, CoreTarget, Verdict};
 use crate::events::{self, StageState};
 use crate::exec::{CmdSpec, Runner};
-use crate::failure::{Failure, FailureCode};
+use crate::failure::{Failure, FailureCode, Repeat};
 use crate::github::{self, PrInfo};
 use crate::lease;
 use crate::publish::PrRunRecord;
 use crate::receipt::{Receipt, ReceiptResult};
 use crate::recipes;
 use crate::record::{self, VideoStatus};
+use crate::redact::OutputText;
 use crate::report::{self, ReportInput};
 use crate::runrecord::{
     capture_pid_identity, BorrowedEmulatorResource, FinalVerification, IosSimResource, Phase,
@@ -633,6 +634,8 @@ fn run_inner(
         scenario,
         scenario_path: req.config_path.clone(),
         scenario_sha256: sha256_hex(config_raw.as_bytes()),
+        plan_sha256: Some(plan_identity(&plan).0),
+        plan_marker_lines: Some(plan_identity(&plan).1),
         candidate: cand,
         phase: Phase::Created,
         substage: None,
@@ -1293,28 +1296,26 @@ fn run_inner(
             ctx.notes
                 .push(("media_withheld".to_string(), entry.receipt_note()));
         }
+        let boundary = |core: &dyn Fn() -> Failure| {
+            walk_failure(
+                outcome.failure.clone(),
+                core,
+                outcome.ledger.failure.as_ref(),
+                &ctx.runs_root,
+                &ctx.record,
+            )
+        };
         let (mut result, mut failure) = match &outcome.verdict {
             Verdict::Pass => (ReceiptResult::Pass, None),
-            Verdict::Fail => {
-                let failure = outcome.failure.clone().unwrap_or_else(|| {
-                    let (step, seen) = outcome
-                        .ledger
-                        .failure
-                        .as_ref()
-                        .map(|f| (f.step, f.seen.clone()))
-                        .unwrap_or((0, "the plan did not pass".to_string()));
-                    Failure::new(
-                        "walk",
-                        FailureCode::PlanStepFailed,
-                        format!("line {step}: {seen}"),
-                        "read the report, fix the app or the plan, then re-run",
-                    )
-                });
-                (ReceiptResult::Fail, Some(failure))
-            }
+            Verdict::Fail => (
+                ReceiptResult::Fail,
+                Some(boundary(&|| {
+                    plan_step_failure(outcome.ledger.failure.as_ref())
+                })),
+            ),
             Verdict::Refused { code, message } => (
                 ReceiptResult::Refused,
-                Some(outcome.failure.clone().unwrap_or_else(|| {
+                Some(boundary(&|| {
                     Failure::new(
                         "prove",
                         refusal_code(code),
@@ -2656,6 +2657,121 @@ impl Drop for RunDirClaim {
     }
 }
 
+// A failed plan step; walk_failure adds the core's target diagnostics.
+fn plan_step_failure(ledger: Option<&core::LedgerFailure>) -> Failure {
+    let Some(seen) = ledger else {
+        return Failure::new(
+            "walk",
+            FailureCode::PlanStepFailed,
+            "line 0: the plan did not pass",
+            "read the report, fix the app or the plan, then re-run",
+        );
+    };
+    let mut failure = Failure::new(
+        "walk",
+        FailureCode::PlanStepFailed,
+        format!("line {}: {}", seen.step, seen.seen),
+        "read the report, fix the app or the plan, then re-run",
+    );
+    failure.step = Some(seen.step);
+    failure
+}
+
+// Forward target diagnostics while preserving the failure code and matching repeats.
+fn walk_failure(
+    cli: Option<Failure>,
+    core: &dyn Fn() -> Failure,
+    ledger: Option<&core::LedgerFailure>,
+    runs_root: &Path,
+    record: &RunRecord,
+) -> Failure {
+    // A CLI-owned cause (deadline, cancellation, candidate drift) supersedes the walk and keeps its own guidance.
+    let (mut failure, ledger) = match cli {
+        Some(failure) => (failure, None),
+        None => (core(), ledger),
+    };
+    if let Some(seen) = ledger.filter(|seen| {
+        seen.screen.is_some() || seen.suggestion.is_some() || seen.subreason.is_some()
+    }) {
+        failure.step = Some(seen.step);
+        failure.subreason = seen.subreason.clone();
+        failure.screen = seen.screen.clone();
+        if let Some(suggestion) = &seen.suggestion {
+            failure.next_action = suggestion.clone();
+            failure.suggestion = Some(suggestion.clone());
+        }
+    }
+    if let Some(repeat) = repeat_of(runs_root, record, &failure) {
+        failure.next_action = OutputText::from_output(&repeat_note(&failure, &repeat));
+        failure.repeat = Some(repeat);
+    }
+    failure
+}
+
+const REPEAT_SCAN: usize = 20;
+
+// A plan's identity ignores QaReN's own broken markers, so flagging a saved plan does not make it a new plan.
+fn plan_identity(plan: &str) -> (String, u64) {
+    let unmarked = recipes::unmarked(plan);
+    let markers = plan
+        .lines()
+        .count()
+        .saturating_sub(unmarked.lines().count());
+    (sha256_hex(unmarked.as_bytes()), markers as u64)
+}
+
+// Informational: the newest of the last REPEAT_SCAN check runs that failed this plan step the same way on the same recorded revision.
+fn repeat_of(runs_root: &Path, record: &RunRecord, failure: &Failure) -> Option<Repeat> {
+    let plan = record.plan_sha256.as_deref()?;
+    // shortcut: subtracts every marker line, which flag() prepends; a marker a person moves mid-plan shifts only the lines after it, so a step above it would not match.
+    let unmarked_step =
+        |step: u64, record: &RunRecord| step.saturating_sub(record.plan_marker_lines.unwrap_or(0));
+    let step = unmarked_step(failure.step?, record);
+    let mut ids: Vec<String> = std::fs::read_dir(runs_root)
+        .ok()?
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|id| id.starts_with("check-") && *id != record.run_id)
+        .collect();
+    ids.sort_unstable_by(|a, b| b.cmp(a));
+    let same: Vec<String> = ids
+        .into_iter()
+        .take(REPEAT_SCAN)
+        .filter_map(|id| RunRecord::load(runs_root, &id).ok())
+        .filter(|previous| {
+            previous.scenario.platform == record.scenario.platform
+                && previous.candidate.app_id == record.candidate.app_id
+                && previous.candidate.git_sha == record.candidate.git_sha
+                && previous.candidate.worktree_fingerprint == record.candidate.worktree_fingerprint
+                && previous.plan_sha256.as_deref() == Some(plan)
+                && previous.failure.as_ref().is_some_and(|earlier| {
+                    earlier.code == failure.code
+                        && earlier.step.map(|line| unmarked_step(line, previous)) == Some(step)
+                        && earlier.subreason == failure.subreason
+                })
+        })
+        .map(|previous| previous.run_id)
+        .collect();
+    Some(Repeat {
+        previous_run_id: same.first()?.clone(),
+        count: same.len() as u64,
+        same_recorded_revision: true,
+    })
+}
+
+fn repeat_note(failure: &Failure, repeat: &Repeat) -> String {
+    let next = failure.next_action.as_str();
+    if failure.subreason.as_deref() == Some("evidence-incomplete") {
+        return format!(
+            "{next}; the same failure was recorded in run {}",
+            repeat.previous_run_id
+        );
+    }
+    format!(
+        "same failure, plan unchanged: run {} failed the same step the same way on this plan and recorded revision, so a re-run without a plan edit or a changed build is unlikely to differ; {next}",
+        repeat.previous_run_id
+    )
+}
+
 fn claim_run_dir(runs_root: &Path, base_id: &str) -> Result<RunDirClaim, Failure> {
     let cannot = |what: &Path, e: std::io::Error| {
         Failure::new(
@@ -2953,5 +3069,229 @@ fn preflight_inputs(
             },
         ),
         _ => Err(unavailable()),
+    }
+}
+
+#[cfg(test)]
+mod last_screen_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn ledger_failure(screen: Value) -> core::LedgerFailure {
+        serde_json::from_value(json!({
+            "step": 2,
+            "seen": "TARGET_NOT_FOUND: \"Submit\" is not on screen",
+            "suggestion": "the target of line 2 was not on the last observed screen, which lists 1 enabled controls in failure.screen; consider reading that screen in source and inserting the missing step before line 2",
+            "subreason": "absent",
+            "screen": screen,
+        }))
+        .unwrap()
+    }
+
+    fn screen() -> Value {
+        json!({
+            "ageMs": 300, "afterDispatch": false, "front": "app", "coverage": "complete",
+            "controls": [{"role": "button", "id": "qa-next", "label": "Next",
+                "enabled": true, "hittable": true, "offscreen": false}],
+            "counts": {"controls": 1, "enabled": 1, "hidden": 0}
+        })
+    }
+
+    fn record(run_id: &str, git_sha: &str) -> RunRecord {
+        serde_json::from_value(json!({
+            "schema": RUN_SCHEMA, "run_id": run_id, "created_at": "2026-10-30T08:15:00Z",
+            "scenario": {"schema": "qaren/1", "name": "test", "platform": "ios",
+                "candidate": {"project_root": ".", "app_id": "test", "revision": "HEAD"}},
+            "scenario_path": "scenario.yaml", "scenario_sha256": "0", "plan_sha256": "plan",
+            "candidate": {"repo_root": ".", "project_root": ".", "app_id": "test",
+                "git_sha": git_sha, "git_dirty": false, "lockfile_sha256": null},
+            "phase": "cleaned", "prepare": null
+        }))
+        .unwrap()
+    }
+
+    fn runs_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("qaren-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        root
+    }
+
+    // A plan step failure after the shared boundary, with no earlier runs to repeat.
+    fn step_failure(seen: &core::LedgerFailure) -> Failure {
+        let record = record("check-20261030T090000Z", "abc");
+        walk_failure(
+            None,
+            &|| plan_step_failure(Some(seen)),
+            Some(seen),
+            Path::new("/nonexistent-qaren-runs"),
+            &record,
+        )
+    }
+
+    fn save_failed(root: &Path, run_id: &str, git_sha: &str) {
+        let mut earlier = record(run_id, git_sha);
+        earlier.failure = Some(step_failure(&ledger_failure(screen())));
+        earlier.save(root).unwrap();
+    }
+
+    #[test]
+    fn a_target_failure_carries_its_screen_and_suggests_the_plan_edit() {
+        let failure = step_failure(&ledger_failure(screen()));
+        assert_eq!(failure.code, FailureCode::PlanStepFailed);
+        assert_eq!(failure.step, Some(2));
+        assert_eq!(failure.subreason.as_deref(), Some("absent"));
+        assert!(failure
+            .next_action
+            .starts_with("the target of line 2 was not on the last observed screen"));
+        let control = &failure.screen.as_ref().unwrap().controls[0];
+        assert_eq!(control.id.as_deref(), Some("qa-next"));
+        assert!(control.enabled);
+    }
+
+    #[test]
+    fn a_malformed_screen_is_dropped_and_the_fixed_next_action_stays_without_a_suggestion() {
+        let mut seen = ledger_failure(json!({"ageMs": "soon"}));
+        assert!(seen.screen.is_none());
+        seen.suggestion = None;
+        let failure = step_failure(&seen);
+        assert_eq!(
+            failure.next_action.as_str(),
+            "read the report, fix the app or the plan, then re-run"
+        );
+    }
+
+    #[test]
+    fn the_same_failure_on_the_same_plan_and_revision_is_a_repeat() {
+        let root = runs_root("repeat-same");
+        save_failed(&root, "check-20261030T081500Z", "abc");
+        let current = record("check-20261030T082000Z", "abc");
+        let failure = step_failure(&ledger_failure(screen()));
+        let repeat = repeat_of(&root, &current, &failure).unwrap();
+        assert_eq!(repeat.previous_run_id, "check-20261030T081500Z");
+        assert_eq!(repeat.count, 1);
+        assert!(repeat_note(&failure, &repeat)
+            .starts_with("same failure, plan unchanged: run check-20261030T081500Z"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_different_platform_is_no_repeat() {
+        let root = runs_root("repeat-platform");
+        save_failed(&root, "check-20261030T081500Z", "abc");
+        let mut current = record("check-20261030T082000Z", "abc");
+        current.scenario.platform = Platform::Android;
+        let failure = step_failure(&ledger_failure(screen()));
+        assert!(repeat_of(&root, &current, &failure).is_none());
+        current.scenario.platform = Platform::Ios;
+        assert!(repeat_of(&root, &current, &failure).is_some());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_refused_block_start_keeps_its_code_and_carries_the_screen_and_its_repeat() {
+        let root = runs_root("repeat-block-start");
+        let mut seen = ledger_failure(screen());
+        seen.seen = "BLOCK_START_MISSING: the block's quoted start marker is not on screen".into();
+        let refusal = || {
+            Failure::new(
+                "prove",
+                refusal_code("BLOCK_START_MISSING"),
+                "BLOCK_START_MISSING: the block's quoted start marker is not on screen",
+                "resolve the refusal, then re-run",
+            )
+        };
+        let mut first = record("check-20261030T081500Z", "abc");
+        let failure = walk_failure(None, &refusal, Some(&seen), &root, &first);
+        assert_eq!(failure.code, FailureCode::BlockStartMissing);
+        assert_eq!(failure.subreason.as_deref(), Some("absent"));
+        assert!(failure.screen.is_some());
+        assert!(failure.repeat.is_none());
+        assert!(failure.next_action.starts_with("the target of line 2"));
+        first.failure = Some(failure);
+        first.save(&root).unwrap();
+        let again = walk_failure(
+            None,
+            &refusal,
+            Some(&seen),
+            &root,
+            &record("check-20261030T082000Z", "abc"),
+        );
+        assert_eq!(again.code, FailureCode::BlockStartMissing);
+        assert_eq!(
+            again.repeat.as_ref().unwrap().previous_run_id,
+            "check-20261030T081500Z"
+        );
+        assert!(again
+            .next_action
+            .starts_with("same failure, plan unchanged: run check-20261030T081500Z"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_cli_owned_failure_keeps_its_own_guidance_over_the_step_suggestion() {
+        let drift = Failure::new(
+            "verify",
+            FailureCode::CandidateDrifted,
+            "the candidate changed during the walk",
+            "re-run the check against an unchanged candidate",
+        );
+        let failure = walk_failure(
+            Some(drift),
+            &|| unreachable!("a CLI-owned failure supersedes the walk verdict"),
+            Some(&ledger_failure(screen())),
+            Path::new("/nonexistent-qaren-runs"),
+            &record("check-20261030T090000Z", "abc"),
+        );
+        assert_eq!(failure.code, FailureCode::CandidateDrifted);
+        assert_eq!(
+            failure.next_action.as_str(),
+            "re-run the check against an unchanged candidate"
+        );
+        assert!(failure.screen.is_none() && failure.suggestion.is_none());
+    }
+
+    #[test]
+    fn a_saved_plan_flagged_broken_is_still_the_same_failure_on_rerun() {
+        let plan = "## Save\n\n1. Tap \"Submit\"\n";
+        let flagged = format!("<!-- qaren:broken ios -->\n{plan}");
+        let root = runs_root("repeat-flagged");
+        let identify = |record: &mut RunRecord, text: &str| {
+            let (sha, markers) = plan_identity(text);
+            record.plan_sha256 = Some(sha);
+            record.plan_marker_lines = Some(markers);
+        };
+        let mut first = record("check-20261030T081500Z", "abc");
+        identify(&mut first, plan);
+        first.failure = Some(step_failure(&ledger_failure(screen())));
+        first.save(&root).unwrap();
+        // The flag prepends one marker line, so the same step is now on the next physical line.
+        let mut current = record("check-20261030T082000Z", "abc");
+        identify(&mut current, &flagged);
+        assert_eq!(current.plan_sha256, first.plan_sha256);
+        let mut seen = ledger_failure(screen());
+        seen.step = 3;
+        let failure = walk_failure(
+            None,
+            &|| plan_step_failure(Some(&seen)),
+            Some(&seen),
+            &root,
+            &current,
+        );
+        assert_eq!(failure.step, Some(3));
+        assert_eq!(
+            failure.repeat.as_ref().unwrap().previous_run_id,
+            "check-20261030T081500Z"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_different_recorded_revision_is_no_repeat() {
+        let root = runs_root("repeat-revision");
+        save_failed(&root, "check-20261030T081500Z", "abc");
+        let current = record("check-20261030T082000Z", "def");
+        let failure = step_failure(&ledger_failure(screen()));
+        assert!(repeat_of(&root, &current, &failure).is_none());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

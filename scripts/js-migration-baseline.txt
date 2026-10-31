@@ -12,7 +12,6 @@ packages/qaren-core/test/integration/maestro-grammar.test.js
 packages/qaren-core/test/unit/action-inventory.test.js
 packages/qaren-core/test/unit/action-store-splityaml.test.js
 packages/qaren-core/test/unit/android-runner-ports.test.js
-packages/qaren-core/test/unit/android-runner-short-circuit.test.js
 packages/qaren-core/test/unit/android-shortcircuit-ensure.test.js
 packages/qaren-core/test/unit/audit-b2-device-dispatch.test.js
 packages/qaren-core/test/unit/audit-clearstate-standalone.test.js

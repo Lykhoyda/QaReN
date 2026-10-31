@@ -163,7 +163,7 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
     const eligible =
       only &&
       projected.elements.includes(only) &&
-      (visibility || !only.disabled) &&
+      (visibility || !semanticDisabled(only)) &&
       (step.kind !== 'fill' || only.kind === 'input');
     if (!eligible) {
       const count = only ? 0 : identities.length;

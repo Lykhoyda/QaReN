@@ -115,6 +115,47 @@ impl FailureCode {
     }
 }
 
+// The last observed screen of a target-class step failure, as the core projected it under its privacy rules.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenNow {
+    pub age_ms: u64,
+    pub after_dispatch: bool,
+    pub front: String,
+    pub coverage: String,
+    pub controls: Vec<ScreenControl>,
+    pub counts: ControlCounts,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScreenControl {
+    pub role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<OutputText>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<OutputText>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub primary: bool,
+    pub enabled: bool,
+    pub hittable: bool,
+    pub offscreen: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ControlCounts {
+    pub controls: u64,
+    pub enabled: u64,
+    pub hidden: u64,
+}
+
+// An earlier run that failed the same way on the same app, recorded revision and plan.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Repeat {
+    pub previous_run_id: String,
+    pub count: u64,
+    pub same_recorded_revision: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Failure {
     pub phase: String,
@@ -123,6 +164,17 @@ pub struct Failure {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<OutputText>,
     pub next_action: OutputText,
+    // Failed or refused walk steps: the line and, for a target-class failure, its miss reason and screen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subreason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen: Option<ScreenNow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggestion: Option<OutputText>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<Repeat>,
     // Boxed so every Result<_, Failure> keeps its size.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<Box<FailureRecovery>>,
@@ -299,6 +351,11 @@ impl Failure {
             detail: OutputText::from_output(&detail.into()),
             evidence: Vec::new(),
             next_action: OutputText::from_output(&next_action.into()),
+            step: None,
+            subreason: None,
+            screen: None,
+            suggestion: None,
+            repeat: None,
             recovery: None,
         }
     }

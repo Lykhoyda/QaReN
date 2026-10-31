@@ -79,6 +79,9 @@ The fields you read most:
 | `failure.code`         | The typed failure or refusal code                                          |
 | `failure.detail`       | What happened                                                              |
 | `next_action`          | What to do next                                                            |
+| `failure.screen`       | Last-observed controls for a target-class failure; see the [screen evidence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence) for states, primary selection, bounds, privacy and age |
+| `failure.suggestion`   | Suggested plan edit; see the [screen evidence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence) for its relationship to `next_action` |
+| `failure.repeat`       | Earlier matching failure; matching and notice rules follow the [screen evidence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence) |
 | `artifacts.report`     | The path of `report.md`                                                    |
 | `ledger`               | The verdict, the walk path, step and Jev counts, recoveries                |
 | `ledger.blocks`        | Counts of `replayed`, `patched` and `discovered` blocks reached by the run |
@@ -113,7 +116,7 @@ The [run storage contract](https://github.com/Lykhoyda/QaReN/blob/develop/packag
 | ------------------ | ---------------------------------------------------------------- |
 | `run.json`         | The durable run record                                           |
 | `ledger.json`      | Every walked step with its outcome, timing and evidence          |
-| `report.md`        | The human-readable report, value-free                            |
+| `report.md`        | The human-readable report; app text follows the [failure text contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#app-derived-failure-text) |
 | `logs/events.jsonl`| The local event stream that `qaren watch` reads; see the [run identity and privacy contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#watch-a-run) |
 | `logs/core.log`    | The screen child's private log                                   |
 | `logs/core-diagnostics.jsonl` | Private [media-withheld diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#why-were-my-screenshots-withheld), [target-miss diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence), [runtime-input diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs) and [admission recovery timings](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#walk-timing), when emitted |

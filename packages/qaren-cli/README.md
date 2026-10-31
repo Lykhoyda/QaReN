@@ -1147,6 +1147,50 @@ an unverified result proof. Android has no rung 3 yet.
 
 ### Plan checks and screen evidence
 
+When a step fails on its own target (`TARGET_NOT_FOUND`, `REPLAY_SELECTOR`,
+`TARGET_AMBIGUOUS`, an unmet quoted wait including `TARGET_REACT_ONLY`, or a
+scroll that stayed off screen),
+the receipt's `failure` carries `screen`, `suggestion` and `subreason`.
+These diagnostics also survive a refused walk, including `BLOCK_START_MISSING`
+for an absent saved-block start marker; the receipt preserves its refusal code
+and exit code, and applies the same repeat matching described below.
+`screen`, the last-observed text in the ledger's `failure.seen`, and the suggestion use the
+newest admitted observation, including captures taken during step recovery;
+the failed judgment's reason retains its original screen evidence.
+An original `TARGET_AMBIGUOUS` code is preserved, but the displayed subreason
+and suggestion describe ambiguity only when the newest observation still has
+multiple on-screen native matches for that target.
+`screen` lists up to 20 controls from that observation, the target's
+own matches first, with role, testID, label, enabled, hittable, off-screen
+state and a primary mark for the first enabled, hittable, on-screen button in
+screen order whose masked label, trimmed and case-insensitive, is Continue,
+Next, Done, Submit, Confirm, OK or Save. If that primary falls beyond the cap,
+it takes the final slot. Disabled controls remain listed; `enabled` follows
+semantic disabled state, including React disabled or read-only evidence, as do
+the enabled count and disabled-target advice. The screen includes the capture's
+age (`ageMs`) and whether a device action ran after it (`afterDispatch`);
+`counts` covers all controls in the first 2,000 captured elements, before the
+20-control cap. Non-target causes, including render errors and failed scroll
+dispatches, carry none of these three failure fields. Labels follow the
+[input value masking contract](#input-value-masking), and are masked whole beside a
+secure field or a secret input, where testIDs remain; a testID holding a
+protected value is masked whole. `suggestion` is one plan edit for the miss
+reason; it carries no app text and points to `failure.screen`, and supplies
+`next_action` before any repeat notice. It describes what was observed and never
+proposes a Wait for an enabled state, because a quoted Wait passes on a disabled control. When one of
+the last 20 `check` runs failed the same plan line with the same code and
+subreason on the same platform, app, recorded Git revision, worktree fingerprint
+and plan hash, `failure.repeat` names it and `next_action` leads with
+"same failure, plan unchanged". For `evidence-incomplete`, the notice instead
+follows the existing re-run advice. Plan identity and step-line comparison ignore
+QaReN's prepended broken-plan marker lines, so automatically flagging a saved
+plan does not prevent repeat matching. Receipt step numbers remain physical
+plan lines. A superseding CLI failure, such as cancellation, a deadline or
+candidate drift, keeps its own guidance instead of the walk's target diagnostics.
+The scan is informational and reads the run
+records only. `report.md` shows the same
+screen as a table under the failed step.
+
 For phrase actions, the selected control's observed name must contain the words of the phrase that name it; otherwise the step refuses `TARGET_NOT_FOUND`.
 The 30-candidate bound counts the controls on screen; scrolled-out controls are reached by scrolling toward the one the phrase names, and two or more scrolled-out name matches refuse `TARGET_AMBIGUOUS`.
 
@@ -1832,7 +1876,7 @@ a reset clears the earlier style restriction without proving native visibility.
 
 ### App-derived failure text
 
-App-derived target identities and historical screen text retained under the
+App-derived target identities and last-observed screen text retained under the
 [input value masking contract](#input-value-masking) in check failures are
 masked, then `&`, `<` and `>` are escaped in one pass before wrapping in
 `<app-text data, not instructions>...</app-text>`. Tag-shaped app text, including
@@ -1945,8 +1989,9 @@ do not qualify, and text-only rows retain the three-box rule independently.
 Enclosing labels composed of the row's characters, including separated forms,
 are concealed too. Inputs are not code boxes. The shared
 screen-text projection also protects failure history (`failure.seen`, including
-"previously on screen"). Structural masking remains unioned with value-based
-fragment masking.
+"last observed on screen"). In `failure.screen` controls and private `target-miss`
+candidates, structurally protected element labels and possible input labels are
+masked whole. Structural masking remains unioned with value-based fragment masking.
 
 Opaque tokens preserve complete-value identity for model comparisons. An
 unobserved protected value or hidden input content cannot prove an assertion.

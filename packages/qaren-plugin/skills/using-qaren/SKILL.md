@@ -73,7 +73,7 @@ The plan grammar is owned by the CLI README's [Check a plan](https://github.com/
 
 A `PLAN_STEP_FAILED` run can mean the plan was short, not that the app was wrong: its `failure.seen` or the failing step's screenshot shows the app correctly on a screen the plan did not include, such as an empty required field. Report it as a plan gap, not an app defect, and do not treat it as product FAIL evidence. Then:
 
-1. Name the failing plan line and the kind of screen in front: input form, choice or confirmation.
+1. Read `failure.screen`, `failure.suggestion` and `failure.repeat` using the [screen evidence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence), including its repeat and re-run rules, then name the failing plan line and the kind of screen in front: input form, choice or confirmation.
 2. Ask the user for any value that screen needs.
 3. Read that screen in source, edit a temporary draft outside `.qaren/plans/`, and disclose the plan-gap changes.
 4. Run the corrected draft only within the task's authorized run scope.
