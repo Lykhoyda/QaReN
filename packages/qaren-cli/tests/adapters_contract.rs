@@ -1576,14 +1576,14 @@ fn app_removal_parsers_are_strict() {
 
 #[test]
 fn metro_never_passes_ci_into_app_config_evaluation() {
-    let spec = metro::start_spec(Path::new("/repo/app"), 8791);
+    let spec = metro::start_spec(Path::new("/repo/app"), 8791, false);
     assert_eq!(spec.unset, ["CI"]);
     assert!(!spec.env.iter().any(|(k, _)| k == "CI"));
 }
 
 #[test]
 fn metro_logs_each_request_on_receipt_to_the_drained_stderr() {
-    let spec = metro::start_spec(Path::new("/repo/app"), 8791);
+    let spec = metro::start_spec(Path::new("/repo/app"), 8791, false);
     assert!(spec.env.contains(&(
         "DEBUG".to_string(),
         qaren::exec::log::METRO_REQUEST_LOG.to_string()
@@ -1938,4 +1938,24 @@ fn reverse_listed_matches_the_device_side_port_only() {
     let spec =
         android::adb_reverse_list_spec(Path::new("/sdk/platform-tools/adb"), 5147, "emulator-5554");
     assert_eq!(spec.args, ["-s", "emulator-5554", "reverse", "--list"]);
+}
+
+#[test]
+fn expo_is_offline_by_default_and_online_requires_an_explicit_override() {
+    let mut runner = qaren::exec::MockRunner::new();
+    assert!(!metro::expo_online(&runner));
+    for (name, value, online) in [
+        ("EXPO_OFFLINE", "1", false),
+        ("EXPO_OFFLINE", "0", true),
+        ("QAREN_EXPO_ONLINE", "0", false),
+        ("QAREN_EXPO_ONLINE", "1", true),
+    ] {
+        runner.environment.clear();
+        runner.environment.insert(name.into(), value.into());
+        assert_eq!(metro::expo_online(&runner), online);
+        let spec = metro::start_spec(Path::new("/repo/app"), 8791, online);
+        assert!(spec
+            .env
+            .contains(&("EXPO_OFFLINE".into(), if online { "0" } else { "1" }.into())));
+    }
 }

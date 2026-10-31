@@ -9,6 +9,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 mod host;
+mod watchman;
 
 use crate::VERSION;
 const INSTALL: &str = "bash <plugin>/scripts/ensure-qaren.sh --install";
@@ -172,7 +173,7 @@ impl Report {
     }
 }
 
-// Read-only: host probes never change a device or start a service.
+// Host probes never change a device or start a service; watch-project may establish a watch.
 pub fn doctor(
     runner: &mut dyn Runner,
     home: &Path,
@@ -264,6 +265,8 @@ pub fn doctor(
         &runner.env_names(),
     ));
     checks.extend(host::checks(runner, std::env::consts::OS));
+    checks.push(expo_mode(runner));
+    checks.extend(watchman::checks(runner, &app_root));
 
     let build = exe
         .as_deref()
@@ -279,6 +282,14 @@ pub fn doctor(
             qaren_home: qaren_home.to_path_buf(),
         },
         checks,
+    }
+}
+
+fn expo_mode(runner: &dyn Runner) -> Check {
+    if crate::adapters::metro::expo_online(runner) {
+        Check::warn("expo-offline", "Expo online override is active; manifest requests may wait for an account lookup", "unset QAREN_EXPO_ONLINE and EXPO_OFFLINE to restore QaReN's offline default, or set EXPO_OFFLINE=1 without QAREN_EXPO_ONLINE")
+    } else {
+        Check::pass("expo-offline", "QaReN starts Expo offline to avoid account lookups; use QAREN_EXPO_ONLINE=1 or EXPO_OFFLINE=0 when account features are needed")
     }
 }
 
@@ -1739,6 +1750,8 @@ mod tests {
                 runner.expect_run(command, CmdOutput::failed(1, "unavailable"));
             }
         }
+        runner.expect_run("watch-list", CmdOutput::failed(1, "unavailable"));
+        runner.expect_run("watch-project", CmdOutput::failed(1, "unavailable"));
     }
 
     #[test]
@@ -2133,6 +2146,18 @@ mod tests {
     }
 
     #[test]
+    fn expo_mode_names_overrides_without_printing_environment_values() {
+        let mut runner = MockRunner::new();
+        assert_eq!(expo_mode(&runner).status, Status::Pass);
+        runner
+            .environment
+            .insert("QAREN_EXPO_ONLINE".into(), "1".into());
+        let row = expo_mode(&runner);
+        assert_eq!(row.status, Status::Warn);
+        assert!(row.fix.unwrap().contains("unset QAREN_EXPO_ONLINE"));
+    }
+
+    #[test]
     fn pnpm_awaiting_its_first_run_download_says_how_to_finish_it() {
         for refusal in [
             "Network access is disabled by the environment, so the pnpm binary cannot be downloaded.",
@@ -2485,7 +2510,9 @@ mod tests {
             || call.args.iter().any(|arg| arg == "--version"
                 || arg == "-version"
                 || arg == "list"
-                || arg == "rev-parse")));
+                || arg == "rev-parse"
+                || arg == "watch-list"
+                || arg == "watch-project")));
         assert_eq!(s.tree(), before);
         assert_eq!(
             report.exit_code(),
@@ -2509,7 +2536,7 @@ mod tests {
                 "pass"
             }
         );
-        assert_eq!(parsed["checks"].as_array().unwrap().len(), 28);
+        assert_eq!(parsed["checks"].as_array().unwrap().len(), 32);
     }
 
     #[test]

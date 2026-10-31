@@ -93,6 +93,7 @@ exited or Metro has received no bundle request since launch.
 | `install_deps_seconds`  | `900`             |
 | `build_seconds`         | `2400`            |
 | `device_boot_seconds`  | `420`             |
+| `manifest_warmup_seconds` | `420`             |
 | `attach_seconds`       | `120`             |
 
 When an iOS run needs a native build, `build_seconds` is one window that
@@ -109,6 +110,13 @@ retirement runs outside this window. A run that spends it waiting refuses
 `BUILD_CONTENDED` and names the run holding the lock. As for a cached build,
 install, launch and readiness then share a fresh `build_seconds` window, and
 Metro startup has a separate one.
+
+`manifest_warmup_seconds` bounds the `dev_client_manifest` stage independently
+of build time. The remaining preparation budget can shorten it; a 64-attempt
+cap also applies. Exhaustion refuses `MANIFEST_NOT_WARM` with value-free probe
+statistics and a recovery step. QaReN starts Expo offline by default to avoid
+account lookups; set `QAREN_EXPO_ONLINE=1` or `EXPO_OFFLINE=0` when online account
+features are needed.
 
 Each limit is a whole number of seconds from 30 through 7200 inclusive.
 Omit the block, write `deadlines: {}`, or write a bare

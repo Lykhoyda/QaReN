@@ -1,0 +1,169 @@
+use crate::exec::CmdOutput;
+use crate::failure::{Failure, FailureCode};
+
+pub(crate) const CLIENT_TIMEOUT_MS: u64 = 10_000;
+pub(crate) const MAX_ATTEMPTS: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VolumeProbe {
+    Ready,
+    TimedOut,
+    Rejected,
+    Unavailable,
+}
+
+impl VolumeProbe {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::TimedOut => "timed_out",
+            Self::Rejected => "rejected",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+pub(crate) struct Warmup {
+    pub deadline_ms: u64,
+    pub attempts: usize,
+    started_ms: u64,
+    answers_ms: Vec<u64>,
+    timeouts: usize,
+    consecutive: usize,
+    ios: bool,
+    pub request_probe_timed_out: bool,
+    pub request_probe_limit_ms: u64,
+    pub watchman_volume_probe: Option<VolumeProbe>,
+}
+
+impl Warmup {
+    pub fn new(now: u64, seconds: u64, preparation_deadline: u64, ios: bool) -> Self {
+        Self {
+            deadline_ms: preparation_deadline.min(now.saturating_add(seconds.saturating_mul(1000))),
+            attempts: 0,
+            started_ms: now,
+            answers_ms: Vec::new(),
+            timeouts: 0,
+            consecutive: 0,
+            ios,
+            request_probe_timed_out: false,
+            request_probe_limit_ms: 0,
+            watchman_volume_probe: None,
+        }
+    }
+
+    pub fn observe(&mut self, output: &CmdOutput) {
+        self.attempts += 1;
+        self.timeouts += usize::from(output.timed_out);
+        if output.ok() {
+            self.answers_ms.push(output.duration_ms);
+        }
+        let margin = if self.ios {
+            CLIENT_TIMEOUT_MS / 2
+        } else {
+            CLIENT_TIMEOUT_MS
+        };
+        self.consecutive = if output.ok() && output.duration_ms < margin {
+            self.consecutive + 1
+        } else {
+            0
+        };
+    }
+
+    pub fn ready(&self, now: u64) -> bool {
+        now < self.deadline_ms && self.consecutive >= if self.ios { 2 } else { 1 }
+    }
+
+    pub fn can_probe(&self, now: u64) -> bool {
+        self.attempts < MAX_ATTEMPTS && self.deadline_ms.saturating_sub(now) >= 1000
+    }
+
+    pub fn elapsed_ms(&self, now: u64) -> u64 {
+        now.saturating_sub(self.started_ms)
+    }
+
+    pub fn summary(&self) -> String {
+        let mut answers = self.answers_ms.clone();
+        answers.sort_unstable();
+        let median = match answers.len() {
+            0 => "none".to_string(),
+            n if n % 2 == 0 => ((answers[n / 2 - 1] + answers[n / 2]) / 2).to_string(),
+            n => answers[n / 2].to_string(),
+        };
+        format!(
+            "attempts={}; timeouts={}; successful_answers={}; median_answer_ms={median}; min_answer_ms={}; max_answer_ms={}; client_timeout_ms={CLIENT_TIMEOUT_MS}; request_probe_timed_out={}; request_probe_limit_ms={}; watchman_volume_probe={}",
+            self.attempts, self.timeouts, answers.len(),
+            answers.first().map_or("none".into(), u64::to_string),
+            answers.last().map_or("none".into(), u64::to_string),
+            self.request_probe_timed_out, self.request_probe_limit_ms, self.watchman_volume_probe.map_or("not_run", VolumeProbe::as_str),
+        )
+    }
+
+    pub fn refusal(&self) -> Failure {
+        let mut next = if matches!(
+            self.watchman_volume_probe,
+            Some(VolumeProbe::TimedOut | VolumeProbe::Rejected)
+        ) {
+            crate::failure::WATCHMAN_VOLUME_FIX.to_string()
+        } else if self.request_probe_timed_out && self.request_probe_limit_ms == 15_000 {
+            "Metro answered /status but not its request handler within 15 s: the dev server is still starting or its file watcher is stalled; check the candidate volume and qaren doctor, reset watchman after coordinating other sessions, set EXPO_OFFLINE=1, re-run once".to_string()
+        } else {
+            "run qaren doctor and check the candidate volume and watchman health; set EXPO_OFFLINE=1 and re-run once".to_string()
+        };
+        if self.answers_ms.len() >= 3
+            && self
+                .answers_ms
+                .iter()
+                .all(|ms| (25_000..=35_000).contains(ms))
+        {
+            next.push_str("; steady answers near 30 s at low host load can mean Metro's manifest handler is waiting on an external service; set EXPO_OFFLINE=1 or log out of Expo on this machine");
+        }
+        let reason = match self.watchman_volume_probe {
+            Some(VolumeProbe::TimedOut) => "watchman watch-project did not answer within 5 s for the candidate volume".to_string(),
+            Some(VolumeProbe::Rejected) => "watchman rejected watch-project for the candidate directory".to_string(),
+            _ => format!("dev client manifest did not warm within its stage budget or {MAX_ATTEMPTS}-attempt cap"),
+        };
+        Failure::new(
+            "build",
+            FailureCode::ManifestNotWarm,
+            format!("{reason}: {}; median successful answer is compared with the dev client's 10 s limit", self.summary()),
+            next,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_shortened_request_probe_does_not_claim_a_fifteen_second_observation() {
+        let mut warm = Warmup::new(0, 420, 10_000, true);
+        warm.request_probe_timed_out = true;
+        warm.request_probe_limit_ms = 10_000;
+        assert!(!warm.refusal().next_action.contains("within 15 s"));
+        assert!(!warm.can_probe(9_001));
+        assert_eq!(warm.elapsed_ms(5000), 5000);
+    }
+
+    #[test]
+    fn attempt_cap_bounds_zero_time_probes_and_preserves_the_platform_margin() {
+        let mut warm = Warmup::new(0, 420, 2_400_000, true);
+        for _ in 0..MAX_ATTEMPTS {
+            warm.observe(&CmdOutput {
+                timed_out: true,
+                ..Default::default()
+            });
+        }
+        assert!(!warm.can_probe(0));
+        assert!(!warm.ready(0));
+        let mut warm = Warmup::new(1000, 420, 50_000, false);
+        warm.observe(&CmdOutput {
+            duration_ms: 9999,
+            ..CmdOutput::success("")
+        });
+        assert!(warm.ready(2000));
+        assert!(!warm.ready(50_000));
+        assert_eq!(warm.deadline_ms, 50_000);
+    }
+}

@@ -88,3 +88,4 @@ mod tests {
         assert!(qaren_home(None, None).is_err());
     }
 }
+mod manifest;
