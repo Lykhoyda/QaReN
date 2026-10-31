@@ -27,6 +27,10 @@ Refusals exit `4` and mean the run could not start or could not decide; failures
 
 ## Devices
 
+For `BUILD_FAILED` with `cause=toolchain-newer-than-prebuilt` or a doctor
+`native-cache-root` warning, follow the receipt or doctor's next action and the
+[native build recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#native-fingerprint-build-selection).
+
 For `FRESH_INSTALL_ADMISSION_UNKNOWN` or a strict-admission `DEVICE_BUSY`, read the
 probe diagnostics in `failure.detail`; see the authoritative
 [fresh-install contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#fresh-install)

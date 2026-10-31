@@ -20,10 +20,26 @@ owns the guided onboarding procedure; [Check a plan](#check-a-plan) covers manua
 qaren doctor [--json] [--config .qaren/config.yaml] [--device <simulator-UUID>]
 ```
 
+On macOS, `ios-toolchain-match` compares the selected Swift compiler with public
+simulator interfaces in installed `expo-modules-core` and `expo-modules-jsi`
+XCFrameworks, including hoisted packages and packages resolved through the app's
+Expo installation. Failed or conflicting package resolution remains unknown.
+A newer compiler produces a warning, not a compatibility verdict;
+incomplete or ambiguous evidence remains unknown. Doctor skips the
+`expo-modules-core` interface comparison only when installed Pods prove source
+linkage; an export alone is insufficient. Requested source mode with unproven
+installed linkage warns to regenerate Pods. `expo-modules-jsi` interfaces are
+still checked. A `SKIP` means compiler compatibility was not assessed.
+Doctor reads static app config
+without executing it. See [native build recovery](#native-fingerprint-build-selection)
+for the remedies. `native-cache-root` explains a cold cache or unavailable
+storage before a build; neither check installs Pods or changes storage.
+
 Doctor prints the running binary's version, path, build, runtime and the
 [`QAREN_HOME`](#release-and-source-builds-side-by-side) in use, then one
 `PASS`, `WARN`, `FAIL` or `SKIP` row per check, each problem with its manual fix.
-It only reads files and runs bounded version, process-group, inventory and host-statistics probes:
+It only reads files and runs bounded version, package-resolution, process-group,
+inventory and host-statistics probes:
 it never writes, deletes, starts a device or restarts a service. It does not run ADB
 or start an ADB server. In text and JSON output, Doctor never prints
 file contents, environment variable values, credentials or any other config value;
@@ -33,11 +49,14 @@ paths, key names and environment variable names. It exits 1 when any row fails,
 `{identity, checks: [{id, status, detail, fix?}], verdict}` and nothing else.
 
 `FAIL` means `qaren check` cannot run correctly on this host; `WARN` is anything
-that can conflict with a session or is hygiene; `SKIP` is not applicable.
+that can conflict with a session or is hygiene; `SKIP` means the check is not
+applicable or its subject was not assessed, as explained in the row's detail.
 
 | Row | Checks |
 |---|---|
 | `xcode`, `ios-runtime` | `xcodebuild -version`; an available iOS simulator runtime, and the configured `ios.runtime` by name or identifier |
+| `ios-toolchain-match` | Expo interface compiler comparison described above |
+| `native-cache-root` | Cache filesystem availability; see [native build recovery](#native-fingerprint-build-selection) |
 | `node`, `pnpm` | `QAREN_NODE` or `node` on `PATH` is 24 or newer; a configured `nodePath` is only checked to be an executable file, never run; `pnpm` runs |
 | `pnpm-source` | The first executable `pnpm` on `PATH` and its resolved source; an offline exec probe in the app root must prove process-group preservation to pass, otherwise the row warns with the fix for `PNPM_PROCESS_GROUP_UNSUPPORTED`; a probe that times out warns as `PNPM_PROBE_TIMED_OUT` with a re-run step instead of version advice |
 | `corepack`, `cocoapods` | `corepack` and `pod` run (warnings) |
@@ -3774,6 +3793,35 @@ in any of those sections also make it incomplete.
 On iOS the value also binds the selected Xcode (`xcodebuild -version`), so a
 build is never reused across Xcode versions, and an unavailable Xcode makes the
 fingerprint incomplete. Android binds the manifest hash alone.
+
+`DEVELOPER_DIR` and `TOOLCHAINS` select the inherited toolchain. The inherited
+`EXPO_USE_PRECOMPILED_MODULES=0` and `RCT_USE_PREBUILT_RNCORE=0` switches select
+source builds when the app's Podfile honors them; they take effect at pod
+installation, not by changing existing Pods.
+
+An Expo interface build failure retains `BUILD_FAILED`. Only a proven newer host
+compiler adds `cause=toolchain-newer-than-prebuilt`; unproven versions receive
+conditional interface guidance. The observed cause and recovery advice remain
+available when build-group cleanup is incomplete; complete the requested
+`qaren cleanup <run-id> --json` before attempting recovery.
+Follow `next_action`: ask the app owner before
+regenerating generated native files, reinstall Pods with the selected environment
+for tracked native source, update compatible Expo patch versions, or select a
+compatible already-installed Xcode with `DEVELOPER_DIR`. Preserve tracked source
+and manual native changes. A successful recovery `qaren prepare` is Ready and
+still owns resources: complete `qaren cleanup <recovery-run-id> --json` before
+retrying the original command with the same environment. Stop on incomplete
+cleanup. Blind retries, device restarts and cache deletion do not fix a compiler mismatch.
+
+If installed Pods already prove Expo module source linkage and the failing
+interface is `expo-modules-jsi`, repeating the source rebuild is not the next
+step: update compatible `expo-modules-jsi` and `expo-modules-core` patch versions
+or select a compatible installed Xcode with `DEVELOPER_DIR`.
+
+Receipts report normalized `toolchain` information: selected Xcode, Swift version,
+and observed Expo module linkage. Unknown evidence remains unknown. Doctor warns
+when the configured cache volume is unmounted; restore it before building or
+explicitly select a mounted private absolute `QAREN_NATIVE_CACHE_ROOT`.
 
 **Expo native identity (iOS).** When the app's `package.json` declares `expo` in
 `dependencies`, `devDependencies`, `optionalDependencies` or `peerDependencies`,

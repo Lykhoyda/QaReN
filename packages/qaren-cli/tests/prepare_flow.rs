@@ -3715,6 +3715,109 @@ fn build_process_death_fails_with_log_evidence() {
 }
 
 #[test]
+fn expo_interface_failure_keeps_the_cause_and_remedy_after_build_cleanup() {
+    for (explicit_versions, unresolved_cleanup) in
+        [(true, false), (false, false), (true, true), (false, true)]
+    {
+        for placement in ["head", "middle", "tail", "after-long-line"] {
+            let repo = common::temp_repo();
+            let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
+            let mut mock = MockRunner::new();
+            script_validation(&mut mock, &repo, IOS_TOOLS);
+            mock.expect_run("lsof", free_port());
+            mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
+            mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
+            common::script_ios_deps(&mut mock);
+            mock.expect_run("ls-files", CmdOutput::success(""));
+            common::script_xcode(&mut mock);
+            mock.expect_run("simctl create", CmdOutput::success(&format!("{UDID}\n")));
+            mock.expect_run("simctl bootstatus", CmdOutput::success(""));
+            let diagnostic = if explicit_versions {
+                include_str!("fixtures/ios-toolchain-mismatch.txt")
+            } else {
+                "ExpoModulesJSI.swiftinterface: error: cannot find type '__ObjC::expo'\n"
+            };
+            let diagnostic = format!(
+                "ExpoModulesJSI.swiftinterface: error: cannot find type '__ObjC::expo'\n{diagnostic}"
+            );
+            let padding = "unrelated build output\n".repeat(450_000);
+            let body = match placement {
+                "head" => format!("{diagnostic}{padding}"),
+                "middle" => format!("{padding}{diagnostic}{padding}"),
+                "tail" => format!("{padding}{diagnostic}"),
+                _ => format!("{}\n{diagnostic}", "x".repeat(9 * 1024 * 1024)),
+            };
+            mock.build_log = Some(format!("{body}{}", "unrelated build tail\n".repeat(40)));
+            mock.expect_spawn_piped("expo run:ios", 5000, "", Some(65));
+            mock.expect_run("ps", CmdOutput::success(LSTART));
+            mock.expect_run("ps", CmdOutput::success("qaren-build"));
+            mock.expect_run(
+                "ps -A",
+                if unresolved_cleanup {
+                    CmdOutput::failed(1, "inventory unavailable")
+                } else {
+                    CmdOutput::success("1 1 S\n")
+                },
+            );
+            let receipt = prepare(&mut mock, &prepare_args(&scenario_path, false, None));
+            let failure = receipt.failure.as_ref().unwrap();
+            assert_eq!(failure.code, FailureCode::BuildFailed);
+            assert!(!receipt.cleanup.contains_key("metro"));
+            assert_eq!(receipt.next_action, failure.next_action.to_string());
+            assert!(receipt
+                .next_action
+                .starts_with(&format!("qaren cleanup {} --json", receipt.run_id)));
+            let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
+            assert_eq!(
+                record.resources.build_process().is_some(),
+                unresolved_cleanup
+            );
+            assert!(record.resources.metro.is_none());
+            assert_eq!(record.resources.build_lock.is_some(), unresolved_cleanup);
+            if let Some(lock) = &record.resources.build_lock {
+                assert!(lock.lock_dir.is_dir());
+            }
+            assert_eq!(
+                record.failure.as_ref().unwrap().next_action,
+                failure.next_action
+            );
+            assert!(receipt
+                .next_action
+                .contains("EXPO_USE_PRECOMPILED_MODULES=0"));
+            assert!(receipt.next_action.contains("only after cleanup completes"));
+            assert_eq!(
+                receipt.outcomes["recovery_next_rung"],
+                if explicit_versions {
+                    "source-rebuild"
+                } else {
+                    "inspect-interface-compatibility"
+                }
+            );
+            assert!(receipt.outcomes["recovery_unavailable_rungs"].contains("restart-device"));
+            if explicit_versions {
+                assert_eq!(
+                    receipt.outcomes["build_failure_cause"],
+                    "toolchain-newer-than-prebuilt"
+                );
+                assert!(failure.detail.contains("6.3.1"));
+                assert!(failure.detail.contains("6.4"));
+                assert!(failure
+                    .evidence
+                    .iter()
+                    .all(|tail| !tail.contains("ExpoModulesCore")));
+            } else {
+                assert!(!receipt.outcomes.contains_key("build_failure_cause"));
+                assert!(failure.detail.contains("compatibility is unproven"));
+            }
+            let json = serde_json::to_value(&receipt).unwrap();
+            assert_eq!(json["failure"]["code"], "BUILD_FAILED");
+            assert_eq!(json["next_action"], json["failure"]["next_action"]);
+            assert_eq!(mock.remaining(), 0);
+        }
+    }
+}
+
+#[test]
 fn recording_a_build_retires_run_output_and_publishes_to_the_machine_store_without_pruning() {
     let repo = common::temp_repo();
     let scenario_path = write_scenario(

@@ -1111,6 +1111,62 @@ fn finite_build_failures_never_install_or_walk_and_unproven_groups_retain_both_l
 }
 
 #[test]
+fn compiler_cause_and_recovery_survive_clean_and_incomplete_check_teardown() {
+    for incomplete in [false, true] {
+        let (repo, app) = app_repo();
+        let req = request(&repo, &app, 30);
+        let mut mock = MockRunner::new();
+        mock.build_log = Some(include_str!("fixtures/ios-toolchain-mismatch.txt").into());
+        script_preflight(&mut mock, &repo);
+        common::script_ios_deps(&mut mock);
+        mock.expect_run("ls-files", CmdOutput::success(""));
+        script_clean_build_plan(&mut mock);
+        mock.expect_spawn_piped("expo run:ios", 5000, "", Some(65));
+        mock.expect_run("ps", CmdOutput::success(LSTART));
+        mock.expect_run("ps", CmdOutput::success("qaren-build"));
+        for _ in 0..if incomplete { 2 } else { 1 } {
+            mock.expect_run(
+                "ps -A",
+                if incomplete {
+                    CmdOutput::failed(1, "inventory unavailable")
+                } else {
+                    CmdOutput::success("1 1 S\n")
+                },
+            );
+        }
+        let receipt = run(&mut mock, &req);
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(failure.code, FailureCode::BuildFailed);
+        assert_eq!(
+            receipt.outcomes["build_failure_cause"],
+            "toolchain-newer-than-prebuilt"
+        );
+        assert_eq!(receipt.next_action, failure.next_action.to_string());
+        assert!(receipt.next_action.contains("host Swift 6.4"));
+        assert!(receipt.next_action.contains("expo-modules-core"));
+        assert!(receipt
+            .next_action
+            .contains("EXPO_USE_PRECOMPILED_MODULES=0"));
+        let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+        assert_eq!(record.resources.lease.is_some(), incomplete);
+        assert_eq!(record.resources.build_lock.is_some(), incomplete);
+        assert!(record.resources.metro.is_none());
+        if incomplete {
+            assert!(receipt
+                .next_action
+                .starts_with(&format!("qaren cleanup {} --json", receipt.run_id)));
+        } else {
+            assert_eq!(receipt.cleanup["device_lease"], "removed");
+        }
+        assert!(!mock
+            .calls
+            .iter()
+            .any(|c| matches!(c.label.as_str(), "simctl-install" | "core-walk")));
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
 fn workspace_changed_by_clean_prebuild_refuses_before_creating_output_or_building() {
     for symlink in [false, true] {
         let (repo, app) = app_repo();

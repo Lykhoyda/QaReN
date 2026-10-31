@@ -61,6 +61,9 @@ pub(crate) struct Ctx<'a> {
     pub(crate) runs_root: PathBuf,
     pub(crate) native_cache_root: PathBuf,
     pub(crate) native_store_entry: Option<buildplan::NativeStoreEntry>,
+    pub(crate) ios_observation: Option<crate::ios_toolchain::Observation>,
+    pub(crate) linkage_before_build: Option<crate::ios_toolchain::Linkage>,
+    pub(crate) ios_generated_native: bool,
     pub(crate) record: RunRecord,
     pub(crate) started_ms: u64,
     pub(crate) timings: Vec<(String, u64)>,
@@ -77,6 +80,25 @@ pub(crate) struct Ctx<'a> {
 }
 
 impl<'a> Ctx<'a> {
+    fn note_toolchain(&mut self, linkage: crate::ios_toolchain::Mode) {
+        if let Some(observation) = &self.ios_observation {
+            let compiler = &observation.compiler;
+            self.notes.push((
+                "toolchain".into(),
+                format!(
+                    "xcode={}; swift={}; precompiled_modules={}",
+                    compiler.xcode.as_deref().unwrap_or("unknown"),
+                    compiler
+                        .swift
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "unknown".into()),
+                    linkage.as_str()
+                ),
+            ));
+        }
+    }
+
     pub(crate) fn mark(&mut self, label: &str, phase_start_ms: u64) -> u64 {
         let now = self.runner.now_epoch_ms();
         self.timings
@@ -119,9 +141,18 @@ impl<'a> Ctx<'a> {
                 FailureCode::ArtifactInstallFailed | FailureCode::BuildContended
             )
         {
+            let remedy = self
+                .notes
+                .iter()
+                .rev()
+                .find(|(key, _)| {
+                    key == "build_failure_next_action" && failure.code == FailureCode::BuildFailed
+                })
+                .map(|(_, value)| format!("; only after cleanup completes: {value}"))
+                .unwrap_or_default();
             failure.next_action = crate::redact::OutputText::from_output(&format!(
-                "qaren cleanup {} --json",
-                self.record.run_id
+                "qaren cleanup {} --json{remedy}",
+                self.record.run_id,
             ));
         }
         if self.record.resources.any_owned() {
@@ -568,6 +599,9 @@ fn prepare_validated(
         runs_root: args.runs_root.clone(),
         native_cache_root: args.native_cache_root.clone(),
         native_store_entry: None,
+        ios_observation: None,
+        linkage_before_build: None,
+        ios_generated_native: false,
         record,
         started_ms,
         timings: Vec::new(),
@@ -2064,6 +2098,15 @@ pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
     let fp = fingerprint::compute(ctx.runner, &repo_root, &project_root, platform)?
         .with_ios_workspace(ctx.record.scenario.build.ios_workspace.as_ref());
     let state = buildplan::load_state(&repo_root, platform, &ctx.record.candidate.app_id);
+    if let Some(compiler) = &fp.ios_compiler {
+        ctx.ios_generated_native = !fp.native_dir_in_candidate;
+        ctx.ios_observation = Some(crate::ios_toolchain::inspect(
+            ctx.runner,
+            &project_root,
+            compiler.clone(),
+        ));
+        ctx.note_toolchain(crate::ios_toolchain::Linkage::inspect(&project_root).expo);
+    }
     let store = cached_artifact(
         &ctx.native_cache_root,
         platform,
@@ -4208,6 +4251,34 @@ fn run_finite_build(ctx: &mut Ctx, spec: &CmdSpec) -> Result<(), Failure> {
         .with_evidence(vec![super::log_tail(&log, 25)]);
         if crate::redact::is_registry_child(&spec.label) && !spec.registry_auth_env.is_empty() {
             failure.next_action = crate::redact::OutputText::from_output(&format!("dependency output was withheld; check the declared registry auth environment names and registry setup, then qaren cleanup {} --json", ctx.record.run_id));
+        } else if started
+            && exit.is_some_and(|code| code != 0)
+            && ctx.record.scenario.platform == Platform::Ios
+        {
+            if let Some(diagnostic) = inspect_interface_failure(&log, ctx.ios_observation.as_ref())
+            {
+                failure.detail = crate::redact::OutputText::from_output(&diagnostic.detail());
+                let source_mode = ctx
+                    .linkage_before_build
+                    .as_ref()
+                    .map_or(crate::ios_toolchain::Mode::Unknown, |linkage| linkage.expo);
+                let recovery = diagnostic.recovery(
+                    ctx.verb == "prepare" && ctx.ios_generated_native,
+                    source_mode,
+                );
+                let next_action = recovery.next_action;
+                failure.next_action = crate::redact::OutputText::from_output(&next_action);
+                if let Some(cause) = diagnostic.cause() {
+                    ctx.notes.push(("build_failure_cause".into(), cause.into()));
+                }
+                ctx.notes.extend([
+                    ("build_failure_next_action".into(), next_action),
+                    ("recovery_next_rung".into(), recovery.next_rung.into()),
+                    ("recovery_requires_user_ok".into(), recovery.requires_user_ok.to_string()),
+                    ("recovery_destroys_state".into(), recovery.destroys_state.into()),
+                    ("recovery_unavailable_rungs".into(), "blind-retry, restart-app, restart-metro, restart-runner, restart-device, cleanup-as-repair".into()),
+                ]);
+            }
         }
         if windowed {
             failure = failure.with_recovery(if budget_spent && exit.is_none() {
@@ -4219,6 +4290,51 @@ fn run_finite_build(ctx: &mut Ctx, spec: &CmdSpec) -> Result<(), Failure> {
         return Err(failure);
     }
     Ok(())
+}
+
+fn inspect_interface_failure(
+    log: &Path,
+    observation: Option<&crate::ios_toolchain::Observation>,
+) -> Option<crate::ios_toolchain::InterfaceFailure> {
+    use std::io::{BufRead, BufReader, Read};
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(log)
+        .ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    let mut reader = BufReader::new(file.take(metadata.len()));
+    let mut line = Vec::new();
+    let mut fallback = None;
+    loop {
+        line.clear();
+        let length = (&mut reader)
+            .take(64 * 1024 + 1)
+            .read_until(b'\n', &mut line)
+            .ok()?;
+        if length == 0 {
+            return fallback;
+        }
+        if length > 64 * 1024 {
+            if !line.ends_with(b"\n") {
+                reader.skip_until(b'\n').ok()?;
+            }
+            continue;
+        }
+        if let Some(failure) = std::str::from_utf8(&line)
+            .ok()
+            .and_then(|text| crate::ios_toolchain::classify_failure(text, observation))
+        {
+            if failure.cause().is_some() {
+                return Some(failure);
+            }
+            fallback.get_or_insert(failure);
+        }
+    }
 }
 
 pub(crate) fn build_ios_locked(
@@ -4266,6 +4382,9 @@ fn with_build_window<T>(
         runs_root: ctx.runs_root.clone(),
         native_cache_root: ctx.native_cache_root.clone(),
         native_store_entry: ctx.native_store_entry.take(),
+        ios_observation: ctx.ios_observation.take(),
+        linkage_before_build: ctx.linkage_before_build.take(),
+        ios_generated_native: ctx.ios_generated_native,
         record: ctx.record.clone(),
         started_ms: ctx.started_ms,
         timings: std::mem::take(&mut ctx.timings),
@@ -4280,6 +4399,9 @@ fn with_build_window<T>(
     let budget = ensure_build_budget(&mut scoped);
     ctx.record = scoped.record;
     ctx.native_store_entry = scoped.native_store_entry;
+    ctx.ios_observation = scoped.ios_observation;
+    ctx.linkage_before_build = scoped.linkage_before_build;
+    ctx.ios_generated_native = scoped.ios_generated_native;
     ctx.timings = scoped.timings;
     ctx.notes = scoped.notes;
     ctx.bundle_requests_at_launch = scoped.bundle_requests_at_launch;
@@ -4307,6 +4429,9 @@ fn finish_ios_build(
 fn build_ios(ctx: &mut Ctx) -> Result<(), Failure> {
     ensure_running(ctx.runner, "build")?;
     let project_root = ctx.record.candidate.project_root.clone();
+    let linkage = crate::ios_toolchain::Linkage::inspect(&project_root);
+    ctx.note_toolchain(linkage.expo);
+    ctx.linkage_before_build = Some(linkage);
     if let Some(workspace) = ctx.record.scenario.build.ios_workspace.as_ref() {
         ios::validate_workspace(&project_root, workspace)?;
     }
@@ -5386,6 +5511,9 @@ mod launch_tests {
                 runs_root: root.clone(),
                 native_cache_root: root.join("native-store"),
                 native_store_entry: None,
+                ios_observation: None,
+                linkage_before_build: None,
+                ios_generated_native: false,
                 record,
                 started_ms: 0,
                 timings: Vec::new(),
@@ -5406,6 +5534,7 @@ mod launch_tests {
                 parts: Default::default(),
                 expo_fingerprint_ms: None,
                 expo_unavailable: None,
+                ios_compiler: None,
             };
             let retirement = record_build_result(&mut ctx, &fp).unwrap();
             assert!(retirement.is_some(), "{:?}", ctx.notes);
