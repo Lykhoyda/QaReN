@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { awaitChildExit } from '../../dist/runners/rn-fast-runner-client.js';
+import { awaitChildExit } from '../../dist/runners/qaren-ios-runner-client.js';
 
 // GH #629: the first-start retry may only proceed once the failed first launch
 // has provably exited. These exercise the real settle logic against real

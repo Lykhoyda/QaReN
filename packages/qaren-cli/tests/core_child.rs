@@ -2050,7 +2050,7 @@ fn a_step_start_carrying_anything_but_its_identity_is_a_protocol_violation() {
 #[test]
 fn a_runner_driver_is_recorded_only_as_this_simulator_s_own_group_leader() {
     let command = "/usr/bin/xcodebuild test-without-building -project R.xcodeproj -destination platform=iOS Simulator,id=AAAA-1111";
-    let real = "xcodebuild test-without-building -project /p/RnFastRunner/RnFastRunner.xcodeproj -scheme RnFastRunner -destination platform=iOS Simulator,id=2E24DCF0-C991-4EB0-80CC-CCFEB9042A73 -derivedDataPath /p/build/DerivedData -only-testing:RnFastRunnerUITests/RnFastRunnerTests/testCommand";
+    let real = "xcodebuild test-without-building -project /p/QarenIosRunner/QarenIosRunner.xcodeproj -scheme QarenIosRunner -destination platform=iOS Simulator,id=2E24DCF0-C991-4EB0-80CC-CCFEB9042A73 -derivedDataPath /p/build/DerivedData -only-testing:QarenIosRunnerUITests/QarenIosRunnerTests/testCommand";
     assert!(qaren::redact::OutputText::from_output(real)
         .as_str()
         .contains("2E24DCF0-C991-4EB0-80CC-CCFEB9042A73"));
@@ -2396,4 +2396,122 @@ fn media_diagnostics_reach_the_private_sink_with_unused_or_absent_inputs() {
             std::fs::remove_dir_all(repo).unwrap();
         });
     }
+}
+
+#[test]
+fn manifest_probe_and_relaunch_timings_reach_the_run_receipt() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    let verify = || {
+        let repo = common::temp_repo();
+        let events = [
+            serde_json::json!({
+                "kind": "metric", "stage": "manifest-probe", "edge": "end", "outcome": "failed",
+                "at": 10000, "ms": 10000, "count": 1, "method": "timeout"
+            }),
+            serde_json::json!({
+                "kind": "metric", "stage": "manifest-probe", "edge": "end", "outcome": "ok",
+                "at": 12000, "ms": 1000, "count": 2, "method": "unknown"
+            }),
+            serde_json::json!({
+                "kind": "metric", "stage": "dev-client-relaunch", "edge": "end", "outcome": "ok",
+                "at": 13000, "ms": 500, "count": 1, "relaunch": "ready"
+            }),
+        ];
+        let mut stdout = String::new();
+        for (i, event) in events.iter().enumerate() {
+            stdout.push_str(&envelope(i as u64 + 2, "diagnostic", &event.to_string()));
+            stdout.push('\n');
+        }
+        stdout.push_str(&envelope(5, "result", &pass_ledger(&[])));
+        stdout.push('\n');
+        let mut mock = MockRunner::new();
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+        let result = run_child(&mut mock, &repo.join("core.log"));
+        assert_eq!(result.verdict, Verdict::Pass);
+        let stored = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
+        let actual: Vec<serde_json::Value> = stored
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(actual, events);
+    };
+    verify();
+    with_input_scope(
+        Arc::new(InputValues::from_entries([(
+            OsString::from("QAREN_INPUT_PASSWORD"),
+            OsString::from("synthetic-password"),
+        )])),
+        verify,
+    );
+}
+
+#[test]
+fn press_evidence_survives_refusal_normalization_with_closed_fields() {
+    let evidence = serde_json::json!({"subreason":"selection_unverified","heldPress":"not_tried_unsafe","outsideTargetChange":true,"captures":2});
+    for code in [
+        "PRESS_NOT_REGISTERED",
+        "NATIVE_CAPTURE_UNAVAILABLE",
+        "ITEM_DEADLINE_EXCEEDED",
+        "EVIDENCE_EXPIRED",
+        "RUN_CANCELLED",
+    ] {
+        let result = serde_json::json!({"verdict":"REFUSED", "code":code, "message":"Selection could not be verified; no second press was sent.", "pressEvidence":evidence});
+        let outcome = run_result(&result, 4);
+        assert!(matches!(outcome.verdict, Verdict::Refused { .. }));
+        assert_eq!(
+            serde_json::to_value(outcome.ledger).unwrap()["pressEvidence"],
+            evidence
+        );
+    }
+    let mut cases = vec![serde_json::Value::Null, serde_json::json!({})];
+    for (key, value) in [
+        ("subreason", serde_json::json!("PRIVATE_CANARY")),
+        ("heldPress", serde_json::json!("tried")),
+        ("outsideTargetChange", serde_json::json!("PRIVATE_CANARY")),
+        ("captures", serde_json::json!(3)),
+        ("captures", serde_json::json!(0)),
+        ("extra", serde_json::json!("PRIVATE_CANARY")),
+    ] {
+        let mut invalid = evidence.clone();
+        invalid[key] = value;
+        cases.push(invalid);
+    }
+    for invalid in cases {
+        let outcome = run_result(
+            &serde_json::json!({"verdict":"REFUSED","code":"PRESS_NOT_REGISTERED","pressEvidence":invalid}),
+            4,
+        );
+        assert_eq!(outcome.verdict, Verdict::Fail);
+        let failure = outcome.failure.unwrap();
+        assert_eq!(failure.code, FailureCode::CoreResultMissing);
+        assert!(!failure.detail.contains("PRIVATE_CANARY"));
+    }
+    assert_eq!(run_result(&serde_json::json!({"verdict":"REFUSED","code":"PRESS_NOT_REGISTERED","pressEvidence":evidence}), 0).verdict, Verdict::Fail);
+}
+
+#[test]
+fn signal_cancellation_preserves_validated_press_evidence_from_the_child_result() {
+    let repo = common::temp_repo();
+    let evidence = serde_json::json!({"subreason":"selection_unverified","heldPress":"not_tried_unsafe","outsideTargetChange":false,"captures":2});
+    let result =
+        serde_json::json!({"verdict":"REFUSED","code":"RUN_CANCELLED","pressEvidence":evidence});
+    let mut mock = MockRunner::new();
+    mock.expect_spawn_piped_holding(
+        "walk.js",
+        9000,
+        &format!("{}\n", envelope(2, "result", &result.to_string())),
+        None,
+        HoldStdout::UntilKill,
+    );
+    mock.cancel_at_ms = Some((mock.monotonic_ms() + 50, "received SIGTERM".into()));
+    let outcome = run_child(&mut mock, &repo.join("core.log"));
+    assert!(matches!(&outcome.verdict, Verdict::Refused { code, .. } if code == "RUN_CANCELLED"));
+    assert_eq!(outcome.failure.unwrap().code, FailureCode::RunCancelled);
+    assert_eq!(
+        serde_json::to_value(outcome.ledger).unwrap()["pressEvidence"],
+        evidence
+    );
+    assert!(*mock.piped_terminated[0].lock().unwrap());
 }

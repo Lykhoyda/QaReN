@@ -600,7 +600,7 @@
       "quiescenceBypass": "active",
       "snapshotVerdict": {
         "state": "ok",
-        "source": "rn-fast-runner",
+        "source": "qaren-ios-runner",
         "nodeCount": 43,
         "refMapUpdated": true,
         "reasons": []

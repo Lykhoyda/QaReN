@@ -10,7 +10,7 @@ const OTHER_UDID = 'AAAAAAAA-1111-2222-3333-BBBBBBBBBBBB';
 const MAESTRO_DRIVER = `18225 /Users/x/Library/Developer/CoreSimulator/Devices/${UDID}/data/Containers/Bundle/Application/155F/maestro-driver-iosUITests-Runner.app/maestro-driver-iosUITests-Runner`;
 const MAESTRO_XCODEBUILD = `17754 /Applications/Xcode.app/.../xcodebuild test-without-building -xctestrun /tmp/${UDID}/maestro-driver-ios-config.xctestrun -destination id=${UDID}`;
 const MAESTRO_MCP_IDLE = '14013 java -classpath /Users/x/.maestro/lib/* maestro.cli.AppKt mcp'; // NB: carries no UDID
-const OUR_RUNNER = `99 /Users/x/Library/Developer/CoreSimulator/Devices/${UDID}/.../RnFastRunnerUITests-Runner.app/RnFastRunnerUITests-Runner`;
+const OUR_RUNNER = `99 /Users/x/Library/Developer/CoreSimulator/Devices/${UDID}/.../QaReN-Runner.app/QaReN-Runner`;
 const WDA_RUNNER = `18300 /Users/x/Library/Developer/CoreSimulator/Devices/${UDID}/data/Containers/Bundle/Application/ABC/WebDriverAgentRunner-Runner.app/WebDriverAgentRunner-Runner`;
 const MAESTRO_CLI = `18301 /opt/homebrew/bin/maestro test --device ${UDID} flow.yaml`;
 const VALIDATOR_PROMPT = `50593 /opt/homebrew/bin/codex --model gpt-5.6-sol Task: validate Maestro and WebDriverAgent on ${UDID}; inspect maestro-driver-iosUITests-Runner and WebDriverAgentRunner.xctestrun`;
@@ -47,7 +47,7 @@ test('detectIosExternalRunner: ignores the idle maestro-mcp server (no UDID)', a
   assert.equal(await detectIosExternalRunner(ps, UDID), null);
 });
 
-test('detectIosExternalRunner: excludes our own RnFastRunner even on the target UDID', async () => {
+test('detectIosExternalRunner: excludes our own QarenIosRunner even on the target UDID', async () => {
   const ps = fakePs(OUR_RUNNER + '\n');
   assert.equal(await detectIosExternalRunner(ps, UDID), null);
 });

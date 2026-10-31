@@ -14,7 +14,7 @@ const CLI_ANDROID = readFileSync(
   'utf8',
 );
 const CLIENT = readFileSync(
-  join(CORE_ROOT, 'src', 'runners', 'rn-android-runner-client.ts'),
+  join(CORE_ROOT, 'src', 'runners', 'qaren-android-runner-client.ts'),
   'utf8',
 );
 

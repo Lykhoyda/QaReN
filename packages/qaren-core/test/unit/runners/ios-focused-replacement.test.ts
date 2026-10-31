@@ -8,7 +8,7 @@ import { test } from 'node:test';
 
 const native = fileURLToPath(
   new URL(
-    '../../../../rn-fast-runner/RnFastRunner/RnFastRunnerUITests/ThirdParty/SynthesizedTextEntry/',
+    '../../../../qaren-ios-runner/QarenIosRunner/QarenIosRunnerUITests/ThirdParty/SynthesizedTextEntry/',
     import.meta.url,
   ),
 );

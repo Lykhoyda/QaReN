@@ -37,7 +37,7 @@ function tree(files: Record<string, { body: string; mode: number }>, mtime: numb
   return dir;
 }
 
-const LONG = `qaren-1.2.3-darwin-arm64/runtime/runners/rn-android-runner/app/src/androidTest/java/dev/${'x'.repeat(60)}/Test.kt`;
+const LONG = `qaren-1.2.3-darwin-arm64/runtime/runners/qaren-android-runner/app/src/androidTest/java/dev/${'x'.repeat(60)}/Test.kt`;
 
 test('two packs of one tree are byte-identical regardless of disk mtimes, modes and creation order', () => {
   const first = tree(
@@ -280,8 +280,8 @@ test('the runtime manifest names only the runner zips, never a qaren tarball', (
     version: '1.2.3',
     xcodeBuildVersion: '16.4',
     assets: {
-      ios: [{ name: 'rn-fast-runner-1.2.3-sim.zip', sha256: 'a'.repeat(64), bytes: 1 }],
-      android: [{ name: 'rn-android-runner-1.2.3.zip', sha256: 'b'.repeat(64), bytes: 2 }],
+      ios: [{ name: 'qaren-ios-runner-1.2.3-sim.zip', sha256: 'a'.repeat(64), bytes: 1 }],
+      android: [{ name: 'qaren-android-runner-1.2.3.zip', sha256: 'b'.repeat(64), bytes: 2 }],
       qaren: {
         'darwin-arm64': {
           name: tarballName('1.2.3', 'darwin-arm64'),

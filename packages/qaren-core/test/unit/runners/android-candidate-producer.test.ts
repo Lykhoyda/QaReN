@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { provenanceDiagnosticFromWire } from '../../../dist/qa/label-provenance.js';
 import { assertProvenanceAdmission } from '../../helpers/candidate-provenance.ts';
 
-const runner = fileURLToPath(new URL('../../../../rn-android-runner/', import.meta.url));
+const runner = fileURLToPath(new URL('../../../../qaren-android-runner/', import.meta.url));
 const kotlin = join(
   runner,
   'app/src/androidTest/java/dev/lykhoyda/rndevagent/androidrunner/CommandDispatcher.kt',

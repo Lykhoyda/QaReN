@@ -265,7 +265,7 @@ export async function handleDevClientPicker(preferredPort?: number): Promise<Pic
  * GH #136 sub-3 / GH #523 sub-3: the single guarded seam every on-demand/auto
  * consumer routes through. The historical iOS short-circuit protected against
  * the legacy agent-device daemon respawning (D1219); every primitive this flow
- * needs (snapshot -i, press @ref) now routes through rn-fast-runner on iOS, so
+ * needs (snapshot -i, press @ref) now routes through qaren-ios-runner on iOS, so
  * both platforms take the real dismiss path. Returns null ONLY when no device
  * session is open, so the MCP tool can surface a NO_SESSION error.
  */

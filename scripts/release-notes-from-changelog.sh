@@ -7,7 +7,7 @@ set -uo pipefail
 
 VERSION="${1:?usage: $0 <version> [changelog-path]}"
 CHANGELOG="${2:-$(cd "$(dirname "$0")/.." && pwd)/packages/qaren-plugin/CHANGELOG.md}"
-FOOTER="Prebuilt runner artifacts for v$VERSION (rn-fast-runner iOS, rn-android-runner)."
+FOOTER="Prebuilt runner artifacts for v$VERSION (qaren-ios-runner iOS, qaren-android-runner)."
 
 entries=""
 if [ -f "$CHANGELOG" ]; then

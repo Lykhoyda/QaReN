@@ -1,6 +1,6 @@
 import { currentInputs } from './inputs.js';
 import { tryRawScreenshot } from '../handlers/device-screenshot-raw.js';
-import { captureRunnerScreenshot } from '../runners/rn-fast-runner-client.js';
+import { captureRunnerScreenshot } from '../runners/qaren-ios-runner-client.js';
 
 export async function captureQaScreenshot(
   platform: 'ios' | 'android',

@@ -8,7 +8,7 @@ import { provenanceDiagnosticFromWire } from '../../../dist/qa/label-provenance.
 import { assertProvenanceAdmission } from '../../helpers/candidate-provenance.ts';
 
 const native = new URL(
-  '../../../../rn-fast-runner/RnFastRunner/RnFastRunnerUITests/',
+  '../../../../qaren-ios-runner/QarenIosRunner/QarenIosRunnerUITests/',
   import.meta.url,
 );
 function section(source: string, start: string, end: string): string {
@@ -23,9 +23,9 @@ test('actual Swift capture prepares exact raw trees inside one deadline and stil
   if (available.error && 'code' in available.error && available.error.code === 'ENOENT')
     return t.skip('Swift toolchain unavailable');
   assert.equal(available.status, 0, available.stderr);
-  const source = readFileSync(new URL('RnFastRunnerTests+Snapshot.swift', native), 'utf8');
+  const source = readFileSync(new URL('QarenIosRunnerTests+Snapshot.swift', native), 'utf8');
   const predicates = readFileSync(new URL('SnapshotPredicates.swift', native), 'utf8');
-  const models = readFileSync(new URL('RnFastRunnerTests+Models.swift', native), 'utf8');
+  const models = readFileSync(new URL('QarenIosRunnerTests+Models.swift', native), 'utf8');
   const result = spawnSync('swift', ['-'], {
     encoding: 'utf8',
     timeout: 90_000,

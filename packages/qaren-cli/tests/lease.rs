@@ -72,7 +72,10 @@ fn a_holder_under_qaren_home_records_that_home_instead_of_home() {
     let binary = binary.display().to_string().replace('\'', "'\\''");
     assert_eq!(
         qaren::lease::cleanup_command("check-q", &holder),
-        format!("`QAREN_HOME='{}' '{binary}' cleanup check-q`", side.display())
+        format!(
+            "`QAREN_HOME='{}' '{binary}' cleanup check-q`",
+            side.display()
+        )
     );
     let mut quoted = holder.clone();
     quoted.qaren_home = Some("/it's; touch x".into());

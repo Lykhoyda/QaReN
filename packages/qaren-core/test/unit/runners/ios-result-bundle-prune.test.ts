@@ -9,7 +9,7 @@ import {
   hasBuiltTestProduct,
   removeRunnerResultBundles,
   resolveRunnerStartPlan,
-} from '../../../dist/runners/rn-fast-runner-client.js';
+} from '../../../dist/runners/qaren-ios-runner-client.js';
 
 test('result bundle dirs cover the local DerivedData and the prebuilt cache for a version', (t) => {
   const prior = process.env.QAREN_HOME;
@@ -35,11 +35,11 @@ test('result bundle dirs cover the local DerivedData and the prebuilt cache for 
 test('the prune removes Logs/Test and keeps the built test product warm', (t) => {
   const root = mkdtempSync(join(tmpdir(), 'qaren-result-bundle-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const staging = join(root, 'Logs', 'Test', 'Test-RnFastRunner-x.xcresult', 'Staging');
+  const staging = join(root, 'Logs', 'Test', 'Test-QarenIosRunner-x.xcresult', 'Staging');
   mkdirSync(staging, { recursive: true });
-  writeFileSync(join(staging, 'Session-RnFastRunnerUITests-x.log'), 'value: typed');
+  writeFileSync(join(staging, 'Session-QarenIosRunnerUITests-x.log'), 'value: typed');
   mkdirSync(join(root, 'Build', 'Products'), { recursive: true });
-  writeFileSync(join(root, 'Build', 'Products', 'RnFastRunner.xctestrun'), '');
+  writeFileSync(join(root, 'Build', 'Products', 'QarenIosRunner.xctestrun'), '');
 
   removeRunnerResultBundles(iosRunnerResultBundleDirs(null, root));
 
@@ -55,7 +55,7 @@ test('the prune tolerates an absent DerivedData root', () => {
 test('direct reap removes result bundles after stopping an adopted process', (t) => {
   const root = mkdtempSync(join(process.cwd(), '.test-ios-reap-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  mkdirSync(join(root, 'runners', 'rn-fast-runner'), { recursive: true });
+  mkdirSync(join(root, 'runners', 'qaren-ios-runner'), { recursive: true });
   execFileSync(
     process.execPath,
     [
@@ -70,7 +70,7 @@ test('direct reap removes result bundles after stopping an adopted process', (t)
     import {
       _setFastRunnerStateForTest, derivedDataPathForRunner, getFastRunnerState,
       hasBuiltTestProduct, reapStaleFastRunner,
-    } from ${JSON.stringify(new URL('../../../dist/runners/rn-fast-runner-client.js', import.meta.url).href)};
+    } from ${JSON.stringify(new URL('../../../dist/runners/qaren-ios-runner-client.js', import.meta.url).href)};
     import { iosRunnerResultBundleDirs } from ${JSON.stringify(new URL('../../../dist/runners/runner-artifacts.js', import.meta.url).href)};
     import { getPluginVersion } from ${JSON.stringify(new URL('../../../dist/runners/protocol.js', import.meta.url).href)};
     import { readProcessBirth } from ${JSON.stringify(new URL('../../../dist/lifecycle/process-birth.js', import.meta.url).href)};
@@ -83,7 +83,7 @@ test('direct reap removes result bundles after stopping an adopted process', (t)
         writeFileSync(join(dir, 'snapshot.log'), 'typed-canary');
         const products = join(dirname(dirname(dir)), 'Build', 'Products');
         mkdirSync(products, { recursive: true });
-        writeFileSync(join(products, 'RnFastRunner.xctestrun'), 'warm-product');
+        writeFileSync(join(products, 'QarenIosRunner.xctestrun'), 'warm-product');
       }
     };
     const check = () => {
@@ -132,11 +132,11 @@ test('direct reap removes result bundles after stopping an adopted process', (t)
 
 test('the runner launch passes no -resultBundlePath', () => {
   const plan = resolveRunnerStartPlan({
-    projectPath: '/p/RnFastRunner.xcodeproj',
-    scheme: 'RnFastRunner',
+    projectPath: '/p/QarenIosRunner.xcodeproj',
+    scheme: 'QarenIosRunner',
     deviceId: 'UDID-123',
     derivedDataPath: '/p/build/DerivedData',
-    onlyTesting: 'RnFastRunnerUITests/RnFastRunnerTests/testCommand',
+    onlyTesting: 'QarenIosRunnerUITests/QarenIosRunnerTests/testCommand',
     hasBuiltTestProduct: false,
   });
   for (const step of plan) assert.ok(!step.args.includes('-resultBundlePath'));

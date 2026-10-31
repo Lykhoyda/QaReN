@@ -106,7 +106,7 @@ for i in $(seq 20); do [ -s <dir>/exit ] && break; sleep 5; done; tail -n 3 <dir
 
 Stopping a poll never affects the run. If `<dir>/exit` never appears, `<qaren path> status <run-id> --json` reports the run's state and its next action.
 
-Once `<dir>/exit` exists, read `<dir>/receipt.json`; if it is empty, report the exit code and the diagnostic from `<dir>/progress.log` and stop. Otherwise report the receipt's `result`, `run_id` and `next_action`. When `result` is not `pass`, quote `failure.code` and `failure.next_action` verbatim if present and stop. When a `pass` receipt's `next_action` is a `qaren cleanup` command, teardown was incomplete: offer to run it. On `pass`, continue to step 7.
+Once `<dir>/exit` exists, read `<dir>/receipt.json`; if it is empty, report the exit code and the diagnostic from `<dir>/progress.log` and stop. Otherwise report the receipt's `result`, `run_id` and `next_action`. When `result` is not `pass`, quote `failure.code` and `failure.next_action` verbatim if present and stop. One managed native build runs per Mac at a time by default, so a check can wait for another run's build; private lock namespaces are independent, and `qaren cleanup` of a dead holder, run from that holder's home, affects only that holder's proven resources. When a `pass` receipt's `next_action` is a `qaren cleanup` command, teardown was incomplete: offer to run it. On `pass`, continue to step 7.
 
 
 ## 7. Sign-in (optional)

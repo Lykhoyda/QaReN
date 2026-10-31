@@ -1,7 +1,7 @@
 // GH #523 sub-3: iOS support for the dev-client picker auto-dismiss.
 // The iOS short-circuit dated from the legacy agent-device daemon (D1219);
 // every primitive the picker needs (snapshot -i, press @ref) now routes
-// through rn-fast-runner on iOS, so the guard costs a manual session-open +
+// through qaren-ios-runner on iOS, so the guard costs a manual session-open +
 // snapshot + row tap on every relaunch (3× in one #523 session). Also covers
 // the stale-server "Error loading app" dialog and entry-preference rules.
 import { test, afterEach } from 'node:test';

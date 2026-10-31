@@ -97,6 +97,24 @@ test('incomplete presence waits for a fresh complete capture even without privat
   assert.equal(reactReads, 1);
 });
 
+// A wait gives its layout read one chance; the walker's deadline owns any retry.
+test('a wait-budgeted presence capture makes exactly one native read inside that budget', async () => {
+  const budgets: number[] = [];
+  const result = await captureScreen({
+    platformPresence: true,
+    requirePrivateInputs: true,
+    appId: 'com.test',
+    budgetMs: 7_250.6,
+    native: async (budget) => {
+      budgets.push(budget);
+      return incompletePresence();
+    },
+    react: async () => ({}),
+  }).catch((error: Error) => error);
+  assert.ok(result instanceof NativeSnapshotIncomplete, String(result));
+  assert.deepEqual(budgets, [7_250]);
+});
+
 test('persistent incomplete presence refuses with a value-free acquisition reason within the capture deadline', async (t) => {
   const time = clock(t);
   let reads = 0;

@@ -91,12 +91,18 @@ impl LogDrain {
             } else {
                 crate::redact::input_namespace_present()
             };
-        let values = serde_json::to_vec(&if core_log && !withheld {
+        let mut redaction_values = if core_log && !withheld {
             crate::redact::log_redaction_values()
         } else {
             Vec::new()
-        })
-        .map_err(io::Error::other)?;
+        };
+        let github_values = crate::redact::github_auth_values();
+        let withheld = withheld
+            || github_values
+                .iter()
+                .any(|value| value.contains(['\r', '\n']));
+        redaction_values.extend(github_values);
+        let values = serde_json::to_vec(&redaction_values).map_err(io::Error::other)?;
         let values_len = u32::try_from(values.len()).map_err(io::Error::other)?;
         let mut command = Command::new(executable);
         command
@@ -214,14 +220,11 @@ impl BundleRequests {
         let Some((_, request)) = line.split_once(REQUEST_RECEIVED) else {
             return Ok(());
         };
-        let bundle = request
-            .split_whitespace()
-            .next()
-            .is_some_and(|url| {
-                let path = url.split('?').next().unwrap_or(url);
-                let path = path.split("//&").next().unwrap_or(path);
-                path.ends_with(".bundle")
-            });
+        let bundle = request.split_whitespace().next().is_some_and(|url| {
+            let path = url.split('?').next().unwrap_or(url);
+            let path = path.split("//&").next().unwrap_or(path);
+            path.ends_with(".bundle")
+        });
         let count = self.count.unwrap_or(0) + u64::from(bundle);
         if self.count == Some(count) {
             return Ok(());

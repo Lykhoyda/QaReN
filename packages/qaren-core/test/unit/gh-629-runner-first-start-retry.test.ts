@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { ensureRunnerForCommand } from '../../dist/agent-device-wrapper.js';
-import type { FastRunnerLivenessDetail } from '../../dist/runners/rn-fast-runner-client.js';
+import type { FastRunnerLivenessDetail } from '../../dist/runners/qaren-ios-runner-client.js';
 
 // GH #629: a fresh simulator's first XCTest bootstrap predictably overruns the
 // warm READY window, so the first spawn dies while its side effects make an
@@ -161,7 +161,7 @@ test('device_snapshot action=open maps the exhausted-retry failure to RN_FAST_RU
     ensureIosRunner: async () => ({
       ok: false,
       message:
-        'rn-fast-runner did not become ready after auto-spawn (one internal retry included). Retry, or run `device_snapshot action=open appId=<your.app.id> platform=ios` to surface the build error.',
+        'qaren-ios-runner did not become ready after auto-spawn (one internal retry included). Retry, or run `device_snapshot action=open appId=<your.app.id> platform=ios` to surface the build error.',
     }),
     stopIosRunner: async () => {},
   });

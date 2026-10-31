@@ -2,6 +2,7 @@
 # Installs qaren from this checkout the way a release would: builds the tarball as version
 # <release>-dev.<commit>, vouches for it in a temporary copy of the plugin, then installs it through
 # ensure-qaren.sh --install, so it never replaces a release runtime.
+# --link writes only $HOME/.local/bin/qaren; link details and shadow warnings go to stderr.
 # stdout is the installed binary path; PATH linking follows packages/qaren-cli/README.md.
 #
 # Run: bash scripts/install-qaren-from-source.sh [--link]
@@ -11,6 +12,12 @@ LINK=()
 case "${1:-}" in
   "") ;;
   --link) LINK=(--link) ;;
+  --help | -h)
+    echo 'usage: install-qaren-from-source.sh [--link]'
+    echo "  --link  Link this build at \$HOME/.local/bin/qaren, replacing a release/dev install link there."
+    echo '          Other PATH entries are left alone; shadow warnings and the written link go to stderr.'
+    exit 0
+    ;;
   *) echo "usage: install-qaren-from-source.sh [--link]" >&2; exit 2 ;;
 esac
 

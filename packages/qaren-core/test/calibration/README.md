@@ -18,7 +18,7 @@ The campaign is separate from unchanged phrase, simultaneous-two-Save and typing
 
 ## Invocation, only after operational authorization
 
-Build core and the existing debug CLI separately, and prepare the native local products using the existing owned workflow. Freezing requires those artifacts already to exist; it never builds or invokes a device/model. The fixed native directory is `packages/rn-fast-runner/build/DerivedData/Build/Products`. No generated manifest with invented hashes is checked in.
+Build core and the existing debug CLI separately, and prepare the native local products using the existing owned workflow. Freezing requires those artifacts already to exist; it never builds or invokes a device/model. The fixed native directory is `packages/qaren-ios-runner/build/DerivedData/Build/Products`. No generated manifest with invented hashes is checked in.
 
 ```sh
 node packages/qaren-core/test/calibration/run.ts freeze /absolute/app/root /absolute/new-campaign-directory
@@ -41,7 +41,7 @@ The analyzer requires the complete scheduled ledger, intact sequential metric sp
 
 ## Native adapter measurements
 
-- The capture-scoped observer and run-relative clock travel through `handlers/device-session.ts` → `agent-device-wrapper.ts:runNative` → `runners/rn-fast-runner-client.ts:runIOS/sendCommandOnce` as host-only `qaTiming`. Neither callback is serialized into a native command.
+- The capture-scoped observer and run-relative clock travel through `handlers/device-session.ts` → `agent-device-wrapper.ts:runNative` → `runners/qaren-ios-runner-client.ts:runIOS/sendCommandOnce` as host-only `qaTiming`. Neither callback is serialized into a native command.
 - `native-readiness` spans measure the existing QA health probe (`count: 1`) and, only on platform-presence captures, the existing V2-specific probe (`count: 2`). Ordinary snapshots perform and require just the first probe. No extra probe is introduced for metrics; producer initial/final eligibility phases are separate measurements.
 - `native-transport` measures the command fetch through response headers; `native-decode` measures the existing `response.json()` body consumption and decoding. Both carry the capture's line/observation identity. Transport instrumentation runs before the unchanged final send authorization, never between authorization and fetch. Failed sends and decoding attempts close with fixed failure codes. Existing status/retry transport paths carry the same observer.
 - `native-read-only-v1` records each successful probe's exact `QA_READ_ONLY_V1` capability only with a bound session/instance/claim and target identity validated by the existing health admission. Neither a cached capability nor `qaReadOnly: true` is an attestation. Unbound identity or a capability disappearing on the second probe yields no positive attestation for that probe and cannot pass analysis.

@@ -364,6 +364,7 @@ fn raw_command_output_and_unmasked_strings_cannot_be_serialized_as_output_text()
 fn evidence_documents_and_reports_still_withhold_opaque_output() {
     let dir = common::temp_repo();
     let ledger = qaren::core::Ledger {
+        press_evidence: None,
         verdict: "FAIL".into(),
         video_publication: None,
         video_policy: Default::default(),

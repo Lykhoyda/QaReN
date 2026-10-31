@@ -16,7 +16,7 @@ import {
   _setRunnerStateForTest,
   _setFetchForTest,
   _setHttpTimeoutForTest,
-} from '../../dist/runners/rn-fast-runner-client.js';
+} from '../../dist/runners/qaren-ios-runner-client.js';
 
 // --- tap NaN guard (iOS + Android) ---
 

@@ -44,12 +44,12 @@ jobs:
             exit 0
           fi
           CHANGED="$(git diff --name-only "$BASE_SHA"...HEAD)"
-          if echo "$CHANGED" | grep -qE '^packages/rn-fast-runner/|^scripts/test-native-ios\.sh$|^\.github/workflows/native-tests\.yml$'; then
+          if echo "$CHANGED" | grep -qE '^packages/qaren-ios-runner/|^scripts/test-native-ios\.sh$|^\.github/workflows/native-tests\.yml$'; then
             echo "ios=true" >> "$GITHUB_OUTPUT"
           else
             echo "ios=false" >> "$GITHUB_OUTPUT"
           fi
-          if echo "$CHANGED" | grep -qE '^packages/rn-android-runner/|^\.github/workflows/native-tests\.yml$'; then
+          if echo "$CHANGED" | grep -qE '^packages/qaren-android-runner/|^\.github/workflows/native-tests\.yml$'; then
             echo "android=true" >> "$GITHUB_OUTPUT"
           else
             echo "android=false" >> "$GITHUB_OUTPUT"
@@ -83,7 +83,7 @@ jobs:
     steps:
       - name: Skip notice (Android unchanged)
         if: ${{ needs.changes.outputs.android != 'true' }}
-        run: echo "No rn-android-runner changes in this PR — skipping the JVM unit tests. Push-to-main runs them unconditionally."
+        run: echo "No qaren-android-runner changes in this PR — skipping the JVM unit tests. Push-to-main runs them unconditionally."
       - name: Checkout
         if: ${{ needs.changes.outputs.android == 'true' }}
         uses: actions/checkout@v4
@@ -98,14 +98,14 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
       - name: gradlew testDebugUnitTest
         if: ${{ needs.changes.outputs.android == 'true' }}
-        working-directory: packages/rn-android-runner
+        working-directory: packages/qaren-android-runner
         run: ./gradlew testDebugUnitTest --no-daemon
       - name: Upload JUnit report (on failure)
         if: ${{ failure() && needs.changes.outputs.android == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: android-unit-report
-          path: packages/rn-android-runner/app/build/reports/tests/
+          path: packages/qaren-android-runner/app/build/reports/tests/
           retention-days: 7
 
   ios-unit:
@@ -116,7 +116,7 @@ jobs:
     steps:
       - name: Skip notice (iOS unchanged)
         if: ${{ needs.changes.outputs.ios != 'true' }}
-        run: echo "No rn-fast-runner changes in this PR — skipping the simulator unit tests. Push-to-main runs them unconditionally."
+        run: echo "No qaren-ios-runner changes in this PR — skipping the simulator unit tests. Push-to-main runs them unconditionally."
       - name: Checkout
         if: ${{ needs.changes.outputs.ios == 'true' }}
         uses: actions/checkout@v4
@@ -149,5 +149,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ios-unit-xcresult
-          path: packages/rn-fast-runner/build/native-tests.xcresult
+          path: packages/qaren-ios-runner/build/native-tests.xcresult
           retention-days: 7

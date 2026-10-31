@@ -13,7 +13,7 @@ import {
   _setCapabilitiesForTest,
   _setFastRunnerStateForTest,
   _setFetchForTest,
-} from '../../../dist/runners/rn-fast-runner-client.js';
+} from '../../../dist/runners/qaren-ios-runner-client.js';
 
 test('full-list drag travel loses only the start inset from develop travel', () => {
   updateRefMapFromFlat([

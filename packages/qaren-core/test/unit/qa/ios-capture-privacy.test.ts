@@ -10,7 +10,7 @@ import {
   _setFastRunnerStateForTest,
   _setCapabilitiesForTest,
   _setFetchForTest,
-} from '../../../dist/runners/rn-fast-runner-client.js';
+} from '../../../dist/runners/qaren-ios-runner-client.js';
 import { REQUIRED_IOS_COMMANDS, REQUIRED_IOS_FEATURES } from '../../../dist/runners/protocol.js';
 import {
   _setActiveSessionForTest,

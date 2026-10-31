@@ -234,7 +234,7 @@ test('cdp_run_action preserves a typed native-blind refusal', async () => {
           proofDomain: 'xctest-native',
           runner: 'maestro-runner',
           transportVersion: '1.1.28',
-          nativeVision: { source: 'rn-fast-runner-snapshot', runtimeMajor: 26 },
+          nativeVision: { source: 'qaren-ios-runner-snapshot', runtimeMajor: 26 },
           cleanup: { cleanupProven: true },
           nextAction: 'run the native smoke on a healthy runtime',
         },
