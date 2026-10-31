@@ -2402,10 +2402,13 @@ core started, the run records the host as its own. Cleanup observes host absence
 after core and driver cleanup. Automatic teardown only observes host absence.
 Explicit cleanup may terminate the fixed runner host and test-host bundles only
 with a freshly matching exact-device lease and saved token, durable driver retirement,
-and a complete scoped host inventory containing no other active application.
+and a complete scoped host inventory without foreign runner candidates.
+Other apps, including the app under test, are ignored. A foreign runner candidate
+has a bundle ID ending in `.xctrunner` or starting with the QaReN runner host
+bundle ID without exactly matching either fixed runner bundle ID.
 It never terminates a configurable app bundle. Each matching constant is terminated
 at most once, followed by bounded absence probes and a durable host checkpoint.
-Any failed command, unreadable or mixed inventory, or lost ownership retains the lease.
+Any failed command, unreadable inventory or foreign runner candidate, or lost ownership retains the lease.
 The core starts the runner's `xcodebuild` driver in its own
 process group and announces it; the CLI records that group with the driver's
 identity and interrupts that driver alone only while that identity still

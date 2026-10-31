@@ -1357,7 +1357,7 @@ fn remove_app_install(
 pub(crate) fn cleanup_scoped_runner_hosts(runner: &mut dyn Runner, udid: &str) -> Outcome {
     let mut cleanup_runner = crate::exec::CleanupRunner(runner);
     let runner: &mut dyn Runner = &mut cleanup_runner;
-    match settled_runner_hosts(runner, udid, false) {
+    match settled_runner_hosts(runner, udid, false, RunnerCleanupPolicy::GracefulOnly) {
         ios::RunnerHostPresence::Absent => Outcome::Absent,
         ios::RunnerHostPresence::Present => Outcome::Unresolved(
             "runner host present without exact process ownership; left untouched".into(),
@@ -1372,10 +1372,24 @@ fn settled_runner_hosts(
     runner: &mut dyn Runner,
     udid: &str,
     after_terminate: bool,
+    policy: RunnerCleanupPolicy,
 ) -> ios::RunnerHostPresence {
     let mut presence = ios::RunnerHostPresence::Unknown;
     for attempt in 0..3 {
-        presence = ios::probe_runner_hosts(runner, udid);
+        presence = if policy == RunnerCleanupPolicy::ReapRecordedDriver {
+            match ios::probe_runner_host_inventory(runner, udid) {
+                Some(inventory) if inventory.foreign_runner => {
+                    return ios::RunnerHostPresence::Unknown
+                }
+                Some(inventory) if inventory.bundle_ids.is_empty() => {
+                    ios::RunnerHostPresence::Absent
+                }
+                Some(_) => ios::RunnerHostPresence::Present,
+                None => return ios::RunnerHostPresence::Unknown,
+            }
+        } else {
+            ios::probe_runner_hosts(runner, udid)
+        };
         if presence == ios::RunnerHostPresence::Absent
             || (presence == ios::RunnerHostPresence::Present && !after_terminate)
         {
@@ -1395,7 +1409,7 @@ fn cleanup_owned_runner_host(
 ) -> Outcome {
     let mut cleanup_runner = crate::exec::CleanupRunner(runner);
     let runner: &mut dyn Runner = &mut cleanup_runner;
-    match settled_runner_hosts(runner, &host.udid, false) {
+    match settled_runner_hosts(runner, &host.udid, false, RunnerCleanupPolicy::GracefulOnly) {
         ios::RunnerHostPresence::Absent => return Outcome::Absent,
         ios::RunnerHostPresence::Unknown => {
             return Outcome::Unresolved(
@@ -1404,7 +1418,7 @@ fn cleanup_owned_runner_host(
         }
         ios::RunnerHostPresence::Present => {}
     }
-    match settled_runner_hosts(runner, &host.udid, true) {
+    match settled_runner_hosts(runner, &host.udid, true, RunnerCleanupPolicy::GracefulOnly) {
         ios::RunnerHostPresence::Absent => Outcome::Absent,
         ios::RunnerHostPresence::Present => Outcome::Unresolved(
             "runner host remains; automation shutdown is unproven; left untouched".into(),
@@ -1483,13 +1497,13 @@ fn cleanup_explicit_runner_hosts(
     let Some(inventory) = ios::probe_runner_host_inventory(runner, udid) else {
         return Outcome::Unresolved("runner host inventory is unreadable; left untouched".into());
     };
+    if inventory.foreign_runner {
+        return Outcome::Refused(
+            "runner host inventory includes a foreign runner candidate; left untouched".into(),
+        );
+    }
     if inventory.bundle_ids.is_empty() {
         return Outcome::Absent;
-    }
-    if inventory.foreign_app {
-        return Outcome::Refused(
-            "runner host inventory includes another application; left untouched".into(),
-        );
     }
     for (index, bundle) in inventory.bundle_ids.into_iter().enumerate() {
         if index > 0 {
@@ -1498,9 +1512,10 @@ fn cleanup_explicit_runner_hosts(
                     "runner host inventory is unreadable; lease retained".into(),
                 );
             };
-            if current.foreign_app {
+            if current.foreign_runner {
                 return Outcome::Refused(
-                    "runner host inventory includes another application; lease retained".into(),
+                    "runner host inventory includes a foreign runner candidate; lease retained"
+                        .into(),
                 );
             }
             if !current.bundle_ids.contains(&bundle) {
@@ -1520,7 +1535,8 @@ fn cleanup_explicit_runner_hosts(
             );
         }
     }
-    let presence = settled_runner_hosts(runner, udid, true);
+    let presence =
+        settled_runner_hosts(runner, udid, true, RunnerCleanupPolicy::ReapRecordedDriver);
     if let Err(reason) = runner_host_reap_proof(runner, record, runs_root) {
         mark_runner_reason(record, reason);
         return Outcome::Refused("runner host cleanup authority changed; lease retained".into());

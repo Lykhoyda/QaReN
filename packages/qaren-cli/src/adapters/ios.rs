@@ -408,7 +408,7 @@ pub enum RunnerHostPresence {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunnerHostInventory {
     pub bundle_ids: Vec<&'static str>,
-    pub foreign_app: bool,
+    pub foreign_runner: bool,
 }
 
 impl RunnerHostInventory {
@@ -445,7 +445,7 @@ pub fn parse_runner_host_inventory(output: &str) -> Option<RunnerHostInventory> 
     }
     let mut labels = std::collections::HashSet::new();
     let mut bundle_ids = Vec::new();
-    let mut foreign_app = false;
+    let mut foreign_runner = false;
     for row in lines {
         let cols: Vec<_> = row.split_whitespace().collect();
         if cols.len() != 3
@@ -489,6 +489,10 @@ pub fn parse_runner_host_inventory(output: &str) -> Option<RunnerHostInventory> 
         } else {
             cols[2]
         };
+        if bundle != RUNNER_HOST_BUNDLE_ID && bundle != RUNNER_TEST_HOST_BUNDLE_ID {
+            foreign_runner |=
+                bundle.ends_with(".xctrunner") || bundle.starts_with(RUNNER_HOST_BUNDLE_ID);
+        }
         if cols[0] != "-" {
             match bundle {
                 RUNNER_HOST_BUNDLE_ID => {
@@ -501,16 +505,13 @@ pub fn parse_runner_host_inventory(output: &str) -> Option<RunnerHostInventory> 
                         bundle_ids.push(RUNNER_TEST_HOST_BUNDLE_ID);
                     }
                 }
-                _ => {
-                    foreign_app |= cols[2].starts_with("UIKitApplication:")
-                        || !bundle.starts_with("com.apple.")
-                }
+                _ => {}
             }
         }
     }
     (!labels.is_empty()).then_some(RunnerHostInventory {
         bundle_ids,
-        foreign_app,
+        foreign_runner,
     })
 }
 
@@ -528,7 +529,7 @@ pub fn probe_runner_host_inventory(
     match parse_selected_sim(&inventory.stdout, udid).map(|sim| sim.state) {
         Some(SimState::Shutdown) => Some(RunnerHostInventory {
             bundle_ids: vec![],
-            foreign_app: false,
+            foreign_runner: false,
         }),
         Some(SimState::Booted) => {
             let output = runner.run(&launchctl_list_spec(udid));
