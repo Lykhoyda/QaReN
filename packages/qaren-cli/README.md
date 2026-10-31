@@ -734,8 +734,8 @@ may resolve live to that control: it agrees only when the same-type,
 same-label owning ancestor in the retained snapshot contains the label and the
 live frame equals that owner's frame; the tap goes to the unchanged point. A later
 screen change cannot turn a proven no-mutation refusal into a passing action.
-For an iOS native-backed button not reported selected, inside a scroll container
-no taller than three times the target's height and with a visible enabled button
+For an iOS native-backed button outside an alert, not reported selected, inside
+a scroll container no taller than three times the target's height and with a visible enabled button
 beside it on the same row, QaReN requires exactly one match for the target's
 identity, retaining its original reference and reporting selected after the press,
 while that identity remains on screen. Identity is kind plus testID when present,
@@ -2123,8 +2123,8 @@ the walk, and native overlay clearance does not prove Fast Refresh is disabled.
 On Android that setting reloads the JS bundle, so the walk must mark the running
 runtime before attempting it; failure to mark refuses before step 1. When the
 setting reports that it executed, step 1 waits until the marked runtime is gone,
-React is ready again within the remaining walk budget, the walk helpers are
-injected into the new runtime and the reloaded bundle passes the origin proof;
+React is ready again within the shared overlay-clearance deadline below, the walk
+helpers are injected into the new runtime and the reloaded bundle passes the origin proof;
 otherwise the walk refuses before step 1.
 Transient helper-injection and origin-read timeouts retry within that same
 deadline; cancellation preempts the wait, and an invalid helper or origin proof
