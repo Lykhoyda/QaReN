@@ -25,6 +25,12 @@ Refusals exit `4` and mean the run could not start or could not decide; failures
 | `GITHUB_AUTH_UNAVAILABLE` | PR lookup could not use GitHub authentication | Follow the [GitHub authentication contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#test-a-pull-request) |
 | `DISK_BUDGET_EXCEEDED`     | Under 1 GiB free for the run storage root or the app, or under about 10 GiB for a clean iOS build | Free space on the volume `failure.detail` names, then re-run                                |
 
+## Development overlays before step 1
+
+For `CORE_REFUSED` with a `DEV_MENU_HIDE_UNVERIFIED_*` inner code in
+`failure.detail`, follow `failure.next_action` and the authoritative
+[overlay clearance and recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan).
+
 ## Devices
 
 For `FRESH_INSTALL_ADMISSION_UNKNOWN` or a strict-admission `DEVICE_BUSY`, read the
@@ -47,6 +53,7 @@ and [iOS admission diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/p
 | ------------------------ | ---------------------------------------------------------------- | ------------------------------------------------------- |
 | `PLAN_STEP_FAILED`       | A step or check failed; the detail names the line and what was seen | Follow `next_action` and the [screen evidence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence) for target diagnostics and repeat guidance |
 | `CORE_REFUSED`           | The screen layer refused; the detail starts with its own code    | Resolve that refusal, then re-run                       |
+| `PRESS_NOT_REGISTERED`   | The selection effect could not be verified                       | Follow the [press evidence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#occluded-taps-and-focus) |
 | `BLOCK_START_MISSING`    | The block's declared start was absent; this is a typed refusal with exit code 4 | Follow the [saved-block contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#saved-blocks) |
 | `WALK_DEADLINE_EXCEEDED` | The walk ran out of time                                         | Raise `QAREN_WALK_SECONDS`, or split the plan           |
 | `CANDIDATE_DRIFTED`      | The working tree changed during the run                          | Re-run against an unchanged checkout                    |
@@ -71,8 +78,8 @@ The screen layer's own codes appear at the start of `failure.detail` or in the r
 
 | Code                  | What happened                                                        | What to do                                                       |
 | --------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `CLEANUP_INCOMPLETE`  | `qaren cleanup` could not resolve some resources                     | Re-run `qaren cleanup <run-id> --json`                           |
-| `OWNERSHIP_UNPROVEN`  | The run's processes were not proven gone                             | Run `qaren cleanup <run-id>`, then re-run `qaren pr`             |
+| `CLEANUP_INCOMPLETE`  | `qaren cleanup` could not resolve some resources                     | Follow the receipt's `next_action` and the [cleanup contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup) |
+| `OWNERSHIP_UNPROVEN`  | The run's processes were not proven gone                             | Follow the receipt's `next_action` and the [cleanup contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup) |
 | `RUN_CANCELLED`       | The run was cancelled                                                | Re-run when ready; the cleanup map names anything retained       |
 | `PR_UNAVAILABLE`      | Pull request lookup, comment creation or label edit failed; failed `qaren pr` lookups also check authentication | Follow the [GitHub authentication contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#test-a-pull-request) |
 
@@ -87,10 +94,11 @@ released. Run:
 qaren cleanup <run-id> --json
 ```
 
-It finishes the teardown from the run's own records and releases the lease once every resource
-is accounted for. Do not delete locks in the
-[configured namespace](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup)
-to get around it.
+It resumes teardown from the run's own records. If it refuses, follow the receipt's
+`next_action`; see the authoritative
+[cleanup contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup)
+for recorded iOS runner recovery and lease-release requirements. Do not delete locks
+to get around a refusal.
 
 ## Why were my screenshots withheld?
 

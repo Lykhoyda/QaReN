@@ -64,6 +64,7 @@ pub enum FailureCode {
     PlanStepFailed,
     MetroOriginMismatch,
     CoreRefused,
+    PressNotRegistered,
     BlockStartMissing,
     JevUnreachable,
     JevAuthFailed,
@@ -103,6 +104,7 @@ impl FailureCode {
                 | FailureCode::DiskBudgetExceeded
                 | FailureCode::PlatformUnsupported
                 | FailureCode::MetroOriginMismatch
+                | FailureCode::PressNotRegistered
                 | FailureCode::CoreRefused
                 | FailureCode::BlockStartMissing
                 | FailureCode::JevUnreachable
@@ -159,7 +161,11 @@ pub struct Failure {
     pub phase: String,
     pub code: FailureCode,
     pub detail: OutputText,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_evidence",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub evidence: Vec<OutputText>,
     pub next_action: OutputText,
     // Failed or refused walk steps: the line and, for a target-class failure, its miss reason and screen.
@@ -175,7 +181,39 @@ pub struct Failure {
     pub repeat: Option<Repeat>,
     // Boxed so every Result<_, Failure> keeps its size.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recovery: Option<Box<Recovery>>,
+    pub recovery: Option<Box<FailureRecovery>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FailureRecovery {
+    Build(Recovery),
+    Press(PressRecovery),
+}
+
+impl FailureRecovery {
+    pub fn with_own_cleanup(self, run_id: &str) -> Self {
+        match self {
+            Self::Build(recovery) => Self::Build(recovery.with_own_cleanup(run_id)),
+            Self::Press(recovery) => Self::Press(recovery),
+        }
+    }
+}
+
+fn deserialize_evidence<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<OutputText>, D::Error> {
+    Vec::<String>::deserialize(deserializer).map(|notes| {
+        notes
+            .into_iter()
+            .map(
+                |note| match crate::core::AdmissionSummary::from_note(&note) {
+                    Some(summary) => OutputText::from_admission(&summary),
+                    None => OutputText::from_output(&note),
+                },
+            )
+            .collect()
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,18 +225,42 @@ pub enum RecoveryReason {
     OwnershipUnresolved,
     PersistenceFailed,
     IdentityUnavailable,
+    ForeignAdmissionUnresolved,
     CandidateDrifted,
     RunCancelled,
+    GracefulPending,
+    IdentityMismatch,
+    IdentityUnknown,
+    CommandIneligible,
+    LeaseUnproven,
+    OwnerUnproven,
+    CoreUnproven,
+    InventoryUnknown,
+    DriverSurvived,
+    GroupRemaining,
+    HostRemaining,
+    HostCleanupFailed,
+    DriverExited,
+    StorageFailed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecoveryAction {
     WaitForHolder,
+    #[serde(rename = "wait-owner")]
+    WaitForOwner,
     CleanupSelf,
     RestoreStorage,
     RestoreProcessObservation,
     None,
+    RetryCleanupAfterExit,
+    CleanupOwnedRunner,
+    RequestExactSimulatorShutdown,
+    NativeRebuildNotApplicable,
+    CleanupThenFreshPrepare,
+    RetainAndReport,
+    RepairRecordStorage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,11 +270,15 @@ pub struct RecoveryRung {
     pub destroys_state: bool,
     pub requires_user_ok: bool,
     pub instruction: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<RecoveryAction>,
 }
 
-// The ordered ladder, least destructive first: retry, restart app/Metro/runner, restart device, rebuild, own cleanup.
+// Foreign admission uses L0-L5; other recovery reasons retain their 1-based rungs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Recovery {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
     pub reason: RecoveryReason,
     pub next_rung: Option<u8>,
     pub action: RecoveryAction,
@@ -228,8 +294,8 @@ pub struct Recovery {
 
 const CANNOT_HELP: &str = "cannot help";
 
-impl Recovery {
-    pub fn new(reason: RecoveryReason) -> Self {
+impl From<RecoveryReason> for Recovery {
+    fn from(reason: RecoveryReason) -> Self {
         use RecoveryReason::*;
         let cleanup = "run qaren cleanup <own-run-id> --json, then prepare again";
         let (retry, rebuild, last): (&str, Option<&str>, &str) = match reason {
@@ -259,6 +325,8 @@ impl Recovery {
                 "run qaren cleanup <own-run-id> --json, then prepare again on a stable checkout",
             ),
             RunCancelled => ("re-run when ready; nothing resumes automatically", None, cleanup),
+            ForeignAdmissionUnresolved => return Self::foreign_admission(),
+            _ => return Self::ios_runner(reason, "<run-id>", false, false, false),
         };
         let first_applicable = matches!(reason, BudgetExhausted | IdentityUnavailable);
         let ladder = vec![
@@ -271,14 +339,17 @@ impl Recovery {
         let (next_rung, action) = match reason {
             BudgetExhausted => (Some(1), RecoveryAction::WaitForHolder),
             IdentityUnavailable => (Some(1), RecoveryAction::RestoreProcessObservation),
+            ForeignAdmissionUnresolved => unreachable!("foreign admission has a dedicated ladder"),
             OwnershipUnresolved | PersistenceFailed => (Some(5), RecoveryAction::RestoreStorage),
             BuildBudgetExhausted | BuildProcessFailed | CandidateDrifted => {
                 (Some(5), RecoveryAction::CleanupSelf)
             }
             RunCancelled => (None, RecoveryAction::None),
+            _ => unreachable!("runner recovery returned above"),
         };
         let destructive = next_rung == Some(5);
         Recovery {
+            key: None,
             reason,
             next_rung,
             action,
@@ -288,6 +359,106 @@ impl Recovery {
             own_cleanup_required: false,
             own_run_id: None,
             ladder,
+        }
+    }
+}
+
+impl Recovery {
+    pub fn new(recovery: impl Into<Self>) -> Self {
+        recovery.into()
+    }
+
+    pub fn ios_runner(
+        reason: RecoveryReason,
+        run_id: &str,
+        destroys_state: bool,
+        needs_user_ok: bool,
+        borrowed: bool,
+    ) -> Self {
+        use RecoveryAction::*;
+        let shutdown = reason == RecoveryReason::HostCleanupFailed;
+        let instructions = [
+            format!("After the recorded driver exits, run qaren cleanup {run_id} --json once; if it remains live, continue to runner recovery."),
+            format!("Run qaren cleanup {run_id} --json; it can stop this run's proven runner driver and matching simulator hosts. If cleanup refuses, follow its next_action."),
+            format!("Request shutdown of only this run's simulator, then run qaren cleanup {run_id} --json; obtain user approval first if the simulator is lent.{}", if shutdown { "" } else { " This step is unavailable: there is no supported standalone shutdown command." }),
+            "Do not rebuild native code to clear a surviving runner process; continue to the final recovery rung.".into(),
+            format!("After owned resources are proven absent, run qaren cleanup {run_id} --json, then a fresh qaren prepare for the scenario; if cleanup still refuses, stop and report retained resources."),
+        ];
+        let (next_rung, action) = match reason {
+            RecoveryReason::HostCleanupFailed => (Some(3), RequestExactSimulatorShutdown),
+            RecoveryReason::GracefulPending => (Some(2), CleanupOwnedRunner),
+            RecoveryReason::DriverExited => (Some(1), RetryCleanupAfterExit),
+            RecoveryReason::StorageFailed => (Some(1), RepairRecordStorage),
+            _ => (Option::None, RetainAndReport),
+        };
+        let actions = [
+            RetryCleanupAfterExit,
+            CleanupOwnedRunner,
+            RequestExactSimulatorShutdown,
+            NativeRebuildNotApplicable,
+            CleanupThenFreshPrepare,
+        ];
+        let ladder = instructions
+            .into_iter()
+            .enumerate()
+            .map(|(i, instruction)| {
+                let rung = i as u8 + 1;
+                let applicable = next_rung == Some(rung);
+                RecoveryRung {
+                    rung,
+                    applicable,
+                    instruction,
+                    action: Some(actions[i]),
+                    destroys_state: matches!(rung, 3 | 5)
+                        || (destroys_state && matches!(rung, 1 | 2)),
+                    requires_user_ok: rung == 5
+                        || (rung == 3 && borrowed)
+                        || (needs_user_ok && matches!(rung, 1 | 2)),
+                }
+            })
+            .collect();
+        Self {
+            key: Some("ios_runner_cleanup".into()),
+            reason,
+            next_rung,
+            action,
+            automatic: false,
+            destroys_state: shutdown || (next_rung.is_some() && destroys_state),
+            requires_user_ok: (shutdown && borrowed) || (next_rung.is_some() && needs_user_ok),
+            own_cleanup_required: true,
+            own_run_id: Option::None,
+            ladder,
+        }
+    }
+
+    pub fn runner_next_action(&self, run_id: &str) -> String {
+        match self.action {
+            RecoveryAction::RepairRecordStorage => format!("Restore write access to this run's record storage, then rerun qaren cleanup {run_id} --json once; do not remove its lease manually."),
+            RecoveryAction::RetainAndReport => "Leave the process, device and lease untouched; report the missing ownership proof and request the owning run or device owner to resolve it.".into(),
+            _ => self.next_rung.and_then(|rung| self.ladder.iter().find(|step| step.rung == rung))
+                .map(|step| step.instruction.clone()).unwrap_or_default(),
+        }
+    }
+
+    fn foreign_admission() -> Self {
+        Self {
+            key: None,
+            reason: RecoveryReason::ForeignAdmissionUnresolved,
+            next_rung: Some(0),
+            action: RecoveryAction::WaitForOwner,
+            automatic: false,
+            destroys_state: false,
+            requires_user_ok: false,
+            own_cleanup_required: false,
+            own_run_id: None,
+            ladder: vec![
+                RecoveryRung::step(0, true, false, "bounded re-probe exhausted or ineligible; wait for the foreign process owner to finish, then re-run; do not signal or adopt it"),
+                RecoveryRung::step(1, false, false, "restarting this run's app, Metro or runner cannot prove a foreign process clear"),
+                RecoveryRung::step(2, false, false, "restarting the selected device cannot resolve foreign process identity"),
+                RecoveryRung::step(3, false, false, "rebuilding native code cannot resolve foreign process identity"),
+                RecoveryRung::step(4, false, false, "own cleanup cannot clear foreign state"),
+                RecoveryRung::step(5, true, true, "only after foreign state is independently clear: qaren cleanup <own-run-id> --json; require every owned leg resolved, then qaren prepare <scenario> --device <device> --json and clean that recovery run before retrying; a fresh install needs separate authorization and user approval for app-data loss"),
+            ],
         }
     }
 
@@ -316,6 +487,7 @@ impl RecoveryRung {
             destroys_state: applicable && destroys_state,
             requires_user_ok: applicable && destroys_state,
             instruction: instruction.to_string(),
+            action: None,
         }
     }
 }
@@ -342,9 +514,26 @@ impl Failure {
         }
     }
 
-    pub fn with_recovery(mut self, reason: RecoveryReason) -> Self {
-        self.recovery = Some(Box::new(Recovery::new(reason)));
+    pub fn with_recovery(mut self, reason: impl Into<Recovery>) -> Self {
+        self.recovery = Some(Box::new(FailureRecovery::Build(Recovery::new(reason))));
         self
+    }
+
+    pub fn build_recovery(&self) -> Option<&Recovery> {
+        match self.recovery.as_deref() {
+            Some(FailureRecovery::Build(recovery)) => Some(recovery),
+            _ => None,
+        }
+    }
+
+    pub fn core_refusal_next_action(code: &str) -> &'static str {
+        match code {
+            "DEV_MENU_HIDE_UNVERIFIED_READ_FAILED" | "DEV_MENU_HIDE_UNVERIFIED_EVALUATE_TIMEOUT" =>
+                "re-run once without --fresh-install or --restart-device; if build work is active, wait for it to finish first",
+            "DEV_MENU_HIDE_UNVERIFIED_NOT_HIDDEN" | "DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED" =>
+                "re-run once without --fresh-install; if it persists, report the value-free refusal",
+            _ => "resolve the refusal, then re-run",
+        }
     }
 
     pub fn cancelled(phase: &str, reason: &str) -> Self {
@@ -361,6 +550,123 @@ impl Failure {
             .into_iter()
             .map(|line| OutputText::from_output(&line))
             .collect();
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PressRecovery {
+    pub next_rung: Option<u8>,
+    pub action: PressRecoveryAction,
+    pub destroys_state: bool,
+    pub requires_user_ok: bool,
+    pub ladder: Vec<PressRecoveryRung>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PressRecoveryAction {
+    RerunThenAskAppTeamExposeSelectionInRowList,
+    ReprepareAfterCaptureRecovery,
+    RerunWhenReady,
+    HeldPress,
+    RestartAppMetroRunner,
+    RestartDevice,
+    RebuildNative,
+    CleanupAndFreshPrepare,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PressRecoveryStatus {
+    Skipped,
+    Available,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PressRecoveryReason {
+    RetrySafeSemanticsUnavailable,
+    AppSelectionContractUnchanged,
+    CaptureRecoveryOwnResourcesOnly,
+    ReadbackExhausted,
+    Cancelled,
+    NotApplicable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PressRecoveryRung {
+    pub rung: u8,
+    pub action: PressRecoveryAction,
+    pub status: PressRecoveryStatus,
+    pub reason: PressRecoveryReason,
+    pub destroys_state: bool,
+    pub requires_user_ok: bool,
+}
+
+impl Failure {
+    pub fn with_press_recovery(mut self, code: &str) -> Self {
+        use PressRecoveryAction::*;
+        use PressRecoveryReason::*;
+        use PressRecoveryStatus::*;
+        let capture = code == "NATIVE_CAPTURE_UNAVAILABLE";
+        let selection = code == "PRESS_NOT_REGISTERED";
+        let action = if selection {
+            RerunThenAskAppTeamExposeSelectionInRowList
+        } else if capture {
+            ReprepareAfterCaptureRecovery
+        } else {
+            RerunWhenReady
+        };
+        self.next_action = OutputText::from_output(match action {
+            RerunThenAskAppTeamExposeSelectionInRowList => {
+                "rerun_then_ask_app_team_expose_selection_in_row_list"
+            }
+            ReprepareAfterCaptureRecovery => "reprepare_after_capture_recovery",
+            _ => "rerun_when_ready",
+        });
+        self.recovery = Some(Box::new(FailureRecovery::Press(PressRecovery {
+            next_rung: if capture { Some(2) } else { None },
+            action,
+            destroys_state: capture,
+            requires_user_ok: capture,
+            ladder: [
+                HeldPress,
+                RestartAppMetroRunner,
+                RestartDevice,
+                RebuildNative,
+                CleanupAndFreshPrepare,
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, action)| PressRecoveryRung {
+                rung: index as u8 + 1,
+                action,
+                status: if capture && index > 0 {
+                    Available
+                } else {
+                    Skipped
+                },
+                reason: if index == 0 {
+                    if selection || capture {
+                        RetrySafeSemanticsUnavailable
+                    } else if code == "RUN_CANCELLED" {
+                        Cancelled
+                    } else {
+                        ReadbackExhausted
+                    }
+                } else if capture {
+                    CaptureRecoveryOwnResourcesOnly
+                } else if selection {
+                    AppSelectionContractUnchanged
+                } else {
+                    NotApplicable
+                },
+                destroys_state: index > 0,
+                requires_user_ok: index > 0,
+            })
+            .collect(),
+        })));
         self
     }
 }

@@ -1,6 +1,3 @@
-// Cached dev-client launch: the app is installed from a verified artifact and
-// opened with the expo-dev-client deep link that pins it to the run's Metro.
-
 fn percent_encode(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len() * 3);
     for byte in raw.bytes() {

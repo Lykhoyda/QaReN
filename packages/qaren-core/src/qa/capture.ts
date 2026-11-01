@@ -1,3 +1,6 @@
+import { AppProcessGoneError } from '../domain/app-process.js';
+export { AppProcessGoneError } from '../domain/app-process.js';
+import type { DevOverlayObservation } from '../domain/dev-overlay.js';
 import { HandlerError } from './adapt.js';
 import { systemModalDiagnostic } from '../domain/system-modal-diagnostic.js';
 import { isAbort, sleep, throwIfCancelled, withDeadline } from '../domain/cancellation.js';
@@ -42,14 +45,6 @@ export class NativeCaptureError extends Error {
   constructor() {
     super('Native capture is unavailable.');
     this.name = 'NativeCaptureError';
-  }
-}
-
-// The runner saw the app process gone; content-free, so it may leave capture unmasked.
-export class AppProcessGoneError extends Error {
-  constructor() {
-    super('the app process is not running');
-    this.name = 'AppProcessGoneError';
   }
 }
 
@@ -506,11 +501,16 @@ export function nativeCaptureCoverage(observation: NativeObservation): Coverage[
     : 'unknown';
 }
 
-export function nativeDevOverlayUncleared(observation: NativeObservation): boolean {
+export function nativeDevOverlayObservation(observation: NativeObservation): DevOverlayObservation {
+  const coverage = nativeCaptureCoverage(observation);
+  if (coverage !== 'complete')
+    return {
+      state: 'unknown',
+      error: coverage === 'incomplete' ? 'coverage_incomplete' : 'coverage_unknown',
+    };
   const front = frontFromSurface(observation.surface, observation.nodes ?? []);
-  return (
-    nativeCaptureCoverage(observation) !== 'complete' || front === 'dev-fab' || front === 'dev-menu'
-  );
+  if (front === 'dev-fab' || front === 'dev-menu') return { state: 'shown', front };
+  return { state: 'clear', front };
 }
 
 function reactCaptureCoverage(observation: ReactObservation): Coverage['react'] {
