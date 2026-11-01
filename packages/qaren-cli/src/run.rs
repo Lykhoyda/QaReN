@@ -1540,8 +1540,9 @@ fn run_inner(
                 .as_ref()
                 .is_none_or(|r| r.key.as_deref() != Some("ios_runner_cleanup"))
         {
-            let next = format!("qaren cleanup {run_id} --json");
+            let mut next = format!("qaren cleanup {run_id} --json");
             if let Some(failure) = &mut receipt.failure {
+                next = cleanup_first(&next, failure);
                 failure.next_action = crate::redact::OutputText::from_output(&next);
             }
             receipt.next_action = next;
@@ -2734,6 +2735,15 @@ fn walk_failure(
 
 const REPEAT_SCAN: usize = 20;
 
+// Retained resources are released first; a target failure's plan edit or repeat note still follows.
+fn cleanup_first(cleanup: &str, failure: &Failure) -> String {
+    if failure.suggestion.is_some() || failure.repeat.is_some() {
+        format!("{cleanup}; then {}", failure.next_action.as_str())
+    } else {
+        cleanup.to_string()
+    }
+}
+
 // A plan's identity ignores QaReN's own broken markers, so flagging a saved plan does not make it a new plan.
 fn plan_identity(plan: &str) -> (String, u64) {
     let unmarked = recipes::unmarked(plan);
@@ -3307,6 +3317,24 @@ mod last_screen_tests {
             "check-20261030T081500Z"
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_unclean_teardown_puts_cleanup_first_and_keeps_the_target_guidance() {
+        let cleanup = "qaren cleanup check-1 --json";
+        let failure = step_failure(&ledger_failure(screen()));
+        assert_eq!(
+            cleanup_first(cleanup, &failure),
+            format!("{cleanup}; then {}", failure.next_action.as_str())
+        );
+        assert!(cleanup_first(cleanup, &failure).contains("the target of line 2"));
+        let plain = Failure::new(
+            "walk",
+            FailureCode::PlanStepFailed,
+            "line 1",
+            "fix the plan",
+        );
+        assert_eq!(cleanup_first(cleanup, &plain), cleanup);
     }
 
     #[test]
