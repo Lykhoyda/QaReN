@@ -56,6 +56,11 @@ impl OutputText {
         Self(redact_secrets(raw))
     }
 
+    pub(crate) fn from_admission(summary: &crate::core::AdmissionSummary) -> Self {
+        // Preserve closed probe facts when an input matches an enum word.
+        Self(summary.note())
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -141,6 +146,31 @@ pub fn durable_json<T: serde::Serialize>(value: &T) -> serde_json::Result<String
                 "/outcomes/media_withheld".to_string(),
                 cause.receipt_note().into(),
             ));
+        }
+    }
+    for key in ["admission_before_deps", "admission_before_mutation"] {
+        let pointer = format!("/outcomes/{key}");
+        if let Some(summary) = projected
+            .pointer(&pointer)
+            .and_then(serde_json::Value::as_str)
+            .and_then(crate::core::AdmissionSummary::from_note)
+        {
+            media.push((pointer, summary.note().into()));
+        }
+    }
+    for pointer in ["/failure/evidence", "/evidence"] {
+        if let Some(items) = projected
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_array)
+        {
+            for (index, item) in items.iter().enumerate() {
+                if let Some(summary) = item
+                    .as_str()
+                    .and_then(crate::core::AdmissionSummary::from_note)
+                {
+                    media.push((format!("{pointer}/{index}"), summary.note().into()));
+                }
+            }
         }
     }
     fn inputs(value: &mut serde_json::Value, path: &str, media: &[(String, serde_json::Value)]) {

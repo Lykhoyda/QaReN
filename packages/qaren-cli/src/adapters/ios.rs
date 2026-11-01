@@ -405,25 +405,47 @@ pub enum RunnerHostPresence {
     Unknown,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunnerHostInventory {
+    pub bundle_ids: Vec<&'static str>,
+    pub foreign_runner: bool,
+}
+
+impl RunnerHostInventory {
+    pub(crate) fn presence(&self) -> RunnerHostPresence {
+        if self.bundle_ids.is_empty() {
+            RunnerHostPresence::Absent
+        } else {
+            RunnerHostPresence::Present
+        }
+    }
+}
+
 pub fn parse_runner_hosts(output: &str) -> RunnerHostPresence {
-    use RunnerHostPresence::{Absent, Present, Unknown};
+    parse_runner_host_inventory(output).map_or(RunnerHostPresence::Unknown, |inventory| {
+        inventory.presence()
+    })
+}
+
+pub fn parse_runner_host_inventory(output: &str) -> Option<RunnerHostInventory> {
     if output.len() >= 1024 * 1024
         || !output.ends_with('\n')
         || output
             .bytes()
             .any(|b| !b.is_ascii_graphic() && !matches!(b, b' ' | b'\t' | b'\n'))
     {
-        return Unknown;
+        return None;
     }
     let mut lines = output.lines();
     if !lines
         .next()
         .is_some_and(|line| line.split_whitespace().eq(["PID", "Status", "Label"]))
     {
-        return Unknown;
+        return None;
     }
     let mut labels = std::collections::HashSet::new();
-    let mut present = false;
+    let mut bundle_ids = Vec::new();
+    let mut foreign_runner = false;
     for row in lines {
         let cols: Vec<_> = row.split_whitespace().collect();
         if cols.len() != 3
@@ -434,32 +456,32 @@ pub fn parse_runner_hosts(output: &str) -> RunnerHostPresence {
             || !labels.insert(cols[2])
             || labels.len() > 16_384
         {
-            return Unknown;
+            return None;
         }
         let bundle = if let Some(label) = cols[2].strip_prefix("UIKitApplication:") {
             let Some((bundle, suffix)) = label.split_once('[') else {
-                return Unknown;
+                return None;
             };
             if bundle.is_empty()
                 || !bundle
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b".-_".contains(&b))
             {
-                return Unknown;
+                return None;
             }
             let mut tail = suffix;
             loop {
                 let Some((identifier, rest)) = tail.split_once(']') else {
-                    return Unknown;
+                    return None;
                 };
                 if identifier.is_empty() || identifier.contains('[') {
-                    return Unknown;
+                    return None;
                 }
                 if rest.is_empty() {
                     break;
                 }
                 let Some(next) = rest.strip_prefix('[') else {
-                    return Unknown;
+                    return None;
                 };
                 tail = next;
             }
@@ -467,38 +489,64 @@ pub fn parse_runner_hosts(output: &str) -> RunnerHostPresence {
         } else {
             cols[2]
         };
-        present |=
-            cols[0] != "-" && matches!(bundle, RUNNER_HOST_BUNDLE_ID | RUNNER_TEST_HOST_BUNDLE_ID);
+        if bundle != RUNNER_HOST_BUNDLE_ID && bundle != RUNNER_TEST_HOST_BUNDLE_ID {
+            foreign_runner |=
+                bundle.ends_with(".xctrunner") || bundle.starts_with(RUNNER_HOST_BUNDLE_ID);
+        }
+        if cols[0] != "-" {
+            match bundle {
+                RUNNER_HOST_BUNDLE_ID => {
+                    if !bundle_ids.contains(&RUNNER_HOST_BUNDLE_ID) {
+                        bundle_ids.push(RUNNER_HOST_BUNDLE_ID);
+                    }
+                }
+                RUNNER_TEST_HOST_BUNDLE_ID => {
+                    if !bundle_ids.contains(&RUNNER_TEST_HOST_BUNDLE_ID) {
+                        bundle_ids.push(RUNNER_TEST_HOST_BUNDLE_ID);
+                    }
+                }
+                _ => {}
+            }
+        }
     }
-    if labels.is_empty() {
-        Unknown
-    } else if present {
-        Present
-    } else {
-        Absent
+    (!labels.is_empty()).then_some(RunnerHostInventory {
+        bundle_ids,
+        foreign_runner,
+    })
+}
+
+pub fn probe_runner_host_inventory(
+    runner: &mut dyn Runner,
+    udid: &str,
+) -> Option<RunnerHostInventory> {
+    if canonical_udid(udid).as_deref() != Some(udid) {
+        return None;
+    }
+    let inventory = runner.run(&list_devices_spec());
+    if !inventory.ok() || !inventory.stderr.is_empty() || inventory.stdout.len() >= 1024 * 1024 {
+        return None;
+    }
+    match parse_selected_sim(&inventory.stdout, udid).map(|sim| sim.state) {
+        Some(SimState::Shutdown) => Some(RunnerHostInventory {
+            bundle_ids: vec![],
+            foreign_runner: false,
+        }),
+        Some(SimState::Booted) => {
+            let output = runner.run(&launchctl_list_spec(udid));
+            if output.ok() && output.stderr.is_empty() {
+                parse_runner_host_inventory(&output.stdout)
+            } else {
+                None
+            }
+        }
+        None => None,
     }
 }
 
 pub fn probe_runner_hosts(runner: &mut dyn Runner, udid: &str) -> RunnerHostPresence {
-    if canonical_udid(udid).as_deref() != Some(udid) {
-        return RunnerHostPresence::Unknown;
-    }
-    let inventory = runner.run(&list_devices_spec());
-    if !inventory.ok() || !inventory.stderr.is_empty() || inventory.stdout.len() >= 1024 * 1024 {
-        return RunnerHostPresence::Unknown;
-    }
-    match parse_selected_sim(&inventory.stdout, udid).map(|sim| sim.state) {
-        Some(SimState::Shutdown) => RunnerHostPresence::Absent,
-        Some(SimState::Booted) => {
-            let output = runner.run(&launchctl_list_spec(udid));
-            if output.ok() && output.stderr.is_empty() {
-                parse_runner_hosts(&output.stdout)
-            } else {
-                RunnerHostPresence::Unknown
-            }
-        }
-        None => RunnerHostPresence::Unknown,
-    }
+    probe_runner_host_inventory(runner, udid).map_or(RunnerHostPresence::Unknown, |inventory| {
+        inventory.presence()
+    })
 }
 
 pub fn uninstall_app_spec(udid: &str, app_id: &str) -> CmdSpec {

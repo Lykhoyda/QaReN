@@ -774,15 +774,19 @@ fn run_inner(
 
         let ios_lifecycle = req.boot_device || req.restart_device || req.shutdown_device_on_exit;
         if req.platform == Platform::Ios && (req.fresh_install || ios_lifecycle) {
-            if let Err(f) = core::fresh_install_admission(
+            match core::fresh_install_admission(
                 ctx.runner,
                 &node,
                 &req.runtime_dir,
                 &project_root,
                 &device.id,
                 None,
+                None,
             ) {
-                return finish_failed(ctx, f);
+                Ok(summary) => ctx
+                    .notes
+                    .push(("admission_before_deps".into(), summary.note())),
+                Err(f) => return finish_failed(ctx, f),
             }
         }
         if req.platform == Platform::Ios {
@@ -799,15 +803,19 @@ fn run_inner(
         }
         // Last proof before anything destructive; ios_lifecycle options are iOS-only.
         if req.fresh_install || ios_lifecycle {
-            if let Err(f) = core::fresh_install_admission(
+            match core::fresh_install_admission(
                 ctx.runner,
                 &node,
                 &req.runtime_dir,
                 &project_root,
                 &device.id,
                 android_env.as_ref(),
+                None,
             ) {
-                return finish_failed(ctx, f);
+                Ok(summary) => ctx
+                    .notes
+                    .push(("admission_before_mutation".into(), summary.note())),
+                Err(f) => return finish_failed(ctx, f),
             }
         }
         if req.shutdown_device_on_exit {
@@ -1109,6 +1117,7 @@ fn run_inner(
             Ok(child) => child,
             Err(f) => return finish_failed(ctx, f),
         };
+        ctx.record.resources.runner_host_absent = false;
         ctx.record.resources.core = Some(crate::runrecord::CoreResource {
             pgid: core_child.pid,
             identity: capture_pid_identity(ctx.runner, core_child.pid),
@@ -1360,7 +1369,7 @@ fn run_inner(
                         "prove",
                         refusal_code(code),
                         format!("{code}: {message}"),
-                        "resolve the refusal, then re-run",
+                        Failure::core_refusal_next_action(code),
                     )
                 })),
             ),
@@ -1589,8 +1598,17 @@ fn run_inner(
         for (name, rendered) in cleanup {
             receipt.cleanup.insert(name, rendered);
         }
-        if !all_clean {
-            receipt.next_action = format!("qaren cleanup {run_id} --json");
+        if !all_clean
+            && receipt
+                .recovery
+                .as_ref()
+                .is_none_or(|r| r.key.as_deref() != Some("ios_runner_cleanup"))
+        {
+            let next = format!("qaren cleanup {run_id} --json");
+            if let Some(failure) = &mut receipt.failure {
+                failure.next_action = crate::redact::OutputText::from_output(&next);
+            }
+            receipt.next_action = next;
         }
         receipt
     };
@@ -2114,9 +2132,13 @@ fn finish_failed(
     failure: Failure,
     retain_device_lease: bool,
 ) -> Receipt {
-    let failure = ensure_running(ctx.runner, &failure.phase)
-        .err()
-        .unwrap_or(failure);
+    let failure = if failure.code == FailureCode::RunCancelled && failure.phase == "fresh_install" {
+        failure
+    } else {
+        ensure_running(ctx.runner, &failure.phase)
+            .err()
+            .unwrap_or(failure)
+    };
     events::close_running(StageState::Failed, Some(&failure.code_str()), &[]);
     let (cleanup, _, _) = teardown(
         &mut ctx,
@@ -2219,7 +2241,9 @@ fn teardown(
     ) {
         outcomes.push(("runner_driver".to_string(), outcome));
     }
-    if let Some(outcome) = crate::commands::cleanup::cleanup_runner_host(ctx.runner, &ctx.record) {
+    if let Some(outcome) =
+        crate::commands::cleanup::cleanup_runner_host(ctx.runner, &mut ctx.record, &ctx.runs_root)
+    {
         outcomes.push(("runner_host".to_string(), outcome));
     }
     // A live recorder still addresses the device, so it gates the lease like the hosts do.
