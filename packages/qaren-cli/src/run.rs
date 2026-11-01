@@ -1605,7 +1605,8 @@ fn run_inner(
                 .is_none_or(|r| r.key.as_deref() != Some("ios_runner_cleanup"))
         {
             let next = format!("qaren cleanup {run_id} --json");
-            if let Some(failure) = &mut receipt.failure {
+            // A held run's failure already names the inspection steps and this cleanup command.
+            if let Some(failure) = receipt.failure.as_mut().filter(|_| receipt.held.is_none()) {
                 failure.next_action = crate::redact::OutputText::from_output(&next);
             }
             receipt.next_action = next;
