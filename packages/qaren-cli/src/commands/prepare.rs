@@ -112,12 +112,16 @@ impl<'a> Ctx<'a> {
             } else {
                 None
             };
-        // A contention refusal keeps naming the holder; the run's own cleanup is carried by its recovery.
         if self.record.resources.any_owned()
             && !matches!(
                 failure.code,
                 FailureCode::ArtifactInstallFailed | FailureCode::BuildContended
             )
+            && failure.build_recovery().is_none_or(|r| {
+                r.reason != RecoveryReason::ForeignAdmissionUnresolved
+                    && !(failure.phase == "fresh_install"
+                        && r.reason == RecoveryReason::IdentityUnavailable)
+            })
         {
             failure.next_action = crate::redact::OutputText::from_output(&format!(
                 "qaren cleanup {} --json",
@@ -606,7 +610,7 @@ fn prepare_validated(
         ctx.notes
             .push(("device_pool".to_string(), format!("reused {udid}")));
     }
-    let borrowed_admission = |ctx: &mut Ctx| {
+    let borrowed_admission = |ctx: &mut Ctx, stage: &str| {
         crate::core::fresh_install_admission(
             ctx.runner,
             &node,
@@ -619,14 +623,18 @@ fn prepare_validated(
                 .expect("borrowed")
                 .udid,
             None,
+            None,
         )
+        .map(|summary| {
+            ctx.notes.push((stage.to_string(), summary.note()));
+        })
     };
     // A pool member is QaReN's to boot; a --device target only with --boot-device.
     let may_boot = args.boot_device || pool_claimed;
     if selected.is_some() || pool_claimed {
         // Recovery may have changed the target; the pre-lease observation is not authority.
-        if let Err(f) =
-            reprove_borrowed_ios(&mut ctx, may_boot).and_then(|_| borrowed_admission(&mut ctx))
+        if let Err(f) = reprove_borrowed_ios(&mut ctx, may_boot)
+            .and_then(|_| borrowed_admission(&mut ctx, "admission_before_deps"))
         {
             return Ok(ctx.fail(f));
         }
@@ -645,7 +653,7 @@ fn prepare_validated(
         }
     }
     if selected.is_some() || pool_claimed {
-        if let Err(f) = borrowed_admission(&mut ctx) {
+        if let Err(f) = borrowed_admission(&mut ctx, "admission_before_mutation") {
             return Ok(ctx.fail(f));
         }
         if pool_claimed {
