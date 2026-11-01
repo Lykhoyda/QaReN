@@ -1312,9 +1312,6 @@ fn script_volume_sample(mock: &mut MockRunner, slow: bool) {
         r#"{"files":32,"elapsed_ms":1}"#
     };
     mock.expect_run("--internal-volume-sample", CmdOutput::success(output));
-    if cfg!(target_os = "macos") {
-        mock.expect_run("SPUSBDataType", CmdOutput::success("{}"));
-    }
 }
 
 fn manifest_answered_in(duration_ms: u64) -> CmdOutput {
@@ -1648,7 +1645,7 @@ fn mixed_slow_answers_with_a_thirty_second_median_explain_an_online_account_look
         .contains("unset QAREN_EXPO_ONLINE and EXPO_OFFLINE"));
     assert!(failure
         .next_action
-        .contains("replug for USB 3 or move the copy to the internal disk"));
+        .contains("move the project to a faster or internal disk"));
     assert!(receipt.outcomes["candidate_volume_speed"].contains("sample_files=32"));
     assert_eq!(receipt.timings_ms["manifest_warmup_elapsed"], 420_000);
     assert_eq!(mock.remaining(), 0);

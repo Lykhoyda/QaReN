@@ -1,4 +1,4 @@
-use crate::exec::{CmdOutput, CmdSpec, Runner};
+use crate::exec::{CmdSpec, Runner};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs::OpenOptions;
@@ -8,7 +8,7 @@ use std::path::Path;
 use std::time::Instant;
 
 pub const HELPER_ARG: &str = "--internal-volume-sample";
-pub const SLOW_VOLUME_FIX: &str = "candidate on a slow volume: expect the manifest and builds to be slow; replug for USB 3 or move the copy to the internal disk, then re-run once";
+pub const SLOW_VOLUME_FIX: &str = "candidate on a slow volume: expect the manifest and builds to be slow; move the project to a faster or internal disk, then re-run once";
 
 #[derive(Serialize, Deserialize)]
 struct Sample {
@@ -24,7 +24,7 @@ pub(crate) struct Assessment {
 
 pub(crate) fn assess(runner: &mut dyn Runner, root: &Path, deadline_ms: u64) -> Assessment {
     let mut result = Assessment {
-        summary: "sample=unknown; usb_link=unknown".into(),
+        summary: "sample=unknown".into(),
         ..Default::default()
     };
     let Ok(exe) = std::env::current_exe() else {
@@ -45,73 +45,20 @@ pub(crate) fn assess(runner: &mut dyn Runner, root: &Path, deadline_ms: u64) -> 
         .then(|| serde_json::from_str::<Sample>(&output.stdout).ok())
         .flatten();
     let sampled = sample.as_ref().filter(|s| (16..=32).contains(&s.files));
-    result.slow = sampled.is_some_and(|s| s.elapsed_ms >= s.files * 50);
-    let mut usb = None;
-    let remaining = deadline_ms.saturating_sub(runner.monotonic_ms()) / 1000;
-    if cfg!(target_os = "macos") && remaining > 0 {
-        let output = runner.run(&CmdSpec::new(
-            "candidate-volume-usb",
-            "/usr/sbin/system_profiler",
-            &["SPUSBDataType", "-json"],
-            remaining.min(5),
-        ));
-        usb = usb2_on_candidate(&output, root);
-    }
-    result.slow |= usb == Some(true);
+    result.slow = sample.as_ref().is_some_and(|s| {
+        s.elapsed_ms >= 4000 || (sampled.is_some() && s.elapsed_ms >= s.files * 50)
+    });
     result.summary = format!(
-        "sample_files={}; sample_elapsed_ms={}; sample={}; usb_link={}",
+        "sample_files={}; sample_elapsed_ms={}; sample={}",
         sample.as_ref().map_or(0, |s| s.files),
         sample.as_ref().map_or(0, |s| s.elapsed_ms),
-        if sampled.is_some() {
+        if sampled.is_some() || result.slow {
             "measured"
         } else {
             "unknown"
         },
-        match usb {
-            Some(true) => "usb2_or_slower",
-            Some(false) => "usb3_or_faster",
-            None => "unknown",
-        }
     );
     result
-}
-
-fn usb2_on_candidate(output: &CmdOutput, root: &Path) -> Option<bool> {
-    if !output.ok() {
-        return None;
-    }
-    let json: serde_json::Value = serde_json::from_str(&output.stdout).ok()?;
-    fn visit(value: &serde_json::Value, root: &Path, inherited: Option<bool>) -> Option<bool> {
-        match value {
-            serde_json::Value::Object(fields) => {
-                let speed = fields
-                    .get("speed")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| {
-                        let lower = s.to_ascii_lowercase();
-                        if lower.contains("gb/") || lower.contains("gbps") {
-                            Some(false)
-                        } else if lower.contains("mb/") || lower.contains("mbps") {
-                            Some(true)
-                        } else {
-                            None
-                        }
-                    })
-                    .or(inherited);
-                if fields
-                    .get("mount_point")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|p| Path::new(p).is_absolute() && root.starts_with(p))
-                {
-                    return speed;
-                }
-                fields.values().find_map(|v| visit(v, root, speed))
-            }
-            serde_json::Value::Array(items) => items.iter().find_map(|v| visit(v, root, inherited)),
-            _ => None,
-        }
-    }
-    visit(&json, root, None)
 }
 
 pub fn run_helper(root: &Path) -> u8 {
@@ -140,7 +87,7 @@ fn sample(root: &Path) -> std::io::Result<Sample> {
         };
         for child in children.take(256).flatten() {
             entries += 1;
-            if entries > 1024 || files == 32 {
+            if entries > 1024 || files == 32 || started.elapsed().as_secs() >= 4 {
                 return Ok(Sample {
                     files,
                     elapsed_ms: started.elapsed().as_millis() as u64,
@@ -199,30 +146,19 @@ fn sample(root: &Path) -> std::io::Result<Sample> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exec::MockRunner;
+    use crate::exec::{CmdOutput, MockRunner};
 
     #[test]
-    fn slow_reads_or_a_candidate_usb2_link_warn_without_exposing_inventory() {
-        for (sample, usb, slow) in [
-            (r#"{"files":32,"elapsed_ms":1800}"#, "{}", true),
-            (
-                r#"{"files":32,"elapsed_ms":1}"#,
-                r#"{"speed":"Up to 480 Mb/sec","volumes":[{"mount_point":"/candidate","serial_num":"private"}]}"#,
-                cfg!(target_os = "macos"),
-            ),
-            (
-                r#"{"files":32,"elapsed_ms":1}"#,
-                r#"{"speed":"Up to 5 Gb/sec","volumes":[{"mount_point":"/candidate"}]}"#,
-                false,
-            ),
-            ("invalid", "{}", false),
-            (r#"{"files":1,"elapsed_ms":2000}"#, "{}", false),
+    fn slow_complete_or_partial_samples_warn_without_exposing_output() {
+        for (sample, slow) in [
+            (r#"{"files":32,"elapsed_ms":1800}"#, true),
+            (r#"{"files":3,"elapsed_ms":4000}"#, true),
+            (r#"{"files":32,"elapsed_ms":1}"#, false),
+            (r#"{"files":1,"elapsed_ms":2000}"#, false),
+            ("invalid-private-output", false),
         ] {
             let mut runner = MockRunner::new();
             runner.expect_run(HELPER_ARG, CmdOutput::success(sample));
-            if cfg!(target_os = "macos") {
-                runner.expect_run("SPUSBDataType", CmdOutput::success(usb));
-            }
             let assessment = assess(&mut runner, Path::new("/candidate/app"), u64::MAX);
             assert_eq!(assessment.slow, slow);
             assert!(!assessment.summary.contains("private"));
@@ -230,13 +166,6 @@ mod tests {
             assert!(runner.calls.iter().all(|spec| spec.timeout_seconds <= 5));
             assert_eq!(runner.remaining(), 0);
         }
-        assert_eq!(
-            usb2_on_candidate(
-                &CmdOutput::success(r#"{"speed":"Up to 480 Mb/sec","mount_point":"/elsewhere"}"#),
-                Path::new("/candidate")
-            ),
-            None
-        );
     }
 
     #[test]

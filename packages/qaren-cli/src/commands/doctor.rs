@@ -271,7 +271,7 @@ pub fn doctor(
         config.as_ref().map(|_| app_root.as_path()),
     ));
     checks.push(if config.is_some() {
-        let deadline = runner.monotonic_ms().saturating_add(10_000);
+        let deadline = runner.monotonic_ms().saturating_add(5_000);
         let volume = crate::volume::assess(runner, &app_root, deadline);
         if volume.slow {
             Check::warn(
@@ -1789,9 +1789,6 @@ mod tests {
             crate::volume::HELPER_ARG,
             CmdOutput::failed(1, "unavailable"),
         );
-        if cfg!(target_os = "macos") {
-            runner.expect_run("SPUSBDataType", CmdOutput::failed(1, "unavailable"));
-        }
     }
 
     #[test]
@@ -2547,7 +2544,6 @@ mod tests {
         assert!(runner.spawned_logs.is_empty());
         assert!(runner.calls.iter().all(|call| call.label == "doctor-host"
             || call.label == "candidate-volume-sample"
-            || call.label == "candidate-volume-usb"
             || call.program == "df"
             || call.args.iter().any(|arg| arg == "--version"
                 || arg == "-version"

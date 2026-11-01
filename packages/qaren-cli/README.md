@@ -48,7 +48,7 @@ that can conflict with a session or is hygiene; `SKIP` is not applicable.
 | `expo-offline` | Metro-only Expo commands start offline by default; warns when `QAREN_EXPO_ONLINE=1` or `EXPO_OFFLINE=0` enables account lookups |
 | `watchman-health`, `watchman-volume-roots` | A read-only, five-second watch-list probe without starting Watchman; a separate five-second metadata probe counts roots on a configured candidate volume and warns about inaccessible roots |
 | `watchman-volume-probe` | A five-second `watch-project` probe on the candidate directory; a timeout or rejection fails with volume-permission and FSEvents recovery steps |
-| `candidate-volume-speed` | A bounded small-file read sample on the candidate volume, bypassing file caching on macOS, plus USB link inventory; warns about slow reads or a USB 2 link, with unknown results disclosed |
+| `candidate-volume-speed` | A bounded small-file read sample on the candidate volume; warns about slow reads, with unknown results disclosed |
 | `host-load` | One-, five- and fifteen-minute load averages, logical CPU count and sampled CPU idle; warns about readiness deadlines under load |
 | `native-build-lock` | Read-only iOS [build-lock observation](#native-fingerprint-build-selection); never claims or reclaims the lock |
 | `android-sdk`, `android-avd` | When `android` is configured: `ANDROID_HOME`, an executable `adb` file (never run; its version is not checked), the emulator binary and the configured AVD via `emulator -list-avds` |
@@ -2051,14 +2051,15 @@ state or reconnecting the volume. Its value-free result is recorded at
 
 After a request-handler timeout or the first manifest answer taking at least
 10 seconds, QaReN also samples up to 32 small files on the candidate volume
-and checks macOS USB link inventory, within the remaining stage budget.
-Each diagnostic has a five-second cap. A sample of at least 16 files averaging
-50 ms per file, or a USB 2 link attributable to the candidate mount, adds the
-next step to replug for USB 3 or move the copy to the internal disk.
-The receipt's `candidate_volume_speed` outcome contains only counts, timings
-and classifications. Sparse samples and unavailable USB inventory remain
-unknown; a short sample cannot establish sustained disk speed. No files are
-written, no global caches are flushed and no service is reset.
+within the remaining stage budget, with a five-second cap. A sample of at
+least 16 files averaging 50 ms per file, or a partial sample reaching its
+four-second work limit, adds the next step to move the project to a faster
+or internal disk. The receipt's `candidate_volume_speed` outcome contains
+only counts, timings and classifications. Sparse samples below that time
+limit and failed probes remain unknown; a short sample cannot establish
+sustained disk speed. macOS reads request uncached I/O, but previously cached
+files can still make the sample partly warm. No files are written, no global
+caches are flushed and no service is reset.
 
 QaReN starts `expo start` with `EXPO_OFFLINE=1` to avoid account lookups for local
 manifests. Set `QAREN_EXPO_ONLINE=1` or explicitly set `EXPO_OFFLINE=0` when the
