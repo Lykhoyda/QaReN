@@ -306,6 +306,52 @@ test('a later target covered by the scrim does not veto recovery', () => {
 });
 
 for (const exact of [undefined, 'text'] as const) {
+  for (const covered of [true, false]) {
+    test(`unresolved text preserves uncertainty beside a ${covered ? 'covered' : 'visible'} occurrence (${exact})`, () => {
+      const snapshot = sheetScreen(covered, ['Close'], [
+        {
+          ref: '@stale-page',
+          type: 'Other',
+          parentIndex: 1,
+          rect: { x: -400, y: 180, width: 400, height: 600 },
+        },
+        {
+          ref: '@stale-input',
+          type: 'TextView',
+          parentIndex: 4,
+          label: 'Welcome Home',
+          rect: { x: 24, y: 20, width: 354, height: 100 },
+        },
+      ]);
+      assert.equal(
+        snapshot.elements.find((e) => e.ref === '@stale-input')!.visibilityEvidence,
+        'unresolved',
+      );
+      assert.deepEqual(snapshot.unresolvedText, ['Welcome Home']);
+      const target = { phrase: 'Welcome Home', quoted: 'Welcome Home', exact };
+      assert.equal(targetEvidence(target, snapshot), covered ? 'unsure' : 'pass');
+      for (const quoted of ['Welcome Home', 'Home']) {
+        const recoveryTarget = { phrase: quoted, quoted, exact };
+        for (const targets of [
+          [recoveryTarget],
+          [{ phrase: 'absent', quoted: 'absent' }, recoveryTarget],
+        ]) {
+          const vetoes: string[] = [];
+          assert.equal(
+            dismissCandidate(snapshot, targets, (record) => vetoes.push(record.veto)),
+            undefined,
+          );
+          assert.deepEqual(vetoes, [targets.length === 1 ? 'current-target' : 'later-target']);
+        }
+      }
+      assert.equal(targetEvidence(homeTarget, snapshot), covered ? 'fail' : 'pass');
+      assert.deepEqual(
+        dismissCandidate(snapshot, [homeTarget]),
+        covered ? { label: 'Close' } : undefined,
+      );
+    });
+  }
+
   test(`a text target uses uncovered contains matches for recovery (${exact})`, () => {
     const target = { phrase: 'Home', quoted: 'Home', exact };
     assert.deepEqual(dismissCandidate(sheetScreen(), [target]), { label: 'Close' });

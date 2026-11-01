@@ -853,7 +853,8 @@ export function targetEvidence(target: Target, screen: Screen): LiteralVerdict {
           ? `${e.label ?? e.placeholder ?? e.testID ?? 'input'}: ${e.value}`
           : e.label) === target.quoted,
     );
-    if (carriers.length && carriers.every((e) => centreCovered(e, screen))) return 'fail';
+    if (carriers.length && carriers.every((e) => centreCovered(e, screen)))
+      return screen.unresolvedText?.some((line) => line === target.quoted) ? 'unsure' : 'fail';
   }
   return text;
 }
@@ -881,7 +882,8 @@ export function targetOnScreen(screen: Screen, target: Target): boolean {
     return true;
   if (target.exact === 'id') return false;
   const evidence = literalEvidence(screen, quoted, 'contains').verdict;
-  if (evidence === 'unsure') return true;
+  if (evidence === 'unsure' || screen.unresolvedText?.some((line) => line.includes(quoted)))
+    return true;
   return (
     evidence === 'pass' &&
     literalTextProjection(screen).elements.some(

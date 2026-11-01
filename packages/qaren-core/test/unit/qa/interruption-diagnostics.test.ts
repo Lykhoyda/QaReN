@@ -7,6 +7,20 @@ import { element, screen } from './judgment-fixtures.ts';
 
 const targets = [{ phrase: '"Private target"', quoted: 'Private target' }];
 
+function observed(labels: string[]) {
+  return join(
+    labels.map((label, index) => ({
+      ref: `@e${index}`,
+      type: 'Button',
+      label,
+      hittable: true,
+    })),
+    [],
+    'app',
+    { native: 'complete', react: 'complete' },
+  );
+}
+
 test('ineligible decline emits one value-free record with the first failed predicate', () => {
   const logs: unknown[] = [];
   const control = element('@private', 'Skip');
@@ -29,7 +43,7 @@ test('ineligible decline emits one value-free record with the first failed predi
 
 test('a later target veto reports only its index and successful selection emits nothing', () => {
   const logs: unknown[] = [];
-  const snapshot = screen([element('@private', 'Close'), element('@target', 'Private target')]);
+  const snapshot = observed(['Close', 'Private target']);
   const planTargets = [{ phrase: '"Absent"', quoted: 'Absent' }, ...targets];
   assert.equal(
     dismissCandidate(snapshot, planTargets, (record) => logs.push(record)),
@@ -52,7 +66,7 @@ test('front, coverage and current-target vetoes use fixed categories and a broke
   for (const [snapshot, veto] of [
     [{ ...screen([]), front: 'dialog' }, 'front'],
     [{ ...screen([]), coverage: { native: 'unknown', react: 'complete' } }, 'coverage'],
-    [screen([element('@private', 'Private target')]), 'current-target'],
+    [observed(['Private target']), 'current-target'],
   ] as const) {
     const logs: InterruptionDiagnostic[] = [];
     assert.equal(
