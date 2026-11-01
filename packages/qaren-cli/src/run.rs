@@ -735,15 +735,19 @@ fn run_inner(
 
         let ios_lifecycle = req.boot_device || req.restart_device || req.shutdown_device_on_exit;
         if req.platform == Platform::Ios && (req.fresh_install || ios_lifecycle) {
-            if let Err(f) = core::fresh_install_admission(
+            match core::fresh_install_admission(
                 ctx.runner,
                 &node,
                 &req.runtime_dir,
                 &project_root,
                 &device.id,
                 None,
+                None,
             ) {
-                return finish_failed(ctx, f);
+                Ok(summary) => ctx
+                    .notes
+                    .push(("admission_before_deps".into(), summary.note())),
+                Err(f) => return finish_failed(ctx, f),
             }
         }
         if req.platform == Platform::Ios {
@@ -760,15 +764,19 @@ fn run_inner(
         }
         // Last proof before anything destructive; ios_lifecycle options are iOS-only.
         if req.fresh_install || ios_lifecycle {
-            if let Err(f) = core::fresh_install_admission(
+            match core::fresh_install_admission(
                 ctx.runner,
                 &node,
                 &req.runtime_dir,
                 &project_root,
                 &device.id,
                 android_env.as_ref(),
+                None,
             ) {
-                return finish_failed(ctx, f);
+                Ok(summary) => ctx
+                    .notes
+                    .push(("admission_before_mutation".into(), summary.note())),
+                Err(f) => return finish_failed(ctx, f),
             }
         }
         if req.shutdown_device_on_exit {
@@ -842,7 +850,8 @@ fn run_inner(
             }
         }
         // iOS claims its build lock inside build_ios_locked, so the lock covers only the build.
-        let ios_build = plan_decision.decision != BuildDecision::Reuse && req.platform == Platform::Ios;
+        let ios_build =
+            plan_decision.decision != BuildDecision::Reuse && req.platform == Platform::Ios;
         if plan_decision.decision != BuildDecision::Reuse && !ios_build {
             if let Err(f) = prepare::claim_build_lock(&mut ctx, &req.lock_root) {
                 return finish_failed(ctx, f);
@@ -1318,11 +1327,26 @@ fn run_inner(
                         "prove",
                         refusal_code(code),
                         format!("{code}: {message}"),
-                        "resolve the refusal, then re-run",
+                        Failure::core_refusal_next_action(code),
                     )
                 })),
             ),
         };
+        if outcome.ledger.press_evidence.is_some() {
+            if let (Some(failure), Verdict::Refused { code, .. }) = (&mut failure, &outcome.verdict)
+            {
+                if matches!(
+                    code.as_str(),
+                    "PRESS_NOT_REGISTERED"
+                        | "NATIVE_CAPTURE_UNAVAILABLE"
+                        | "ITEM_DEADLINE_EXCEEDED"
+                        | "EVIDENCE_EXPIRED"
+                        | "RUN_CANCELLED"
+                ) {
+                    *failure = failure.clone().with_press_recovery(code);
+                }
+            }
+        }
         let mut tested_older_commit = None;
         let mut published_video = None;
         if let Some(pr) = &pr_state {
@@ -1669,6 +1693,7 @@ pub fn worktree_drift(before: &BTreeSet<String>, after: &BTreeSet<String>) -> Ve
 
 fn refusal_code(code: &str) -> FailureCode {
     match code {
+        "PRESS_NOT_REGISTERED" => FailureCode::PressNotRegistered,
         "METRO_ORIGIN_MISMATCH" => FailureCode::MetroOriginMismatch,
         "PLAN_INPUT_MISSING" => FailureCode::PlanInputMissing,
         "PLAN_UNPARSEABLE" => FailureCode::PlanUnparseable,
@@ -1938,9 +1963,13 @@ fn finish_failed(
     failure: Failure,
     retain_device_lease: bool,
 ) -> Receipt {
-    let failure = ensure_running(ctx.runner, &failure.phase)
-        .err()
-        .unwrap_or(failure);
+    let failure = if failure.code == FailureCode::RunCancelled && failure.phase == "fresh_install" {
+        failure
+    } else {
+        ensure_running(ctx.runner, &failure.phase)
+            .err()
+            .unwrap_or(failure)
+    };
     events::close_running(StageState::Failed, Some(&failure.code_str()), &[]);
     let (cleanup, _, _) = teardown(&mut ctx, node, runtime_dir, false, retain_device_lease);
     let mut receipt = ctx.fail(failure);

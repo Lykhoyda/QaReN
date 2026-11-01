@@ -2046,6 +2046,7 @@ pub(crate) fn cleanup_borrowed_ios(
         &record.candidate.project_root,
         &sim.udid,
         None,
+        None,
     ) {
         return Outcome::Unresolved(format!(
             "strict foreign-driver admission did not clear simulator stop: {}",
