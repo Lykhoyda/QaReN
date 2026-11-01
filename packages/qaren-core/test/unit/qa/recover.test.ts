@@ -199,6 +199,49 @@ test('an uncovered id target still vetoes recovery', () => {
   assert.equal(dismissCandidate(snapshot, [homeTarget]), undefined);
 });
 
+for (const exact of [undefined, 'text', 'id'] as const) {
+  test(`a planned Offer container protects its Close child without literal contribution (${exact})`, () => {
+    const nodes: NativeNode[] = [
+      { ref: '@app', type: 'Application' },
+      { ref: '@window', type: 'Window', parentIndex: 0 },
+      {
+        ref: '@offer',
+        type: 'Other',
+        parentIndex: 1,
+        label: 'Offer',
+        identifier: exact === 'id' ? 'Offer' : undefined,
+        hittable: true,
+      },
+      { ref: '@close', type: 'Button', parentIndex: 2, label: 'Close', hittable: true },
+    ];
+    const snapshot = join(
+      nodes,
+      [],
+      'app',
+      { native: 'complete', react: 'complete' },
+      undefined,
+      {
+        source: 'xcui-live',
+        nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+      },
+    );
+    assert.equal(snapshot.visibleText.includes('Offer'), false);
+    assert.equal(snapshot.labelText?.includes('Offer') ?? false, false);
+    const absent = { phrase: 'Absent', quoted: 'Absent' };
+    assert.deepEqual(dismissCandidate(snapshot, [absent]), { label: 'Close' });
+    const records: string[] = [];
+    assert.equal(
+      dismissCandidate(
+        snapshot,
+        [absent, { phrase: 'Offer', quoted: 'Offer', exact, laterBlock: true }],
+        (record) => records.push(...record.elements.map((e) => e.failed)),
+      ),
+      undefined,
+    );
+    assert.deepEqual(records, ['target-ancestor']);
+  });
+}
+
 for (const exact of [undefined, 'id'] as const) {
   test(`an uncovered id carrier with an offscreen twin still vetoes recovery (${exact})`, () => {
     const snapshot = sheetScreen(

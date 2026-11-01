@@ -1,11 +1,5 @@
 import type { Target } from './plan.js';
-import {
-  ancestorsOf,
-  contributesLiteralText,
-  hostAssociationIdentity,
-  type Element,
-  type Screen,
-} from './screen.js';
+import { ancestorsOf, hostAssociationIdentity, type Element, type Screen } from './screen.js';
 import type { HostAssociationDiagnostic } from './host-association.js';
 import { targetOnScreen } from './resolve.js';
 import type { Reason } from './untrusted.js';
@@ -213,7 +207,9 @@ function matchesTarget(element: Element, target: Target): boolean {
   return (
     target.quoted !== undefined &&
     ((target.exact !== 'text' && element.testID === target.quoted) ||
-      (target.exact !== 'id' && contributesLiteralText(element) && element.label === target.quoted))
+      (target.exact !== 'id' &&
+        !element.semantic?.nativePresence?.structural &&
+        element.label === target.quoted))
   );
 }
 
