@@ -99,6 +99,45 @@ test('an absent target suggests inserting a step and names enabled controls by i
   assert.doesNotMatch(failure.suggestion!, /qa-next/);
 });
 
+test('fill diagnostics recognize disabled placeholder targets and prioritize them under the cap', async () => {
+  const observed = screen([
+    ...Array.from({ length: 25 }, (_, i) => control(`@other${i}`, `Other ${i}`)),
+    control('@email', '', {
+      kind: 'input',
+      label: undefined,
+      placeholder: 'Email',
+      testID: 'email-field',
+      disabled: true,
+      hittable: false,
+      semantic: { press: 'unsupported', fill: 'supported', visibility: 'visible' },
+    }),
+  ]);
+  const ledger = await runPlan(plan('1. Fill "Email" with "x"\n'), deps([observed]));
+  assert.equal(ledger.failure?.subreason, 'present-but-unavailable');
+  assert.equal(ledger.failure?.screen?.controls[0].id, 'email-field');
+  assert.equal(ledger.failure?.screen?.controls[0].enabled, false);
+  assert.match(ledger.failure!.suggestion!, /on screen and disabled/);
+  assert.doesNotMatch(ledger.failure!.suggestion!, /inserting the missing step/);
+
+  const privacy = new ObservedPrivacy();
+  for (const kind of ['fill', 'press', 'wait'] as const) {
+    for (const exact of [undefined, 'text', 'id'] as const) {
+      const diagnostic = targetMissDiagnostic(
+        { phrase: 'Email', quoted: 'Email', exact },
+        observed,
+        1,
+        false,
+        privacy,
+        kind,
+      );
+      assert.equal(
+        diagnostic.reason,
+        kind === 'fill' && exact === undefined ? 'present-but-unavailable' : 'absent',
+      );
+    }
+  }
+});
+
 test('a label shared by two controls suggests a unique testID', async () => {
   const ledger = await runPlan(
     plan('1. Tap "Agree"\n'),
@@ -178,12 +217,12 @@ test('structurally protected code labels are masked in both failure projections'
     privacy.observe(observed);
     assert.deepEqual(privacy.screenText(observed), ['[code]']);
     const target = { phrase: 'A', quoted: 'A', exact: 'text' as const };
-    const now = screenNow(observed, target, 0, false, privacy);
+    const now = screenNow(observed, target, 0, false, privacy, 'press');
     assert.deepEqual(
       now.controls.map((c) => c.label),
       [MASK, MASK, MASK, MASK],
     );
-    const diagnostic = targetMissDiagnostic(target, observed, 1, false, privacy);
+    const diagnostic = targetMissDiagnostic(target, observed, 1, false, privacy, 'press');
     assert.equal(diagnostic.candidates[0].label, MASK);
   }
 });
@@ -244,6 +283,7 @@ test('the primary mark follows screen order and the fixed labels, regardless of 
       0,
       false,
       new ObservedPrivacy(),
+      'press',
     );
     assert.equal(now.controls[0].id, 'target');
     assert.deepEqual(
@@ -259,7 +299,14 @@ test('no primary mark is emitted for unmatched or privacy-masked labels', () => 
     const privacy = new ObservedPrivacy();
     if (masked) privacy.observePrivateFill('Continue');
     privacy.observe(observed);
-    const now = screenNow(observed, { phrase: 'Missing', quoted: 'Missing' }, 0, false, privacy);
+    const now = screenNow(
+      observed,
+      { phrase: 'Missing', quoted: 'Missing' },
+      0,
+      false,
+      privacy,
+      'press',
+    );
     assert.equal(
       now.controls.some((c) => c.primary !== undefined),
       false,

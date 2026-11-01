@@ -1,8 +1,9 @@
-import type { Target } from './plan.js';
+import type { Step, Target } from './plan.js';
 import { semanticDisabled, type Element, type Kind, type Screen } from './screen.js';
 import { ObservedPrivacy, MASK } from './privacy.js';
 import { scrollUntilBand } from './resolve.js';
 import { isRecord } from './questions.js';
+import { named } from './identity.js';
 
 export const MISS_REASONS = [
   'absent',
@@ -42,6 +43,7 @@ export function targetMissDiagnostic(
   line: number,
   scrolling: boolean,
   privacy: ObservedPrivacy,
+  kind: Step['kind'],
 ): TargetMissDiagnostic {
   const query = target.quoted ?? target.phrase;
   const wantedWords = new Set(words(query.slice(0, MATCH_TEXT)));
@@ -72,9 +74,7 @@ export function targetMissDiagnostic(
       query.length <= MATCH_TEXT &&
       label.length > query.length &&
       label.slice(0, MATCH_TEXT).includes(query);
-    const direct =
-      (target.exact !== 'id' && label === query) ||
-      (target.exact !== 'text' && identifier === query);
+    const direct = names(target, element, kind);
     if (element.visibilityEvidence === 'unresolved') {
       unresolved ||= direct || contained;
       continue;
@@ -146,10 +146,8 @@ const CONTROL_KINDS: ReadonlySet<Kind> = new Set(['button', 'input', 'switch', '
 const shown = (text: string): string =>
   text.slice(0, MISS_TEXT).replace(/[\uD800-\uDFFF]/gu, '\uFFFD');
 
-const names = (target: Target, element: Element): boolean =>
-  target.quoted !== undefined &&
-  ((target.exact !== 'id' && element.label === target.quoted) ||
-    (target.exact !== 'text' && element.testID === target.quoted));
+const names = (target: Target, element: Element, kind: Step['kind']): boolean =>
+  target.quoted !== undefined && named(element, target.quoted, kind, target.exact);
 
 export function screenNow(
   screen: Screen,
@@ -157,6 +155,7 @@ export function screenNow(
   ageMs: number,
   afterDispatch: boolean,
   privacy: ObservedPrivacy,
+  kind: Step['kind'],
 ): ScreenNow {
   const withheld = privacy.textWithheld(screen) !== undefined;
   const all = screen.elements
@@ -180,9 +179,9 @@ export function screenNow(
   );
   // Target matches lead; a primary beyond the cap takes the final slot.
   const ordered = [
-    ...all.filter((e) => names(target, e)),
-    ...all.filter((e) => !names(target, e) && !e.offscreen),
-    ...all.filter((e) => !names(target, e) && e.offscreen),
+    ...all.filter((e) => names(target, e, kind)),
+    ...all.filter((e) => !names(target, e, kind) && !e.offscreen),
+    ...all.filter((e) => !names(target, e, kind) && e.offscreen),
   ];
   const controls = ordered.slice(0, MISS_CANDIDATES);
   if (primary && !controls.includes(primary)) controls[controls.length - 1] = primary;
@@ -230,6 +229,7 @@ export function missSuggestion(
   screen: Screen,
   now: ScreenNow,
   line: number,
+  kind: Step['kind'],
 ): string {
   const step = `line ${line}`;
   if (target.quoted === undefined)
@@ -238,7 +238,7 @@ export function missSuggestion(
     case 'ambiguous':
       return `the target of ${step} matched more than one control on the last observed screen; quote a testID only one control in failure.screen carries, or give the control a unique testID`;
     case 'present-but-unavailable': {
-      const matches = screen.elements.filter((e) => !e.offscreen && names(target, e));
+      const matches = screen.elements.filter((e) => !e.offscreen && names(target, e, kind));
       const state = !matches.length
         ? undefined
         : matches.every(semanticDisabled)

@@ -1238,7 +1238,7 @@ async function walkBlockScoped(
       newest && (captured.get(newest)?.id ?? 0) > (captured.get(screen)?.id ?? 0) ? newest : screen;
     const waitOrScroll = item.kind === 'wait' || item.kind === 'scroll';
     let lastScreen: Pick<LedgerFailure, 'screen' | 'suggestion' | 'subreason'> = {};
-    if (target && (waitOrScroll || targetCode)) {
+    if (item.kind !== 'check' && target && (waitOrScroll || targetCode)) {
       try {
         const diagnostic = targetMissDiagnostic(
           target,
@@ -1246,6 +1246,7 @@ async function walkBlockScoped(
           item.line,
           item.kind === 'scroll',
           privacy,
+          item.kind,
         );
         if (waitOrScroll) {
           if (
@@ -1263,19 +1264,31 @@ async function walkBlockScoped(
           const lastReason =
             last === screen
               ? diagnostic.reason
-              : targetMissDiagnostic(target, last, item.line, item.kind === 'scroll', privacy)
-                  .reason;
-          const now = screenNow(last, target, row.t - seen.at, dispatchedOn === seen.id, privacy);
+              : targetMissDiagnostic(
+                  target,
+                  last,
+                  item.line,
+                  item.kind === 'scroll',
+                  privacy,
+                  item.kind,
+                ).reason;
+          const now = screenNow(
+            last,
+            target,
+            row.t - seen.at,
+            dispatchedOn === seen.id,
+            privacy,
+            item.kind,
+          );
           const ambiguous =
             targetCode === 'TARGET_AMBIGUOUS' &&
-            item.kind !== 'check' &&
             exactIdentities(last, target, item.kind).filter(
               ({ element }) => !element.offscreen && !element.ref.startsWith('react:'),
             ).length > 1;
           const subreason = ambiguous ? 'ambiguous' : lastReason;
           lastScreen = {
             screen: now,
-            suggestion: missSuggestion(subreason, target, last, now, item.line),
+            suggestion: missSuggestion(subreason, target, last, now, item.line, item.kind),
             subreason,
           };
         }
