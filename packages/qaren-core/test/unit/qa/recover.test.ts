@@ -214,17 +214,10 @@ for (const exact of [undefined, 'text', 'id'] as const) {
       },
       { ref: '@close', type: 'Button', parentIndex: 2, label: 'Close', hittable: true },
     ];
-    const snapshot = join(
-      nodes,
-      [],
-      'app',
-      { native: 'complete', react: 'complete' },
-      undefined,
-      {
-        source: 'xcui-live',
-        nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
-      },
-    );
+    const snapshot = join(nodes, [], 'app', { native: 'complete', react: 'complete' }, undefined, {
+      source: 'xcui-live',
+      nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+    });
     assert.equal(snapshot.visibleText.includes('Offer'), false);
     assert.equal(snapshot.labelText?.includes('Offer') ?? false, false);
     const absent = { phrase: 'Absent', quoted: 'Absent' };
@@ -351,21 +344,25 @@ test('a later target covered by the scrim does not veto recovery', () => {
 for (const exact of [undefined, 'text'] as const) {
   for (const covered of [true, false]) {
     test(`unresolved text preserves uncertainty beside a ${covered ? 'covered' : 'visible'} occurrence (${exact})`, () => {
-      const snapshot = sheetScreen(covered, ['Close'], [
-        {
-          ref: '@stale-page',
-          type: 'Other',
-          parentIndex: 1,
-          rect: { x: -400, y: 180, width: 400, height: 600 },
-        },
-        {
-          ref: '@stale-input',
-          type: 'TextView',
-          parentIndex: 4,
-          label: 'Welcome Home',
-          rect: { x: 24, y: 20, width: 354, height: 100 },
-        },
-      ]);
+      const snapshot = sheetScreen(
+        covered,
+        ['Close'],
+        [
+          {
+            ref: '@stale-page',
+            type: 'Other',
+            parentIndex: 1,
+            rect: { x: -400, y: 180, width: 400, height: 600 },
+          },
+          {
+            ref: '@stale-input',
+            type: 'TextView',
+            parentIndex: 4,
+            label: 'Welcome Home',
+            rect: { x: 24, y: 20, width: 354, height: 100 },
+          },
+        ],
+      );
       assert.equal(
         snapshot.elements.find((e) => e.ref === '@stale-input')!.visibilityEvidence,
         'unresolved',
@@ -414,15 +411,19 @@ for (const exact of [undefined, 'text'] as const) {
 
   for (const type of ['Image', 'Other'] as const) {
     test(`an excluded ${type} label does not veto recovery for covered text (${exact})`, () => {
-      const snapshot = sheetScreen(true, ['Close'], [
-        {
-          ref: '@excluded',
-          type,
-          parentIndex: 2,
-          label: 'Welcome Home',
-          rect: { x: 20, y: 200, width: 200, height: 40 },
-        },
-      ]);
+      const snapshot = sheetScreen(
+        true,
+        ['Close'],
+        [
+          {
+            ref: '@excluded',
+            type,
+            parentIndex: 2,
+            label: 'Welcome Home',
+            rect: { x: 20, y: 200, width: 200, height: 40 },
+          },
+        ],
+      );
       const excluded = snapshot.elements.find((e) => e.ref === '@excluded')!;
       assert.equal(centreCovered(excluded, snapshot), false);
       const target = { phrase: 'Welcome Home', quoted: 'Welcome Home', exact };
