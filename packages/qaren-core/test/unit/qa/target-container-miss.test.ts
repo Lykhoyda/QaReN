@@ -376,7 +376,14 @@ for (const exact of ['id', 'text'] as const) {
       assert.equal(ordinary.candidates.length, 1);
       if (exact === 'id') screen.elements[3].testID = query;
       else screen.elements[3].label = query;
-      const present = targetMissDiagnostic(selected, screen, 1, false, new ObservedPrivacy(), 'press');
+      const present = targetMissDiagnostic(
+        selected,
+        screen,
+        1,
+        false,
+        new ObservedPrivacy(),
+        'press',
+      );
       assert.equal(present.reason, 'present-but-unavailable');
       assert.equal(present.candidates[0].match, 'exact');
       assert.equal(present.candidates[0].aggregated, false);
