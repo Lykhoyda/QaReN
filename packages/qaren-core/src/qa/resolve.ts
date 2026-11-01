@@ -889,6 +889,7 @@ export function targetOnScreen(screen: Screen, target: Target): boolean {
           (e.kind === 'input' &&
             e.value !== undefined &&
             `${e.label ?? e.placeholder ?? e.testID ?? 'input'}: ${e.value}`.includes(quoted))) &&
+        !e.semantic?.nativePresence?.structural &&
         !e.offscreen &&
         !centreCovered(e, screen),
     )

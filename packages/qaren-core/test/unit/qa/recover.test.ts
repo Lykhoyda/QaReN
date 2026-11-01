@@ -135,7 +135,12 @@ test('a floating dev-menu button that stays fails with the reason', async () => 
 
 const homeTarget: Target = { phrase: 'home', quoted: 'home', exact: 'id' };
 
-function sheetScreen(covered = true, declines = ['Close'], extraNodes: NativeNode[] = []): Screen {
+function sheetScreen(
+  covered = true,
+  declines = ['Close'],
+  extraNodes: NativeNode[] = [],
+  scrimTop = 400,
+): Screen {
   const rect = { x: 0, y: 0, width: 400, height: 800 };
   const nodes: NativeNode[] = [
     { ref: '@app', type: 'Application', rect },
@@ -162,7 +167,7 @@ function sheetScreen(covered = true, declines = ['Close'], extraNodes: NativeNod
             type: 'Other',
             parentIndex: 1,
             hittable: true,
-            rect: { x: 0, y: 400, width: 400, height: 400 },
+            rect: { x: 0, y: scrimTop, width: 400, height: 800 - scrimTop },
           },
         ]
       : []),
@@ -172,7 +177,7 @@ function sheetScreen(covered = true, declines = ['Close'], extraNodes: NativeNod
       parentIndex: 1,
       label,
       hittable: true,
-      rect: { x: 20 + index * 150, y: 450, width: 100, height: 40 },
+      rect: { x: 20 + index * 150, y: scrimTop + 50, width: 100, height: 40 },
     })),
   ];
   return join(nodes, [], 'app', { native: 'complete', react: 'complete' }, undefined, {
@@ -305,6 +310,17 @@ for (const exact of [undefined, 'text'] as const) {
     const target = { phrase: 'Home', quoted: 'Home', exact };
     assert.deepEqual(dismissCandidate(sheetScreen(), [target]), { label: 'Close' });
     assert.equal(dismissCandidate(sheetScreen(false), [target]), undefined);
+  });
+
+  test(`a structural app label does not veto recovery for covered text (${exact})`, () => {
+    const snapshot = sheetScreen(true, ['Close'], [], 500);
+    const app = snapshot.elements[0];
+    app.label = 'Welcome Home Demo';
+    assert.equal(app.semantic?.nativePresence?.structural, true);
+    assert.equal(centreCovered(app, snapshot), false);
+    const target = { phrase: 'Welcome Home', quoted: 'Welcome Home', exact };
+    assert.equal(targetEvidence(target, snapshot), 'fail');
+    assert.deepEqual(dismissCandidate(snapshot, [target]), { label: 'Close' });
   });
 }
 
