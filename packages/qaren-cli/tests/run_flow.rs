@@ -3143,6 +3143,23 @@ fn every_core_refusal_code_ends_through_teardown() {
         ("JEV_UNREACHABLE", FailureCode::JevUnreachable),
         ("RUN_CANCELLED", FailureCode::RunCancelled),
         ("OTHER", FailureCode::CoreRefused),
+        ("DEV_MENU_HIDE_UNVERIFIED", FailureCode::CoreRefused),
+        (
+            "DEV_MENU_HIDE_UNVERIFIED_READ_FAILED",
+            FailureCode::CoreRefused,
+        ),
+        (
+            "DEV_MENU_HIDE_UNVERIFIED_NOT_HIDDEN",
+            FailureCode::CoreRefused,
+        ),
+        (
+            "DEV_MENU_HIDE_UNVERIFIED_EVALUATE_TIMEOUT",
+            FailureCode::CoreRefused,
+        ),
+        (
+            "DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED",
+            FailureCode::CoreRefused,
+        ),
     ] {
         let (repo, app) = app_repo();
         let mut mock = MockRunner::new();
@@ -3167,6 +3184,15 @@ fn every_core_refusal_code_ends_through_teardown() {
         let failure = receipt.failure.as_ref().unwrap();
         assert_eq!(failure.code, expected, "{code}");
         assert_eq!(failure.detail, format!("{code}: walk refused"), "{code}");
+        let expected_action = match code {
+            "DEV_MENU_HIDE_UNVERIFIED_READ_FAILED" | "DEV_MENU_HIDE_UNVERIFIED_EVALUATE_TIMEOUT" =>
+                "re-run once without --fresh-install or --restart-device; if build work is active, wait for it to finish first",
+            "DEV_MENU_HIDE_UNVERIFIED_NOT_HIDDEN" | "DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED" =>
+                "re-run once without --fresh-install; if it persists, report the value-free refusal",
+            _ => "resolve the refusal, then re-run",
+        };
+        assert_eq!(failure.next_action, expected_action, "{code}");
+
         assert_eq!(receipt.cleanup["device_lease"], "removed", "{code}");
         let cleanup = events
             .iter()
@@ -5203,6 +5229,11 @@ fn fresh_install_reset_build_readiness_walk_and_teardown_share_one_durable_lease
     let receipt = run(&mut runner, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     assert_eq!(receipt.outcomes["fresh_install"], "proven_absent");
+    for key in ["admission_before_deps", "admission_before_mutation"] {
+        let summary: serde_json::Value = serde_json::from_str(&receipt.outcomes[key]).unwrap();
+        assert_eq!(summary["attempts"], 1);
+        assert_eq!(summary["terminalReason"], "clear");
+    }
     let lane = receipt
         .lane
         .as_ref()
@@ -10213,5 +10244,79 @@ fn first_capture_fault_requires_reprepare_after_the_walk_has_exited() {
     assert_eq!(recovery["requires_user_ok"], true);
     assert_eq!(recovery["ladder"][0]["action"], "held_press");
     assert_eq!(recovery["ladder"][0]["status"], "skipped");
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn fresh_install_reprobe_keeps_the_final_busy_verdict_at_both_admission_points() {
+    for after_deps in [false, true] {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        script_preflight(&mut mock, &repo);
+        if after_deps {
+            script_admission(&mut mock);
+            common::script_ios_deps(&mut mock);
+        }
+        for (status, reason) in [
+            ("unknown", "executable_identity_unproven"),
+            ("busy", "driver_on_selected_device"),
+        ] {
+            mock.expect_run(
+                "fresh-install-preflight.js",
+                CmdOutput {
+                    exit_code: Some(4),
+                    stdout:
+                        serde_json::json!({"v":1,"platform":"ios","deviceId":UDID,"status":status,
+                    "evidence":{"reason":reason,"pid":812}})
+                        .to_string(),
+                    ..Default::default()
+                },
+            );
+        }
+        let mut req = request(&repo, &app, 30);
+        req.fresh_install = true;
+        let receipt = run(&mut mock, &req);
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Refused,
+            "{}",
+            receipt.to_json()
+        );
+        let failure = receipt.failure.unwrap();
+        assert_eq!(failure.code, FailureCode::DeviceBusy);
+        assert!(failure
+            .next_action
+            .contains("wait for the foreign process owner"));
+        assert_eq!(
+            failure.build_recovery().unwrap().action,
+            qaren::failure::RecoveryAction::WaitForOwner
+        );
+        assert!(failure
+            .detail
+            .as_str()
+            .contains("driver_on_selected_device"));
+        assert_eq!(mock.remaining(), 0);
+        assert!(!mock.calls.iter().any(|c| matches!(
+            c.label.as_str(),
+            "simctl-uninstall" | "simctl-install" | "expo-run-ios"
+        )));
+    }
+}
+
+#[test]
+fn fresh_install_cancelled_admission_retains_its_attempt_summary() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    script_admission(&mut mock);
+    mock.cancel_after = Some(("fresh-install-preflight.js".into(), "cancelled".into()));
+    let mut req = request(&repo, &app, 30);
+    req.fresh_install = true;
+    let receipt = run(&mut mock, &req);
+    let failure = receipt.failure.unwrap();
+    assert_eq!(failure.code, FailureCode::RunCancelled);
+    let summary: serde_json::Value = serde_json::from_str(failure.evidence[0].as_str()).unwrap();
+    assert_eq!(summary["attempts"], 1);
+    assert_eq!(summary["terminalReason"], "cancelled");
     assert_eq!(mock.remaining(), 0);
 }

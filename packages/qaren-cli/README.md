@@ -734,8 +734,8 @@ may resolve live to that control: it agrees only when the same-type,
 same-label owning ancestor in the retained snapshot contains the label and the
 live frame equals that owner's frame; the tap goes to the unchanged point. A later
 screen change cannot turn a proven no-mutation refusal into a passing action.
-For an iOS native-backed button not reported selected, inside a scroll container
-no taller than three times the target's height and with a visible enabled button
+For an iOS native-backed button outside an alert, not reported selected, inside
+a scroll container no taller than three times the target's height and with a visible enabled button
 beside it on the same row, QaReN requires exactly one match for the target's
 identity, retaining its original reference and reporting selected after the press,
 while that identity remains on screen. Identity is kind plus testID when present,
@@ -1983,7 +1983,8 @@ borrowed server. A matching UIAutomator, agent-device, Maestro or instrumentatio
 process refuses `DEVICE_BUSY`, excluding QaReN's own runner package. A scan
 error, timeout or empty output refuses `FRESH_INSTALL_ADMISSION_UNKNOWN`.
 Both refusals occur before uninstall. This flow never boots, wipes or restarts
-the emulator. For iOS, see [iOS admission and cleanup](#ios-admission-and-cleanup).
+the emulator. For refusal diagnostics and recovery on either platform, and iOS
+admission rules, see [iOS admission and cleanup](#ios-admission-and-cleanup).
 
 ### iOS simulator lifecycle
 
@@ -2113,18 +2114,18 @@ Before each iOS launch, `prepare` writes the app's Expo dev-menu preferences wit
 `simctl spawn <udid> defaults write <app-id>`: no floating action button, no menu
 at launch, onboarding finished. A failed write is recorded as
 `dev_menu_defaults: unconfirmed` and the launch continues. At walk start the core
-also hides the floating button through Expo's `DevMenuPreferences` module and
-reads the setting back, disables the shake gesture, attempts to disable Fast
-Refresh through `DevSettings.setHotLoadingEnabled(false)`, and closes an open
-menu. Disabling Fast Refresh prevents saved-block YAML writes in the app folder
+closes an open menu first, hides the floating button through Expo's
+`DevMenuPreferences` module and reads the setting back, disables the shake
+gesture, and attempts to disable Fast Refresh through
+`DevSettings.setHotLoadingEnabled(false)`. Disabling Fast Refresh prevents saved-block YAML writes in the app folder
 from triggering the dev client's `Refreshing...` banner during recording. This
 attempt is best-effort: an unavailable or throwing API does not itself refuse
 the walk, and native overlay clearance does not prove Fast Refresh is disabled.
 On Android that setting reloads the JS bundle, so the walk must mark the running
 runtime before attempting it; failure to mark refuses before step 1. When the
 setting reports that it executed, step 1 waits until the marked runtime is gone,
-React is ready again within the remaining walk budget, the walk helpers are
-injected into the new runtime and the reloaded bundle passes the origin proof;
+React is ready again within the shared overlay-clearance deadline below, the walk
+helpers are injected into the new runtime and the reloaded bundle passes the origin proof;
 otherwise the walk refuses before step 1.
 Transient helper-injection and origin-read timeouts retry within that same
 deadline; cancellation preempts the wait, and an invalid helper or origin proof
@@ -2134,11 +2135,34 @@ sequence runs again after a successful dev-menu recovery, except that Android do
 Refresh again, because that would reload the app mid-walk.
 Apps without the preferences module skip the floating-button setting change but still require
 native clearance evidence. The shared clearance mechanism accepts only a complete
-native snapshot with neither a floating button nor an open dev menu in front,
-briefly re-reading while overlays settle. A failed or unconfirmed floating-button
-hide is attempted up to three times; if every attempt fails, or complete
-clearance evidence is not obtained within the reads, the walk refuses with
-`DEV_MENU_HIDE_UNVERIFIED` before the first step.
+native snapshot with a non-dev surface in front, including system or app dialogs;
+step 1 handles any such dialog. Failed or incomplete reads remain unknown and retry within the attach budget
+measured from the overlay check, capped by the remaining walk budget with its
+one-second delivery reserve. Reads are separated by 250 ms waits, shortened only
+at the deadline. A failed or unconfirmed floating-button hide is attempted up to
+three times, with each preference evaluation capped at the smaller of the
+remaining budget and the platform's normal timeout.
+
+Overlay-proof refusals before step 1 use outer code `CORE_REFUSED`;
+`failure.detail` names the inner code and includes value-free read and evaluation
+counts, elapsed time and the last error class. Classification uses the final
+read attempt, so a failed or pending read after visible dev chrome is unknown,
+not proof that the chrome remains shown:
+
+| Inner code | What happened | What to do after required cleanup |
+| --- | --- | --- |
+| `DEV_MENU_HIDE_UNVERIFIED_READ_FAILED` | Clearance evidence remained unavailable, incomplete or pending at the deadline | Re-run once without `--fresh-install` or `--restart-device`; if build work is active, wait for it to finish first |
+| `DEV_MENU_HIDE_UNVERIFIED_NOT_HIDDEN` | The final complete native read still showed development-menu chrome | Re-run once without `--fresh-install`; if it persists, report the value-free refusal |
+| `DEV_MENU_HIDE_UNVERIFIED_EVALUATE_TIMEOUT` | The floating-button preference evaluation timed out or had insufficient remaining time | Re-run once without `--fresh-install` or `--restart-device`; if build work is active, wait for it to finish first |
+| `DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED` | The floating-button preference call or its hidden-state readback failed | Re-run once without `--fresh-install`; if it persists, report the value-free refusal |
+
+Follow `failure.next_action`. Unknown reads alone do not justify restarting the
+app or device, rebuilding, or resetting app data. Stop and report the refusal if
+the single re-run also refuses. Unknown evidence never admits the walk.
+Mid-walk recovery shares one 15-second budget per attempt across reconnect,
+settings and clearance reads, capped by the remaining walk deadline.
+Cancellation and typed app-exit outcomes propagate without becoming overlay-proof
+failures.
 
 ### Warm lane
 
@@ -2370,14 +2394,51 @@ instead of admitting a partial scan. The limits and classification rules are
 owned by the [strict scanner](../qaren-core/src/runners/external-runner-detect.ts)
 and [kernel observer](src/process_observation.rs).
 
+On iOS, a matching `unknown/executable_identity_unproven` response naming a
+foreign PID gets one new whole-device scan after at most 500 ms. Both scans
+share the original 30-second admission allowance, clipped to a smaller caller
+deadline when supplied; a late clear result never admits. Busy, malformed and
+other unknown responses do not trigger a retry. Every scan keeps the same
+kernel identity checks and never signals or adopts a foreign process.
+
+Check and prepare receipts include `admission_before_deps` and
+`admission_before_mutation` summaries in `outcomes` for the admission points
+that completed, even if a later gate refuses. Refusals carry the same summary in `failure.evidence`: `probe`,
+`initialReason`, `terminalReason`, `attempts`, `elapsedMs` and `deadlineExceeded`.
+Elapsed time includes child completion/reaping, which may outlast the admission
+allowance; `deadlineExceeded` prevents acceptance of that result. The final
+scan owns the terminal reason, including `DEVICE_BUSY` if it proves a driver
+within the allowance.
+
 When the strict admission probe refuses with `FRESH_INSTALL_ADMISSION_UNKNOWN`
-or `DEVICE_BUSY`, it includes `probe_status`, `probe_evidence`, `exit_code` and `timed_out` in
+or `DEVICE_BUSY`, it includes `probe_status`, `probe_evidence`, `exit_code`,
+`timed_out` and `deadline_exceeded` in
 `failure.detail`, retained in the receipt and `run.json`. Valid probe evidence
 contains an allowlisted reason and, when available, a PID or candidate count;
 raw process arguments, paths and subprocess output are not included. Missing,
 invalid or mismatched evidence is reported as `unavailable`, `invalid_evidence`,
-`envelope_mismatch` or `invalid_response`. These diagnostics do not relax
-admission: resolve the refusal and start a new run.
+`envelope_mismatch` or `invalid_response`. Expiry before dispatch reports
+`not_run`; a late response retains its observed status with `deadline_exceeded=true`.
+These diagnostics do not relax admission. Within the allowance, a matching
+Android `busy` response with exit code 4 advises waiting for the foreign process
+owner even though Android supplies no PID evidence. On iOS, that advice requires
+exit code 4 and validated PID evidence for `busy/driver_on_selected_device` or
+`unknown/driver_identity_unproven` or `unknown/executable_identity_unproven`.
+Neither platform uses this advice for a timed-out response. Wait for the owner
+to finish, then re-run; do not signal or adopt the process. That recovery ladder
+marks automatic re-probing exhausted or ineligible, rules out app/runner/device
+restarts and rebuilds as ways to prove foreign identity, and offers cleanup and
+prepare only after foreign state is independently clear. It uses L0-L5 with
+`action: wait-owner` and `next_rung: 0`.
+
+Observation, runtime, malformed-response and allowance-expiry failures instead
+advise running `qaren doctor`, restoring process observation and the QaReN
+runtime, and resolving the reported probe or deadline failure before re-running.
+They use `reason: identity_unavailable`, `action: restore_process_observation`
+and `next_rung: 1`; waiting for a foreign owner cannot repair these failures.
+Any retained resources still require this run's own cleanup, recorded separately
+in recovery; a fresh install requires separate authorization for app-data loss.
+Other recovery reasons retain their existing 1-based rungs.
 
 Runs and evidence live under `$QAREN_HOME/runs/<run-id>/` (`~/.qaren` by default).
 Device and
