@@ -1234,8 +1234,7 @@ async function walkBlockScoped(
     if (target?.quoted !== undefined) emitQuotedTargetDiagnostic(screen, target.quoted, item.line);
     const row = base(item, attempt);
     // The judgment stays on the judged screen; what the author is shown is the newest admitted observation.
-    const last =
-      newest && (captured.get(newest)?.id ?? 0) > (captured.get(screen)?.id ?? 0) ? newest : screen;
+    const last = newest ?? screen;
     const waitOrScroll = item.kind === 'wait' || item.kind === 'scroll';
     let lastScreen: Pick<LedgerFailure, 'screen' | 'suggestion' | 'subreason'> = {};
     if (item.kind !== 'check' && target && (waitOrScroll || targetCode)) {

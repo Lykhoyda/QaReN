@@ -85,6 +85,35 @@ test('a press on a disabled target reports it disabled on the last observed scre
   assert.match(failure.seen, /; last observed on screen: /);
 });
 
+test('a rejected recovery capture keeps the admitted disabled target in failure diagnostics', async () => {
+  const admitted = pad();
+  const rejected = screen([control('@rejected', 'Rejected capture', { testID: 'rejected' })]);
+  rejected.coverage = { native: 'incomplete', react: 'complete' };
+  const fixture = deps([]);
+  let captures = 0;
+  let recoverySkipped = false;
+  fixture.presenceUnavailable = true;
+  fixture.captureScreen = async () => (++captures === 1 ? admitted : rejected);
+  fixture.note = (note) => {
+    recoverySkipped ||= note === 'recovery-skipped=presence-unavailable';
+  };
+  fixture.press = async () => assert.fail('a disabled target must not be pressed');
+  const ledger = await runPlan(plan('1. Tap "Agree"\n'), fixture);
+  assert.equal(captures, 2);
+  assert.equal(recoverySkipped, true);
+  assert.equal(ledger.verdict, 'FAIL');
+  assert.match(ledger.failure!.seen, /^TARGET_NOT_FOUND:/);
+  assert.match(ledger.failure!.seen, /last observed on screen: .*Agree/);
+  assert.doesNotMatch(ledger.failure!.seen, /Rejected capture/);
+  assert.deepEqual(
+    ledger.failure?.screen?.controls.map((c) => c.id),
+    ['qa-agree', 'qa-continue'],
+  );
+  assert.equal(ledger.failure?.screen?.controls[0].enabled, false);
+  assert.equal(ledger.failure?.subreason, 'present-but-unavailable');
+  assert.match(ledger.failure!.suggestion!, /on screen and disabled/);
+});
+
 test('an absent target suggests inserting a step and names enabled controls by id', async () => {
   const ledger = await runPlan(
     plan('1. Tap "Continue"\n2. Tap "Submit"\n'),
