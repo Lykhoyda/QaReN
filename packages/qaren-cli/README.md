@@ -1370,9 +1370,13 @@ Literal checks, quoted waits and scroll-until text do not count text or merged
 labels whose centre lies under a captured keyboard unless the keyboard is
 proven hidden. A docked full-width keyboard covers from its frame's top to the
 screen bottom, because its chrome paints below the frame XCUI reports. The
-keyboard's own keys and the chrome in its window stay visible. Literal checks and
-waits do not treat other overlays as occlusion evidence: see
-[Limitations](#limitations-recorded-not-papered-over). Scroll-until uses the
+keyboard's own keys and the chrome in its window stay visible. Literal checks
+do not treat other overlays as occlusion evidence. Quoted waits additionally
+reject text when every matching literal contributor has its centre covered by
+the detected overlay clearance band; matching unresolved text keeps the verdict
+unsure. An uncovered occurrence still satisfies the wait, and missing geometry
+alone does not prove coverage. An eligible unmet wait can enter
+[step recovery](#step-recovery) to dismiss an interruption. Scroll-until uses the
 overlay clearance policy below.
 Quoted and phrase target resolution scrolls up when the target's centre lies at
 or above the top of its effective trusted clipping viewport, and down otherwise;
@@ -4272,12 +4276,8 @@ now encoded once and replayed deterministically.
 - app_id validation is one shared grammar (dot-separated `[A-Za-z0-9_-]`
   segments), not per-platform store rules; invalid-but-well-formed ids fail
   later as visible `BUILD_FAILED`.
-- **Literal checks judge accessibility presence, not paint.** Text inside the
-  screen, window and scroll clip counts as visible even when an overlay paints
-  over it, such as an absolutely positioned sticky footer or another later
-  sibling that XCUI still reports hittable. Only the keyboard is treated as an
-  occluder for literal checks and waits; scroll-until follows the
-  [overlay clearance policy](#plan-checks-and-screen-evidence).
+- For the limits of overlay detection in literal checks, quoted waits and
+  scroll-until, see the [screen evidence contract](#plan-checks-and-screen-evidence).
 - The historical Expo SDK 56 artifact-discovery gap in the timing evidence
   predates the current finite iOS build path. Those measurements do not validate
   this implementation; exact-head device acceptance remains separate.
