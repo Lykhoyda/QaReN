@@ -120,7 +120,6 @@ fn exec_probe_accepts_preserved_groups_and_refuses_bootstrap_group_changes() {
             }
         }
         runner.expect_run("watch-list", CmdOutput::failed(1, "unavailable"));
-        runner.expect_run("watch-project", CmdOutput::failed(1, "unavailable"));
         let report = doctor(
             &mut runner,
             &root,

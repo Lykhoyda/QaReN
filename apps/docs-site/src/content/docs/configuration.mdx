@@ -114,7 +114,7 @@ Metro startup has a separate one.
 `manifest_warmup_seconds` bounds the `dev_client_manifest` stage independently
 of build time. The remaining preparation budget can shorten it; a 64-attempt
 cap also applies. Exhaustion refuses `MANIFEST_NOT_WARM` with value-free probe
-statistics and a recovery step. QaReN starts Expo offline by default to avoid
+statistics and a recovery step. QaReN starts Metro-only Expo commands offline by default to avoid
 account lookups; set `QAREN_EXPO_ONLINE=1` or `EXPO_OFFLINE=0` when online account
 features are needed.
 

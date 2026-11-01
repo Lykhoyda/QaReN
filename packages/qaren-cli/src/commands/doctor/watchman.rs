@@ -1,12 +1,18 @@
 use super::Check;
 use crate::exec::{CmdSpec, Runner};
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 const FIX: &str = "verify the candidate volume is mounted and responsive; inspect watchman health before coordinating a watchman reset with other sessions, then re-run doctor";
 
-pub(super) fn checks(runner: &mut dyn Runner, app_root: &Path) -> Vec<Check> {
+pub(super) fn checks(runner: &mut dyn Runner, app_root: Option<&Path>) -> Vec<Check> {
     let mut rows = inventory_checks(runner, app_root);
+    let Some(app_root) = app_root else {
+        rows.push(Check::skip(
+            "watchman-volume-probe",
+            "no configured candidate; no watch is established",
+        ));
+        return rows;
+    };
     let output = runner.run(&crate::adapters::watchman::watch_project_spec(app_root));
     use crate::adapters::watchman::VolumeProbe;
     rows.push(match VolumeProbe::from_output(&output) {
@@ -18,7 +24,7 @@ pub(super) fn checks(runner: &mut dyn Runner, app_root: &Path) -> Vec<Check> {
     rows
 }
 
-fn inventory_checks(runner: &mut dyn Runner, app_root: &Path) -> Vec<Check> {
+fn inventory_checks(runner: &mut dyn Runner, app_root: Option<&Path>) -> Vec<Check> {
     let output = runner.run(
         &CmdSpec::new(
             "watchman-health",
@@ -64,23 +70,40 @@ fn inventory_checks(runner: &mut dyn Runner, app_root: &Path) -> Vec<Check> {
             "watchman answered its read-only watch-list probe within 5 s",
         )
     };
-    let volume = std::fs::metadata(app_root).map(|m| m.dev()).ok();
-    let mut matching = 0;
-    let mut unknown = 0;
-    for root in roots {
-        match std::fs::metadata(root.as_str().expect("validated"))
-            .map(|m| m.dev())
+    let Some(app_root) = app_root else {
+        return vec![
+            health,
+            Check::skip(
+                "watchman-volume-roots",
+                "no configured candidate; volume roots are not inspected",
+            ),
+        ];
+    };
+    let roots: Vec<String> = roots
+        .iter()
+        .map(|r| r.as_str().expect("validated").to_string())
+        .collect();
+    let counts = crate::adapters::watchman::roots_spec(app_root, &roots).and_then(|spec| {
+        let output = runner.run(&spec);
+        output
             .ok()
-            .zip(volume)
-        {
-            Some((root_volume, candidate_volume)) => {
-                matching += usize::from(root_volume == candidate_volume)
-            }
-            None => unknown += 1,
-        }
-    }
+            .then(|| {
+                serde_json::from_str::<crate::adapters::watchman::RootCounts>(&output.stdout).ok()
+            })
+            .flatten()
+    });
+    let Some(crate::adapters::watchman::RootCounts { matching, unknown }) = counts else {
+        return vec![
+            health,
+            Check::warn(
+                "watchman-volume-roots",
+                "candidate volume roots are unknown; metadata probe failed or exceeded 5 s",
+                FIX,
+            ),
+        ];
+    };
     let detail = format!("watch roots on candidate volume: {matching}; inaccessible or unclassified roots: {unknown}");
-    let roots = if volume.is_none() || unknown > 0 {
+    let roots = if unknown > 0 {
         Check::warn("watchman-volume-roots", detail, FIX)
     } else {
         Check::pass("watchman-volume-roots", detail)
@@ -92,6 +115,34 @@ fn inventory_checks(runner: &mut dyn Runner, app_root: &Path) -> Vec<Check> {
 mod tests {
     use super::*;
     use crate::exec::{CmdOutput, MockRunner};
+
+    #[test]
+    fn no_candidate_establishes_no_watch_and_stalled_metadata_is_bounded() {
+        let mut runner = MockRunner::new();
+        runner.expect_run("watch-list", CmdOutput::success(r#"{"roots":["/"]}"#));
+        let rows = checks(&mut runner, None);
+        assert_eq!(runner.calls.len(), 1);
+        assert_eq!(rows[1].status, super::super::Status::Skip);
+        assert_eq!(rows[2].status, super::super::Status::Skip);
+        let mut runner = MockRunner::new();
+        runner.expect_run("watch-list", CmdOutput::success(r#"{"roots":["/"]}"#));
+        runner.expect_run(
+            crate::adapters::watchman::ROOTS_HELPER_ARG,
+            CmdOutput {
+                timed_out: true,
+                ..Default::default()
+            },
+        );
+        let rows = inventory_checks(&mut runner, Some(Path::new("/")));
+        assert_eq!(rows[1].status, super::super::Status::Warn);
+        assert_eq!(runner.calls[1].timeout_seconds, 5);
+        let counts = crate::adapters::watchman::root_counts(
+            Path::new("/"),
+            &["/".into(), "/missing-synthetic-watch-root".into()],
+        );
+        assert_eq!(counts.matching, 1);
+        assert_eq!(counts.unknown, 1);
+    }
 
     #[test]
     fn a_stalled_volume_is_a_failure_even_when_watch_list_does_not_answer() {
@@ -110,7 +161,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let rows = checks(&mut runner, Path::new("/candidate/project"));
+        let rows = checks(&mut runner, Some(Path::new("/candidate/project")));
         assert_eq!(rows[2].status, super::super::Status::Fail);
         assert!(rows[2].fix.as_ref().unwrap().contains("fseventsd"));
         assert!(rows[2].fix.as_ref().unwrap().contains("Privacy & Security"));
@@ -130,8 +181,12 @@ mod tests {
         ] {
             let mut runner = MockRunner::new();
             runner.expect_run("watch-list", CmdOutput::success(r#"{"roots":[]}"#));
+            runner.expect_run(
+                crate::adapters::watchman::ROOTS_HELPER_ARG,
+                CmdOutput::success(r#"{"matching":0,"unknown":0}"#),
+            );
             runner.expect_run("watch-project", output);
-            let rows = checks(&mut runner, Path::new("/"));
+            let rows = checks(&mut runner, Some(Path::new("/")));
             assert_eq!(rows[2].status, status);
             assert!(!format!("{rows:?}").contains("private error"));
         }
@@ -141,7 +196,11 @@ mod tests {
     fn watches_are_counted_without_exposing_paths_or_starting_the_service() {
         let mut runner = MockRunner::new();
         runner.expect_run("watch-list", CmdOutput::success(r#"{"roots":["/"]}"#));
-        let rows = inventory_checks(&mut runner, Path::new("/"));
+        runner.expect_run(
+            crate::adapters::watchman::ROOTS_HELPER_ARG,
+            CmdOutput::success(r#"{"matching":1,"unknown":0}"#),
+        );
+        let rows = inventory_checks(&mut runner, Some(Path::new("/")));
         assert!(rows
             .iter()
             .all(|row| row.status == super::super::Status::Pass));
@@ -164,8 +223,15 @@ mod tests {
             CmdOutput::success(r#"{"roots":[],"warning":"private diagnostic"}"#),
         ] {
             let mut runner = MockRunner::new();
+            let valid_roots = output.stdout.contains("\"warning\"");
             runner.expect_run("watch-list", output);
-            let rows = inventory_checks(&mut runner, Path::new("/"));
+            if valid_roots {
+                runner.expect_run(
+                    crate::adapters::watchman::ROOTS_HELPER_ARG,
+                    CmdOutput::success(r#"{"matching":0,"unknown":0}"#),
+                );
+            }
+            let rows = inventory_checks(&mut runner, Some(Path::new("/")));
             assert_eq!(rows[0].status, super::super::Status::Warn);
             assert!(!format!("{rows:?}").contains("private diagnostic"));
         }
@@ -174,7 +240,11 @@ mod tests {
             "watch-list",
             CmdOutput::success(r#"{"roots":["/missing-synthetic-qaren-root"]}"#),
         );
-        let rows = inventory_checks(&mut runner, Path::new("/"));
+        runner.expect_run(
+            crate::adapters::watchman::ROOTS_HELPER_ARG,
+            CmdOutput::success(r#"{"matching":0,"unknown":1}"#),
+        );
+        let rows = inventory_checks(&mut runner, Some(Path::new("/")));
         assert_eq!(rows[1].status, super::super::Status::Warn);
         assert!(!format!("{rows:?}").contains("missing-synthetic"));
     }

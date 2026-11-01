@@ -2,6 +2,42 @@ use crate::exec::{CmdOutput, CmdSpec};
 use std::path::Path;
 
 pub const VOLUME_PROBE_SECONDS: u64 = 5;
+pub const ROOTS_HELPER_ARG: &str = "--internal-watchman-volume-roots";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct RootCounts {
+    pub matching: usize,
+    pub unknown: usize,
+}
+
+pub fn root_counts(candidate: &Path, roots: &[String]) -> RootCounts {
+    use std::os::unix::fs::MetadataExt;
+    let volume = std::fs::metadata(candidate).map(|m| m.dev()).ok();
+    let mut counts = RootCounts {
+        matching: 0,
+        unknown: usize::from(volume.is_none()),
+    };
+    for root in roots {
+        match std::fs::metadata(root).map(|m| m.dev()).ok().zip(volume) {
+            Some((root_volume, candidate_volume)) => {
+                counts.matching += usize::from(root_volume == candidate_volume)
+            }
+            None => counts.unknown += 1,
+        }
+    }
+    counts
+}
+
+pub fn roots_spec(candidate: &Path, roots: &[String]) -> Option<CmdSpec> {
+    let exe = std::env::current_exe().ok()?;
+    let json = serde_json::to_string(roots).ok()?;
+    Some(CmdSpec::new(
+        "watchman-volume-roots",
+        &exe.to_string_lossy(),
+        &[ROOTS_HELPER_ARG, &candidate.to_string_lossy(), &json],
+        5,
+    ))
+}
 
 pub fn watch_project_spec(project_root: &Path) -> CmdSpec {
     CmdSpec::new(

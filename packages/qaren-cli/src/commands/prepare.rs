@@ -5197,12 +5197,18 @@ fn run_budgeted_attempt(
 }
 
 fn warm_dev_client_manifest(ctx: &mut Ctx, port: u16, deadline: u64) -> Result<(), Failure> {
+    ensure_running(ctx.runner, "build")?;
+    if deadline.saturating_sub(ctx.runner.monotonic_ms()) < 1000 {
+        return Err(launch_deadline_spent(&ctx.record.run_id));
+    }
     let mut warm = crate::manifest::Warmup::new(
         ctx.runner.monotonic_ms(),
         ctx.record.scenario.deadlines.manifest_warmup_seconds,
         deadline,
         ctx.record.scenario.platform == Platform::Ios,
     );
+    let mut volume_checked = false;
+    warm.expo_online = metro::expo_online(ctx.runner);
     let result = (|| {
         if ctx.record.scenario.platform == Platform::Ios {
             warm.request_probe_limit_ms = 15_000
@@ -5214,6 +5220,17 @@ fn warm_dev_client_manifest(ctx: &mut Ctx, port: u16, deadline: u64) -> Result<(
                 &mut 0,
             )? {
                 warm.request_probe_timed_out = probe.timed_out;
+            }
+            if warm.request_probe_timed_out {
+                let volume = crate::volume::assess(
+                    ctx.runner,
+                    &ctx.record.candidate.project_root,
+                    warm.deadline_ms,
+                );
+                warm.slow_volume = volume.slow;
+                ctx.notes
+                    .push(("candidate_volume_speed".into(), volume.summary));
+                volume_checked = true;
             }
             if warm.request_probe_timed_out
                 && warm.deadline_ms.saturating_sub(ctx.runner.monotonic_ms()) >= 5_000
@@ -5245,6 +5262,20 @@ fn warm_dev_client_manifest(ctx: &mut Ctx, port: u16, deadline: u64) -> Result<(
                 break;
             };
             warm.observe(&output);
+            if !volume_checked
+                && output.duration_ms >= 10_000
+                && ctx.runner.cancellation().is_none()
+            {
+                let volume = crate::volume::assess(
+                    ctx.runner,
+                    &ctx.record.candidate.project_root,
+                    warm.deadline_ms,
+                );
+                warm.slow_volume = volume.slow;
+                ctx.notes
+                    .push(("candidate_volume_speed".into(), volume.summary));
+                volume_checked = true;
+            }
             if warm.ready(ctx.runner.monotonic_ms()) {
                 ctx.manifest_warm = Some(crate::core::ManifestWarm {
                     ms: output.duration_ms,

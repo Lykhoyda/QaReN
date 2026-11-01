@@ -185,6 +185,39 @@ fn main() -> ExitCode {
     let raw_args: Vec<_> = std::env::args_os().skip(1).collect();
     if raw_args
         .first()
+        .is_some_and(|arg| arg == qaren::adapters::watchman::ROOTS_HELPER_ARG)
+    {
+        return match raw_args.as_slice() {
+            [_, candidate, roots] => {
+                match serde_json::from_str::<Vec<String>>(&roots.to_string_lossy()) {
+                    Ok(roots) if roots.len() <= 256 => {
+                        println!(
+                            "{}",
+                            serde_json::to_string(&qaren::adapters::watchman::root_counts(
+                                std::path::Path::new(candidate),
+                                &roots
+                            ))
+                            .expect("root counts JSON")
+                        );
+                        ExitCode::SUCCESS
+                    }
+                    _ => ExitCode::from(2),
+                }
+            }
+            _ => ExitCode::from(2),
+        };
+    }
+    if raw_args
+        .first()
+        .is_some_and(|arg| arg == qaren::volume::HELPER_ARG)
+    {
+        return ExitCode::from(match raw_args.as_slice() {
+            [_, root] => qaren::volume::run_helper(std::path::Path::new(root)),
+            _ => 2,
+        });
+    }
+    if raw_args
+        .first()
         .is_some_and(|arg| arg == qaren::process_observation::HELPER_ARG)
     {
         return ExitCode::from(qaren::process_observation::run_helper(&raw_args));

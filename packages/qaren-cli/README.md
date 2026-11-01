@@ -24,7 +24,7 @@ Doctor prints the running binary's version, path, build, runtime and the
 [`QAREN_HOME`](#release-and-source-builds-side-by-side) in use, then one
 `PASS`, `WARN`, `FAIL` or `SKIP` row per check, each problem with its manual fix.
 It reads files and runs bounded version, process-group, inventory, host-statistics and Watchman probes.
-The five-second `watch-project` probe may establish a watch on the candidate directory;
+When an app config is valid, the five-second `watch-project` probe may establish a watch on its candidate directory;
 it never starts a Watchman service, starts a device or resets a service. It does not run ADB
 or start an ADB server. In text and JSON output, Doctor never prints
 file contents, environment variable values, credentials or any other config value;
@@ -45,9 +45,10 @@ that can conflict with a session or is hygiene; `SKIP` is not applicable.
 | `disk` | The volumes holding the current directory and your home have the roughly 10 GiB free a clean iOS build needs (warning) |
 | `host-memory`, `host-devices` | Free memory, memory pressure, booted simulators and running Android emulators; conservative concurrent lane headroom on macOS and Linux |
 | `simulator-service` | A five-second `simctl list devices -j` probe on macOS; attributable uninterruptible simulator process evidence when unresponsive |
-| `expo-offline` | Expo starts offline by default; warns when `QAREN_EXPO_ONLINE=1` or `EXPO_OFFLINE=0` enables account lookups |
-| `watchman-health`, `watchman-volume-roots` | A read-only, five-second watch-list probe without starting Watchman; counts roots on the candidate volume and warns about inaccessible roots |
+| `expo-offline` | Metro-only Expo commands start offline by default; warns when `QAREN_EXPO_ONLINE=1` or `EXPO_OFFLINE=0` enables account lookups |
+| `watchman-health`, `watchman-volume-roots` | A read-only, five-second watch-list probe without starting Watchman; a separate five-second metadata probe counts roots on a configured candidate volume and warns about inaccessible roots |
 | `watchman-volume-probe` | A five-second `watch-project` probe on the candidate directory; a timeout or rejection fails with volume-permission and FSEvents recovery steps |
+| `candidate-volume-speed` | A bounded small-file read sample on the candidate volume, bypassing file caching on macOS, plus USB link inventory; warns about slow reads or a USB 2 link, with unknown results disclosed |
 | `host-load` | One-, five- and fifteen-minute load averages, logical CPU count and sampled CPU idle; warns about readiness deadlines under load |
 | `native-build-lock` | Read-only iOS [build-lock observation](#native-fingerprint-build-selection); never claims or reclaims the lock |
 | `android-sdk`, `android-avd` | When `android` is configured: `ANDROID_HOME`, an executable `adb` file (never run; its version is not checked), the emulator binary and the configured AVD via `emulator -list-avds` |
@@ -2040,18 +2041,31 @@ limit, and whether the 15-second request-handler probe timed out; elapsed time
 is at `timings_ms.manifest_warmup_elapsed`. These statistics contain no raw probe
 output. A request-handler timeout after `/status` responds names startup or a
 stalled watcher as possible causes; steady answers near 30 seconds also name a
-possible external-service wait. Check the volume and doctor before coordinating
+possible external-service wait when an online override is active; remove both online overrides to restore the offline default. Check the volume and doctor before coordinating
 a Watchman reset and retrying once. When the request-handler probe times out,
 a five-second `watch-project` probe checks the candidate volume within the
-remaining stage budget. A confirmed timeout refuses immediately with "watchman
+remaining stage budget. A confirmed timeout or rejection refuses immediately with "watchman
 cannot watch this volume" and steps for removable-volume permissions, FSEvents
 state or reconnecting the volume. Its value-free result is recorded at
 `outcomes.watchman_volume_probe`; no watcher fallback or automatic reset is attempted.
+
+After a request-handler timeout or the first manifest answer taking at least
+10 seconds, QaReN also samples up to 32 small files on the candidate volume
+and checks macOS USB link inventory, within the remaining stage budget.
+Each diagnostic has a five-second cap. A sample of at least 16 files averaging
+50 ms per file, or a USB 2 link attributable to the candidate mount, adds the
+next step to replug for USB 3 or move the copy to the internal disk.
+The receipt's `candidate_volume_speed` outcome contains only counts, timings
+and classifications. Sparse samples and unavailable USB inventory remain
+unknown; a short sample cannot establish sustained disk speed. No files are
+written, no global caches are flushed and no service is reset.
 
 QaReN starts `expo start` with `EXPO_OFFLINE=1` to avoid account lookups for local
 manifests. Set `QAREN_EXPO_ONLINE=1` or explicitly set `EXPO_OFFLINE=0` when the
 dev server needs account features; either enables online mode. Remove those
 overrides to restore the offline default.
+This default applies to Metro-only starts; fresh Android preparation through
+`expo run:android` retains its inherited Expo environment.
 
 The readiness margin only gates launch. Borrowed-emulator builds and cached Android preparation retain
 one manifest answer under the dev client's 10-second timeout. Fresh Android

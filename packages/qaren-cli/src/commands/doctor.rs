@@ -266,7 +266,34 @@ pub fn doctor(
     ));
     checks.extend(host::checks(runner, std::env::consts::OS));
     checks.push(expo_mode(runner));
-    checks.extend(watchman::checks(runner, &app_root));
+    checks.extend(watchman::checks(
+        runner,
+        config.as_ref().map(|_| app_root.as_path()),
+    ));
+    checks.push(if config.is_some() {
+        let deadline = runner.monotonic_ms().saturating_add(10_000);
+        let volume = crate::volume::assess(runner, &app_root, deadline);
+        if volume.slow {
+            Check::warn(
+                "candidate-volume-speed",
+                volume.summary,
+                crate::volume::SLOW_VOLUME_FIX,
+            )
+        } else {
+            Check::skip(
+                "candidate-volume-speed",
+                format!(
+                    "{}; a short sample cannot establish sustained volume speed",
+                    volume.summary
+                ),
+            )
+        }
+    } else {
+        Check::skip(
+            "candidate-volume-speed",
+            "no configured candidate; no files sampled",
+        )
+    });
 
     let build = exe
         .as_deref()
@@ -289,7 +316,7 @@ fn expo_mode(runner: &dyn Runner) -> Check {
     if crate::adapters::metro::expo_online(runner) {
         Check::warn("expo-offline", "Expo online override is active; manifest requests may wait for an account lookup", "unset QAREN_EXPO_ONLINE and EXPO_OFFLINE to restore QaReN's offline default, or set EXPO_OFFLINE=1 without QAREN_EXPO_ONLINE")
     } else {
-        Check::pass("expo-offline", "QaReN starts Expo offline to avoid account lookups; use QAREN_EXPO_ONLINE=1 or EXPO_OFFLINE=0 when account features are needed")
+        Check::pass("expo-offline", "QaReN starts Metro-only Expo commands offline to avoid account lookups; use QAREN_EXPO_ONLINE=1 or EXPO_OFFLINE=0 when account features are needed")
     }
 }
 
@@ -1723,7 +1750,10 @@ mod tests {
             "--git-common-dir",
             CmdOutput::failed(128, "not a git checkout"),
         );
-        script_host(runner);
+        script_host(
+            runner,
+            config_check(&cwd.join(DEFAULT_CONFIG_PATH)).1.is_some(),
+        );
         doctor(
             runner,
             &scratch.0,
@@ -1735,7 +1765,7 @@ mod tests {
         )
     }
 
-    fn script_host(runner: &mut MockRunner) {
+    fn script_host(runner: &mut MockRunner, candidate: bool) {
         runner.expect_run("ps -axww", CmdOutput::failed(1, "unavailable"));
         if cfg!(target_os = "macos") {
             runner.expect_run(
@@ -1751,7 +1781,17 @@ mod tests {
             }
         }
         runner.expect_run("watch-list", CmdOutput::failed(1, "unavailable"));
+        if !candidate {
+            return;
+        }
         runner.expect_run("watch-project", CmdOutput::failed(1, "unavailable"));
+        runner.expect_run(
+            crate::volume::HELPER_ARG,
+            CmdOutput::failed(1, "unavailable"),
+        );
+        if cfg!(target_os = "macos") {
+            runner.expect_run("SPUSBDataType", CmdOutput::failed(1, "unavailable"));
+        }
     }
 
     #[test]
@@ -2506,6 +2546,8 @@ mod tests {
         assert_eq!(runner.remaining(), 0);
         assert!(runner.spawned_logs.is_empty());
         assert!(runner.calls.iter().all(|call| call.label == "doctor-host"
+            || call.label == "candidate-volume-sample"
+            || call.label == "candidate-volume-usb"
             || call.program == "df"
             || call.args.iter().any(|arg| arg == "--version"
                 || arg == "-version"
@@ -2536,7 +2578,7 @@ mod tests {
                 "pass"
             }
         );
-        assert_eq!(parsed["checks"].as_array().unwrap().len(), 32);
+        assert_eq!(parsed["checks"].as_array().unwrap().len(), 33);
     }
 
     #[test]
@@ -2552,7 +2594,7 @@ mod tests {
             "--git-common-dir",
             CmdOutput::failed(128, "not a git checkout"),
         );
-        script_host(&mut runner);
+        script_host(&mut runner, false);
         let runtime = side.join("runtime").join(VERSION).join("runtime");
         let report = doctor(&mut runner, &s.0, &side, &s.0, Some(exe), runtime, None);
         let installed = row(&report, "installed-build");
@@ -3078,7 +3120,7 @@ mod tests {
             "--git-common-dir",
             CmdOutput::failed(128, "not a git checkout"),
         );
-        script_host(&mut runner);
+        script_host(&mut runner, true);
         let report = doctor(
             &mut runner,
             &s.0,

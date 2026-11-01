@@ -89,3 +89,4 @@ mod tests {
     }
 }
 mod manifest;
+pub mod volume;

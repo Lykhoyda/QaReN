@@ -34,6 +34,8 @@ pub(crate) struct Warmup {
     pub request_probe_timed_out: bool,
     pub request_probe_limit_ms: u64,
     pub watchman_volume_probe: Option<VolumeProbe>,
+    pub slow_volume: bool,
+    pub expo_online: bool,
 }
 
 impl Warmup {
@@ -49,6 +51,8 @@ impl Warmup {
             request_probe_timed_out: false,
             request_probe_limit_ms: 0,
             watchman_volume_probe: None,
+            slow_volume: false,
+            expo_online: false,
         }
     }
 
@@ -99,6 +103,16 @@ impl Warmup {
         )
     }
 
+    fn median_answer_ms(&self) -> Option<u64> {
+        let mut answers = self.answers_ms.clone();
+        answers.sort_unstable();
+        match answers.len() {
+            0 => None,
+            n if n % 2 == 0 => Some((answers[n / 2 - 1] + answers[n / 2]) / 2),
+            n => Some(answers[n / 2]),
+        }
+    }
+
     pub fn refusal(&self) -> Failure {
         let mut next = if matches!(
             self.watchman_volume_probe,
@@ -106,17 +120,25 @@ impl Warmup {
         ) {
             crate::failure::WATCHMAN_VOLUME_FIX.to_string()
         } else if self.request_probe_timed_out && self.request_probe_limit_ms == 15_000 {
-            "Metro answered /status but not its request handler within 15 s: the dev server is still starting or its file watcher is stalled; check the candidate volume and qaren doctor, reset watchman after coordinating other sessions, set EXPO_OFFLINE=1, re-run once".to_string()
+            "Metro answered /status but not its request handler within 15 s: the dev server is still starting or its file watcher is stalled; check the candidate volume and qaren doctor, reset watchman after coordinating other sessions, re-run once".to_string()
         } else {
-            "run qaren doctor and check the candidate volume and watchman health; set EXPO_OFFLINE=1 and re-run once".to_string()
+            "run qaren doctor and check the candidate volume and watchman health, then re-run once"
+                .to_string()
         };
-        if self.answers_ms.len() >= 3
+        if self.expo_online
+            && self.answers_ms.len() >= 3
             && self
-                .answers_ms
-                .iter()
-                .all(|ms| (25_000..=35_000).contains(ms))
+                .median_answer_ms()
+                .is_some_and(|ms| (25_000..=35_000).contains(&ms))
         {
-            next.push_str("; steady answers near 30 s at low host load can mean Metro's manifest handler is waiting on an external service; set EXPO_OFFLINE=1 or log out of Expo on this machine");
+            next.push_str("; a median answer near 30 s at low host load can mean Metro's manifest handler is waiting on an external service");
+        }
+        if self.expo_online {
+            next.push_str("; unset QAREN_EXPO_ONLINE and EXPO_OFFLINE to restore EXPO_OFFLINE=1, then re-run once");
+        }
+        if self.slow_volume {
+            next.push_str("; ");
+            next.push_str(crate::volume::SLOW_VOLUME_FIX);
         }
         let reason = match self.watchman_volume_probe {
             Some(VolumeProbe::TimedOut) => "watchman watch-project did not answer within 5 s for the candidate volume".to_string(),
@@ -135,6 +157,25 @@ impl Warmup {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offline_runs_do_not_recommend_an_account_lookup_workaround() {
+        let mut warm = Warmup::new(0, 420, 2_400_000, true);
+        for duration_ms in [27_000, 30_000, 42_000] {
+            warm.observe(&CmdOutput {
+                duration_ms,
+                ..CmdOutput::success("")
+            });
+        }
+        assert!(!warm.refusal().next_action.contains("external service"));
+        assert!(!warm.refusal().next_action.contains("EXPO_OFFLINE"));
+        warm.expo_online = true;
+        assert!(warm.refusal().next_action.contains("external service"));
+        assert!(warm
+            .refusal()
+            .next_action
+            .contains("unset QAREN_EXPO_ONLINE and EXPO_OFFLINE"));
+    }
 
     #[test]
     fn a_shortened_request_probe_does_not_claim_a_fifteen_second_observation() {
