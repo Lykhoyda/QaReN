@@ -2735,8 +2735,7 @@ fn walk_failure(
 
 const REPEAT_SCAN: usize = 20;
 
-// Retained resources are released first; a target failure's plan edit or repeat note still follows.
-fn cleanup_first(cleanup: &str, failure: &Failure) -> String {
+pub(crate) fn cleanup_first(cleanup: &str, failure: &Failure) -> String {
     if failure.suggestion.is_some() || failure.repeat.is_some() {
         format!("{cleanup}; then {}", failure.next_action.as_str())
     } else {
@@ -3317,6 +3316,54 @@ mod last_screen_tests {
             "check-20261030T081500Z"
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn runner_recovery_preserves_target_guidance_in_both_next_actions() {
+        let mut record = record("check-1", "abc");
+        record.resources.runner_cleanup_cause = Some(crate::failure::RecoveryReason::StorageFailed);
+        let recovery = "Restore write access to this run's record storage, then rerun qaren cleanup check-1 --json once; do not remove its lease manually.";
+        for (suggestion, repeat, guidance) in [
+            (true, false, "insert the missing step before line 2"),
+            (false, true, "same failure, plan unchanged"),
+            (false, false, "fix the plan"),
+        ] {
+            let mut failure = Failure::new("walk", FailureCode::PlanStepFailed, "line 2", guidance);
+            if suggestion {
+                failure.suggestion = Some(OutputText::from_output(guidance));
+            }
+            if repeat {
+                failure.repeat = Some(Repeat {
+                    previous_run_id: "check-0".into(),
+                    count: 2,
+                    same_recorded_revision: true,
+                });
+            }
+            let mut receipt = Receipt::new(
+                "check",
+                &record.run_id,
+                ReceiptResult::Fail,
+                "cleaned",
+                "2026-10-30T08:15:00Z".into(),
+            );
+            receipt.failure = Some(failure);
+            crate::commands::cleanup::project_runner_recovery(&mut receipt, &record);
+            let expected = if suggestion || repeat {
+                format!("{recovery}; then {guidance}")
+            } else {
+                recovery.to_string()
+            };
+            assert_eq!(receipt.next_action, expected);
+            let failure = receipt.failure.unwrap();
+            assert_eq!(failure.next_action.as_str(), expected);
+            assert_eq!(failure.code, FailureCode::PlanStepFailed);
+            assert_eq!(failure.suggestion.is_some(), suggestion);
+            assert_eq!(failure.repeat.is_some(), repeat);
+            assert_eq!(
+                receipt.recovery.unwrap().key.as_deref(),
+                Some("ios_runner_cleanup")
+            );
+        }
     }
 
     #[test]
