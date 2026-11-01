@@ -1176,11 +1176,12 @@ dispatches, carry none of these three failure fields. Labels follow the
 secure field or a secret input, where testIDs remain; a testID holding a
 protected value is masked whole. `suggestion` is one plan edit for the miss
 reason; it carries no app text and points to `failure.screen`, and supplies
-`next_action` before any repeat notice. It describes what was observed and never
+the walk's `next_action`, subject to the [cleanup precedence](#ios-admission-and-cleanup).
+It describes what was observed and never
 proposes a Wait for an enabled state, because a quoted Wait passes on a disabled control. When one of
 the last 20 `check` runs failed the same plan line with the same code and
 subreason on the same platform, app, recorded Git revision, worktree fingerprint
-and plan hash, `failure.repeat` names it and `next_action` leads with
+and plan hash, `failure.repeat` names it and the walk's guidance leads with
 "same failure, plan unchanged". For `evidence-incomplete`, the notice instead
 follows the existing re-run advice. Plan identity and step-line comparison ignore
 QaReN's prepended broken-plan marker lines, so automatically flagging a saved
@@ -2594,7 +2595,9 @@ QaReN has no standalone shutdown command. Missing driver proof means retain and 
 storage failures require restoring
 write access before one cleanup retry. Fresh preparation follows proven absence.
 An unclean check keeps its original failure code. Its `next_action` follows runner
-recovery advice when present; otherwise it points to this run's cleanup. Lost lease
+recovery advice when present; otherwise it points to this run's cleanup. Any existing
+target suggestion or repeat guidance follows those cleanup instructions in both
+`failure.next_action` and top-level `next_action`. Lost lease
 or owner proof selects retain-and-report advice, never simulator shutdown.
 
 When the leased simulator had no runner host as the
