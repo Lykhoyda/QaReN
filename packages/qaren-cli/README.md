@@ -3,8 +3,7 @@
 `qaren check` owns a QA run against the current app worktree: it leases a
 borrowed iOS simulator or Android emulator, prepares the app and Metro,
 starts the TypeScript screen child, walks a Markdown plan, writes evidence,
-and tears down owned resources (by default a failed iOS walk holds Metro and the lease
-for inspection until `qaren cleanup`; see [iOS admission and cleanup](#ios-admission-and-cleanup)).
+and cleans up owned resources under the [iOS admission and cleanup contract](#ios-admission-and-cleanup).
 This file is the CLI reference; the product introduction and the agent path are in the [root README](../../README.md).
 The scenario-based preparation verbs remain available for explicit iOS,
 NUC Android and USB Android setup experiments.
@@ -2629,8 +2628,9 @@ Do not delete locks to bypass unresolved ownership.
 
 A failed iOS `check` walk is held for inspection. After the app was admitted, an uncancelled `FAIL` or
 `TARGET_*` or `PRESS_NOT_REGISTERED` refusal reported by the core (not one QaReN synthesizes after a deadline kill or a
-missing result) is eligible. Teardown still stops the build, core, runner driver, runner host and recorder and
-releases the build lock. It skips stopping Metro (`metro=held: …`), skips any armed simulator
+missing result) is eligible. Teardown still attempts build, core, runner-driver and recorder cleanup,
+observes runner-host absence and releases the build lock under the normal ownership gates.
+It skips stopping Metro (`metro=held: …`), skips any armed simulator
 stop, and keeps the device lease (`device_lease=held: …`). Teardown never terminates the app,
 so if it is still running it keeps its live Metro; the hold does not restart an app that already exited. `run.json` and the receipt record `held` (`since`, `reason`, `retained`), the `end`
 event carries `held: true`, and the record stays in the walking phase. `qaren status <run-id>`
