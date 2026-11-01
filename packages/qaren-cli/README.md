@@ -2031,8 +2031,9 @@ under 5 seconds, half the dev client's own 10-second request timeout, because
 Metro rebuilds the manifest
 per request and one answer does not predict the client's own. Each request is
 recorded; slower answers and request timeouts restart the count. This stage has
-its own `deadlines.manifest_warmup_seconds` clock (default 420 seconds, configurable
-from 30 through 7200) and a 64-attempt cap, also bounded by the remaining
+its own `deadlines.manifest_warmup_seconds` clock (see
+[configuration defaults and limits](../../apps/docs-site/src/content/docs/configuration.mdx#deadlines))
+and a 64-attempt cap, also bounded by the remaining
 `build_seconds` budget. Exhaustion refuses with `MANIFEST_NOT_WARM` (exit 4),
 without launching the client. Each request is capped to the remaining stage
 budget. The receipt's `manifest_warmup` outcome records attempt and timeout
@@ -2041,11 +2042,13 @@ limit, and whether the 15-second request-handler probe timed out; elapsed time
 is at `timings_ms.manifest_warmup_elapsed`. These statistics contain no raw probe
 output. A request-handler timeout after `/status` responds names startup or a
 stalled watcher as possible causes; steady answers near 30 seconds also name a
-possible external-service wait when an online override is active; remove both online overrides to restore the offline default. Check the volume and doctor before coordinating
+possible external-service wait when the online override described below is
+active. Check the volume and doctor before coordinating
 a Watchman reset and retrying once. When the request-handler probe times out,
-a five-second `watch-project` probe checks the candidate volume within the
-remaining stage budget. A confirmed timeout or rejection refuses immediately with "watchman
-cannot watch this volume" and steps for removable-volume permissions, FSEvents
+a five-second `watch-project` probe checks the candidate volume if at least
+five seconds remain after the file sample described below. This probe may
+establish a watch on the candidate directory. A confirmed timeout or rejection
+refuses immediately with "watchman cannot watch this volume" and steps for removable-volume permissions, FSEvents
 state or reconnecting the volume. Its value-free result is recorded at
 `outcomes.watchman_volume_probe`; no watcher fallback or automatic reset is attempted.
 

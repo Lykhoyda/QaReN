@@ -84,8 +84,8 @@ ready for Xcode.
 ## deadlines
 
 Optional preparation budgets for `check` and `pr`: a native build time limit,
-a dependency-install time limit, a simulator-boot time limit, and a dev-client
-attach limit after which an attach without a target is refused when the app has
+a dependency-install time limit, a simulator-boot time limit, a manifest warm-up
+limit, and a dev-client attach limit after which an attach without a target is refused when the app has
 exited or Metro has received no bundle request since launch.
 
 | Key                    | Default (seconds) |
@@ -111,12 +111,8 @@ retirement runs outside this window. A run that spends it waiting refuses
 install, launch and readiness then share a fresh `build_seconds` window, and
 Metro startup has a separate one.
 
-`manifest_warmup_seconds` bounds the `dev_client_manifest` stage independently
-of build time. The remaining preparation budget can shorten it; a 64-attempt
-cap also applies. Exhaustion refuses `MANIFEST_NOT_WARM` with value-free probe
-statistics and a recovery step. QaReN starts Metro-only Expo commands offline by default to avoid
-account lookups; set `EXPO_OFFLINE=0` when online account
-features are needed.
+For manifest warm-up bounds, diagnostics and the Expo offline default and override,
+see the [launch readiness contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle).
 
 Each limit is a whole number of seconds from 30 through 7200 inclusive.
 Omit the block, write `deadlines: {}`, or write a bare
