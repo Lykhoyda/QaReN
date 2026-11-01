@@ -2,8 +2,7 @@ use crate::exec::{CmdOutput, CmdSpec, Runner};
 use std::path::Path;
 
 pub fn expo_online(runner: &dyn Runner) -> bool {
-    runner.env_var("QAREN_EXPO_ONLINE").as_deref() == Some("1")
-        || runner.env_var("EXPO_OFFLINE").as_deref() == Some("0")
+    runner.env_var("EXPO_OFFLINE").as_deref() == Some("0")
 }
 
 pub fn start_spec(project_root: &Path, port: u16, online: bool) -> CmdSpec {

@@ -45,8 +45,8 @@ that can conflict with a session or is hygiene; `SKIP` is not applicable.
 | `disk` | The volumes holding the current directory and your home have the roughly 10 GiB free a clean iOS build needs (warning) |
 | `host-memory`, `host-devices` | Free memory, memory pressure, booted simulators and running Android emulators; conservative concurrent lane headroom on macOS and Linux |
 | `simulator-service` | A five-second `simctl list devices -j` probe on macOS; attributable uninterruptible simulator process evidence when unresponsive |
-| `expo-offline` | Metro-only Expo commands start offline by default; warns when `QAREN_EXPO_ONLINE=1` or `EXPO_OFFLINE=0` enables account lookups |
-| `watchman-health`, `watchman-volume-roots` | A read-only, five-second watch-list probe without starting Watchman; a separate five-second metadata probe counts roots on a configured candidate volume and warns about inaccessible roots |
+| `expo-offline` | Metro-only Expo commands start offline by default; warns when `EXPO_OFFLINE=0` enables account lookups |
+| `watchman-health` | A read-only, five-second watch-list probe without starting Watchman |
 | `watchman-volume-probe` | A five-second `watch-project` probe on the candidate directory; a timeout or rejection fails with volume-permission and FSEvents recovery steps |
 | `candidate-volume-speed` | A bounded small-file read sample on the candidate volume; warns about slow reads, with unknown results disclosed |
 | `host-load` | One-, five- and fifteen-minute load averages, logical CPU count and sampled CPU idle; warns about readiness deadlines under load |
@@ -2062,9 +2062,8 @@ files can still make the sample partly warm. No files are written, no global
 caches are flushed and no service is reset.
 
 QaReN starts `expo start` with `EXPO_OFFLINE=1` to avoid account lookups for local
-manifests. Set `QAREN_EXPO_ONLINE=1` or explicitly set `EXPO_OFFLINE=0` when the
-dev server needs account features; either enables online mode. Remove those
-overrides to restore the offline default.
+manifests. Set `EXPO_OFFLINE=0` when the dev server needs account
+features. Unset `EXPO_OFFLINE` to restore the offline default.
 This default applies to Metro-only starts; fresh Android preparation through
 `expo run:android` retains its inherited Expo environment.
 

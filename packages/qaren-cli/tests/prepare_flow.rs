@@ -1621,8 +1621,7 @@ fn mixed_slow_answers_with_a_thirty_second_median_explain_an_online_account_look
     let repo = common::temp_repo();
     let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
     let mut mock = MockRunner::new();
-    mock.environment
-        .insert("QAREN_EXPO_ONLINE".into(), "1".into());
+    mock.environment.insert("EXPO_OFFLINE".into(), "0".into());
     script_ios_prepare_before_manifest(&mut mock, &repo);
     for index in 0..14 {
         mock.expect_run(
@@ -1640,9 +1639,7 @@ fn mixed_slow_answers_with_a_thirty_second_median_explain_an_online_account_look
     assert_eq!(failure.code, FailureCode::ManifestNotWarm);
     assert!(failure.detail.contains("median_answer_ms=30000"));
     assert!(failure.next_action.contains("external service"));
-    assert!(failure
-        .next_action
-        .contains("unset QAREN_EXPO_ONLINE and EXPO_OFFLINE"));
+    assert!(failure.next_action.contains("unset EXPO_OFFLINE"));
     assert!(failure
         .next_action
         .contains("move the project to a faster or internal disk"));

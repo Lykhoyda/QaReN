@@ -314,9 +314,13 @@ pub fn doctor(
 
 fn expo_mode(runner: &dyn Runner) -> Check {
     if crate::adapters::metro::expo_online(runner) {
-        Check::warn("expo-offline", "Expo online override is active; manifest requests may wait for an account lookup", "unset QAREN_EXPO_ONLINE and EXPO_OFFLINE to restore QaReN's offline default, or set EXPO_OFFLINE=1 without QAREN_EXPO_ONLINE")
+        Check::warn(
+            "expo-offline",
+            "Expo online override is active; manifest requests may wait for an account lookup",
+            "unset EXPO_OFFLINE to restore QaReN's offline default, or set EXPO_OFFLINE=1",
+        )
     } else {
-        Check::pass("expo-offline", "QaReN starts Metro-only Expo commands offline to avoid account lookups; use QAREN_EXPO_ONLINE=1 or EXPO_OFFLINE=0 when account features are needed")
+        Check::pass("expo-offline", "QaReN starts Metro-only Expo commands offline to avoid account lookups; use EXPO_OFFLINE=0 when account features are needed")
     }
 }
 
@@ -2186,12 +2190,10 @@ mod tests {
     fn expo_mode_names_overrides_without_printing_environment_values() {
         let mut runner = MockRunner::new();
         assert_eq!(expo_mode(&runner).status, Status::Pass);
-        runner
-            .environment
-            .insert("QAREN_EXPO_ONLINE".into(), "1".into());
+        runner.environment.insert("EXPO_OFFLINE".into(), "0".into());
         let row = expo_mode(&runner);
         assert_eq!(row.status, Status::Warn);
-        assert!(row.fix.unwrap().contains("unset QAREN_EXPO_ONLINE"));
+        assert!(row.fix.unwrap().contains("unset EXPO_OFFLINE"));
     }
 
     #[test]
@@ -2574,7 +2576,7 @@ mod tests {
                 "pass"
             }
         );
-        assert_eq!(parsed["checks"].as_array().unwrap().len(), 33);
+        assert_eq!(parsed["checks"].as_array().unwrap().len(), 32);
     }
 
     #[test]

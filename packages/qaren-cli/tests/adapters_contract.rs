@@ -1944,12 +1944,7 @@ fn reverse_listed_matches_the_device_side_port_only() {
 fn expo_is_offline_by_default_and_online_requires_an_explicit_override() {
     let mut runner = qaren::exec::MockRunner::new();
     assert!(!metro::expo_online(&runner));
-    for (name, value, online) in [
-        ("EXPO_OFFLINE", "1", false),
-        ("EXPO_OFFLINE", "0", true),
-        ("QAREN_EXPO_ONLINE", "0", false),
-        ("QAREN_EXPO_ONLINE", "1", true),
-    ] {
+    for (name, value, online) in [("EXPO_OFFLINE", "1", false), ("EXPO_OFFLINE", "0", true)] {
         runner.environment.clear();
         runner.environment.insert(name.into(), value.into());
         assert_eq!(metro::expo_online(&runner), online);

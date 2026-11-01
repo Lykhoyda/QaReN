@@ -134,7 +134,7 @@ impl Warmup {
             next.push_str("; a median answer near 30 s at low host load can mean Metro's manifest handler is waiting on an external service");
         }
         if self.expo_online {
-            next.push_str("; unset QAREN_EXPO_ONLINE and EXPO_OFFLINE to restore EXPO_OFFLINE=1, then re-run once");
+            next.push_str("; unset EXPO_OFFLINE to restore EXPO_OFFLINE=1, then re-run once");
         }
         if self.slow_volume {
             next.push_str("; ");
@@ -171,10 +171,7 @@ mod tests {
         assert!(!warm.refusal().next_action.contains("EXPO_OFFLINE"));
         warm.expo_online = true;
         assert!(warm.refusal().next_action.contains("external service"));
-        assert!(warm
-            .refusal()
-            .next_action
-            .contains("unset QAREN_EXPO_ONLINE and EXPO_OFFLINE"));
+        assert!(warm.refusal().next_action.contains("unset EXPO_OFFLINE"));
     }
 
     #[test]
