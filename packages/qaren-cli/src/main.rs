@@ -508,12 +508,13 @@ fn main_inner(args: Vec<String>) -> ExitCode {
             match runs_root() {
                 Ok(runs_root) => match verb.as_str() {
                     "status" => status::status(&mut runner, &runs_root, target),
-                    "cleanup" => cleanup::cleanup_with_orphan_locks(
+                    "cleanup" => cleanup::cleanup_with_orphan_locks_policy(
                         &mut runner,
                         &runs_root,
                         lock_root().ok().as_deref(),
                         target,
                         confirm_remove_app.as_deref(),
+                        cleanup::RunnerCleanupPolicy::ReapRecordedDriver,
                     ),
                     _ => complete::complete(
                         &mut runner,

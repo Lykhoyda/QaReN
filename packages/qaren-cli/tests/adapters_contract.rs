@@ -1939,3 +1939,35 @@ fn reverse_listed_matches_the_device_side_port_only() {
         android::adb_reverse_list_spec(Path::new("/sdk/platform-tools/adb"), 5147, "emulator-5554");
     assert_eq!(spec.args, ["-s", "emulator-5554", "reverse", "--list"]);
 }
+
+#[test]
+fn explicit_runner_host_inventory_ignores_apps_and_marks_foreign_runner_candidates() {
+    use ios::{RUNNER_HOST_BUNDLE_ID, RUNNER_TEST_HOST_BUNDLE_ID};
+    let output = format!("PID Status Label\n1 0 com.apple.SpringBoard\n42 0 UIKitApplication:{RUNNER_HOST_BUNDLE_ID}[abc]\n43 0 {RUNNER_TEST_HOST_BUNDLE_ID}\n44 0 UIKitApplication:{RUNNER_HOST_BUNDLE_ID}[other]\n");
+    for ordinary in [
+        "UIKitApplication:com.example.test-app[abc]",
+        "com.example.service",
+        "UIKitApplication:com.apple.Preferences[abc]",
+    ] {
+        let inventory =
+            ios::parse_runner_host_inventory(&format!("{output}99 0 {ordinary}\n")).unwrap();
+        assert_eq!(
+            inventory.bundle_ids,
+            [RUNNER_HOST_BUNDLE_ID, RUNNER_TEST_HOST_BUNDLE_ID]
+        );
+        assert!(!inventory.foreign_runner);
+    }
+    for foreign in [
+        "UIKitApplication:com.example.tests.xctrunner[abc]",
+        "dev.lykhoyda.rndevagent.fastrunner.other",
+        "UIKitApplication:dev.lykhoyda.rndevagent.fastrunner.uitests.xctrunner.extra[abc]",
+    ] {
+        for pid in ["99", "-"] {
+            let inventory =
+                ios::parse_runner_host_inventory(&format!("{output}{pid} 0 {foreign}\n")).unwrap();
+            assert!(inventory.foreign_runner);
+            assert_eq!(inventory.bundle_ids.len(), 2);
+        }
+    }
+    assert!(ios::parse_runner_host_inventory(&format!("{output}broken")).is_none());
+}

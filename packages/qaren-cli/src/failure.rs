@@ -176,6 +176,20 @@ pub enum RecoveryReason {
     ForeignAdmissionUnresolved,
     CandidateDrifted,
     RunCancelled,
+    GracefulPending,
+    IdentityMismatch,
+    IdentityUnknown,
+    CommandIneligible,
+    LeaseUnproven,
+    OwnerUnproven,
+    CoreUnproven,
+    InventoryUnknown,
+    DriverSurvived,
+    GroupRemaining,
+    HostRemaining,
+    HostCleanupFailed,
+    DriverExited,
+    StorageFailed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -188,6 +202,13 @@ pub enum RecoveryAction {
     RestoreStorage,
     RestoreProcessObservation,
     None,
+    RetryCleanupAfterExit,
+    CleanupOwnedRunner,
+    RequestExactSimulatorShutdown,
+    NativeRebuildNotApplicable,
+    CleanupThenFreshPrepare,
+    RetainAndReport,
+    RepairRecordStorage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,11 +218,15 @@ pub struct RecoveryRung {
     pub destroys_state: bool,
     pub requires_user_ok: bool,
     pub instruction: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<RecoveryAction>,
 }
 
 // Foreign admission uses L0-L5; other recovery reasons retain their 1-based rungs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Recovery {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
     pub reason: RecoveryReason,
     pub next_rung: Option<u8>,
     pub action: RecoveryAction,
@@ -217,8 +242,8 @@ pub struct Recovery {
 
 const CANNOT_HELP: &str = "cannot help";
 
-impl Recovery {
-    pub fn new(reason: RecoveryReason) -> Self {
+impl From<RecoveryReason> for Recovery {
+    fn from(reason: RecoveryReason) -> Self {
         use RecoveryReason::*;
         let cleanup = "run qaren cleanup <own-run-id> --json, then prepare again";
         let (retry, rebuild, last): (&str, Option<&str>, &str) = match reason {
@@ -249,6 +274,7 @@ impl Recovery {
             ),
             RunCancelled => ("re-run when ready; nothing resumes automatically", None, cleanup),
             ForeignAdmissionUnresolved => return Self::foreign_admission(),
+            _ => return Self::ios_runner(reason, "<run-id>", false, false, false),
         };
         let first_applicable = matches!(reason, BudgetExhausted | IdentityUnavailable);
         let ladder = vec![
@@ -267,9 +293,11 @@ impl Recovery {
                 (Some(5), RecoveryAction::CleanupSelf)
             }
             RunCancelled => (None, RecoveryAction::None),
+            _ => unreachable!("runner recovery returned above"),
         };
         let destructive = next_rung == Some(5);
         Recovery {
+            key: None,
             reason,
             next_rung,
             action,
@@ -281,9 +309,88 @@ impl Recovery {
             ladder,
         }
     }
+}
+
+impl Recovery {
+    pub fn new(recovery: impl Into<Self>) -> Self {
+        recovery.into()
+    }
+
+    pub fn ios_runner(
+        reason: RecoveryReason,
+        run_id: &str,
+        destroys_state: bool,
+        needs_user_ok: bool,
+        borrowed: bool,
+    ) -> Self {
+        use RecoveryAction::*;
+        let shutdown = reason == RecoveryReason::HostCleanupFailed;
+        let instructions = [
+            format!("After the recorded driver exits, run qaren cleanup {run_id} --json once; if it remains live, continue to runner recovery."),
+            format!("Run qaren cleanup {run_id} --json; it can stop this run's proven runner driver and matching simulator hosts. If cleanup refuses, follow its next_action."),
+            format!("Request shutdown of only this run's simulator, then run qaren cleanup {run_id} --json; obtain user approval first if the simulator is lent.{}", if shutdown { "" } else { " This step is unavailable: there is no supported standalone shutdown command." }),
+            "Do not rebuild native code to clear a surviving runner process; continue to the final recovery rung.".into(),
+            format!("After owned resources are proven absent, run qaren cleanup {run_id} --json, then a fresh qaren prepare for the scenario; if cleanup still refuses, stop and report retained resources."),
+        ];
+        let (next_rung, action) = match reason {
+            RecoveryReason::HostCleanupFailed => (Some(3), RequestExactSimulatorShutdown),
+            RecoveryReason::GracefulPending => (Some(2), CleanupOwnedRunner),
+            RecoveryReason::DriverExited => (Some(1), RetryCleanupAfterExit),
+            RecoveryReason::StorageFailed => (Some(1), RepairRecordStorage),
+            _ => (Option::None, RetainAndReport),
+        };
+        let actions = [
+            RetryCleanupAfterExit,
+            CleanupOwnedRunner,
+            RequestExactSimulatorShutdown,
+            NativeRebuildNotApplicable,
+            CleanupThenFreshPrepare,
+        ];
+        let ladder = instructions
+            .into_iter()
+            .enumerate()
+            .map(|(i, instruction)| {
+                let rung = i as u8 + 1;
+                let applicable = next_rung == Some(rung);
+                RecoveryRung {
+                    rung,
+                    applicable,
+                    instruction,
+                    action: Some(actions[i]),
+                    destroys_state: matches!(rung, 3 | 5)
+                        || (destroys_state && matches!(rung, 1 | 2)),
+                    requires_user_ok: rung == 5
+                        || (rung == 3 && borrowed)
+                        || (needs_user_ok && matches!(rung, 1 | 2)),
+                }
+            })
+            .collect();
+        Self {
+            key: Some("ios_runner_cleanup".into()),
+            reason,
+            next_rung,
+            action,
+            automatic: false,
+            destroys_state: shutdown || (next_rung.is_some() && destroys_state),
+            requires_user_ok: (shutdown && borrowed) || (next_rung.is_some() && needs_user_ok),
+            own_cleanup_required: true,
+            own_run_id: Option::None,
+            ladder,
+        }
+    }
+
+    pub fn runner_next_action(&self, run_id: &str) -> String {
+        match self.action {
+            RecoveryAction::RepairRecordStorage => format!("Restore write access to this run's record storage, then rerun qaren cleanup {run_id} --json once; do not remove its lease manually."),
+            RecoveryAction::RetainAndReport => "Leave the process, device and lease untouched; report the missing ownership proof and request the owning run or device owner to resolve it.".into(),
+            _ => self.next_rung.and_then(|rung| self.ladder.iter().find(|step| step.rung == rung))
+                .map(|step| step.instruction.clone()).unwrap_or_default(),
+        }
+    }
 
     fn foreign_admission() -> Self {
         Self {
+            key: None,
             reason: RecoveryReason::ForeignAdmissionUnresolved,
             next_rung: Some(0),
             action: RecoveryAction::WaitForOwner,
@@ -328,6 +435,7 @@ impl RecoveryRung {
             destroys_state: applicable && destroys_state,
             requires_user_ok: applicable && destroys_state,
             instruction: instruction.to_string(),
+            action: None,
         }
     }
 }
@@ -349,7 +457,7 @@ impl Failure {
         }
     }
 
-    pub fn with_recovery(mut self, reason: RecoveryReason) -> Self {
+    pub fn with_recovery(mut self, reason: impl Into<Recovery>) -> Self {
         self.recovery = Some(Box::new(FailureRecovery::Build(Recovery::new(reason))));
         self
     }
