@@ -28,6 +28,7 @@ import { isRecord } from '../../../dist/qa/questions.js';
 import { recover } from '../../../dist/qa/recover.js';
 import { observeTiming, type TimingContext, type TimingEvent } from '../../../dist/qa/timing.js';
 import { createStop } from '../../../dist/qa/stop.js';
+import { AppProcessGoneError } from '../../../dist/qa/capture.js';
 import type { ActResult } from '../../../dist/qa/walker.js';
 import type { ToolResult } from '../../../dist/utils.js';
 
@@ -46,6 +47,7 @@ function fixture(throwSink = false) {
   ) => Promise<ActResult> = runInNewContext(`${source.slice(from, to)}; act`, {
     observeTiming,
     QaDispatchError,
+    AppProcessGoneError,
     HandlerError,
     extractMutationDisposition,
     entryMismatchOf,
@@ -168,6 +170,18 @@ test('settle reporting preserves handler errors, rejected promises, and sink fai
     assert.equal(outcome.error, 'TEST_FAILURE: handler failed');
     assert.deepEqual(f.logs, [`action-settle=${JSON.stringify(unknown)}`]);
   }
+});
+
+test('act propagates app-exit errors unchanged without settle diagnostics', async () => {
+  const f = fixture();
+  const error = new AppProcessGoneError();
+  await assert.rejects(
+    f.act(async () => {
+      throw error;
+    }, false),
+    (thrown) => thrown === error,
+  );
+  assert.deepEqual(f.logs, []);
 });
 
 test('cancelled act does not dispatch or manufacture settle diagnostics', async () => {

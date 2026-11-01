@@ -133,8 +133,12 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
-      # Ubuntu runners ship a JDK (JAVA_HOME set) and the Android SDK
-      # ($ANDROID_HOME). If a future AGP needs a newer JDK, add actions/setup-java.
+      # Pin the JDK so runner-image updates cannot break Gradle.
+      - name: Set up Java for the Android runner build
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
       - name: assembleDebug + assembleDebugAndroidTest
         working-directory: packages/qaren-android-runner
         run: ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
