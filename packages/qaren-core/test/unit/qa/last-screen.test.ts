@@ -114,6 +114,27 @@ test('a rejected recovery capture keeps the admitted disabled target in failure 
   assert.match(ledger.failure!.suggestion!, /on screen and disabled/);
 });
 
+test('a tap opening a render-error screen reports that screen instead of the admitted screen', async () => {
+  const before = screen([control('@open', 'Open', { testID: 'qa-open' })]);
+  const broken = screen([control('@error', 'Synthetic render failure', { kind: 'text' })]);
+  broken.renderError = true;
+  const fixture = deps([]);
+  let presses = 0;
+  fixture.captureScreen = async () => (presses ? broken : before);
+  fixture.press = async () => {
+    presses++;
+    return { ok: true, proven: false };
+  };
+  const ledger = await runPlan(plan('1. Tap "Open"\n'), fixture);
+  assert.equal(presses, 1);
+  assert.equal(ledger.verdict, 'FAIL');
+  assert.match(ledger.failure!.seen, /^the app is showing a React Native error screen/);
+  assert.match(ledger.failure!.seen, /last observed on screen: .*Synthetic render failure/);
+  assert.doesNotMatch(ledger.failure!.seen, /last observed on screen: .*Open/);
+  assert.equal(ledger.failure?.screen, undefined);
+  assert.equal(ledger.failure?.suggestion, undefined);
+});
+
 test('an absent target suggests inserting a step and names enabled controls by id', async () => {
   const ledger = await runPlan(
     plan('1. Tap "Continue"\n2. Tap "Submit"\n'),
