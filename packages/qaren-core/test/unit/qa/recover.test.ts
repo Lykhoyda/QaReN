@@ -315,13 +315,36 @@ for (const exact of [undefined, 'text'] as const) {
   test(`a structural app label does not veto recovery for covered text (${exact})`, () => {
     const snapshot = sheetScreen(true, ['Close'], [], 500);
     const app = snapshot.elements[0];
-    app.label = 'Welcome Home Demo';
+    app.label = 'Welcome Home';
     assert.equal(app.semantic?.nativePresence?.structural, true);
     assert.equal(centreCovered(app, snapshot), false);
     const target = { phrase: 'Welcome Home', quoted: 'Welcome Home', exact };
     assert.equal(targetEvidence(target, snapshot), 'fail');
     assert.deepEqual(dismissCandidate(snapshot, [target]), { label: 'Close' });
   });
+
+  for (const type of ['Image', 'Other'] as const) {
+    test(`an excluded ${type} label does not veto recovery for covered text (${exact})`, () => {
+      const snapshot = sheetScreen(true, ['Close'], [
+        {
+          ref: '@excluded',
+          type,
+          parentIndex: 2,
+          label: 'Welcome Home',
+          rect: { x: 20, y: 200, width: 200, height: 40 },
+        },
+      ]);
+      const excluded = snapshot.elements.find((e) => e.ref === '@excluded')!;
+      assert.equal(centreCovered(excluded, snapshot), false);
+      const target = { phrase: 'Welcome Home', quoted: 'Welcome Home', exact };
+      assert.equal(targetEvidence(target, snapshot), 'fail');
+      assert.deepEqual(dismissCandidate(snapshot, [target]), { label: 'Close' });
+      assert.deepEqual(
+        dismissCandidate(snapshot, [{ phrase: 'absent', quoted: 'absent' }, target]),
+        { label: 'Close' },
+      );
+    });
+  }
 }
 
 test('a covered target with two decline controls still refuses as ambiguous', () => {

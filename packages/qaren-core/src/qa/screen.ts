@@ -140,6 +140,7 @@ const elementFrames = new WeakMap<Element, NonNullable<NativeNode['rect']>>();
 const nativeAncestors = new WeakMap<Element, Element[]>();
 const elementViewports = new WeakMap<Element, NonNullable<NativeNode['rect']>>();
 const keyboardCoveredElements = new WeakSet<Element>();
+const literalTextContributors = new WeakSet<Element>();
 // Native scroll containers (iOS names, Android class suffixes); only native-backed elements are ever members.
 const scrollContainers = new WeakMap<Element, string>();
 const windows = new WeakSet<Element>();
@@ -154,6 +155,10 @@ const localCapabilities = new WeakMap<
 
 export function keyboardCoversElement(element: Element): boolean {
   return keyboardCoveredElements.has(element);
+}
+
+export function contributesLiteralText(element: Element): boolean {
+  return literalTextContributors.has(element);
 }
 
 export function isScrollContainer(element: Element): boolean {
@@ -1176,6 +1181,7 @@ export function join(
       continue;
     }
     if (merged) {
+      literalTextContributors.add(e);
       labelText.push(line);
       if (!underKeyboard(n, i)) uncoveredLabelText.push(line);
       continue;
@@ -1195,6 +1201,7 @@ export function join(
     }
     paintedKeys.set(i, key);
     if (!echo) {
+      literalTextContributors.add(e);
       paintedText.push(line);
       if (!underKeyboard(n, i)) uncoveredText.push(line);
     }

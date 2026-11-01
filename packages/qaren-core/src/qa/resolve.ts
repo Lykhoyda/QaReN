@@ -12,6 +12,7 @@ import {
   isNativeInput,
   ancestorsOf,
   keyboardCoversElement,
+  contributesLiteralText,
   describe,
   elementFrame,
   elementViewport,
@@ -847,6 +848,7 @@ export function targetEvidence(target: Target, screen: Screen): LiteralVerdict {
   if (text === 'pass') {
     const carriers = literalTextProjection(screen).elements.filter(
       (e) =>
+        contributesLiteralText(e) &&
         (e.kind === 'input' && e.value !== undefined
           ? `${e.label ?? e.placeholder ?? e.testID ?? 'input'}: ${e.value}`
           : e.label) === target.quoted,
@@ -882,14 +884,14 @@ export function targetOnScreen(screen: Screen, target: Target): boolean {
   if (evidence === 'unsure') return true;
   return (
     evidence === 'pass' &&
-    screen.elements.some(
+    literalTextProjection(screen).elements.some(
       (e) =>
+        contributesLiteralText(e) &&
         (e.label?.includes(quoted) ||
           e.value?.includes(quoted) ||
           (e.kind === 'input' &&
             e.value !== undefined &&
             `${e.label ?? e.placeholder ?? e.testID ?? 'input'}: ${e.value}`.includes(quoted))) &&
-        !e.semantic?.nativePresence?.structural &&
         !e.offscreen &&
         !centreCovered(e, screen),
     )
