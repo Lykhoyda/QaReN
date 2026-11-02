@@ -17,7 +17,8 @@
     "skipLibCheck": true,
     "types": [
       "node",
-      "mdx"
+      "mdx",
+      "bun"
     ],
     "plugins": [
       {

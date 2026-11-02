@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, resolve, dirname } from 'node:path';
-import { pagePath, pages } from '../src/site.ts';
+import { SITE_ORIGIN, pagePath, pages } from '../src/site.ts';
 
 const HERE = import.meta.dirname;
 const DIST = process.env.DOCS_DIST ?? resolve(HERE, '../dist');
@@ -120,18 +120,21 @@ for (const { slug } of pages) {
   const html = exists(pageFile(slug)) ? page(pageFile(slug)) : '';
   const canonical = /<link rel="canonical" href="([^"]+)"/.exec(html)?.[1] ?? '';
   check(
-    `${slug || 'index'} canonical ends ${BASE}${pagePath(slug)}`,
-    canonical.endsWith(`${BASE}${pagePath(slug)}`),
+    `${slug || 'index'} canonical is ${SITE_ORIGIN}${BASE}${pagePath(slug)}`,
+    canonical === `${SITE_ORIGIN}${BASE}${pagePath(slug)}`,
   );
 }
 
 console.log('\nverify-site: generated files');
 const sitemap = exists('sitemap.xml') ? page('sitemap.xml') : '';
 for (const { slug } of pages)
-  check(`sitemap lists ${slug || 'index'}`, sitemap.includes(`${BASE}${pagePath(slug)}</loc>`));
+  check(
+    `sitemap lists ${slug || 'index'}`,
+    sitemap.includes(`<loc>${SITE_ORIGIN}${BASE}${pagePath(slug)}</loc>`),
+  );
 check(
   'robots.txt points at the sitemap',
-  exists('robots.txt') && page('robots.txt').includes(`${BASE}/sitemap.xml`),
+  exists('robots.txt') && page('robots.txt').includes(`Sitemap: ${SITE_ORIGIN}${BASE}/sitemap.xml`),
 );
 const llms = exists('llms.txt') ? page('llms.txt') : '';
 const llmsFull = exists('llms-full.txt') ? page('llms-full.txt') : '';

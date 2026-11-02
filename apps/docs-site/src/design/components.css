@@ -58,6 +58,9 @@
   text-underline-offset: 3px;
   transition: text-decoration-color var(--duration-fast) var(--ease-standard);
 }
+.qr-link--muted {
+  color: var(--muted);
+}
 .qr-link:hover {
   text-decoration-color: var(--accent-text);
   text-decoration-thickness: 2px;

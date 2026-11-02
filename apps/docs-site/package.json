@@ -7,7 +7,7 @@
     "generate": "bun scripts/generate-changelog.ts && bun scripts/generate-llms.ts",
     "dev": "bun run generate && bun --bun next dev",
     "typecheck": "tsc --noEmit",
-    "build": "bun run generate && bun run typecheck && bun --bun next build && pagefind --site dist --output-subdir pagefind && bun scripts/verify-site.ts",
+    "build": "bun test && bun run generate && bun run typecheck && bun --bun next build && pagefind --site dist --output-subdir pagefind && bun scripts/verify-site.ts",
     "verify": "bun scripts/verify-site.ts"
   },
   "dependencies": {
@@ -22,6 +22,7 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@types/bun": "^1.4.4",
     "@types/mdx": "^2.0.14",
     "@types/node": "^24.19.2",
     "@types/react": "^19.3.0",
