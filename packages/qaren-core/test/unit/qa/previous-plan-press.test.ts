@@ -368,7 +368,10 @@ test('login replay clears the previous dismissal veto from a retried target or c
     assert.ok(f.vetoes.includes('previous-plan-press'), next);
     assert.equal(result.recoveries, 1, next);
     assert.deepEqual(f.actions, ['press @open', 'press @signin'], next);
-    assert.ok(result.steps.some((row) => row.reason?.includes('recovered: login')), next);
+    assert.ok(
+      result.steps.some((row) => row.reason?.includes('recovered: login')),
+      next,
+    );
     assert.doesNotMatch(result.failure?.seen ?? '', /automatic app dismissal was withheld/, next);
     if (next.startsWith('2.')) {
       assert.equal(result.failure?.subreason, 'absent');
