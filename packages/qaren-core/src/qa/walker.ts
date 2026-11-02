@@ -2239,10 +2239,17 @@ async function walkBlockScoped(
       devErrorDismissals.set(item, dismissal);
       recoveries += 1;
       const dispatched = dispatchedOn;
-      const acted = await mutate(item, observation, (context) => deps.press(ref, context));
-      // The overlay's own Dismiss is not the step's action, so the step stays unmutated.
-      mutationStarted = false;
-      dispatchedOn = dispatched;
+      let acted: ActResult;
+      try {
+        acted = await mutate(item, observation, (context) => deps.press(ref, context));
+      } catch (error) {
+        if (isAbort(error)) throw error;
+        acted = { ok: false, proven: false, executed: false };
+      } finally {
+        // The overlay's own Dismiss is not the step's action, so the step stays unmutated.
+        mutationStarted = false;
+        dispatchedOn = dispatched;
+      }
       if (!acted.ok || acted.executed === false) return refuse('DISMISS_FAILED');
       emit({
         ...base(item, attempt),

@@ -282,6 +282,19 @@ test('a Dismiss that is not dispatched is refused and never retried', async () =
   assert.deepEqual(f.actions, ['press @dismiss']);
 });
 
+test('a Dismiss whose dispatch throws is refused with the overlay cause', async () => {
+  const f = app(overlay());
+  f.deps.press = async (ref, context) => {
+    context!.authorize();
+    f.actions.push(`press ${ref}`);
+    throw new Error('runner lost the element');
+  };
+  const result = await runPlan(tapPlan(), f.deps);
+  assert.equal(result.verdict, 'REFUSED');
+  assert.equal(result.code, 'DEV_REDBOX_DISMISS_FAILED');
+  assert.deepEqual(f.actions, ['press @dismiss']);
+});
+
 test('a check behind an error overlay is judged only after the overlay is dismissed', async () => {
   const f = app(overlay());
   const result = await runPlan(parsePlan('✓ "Settings"').blocks!, f.deps);
