@@ -2402,6 +2402,7 @@ for (const mode of [
   'mixed',
   'undefined',
   'late_true',
+  'late_undefined',
   'failed_scan',
   'pending_scan',
   'replaced',
@@ -2420,11 +2421,12 @@ for (const mode of [
         if (attempts > 1 && mode === 'failed_scan') throw new CDPProbeTimeoutError('scan failed');
         if (attempts > 1 && mode === 'pending_scan') await new Promise(() => {});
         if (attempts > 1 && mode === 'replaced') throw new CDPTargetClosedError('replaced');
+        const undefinedTarget = mode === 'undefined' || (mode === 'late_undefined' && attempts > 1);
         throw new DevTargetUnavailableError({
           targetsTotal: mode === 'mixed' ? 2 : 1,
           devTrue: 0,
-          devFalse: mode === 'undefined' ? 0 : 1,
-          devUndefined: mode === 'undefined' ? 1 : 0,
+          devFalse: undefinedTarget ? 0 : 1,
+          devUndefined: undefinedTarget ? 1 : 0,
           devUnknown: mode === 'mixed' ? 1 : 0,
         });
       },
@@ -2443,14 +2445,16 @@ for (const mode of [
       assert.equal(calls.filter((call) => call === 'open').length, 1);
     } else {
       assert.ok(result instanceof HandlerError);
-      assert.equal(result.code, mode === 'false' ? 'DEV_TARGET_MISSING' : 'CDP_NOT_CONNECTED');
-      assert.equal(
-        result.meta?.inner,
-        mode === 'false' ? 'non_dev_bundle' : 'no_dev_target_unknown',
-      );
+      const nonDev = mode === 'false' || mode === 'pending_scan';
+      assert.equal(result.code, nonDev ? 'DEV_TARGET_MISSING' : 'CDP_NOT_CONNECTED');
+      assert.equal(result.meta?.inner, nonDev ? 'non_dev_bundle' : 'no_dev_target_unknown');
       assert.ok(!calls.includes('open'));
       assert.ok(!calls.includes('prove'));
-      if (mode === 'false') assert.equal(result.meta?.devFalse, 1);
+      if (nonDev) assert.equal(result.meta?.devFalse, 1);
+      if (mode === 'late_undefined') {
+        assert.equal(result.meta?.devFalse, 0);
+        assert.equal(result.meta?.devUndefined, 1);
+      }
     }
   });
 }
@@ -2518,8 +2522,12 @@ for (const listState of ['pending', 'empty'] as const) {
     await clock.advance(500);
     assert.equal(settled, true, 'rediscovery cannot extend the registered-target deadline');
     const error = await pending;
-    assert.equal(error.code, 'CDP_NOT_CONNECTED');
-    assert.equal(error.meta?.inner, 'no_dev_target_unknown');
+    assert.equal(error.code, listState === 'pending' ? 'DEV_TARGET_MISSING' : 'CDP_NOT_CONNECTED');
+    assert.equal(
+      error.meta?.inner,
+      listState === 'pending' ? 'non_dev_bundle' : 'no_dev_target_unknown',
+    );
+    if (listState === 'pending') assert.equal(error.meta?.devFalse, 1);
     assert.equal(relaunches, 0, 'unavailable development targets never enable no-target relaunch');
   });
 }
