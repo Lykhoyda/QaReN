@@ -33,6 +33,10 @@ For `CORE_REFUSED` with a `DEV_MENU_HIDE_UNVERIFIED_*` inner code in
 
 ## Devices
 
+For `BUILD_FAILED` with `cause=toolchain-newer-than-prebuilt`, follow the
+receipt's next action and the
+[native build recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#native-fingerprint-build-selection).
+
 For `FRESH_INSTALL_ADMISSION_UNKNOWN` or a strict-admission `DEVICE_BUSY`, read the
 probe diagnostics in `failure.detail`; see the authoritative
 [fresh-install contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#fresh-install)

@@ -93,6 +93,10 @@ pub fn xcode_version_spec() -> CmdSpec {
     CmdSpec::new("xcode-version", "xcodebuild", &["-version"], 30)
 }
 
+pub fn swift_version_spec() -> CmdSpec {
+    CmdSpec::new("swift-version", "xcrun", &["swift", "--version"], 10)
+}
+
 pub fn list_runtimes_spec() -> CmdSpec {
     CmdSpec::new(
         "simctl-list-runtimes",

@@ -13,6 +13,7 @@ fn prior_fingerprint() -> NativeFingerprint {
         parts: Default::default(),
         expo_fingerprint_ms: None,
         expo_unavailable: None,
+        ios_compiler: None,
     }
 }
 
@@ -1024,6 +1025,7 @@ fn static_config_without_expo_binds_the_xcode_version() {
         "xcodebuild -version",
         CmdOutput::success("Xcode 27.1\nBuild version 27B5\n"),
     );
+    common::script_swift(&mut runner);
     let other_xcode = compute(&mut runner, &root, &root, "ios").unwrap();
     assert_eq!(other_xcode.parts["rnfp"], fp.parts["rnfp"]);
     assert_ne!(other_xcode.value, fp.value);
@@ -1113,6 +1115,7 @@ fn static_config_without_xcode_never_reuses() {
         "xcodebuild -version",
         CmdOutput::failed(1, "no developer dir"),
     );
+    common::script_swift(&mut runner);
     let fp = compute(&mut runner, &root, &root, "ios").unwrap();
     assert!(!fp.complete);
     assert!(fp.incompleteness[0].starts_with("toolchain identity unavailable"));
@@ -1148,8 +1151,8 @@ fn evaluated_dynamic_config_clears_only_its_own_incompleteness_and_reuses() {
     assert!(fp.expo_fingerprint_ms.is_some());
     assert_eq!(
         runner.private_inputs.len(),
-        2,
-        "both Expo commands use private capture"
+        4,
+        "Expo and compiler probes use private capture"
     );
     let plan = matching_build(&root, &fp, "ios");
     assert_eq!(
@@ -1386,6 +1389,7 @@ fn unavailable_toolchain_identity_forbids_reuse() {
             "xcodebuild -version",
             CmdOutput::failed(1, "no developer dir"),
         );
+        common::script_swift(m);
     });
     assert!(!fp.complete);
     assert_eq!(fp.incompleteness.len(), 1);
@@ -1445,6 +1449,7 @@ fn evaluated_config_output_never_reaches_fingerprint_or_decision() {
             );
             if stderr.is_empty() {
                 m.expect_run("xcodebuild -version", CmdOutput::success(XCODE));
+                common::script_swift(m);
             }
         });
         let plan = matching_build(&root, &fp, "ios");
@@ -1478,7 +1483,43 @@ fn a_pnpm_dependency_check_preamble_on_stdout_is_ignored() {
             )),
         );
         m.expect_run("xcodebuild -version", CmdOutput::success(XCODE));
+        common::script_swift(m);
     });
     assert!(fp.complete, "{:?}", fp.incompleteness);
     assert_eq!(fp, evaluated(&root, EXPO_H, XCODE));
+}
+
+#[test]
+fn diagnostic_compiler_and_mode_inputs_preserve_the_existing_cache_key() {
+    let root = common::temp_repo();
+    let mut values = Vec::new();
+    for (mode, swift) in [("0", "6.3.1"), ("1", "6.4")] {
+        let mut runner = MockRunner::new();
+        runner
+            .environment
+            .insert("EXPO_USE_PRECOMPILED_MODULES".into(), mode.into());
+        runner
+            .environment
+            .insert("RCT_USE_PREBUILT_RNCORE".into(), mode.into());
+        runner.expect_run("ls-files", CmdOutput::success(""));
+        runner.expect_run(
+            "xcodebuild -version",
+            CmdOutput {
+                stderr: "DVT notice\n".into(),
+                ..CmdOutput::success(common::XCODE_VERSION)
+            },
+        );
+        runner.expect_run(
+            "xcrun swift --version",
+            CmdOutput::success(&format!(
+                "Apple Swift version {swift} (swiftlang-fixture clang-fixture)\n"
+            )),
+        );
+        let fp = compute(&mut runner, &root, &root, "ios").unwrap();
+        assert!(fp.complete);
+        assert_eq!(fp.parts.keys().collect::<Vec<_>>(), ["rnfp", "toolchain"]);
+        values.push(fp.value);
+        assert_eq!(runner.remaining(), 0);
+    }
+    assert_eq!(values[0], values[1]);
 }

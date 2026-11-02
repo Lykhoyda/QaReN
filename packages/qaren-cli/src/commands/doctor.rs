@@ -202,9 +202,17 @@ pub fn doctor(
         .as_ref()
         .and_then(|c| c.ios.as_ref()?.runtime.clone());
     let qaren_hits = find_on_path(&path_dirs, "qaren");
+    let app_root =
+        crate::run::app_root_for(&config_file, cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let compiler = if cfg!(target_os = "macos") {
+        crate::ios_toolchain::CompilerIdentity::collect(runner)
+    } else {
+        crate::ios_toolchain::CompilerIdentity::collect_xcode(runner)
+    };
 
     let mut checks = vec![
-        xcode(runner),
+        xcode(Some(&compiler)),
+        ios_toolchain_match(runner, &app_root, cfg!(target_os = "macos").then_some(compiler)),
         ios_runtimes(runner, ios_runtime.as_deref()),
         node_check(runner, configured_node.as_deref()),
         tool(
@@ -230,8 +238,6 @@ pub fn doctor(
         ),
         disk(runner, cwd, home),
     ];
-    let app_root =
-        crate::run::app_root_for(&config_file, cwd).unwrap_or_else(|_| cwd.to_path_buf());
     checks.push(pnpm_source(runner, &app_root));
     checks.extend(android_checks(
         runner,
@@ -391,17 +397,86 @@ fn sha256_record(version_dir: &Path) -> Option<String> {
     (sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit())).then_some(sha)
 }
 
-fn xcode(runner: &mut dyn Runner) -> Check {
-    let output = runner.run(&ios::xcode_version_spec());
-    if output.ok() && !output.stdout.trim().is_empty() {
-        let lines: Vec<&str> = output.stdout.trim().lines().map(str::trim).collect();
-        return Check::pass("xcode", lines.join(", "));
+fn xcode(compiler: Option<&crate::ios_toolchain::CompilerIdentity>) -> Check {
+    if let Some(xcode) = compiler.and_then(|c| c.xcode.as_deref()) {
+        return Check::pass("xcode", format!("Xcode {xcode}"));
     }
     Check::fail(
         "xcode",
-        format!("xcodebuild -version did not run: {}", output.summary()),
-        "install Xcode and select it: `xcode-select -s /Applications/Xcode.app`",
+        "selected Xcode version could not be read",
+        "select a compatible installed Xcode for this shell with DEVELOPER_DIR, or ask the user to install Xcode, then re-run qaren doctor --json",
     )
+}
+
+fn ios_toolchain_match(
+    runner: &mut dyn Runner,
+    app: &Path,
+    compiler: Option<crate::ios_toolchain::CompilerIdentity>,
+) -> Check {
+    use crate::ios_toolchain::{self, Mode};
+    const ID: &str = "ios-toolchain-match";
+    let Some(compiler) = compiler else {
+        return Check::skip(ID, "iOS compiler inspection requires macOS");
+    };
+    let modes = ios_toolchain::requested_modes(runner, app);
+    let linkage = ios_toolchain::Linkage::inspect(app);
+    let source_requested = ios_toolchain::has_expo_dependency(app)
+        && (modes.expo == Mode::Off
+            || runner.env_var("EXPO_USE_PRECOMPILED_MODULES").as_deref() == Some("0"));
+    let unknown_fix = if source_requested && linkage.expo != Mode::Off {
+        ios_toolchain::SOURCE_FIX
+    } else {
+        ios_toolchain::UNKNOWN_FIX
+    };
+    let observation = ios_toolchain::inspect_for_doctor(runner, app, compiler, &linkage);
+    if observation.compiler.swift.is_none() {
+        return Check::warn(ID, "iOS compiler compatibility unknown", unknown_fix);
+    }
+    let host = observation.compiler.swift.as_ref().expect("checked Swift");
+    for interface in &observation.interfaces {
+        if host > &interface.swift {
+            let fix = if linkage.expo == Mode::Off && interface.package == "expo-modules-jsi" {
+                ios_toolchain::JSI_SOURCE_FIX
+            } else {
+                ios_toolchain::SOURCE_FIX
+            };
+            return Check::warn(ID, format!("host Swift {host} is newer than the compiler for {} ({}); precompiled interface compatibility needs checking", interface.package, interface.swift), fix);
+        }
+    }
+    if observation
+        .interfaces
+        .iter()
+        .any(|interface| host < &interface.swift)
+    {
+        return Check::warn(
+            ID,
+            "host Swift is older than an inspected Expo interface compiler",
+            unknown_fix,
+        );
+    }
+    if source_requested && linkage.expo != Mode::Off {
+        return Check::warn(
+            ID,
+            "Expo module source builds requested, but installed Pods source linkage is unproven; regenerate pods before building",
+            ios_toolchain::SOURCE_FIX,
+        );
+    }
+    if observation.incomplete || modes.expo == Mode::Unknown {
+        return Check::warn(ID, "iOS compiler compatibility unknown", unknown_fix);
+    }
+    if linkage.expo == Mode::Off {
+        return Check::pass(
+            ID,
+            "Installed Pods use Expo module source builds; source linkage is proven",
+        );
+    }
+    if observation.interfaces.is_empty() {
+        return Check::skip(
+            ID,
+            "no installed precompiled Expo XCFramework found; compiler compatibility not assessed",
+        );
+    }
+    Check::pass(ID, "host Swift and inspected Expo interface compiler versions match; build compatibility is not guaranteed")
 }
 
 fn ios_runtimes(runner: &mut dyn Runner, configured: Option<&str>) -> Check {
@@ -1686,6 +1761,12 @@ mod tests {
             "xcodebuild -version",
             CmdOutput::success("Xcode 26.0\nBuild version 17A324\n"),
         );
+        if cfg!(target_os = "macos") {
+            runner.expect_run(
+                "xcrun swift --version",
+                CmdOutput::success("Apple Swift version 6.4 (swiftlang-test clang-test)\n"),
+            );
+        }
         runner.expect_run("simctl list runtimes --json", CmdOutput::success(runtimes));
         if let Some(node) = node {
             runner.expect_run("node --version", CmdOutput::success(node));
@@ -1694,6 +1775,418 @@ mod tests {
         runner.expect_run("corepack --version", CmdOutput::success("0.34.0\n"));
         runner.expect_run("pod --version", CmdOutput::success("1.16.2\n"));
         runner.expect_run("df -Pk", df(500_000_000));
+    }
+
+    fn interface_fixture(s: &Scratch, package: &str, version: &str) {
+        let module = if package == "expo-modules-core" {
+            "ExpoModulesCore"
+        } else {
+            "ExpoModulesJSI"
+        };
+        s.file(
+            &format!("app/node_modules/{package}/apple/Products/Public.xcframework/Info.plist"),
+            "synthetic plist",
+        );
+        s.file(&format!("app/node_modules/{package}/apple/Products/Public.xcframework/simulator/{module}.framework/Modules/{module}.swiftmodule/arm64.swiftinterface"), &format!("// swift-compiler-version: Apple Swift version {version} (swiftlang-test clang-test)\n"));
+    }
+
+    fn plist_probe(runner: &mut MockRunner) {
+        runner.expect_run("plutil -convert", CmdOutput::success(r#"{"AvailableLibraries":[{"LibraryIdentifier":"simulator","SupportedPlatform":"ios","SupportedPlatformVariant":"simulator"}]}"#));
+    }
+
+    #[test]
+    fn successful_compiler_probes_accept_private_stderr_notices() {
+        let mut runner = MockRunner::new();
+        for (command, stdout) in [
+            ("xcodebuild -version", "Xcode 27.0\nBuild version 27A1\n"),
+            (
+                "xcrun swift --version",
+                "Apple Swift version 6.4 (swiftlang-test clang-test)\n",
+            ),
+        ] {
+            runner.expect_run(
+                command,
+                CmdOutput {
+                    stderr: "private DVT notice\n".into(),
+                    ..CmdOutput::success(stdout)
+                },
+            );
+        }
+        let compiler = crate::ios_toolchain::CompilerIdentity::collect(&mut runner);
+        let check = xcode(Some(&compiler));
+        assert_eq!(check.status, Status::Pass);
+        assert_eq!(
+            compiler.swift,
+            crate::ios_toolchain::SwiftVersion::parse("6.4")
+        );
+        assert!(compiler.xcode_hash.is_some());
+        assert!(!check.detail.contains("private"));
+        assert_eq!(runner.remaining(), 0);
+    }
+
+    #[test]
+    fn resolved_packages_outside_the_app_keep_the_compiler_warning() {
+        let s = Scratch::new("resolved-expo-compiler");
+        let app = s.dir("app");
+        s.file("app/package.json", r#"{"dependencies":{"expo":"56.0.0"}}"#);
+        interface_fixture(&s, "expo-modules-core", "6.3.1");
+        let installed = s.path("hoisted-core");
+        std::fs::rename(app.join("node_modules/expo-modules-core"), &installed).unwrap();
+        let before = s.tree();
+        let mut runner = MockRunner::new();
+        runner.expect_run(
+            "node -e",
+            CmdOutput::success(&serde_json::to_string(&installed).unwrap()),
+        );
+        plist_probe(&mut runner);
+        runner.expect_run("node -e", CmdOutput::success("null"));
+        let compiler = crate::ios_toolchain::CompilerIdentity {
+            swift: crate::ios_toolchain::SwiftVersion::parse("6.4"),
+            ..Default::default()
+        };
+        let check = ios_toolchain_match(&mut runner, &app, Some(compiler));
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.detail.contains("is newer than"));
+        assert!(check.detail.contains("expo-modules-core"));
+        assert!(check.fix.unwrap().contains("regenerate pods"));
+        assert_eq!(runner.remaining(), 0);
+        assert_eq!(s.tree(), before);
+    }
+
+    #[test]
+    fn newer_host_warning_wins_when_another_interface_needs_a_newer_compiler() {
+        let s = Scratch::new("mixed-interface-compilers");
+        let app = s.dir("app");
+        s.file("app/package.json", r#"{"dependencies":{"expo":"56.0.0"}}"#);
+        interface_fixture(&s, "expo-modules-core", "6.5");
+        interface_fixture(&s, "expo-modules-jsi", "6.3.1");
+        let mut runner = MockRunner::new();
+        plist_probe(&mut runner);
+        plist_probe(&mut runner);
+        let compiler = crate::ios_toolchain::CompilerIdentity {
+            swift: crate::ios_toolchain::SwiftVersion::parse("6.4"),
+            ..Default::default()
+        };
+        let check = ios_toolchain_match(&mut runner, &app, Some(compiler));
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.detail.contains("is newer than"));
+        assert!(check.detail.contains("expo-modules-jsi"));
+        assert_eq!(runner.remaining(), 0);
+    }
+
+    #[test]
+    fn ios_toolchain_rows_compare_compilers_without_a_build_or_device_command() {
+        for (version, source, expected, detail) in [
+            ("6.3.1", false, Status::Warn, "is newer than"),
+            (
+                "6.4",
+                false,
+                Status::Pass,
+                "compatibility is not guaranteed",
+            ),
+            ("6.5", false, Status::Warn, "is older than"),
+            (
+                "unknown-private-field",
+                false,
+                Status::Warn,
+                "compatibility unknown",
+            ),
+            ("6.3.1", true, Status::Warn, "is newer than"),
+        ] {
+            let s = Scratch::new("compiler-row");
+            let app = s.dir("app");
+            s.file("app/package.json", r#"{"dependencies":{"expo":"56.0.0"}}"#);
+            interface_fixture(&s, "expo-modules-core", version);
+            let mut runner = MockRunner::new();
+            if source {
+                runner
+                    .environment
+                    .insert("EXPO_USE_PRECOMPILED_MODULES".into(), "0".into());
+            }
+            plist_probe(&mut runner);
+            runner.expect_run("node -e", CmdOutput::success("null"));
+            let compiler = crate::ios_toolchain::CompilerIdentity {
+                swift: crate::ios_toolchain::SwiftVersion::parse("6.4"),
+                ..Default::default()
+            };
+            let check = ios_toolchain_match(&mut runner, &app, Some(compiler));
+            assert_eq!(check.status, expected, "{version}");
+            assert!(check.detail.contains(detail), "{:?}", check);
+            assert!(!check.detail.contains("private-field"));
+            assert!(!app.join("ios").exists());
+            assert!(runner.calls.iter().all(|spec| matches!(
+                spec.label.as_str(),
+                "expo-xcframework-plist" | "expo-module-resolve"
+            )));
+            assert_eq!(runner.remaining(), 0);
+        }
+    }
+
+    #[test]
+    fn ios_toolchain_reads_precompiled_interfaces_extracted_into_pods() {
+        for extracted in [true, false] {
+            let s = Scratch::new("pods-interface");
+            let app = s.dir("app");
+            s.file("app/package.json", r#"{"dependencies":{"expo":"56.0.0"}}"#);
+            pods_linkage_fixture(&s, true);
+            // The npm package ships only tarballs, behind more entries than the walk budget.
+            s.file("app/node_modules/expo-modules-core/prebuilds/output/debug/xcframeworks/ExpoModulesCore.tar.gz", "tarball");
+            for i in 0..300 {
+                s.file(
+                    &format!("app/node_modules/expo-modules-core/ios/Source{i}.swift"),
+                    "",
+                );
+            }
+            let mut runner = MockRunner::new();
+            if extracted {
+                let framework = "app/ios/Pods/ExpoModulesCore/ExpoModulesCore.xcframework";
+                s.file(&format!("{framework}/Info.plist"), "synthetic plist");
+                s.file(&format!("{framework}/simulator/ExpoModulesCore.framework/Modules/ExpoModulesCore.swiftmodule/arm64.swiftinterface"), "// swift-compiler-version: Apple Swift version 6.3.1 (swiftlang-test clang-test)\n");
+                plist_probe(&mut runner);
+                runner.expect_run("node -e", CmdOutput::success("null"));
+            }
+            let compiler = crate::ios_toolchain::CompilerIdentity {
+                swift: crate::ios_toolchain::SwiftVersion::parse("6.4"),
+                ..Default::default()
+            };
+            let check = ios_toolchain_match(&mut runner, &app, Some(compiler));
+            assert_eq!(check.status, Status::Warn, "{check:?}");
+            if extracted {
+                assert!(
+                    check.detail.contains("expo-modules-core (6.3.1)"),
+                    "{check:?}"
+                );
+                assert!(check.detail.contains("is newer than"));
+                assert_eq!(check.fix.as_deref(), Some(crate::ios_toolchain::SOURCE_FIX));
+            } else {
+                assert!(check.detail.contains("compatibility unknown"), "{check:?}");
+            }
+            assert_eq!(runner.remaining(), 0);
+        }
+    }
+
+    fn pods_linkage_fixture(s: &Scratch, precompiled: bool) {
+        s.file(
+            "app/ios/Pods/Local Podspecs/ExpoModulesCore.podspec.json",
+            if precompiled {
+                r#"{"name":"ExpoModulesCore","vendored_frameworks":["ExpoModulesCore.xcframework"]}"#
+            } else {
+                r#"{"name":"ExpoModulesCore","source_files":["ios/**/*.swift"]}"#
+            },
+        );
+        s.file(
+            "app/ios/Pods/Target Support Files/ExpoModulesCore/ExpoModulesCore.debug.xcconfig",
+            if precompiled {
+                "FRAMEWORK_SEARCH_PATHS = XCFrameworkIntermediates/ExpoModulesCore\n"
+            } else {
+                "PODS_TARGET_SRCROOT = ${PODS_ROOT}/../../node_modules/expo-modules-core\n"
+            },
+        );
+    }
+
+    #[test]
+    fn source_request_requires_installed_source_linkage_before_suppressing_core_diagnostics() {
+        for linkage in ["precompiled", "missing", "ambiguous", "source"] {
+            for version in [None, Some("6.3.1"), Some("6.4")] {
+                for matching_jsi in [false, true] {
+                    let s = Scratch::new("installed-pods-compiler");
+                    let app = s.dir("app");
+                    s.file("app/package.json", r#"{"dependencies":{"expo":"56.0.0"}}"#);
+                    if let Some(version) = version {
+                        interface_fixture(&s, "expo-modules-core", version);
+                    }
+                    if linkage != "missing" {
+                        pods_linkage_fixture(&s, linkage == "precompiled");
+                    }
+                    if linkage == "ambiguous" {
+                        s.file("app/ios/Pods/Target Support Files/ExpoModulesCore/ExpoModulesCore.debug.xcconfig", "custom linkage\n");
+                    }
+                    if matching_jsi {
+                        interface_fixture(&s, "expo-modules-jsi", "6.4");
+                    }
+                    let before = s.tree();
+                    let mut runner = MockRunner::new();
+                    runner
+                        .environment
+                        .insert("EXPO_USE_PRECOMPILED_MODULES".into(), "0".into());
+                    if linkage != "source" {
+                        if version.is_some() {
+                            plist_probe(&mut runner);
+                        } else {
+                            runner.expect_run("node -e", CmdOutput::success("null"));
+                        }
+                    }
+                    if matching_jsi {
+                        plist_probe(&mut runner);
+                    } else {
+                        runner.expect_run("node -e", CmdOutput::success("null"));
+                    }
+                    let compiler = crate::ios_toolchain::CompilerIdentity {
+                        swift: crate::ios_toolchain::SwiftVersion::parse("6.4"),
+                        ..Default::default()
+                    };
+                    let check = ios_toolchain_match(&mut runner, &app, Some(compiler));
+                    assert_eq!(
+                        check.status,
+                        if linkage == "source" {
+                            Status::Pass
+                        } else {
+                            Status::Warn
+                        },
+                        "{linkage} {version:?} {matching_jsi}: {check:?}"
+                    );
+                    if linkage == "source" {
+                        assert!(check.detail.contains("source linkage is proven"));
+                        assert!(check.fix.is_none());
+                    } else {
+                        assert!(check.fix.as_ref().unwrap().contains("regenerate pods"));
+                        if version == Some("6.3.1") {
+                            assert!(check.detail.contains("expo-modules-core"));
+                            assert!(check.detail.contains("is newer than"));
+                        }
+                    }
+                    assert_eq!(runner.remaining(), 0);
+                    assert!(runner.calls.iter().all(|spec| matches!(
+                        spec.label.as_str(),
+                        "expo-xcframework-plist" | "expo-module-resolve"
+                    )));
+                    assert_eq!(s.tree(), before);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn source_export_keeps_regeneration_guidance_with_unknown_config() {
+        for (path, contents) in [
+            ("app/app.config.ts", "export default {};\n"),
+            ("app/ios/Podfile", "custom pod installation\n"),
+        ] {
+            for interface in [false, true] {
+                let s = Scratch::new("source-export-unknown-config");
+                let app = s.dir("app");
+                s.file("app/package.json", r#"{"dependencies":{"expo":"56.0.0"}}"#);
+                s.file(path, contents);
+                if interface {
+                    interface_fixture(&s, "expo-modules-core", "6.4");
+                }
+                let before = s.tree();
+                let mut runner = MockRunner::new();
+                runner
+                    .environment
+                    .insert("EXPO_USE_PRECOMPILED_MODULES".into(), "0".into());
+                if interface {
+                    plist_probe(&mut runner);
+                } else {
+                    runner.expect_run("node -e", CmdOutput::success("null"));
+                }
+                runner.expect_run("node -e", CmdOutput::success("null"));
+                let compiler = crate::ios_toolchain::CompilerIdentity {
+                    swift: crate::ios_toolchain::SwiftVersion::parse("6.4"),
+                    ..Default::default()
+                };
+                let check = ios_toolchain_match(&mut runner, &app, Some(compiler));
+                assert_eq!(check.status, Status::Warn, "{path} {interface}: {check:?}");
+                assert!(check.fix.as_ref().unwrap().contains("regenerate pods"));
+                assert_eq!(runner.remaining(), 0);
+                assert!(runner.calls.iter().all(|spec| matches!(
+                    spec.label.as_str(),
+                    "expo-xcframework-plist" | "expo-module-resolve"
+                )));
+                assert_eq!(s.tree(), before);
+            }
+        }
+    }
+
+    #[test]
+    fn source_selection_does_not_suppress_an_independent_jsi_interface_warning() {
+        for source_proven in [false, true] {
+            let s = Scratch::new("jsi-compiler");
+            let app = s.dir("app");
+            s.file("app/package.json", r#"{"dependencies":{"expo":"56.0.0"}}"#);
+            interface_fixture(&s, "expo-modules-jsi", "6.3.1");
+            if source_proven {
+                pods_linkage_fixture(&s, false);
+            }
+            let mut runner = MockRunner::new();
+            if !source_proven {
+                runner.expect_run("node -e", CmdOutput::success("null"));
+            }
+            runner
+                .environment
+                .insert("EXPO_USE_PRECOMPILED_MODULES".into(), "0".into());
+            plist_probe(&mut runner);
+            let compiler = crate::ios_toolchain::CompilerIdentity {
+                swift: crate::ios_toolchain::SwiftVersion::parse("6.4"),
+                ..Default::default()
+            };
+            let check = ios_toolchain_match(&mut runner, &app, Some(compiler));
+            assert_eq!(check.status, Status::Warn);
+            assert!(check.detail.contains("expo-modules-jsi"));
+            let fix = check.fix.unwrap();
+            assert!(fix.contains("DEVELOPER_DIR"));
+            assert!(fix.contains("patch versions"));
+            assert_eq!(fix.contains("regenerate pods"), !source_proven);
+            assert!(!fix.contains("select source-built"));
+        }
+    }
+
+    #[test]
+    fn an_app_without_expo_does_not_get_a_pod_regeneration_warning() {
+        let s = Scratch::new("no-expo-compiler");
+        let app = s.dir("app");
+        s.file(
+            "app/package.json",
+            r#"{"dependencies":{"react-native":"0.84.0"}}"#,
+        );
+        interface_fixture(&s, "expo-modules-core", "6.3.1");
+        let hoisted = s.dir("node_modules").join("expo-modules-core");
+        std::fs::rename(app.join("node_modules/expo-modules-core"), &hoisted).unwrap();
+        let mut runner = MockRunner::new();
+        runner.expect_run(
+            "node -e",
+            CmdOutput::success(&serde_json::to_string(&hoisted).unwrap()),
+        );
+        runner
+            .environment
+            .insert("EXPO_USE_PRECOMPILED_MODULES".into(), "0".into());
+        let compiler = crate::ios_toolchain::CompilerIdentity {
+            swift: crate::ios_toolchain::SwiftVersion::parse("6.4"),
+            ..Default::default()
+        };
+        let before = s.tree();
+        let check = ios_toolchain_match(&mut runner, &app, Some(compiler));
+        assert_eq!(check.status, Status::Skip);
+        assert!(check.fix.is_none());
+        assert!(runner.calls.is_empty());
+        assert_eq!(s.tree(), before);
+    }
+
+    #[test]
+    fn absent_frameworks_skip_after_resolution_and_unsupported_hosts_need_no_commands() {
+        let s = Scratch::new("no-compiler-frameworks");
+        let app = s.dir("app");
+        s.file("app/package.json", r#"{"dependencies":{"expo":"56.0.0"}}"#);
+        let mut runner = MockRunner::new();
+        runner.expect_run("node -e", CmdOutput::success("null"));
+        runner.expect_run("node -e", CmdOutput::success("null"));
+        let compiler = crate::ios_toolchain::CompilerIdentity {
+            swift: crate::ios_toolchain::SwiftVersion::parse("6.4"),
+            ..Default::default()
+        };
+        assert_eq!(
+            ios_toolchain_match(&mut runner, &app, Some(compiler)).status,
+            Status::Skip
+        );
+        assert_eq!(
+            ios_toolchain_match(&mut runner, &app, None).status,
+            Status::Skip
+        );
+        assert_eq!(runner.calls.len(), 2);
+        assert!(runner
+            .calls
+            .iter()
+            .all(|spec| spec.label == "expo-module-resolve"));
     }
 
     #[test]
@@ -2243,6 +2736,12 @@ mod tests {
         let s = Scratch::new("pnpm-fix");
         let mut runner = MockRunner::new();
         runner.expect_run("xcodebuild -version", CmdOutput::success("Xcode 26.0\n"));
+        if cfg!(target_os = "macos") {
+            runner.expect_run(
+                "xcrun swift --version",
+                CmdOutput::success("Apple Swift version 6.4 (swiftlang-test clang-test)\n"),
+            );
+        }
         runner.expect_run("simctl list runtimes --json", CmdOutput::success(RUNTIMES));
         runner.expect_run("node --version", CmdOutput::success("v24.1.0\n"));
         runner.expect_run("pnpm --version", CmdOutput::failed(1, "boom"));
@@ -2341,6 +2840,12 @@ mod tests {
                 runner.environment.insert("QAREN_NODE".into(), env.into());
             }
             runner.expect_run("xcodebuild -version", CmdOutput::success("Xcode 26.0\n"));
+            if cfg!(target_os = "macos") {
+                runner.expect_run(
+                    "xcrun swift --version",
+                    CmdOutput::success("Apple Swift version 6.4 (swiftlang-test clang-test)\n"),
+                );
+            }
             runner.expect_run("simctl list runtimes --json", CmdOutput::success(RUNTIMES));
             if env.is_some() {
                 runner.expect_run("distinct-qaren-node-env-9c1e", CmdOutput::success(version));
@@ -2569,6 +3074,7 @@ mod tests {
         assert_eq!(runner.remaining(), 0);
         assert!(runner.spawned_logs.is_empty());
         assert!(runner.calls.iter().all(|call| call.label == "doctor-host"
+            || call.label == "expo-module-resolve"
             || call.label == "candidate-volume-sample"
             || call.program == "df"
             || call.args.iter().any(|arg| arg == "--version"
@@ -2600,7 +3106,7 @@ mod tests {
                 "pass"
             }
         );
-        assert_eq!(parsed["checks"].as_array().unwrap().len(), 32);
+        assert_eq!(parsed["checks"].as_array().unwrap().len(), 33);
     }
 
     #[test]
@@ -2817,7 +3323,10 @@ mod tests {
         script_toolchain(&mut runner, Some("v24.1.0\n"), RUNTIMES);
         let report = run_doctor(&mut runner, &s, &s.0, None);
         assert_eq!(row(&report, "config").status, Status::Fail);
-        assert_eq!(runner.calls[2].program, "node");
+        assert!(runner
+            .calls
+            .iter()
+            .any(|spec| spec.label == "node-version" && spec.program == "node"));
     }
 
     #[test]
