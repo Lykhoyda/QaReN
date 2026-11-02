@@ -403,6 +403,7 @@ export interface WalkSequence {
   };
   screenshots?: { cause: MediaLatch; line: number; count: number };
   operation?: number;
+  stepBudgets?: Map<number, { startedAt: number; deadline?: number; devErrorDismissals: number }>;
   publicationInterrupted?: boolean;
   momentum?: boolean;
   planPassed?: boolean;
@@ -602,8 +603,7 @@ async function walkBlockScoped(
   };
   // The interruption a step's first decline answered; null once no further recovery is allowed.
   const recovered = new Map<Item, string | null>();
-  // Error-overlay dismissals per step, kept apart from the interruption budget above.
-  const devErrorDismissals = new Map<Item, number>();
+  const stepBudgets = (sequence.stepBudgets ??= new Map());
   const metric = (
     stage: TimingEvent['stage'],
     observation?: Observation,
@@ -2235,7 +2235,8 @@ async function walkBlockScoped(
     until?: number,
   ): Promise<'retry' | WalkOutcome> => {
     let observation = fresh;
-    const previousDismissal = devErrorDismissals.get(item);
+    const budget = stepBudgets.get(operationFor(item.line))!;
+    const previousDismissal = budget.devErrorDismissals;
     let devError: LedgerRow['devError'] =
       fresh.screen.devError && previousDismissal
         ? { variant: fresh.screen.devError.variant, dismissal: previousDismissal }
@@ -2256,13 +2257,13 @@ async function walkBlockScoped(
     });
     if (mutationStarted) return refuse('ACTION_UNCERTAIN');
     while (observation.screen.front === 'dev-redbox') {
-      const dismissal = (devErrorDismissals.get(item) ?? 0) + 1;
+      const dismissal = budget.devErrorDismissals + 1;
       if (dismissal > DEV_ERROR_DISMISSALS) return refuse('REPEATED');
       const overlay = observation.screen.devError;
       const ref = overlay?.dismissRef;
       if (!overlay || !ref) return refuse('NO_SAFE_DISMISS');
       devError = { variant: overlay.variant, dismissal };
-      devErrorDismissals.set(item, dismissal);
+      budget.devErrorDismissals = dismissal;
       recoveries += 1;
       const dispatched = dispatchedOn;
       let acted: ActResult;
@@ -2314,13 +2315,24 @@ async function walkBlockScoped(
     fillHandlerRefused = false;
     enrichment = undefined;
     waitAttempt = 'none';
-    itemStartedAt = deps.now();
-    itemDeadline =
-      item.kind === 'wait'
-        ? itemStartedAt + (item.target.quoted === undefined ? PHRASE_WAIT_BUDGET_MS : WAIT_BUDGET_MS)
-        : item.kind === 'scroll' && item.until
-          ? itemStartedAt + PHRASE_WAIT_BUDGET_MS
-          : undefined;
+    const operationId = operationFor(item.line);
+    let budget = stepBudgets.get(operationId);
+    if (!budget) {
+      const startedAt = deps.now();
+      budget = {
+        startedAt,
+        deadline:
+          item.kind === 'wait'
+            ? startedAt + (item.target.quoted === undefined ? PHRASE_WAIT_BUDGET_MS : WAIT_BUDGET_MS)
+            : item.kind === 'scroll' && item.until
+              ? startedAt + PHRASE_WAIT_BUDGET_MS
+              : undefined,
+        devErrorDismissals: 0,
+      };
+      stepBudgets.set(operationId, budget);
+    }
+    itemStartedAt = budget.startedAt;
+    itemDeadline = budget.deadline;
     let pixelBaselineTaken = false;
     let pixelBaseline:
       | { target: NonNullable<ReturnType<typeof pixelTarget>>; crop: PixelCrop }

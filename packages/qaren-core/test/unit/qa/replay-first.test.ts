@@ -680,7 +680,7 @@ for (const verb of ['Wait for "Ready"', 'Scroll down until "Ready"']) {
 }
 
 for (const drift of [false, true]) {
-  test(`stored-ID wait exhausts its budget before re-walking a ${drift ? 'renamed' : 'missing'} ID`, async () => {
+  test(`stored-ID wait keeps its exhausted budget when re-walking a ${drift ? 'renamed' : 'missing'} ID`, async () => {
     const dir = root();
     try {
       const plan = blocks('### Ready\n1. Wait for "Ready"');
@@ -693,7 +693,7 @@ for (const drift of [false, true]) {
         judge,
       );
       const result = ledger(await runPlan(plan, fake.deps, [], store(dir)));
-      assert.equal(result.verdict, drift ? 'PASS' : 'FAIL');
+      assert.equal(result.verdict, 'FAIL');
       assert.equal(result.path, `replay→walk@${plan[0].items[0].line}`);
       const [retry, completion] = result.steps;
       assert.equal(retry.outcome, 'retry');
@@ -702,16 +702,14 @@ for (const drift of [false, true]) {
         retry.reason,
         'REPLAY_SELECTOR: 0 identities match the stored id "ready-id"; re-walking from this line',
       );
-      assert.equal(completion.outcome, drift ? 'pass' : 'fail');
+      assert.equal(completion.outcome, 'fail');
+      assert.equal(completion.t, WAIT_BUDGET_MS);
       assert.equal(completion.operationId, retry.operationId);
       assert.deepEqual(fake.actions, []);
       assert.equal(judge.calls.length, 0);
-      if (drift) assert.deepEqual(completion.selector, { id: 'new-ready-id' });
-      else {
-        assert.match(completion.reason ?? '', /did not appear within 15s/);
-        assert.deepEqual(result.blocksWritten, []);
-        assert.equal(readFileSync(join(dir, '.qaren/actions/ready.yaml'), 'utf8'), saved);
-      }
+      assert.match(completion.reason ?? '', /TARGET_WAIT_TIMEOUT/);
+      assert.deepEqual(result.blocksWritten, []);
+      assert.equal(readFileSync(join(dir, '.qaren/actions/ready.yaml'), 'utf8'), saved);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1285,3 +1283,55 @@ test('run-wide fixture policy changes re-walk unchanged earlier blocks, includin
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+for (const replayDismissals of [1, 2, 3]) {
+  test(`re-walk retains the ${replayDismissals} dismissals already spent by replay`, async () => {
+    const dir = root();
+    try {
+      const plan = blocks('### Ready\n1. Tap "Ready"');
+      const judge = scriptedJudge(() => assert.fail('literal targets must not ask Jev'));
+      const seed = walker([screen([element('@ready', 'Ready', { testID: 'old-ready' })])], judge);
+      assert.equal(ledger(await runPlan(plan, seed.deps, [], store(dir))).verdict, 'PASS');
+      const fake = walker([], judge);
+      let dismissals = 0;
+      let rewalking = false;
+      fake.deps.captureScreen = async () => {
+        if (rewalking || dismissals < replayDismissals)
+          return {
+            ...screen([element('@dismiss', 'Dismiss')]),
+            front: 'dev-redbox',
+            devError: { variant: 'redbox', dismissRef: '@dismiss' },
+          };
+        return screen([element('@ready', 'Ready', { testID: 'new-ready' })]);
+      };
+      fake.deps.press = async (ref, context) => {
+        context!.authorize();
+        fake.actions.push(`press ${ref}`);
+        assert.equal(ref, '@dismiss', 'no planned action may dispatch behind the overlay');
+        dismissals++;
+        return { ok: true, executed: true };
+      };
+      fake.deps.hideDevMenu = async () => assert.fail('RedBox uses its own Dismiss');
+      const row = fake.deps.row;
+      fake.deps.row = (event) => {
+        row(event);
+        if (event.outcome === 'retry' && event.retryCause !== 'DEV_REDBOX') rewalking = true;
+      };
+      const result = await runPlan(plan, fake.deps, [], store(dir));
+      assert.equal(result.verdict, 'REFUSED');
+      assert.equal(result.code, 'DEV_REDBOX_REPEATED');
+      assert.equal(result.path, `replay→walk@${plan[0].items[0].line}`);
+      assert.equal(dismissals, 3);
+      assert.deepEqual(fake.actions, ['press @dismiss', 'press @dismiss', 'press @dismiss']);
+      assert.deepEqual(
+        result.steps
+          .filter((event) => event.retryCause === 'DEV_REDBOX')
+          .map((event) => event.devError?.dismissal),
+        [1, 2, 3],
+      );
+      assert.equal(new Set(result.steps.map((event) => event.operationId)).size, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
