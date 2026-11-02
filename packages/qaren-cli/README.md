@@ -930,6 +930,28 @@ passing press with its line and reason, and is omitted when empty. The row's
 `unverifiedPress` flag preserves this status even when privacy redacts the
 reason. A later plan check still decides whether the intended screen followed.
 
+A plain `Scroll down` or `Scroll up` is a gesture, not an assertion. It passes
+when a cleanly dispatched scroll changes the app screen. When the first scroll
+leaves the screen unchanged, QaReN scrolls once more under the same operation
+id; if both scrolls dispatched cleanly with complete native app captures
+before and after each attempt and neither changed the screen,
+the step passes with reason `SCROLL_NO_VISIBLE_CHANGE` and the row field
+`scrollDetail: {"status":"no_visible_change","attempts":2}`, and no recovery tap
+runs. An unchanged scroll with incomplete captures or only one attempt
+(including after recovery) still fails without `scrollDetail`.
+A no-op result does not prove the content ended: QaReN has no end-of-list detector.
+The receipt's `ledger.no_visible_change_scrolls` lists those lines and is
+omitted when empty. A runner's own success proof never stands in for a
+changed or still capture. A scroll that errored or did not execute never passes
+on a changed capture; one whose effect is uncertain fails at once, and one
+that brings another front, such as a system dialog, fails without a retry.
+These failures carry `failure.cause` `scroll_dispatch_failed` or
+`scroll_context_changed`. A refused scroll that changed nothing keeps the
+ordinary recovery, such as hiding a dev menu, before that failure. To require
+content, write `Scroll down until "<text>"`: it still fails when the target
+never appears, with cause `scroll_target_absent`. These causes are diagnostic
+metadata and preserve existing guidance and repeat behavior.
+
 While it serves commands, the iOS runner contains XCTest UI automation issues,
 such as a read of an element that vanished, instead of letting XCTest end its
 test, and logs only the issue type. A tap, press, drag, swipe or typing gesture

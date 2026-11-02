@@ -3452,6 +3452,27 @@ mod last_screen_tests {
     }
 
     #[test]
+    fn scroll_causes_round_trip_and_unknown_causes_are_dropped() {
+        for cause in [
+            "scroll_dispatch_failed",
+            "scroll_context_changed",
+            "scroll_target_absent",
+        ] {
+            let wire = json!({ "step": 3, "seen": "scroll failed", "cause": cause });
+            let failure: core::LedgerFailure = serde_json::from_value(wire.clone()).unwrap();
+            assert!(failure.cause.is_some(), "{cause}");
+            assert_eq!(serde_json::to_value(&failure).unwrap(), wire);
+        }
+        let unknown: core::LedgerFailure =
+            serde_json::from_value(json!({ "step": 3, "seen": "x", "cause": "gremlins" })).unwrap();
+        assert!(unknown.cause.is_none());
+        assert_eq!(
+            serde_json::to_value(&unknown).unwrap(),
+            json!({ "step": 3, "seen": "x" })
+        );
+    }
+
+    #[test]
     fn a_render_error_does_not_repeat_an_unchanged_tap_failure() {
         let root = runs_root("repeat-non-target");
         let unchanged: core::LedgerFailure = serde_json::from_value(json!({

@@ -351,6 +351,8 @@ const TARGET_CODES: ReadonlySet<string> = new Set([
 export const WAIT_BUDGET_MS = 15_000;
 export const WAIT_POLL_MS = 500;
 export const SCROLL_ATTEMPTS = 6;
+export const SCROLL_NO_VISIBLE_CHANGE =
+  'SCROLL_NO_VISIBLE_CHANGE: two scrolls were dispatched and the screen did not change; this is not proof that the end of the content was reached';
 export const KEYBOARD_READY_MS = 1_500;
 export const KEYBOARD_READY_CAPTURES = 3;
 export const SCROLL_SETTLE_READBACKS = 3;
@@ -1340,6 +1342,11 @@ async function walkBlockScoped(
       },
     };
   };
+  const withCause = (
+    outcome: WalkOutcome,
+    cause: NonNullable<LedgerFailure['cause']>,
+  ): WalkOutcome =>
+    outcome.failure ? { ...outcome, failure: { ...outcome.failure, cause } } : outcome;
   // The judged screen and any post-recovery capture must both show the app.
   const judged = (outcome: WalkOutcome, screen: Screen): WalkOutcome =>
     outcome.failure && screen.front === 'app' && latest.front === 'app'
@@ -2687,18 +2694,21 @@ async function walkBlockScoped(
             continue items;
           }
           const reason = `"${item.until.phrase}" did not come into view after ${SCROLL_ATTEMPTS} scrolls`;
-          return judged(
-            failed(
-              item,
-              Math.max(attempts, 1),
-              reason,
+          return withCause(
+            judged(
+              failed(
+                item,
+                Math.max(attempts, 1),
+                reason,
+                observation.screen,
+                shot,
+                undefined,
+                false,
+                'TARGET_NOT_FOUND',
+              ),
               observation.screen,
-              shot,
-              undefined,
-              false,
-              'TARGET_NOT_FOUND',
             ),
-            observation.screen,
+            'scroll_target_absent',
           );
         }
 
@@ -2715,6 +2725,9 @@ async function walkBlockScoped(
         let scrollDirection: 'up' | 'down' | null = null;
         let refusedIdentity: Element | undefined;
         let moved: { target: Element; error: string } | undefined;
+        // Plain-scroll attempts that dispatched cleanly onto complete, unchanged app captures.
+        let stillScrolls = 0;
+        let scrollRefused = false;
         let settledFrame: string | undefined;
         let keyboardAttempted = false;
         const captureBeforeDispatch = (): Promise<Observation> =>
@@ -3487,12 +3500,51 @@ async function walkBlockScoped(
               : undefined;
           const alertOnly = alertEffect !== undefined && alertEffect !== 'changed';
           const fillReason = item.kind === 'fill' ? handlerReason(item, act!) : undefined;
+          // A changed capture proves a plain scroll only when it dispatched cleanly; proven alone never does.
+          const scrollDispatched = act!.ok && !act!.error && act!.executed !== false;
+          if (item.kind === 'scroll') {
+            const error = act!.error ? `${act!.error}; ` : '';
+            if (after.screen.front !== before.screen.front) {
+              outcome = withCause(
+                failed(
+                  item,
+                  attempt,
+                  `${error}the front changed from ${before.screen.front} to ${after.screen.front} during the scroll; not retrying`,
+                  after.screen,
+                  shot,
+                ),
+                'scroll_context_changed',
+              );
+              break;
+            }
+            if (!scrollDispatched && act!.mutation !== 'none') {
+              outcome = withCause(
+                failed(
+                  item,
+                  attempt,
+                  `${act!.error ?? 'the scroll was not proven dispatched'}; the scroll may have moved the screen; not retrying`,
+                  after.screen,
+                  shot,
+                ),
+                'scroll_dispatch_failed',
+              );
+              break;
+            }
+            const complete = (screen: Screen) =>
+              screen.front === 'app' &&
+              (screen.captureCoverage?.native ?? screen.coverage?.native) === 'complete';
+            if (!scrollDispatched) scrollRefused = true;
+            else if (!changed && complete(before.screen) && complete(after.screen))
+              stillScrolls += 1;
+          }
           if (
             !noMutationRefusal &&
             !dialogRefused &&
             (item.kind === 'fill'
               ? (act!.ok && act!.proven) || unverified
-              : act!.proven || changed || alreadySelected)
+              : item.kind === 'scroll'
+                ? scrollDispatched && changed
+                : act!.proven || changed || alreadySelected)
           ) {
             const target = stepTarget(item);
             if (act!.dialog)
@@ -3580,10 +3632,21 @@ async function walkBlockScoped(
               ...(shot ? { screenshot: shot } : {}),
               outcome: 'retry',
               reason: redact(
-                `${act!.error ? `${act!.error}; ` : ''}${noKeyboard}the screen did not change; retrying once`,
+                `${act!.error ? `${act!.error}; ` : ''}${noKeyboard}${item.kind === 'scroll' && changed ? 'the scroll was not dispatched' : 'the screen did not change'}; retrying once`,
               ),
             });
             continue;
+          }
+          if (item.kind === 'scroll' && stillScrolls === 2) {
+            // No end-of-content detector exists, so this records stillness, never a list boundary.
+            emit({
+              ...base(item, attempt),
+              ...(shot ? { screenshot: shot } : {}),
+              outcome: 'pass',
+              reason: redact(SCROLL_NO_VISIBLE_CHANGE),
+              scrollDetail: { status: 'no_visible_change', attempts: 2 },
+            });
+            break;
           }
           const unchangedScreen =
             maxAttempts === 1
@@ -3617,6 +3680,8 @@ async function walkBlockScoped(
             (act!.ok && !act!.error
               ? judged(failed(item, attempt, unchanged, after.screen, shot, ref), after.screen)
               : failed(item, attempt, unchanged, after.screen, shot, ref));
+          if (item.kind === 'scroll' && scrollRefused && !recovering)
+            outcome = withCause(outcome, 'scroll_dispatch_failed');
         }
         if (again) continue attempts;
         if (outcome) return outcome;
@@ -3781,6 +3846,7 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     ...(row.method ? { method: row.method } : {}),
     ...(row.keyboardCleared ? { keyboardCleared: row.keyboardCleared } : {}),
     ...(row.retryCause ? { retryCause: row.retryCause } : {}),
+    ...(row.scrollDetail ? { scrollDetail: row.scrollDetail } : {}),
     ...(row.entryMismatch ? { entryMismatch: row.entryMismatch } : {}),
     ...(row.screenshotWithheld ? { screenshotWithheld: row.screenshotWithheld } : {}),
     ...(screenshot ? { screenshot } : {}),

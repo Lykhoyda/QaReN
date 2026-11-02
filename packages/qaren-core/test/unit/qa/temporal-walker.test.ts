@@ -654,7 +654,7 @@ test('all target-free mutations carry the preceding observation deadline', async
       return result;
     };
     const act = async (context: Parameters<typeof f.deps.back>[0]) => {
-      assert.equal(context.deadline, 30_000);
+      assert.equal(context.deadline, now + 10_000);
       context.authorize();
       sends++;
       return { ok: true, proven: true };
@@ -666,7 +666,8 @@ test('all target-free mutations carry the preceding observation deadline', async
     assert.ok(plan.blocks, line);
     const result = await runPlan(plan.blocks, f.deps);
     assert.equal(result.verdict, 'PASS', line);
-    assert.equal(sends, 1);
+    // A still plain scroll passes as a typed no-op only after a second clean scroll.
+    assert.equal(sends, line === 'Scroll down' ? 2 : 1);
   }
 });
 

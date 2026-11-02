@@ -57,6 +57,8 @@ export interface LedgerRow {
   keyboardCleared?: 'native-control' | 'js';
   // Why this press was sent a second time.
   retryCause?: 'KEYBOARD_SWALLOWED_TAP';
+  // A plain scroll that passed although two dispatched attempts left the screen unchanged.
+  scrollDetail?: { status: 'no_visible_change'; attempts: 2 };
 }
 
 // The value-free announcement that a plan line begins; its row later carries the same operationId.
@@ -77,6 +79,8 @@ export interface LedgerFailure {
   screen?: ScreenNow;
   suggestion?: string;
   subreason?: TargetMissDiagnostic['reason'] | 'ambiguous';
+  // Why a scroll step failed; set only by the walker, never read from reason prose.
+  cause?: 'scroll_dispatch_failed' | 'scroll_context_changed' | 'scroll_target_absent';
 }
 
 export interface BlockResult {
