@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import type { Screen } from '../../../dist/qa/screen.js';
-import type { WalkerDeps } from '../../../dist/qa/walker.js';
+import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
 import { element, screen } from './judgment-fixtures.ts';
 
 const opener = () => screen([element('@open', 'Open')]);
@@ -83,6 +83,64 @@ test('a missing wait after a passed planned press leaves the opened screen and f
     );
     assert.ok(f.vetoes.includes('previous-plan-press'), name);
   }
+});
+
+test('ANT-848: a planned press accepted despite a handler error protects its consent screen', async () => {
+  const acceptedErrors: ActResult[] = [
+    {
+      ok: false,
+      proven: false,
+      mutation: 'possible',
+      error:
+        'INTERACTION_EFFECT_UNVERIFIED: The tap was dispatched but produced no observable UI change.',
+    },
+    { ok: false, proven: false, error: 'press timed out' },
+    { ok: true, proven: false, executed: true, error: 'effect verification timed out' },
+  ];
+  for (const decline of ['Close', 'Skip']) {
+    for (const accepted of acceptedErrors) {
+      const f = app(screen([element('@open', 'Open consent')]), {
+        '@open': () => screen([element('@heading', 'Consent', { kind: 'text' }), close(decline)]),
+        '@close': () => screen([element('@continue', 'Continue')]),
+      });
+      f.deps.platform = 'android';
+      const press = f.deps.press;
+      f.deps.press = async (ref, context) => {
+        const result = await press(ref, context);
+        return ref === '@open' ? accepted : result;
+      };
+      const result = await run('1. Tap "Open consent"\n2. Wait for "Continue" to appear', f);
+      assert.ok(result.steps.some((row) => row.line === 1 && row.outcome === 'pass'));
+      assert.equal(result.verdict, 'FAIL', `${decline}: ${accepted.error}`);
+      assert.equal(result.failure?.step, 2);
+      assert.equal(result.failure?.subreason, 'previous-plan-press');
+      assert.equal(result.recoveries, 0);
+      assert.deepEqual(f.actions, ['press @open']);
+    }
+  }
+});
+
+test('a planned press accepted through a delayed system dialog protects its destination', async () => {
+  const f = app(opener(), { '@close': ready });
+  f.deps.row = (row) => {
+    if (row.line === 1 && row.outcome === 'retry')
+      f.show({ ...screen([element('@allow', 'Allow')]), front: 'dialog' });
+  };
+  f.deps.dialog = async (action) => {
+    f.actions.push(`dialog ${action}`);
+    f.show(destination());
+    return { ok: true, proven: true, executed: true };
+  };
+  const result = await run(
+    '1. Tap "Open"\n2. Dismiss the permission dialog\n3. Wait for "Ready" to appear',
+    f,
+  );
+  assert.ok(result.steps.some((row) => row.line === 1 && row.outcome === 'pass'));
+  assert.equal(result.verdict, 'FAIL');
+  assert.equal(result.failure?.step, 3);
+  assert.equal(result.failure?.subreason, 'previous-plan-press');
+  assert.equal(result.recoveries, 0);
+  assert.deepEqual(f.actions, ['press @open', 'dialog dismiss']);
 });
 
 test('a churning destination is still protected', async () => {

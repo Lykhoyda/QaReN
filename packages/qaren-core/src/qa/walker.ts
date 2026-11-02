@@ -1211,7 +1211,14 @@ async function walkBlockScoped(
       // Row timing is passive; the row is recorded without it.
     }
     const timed = timing ? { ...row, timing } : row;
-    if (row.outcome === 'pass' && !opts.login) sequence.planPassed = true;
+    if (row.outcome === 'pass' && !opts.login) {
+      sequence.planPassed = true;
+      if (
+        opts.recover !== false &&
+        block.items.some((item) => item.line === row.line && item.kind === 'press')
+      )
+        sequence.plannedPress = true;
+    }
     rows.push(timed);
     deps.row(valueFree(timed));
   };
@@ -3568,15 +3575,6 @@ async function walkBlockScoped(
                 : act!.proven || changed || alreadySelected)
           ) {
             const target = stepTarget(item);
-            if (
-              item.kind === 'press' &&
-              opts.recover !== false &&
-              !opts.login &&
-              act!.ok &&
-              act!.error === undefined &&
-              act!.executed !== false
-            )
-              sequence.plannedPress = true;
             if (act!.dialog)
               deps.note?.(
                 `dialog-tap ${JSON.stringify({ v: 1, line: item.line, label: act!.dialog.label, rect: act!.dialog.rect })}`,

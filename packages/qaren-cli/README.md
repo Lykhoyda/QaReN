@@ -3168,10 +3168,11 @@ Planned-container protection follows native ancestry and proven React host
 ancestry. The React ancestry guard stops at a modal host, so the presenting
 screen does not protect the modal's controls.
 
-A screen the plan's own press opened is never dismissed. After a planned press
-passes with a dispatched, error-free action, the next executable item is
-protected, whether or not the pressed control disappeared, across block and
-replay boundaries and through retries. Waits, checks, fills, and scrolls retain
+A screen the plan's own press opened is never dismissed. Every planned press
+accepted as passed protects the next executable item, including when readback
+establishes success despite a handler error or a delayed system dialog proves
+the press took effect. Protection holds whether or not the pressed control
+disappeared, across block and replay boundaries and through retries. Waits, checks, fills, and scrolls retain
 the protection, so interacting with a planned modal or consent screen never
 enables automatic dismissal. Back also retains protection: a changed capture
 can reflect a hidden keyboard rather than departure from the protected screen.
