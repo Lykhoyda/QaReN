@@ -169,3 +169,80 @@ test('QA intent survives soft reconnect, ordinary reconnect and replacement unti
   await replacement.autoConnect(h.port, {});
   assert.equal(setups, 1);
 });
+
+test('a true probe before stalled setup invalidates an earlier complete false scan', async (t) => {
+  const { admit } = await import('../../../dist/qa/admission.js');
+  const { createStop } = await import('../../../dist/qa/stop.js');
+  const modes = [false];
+  const h = await targets(t, modes);
+  const client = new CDPClient(h.port);
+  t.after(() => client.disconnect());
+  t.mock.method(globalThis, 'fetch', async () => ({ json: async () => h.list }));
+  let attempts = 0;
+  let setupStarted = false;
+  t.mock.method(client as any, 'setup', async () => {
+    setupStarted = true;
+    await new Promise(() => {});
+  });
+  const stop = createStop();
+  await assert.rejects(admit({
+    metroPort: h.port,
+    readinessMs: 30000,
+    attachBudgetMs: 1500,
+    remainingMs: () => 20000,
+    attach: async () => {
+      modes[0] = ++attempts > 1;
+      await client.connectExact(h.port, {}, 'qa', 1);
+    },
+    observeDevelopmentTargets: (observe) => client.observeDevelopmentTargets(observe),
+    open: async () => assert.fail('stalled setup cannot open a session'),
+    prove: async () => assert.fail('stalled setup cannot prove a session'),
+    close: async () => {},
+    load: () => 1,
+  }, stop), (error: any) => {
+    assert.equal(error.code, 'CDP_NOT_CONNECTED');
+    assert.equal(error.meta?.inner, 'no_dev_target_unknown');
+    return true;
+  });
+  assert.equal(setupStarted, true);
+  assert.equal(attempts, 2);
+});
+
+test('unfinished scans retain same-candidate evidence and invalidate replaced candidates', async (t) => {
+  const h = await targets(t, [false, false]);
+  const client = new CDPClient(h.port);
+  t.after(() => client.disconnect());
+  t.mock.method(globalThis, 'fetch', async () => ({ json: async () => h.list }));
+  let observation: { devFalse: number } | undefined;
+  const unsubscribe = client.observeDevelopmentTargets((counts) => {
+    observation = counts;
+  });
+  t.after(unsubscribe);
+  const unavailable = (error: Error) => error.constructor.name === 'DevTargetUnavailableError';
+  await assert.rejects(client.connectExact(h.port, {}, 'qa', 1), unavailable);
+  assert.equal(observation?.devFalse, 2);
+  for (const replaced of [false, true]) {
+    if (replaced) h.list[0].id = 'replacement';
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    let probes = 0;
+    t.mock.method(client as any, 'evaluateWithinAttach', async () => {
+      if (++probes === 1) {
+        entered.resolve();
+        await resume.promise;
+      }
+      return { value: 'false' };
+    });
+    const retry = assert.rejects(client.connectExact(h.port, {}, 'qa', 1), unavailable);
+    await entered.promise;
+    try {
+      assert.equal(observation?.devFalse, replaced ? undefined : 2);
+    } finally {
+      resume.resolve();
+      await retry;
+    }
+  }
+  h.list.splice(0);
+  await assert.rejects(client.connectExact(h.port, {}, 'qa', 1));
+  assert.equal(observation?.devFalse, 0, 'a completed empty scan replaces the false scan');
+});

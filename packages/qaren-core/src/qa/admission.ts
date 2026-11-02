@@ -54,6 +54,9 @@ export interface AdmissionSteps {
   // Inside the attach deadline: the attached client must have run its bundle before anything reads it.
   bundleReady?(deadline: number): Promise<void>;
   developmentTargets?(): DevelopmentTargetCounts | undefined;
+  observeDevelopmentTargets?(
+    observe: (counts: DevelopmentTargetCounts | undefined) => void,
+  ): () => void;
   manifest?(deadline: number, retry: ManifestRetry): Promise<ManifestWarm>;
   // Only a proven slow manifest probe permits additional relaunches.
   relaunch?(deadline: number): Promise<ManifestWarm | void>;
@@ -595,6 +598,9 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
   let lastCompleted: AdmissionBoundary | 'none' = 'none';
   let retried: unknown;
   let devObservation: DevelopmentTargetCounts | undefined;
+  const stopObservingTargets = steps.observeDevelopmentTargets?.((counts) => {
+    devObservation = counts;
+  });
   let devTargetSeen = false;
   let registeredTargetSeen = false;
   let waitingForTargets = false;
@@ -705,7 +711,15 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
         } catch (error) {
           if (isAbort(error)) throw error;
           if (error === registeredTimeout) throw error;
-          if (!(error instanceof TargetListAttemptTimeoutError)) devObservation = undefined;
+          if (
+            error instanceof CDPTargetClosedError ||
+            error instanceof ConnectionSetupSupersededError ||
+            (error instanceof TargetReadinessTimeoutError &&
+              (error.state === 'empty' ||
+                error.state === 'other_device' ||
+                error.state === 'other_bundle'))
+          )
+            devObservation = undefined;
           if (error instanceof DevTargetUnavailableError) {
             devTargetSeen = true;
             devObservation = error.counts;
@@ -1012,6 +1026,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
       refusal,
     );
   } finally {
+    stopObservingTargets?.();
     signal.removeEventListener('abort', observeCancellation);
   }
 }

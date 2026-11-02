@@ -2446,7 +2446,7 @@ for (const mode of [
       assert.equal(calls.filter((call) => call === 'open').length, 1);
     } else {
       assert.ok(result instanceof HandlerError);
-      const nonDev = mode === 'false' || mode === 'pending_scan';
+      const nonDev = mode === 'false' || mode === 'pending_scan' || mode === 'failed_scan';
       assert.equal(result.code, nonDev ? 'DEV_TARGET_MISSING' : 'CDP_NOT_CONNECTED');
       assert.equal(result.meta?.inner, nonDev ? 'non_dev_bundle' : 'no_dev_target_unknown');
       assert.ok(!calls.includes('open'));
@@ -2482,7 +2482,7 @@ for (const remaining of [750, 20000]) {
   });
 }
 
-for (const listState of ['pending', 'timed_out', 'empty'] as const) {
+for (const listState of ['pending', 'timed_out', 'ready_at_deadline', 'empty'] as const) {
   test(`a ${listState} rediscovery after false stays inside the registered attach budget`, async (t) => {
     const { DevTargetUnavailableError } = await import('../../../dist/cdp/connect.js');
     const clock = mockClock(t);
@@ -2497,6 +2497,8 @@ for (const listState of ['pending', 'timed_out', 'empty'] as const) {
         if (++scans === 1) return;
         if (listState === 'pending') await new Promise(() => {});
         if (listState === 'timed_out') throw new TargetListAttemptTimeoutError('list timed out');
+        if (listState === 'ready_at_deadline')
+          throw new TargetReadinessTimeoutError('readiness deadline', 'ready');
         throw new TargetReadinessTimeoutError('no target', 'empty');
       },
       attach: async () => {

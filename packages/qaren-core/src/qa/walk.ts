@@ -557,6 +557,7 @@ async function openSession(
           );
         },
         developmentTargets: () => cdp.developmentTargets,
+        observeDevelopmentTargets: (observe) => cdp.observeDevelopmentTargets(observe),
         bundleReady: (deadline) => awaitBundleReady((expr) => cdp.evaluate(expr), deadline),
         // Same launch the CLI made: once Metro answers the manifest in time, terminate and open the dev client on its Metro.
         ...(platform === 'ios'
