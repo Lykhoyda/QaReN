@@ -60,6 +60,12 @@ copy; see the [saved-block contract](https://github.com/Lykhoyda/QaReN/blob/deve
 | Dialog   | accept, allow, dismiss, deny, decline, cancel with dialog, prompt, alert or permission | `Accept the permission dialog` |
 | Echo     | expect input NAME on screen, expect input NAME on this screen          | `Expect input USERNAME on screen`   |
 
+A plain `Scroll down` or `Scroll up` is a gesture, not an assertion: when two clean scrolls leave the
+screen unchanged, the step passes with the reason `SCROLL_NO_VISIBLE_CHANGE`, which does not prove the
+list ended. So a plan with an extra scroll still passes for an account with a shorter list. To require
+content, write `Scroll down until "Settings"`, which fails when the target never appears. See the
+[plain scroll contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#occluded-taps-and-focus).
+
 A fill needs its text in quotes, or a [runtime input](#runtime-inputs). For iOS entry methods, handler recovery,
 verification and the `(any method)` label, see the authoritative
 [Fill ladder contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#fill-ladder).

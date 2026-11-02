@@ -246,6 +246,9 @@ pub enum RecoveryReason {
     HostCleanupFailed,
     DriverExited,
     StorageFailed,
+    ScrollDispatchFailed,
+    ScrollContextChanged,
+    ScrollTargetAbsent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,6 +268,9 @@ pub enum RecoveryAction {
     CleanupThenFreshPrepare,
     RetainAndReport,
     RepairRecordStorage,
+    InspectLastObservedScreen,
+    InspectScrollDispatch,
+    InspectScrollTarget,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -330,6 +336,9 @@ impl From<RecoveryReason> for Recovery {
             ),
             RunCancelled => ("re-run when ready; nothing resumes automatically", None, cleanup),
             ForeignAdmissionUnresolved => return Self::foreign_admission(),
+            ScrollDispatchFailed | ScrollContextChanged | ScrollTargetAbsent => {
+                return Self::inspection(reason)
+            }
             _ => return Self::ios_runner(reason, "<run-id>", false, false, false),
         };
         let first_applicable = matches!(reason, BudgetExhausted | IdentityUnavailable);
@@ -441,6 +450,33 @@ impl Recovery {
             RecoveryAction::RetainAndReport => "Leave the process, device and lease untouched; report the missing ownership proof and request the owning run or device owner to resolve it.".into(),
             _ => self.next_rung.and_then(|rung| self.ladder.iter().find(|step| step.rung == rung))
                 .map(|step| step.instruction.clone()).unwrap_or_default(),
+        }
+    }
+
+    // A plan step that failed on its own terms: every reset rung is inapplicable and nothing authorizes a rerun.
+    fn inspection(reason: RecoveryReason) -> Self {
+        let action = match reason {
+            RecoveryReason::ScrollDispatchFailed => RecoveryAction::InspectScrollDispatch,
+            RecoveryReason::ScrollTargetAbsent => RecoveryAction::InspectScrollTarget,
+            _ => RecoveryAction::InspectLastObservedScreen,
+        };
+        Self {
+            key: None,
+            reason,
+            next_rung: None,
+            action,
+            automatic: false,
+            destroys_state: false,
+            requires_user_ok: false,
+            own_cleanup_required: false,
+            own_run_id: None,
+            ladder: vec![
+                RecoveryRung::step(1, false, false, "retrying cannot help: the retry budget is spent or the scroll's effect is uncertain"),
+                RecoveryRung::step(2, false, false, "restarting the app, Metro or the runner cannot repair an unproven cause or a target mismatch"),
+                RecoveryRung::step(3, false, false, "restarting the device cannot repair an unproven cause or a target mismatch"),
+                RecoveryRung::step(4, false, false, "rebuilding native code cannot repair an unproven cause or a target mismatch"),
+                RecoveryRung::step(5, false, false, "cleanup and a fresh prepare cannot repair a plan mismatch"),
+            ],
         }
     }
 

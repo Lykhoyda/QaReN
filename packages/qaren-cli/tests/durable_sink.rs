@@ -392,6 +392,7 @@ fn evidence_documents_and_reports_still_withhold_opaque_output() {
             screen: None,
             suggestion: None,
             subreason: None,
+            cause: None,
         }),
     };
     let path = dir.join("ledger.json");
