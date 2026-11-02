@@ -228,9 +228,17 @@ function modalContainers(screen: Screen): Array<string | undefined> | undefined 
 }
 
 export function plannedSurface(after: Screen, before?: Screen): PlannedSurface {
-  const containers = after.front === 'app' ? modalContainers(after) : undefined;
-  const previous = before ? modalContainers(before) : undefined;
-  if (containers?.length === 1 && containers[0] && !previous?.includes(containers[0]))
+  if (
+    !before ||
+    before.front !== 'app' ||
+    after.front !== 'app' ||
+    !completeCapture(before) ||
+    !completeCapture(after)
+  )
+    return {};
+  const containers = modalContainers(after);
+  const previous = modalContainers(before);
+  if (previous && containers?.length === 1 && containers[0] && !previous.includes(containers[0]))
     return { container: containers[0] };
   return {};
 }

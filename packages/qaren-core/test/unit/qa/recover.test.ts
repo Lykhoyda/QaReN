@@ -246,6 +246,16 @@ test('only complete container absence expires an identified planned surface', ()
       },
     });
   const surface = plannedSurface(at('consent'), at())!;
+  for (const before of [
+    undefined,
+    screen('app'),
+    { ...at(), coverage: { native: 'incomplete', react: 'complete' } } as Screen,
+    { ...at(), reactHostEvidence: undefined },
+  ]) {
+    assert.equal(surfaceGone(at(), plannedSurface(at('consent'), before)), false);
+  }
+  assert.equal(surfaceGone(at(), plannedSurface(at('consent'), at('consent'))), false);
+
   assert.equal(surfaceGone(at('consent'), surface), false);
   assert.equal(surfaceGone(at('offer'), surface), true);
   assert.equal(surfaceGone(at(), surface), true);

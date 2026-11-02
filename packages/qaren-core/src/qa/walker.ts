@@ -555,8 +555,7 @@ async function walkBlockScoped(
   let resolvedBy: LedgerRow['resolvedBy'] = 'exact';
   let cached: { item: Item; observation: Observation; decision: ScreenDecision } | undefined;
   let latest: Screen = { elements: [], visibleText: [], front: 'app' };
-  // The screen before the current item ran, so a planned press's surface is what it added.
-  let itemBase: Screen | undefined;
+  let pressBase: Screen | undefined;
   let line = 0;
   let mutationStarted = false;
   // The Fill ladder rung of the current item's last fill dispatch, and when the item began.
@@ -1222,7 +1221,7 @@ async function walkBlockScoped(
         opts.recover !== false &&
         block.items.some((item) => item.line === row.line && item.kind === 'press')
       )
-        sequence.plannedPress = plannedSurface(latest, itemBase);
+        sequence.plannedPress = plannedSurface(latest, pressBase);
     }
     rows.push(timed);
     deps.row(valueFree(timed));
@@ -2220,7 +2219,7 @@ async function walkBlockScoped(
       continue;
     }
     pressVetoed = undefined;
-    itemBase = latest;
+    pressBase = undefined;
     mutationStarted = false;
     fillMethod = undefined;
     fillMismatch = undefined;
@@ -3229,17 +3228,19 @@ async function walkBlockScoped(
                 selectionStartedAt = deps.now();
               }
               act = await mutate(item, before, async (context) => {
-                return item.kind === 'press'
-                  ? deps.press(ref!, context)
-                  : item.kind === 'fill'
-                    ? deps.fill(ref!, fillText(item), context, secretFill(item), () =>
-                        promoteFill(item, element?.testID),
-                      )
-                    : item.kind === 'scroll'
-                      ? deps.scroll(item.direction, context)
-                      : item.kind === 'back'
-                        ? deps.back(context)
-                        : deps.dialog(item.action, context);
+                if (item.kind === 'press') {
+                  pressBase = before.screen;
+                  return deps.press(ref!, context);
+                }
+                return item.kind === 'fill'
+                  ? deps.fill(ref!, fillText(item), context, secretFill(item), () =>
+                      promoteFill(item, element?.testID),
+                    )
+                  : item.kind === 'scroll'
+                    ? deps.scroll(item.direction, context)
+                    : item.kind === 'back'
+                      ? deps.back(context)
+                      : deps.dialog(item.action, context);
               });
               if (item.kind === 'fill') fillMethod = act.method ?? 'keyboard';
               if (!act.ok && act.ambiguous) {

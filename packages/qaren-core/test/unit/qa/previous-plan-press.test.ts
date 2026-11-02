@@ -363,6 +363,35 @@ test('Accept re-arms protection for an unidentified onboarding destination and l
   }
 });
 
+test('cross-block Accept submitting in existing consent keeps its asynchronous destination protected', async () => {
+  const consent = (submitting = false) =>
+    withModal(
+      screen([element('@accept', submitting ? 'Submitting' : 'Accept'), close()]),
+      'consent',
+    );
+  const f = app(withModal(opener()), {
+    '@open': () => consent(),
+    '@accept': () => consent(true),
+    '@close': ready,
+  });
+  f.deps.row = (row) => {
+    if (row.line === 4 && row.outcome === 'pass')
+      f.show(
+        withModal(screen([element('@heading', 'Onboarding', { kind: 'text' }), close('Skip')])),
+      );
+  };
+  const result = await run(
+    '### Consent\n1. Tap "Open"\n### Accept\n2. Tap "Accept"\n3. Wait for "Ready" to appear',
+    f,
+  );
+  assert.ok(result.steps.some((row) => row.line === 4 && row.outcome === 'pass'));
+  assert.equal(result.verdict, 'FAIL');
+  assert.equal(result.failure?.step, 5);
+  assert.equal(result.failure?.subreason, 'previous-plan-press');
+  assert.deepEqual(f.actions, ['press @open', 'press @accept']);
+  assert.equal(result.recoveries, 0);
+});
+
 test('scrolling every original consent element offscreen never permits dismissal', async () => {
   for (const identified of [true, false]) {
     for (const direction of ['up', 'down']) {

@@ -3173,7 +3173,8 @@ accepted as passed, including when readback establishes success despite a handle
 error or a delayed system dialog proves the press took effect, records the surface
 it opened. When complete React host evidence identifies a newly opened modal
 container by its modal type and test ID or native ID, protection tracks that
-container. Otherwise its identity is unknown and protection stays on until a later
+container. Novelty requires complete captures immediately before dispatch and
+after the press; a missing or incomplete baseline keeps protection unknown. Otherwise its identity is unknown and protection stays on until a later
 accepted planned press replaces it or login replay clears it. A press accepted
 behind a system dialog also keeps this conservative protection. These identities
 stay in memory and are never written to the ledger or logs.
