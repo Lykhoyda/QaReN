@@ -1,6 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dismissCandidate, recover } from '../../../dist/qa/recover.js';
+import {
+  dismissCandidate,
+  plannedSurface,
+  recover,
+  surfaceGone,
+} from '../../../dist/qa/recover.js';
 import type { RecoverDeps } from '../../../dist/qa/recover.js';
 import {
   ancestorsOf,
@@ -198,6 +203,85 @@ test('a centre-covered id target allows the sheet decline', () => {
   assert.equal(centreCovered(snapshot.elements[3], snapshot), true);
   assert.equal(targetEvidence(homeTarget, snapshot), 'fail');
   assert.deepEqual(dismissCandidate(snapshot, [homeTarget]), { label: 'Close' });
+});
+
+test('a target after a planned press withholds the decline, including ambiguous ones', () => {
+  const after = { ...homeTarget, afterPlannedPress: true };
+  const vetoes: string[] = [];
+  const record = (entry: { veto: string }) => vetoes.push(entry.veto);
+  assert.equal(dismissCandidate(sheetScreen(), [after], record), undefined);
+  assert.equal(dismissCandidate(sheetScreen(true, ['Close', 'Skip']), [after], record), undefined);
+  assert.deepEqual(vetoes, ['previous-plan-press', 'previous-plan-press']);
+  vetoes.length = 0;
+  // With nothing to dismiss, the screen's own veto stands instead.
+  assert.equal(dismissCandidate(sheetScreen(true, []), [after], record), undefined);
+  assert.equal(vetoes.length, 1);
+  assert.notEqual(vetoes[0], 'previous-plan-press');
+});
+
+test('only complete container absence expires an identified planned surface', () => {
+  const at = (id?: string): Screen =>
+    screen('app', {
+      coverage: { native: 'complete', react: 'complete' },
+      reactHostEvidence: {
+        complete: true,
+        hosts: id ? [{ testID: id, role: null, roleSource: 'none', capabilities: {} }] : [],
+        typography: {
+          version: 1,
+          complete: true,
+          durationMs: 0,
+          coordinateSpace: 'window-points',
+          nodes: id
+            ? [
+                {
+                  hostIndex: 0,
+                  parentHostIndex: null,
+                  rootIndex: 0,
+                  hostType: 'Modal',
+                  text: { kind: 'none' },
+                },
+              ]
+            : [],
+        },
+      },
+    });
+  const surface = plannedSurface(at('consent'), at())!;
+  for (const before of [
+    undefined,
+    screen('app'),
+    { ...at(), coverage: { native: 'incomplete', react: 'complete' } } as Screen,
+    { ...at(), reactHostEvidence: undefined },
+  ]) {
+    assert.equal(surfaceGone(at(), plannedSurface(at('consent'), before)), false);
+  }
+  assert.equal(surfaceGone(at(), plannedSurface(at('consent'), at('consent'))), false);
+
+  assert.equal(surfaceGone(at('consent'), surface), false);
+  assert.equal(surfaceGone(at('offer'), surface), true);
+  assert.equal(surfaceGone(at(), surface), true);
+  assert.equal(surfaceGone(at(), plannedSurface(at(), at('consent'))), false);
+  assert.equal(surfaceGone({ ...at(), front: 'dialog' }, surface), false);
+  assert.equal(
+    surfaceGone({ ...at(), coverage: { native: 'incomplete', react: 'complete' } }, surface),
+    false,
+  );
+  assert.equal(surfaceGone({ ...at(), reactHostEvidence: undefined }, surface), false);
+  const incomplete = at();
+  incomplete.reactHostEvidence!.typography!.complete = false;
+  assert.equal(surfaceGone(incomplete, surface), false);
+  const nativeId = at('consent');
+  nativeId.reactHostEvidence!.hosts[0] = {
+    nativeID: 'consent',
+    role: null,
+    roleSource: 'none',
+    capabilities: {},
+  };
+  assert.equal(surfaceGone(nativeId, surface), false);
+  const anonymous = at('consent');
+  delete anonymous.reactHostEvidence!.hosts[0].testID;
+  assert.equal(surfaceGone(at(), plannedSurface(anonymous)!), false);
+  const unknown = plannedSurface(screen('app'))!;
+  assert.equal(surfaceGone(at(), unknown), false);
 });
 
 test('an uncovered id target still vetoes recovery', () => {

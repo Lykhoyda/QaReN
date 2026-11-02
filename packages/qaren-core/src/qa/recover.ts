@@ -14,6 +14,8 @@ export interface RecoveryTarget extends Target {
   declared?: Target;
   // A target from a later block keeps its own control but never vetoes recovery by mere presence.
   laterBlock?: boolean;
+  // The current target follows a passed planned press, so the screen in front is the plan's own.
+  afterPlannedPress?: boolean;
 }
 
 export type LoginReplay =
@@ -89,6 +91,7 @@ export const INTERRUPTION_VETOES = [
   'coverage',
   'current-target',
   'later-target',
+  'previous-plan-press',
   'no-candidate',
 ] as const;
 
@@ -135,11 +138,7 @@ export function dismissCandidate(
     return undefined;
   };
   if (screen.front !== 'app') return rejected('front');
-  if (
-    (screen.captureCoverage?.native ?? screen.coverage?.native) !== 'complete' ||
-    screen.coverage?.react !== 'complete'
-  )
-    return rejected('coverage');
+  if (!completeCapture(screen)) return rejected('coverage');
   if (!planTargets.length) return rejected('current-target', 0);
   const targetIndex = planTargets.findIndex(
     (target, index) =>
@@ -175,6 +174,9 @@ export function dismissCandidate(
   const candidates = screen.elements.filter(
     (e) => e.label !== undefined && DECLINE_LABELS.has(e.label) && failedPredicate(e) === undefined,
   );
+  // Only a dismissal that would otherwise happen is withheld, so an ordinary miss keeps its own cause.
+  if (candidates.length && planTargets[0].afterPlannedPress)
+    return rejected('previous-plan-press', 0);
   if (candidates.length > 1)
     return {
       refuse: {
@@ -203,6 +205,48 @@ export function dismissCandidate(
       return [{ index, failed, ...(association ? { association } : {}) }];
     }),
   );
+}
+
+const completeCapture = (screen: Screen): boolean =>
+  (screen.captureCoverage?.native ?? screen.coverage?.native) === 'complete' &&
+  screen.coverage?.react === 'complete';
+
+export interface PlannedSurface {
+  container?: string;
+}
+
+function modalContainers(screen: Screen): Array<string | undefined> | undefined {
+  const evidence = screen.reactHostEvidence;
+  const typography = evidence?.typography;
+  if (!evidence?.complete || !typography?.complete) return undefined;
+  return typography.nodes.flatMap((node, index) => {
+    if (!MODAL_HOST_TYPES.has(node.hostType ?? '')) return [];
+    const host = evidence.hosts[index];
+    const id = host?.testID || host?.nativeID;
+    return [id ? JSON.stringify([node.hostType, id]) : undefined];
+  });
+}
+
+export function plannedSurface(after: Screen, before?: Screen): PlannedSurface {
+  if (
+    !before ||
+    before.front !== 'app' ||
+    after.front !== 'app' ||
+    !completeCapture(before) ||
+    !completeCapture(after)
+  )
+    return {};
+  const containers = modalContainers(after);
+  const previous = modalContainers(before);
+  if (previous && containers?.length === 1 && containers[0] && !previous.includes(containers[0]))
+    return { container: containers[0] };
+  return {};
+}
+
+export function surfaceGone(screen: Screen, surface: PlannedSurface): boolean {
+  if (screen.front !== 'app' || !completeCapture(screen) || !surface.container) return false;
+  const containers = modalContainers(screen);
+  return containers !== undefined && !containers.includes(surface.container);
 }
 
 function hasPlannedReactAncestor(

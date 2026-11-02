@@ -459,28 +459,17 @@ test('saved-block replay excludes completed blocks from the later-target guard',
   const root = mkdtempSync(join(tmpdir(), 'qaren-interruption-replay-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const blocks = parsePlan(
-    '### Before\n1. Tap "Home"\n### Target\n2. Tap "Settings"\n✓ "Done"',
+    '### Before\n1. Wait for "Home" to appear\n### Target\n✓ "Settings"\n2. Tap "Settings"\n✓ "Done"',
   ).blocks!;
   for (const interrupted of [false, true]) {
     const f = app(screen([element('@home', 'Home')]));
-    let reachedTarget = false;
-    let closed = false;
-    let targetCaptures = 0;
-    const capture = f.deps.captureScreen;
-    f.deps.captureScreen = async (options) =>
-      reachedTarget && interrupted && !closed && ++targetCaptures >= 6
-        ? screen([element('@close', 'Close'), element('@past', 'Home', { kind: 'text' })])
-        : capture(options);
-    f.deps.press = async (ref) => {
-      f.actions.push(`press ${ref}`);
-      if (ref === '@home') {
-        reachedTarget = true;
-        f.show(home());
-      } else if (ref === '@close') {
-        closed = true;
-        f.show(home());
-      } else if (!interrupted || closed) f.show(screen([element('@done', 'Done')]));
-      return { ok: true, proven: false, executed: true };
+    f.deps.row = (row) => {
+      if (row.line === blocks[0].items[0].line && row.outcome === 'pass')
+        f.show(
+          interrupted
+            ? screen([element('@close', 'Close'), element('@past', 'Home', { kind: 'text' })])
+            : home(),
+        );
     };
     const result = await runPlan(blocks, f.deps, [], {
       appRoot: root,
@@ -488,17 +477,13 @@ test('saved-block replay excludes completed blocks from the later-target guard',
       platform: 'ios',
     });
     assert.equal(result.verdict, 'PASS');
-    if (interrupted) {
-      assert.equal(result.path, 'replay');
-      assert.equal(result.recoveries, 1);
-      assert.deepEqual(f.actions, [
-        'press @home',
-        'press @settings',
-        'press @settings',
-        'press @close',
-        'press @settings',
-      ]);
-    }
+    assert.equal(result.recoveries, interrupted ? 1 : 0);
+    assert.deepEqual(
+      f.actions,
+      interrupted ? ['press @close', 'press @settings'] : ['press @settings'],
+    );
+    if (interrupted) assert.equal(result.path, 'replay');
+    else assert.deepEqual(result.blocksWritten, ['before', 'target']);
   }
 });
 
