@@ -434,8 +434,7 @@ export function centreCovered(
       }
     }
   }
-  // A centre under a sticky overlay inside the clip is as untouchable as one under the keyboard;
-  // at or below the keyboard top the keyboard clause alone decides.
+  // Capture order only infers overlay coverage; the walker owns strict iOS press recovery.
   const cutters: Partial<Record<BandCut['edge'], BandCut>> = {};
   const band = viewport && clearanceBand(element, screen, (cut) => (cutters[cut.edge] = cut));
   const keyboardTop = visible !== false ? screen.keyboardFrame?.y : undefined;

@@ -883,11 +883,12 @@ after a send stays `ACTION_OUTCOME_UNCERTAIN`.
 Resolution, frame comparison and hit testing share one 300 ms deadline.
 Missing retained identity, a generation mismatch, zero or ambiguous live
 matches, and failed or over-budget checks leave the check unavailable and
-permit dispatch as before. Stable taps check `XCUIElement.isHittable`; exact
+permit ordinary dispatch as before; the [strict overlay path](#covered-target-recovery)
+instead requires a proven live hit. Stable taps check `XCUIElement.isHittable`; exact
 fills use the frame guard without an extra hittability read, then keep the
 existing focus-point check when a focus tap is needed. An input's hit test
 applies only when the focus point lies inside its frame; a wrapper-centre focus
-point outside it leaves that check unavailable. A negative check refuses with
+point outside it leaves that check unavailable. An ordinary negative check refuses with
 `FOCUS_TARGET_OCCLUDED` and mutation `none`. Core requires
 `HIT_TESTED_DISPATCH_V1`, `TARGET_FRAME_GUARD_V1` and `SNAPSHOT_FIDELITY_V1`
 (toolbars named `Toolbar`, nested same-origin containers kept apart); a missing
@@ -961,6 +962,8 @@ is reported as performed. Issues raised by reads before or after the gesture,
 such as the readback of a code field that vanished after its fill, do not
 change the result.
 
+<a id="covered-target-recovery"></a>
+
 Before dispatch, the walker also treats a press or fill target, including a
 keyboard-fallback wrapper before its tap, whose centre lies outside its trusted
 clipping viewport or covered by an observed keyboard frame
@@ -994,9 +997,8 @@ the captured centre. If native element activation is unavailable, it refuses
 `LIVE_HIT_UNPROVEN` with no tap and never falls back to coordinates.
 A false read, a moved target, or an unavailable read (expired snapshot, no identity, absent or ambiguous match, a
 read that threw or ran out of time) refuses `LIVE_HIT_UNPROVEN` with no tap, and the step fails
-with “stayed off screen after one scroll” naming the inferred band cutter by its
-capture-local ref, kind, frame and the band edge it moved, never its label,
-identifier or value. The cutter is inferred, not the proven cover, and the scroll
+with “stayed off screen after one scroll” and the inferred band cutter described
+under [clearance diagnostics](#clearance-diagnostics). The scroll
 that ran before the refusal remains a performed action. Fills, scroll-until, waits
 and Android keep the inferred overlay rule. A runner without `STRICT_LIVE_HIT_V1` refuses `RN_FAST_RUNNER_STALE` before anything
 is sent; reopen the device session to rebuild it.
@@ -3378,15 +3380,22 @@ outside these boundaries may have no record. These facts do not establish
 no-mutation proof, authorize another send or change retries, deadlines or outcomes;
 diagnostic collection and sink failures preserve the refusal.
 
+<a id="clearance-diagnostics"></a>
+
 When a press or fill target's centre remains covered after the one-scroll
 allowance, a private `timing` event with code `CENTRE_COVERED` includes the
 observation ordinal and `clearanceDiagnostic`. It records the viewport, keyboard or
 overlay predicate branch, boolean coverage facts, the scroll's origin and requested
-direction, and whether the target centre changed. Unread or unavailable facts
-remain `null`; target text, identifiers and coordinates are excluded. The
+direction, and whether the target centre changed. For an overlay branch, the
+predicate also records the inferred band cutter's capture-local ref, kind, frame,
+and band edges before and after the cut; the failed step names that cutter too.
+The cutter is inferred, not the proven cover. Unread or unavailable facts
+remain `null`; target text, identifiers and target coordinates are excluded. The
 [walker](../qaren-core/src/qa/walker.ts) owns the event layout; the
 [centre predicate](../qaren-core/src/qa/resolve.ts) owns its coverage facts.
-The event preserves the existing failed step and grants no further scroll or
+On the [strict iOS overlay path](#covered-target-recovery), this event follows
+a live-hit refusal with mutation `none`, rather than the inference alone.
+The event preserves the failed step and grants no further scroll or
 target dispatch; sink failures leave the outcome unchanged. It stays out of the
 public result and ledger, as covered by the
 [occlusion regressions](../qaren-core/test/unit/qa/occlusion-walker.test.ts).
