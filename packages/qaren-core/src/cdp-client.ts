@@ -41,6 +41,7 @@ import {
   CDPTargetClosedError,
   discoverAndConnect as discoverAndConnectFn,
 } from './cdp/connect.js';
+import type { DevelopmentTargetCounts } from './domain/dev-target.js';
 import type { ConnectContext, ConnectFilters, ConnectIntent } from './cdp/connect.js';
 import { resolveAutoConnect } from './project-config.js';
 import type { AutoConnectResolution } from './project-config.js';
@@ -465,6 +466,7 @@ export class CDPClient {
       | 'context_destroyed'
       | 'contexts_cleared',
   ): void {
+    this._developmentTargets = undefined;
     this._helperWorldGeneration++;
     this._helpersInjected = false;
     this._bridgeDetected = false;
@@ -704,7 +706,7 @@ export class CDPClient {
       this._exactDiscoveryPort !== undefined && filtersOrPlatform === undefined
         ? this._connectFilters
         : filters;
-    return this.connectWithCurrentPolicy(portHint, scoped, intent);
+    return this.connectWithCurrentPolicy(portHint, scoped, this._exactConnectIntent ?? intent);
   }
 
   async listTargets(portHint?: number): Promise<{ port: number; targets: HermesTarget[] }> {
@@ -724,8 +726,15 @@ export class CDPClient {
   ): Promise<string> {
     this._reconnectDiscover = discoverExactPort;
     this._exactDiscoveryPort = port;
+    if (intent === 'qa') this._exactConnectIntent = 'qa';
     const connect = () =>
-      this.connectWithCurrentPolicy(port, filters, intent, targetRetries, awaitWithinBoundary);
+      this.connectWithCurrentPolicy(
+        port,
+        filters,
+        this._exactConnectIntent ?? intent,
+        targetRetries,
+        awaitWithinBoundary,
+      );
     if (deadline === undefined) return connect();
     return this.withAttachDeadline(deadline, () =>
       withDeadline(deadline, new CDPProbeTimeoutError('CDP attach deadline exceeded'), connect),
@@ -783,6 +792,7 @@ export class CDPClient {
   clearAuthoritativeSessionPolicy(): void {
     this._authoritativeSessionPolicy = undefined;
     this._exactDiscoveryPort = undefined;
+    this._exactConnectIntent = undefined;
     this._reconnectDiscover = undefined;
   }
 
@@ -800,6 +810,12 @@ export class CDPClient {
 
   createReplacement(port: number): CDPClient {
     const replacement = new CDPClient(port, this._timeNowFn);
+    if (this._exactConnectIntent === 'qa') {
+      replacement._exactConnectIntent = 'qa';
+      replacement._exactDiscoveryPort = this._exactDiscoveryPort;
+      replacement._reconnectDiscover = this._reconnectDiscover;
+      replacement._connectFilters = { ...this._connectFilters };
+    }
     if (this._authoritativeSessionPolicy) {
       replacement.setAuthoritativeSessionPolicy(this._authoritativeSessionPolicy);
     }
@@ -809,6 +825,12 @@ export class CDPClient {
   private _connectFilters: ConnectFilters = {};
   private _reconnectDiscover: typeof discoverExactPort | undefined;
   private _exactDiscoveryPort: number | undefined;
+  private _exactConnectIntent: ConnectIntent | undefined;
+  private _developmentTargets: DevelopmentTargetCounts | undefined;
+
+  get developmentTargets(): DevelopmentTargetCounts | undefined {
+    return this._developmentTargets && { ...this._developmentTargets };
+  }
 
   /** GH #625: pinned device affinity, if an explicit targetId pin captured one. */
   get pinnedDeviceName(): string | undefined {
@@ -856,6 +878,7 @@ export class CDPClient {
       policy?.port ?? this._exactDiscoveryPort ?? portHint,
       policy ? { ...filters, ...policy.filters, targetId: undefined } : filters,
       policy ? this.createAuthoritativeDiscover() : this._reconnectDiscover,
+      this._exactConnectIntent ?? 'default',
     );
     await this.verifyAuthoritativeConnection();
     return result;
@@ -1061,6 +1084,7 @@ export class CDPClient {
     // caller sees already-disposed and returns cleanly.
     if (this.disposed) return;
     this.disposed = true;
+    this.clearAuthoritativeSessionPolicy();
     this.invalidateHelperWorld('explicit_disconnect');
     resetState(this.buildResettableState());
     this.clearActiveState();
@@ -1508,6 +1532,10 @@ export class CDPClient {
       incrementConnectionGeneration: () => ++this._connectionGeneration,
       evaluate: (expr) => this.evaluate(expr),
       evaluateWithinAttach: (expr) => this.evaluateWithinAttach(expr),
+      getRuntimeToken: () => this._helperToken,
+      setDevelopmentTargets: (counts) => {
+        this._developmentTargets = counts;
+      },
       sendWithTimeout: (method, params, ms) => this.sendWithTimeout(method, params, ms),
       handleMessage: (data) => this.handleMessage(data),
       handleClose: (code) => this.handleClose(code),

@@ -10701,3 +10701,100 @@ fn fresh_install_cancelled_admission_retains_its_attempt_summary() {
     assert_eq!(summary["terminalReason"], "cancelled");
     assert_eq!(mock.remaining(), 0);
 }
+
+#[test]
+fn admission_refusal_codes_recovery_and_private_facts_reach_the_receipt_and_end_event() {
+    for private in [false, true] {
+        for (inner, code, expected_code, action) in [
+            (
+                "non_dev_bundle",
+                "DEV_TARGET_MISSING",
+                FailureCode::DevTargetMissing,
+                "use_development_bundle",
+            ),
+            (
+                "no_dev_target_unknown",
+                "CDP_NOT_CONNECTED",
+                FailureCode::CoreRefused,
+                "inspect_development_target",
+            ),
+            (
+                "react_readiness_timeout",
+                "CDP_NOT_CONNECTED",
+                FailureCode::CoreRefused,
+                "inspect_bundle_readiness",
+            ),
+        ] {
+            let (repo, app) = app_repo();
+            let mut mock = MockRunner::new();
+            script_preflight(&mut mock, &repo);
+            script_provision(&mut mock);
+            script_drift_status(&mut mock);
+            script_host_probe(&mut mock, UDID, hosts_absent());
+            let facts = serde_json::json!({
+                "attempt":2,"lastStarted":"attach","lastCompleted":"retry_wait","inner":inner,
+                "relaunches":0,"relaunchFailed":false,"liveness":"not_probed",
+                "elapsedMs":120000,"remainingMs":1080000,"budgetMs":1200000,
+                "attachBudgetMs":120000,"walkBudgetMs":1200000,
+                "targetsTotal":1,"devTrue":0,"devFalse": if inner == "non_dev_bundle" {1} else {0},
+                "devUndefined":0,"devUnknown": if inner == "non_dev_bundle" {0} else {1}
+            });
+            let refusal = serde_json::json!({"verdict":"REFUSED","code":code,"message":"admission refused","admission":facts});
+            mock.expect_spawn_piped(
+                "walk.js",
+                9000,
+                &(envelope(2, "result", &refusal.to_string()) + "\n"),
+                Some(4),
+            );
+            script_core_identity(&mut mock);
+            script_teardown(&mut mock);
+            let req = request(&repo, &app, 30);
+            let (receipt, events) = if private {
+                let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries([(
+                    std::ffi::OsString::from("QAREN_INPUT_UNUSED"),
+                    std::ffi::OsString::from("synthetic-private-canary"),
+                )]));
+                qaren::redact::with_input_scope(inputs, || run_with_events(&mut mock, &req))
+            } else {
+                run_with_events(&mut mock, &req)
+            };
+            assert_eq!(receipt.result, ReceiptResult::Refused);
+            let budgets = &events
+                .iter()
+                .find(|event| event["event"] == "coreT0")
+                .unwrap()["payload"];
+            assert_eq!(budgets["attachBudgetMs"], 120000);
+            assert!(budgets["walkBudgetMs"].as_u64().unwrap() > 0);
+            let failure = receipt.failure.as_ref().unwrap();
+            assert_eq!(failure.code, expected_code);
+            assert_eq!(failure.phase, "attach");
+            assert_eq!(failure.next_action.as_str(), action);
+            assert!(failure.code.is_refusal());
+            let serialized = serde_json::to_value(&receipt).unwrap();
+            let recovery = &serialized["failure"]["recovery"];
+            assert_eq!(recovery["cause"], inner);
+            assert_eq!(recovery["action"], action);
+            assert_eq!(recovery["admission"], facts);
+            let ladder = recovery["ladder"].as_array().unwrap();
+            assert_eq!(ladder.len(), 5);
+            for (index, rung) in ladder.iter().enumerate() {
+                assert_eq!(rung["rung"], index + 1);
+                assert_eq!(rung["requires_user_ok"], rung["destroys_state"]);
+            }
+            if inner == "non_dev_bundle" {
+                assert!(recovery["next_rung"].is_null());
+                assert_eq!(ladder[0]["applicable"], false);
+                assert_eq!(ladder[1]["applicable"], true);
+                assert!(ladder[2..].iter().all(|rung| rung["applicable"] == false));
+            }
+            let end = events.iter().find(|event| event["event"] == "end").unwrap();
+            assert_eq!(
+                end["payload"]["failureCode"],
+                serde_json::to_value(expected_code).unwrap()
+            );
+            assert!(!serialized.to_string().contains("synthetic-private-canary"));
+            assert_eq!(receipt.cleanup["device_lease"], "removed");
+            assert_eq!(mock.remaining(), 0);
+        }
+    }
+}

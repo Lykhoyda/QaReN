@@ -1,3 +1,4 @@
+import { cleanAdmissionFacts, type AdmissionFacts } from './admission-facts.js';
 import { RunInputs, withInputs, currentInputs } from './inputs.js';
 import { cleanDiagnostic } from './diagnostics.js';
 import { ObservedPrivacy } from './privacy.js';
@@ -84,6 +85,7 @@ export interface Refusal extends Partial<Omit<Ledger, 'verdict'>> {
   code: string;
   message: string;
   lease: string;
+  admission?: AdmissionFacts;
 }
 
 export type ResultPayload = Ledger | Refusal;
@@ -402,6 +404,11 @@ export function createWriter(write: (line: string) => void, runId: string): Wire
       if (!closed) send('resource', { kind: 'runner_driver', pid });
     },
     result: (payload) => {
+      if (payload.verdict === 'REFUSED' && payload.admission !== undefined) {
+        const admission = cleanAdmissionFacts(payload.admission);
+        if (!admission) throw new WireError('invalid admission facts');
+        payload = { ...payload, admission };
+      }
       send('result', payload);
       closed = true;
       return exitCodeFor(payload);

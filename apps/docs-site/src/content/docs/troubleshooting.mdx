@@ -25,6 +25,29 @@ Refusals exit `4` and mean the run could not start or could not decide; failures
 | `GITHUB_AUTH_UNAVAILABLE` | PR lookup could not use GitHub authentication | Follow the [GitHub authentication contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#test-a-pull-request) |
 | `DISK_BUDGET_EXCEEDED`     | Under 1 GiB free for the run storage root or the app, or under about 10 GiB for a clean iOS build | Free space on the volume `failure.detail` names, then re-run                                |
 
+## Development target admission
+
+QA needs a JS bundle built with `__DEV__ === true`. Registered-target connection,
+setup and React readiness share the attach budget (120 seconds by default),
+clipped to the remaining walk budget. Retries keep that deadline; patient
+no-target manifest recovery retains its separate bounded phases.
+
+| Receipt / cause | Exact next_action | Recovery |
+| --- | --- | --- |
+| `DEV_TARGET_MISSING` / `non_dev_bundle` | `use_development_bundle` | Check the launch URL and build variant; use a development JS bundle. An unchanged retry, device restart, unchanged native rebuild or cleanup cannot fix bundle mode. |
+| `CORE_REFUSED`, inner `CDP_NOT_CONNECTED` / `no_dev_target_unknown` | `inspect_development_target` | Inspect launch URL, target readiness and build variant; undefined or failed probes do not establish production mode. |
+| `CORE_REFUSED`, inner `CDP_NOT_CONNECTED` / `react_readiness_timeout` | `inspect_bundle_readiness` | Inspect stage and budget facts; confirm the selected dev bundle starts React before starting a changed run. |
+| Pre-admission total walk expiry | `inspect_admission_budget` | Inspect the last recorded stage, effective budgets and runtime identity. Elapsed time alone cannot diagnose bundle mode. |
+| Pre-admission `RUN_CANCELLED` | `stop_after_cancellation` | Complete owned cleanup and preserve cancellation; do not automatically resume. |
+
+Follow the receipt's five ordered recovery rungs. Inspect evidence first, then
+consider only proven stale owned resources, a proven device fault or a proven
+native mismatch; owned cleanup/fresh prepare is last. State-losing actions need
+approval and ownership proof. For a non-dev bundle, restart owned app/Metro only
+after proving stale Metro served the wrong bundle; correcting the build variant
+may require a separately authorized build. See the
+[admission contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan).
+
 ## Development overlays before step 1
 
 For `CORE_REFUSED` with a `DEV_MENU_HIDE_UNVERIFIED_*` inner code in
