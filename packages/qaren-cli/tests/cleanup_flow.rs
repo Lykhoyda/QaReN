@@ -76,6 +76,12 @@ fn interrupted_finite_build_retains_ownership_until_group_absence_is_proven() {
                 },
             );
         }
+        mock.expect_run(
+            "simctl list",
+            CmdOutput::success(
+                r#"{"devices":{"rt":[{"udid":"selected-device","name":"qaren-core-run","state":"Booted"}]}}"#,
+            ),
+        );
         let receipt = cleanup(&mut mock, &repo, "core-run");
         assert_eq!(receipt.result, ReceiptResult::Failed);
         assert!(receipt.cleanup["build_process"].starts_with("unresolved"));
@@ -2085,6 +2091,7 @@ fn a_dead_owner_s_recorded_runner_driver_group_is_signaled_and_the_lease_release
     mock.expect_run("stat=", CmdOutput::success("S"));
     mock.expect_run("/bin/kill -INT -- 7000", CmdOutput::success(""));
     mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    mock.expect_run("lstart=", CmdOutput::success(""));
 
     let receipt = cleanup(&mut mock, &repo, "core-run");
 
@@ -2108,6 +2115,7 @@ fn a_runner_driver_whose_leader_is_not_the_recorded_process_is_never_signaled() 
     owner_gone(&mut mock);
     mock.expect_run("ps -A", CmdOutput::success("1 1 S\n7000 7000 S\n"));
     mock.expect_run("ps -A", CmdOutput::success("1 1 S\n7000 7000 S\n"));
+    mock.expect_run("ps -p 7000", CmdOutput::success("Thu Aug 13 09:00:00 2026"));
     mock.expect_run("ps -p 7000", CmdOutput::success("Thu Aug 13 09:00:00 2026"));
     mock.expect_run("ps -A", CmdOutput::success("1 1 S\n7000 7000 S\n"));
 

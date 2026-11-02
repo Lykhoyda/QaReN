@@ -344,7 +344,7 @@ impl DeadlineRunner<'_> {
             return None;
         }
         let mut spec = spec.clone();
-        spec.timeout_seconds = spec.timeout_seconds.min(remaining.div_ceil(1000));
+        spec.timeout_seconds = spec.timeout_seconds.min(remaining / 1000);
         Some(spec)
     }
 
@@ -1310,6 +1310,22 @@ impl Runner for MockRunner {
 #[cfg(test)]
 mod deadline_tests {
     use super::*;
+
+    #[test]
+    fn admission_retry_child_stays_within_the_original_allowance() {
+        let mut inner = RealRunner::new();
+        let started = Instant::now();
+        let deadline_ms = inner.monotonic_ms() + 30_000;
+        let mut runner = DeadlineRunner {
+            inner: &mut inner,
+            deadline_ms,
+        };
+        let spec = CmdSpec::new("admission-probe", "sh", &["-c", "sleep 16"], 30);
+        assert!(runner.run(&spec).ok());
+        runner.sleep(Duration::from_millis(500));
+        assert!(runner.run(&spec).timed_out);
+        assert!(started.elapsed() < Duration::from_millis(30_200));
+    }
 
     #[test]
     fn build_window_caps_fingerprint_and_all_spawn_paths() {
