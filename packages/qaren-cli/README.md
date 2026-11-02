@@ -3492,7 +3492,7 @@ probe and development-state probe are capped at 1500 ms and clipped to the
 active deadline, so an unresponsive candidate leaves time to inspect the next
 scoped candidate. Other CDP clients retain their existing fallback behavior.
 
-If the final completed discovery attempt finds only explicitly false targets,
+If the latest complete scan finds only explicitly false targets,
 QaReN refuses `DEV_TARGET_MISSING` (exit 4) before any plan step, with
 `next_action: use_development_bundle`. Check the launch URL and build variant;
 a dev-client native build alone does not prove the JS bundle uses development
@@ -3502,8 +3502,13 @@ approval for volatile state loss. Device restart, unchanged native rebuild and
 cleanup/fresh prepare cannot correct bundle mode; a corrected build requires
 separate authorization.
 
-Undefined development state, a failed or pending final scan, or a target/context
-replacement cannot establish production mode. Those cases refuse with receipt
+The last complete scan survives transient failures and deadline-interrupted
+rediscovery or connection attempts. A newer complete scan replaces it; a proven
+`__DEV__ === true` probe invalidates earlier non-dev certainty immediately, even
+if setup subsequently stalls. Target/context replacement also clears that certainty.
+An empty scan, undefined or unknown development state, or a failed or pending
+scan without retained all-false evidence cannot establish production mode.
+Those cases refuse with receipt
 `CORE_REFUSED`, inner `CDP_NOT_CONNECTED/no_dev_target_unknown` and
 `inspect_development_target`. A proven dev bundle that does not start React
 refuses with inner `CDP_NOT_CONNECTED/react_readiness_timeout` and
