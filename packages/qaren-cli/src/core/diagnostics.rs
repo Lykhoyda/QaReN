@@ -568,6 +568,7 @@ fn clean(value: &Value) -> Option<Value> {
                 "coverage",
                 "current-target",
                 "later-target",
+                "previous-plan-press",
                 "no-candidate",
             ]),
             "outcome" if kind == "metric" => {

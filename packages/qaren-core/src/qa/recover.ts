@@ -14,6 +14,8 @@ export interface RecoveryTarget extends Target {
   declared?: Target;
   // A target from a later block keeps its own control but never vetoes recovery by mere presence.
   laterBlock?: boolean;
+  // The current target follows a passed planned press, so the screen in front is the plan's own.
+  afterPlannedPress?: boolean;
 }
 
 export type LoginReplay =
@@ -89,6 +91,7 @@ export const INTERRUPTION_VETOES = [
   'coverage',
   'current-target',
   'later-target',
+  'previous-plan-press',
   'no-candidate',
 ] as const;
 
@@ -175,6 +178,9 @@ export function dismissCandidate(
   const candidates = screen.elements.filter(
     (e) => e.label !== undefined && DECLINE_LABELS.has(e.label) && failedPredicate(e) === undefined,
   );
+  // Only a dismissal that would otherwise happen is withheld, so an ordinary miss keeps its own cause.
+  if (candidates.length && planTargets[0].afterPlannedPress)
+    return rejected('previous-plan-press', 0);
   if (candidates.length > 1)
     return {
       refuse: {

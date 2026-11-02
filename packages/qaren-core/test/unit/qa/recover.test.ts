@@ -200,6 +200,20 @@ test('a centre-covered id target allows the sheet decline', () => {
   assert.deepEqual(dismissCandidate(snapshot, [homeTarget]), { label: 'Close' });
 });
 
+test('a target after a planned press withholds the decline, including ambiguous ones', () => {
+  const after = { ...homeTarget, afterPlannedPress: true };
+  const vetoes: string[] = [];
+  const record = (entry: { veto: string }) => vetoes.push(entry.veto);
+  assert.equal(dismissCandidate(sheetScreen(), [after], record), undefined);
+  assert.equal(dismissCandidate(sheetScreen(true, ['Close', 'Skip']), [after], record), undefined);
+  assert.deepEqual(vetoes, ['previous-plan-press', 'previous-plan-press']);
+  vetoes.length = 0;
+  // With nothing to dismiss, the screen's own veto stands instead.
+  assert.equal(dismissCandidate(sheetScreen(true, []), [after], record), undefined);
+  assert.equal(vetoes.length, 1);
+  assert.notEqual(vetoes[0], 'previous-plan-press');
+});
+
 test('an uncovered id target still vetoes recovery', () => {
   const snapshot = sheetScreen(false);
   assert.equal(targetEvidence(homeTarget, snapshot), 'pass');

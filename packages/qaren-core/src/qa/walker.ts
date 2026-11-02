@@ -409,6 +409,8 @@ export interface WalkSequence {
   window?: { fromMs: number; typed: number };
   // System prompts recovery declined in this run; a repeat ask is the plan author's to answer.
   declinedPrompts?: Set<string>;
+  // A passed planned press arms protection for the next executable item; a passing wait or check carries it on.
+  plannedPress?: 'armed' | { item: string; observe: boolean };
 }
 
 function recordMediaLatch(
@@ -446,6 +448,9 @@ const promptSignature = (screen: Screen): string =>
     screen.elements.find((e) => e.kind !== 'button' && e.label !== undefined)?.label,
     screen.elements.flatMap((e) => (e.kind === 'button' && e.label !== undefined ? [e.label] : [])),
   ]);
+
+const PREVIOUS_PLAN_PRESS =
+  '; the previous planned press succeeded; the next target was not found; automatic app dismissal was withheld';
 
 // Capture and process refusals, ambiguity and the replay-miss path are never recovered.
 const UNRECOVERABLE = new Set([
@@ -1313,6 +1318,15 @@ async function walkBlockScoped(
         // Diagnostics cannot change the failed step's outcome.
       }
     }
+    if (pressVetoed === item && ((target && targetCode) || item.kind === 'check')) {
+      // A check has no target diagnostics, so it keeps the note but no subreason.
+      if (target)
+        lastScreen = {
+          ...(lastScreen.screen ? { screen: lastScreen.screen } : {}),
+          subreason: 'previous-plan-press',
+        };
+      reason = [...segments(reason), PREVIOUS_PLAN_PRESS];
+    }
     const withheld = privacy.textWithheld(last);
     emit({
       ...row,
@@ -1869,6 +1883,10 @@ async function walkBlockScoped(
   };
   // The login block walks with this walk's privacy, so its typed values stay masked.
   let loginReplayed = false;
+  // Lines are unique within a plan, so a replayed item and its re-walk share one key.
+  const itemKey = (item: Item): string => `${block.slug}:${item.line}`;
+  // The item whose recovery withheld an app dismissal because a planned press opened the screen.
+  let pressVetoed: Item | undefined;
   const replayLogin = async () => {
     const login = deps.login?.block;
     if (!login) {
@@ -1883,6 +1901,7 @@ async function walkBlockScoped(
     }
     loginReplayed = true;
     sequence.window = undefined;
+    sequence.plannedPress = undefined;
     let taken = 0;
     const counted: WalkerDeps = {
       ...deps,
@@ -1985,8 +2004,14 @@ async function walkBlockScoped(
           await shoot(item),
         );
     }
+    const planned = sequence.plannedPress;
     const planTargets = [
-      recoveryTarget(item) ?? { phrase: '' },
+      {
+        ...(recoveryTarget(item) ?? { phrase: '' }),
+        ...(typeof planned === 'object' && planned.item === itemKey(item)
+          ? { afterPlannedPress: true }
+          : {}),
+      },
       ...block.items.slice(block.items.indexOf(item) + 1).flatMap((remaining) => {
         const target = recoveryTarget(remaining);
         return target?.quoted !== undefined ? [target] : [];
@@ -1994,6 +2019,7 @@ async function walkBlockScoped(
       ...(opts.laterTargets ?? []),
     ];
     const interruptionRejected = (record: InterruptionDiagnostic, observation?: number) => {
+      if (record.veto === 'previous-plan-press') pressVetoed = item;
       try {
         deps.note?.(
           `interruption-rejected=${JSON.stringify({ line: item.line, ...(observation === undefined ? {} : { observation }), ...record })}`,
@@ -2184,6 +2210,17 @@ async function walkBlockScoped(
       if (item.kind === 'echo') declareEcho(item.input);
       continue;
     }
+    if (item.kind !== 'echo' && opts.recover !== false) {
+      const planned = sequence.plannedPress;
+      const key = itemKey(item);
+      if (planned === 'armed' || (planned && planned.item !== key && planned.observe))
+        sequence.plannedPress = {
+          item: key,
+          observe: item.kind === 'wait' || item.kind === 'check',
+        };
+      else if (planned && planned.item !== key) sequence.plannedPress = undefined;
+    }
+    pressVetoed = undefined;
     mutationStarted = false;
     fillMethod = undefined;
     fillMismatch = undefined;
@@ -3547,6 +3584,15 @@ async function walkBlockScoped(
                 : act!.proven || changed || alreadySelected)
           ) {
             const target = stepTarget(item);
+            if (
+              item.kind === 'press' &&
+              opts.recover !== false &&
+              !opts.login &&
+              act!.ok &&
+              act!.error === undefined &&
+              act!.executed !== false
+            )
+              sequence.plannedPress = 'armed';
             if (act!.dialog)
               deps.note?.(
                 `dialog-tap ${JSON.stringify({ v: 1, line: item.line, label: act!.dialog.label, rect: act!.dialog.rect })}`,

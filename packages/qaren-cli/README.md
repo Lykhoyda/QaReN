@@ -1257,7 +1257,9 @@ When one of the last 20 `check` runs failed the same plan line with the same cod
 subreason on the same platform, app, recorded Git revision, worktree fingerprint
 and plan hash, `failure.repeat` names it and the walk's guidance leads with
 "same failure, plan unchanged". For `evidence-incomplete`, the notice instead
-follows the existing re-run advice. Plan identity and step-line comparison ignore
+follows the existing re-run advice; `previous-plan-press` keeps its
+`inspect_last_observed_screen` next action and records only `failure.repeat`
+([step recovery](#step-recovery)). Plan identity and step-line comparison ignore
 QaReN's prepended broken-plan marker lines, so automatically flagging a saved
 plan does not prevent repeat matching. Receipt step numbers remain physical
 plan lines. A superseding CLI failure, such as cancellation, a deadline or
@@ -3166,6 +3168,25 @@ Planned-container protection follows native ancestry and proven React host
 ancestry. The React ancestry guard stops at a modal host, so the presenting
 screen does not protect the modal's controls.
 
+A screen the plan's own press opened is never dismissed. After a planned press
+passes with a dispatched, error-free action, the next executable item is
+protected, whether or not the pressed control disappeared, across block and
+replay boundaries and through that item's retries. A passing wait or check
+carries the protection to the item after it, so a planned modal or consent
+screen keeps it through `Wait for` and checks of its own content. Any other
+item consumes it, and a login replay clears it; recovery's own decline press
+and login presses never set it. While protected, recovery still answers system
+prompts and dev menus and still replays login, but withholds every app decline,
+including the recheck before dispatch, and an ambiguous decline set does not
+refuse. A failing target-class step then reports subreason `previous-plan-press`,
+`failure.seen` ends with `the previous planned press succeeded; the next target
+was not found; automatic app dismissal was withheld`, and the walk's
+`next_action` is `inspect_last_observed_screen`, also on a repeat, with a
+`failure.recovery` of reason `previous_plan_press` whose five rungs are all
+inapplicable. A failed check after such a veto carries the same `failure.seen`
+note without a subreason. An unsolicited sheet that appears right after a planned press is
+therefore not dismissed either; insert the plan's own step for it.
+
 With `TYPESAFE_API_KEY`, Jev may veto a selected control when the screen may be
 related to the step or its purpose is uncertain. It never chooses a control,
 breaks a tie, or authorizes a tap. Without the key, recovery uses only the
@@ -3186,8 +3207,8 @@ and cannot authorize a retry; an attempted decline still counts in `recoveries`,
 including when its read-back refuses incomplete capture.
 
 `logs/core.log` includes value-free diagnostics for failed interruption admission:
-`interruption-rejected` reports a front, coverage, indexed target or no-candidate
-veto and the exact-decline-label element count; the same veto kind, step line,
+`interruption-rejected` reports a front, coverage, indexed target,
+previous-plan-press or no-candidate veto and the exact-decline-label element count; the same veto kind, step line,
 target index and count are also retained as an `interruption-rejected` event in
 `core-diagnostics.jsonl` for runs with inputs. A no-candidate veto also reports
 each decline-labelled element's first failed predicate; press capability failures

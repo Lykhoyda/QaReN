@@ -459,7 +459,8 @@ test('saved-block replay excludes completed blocks from the later-target guard',
   const root = mkdtempSync(join(tmpdir(), 'qaren-interruption-replay-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const blocks = parsePlan(
-    '### Before\n1. Tap "Home"\n### Target\n2. Tap "Settings"\n✓ "Done"',
+    // Go back separates the planned Home press from the sheet, so its screen is no longer protected.
+    '### Before\n1. Tap "Home"\n2. Go back\n### Target\n3. Tap "Settings"\n✓ "Done"',
   ).blocks!;
   for (const interrupted of [false, true]) {
     const f = app(screen([element('@home', 'Home')]));
@@ -468,9 +469,13 @@ test('saved-block replay excludes completed blocks from the later-target guard',
     let targetCaptures = 0;
     const capture = f.deps.captureScreen;
     f.deps.captureScreen = async (options) =>
-      reachedTarget && interrupted && !closed && ++targetCaptures >= 6
+      reachedTarget && interrupted && !closed && ++targetCaptures >= 8
         ? screen([element('@close', 'Close'), element('@past', 'Home', { kind: 'text' })])
         : capture(options);
+    f.deps.back = async () => {
+      f.actions.push('back');
+      return { ok: true, proven: true, executed: true };
+    };
     f.deps.press = async (ref) => {
       f.actions.push(`press ${ref}`);
       if (ref === '@home') {
@@ -493,6 +498,7 @@ test('saved-block replay excludes completed blocks from the later-target guard',
       assert.equal(result.recoveries, 1);
       assert.deepEqual(f.actions, [
         'press @home',
+        'back',
         'press @settings',
         'press @settings',
         'press @close',
