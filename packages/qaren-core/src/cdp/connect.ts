@@ -130,6 +130,7 @@ export interface ConnectContext {
   evaluateWithinAttach(expr: string): Promise<EvaluateResult>;
   getRuntimeToken?(): unknown;
   setDevelopmentTargets?(counts: DevelopmentTargetCounts): void;
+  setDevelopmentTargetCandidates?(targets: HermesTarget[]): void;
   sendWithTimeout(method: string, params: unknown, ms: number): Promise<unknown>;
   handleMessage(data: WebSocket.RawData): void;
   handleClose(code: number): void;
@@ -223,6 +224,16 @@ export async function discoverAndConnect(
     inference,
   } = result;
   ctx.setPort(metroPort);
+  if (intent === 'qa') ctx.setDevelopmentTargetCandidates?.(sorted);
+  if (intent === 'qa' && (errorCode || sorted.length === 0)) {
+    ctx.setDevelopmentTargets?.({
+      targetsTotal: 0,
+      devTrue: 0,
+      devFalse: 0,
+      devUndefined: 0,
+      devUnknown: 0,
+    });
+  }
   if (errorCode) {
     ctx.setState('disconnected');
     throw new TargetSelectionError(
@@ -311,7 +322,10 @@ export async function discoverAndConnect(
   }
 
   if (ctx.isDisposed()) throw new ConnectionSetupSupersededError();
-  if (!connectedTarget) throw new DevTargetUnavailableError(counts);
+  if (!connectedTarget) {
+    ctx.setDevelopmentTargets?.(counts);
+    throw new DevTargetUnavailableError(counts);
+  }
 
   logger.info(
     'CDP',
@@ -433,6 +447,13 @@ async function requireDevelopmentTarget(ctx: ConnectContext): Promise<void> {
         ? (dev.value as DevelopmentState)
         : 'unknown';
   if (state !== 'true') throw new DevCandidateUnavailableError(state);
+  ctx.setDevelopmentTargets?.({
+    targetsTotal: 1,
+    devTrue: 1,
+    devFalse: 0,
+    devUndefined: 0,
+    devUnknown: 0,
+  });
 }
 
 async function connectToTarget(

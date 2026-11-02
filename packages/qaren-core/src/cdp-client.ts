@@ -467,6 +467,13 @@ export class CDPClient {
       | 'contexts_cleared',
   ): void {
     this._developmentTargets = undefined;
+    if (
+      cause === 'context_created' ||
+      cause === 'context_destroyed' ||
+      cause === 'contexts_cleared' ||
+      cause === 'explicit_disconnect'
+    )
+      this.publishDevelopmentTargets(undefined);
     this._helperWorldGeneration++;
     this._helpersInjected = false;
     this._bridgeDetected = false;
@@ -827,6 +834,24 @@ export class CDPClient {
   private _exactDiscoveryPort: number | undefined;
   private _exactConnectIntent: ConnectIntent | undefined;
   private _developmentTargets: DevelopmentTargetCounts | undefined;
+  private _developmentTargetCandidates: string | undefined;
+  private _developmentTargetObservers = new Set<
+    (counts: DevelopmentTargetCounts | undefined) => void
+  >();
+
+  observeDevelopmentTargets(
+    observe: (counts: DevelopmentTargetCounts | undefined) => void,
+  ): () => void {
+    this._developmentTargetObservers.add(observe);
+    return () => {
+      this._developmentTargetObservers.delete(observe);
+    };
+  }
+
+  private publishDevelopmentTargets(counts: DevelopmentTargetCounts | undefined): void {
+    this._developmentTargets = counts;
+    for (const observe of this._developmentTargetObservers) observe(counts);
+  }
 
   get developmentTargets(): DevelopmentTargetCounts | undefined {
     return this._developmentTargets && { ...this._developmentTargets };
@@ -1534,7 +1559,18 @@ export class CDPClient {
       evaluateWithinAttach: (expr) => this.evaluateWithinAttach(expr),
       getRuntimeToken: () => this._helperToken,
       setDevelopmentTargets: (counts) => {
-        this._developmentTargets = counts;
+        this.publishDevelopmentTargets(counts);
+      },
+      setDevelopmentTargetCandidates: (targets) => {
+        const candidates = JSON.stringify(
+          targets.map((target) => [target.id, target.webSocketDebuggerUrl]).sort(),
+        );
+        if (
+          this._developmentTargetCandidates !== undefined &&
+          this._developmentTargetCandidates !== candidates
+        )
+          this.publishDevelopmentTargets(undefined);
+        this._developmentTargetCandidates = candidates;
       },
       sendWithTimeout: (method, params, ms) => this.sendWithTimeout(method, params, ms),
       handleMessage: (data) => this.handleMessage(data),
