@@ -475,7 +475,7 @@ pub enum ScrollStatus {
     NoVisibleChange,
 }
 
-// Which development error overlay a retry dismissed, and the step's dismissal count.
+// The development error overlay variant and dismissal attempt number, including failed attempts.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DevErrorDismissal {

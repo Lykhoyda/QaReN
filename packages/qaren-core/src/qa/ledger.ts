@@ -57,7 +57,7 @@ export interface LedgerRow {
   keyboardCleared?: 'native-control' | 'js';
   // Why this step was sent again: a swallowed press, or a dismissed development error overlay.
   retryCause?: 'KEYBOARD_SWALLOWED_TAP' | 'DEV_REDBOX';
-  // Which overlay was dismissed and the step's dismissal count, never its text.
+  // The overlay variant and dismissal attempt number, including failed attempts, never its text.
   devError?: { variant: 'redbox' | 'logbox'; dismissal: number };
   // A plain scroll that passed although two dispatched attempts left the screen unchanged.
   scrollDetail?: { status: 'no_visible_change'; attempts: 2 };

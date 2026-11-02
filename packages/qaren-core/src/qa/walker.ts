@@ -1957,7 +1957,7 @@ async function walkBlockScoped(
     }
     return 'pass' as const;
   };
-  // At most two recoveries per item, the second only declining a different interruption; 'retry' re-runs the item from a fresh capture.
+  // At most two interruption recoveries per item, for distinct interruptions; overlay dismissals have a separate bound.
   const recovery = async (
     item: Item,
     attempt: number,
