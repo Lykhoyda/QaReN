@@ -55,8 +55,10 @@ export interface LedgerRow {
   method?: FillMethod;
   // The dismissal tier that hid a visible keyboard before this press.
   keyboardCleared?: 'native-control' | 'js';
-  // Why this press was sent a second time.
-  retryCause?: 'KEYBOARD_SWALLOWED_TAP';
+  // Why this step was sent again: a swallowed press, or a dismissed development error overlay.
+  retryCause?: 'KEYBOARD_SWALLOWED_TAP' | 'DEV_REDBOX';
+  // The overlay variant and dismissal attempt number, including failed attempts, never its text.
+  devError?: { variant: 'redbox' | 'logbox'; dismissal: number };
   // A plain scroll that passed although two dispatched attempts left the screen unchanged.
   scrollDetail?: { status: 'no_visible_change'; attempts: 2 };
 }

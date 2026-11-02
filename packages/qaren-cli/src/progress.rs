@@ -264,6 +264,7 @@ mod tests {
             keyboard_cleared: None,
             retry_cause: None,
             scroll_detail: None,
+            dev_error: None,
         }
     }
 

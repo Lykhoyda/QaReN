@@ -72,7 +72,13 @@ export interface Element {
   };
 }
 
-export type Front = 'app' | 'dev-menu' | 'dev-fab' | 'picker' | 'dialog';
+export type Front = 'app' | 'dev-menu' | 'dev-fab' | 'dev-redbox' | 'picker' | 'dialog';
+
+// React Native's own error overlay (native RedBox or LogBox inspector); dismissRef is its one Dismiss control.
+export interface DevErrorOverlay {
+  variant: 'redbox' | 'logbox';
+  dismissRef?: string;
+}
 
 export interface Screen {
   pointScale?: number;
@@ -84,6 +90,8 @@ export interface Screen {
   labelText?: string[];
   unresolvedText?: string[];
   front: Front;
+  // Present whenever an error overlay is captured, even behind an alert; its text is never reported.
+  devError?: DevErrorOverlay;
   semanticUnassociatedReact?: number;
   coverage?: {
     native: 'complete' | 'incomplete' | 'unknown';
@@ -1653,8 +1661,76 @@ export function frontFromSurface(surface: string | undefined, nodes: NativeNode[
     case 'first_run_tutorial':
       return 'picker';
     default:
+      if (devErrorOverlay(nodes)) return 'dev-redbox';
       return devFabWindow(nodes) ? 'dev-fab' : 'app';
   }
+}
+
+const REDBOX_IDENTIFIERS = new Set([
+  'redbox-dismiss',
+  'redbox-reload',
+  'redbox-copy',
+  'redbox-extra',
+  'redbox-error',
+  'rn_redbox_stack',
+  'rn_redbox_dismiss_button',
+]);
+const LOGBOX_HEADER = /^Log \d+ of \d+$/u;
+
+function windowOf(nodes: NativeNode[], index: number): number | undefined {
+  let at: number | undefined = nodes[index]?.parentIndex;
+  for (let hops = 0; at !== undefined && hops < nodes.length; hops++) {
+    if (nodes[at]?.type === 'Window') return at;
+    at = nodes[at]?.parentIndex;
+  }
+  return undefined;
+}
+
+// Identified by the fixed identifiers and controls React Native gives the overlay, never by error text.
+export function devErrorOverlay(nodes: NativeNode[]): DevErrorOverlay | undefined {
+  if (nodes.some((node) => REDBOX_IDENTIFIERS.has(node.identifier ?? ''))) {
+    const dismiss = nodes.filter(
+      (node) =>
+        node.identifier === 'redbox-dismiss' || node.identifier === 'rn_redbox_dismiss_button',
+    );
+    return { variant: 'redbox', ...(dismiss.length === 1 ? { dismissRef: dismiss[0].ref } : {}) };
+  }
+  const byWindow = new Map<number | undefined, number[]>();
+  nodes.forEach((_, index) => {
+    const window = windowOf(nodes, index);
+    const members = byWindow.get(window);
+    if (members) members.push(index);
+    else byWindow.set(window, [index]);
+  });
+  for (const members of byWindow.values()) {
+    const labelled = (text: string) => members.filter((i) => nodes[i].label?.trim() === text);
+    const dismiss = labelled('Dismiss');
+    if (
+      members.some((i) => LOGBOX_HEADER.test(nodes[i].label?.trim() ?? '')) &&
+      dismiss.length > 0 &&
+      labelled('Minimize').length > 0
+    ) {
+      // A button and its own label text are one control: keep the outermost.
+      const outer = dismiss.filter((i) => {
+        for (
+          let at = nodes[i].parentIndex, hops = 0;
+          at !== undefined && hops < nodes.length;
+          hops++
+        ) {
+          if (dismiss.includes(at)) return false;
+          at = nodes[at]?.parentIndex;
+        }
+        return true;
+      });
+      return {
+        variant: 'logbox',
+        ...(outer.length === 1 ? { dismissRef: nodes[outer[0]].ref } : {}),
+      };
+    }
+    if (labelled('Failed to compile').length && labelled('This error cannot be dismissed.').length)
+      return { variant: 'logbox' };
+  }
+  return undefined;
 }
 
 const DEV_FAB_MAX_PT = 96;

@@ -7,7 +7,7 @@ export type DevOverlayReadError =
 
 export type DevOverlayObservation =
   | { state: 'clear'; front: 'app' | 'dialog' | 'picker' }
-  | { state: 'shown'; front: 'dev-menu' | 'dev-fab' }
+  | { state: 'shown'; front: 'dev-menu' | 'dev-fab' | 'dev-redbox' }
   | { state: 'unknown'; error: DevOverlayReadError };
 
 export function devOverlayDeadline(

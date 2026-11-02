@@ -1285,3 +1285,55 @@ test('run-wide fixture policy changes re-walk unchanged earlier blocks, includin
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+for (const replayDismissals of [1, 2, 3]) {
+  test(`re-walk retains the ${replayDismissals} dismissals already spent by replay`, async () => {
+    const dir = root();
+    try {
+      const plan = blocks('### Ready\n1. Tap "Ready"');
+      const judge = scriptedJudge(() => assert.fail('literal targets must not ask Jev'));
+      const seed = walker([screen([element('@ready', 'Ready', { testID: 'old-ready' })])], judge);
+      assert.equal(ledger(await runPlan(plan, seed.deps, [], store(dir))).verdict, 'PASS');
+      const fake = walker([], judge);
+      let dismissals = 0;
+      let rewalking = false;
+      fake.deps.captureScreen = async () => {
+        if (rewalking || dismissals < replayDismissals)
+          return {
+            ...screen([element('@dismiss', 'Dismiss')]),
+            front: 'dev-redbox',
+            devError: { variant: 'redbox', dismissRef: '@dismiss' },
+          };
+        return screen([element('@ready', 'Ready', { testID: 'new-ready' })]);
+      };
+      fake.deps.press = async (ref, context) => {
+        context!.authorize();
+        fake.actions.push(`press ${ref}`);
+        assert.equal(ref, '@dismiss', 'no planned action may dispatch behind the overlay');
+        dismissals++;
+        return { ok: true, executed: true };
+      };
+      fake.deps.hideDevMenu = async () => assert.fail('RedBox uses its own Dismiss');
+      const row = fake.deps.row;
+      fake.deps.row = (event) => {
+        row(event);
+        if (event.outcome === 'retry' && event.retryCause !== 'DEV_REDBOX') rewalking = true;
+      };
+      const result = await runPlan(plan, fake.deps, [], store(dir));
+      assert.equal(result.verdict, 'REFUSED');
+      assert.equal(result.code, 'DEV_REDBOX_REPEATED');
+      assert.equal(result.path, `replay→walk@${plan[0].items[0].line}`);
+      assert.equal(dismissals, 3);
+      assert.deepEqual(fake.actions, ['press @dismiss', 'press @dismiss', 'press @dismiss']);
+      assert.deepEqual(
+        result.steps
+          .filter((event) => event.retryCause === 'DEV_REDBOX')
+          .map((event) => event.devError?.dismissal),
+        [1, 2, 3],
+      );
+      assert.equal(new Set(result.steps.map((event) => event.operationId)).size, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}

@@ -1265,6 +1265,30 @@ mod tests {
     }
 
     #[test]
+    fn dev_error_retry_rows_keep_the_variant_and_count_and_drop_unknown_ones() {
+        let ledger: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "PASS", "path": "walk", "blocks": [],
+            "steps": [
+                { "block": "b", "line": 1, "attempt": 1, "kind": "step", "resolvedBy": "exact",
+                  "t": 0, "outcome": "retry", "retryCause": "DEV_REDBOX",
+                  "devError": { "variant": "logbox", "dismissal": 2 } },
+                { "block": "b", "line": 1, "attempt": 1, "kind": "step", "resolvedBy": "exact",
+                  "t": 0, "outcome": "retry", "retryCause": "DEV_REDBOX",
+                  "devError": { "variant": "toast", "dismissal": 1, "text": "stack" } },
+            ],
+            "jev": { "calls": 0, "medianMs": 0 }, "llmTurns": 0, "escapes": 0, "recoveries": 2,
+        }))
+        .unwrap();
+        let json = serde_json::to_value(&ledger).unwrap();
+        assert_eq!(json["steps"][0]["retryCause"], "DEV_REDBOX");
+        assert_eq!(
+            json["steps"][0]["devError"],
+            serde_json::json!({ "variant": "logbox", "dismissal": 2 })
+        );
+        assert!(json["steps"][1].get("devError").is_none());
+    }
+
+    #[test]
     fn splice_proof_section_appends_or_replaces_and_keeps_every_other_byte() {
         let s = format!("{PROOF_START}\nnew\n{PROOF_END}\n");
         let old = format!("{PROOF_START}\nold\n{PROOF_END}");

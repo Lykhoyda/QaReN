@@ -406,6 +406,7 @@ export interface WalkSequence {
   };
   screenshots?: { cause: MediaLatch; line: number; count: number };
   operation?: number;
+  stepBudgets?: Map<number, { startedAt: number; deadline?: number; devErrorDismissals: number }>;
   publicationInterrupted?: boolean;
   momentum?: boolean;
   planPassed?: boolean;
@@ -451,11 +452,49 @@ const promptSignature = (screen: Screen): string =>
     screen.elements.flatMap((e) => (e.kind === 'button' && e.label !== undefined ? [e.label] : [])),
   ]);
 
+// A development error overlay is a known cause: its own Dismiss runs at most this often per step.
+export const DEV_ERROR_DISMISSALS = 3;
+
+// Closed causes of a DEV_REDBOX refusal; the messages carry no app text.
+const DEV_ERROR_REFUSALS = {
+  REPEATED: `a development error overlay was still in front after ${DEV_ERROR_DISMISSALS} dismissals in this step; nothing else was tapped`,
+  DISMISS_FAILED: "the development error overlay's Dismiss control was not dispatched",
+  NO_SAFE_DISMISS:
+    'a development error overlay is in front with no single Dismiss control to press; nothing was tapped',
+  CLEARANCE_UNPROVEN: 'the development error overlay was not proven gone after Dismiss',
+  ACTION_UNCERTAIN:
+    "a development error overlay appeared after the step's action was sent; it was not dismissed and the step was not replayed",
+} as const;
+type DevErrorRefusal = keyof typeof DEV_ERROR_REFUSALS;
+
+// The runner's refusal code only: a value-free token, never the message after it.
+const refusalCode = (error: string | undefined): string | undefined =>
+  /^([A-Z][A-Z0-9_]{2,63}):/u.exec(error ?? '')?.[1];
+
+const FRAME = String.raw`(-?\d+(?:\.\d+)?(?:,-?\d+(?:\.\d+)?){3})`;
+const IDENTITY = String.raw`(?: \((?:[A-Za-z]{1,32}(?:\(\d{1,3}\))?), (?:label \d+ chars|no label), (has id|no id)\))?`;
+const MOVED = new RegExp(
+  `retained ${FRAME}${IDENTITY}; live ${FRAME}${IDENTITY}(?:; labels (?:match|differ), ids (?:match|differ))?; delta ${FRAME}`,
+  'u',
+);
+function movedGeometry(error: string | undefined) {
+  const m = MOVED.exec(error ?? '');
+  if (!m) return undefined;
+  const frame = (text: string) => text.split(',').map(Number);
+  return {
+    retained: frame(m[1]),
+    live: frame(m[3]),
+    delta: frame(m[5]),
+    ...(m[2] ? { path: m[2] === 'has id' ? 'identifier' : 'label' } : {}),
+  };
+}
+
 const PREVIOUS_PLAN_PRESS =
   '; the previous planned press succeeded; the next target was not found; automatic app dismissal was withheld';
 
 // Capture and process refusals, ambiguity and the replay-miss path are never recovered.
 const UNRECOVERABLE = new Set([
+  'DEV_REDBOX_ACTION_UNCERTAIN',
   'SCROLL_NAVIGATED',
   'SCROLL_UNSETTLED',
   'REPLAY_SELECTOR',
@@ -565,6 +604,7 @@ async function walkBlockScoped(
   let fillHandlerAttempted = false;
   let fillHandlerRefused = false;
   let itemStartedAt = 0;
+  let itemDeadline: number | undefined;
   // A quoted wait's one layout read and one scroll, which a recovery retry does not refund.
   let enrichment: { at: number; budget: number; waited?: number } | undefined;
   let waitAttempt: 'scroll' | 'none' = 'none';
@@ -592,6 +632,7 @@ async function walkBlockScoped(
   };
   // The interruption a step's first decline answered; null once no further recovery is allowed.
   const recovered = new Map<Item, string | null>();
+  const stepBudgets = (sequence.stepBudgets ??= new Map());
   const metric = (
     stage: TimingEvent['stage'],
     observation?: Observation,
@@ -636,6 +677,7 @@ async function walkBlockScoped(
     const requirePresence = assertion || (!!target && target.quoted === undefined);
     const platformPresence = requirePresence || purpose === 'provenance';
     const startedAt = deps.now();
+    if (until !== undefined && startedAt >= until) throw new CaptureDeadline();
     const id = ++sequence.observation;
     latestObservation = id;
     const captureLine = line;
@@ -668,13 +710,27 @@ async function walkBlockScoped(
         if (error instanceof AppProcessGoneError) throw processChanged();
         throw error;
       }
-      if (latest.front === 'picker' || latest.front === 'dev-fab' || latest.front === 'dev-menu')
+      if (
+        latest.front === 'picker' ||
+        latest.front === 'dev-fab' ||
+        latest.front === 'dev-menu' ||
+        latest.front === 'dev-redbox'
+      )
         sequence.publicationInterrupted = true;
       const privacyStarted = deps.timing ? deps.now() : 0;
       privacy.observe(latest);
       recordMediaLatch(privacy, sequence, deps, line);
       guardAppProcess(deps.appProcess, latest.appProcessIdentifier);
-      if (latest.renderError) throw new RenderError();
+      // A natively identified overlay gets its bounded dismissal; React's error flag alone still fails.
+      if (latest.renderError && latest.front !== 'dev-redbox') throw new RenderError();
+      // The overlay is never read as the app: recovery dismisses it, or the step refuses.
+      if (latest.front === 'dev-redbox' && !recovery) {
+        const cause: DevErrorRefusal = mutationStarted ? 'ACTION_UNCERTAIN' : 'NO_SAFE_DISMISS';
+        throw new ResolutionError({
+          refuse: `DEV_REDBOX_${cause}`,
+          reason: DEV_ERROR_REFUSALS[cause],
+        });
+      }
       if (deps.timing)
         observeTiming(timingObserver, {
           stage: 'privacy-history',
@@ -684,6 +740,7 @@ async function walkBlockScoped(
           ms: deps.now() - privacyStarted,
         });
       assertActive();
+      if (until !== undefined && deps.now() >= until) throw new CaptureDeadline();
       const timing = admitObservation(startedAt, deps.now());
       if (timing) captured.set(latest, { at: timing.completedAt, id });
       if (!timing)
@@ -956,7 +1013,11 @@ async function walkBlockScoped(
         crop: bytes && allowed() ? cropPng(bytes, target.frame, target.scale) : undefined,
       };
     } catch (error) {
-      if (isAbort(error)) throw error;
+      if (
+        isAbort(error) ||
+        (error instanceof ResolutionError && error.code.startsWith('DEV_REDBOX_'))
+      )
+        throw error;
       return { stable: false };
     }
   };
@@ -1263,6 +1324,7 @@ async function walkBlockScoped(
     miss = false,
     // The refusal code when a step failed on its target; false when the walk ended for another cause.
     targetCode?: string | false,
+    devError?: LedgerRow['devError'],
   ): WalkOutcome => {
     const target = item.kind === 'check' ? undefined : stepTarget(item);
     if (target?.quoted !== undefined) emitQuotedTargetDiagnostic(screen, target.quoted, item.line);
@@ -1340,6 +1402,7 @@ async function walkBlockScoped(
     const withheld = privacy.textWithheld(last);
     emit({
       ...row,
+      ...(devError ? { devError } : {}),
       ...(ref ? { ref } : {}),
       ...(screenshot ? { screenshot } : {}),
       outcome: miss ? 'retry' : 'fail',
@@ -1391,7 +1454,7 @@ async function walkBlockScoped(
       withheldRows.set(item.line, latch.reason);
       return undefined;
     }
-    if (metadataOnly) {
+    if (metadataOnly || latest.devError) {
       metric('screenshot', undefined, { outcome: 'withheld' });
       return undefined;
     }
@@ -1451,10 +1514,7 @@ async function walkBlockScoped(
           metric('refresh', observation);
           await pause(Math.min(WAIT_POLL_MS, Math.max(0, deadline - deps.now())));
           if (deps.now() >= deadline) throw new EvidenceExpired(true);
-          observation =
-            item.kind === 'wait'
-              ? await captureOnce(item, false, false, 'resolve', deadline)
-              : await capture(item);
+          observation = await captureOnce(item, false, false, 'resolve', deadline);
           decision = undefined;
           continue;
         }
@@ -1509,7 +1569,7 @@ async function walkBlockScoped(
         metric('reask', observation);
         await pause(Math.min(WAIT_POLL_MS, remaining));
         if (deps.now() >= deadline) break;
-        observation = await capture(item);
+        observation = await captureOnce(item, false, false, 'resolve', deadline);
         decision = undefined;
       }
       usable(observation, item, deadline);
@@ -1946,7 +2006,7 @@ async function walkBlockScoped(
     }
     return 'pass' as const;
   };
-  // At most two recoveries per item, the second only declining a different interruption; 'retry' re-runs the item from a fresh capture.
+  // At most two interruption recoveries per item, for distinct interruptions; overlay dismissals have a separate bound.
   const recovery = async (
     item: Item,
     attempt: number,
@@ -1958,12 +2018,12 @@ async function walkBlockScoped(
     recovered.set(item, null);
     loginReplayed = false;
     let fresh: Observation;
+    const captureDeadline = latest.front === 'dev-redbox' ? itemDeadline : until;
     try {
-      // A wait's recovery capture shares the wait's deadline; out of time, the wait's reason stands.
       fresh =
-        until === undefined
+        captureDeadline === undefined
           ? await capture(undefined, true, true)
-          : await captureOnce(undefined, true, true, 'resolve', until);
+          : await captureOnce(undefined, true, true, 'resolve', captureDeadline);
     } catch (error) {
       if (error instanceof CaptureDeadline) return undefined;
       if (
@@ -1978,6 +2038,12 @@ async function walkBlockScoped(
         /* Diagnostics cannot change recovery. */
       }
       return undefined;
+    }
+    if (fresh.screen.front === 'dev-redbox') {
+      // An overlay dismissal never spends the step's interruption recovery.
+      if (first === undefined) recovered.delete(item);
+      else recovered.set(item, first);
+      return devErrorRecovery(item, attempt, fresh, itemDeadline);
     }
     // A system alert the plan's next step answers is the author's, not recovery's.
     const next = block.items[block.items.indexOf(item) + 1];
@@ -2201,6 +2267,14 @@ async function walkBlockScoped(
           `${reason}; recovered: ${result.label ? `dismissed an app screen with ${result.label}` : result.handled}; retrying the step once`,
         ),
       });
+      const budget = stepBudgets.get(operationFor(item.line))!;
+      if (budget.deadline !== undefined) {
+        const startedAt = deps.now();
+        budget.deadline += startedAt - budget.startedAt;
+        budget.startedAt = startedAt;
+        itemStartedAt = startedAt;
+        itemDeadline = budget.deadline;
+      }
       return 'retry';
     }
     const shown = loginReplayed ? (await capture()).screen : fresh.screen;
@@ -2211,6 +2285,126 @@ async function walkBlockScoped(
           ...failed(item, attempt, result.refuse.message, fresh.screen, shot),
           refusal: result.refuse,
         };
+  };
+
+  // Dismisses the overlay with its own control, never replaying a step whose action may have run.
+  const devErrorRecovery = async (
+    item: Item,
+    attempt: number,
+    fresh: Observation,
+    until?: number,
+  ): Promise<'retry' | WalkOutcome> => {
+    let observation = fresh;
+    const budget = stepBudgets.get(operationFor(item.line))!;
+    const previousDismissal = budget.devErrorDismissals;
+    let devError: LedgerRow['devError'] =
+      fresh.screen.devError && previousDismissal
+        ? { variant: fresh.screen.devError.variant, dismissal: previousDismissal }
+        : undefined;
+    const refuse = (cause: DevErrorRefusal, runnerCode?: string): WalkOutcome => {
+      const message = `${DEV_ERROR_REFUSALS[cause]}${runnerCode ? `; runner refused: ${runnerCode}` : ''}`;
+      return {
+        ...failed(
+          item,
+          attempt,
+          message,
+          observation.screen,
+          undefined,
+          undefined,
+          false,
+          false,
+          devError,
+        ),
+        refusal: { code: `DEV_REDBOX_${cause}`, message },
+      };
+    };
+    const reobserve = async (): Promise<boolean> => {
+      try {
+        observation =
+          until === undefined
+            ? await capture(undefined, true, true)
+            : await captureOnce(undefined, true, true, 'resolve', until);
+        return true;
+      } catch (error) {
+        if (
+          error instanceof CaptureDeadline ||
+          (error instanceof ResolutionError && error.code === 'SCREEN_EVIDENCE_INCOMPLETE')
+        )
+          return false;
+        throw error;
+      }
+    };
+    if (mutationStarted) return refuse('ACTION_UNCERTAIN');
+    while (observation.screen.front === 'dev-redbox') {
+      const dismissal = budget.devErrorDismissals + 1;
+      if (dismissal > DEV_ERROR_DISMISSALS) return refuse('REPEATED');
+      const overlay = observation.screen.devError;
+      const ref = overlay?.dismissRef;
+      if (!overlay || !ref) return refuse('NO_SAFE_DISMISS');
+      devError = { variant: overlay.variant, dismissal };
+      budget.devErrorDismissals = dismissal;
+      recoveries += 1;
+      const dispatched = dispatchedOn;
+      let acted: ActResult;
+      try {
+        acted = await mutate(item, observation, (context) => deps.press(ref, context), until);
+      } catch (error) {
+        if (isAbort(error)) throw error;
+        acted = {
+          ok: false,
+          proven: false,
+          executed: false,
+          ...(error instanceof QaDispatchError ? { error: `${error.code}: ` } : {}),
+          // The runner refused before any gesture, as the walker's own moved-target retry relies on.
+          ...(error instanceof QaDispatchError && error.code === 'TARGET_MOVED_BEFORE_DISPATCH'
+            ? { mutation: 'none' as const }
+            : {}),
+        };
+      } finally {
+        // The overlay's own Dismiss is not the step's action, so the step stays unmutated.
+        mutationStarted = false;
+        dispatchedOn = dispatched;
+      }
+      if (!acted.ok || acted.executed === false) {
+        const code = refusalCode(acted.error);
+        const moved =
+          code === 'TARGET_MOVED_BEFORE_DISPATCH' ? movedGeometry(acted.error) : undefined;
+        try {
+          deps.note?.(
+            `dev-error-dismiss-failed=${code ?? 'unknown'}${moved ? ` moved=${JSON.stringify(moved)}` : ''}`,
+          );
+        } catch {
+          /* Diagnostics cannot change recovery. */
+        }
+        // Only a refusal that proves no gesture ran may be followed by another Dismiss, within the bound.
+        // shortcut: LogBox's Dismiss has no identifier, so the runner re-finds it by label and refuses it as
+        // moved every time; refuse at once until the runner's label path is fixed.
+        if (
+          acted.mutation !== 'none' ||
+          dismissal >= DEV_ERROR_DISMISSALS ||
+          (overlay.variant === 'logbox' && code === 'TARGET_MOVED_BEFORE_DISPATCH')
+        )
+          return refuse('DISMISS_FAILED', code);
+        emit({
+          ...base(item, attempt),
+          outcome: 'retry',
+          retryCause: 'DEV_REDBOX',
+          devError,
+          reason: `a development error overlay was in front; its Dismiss control was refused before any gesture${code ? ` (${code})` : ''} (${dismissal} of ${DEV_ERROR_DISMISSALS}); observing it again`,
+        });
+        if (!(await reobserve())) return refuse('CLEARANCE_UNPROVEN');
+        continue;
+      }
+      emit({
+        ...base(item, attempt),
+        outcome: 'retry',
+        retryCause: 'DEV_REDBOX',
+        devError,
+        reason: `a development error overlay was in front; dismissed it with its own Dismiss control (${dismissal} of ${DEV_ERROR_DISMISSALS}); retrying the step`,
+      });
+      if (!(await reobserve())) return refuse('CLEARANCE_UNPROVEN');
+    }
+    return 'retry';
   };
 
   items: for (const item of block.items) {
@@ -2228,7 +2422,25 @@ async function walkBlockScoped(
     fillHandlerRefused = false;
     enrichment = undefined;
     waitAttempt = 'none';
-    itemStartedAt = deps.now();
+    const operationId = operationFor(item.line);
+    let budget = stepBudgets.get(operationId);
+    if (!budget || budget.devErrorDismissals === 0) {
+      const startedAt = deps.now();
+      budget = {
+        startedAt,
+        deadline:
+          item.kind === 'wait'
+            ? startedAt +
+              (item.target.quoted === undefined ? PHRASE_WAIT_BUDGET_MS : WAIT_BUDGET_MS)
+            : item.kind === 'scroll' && item.until
+              ? startedAt + PHRASE_WAIT_BUDGET_MS
+              : undefined,
+        devErrorDismissals: 0,
+      };
+      stepBudgets.set(operationId, budget);
+    }
+    itemStartedAt = budget.startedAt;
+    itemDeadline = budget.deadline;
     let pixelBaselineTaken = false;
     let pixelBaseline:
       | { target: NonNullable<ReturnType<typeof pixelTarget>>; crop: PixelCrop }
@@ -2310,8 +2522,8 @@ async function walkBlockScoped(
         if (item.kind === 'wait') {
           resolvedBy = item.target.quoted === undefined ? 'jev' : resolvedBy;
           const budget = item.target.quoted === undefined ? PHRASE_WAIT_BUDGET_MS : WAIT_BUDGET_MS;
-          const waitStarted = deps.now();
-          const deadline = waitStarted + budget;
+          const waitStarted = itemStartedAt;
+          const deadline = itemDeadline!;
           const held = cached?.item === item ? cached : undefined;
           let observation: Observation;
           try {
@@ -2622,9 +2834,10 @@ async function walkBlockScoped(
 
         if (item.kind === 'scroll' && item.until) {
           resolvedBy = item.until.quoted === undefined ? 'jev' : resolvedBy;
-          const deadline = deps.now() + PHRASE_WAIT_BUDGET_MS;
+          const deadline = itemDeadline!;
           const held = cached?.item === item ? cached : undefined;
-          let observation = held?.observation ?? (await capture(item));
+          let observation =
+            held?.observation ?? (await captureOnce(item, false, false, 'resolve', deadline));
           cached = undefined;
           let beforeScroll = {
             screen: observation.screen,
@@ -2694,14 +2907,14 @@ async function walkBlockScoped(
               metric('refresh', observation);
               await pause(Math.min(WAIT_POLL_MS, Math.max(0, deadline - deps.now())));
               if (deps.now() >= deadline) throw replayMiss ?? new EvidenceExpired(true);
-              observation = await capture(item);
+              observation = await captureOnce(item, false, false, 'resolve', deadline);
               found = await visible(observation);
               continue;
             }
             attempts += 1;
             await pause(Math.min(WAIT_POLL_MS, Math.max(0, deadline - deps.now())));
             if (deps.now() >= deadline) throw replayMiss ?? new EvidenceExpired(true);
-            observation = await capture(item);
+            observation = await captureOnce(item, false, false, 'resolve', deadline);
             found = await visible(observation);
             const moved = screenSignature(observation.screen) !== beforeSignature;
             if (!act.ok && !moved)
@@ -3203,7 +3416,6 @@ async function walkBlockScoped(
               )
                 throw dialogInFront();
               if (item.kind === 'press' && !pixelBaselineTaken) {
-                pixelBaselineTaken = true;
                 const target = element && pixelTarget(before.screen, element);
                 if (target) {
                   const shot = await pixelShot(item, target);
@@ -3215,6 +3427,7 @@ async function walkBlockScoped(
                   }
                   if (shot.crop) pixelBaseline = { target, crop: shot.crop };
                 }
+                pixelBaselineTaken = true;
               }
               selectionTarget =
                 item.kind === 'press' &&
@@ -3726,7 +3939,7 @@ async function walkBlockScoped(
         continue items;
       } catch (caught) {
         if (isAbort(caught)) throw caught;
-        let error = caught;
+        let error = caught instanceof CaptureDeadline ? new EvidenceExpired(true) : caught;
         if (
           error instanceof ResolutionError &&
           !UNRECOVERABLE.has(error.code) &&
@@ -3815,8 +4028,16 @@ async function walkBlockScoped(
           error.code === 'REPLAY_SELECTOR';
         const resolutionRefusal =
           error instanceof ResolutionError &&
-          (error.code === 'APP_PROCESS_UNKNOWN' || error.code === 'SCROLL_NAVIGATED')
-            ? { code: error.code, message: error.message }
+          (error.code === 'APP_PROCESS_UNKNOWN' ||
+            error.code === 'SCROLL_NAVIGATED' ||
+            error.code.startsWith('DEV_REDBOX_'))
+            ? {
+                code: error.code,
+                // The receipt adds the code itself; an overlay refusal's message must not repeat it.
+                message: error.code.startsWith('DEV_REDBOX_')
+                  ? error.message.slice(error.code.length + 2)
+                  : error.message,
+              }
             : undefined;
         const caughtOutcome = failed(
           item,

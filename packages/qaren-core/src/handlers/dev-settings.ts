@@ -200,7 +200,9 @@ async function clearOverlays(
     }
     witness.phase = 'read';
     while (remaining() > 0) {
-      if ((await read()).state === 'clear')
+      const seen = await read();
+      // An error overlay is no dev menu: the walk's first step dismisses it within its own bound.
+      if (seen.state === 'clear' || (seen.state === 'shown' && seen.front === 'dev-redbox'))
         return okResult({ action: 'clearDevOverlays', executed: true });
       await pause();
     }

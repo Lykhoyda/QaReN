@@ -1784,6 +1784,7 @@ fn refusal_code(code: &str) -> FailureCode {
         "JEV_REQUEST_INVALID" => FailureCode::JevRequestInvalid,
         "JEV_UNREACHABLE" => FailureCode::JevUnreachable,
         "RUN_CANCELLED" => FailureCode::RunCancelled,
+        code if code.starts_with("DEV_REDBOX_") => FailureCode::DevRedbox,
         _ => FailureCode::CoreRefused,
     }
 }
@@ -1891,6 +1892,29 @@ mod block_start_tests {
         let code = refusal_code("BLOCK_START_MISSING");
         assert_eq!(serde_json::to_value(code).unwrap(), "BLOCK_START_MISSING");
         assert!(code.is_refusal());
+    }
+
+    #[test]
+    fn dev_error_overlay_refusals_share_one_code_and_pick_guidance_by_cause() {
+        for (inner, next) in [
+            ("DEV_REDBOX_REPEATED", "restart_app_from_plan_start"),
+            ("DEV_REDBOX_DISMISS_FAILED", "restart_app_from_plan_start"),
+            ("DEV_REDBOX_NO_SAFE_DISMISS", "restart_app_from_plan_start"),
+            (
+                "DEV_REDBOX_CLEARANCE_UNPROVEN",
+                "restart_app_from_plan_start",
+            ),
+            (
+                "DEV_REDBOX_ACTION_UNCERTAIN",
+                "inspect_app_error_before_rerun",
+            ),
+        ] {
+            let code = refusal_code(inner);
+            assert_eq!(serde_json::to_value(code).unwrap(), "DEV_REDBOX", "{inner}");
+            assert!(code.is_refusal(), "{inner}");
+            assert_eq!(Failure::core_refusal_next_action(inner), next, "{inner}");
+        }
+        assert_eq!(refusal_code("DEV_REDBOX"), FailureCode::CoreRefused);
     }
 
     fn home_with_reports(name: &str, coalitions: &[&str]) -> PathBuf {

@@ -558,6 +558,29 @@ test('a quoted wait behind an unchanged optional pop-up declines it once and ret
   );
 });
 
+test('an optional Skip popup can recover after the full 15-second wait budget', async () => {
+  const f = app(screen([element('@close', 'Skip')]));
+  let clock = 0;
+  let declinedAt: number | undefined;
+  f.deps.now = () => clock;
+  f.deps.sleep = async (ms) => {
+    clock += ms;
+  };
+  const press = f.deps.press;
+  f.deps.press = async (ref, context) => {
+    declinedAt = clock;
+    assert.equal(ref, '@close');
+    return press(ref, context);
+  };
+  const result = await runPlan(parsePlan('1. Wait for "Settings"').blocks!, f.deps);
+  assert.equal(declinedAt, 15_000);
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['press @close']);
+  assert.equal(result.recoveries, 1);
+  const completion = result.steps.find((row) => row.outcome === 'pass' && row.line === 1);
+  assert.equal(completion?.t, 15_000);
+});
+
 test('a quoted wait behind a changing optional pop-up declines it once and retries the wait', async () => {
   const f = app(home());
   changingPopup(f);
