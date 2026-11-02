@@ -438,6 +438,7 @@ fn workspace_dry_run_reports_xcode_only_when_the_bound_cache_cannot_be_reused() 
                 | "lsof-port"
                 | "git-ls-files"
                 | "xcode-version"
+                | "swift-version"
         )));
         assert!(mock.spawned_logs.is_empty());
         assert!(!options.lock_root.exists());

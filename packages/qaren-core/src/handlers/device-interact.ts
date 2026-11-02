@@ -30,6 +30,8 @@ import { stopAndroidRunner } from '../runners/qaren-android-runner-client.js';
 import {
   surfaceKeyboardGuard,
   healKeyboardOccludedTap,
+  dismissKeyboardWithParity,
+  dismissalTier,
   type KeyboardAutoHealDeps,
 } from '../runners/keyboard-guard.js';
 import { resolveBundleId } from '../project-config.js';
@@ -889,6 +891,33 @@ function snapshotNodes(result: unknown): FlatNode[] | null {
   }
 }
 
+async function dismissViaJs(client: CDPClient, qaContext?: QaDispatchContext): Promise<boolean> {
+  qaContext?.authorize();
+  const r = await client.evaluate('__QAREN.dismissKeyboard()');
+  if (typeof r.value !== 'string') return false;
+  try {
+    const parsed = JSON.parse(r.value) as { dismissed?: boolean } | null;
+    return parsed?.dismissed === true;
+  } catch {
+    return false;
+  }
+}
+
+// The walker's pre-tap clearance: the shared dismissal chain, native tier then JS tier, each proven hidden.
+export async function dismissKeyboardForQa(
+  getClient: () => CDPClient,
+  qaContext: QaDispatchContext,
+): Promise<'native-control' | 'js' | 'none'> {
+  const client = cdpClientOrNull(getClient);
+  return dismissalTier(
+    await dismissKeyboardWithParity({
+      nativeDismiss: () => runNative(['keyboard'], { qaContext }),
+      ...(client ? { dismissViaJs: () => dismissViaJs(client, qaContext) } : {}),
+      refreshSnapshot: () => runNative(['snapshot', '--full'], { qaContext, qaReadOnly: true }),
+    }),
+  );
+}
+
 // The heal retries the identity the refused tap named, never whatever its refreshed ref now names.
 function keyboardHealDeps(
   getClient: () => CDPClient,
@@ -900,17 +929,7 @@ function keyboardHealDeps(
   if (!client) return null;
   let refreshed: unknown;
   return {
-    dismissViaJs: async () => {
-      qaContext?.authorize();
-      const r = await client.evaluate('__QAREN.dismissKeyboard()');
-      if (typeof r.value !== 'string') return false;
-      try {
-        const parsed = JSON.parse(r.value) as { dismissed?: boolean } | null;
-        return parsed?.dismissed === true;
-      } catch {
-        return false;
-      }
-    },
+    dismissViaJs: () => dismissViaJs(client, qaContext),
     refreshSnapshot: async () =>
       // Identity re-resolution counts every node, not only interactive ones.
       (refreshed = await runNative(['snapshot', '--full'], {

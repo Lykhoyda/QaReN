@@ -31,6 +31,7 @@ import {
   extractMutationDisposition,
   createDevicePressHandler,
   createDeviceScrollHandler,
+  dismissKeyboardForQa,
   readReactInputValue,
   entryMismatchOf,
 } from '../handlers/device-interact.js';
@@ -56,6 +57,8 @@ import {
   observeRunnerRelaunches,
 } from '../runners/qaren-ios-runner-client.js';
 import type { ToolResult } from '../utils.js';
+import type { QaDispatchContext } from '../domain/qa-dispatch.js';
+import { resolveKeyboardGuard } from '../runners/keyboard-guard.js';
 import { HandlerError, adapt, describeError, fillEvidence, unwrap } from './adapt.js';
 import {
   AppProcessGoneError,
@@ -856,6 +859,13 @@ async function openSession(
       ? {
           appProcess: {},
           reactFocused: (testID: string) => reactFocused(cdpClientOrNull(getClient), testID),
+          // RN_KEYBOARD_GUARD=0 turns off every QaReN keyboard clearance, this one included.
+          ...(resolveKeyboardGuard(process.env)
+            ? {
+                dismissKeyboard: (qaContext: QaDispatchContext) =>
+                  stop.track(() => dismissKeyboardForQa(getClient, qaContext)),
+              }
+            : {}),
           typeFocused: (
             ref,
             text,

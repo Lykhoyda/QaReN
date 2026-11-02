@@ -483,11 +483,14 @@ pub fn run(run_id: &str, verb: &str, platform: &str, client: &Client, flags: &[&
     with(|e| e.run(run_id, verb, platform, client, flags));
 }
 
+// Progress is projected here, not in `Events`, so it works without a stream and never twice.
 pub fn stage(name: &'static str, state: StageState, code: Option<&str>, ms: Option<u64>) {
+    crate::progress::stage(name, state);
     with(|e| e.stage(name, state, code, ms));
 }
 
 pub fn close_running(state: StageState, code: Option<&str>, except: &[&str]) {
+    crate::progress::close_stages(state, except);
     with(|e| e.close_running(state, code, except));
 }
 

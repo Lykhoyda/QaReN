@@ -12,8 +12,9 @@ import {
   visibleSelector,
 } from '../../../dist/qa/resolve.js';
 import { literalEvidence } from '../../../dist/qa/evidence.js';
+import { dismissCandidate } from '../../../dist/qa/recover.js';
 import { replayBlock, runPlan, walkBlock } from '../../../dist/qa/walker.js';
-import { scriptedJudge, walker } from './judgment-fixtures.ts';
+import { element, scriptedJudge, walker } from './judgment-fixtures.ts';
 import type { TargetMissDiagnostic } from '../../../dist/qa/target-miss.js';
 
 const app = { x: 0, y: 0, width: 402, height: 874 };
@@ -171,6 +172,25 @@ test('V1: consistent pager shapes keep their verdicts; the K2 stale input is uns
   const input = wizard.elements.find((e) => e.label === 'Describe the issue')!;
   assert.equal(input.visibilityEvidence, 'unresolved');
   assert.equal(input.offscreen, true, 'press and fill targeting keep treating it as not shown');
+});
+
+test('unresolved stale input text vetoes dismissal for current and later targets', () => {
+  const screen = k2();
+  screen.elements.push(element('@close', 'Close'));
+  const absent = { phrase: 'Absent', quoted: 'Absent' };
+  assert.deepEqual(dismissCandidate(screen, [absent]), { label: 'Close' });
+  assert.equal(literalEvidence(screen, 'Describe the issue', 'contains').verdict, 'unsure');
+  for (const exact of [undefined, 'text'] as const) {
+    const target = { phrase: 'Describe the issue', quoted: 'Describe the issue', exact };
+    for (const targets of [[target], [absent, target]]) {
+      const diagnostics: string[] = [];
+      assert.equal(
+        dismissCandidate(screen, targets, (record) => diagnostics.push(record.veto)),
+        undefined,
+      );
+      assert.deepEqual(diagnostics, [targets.length === 1 ? 'current-target' : 'later-target']);
+    }
+  }
 });
 
 test('K1: later pages chained to no Window stay FAIL through the Application clip', () => {

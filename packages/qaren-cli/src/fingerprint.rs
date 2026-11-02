@@ -19,6 +19,7 @@ pub struct NativeFingerprint {
     pub expo_fingerprint_ms: Option<u64>,
     // The closed-template cause when the app's Expo fingerprint could not be computed.
     pub expo_unavailable: Option<String>,
+    pub ios_compiler: Option<crate::ios_toolchain::CompilerIdentity>,
 }
 
 impl NativeFingerprint {
@@ -821,9 +822,16 @@ pub fn compute(
         }
     }
     // Failed dynamic-config evaluation already forbids reuse; static Expo fallback still binds Xcode.
-    let toolchain = (platform_dir == "ios"
+    let ios_compiler = (platform_dir == "ios"
         && (dynamic_config.is_none() || expo_unavailable.is_none()))
-    .then(|| toolchain_digest(runner));
+    .then(|| crate::ios_toolchain::CompilerIdentity::collect(runner));
+    let toolchain = ios_compiler.as_ref().map(|compiler| {
+        compiler
+            .xcode_hash
+            .as_ref()
+            .map(|hash| format!("xcode:{hash}"))
+            .ok_or_else(|| "xcodebuild -version failed".to_string())
+    });
     if let Some(Err(reason)) = &toolchain {
         incompleteness.push(format!(
             "toolchain identity unavailable ({reason}); reuse across an unknown Xcode is unprovable"
@@ -961,6 +969,7 @@ pub fn compute(
         parts,
         expo_fingerprint_ms,
         expo_unavailable,
+        ios_compiler,
     })
 }
 
@@ -1060,18 +1069,6 @@ fn outcome(output: &crate::exec::PrivateOutput) -> String {
         (false, Some(code)) => format!("exit {code}"),
         (false, None) => "terminated by a signal".to_string(),
     }
-}
-
-// The installed simulator SDK ships inside Xcode, so the selected Xcode's build version identifies both.
-fn toolchain_digest(runner: &mut dyn Runner) -> Result<String, String> {
-    let version = runner.run(&crate::adapters::ios::xcode_version_spec());
-    if !version.ok() || version.stdout.trim().is_empty() {
-        return Err("xcodebuild -version failed".to_string());
-    }
-    Ok(format!(
-        "xcode:{}",
-        sha256_hex(version.stdout.trim().as_bytes())
-    ))
 }
 
 #[cfg(test)]

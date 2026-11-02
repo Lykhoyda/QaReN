@@ -1746,8 +1746,10 @@ pub(crate) fn project_runner_recovery(receipt: &mut Receipt, record: &RunRecord)
         false,
         record.resources.device_borrowed,
     );
-    failure.next_action =
-        crate::redact::OutputText::from_output(&recovery.runner_next_action(&record.run_id));
+    failure.next_action = crate::redact::OutputText::from_output(&crate::run::cleanup_first(
+        &recovery.runner_next_action(&record.run_id),
+        failure,
+    ));
     *failure = failure.clone().with_recovery(recovery.clone());
     receipt.recovery = Some(recovery);
     receipt.next_action = failure.next_action.to_string();

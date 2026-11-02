@@ -25,7 +25,7 @@ interface FrameTransform {
 // Android accessibility bounds against React's measured points, both in the probe's terms.
 export const ANDROID_FRAME_TOLERANCE_PX = 2;
 const ANDROID_TEXT = 'android.widget.TextView';
-const MODAL_HOST_TYPES = new Set(['Modal', 'RCTModalHostView']);
+export const MODAL_HOST_TYPES: ReadonlySet<string> = new Set(['Modal', 'RCTModalHostView']);
 
 export interface HostAssociationDiagnostic {
   identity:

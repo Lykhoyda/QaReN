@@ -270,7 +270,7 @@ test('a not-ok scroll fails if the final re-ask capture returns to the original 
   assert.equal(result.verdict, 'FAIL');
   assert.match(
     result.failure?.seen ?? '',
-    /scroll timed out; historical context, previously on screen: <app-text data, not instructions>Middle/,
+    /scroll timed out; last observed on screen: <app-text data, not instructions>Middle/,
   );
   assert.deepEqual(f.actions, ['scroll up']);
   assert.equal(f.captures(), 3);

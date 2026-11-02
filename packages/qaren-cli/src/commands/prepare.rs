@@ -61,6 +61,9 @@ pub(crate) struct Ctx<'a> {
     pub(crate) runs_root: PathBuf,
     pub(crate) native_cache_root: PathBuf,
     pub(crate) native_store_entry: Option<buildplan::NativeStoreEntry>,
+    pub(crate) ios_observation: Option<crate::ios_toolchain::Observation>,
+    pub(crate) linkage_before_build: Option<crate::ios_toolchain::Linkage>,
+    pub(crate) ios_generated_native: bool,
     pub(crate) record: RunRecord,
     pub(crate) started_ms: u64,
     pub(crate) timings: Vec<(String, u64)>,
@@ -77,6 +80,25 @@ pub(crate) struct Ctx<'a> {
 }
 
 impl<'a> Ctx<'a> {
+    fn note_toolchain(&mut self, linkage: crate::ios_toolchain::Mode) {
+        if let Some(observation) = &self.ios_observation {
+            let compiler = &observation.compiler;
+            self.notes.push((
+                "toolchain".into(),
+                format!(
+                    "xcode={}; swift={}; precompiled_modules={}",
+                    compiler.xcode.as_deref().unwrap_or("unknown"),
+                    compiler
+                        .swift
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "unknown".into()),
+                    linkage.as_str()
+                ),
+            ));
+        }
+    }
+
     pub(crate) fn mark(&mut self, label: &str, phase_start_ms: u64) -> u64 {
         let now = self.runner.now_epoch_ms();
         self.timings
@@ -123,10 +145,23 @@ impl<'a> Ctx<'a> {
                         && r.reason == RecoveryReason::IdentityUnavailable)
             })
         {
-            failure.next_action = crate::redact::OutputText::from_output(&format!(
-                "qaren cleanup {} --json",
-                self.record.run_id
-            ));
+            let cleanup = format!("qaren cleanup {} --json", self.record.run_id);
+            let next = if failure.code == FailureCode::ManifestNotWarm {
+                format!("{cleanup}; then {}", failure.next_action)
+            } else {
+                let remedy = self
+                    .notes
+                    .iter()
+                    .rev()
+                    .find(|(key, _)| {
+                        key == "build_failure_next_action"
+                            && failure.code == FailureCode::BuildFailed
+                    })
+                    .map(|(_, value)| format!("; only after cleanup completes: {value}"))
+                    .unwrap_or_default();
+                format!("{cleanup}{remedy}")
+            };
+            failure.next_action = crate::redact::OutputText::from_output(&next);
         }
         if self.record.resources.any_owned() {
             failure.recovery = failure
@@ -176,12 +211,23 @@ impl FailureCodeStr for Failure {
     }
 }
 
+// A step failure with a suggested plan edit or an earlier identical failure leads with that next step.
+fn report_next_action(report: String, failure: Option<&Failure>) -> String {
+    match failure {
+        Some(f) if f.suggestion.is_some() || f.repeat.is_some() => {
+            format!("{}; {report}", f.next_action.as_str())
+        }
+        _ => report,
+    }
+}
+
 pub(crate) fn finish_receipt(ctx: Ctx, result: ReceiptResult, failure: Option<Failure>) -> Receipt {
     let now = ctx.runner.now_epoch_ms();
     let phase = ctx.record.phase.as_str().to_string();
     let next_action = match (&result, &failure) {
         (ReceiptResult::Pass | ReceiptResult::Fail, _) => {
-            format!("read the report under {}", RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id).display())
+            let report = format!("read the report under {}", RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id).display());
+            report_next_action(report, failure.as_ref())
         }
         (ReceiptResult::Ready, _) if ctx.record.phase == Phase::HandedOff => format!(
             "run the qaren managed build/bind chain against the allocated device (docs/qa/cooperative-qa.md), then: qaren complete {} <build-log> --json",
@@ -561,6 +607,8 @@ fn prepare_validated(
         scenario: scenario.clone(),
         scenario_path: args.scenario_path.clone(),
         scenario_sha256,
+        plan_sha256: None,
+        plan_marker_lines: None,
         candidate: cand,
         phase: Phase::Created,
         substage: None,
@@ -586,6 +634,9 @@ fn prepare_validated(
         runs_root: args.runs_root.clone(),
         native_cache_root: args.native_cache_root.clone(),
         native_store_entry: None,
+        ios_observation: None,
+        linkage_before_build: None,
+        ios_generated_native: false,
         record,
         started_ms,
         timings: Vec::new(),
@@ -2086,6 +2137,15 @@ pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
     let fp = fingerprint::compute(ctx.runner, &repo_root, &project_root, platform)?
         .with_ios_workspace(ctx.record.scenario.build.ios_workspace.as_ref());
     let state = buildplan::load_state(&repo_root, platform, &ctx.record.candidate.app_id);
+    if let Some(compiler) = &fp.ios_compiler {
+        ctx.ios_generated_native = !fp.native_dir_in_candidate;
+        ctx.ios_observation = Some(crate::ios_toolchain::inspect(
+            ctx.runner,
+            &project_root,
+            compiler.clone(),
+        ));
+        ctx.note_toolchain(crate::ios_toolchain::Linkage::inspect(&project_root).expo);
+    }
     let store = cached_artifact(
         &ctx.native_cache_root,
         platform,
@@ -2867,6 +2927,7 @@ fn spawn_metro_only(ctx: &mut Ctx) -> Result<(), Failure> {
         &project_root,
         port,
         ctx.record.scenario.platform == Platform::Ios,
+        metro::expo_online(ctx.runner),
     );
     let metro_log = RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id)
         .join("logs")
@@ -3156,54 +3217,7 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     let t = ctx.mark("metro_ready", t);
 
     enter_substage(ctx, Some("dev_client_manifest"));
-    if matches!(ctx.record.scenario.platform, Platform::Ios) {
-        run_budgeted_attempt(
-            ctx,
-            &metro::request_probe_spec(metro_port),
-            deadline,
-            &mut 0,
-        )?;
-    }
-    let manifest = metro::manifest_spec(metro_port, platform_dir(ctx.record.scenario.platform));
-    let mut attempts = 0;
-    let mut in_margin = 0;
-    let mut last = None;
-    loop {
-        let Some(warmed) = run_budgeted_attempt(ctx, &manifest, deadline, &mut attempts)? else {
-            let last = last.ok_or_else(|| launch_deadline_spent(&ctx.record.run_id))?;
-            return Err(launch_failure(
-                "dev client manifest",
-                &last,
-                crate::core::host_load_1m(),
-                attempts,
-                &ctx.record.run_id,
-            ));
-        };
-        let ready = match ctx.record.scenario.platform {
-            Platform::Ios => {
-                in_margin = manifest_in_margin(in_margin, &warmed);
-                in_margin == DEV_CLIENT_MANIFEST_ANSWERS
-            }
-            Platform::Android => warmed.ok() && warmed.duration_ms < DEV_CLIENT_REQUEST_TIMEOUT_MS,
-        };
-        if ready {
-            ctx.manifest_warm = Some(crate::core::ManifestWarm {
-                ms: warmed.duration_ms,
-                attempts,
-            });
-            break;
-        }
-        if !warmed.ok() && !warmed.timed_out {
-            return Err(launch_failure(
-                "dev client manifest",
-                &warmed,
-                None,
-                attempts,
-                &ctx.record.run_id,
-            ));
-        }
-        last = Some(warmed);
-    }
+    warm_dev_client_manifest(ctx, metro_port, deadline)?;
     let launch = match ctx.record.scenario.platform {
         Platform::Ios => {
             reprove_borrowed_prepare(ctx)?;
@@ -4234,6 +4248,34 @@ fn run_finite_build(ctx: &mut Ctx, spec: &CmdSpec) -> Result<(), Failure> {
         .with_evidence(vec![super::log_tail(&log, 25)]);
         if crate::redact::is_registry_child(&spec.label) && !spec.registry_auth_env.is_empty() {
             failure.next_action = crate::redact::OutputText::from_output(&format!("dependency output was withheld; check the declared registry auth environment names and registry setup, then qaren cleanup {} --json", ctx.record.run_id));
+        } else if started
+            && exit.is_some_and(|code| code != 0)
+            && ctx.record.scenario.platform == Platform::Ios
+        {
+            if let Some(diagnostic) = inspect_interface_failure(&log, ctx.ios_observation.as_ref())
+            {
+                failure.detail = crate::redact::OutputText::from_output(&diagnostic.detail());
+                let source_mode = ctx
+                    .linkage_before_build
+                    .as_ref()
+                    .map_or(crate::ios_toolchain::Mode::Unknown, |linkage| linkage.expo);
+                let recovery = diagnostic.recovery(
+                    ctx.verb == "prepare" && ctx.ios_generated_native,
+                    source_mode,
+                );
+                let next_action = recovery.next_action;
+                failure.next_action = crate::redact::OutputText::from_output(&next_action);
+                if let Some(cause) = diagnostic.cause() {
+                    ctx.notes.push(("build_failure_cause".into(), cause.into()));
+                }
+                ctx.notes.extend([
+                    ("build_failure_next_action".into(), next_action),
+                    ("recovery_next_rung".into(), recovery.next_rung.into()),
+                    ("recovery_requires_user_ok".into(), recovery.requires_user_ok.to_string()),
+                    ("recovery_destroys_state".into(), recovery.destroys_state.into()),
+                    ("recovery_unavailable_rungs".into(), "blind-retry, restart-app, restart-metro, restart-runner, restart-device, cleanup-as-repair".into()),
+                ]);
+            }
         }
         if windowed {
             failure = failure.with_recovery(if budget_spent && exit.is_none() {
@@ -4245,6 +4287,51 @@ fn run_finite_build(ctx: &mut Ctx, spec: &CmdSpec) -> Result<(), Failure> {
         return Err(failure);
     }
     Ok(())
+}
+
+fn inspect_interface_failure(
+    log: &Path,
+    observation: Option<&crate::ios_toolchain::Observation>,
+) -> Option<crate::ios_toolchain::InterfaceFailure> {
+    use std::io::{BufRead, BufReader, Read};
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(log)
+        .ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    let mut reader = BufReader::new(file.take(metadata.len()));
+    let mut line = Vec::new();
+    let mut fallback = None;
+    loop {
+        line.clear();
+        let length = (&mut reader)
+            .take(64 * 1024 + 1)
+            .read_until(b'\n', &mut line)
+            .ok()?;
+        if length == 0 {
+            return fallback;
+        }
+        if length > 64 * 1024 {
+            if !line.ends_with(b"\n") {
+                reader.skip_until(b'\n').ok()?;
+            }
+            continue;
+        }
+        if let Some(failure) = std::str::from_utf8(&line)
+            .ok()
+            .and_then(|text| crate::ios_toolchain::classify_failure(text, observation))
+        {
+            if failure.cause().is_some() {
+                return Some(failure);
+            }
+            fallback.get_or_insert(failure);
+        }
+    }
 }
 
 pub(crate) fn build_ios_locked(
@@ -4292,6 +4379,9 @@ fn with_build_window<T>(
         runs_root: ctx.runs_root.clone(),
         native_cache_root: ctx.native_cache_root.clone(),
         native_store_entry: ctx.native_store_entry.take(),
+        ios_observation: ctx.ios_observation.take(),
+        linkage_before_build: ctx.linkage_before_build.take(),
+        ios_generated_native: ctx.ios_generated_native,
         record: ctx.record.clone(),
         started_ms: ctx.started_ms,
         timings: std::mem::take(&mut ctx.timings),
@@ -4306,6 +4396,9 @@ fn with_build_window<T>(
     let budget = ensure_build_budget(&mut scoped);
     ctx.record = scoped.record;
     ctx.native_store_entry = scoped.native_store_entry;
+    ctx.ios_observation = scoped.ios_observation;
+    ctx.linkage_before_build = scoped.linkage_before_build;
+    ctx.ios_generated_native = scoped.ios_generated_native;
     ctx.timings = scoped.timings;
     ctx.notes = scoped.notes;
     ctx.bundle_requests_at_launch = scoped.bundle_requests_at_launch;
@@ -4333,6 +4426,9 @@ fn finish_ios_build(
 fn build_ios(ctx: &mut Ctx) -> Result<(), Failure> {
     ensure_running(ctx.runner, "build")?;
     let project_root = ctx.record.candidate.project_root.clone();
+    let linkage = crate::ios_toolchain::Linkage::inspect(&project_root);
+    ctx.note_toolchain(linkage.expo);
+    ctx.linkage_before_build = Some(linkage);
     if let Some(workspace) = ctx.record.scenario.build.ios_workspace.as_ref() {
         ios::validate_workspace(&project_root, workspace)?;
     }
@@ -4969,7 +5065,12 @@ fn dry_run_receipt(
                     ..Default::default()
                 });
             }
-            planned.push(metro::start_spec(&cand.project_root, port, true));
+            planned.push(metro::start_spec(
+                &cand.project_root,
+                port,
+                true,
+                metro::expo_online(runner),
+            ));
             planned.push(ios::build_spec(
                 &cand.project_root,
                 Path::new("<run_dir>/ios-build"),
@@ -5119,7 +5220,12 @@ fn dry_run_receipt(
         match scenario.platform {
             Platform::Ios => {
                 let udid = borrowed.map_or("<udid>", |sim| sim.udid.as_str());
-                planned.push(metro::start_spec(&cand.project_root, port, true));
+                planned.push(metro::start_spec(
+                    &cand.project_root,
+                    port,
+                    true,
+                    metro::expo_online(runner),
+                ));
                 planned.push(ios::install_app_spec(udid, &artifact_path));
                 planned.push(metro::request_probe_spec(port));
                 planned.push(metro::manifest_spec(port, "ios"));
@@ -5149,7 +5255,12 @@ fn dry_run_receipt(
                     &artifact_path,
                 ));
                 planned.push(android::adb_reverse_spec(adb, server_port, &serial, port));
-                planned.push(metro::start_spec(&cand.project_root, port, false));
+                planned.push(metro::start_spec(
+                    &cand.project_root,
+                    port,
+                    false,
+                    metro::expo_online(runner),
+                ));
                 planned.push(metro::manifest_spec(port, "android"));
                 planned.push(android::am_start_deeplink_spec(
                     adb,
@@ -5239,7 +5350,14 @@ fn run_budgeted_attempt(
         label,
         format!(
             "{}; timeout_seconds={}",
-            output.summary(),
+            if matches!(
+                spec.label.as_str(),
+                "metro-manifest" | "metro-request-probe" | "watchman-volume-probe"
+            ) {
+                format!("ok={}; timed out={}", output.ok(), output.timed_out)
+            } else {
+                output.summary()
+            },
             bounded.timeout_seconds
         ),
     ));
@@ -5247,19 +5365,116 @@ fn run_budgeted_attempt(
     Ok(Some(output))
 }
 
-// expo-dev-launcher abandons its first manifest fetch after EXDevLauncherDefaultRequestTimeout (10 s); launch only once Metro answers inside it.
-const DEV_CLIENT_REQUEST_TIMEOUT_MS: u64 = 10_000;
-// Metro rebuilds the manifest per request, so one fast answer does not predict the dev client's own.
-const DEV_CLIENT_MANIFEST_MARGIN_MS: u64 = DEV_CLIENT_REQUEST_TIMEOUT_MS / 2;
-const DEV_CLIENT_MANIFEST_ANSWERS: usize = 2;
-
-// Consecutive manifest answers inside the margin; any other outcome restarts the count.
-fn manifest_in_margin(in_margin: usize, warmed: &crate::exec::CmdOutput) -> usize {
-    if warmed.ok() && warmed.duration_ms < DEV_CLIENT_MANIFEST_MARGIN_MS {
-        in_margin + 1
-    } else {
-        0
+fn warm_dev_client_manifest(ctx: &mut Ctx, port: u16, deadline: u64) -> Result<(), Failure> {
+    ensure_running(ctx.runner, "build")?;
+    if deadline.saturating_sub(ctx.runner.monotonic_ms()) < 1000 {
+        return Err(launch_deadline_spent(&ctx.record.run_id));
     }
+    let mut warm = crate::manifest::Warmup::new(
+        ctx.runner.monotonic_ms(),
+        ctx.record.scenario.deadlines.manifest_warmup_seconds,
+        deadline,
+        ctx.record.scenario.platform == Platform::Ios,
+    );
+    let mut volume_checked = false;
+    warm.expo_online = metro::expo_online(ctx.runner);
+    let result = (|| {
+        if ctx.record.scenario.platform == Platform::Ios {
+            warm.request_probe_limit_ms = 15_000
+                .min(warm.deadline_ms.saturating_sub(ctx.runner.monotonic_ms()) / 1000 * 1000);
+            if let Some(probe) = run_budgeted_attempt(
+                ctx,
+                &metro::request_probe_spec(port),
+                warm.deadline_ms,
+                &mut 0,
+            )? {
+                warm.request_probe_timed_out = probe.timed_out;
+            }
+            if warm.request_probe_timed_out {
+                let volume = crate::volume::assess(
+                    ctx.runner,
+                    &ctx.record.candidate.project_root,
+                    warm.deadline_ms,
+                );
+                warm.slow_volume = volume.slow;
+                ctx.notes
+                    .push(("candidate_volume_speed".into(), volume.summary));
+                volume_checked = true;
+            }
+            if warm.request_probe_timed_out
+                && warm.deadline_ms.saturating_sub(ctx.runner.monotonic_ms()) >= 5_000
+            {
+                let spec = crate::adapters::watchman::watch_project_spec(
+                    &ctx.record.candidate.project_root,
+                );
+                if let Some(output) = run_budgeted_attempt(ctx, &spec, warm.deadline_ms, &mut 0)? {
+                    let probe = crate::adapters::watchman::VolumeProbe::from_output(&output);
+                    ctx.notes
+                        .push(("watchman_volume_probe".into(), probe.as_str().into()));
+                    warm.watchman_volume_probe = Some(probe);
+                    if matches!(
+                        probe,
+                        crate::adapters::watchman::VolumeProbe::TimedOut
+                            | crate::adapters::watchman::VolumeProbe::Rejected
+                    ) {
+                        return Err(warm.refusal());
+                    }
+                }
+            }
+        }
+        let manifest = metro::manifest_spec(port, platform_dir(ctx.record.scenario.platform));
+        while warm.can_probe(ctx.runner.monotonic_ms()) {
+            let mut attempt = warm.attempts;
+            let Some(output) =
+                run_budgeted_attempt(ctx, &manifest, warm.deadline_ms, &mut attempt)?
+            else {
+                break;
+            };
+            warm.observe(&output);
+            if !volume_checked
+                && output.duration_ms >= 10_000
+                && ctx.runner.cancellation().is_none()
+            {
+                let volume = crate::volume::assess(
+                    ctx.runner,
+                    &ctx.record.candidate.project_root,
+                    warm.deadline_ms,
+                );
+                warm.slow_volume = volume.slow;
+                ctx.notes
+                    .push(("candidate_volume_speed".into(), volume.summary));
+                volume_checked = true;
+            }
+            if warm.ready(ctx.runner.monotonic_ms()) {
+                ctx.manifest_warm = Some(crate::core::ManifestWarm {
+                    ms: output.duration_ms,
+                    attempts: warm.attempts,
+                });
+                return Ok(());
+            }
+            if !output.ok() && !output.timed_out {
+                let safe = crate::exec::CmdOutput {
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    ..output
+                };
+                return Err(launch_failure(
+                    "dev client manifest",
+                    &safe,
+                    None,
+                    warm.attempts,
+                    &ctx.record.run_id,
+                ));
+            }
+        }
+        Err(warm.refusal())
+    })();
+    ctx.timings.push((
+        "manifest_warmup_elapsed".into(),
+        warm.elapsed_ms(ctx.runner.monotonic_ms()),
+    ));
+    ctx.notes.push(("manifest_warmup".into(), warm.summary()));
+    result
 }
 
 // A launch timeout or a too-slow answer is the CDP leg's environmental refusal; any other launch error stays a build failure.
@@ -5311,6 +5526,27 @@ mod launch_tests {
     use crate::exec::CmdOutput;
 
     #[test]
+    fn a_step_failure_with_a_suggestion_or_a_repeat_leads_the_receipt_next_action() {
+        let report = || "read the report under /runs/check-1".to_string();
+        let mut failure =
+            Failure::new("walk", FailureCode::PlanStepFailed, "line 2", "edit line 2");
+        assert_eq!(report_next_action(report(), Some(&failure)), report());
+        failure.repeat = Some(crate::failure::Repeat {
+            previous_run_id: "check-0".into(),
+            count: 1,
+            same_recorded_revision: true,
+        });
+        assert_eq!(
+            report_next_action(report(), Some(&failure)),
+            "edit line 2; read the report under /runs/check-1"
+        );
+        failure.repeat = None;
+        failure.suggestion = Some(crate::redact::OutputText::from_output("edit line 2"));
+        assert!(report_next_action(report(), Some(&failure)).starts_with("edit line 2; "));
+        assert_eq!(report_next_action(report(), None), report());
+    }
+
+    #[test]
     fn recording_a_build_releases_lock_before_retirement() {
         use std::os::unix::fs::DirBuilderExt;
 
@@ -5339,6 +5575,8 @@ mod launch_tests {
                 scenario,
                 scenario_path: root.join("scenario.yaml"),
                 scenario_sha256: "0".repeat(64),
+                plan_sha256: None,
+                plan_marker_lines: None,
                 candidate: candidate::Candidate {
                     repo_root: root.clone(),
                     project_root: root.join("test-app"),
@@ -5413,6 +5651,9 @@ mod launch_tests {
                 runs_root: root.clone(),
                 native_cache_root: root.join("native-store"),
                 native_store_entry: None,
+                ios_observation: None,
+                linkage_before_build: None,
+                ios_generated_native: false,
                 record,
                 started_ms: 0,
                 timings: Vec::new(),
@@ -5433,6 +5674,7 @@ mod launch_tests {
                 parts: Default::default(),
                 expo_fingerprint_ms: None,
                 expo_unavailable: None,
+                ios_compiler: None,
             };
             let retirement = record_build_result(&mut ctx, &fp).unwrap();
             assert!(retirement.is_some(), "{:?}", ctx.notes);

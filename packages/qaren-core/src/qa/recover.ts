@@ -1,7 +1,7 @@
 import type { Target } from './plan.js';
 import { ancestorsOf, hostAssociationIdentity, type Element, type Screen } from './screen.js';
-import type { HostAssociationDiagnostic } from './host-association.js';
-import { literalEvidence } from './evidence.js';
+import { hostPath, MODAL_HOST_TYPES, type HostAssociationDiagnostic } from './host-association.js';
+import { targetOnScreen } from './resolve.js';
 import type { Reason } from './untrusted.js';
 import type { ActResult } from './walker.js';
 
@@ -149,12 +149,7 @@ export function dismissCandidate(
         (target.declared ?? target).exact !== 'id' &&
         DECLINE_LOWER.has((target.declared ?? target).quoted?.toLowerCase() ?? '')
       ) &&
-      (target.quoted === undefined ||
-        (target.exact !== 'id' &&
-          literalEvidence(screen, target.quoted, 'contains').verdict !== 'fail') ||
-        screen.elements.some(
-          (e) => !e.offscreen && target.exact !== 'text' && e.testID === target.quoted,
-        )),
+      targetOnScreen(screen, target),
   );
   if (targetIndex !== -1)
     return rejected(targetIndex === 0 ? 'current-target' : 'later-target', targetIndex);
@@ -168,9 +163,11 @@ export function dismissCandidate(
     if (e.semantic.visibility !== 'visible') return 'not-visible';
     if (e.secure) return 'secure';
     if (
+      matchesTarget(e, planTargets[0]) ||
       ancestorsOf(e).some((ancestor) =>
         planTargets.some((target) => matchesTarget(ancestor, target)),
-      )
+      ) ||
+      hasPlannedReactAncestor(screen, e, planTargets)
     )
       return 'target-ancestor';
     return undefined;
@@ -208,11 +205,45 @@ export function dismissCandidate(
   );
 }
 
-function matchesTarget(element: Element, target: Target): boolean {
+function hasPlannedReactAncestor(
+  screen: Screen,
+  element: Element,
+  targets: readonly RecoveryTarget[],
+): boolean {
+  const evidence = screen.reactHostEvidence;
+  const typography = evidence?.typography;
+  if (!element.testID || !evidence?.complete || !typography) return false;
+  return evidence.hosts.some((host, index) => {
+    if (host.testID !== element.testID) return false;
+    for (const parent of hostPath(typography, index)?.slice(1) ?? []) {
+      const id = evidence.hosts[parent]?.testID;
+      if (
+        id &&
+        targets.some(
+          (target) =>
+            matchesTarget({ testID: id }, target) ||
+            screen.elements.some((e) => e.testID === id && matchesTarget(e, target)),
+        )
+      )
+        return true;
+      const type = typography.nodes[parent].hostType;
+      // A modal is a separate surface; its React parents do not own the controls inside it.
+      if (MODAL_HOST_TYPES.has(type ?? '')) break;
+    }
+    return false;
+  });
+}
+
+function matchesTarget(
+  element: Pick<Element, 'testID' | 'label' | 'semantic'>,
+  target: Target,
+): boolean {
   return (
     target.quoted !== undefined &&
     ((target.exact !== 'text' && element.testID === target.quoted) ||
-      (target.exact !== 'id' && element.label === target.quoted))
+      (target.exact !== 'id' &&
+        !element.semantic?.nativePresence?.structural &&
+        element.label === target.quoted))
   );
 }
 

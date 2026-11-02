@@ -5,6 +5,31 @@ use qaren::exec::CmdOutput;
 use std::path::Path;
 
 #[test]
+fn swift_probe_is_bounded_and_preserves_the_selected_build_environment() {
+    use qaren::exec::{RealRunner, Runner};
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = common::temp_repo();
+    let bin = fixture.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let executable = bin.join("xcrun");
+    std::fs::write(&executable, "#!/bin/sh\n[ \"$1\" = swift ] && [ \"$2\" = --version ] && [ \"$#\" = 2 ] || exit 2\n[ \"$DEVELOPER_DIR\" = /synthetic/Xcode ] && [ \"$TOOLCHAINS\" = synthetic-toolchain ] || exit 3\n[ \"$EXPO_USE_PRECOMPILED_MODULES\" = 0 ] && [ \"$RCT_USE_PREBUILT_RNCORE\" = 0 ] || exit 4\nprintf 'Apple Swift version 6.4 (swiftlang-synthetic clang-synthetic)\\n'\n").unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let spec = ios::swift_version_spec()
+        .env("PATH", &bin.to_string_lossy())
+        .env("DEVELOPER_DIR", "/synthetic/Xcode")
+        .env("TOOLCHAINS", "synthetic-toolchain")
+        .env("EXPO_USE_PRECOMPILED_MODULES", "0")
+        .env("RCT_USE_PREBUILT_RNCORE", "0");
+    assert!(spec.timeout_seconds <= 10);
+    let result = RealRunner::new().run_private(&spec, &[]);
+    assert!(result.clean(), "{}", result.summary());
+    assert_eq!(
+        result.stdout(),
+        "Apple Swift version 6.4 (swiftlang-synthetic clang-synthetic)\n"
+    );
+}
+
+#[test]
 fn app_inventory_conversion_is_private_stdin_only_and_uses_exact_bundle_lookup() {
     let plist = include_str!("fixtures/installed-apps.plist");
     let converted = r#"{"com.rndevagent.testapp":{"CFBundleIdentifier":"com.rndevagent.testapp","Path":"/private/fixture/Applications/Test.app"},"com.private.unrelated":{"CFBundleIdentifier":"com.private.unrelated","DataContainer":"file:///private/fixture/Data/OTHER"}}"#;
@@ -1576,15 +1601,15 @@ fn app_removal_parsers_are_strict() {
 
 #[test]
 fn metro_never_passes_ci_into_app_config_evaluation() {
-    let spec = metro::start_spec(Path::new("/repo/app"), 8791, true);
+    let spec = metro::start_spec(Path::new("/repo/app"), 8791, true, false);
     assert_eq!(spec.unset, ["CI"]);
     assert!(!spec.env.iter().any(|(k, _)| k == "CI"));
 }
 
 #[test]
 fn ios_metro_binds_to_loopback_and_android_metro_keeps_its_reverse_path() {
-    let ios = metro::start_spec(Path::new("/repo/app"), 8791, true);
-    let android = metro::start_spec(Path::new("/repo/app"), 8791, false);
+    let ios = metro::start_spec(Path::new("/repo/app"), 8791, true, false);
+    let android = metro::start_spec(Path::new("/repo/app"), 8791, false, false);
     assert_eq!(
         ios.args,
         ["exec", "expo", "start", "--port", "8791", "--localhost"]
@@ -1621,7 +1646,7 @@ fn ipv4_first_is_appended_to_the_callers_node_options() {
 
 #[test]
 fn metro_logs_each_request_on_receipt_to_the_drained_stderr() {
-    let spec = metro::start_spec(Path::new("/repo/app"), 8791, true);
+    let spec = metro::start_spec(Path::new("/repo/app"), 8791, true, false);
     assert!(spec.env.contains(&(
         "DEBUG".to_string(),
         qaren::exec::log::METRO_REQUEST_LOG.to_string()
@@ -1976,6 +2001,23 @@ fn reverse_listed_matches_the_device_side_port_only() {
     let spec =
         android::adb_reverse_list_spec(Path::new("/sdk/platform-tools/adb"), 5147, "emulator-5554");
     assert_eq!(spec.args, ["-s", "emulator-5554", "reverse", "--list"]);
+}
+
+#[test]
+fn expo_is_offline_by_default_and_online_requires_an_explicit_override() {
+    let mut runner = qaren::exec::MockRunner::new();
+    assert!(!metro::expo_online(&runner));
+    for (name, value, online) in [("EXPO_OFFLINE", "1", false), ("EXPO_OFFLINE", "0", true)] {
+        runner.environment.clear();
+        runner.environment.insert(name.into(), value.into());
+        assert_eq!(metro::expo_online(&runner), online);
+        for localhost in [false, true] {
+            let spec = metro::start_spec(Path::new("/repo/app"), 8791, localhost, online);
+            assert!(spec
+                .env
+                .contains(&("EXPO_OFFLINE".into(), if online { "0" } else { "1" }.into())));
+        }
+    }
 }
 
 #[test]

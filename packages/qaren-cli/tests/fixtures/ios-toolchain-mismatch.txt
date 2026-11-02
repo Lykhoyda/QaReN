@@ -1,0 +1,1 @@
+ExpoModulesCore.xcframework/ios-simulator/ExpoModulesCore.framework/Modules/ExpoModulesCore.swiftmodule/arm64.swiftinterface:1:1: error: this SDK is not supported by the compiler (the SDK is built with 'Apple Swift version 6.3.1 (swiftlang-synthetic-A clang-synthetic-A)', while this compiler is 'Apple Swift version 6.4 (swiftlang-synthetic-B clang-synthetic-B)')

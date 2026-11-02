@@ -70,6 +70,7 @@ pub fn script_expo_fingerprint(mock: &mut MockRunner, hash: &str, xcode: &str) {
         )),
     );
     mock.expect_run("xcodebuild -version", CmdOutput::success(xcode));
+    script_swift(mock);
 }
 
 pub fn stored_record(
@@ -125,6 +126,7 @@ pub const XCODE_VERSION: &str = "Xcode 27.0\nBuild version 27A266a\n";
 
 pub fn script_xcode(mock: &mut MockRunner) {
     mock.expect_run("xcodebuild -version", CmdOutput::success(XCODE_VERSION));
+    script_swift(mock);
 }
 
 pub fn script_expo_fingerprint_unresolvable(mock: &mut MockRunner) {
@@ -177,6 +179,8 @@ pub fn base_record(
         scenario,
         scenario_path: repo_root.join("scenario.yaml"),
         scenario_sha256: "0".repeat(64),
+        plan_sha256: None,
+        plan_marker_lines: None,
         candidate: Candidate {
             repo_root: repo_root.to_path_buf(),
             project_root: repo_root.join("test-app"),
@@ -877,4 +881,8 @@ pub fn assert_registry_specs(calls: &[qaren::exec::CmdSpec]) {
             assert!(spec.registry_auth_env.is_empty(), "{}", spec.label);
         }
     }
+}
+
+pub fn script_swift(mock: &mut MockRunner) {
+    mock.expect_run("xcrun swift --version", CmdOutput::success("Apple Swift version 6.4 (swiftlang-fixture clang-fixture)\nTarget: arm64-apple-macosx\n"));
 }

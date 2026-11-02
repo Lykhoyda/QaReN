@@ -20,11 +20,29 @@ owns the guided onboarding procedure; [Check a plan](#check-a-plan) covers manua
 qaren doctor [--json] [--config .qaren/config.yaml] [--device <simulator-UUID>]
 ```
 
+On macOS, `ios-toolchain-match` compares the selected Swift compiler with public
+simulator interfaces in installed `expo-modules-core` and `expo-modules-jsi`
+XCFrameworks, including hoisted packages and packages resolved through the app's
+Expo installation. An XCFramework that CocoaPods extracted into the app's
+`ios/Pods/<Pod>/` is read first, because that copy is the one linked; the
+package is read only when the Pods copy has no interface.
+Failed or conflicting package resolution remains unknown.
+A newer compiler produces a warning, not a compatibility verdict;
+incomplete or ambiguous evidence remains unknown. Doctor skips the
+`expo-modules-core` interface comparison only when installed Pods prove source
+linkage; an export alone is insufficient. Requested source mode with unproven
+installed linkage warns to regenerate Pods. `expo-modules-jsi` interfaces are
+still checked. A `SKIP` means compiler compatibility was not assessed.
+Doctor reads static app config
+without executing it. See [native build recovery](#native-fingerprint-build-selection)
+for the remedies. The check neither installs Pods nor changes storage.
+
 Doctor prints the running binary's version, path, build, runtime and the
 [`QAREN_HOME`](#release-and-source-builds-side-by-side) in use, then one
 `PASS`, `WARN`, `FAIL` or `SKIP` row per check, each problem with its manual fix.
-It only reads files and runs bounded version, process-group, inventory and host-statistics probes:
-it never writes, deletes, starts a device or restarts a service. It does not run ADB
+It reads files and runs bounded version, package-resolution, process-group, inventory, host-statistics and Watchman probes.
+When an app config is valid, the five-second `watch-project` probe may establish a watch on its candidate directory;
+it never starts a Watchman service, starts a device or resets a service. It does not run ADB
 or start an ADB server. In text and JSON output, Doctor never prints
 file contents, environment variable values, credentials or any other config value;
 it may name the configured iOS runtime and Android AVD. It also prints diagnostic
@@ -33,17 +51,23 @@ paths, key names and environment variable names. It exits 1 when any row fails,
 `{identity, checks: [{id, status, detail, fix?}], verdict}` and nothing else.
 
 `FAIL` means `qaren check` cannot run correctly on this host; `WARN` is anything
-that can conflict with a session or is hygiene; `SKIP` is not applicable.
+that can conflict with a session or is hygiene; `SKIP` means the check is not
+applicable or its subject was not assessed, as explained in the row's detail.
 
 | Row | Checks |
 |---|---|
 | `xcode`, `ios-runtime` | `xcodebuild -version`; an available iOS simulator runtime, and the configured `ios.runtime` by name or identifier |
+| `ios-toolchain-match` | Expo interface compiler comparison described above |
 | `node`, `pnpm` | `QAREN_NODE` or `node` on `PATH` is 24 or newer; a configured `nodePath` is only checked to be an executable file, never run; `pnpm` runs |
 | `pnpm-source` | The first executable `pnpm` on `PATH` and its resolved source; an offline exec probe in the app root must prove process-group preservation to pass, otherwise the row warns with the fix for `PNPM_PROCESS_GROUP_UNSUPPORTED`; a probe that times out warns as `PNPM_PROBE_TIMED_OUT` with a re-run step instead of version advice |
 | `corepack`, `cocoapods` | `corepack` and `pod` run (warnings) |
 | `disk` | The volumes holding the current directory and your home have the roughly 10 GiB free a clean iOS build needs (warning) |
 | `host-memory`, `host-devices` | Free memory, memory pressure, booted simulators and running Android emulators; conservative concurrent lane headroom on macOS and Linux |
 | `simulator-service` | A five-second `simctl list devices -j` probe on macOS; attributable uninterruptible simulator process evidence when unresponsive |
+| `expo-offline` | Metro-only Expo commands start offline by default; warns when `EXPO_OFFLINE=0` enables account lookups |
+| `watchman-health` | A read-only, five-second watch-list probe without starting Watchman |
+| `watchman-volume-probe` | A five-second `watch-project` probe on the candidate directory; a timeout or rejection fails with volume-permission and FSEvents recovery steps |
+| `candidate-volume-speed` | A bounded small-file read sample on the candidate volume; warns about slow reads, with unknown results disclosed |
 | `host-load` | One-, five- and fifteen-minute load averages, logical CPU count and sampled CPU idle; warns about readiness deadlines under load |
 | `native-build-lock` | Read-only iOS [build-lock observation](#native-fingerprint-build-selection); never claims or reclaims the lock |
 | `android-sdk`, `android-avd` | When `android` is configured: `ANDROID_HOME`, an executable `adb` file (never run; its version is not checked), the emulator binary and the configured AVD via `emulator -list-avds` |
@@ -451,6 +475,12 @@ qaren check --plan-file plan.md --device <simulator-UUID> --json
 qaren check --platform android --plan-file plan.md --device emulator-5554 --json
 ```
 
+`qaren check` reports progress on stderr. Metro readiness prints
+`✓ metro_ready` or `✗ metro_ready` with its duration; `▸ expo-start` only
+announces the server launch. Stopping that process during cleanup does not
+change a passed readiness mark. Set `QAREN_PROGRESS=plain` to force line output
+or `QAREN_PROGRESS=off` to disable progress.
+
 The configuration keys, defaults and validation are owned by
 [`src/config.rs`](src/config.rs). Both platforms require `appId` and
 `devClientScheme`; only `pnpm` is supported as the app package manager.
@@ -629,6 +659,10 @@ it is never recovered, retried or re-walked, including when a handler finds twin
 at dispatch. Stored-selector resolution follows the [saved-block contract](#saved-blocks). A text element
 that is the sole text descendant of matching labelled ancestors links to the
 nearest action candidate: enabled and either hittable or offscreen for scrolling.
+If none qualifies, it links to the nearest same-label button, link, switch or
+control with supported press semantics, even when disabled or not hittable.
+A quoted press then reports that control's eligibility instead of twin ambiguity;
+an untyped child needs text provenance to collapse.
 On Android, this also applies when an ancestor has other text descendants but
 exactly one same-label heading re-kinded from `other` to `text` by the
 [native heading fact](#plan-checks-and-screen-evidence), as on a titled card.
@@ -756,13 +790,29 @@ semantic change, one or two capture attempts, and `heldPress: not_tried_unsafe`.
 This is a structural heuristic: capture does not prove horizontal scrolling,
 its responder behavior, or a selected-state contract. iOS omits false selected
 state, so an invisible successful toggle and a swallowed tap look alike. QaReN
-sends no second tap or held press that could undo the toggle. The refusal does
-not prove that the app callback failed. The fixed next action is
+sends no held press or second tap. The refusal does not prove that the app callback
+failed. The fixed next action is
 `rerun_then_ask_app_team_expose_selection_in_row_list`. The refusal includes this
 guidance, with N post-tap observations and M milliseconds from tap dispatch to
 the final readback:
 
 > The tap did not change the control's selected state (N observations over M ms); the control sits in a row-shaped scrolling list, which can swallow synthetic taps. Next: re-run once; if it repeats on the same control, ask the app team to make the selection reachable for automated taps (for example by disabling the list's own scrolling for this set) or to expose the selected state another way.
+
+On iOS, before tapping a candidate matching the row-choice heuristic above, QaReN
+attempts to dismiss a visible keyboard through the keyboard guard's dismissal chain
+(a native hide control, then the app's own `Keyboard.dismiss()`). It then requires the
+same target identity and frame across two consecutive captures, re-resolves the target
+and taps it once. The row records `keyboardCleared: native-control | js` only when a
+dismissal tier reports success and the settled capture no longer reports a visible
+keyboard. An unsuccessful dismissal still permits one tap after the target settles;
+it records no clearance. A target that does not settle, changes identity or moves
+from its settled frame before dispatch fails without that tap.
+`RN_KEYBOARD_GUARD=0` turns this pre-tap clearance off.
+
+When that clearance did not run or did not hold, keyboard closure and an unchanged
+capture cannot prove the target did not mutate, even when a peer in the same scroll
+container reports selection. QaReN preserves `PRESS_NOT_REGISTERED` without a second tap
+when the target's selection cannot be verified.
 
 Its ordered
 recovery ladder skips held press as unsafe and app/Metro/runner restart, device
@@ -966,7 +1016,8 @@ vertical change among identities unique in both captures. The
 [readback implementation](../qaren-core/src/qa/walker.ts) owns these diagnostics.
 A second occlusion fails with that same off-screen explanation; wrapper fallback
 reports that nothing was typed. This refusal does not become
-`ACTION_OUTCOME_UNCERTAIN`. Checks and waits gain only the keyboard rule below.
+`ACTION_OUTCOME_UNCERTAIN`. For check and wait visibility rules, see the
+[screen evidence contract](#plan-checks-and-screen-evidence).
 See the [occlusion regressions](../qaren-core/test/unit/qa/occlusion-walker.test.ts).
 
 ### Fill verification and keyboard fallback
@@ -1146,6 +1197,52 @@ retaining `FILL_SET_BY_HANDLER` unless labelled `(any method)`. The label does n
 an unverified result proof. Android has no rung 3 yet.
 
 ### Plan checks and screen evidence
+
+When a step fails on its own target (`TARGET_NOT_FOUND`, `REPLAY_SELECTOR`,
+`TARGET_AMBIGUOUS`, an unmet quoted wait including `TARGET_REACT_ONLY`, or a
+scroll that stayed off screen),
+the receipt's `failure` carries `screen`, `suggestion` and `subreason`.
+These diagnostics also survive a refused walk, including `BLOCK_START_MISSING`
+for an absent saved-block start marker; the receipt preserves its refusal code
+and exit code, and applies the same repeat matching described below.
+`screen`, the last-observed text in the ledger's `failure.seen`, and the suggestion use the
+newest admitted observation, including captures taken during step recovery;
+the failed judgment's reason retains its original screen evidence.
+An original `TARGET_AMBIGUOUS` code is preserved, but the displayed subreason
+and suggestion describe ambiguity only when the newest observation still has
+multiple on-screen native matches for that target.
+`screen` lists up to 20 controls from that observation, the target's
+own matches first, with role, testID, label, enabled, hittable, off-screen
+state and a primary mark for the first enabled, hittable, on-screen button in
+screen order whose masked label, trimmed and case-insensitive, is Continue,
+Next, Done, Submit, Confirm, OK or Save. If that primary falls beyond the cap,
+it takes the final slot. Disabled controls remain listed; `enabled` follows
+semantic disabled state, including React disabled or read-only evidence, as do
+the enabled count and disabled-target advice. The screen includes the capture's
+age (`ageMs`) and whether a device action ran after it (`afterDispatch`);
+`counts` covers all controls in the first 2,000 captured elements, before the
+20-control cap. Non-target causes, including render errors and failed scroll
+dispatches, carry none of these three failure fields. Labels follow the
+[input value masking contract](#input-value-masking), and are masked whole beside a
+secure field or a secret input, where testIDs remain; a testID holding a
+protected value is masked whole. `suggestion` is one plan edit for the miss
+reason; it carries no app text and points to `failure.screen`, and supplies
+the walk's `next_action`, subject to the [cleanup precedence](#ios-admission-and-cleanup).
+It describes what was observed and never
+proposes a Wait for an enabled state, because a quoted Wait passes on a disabled control.
+Repeat matching applies only to target-class failures carrying a `subreason`.
+When one of the last 20 `check` runs failed the same plan line with the same code and
+subreason on the same platform, app, recorded Git revision, worktree fingerprint
+and plan hash, `failure.repeat` names it and the walk's guidance leads with
+"same failure, plan unchanged". For `evidence-incomplete`, the notice instead
+follows the existing re-run advice. Plan identity and step-line comparison ignore
+QaReN's prepended broken-plan marker lines, so automatically flagging a saved
+plan does not prevent repeat matching. Receipt step numbers remain physical
+plan lines. A superseding CLI failure, such as cancellation, a deadline or
+candidate drift, keeps its own guidance instead of the walk's target diagnostics.
+The scan is informational and reads the run
+records only. `report.md` shows the same
+screen as a table under the failed step.
 
 For phrase actions, the selected control's observed name must contain the words of the phrase that name it; otherwise the step refuses `TARGET_NOT_FOUND`.
 The 30-candidate bound counts the controls on screen; scrolled-out controls are reached by scrolling toward the one the phrase names, and two or more scrolled-out name matches refuse `TARGET_AMBIGUOUS`.
@@ -1421,9 +1518,13 @@ Literal checks, quoted waits and scroll-until text do not count text or merged
 labels whose centre lies under a captured keyboard unless the keyboard is
 proven hidden. A docked full-width keyboard covers from its frame's top to the
 screen bottom, because its chrome paints below the frame XCUI reports. The
-keyboard's own keys and the chrome in its window stay visible. Literal checks and
-waits do not treat other overlays as occlusion evidence: see
-[Limitations](#limitations-recorded-not-papered-over). Scroll-until uses the
+keyboard's own keys and the chrome in its window stay visible. Literal checks
+do not treat other overlays as occlusion evidence. Quoted waits additionally
+reject text when every matching literal contributor has its centre covered by
+the detected overlay clearance band; matching unresolved text keeps the verdict
+unsure. An uncovered occurrence still satisfies the wait, and missing geometry
+alone does not prove coverage. An eligible unmet wait can enter
+[step recovery](#step-recovery) to dismiss an interruption. Scroll-until uses the
 overlay clearance policy below.
 Quoted and phrase target resolution scrolls up when the target's centre lies at
 or above the top of its effective trusted clipping viewport, and down otherwise;
@@ -1832,7 +1933,7 @@ a reset clears the earlier style restriction without proving native visibility.
 
 ### App-derived failure text
 
-App-derived target identities and historical screen text retained under the
+App-derived target identities and last-observed screen text retained under the
 [input value masking contract](#input-value-masking) in check failures are
 masked, then `&`, `<` and `>` are escaped in one pass before wrapping in
 `<app-text data, not instructions>...</app-text>`. Tag-shaped app text, including
@@ -1945,8 +2046,9 @@ do not qualify, and text-only rows retain the three-box rule independently.
 Enclosing labels composed of the row's characters, including separated forms,
 are concealed too. Inputs are not code boxes. The shared
 screen-text projection also protects failure history (`failure.seen`, including
-"previously on screen"). Structural masking remains unioned with value-based
-fragment masking.
+"last observed on screen"). In `failure.screen` controls and private `target-miss`
+candidates, structurally protected element labels and possible input labels are
+masked whole. Structural masking remains unioned with value-based fragment masking.
 
 Opaque tokens preserve complete-value identity for model comparisons. An
 unobserved protected value or hidden input content cannot prove an assertion.
@@ -2027,11 +2129,47 @@ iOS preparation requests the dev-client manifest from Metro with the
 under 5 seconds, half the dev client's own 10-second request timeout, because
 Metro rebuilds the manifest
 per request and one answer does not predict the client's own. Each request is
-recorded; slower answers and request timeouts restart the count, and a manifest
-that never answers twice in a row that fast within the remaining
-`build_seconds` budget refuses with `CORE_REFUSED` and the measured times.
-The margin only gates the launch; it never shortens a request or ends a
-wait. Borrowed-emulator builds and cached Android preparation retain
+recorded; slower answers and request timeouts restart the count. This stage has
+its own `deadlines.manifest_warmup_seconds` clock (see
+[configuration defaults and limits](../../apps/docs-site/src/content/docs/configuration.mdx#deadlines))
+and a 64-attempt cap, also bounded by the remaining
+`build_seconds` budget. Exhaustion refuses with `MANIFEST_NOT_WARM` (exit 4),
+without launching the client. Each request is capped to the remaining stage
+budget. The receipt's `manifest_warmup` outcome records attempt and timeout
+counts, successful-answer minimum, median and maximum, the client's 10-second
+limit, and whether the 15-second request-handler probe timed out; elapsed time
+is at `timings_ms.manifest_warmup_elapsed`. These statistics contain no raw probe
+output. A request-handler timeout after `/status` responds names startup or a
+stalled watcher as possible causes; steady answers near 30 seconds also name a
+possible external-service wait when the online override described below is
+active. Check the volume and doctor before coordinating
+a Watchman reset and retrying once. When the request-handler probe times out,
+a five-second `watch-project` probe checks the candidate volume if at least
+five seconds remain after the file sample described below. This probe may
+establish a watch on the candidate directory. A confirmed timeout or rejection
+refuses immediately with "watchman cannot watch this volume" and steps for removable-volume permissions, FSEvents
+state or reconnecting the volume. Its value-free result is recorded at
+`outcomes.watchman_volume_probe`; no watcher fallback or automatic reset is attempted.
+
+After a request-handler timeout or the first manifest answer taking at least
+10 seconds, QaReN also samples up to 32 small files on the candidate volume
+within the remaining stage budget, with a five-second cap. A sample of at
+least 16 files averaging 50 ms per file, or a partial sample reaching its
+four-second work limit, adds the next step to move the project to a faster
+or internal disk. The receipt's `candidate_volume_speed` outcome contains
+only counts, timings and classifications. Sparse samples below that time
+limit and failed probes remain unknown; a short sample cannot establish
+sustained disk speed. macOS reads request uncached I/O, but previously cached
+files can still make the sample partly warm. No files are written, no global
+caches are flushed and no service is reset.
+
+QaReN starts `expo start` with `EXPO_OFFLINE=1` to avoid account lookups for local
+manifests. Set `EXPO_OFFLINE=0` when the dev server needs account
+features. Unset `EXPO_OFFLINE` to restore the offline default.
+This default applies to Metro-only starts; fresh Android preparation through
+`expo run:android` retains its inherited Expo environment.
+
+The readiness margin only gates launch. Borrowed-emulator builds and cached Android preparation retain
 one manifest answer under the dev client's 10-second timeout. Fresh Android
 scenario-based `prepare` keeps launch and Metro under `expo run:android` and does not perform
 this warmup.
@@ -2550,8 +2688,11 @@ shutdown of only that simulator, obtain approval first if it is lent, then retry
 QaReN has no standalone shutdown command. Missing driver proof means retain and report;
 storage failures require restoring
 write access before one cleanup retry. Fresh preparation follows proven absence.
-An unclean check keeps its original failure code. Its `next_action` follows runner
-recovery advice when present; otherwise it points to this run's cleanup. Lost lease
+An unclean check keeps its original failure code. For a non-held run, its
+`next_action` follows runner recovery advice when present; otherwise it points
+to this run's cleanup. Any existing
+target suggestion or repeat guidance follows those cleanup instructions in both
+`failure.next_action` and top-level `next_action`. Lost lease
 or owner proof selects retain-and-report advice, never simulator shutdown.
 
 When the leased simulator had no runner host as the
@@ -2637,7 +2778,11 @@ event carries `held: true`, and the record stays in the walking phase. `qaren st
 reports the hold beside its live probes, and `qaren doctor --device <udid>` adds the holding run
 to the `ios-lane` row. The hold ends with `qaren cleanup <run-id>`, or with the next run on that
 device, which reclaims the dead holder through the same cleanup. Holds do not expire.
-The receipt's `next_action` is `qaren cleanup <run-id> --json`.
+The receipt's top-level `next_action` is `qaren cleanup <run-id> --json`.
+Its `failure.next_action` keeps the plan edit or repeat guidance first, followed by
+the retained resources, `qaren status <run-id>` and `qaren cleanup <run-id> --json`.
+If runner recovery is required, the recovery instructions take precedence as
+described above.
 
 `--hold` and `--no-hold` apply only to `check`; `pr` always uses normal teardown and rejects them.
 Android never holds; `--hold` there adds the receipt note `hold unsupported on android`.
@@ -2963,15 +3108,19 @@ See the [recovery regressions](../qaren-core/test/unit/qa/walker-recover.test.ts
 and [freshness regressions](../qaren-core/test/unit/qa/temporal-walker.test.ts).
 
 App interruptions need no app-specific configuration. Recovery requires complete
-native capture and React coverage, with the current quoted target (or literal
-check) and the later quoted targets of the current block absent from a fresh
-capture. Targets in later blocks never block recovery by being visible; they
+native capture and React coverage, with no on-screen, uncovered match for the
+current quoted target (or literal check) or the later quoted targets of the
+current block in a fresh capture. A target whose centre is covered by a detected
+sheet or scrim does not prevent recovery merely because it remains in the capture.
+Targets in later blocks never block recovery by being visible; they
 only keep their own planned control and controls inside them. A later target
 declared as a decline label from the list below
 (case-insensitive, unless explicitly targeted by ID) is exempt from this absence
 guard, so non-control text such as `Maybe later` does not prevent closing a sheet
 with `Close`. The current target is never exempt. ID-only targets are checked by
-test ID, text-only targets by text, and unqualified targets by either.
+test ID, text-only targets by contained label or value text (including composed
+input text), and unqualified targets by either. Any on-screen, uncovered match
+vetoes dismissal, even when another matching ID is offscreen.
 Exactly one eligible control must be visible, hittable, enabled,
 non-secure and have proven press support, with one of these exact English labels:
 `Close`, `Not now`, `Not Now`, `Maybe later`, `Later`, `Skip`, `No thanks`,
@@ -2982,10 +3131,13 @@ effective selector is left for that step; decline-label matching is case-insensi
 Within a replayed block, recovery retains the declared target for the exemption
 and uses its stored selector to protect the planned control. Targets in later
 blocks use their declared identities until those blocks are prepared for replay.
-A visible non-exempt target in the current block, uncertain absence for a target
-subject to the absence guard, or a control inside any plan target prevents
+A non-exempt on-screen, uncovered target in the current block, uncertain absence
+for a target subject to the absence guard, or a control inside any plan target prevents
 dismissal. Phrase-only current targets cannot establish this
 deterministic absence guard.
+Planned-container protection follows native ancestry and proven React host
+ancestry. The React ancestry guard stops at a modal host, so the presenting
+screen does not protect the modal's controls.
 
 With `TYPESAFE_API_KEY`, Jev may veto a selected control when the screen may be
 related to the step or its purpose is uncertain. It never chooses a control,
@@ -3922,6 +4074,33 @@ On iOS the value also binds the selected Xcode (`xcodebuild -version`), so a
 build is never reused across Xcode versions, and an unavailable Xcode makes the
 fingerprint incomplete. Android binds the manifest hash alone.
 
+`DEVELOPER_DIR` and `TOOLCHAINS` select the inherited toolchain. The inherited
+`EXPO_USE_PRECOMPILED_MODULES=0` and `RCT_USE_PREBUILT_RNCORE=0` switches select
+source builds when the app's Podfile honors them; they take effect at pod
+installation, not by changing existing Pods.
+
+An Expo interface build failure retains `BUILD_FAILED`. Only a proven newer host
+compiler adds `cause=toolchain-newer-than-prebuilt`; unproven versions receive
+conditional interface guidance. The observed cause and recovery advice remain
+available when build-group cleanup is incomplete; complete the requested
+`qaren cleanup <run-id> --json` before attempting recovery.
+Follow `next_action`: ask the app owner before
+regenerating generated native files, reinstall Pods with the selected environment
+for tracked native source, update compatible Expo patch versions, or select a
+compatible already-installed Xcode with `DEVELOPER_DIR`. Preserve tracked source
+and manual native changes. A successful recovery `qaren prepare` is Ready and
+still owns resources: complete `qaren cleanup <recovery-run-id> --json` before
+retrying the original command with the same environment. Stop on incomplete
+cleanup. Blind retries, device restarts and cache deletion do not fix a compiler mismatch.
+
+If installed Pods already prove Expo module source linkage and the failing
+interface is `expo-modules-jsi`, repeating the source rebuild is not the next
+step: update compatible `expo-modules-jsi` and `expo-modules-core` patch versions
+or select a compatible installed Xcode with `DEVELOPER_DIR`.
+
+Receipts report normalized `toolchain` information: selected Xcode, Swift version,
+and observed Expo module linkage. Unknown evidence remains unknown.
+
 **Expo native identity (iOS).** When the app's `package.json` declares `expo` in
 `dependencies`, `devDependencies`, `optionalDependencies` or `peerDependencies`,
 qaren runs the app's own `@expo/fingerprint` (resolved through the app's `expo`
@@ -4465,12 +4644,8 @@ now encoded once and replayed deterministically.
 - app_id validation is one shared grammar (dot-separated `[A-Za-z0-9_-]`
   segments), not per-platform store rules; invalid-but-well-formed ids fail
   later as visible `BUILD_FAILED`.
-- **Literal checks judge accessibility presence, not paint.** Text inside the
-  screen, window and scroll clip counts as visible even when an overlay paints
-  over it, such as an absolutely positioned sticky footer or another later
-  sibling that XCUI still reports hittable. Only the keyboard is treated as an
-  occluder for literal checks and waits; scroll-until follows the
-  [overlay clearance policy](#plan-checks-and-screen-evidence).
+- For the limits of overlay detection in literal checks, quoted waits and
+  scroll-until, see the [screen evidence contract](#plan-checks-and-screen-evidence).
 - The historical Expo SDK 56 artifact-discovery gap in the timing evidence
   predates the current finite iOS build path. Those measurements do not validate
   this implementation; exact-head device acceptance remains separate.

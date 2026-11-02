@@ -328,6 +328,7 @@ for (const [label, match, reason, aggregated] of [
           1,
           scrolling,
           new ObservedPrivacy(),
+          'press',
         );
         assert.equal(diagnostic.truncated, false);
         if (exact === 'id') {
@@ -361,7 +362,7 @@ for (const exact of ['id', 'text'] as const) {
       else tree[3].identifier = other;
       const screen = join(tree, [], 'app', { native: 'complete', react: 'complete' });
       const selected = { phrase: query, quoted: query, exact };
-      const miss = targetMissDiagnostic(selected, screen, 1, false, new ObservedPrivacy());
+      const miss = targetMissDiagnostic(selected, screen, 1, false, new ObservedPrivacy(), 'press');
       assert.equal(miss.reason, 'absent');
       assert.deepEqual(miss.candidates, []);
       const ordinary = targetMissDiagnostic(
@@ -370,11 +371,19 @@ for (const exact of ['id', 'text'] as const) {
         1,
         false,
         new ObservedPrivacy(),
+        'press',
       );
       assert.equal(ordinary.candidates.length, 1);
       if (exact === 'id') screen.elements[3].testID = query;
       else screen.elements[3].label = query;
-      const present = targetMissDiagnostic(selected, screen, 1, false, new ObservedPrivacy());
+      const present = targetMissDiagnostic(
+        selected,
+        screen,
+        1,
+        false,
+        new ObservedPrivacy(),
+        'press',
+      );
       assert.equal(present.reason, 'present-but-unavailable');
       assert.equal(present.candidates[0].match, 'exact');
       assert.equal(present.candidates[0].aggregated, false);
@@ -411,6 +420,7 @@ test('unresolved matches prevent conclusive misses in the selected domain', () =
             1,
             scrolling,
             new ObservedPrivacy(),
+            'press',
           );
           const matches =
             exact === undefined ||
@@ -435,6 +445,7 @@ test('exact identifier diagnostics do not describe identifier matches as aggrega
     1,
     false,
     new ObservedPrivacy(),
+    'press',
   );
   assert.equal(diagnostic.reason, 'present-but-unavailable');
   assert.equal(diagnostic.candidates[0].match, 'exact');
@@ -458,7 +469,7 @@ test('private miss candidates mask runtime inputs and observed input values befo
   const privacy = new ObservedPrivacy();
   privacy.classifyInputs([secret]);
   privacy.observe(screen);
-  const diagnostic = targetMissDiagnostic(target, screen, 1, true, privacy);
+  const diagnostic = targetMissDiagnostic(target, screen, 1, true, privacy, 'press');
   assert.doesNotMatch(JSON.stringify(diagnostic), new RegExp(`${secret}|${observedValue}`));
   assert.ok(diagnostic.candidates.every((candidate) => (candidate.label?.length ?? 0) <= 256));
   assert.match(JSON.stringify(diagnostic), /•••/);
@@ -469,7 +480,7 @@ test('miss diagnostics bound candidates and never infer absence after a truncate
   for (let i = 0; i < 2100; i++)
     tree.push({ ...tree[3], ref: `@extra${i}`, label: 'Add another coverage' });
   const screen = join(tree, [], 'app', { native: 'complete', react: 'complete' });
-  const diagnostic = targetMissDiagnostic(target, screen, 1, true, new ObservedPrivacy());
+  const diagnostic = targetMissDiagnostic(target, screen, 1, true, new ObservedPrivacy(), 'press');
   assert.equal(diagnostic.candidates.length, 20);
   assert.equal(diagnostic.truncated, true);
   assert.equal(
@@ -483,6 +494,7 @@ test('miss diagnostics bound candidates and never infer absence after a truncate
     1,
     true,
     new ObservedPrivacy(),
+    'press',
   );
   assert.equal(missing.reason, 'evidence-incomplete');
 });
@@ -518,7 +530,7 @@ test('bounded diagnostic labels remain well-formed at a surrogate boundary', () 
   const tree = nodes(false);
   tree[3].label = `Add coverage ${'x'.repeat(242)}😀`;
   const screen = join(tree, [], 'app', { native: 'complete', react: 'complete' });
-  const diagnostic = targetMissDiagnostic(target, screen, 1, true, new ObservedPrivacy());
+  const diagnostic = targetMissDiagnostic(target, screen, 1, true, new ObservedPrivacy(), 'press');
   const label = diagnostic.candidates[1].label!;
   assert.equal(label.length, 256);
   assert.doesNotMatch(label, /[\uD800-\uDFFF]/u);
@@ -537,14 +549,14 @@ test('a secure screen withholds diagnostic labels and oversized targets cannot m
   const screen = join(tree, [], 'app', { native: 'complete', react: 'complete' });
   const privacy = new ObservedPrivacy();
   privacy.observe(screen);
-  const diagnostic = targetMissDiagnostic(target, screen, 1, true, privacy);
+  const diagnostic = targetMissDiagnostic(target, screen, 1, true, privacy, 'press');
   assert.ok(diagnostic.candidates.every((candidate) => candidate.label === '•••'));
   const oversized = {
     phrase: 'Add coverage',
     quoted: 'Add coverage' + ' '.repeat(4100) + 'missing',
   };
   assert.equal(
-    targetMissDiagnostic(oversized, screen, 1, true, privacy).reason,
+    targetMissDiagnostic(oversized, screen, 1, true, privacy, 'press').reason,
     'evidence-incomplete',
   );
 });

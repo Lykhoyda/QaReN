@@ -105,7 +105,12 @@ import type {
   MediaWithheldDiagnostic,
   FillPrivacyDiagnostic,
 } from './diagnostics.js';
-import { targetMissDiagnostic, type TargetMissDiagnostic } from './target-miss.js';
+import {
+  missSuggestion,
+  screenNow,
+  targetMissDiagnostic,
+  type TargetMissDiagnostic,
+} from './target-miss.js';
 import {
   type MediaLatch,
   concealsScreen,
@@ -227,6 +232,8 @@ export interface WalkerDeps {
   ): Promise<ActResult>;
   // iOS only: positive React proof that the input with this testID is focused.
   reactFocused?(testID: string): Promise<boolean>;
+  // iOS only: hides a visible keyboard, native tier then JS tier; none when neither proved it hidden.
+  dismissKeyboard?(context: QaDispatchContext): Promise<'native-control' | 'js' | 'none'>;
   // iOS only: Fill ladder rung 3, the input's change handler receives the whole value, then it is verified.
   setByHandler?(
     testID: string,
@@ -310,6 +317,7 @@ interface Observation {
 // The Fill ladder steps to rung 3 only inside this budget from the item's start.
 const FILL_LADDER_BUDGET_MS = 120_000;
 const ITEM_DEADLINE_EXCEEDED = 'VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED';
+const KEYBOARD_DISMISSED = '; the keyboard was dismissed before this tap';
 
 class EvidenceExpired extends Error {
   constructor(readonly itemExpired = false) {
@@ -332,6 +340,13 @@ const dialogInFront = (phrase?: string) =>
         ? 'a system dialog is in front of the app; nothing behind it can be scrolled, left or reached until the dialog is answered'
         : `"${phrase}" is behind a system dialog; nothing of the app can be scrolled to or reached until the dialog is answered`,
   });
+
+// Refusals about the step's own target; their failure carries the last observed screen.
+const TARGET_CODES: ReadonlySet<string> = new Set([
+  'TARGET_NOT_FOUND',
+  'REPLAY_SELECTOR',
+  'TARGET_AMBIGUOUS',
+]);
 
 export const WAIT_BUDGET_MS = 15_000;
 export const WAIT_POLL_MS = 500;
@@ -529,6 +544,7 @@ async function walkBlockScoped(
   // The Fill ladder rung of the current item's last fill dispatch, and when the item began.
   let fillMethod: FillMethod | undefined;
   let fillMismatch: EntryMismatch | undefined;
+  let keyboardCleared: LedgerRow['keyboardCleared'];
   let fillHandlerAttempted = false;
   let fillHandlerRefused = false;
   let itemStartedAt = 0;
@@ -536,6 +552,11 @@ async function walkBlockScoped(
   let enrichment: { at: number; budget: number; waited?: number } | undefined;
   let waitAttempt: 'scroll' | 'none' = 'none';
   let latestObservation = 0;
+  // When each screen was captured, and the observation the last device action was dispatched on.
+  const captured = new WeakMap<Screen, { at: number; id: number }>();
+  // The newest observation that passed admission, recovery's captures included.
+  let newest: Screen | undefined;
+  let dispatchedOn = 0;
   let recoveries = 0;
   let metadataOnly = false;
   // The capture stage last started, which a capture cut off at a wait deadline was in.
@@ -623,6 +644,8 @@ async function walkBlockScoped(
           ...(timingObserver ? { timing: timingObserver } : {}),
           ...(until === undefined ? {} : { budgetMs: Math.max(0, until - startedAt) }),
         });
+        // Stamped at the capture's start until admission records its completion.
+        captured.set(latest, { at: startedAt, id });
       } catch (error) {
         if (isAbort(error)) throw error;
         if (error instanceof AppProcessGoneError) throw processChanged();
@@ -645,6 +668,7 @@ async function walkBlockScoped(
         });
       assertActive();
       const timing = admitObservation(startedAt, deps.now());
+      if (timing) captured.set(latest, { at: timing.completedAt, id });
       if (!timing)
         throw new ResolutionError({
           refuse: 'SCREEN_EVIDENCE_INCOMPLETE',
@@ -670,6 +694,7 @@ async function walkBlockScoped(
           reason: 'NATIVE_PRESENCE_UNUSABLE',
         });
       admitted = true;
+      newest = latest;
       metadataOnly = false;
       emitCaptureDiagnostics(latest);
       return { screen: latest, timing, id, platformPresence };
@@ -1072,6 +1097,7 @@ async function walkBlockScoped(
             ms: deps.now() - preparedAt,
           });
         super.check();
+        dispatchedOn = observation.id;
       }
     })(observationDeadline(observation.timing, deadline), deps.now, deps.cancelled, item.line);
     try {
@@ -1152,6 +1178,7 @@ async function walkBlockScoped(
     row = {
       ...row,
       ...(fillMethod ? { method: fillMethod } : {}),
+      ...(keyboardCleared ? { keyboardCleared } : {}),
       ...(fillMismatch && row.outcome !== 'pass' ? { entryMismatch: fillMismatch } : {}),
       operationId: operationFor(row.line),
       ...(reactCoverage ? { reactCoverage } : {}),
@@ -1205,34 +1232,76 @@ async function walkBlockScoped(
     screenshot: string | undefined,
     ref?: string,
     miss = false,
+    // The refusal code when a step failed on its target; false when the walk ended for another cause.
+    targetCode?: string | false,
   ): WalkOutcome => {
-    const quoted = item.kind === 'check' ? undefined : stepTarget(item)?.quoted;
-    if (quoted !== undefined) emitQuotedTargetDiagnostic(screen, quoted, item.line);
-    if ((item.kind === 'wait' || item.kind === 'scroll') && stepTarget(item)) {
+    const target = item.kind === 'check' ? undefined : stepTarget(item);
+    if (target?.quoted !== undefined) emitQuotedTargetDiagnostic(screen, target.quoted, item.line);
+    const row = base(item, attempt);
+    const last = targetCode ? (newest ?? screen) : screen;
+    const waitOrScroll = item.kind === 'wait' || item.kind === 'scroll';
+    let lastScreen: Pick<LedgerFailure, 'screen' | 'suggestion' | 'subreason'> = {};
+    if (item.kind !== 'check' && target && (waitOrScroll || targetCode)) {
       try {
         const diagnostic = targetMissDiagnostic(
-          stepTarget(item)!,
+          target,
           screen,
           item.line,
           item.kind === 'scroll',
           privacy,
+          item.kind,
         );
-        if (
-          !miss &&
-          !(item.kind === 'wait' && item.precondition) &&
-          diagnostic.reason !== 'evidence-incomplete'
-        ) {
-          const detail = `; target visibility: ${diagnostic.reason}`;
-          reason = typeof reason === 'string' ? reason + detail : [...segments(reason), detail];
+        if (waitOrScroll) {
+          if (
+            !miss &&
+            !(item.kind === 'wait' && item.precondition) &&
+            diagnostic.reason !== 'evidence-incomplete'
+          ) {
+            const detail = `; target visibility: ${diagnostic.reason}`;
+            reason = typeof reason === 'string' ? reason + detail : [...segments(reason), detail];
+          }
+          deps.targetMiss?.(diagnostic);
         }
-        deps.targetMiss?.(diagnostic);
+        const seen = captured.get(last);
+        if (seen && targetCode) {
+          const lastReason =
+            last === screen
+              ? diagnostic.reason
+              : targetMissDiagnostic(
+                  target,
+                  last,
+                  item.line,
+                  item.kind === 'scroll',
+                  privacy,
+                  item.kind,
+                ).reason;
+          const now = screenNow(
+            last,
+            target,
+            row.t - seen.at,
+            dispatchedOn === seen.id,
+            privacy,
+            item.kind,
+          );
+          const ambiguous =
+            targetCode === 'TARGET_AMBIGUOUS' &&
+            exactIdentities(last, target, item.kind).filter(
+              ({ element }) => !element.offscreen && !element.ref.startsWith('react:'),
+            ).length > 1;
+          const subreason = ambiguous ? 'ambiguous' : lastReason;
+          lastScreen = {
+            screen: now,
+            suggestion: missSuggestion(subreason, target, last, now, item.line, item.kind),
+            subreason,
+          };
+        }
       } catch {
         // Diagnostics cannot change the failed step's outcome.
       }
     }
-    const withheld = privacy.textWithheld(screen);
+    const withheld = privacy.textWithheld(last);
     emit({
-      ...base(item, attempt),
+      ...row,
       ...(ref ? { ref } : {}),
       ...(screenshot ? { screenshot } : {}),
       outcome: miss ? 'retry' : 'fail',
@@ -1248,13 +1317,14 @@ async function walkBlockScoped(
         step: item.line,
         seen: [
           ...segments(reason),
-          '; historical context, previously on screen: ',
+          '; last observed on screen: ',
           {
-            app: privacy.screenText(screen).slice(0, 40).join(' | '),
+            app: privacy.screenText(last).slice(0, 40).join(' | '),
             ...(withheld ? { withheld } : {}),
           },
         ],
         ...(screenshot ? { screenshot } : {}),
+        ...lastScreen,
       },
     };
   };
@@ -1530,8 +1600,17 @@ async function walkBlockScoped(
   > => {
     const quoted = item.target.quoted!;
     secretFill(item, target.element);
-    const nothingTyped = (reason: string, screen: Screen): WalkOutcome =>
-      failed(item, attempt, `${reason}; nothing was typed`, screen, undefined);
+    const nothingTyped = (reason: string, screen: Screen, targetCode?: string): WalkOutcome =>
+      failed(
+        item,
+        attempt,
+        `${reason}; nothing was typed`,
+        screen,
+        undefined,
+        undefined,
+        false,
+        targetCode,
+      );
     const proofMode = before.screen.keyboardVisible === true && deps.reactFocused !== undefined;
     if (before.screen.keyboardVisible !== false && !proofMode)
       return nothingTyped(
@@ -1568,6 +1647,7 @@ async function walkBlockScoped(
             ? `${tap.error}; "${quoted}" stayed off screen after one scroll`
             : `"${quoted}" stayed off screen after one scroll: its centre is past the visible area or under the keyboard`,
           before.screen,
+          'TARGET_NOT_FOUND',
         );
       const scroll = await mutate(item, before, (context) =>
         deps.scroll(
@@ -1588,6 +1668,7 @@ async function walkBlockScoped(
         return nothingTyped(
           'TARGET_NOT_FOUND: the refused wrapper stayed off screen after one scroll',
           afterScroll.screen,
+          'TARGET_NOT_FOUND',
         );
       return keyboardFallback(
         item,
@@ -1601,6 +1682,7 @@ async function walkBlockScoped(
       return nothingTyped(
         `${tap.error ?? 'the tap was not dispatched'}; tapping "${quoted}" failed`,
         before.screen,
+        tap.ambiguous ? 'TARGET_AMBIGUOUS' : undefined,
       );
     const readyBy = deps.now() + KEYBOARD_READY_MS;
     let after = await settledCapture(item);
@@ -1623,7 +1705,12 @@ async function walkBlockScoped(
     if (after.screen.keyboardVisible !== true)
       return nothingTyped(`tapping "${quoted}" raised no keyboard`, after.screen);
     const again = binding?.kind === 'fallback' ? binding.fallback : undefined;
-    if (!again) return nothingTyped(`the tap on "${quoted}" changed the screen`, after.screen);
+    if (!again)
+      return nothingTyped(
+        `the tap on "${quoted}" changed the screen`,
+        after.screen,
+        'TARGET_NOT_FOUND',
+      );
     if (proofMode && !(await focusProven('tap', again.oracleTestID)))
       return nothingTyped(
         `the keyboard was already up and focus on "${quoted}" is not proven`,
@@ -2042,6 +2129,7 @@ async function walkBlockScoped(
         );
       // The recovery acted on the device, so a later selector miss is not a pre-mutation re-walk.
       mutationStarted = true;
+      dispatchedOn = fresh.id;
       const proof = result.handled === 'dialog' ? dialogAct?.dialog : undefined;
       if (proof)
         deps.note?.(
@@ -2076,6 +2164,7 @@ async function walkBlockScoped(
     mutationStarted = false;
     fillMethod = undefined;
     fillMismatch = undefined;
+    keyboardCleared = undefined;
     fillHandlerAttempted = false;
     fillHandlerRefused = false;
     enrichment = undefined;
@@ -2099,6 +2188,7 @@ async function walkBlockScoped(
         continue items;
       }
       let currentAttempt = 1;
+      let targetPending = false;
       resolvedBy = item.source === 'jev' && !replay ? 'jev' : 'exact';
       if (item.kind === 'fill' && !typed.includes(fillText(item))) typed.push(fillText(item));
       try {
@@ -2204,6 +2294,7 @@ async function walkBlockScoped(
             }
             observation = observed.observation;
             unsure = observed.unsure === true;
+            targetPending = !observed.found && item.target.quoted !== undefined;
             observations += 1;
             if (!observed.found && reactOnlyTarget(item.target, observation.screen))
               reactOnlyObservations += 1;
@@ -2253,7 +2344,16 @@ async function walkBlockScoped(
               if (recovering === 'retry') continue attempts;
               if (recovering) return recovering;
               return judged(
-                failed(item, 1, reason, observation.screen, await shoot(item)),
+                failed(
+                  item,
+                  1,
+                  reason,
+                  observation.screen,
+                  await shoot(item),
+                  undefined,
+                  false,
+                  'TARGET_NOT_FOUND',
+                ),
                 observation.screen,
               );
             }
@@ -2379,6 +2479,9 @@ async function walkBlockScoped(
                   `${refusal.code}: ${refusal.message}`,
                   observation.screen,
                   await shoot(item),
+                  undefined,
+                  false,
+                  'TARGET_NOT_FOUND',
                 ),
                 refusal,
               };
@@ -2416,6 +2519,9 @@ async function walkBlockScoped(
                 }),
                 observation.screen,
                 undefined,
+                undefined,
+                false,
+                'TARGET_NOT_FOUND',
               );
             const reason =
               reactOnly ||
@@ -2435,6 +2541,9 @@ async function walkBlockScoped(
                   miss ? `${reason}; ${miss}` : reason,
                   observation.screen,
                   await shoot(item),
+                  undefined,
+                  false,
+                  'TARGET_NOT_FOUND',
                 ),
                 observation.screen,
               );
@@ -2493,6 +2602,7 @@ async function walkBlockScoped(
             }
             observation = observed.observation;
             unsure = observed.unsure === true;
+            targetPending = !observed.found;
             return observed.found;
           };
           let found = await visible(observation, held?.decision);
@@ -2542,6 +2652,9 @@ async function walkBlockScoped(
                 act.error ?? 'scroll was not dispatched',
                 observation.screen,
                 await shoot(item),
+                undefined,
+                false,
+                false,
               );
           }
           if (!found && replayMiss) throw replayMiss;
@@ -2559,7 +2672,16 @@ async function walkBlockScoped(
           }
           const reason = `"${item.until.phrase}" did not come into view after ${SCROLL_ATTEMPTS} scrolls`;
           return judged(
-            failed(item, Math.max(attempts, 1), reason, observation.screen, shot),
+            failed(
+              item,
+              Math.max(attempts, 1),
+              reason,
+              observation.screen,
+              shot,
+              undefined,
+              false,
+              'TARGET_NOT_FOUND',
+            ),
             observation.screen,
           );
         }
@@ -2578,6 +2700,7 @@ async function walkBlockScoped(
         let refusedIdentity: Element | undefined;
         let moved: { target: Element; error: string } | undefined;
         let settledFrame: string | undefined;
+        let keyboardAttempted = false;
         const captureBeforeDispatch = (): Promise<Observation> =>
           (item.kind === 'press' || item.kind === 'fill') &&
           (scrolled || sequence.momentum || fillIdentity !== undefined)
@@ -2644,6 +2767,8 @@ async function walkBlockScoped(
           let within: NativeNode['rect'];
           let scrollNeedsReadback = false;
           let scrollError: string | undefined;
+          // The target that settled after this attempt's keyboard dismissal; the tap goes to it or nowhere.
+          let keyboardBound: { target: Element; frame: string; scrolled: number } | undefined;
           let act: ActResult;
           for (;;) {
             try {
@@ -2714,7 +2839,12 @@ async function walkBlockScoped(
                       break;
                     }
                   }
-                  if (!fallback || item.kind !== 'fill') throw new ResolutionError(decided);
+                  if (!fallback || item.kind !== 'fill')
+                    throw new ResolutionError(
+                      keyboardBound
+                        ? { ...decided, reason: `${decided.reason}${KEYBOARD_DISMISSED}` }
+                        : decided,
+                    );
                   fellBack = true;
                   fillIdentity = fallback.oracleTestID;
                   const result = await keyboardFallback(
@@ -2750,6 +2880,9 @@ async function walkBlockScoped(
                       `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}`,
                       before.screen,
                       await shoot(item),
+                      undefined,
+                      false,
+                      'TARGET_NOT_FOUND',
                     );
                     break;
                   }
@@ -2798,6 +2931,9 @@ async function walkBlockScoped(
                       `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}`,
                       before.screen,
                       await shoot(item),
+                      undefined,
+                      false,
+                      'TARGET_NOT_FOUND',
                     );
                     break;
                   }
@@ -2843,6 +2979,84 @@ async function walkBlockScoped(
                 );
                 break;
               }
+              if (
+                keyboardBound &&
+                (element === undefined ||
+                  !sameIdentity(element, keyboardBound.target) ||
+                  (scrolled === keyboardBound.scrolled &&
+                    frameKey(element) !== keyboardBound.frame))
+              ) {
+                outcome = failed(
+                  item,
+                  attempt,
+                  [
+                    'the step resolved ',
+                    ...(element
+                      ? [
+                          {
+                            app: identityText(element),
+                            ...(concealsScreen(before.screen) ? { withheld: MASK } : {}),
+                          },
+                          ` at ${frameKey(element) ?? 'no frame'}`,
+                        ]
+                      : ['no element']),
+                    ', not the target that settled (',
+                    {
+                      app: identityText(keyboardBound.target),
+                      ...(concealsScreen(before.screen) ? { withheld: MASK } : {}),
+                    },
+                    ` at ${keyboardBound.frame}); it was not dispatched${KEYBOARD_DISMISSED}`,
+                  ],
+                  before.screen,
+                  await shoot(item),
+                  ref,
+                );
+                break;
+              }
+              if (
+                item.kind === 'press' &&
+                deps.platform === 'ios' &&
+                deps.dismissKeyboard &&
+                !keyboardAttempted &&
+                before.screen.keyboardVisible === true &&
+                element !== undefined &&
+                selectionPressCandidate(element, before.screen)
+              ) {
+                keyboardAttempted = true;
+                const target = element;
+                const dismissal: { via: 'native-control' | 'js' | 'none' } = { via: 'none' };
+                await mutate(item, before, async (context) => {
+                  dismissal.via = await deps.dismissKeyboard!(context);
+                  return { ok: true, proven: false };
+                });
+                const settled = await settledTarget(item, target);
+                if ('frames' in settled) {
+                  outcome = failed(
+                    item,
+                    attempt,
+                    [
+                      'the target (',
+                      {
+                        app: identityText(target),
+                        ...(concealsScreen(latest) ? { withheld: MASK } : {}),
+                      },
+                      `) did not settle across ${settled.frames.length} captures (${settled.frames.join(' | ')}); it was not dispatched${KEYBOARD_DISMISSED}`,
+                    ],
+                    latest,
+                    await shoot(item),
+                  );
+                  break;
+                }
+                before = settled.observation;
+                if (dismissal.via !== 'none' && before.screen.keyboardVisible !== true)
+                  keyboardCleared = dismissal.via;
+                deps.note?.(
+                  `keyboard-clearance ${JSON.stringify({ line: item.line, via: dismissal.via, hidden: before.screen.keyboardVisible === false })}`,
+                );
+                keyboardBound = { target, frame: settled.frame, scrolled };
+                initial = undefined;
+                continue;
+              }
               let centreDiagnostic: Readonly<CentreCoverageDiagnostic> | null = null;
               if (
                 (item.kind === 'press' || item.kind === 'fill') &&
@@ -2859,6 +3073,8 @@ async function walkBlockScoped(
                     before.screen,
                     await shoot(item),
                     ref,
+                    false,
+                    'TARGET_NOT_FOUND',
                   );
                   const originalFrame = refusedIdentity && elementFrame(refusedIdentity);
                   const currentFrame = elementFrame(element);
@@ -2968,6 +3184,8 @@ async function walkBlockScoped(
                   before.screen,
                   undefined,
                   ref,
+                  false,
+                  'TARGET_AMBIGUOUS',
                 );
                 break;
               }
@@ -3001,6 +3219,8 @@ async function walkBlockScoped(
                     before.screen,
                     await shoot(item),
                     ref,
+                    false,
+                    'TARGET_NOT_FOUND',
                   );
                   break;
                 }
@@ -3043,6 +3263,9 @@ async function walkBlockScoped(
                     `${act.error}; no unique eligible keyboard fallback target after the strict refusal; nothing was typed`,
                     before.screen,
                     undefined,
+                    undefined,
+                    false,
+                    'TARGET_NOT_FOUND',
                   );
                   break;
                 }
@@ -3103,7 +3326,11 @@ async function walkBlockScoped(
             const refusePress = (code: string, message: string): WalkOutcome => {
               const pressEvidence = evidence();
               deps.pressReadback?.(pressEvidence);
-              emit({ ...base(item, attempt), outcome: 'fail', reason: message });
+              emit({
+                ...base(item, attempt),
+                outcome: 'fail',
+                reason: message,
+              });
               return {
                 block: { key: block.slug, outcome: 'fail', source: 'discovered' },
                 rows,
@@ -3396,7 +3623,16 @@ async function walkBlockScoped(
           }
         }
         if (error instanceof RenderError)
-          return failed(item, currentAttempt, error.message, latest, undefined);
+          return failed(
+            item,
+            currentAttempt,
+            error.message,
+            latest,
+            undefined,
+            undefined,
+            false,
+            false,
+          );
         if (error instanceof PrivateInputCaptureError || error instanceof NativeCaptureError) {
           const nativeFailure = error instanceof NativeCaptureError;
           const safe = nativeFailure
@@ -3471,6 +3707,11 @@ async function walkBlockScoped(
           shot,
           undefined,
           miss,
+          error instanceof ResolutionError && TARGET_CODES.has(error.code)
+            ? error.code
+            : error instanceof EvidenceExpired && error.itemExpired && targetPending
+              ? 'TARGET_NOT_FOUND'
+              : false,
         );
         return {
           ...(error instanceof ResolutionError && error.missing
@@ -3522,6 +3763,8 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     outcome,
     ...(row.unverifiedPress ? { unverifiedPress: true } : {}),
     ...(row.method ? { method: row.method } : {}),
+    ...(row.keyboardCleared ? { keyboardCleared: row.keyboardCleared } : {}),
+    ...(row.retryCause ? { retryCause: row.retryCause } : {}),
     ...(row.entryMismatch ? { entryMismatch: row.entryMismatch } : {}),
     ...(row.screenshotWithheld ? { screenshotWithheld: row.screenshotWithheld } : {}),
     ...(screenshot ? { screenshot } : {}),
