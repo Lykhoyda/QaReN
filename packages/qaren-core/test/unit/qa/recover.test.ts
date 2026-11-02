@@ -235,6 +235,80 @@ for (const exact of [undefined, 'text', 'id'] as const) {
   });
 }
 
+function plannedSheetScreen(exact: 'id' | 'text', flattenedClose = false): Screen {
+  const rect = { x: 0, y: 0, width: 400, height: 800 };
+  const nodes: NativeNode[] = [
+    { ref: '@app', type: 'Application' },
+    { ref: '@window', type: 'Window', parentIndex: 0, rect },
+    {
+      ref: '@sheet',
+      type: 'Other',
+      parentIndex: 1,
+      identifier: exact === 'id' ? 'planned-sheet' : undefined,
+      label: exact === 'text' ? 'Offer' : undefined,
+      hittable: true,
+      rect: { x: 0, y: 300, width: 400, height: 500 },
+    },
+    {
+      ref: '@sheet-body',
+      type: 'Other',
+      parentIndex: 2,
+      hittable: true,
+      rect: { x: 0, y: 500, width: 400, height: 300 },
+    },
+    {
+      ref: '@close',
+      type: 'Button',
+      parentIndex: flattenedClose ? 1 : 3,
+      identifier: 'close-control',
+      label: 'Close',
+      hittable: true,
+      rect: { x: 20, y: 550, width: 100, height: 40 },
+    },
+  ];
+  return join(nodes, [], 'app', { native: 'complete', react: 'complete' }, undefined, {
+    source: 'xcui-live',
+    nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+  });
+}
+
+for (const exact of ['id', 'text'] as const) {
+  test(`a planned sheet is not covered by its own body (${exact})`, () => {
+    const snapshot = plannedSheetScreen(exact);
+    assert.equal(centreCovered(snapshot.elements[2], snapshot), false);
+    if (exact === 'id')
+      assert.equal(
+        targetEvidence({ phrase: 'planned-sheet', quoted: 'planned-sheet', exact }, snapshot),
+        'pass',
+      );
+  });
+
+  test(`a planned sheet protects Close when native ancestry is flattened (${exact})`, async () => {
+    const snapshot = plannedSheetScreen(exact, true);
+    const quoted = exact === 'id' ? 'planned-sheet' : 'Offer';
+    const targets = [
+      { phrase: 'Absent', quoted: 'Absent' },
+      { phrase: quoted, quoted, exact, laterBlock: true },
+    ];
+    let presses = 0;
+    const d = deps({
+      dismiss: async () => {
+        presses++;
+        return 'pass';
+      },
+    });
+    assert.equal(await recover(snapshot, d.deps, undefined, targets), undefined);
+    assert.equal(presses, 0);
+  });
+
+  test(`a covered Close control cannot be its own recovery action (${exact})`, () => {
+    const snapshot = plannedSheetScreen(exact, true);
+    const quoted = exact === 'id' ? 'close-control' : 'Close';
+    assert.equal(centreCovered(snapshot.elements[4], snapshot), true);
+    assert.equal(dismissCandidate(snapshot, [{ phrase: quoted, quoted, exact }]), undefined);
+  });
+}
+
 for (const exact of [undefined, 'id'] as const) {
   test(`an uncovered id carrier with an offscreen twin still vetoes recovery (${exact})`, () => {
     const snapshot = sheetScreen(

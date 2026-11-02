@@ -1,5 +1,11 @@
 import type { Target } from './plan.js';
-import { ancestorsOf, hostAssociationIdentity, type Element, type Screen } from './screen.js';
+import {
+  ancestorsOf,
+  elementFrame,
+  hostAssociationIdentity,
+  type Element,
+  type Screen,
+} from './screen.js';
 import type { HostAssociationDiagnostic } from './host-association.js';
 import { targetOnScreen } from './resolve.js';
 import type { Reason } from './untrusted.js';
@@ -153,6 +159,9 @@ export function dismissCandidate(
   );
   if (targetIndex !== -1)
     return rejected(targetIndex === 0 ? 'current-target' : 'later-target', targetIndex);
+  const protectedTargets = screen.elements.filter((e) =>
+    planTargets.some((target) => matchesTarget(e, target)),
+  );
   const failedPredicate = (
     e: Element,
   ): InterruptionDiagnostic['elements'][number]['failed'] | undefined => {
@@ -163,9 +172,22 @@ export function dismissCandidate(
     if (e.semantic.visibility !== 'visible') return 'not-visible';
     if (e.secure) return 'secure';
     if (
-      ancestorsOf(e).some((ancestor) =>
-        planTargets.some((target) => matchesTarget(ancestor, target)),
-      )
+      protectedTargets.some((target) => {
+        if (target === e || ancestorsOf(e).includes(target)) return true;
+        // Native trees can flatten containers; containment only vetoes a dismissal.
+        const outer = elementFrame(target);
+        const inner = elementFrame(e);
+        return (
+          outer !== undefined &&
+          inner !== undefined &&
+          inner.width > 0 &&
+          inner.height > 0 &&
+          inner.x >= outer.x &&
+          inner.y >= outer.y &&
+          inner.x + inner.width <= outer.x + outer.width &&
+          inner.y + inner.height <= outer.y + outer.height
+        );
+      })
     )
       return 'target-ancestor';
     return undefined;
