@@ -1,10 +1,12 @@
 use crate::exec::{CmdOutput, CmdSpec, Runner};
 use std::path::Path;
 
-// Metro without a native build: the dev server this process group owns is the
-// same cleanup contract as the expo run:* owner.
+pub fn expo_online(runner: &dyn Runner) -> bool {
+    runner.env_var("EXPO_OFFLINE").as_deref() == Some("0")
+}
+
 // The iOS simulator reaches Metro on 127.0.0.1, so iOS binds to loopback; Android keeps its adb-reverse path.
-pub fn start_spec(project_root: &Path, port: u16, localhost: bool) -> CmdSpec {
+pub fn start_spec(project_root: &Path, port: u16, localhost: bool, online: bool) -> CmdSpec {
     let port = port.to_string();
     let mut args = vec!["exec", "expo", "start", "--port", &port];
     if localhost {
@@ -14,6 +16,7 @@ pub fn start_spec(project_root: &Path, port: u16, localhost: bool) -> CmdSpec {
         .cwd(project_root)
         .env_remove("CI")
         .env("EXPO_NO_TELEMETRY", "1")
+        .env("EXPO_OFFLINE", if online { "0" } else { "1" })
         // Metro logs each request on receipt here, before any dependency-graph wait; the drain counts bundle requests.
         .env("DEBUG", crate::exec::log::METRO_REQUEST_LOG);
     if !localhost {

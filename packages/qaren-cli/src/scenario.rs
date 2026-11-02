@@ -251,6 +251,8 @@ pub struct Deadlines {
     pub build_seconds: u64,
     #[serde(default = "d_boot")]
     pub device_boot_seconds: u64,
+    #[serde(default = "d_boot")]
+    pub manifest_warmup_seconds: u64,
     #[serde(default = "d_attach")]
     pub attach_seconds: u64,
 }
@@ -274,6 +276,7 @@ impl Default for Deadlines {
             install_deps_seconds: d_deps(),
             build_seconds: d_build(),
             device_boot_seconds: d_boot(),
+            manifest_warmup_seconds: d_boot(),
             attach_seconds: d_attach(),
         }
     }
@@ -285,6 +288,10 @@ impl Deadlines {
             ("deadlines.install_deps_seconds", self.install_deps_seconds),
             ("deadlines.build_seconds", self.build_seconds),
             ("deadlines.device_boot_seconds", self.device_boot_seconds),
+            (
+                "deadlines.manifest_warmup_seconds",
+                self.manifest_warmup_seconds,
+            ),
             ("deadlines.attach_seconds", self.attach_seconds),
         ] {
             if !(30..=7200).contains(&value) {

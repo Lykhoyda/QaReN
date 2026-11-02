@@ -1,6 +1,8 @@
 use crate::redact::OutputText;
 use serde::{Deserialize, Serialize};
 
+pub(crate) const WATCHMAN_VOLUME_FIX: &str = "watchman cannot watch this volume; on macOS, FSEvents (fseventsd) state or removable-volume permissions may be blocking it: allow watchman under System Settings > Privacy & Security > Files and Folders > Removable Volumes, or coordinate an fseventsd reset, or reconnect the volume; then re-run qaren doctor once";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum FailureCode {
@@ -15,6 +17,7 @@ pub enum FailureCode {
     PnpmProcessGroupUnsupported,
     PnpmProbeTimedOut,
     MetroPortOccupied,
+    ManifestNotWarm,
     RunAlreadyExists,
     RunRecordUnavailable,
     RunRecordInvalid,
@@ -81,6 +84,7 @@ impl FailureCode {
         matches!(
             self,
             FailureCode::DepsNotPrewarmed
+                | FailureCode::ManifestNotWarm
                 | FailureCode::PnpmProcessGroupUnsupported
                 | FailureCode::PnpmProbeTimedOut
                 | FailureCode::DeviceClaimContended

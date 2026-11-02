@@ -123,10 +123,13 @@ impl<'a> Ctx<'a> {
                         && r.reason == RecoveryReason::IdentityUnavailable)
             })
         {
-            failure.next_action = crate::redact::OutputText::from_output(&format!(
-                "qaren cleanup {} --json",
-                self.record.run_id
-            ));
+            let cleanup = format!("qaren cleanup {} --json", self.record.run_id);
+            let next = if failure.code == FailureCode::ManifestNotWarm {
+                format!("{cleanup}; then {}", failure.next_action)
+            } else {
+                cleanup
+            };
+            failure.next_action = crate::redact::OutputText::from_output(&next);
         }
         if self.record.resources.any_owned() {
             failure.recovery = failure
@@ -2867,6 +2870,7 @@ fn spawn_metro_only(ctx: &mut Ctx) -> Result<(), Failure> {
         &project_root,
         port,
         ctx.record.scenario.platform == Platform::Ios,
+        metro::expo_online(ctx.runner),
     );
     let metro_log = RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id)
         .join("logs")
@@ -3156,54 +3160,7 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     let t = ctx.mark("metro_ready", t);
 
     enter_substage(ctx, Some("dev_client_manifest"));
-    if matches!(ctx.record.scenario.platform, Platform::Ios) {
-        run_budgeted_attempt(
-            ctx,
-            &metro::request_probe_spec(metro_port),
-            deadline,
-            &mut 0,
-        )?;
-    }
-    let manifest = metro::manifest_spec(metro_port, platform_dir(ctx.record.scenario.platform));
-    let mut attempts = 0;
-    let mut in_margin = 0;
-    let mut last = None;
-    loop {
-        let Some(warmed) = run_budgeted_attempt(ctx, &manifest, deadline, &mut attempts)? else {
-            let last = last.ok_or_else(|| launch_deadline_spent(&ctx.record.run_id))?;
-            return Err(launch_failure(
-                "dev client manifest",
-                &last,
-                crate::core::host_load_1m(),
-                attempts,
-                &ctx.record.run_id,
-            ));
-        };
-        let ready = match ctx.record.scenario.platform {
-            Platform::Ios => {
-                in_margin = manifest_in_margin(in_margin, &warmed);
-                in_margin == DEV_CLIENT_MANIFEST_ANSWERS
-            }
-            Platform::Android => warmed.ok() && warmed.duration_ms < DEV_CLIENT_REQUEST_TIMEOUT_MS,
-        };
-        if ready {
-            ctx.manifest_warm = Some(crate::core::ManifestWarm {
-                ms: warmed.duration_ms,
-                attempts,
-            });
-            break;
-        }
-        if !warmed.ok() && !warmed.timed_out {
-            return Err(launch_failure(
-                "dev client manifest",
-                &warmed,
-                None,
-                attempts,
-                &ctx.record.run_id,
-            ));
-        }
-        last = Some(warmed);
-    }
+    warm_dev_client_manifest(ctx, metro_port, deadline)?;
     let launch = match ctx.record.scenario.platform {
         Platform::Ios => {
             reprove_borrowed_prepare(ctx)?;
@@ -4969,7 +4926,12 @@ fn dry_run_receipt(
                     ..Default::default()
                 });
             }
-            planned.push(metro::start_spec(&cand.project_root, port, true));
+            planned.push(metro::start_spec(
+                &cand.project_root,
+                port,
+                true,
+                metro::expo_online(runner),
+            ));
             planned.push(ios::build_spec(
                 &cand.project_root,
                 Path::new("<run_dir>/ios-build"),
@@ -5119,7 +5081,12 @@ fn dry_run_receipt(
         match scenario.platform {
             Platform::Ios => {
                 let udid = borrowed.map_or("<udid>", |sim| sim.udid.as_str());
-                planned.push(metro::start_spec(&cand.project_root, port, true));
+                planned.push(metro::start_spec(
+                    &cand.project_root,
+                    port,
+                    true,
+                    metro::expo_online(runner),
+                ));
                 planned.push(ios::install_app_spec(udid, &artifact_path));
                 planned.push(metro::request_probe_spec(port));
                 planned.push(metro::manifest_spec(port, "ios"));
@@ -5149,7 +5116,12 @@ fn dry_run_receipt(
                     &artifact_path,
                 ));
                 planned.push(android::adb_reverse_spec(adb, server_port, &serial, port));
-                planned.push(metro::start_spec(&cand.project_root, port, false));
+                planned.push(metro::start_spec(
+                    &cand.project_root,
+                    port,
+                    false,
+                    metro::expo_online(runner),
+                ));
                 planned.push(metro::manifest_spec(port, "android"));
                 planned.push(android::am_start_deeplink_spec(
                     adb,
@@ -5239,7 +5211,14 @@ fn run_budgeted_attempt(
         label,
         format!(
             "{}; timeout_seconds={}",
-            output.summary(),
+            if matches!(
+                spec.label.as_str(),
+                "metro-manifest" | "metro-request-probe" | "watchman-volume-probe"
+            ) {
+                format!("ok={}; timed out={}", output.ok(), output.timed_out)
+            } else {
+                output.summary()
+            },
             bounded.timeout_seconds
         ),
     ));
@@ -5247,19 +5226,116 @@ fn run_budgeted_attempt(
     Ok(Some(output))
 }
 
-// expo-dev-launcher abandons its first manifest fetch after EXDevLauncherDefaultRequestTimeout (10 s); launch only once Metro answers inside it.
-const DEV_CLIENT_REQUEST_TIMEOUT_MS: u64 = 10_000;
-// Metro rebuilds the manifest per request, so one fast answer does not predict the dev client's own.
-const DEV_CLIENT_MANIFEST_MARGIN_MS: u64 = DEV_CLIENT_REQUEST_TIMEOUT_MS / 2;
-const DEV_CLIENT_MANIFEST_ANSWERS: usize = 2;
-
-// Consecutive manifest answers inside the margin; any other outcome restarts the count.
-fn manifest_in_margin(in_margin: usize, warmed: &crate::exec::CmdOutput) -> usize {
-    if warmed.ok() && warmed.duration_ms < DEV_CLIENT_MANIFEST_MARGIN_MS {
-        in_margin + 1
-    } else {
-        0
+fn warm_dev_client_manifest(ctx: &mut Ctx, port: u16, deadline: u64) -> Result<(), Failure> {
+    ensure_running(ctx.runner, "build")?;
+    if deadline.saturating_sub(ctx.runner.monotonic_ms()) < 1000 {
+        return Err(launch_deadline_spent(&ctx.record.run_id));
     }
+    let mut warm = crate::manifest::Warmup::new(
+        ctx.runner.monotonic_ms(),
+        ctx.record.scenario.deadlines.manifest_warmup_seconds,
+        deadline,
+        ctx.record.scenario.platform == Platform::Ios,
+    );
+    let mut volume_checked = false;
+    warm.expo_online = metro::expo_online(ctx.runner);
+    let result = (|| {
+        if ctx.record.scenario.platform == Platform::Ios {
+            warm.request_probe_limit_ms = 15_000
+                .min(warm.deadline_ms.saturating_sub(ctx.runner.monotonic_ms()) / 1000 * 1000);
+            if let Some(probe) = run_budgeted_attempt(
+                ctx,
+                &metro::request_probe_spec(port),
+                warm.deadline_ms,
+                &mut 0,
+            )? {
+                warm.request_probe_timed_out = probe.timed_out;
+            }
+            if warm.request_probe_timed_out {
+                let volume = crate::volume::assess(
+                    ctx.runner,
+                    &ctx.record.candidate.project_root,
+                    warm.deadline_ms,
+                );
+                warm.slow_volume = volume.slow;
+                ctx.notes
+                    .push(("candidate_volume_speed".into(), volume.summary));
+                volume_checked = true;
+            }
+            if warm.request_probe_timed_out
+                && warm.deadline_ms.saturating_sub(ctx.runner.monotonic_ms()) >= 5_000
+            {
+                let spec = crate::adapters::watchman::watch_project_spec(
+                    &ctx.record.candidate.project_root,
+                );
+                if let Some(output) = run_budgeted_attempt(ctx, &spec, warm.deadline_ms, &mut 0)? {
+                    let probe = crate::adapters::watchman::VolumeProbe::from_output(&output);
+                    ctx.notes
+                        .push(("watchman_volume_probe".into(), probe.as_str().into()));
+                    warm.watchman_volume_probe = Some(probe);
+                    if matches!(
+                        probe,
+                        crate::adapters::watchman::VolumeProbe::TimedOut
+                            | crate::adapters::watchman::VolumeProbe::Rejected
+                    ) {
+                        return Err(warm.refusal());
+                    }
+                }
+            }
+        }
+        let manifest = metro::manifest_spec(port, platform_dir(ctx.record.scenario.platform));
+        while warm.can_probe(ctx.runner.monotonic_ms()) {
+            let mut attempt = warm.attempts;
+            let Some(output) =
+                run_budgeted_attempt(ctx, &manifest, warm.deadline_ms, &mut attempt)?
+            else {
+                break;
+            };
+            warm.observe(&output);
+            if !volume_checked
+                && output.duration_ms >= 10_000
+                && ctx.runner.cancellation().is_none()
+            {
+                let volume = crate::volume::assess(
+                    ctx.runner,
+                    &ctx.record.candidate.project_root,
+                    warm.deadline_ms,
+                );
+                warm.slow_volume = volume.slow;
+                ctx.notes
+                    .push(("candidate_volume_speed".into(), volume.summary));
+                volume_checked = true;
+            }
+            if warm.ready(ctx.runner.monotonic_ms()) {
+                ctx.manifest_warm = Some(crate::core::ManifestWarm {
+                    ms: output.duration_ms,
+                    attempts: warm.attempts,
+                });
+                return Ok(());
+            }
+            if !output.ok() && !output.timed_out {
+                let safe = crate::exec::CmdOutput {
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    ..output
+                };
+                return Err(launch_failure(
+                    "dev client manifest",
+                    &safe,
+                    None,
+                    warm.attempts,
+                    &ctx.record.run_id,
+                ));
+            }
+        }
+        Err(warm.refusal())
+    })();
+    ctx.timings.push((
+        "manifest_warmup_elapsed".into(),
+        warm.elapsed_ms(ctx.runner.monotonic_ms()),
+    ));
+    ctx.notes.push(("manifest_warmup".into(), warm.summary()));
+    result
 }
 
 // A launch timeout or a too-slow answer is the CDP leg's environmental refusal; any other launch error stays a build failure.

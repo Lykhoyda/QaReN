@@ -1291,6 +1291,11 @@ fn script_ios_prepare_before_devmenu(mock: &mut MockRunner, repo: &std::path::Pa
 }
 
 fn script_ios_prepare_before_manifest(mock: &mut MockRunner, repo: &std::path::Path) {
+    script_ios_prepare_before_request_probe(mock, repo);
+    mock.expect_run("qaren-request-probe", CmdOutput::success(""));
+}
+
+fn script_ios_prepare_before_request_probe(mock: &mut MockRunner, repo: &std::path::Path) {
     script_ios_prepare_before_install(mock, repo);
     mock.expect_run("simctl install", CmdOutput::success(""));
     mock.expect_run("ps", CmdOutput::success(LSTART));
@@ -1298,7 +1303,15 @@ fn script_ios_prepare_before_manifest(mock: &mut MockRunner, repo: &std::path::P
     mock.expect_run("lsof", CmdOutput::success("6001"));
     mock.expect_run("ps", CmdOutput::success("6000"));
     mock.expect_run("curl", CmdOutput::success("packager-status:running"));
-    mock.expect_run("qaren-request-probe", CmdOutput::success(""));
+}
+
+fn script_volume_sample(mock: &mut MockRunner, slow: bool) {
+    let output = if slow {
+        r#"{"files":32,"elapsed_ms":2000}"#
+    } else {
+        r#"{"files":32,"elapsed_ms":1}"#
+    };
+    mock.expect_run("--internal-volume-sample", CmdOutput::success(output));
 }
 
 fn manifest_answered_in(duration_ms: u64) -> CmdOutput {
@@ -1309,6 +1322,23 @@ fn manifest_answered_in(duration_ms: u64) -> CmdOutput {
 }
 
 #[test]
+fn a_spent_preparation_budget_does_not_claim_manifest_warmup_was_attempted() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_before_request_probe(&mut mock, &repo);
+    mock.advance_on = Some(("/status".into(), 2_400_000));
+    common::script_ios_metro_cleanup(&mut mock);
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::ReadyDeadlineExceeded
+    );
+    assert!(!mock.calls.iter().any(|c| c.label == "metro-manifest"));
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
 fn ios_prepare_warms_metro_until_the_manifest_answers_twice_inside_half_the_dev_client_timeout() {
     let repo = common::temp_repo();
     let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
@@ -1316,8 +1346,11 @@ fn ios_prepare_warms_metro_until_the_manifest_answers_twice_inside_half_the_dev_
     script_ios_prepare_before_manifest(&mut mock, &repo);
     // 7 s fits the dev client's 10 s limit but not the 5 s margin, so it restarts the count.
     let answers = [12_000, 4_000, 7_000, 4_999, 1_000];
-    for ms in answers {
+    for (index, ms) in answers.into_iter().enumerate() {
         mock.expect_run("expo-platform", manifest_answered_in(ms));
+        if index == 0 {
+            script_volume_sample(&mut mock, false);
+        }
     }
     common::script_devmenu_defaults(&mut mock, CmdOutput::success(""));
     common::script_ios_launch(&mut mock);
@@ -1363,6 +1396,7 @@ fn ios_prepare_retries_a_manifest_request_timeout_with_the_original_attempt_boun
             ..Default::default()
         },
     );
+    script_volume_sample(&mut mock, false);
     mock.expect_run("expo-platform", manifest_answered_in(4_999));
     mock.expect_run("expo-platform", manifest_answered_in(4_999));
     common::script_devmenu_defaults(&mut mock, CmdOutput::success(""));
@@ -1399,36 +1433,218 @@ fn ios_prepare_refuses_when_the_manifest_never_answers_twice_inside_half_the_dev
     let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
     let mut mock = MockRunner::new();
     script_ios_prepare_before_manifest(&mut mock, &repo);
-    for ms in [12_000, 1_000, 12_000, 1_000] {
+    for (index, ms) in [12_000, 1_000, 12_000].into_iter().enumerate() {
         mock.expect_run("expo-platform", manifest_answered_in(ms));
+        if index == 0 {
+            script_volume_sample(&mut mock, false);
+        }
     }
     common::script_ios_metro_cleanup(&mut mock);
-    mock.advance_on = Some(("expo-platform".into(), 600_000));
+    mock.advance_on = Some(("expo-platform".into(), 150_000));
 
     let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
 
     let failure = receipt.failure.as_ref().expect("slow manifest refuses");
-    assert_eq!(failure.code, FailureCode::CoreRefused);
+    assert_eq!(failure.code, FailureCode::ManifestNotWarm);
     assert!(
         failure
             .detail
-            .starts_with("dev client manifest did not become ready within the preparation budget"),
+            .starts_with("dev client manifest did not warm within its stage budget"),
         "{failure:?}"
     );
-    assert!(failure.detail.contains("after 4 attempts"), "{failure:?}");
-    assert!(failure.detail.contains("host"), "{failure:?}");
-    assert_eq!(receipt.outcomes["launch_ready_budget"], "spent");
+    assert!(failure.detail.contains("attempts=3"), "{failure:?}");
+    assert_eq!(receipt.timings_ms["manifest_warmup_elapsed"], 450_000);
     assert_eq!(receipt.outcomes["substage"], "dev_client_manifest");
-    for (attempt, ms) in [12_000, 1_000, 12_000, 1_000].into_iter().enumerate() {
+    for (attempt, ms) in [12_000, 1_000, 12_000].into_iter().enumerate() {
         assert_eq!(
             receipt.timings_ms[&format!("metro-manifest_attempt_{}", attempt + 1)],
             ms
         );
     }
     let count = |label: &str| mock.calls.iter().filter(|c| c.label == label).count();
-    assert_eq!(count("metro-manifest"), 4);
+    assert_eq!(count("metro-manifest"), 3);
     assert_eq!(count("simctl-devmenu-defaults"), 0);
     assert_eq!(count("simctl-launch"), 0);
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn manifest_timeout_records_the_request_handler_cause_without_raw_output() {
+    for (watch_output, expected_watch) in [
+        (CmdOutput::success(r#"{"watch":"/candidate"}"#), "ready"),
+        (
+            CmdOutput::failed(127, "private-watchman-output"),
+            "unavailable",
+        ),
+    ] {
+        let repo = common::temp_repo();
+        let scenario = write_scenario(
+            &repo,
+            &format!(
+                "{}deadlines:\n  manifest_warmup_seconds: 30\n",
+                ios_scenario_yaml(8791)
+            ),
+        );
+        let mut mock = MockRunner::new();
+        script_ios_prepare_before_request_probe(&mut mock, &repo);
+        mock.expect_run(
+            "qaren-request-probe",
+            CmdOutput {
+                timed_out: true,
+                duration_ms: 15_000,
+                stdout: "private-probe-output".into(),
+                ..Default::default()
+            },
+        );
+        script_volume_sample(&mut mock, false);
+        mock.expect_run("watch-project", watch_output);
+        for _ in 0..2 {
+            mock.expect_run(
+                "expo-platform",
+                CmdOutput {
+                    timed_out: true,
+                    duration_ms: 15_000,
+                    stderr: "private-probe-output".into(),
+                    ..Default::default()
+                },
+            );
+        }
+        mock.advance_on = Some(("expo-platform".into(), 15_000));
+        common::script_ios_metro_cleanup(&mut mock);
+        let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(failure.code, FailureCode::ManifestNotWarm);
+        assert!(failure.code.is_refusal());
+        assert!(failure
+            .next_action
+            .contains("Metro answered /status but not its request handler within 15 s"));
+        assert!(failure.next_action.contains("re-run once"));
+        assert!(receipt.outcomes["manifest_warmup"].contains("timeouts=2"));
+        assert!(receipt.outcomes["manifest_warmup"].contains("request_probe_timed_out=true"));
+        assert!(!receipt.to_json().contains("private-probe-output"));
+        assert!(!receipt.to_json().contains("private-watchman-output"));
+        assert_eq!(receipt.outcomes["watchman_volume_probe"], expected_watch);
+        let limits: Vec<_> = mock
+            .calls
+            .iter()
+            .filter(|c| c.label == "metro-manifest")
+            .map(|c| c.timeout_seconds)
+            .collect();
+        assert_eq!(limits, [30, 15]);
+        assert!(!mock.calls.iter().any(|c| c.label == "simctl-launch"));
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn a_confirmed_watchman_volume_stall_refuses_without_looping_or_launching() {
+    for (watch_output, expected_watch) in [
+        (
+            CmdOutput {
+                timed_out: true,
+                duration_ms: 5_000,
+                stderr: "private-watchman-output".into(),
+                ..Default::default()
+            },
+            "timed_out",
+        ),
+        (
+            CmdOutput::success(r#"{"error":"private-watchman-output"}"#),
+            "rejected",
+        ),
+    ] {
+        let repo = common::temp_repo();
+        let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+        let mut mock = MockRunner::new();
+        script_ios_prepare_before_request_probe(&mut mock, &repo);
+        mock.expect_run(
+            "qaren-request-probe",
+            CmdOutput {
+                timed_out: true,
+                duration_ms: 15_000,
+                ..Default::default()
+            },
+        );
+        script_volume_sample(&mut mock, false);
+        mock.expect_run("watch-project", watch_output);
+        mock.advance_on = Some(("watch-project".into(), 5_000));
+        common::script_ios_metro_cleanup(&mut mock);
+        let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(failure.code, FailureCode::ManifestNotWarm);
+        assert_eq!(receipt.result, ReceiptResult::Refused);
+        assert!(failure
+            .next_action
+            .contains("watchman cannot watch this volume"));
+        assert!(failure.next_action.contains("fseventsd"));
+        assert!(failure.next_action.contains("Privacy & Security"));
+        assert!(failure.next_action.contains("qaren cleanup"));
+        assert_eq!(receipt.outcomes["watchman_volume_probe"], expected_watch);
+        assert!(receipt.outcomes["manifest_warmup"]
+            .contains(&format!("watchman_volume_probe={expected_watch}")));
+        assert!(!receipt.to_json().contains("private-watchman-output"));
+        assert!(!mock
+            .calls
+            .iter()
+            .any(|c| matches!(c.label.as_str(), "metro-manifest" | "simctl-launch")));
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn manifest_attempt_cap_stops_probes_even_when_the_clock_does_not_advance() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_before_manifest(&mut mock, &repo);
+    for _ in 0..64 {
+        mock.expect_run(
+            "expo-platform",
+            CmdOutput {
+                timed_out: true,
+                ..Default::default()
+            },
+        );
+    }
+    common::script_ios_metro_cleanup(&mut mock);
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::ManifestNotWarm
+    );
+    assert!(receipt.outcomes["manifest_warmup"].contains("attempts=64"));
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn mixed_slow_answers_with_a_thirty_second_median_explain_an_online_account_lookup() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    mock.environment.insert("EXPO_OFFLINE".into(), "0".into());
+    script_ios_prepare_before_manifest(&mut mock, &repo);
+    for index in 0..14 {
+        mock.expect_run(
+            "expo-platform",
+            manifest_answered_in([27_000, 30_000, 42_000][index % 3]),
+        );
+        if index == 0 {
+            script_volume_sample(&mut mock, true);
+        }
+    }
+    mock.advance_on = Some(("expo-platform".into(), 30_000));
+    common::script_ios_metro_cleanup(&mut mock);
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::ManifestNotWarm);
+    assert!(failure.detail.contains("median_answer_ms=30000"));
+    assert!(failure.next_action.contains("external service"));
+    assert!(failure.next_action.contains("unset EXPO_OFFLINE"));
+    assert!(failure
+        .next_action
+        .contains("move the project to a faster or internal disk"));
+    assert!(receipt.outcomes["candidate_volume_speed"].contains("sample_files=32"));
+    assert_eq!(receipt.timings_ms["manifest_warmup_elapsed"], 420_000);
     assert_eq!(mock.remaining(), 0);
 }
 
@@ -1439,6 +1655,7 @@ fn ios_manifest_error_after_a_slow_answer_stays_a_build_failure() {
     let mut mock = MockRunner::new();
     script_ios_prepare_before_manifest(&mut mock, &repo);
     mock.expect_run("expo-platform", manifest_answered_in(12_000));
+    script_volume_sample(&mut mock, false);
     mock.expect_run("expo-platform", CmdOutput::failed(22, "HTTP 500"));
     common::script_ios_metro_cleanup(&mut mock);
 
@@ -3360,7 +3577,7 @@ fn ios_reuse_dry_run_lists_each_launch_step_once_in_execution_order() {
             &ios_spec.runtime,
         ),
         ios::bootstatus_spec("<udid>", scenario.deadlines.device_boot_seconds),
-        metro::start_spec(&project, 8791, true),
+        metro::start_spec(&project, 8791, true, false),
         ios::install_app_spec("<udid>", &artifact),
         metro::request_probe_spec(8791),
         metro::manifest_spec(8791, "ios"),
