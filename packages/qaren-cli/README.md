@@ -784,7 +784,8 @@ not reported selected, its own captured semantics did not change, and a peer but
 the same scroll container reports native selection before or after the tap. Without
 that readable selection evidence, an invisible successful toggle cannot be ruled out.
 The retry row and the step's final row carry `retryCause: KEYBOARD_SWALLOWED_TAP`, and a pass after it
-shows as attempt 2. Without every fact the `PRESS_NOT_REGISTERED` refusal above stands.
+shows as attempt 2. A target reported selected when the retry settles passes without a
+second tap. Without every fact the `PRESS_NOT_REGISTERED` refusal above stands.
 
 Its ordered
 recovery ladder skips held press as unsafe and app/Metro/runner restart, device

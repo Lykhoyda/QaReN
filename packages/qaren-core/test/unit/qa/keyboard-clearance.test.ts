@@ -250,6 +250,19 @@ test('a keyboard-closing tap with readable native selection is retried once', as
   assert.match(String(outcome.rows[0].reason), /KEYBOARD_SWALLOWED_TAP/);
 });
 
+test('a selection that lands after both readbacks is kept, never tapped again', async () => {
+  const f = fake([
+    screen({ keyboard: true, peerSelected: true }),
+    screen({ peerSelected: true }),
+    screen({ peerSelected: true }),
+    screen({ selected: true, peerSelected: true }),
+  ]);
+  const outcome = await walkBlock(tap, f.deps);
+  assert.equal(outcome.block.outcome, 'pass', outcome.failure?.seen);
+  assert.equal(count(f, 'press'), 1);
+  assert.equal(outcome.rows.at(-1)!.attempt, 2);
+});
+
 test('an invisible successful toggle that closes the keyboard is never retried', async () => {
   const f = fake([screen({ keyboard: true }), screen(), screen()]);
   let selected = false;

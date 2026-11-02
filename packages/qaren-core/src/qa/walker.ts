@@ -2626,6 +2626,24 @@ async function walkBlockScoped(
             }
             before = settled.observation;
             settledFrame = settled.frame;
+            const target = moved.target;
+            const late = before.screen.elements.filter((e) => sameIdentity(e, target));
+            if (
+              retryCause === 'KEYBOARD_SWALLOWED_TAP' &&
+              late.length === 1 &&
+              late[0].selected === true
+            ) {
+              const shot = await shoot(item);
+              emit({
+                ...base(item, attempt),
+                ...(shot ? { screenshot: shot } : {}),
+                outcome: 'pass',
+                reason: redact(
+                  'the previous attempt took effect after its readback: the target is now reported selected, so it was not tapped again',
+                ),
+              });
+              continue items;
+            }
           } else {
             before = held?.observation ?? (await captureBeforeDispatch());
           }
