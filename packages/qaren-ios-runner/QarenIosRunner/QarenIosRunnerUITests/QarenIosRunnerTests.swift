@@ -78,6 +78,8 @@ class QarenIosRunnerTests: XCTestCase {
   )?
   // The live element the latest target check resolved with the retained frame.
   var lastLiveTarget: XCUIElement?
+  // Why the last live target check was unavailable, for a strict tap's refusal.
+  var lastLiveCheckUnavailable: String?
   var appAlertInterruptions = 0
   var servingCommands = false
   var containedIssues = 0

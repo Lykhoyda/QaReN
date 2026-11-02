@@ -37,6 +37,30 @@ enum DispatchGuard {
     case moved
   }
 
+  // A strict tap proceeds only on a live read proving the target hittable; nil means proceed.
+  static func strictRefusal(_ check: TargetCheck, unavailableReason: String?) -> String? {
+    switch check {
+    case .hittable(true): return nil
+    case .hittable(false): return "not-hittable"
+    case .moved: return "moved"
+    case .unavailable: return unavailableReason ?? "unavailable"
+    }
+  }
+
+  static func dispatchTap<T>(
+    requireLiveHit: Bool,
+    liveTarget: T?,
+    activate: (T) -> Bool,
+    coordinate: () -> Void
+  ) -> Bool {
+    if requireLiveHit {
+      guard let liveTarget else { return false }
+      return activate(liveTarget)
+    }
+    coordinate()
+    return true
+  }
+
   // Proven frame movement refuses even when hittability is unavailable.
   static func decide(liveHittable: Bool?, keyboardContainsPoint: Bool, targetMoved: Bool = false) -> Decision {
     if targetMoved { return .moved }
