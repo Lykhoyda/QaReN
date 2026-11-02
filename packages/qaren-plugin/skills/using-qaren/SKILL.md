@@ -28,6 +28,18 @@ cannot repair compiler compatibility.
 
 For a retained iOS runner, run `qaren cleanup <run-id> --json`; follow its `next_action` if ownership remains unproven.
 
+For `DEV_TARGET_MISSING`, follow `use_development_bundle`: inspect the launch
+URL and build variant for a JS bundle with `__DEV__ === true`. Registered-target
+admission uses the attach budget clipped to the walk budget; unchanged retries
+cannot fix bundle mode. For admission `CORE_REFUSED` with
+`inspect_development_target`, `inspect_bundle_readiness` or
+`inspect_admission_budget`, read the
+[admission and recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan)
+and follow its five applicability-aware rungs. Undefined/failed probes leave
+development mode unknown. State-losing recovery requires approval and ownership
+proof; a non-dev bundle permits app/Metro restart only for proven stale Metro
+serving the wrong bundle. A corrected build requires separate authorization.
+
 For `CORE_REFUSED` with a `DEV_MENU_HIDE_UNVERIFIED_*` inner code in
 `failure.detail`, read the authoritative
 [overlay clearance and recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan)

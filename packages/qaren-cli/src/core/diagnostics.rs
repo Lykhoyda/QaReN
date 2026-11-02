@@ -303,15 +303,7 @@ const POST_MORTEM_FIELDS: &[&str] = &[
     "markerTestFailed",
 ];
 
-const ADMISSION_BOUNDARIES: &[&str] = &[
-    "attach",
-    "bundle_ready",
-    "foreign_driver",
-    "open",
-    "prove",
-    "relaunch",
-    "retry_wait",
-];
+const ADMISSION_BOUNDARIES: &[&str] = crate::failure::admission::BOUNDARIES;
 const ADMISSION_COMPLETED: &[&str] = &[
     "attach",
     "bundle_ready",
@@ -322,24 +314,7 @@ const ADMISSION_COMPLETED: &[&str] = &[
     "retry_wait",
     "none",
 ];
-const ADMISSION_INNER: &[&str] = &[
-    "target_selection_platform_not_found",
-    "target_selection_platform_conflict",
-    "target_selection_device_not_found",
-    "target_selection_device_ambiguous",
-    "target_selection_bundle_not_found",
-    "target_list_attempt_timeout",
-    "target_readiness_timeout",
-    "target_list_empty",
-    "target_other_device",
-    "bundle_readiness_timeout",
-    "cdp_probe_timeout",
-    "cdp_handshake_timeout",
-    "cdp_target_closed",
-    "cdp_request_timeout",
-    "untyped",
-    "none",
-];
+const ADMISSION_INNER: &[&str] = crate::failure::admission::INNER;
 const ADMISSION_KEYS: &[&str] = &[
     "admission",
     "attempt",
@@ -352,6 +327,13 @@ const ADMISSION_KEYS: &[&str] = &[
     "liveness",
     "bundleRequest",
     "elapsedMs",
+    "attachBudgetMs",
+    "walkBudgetMs",
+    "targetsTotal",
+    "devTrue",
+    "devFalse",
+    "devUndefined",
+    "devUnknown",
     "remainingMs",
 ];
 
@@ -469,6 +451,13 @@ fn clean(value: &Value) -> Option<Value> {
                 "liveness",
                 "bundleRequest",
                 "elapsedMs",
+                "attachBudgetMs",
+                "walkBudgetMs",
+                "targetsTotal",
+                "devTrue",
+                "devFalse",
+                "devUndefined",
+                "devUnknown",
                 "remainingMs",
                 "healthDetail",
                 "hostChild",
@@ -624,7 +613,8 @@ fn clean(value: &Value) -> Option<Value> {
                 || (["block-outcome", "interruption-rejected"].contains(&kind)
                     && key == "line"
                     && number == 0.0)
-                || (kind == "interruption-rejected" && number.fract() != 0.0)
+                || ((kind == "interruption-rejected" || ADMISSION_KEYS.contains(&key.as_str()))
+                    && number.fract() != 0.0)
             {
                 return None;
             }

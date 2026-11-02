@@ -3370,24 +3370,45 @@ The [row timing implementation](../qaren-core/src/qa/row-timing.ts) owns
 aggregation; [CLI decoding](src/core.rs) and [report rendering](src/report.rs)
 own consumption.
 
-Launch admission shares the remaining walk deadline across target readiness,
-WebSocket handshakes, probes and retry sleeps; retries and relaunches never
-renew it. Outside patient manifest recovery below, a stall without progress refuses
-earlier, once `deadlines.attach_seconds`
-(default 120; see the [deadline configuration reference](../../apps/docs-site/src/content/docs/configuration.mdx#deadlines)) has passed since admission began:
-a target-list wait that saw no target on the selected device, or whose list
-requests went unanswered, ends admission when the app job is proven dead or Metro
-has received no bundle request since the latest launch. Each relaunch rebases
-the request count on Metro's count just before it (an unreadable count leaves the
-signal unknown), and liveness and the request signal are re-read at that point, so
-a request from an earlier launch keeps neither a dead nor a relaunched app waiting. The refusal follows the first readiness window ending
-after that limit, and a relaunch made just before it still gets its full window. A
-received request, an unknown or unreadable request signal (including Metro owned by
-an `expo run:*` build and platforms without the signal), a registered target whose
-probes or handshakes stall, and React that is not yet ready keep the walk deadline.
-The refusal names the stalled `attach` boundary and its stage. The connect-time dev-build check
-and helper injection wait for the runtime's answer until that deadline rather
-than a fixed request timeout; no answer by the deadline is a readiness timeout.
+Launch admission requires a development JS bundle with `__DEV__ === true`.
+Registered-target connection, setup, React readiness and origin proof share
+`min(remaining walk budget, deadlines.attach_seconds)` (120 seconds by default).
+Retries do not renew this deadline. Each candidate's handshake, responsive-JS
+probe and development-state probe are capped at 1500 ms and clipped to the
+active deadline, so an unresponsive candidate leaves time to inspect the next
+scoped candidate. Other CDP clients retain their existing fallback behavior.
+
+If the final completed discovery attempt finds only explicitly false targets,
+QaReN refuses `DEV_TARGET_MISSING` (exit 4) before any plan step, with
+`next_action: use_development_bundle`. Check the launch URL and build variant;
+a dev-client native build alone does not prove the JS bundle uses development
+mode. An unchanged retry cannot repair bundle mode. Restart only the owned app
+and Metro after proving stale Metro served the wrong bundle and obtaining
+approval for volatile state loss. Device restart, unchanged native rebuild and
+cleanup/fresh prepare cannot correct bundle mode; a corrected build requires
+separate authorization.
+
+Undefined development state, a failed or pending final scan, or a target/context
+replacement cannot establish production mode. Those cases refuse with receipt
+`CORE_REFUSED`, inner `CDP_NOT_CONNECTED/no_dev_target_unknown` and
+`inspect_development_target`. A proven dev bundle that does not start React
+refuses with inner `CDP_NOT_CONNECTED/react_readiness_timeout` and
+`inspect_bundle_readiness`. A late dev target may admit only if setup, readiness
+and proof all finish before the same deadline. Cancellation wins over admission.
+
+`failure.recovery` carries the typed cause, instruction, stage/count/budget facts
+and five ordered rungs with applicability, state-loss and approval fields.
+Inspect terminal evidence first; a changed new run gets a new budget. Resource
+restarts require evidence of stale owned resources, device restarts require a
+proven device fault, native rebuilds require a proven native mismatch, and owned
+cleanup/fresh prepare is the last resource reset. State-losing actions require
+approval and ownership proof. Total walk expiry before admission uses
+`inspect_admission_budget`; elapsed time alone does not establish bundle mode.
+A live app with no registered target and a received or unknown bundle-request
+signal keeps waiting within the walk budget; once a target registers, setup uses
+the registered-target deadline. Patient no-target manifest recovery below keeps
+its distinct warming, relaunch and post-relaunch attach deadlines, all clipped
+to the remaining walk budget.
 Target readiness and attachment accept only a runtime Metro reports with the
 requested `appId` bundle identity (and on iOS, under the run's simulator name on
 that same target), so another app on the selected device or another booted

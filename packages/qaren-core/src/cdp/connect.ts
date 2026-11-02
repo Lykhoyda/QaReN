@@ -1,5 +1,16 @@
-import { isAbort, cancellationSignal, interruptible } from '../domain/cancellation.js';
+import {
+  isAbort,
+  cancellationSignal,
+  interruptible,
+  withDeadline,
+} from '../domain/cancellation.js';
 import WebSocket from 'ws';
+import {
+  DevTargetUnavailableError,
+  type DevelopmentState,
+  type DevelopmentTargetCounts,
+} from '../domain/dev-target.js';
+export { DevTargetUnavailableError } from '../domain/dev-target.js';
 import { logger } from '../logger.js';
 import { metroOrigin } from '../ws-origin.js';
 import { resolveBundleId } from '../project-config.js';
@@ -17,10 +28,16 @@ export { CDPTargetClosedError } from './transport.js';
 import { probeReactReachable } from './setup.js';
 import type { CDPClientState, EvaluateResult, HermesTarget } from '../types.js';
 
-// GH #184: distinguishes a quick health-check connect (cdp_status) from every
-// other connect path. Only 'status' connects run the bounded picker probe; all
-// other paths keep the full waitForReact budget for legitimate slow builds.
-export type ConnectIntent = 'default' | 'status';
+// QA requires proven development mode; status retains its bounded picker probe.
+export type ConnectIntent = 'default' | 'status' | 'qa';
+
+const DEVELOPMENT_STATE_JS = `typeof __DEV__ === 'undefined' ? 'undefined' : __DEV__ === true ? 'true' : __DEV__ === false ? 'false' : 'unknown'`;
+
+class DevCandidateUnavailableError extends Error {
+  constructor(readonly state: DevelopmentState) {
+    super('Scoped candidate did not prove development mode');
+  }
+}
 
 // Budget for the status-scoped React-reachability probe. Generous enough to
 // clear a normal Bridgeless reload (React ready in <~2s) but far below setup()'s
@@ -111,6 +128,8 @@ export interface ConnectContext {
   evaluate(expr: string): Promise<EvaluateResult>;
   // Bounded by the caller's attach deadline when one is set; expiry is a TargetReadinessTimeoutError.
   evaluateWithinAttach(expr: string): Promise<EvaluateResult>;
+  getRuntimeToken?(): unknown;
+  setDevelopmentTargets?(counts: DevelopmentTargetCounts): void;
   sendWithTimeout(method: string, params: unknown, ms: number): Promise<unknown>;
   handleMessage(data: WebSocket.RawData): void;
   handleClose(code: number): void;
@@ -222,12 +241,28 @@ export async function discoverAndConnect(
     throw new Error(selectionWarning ?? 'No matching CDP targets found.');
   }
 
+  const counts: DevelopmentTargetCounts = {
+    targetsTotal: sorted.length,
+    devTrue: 0,
+    devFalse: 0,
+    devUndefined: 0,
+    devUnknown: 0,
+  };
   let connectedTarget: HermesTarget | null = null;
   for (let idx = 0; idx < sorted.length; idx++) {
     const candidate = sorted[idx];
     const isLast = idx === sorted.length - 1;
     try {
       await connectToTarget(ctx, candidate, targetRetries, intent);
+      if (intent === 'qa') {
+        ctx.setDevelopmentTargets?.({
+          ...counts,
+          devTrue: 1,
+          devUnknown: counts.devUnknown + sorted.length - idx - 1,
+        });
+        connectedTarget = candidate;
+        break;
+      }
       const devCheck = await interruptible(() =>
         ctx.evaluateWithinAttach('typeof __DEV__ !== "undefined" && __DEV__ === true'),
       );
@@ -249,8 +284,19 @@ export async function discoverAndConnect(
       connectedTarget = candidate;
     } catch (err) {
       if (isAbort(err)) throw err;
-      // Refusal or page replacement returns control to the discovery owner.
       if (err instanceof ConnectionSetupSupersededError) throw err;
+      if (intent === 'qa') {
+        const state = err instanceof DevCandidateUnavailableError ? err.state : 'unknown';
+        if (state === 'false') counts.devFalse++;
+        else if (state === 'undefined') counts.devUndefined++;
+        else counts.devUnknown++;
+        closeAndResetWs(ctx);
+        ctx.setHelpersInjected(false);
+        ctx.setConnectedTarget(null);
+        ctx.setState('disconnected');
+        continue;
+      }
+      // Refusal or page replacement returns control to the discovery owner.
       if (
         err instanceof PickerBlockingBundleError ||
         err instanceof TargetReadinessTimeoutError ||
@@ -265,6 +311,7 @@ export async function discoverAndConnect(
   }
 
   if (ctx.isDisposed()) throw new ConnectionSetupSupersededError();
+  if (!connectedTarget) throw new DevTargetUnavailableError(counts);
 
   logger.info(
     'CDP',
@@ -372,6 +419,22 @@ export function formatConnectFailureMessage(
   return `Failed to connect after ${retries} attempts.${hint}`;
 }
 
+async function requireDevelopmentTarget(ctx: ConnectContext): Promise<void> {
+  const token = ctx.getRuntimeToken?.();
+  const dev = await withDeadline(
+    performance.now() + CDP_TIMEOUT_FAST,
+    new CDPProbeTimeoutError('Development state probe timed out'),
+    () => ctx.evaluateWithinAttach(DEVELOPMENT_STATE_JS),
+  );
+  const state: DevelopmentState =
+    dev.error || token !== ctx.getRuntimeToken?.()
+      ? 'unknown'
+      : ['true', 'false', 'undefined'].includes(String(dev.value))
+        ? (dev.value as DevelopmentState)
+        : 'unknown';
+  if (state !== 'true') throw new DevCandidateUnavailableError(state);
+}
+
 async function connectToTarget(
   ctx: ConnectContext,
   target: HermesTarget,
@@ -383,7 +446,7 @@ async function connectToTarget(
   // Fed into formatConnectFailureMessage at the end.
   const attempts: { handshakeOk: boolean; probeTimedOut: boolean; handshakeTimedOut: boolean }[] =
     [];
-  for (let i = 0; i < retries; i++) {
+  for (let i = 0; i < (intent === 'qa' ? 1 : retries); i++) {
     if (ctx.isDisposed() || ctx.isSoftReconnectRequested()) {
       throw new Error('Client disposed or preempted during connection');
     }
@@ -398,20 +461,35 @@ async function connectToTarget(
       if (proxyUrl) {
         logger.info('CDP', `Routing via multiplexer proxy: ${proxyUrl}`);
       }
-      attemptWs = await connectWebSocket(ctx, url);
+      attemptWs =
+        intent === 'qa'
+          ? await withDeadline(
+              performance.now() + CDP_TIMEOUT_FAST,
+              new CDPHandshakeTimeoutError('Candidate handshake timed out'),
+              () => connectWebSocket(ctx, url),
+            )
+          : await connectWebSocket(ctx, url);
       handshakeOk = true;
       // D594: Early stale-target detection — quick probe before full setup
       try {
-        await interruptible(() =>
-          ctx.sendWithTimeout(
-            'Runtime.evaluate',
-            {
-              expression: '1+1',
-              returnByValue: true,
-            },
-            CDP_TIMEOUT_FAST,
-          ),
-        );
+        const preflight = () =>
+          interruptible(() =>
+            ctx.sendWithTimeout(
+              'Runtime.evaluate',
+              {
+                expression: '1+1',
+                returnByValue: true,
+              },
+              CDP_TIMEOUT_FAST,
+            ),
+          );
+        await (intent === 'qa'
+          ? withDeadline(
+              performance.now() + CDP_TIMEOUT_FAST,
+              new CDPProbeTimeoutError('Candidate runtime probe timed out'),
+              preflight,
+            )
+          : preflight());
       } catch (error) {
         if (isAbort(error)) throw error;
         if (!(error instanceof CDPRequestTimeoutError)) throw error;
@@ -434,7 +512,9 @@ async function connectToTarget(
         );
         if (!reachable) throw new PickerBlockingBundleError(target);
       }
+      if (intent === 'qa') await requireDevelopmentTarget(ctx);
       await interruptible(() => ctx.setup());
+      if (intent === 'qa') await requireDevelopmentTarget(ctx);
       if (ctx.isDisposed()) throw new ConnectionSetupSupersededError();
       return;
     } catch (err) {
@@ -445,6 +525,13 @@ async function connectToTarget(
       cancellationSignal();
       if (err instanceof ConnectionSetupSupersededError) {
         closeConnectionAttempt(ctx, attemptWs);
+        throw err;
+      }
+      if (intent === 'qa') {
+        closeConnectionAttempt(ctx, attemptWs);
+        ctx.setHelpersInjected(false);
+        ctx.setConnectedTarget(null);
+        ctx.setState('disconnected');
         throw err;
       }
       // The caller owns refusal, deadline expiry and rediscovery after page replacement.

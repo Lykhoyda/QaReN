@@ -71,6 +71,7 @@ function harness(overrides: Partial<AdmissionSteps> = {}) {
   const steps: AdmissionSteps = {
     metroPort: 8081,
     readinessMs: 30_000,
+    attachBudgetMs: 120_000,
     remainingMs: () => 90_000,
     attach: step('attach', () => undefined),
     foreignDriver: step('foreignDriver', () => undefined),
@@ -2250,3 +2251,183 @@ test('admission facts become a cleaned metric with only allowlisted words and nu
   assert.equal(cleanTimingEvent({ ...expected, stage: 'capture' }), undefined);
   assert.equal(cleanTimingEvent({ ...expected, edge: 'end' }), undefined);
 });
+
+test('registered-target bundle readiness cannot spend the remaining walk budget', async (t) => {
+  const clock = mockClock(t);
+  const deadlines: number[] = [];
+  const { calls, stop, steps } = harness({
+    attachBudgetMs: 1000,
+    remainingMs: () => 20_000,
+    attach: async (deadline) => void deadlines.push(deadline),
+    developmentTargets: () => ({
+      targetsTotal: 1,
+      devTrue: 1,
+      devFalse: 0,
+      devUndefined: 0,
+      devUnknown: 0,
+    }),
+    bundleReady: async (deadline) => {
+      deadlines.push(deadline);
+      await new Promise(() => {});
+    },
+  });
+  const pending = admit(steps, stop);
+  const refused = assert.rejects(pending, (error: HandlerError) => {
+    assert.equal(error.code, 'CDP_NOT_CONNECTED');
+    assert.equal(error.meta?.inner, 'react_readiness_timeout');
+    assert.equal(error.meta?.devTrue, 1);
+    return true;
+  });
+  clock.cleanup(stop, pending);
+  await nextTurn();
+  await clock.advance(1000);
+  assert.deepEqual(deadlines, [1000, 1000]);
+  await refused;
+  assert.deepEqual(calls, ['close']);
+});
+
+test(
+  'a stalled readiness evaluation is interrupted by its own deadline',
+  { timeout: 2000 },
+  async (t) => {
+    const clock = mockClock(t);
+    const pending = awaitBundleReady(async () => new Promise(() => {}), 1000);
+    const refused = assert.rejects(
+      pending,
+      (error: Error) => error.constructor.name === 'BundleReadinessTimeoutError',
+    );
+    t.after(() => {
+      t.mock.timers.reset();
+      syncBuiltinESMExports();
+    });
+    await clock.advance(1000);
+    await refused;
+  },
+);
+
+for (const mode of [
+  'false',
+  'mixed',
+  'undefined',
+  'late_true',
+  'failed_scan',
+  'pending_scan',
+  'replaced',
+] as const) {
+  test(`development admission uses its unchanged attach deadline: ${mode}`, async (t) => {
+    const { DevTargetUnavailableError } = await import('../../../dist/cdp/connect.js');
+    const clock = mockClock(t);
+    let attempts = 0;
+    const { calls, stop, steps } = harness({
+      attachBudgetMs: 1000,
+      remainingMs: () => 20_000,
+      attach: async (deadline) => {
+        assert.equal(deadline, 1000);
+        attempts++;
+        if (attempts > 1 && mode === 'late_true') return;
+        if (attempts > 1 && mode === 'failed_scan') throw new CDPProbeTimeoutError('scan failed');
+        if (attempts > 1 && mode === 'pending_scan') await new Promise(() => {});
+        if (attempts > 1 && mode === 'replaced') throw new CDPTargetClosedError('replaced');
+        throw new DevTargetUnavailableError({
+          targetsTotal: mode === 'mixed' ? 2 : 1,
+          devTrue: 0,
+          devFalse: mode === 'undefined' ? 0 : 1,
+          devUndefined: mode === 'undefined' ? 1 : 0,
+          devUnknown: mode === 'mixed' ? 1 : 0,
+        });
+      },
+      relaunch: async () => assert.fail('registered non-dev targets never enable relaunch'),
+    });
+    const pending = admit(steps, stop);
+    const outcome = pending.catch((error: HandlerError) => error);
+    clock.cleanup(stop, pending);
+    await nextTurn();
+    await clock.advance(500);
+    if (mode !== 'late_true') await clock.advance(500);
+    const result = await outcome;
+    if (mode === 'late_true') {
+      assert.deepEqual(result, PROVEN);
+      assert.equal(attempts, 2);
+      assert.equal(calls.filter((call) => call === 'open').length, 1);
+    } else {
+      assert.ok(result instanceof HandlerError);
+      assert.equal(result.code, mode === 'false' ? 'DEV_TARGET_MISSING' : 'CDP_NOT_CONNECTED');
+      assert.equal(
+        result.meta?.inner,
+        mode === 'false' ? 'non_dev_bundle' : 'no_dev_target_unknown',
+      );
+      assert.ok(!calls.includes('open'));
+      assert.ok(!calls.includes('prove'));
+      if (mode === 'false') assert.equal(result.meta?.devFalse, 1);
+    }
+  });
+}
+
+for (const remaining of [750, 20000]) {
+  test(`a true target arriving at the deadline cannot open a session (remaining ${remaining})`, async (t) => {
+    const clock = mockClock(t);
+    const limit = Math.min(1000, remaining);
+    const { calls, stop, steps } = harness({
+      attachBudgetMs: 1000,
+      remainingMs: () => remaining,
+      attach: async (deadline) => {
+        assert.equal(deadline, limit);
+        await new Promise((resolve) => setTimeout(resolve, limit));
+      },
+    });
+    const pending = admit(steps, stop);
+    const refusal = assert.rejects(pending, { code: 'CDP_NOT_CONNECTED' });
+    clock.cleanup(stop, pending);
+    await nextTurn();
+    await clock.advance(limit);
+    await refusal;
+    assert.deepEqual(calls, ['close']);
+  });
+}
+
+for (const listState of ['pending', 'empty'] as const) {
+  test(`a ${listState} rediscovery after false stays inside the registered attach budget`, async (t) => {
+    const { DevTargetUnavailableError } = await import('../../../dist/cdp/connect.js');
+    const clock = mockClock(t);
+    let scans = 0;
+    let relaunches = 0;
+    let settled = false;
+    const { stop, steps } = harness({
+      readinessMs: 100,
+      attachBudgetMs: 1000,
+      remainingMs: () => 20000,
+      waitTargets: async () => {
+        if (++scans === 1) return;
+        if (listState === 'pending') await new Promise(() => {});
+        throw new TargetReadinessTimeoutError('no target', 'empty');
+      },
+      attach: async () => {
+        throw new DevTargetUnavailableError({
+          targetsTotal: 1,
+          devTrue: 0,
+          devFalse: 1,
+          devUndefined: 0,
+          devUnknown: 0,
+        });
+      },
+      appAlive: async () => true,
+      bundleRequested: async () => false,
+      relaunch: async () => {
+        relaunches++;
+      },
+    });
+    const pending = admit(steps, stop).catch((error: HandlerError) => {
+      settled = true;
+      return error;
+    });
+    clock.cleanup(stop, pending);
+    await nextTurn();
+    await clock.advance(500);
+    await clock.advance(500);
+    assert.equal(settled, true, 'rediscovery cannot extend the registered-target deadline');
+    const error = await pending;
+    assert.equal(error.code, 'CDP_NOT_CONNECTED');
+    assert.equal(error.meta?.inner, 'no_dev_target_unknown');
+    assert.equal(relaunches, 0, 'unavailable development targets never enable no-target relaunch');
+  });
+}

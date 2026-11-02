@@ -1109,7 +1109,11 @@ fn run_inner(
             }
         });
         let core_log = run_dir.join("logs").join("core.log");
-        events::core_t0(core_request.t0);
+        events::core_t0(
+            core_request.t0,
+            core_request.walk_budget_ms,
+            core_request.attach_budget_ms,
+        );
         events::stage("attach", StageState::Running, None, None);
         let runner_started_at = ctx.runner.now_epoch_ms();
         let core_child = match core::spawn_private(
@@ -1378,6 +1382,28 @@ fn run_inner(
                 })),
             ),
         };
+        if let (Some(failure), Verdict::Refused { code, .. }) = (&mut failure, &outcome.verdict) {
+            let cause = if code == "RUN_CANCELLED"
+                && !outcome.admitted
+                && outcome.ledger.press_evidence.is_none()
+            {
+                Some(crate::failure::AdmissionCause::RunCancelled)
+            } else {
+                outcome
+                    .ledger
+                    .admission
+                    .as_ref()
+                    .and_then(|facts| crate::failure::AdmissionCause::from_inner(&facts.inner))
+            };
+            if let Some(cause) = cause {
+                if code != "RUN_CANCELLED" {
+                    failure.phase = "attach".to_string();
+                }
+                *failure = failure
+                    .clone()
+                    .with_admission_recovery(cause, outcome.ledger.admission.clone());
+            }
+        }
         if outcome.ledger.press_evidence.is_some() {
             if let (Some(failure), Verdict::Refused { code, .. }) = (&mut failure, &outcome.verdict)
             {
@@ -1774,6 +1800,7 @@ pub fn worktree_drift(before: &BTreeSet<String>, after: &BTreeSet<String>) -> Ve
 
 fn refusal_code(code: &str) -> FailureCode {
     match code {
+        "DEV_TARGET_MISSING" => FailureCode::DevTargetMissing,
         "PRESS_NOT_REGISTERED" => FailureCode::PressNotRegistered,
         "METRO_ORIGIN_MISMATCH" => FailureCode::MetroOriginMismatch,
         "PLAN_INPUT_MISSING" => FailureCode::PlanInputMissing,

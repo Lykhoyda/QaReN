@@ -1,5 +1,5 @@
 use crate::exec::{CmdOutput, CmdSpec, DeadlineRunner, Runner};
-use crate::failure::{Failure, FailureCode};
+use crate::failure::{AdmissionCause, AdmissionFacts, Failure, FailureCode};
 use crate::redact::redact_secrets;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -209,6 +209,12 @@ pub struct MediaWithheld {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Ledger {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "AdmissionFacts::deserialize_optional"
+    )]
+    pub admission: Option<AdmissionFacts>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub press_evidence: Option<PressEvidence>,
     pub verdict: String,
@@ -1547,12 +1553,20 @@ pub fn wait(
             } else {
                 reason
             };
-            deadline_failure = Some(Failure::new(
-                "walk",
+            let mut failure = Failure::new(
+                if code == FailureCode::CoreRefused {
+                    "attach"
+                } else {
+                    "walk"
+                },
                 code,
                 reason,
                 "inspect the core log for the stuck or misbehaving step, then re-run",
-            ));
+            );
+            if code == FailureCode::CoreRefused {
+                failure = failure.with_admission_recovery(AdmissionCause::AdmissionBudget, None);
+            }
+            deadline_failure = Some(failure);
             child.handle.kill_group();
             killed_at = Some(now);
         } else if let Some(at) = result_at {
@@ -1746,6 +1760,14 @@ fn refusal_ledger(result: &Value, rows: &[Row], seen: &str) -> Result<Ledger, St
             return Err(format!("{field} must be a string when supplied"));
         }
     }
+    if result.get("code").and_then(Value::as_str) == Some("DEV_TARGET_MISSING") {
+        let facts: AdmissionFacts =
+            serde_json::from_value(result.get("admission").cloned().unwrap_or(Value::Null))
+                .map_err(|_| "DEV_TARGET_MISSING requires admission facts".to_string())?;
+        if !facts.valid() || !facts.all_false() {
+            return Err("DEV_TARGET_MISSING requires complete all-false facts".to_string());
+        }
+    }
     let mut normalized = serde_json::to_value(synthesized_ledger(rows, "REFUSED", seen))
         .map_err(|error| error.to_string())?;
     for field in [
@@ -1759,6 +1781,7 @@ fn refusal_ledger(result: &Value, rows: &[Row], seen: &str) -> Result<Ledger, St
         "failure",
         "blocksWritten",
         "pressEvidence",
+        "admission",
     ] {
         if let Some(value) = result.get(field) {
             if value.is_null() {
@@ -1835,6 +1858,7 @@ fn synthesized_failure(rows: &[Row], seen: &str) -> LedgerFailure {
 pub fn synthesized_ledger(rows: &[Row], verdict: &str, seen: &str) -> Ledger {
     let steps: Vec<Row> = rows.to_vec();
     Ledger {
+        admission: None,
         press_evidence: None,
         verdict: verdict.to_string(),
         video_publication: None,

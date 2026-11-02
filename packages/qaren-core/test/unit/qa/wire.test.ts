@@ -395,3 +395,68 @@ test('a spawned runner driver is announced as a resource envelope before the res
   );
   assert.equal(JSON.parse(lines[1]).type, 'result');
 });
+
+const admission = {
+  attempt: 2,
+  lastStarted: 'retry_wait',
+  lastCompleted: 'attach',
+  inner: 'non_dev_bundle',
+  relaunches: 0,
+  relaunchFailed: false,
+  liveness: 'not_probed',
+  elapsedMs: 1000,
+  remainingMs: 19000,
+  budgetMs: 20000,
+  attachBudgetMs: 1000,
+  walkBudgetMs: 20000,
+  targetsTotal: 1,
+  devTrue: 0,
+  devFalse: 1,
+  devUndefined: 0,
+  devUnknown: 0,
+} as const;
+
+test('refusal wire retains only validated value-free admission facts', () => {
+  const lines: string[] = [];
+  const writer = createWriter((line) => lines.push(line), 'check-1');
+  assert.equal(
+    writer.result({
+      verdict: 'REFUSED',
+      code: 'DEV_TARGET_MISSING',
+      message: 'development bundle required',
+      lease: 'lease',
+      admission: {
+        ...admission,
+        targetId: 'private-canary',
+        inference: { private: 'private-canary' },
+      } as any,
+    }),
+    4,
+  );
+  assert.deepEqual(JSON.parse(lines[0]!).payload.admission, admission);
+  assert.doesNotMatch(lines[0]!, /private-canary/);
+});
+
+for (const invalid of [
+  { ...admission, devFalse: -1 },
+  { ...admission, devUnknown: 1 },
+  { ...admission, elapsedMs: 0.5 },
+  { ...admission, inner: 'private-canary' },
+]) {
+  test(`invalid admission facts never reach the refusal wire: ${JSON.stringify(invalid)}`, () => {
+    const lines: string[] = [];
+    const writer = createWriter((line) => lines.push(line), 'check-1');
+    assert.throws(
+      () =>
+        writer.result({
+          verdict: 'REFUSED',
+          code: 'DEV_TARGET_MISSING',
+          message: 'development bundle required',
+          lease: 'lease',
+          admission: invalid as any,
+        }),
+      WireError,
+    );
+    assert.deepEqual(lines, []);
+  });
+}
