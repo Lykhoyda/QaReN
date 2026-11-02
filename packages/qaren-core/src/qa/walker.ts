@@ -1,9 +1,6 @@
 import {
   selectionPressCandidate,
-  selectionStateReadable,
   outsideTargetChange,
-  targetUnchanged,
-  KEYBOARD_SWALLOWED_TAP,
   PRESS_NOT_REGISTERED_REASON,
   PRESS_OUTSIDE_CHANGE_REASON,
   selectionPressGuidance,
@@ -536,7 +533,6 @@ async function walkBlockScoped(
   let fillMethod: FillMethod | undefined;
   let fillMismatch: EntryMismatch | undefined;
   let keyboardCleared: LedgerRow['keyboardCleared'];
-  let retryCause: LedgerRow['retryCause'];
   let fillHandlerAttempted = false;
   let fillHandlerRefused = false;
   let itemStartedAt = 0;
@@ -1161,7 +1157,6 @@ async function walkBlockScoped(
       ...row,
       ...(fillMethod ? { method: fillMethod } : {}),
       ...(keyboardCleared ? { keyboardCleared } : {}),
-      ...(retryCause ? { retryCause } : {}),
       ...(fillMismatch && row.outcome !== 'pass' ? { entryMismatch: fillMismatch } : {}),
       operationId: operationFor(row.line),
       ...(reactCoverage ? { reactCoverage } : {}),
@@ -2087,7 +2082,6 @@ async function walkBlockScoped(
     fillMethod = undefined;
     fillMismatch = undefined;
     keyboardCleared = undefined;
-    retryCause = undefined;
     fillHandlerAttempted = false;
     fillHandlerRefused = false;
     enrichment = undefined;
@@ -2626,24 +2620,6 @@ async function walkBlockScoped(
             }
             before = settled.observation;
             settledFrame = settled.frame;
-            const target = moved.target;
-            const late = before.screen.elements.filter((e) => sameIdentity(e, target));
-            if (
-              retryCause === 'KEYBOARD_SWALLOWED_TAP' &&
-              late.length === 1 &&
-              late[0].selected === true
-            ) {
-              const shot = await shoot(item);
-              emit({
-                ...base(item, attempt),
-                ...(shot ? { screenshot: shot } : {}),
-                outcome: 'pass',
-                reason: redact(
-                  'the previous attempt took effect after its readback: the target is now reported selected, so it was not tapped again',
-                ),
-              });
-              continue items;
-            }
           } else {
             before = held?.observation ?? (await captureBeforeDispatch());
           }
@@ -3274,26 +3250,6 @@ async function walkBlockScoped(
             }
             selectionExited = !targetPresent(observed.screen);
             if (!selectionExited && !act!.proven && current?.selected !== true) {
-              if (
-                attempt === 1 &&
-                attempt < maxAttempts &&
-                before.screen.keyboardVisible === true &&
-                observed.screen.keyboardVisible === false &&
-                targetUnchanged(before.screen, observed.screen, selectionTarget, current) &&
-                (selectionStateReadable(before.screen, selectionTarget) ||
-                  (current !== undefined && selectionStateReadable(observed.screen, current)))
-              ) {
-                deps.pressReadback?.(undefined);
-                retryCause = 'KEYBOARD_SWALLOWED_TAP';
-                emit({
-                  ...base(item, attempt),
-                  ...(ref ? { ref } : {}),
-                  outcome: 'retry',
-                  reason: redact(`${KEYBOARD_SWALLOWED_TAP}; retrying once`),
-                });
-                moved = { target: selectionTarget, error: KEYBOARD_SWALLOWED_TAP };
-                continue;
-              }
               return refusePress(
                 'PRESS_NOT_REGISTERED',
                 `${evidence().outsideTargetChange ? PRESS_OUTSIDE_CHANGE_REASON : PRESS_NOT_REGISTERED_REASON} ${selectionPressGuidance(captures, observed.timing.completedAt - selectionStartedAt)}`,

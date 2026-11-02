@@ -761,8 +761,7 @@ semantic change, one or two capture attempts, and `heldPress: not_tried_unsafe`.
 This is a structural heuristic: capture does not prove horizontal scrolling,
 its responder behavior, or a selected-state contract. iOS omits false selected
 state, so an invisible successful toggle and a swallowed tap look alike. QaReN
-sends no held press, and no second tap except the one keyboard retry below. The refusal does
-not prove that the app callback failed. The fixed next action is
+sends no held press or second tap. The refusal does not prove that the app callback failed. The fixed next action is
 `rerun_then_ask_app_team_expose_selection_in_row_list`. The refusal includes this
 guidance, with N post-tap observations and M milliseconds from tap dispatch to
 the final readback:
@@ -777,15 +776,10 @@ taps it once. The row records `keyboardCleared: native-control | js`. A target t
 not settle or no longer resolves fails without a tap, and the failure says the keyboard
 was dismissed before this tap. `RN_KEYBOARD_GUARD=0` turns this clearance off.
 
-When that clearance did not run or did not hold, a row-list candidate is retried exactly
-once, and only when every fact holds: the keyboard was visible in the capture the tap
-was dispatched from, it is hidden in the readback, the bound target is still present and
-not reported selected, its own captured semantics did not change, and a peer button in
-the same scroll container reports native selection before or after the tap. Without
-that readable selection evidence, an invisible successful toggle cannot be ruled out.
-The retry row and the step's final row carry `retryCause: KEYBOARD_SWALLOWED_TAP`, and a pass after it
-shows as attempt 2. A target reported selected when the retry settles passes without a
-second tap. Without every fact the `PRESS_NOT_REGISTERED` refusal above stands.
+When that clearance did not run or did not hold, keyboard closure and an unchanged
+capture cannot prove the target did not mutate, even when a peer in the same scroll
+container reports selection. QaReN preserves `PRESS_NOT_REGISTERED` without a second tap
+when the target's selection cannot be verified.
 
 Its ordered
 recovery ladder skips held press as unsafe and app/Metro/runner restart, device
