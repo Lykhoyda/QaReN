@@ -353,7 +353,8 @@ test('a RedBox at 14s cannot restart a 15s wait and accept a target at 20s', asy
     clock = clock === 0 ? 14_000 : clock + ms;
   };
   f.deps.captureScreen = async ({ budgetMs } = {}) => {
-    assert.ok(budgetMs !== undefined && budgetMs <= 15_000 - clock);
+    if (budgetMs === undefined) assert.equal(clock, 15_000);
+    else assert.ok(budgetMs <= 15_000 - clock);
     return clock >= 20_000
       ? home()
       : clock >= 14_000 && !dismissed

@@ -680,7 +680,7 @@ for (const verb of ['Wait for "Ready"', 'Scroll down until "Ready"']) {
 }
 
 for (const drift of [false, true]) {
-  test(`stored-ID wait keeps its exhausted budget when re-walking a ${drift ? 'renamed' : 'missing'} ID`, async () => {
+  test(`stored-ID wait exhausts its budget before re-walking a ${drift ? 'renamed' : 'missing'} ID`, async () => {
     const dir = root();
     try {
       const plan = blocks('### Ready\n1. Wait for "Ready"');
@@ -693,7 +693,7 @@ for (const drift of [false, true]) {
         judge,
       );
       const result = ledger(await runPlan(plan, fake.deps, [], store(dir)));
-      assert.equal(result.verdict, 'FAIL');
+      assert.equal(result.verdict, drift ? 'PASS' : 'FAIL');
       assert.equal(result.path, `replay→walk@${plan[0].items[0].line}`);
       const [retry, completion] = result.steps;
       assert.equal(retry.outcome, 'retry');
@@ -702,14 +702,16 @@ for (const drift of [false, true]) {
         retry.reason,
         'REPLAY_SELECTOR: 0 identities match the stored id "ready-id"; re-walking from this line',
       );
-      assert.equal(completion.outcome, 'fail');
-      assert.equal(completion.t, WAIT_BUDGET_MS);
+      assert.equal(completion.outcome, drift ? 'pass' : 'fail');
       assert.equal(completion.operationId, retry.operationId);
       assert.deepEqual(fake.actions, []);
       assert.equal(judge.calls.length, 0);
-      assert.match(completion.reason ?? '', /TARGET_WAIT_TIMEOUT/);
-      assert.deepEqual(result.blocksWritten, []);
-      assert.equal(readFileSync(join(dir, '.qaren/actions/ready.yaml'), 'utf8'), saved);
+      if (drift) assert.deepEqual(completion.selector, { id: 'new-ready-id' });
+      else {
+        assert.match(completion.reason ?? '', /did not appear within 15s/);
+        assert.deepEqual(result.blocksWritten, []);
+        assert.equal(readFileSync(join(dir, '.qaren/actions/ready.yaml'), 'utf8'), saved);
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

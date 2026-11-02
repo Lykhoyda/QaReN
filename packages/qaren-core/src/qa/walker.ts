@@ -638,7 +638,7 @@ async function walkBlockScoped(
     assertion = false,
     recovery = false,
     purpose: 'resolve' | 'provenance' = 'resolve',
-    until = itemDeadline,
+    until?: number,
   ): Promise<Observation> => {
     assertActive();
     cached = undefined;
@@ -1469,10 +1469,7 @@ async function walkBlockScoped(
           metric('refresh', observation);
           await pause(Math.min(WAIT_POLL_MS, Math.max(0, deadline - deps.now())));
           if (deps.now() >= deadline) throw new EvidenceExpired(true);
-          observation =
-            item.kind === 'wait'
-              ? await captureOnce(item, false, false, 'resolve', deadline)
-              : await capture(item);
+          observation = await captureOnce(item, false, false, 'resolve', deadline);
           decision = undefined;
           continue;
         }
@@ -1527,7 +1524,7 @@ async function walkBlockScoped(
         metric('reask', observation);
         await pause(Math.min(WAIT_POLL_MS, remaining));
         if (deps.now() >= deadline) break;
-        observation = await capture(item);
+        observation = await captureOnce(item, false, false, 'resolve', deadline);
         decision = undefined;
       }
       usable(observation, item, deadline);
@@ -1965,19 +1962,19 @@ async function walkBlockScoped(
     item: Item,
     attempt: number,
     reason: string,
-    until = itemDeadline,
+    until?: number,
   ): Promise<'retry' | WalkOutcome | undefined> => {
     const first = recovered.get(item);
     if (opts.recover === false || !deps.hideDevMenu) return undefined;
     recovered.set(item, null);
     loginReplayed = false;
     let fresh: Observation;
+    const captureDeadline = latest.front === 'dev-redbox' ? itemDeadline : until;
     try {
-      // A wait's recovery capture shares the wait's deadline; out of time, the wait's reason stands.
       fresh =
-        until === undefined
+        captureDeadline === undefined
           ? await capture(undefined, true, true)
-          : await captureOnce(undefined, true, true, 'resolve', until);
+          : await captureOnce(undefined, true, true, 'resolve', captureDeadline);
     } catch (error) {
       if (error instanceof CaptureDeadline) return undefined;
       if (
@@ -1997,7 +1994,7 @@ async function walkBlockScoped(
       // An overlay dismissal never spends the step's interruption recovery.
       if (first === undefined) recovered.delete(item);
       else recovered.set(item, first);
-      return devErrorRecovery(item, attempt, fresh, until);
+      return devErrorRecovery(item, attempt, fresh, itemDeadline);
     }
     // A system alert the plan's next step answers is the author's, not recovery's.
     const next = block.items[block.items.indexOf(item) + 1];
@@ -2215,6 +2212,14 @@ async function walkBlockScoped(
           `${reason}; recovered: ${result.label ? `dismissed an app screen with ${result.label}` : result.handled}; retrying the step once`,
         ),
       });
+      const budget = stepBudgets.get(operationFor(item.line))!;
+      if (budget.deadline !== undefined) {
+        const startedAt = deps.now();
+        budget.deadline += startedAt - budget.startedAt;
+        budget.startedAt = startedAt;
+        itemStartedAt = startedAt;
+        itemDeadline = budget.deadline;
+      }
       return 'retry';
     }
     const shown = loginReplayed ? (await capture()).screen : fresh.screen;
@@ -2317,7 +2322,7 @@ async function walkBlockScoped(
     waitAttempt = 'none';
     const operationId = operationFor(item.line);
     let budget = stepBudgets.get(operationId);
-    if (!budget) {
+    if (!budget || budget.devErrorDismissals === 0) {
       const startedAt = deps.now();
       budget = {
         startedAt,
@@ -2692,7 +2697,7 @@ async function walkBlockScoped(
                 ? `"${item.target.quoted}" did not appear within ${budget / 1000}s; the screen did not change across ${absent} observations`
                 : ITEM_DEADLINE_EXCEEDED);
             // A classified React-only miss already spent its layout read; recovery gets no fresh time for another.
-            const recovering = await recovery(item, 1, reason, deadline);
+            const recovering = await recovery(item, 1, reason, reactOnly ? deadline : undefined);
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
             if (unchanged) {
@@ -2728,7 +2733,8 @@ async function walkBlockScoped(
           resolvedBy = item.until.quoted === undefined ? 'jev' : resolvedBy;
           const deadline = itemDeadline!;
           const held = cached?.item === item ? cached : undefined;
-          let observation = held?.observation ?? (await capture(item));
+          let observation =
+            held?.observation ?? (await captureOnce(item, false, false, 'resolve', deadline));
           cached = undefined;
           let beforeScroll = {
             screen: observation.screen,
@@ -2798,14 +2804,14 @@ async function walkBlockScoped(
               metric('refresh', observation);
               await pause(Math.min(WAIT_POLL_MS, Math.max(0, deadline - deps.now())));
               if (deps.now() >= deadline) throw replayMiss ?? new EvidenceExpired(true);
-              observation = await capture(item);
+              observation = await captureOnce(item, false, false, 'resolve', deadline);
               found = await visible(observation);
               continue;
             }
             attempts += 1;
             await pause(Math.min(WAIT_POLL_MS, Math.max(0, deadline - deps.now())));
             if (deps.now() >= deadline) throw replayMiss ?? new EvidenceExpired(true);
-            observation = await capture(item);
+            observation = await captureOnce(item, false, false, 'resolve', deadline);
             found = await visible(observation);
             const moved = screenSignature(observation.screen) !== beforeSignature;
             if (!act.ok && !moved)
