@@ -127,6 +127,8 @@ pub struct Receipt {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub cleanup: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_details: Option<CleanupDetails>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub core_cleanup: Option<crate::runrecord::CoreCleanupEvidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fresh_install: Option<crate::runrecord::FreshInstallEvidence>,
@@ -151,6 +153,8 @@ pub struct Receipt {
     pub worktree_drift: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recipe: Option<crate::recipes::RecipeOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<crate::runrecord::Held>,
     pub next_action: String,
 }
 
@@ -182,6 +186,7 @@ impl Receipt {
             recovery: None,
             build_lock: None,
             cleanup: BTreeMap::new(),
+            cleanup_details: None,
             core_cleanup: None,
             fresh_install: None,
             lane: None,
@@ -194,6 +199,7 @@ impl Receipt {
             blocks_not_saved: Vec::new(),
             worktree_drift: Vec::new(),
             recipe: None,
+            held: None,
             next_action: String::new(),
         }
     }
@@ -219,4 +225,9 @@ impl Receipt {
             crate::redact::durable_json(&fallback).expect("fallback receipt is plain strings")
         }))
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CleanupDetails {
+    pub runner_driver: crate::runrecord::RunnerDriverDetails,
 }

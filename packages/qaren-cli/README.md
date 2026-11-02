@@ -3,7 +3,7 @@
 `qaren check` owns a QA run against the current app worktree: it leases a
 borrowed iOS simulator or Android emulator, prepares the app and Metro,
 starts the TypeScript screen child, walks a Markdown plan, writes evidence,
-and tears down owned resources.
+and cleans up owned resources under the [iOS admission and cleanup contract](#ios-admission-and-cleanup).
 This file is the CLI reference; the product introduction and the agent path are in the [root README](../../README.md).
 The scenario-based preparation verbs remain available for explicit iOS,
 NUC Android and USB Android setup experiments.
@@ -38,9 +38,9 @@ storage before a build; neither check installs Pods or changes storage.
 Doctor prints the running binary's version, path, build, runtime and the
 [`QAREN_HOME`](#release-and-source-builds-side-by-side) in use, then one
 `PASS`, `WARN`, `FAIL` or `SKIP` row per check, each problem with its manual fix.
-It only reads files and runs bounded version, package-resolution, process-group,
-inventory and host-statistics probes:
-it never writes, deletes, starts a device or restarts a service. It does not run ADB
+It reads files and runs bounded version, package-resolution, process-group, inventory, host-statistics and Watchman probes.
+When an app config is valid, the five-second `watch-project` probe may establish a watch on its candidate directory;
+it never starts a Watchman service, starts a device or resets a service. It does not run ADB
 or start an ADB server. In text and JSON output, Doctor never prints
 file contents, environment variable values, credentials or any other config value;
 it may name the configured iOS runtime and Android AVD. It also prints diagnostic
@@ -63,6 +63,10 @@ applicable or its subject was not assessed, as explained in the row's detail.
 | `disk` | The volumes holding the current directory and your home have the roughly 10 GiB free a clean iOS build needs (warning) |
 | `host-memory`, `host-devices` | Free memory, memory pressure, booted simulators and running Android emulators; conservative concurrent lane headroom on macOS and Linux |
 | `simulator-service` | A five-second `simctl list devices -j` probe on macOS; attributable uninterruptible simulator process evidence when unresponsive |
+| `expo-offline` | Metro-only Expo commands start offline by default; warns when `EXPO_OFFLINE=0` enables account lookups |
+| `watchman-health` | A read-only, five-second watch-list probe without starting Watchman |
+| `watchman-volume-probe` | A five-second `watch-project` probe on the candidate directory; a timeout or rejection fails with volume-permission and FSEvents recovery steps |
+| `candidate-volume-speed` | A bounded small-file read sample on the candidate volume; warns about slow reads, with unknown results disclosed |
 | `host-load` | One-, five- and fifteen-minute load averages, logical CPU count and sampled CPU idle; warns about readiness deadlines under load |
 | `native-build-lock` | Read-only iOS [build-lock observation](#native-fingerprint-build-selection); never claims or reclaims the lock |
 | `android-sdk`, `android-avd` | When `android` is configured: `ANDROID_HOME`, an executable `adb` file (never run; its version is not checked), the emulator binary and the configured AVD via `emulator -list-avds` |
@@ -470,6 +474,12 @@ qaren check --plan-file plan.md --device <simulator-UUID> --json
 qaren check --platform android --plan-file plan.md --device emulator-5554 --json
 ```
 
+`qaren check` reports progress on stderr. Metro readiness prints
+`✓ metro_ready` or `✗ metro_ready` with its duration; `▸ expo-start` only
+announces the server launch. Stopping that process during cleanup does not
+change a passed readiness mark. Set `QAREN_PROGRESS=plain` to force line output
+or `QAREN_PROGRESS=off` to disable progress.
+
 The configuration keys, defaults and validation are owned by
 [`src/config.rs`](src/config.rs). Both platforms require `appId` and
 `devClientScheme`; only `pnpm` is supported as the app package manager.
@@ -648,6 +658,10 @@ it is never recovered, retried or re-walked, including when a handler finds twin
 at dispatch. Stored-selector resolution follows the [saved-block contract](#saved-blocks). A text element
 that is the sole text descendant of matching labelled ancestors links to the
 nearest action candidate: enabled and either hittable or offscreen for scrolling.
+If none qualifies, it links to the nearest same-label button, link, switch or
+control with supported press semantics, even when disabled or not hittable.
+A quoted press then reports that control's eligibility instead of twin ambiguity;
+an untyped child needs text provenance to collapse.
 On Android, this also applies when an ancestor has other text descendants but
 exactly one same-label heading re-kinded from `other` to `text` by the
 [native heading fact](#plan-checks-and-screen-evidence), as on a titled card.
@@ -753,8 +767,8 @@ may resolve live to that control: it agrees only when the same-type,
 same-label owning ancestor in the retained snapshot contains the label and the
 live frame equals that owner's frame; the tap goes to the unchanged point. A later
 screen change cannot turn a proven no-mutation refusal into a passing action.
-For an iOS native-backed button not reported selected, inside a scroll container
-no taller than three times the target's height and with a visible enabled button
+For an iOS native-backed button outside an alert, not reported selected, inside
+a scroll container no taller than three times the target's height and with a visible enabled button
 beside it on the same row, QaReN requires exactly one match for the target's
 identity, retaining its original reference and reporting selected after the press,
 while that identity remains on screen. Identity is kind plus testID when present,
@@ -775,13 +789,29 @@ semantic change, one or two capture attempts, and `heldPress: not_tried_unsafe`.
 This is a structural heuristic: capture does not prove horizontal scrolling,
 its responder behavior, or a selected-state contract. iOS omits false selected
 state, so an invisible successful toggle and a swallowed tap look alike. QaReN
-sends no second tap or held press that could undo the toggle. The refusal does
-not prove that the app callback failed. The fixed next action is
+sends no held press or second tap. The refusal does not prove that the app callback
+failed. The fixed next action is
 `rerun_then_ask_app_team_expose_selection_in_row_list`. The refusal includes this
 guidance, with N post-tap observations and M milliseconds from tap dispatch to
 the final readback:
 
 > The tap did not change the control's selected state (N observations over M ms); the control sits in a row-shaped scrolling list, which can swallow synthetic taps. Next: re-run once; if it repeats on the same control, ask the app team to make the selection reachable for automated taps (for example by disabling the list's own scrolling for this set) or to expose the selected state another way.
+
+On iOS, before tapping a candidate matching the row-choice heuristic above, QaReN
+attempts to dismiss a visible keyboard through the keyboard guard's dismissal chain
+(a native hide control, then the app's own `Keyboard.dismiss()`). It then requires the
+same target identity and frame across two consecutive captures, re-resolves the target
+and taps it once. The row records `keyboardCleared: native-control | js` only when a
+dismissal tier reports success and the settled capture no longer reports a visible
+keyboard. An unsuccessful dismissal still permits one tap after the target settles;
+it records no clearance. A target that does not settle, changes identity or moves
+from its settled frame before dispatch fails without that tap.
+`RN_KEYBOARD_GUARD=0` turns this pre-tap clearance off.
+
+When that clearance did not run or did not hold, keyboard closure and an unchanged
+capture cannot prove the target did not mutate, even when a peer in the same scroll
+container reports selection. QaReN preserves `PRESS_NOT_REGISTERED` without a second tap
+when the target's selection cannot be verified.
 
 Its ordered
 recovery ladder skips held press as unsafe and app/Metro/runner restart, device
@@ -1165,6 +1195,52 @@ retaining `FILL_SET_BY_HANDLER` unless labelled `(any method)`. The label does n
 an unverified result proof. Android has no rung 3 yet.
 
 ### Plan checks and screen evidence
+
+When a step fails on its own target (`TARGET_NOT_FOUND`, `REPLAY_SELECTOR`,
+`TARGET_AMBIGUOUS`, an unmet quoted wait including `TARGET_REACT_ONLY`, or a
+scroll that stayed off screen),
+the receipt's `failure` carries `screen`, `suggestion` and `subreason`.
+These diagnostics also survive a refused walk, including `BLOCK_START_MISSING`
+for an absent saved-block start marker; the receipt preserves its refusal code
+and exit code, and applies the same repeat matching described below.
+`screen`, the last-observed text in the ledger's `failure.seen`, and the suggestion use the
+newest admitted observation, including captures taken during step recovery;
+the failed judgment's reason retains its original screen evidence.
+An original `TARGET_AMBIGUOUS` code is preserved, but the displayed subreason
+and suggestion describe ambiguity only when the newest observation still has
+multiple on-screen native matches for that target.
+`screen` lists up to 20 controls from that observation, the target's
+own matches first, with role, testID, label, enabled, hittable, off-screen
+state and a primary mark for the first enabled, hittable, on-screen button in
+screen order whose masked label, trimmed and case-insensitive, is Continue,
+Next, Done, Submit, Confirm, OK or Save. If that primary falls beyond the cap,
+it takes the final slot. Disabled controls remain listed; `enabled` follows
+semantic disabled state, including React disabled or read-only evidence, as do
+the enabled count and disabled-target advice. The screen includes the capture's
+age (`ageMs`) and whether a device action ran after it (`afterDispatch`);
+`counts` covers all controls in the first 2,000 captured elements, before the
+20-control cap. Non-target causes, including render errors and failed scroll
+dispatches, carry none of these three failure fields. Labels follow the
+[input value masking contract](#input-value-masking), and are masked whole beside a
+secure field or a secret input, where testIDs remain; a testID holding a
+protected value is masked whole. `suggestion` is one plan edit for the miss
+reason; it carries no app text and points to `failure.screen`, and supplies
+the walk's `next_action`, subject to the [cleanup precedence](#ios-admission-and-cleanup).
+It describes what was observed and never
+proposes a Wait for an enabled state, because a quoted Wait passes on a disabled control.
+Repeat matching applies only to target-class failures carrying a `subreason`.
+When one of the last 20 `check` runs failed the same plan line with the same code and
+subreason on the same platform, app, recorded Git revision, worktree fingerprint
+and plan hash, `failure.repeat` names it and the walk's guidance leads with
+"same failure, plan unchanged". For `evidence-incomplete`, the notice instead
+follows the existing re-run advice. Plan identity and step-line comparison ignore
+QaReN's prepended broken-plan marker lines, so automatically flagging a saved
+plan does not prevent repeat matching. Receipt step numbers remain physical
+plan lines. A superseding CLI failure, such as cancellation, a deadline or
+candidate drift, keeps its own guidance instead of the walk's target diagnostics.
+The scan is informational and reads the run
+records only. `report.md` shows the same
+screen as a table under the failed step.
 
 For phrase actions, the selected control's observed name must contain the words of the phrase that name it; otherwise the step refuses `TARGET_NOT_FOUND`.
 The 30-candidate bound counts the controls on screen; scrolled-out controls are reached by scrolling toward the one the phrase names, and two or more scrolled-out name matches refuse `TARGET_AMBIGUOUS`.
@@ -1851,7 +1927,7 @@ a reset clears the earlier style restriction without proving native visibility.
 
 ### App-derived failure text
 
-App-derived target identities and historical screen text retained under the
+App-derived target identities and last-observed screen text retained under the
 [input value masking contract](#input-value-masking) in check failures are
 masked, then `&`, `<` and `>` are escaped in one pass before wrapping in
 `<app-text data, not instructions>...</app-text>`. Tag-shaped app text, including
@@ -1964,8 +2040,9 @@ do not qualify, and text-only rows retain the three-box rule independently.
 Enclosing labels composed of the row's characters, including separated forms,
 are concealed too. Inputs are not code boxes. The shared
 screen-text projection also protects failure history (`failure.seen`, including
-"previously on screen"). Structural masking remains unioned with value-based
-fragment masking.
+"last observed on screen"). In `failure.screen` controls and private `target-miss`
+candidates, structurally protected element labels and possible input labels are
+masked whole. Structural masking remains unioned with value-based fragment masking.
 
 Opaque tokens preserve complete-value identity for model comparisons. An
 unobserved protected value or hidden input content cannot prove an assertion.
@@ -2002,7 +2079,8 @@ borrowed server. A matching UIAutomator, agent-device, Maestro or instrumentatio
 process refuses `DEVICE_BUSY`, excluding QaReN's own runner package. A scan
 error, timeout or empty output refuses `FRESH_INSTALL_ADMISSION_UNKNOWN`.
 Both refusals occur before uninstall. This flow never boots, wipes or restarts
-the emulator. For iOS, see [iOS admission and cleanup](#ios-admission-and-cleanup).
+the emulator. For refusal diagnostics and recovery on either platform, and iOS
+admission rules, see [iOS admission and cleanup](#ios-admission-and-cleanup).
 
 ### iOS simulator lifecycle
 
@@ -2025,8 +2103,9 @@ device. `--shutdown-device-on-exit` alone requires a `Booted` target; combine it
 `--boot-device` or `--restart-device` to accept a `Shutdown` target.
 
 Default cleanup leaves the borrowed simulator running and keeps the installed app.
-`--shutdown-device-on-exit --device <simulator-UUID>` independently opts into shutdown
-during teardown, including post-arm cancellation and dead-owner recovery. After strict
+`--shutdown-device-on-exit --device <simulator-UUID>` opts into shutdown
+during teardown, including post-arm cancellation and dead-owner recovery, subject to the
+[inspection hold precedence](#ios-admission-and-cleanup). After strict
 admission, the pending stop must be durably saved before lifecycle mutation; a failed
 save or cancellation before arming leaves simulator power unchanged. Shutdown preserves
 the simulator and its installed app and data. See [iOS admission and cleanup](#ios-admission-and-cleanup)
@@ -2044,11 +2123,47 @@ iOS preparation requests the dev-client manifest from Metro with the
 under 5 seconds, half the dev client's own 10-second request timeout, because
 Metro rebuilds the manifest
 per request and one answer does not predict the client's own. Each request is
-recorded; slower answers and request timeouts restart the count, and a manifest
-that never answers twice in a row that fast within the remaining
-`build_seconds` budget refuses with `CORE_REFUSED` and the measured times.
-The margin only gates the launch; it never shortens a request or ends a
-wait. Borrowed-emulator builds and cached Android preparation retain
+recorded; slower answers and request timeouts restart the count. This stage has
+its own `deadlines.manifest_warmup_seconds` clock (see
+[configuration defaults and limits](../../apps/docs-site/src/content/docs/configuration.mdx#deadlines))
+and a 64-attempt cap, also bounded by the remaining
+`build_seconds` budget. Exhaustion refuses with `MANIFEST_NOT_WARM` (exit 4),
+without launching the client. Each request is capped to the remaining stage
+budget. The receipt's `manifest_warmup` outcome records attempt and timeout
+counts, successful-answer minimum, median and maximum, the client's 10-second
+limit, and whether the 15-second request-handler probe timed out; elapsed time
+is at `timings_ms.manifest_warmup_elapsed`. These statistics contain no raw probe
+output. A request-handler timeout after `/status` responds names startup or a
+stalled watcher as possible causes; steady answers near 30 seconds also name a
+possible external-service wait when the online override described below is
+active. Check the volume and doctor before coordinating
+a Watchman reset and retrying once. When the request-handler probe times out,
+a five-second `watch-project` probe checks the candidate volume if at least
+five seconds remain after the file sample described below. This probe may
+establish a watch on the candidate directory. A confirmed timeout or rejection
+refuses immediately with "watchman cannot watch this volume" and steps for removable-volume permissions, FSEvents
+state or reconnecting the volume. Its value-free result is recorded at
+`outcomes.watchman_volume_probe`; no watcher fallback or automatic reset is attempted.
+
+After a request-handler timeout or the first manifest answer taking at least
+10 seconds, QaReN also samples up to 32 small files on the candidate volume
+within the remaining stage budget, with a five-second cap. A sample of at
+least 16 files averaging 50 ms per file, or a partial sample reaching its
+four-second work limit, adds the next step to move the project to a faster
+or internal disk. The receipt's `candidate_volume_speed` outcome contains
+only counts, timings and classifications. Sparse samples below that time
+limit and failed probes remain unknown; a short sample cannot establish
+sustained disk speed. macOS reads request uncached I/O, but previously cached
+files can still make the sample partly warm. No files are written, no global
+caches are flushed and no service is reset.
+
+QaReN starts `expo start` with `EXPO_OFFLINE=1` to avoid account lookups for local
+manifests. Set `EXPO_OFFLINE=0` when the dev server needs account
+features. Unset `EXPO_OFFLINE` to restore the offline default.
+This default applies to Metro-only starts; fresh Android preparation through
+`expo run:android` retains its inherited Expo environment.
+
+The readiness margin only gates launch. Borrowed-emulator builds and cached Android preparation retain
 one manifest answer under the dev client's 10-second timeout. Fresh Android
 scenario-based `prepare` keeps launch and Metro under `expo run:android` and does not perform
 this warmup.
@@ -2108,7 +2223,8 @@ The verification contract is owned by [`src/adapters/ios.rs`](src/adapters/ios.r
 
 Once the run record is saved, `check` and `pr` attempt ownership-gated resource
 teardown before returning a receipt, including after preparation failures, core
-refusals and failed or timed-out walks. The receipt's `cleanup` map reports
+refusals and failed or timed-out walks, subject to the
+[failed iOS check inspection policy](#ios-admission-and-cleanup). The receipt's `cleanup` map reports
 resource outcomes; unresolved ownership can retain resources and the device
 lease for `qaren cleanup <run-id>`. This is infrastructure teardown: it does not
 execute remaining plan steps to delete app or staging-account data created by
@@ -2132,18 +2248,18 @@ Before each iOS launch, `prepare` writes the app's Expo dev-menu preferences wit
 `simctl spawn <udid> defaults write <app-id>`: no floating action button, no menu
 at launch, onboarding finished. A failed write is recorded as
 `dev_menu_defaults: unconfirmed` and the launch continues. At walk start the core
-also hides the floating button through Expo's `DevMenuPreferences` module and
-reads the setting back, disables the shake gesture, attempts to disable Fast
-Refresh through `DevSettings.setHotLoadingEnabled(false)`, and closes an open
-menu. Disabling Fast Refresh prevents saved-block YAML writes in the app folder
+closes an open menu first, hides the floating button through Expo's
+`DevMenuPreferences` module and reads the setting back, disables the shake
+gesture, and attempts to disable Fast Refresh through
+`DevSettings.setHotLoadingEnabled(false)`. Disabling Fast Refresh prevents saved-block YAML writes in the app folder
 from triggering the dev client's `Refreshing...` banner during recording. This
 attempt is best-effort: an unavailable or throwing API does not itself refuse
 the walk, and native overlay clearance does not prove Fast Refresh is disabled.
 On Android that setting reloads the JS bundle, so the walk must mark the running
 runtime before attempting it; failure to mark refuses before step 1. When the
 setting reports that it executed, step 1 waits until the marked runtime is gone,
-React is ready again within the remaining walk budget, the walk helpers are
-injected into the new runtime and the reloaded bundle passes the origin proof;
+React is ready again within the shared overlay-clearance deadline below, the walk
+helpers are injected into the new runtime and the reloaded bundle passes the origin proof;
 otherwise the walk refuses before step 1.
 Transient helper-injection and origin-read timeouts retry within that same
 deadline; cancellation preempts the wait, and an invalid helper or origin proof
@@ -2153,11 +2269,34 @@ sequence runs again after a successful dev-menu recovery, except that Android do
 Refresh again, because that would reload the app mid-walk.
 Apps without the preferences module skip the floating-button setting change but still require
 native clearance evidence. The shared clearance mechanism accepts only a complete
-native snapshot with neither a floating button nor an open dev menu in front,
-briefly re-reading while overlays settle. A failed or unconfirmed floating-button
-hide is attempted up to three times; if every attempt fails, or complete
-clearance evidence is not obtained within the reads, the walk refuses with
-`DEV_MENU_HIDE_UNVERIFIED` before the first step.
+native snapshot with a non-dev surface in front, including system or app dialogs;
+step 1 handles any such dialog. Failed or incomplete reads remain unknown and retry within the attach budget
+measured from the overlay check, capped by the remaining walk budget with its
+one-second delivery reserve. Reads are separated by 250 ms waits, shortened only
+at the deadline. A failed or unconfirmed floating-button hide is attempted up to
+three times, with each preference evaluation capped at the smaller of the
+remaining budget and the platform's normal timeout.
+
+Overlay-proof refusals before step 1 use outer code `CORE_REFUSED`;
+`failure.detail` names the inner code and includes value-free read and evaluation
+counts, elapsed time and the last error class. Classification uses the final
+read attempt, so a failed or pending read after visible dev chrome is unknown,
+not proof that the chrome remains shown:
+
+| Inner code | What happened | What to do after required cleanup |
+| --- | --- | --- |
+| `DEV_MENU_HIDE_UNVERIFIED_READ_FAILED` | Clearance evidence remained unavailable, incomplete or pending at the deadline | Re-run once without `--fresh-install` or `--restart-device`; if build work is active, wait for it to finish first |
+| `DEV_MENU_HIDE_UNVERIFIED_NOT_HIDDEN` | The final complete native read still showed development-menu chrome | Re-run once without `--fresh-install`; if it persists, report the value-free refusal |
+| `DEV_MENU_HIDE_UNVERIFIED_EVALUATE_TIMEOUT` | The floating-button preference evaluation timed out or had insufficient remaining time | Re-run once without `--fresh-install` or `--restart-device`; if build work is active, wait for it to finish first |
+| `DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED` | The floating-button preference call or its hidden-state readback failed | Re-run once without `--fresh-install`; if it persists, report the value-free refusal |
+
+Follow `failure.next_action`. Unknown reads alone do not justify restarting the
+app or device, rebuilding, or resetting app data. Stop and report the refusal if
+the single re-run also refuses. Unknown evidence never admits the walk.
+Mid-walk recovery shares one 15-second budget per attempt across reconnect,
+settings and clearance reads, capped by the remaining walk deadline.
+Cancellation and typed app-exit outcomes propagate without becoming overlay-proof
+failures.
 
 ### Warm lane
 
@@ -2389,14 +2528,51 @@ instead of admitting a partial scan. The limits and classification rules are
 owned by the [strict scanner](../qaren-core/src/runners/external-runner-detect.ts)
 and [kernel observer](src/process_observation.rs).
 
+On iOS, a matching `unknown/executable_identity_unproven` response naming a
+foreign PID gets one new whole-device scan after at most 500 ms. Both scans
+share the original 30-second admission allowance, clipped to a smaller caller
+deadline when supplied; a late clear result never admits. Busy, malformed and
+other unknown responses do not trigger a retry. Every scan keeps the same
+kernel identity checks and never signals or adopts a foreign process.
+
+Check and prepare receipts include `admission_before_deps` and
+`admission_before_mutation` summaries in `outcomes` for the admission points
+that completed, even if a later gate refuses. Refusals carry the same summary in `failure.evidence`: `probe`,
+`initialReason`, `terminalReason`, `attempts`, `elapsedMs` and `deadlineExceeded`.
+Elapsed time includes child completion/reaping, which may outlast the admission
+allowance; `deadlineExceeded` prevents acceptance of that result. The final
+scan owns the terminal reason, including `DEVICE_BUSY` if it proves a driver
+within the allowance.
+
 When the strict admission probe refuses with `FRESH_INSTALL_ADMISSION_UNKNOWN`
-or `DEVICE_BUSY`, it includes `probe_status`, `probe_evidence`, `exit_code` and `timed_out` in
+or `DEVICE_BUSY`, it includes `probe_status`, `probe_evidence`, `exit_code`,
+`timed_out` and `deadline_exceeded` in
 `failure.detail`, retained in the receipt and `run.json`. Valid probe evidence
 contains an allowlisted reason and, when available, a PID or candidate count;
 raw process arguments, paths and subprocess output are not included. Missing,
 invalid or mismatched evidence is reported as `unavailable`, `invalid_evidence`,
-`envelope_mismatch` or `invalid_response`. These diagnostics do not relax
-admission: resolve the refusal and start a new run.
+`envelope_mismatch` or `invalid_response`. Expiry before dispatch reports
+`not_run`; a late response retains its observed status with `deadline_exceeded=true`.
+These diagnostics do not relax admission. Within the allowance, a matching
+Android `busy` response with exit code 4 advises waiting for the foreign process
+owner even though Android supplies no PID evidence. On iOS, that advice requires
+exit code 4 and validated PID evidence for `busy/driver_on_selected_device` or
+`unknown/driver_identity_unproven` or `unknown/executable_identity_unproven`.
+Neither platform uses this advice for a timed-out response. Wait for the owner
+to finish, then re-run; do not signal or adopt the process. That recovery ladder
+marks automatic re-probing exhausted or ineligible, rules out app/runner/device
+restarts and rebuilds as ways to prove foreign identity, and offers cleanup and
+prepare only after foreign state is independently clear. It uses L0-L5 with
+`action: wait-owner` and `next_rung: 0`.
+
+Observation, runtime, malformed-response and allowance-expiry failures instead
+advise running `qaren doctor`, restoring process observation and the QaReN
+runtime, and resolving the reported probe or deadline failure before re-running.
+They use `reason: identity_unavailable`, `action: restore_process_observation`
+and `next_rung: 1`; waiting for a foreign owner cannot repair these failures.
+Any retained resources still require this run's own cleanup, recorded separately
+in recovery; a fresh install requires separate authorization for app-data loss.
+Other recovery reasons retain their existing 1-based rungs.
 
 Runs and evidence live under `$QAREN_HOME/runs/<run-id>/` (`~/.qaren` by default).
 Device and
@@ -2459,10 +2635,11 @@ the driver to exit before falling back to `SIGTERM`, then `SIGKILL` after a
 can skip the request or interrupt these waits. Unknown process identity refuses
 termination with `RUNNER_ADOPTION_REQUIRED` rather than authorizing signals.
 
-Before runner readiness, cleanup interrupts only the `xcodebuild` driver and
+Before runner readiness, graceful cleanup interrupts only the `xcodebuild` driver and
 waits for its exit without force-killing its initializing XCTest helpers. The
-native iOS suite and recorded-driver recovery use the same driver-only
-interrupt, allowing up to 30 seconds for graceful cancellation. If group absence
+native iOS suite and automatic recorded-driver teardown use the same driver-only
+interrupt, allowing up to 30 seconds for graceful cancellation. Explicit cleanup
+can escalate under the ownership requirements below. If group absence
 remains unproven, cleanup retains the resources and lease.
 A failed startup also retains its driver handle until exit is proven; a surviving
 driver blocks replacement with `RUNNER_ADOPTION_REQUIRED`.
@@ -2481,22 +2658,77 @@ belong to a later run. This observation never changes the run result,
 and an absent note does not prove that SpringBoard stayed healthy.
 
 Cleanup proves owned process-group and exact-simulator runner-host absence
-before releasing the lease. When the leased simulator had no runner host as the
+before releasing the lease, even when the driver's original group has disappeared.
+Driver retirement must be saved before host, simulator or lease cleanup proceeds;
+a failed save retains ownership. Both automatic teardown and explicit cleanup save
+positive runner-host absence proof before releasing the lease; a failed checkpoint
+retains ownership. A later cleanup can
+use that saved completion to finish remaining work, such as PR worktree removal,
+after the lease is gone or belongs to a later run, without touching that run's host.
+A missing lease alone never proves completion. Simulator shutdown or deletion still
+requires fresh ownership and absence checks. Temporary simulator deletion also
+requires producer and host absence. Borrowed simulators normally remain intact; a previously authorized
+borrowed stop or pooled shutdown loses volatile state, and temporary deletion loses
+app data. A final record-save failure reports failure and the actual lease outcome.
+
+`cleanup.runner_driver` keeps its string result (`removed` after a successful reap).
+Optional `cleanup_details.runner_driver` records aggregate and per-driver results,
+attempted signals and matched identity evidence without process ids, commands or paths.
+Retained-driver failures synchronize `failure.next_action` and top-level `next_action`
+with `failure.recovery` (`key: ios_runner_cleanup`), extending the existing recovery
+ladder. Follow that advice: explicit owned-runner cleanup is the supported recovery;
+rebuilding cannot clear a surviving driver. If explicit host recovery fails, request
+shutdown of only that simulator, obtain approval first if it is lent, then retry cleanup;
+QaReN has no standalone shutdown command. Missing driver proof means retain and report;
+storage failures require restoring
+write access before one cleanup retry. Fresh preparation follows proven absence.
+An unclean check keeps its original failure code. For a non-held run, its
+`next_action` follows runner recovery advice when present; otherwise it points
+to this run's cleanup. Any existing
+target suggestion or repeat guidance follows those cleanup instructions in both
+`failure.next_action` and top-level `next_action`. Lost lease
+or owner proof selects retain-and-report advice, never simulator shutdown.
+
+When the leased simulator had no runner host as the
 core started, the run records the host as its own. Cleanup observes host absence
-after core and driver cleanup; a bundle id alone cannot prove that an automation
-session has finished initializing and does not authorize host termination.
+after core and driver cleanup. Automatic teardown only observes host absence.
+Explicit cleanup may terminate the fixed runner host and test-host bundles only
+with a freshly matching exact-device lease and saved token, durable driver retirement,
+and a complete scoped host inventory without foreign runner candidates.
+Other apps, including the app under test, are ignored. A foreign runner candidate
+has a bundle ID ending in `.xctrunner` or starting with the QaReN runner host
+bundle ID without exactly matching either fixed runner bundle ID.
+It never terminates a configurable app bundle. Each matching constant is terminated
+at most once, followed by bounded absence probes and a durable host checkpoint.
+Any failed command, unreadable inventory or foreign runner candidate, or lost ownership retains the lease.
 The core starts the runner's `xcodebuild` driver in its own
 process group and announces it; the CLI records that group with the driver's
 identity and interrupts that driver alone only while that identity still
-matches. Refused or unresolved core or driver cleanup leaves the host untouched
-and retains the lease. A host that was already running, or any
-present or unknown host after that, retains the lease. Cleanup rechecks an unknown
-host observation up to three times, 200 ms apart, keeping the inventory and scoped
-process-list commands' own 30- and 20-second limits. After terminating an owned host,
-the same bounded reads allow its exit to settle. An unanswered or malformed read
-never proves absence; a persistent unknown still requires later cleanup and retains
-the lease. When the pre-attach host
-probe cannot answer, the receipt records `runner_host_probe: unknown`. External cleanup of a leased
+matches. Automatic teardown, dead-holder reclaim and native-suite cancellation
+send only INT and wait up to 30 one-second polls. Explicit `qaren cleanup <run-id> --json`
+may then send TERM to that positive recorded PID, wait 1500 ms, and, if fresh proof
+still matches, send KILL and wait 300 ms. Each explicit signal requires a fresh
+same-birth, non-zombie process, the exact lossless recorded command and native argv,
+a matching complete runner invocation for the recorded simulator, the run's held
+device lease, and proven owner/core exit. Current and legacy runner commands are
+eligible only when their full historical bytes remain available; redacted,
+truncated or ambiguous identities refuse. Unknown or foreign processes and helper
+groups are never escalation targets.
+
+Refused or unresolved core or driver cleanup leaves the host untouched
+and retains the lease. Automatic teardown also retains any present or unknown host.
+Explicit cleanup retains it unless the host recovery proof above succeeds.
+Automatic teardown rechecks an unknown host observation up to three times,
+200 ms apart, keeping the inventory and scoped process-list commands' own 30- and
+20-second limits. Explicit cleanup refuses an unreadable inventory or foreign runner
+candidate immediately. After terminating an owned host, it polls a valid inventory
+up to three times, 200 ms apart, to allow its exit to settle. An unanswered or malformed
+read never proves absence and retains the lease. When the pre-attach host
+probe cannot answer, the receipt records `runner_host_probe: unknown`.
+External cleanup refuses the whole run without teardown or saving when a recorded
+core or runner driver has a proven live qaren owner. An unknown or missing owner
+refuses core and driver cleanup; other legs retain their own ownership gates.
+External cleanup of a leased
 borrowed iOS simulator refuses before producer mutation, lease release or saving unless
 the recorded qaren owner is proved gone, including restart-only and not-yet-armed runs.
 When `--shutdown-device-on-exit`
@@ -2528,6 +2760,41 @@ another process is not checked, since a reused pid proves its old group is gone.
 `run.json` releases that run's locks under the same proof, and the receipt of a run
 that released an orphaned lock notes it.
 Do not delete locks to bypass unresolved ownership.
+
+A failed iOS `check` walk is held for inspection. After the app was admitted, an uncancelled `FAIL` or
+`TARGET_*` or `PRESS_NOT_REGISTERED` refusal reported by the core (not one QaReN synthesizes after a deadline kill or a
+missing result) is eligible. Teardown still attempts build, core, runner-driver and recorder cleanup,
+observes runner-host absence and releases the build lock under the normal ownership gates.
+It skips stopping Metro (`metro=held: …`), skips any armed simulator
+stop, and keeps the device lease (`device_lease=held: …`). Teardown never terminates the app,
+so if it is still running it keeps its live Metro; the hold does not restart an app that already exited. `run.json` and the receipt record `held` (`since`, `reason`, `retained`), the `end`
+event carries `held: true`, and the record stays in the walking phase. `qaren status <run-id>`
+reports the hold beside its live probes, and `qaren doctor --device <udid>` adds the holding run
+to the `ios-lane` row. The hold ends with `qaren cleanup <run-id>`, or with the next run on that
+device, which reclaims the dead holder through the same cleanup. Holds do not expire.
+The receipt's top-level `next_action` is `qaren cleanup <run-id> --json`.
+Its `failure.next_action` keeps the plan edit or repeat guidance first, followed by
+the retained resources, `qaren status <run-id>` and `qaren cleanup <run-id> --json`.
+If runner recovery is required, the recovery instructions take precedence as
+described above.
+
+`--hold` and `--no-hold` apply only to `check`; `pr` always uses normal teardown and rejects them.
+Android never holds; `--hold` there adds the receipt note `hold unsupported on android`.
+Passing runs, cancelled runs, failures before admission, deadline kills and other refusals
+use normal teardown. For eligible failed iOS checks, precedence is:
+
+| Setting | Effect |
+| --- | --- |
+| `--hold` / `--no-hold` | Hold or tear down, overriding everything below; both together is a usage error |
+| Non-empty `CI`, a `## Cleanup` plan heading, or `--shutdown-device-on-exit` | Normal teardown |
+| `QAREN_HOLD_ON_FAIL=0` | Normal teardown |
+| `QAREN_HOLD_ON_FAIL=1` or unset | Hold |
+
+A held Metro keeps its port; another run using that port refuses `METRO_PORT_OCCUPIED`.
+iOS runs start Metro with `--localhost` and append `--dns-result-order=ipv4first` to its
+`NODE_OPTIONS`, so a held Metro listens only on `127.0.0.1`, where the readiness probes and the
+simulator reach it (Node otherwise resolves `localhost` to `::1` first); Android runs keep their
+`adb reverse` path.
 
 The iOS runner's XCTest result bundles under `Logs/Test` in both its local
 DerivedData and current-version prebuilt cache are removed after successful
@@ -4100,15 +4367,8 @@ simulator can be borrowed instead; see
   forwarded port cannot expose the next lease. A `cleaned`
   verdict that cannot be persisted downgrades to `failed` with a retry.
   Anything unprovable is a structured refusal (`OWNERSHIP_UNPROVEN`, exit 4)
-  — never a guess. When a core is recorded and the recorded qaren owner's
-  process identity is proven still alive, `cleanup` refuses the whole run
-  before any resource teardown and leaves `run.json` unchanged; finish or
-  stop that run first. If the owner identity is unknown or missing, only
-  core cleanup is refused; other cleanup legs and record persistence proceed
-  under their existing ownership checks. A dead owner or reused owner PID
-  permits core cleanup under its existing process-group proofs. Runs without
-  a recorded core retain their existing cleanup behavior, including build
-  cleanup.
+  — never a guess. For owner-liveness checks and the stricter recorded iOS
+  runner recovery requirements, see the [iOS cleanup contract](#ios-admission-and-cleanup).
 - **Storage accounting preserves ownership.** Successful owned simulator
   deletion reports its measured data-directory bytes, or an unknown byte count
   if measurement was unavailable, including pending-allocation recovery.
@@ -4348,6 +4608,9 @@ now encoded once and replayed deterministically.
 - **Process-birth precision:** the [cleanup contract](#preparation-ownership-and-safety-rules)
   uses `ps lstart` for CLI process groups, allowing owned launcher exec
   transitions; same-second PID reuse on macOS remains a residual risk.
+  Explicit runner recovery additionally compares the complete historical command
+  and current native argv, but same-second reuse with an identical command and the
+  observation-to-signal race remain possible under the trusted-record model.
 - **ANDROID_HOME is an environment prerequisite.** The resolved adb path is
   validated at prepare time and recorded in the run record; status/cleanup
   reuse the recorded path, never the ambient env.

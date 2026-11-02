@@ -25,6 +25,12 @@ Refusals exit `4` and mean the run could not start or could not decide; failures
 | `GITHUB_AUTH_UNAVAILABLE` | PR lookup could not use GitHub authentication | Follow the [GitHub authentication contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#test-a-pull-request) |
 | `DISK_BUDGET_EXCEEDED`     | Under 1 GiB free for the run storage root or the app, or under about 10 GiB for a clean iOS build | Free space on the volume `failure.detail` names, then re-run                                |
 
+## Development overlays before step 1
+
+For `CORE_REFUSED` with a `DEV_MENU_HIDE_UNVERIFIED_*` inner code in
+`failure.detail`, follow `failure.next_action` and the authoritative
+[overlay clearance and recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan).
+
 ## Devices
 
 For `BUILD_FAILED` with `cause=toolchain-newer-than-prebuilt` or a doctor
@@ -43,13 +49,14 @@ and [iOS admission diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/p
 | `DEVICE_BUSY`        | Another run holds the device's lease                                | Wait for that run to finish, or clean it up with `qaren cleanup <its-run-id>`; a live holder is never stolen |
 | `ARTIFACT_INSTALL_FAILED` | The cached dev-client verification or installation failed | Follow `next_action`; see the [cached-install recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan) |
 | `APP_EXITED_AT_LAUNCH` | The launched app exited before it became ready; on iOS the detail cites the simulator crash report | Follow `next_action`, which for a missing app-embedded framework is a CocoaPods reinstall; see the [launch readiness contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle) |
+| `MANIFEST_NOT_WARM` | Dev-client manifest warm-up refused before launch | Follow `next_action`; see the [launch readiness contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle) for bounds, diagnostics and recovery |
 | `LANE_NOT_WARM` | The owned simulator failed the [warm-lane contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#warm-lane) | Follow `next_action` and `failure.detail`; use the linked contract for settings, first-screen requirements and doctor diagnostics |
 
 ## During the walk
 
 | Code                     | What happened                                                    | What to do                                              |
 | ------------------------ | ---------------------------------------------------------------- | ------------------------------------------------------- |
-| `PLAN_STEP_FAILED`       | A step or check failed; the detail names the line and what was seen | Read the report, fix the app or the plan, then re-run |
+| `PLAN_STEP_FAILED`       | A step or check failed; the detail names the line and what was seen | Follow `next_action` and the [screen evidence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence) for target diagnostics and repeat guidance |
 | `CORE_REFUSED`           | The screen layer refused; the detail starts with its own code    | Resolve that refusal, then re-run                       |
 | `PRESS_NOT_REGISTERED`   | The selection effect could not be verified                       | Follow the [press evidence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#occluded-taps-and-focus) |
 | `BLOCK_START_MISSING`    | The block's declared start was absent; this is a typed refusal with exit code 4 | Follow the [saved-block contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#saved-blocks) |
@@ -61,7 +68,7 @@ The screen layer's own codes appear at the start of `failure.detail` or in the r
 
 | Screen code                  | Meaning                                                                       |
 | ---------------------------- | ----------------------------------------------------------------------------- |
-| `TARGET_AMBIGUOUS`           | A quoted target, or a phrase target's scrolled-out name matches, matched two or more elements; each candidate is listed by kind, `testID` and frame. Use a unique `testID` or label. |
+| `TARGET_AMBIGUOUS`           | A quoted target, or a phrase target's scrolled-out name matches, matched two or more elements; interpret the latest controls and suggested edit using the [screen evidence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence). |
 | `TARGET_NOT_FOUND`           | A target did not resolve on screen                                            |
 | `TARGET_REACT_ONLY`          | A quoted wait repeatedly found only a React-mounted match without native visibility; follow the [wait evidence and recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence) for diagnostic fields, iOS scroll recovery and next steps |
 | `TARGET_WAIT_TIMEOUT`        | A wait's first capture did not complete; follow the [wait evidence and recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence) for deadline details and next steps |
@@ -76,8 +83,8 @@ The screen layer's own codes appear at the start of `failure.detail` or in the r
 
 | Code                  | What happened                                                        | What to do                                                       |
 | --------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `CLEANUP_INCOMPLETE`  | `qaren cleanup` could not resolve some resources                     | Re-run `qaren cleanup <run-id> --json`                           |
-| `OWNERSHIP_UNPROVEN`  | The run's processes were not proven gone                             | Run `qaren cleanup <run-id>`, then re-run `qaren pr`             |
+| `CLEANUP_INCOMPLETE`  | `qaren cleanup` could not resolve some resources                     | Follow the receipt's `next_action` and the [cleanup contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup) |
+| `OWNERSHIP_UNPROVEN`  | The run's processes were not proven gone                             | Follow the receipt's `next_action` and the [cleanup contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup) |
 | `RUN_CANCELLED`       | The run was cancelled                                                | Re-run when ready; the cleanup map names anything retained       |
 | `PR_UNAVAILABLE`      | Pull request lookup, comment creation or label edit failed; failed `qaren pr` lookups also check authentication | Follow the [GitHub authentication contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#test-a-pull-request) |
 
@@ -85,17 +92,19 @@ The screen layer's own codes appear at the start of `failure.detail` or in the r
 
 When a run cannot prove that a process is gone, it keeps the device lease and records what it
 kept. A PR worktree it cannot remove stays recorded for `qaren cleanup` without holding the
-lease. The next run on that device refuses `DEVICE_BUSY` until the lease is
-released. Run:
+lease. For dead-holder reclamation and intentional inspection holds, see the
+[iOS admission and cleanup contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup).
+To request cleanup explicitly, run:
 
 ```sh
 qaren cleanup <run-id> --json
 ```
 
-It finishes the teardown from the run's own records and releases the lease once every resource
-is accounted for. Do not delete locks in the
-[configured namespace](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup)
-to get around it.
+It resumes teardown from the run's own records. If it refuses, follow the receipt's
+`next_action`; see the authoritative
+[cleanup contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup)
+for recorded iOS runner recovery and lease-release requirements. Do not delete locks
+to get around a refusal.
 
 ## Why were my screenshots withheld?
 

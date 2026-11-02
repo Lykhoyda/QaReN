@@ -9,6 +9,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 mod host;
+mod watchman;
 
 use crate::VERSION;
 const INSTALL: &str = "bash <plugin>/scripts/ensure-qaren.sh --install";
@@ -172,7 +173,7 @@ impl Report {
     }
 }
 
-// Read-only: host probes never change a device or start a service.
+// Host probes never change a device or start a service; watch-project may establish a watch.
 pub fn doctor(
     runner: &mut dyn Runner,
     home: &Path,
@@ -271,6 +272,35 @@ pub fn doctor(
         &runner.env_names(),
     ));
     checks.extend(host::checks(runner, std::env::consts::OS));
+    checks.push(expo_mode(runner));
+    checks.extend(watchman::checks(
+        runner,
+        config.as_ref().map(|_| app_root.as_path()),
+    ));
+    checks.push(if config.is_some() {
+        let deadline = runner.monotonic_ms().saturating_add(5_000);
+        let volume = crate::volume::assess(runner, &app_root, deadline);
+        if volume.slow {
+            Check::warn(
+                "candidate-volume-speed",
+                volume.summary,
+                crate::volume::SLOW_VOLUME_FIX,
+            )
+        } else {
+            Check::skip(
+                "candidate-volume-speed",
+                format!(
+                    "{}; a short sample cannot establish sustained volume speed",
+                    volume.summary
+                ),
+            )
+        }
+    } else {
+        Check::skip(
+            "candidate-volume-speed",
+            "no configured candidate; no files sampled",
+        )
+    });
 
     let build = exe
         .as_deref()
@@ -286,6 +316,18 @@ pub fn doctor(
             qaren_home: qaren_home.to_path_buf(),
         },
         checks,
+    }
+}
+
+fn expo_mode(runner: &dyn Runner) -> Check {
+    if crate::adapters::metro::expo_online(runner) {
+        Check::warn(
+            "expo-offline",
+            "Expo online override is active; manifest requests may wait for an account lookup",
+            "unset EXPO_OFFLINE to restore QaReN's offline default, or set EXPO_OFFLINE=1",
+        )
+    } else {
+        Check::pass("expo-offline", "QaReN starts Metro-only Expo commands offline to avoid account lookups; use EXPO_OFFLINE=0 when account features are needed")
     }
 }
 
@@ -525,6 +567,30 @@ fn ios_runtimes(runner: &mut dyn Runner, configured: Option<&str>) -> Check {
         }
         _ => Check::pass("ios-runtime", format!("{names} available")),
     }
+}
+
+// Read only: names a failed run that keeps this simulator's lease for inspection.
+pub fn held_note(lock_root: &Path, runs_root: &Path, udid: &str) -> Option<String> {
+    let name = crate::lease::lock_name(crate::scenario::Platform::Ios, udid);
+    let holder = crate::buildplan::read_holder(&crate::buildplan::lock_dir(lock_root, &name))?;
+    // The lock root can be shared across QaReN homes; the record lives in the holder's.
+    let holder_runs = holder
+        .qaren_home
+        .clone()
+        .or_else(|| holder.home.as_ref().map(|home| home.join(".qaren")))
+        .map(|qaren_home| qaren_home.join("runs"));
+    let runs_root = holder_runs.as_deref().unwrap_or(runs_root);
+    let record = crate::runrecord::RunRecord::load(runs_root, &holder.run_id).ok()?;
+    let held = record
+        .held
+        .filter(|_| record.phase == crate::runrecord::Phase::Walking)?;
+    Some(format!(
+        " ({} since {}, run {}; {} releases it)",
+        held.reason,
+        held.since,
+        holder.run_id,
+        crate::lease::cleanup_command(&holder.run_id, &holder)
+    ))
 }
 
 const BUILD_LOCK_FIX: &str = "a check or prepare waits for it within its build budget; if the holder is dead, run its qaren cleanup from its home (its resources only)";
@@ -2234,7 +2300,10 @@ mod tests {
             "--git-common-dir",
             CmdOutput::failed(128, "not a git checkout"),
         );
-        script_host(runner);
+        script_host(
+            runner,
+            config_check(&cwd.join(DEFAULT_CONFIG_PATH)).1.is_some(),
+        );
         doctor(
             runner,
             &scratch.0,
@@ -2246,7 +2315,7 @@ mod tests {
         )
     }
 
-    fn script_host(runner: &mut MockRunner) {
+    fn script_host(runner: &mut MockRunner, candidate: bool) {
         runner.expect_run("ps -axww", CmdOutput::failed(1, "unavailable"));
         if cfg!(target_os = "macos") {
             runner.expect_run(
@@ -2261,6 +2330,15 @@ mod tests {
                 runner.expect_run(command, CmdOutput::failed(1, "unavailable"));
             }
         }
+        runner.expect_run("watch-list", CmdOutput::failed(1, "unavailable"));
+        if !candidate {
+            return;
+        }
+        runner.expect_run("watch-project", CmdOutput::failed(1, "unavailable"));
+        runner.expect_run(
+            crate::volume::HELPER_ARG,
+            CmdOutput::failed(1, "unavailable"),
+        );
     }
 
     #[test]
@@ -2655,6 +2733,16 @@ mod tests {
     }
 
     #[test]
+    fn expo_mode_names_overrides_without_printing_environment_values() {
+        let mut runner = MockRunner::new();
+        assert_eq!(expo_mode(&runner).status, Status::Pass);
+        runner.environment.insert("EXPO_OFFLINE".into(), "0".into());
+        let row = expo_mode(&runner);
+        assert_eq!(row.status, Status::Warn);
+        assert!(row.fix.unwrap().contains("unset EXPO_OFFLINE"));
+    }
+
+    #[test]
     fn pnpm_awaiting_its_first_run_download_says_how_to_finish_it() {
         for refusal in [
             "Network access is disabled by the environment, so the pnpm binary cannot be downloaded.",
@@ -3016,11 +3104,14 @@ mod tests {
         assert!(runner.spawned_logs.is_empty());
         assert!(runner.calls.iter().all(|call| call.label == "doctor-host"
             || call.label == "expo-module-resolve"
+            || call.label == "candidate-volume-sample"
             || call.program == "df"
             || call.args.iter().any(|arg| arg == "--version"
                 || arg == "-version"
                 || arg == "list"
-                || arg == "rev-parse")));
+                || arg == "rev-parse"
+                || arg == "watch-list"
+                || arg == "watch-project")));
         assert_eq!(s.tree(), before);
         assert_eq!(
             report.exit_code(),
@@ -3044,7 +3135,7 @@ mod tests {
                 "pass"
             }
         );
-        assert_eq!(parsed["checks"].as_array().unwrap().len(), 30);
+        assert_eq!(parsed["checks"].as_array().unwrap().len(), 34);
     }
 
     #[test]
@@ -3060,7 +3151,7 @@ mod tests {
             "--git-common-dir",
             CmdOutput::failed(128, "not a git checkout"),
         );
-        script_host(&mut runner);
+        script_host(&mut runner, false);
         let runtime = side.join("runtime").join(VERSION).join("runtime");
         let report = doctor(&mut runner, &s.0, &side, &s.0, Some(exe), runtime, None);
         let installed = row(&report, "installed-build");
@@ -3589,7 +3680,7 @@ mod tests {
             "--git-common-dir",
             CmdOutput::failed(128, "not a git checkout"),
         );
-        script_host(&mut runner);
+        script_host(&mut runner, true);
         let report = doctor(
             &mut runner,
             &s.0,

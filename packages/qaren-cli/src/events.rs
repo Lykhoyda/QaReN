@@ -30,10 +30,11 @@ const CLEANUP_KEYS: [&str; 11] = [
     "adb_reverse",
     "android_runner",
 ];
-const CLEANUP_KINDS: [&str; 7] = [
+const CLEANUP_KINDS: [&str; 8] = [
     "removed",
     "absent",
     "kept",
+    "held",
     "released",
     "retained",
     "unresolved",
@@ -329,6 +330,9 @@ impl Events {
             payload["failureCode"] = code.into();
             payload["failurePhase"] = token(&failure.phase).into();
         }
+        if receipt.held.is_some() {
+            payload["held"] = true.into();
+        }
         let envelope = self.envelope("end", payload);
         let _ = self.shared.end.set(envelope);
         self.ended = true;
@@ -479,11 +483,14 @@ pub fn run(run_id: &str, verb: &str, platform: &str, client: &Client, flags: &[&
     with(|e| e.run(run_id, verb, platform, client, flags));
 }
 
+// Progress is projected here, not in `Events`, so it works without a stream and never twice.
 pub fn stage(name: &'static str, state: StageState, code: Option<&str>, ms: Option<u64>) {
+    crate::progress::stage(name, state);
     with(|e| e.stage(name, state, code, ms));
 }
 
 pub fn close_running(state: StageState, code: Option<&str>, except: &[&str]) {
+    crate::progress::close_stages(state, except);
     with(|e| e.close_running(state, code, except));
 }
 

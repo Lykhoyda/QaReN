@@ -28,6 +28,7 @@ fn fresh_admission_command_pins_runtime_node_device_cwd_and_deadline_without_ado
         Path::new("/app path"),
         "AAAA-1111",
         None,
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -103,6 +104,7 @@ fn fresh_admission_refusal_reports_only_validated_probe_evidence_and_transport_s
             Path::new("/app"),
             "AAAA-1111",
             None,
+            None,
         )
         .unwrap_err();
         assert_eq!(failure.code, FailureCode::FreshInstallAdmissionUnknown);
@@ -113,6 +115,450 @@ fn fresh_admission_refusal_reports_only_validated_probe_evidence_and_transport_s
         assert!(detail.contains("timed_out=false"));
         assert!(!detail.contains("diagnostic-secret"));
     }
+}
+
+fn admission_output(status: &str, reason: &str) -> CmdOutput {
+    CmdOutput {
+        exit_code: Some(if status == "clear" { 0 } else { 4 }),
+        stdout: serde_json::json!({"v":1,"platform":"ios","deviceId":"AAAA-1111","status":status,
+            "evidence":{"reason":reason,"pid":812}})
+        .to_string(),
+        ..Default::default()
+    }
+}
+
+fn admit(
+    mock: &mut MockRunner,
+    deadline: Option<u64>,
+) -> Result<core::AdmissionSummary, qaren::failure::Failure> {
+    core::fresh_install_admission(
+        mock,
+        Path::new("/node"),
+        Path::new("/runtime"),
+        Path::new("/app"),
+        "AAAA-1111",
+        None,
+        deadline,
+    )
+}
+
+fn admission_failure_summary(failure: &qaren::failure::Failure) -> serde_json::Value {
+    serde_json::from_str(failure.evidence.last().unwrap().as_str()).unwrap()
+}
+
+#[test]
+fn fresh_admission_reprobe_is_one_new_whole_scan_and_uses_only_the_terminal_verdict() {
+    for (output, code, reason) in [
+        (admission_output("clear", "scan_failed"), None, "clear"),
+        (
+            admission_output("unknown", "executable_identity_unproven"),
+            Some(FailureCode::FreshInstallAdmissionUnknown),
+            "executable_identity_unproven",
+        ),
+        (
+            admission_output("busy", "driver_on_selected_device"),
+            Some(FailureCode::DeviceBusy),
+            "driver_on_selected_device",
+        ),
+        (
+            admission_output("unknown", "scan_corrupt"),
+            Some(FailureCode::FreshInstallAdmissionUnknown),
+            "scan_corrupt",
+        ),
+        (
+            CmdOutput::success("malformed"),
+            Some(FailureCode::FreshInstallAdmissionUnknown),
+            "invalid_response",
+        ),
+        (
+            CmdOutput::success(r#"{"v":1,"platform":"ios","deviceId":"OTHER","status":"clear"}"#),
+            Some(FailureCode::FreshInstallAdmissionUnknown),
+            "envelope_mismatch",
+        ),
+        (admission_output("busy", "scan_corrupt"), Some(FailureCode::DeviceBusy), "scan_corrupt"),
+        (admission_output("unknown", "scan_unavailable"), Some(FailureCode::FreshInstallAdmissionUnknown), "scan_unavailable"),
+        (admission_output("unknown", "observer_unavailable"), Some(FailureCode::FreshInstallAdmissionUnknown), "observer_unavailable"),
+        (admission_output("unknown", "observer_failed"), Some(FailureCode::FreshInstallAdmissionUnknown), "observer_failed"),
+        (admission_output("unknown", "observer_timeout"), Some(FailureCode::FreshInstallAdmissionUnknown), "observer_timeout"),
+        (admission_output("unknown", "scan_failed"), Some(FailureCode::FreshInstallAdmissionUnknown), "scan_failed"),
+        (admission_output("unknown", "scan_timeout"), Some(FailureCode::FreshInstallAdmissionUnknown), "scan_timeout"),
+        (admission_output("unknown", "candidate_budget_exceeded"), Some(FailureCode::FreshInstallAdmissionUnknown), "candidate_budget_exceeded"),
+        (admission_output("unknown", "deadline_exceeded"), Some(FailureCode::FreshInstallAdmissionUnknown), "deadline_exceeded"),
+        (admission_output("invalid", "executable_identity_unproven"), Some(FailureCode::FreshInstallAdmissionUnknown), "invalid_status"),
+        (CmdOutput { exit_code: Some(4), ..admission_output("clear", "scan_failed") }, Some(FailureCode::FreshInstallAdmissionUnknown), "clear_exit_mismatch"),
+        (CmdOutput { stdout: r#"{"v":1,"platform":"ios","deviceId":"AAAA-1111","status":"unknown","evidence":{"reason":"/private/secret"}}"#.into(), ..admission_output("unknown", "scan_failed") }, Some(FailureCode::FreshInstallAdmissionUnknown), "invalid_evidence"),
+    ] {
+        let mut mock = MockRunner::new();
+        mock.expect_run(
+            "fresh-install-preflight.js",
+            admission_output("unknown", "executable_identity_unproven"),
+        );
+        mock.expect_run("fresh-install-preflight.js", output);
+        let result = admit(&mut mock, None);
+        let summary = match code {
+            None => serde_json::to_value(result.unwrap()).unwrap(),
+            Some(code) => {
+                let failure = result.unwrap_err();
+                assert_eq!(failure.code, code);
+                assert!(failure
+                    .next_action
+                    .as_str()
+                    .contains("do not signal or adopt"));
+                let recovery = failure.build_recovery().unwrap();
+                assert!(
+                    !recovery.destroys_state && !recovery.requires_user_ok && !recovery.automatic
+                );
+                if matches!(reason, "executable_identity_unproven" | "driver_on_selected_device") {
+                    assert_eq!(recovery.action, qaren::failure::RecoveryAction::WaitForOwner);
+                    assert_eq!(recovery.next_rung, Some(0));
+                    assert_eq!(
+                        recovery.ladder.iter().map(|s| s.rung).collect::<Vec<_>>(),
+                        vec![0, 1, 2, 3, 4, 5]
+                    );
+                    assert!(recovery.ladder[1..5].iter().all(|s| !s.applicable));
+                } else {
+                    assert_eq!(recovery.action, qaren::failure::RecoveryAction::RestoreProcessObservation);
+                    assert_eq!(recovery.reason, qaren::failure::RecoveryReason::IdentityUnavailable);
+                    assert_eq!(recovery.next_rung, Some(1));
+                    assert!(failure.next_action.contains("qaren doctor"));
+                    assert!(!failure.next_action.contains("wait for the foreign"));
+                }
+                admission_failure_summary(&failure)
+            }
+        };
+        assert_eq!(summary["initialReason"], "executable_identity_unproven");
+        assert_eq!(summary["terminalReason"], reason);
+        assert_eq!(summary["attempts"], 2);
+        assert_eq!(summary["elapsedMs"], 500);
+        assert_eq!(summary["deadlineExceeded"], false);
+        let mut retry_spec = mock.calls[0].clone();
+        retry_spec.timeout_seconds = 29;
+        assert_eq!(
+            retry_spec, mock.calls[1],
+            "the same whole-device scan runs again, with no PID adoption"
+        );
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn fresh_admission_reprobe_requires_a_matching_typed_identity_refusal_with_a_pid() {
+    let identity = admission_output("unknown", "executable_identity_unproven");
+    let mut cases = vec![
+        admission_output("busy", "driver_on_selected_device"),
+        admission_output("unknown", "driver_identity_unproven"),
+        CmdOutput::success("malformed"),
+    ];
+    for (key, value) in [
+        ("v", serde_json::json!(2)),
+        ("platform", serde_json::json!("android")),
+        ("deviceId", serde_json::json!("OTHER")),
+        ("status", serde_json::json!("invalid")),
+        (
+            "evidence",
+            serde_json::json!({"reason":"executable_identity_unproven"}),
+        ),
+        (
+            "evidence",
+            serde_json::json!({"reason":"executable_identity_unproven","pid":0}),
+        ),
+        (
+            "evidence",
+            serde_json::json!({"reason":"executable_identity_unproven","pid":812,"argv":"private"}),
+        ),
+    ] {
+        let mut output = identity.clone();
+        let mut v: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
+        v[key] = value;
+        output.stdout = v.to_string();
+        cases.push(output);
+    }
+    let mut wrong_exit = identity.clone();
+    wrong_exit.exit_code = Some(0);
+    cases.push(wrong_exit);
+    let mut timeout = identity;
+    timeout.timed_out = true;
+    cases.push(timeout);
+    for (index, output) in cases.into_iter().enumerate() {
+        let mut mock = MockRunner::new();
+        mock.expect_run("fresh-install-preflight.js", output);
+        let failure = admit(&mut mock, None).unwrap_err();
+        assert_eq!(
+            failure.build_recovery().unwrap().action,
+            if index < 2 {
+                qaren::failure::RecoveryAction::WaitForOwner
+            } else {
+                qaren::failure::RecoveryAction::RestoreProcessObservation
+            }
+        );
+        assert_eq!(admission_failure_summary(&failure)["attempts"], 1);
+        assert_eq!(mock.calls.len(), 1);
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn fresh_admission_reprobe_shares_the_original_allowance_and_rejects_late_results() {
+    for (allowance, per_read, expected_attempts, terminal, elapsed) in [
+        (30_000, 10_000, 2, "clear", 20_500),
+        (30_000, 15_000, 2, "deadline_exceeded", 30_500),
+        (60_000, 15_000, 2, "deadline_exceeded", 30_500),
+        (30_000, 30_000, 1, "deadline_exceeded", 30_000),
+        (600, 100, 1, "deadline_exceeded", 600),
+        (700, 100, 2, "deadline_exceeded", 700),
+        (0, 0, 0, "deadline_exceeded", 0),
+    ] {
+        let mut mock = MockRunner::new();
+        let start = mock.monotonic_ms();
+        mock.advance_on = Some(("fresh-install-preflight.js".into(), per_read));
+        if expected_attempts > 0 {
+            mock.expect_run(
+                "fresh-install-preflight.js",
+                admission_output("unknown", "executable_identity_unproven"),
+            );
+        }
+        if expected_attempts == 2 {
+            mock.expect_run(
+                "fresh-install-preflight.js",
+                admission_output("clear", "scan_failed"),
+            );
+        }
+        let result = admit(&mut mock, Some(start + allowance));
+        let summary = if terminal == "clear" {
+            serde_json::to_value(result.unwrap()).unwrap()
+        } else {
+            let failure = result.unwrap_err();
+            assert_eq!(failure.code, FailureCode::FreshInstallAdmissionUnknown);
+            assert_eq!(
+                failure.build_recovery().unwrap().action,
+                qaren::failure::RecoveryAction::RestoreProcessObservation
+            );
+            assert!(failure.next_action.contains("qaren doctor"));
+            assert!(failure.detail.contains("admission allowance expired"));
+            assert!(failure.detail.contains("deadline_exceeded=true"));
+            if allowance == 0 || allowance == 600 {
+                assert!(failure.detail.contains("probe_status=not_run"));
+                assert!(failure.detail.contains("timed_out=false"));
+                assert!(!failure.detail.contains("invalid_response"));
+            }
+            admission_failure_summary(&failure)
+        };
+        assert_eq!(summary["terminalReason"], terminal);
+        assert_eq!(summary["attempts"], expected_attempts);
+        assert_eq!(summary["elapsedMs"], elapsed);
+        assert_eq!(summary["deadlineExceeded"], terminal != "clear");
+        assert_eq!(mock.remaining(), 0);
+        if expected_attempts > 0 {
+            assert_eq!(
+                mock.calls[0].timeout_seconds,
+                allowance.min(30_000) / 1000
+            );
+        }
+        if expected_attempts == 2 {
+            assert_eq!(
+                mock.calls[1].timeout_seconds,
+                (allowance.min(30_000) - per_read - 500) / 1000
+            );
+        }
+    }
+}
+
+#[test]
+fn fresh_admission_cancellation_before_scan_after_scan_during_delay_and_after_reprobe_stops() {
+    for (cancel_after_ms, reads) in [(0, 0), (100, 1), (300, 1), (700, 2)] {
+        let mut mock = MockRunner::new();
+        mock.cancel_at_ms = Some((mock.monotonic_ms() + cancel_after_ms, "cancelled".into()));
+        mock.advance_on = Some(("fresh-install-preflight.js".into(), 100));
+        if reads > 0 {
+            mock.expect_run(
+                "fresh-install-preflight.js",
+                admission_output("unknown", "executable_identity_unproven"),
+            );
+        }
+        if reads == 2 {
+            mock.expect_run(
+                "fresh-install-preflight.js",
+                admission_output("clear", "scan_failed"),
+            );
+        }
+        let failure = admit(&mut mock, None).unwrap_err();
+        assert_eq!(failure.code, FailureCode::RunCancelled);
+        assert_eq!(
+            failure.build_recovery().unwrap().reason,
+            qaren::failure::RecoveryReason::RunCancelled
+        );
+        let summary = admission_failure_summary(&failure);
+        assert_eq!(summary["attempts"], reads);
+        assert_eq!(summary["terminalReason"], "cancelled");
+        assert_eq!(mock.remaining(), 0);
+        assert_eq!(mock.calls.len(), reads as usize);
+    }
+}
+
+#[test]
+fn fresh_admission_android_busy_without_pid_evidence_waits_for_owner_without_reprobing() {
+    let mut mock = MockRunner::new();
+    mock.expect_run(
+        "fresh-install-preflight.js",
+        CmdOutput {
+            exit_code: Some(4),
+            stdout: r#"{"v":1,"platform":"android","deviceId":"emulator-5554","status":"busy"}"#
+                .into(),
+            ..Default::default()
+        },
+    );
+    let android = core::AndroidEnv {
+        serial: "emulator-5554".into(),
+        server_port: 5038,
+        platform_tools: "/android/platform-tools".into(),
+    };
+    let failure = core::fresh_install_admission(
+        &mut mock,
+        Path::new("/node"),
+        Path::new("/runtime"),
+        Path::new("/app"),
+        "emulator-5554",
+        Some(&android),
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(failure.code, FailureCode::DeviceBusy);
+    let recovery = failure.build_recovery().unwrap();
+    assert_eq!(
+        recovery.reason,
+        qaren::failure::RecoveryReason::ForeignAdmissionUnresolved
+    );
+    assert_eq!(
+        recovery.action,
+        qaren::failure::RecoveryAction::WaitForOwner
+    );
+    assert!(failure
+        .next_action
+        .contains("wait for the foreign process owner"));
+    assert_eq!(admission_failure_summary(&failure)["attempts"], 1);
+    assert_eq!(mock.calls.len(), 1);
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn fresh_admission_android_never_reprobes_ios_identity_evidence() {
+    let mut mock = MockRunner::new();
+    let mut output = admission_output("unknown", "executable_identity_unproven");
+    output.stdout = output
+        .stdout
+        .replace("ios", "android")
+        .replace("AAAA-1111", "emulator-5554");
+    mock.expect_run("fresh-install-preflight.js", output);
+    let android = core::AndroidEnv {
+        serial: "emulator-5554".into(),
+        server_port: 5038,
+        platform_tools: "/android/platform-tools".into(),
+    };
+    let failure = core::fresh_install_admission(
+        &mut mock,
+        Path::new("/node"),
+        Path::new("/runtime"),
+        Path::new("/app"),
+        "emulator-5554",
+        Some(&android),
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(admission_failure_summary(&failure)["attempts"], 1);
+    assert_eq!(mock.calls.len(), 1);
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn fresh_admission_closed_summary_survives_runtime_input_word_collisions() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    let inputs = Arc::new(InputValues::from_entries([
+        (
+            OsString::from("QAREN_INPUT_PASSWORD"),
+            OsString::from("executable_identity_unproven"),
+        ),
+        (OsString::from("QAREN_INPUT_CODE"), OsString::from("clear")),
+    ]));
+    with_input_scope(inputs, || {
+        let mut mock = MockRunner::new();
+        for _ in 0..2 {
+            mock.expect_run(
+                "fresh-install-preflight.js",
+                admission_output("unknown", "executable_identity_unproven"),
+            );
+        }
+        let failure = admit(&mut mock, None).unwrap_err();
+        let summary = admission_failure_summary(&failure);
+        assert_eq!(summary["initialReason"], "executable_identity_unproven");
+        let json = qaren::redact::durable_json(&failure).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let summary: serde_json::Value =
+            serde_json::from_str(saved["evidence"][0].as_str().unwrap()).unwrap();
+        assert_eq!(summary["terminalReason"], "executable_identity_unproven");
+        let restored: qaren::failure::Failure = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            admission_failure_summary(&restored)["terminalReason"],
+            "executable_identity_unproven"
+        );
+        mock.expect_run(
+            "fresh-install-preflight.js",
+            admission_output("clear", "scan_failed"),
+        );
+        let note = admit(&mut mock, None).unwrap().note();
+        let receipt = serde_json::json!({"outcomes":{"admission_before_deps":note, "admission_before_mutation":note}, "failure":failure});
+        let saved: serde_json::Value =
+            serde_json::from_str(&qaren::redact::durable_json(&receipt).unwrap()).unwrap();
+        for key in ["admission_before_deps", "admission_before_mutation"] {
+            let summary: serde_json::Value =
+                serde_json::from_str(saved["outcomes"][key].as_str().unwrap()).unwrap();
+            assert_eq!(summary["terminalReason"], "clear");
+        }
+        let summary: serde_json::Value =
+            serde_json::from_str(saved["failure"]["evidence"][0].as_str().unwrap()).unwrap();
+        assert_eq!(summary["initialReason"], "executable_identity_unproven");
+    });
+}
+
+#[test]
+fn fresh_admission_projection_never_exempts_unvalidated_note_payloads() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    let inputs = Arc::new(InputValues::from_entries([
+        (
+            OsString::from("QAREN_INPUT_PASSWORD"),
+            OsString::from("private-admission-canary"),
+        ),
+        (OsString::from("QAREN_INPUT_CODE"), OsString::from("clear")),
+    ]));
+    with_input_scope(inputs, || {
+        for field in ["probe", "initialReason", "terminalReason", "extra"] {
+            let mut note = serde_json::json!({"probe":"fresh-install-admission","initialReason":"clear","terminalReason":"clear","attempts":1,"elapsedMs":0,"deadlineExceeded":false});
+            note[field] = "private-admission-canary".into();
+            let note = note.to_string();
+            let receipt = serde_json::json!({"outcomes":{"admission_before_deps":note}, "failure":{"evidence":[note]}});
+            let output = qaren::redact::durable_json(&receipt).unwrap();
+            assert!(!output.contains("private-admission-canary"));
+            let mut failure = qaren::failure::Failure::new(
+                "fresh_install",
+                FailureCode::FreshInstallAdmissionUnknown,
+                "unknown",
+                "retry later",
+            );
+            let mut value = serde_json::to_value(&failure).unwrap();
+            value["evidence"] = serde_json::json!([note]);
+            failure = serde_json::from_value(value).unwrap();
+            assert!(!failure.evidence[0].contains("private-admission-canary"));
+        }
+        let note = serde_json::json!({"probe":"fresh-install-admission","initialReason":"clear","terminalReason":"clear","attempts":3,"elapsedMs":0,"deadlineExceeded":false}).to_string();
+        let output = qaren::redact::durable_json(
+            &serde_json::json!({"outcomes":{"admission_before_deps":note}}),
+        )
+        .unwrap();
+        assert!(!output.contains("clear"));
+    });
 }
 
 fn request() -> CoreRequest {

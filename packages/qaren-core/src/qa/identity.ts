@@ -135,7 +135,11 @@ export function echoControl(
   const control =
     purpose === 'refresh'
       ? ancestors.find((e) => e.semantic?.press === 'supported')
-      : actionView({ elements: ancestors })[0];
+      : // A label stays its control's even while that control is disabled or not hittable.
+        (actionView({ elements: ancestors })[0] ??
+        ancestors.find(
+          (e) => ['button', 'link', 'switch'].includes(e.kind) || e.semantic?.press === 'supported',
+        ));
   return control !== element ? control : undefined;
 }
 

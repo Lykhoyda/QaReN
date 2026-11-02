@@ -74,6 +74,16 @@ const subtree = (screen: Screen, target: Element) =>
       ]),
   );
 
+// The bound target's own captured semantics did not change.
+export function targetUnchanged(
+  before: Screen,
+  after: Screen,
+  target: Element,
+  current: Element | undefined,
+): boolean {
+  return current !== undefined && subtree(before, target) === subtree(after, current);
+}
+
 export function outsideTargetChange(
   before: Screen,
   after: Screen,
@@ -81,9 +91,8 @@ export function outsideTargetChange(
   current: Element | undefined,
 ): boolean {
   return (
-    current !== undefined &&
     screenSignature(before) !== screenSignature(after) &&
-    subtree(before, target) === subtree(after, current)
+    targetUnchanged(before, after, target, current)
   );
 }
 
