@@ -2252,6 +2252,98 @@ test('admission facts become a cleaned metric with only allowlisted words and nu
   assert.equal(cleanTimingEvent({ ...expected, edge: 'end' }), undefined);
 });
 
+for (const requested of [true, undefined]) {
+  test(`a first target arriving after the baseline attach window can admit (bundle request ${requested})`, async (t) => {
+    const clock = mockClock(t);
+    const deadlines: number[] = [];
+    const { calls, stop, steps } = harness({
+      remainingMs: () => 1_199_000 - performance.now(),
+      waitTargets: async () => {
+        if (performance.now() < 160_000)
+          throw new TargetReadinessTimeoutError('no target yet', 'empty');
+      },
+      attach: async (deadline) => void deadlines.push(deadline),
+      appAlive: async () => true,
+      bundleRequested: async () => requested,
+      relaunch: async () => assert.fail('a requested or unknown bundle must not relaunch'),
+    });
+    const pending = admit(steps, stop);
+    const result = pending.catch((error: HandlerError) => error);
+    clock.cleanup(stop, pending);
+    await nextTurn();
+    for (let n = 0; n < 5; n++) await clock.advance(30_000);
+    await clock.advance(10_000);
+    assert.deepEqual(await result, PROVEN);
+    assert.deepEqual(deadlines, [280_000]);
+    assert.deepEqual(calls.slice(-3), ['foreignDriver', 'open', 'prove']);
+  });
+}
+
+for (const walkBudget of [2500, 20_000]) {
+  test(`late registration starts only one attach window clipped to walk budget ${walkBudget}`, async (t) => {
+    const { DevTargetUnavailableError } = await import('../../../dist/cdp/connect.js');
+    const clock = mockClock(t);
+    const deadlines: number[] = [];
+    const limit = Math.min(walkBudget, 3000);
+    let scans = 0;
+    const { calls, stop, steps } = harness({
+      attachBudgetMs: 1000,
+      remainingMs: () => walkBudget - performance.now(),
+      waitTargets: async () => {
+        if (++scans === 1) await new Promise((resolve) => setTimeout(resolve, 2000));
+      },
+      attach: async (deadline) => {
+        deadlines.push(deadline);
+        throw new DevTargetUnavailableError({
+          targetsTotal: 1,
+          devTrue: 0,
+          devFalse: 1,
+          devUndefined: 0,
+          devUnknown: 0,
+        });
+      },
+    });
+    const pending = admit(steps, stop);
+    const result = pending.catch((error: HandlerError) => error);
+    clock.cleanup(stop, pending);
+    await nextTurn();
+    await clock.advance(2000);
+    if (walkBudget > 2500) await clock.advance(500);
+    await clock.advance(500);
+    const error = await result;
+    assert.ok(error instanceof HandlerError);
+    assert.equal(error.code, 'DEV_TARGET_MISSING');
+    assert.ok(deadlines.length > 0);
+    assert.ok(deadlines.every((deadline) => deadline === limit));
+    assert.deepEqual(calls, ['close']);
+  });
+}
+
+for (const boundary of ['foreignDriver', 'open', 'prove'] as const) {
+  test(`a timeout during ${boundary} does not claim development mode is unknown`, async (t) => {
+    const clock = mockClock(t);
+    const { stop, steps } = harness({
+      attachBudgetMs: 1000,
+      remainingMs: () => 20_000,
+      [boundary]: async () => new Promise<never>(() => {}),
+    });
+    const pending = admit(steps, stop);
+    const refusal = assert.rejects(pending, (error: HandlerError) => {
+      assert.equal(error.code, 'CDP_NOT_CONNECTED');
+      assert.equal(
+        error.meta?.lastStarted,
+        boundary === 'foreignDriver' ? 'foreign_driver' : boundary,
+      );
+      assert.equal(error.meta?.inner, 'cdp_probe_timeout');
+      return true;
+    });
+    clock.cleanup(stop, pending);
+    await nextTurn();
+    await clock.advance(1000);
+    await refusal;
+  });
+}
+
 test('registered-target bundle readiness cannot spend the remaining walk budget', async (t) => {
   const clock = mockClock(t);
   const deadlines: number[] = [];

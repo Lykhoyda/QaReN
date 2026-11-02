@@ -506,6 +506,28 @@ test('patient warming recovers transient slow QaReN manifest probes and records 
   );
 });
 
+test('first target registration after patient recovery retains the post-relaunch deadline', async (t) => {
+  let launched = false;
+  const fixture = patient(t, {
+    attachBudgetMs: 60_000,
+    waitTargets: async () => {
+      if (!launched) throw new TargetReadinessTimeoutError('no target', 'empty');
+    },
+    attach: async (deadline) => assert.equal(deadline, 60_000),
+    relaunch: async () => {
+      launched = true;
+    },
+    bundleReady: async (deadline) => {
+      assert.equal(deadline, 60_000);
+      await new Promise(() => {});
+    },
+  });
+  const error = await fixture.run();
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  assert.equal(error.meta.inner, 'react_readiness_timeout');
+  assert.equal(fixture.elapsed(), 60_000);
+});
+
 test('persistent slow QaReN probes refuse after one bounded patient window with timings', async (t) => {
   const fixture = patient(t, {}, [15_000]);
   const error = await fixture.run();

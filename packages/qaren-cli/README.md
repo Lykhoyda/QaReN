@@ -3485,6 +3485,8 @@ own consumption.
 Launch admission requires a development JS bundle with `__DEV__ === true`.
 Registered-target connection, setup, React readiness and origin proof share
 `min(remaining walk budget, deadlines.attach_seconds)` (120 seconds by default).
+This window starts when the first target registers after an initial no-target wait;
+patient recovery retains its separate post-relaunch deadline.
 Retries do not renew this deadline. Each candidate's handshake, responsive-JS
 probe and development-state probe are capped at 1500 ms and clipped to the
 active deadline, so an unresponsive candidate leaves time to inspect the next
