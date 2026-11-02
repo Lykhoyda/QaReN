@@ -14,7 +14,8 @@ Object.defineProperty(globalThis, 'window', { configurable: true, value: window 
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', { configurable: true, value: true });
 const container = window.document.createElement('div');
 window.document.body.append(container);
-const root = createRoot(container);
+// Happy DOM implements the container API with its own DOM types.
+const root = createRoot(container as unknown as HTMLElement);
 
 afterEach(async () => {
   await act(async () => root.render(null));
