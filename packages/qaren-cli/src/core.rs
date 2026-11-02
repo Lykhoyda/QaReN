@@ -435,6 +435,49 @@ pub struct Row {
         deserialize_with = "passive"
     )]
     pub method: Option<FillMethod>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub keyboard_cleared: Option<KeyboardCleared>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub retry_cause: Option<RetryCause>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub press_evidence: Option<PressEvidenceKind>,
+}
+
+// The dismissal tier that hid a visible keyboard before a press.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum KeyboardCleared {
+    NativeControl,
+    Js,
+}
+
+// Why a press was sent a second time.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RetryCause {
+    KeyboardSwallowedTap,
+}
+
+// What a press row's verdict rested on.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PressEvidenceKind {
+    Selected,
+    Effect,
+    ScreenChange,
+    None,
 }
 
 // The Fill ladder rung a fill row used.

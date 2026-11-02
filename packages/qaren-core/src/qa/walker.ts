@@ -1,6 +1,8 @@
 import {
   selectionPressCandidate,
   outsideTargetChange,
+  targetUnchanged,
+  KEYBOARD_SWALLOWED_TAP,
   PRESS_NOT_REGISTERED_REASON,
   PRESS_OUTSIDE_CHANGE_REASON,
   selectionPressGuidance,
@@ -33,6 +35,9 @@ import {
   screenSignature,
   alertPressEffect,
   insideAlert,
+  insideKeyboard,
+  isScrollContainer,
+  ancestorsOf,
   elementFrame,
   applicationFrame,
   isNativeInput,
@@ -227,6 +232,8 @@ export interface WalkerDeps {
   ): Promise<ActResult>;
   // iOS only: positive React proof that the input with this testID is focused.
   reactFocused?(testID: string): Promise<boolean>;
+  // iOS only: hides a visible keyboard, native tier then JS tier; none when neither proved it hidden.
+  dismissKeyboard?(context: QaDispatchContext): Promise<'native-control' | 'js' | 'none'>;
   // iOS only: Fill ladder rung 3, the input's change handler receives the whole value, then it is verified.
   setByHandler?(
     testID: string,
@@ -310,6 +317,7 @@ interface Observation {
 // The Fill ladder steps to rung 3 only inside this budget from the item's start.
 const FILL_LADDER_BUDGET_MS = 120_000;
 const ITEM_DEADLINE_EXCEEDED = 'VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED';
+const KEYBOARD_DISMISSED = '; the keyboard was dismissed before this tap';
 
 class EvidenceExpired extends Error {
   constructor(readonly itemExpired = false) {
@@ -529,6 +537,8 @@ async function walkBlockScoped(
   // The Fill ladder rung of the current item's last fill dispatch, and when the item began.
   let fillMethod: FillMethod | undefined;
   let fillMismatch: EntryMismatch | undefined;
+  let keyboardCleared: LedgerRow['keyboardCleared'];
+  let retryCause: LedgerRow['retryCause'];
   let fillHandlerAttempted = false;
   let fillHandlerRefused = false;
   let itemStartedAt = 0;
@@ -1152,6 +1162,8 @@ async function walkBlockScoped(
     row = {
       ...row,
       ...(fillMethod ? { method: fillMethod } : {}),
+      ...(keyboardCleared ? { keyboardCleared } : {}),
+      ...(retryCause ? { retryCause } : {}),
       ...(fillMismatch && row.outcome !== 'pass' ? { entryMismatch: fillMismatch } : {}),
       operationId: operationFor(row.line),
       ...(reactCoverage ? { reactCoverage } : {}),
@@ -2076,6 +2088,8 @@ async function walkBlockScoped(
     mutationStarted = false;
     fillMethod = undefined;
     fillMismatch = undefined;
+    keyboardCleared = undefined;
+    retryCause = undefined;
     fillHandlerAttempted = false;
     fillHandlerRefused = false;
     enrichment = undefined;
@@ -2578,6 +2592,7 @@ async function walkBlockScoped(
         let refusedIdentity: Element | undefined;
         let moved: { target: Element; error: string } | undefined;
         let settledFrame: string | undefined;
+        let keyboardAttempted = false;
         const captureBeforeDispatch = (): Promise<Observation> =>
           (item.kind === 'press' || item.kind === 'fill') &&
           (scrolled || sequence.momentum || fillIdentity !== undefined)
@@ -2644,6 +2659,8 @@ async function walkBlockScoped(
           let within: NativeNode['rect'];
           let scrollNeedsReadback = false;
           let scrollError: string | undefined;
+          // The target that settled after this attempt's keyboard dismissal; the tap goes to it or nowhere.
+          let keyboardBound: { target: Element; frame: string; scrolled: number } | undefined;
           let act: ActResult;
           for (;;) {
             try {
@@ -2714,7 +2731,12 @@ async function walkBlockScoped(
                       break;
                     }
                   }
-                  if (!fallback || item.kind !== 'fill') throw new ResolutionError(decided);
+                  if (!fallback || item.kind !== 'fill')
+                    throw new ResolutionError(
+                      keyboardBound
+                        ? { ...decided, reason: `${decided.reason}${KEYBOARD_DISMISSED}` }
+                        : decided,
+                    );
                   fellBack = true;
                   fillIdentity = fallback.oracleTestID;
                   const result = await keyboardFallback(
@@ -2842,6 +2864,86 @@ async function walkBlockScoped(
                   ref,
                 );
                 break;
+              }
+              if (
+                keyboardBound &&
+                (element === undefined ||
+                  !sameIdentity(element, keyboardBound.target) ||
+                  (scrolled === keyboardBound.scrolled &&
+                    frameKey(element) !== keyboardBound.frame))
+              ) {
+                outcome = failed(
+                  item,
+                  attempt,
+                  [
+                    'the step resolved ',
+                    ...(element
+                      ? [
+                          {
+                            app: identityText(element),
+                            ...(concealsScreen(before.screen) ? { withheld: MASK } : {}),
+                          },
+                          ` at ${frameKey(element) ?? 'no frame'}`,
+                        ]
+                      : ['no element']),
+                    ', not the target that settled (',
+                    {
+                      app: identityText(keyboardBound.target),
+                      ...(concealsScreen(before.screen) ? { withheld: MASK } : {}),
+                    },
+                    ` at ${keyboardBound.frame}); it was not dispatched${KEYBOARD_DISMISSED}`,
+                  ],
+                  before.screen,
+                  await shoot(item),
+                  ref,
+                );
+                break;
+              }
+              // A visible keyboard takes a tap inside a scroll view to dismiss itself; clear it first, as the user's own tap would.
+              if (
+                item.kind === 'press' &&
+                deps.dismissKeyboard &&
+                !keyboardAttempted &&
+                before.screen.keyboardVisible === true &&
+                element !== undefined &&
+                !isNativeInput(element) &&
+                !insideKeyboard(element) &&
+                ancestorsOf(element).some(isScrollContainer)
+              ) {
+                keyboardAttempted = true;
+                const target = element;
+                const dismissal: { via: 'native-control' | 'js' | 'none' } = { via: 'none' };
+                await mutate(item, before, async (context) => {
+                  dismissal.via = await deps.dismissKeyboard!(context);
+                  return { ok: true, proven: false };
+                });
+                const settled = await settledTarget(item, target);
+                if ('frames' in settled) {
+                  outcome = failed(
+                    item,
+                    attempt,
+                    [
+                      'the target (',
+                      {
+                        app: identityText(target),
+                        ...(concealsScreen(latest) ? { withheld: MASK } : {}),
+                      },
+                      `) did not settle across ${settled.frames.length} captures (${settled.frames.join(' | ')}); it was not dispatched${KEYBOARD_DISMISSED}`,
+                    ],
+                    latest,
+                    await shoot(item),
+                  );
+                  break;
+                }
+                before = settled.observation;
+                if (dismissal.via !== 'none' && before.screen.keyboardVisible !== true)
+                  keyboardCleared = dismissal.via;
+                deps.note?.(
+                  `keyboard-clearance ${JSON.stringify({ line: item.line, via: dismissal.via, hidden: before.screen.keyboardVisible === false })}`,
+                );
+                keyboardBound = { target, frame: settled.frame, scrolled };
+                initial = undefined;
+                continue;
               }
               let centreDiagnostic: Readonly<CentreCoverageDiagnostic> | null = null;
               if (
@@ -3103,7 +3205,12 @@ async function walkBlockScoped(
             const refusePress = (code: string, message: string): WalkOutcome => {
               const pressEvidence = evidence();
               deps.pressReadback?.(pressEvidence);
-              emit({ ...base(item, attempt), outcome: 'fail', reason: message });
+              emit({
+                ...base(item, attempt),
+                outcome: 'fail',
+                reason: message,
+                pressEvidence: 'none',
+              });
               return {
                 block: { key: block.slug, outcome: 'fail', source: 'discovered' },
                 rows,
@@ -3154,6 +3261,25 @@ async function walkBlockScoped(
             }
             selectionExited = !targetPresent(observed.screen);
             if (!selectionExited && !act!.proven && current?.selected !== true) {
+              // Under React's touch contract a tap the keyboard took never reached the control, so one more cannot double-toggle it.
+              if (
+                attempt === 1 &&
+                attempt < maxAttempts &&
+                before.screen.keyboardVisible === true &&
+                observed.screen.keyboardVisible === false &&
+                targetUnchanged(before.screen, observed.screen, selectionTarget, current)
+              ) {
+                deps.pressReadback?.(undefined);
+                retryCause = 'KEYBOARD_SWALLOWED_TAP';
+                emit({
+                  ...base(item, attempt),
+                  ...(ref ? { ref } : {}),
+                  outcome: 'retry',
+                  reason: redact(`${KEYBOARD_SWALLOWED_TAP}; retrying once`),
+                });
+                moved = { target: selectionTarget, error: KEYBOARD_SWALLOWED_TAP };
+                continue;
+              }
               return refusePress(
                 'PRESS_NOT_REGISTERED',
                 `${evidence().outsideTargetChange ? PRESS_OUTSIDE_CHANGE_REASON : PRESS_NOT_REGISTERED_REASON} ${selectionPressGuidance(captures, observed.timing.completedAt - selectionStartedAt)}`,
@@ -3265,6 +3391,18 @@ async function walkBlockScoped(
                   (element ? elementSelector(element) : undefined),
               ),
               outcome: 'pass',
+              ...(item.kind === 'press'
+                ? {
+                    pressEvidence:
+                      selectionProven || alreadySelected
+                        ? 'selected'
+                        : alertOnly
+                          ? 'none'
+                          : act!.proven
+                            ? 'effect'
+                            : 'screen-change',
+                  }
+                : {}),
               ...(act!.dialog ? { dialog: act!.dialog } : {}),
               ...(fillReason
                 ? { reason: redact(fillReason) }
@@ -3522,6 +3660,9 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     outcome,
     ...(row.unverifiedPress ? { unverifiedPress: true } : {}),
     ...(row.method ? { method: row.method } : {}),
+    ...(row.keyboardCleared ? { keyboardCleared: row.keyboardCleared } : {}),
+    ...(row.retryCause ? { retryCause: row.retryCause } : {}),
+    ...(row.pressEvidence ? { pressEvidence: row.pressEvidence } : {}),
     ...(row.entryMismatch ? { entryMismatch: row.entryMismatch } : {}),
     ...(row.screenshotWithheld ? { screenshotWithheld: row.screenshotWithheld } : {}),
     ...(screenshot ? { screenshot } : {}),
