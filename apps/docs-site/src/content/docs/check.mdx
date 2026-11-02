@@ -25,8 +25,9 @@ plan preflight -> device selection -> lease + durable run record
 
 The plan is parsed first, so an unparseable plan or a missing Jev key refuses before any
 device is touched. The run then leases the device, prepares the app and its own Metro,
-walks the plan and tears down what it started. By default, the simulator or emulator
-stays running and the installed app stays.
+walks the plan and cleans up owned resources. By default, the simulator or emulator
+stays running and the installed app stays. Failed iOS checks can hold resources for inspection;
+see [Leases, cancellation and cleanup](#leases-cancellation-and-cleanup).
 See [CLI-owned iOS build routes](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#cli-owned-ios-build-routes)
 for iOS startup ordering.
 
@@ -64,6 +65,7 @@ must be git-ignored; otherwise the build fails `BUILD_FAILED` before generating 
 | `--device <id>`                 | A simulator UUID on iOS, an emulator serial on Android.                            |
 | `--config <path>`               | Another configuration file. Defaults to `.qaren/config.yaml`.                      |
 | `--fresh-install`               | See the [fresh-install contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#fresh-install). |
+| `--hold`, `--no-hold`            | Check-only inspection controls; see the [iOS admission and cleanup contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup). |
 | `--boot-device`, `--restart-device`, `--shutdown-device-on-exit` | See the [iOS simulator lifecycle contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle). |
 | `--json`                        | Accepted for scripts; the receipt is always JSON on stdout.                        |
 
@@ -137,6 +139,10 @@ cleanup.
 A signal, or the calling process going away, ends the run as `RUN_CANCELLED` after normal teardown.
 When teardown cannot prove a resource is gone, the lease stays and the receipt says so:
 run `qaren cleanup <run-id>`. Never delete lock files to get around it.
+
+Failed iOS checks can keep the reached state for inspection. See the authoritative
+[iOS admission and cleanup contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup)
+for eligibility, `--hold` / `--no-hold`, environment overrides, receipt fields and releasing a hold.
 
 ## Time budgets
 

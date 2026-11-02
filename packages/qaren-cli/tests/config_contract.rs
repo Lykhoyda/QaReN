@@ -376,3 +376,22 @@ fn video_policy_is_explicit_and_invalid_values_refuse_without_echoing_them() {
             .contains("video must be strict or non-strict"));
     }
 }
+
+#[test]
+fn manifest_deadline_defaults_to_420_seconds_and_validates_overrides() {
+    let (config, _) = load_raw(&config_yaml("")).unwrap();
+    assert_eq!(config.deadlines.manifest_warmup_seconds, 420);
+    for seconds in [30, 7200] {
+        let (config, _) = load_raw(&config_yaml(&format!(
+            "deadlines:\n  manifest_warmup_seconds: {seconds}\n"
+        )))
+        .unwrap();
+        assert_eq!(config.deadlines.manifest_warmup_seconds, seconds);
+    }
+    for seconds in [0, 29, 7201] {
+        assert!(load_raw(&config_yaml(&format!(
+            "deadlines:\n  manifest_warmup_seconds: {seconds}\n"
+        )))
+        .is_err());
+    }
+}

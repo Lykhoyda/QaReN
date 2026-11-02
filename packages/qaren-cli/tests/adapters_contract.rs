@@ -1576,14 +1576,52 @@ fn app_removal_parsers_are_strict() {
 
 #[test]
 fn metro_never_passes_ci_into_app_config_evaluation() {
-    let spec = metro::start_spec(Path::new("/repo/app"), 8791);
+    let spec = metro::start_spec(Path::new("/repo/app"), 8791, true, false);
     assert_eq!(spec.unset, ["CI"]);
     assert!(!spec.env.iter().any(|(k, _)| k == "CI"));
 }
 
 #[test]
+fn ios_metro_binds_to_loopback_and_android_metro_keeps_its_reverse_path() {
+    let ios = metro::start_spec(Path::new("/repo/app"), 8791, true, false);
+    let android = metro::start_spec(Path::new("/repo/app"), 8791, false, false);
+    assert_eq!(
+        ios.args,
+        ["exec", "expo", "start", "--port", "8791", "--localhost"]
+    );
+    assert_eq!(android.args, ["exec", "expo", "start", "--port", "8791"]);
+    // The probes and the app's initialUrl use 127.0.0.1, so iOS Metro must resolve localhost to IPv4 first.
+    let node_options = ios
+        .env
+        .iter()
+        .find(|(k, _)| k == "NODE_OPTIONS")
+        .map(|(_, v)| v.as_str());
+    assert!(
+        node_options.is_some_and(|v| v.ends_with("--dns-result-order=ipv4first")),
+        "{node_options:?}"
+    );
+    assert!(!android.env.iter().any(|(k, _)| k == "NODE_OPTIONS"));
+}
+
+#[test]
+fn ipv4_first_is_appended_to_the_callers_node_options() {
+    assert_eq!(
+        metro::ipv4_first_node_options(None),
+        "--dns-result-order=ipv4first"
+    );
+    assert_eq!(
+        metro::ipv4_first_node_options(Some("  ")),
+        "--dns-result-order=ipv4first"
+    );
+    assert_eq!(
+        metro::ipv4_first_node_options(Some("--max-old-space-size=4096")),
+        "--max-old-space-size=4096 --dns-result-order=ipv4first"
+    );
+}
+
+#[test]
 fn metro_logs_each_request_on_receipt_to_the_drained_stderr() {
-    let spec = metro::start_spec(Path::new("/repo/app"), 8791);
+    let spec = metro::start_spec(Path::new("/repo/app"), 8791, true, false);
     assert!(spec.env.contains(&(
         "DEBUG".to_string(),
         qaren::exec::log::METRO_REQUEST_LOG.to_string()
@@ -1938,6 +1976,23 @@ fn reverse_listed_matches_the_device_side_port_only() {
     let spec =
         android::adb_reverse_list_spec(Path::new("/sdk/platform-tools/adb"), 5147, "emulator-5554");
     assert_eq!(spec.args, ["-s", "emulator-5554", "reverse", "--list"]);
+}
+
+#[test]
+fn expo_is_offline_by_default_and_online_requires_an_explicit_override() {
+    let mut runner = qaren::exec::MockRunner::new();
+    assert!(!metro::expo_online(&runner));
+    for (name, value, online) in [("EXPO_OFFLINE", "1", false), ("EXPO_OFFLINE", "0", true)] {
+        runner.environment.clear();
+        runner.environment.insert(name.into(), value.into());
+        assert_eq!(metro::expo_online(&runner), online);
+        for localhost in [false, true] {
+            let spec = metro::start_spec(Path::new("/repo/app"), 8791, localhost, online);
+            assert!(spec
+                .env
+                .contains(&("EXPO_OFFLINE".into(), if online { "0" } else { "1" }.into())));
+        }
+    }
 }
 
 #[test]

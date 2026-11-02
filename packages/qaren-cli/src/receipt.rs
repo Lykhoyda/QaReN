@@ -153,6 +153,8 @@ pub struct Receipt {
     pub worktree_drift: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recipe: Option<crate::recipes::RecipeOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<crate::runrecord::Held>,
     pub next_action: String,
 }
 
@@ -197,6 +199,7 @@ impl Receipt {
             blocks_not_saved: Vec::new(),
             worktree_drift: Vec::new(),
             recipe: None,
+            held: None,
             next_action: String::new(),
         }
     }

@@ -3,7 +3,7 @@
 `qaren check` owns a QA run against the current app worktree: it leases a
 borrowed iOS simulator or Android emulator, prepares the app and Metro,
 starts the TypeScript screen child, walks a Markdown plan, writes evidence,
-and tears down owned resources.
+and cleans up owned resources under the [iOS admission and cleanup contract](#ios-admission-and-cleanup).
 This file is the CLI reference; the product introduction and the agent path are in the [root README](../../README.md).
 The scenario-based preparation verbs remain available for explicit iOS,
 NUC Android and USB Android setup experiments.
@@ -23,8 +23,9 @@ qaren doctor [--json] [--config .qaren/config.yaml] [--device <simulator-UUID>]
 Doctor prints the running binary's version, path, build, runtime and the
 [`QAREN_HOME`](#release-and-source-builds-side-by-side) in use, then one
 `PASS`, `WARN`, `FAIL` or `SKIP` row per check, each problem with its manual fix.
-It only reads files and runs bounded version, process-group, inventory and host-statistics probes:
-it never writes, deletes, starts a device or restarts a service. It does not run ADB
+It reads files and runs bounded version, process-group, inventory, host-statistics and Watchman probes.
+When an app config is valid, the five-second `watch-project` probe may establish a watch on its candidate directory;
+it never starts a Watchman service, starts a device or resets a service. It does not run ADB
 or start an ADB server. In text and JSON output, Doctor never prints
 file contents, environment variable values, credentials or any other config value;
 it may name the configured iOS runtime and Android AVD. It also prints diagnostic
@@ -44,6 +45,10 @@ that can conflict with a session or is hygiene; `SKIP` is not applicable.
 | `disk` | The volumes holding the current directory and your home have the roughly 10 GiB free a clean iOS build needs (warning) |
 | `host-memory`, `host-devices` | Free memory, memory pressure, booted simulators and running Android emulators; conservative concurrent lane headroom on macOS and Linux |
 | `simulator-service` | A five-second `simctl list devices -j` probe on macOS; attributable uninterruptible simulator process evidence when unresponsive |
+| `expo-offline` | Metro-only Expo commands start offline by default; warns when `EXPO_OFFLINE=0` enables account lookups |
+| `watchman-health` | A read-only, five-second watch-list probe without starting Watchman |
+| `watchman-volume-probe` | A five-second `watch-project` probe on the candidate directory; a timeout or rejection fails with volume-permission and FSEvents recovery steps |
+| `candidate-volume-speed` | A bounded small-file read sample on the candidate volume; warns about slow reads, with unknown results disclosed |
 | `host-load` | One-, five- and fifteen-minute load averages, logical CPU count and sampled CPU idle; warns about readiness deadlines under load |
 | `native-build-lock` | Read-only iOS [build-lock observation](#native-fingerprint-build-selection); never claims or reclaims the lock |
 | `android-sdk`, `android-avd` | When `android` is configured: `ANDROID_HOME`, an executable `adb` file (never run; its version is not checked), the emulator binary and the configured AVD via `emulator -list-avds` |
@@ -2011,8 +2016,9 @@ device. `--shutdown-device-on-exit` alone requires a `Booted` target; combine it
 `--boot-device` or `--restart-device` to accept a `Shutdown` target.
 
 Default cleanup leaves the borrowed simulator running and keeps the installed app.
-`--shutdown-device-on-exit --device <simulator-UUID>` independently opts into shutdown
-during teardown, including post-arm cancellation and dead-owner recovery. After strict
+`--shutdown-device-on-exit --device <simulator-UUID>` opts into shutdown
+during teardown, including post-arm cancellation and dead-owner recovery, subject to the
+[inspection hold precedence](#ios-admission-and-cleanup). After strict
 admission, the pending stop must be durably saved before lifecycle mutation; a failed
 save or cancellation before arming leaves simulator power unchanged. Shutdown preserves
 the simulator and its installed app and data. See [iOS admission and cleanup](#ios-admission-and-cleanup)
@@ -2030,11 +2036,47 @@ iOS preparation requests the dev-client manifest from Metro with the
 under 5 seconds, half the dev client's own 10-second request timeout, because
 Metro rebuilds the manifest
 per request and one answer does not predict the client's own. Each request is
-recorded; slower answers and request timeouts restart the count, and a manifest
-that never answers twice in a row that fast within the remaining
-`build_seconds` budget refuses with `CORE_REFUSED` and the measured times.
-The margin only gates the launch; it never shortens a request or ends a
-wait. Borrowed-emulator builds and cached Android preparation retain
+recorded; slower answers and request timeouts restart the count. This stage has
+its own `deadlines.manifest_warmup_seconds` clock (see
+[configuration defaults and limits](../../apps/docs-site/src/content/docs/configuration.mdx#deadlines))
+and a 64-attempt cap, also bounded by the remaining
+`build_seconds` budget. Exhaustion refuses with `MANIFEST_NOT_WARM` (exit 4),
+without launching the client. Each request is capped to the remaining stage
+budget. The receipt's `manifest_warmup` outcome records attempt and timeout
+counts, successful-answer minimum, median and maximum, the client's 10-second
+limit, and whether the 15-second request-handler probe timed out; elapsed time
+is at `timings_ms.manifest_warmup_elapsed`. These statistics contain no raw probe
+output. A request-handler timeout after `/status` responds names startup or a
+stalled watcher as possible causes; steady answers near 30 seconds also name a
+possible external-service wait when the online override described below is
+active. Check the volume and doctor before coordinating
+a Watchman reset and retrying once. When the request-handler probe times out,
+a five-second `watch-project` probe checks the candidate volume if at least
+five seconds remain after the file sample described below. This probe may
+establish a watch on the candidate directory. A confirmed timeout or rejection
+refuses immediately with "watchman cannot watch this volume" and steps for removable-volume permissions, FSEvents
+state or reconnecting the volume. Its value-free result is recorded at
+`outcomes.watchman_volume_probe`; no watcher fallback or automatic reset is attempted.
+
+After a request-handler timeout or the first manifest answer taking at least
+10 seconds, QaReN also samples up to 32 small files on the candidate volume
+within the remaining stage budget, with a five-second cap. A sample of at
+least 16 files averaging 50 ms per file, or a partial sample reaching its
+four-second work limit, adds the next step to move the project to a faster
+or internal disk. The receipt's `candidate_volume_speed` outcome contains
+only counts, timings and classifications. Sparse samples below that time
+limit and failed probes remain unknown; a short sample cannot establish
+sustained disk speed. macOS reads request uncached I/O, but previously cached
+files can still make the sample partly warm. No files are written, no global
+caches are flushed and no service is reset.
+
+QaReN starts `expo start` with `EXPO_OFFLINE=1` to avoid account lookups for local
+manifests. Set `EXPO_OFFLINE=0` when the dev server needs account
+features. Unset `EXPO_OFFLINE` to restore the offline default.
+This default applies to Metro-only starts; fresh Android preparation through
+`expo run:android` retains its inherited Expo environment.
+
+The readiness margin only gates launch. Borrowed-emulator builds and cached Android preparation retain
 one manifest answer under the dev client's 10-second timeout. Fresh Android
 scenario-based `prepare` keeps launch and Metro under `expo run:android` and does not perform
 this warmup.
@@ -2094,7 +2136,8 @@ The verification contract is owned by [`src/adapters/ios.rs`](src/adapters/ios.r
 
 Once the run record is saved, `check` and `pr` attempt ownership-gated resource
 teardown before returning a receipt, including after preparation failures, core
-refusals and failed or timed-out walks. The receipt's `cleanup` map reports
+refusals and failed or timed-out walks, subject to the
+[failed iOS check inspection policy](#ios-admission-and-cleanup). The receipt's `cleanup` map reports
 resource outcomes; unresolved ownership can retain resources and the device
 lease for `qaren cleanup <run-id>`. This is infrastructure teardown: it does not
 execute remaining plan steps to delete app or staging-account data created by
@@ -2627,6 +2670,37 @@ another process is not checked, since a reused pid proves its old group is gone.
 `run.json` releases that run's locks under the same proof, and the receipt of a run
 that released an orphaned lock notes it.
 Do not delete locks to bypass unresolved ownership.
+
+A failed iOS `check` walk is held for inspection. After the app was admitted, an uncancelled `FAIL` or
+`TARGET_*` or `PRESS_NOT_REGISTERED` refusal reported by the core (not one QaReN synthesizes after a deadline kill or a
+missing result) is eligible. Teardown still attempts build, core, runner-driver and recorder cleanup,
+observes runner-host absence and releases the build lock under the normal ownership gates.
+It skips stopping Metro (`metro=held: …`), skips any armed simulator
+stop, and keeps the device lease (`device_lease=held: …`). Teardown never terminates the app,
+so if it is still running it keeps its live Metro; the hold does not restart an app that already exited. `run.json` and the receipt record `held` (`since`, `reason`, `retained`), the `end`
+event carries `held: true`, and the record stays in the walking phase. `qaren status <run-id>`
+reports the hold beside its live probes, and `qaren doctor --device <udid>` adds the holding run
+to the `ios-lane` row. The hold ends with `qaren cleanup <run-id>`, or with the next run on that
+device, which reclaims the dead holder through the same cleanup. Holds do not expire.
+The receipt's `next_action` is `qaren cleanup <run-id> --json`.
+
+`--hold` and `--no-hold` apply only to `check`; `pr` always uses normal teardown and rejects them.
+Android never holds; `--hold` there adds the receipt note `hold unsupported on android`.
+Passing runs, cancelled runs, failures before admission, deadline kills and other refusals
+use normal teardown. For eligible failed iOS checks, precedence is:
+
+| Setting | Effect |
+| --- | --- |
+| `--hold` / `--no-hold` | Hold or tear down, overriding everything below; both together is a usage error |
+| Non-empty `CI`, a `## Cleanup` plan heading, or `--shutdown-device-on-exit` | Normal teardown |
+| `QAREN_HOLD_ON_FAIL=0` | Normal teardown |
+| `QAREN_HOLD_ON_FAIL=1` or unset | Hold |
+
+A held Metro keeps its port; another run using that port refuses `METRO_PORT_OCCUPIED`.
+iOS runs start Metro with `--localhost` and append `--dns-result-order=ipv4first` to its
+`NODE_OPTIONS`, so a held Metro listens only on `127.0.0.1`, where the readiness probes and the
+simulator reach it (Node otherwise resolves `localhost` to `::1` first); Android runs keep their
+`adb reverse` path.
 
 The iOS runner's XCTest result bundles under `Logs/Test` in both its local
 DerivedData and current-version prebuilt cache are removed after successful

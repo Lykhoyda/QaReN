@@ -30,10 +30,11 @@ const CLEANUP_KEYS: [&str; 11] = [
     "adb_reverse",
     "android_runner",
 ];
-const CLEANUP_KINDS: [&str; 7] = [
+const CLEANUP_KINDS: [&str; 8] = [
     "removed",
     "absent",
     "kept",
+    "held",
     "released",
     "retained",
     "unresolved",
@@ -328,6 +329,9 @@ impl Events {
         if let (Some(code), Some(failure)) = (failure_code, &receipt.failure) {
             payload["failureCode"] = code.into();
             payload["failurePhase"] = token(&failure.phase).into();
+        }
+        if receipt.held.is_some() {
+            payload["held"] = true.into();
         }
         let envelope = self.envelope("end", payload);
         let _ = self.shared.end.set(envelope);

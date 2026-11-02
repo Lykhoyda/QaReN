@@ -882,7 +882,10 @@ fn ambiguous_markers_skip_the_description_for_good() {
     let mut again = Git(MockRunner::new());
     let resumed = publish(&mut again, &runs, RUN, &machine());
     assert_eq!(resumed.result, ReceiptResult::Published);
-    assert_eq!(resumed.outcomes["description"], receipt.outcomes["description"]);
+    assert_eq!(
+        resumed.outcomes["description"],
+        receipt.outcomes["description"]
+    );
     assert_eq!(resumed.next_action, next_action);
     assert!(again.0.calls.is_empty());
 }
