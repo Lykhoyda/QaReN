@@ -5,6 +5,7 @@ import { createWriter } from '../../../dist/qa/wire.js';
 import { getEventListeners } from 'node:events';
 import {
   TargetReadinessTimeoutError,
+  TargetListAttemptTimeoutError,
   TargetSelectionError,
   cachedPackageProbe,
   inferPlatforms,
@@ -2481,7 +2482,7 @@ for (const remaining of [750, 20000]) {
   });
 }
 
-for (const listState of ['pending', 'empty'] as const) {
+for (const listState of ['pending', 'timed_out', 'empty'] as const) {
   test(`a ${listState} rediscovery after false stays inside the registered attach budget`, async (t) => {
     const { DevTargetUnavailableError } = await import('../../../dist/cdp/connect.js');
     const clock = mockClock(t);
@@ -2495,6 +2496,7 @@ for (const listState of ['pending', 'empty'] as const) {
       waitTargets: async () => {
         if (++scans === 1) return;
         if (listState === 'pending') await new Promise(() => {});
+        if (listState === 'timed_out') throw new TargetListAttemptTimeoutError('list timed out');
         throw new TargetReadinessTimeoutError('no target', 'empty');
       },
       attach: async () => {
@@ -2522,12 +2524,12 @@ for (const listState of ['pending', 'empty'] as const) {
     await clock.advance(500);
     assert.equal(settled, true, 'rediscovery cannot extend the registered-target deadline');
     const error = await pending;
-    assert.equal(error.code, listState === 'pending' ? 'DEV_TARGET_MISSING' : 'CDP_NOT_CONNECTED');
+    assert.equal(error.code, listState !== 'empty' ? 'DEV_TARGET_MISSING' : 'CDP_NOT_CONNECTED');
     assert.equal(
       error.meta?.inner,
-      listState === 'pending' ? 'non_dev_bundle' : 'no_dev_target_unknown',
+      listState !== 'empty' ? 'non_dev_bundle' : 'no_dev_target_unknown',
     );
-    if (listState === 'pending') assert.equal(error.meta?.devFalse, 1);
+    if (listState !== 'empty') assert.equal(error.meta?.devFalse, 1);
     assert.equal(relaunches, 0, 'unavailable development targets never enable no-target relaunch');
   });
 }
