@@ -69,6 +69,7 @@ pub enum FailureCode {
     CoreRefused,
     PressNotRegistered,
     BlockStartMissing,
+    DevRedbox,
     JevUnreachable,
     JevAuthFailed,
     JevRequestInvalid,
@@ -111,6 +112,7 @@ impl FailureCode {
                 | FailureCode::PressNotRegistered
                 | FailureCode::CoreRefused
                 | FailureCode::BlockStartMissing
+                | FailureCode::DevRedbox
                 | FailureCode::JevUnreachable
                 | FailureCode::JevAuthFailed
                 | FailureCode::JevRequestInvalid
@@ -246,6 +248,7 @@ pub enum RecoveryReason {
     HostCleanupFailed,
     DriverExited,
     StorageFailed,
+    PreviousPlanPress,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,6 +268,7 @@ pub enum RecoveryAction {
     CleanupThenFreshPrepare,
     RetainAndReport,
     RepairRecordStorage,
+    InspectLastObservedScreen,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -330,6 +334,7 @@ impl From<RecoveryReason> for Recovery {
             ),
             RunCancelled => ("re-run when ready; nothing resumes automatically", None, cleanup),
             ForeignAdmissionUnresolved => return Self::foreign_admission(),
+            PreviousPlanPress => return Self::previous_plan_press(),
             _ => return Self::ios_runner(reason, "<run-id>", false, false, false),
         };
         let first_applicable = matches!(reason, BudgetExhausted | IdentityUnavailable);
@@ -444,6 +449,28 @@ impl Recovery {
         }
     }
 
+    // A plan mismatch: inspection only, and no reset can repair it.
+    fn previous_plan_press() -> Self {
+        Self {
+            key: None,
+            reason: RecoveryReason::PreviousPlanPress,
+            next_rung: None,
+            action: RecoveryAction::InspectLastObservedScreen,
+            automatic: false,
+            destroys_state: false,
+            requires_user_ok: false,
+            own_cleanup_required: false,
+            own_run_id: None,
+            ladder: vec![
+                RecoveryRung::step(1, false, false, "a retry cannot help: the planned press already passed and the next target was not found"),
+                RecoveryRung::step(2, false, false, "restarting the app, Metro or the runner cannot repair a plan that does not match the screen its own press opened"),
+                RecoveryRung::step(3, false, false, "restarting the device cannot repair a plan mismatch"),
+                RecoveryRung::step(4, false, false, "rebuilding native code cannot repair a plan mismatch"),
+                RecoveryRung::step(5, false, false, "cleanup and a fresh prepare cannot repair a plan mismatch"),
+            ],
+        }
+    }
+
     fn foreign_admission() -> Self {
         Self {
             key: None,
@@ -536,6 +563,12 @@ impl Failure {
                 "re-run once without --fresh-install or --restart-device; if build work is active, wait for it to finish first",
             "DEV_MENU_HIDE_UNVERIFIED_NOT_HIDDEN" | "DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED" =>
                 "re-run once without --fresh-install; if it persists, report the value-free refusal",
+            // A development error overlay: the cause decides whether a restart may help.
+            "DEV_REDBOX_REPEATED"
+            | "DEV_REDBOX_DISMISS_FAILED"
+            | "DEV_REDBOX_NO_SAFE_DISMISS"
+            | "DEV_REDBOX_CLEARANCE_UNPROVEN" => "restart_app_from_plan_start",
+            "DEV_REDBOX_ACTION_UNCERTAIN" => "inspect_app_error_before_rerun",
             _ => "resolve the refusal, then re-run",
         }
     }

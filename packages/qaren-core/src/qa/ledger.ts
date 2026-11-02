@@ -55,8 +55,12 @@ export interface LedgerRow {
   method?: FillMethod;
   // The dismissal tier that hid a visible keyboard before this press.
   keyboardCleared?: 'native-control' | 'js';
-  // Why this press was sent a second time.
-  retryCause?: 'KEYBOARD_SWALLOWED_TAP';
+  // Why this step was sent again: a swallowed press, or a dismissed development error overlay.
+  retryCause?: 'KEYBOARD_SWALLOWED_TAP' | 'DEV_REDBOX';
+  // The overlay variant and dismissal attempt number, including failed attempts, never its text.
+  devError?: { variant: 'redbox' | 'logbox'; dismissal: number };
+  // A plain scroll that passed although two dispatched attempts left the screen unchanged.
+  scrollDetail?: { status: 'no_visible_change'; attempts: 2 };
 }
 
 // The value-free announcement that a plan line begins; its row later carries the same operationId.
@@ -76,7 +80,9 @@ export interface LedgerFailure {
   // Target-class failures only: the last observed screen, one suggested plan edit and the miss reason.
   screen?: ScreenNow;
   suggestion?: string;
-  subreason?: TargetMissDiagnostic['reason'] | 'ambiguous';
+  subreason?: TargetMissDiagnostic['reason'] | 'ambiguous' | 'previous-plan-press';
+  // Why a scroll step failed; set only by the walker, never read from reason prose.
+  cause?: 'scroll_dispatch_failed' | 'scroll_context_changed' | 'scroll_target_absent';
 }
 
 export interface BlockResult {

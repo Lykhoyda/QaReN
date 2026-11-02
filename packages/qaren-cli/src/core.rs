@@ -447,6 +447,47 @@ pub struct Row {
         deserialize_with = "passive"
     )]
     pub retry_cause: Option<RetryCause>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub scroll_detail: Option<ScrollDetail>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub dev_error: Option<DevErrorDismissal>,
+}
+
+// A plain scroll that passed although every dispatched attempt left the screen unchanged; never an end-of-content proof.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ScrollDetail {
+    pub status: ScrollStatus,
+    pub attempts: u8,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollStatus {
+    NoVisibleChange,
+}
+
+// The development error overlay variant and dismissal attempt number, including failed attempts.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DevErrorDismissal {
+    pub variant: DevErrorVariant,
+    pub dismissal: u8,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum DevErrorVariant {
+    Redbox,
+    Logbox,
 }
 
 // The dismissal tier that hid a visible keyboard before a press.
@@ -462,6 +503,7 @@ pub enum KeyboardCleared {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum RetryCause {
     KeyboardSwallowedTap,
+    DevRedbox,
 }
 
 // The Fill ladder rung a fill row used.
@@ -700,6 +742,21 @@ pub struct LedgerFailure {
         deserialize_with = "passive"
     )]
     pub subreason: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub cause: Option<StepCause>,
+}
+
+// Why a scroll step failed, as the walker typed it; an unknown cause is dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepCause {
+    ScrollDispatchFailed,
+    ScrollContextChanged,
+    ScrollTargetAbsent,
 }
 
 // Only a plan step's own judgment is a step failure; anything else, or an older core, has no kind.
@@ -1793,6 +1850,7 @@ fn synthesized_failure(rows: &[Row], seen: &str) -> LedgerFailure {
         screen: None,
         suggestion: None,
         subreason: None,
+        cause: None,
     }
 }
 

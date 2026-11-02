@@ -859,8 +859,8 @@ the thresholds and supported PNG formats, and the
 [press regression tests](../qaren-core/test/unit/qa/option-redraw-press.test.ts)
 cover the retry and withholding boundaries.
 
-Comparison screenshots obey the ordinary screenshot privacy gates: no runtime
-inputs, no metadata-only capture and no active screenshot withholding. They use
+Comparison screenshots obey the [selected media policy](#video-publication).
+Metadata-only capture or active screenshot withholding prevents them. They use
 temporary files under the run directory that are removed after reading, and are
 not retained with ledger screenshots. Missing, failed or unsupported captures,
 ineligible targets and insufficient pixel change provide no proof; the existing
@@ -929,6 +929,28 @@ are not compared. The receipt's `ledger.unverified_presses` lists each such
 passing press with its line and reason, and is omitted when empty. The row's
 `unverifiedPress` flag preserves this status even when privacy redacts the
 reason. A later plan check still decides whether the intended screen followed.
+
+A plain `Scroll down` or `Scroll up` is a gesture, not an assertion. It passes
+when a cleanly dispatched scroll changes the app screen. When the first scroll
+leaves the screen unchanged, QaReN scrolls once more under the same operation
+id; if both scrolls dispatched cleanly with complete native app captures
+before and after each attempt and neither changed the screen,
+the step passes with reason `SCROLL_NO_VISIBLE_CHANGE` and the row field
+`scrollDetail: {"status":"no_visible_change","attempts":2}`, and no recovery tap
+runs. An unchanged scroll with incomplete captures or only one attempt
+(including after recovery) still fails without `scrollDetail`.
+A no-op result does not prove the content ended: QaReN has no end-of-list detector.
+The receipt's `ledger.no_visible_change_scrolls` lists those lines and is
+omitted when empty. A runner's own success proof never stands in for a
+changed or still capture. A scroll that errored or did not execute never passes
+on a changed capture; one whose effect is uncertain fails at once, and one
+that brings another front, such as a system dialog, fails without a retry.
+These failures carry `failure.cause` `scroll_dispatch_failed` or
+`scroll_context_changed`. A refused scroll that changed nothing keeps the
+ordinary recovery, such as hiding a dev menu, before that failure. To require
+content, write `Scroll down until "<text>"`: it still fails when the target
+never appears, with cause `scroll_target_absent`. These causes are diagnostic
+metadata and preserve existing guidance and repeat behavior.
 
 While it serves commands, the iOS runner contains XCTest UI automation issues,
 such as a read of an element that vanished, instead of letting XCTest end its
@@ -1155,8 +1177,8 @@ An unverified keyboard step records a passing row with reason `UNVERIFIED_FILL`,
 allowing later plan steps to continue; it does not establish the field's final
 value. Apart from that one replacement recovery and the ladder step below, failed keyboard typing is not retried. Before the fallback tap or
 no-target typing dispatch, the value is protected under the
-[shared masking rules](#input-value-masking), and screenshots are withheld for the rest
-of the walk. For block persistence after fallback, see [Saved blocks](#saved-blocks).
+[shared masking rules](#input-value-masking), and screenshots follow the
+[declared policy](#video-publication). For block persistence after fallback, see [Saved blocks](#saved-blocks).
 Eligibility is owned
 by the [resolver](../qaren-core/src/qa/resolve.ts), exact identity counting by
 the [shared identity model](../qaren-core/src/qa/identity.ts), and both are
@@ -1235,7 +1257,9 @@ When one of the last 20 `check` runs failed the same plan line with the same cod
 subreason on the same platform, app, recorded Git revision, worktree fingerprint
 and plan hash, `failure.repeat` names it and the walk's guidance leads with
 "same failure, plan unchanged". For `evidence-incomplete`, the notice instead
-follows the existing re-run advice. Plan identity and step-line comparison ignore
+follows the existing re-run advice; `previous-plan-press` keeps its
+`inspect_last_observed_screen` next action and records only `failure.repeat`
+([step recovery](#step-recovery)). Plan identity and step-line comparison ignore
 QaReN's prepended broken-plan marker lines, so automatically flagging a saved
 plan does not prevent repeat matching. Receipt step numbers remain physical
 plan lines. A superseding CLI failure, such as cancellation, a deadline or
@@ -1699,8 +1723,9 @@ first `reason`, optional `kind` or `source`, `line` and withheld screenshot `cou
 count: the strict privacy cause for strict or undeclared runs, or the protected
 cause for non-strict runs. In non-strict mode, a later protected cause replaces
 an earlier `runtime-input` or `echo` with source `input`, including its observation
-line. A successful pre-plan login resets the video window; a retained cause then
-uses the new window's starting line. `videoPublication` retains the strict verdict;
+line. A successful pre-plan login resets the video window and, in non-strict mode,
+the screenshot cause and count; a retained cause then uses the new window's
+starting line. `videoPublication` retains the strict verdict;
 `nonStrictPublication` supplies the separate non-strict verdict.
 The receipt includes one `media_withheld=<code>[/<kind|source>]@line <N>` note,
 preferring the video cause in non-strict mode and the screenshot cause otherwise.
@@ -1714,13 +1739,15 @@ the first screenshot cause and line. Line 0 means privacy latched before the wal
 | `generic-value` | A non-input element exposes an accessibility value; `kind` names its native category. | Check whether the accessibility value carries data. |
 | `echo` | A value already treated as private reappeared as text; `source` names its provenance. | For `typed`, use a test value the app does not echo, including saved-login literals. `observed` means a value previously seen in a field or other value carrier. `secret`, `code`, `input` and `concealed` are expected privacy guards. |
 | `runtime-input` | The run holds runtime inputs. | Expected for input runs; see [reusable sign-in](#reusable-sign-in-example) for login inputs. |
-| `concealed-fill` | A filled field could not be read back. | For a clean video window, the field must be seen and then leave the screen before login completes; screenshots require a new run. |
+| `concealed-fill` | A filled field could not be read back. | For a clean media window, the field must be seen and then leave the screen before login completes; strict screenshots require a new run. |
 | `code-row` | One-character boxes showed a typed value. | Expected for code-entry screens. |
 
-The first screenshot cause remains sticky for the run, even after the field
-leaves the screen. To obtain screenshots, start a new run on a screen without
-private data or runtime inputs. Video uses the privacy window after a successful
-pre-plan login; see [video publication](#video-publication). These diagnostics do
+In strict or undeclared mode, the first screenshot cause remains sticky for the run,
+even after the field leaves the screen. Start a new run on a screen without private
+data or runtime inputs to obtain strict screenshots. In non-strict mode, screenshots
+use the same protected-value gate and pre-plan login window as video; ordinary
+accessibility values and TEST-PII inputs do not alone withhold them. See
+[video publication](#video-publication). These diagnostics do
 not change capture, masking or publication rules. Older cores may omit them;
 the CLI passively ignores unknown withholding codes in mixed-version evidence.
 
@@ -1837,7 +1864,8 @@ optional single whitespace character such as the no-break space iOS may insert,
 then `%`. The projection keeps the
 label and omits this native value, so the indicator alone does not trigger
 screenshot withholding. Other valued generic elements, malformed lookalikes,
-React input evidence and secure fields remain protected. The accepted residual
+React input evidence and secure fields retain their privacy classification;
+media withholding follows the [selected policy](#video-publication). The accepted residual
 risk is that an app element mimicking both patterns can expose its percentage
 in captured pixels. The shared patterns in
 [privacy.ts](../qaren-core/src/qa/privacy.ts) own the exact matching rule;
@@ -2052,8 +2080,9 @@ masked whole. Structural masking remains unioned with value-based fragment maski
 
 Opaque tokens preserve complete-value identity for model comparisons. An
 unobserved protected value or hidden input content cannot prove an assertion.
-Once sensitive input pixels, code rows or a protected value's visible echo are
-observed, screenshots are withheld for the rest of the walk. See the
+In strict or undeclared mode, once sensitive input pixels, code rows or a protected
+value's visible echo are observed, screenshots are withheld for the rest of the walk.
+Non-strict screenshots follow the [declared policy](#video-publication). See the
 [structural privacy regression cases](../qaren-core/test/unit/qa/split-digit-privacy.test.ts)
 and [Saved blocks](#saved-blocks).
 
@@ -2382,13 +2411,13 @@ and types retain their original hash operands, even at the filled field, and a r
 does not mask them to a constant. SECRET matches win on equal or overlapping values; a
 TEST-PII alias cannot leave a SECRET value unmasked in a label hash. Repeated declarations
 across the plan and configured login block must agree before device selection. Input tiers have no
-config or global opt-in and no inferred environment policy; the separate [video policy](#video-publication) controls video publication only. Any extra `QAREN_INPUT_` variable
+config or global opt-in and no inferred environment policy; media eligibility follows the separate [declared policy](#video-publication). Any extra `QAREN_INPUT_` variable
 in the environment, even one the plan does not use, keeps logs withheld.
 In a TEST-PII run only `core.log`,
 failure screen text and Fill readback come back redacted by the declared values; Metro and
 other subprocess logs stay withheld as in a SECRET run. Declared-value redaction includes
 an e-mail's local part, plus-less local part, domain and
-percent- or HTML-encoded forms; screenshots stay withheld and video follows the [declared policy](#video-publication). Derived e-mail forms
+percent- or HTML-encoded forms; screenshots and video follow the [declared policy](#video-publication). Derived e-mail forms
 shorter than 3 characters (for example a 2-letter local part) are not redacted on their own,
 while the full address and every longer derived form always are. Core evidence and CLI
 logs also redact Unicode case variants, including length-changing mappings such as
@@ -2431,9 +2460,9 @@ secret despite artifact redaction.
   marker, preflight/subprocess output excerpts and command summaries are withheld, and
   native runner output tails are not retained. After an input is promoted to SECRET before
   typing, subsequent core log writes and failure screen text are withheld. A run that
-  requires inputs skips screenshots. Recording is also skipped unless `video: non-strict`
+  requires inputs skips screenshots and recording unless `video: non-strict`
   is declared and the run holds only TEST-PII inputs; detected SECRET causes still
-  withhold video publication.
+  withhold screenshot and video publication.
 - Slot runs retain value-free structured events in `core-diagnostics.jsonl` beside `core.log`:
   `metric` has measured stage timings, and `timing` has decision/dispatch timing, finite outcome
   codes and allowlisted native refusal codes. Dispatch refusals retain `refusalStage` and
@@ -2483,7 +2512,7 @@ secret despite artifact redaction.
   produce the same marker. Other labels containing a known input use a redacted projection,
   verified by the same guard before hashing. This includes later account screens and inputs
   supplied by a configured login block that was never replayed. No echo declaration is
-  required for this masking; screenshots remain withheld, video follows the
+  required for this masking; screenshots and video follow the
   [declared policy](#video-publication), and output redaction remains active.
 - After a block's `Expect input NAME on screen` line, until the block ends, a label whose
   whole-value strict echoes are all of declared inputs hashes as the same constant marker; a
@@ -3060,11 +3089,58 @@ nested in its repository they do not make the next run's candidate dirty.
 Selection-proof refusals bypass step recovery; follow the
 [press evidence contract](#occluded-taps-and-focus) before retrying.
 
-An observed React Native red box fails the current step immediately, including
-during login replay, with error-screen evidence in `failure.seen` projected through
-the [input value masking contract](#input-value-masking).
-It is checked before accepting a step or refusing incomplete semantic evidence,
-and never triggers recovery.
+Development error overlay recognition covers iOS RedBox and LogBox and Android
+native RedBox. Android native RedBox recognition has automated test coverage only,
+with no Android device proof; Android LogBox is out of scope. On iOS, LogBox is
+currently recognize-and-refuse: its Dismiss control has no accessibility identifier,
+and the runner refuses the press as `TARGET_MOVED_BEFORE_DISPATCH`. That refusal is
+not retried. The step refuses `DEV_REDBOX_DISMISS_FAILED`, and the LogBox is never
+read as app content. RedBox dismissal is unaffected.
+The overlays are recognized in the native capture by the
+fixed identifiers and controls React Native gives them (`redbox-dismiss`, `redbox-reload`,
+`redbox-copy`, `redbox-error`, `rn_redbox_stack`, `rn_redbox_dismiss_button`, or one window holding `Dismiss`, `Minimize` and a
+`Log N of M` header, or the syntax-error `Failed to compile` header and footer),
+never by error text. An overlay in front is never read as the app: before a step
+resolves its target, judges a check or evaluates a wait, QaReN presses the
+overlay's own Dismiss control by its exact reference, proves the overlay gone in
+a fresh capture and runs the step again. This is a retry for a known cause, not a
+blind retry: each successful dismissal writes a `retry` row with `retryCause: DEV_REDBOX`,
+`devError: { variant, dismissal }` and the step attempt number. A failed dismissal
+proven not to have sent a gesture writes the same metadata on a `retry` row when
+another attempt remains; otherwise it records the metadata on the terminal `fail` row. Every
+dismissal attempt counts in `recoveries`. A step gets at most three dismissals,
+including across saved replay falling back to a walk. Dismissal, clearance and
+resumed execution share the step's existing deadline; overlay recovery never
+renews it. The dismissal count is separate from the step's two interruption
+recoveries. Reload and Copy are never
+pressed, and Dismiss is not proof that the step's own action worked.
+
+When the overlay cannot be cleared this way the run refuses with
+`failure.code: DEV_REDBOX` (exit 4). The cause opens `failure.detail`:
+
+| Cause | When | `next_action` |
+| --- | --- | --- |
+| `DEV_REDBOX_REPEATED` | The overlay was still in front after three dismissals in one step | `restart_app_from_plan_start` |
+| `DEV_REDBOX_DISMISS_FAILED` | The Dismiss press failed or was not dispatched. A press the runner refused before any gesture is observed again and pressed again within the three; one that may have run a gesture is never repeated. A LogBox Dismiss refused as `TARGET_MOVED_BEFORE_DISPATCH` is never pressed again. When available, the detail includes the runner's value-free refusal code (`runner refused: <CODE>`). The log records `dev-error-dismiss-failed=<CODE>` in `logs/core.log`, using `unknown` when no code is available. For a moved refusal, the log line also carries the runner's value-free geometry: the retained and live frames, their delta, and whether the target was re-found by identifier or label | `restart_app_from_plan_start` |
+| `DEV_REDBOX_NO_SAFE_DISMISS` | No single Dismiss control (a syntax error, an ambiguous control, or an overlay inside a login replay, which never recovers) | `restart_app_from_plan_start` |
+| `DEV_REDBOX_CLEARANCE_UNPROVEN` | A fresh capture could not prove the overlay gone | `restart_app_from_plan_start` |
+| `DEV_REDBOX_ACTION_UNCERTAIN` | The overlay was first seen after the step's action was sent, or after another recovery already acted in the same step; nothing is dismissed or replayed | `inspect_app_error_before_rerun` |
+
+A restart from plan start loses app state; the error may race the app again. A
+device restart or an unchanged native rebuild cannot fix it. A run that passes
+after a dismissal passed with an app error recorded in its rows, not without one.
+
+While an overlay is captured, even behind an alert, every textual report
+(`failure.seen`, the last observed screen, target diagnostics) carries only
+`A development error overlay was in front; N lines withheld.`, with no stack,
+path or message text, and no screenshot is taken. Admission leaves an overlay to
+the first step's dismissal instead of waiting out the dev-menu budget; a
+[warm lane](#warm-lane) still refuses `LANE_NOT_WARM` when its first screen is
+covered by one. A React
+render error that only the React capture reports, with no overlay in the native
+capture, still fails the current step immediately, including during login
+replay, and never triggers recovery. The regressions are in
+[`dev-error-overlay.test.ts`](../qaren-core/test/unit/qa/dev-error-overlay.test.ts).
 
 An action without success evidence after its one retry, a step target that
 does not resolve, a definite failed check, an unmet quoted wait, or a phrase check still
@@ -3074,7 +3150,7 @@ capture. If it fails again, a second recovery may decline a different system pro
 interruption once the first is proven gone. An app interruption with the same decline label
 fails with `the app interruption did not disappear`; a different kind of interruption or
 decline label may be eligible, subject to the same guards on each recovery. A step never
-gets more than two recoveries. The order is owned by [`recover.ts`](../qaren-core/src/qa/recover.ts): a
+gets more than two interruption recoveries. The order is owned by [`recover.ts`](../qaren-core/src/qa/recover.ts): a
 recognized system prompt met during an ordinary app step is declined, never accepted
 (only an explicit `Allow the permission prompt` or `Accept the dialog` step accepts, and a
 dialog is left to the plan when its next step is a dialog step). Recovery declines a given
@@ -3100,7 +3176,7 @@ failed; `escapes` and `llmTurns`
 stay `0`. Login fills are masked like plan fills; see [Video publication](#video-publication)
 for recording eligibility.
 
-Recovery counts as a device mutation for replay eligibility: a selector miss
+Interruption recovery counts as a device mutation for replay eligibility: a selector miss
 after recovery is terminal and never initiates another re-walk. The second ordinary
 action attempt captures fresh evidence but gets no additional expiry refresh;
 phrase actions retain presence capture through readback and retries.
@@ -3139,6 +3215,40 @@ Planned-container protection follows native ancestry and proven React host
 ancestry. The React ancestry guard stops at a modal host, so the presenting
 screen does not protect the modal's controls.
 
+A screen the plan's own press opened is never dismissed. Every planned press
+accepted as passed, including when readback establishes success despite a handler
+error or a delayed system dialog proves the press took effect, records the surface
+it opened. When complete React host evidence shows exactly one modal container
+after the press, identified by its modal type and test ID or native ID and absent
+before dispatch, protection tracks that container. Novelty requires complete
+captures and complete React host evidence before and after the press. Otherwise
+its identity is unknown and protection stays on until a later
+accepted planned press replaces it or login replay clears it. A press accepted
+behind a system dialog also keeps this conservative protection. These identities
+stay in memory and are never written to the ledger or logs.
+Protection crosses block and replay boundaries and retries. Waits, checks, fills,
+scrolls and keyboard-only Back never establish departure. Only a complete native
+and React capture with complete host structure proving the identified container
+absent can expire protection. A planned Accept re-arms protection for its own
+destination, even when it closes an identified modal. If that destination has no
+identifiable container, protection remains on, including against later sheets.
+When an identified destination is proven gone, later unsolicited sheets can be
+dismissed. Recovery's decline presses and login presses never arm it.
+Login replay also clears the withheld-dismissal diagnostic for the retried item.
+While protected, recovery still answers system
+prompts and dev menus and still replays login, but withholds every app decline,
+including the recheck before dispatch, and an ambiguous decline set does not
+refuse. If login replay has not cleared the veto, a failing target-class step reports
+subreason `previous-plan-press`, and `failure.seen` includes
+`the previous planned press succeeded; the next target
+was not found; automatic app dismissal was withheld`, and the walk's
+`next_action` is `inspect_last_observed_screen`, also on a repeat, with a
+`failure.recovery` of reason `previous_plan_press` whose five rungs are all
+inapplicable. A failed check after such a veto carries the same `failure.seen`
+note without a subreason. A sheet that appears while the planned surface is still on
+screen, including one that opens together with it, is therefore not dismissed
+either; insert the plan's own step for it.
+
 With `TYPESAFE_API_KEY`, Jev may veto a selected control when the screen may be
 related to the step or its purpose is uncertain. It never chooses a control,
 breaks a tie, or authorizes a tap. Without the key, recovery uses only the
@@ -3159,8 +3269,8 @@ and cannot authorize a retry; an attempted decline still counts in `recoveries`,
 including when its read-back refuses incomplete capture.
 
 `logs/core.log` includes value-free diagnostics for failed interruption admission:
-`interruption-rejected` reports a front, coverage, indexed target or no-candidate
-veto and the exact-decline-label element count; the same veto kind, step line,
+`interruption-rejected` reports a front, coverage, indexed target,
+previous-plan-press or no-candidate veto and the exact-decline-label element count; the same veto kind, step line,
 target index and count are also retained as an `interruption-rejected` event in
 `core-diagnostics.jsonl` for runs with inputs. A no-candidate veto also reports
 each decline-labelled element's first failed predicate; press capability failures
@@ -3667,22 +3777,24 @@ contention.
 
 ### Video publication
 
-Declare the video policy in the selected app config (`--config <path>` selects another file):
+Declare the video policy in the selected app config (`--config <path>` selects another file); screenshots use the same setting:
 
 ```yaml
 video: non-strict
 ```
 
 - `strict`: today's privacy checks apply; clean walks can publish.
-- `non-strict`: use only when the app shows test data. Non-SECRET observations, literal fills and TEST-PII inputs can publish video. Detected SECRET causes still withhold it: secure fields (including empty fields), fills into unreadable fields, concealed fills of protected values, code rows and echoes attributable to protected values. A readable, non-secure field whose native label may contain its value does not alone veto a PUBLIC or TEST-PII fill. A run holding SECRET runtime inputs also withholds video, even if they are unused.
+- `non-strict`: use only when the app shows test data. Non-SECRET observations, literal fills and TEST-PII inputs can publish video and screenshots. Detected SECRET causes still withhold them: secure fields (including empty fields), fills into unreadable fields, concealed fills of protected values, code rows and echoes attributable to protected values. A readable, non-secure field whose native label may contain its value does not alone veto a PUBLIC or TEST-PII fill. A run holding SECRET runtime inputs also withholds video and screenshots, even if they are unused.
 - Absent: strict rules apply and doctor reminds you to declare a policy. Any other value, including null, refuses `SCENARIO_INVALID`.
 
-The receipt, report and PR comment name the policy and the selected config: its app-relative path for files inside the invoking project, or its filename for external configs, with private values redacted. The path identifies the declaration, not the backend or dataset. Policy and eligibility are persisted with the run; `qaren publish` never re-reads the current app config. A missing or unknown eligibility verdict still withholds video. Saved-block publication and screenshots retain strict rules in this release.
+The receipt, report and PR comment name the policy and the selected config: its app-relative path for files inside the invoking project, or its filename for external configs, with private values redacted. The path identifies the declaration, not the backend or dataset. Policy and eligibility are persisted with the run; `qaren publish` never re-reads the current app config. A missing or unknown eligibility verdict still withholds video. Saved-block publication retains strict rules; temporary tap-comparison screenshots follow the selected mode.
+
+Feature artwork withheld solely for an ordinary accessibility value without a typed safe path (ANT-664) is eligible in non-strict mode and remains withheld in strict or undeclared mode. The [screenshot publication regression](tests/publish_flow.rs) covers this policy decision with synthetic artwork; it does not establish live device acceptance.
 
 Only the selected config declares the video mode; no flag, environment variable,
 plan annotation or inferred backend selects it.
 
-SECRET text masking and no readback apply in both modes. A runtime input displayed in a non-secure field can be marked `(test-pii)` only if it is test data; that annotation cannot exempt secure fields or code rows. Non-strict is an operator declaration, not proof: an undeclared secret prefilled into a non-secure field, real personal data, or a value visible only between captures can appear in a published video. QaReN does not mask video regions or identify the backend. Upgrade every CLI/CI runtime before adding the key; older versions refuse it. Removing the key restores strict behavior.
+SECRET text masking and no readback apply in both modes. A runtime input displayed in a non-secure field can be marked `(test-pii)` only if it is test data; that annotation cannot exempt secure fields or code rows. Non-strict is an operator declaration, not proof: an undeclared secret prefilled into a non-secure field, real personal data, or a value visible only between captures can appear in published media. QaReN does not mask media regions or identify the backend. Upgrade every CLI/CI runtime before adding the key; older versions refuse it. Removing the key restores strict behavior.
 
 For non-strict privacy withholding, the report and PR comment name the protected
 cause. They offer the `(test-pii)` hint when a SECRET input is observed in a readable,
@@ -3714,8 +3826,8 @@ Login fills after any plan step passes withhold
 the video, including a second login after an earlier publication window opened.
 The comment's fill-related withholding reason covers both a plan fill or type
 step, executed or not, and saved login replay input.
-The login exception never resets run-wide screenshot withholding or masking
-history.
+The login exception never resets strict run-wide screenshot withholding or masking
+history; non-strict screenshots share the video's pre-plan login window.
 
 Launcher, server-picker, relaunch and dev chrome frames before admission never
 reach the pull request. Without a start time or a successful trim, or when an app

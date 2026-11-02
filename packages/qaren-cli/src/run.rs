@@ -11,7 +11,7 @@ use crate::config::CheckConfig;
 use crate::core::{self, Budgets, CoreRequest, CoreTarget, Verdict};
 use crate::events::{self, StageState};
 use crate::exec::{CmdSpec, Runner};
-use crate::failure::{Failure, FailureCode, Repeat};
+use crate::failure::{Failure, FailureCode, RecoveryReason, Repeat};
 use crate::github::{self, PrInfo};
 use crate::lease;
 use crate::publish::PrRunRecord;
@@ -1784,6 +1784,7 @@ fn refusal_code(code: &str) -> FailureCode {
         "JEV_REQUEST_INVALID" => FailureCode::JevRequestInvalid,
         "JEV_UNREACHABLE" => FailureCode::JevUnreachable,
         "RUN_CANCELLED" => FailureCode::RunCancelled,
+        code if code.starts_with("DEV_REDBOX_") => FailureCode::DevRedbox,
         _ => FailureCode::CoreRefused,
     }
 }
@@ -1891,6 +1892,29 @@ mod block_start_tests {
         let code = refusal_code("BLOCK_START_MISSING");
         assert_eq!(serde_json::to_value(code).unwrap(), "BLOCK_START_MISSING");
         assert!(code.is_refusal());
+    }
+
+    #[test]
+    fn dev_error_overlay_refusals_share_one_code_and_pick_guidance_by_cause() {
+        for (inner, next) in [
+            ("DEV_REDBOX_REPEATED", "restart_app_from_plan_start"),
+            ("DEV_REDBOX_DISMISS_FAILED", "restart_app_from_plan_start"),
+            ("DEV_REDBOX_NO_SAFE_DISMISS", "restart_app_from_plan_start"),
+            (
+                "DEV_REDBOX_CLEARANCE_UNPROVEN",
+                "restart_app_from_plan_start",
+            ),
+            (
+                "DEV_REDBOX_ACTION_UNCERTAIN",
+                "inspect_app_error_before_rerun",
+            ),
+        ] {
+            let code = refusal_code(inner);
+            assert_eq!(serde_json::to_value(code).unwrap(), "DEV_REDBOX", "{inner}");
+            assert!(code.is_refusal(), "{inner}");
+            assert_eq!(Failure::core_refusal_next_action(inner), next, "{inner}");
+        }
+        assert_eq!(refusal_code("DEV_REDBOX"), FailureCode::CoreRefused);
     }
 
     fn home_with_reports(name: &str, coalitions: &[&str]) -> PathBuf {
@@ -2969,17 +2993,30 @@ fn walk_failure(
             failure.suggestion = Some(suggestion.clone());
         }
     }
+    let previous_press = failure.subreason.as_deref() == Some(PREVIOUS_PLAN_PRESS);
+    if previous_press {
+        failure.next_action = OutputText::from_output("inspect_last_observed_screen");
+        failure = failure.with_recovery(RecoveryReason::PreviousPlanPress);
+    }
     if let Some(repeat) = repeat_of(runs_root, record, &failure) {
-        failure.next_action = OutputText::from_output(&repeat_note(&failure, &repeat));
+        // The machine next action stays stable on a repeat; failure.repeat still records it.
+        if !previous_press {
+            failure.next_action = OutputText::from_output(&repeat_note(&failure, &repeat));
+        }
         failure.repeat = Some(repeat);
     }
     failure
 }
 
+const PREVIOUS_PLAN_PRESS: &str = "previous-plan-press";
+
 const REPEAT_SCAN: usize = 20;
 
 pub(crate) fn cleanup_first(cleanup: &str, failure: &Failure) -> String {
-    if failure.suggestion.is_some() || failure.repeat.is_some() {
+    if failure.suggestion.is_some()
+        || failure.repeat.is_some()
+        || failure.subreason.as_deref() == Some(PREVIOUS_PLAN_PRESS)
+    {
         format!("{cleanup}; then {}", failure.next_action.as_str())
     } else {
         cleanup.to_string()
@@ -3452,6 +3489,27 @@ mod last_screen_tests {
     }
 
     #[test]
+    fn scroll_causes_round_trip_and_unknown_causes_are_dropped() {
+        for cause in [
+            "scroll_dispatch_failed",
+            "scroll_context_changed",
+            "scroll_target_absent",
+        ] {
+            let wire = json!({ "step": 3, "seen": "scroll failed", "cause": cause });
+            let failure: core::LedgerFailure = serde_json::from_value(wire.clone()).unwrap();
+            assert!(failure.cause.is_some(), "{cause}");
+            assert_eq!(serde_json::to_value(&failure).unwrap(), wire);
+        }
+        let unknown: core::LedgerFailure =
+            serde_json::from_value(json!({ "step": 3, "seen": "x", "cause": "gremlins" })).unwrap();
+        assert!(unknown.cause.is_none());
+        assert_eq!(
+            serde_json::to_value(&unknown).unwrap(),
+            json!({ "step": 3, "seen": "x" })
+        );
+    }
+
+    #[test]
     fn a_render_error_does_not_repeat_an_unchanged_tap_failure() {
         let root = runs_root("repeat-non-target");
         let unchanged: core::LedgerFailure = serde_json::from_value(json!({
@@ -3481,6 +3539,59 @@ mod last_screen_tests {
             failure.next_action.as_str(),
             "read the report, fix the app or the plan, then re-run"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_withheld_dismissal_after_a_planned_press_points_at_the_last_screen_on_every_run() {
+        let root = runs_root("repeat-previous-press");
+        let mut seen = ledger_failure(screen());
+        seen.suggestion = None;
+        seen.subreason = Some("previous-plan-press".into());
+        let mut first = record("check-20261030T081500Z", "abc");
+        let failure = walk_failure(
+            None,
+            &|| plan_step_failure(Some(&seen)),
+            Some(&seen),
+            &root,
+            &first,
+        );
+        assert_eq!(failure.code, FailureCode::PlanStepFailed);
+        assert!(failure.screen.is_some());
+        assert_eq!(failure.next_action.as_str(), "inspect_last_observed_screen");
+        let recovery = failure.build_recovery().unwrap();
+        assert_eq!(recovery.reason, RecoveryReason::PreviousPlanPress);
+        assert_eq!(recovery.next_rung, None);
+        assert!(!recovery.destroys_state && !recovery.requires_user_ok);
+        assert!(recovery.ladder.iter().all(|rung| !rung.applicable));
+        let json = serde_json::to_value(&failure).unwrap();
+        assert_eq!(json["recovery"]["reason"], "previous_plan_press");
+        assert_eq!(json["recovery"]["action"], "inspect_last_observed_screen");
+        first.failure = Some(failure);
+        first.save(&root).unwrap();
+        let again = walk_failure(
+            None,
+            &|| plan_step_failure(Some(&seen)),
+            Some(&seen),
+            &root,
+            &record("check-20261030T082000Z", "abc"),
+        );
+        assert!(again.repeat.is_some());
+        assert_eq!(again.next_action.as_str(), "inspect_last_observed_screen");
+        assert_eq!(
+            cleanup_first("qaren cleanup check-1 --json", &again),
+            "qaren cleanup check-1 --json; then inspect_last_observed_screen"
+        );
+        let cli = Failure::new("verify", FailureCode::CandidateDrifted, "drifted", "re-run");
+        let kept = walk_failure(
+            Some(cli),
+            &|| plan_step_failure(Some(&seen)),
+            Some(&seen),
+            &root,
+            &record("check-20261030T083000Z", "abc"),
+        );
+        assert!(kept.recovery.is_none());
+        assert_eq!(kept.next_action.as_str(), "re-run");
         let _ = std::fs::remove_dir_all(root);
     }
 

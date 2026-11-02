@@ -459,28 +459,17 @@ test('saved-block replay excludes completed blocks from the later-target guard',
   const root = mkdtempSync(join(tmpdir(), 'qaren-interruption-replay-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const blocks = parsePlan(
-    '### Before\n1. Tap "Home"\n### Target\n2. Tap "Settings"\n✓ "Done"',
+    '### Before\n1. Wait for "Home" to appear\n### Target\n✓ "Settings"\n2. Tap "Settings"\n✓ "Done"',
   ).blocks!;
   for (const interrupted of [false, true]) {
     const f = app(screen([element('@home', 'Home')]));
-    let reachedTarget = false;
-    let closed = false;
-    let targetCaptures = 0;
-    const capture = f.deps.captureScreen;
-    f.deps.captureScreen = async (options) =>
-      reachedTarget && interrupted && !closed && ++targetCaptures >= 6
-        ? screen([element('@close', 'Close'), element('@past', 'Home', { kind: 'text' })])
-        : capture(options);
-    f.deps.press = async (ref) => {
-      f.actions.push(`press ${ref}`);
-      if (ref === '@home') {
-        reachedTarget = true;
-        f.show(home());
-      } else if (ref === '@close') {
-        closed = true;
-        f.show(home());
-      } else if (!interrupted || closed) f.show(screen([element('@done', 'Done')]));
-      return { ok: true, proven: false, executed: true };
+    f.deps.row = (row) => {
+      if (row.line === blocks[0].items[0].line && row.outcome === 'pass')
+        f.show(
+          interrupted
+            ? screen([element('@close', 'Close'), element('@past', 'Home', { kind: 'text' })])
+            : home(),
+        );
     };
     const result = await runPlan(blocks, f.deps, [], {
       appRoot: root,
@@ -488,17 +477,13 @@ test('saved-block replay excludes completed blocks from the later-target guard',
       platform: 'ios',
     });
     assert.equal(result.verdict, 'PASS');
-    if (interrupted) {
-      assert.equal(result.path, 'replay');
-      assert.equal(result.recoveries, 1);
-      assert.deepEqual(f.actions, [
-        'press @home',
-        'press @settings',
-        'press @settings',
-        'press @close',
-        'press @settings',
-      ]);
-    }
+    assert.equal(result.recoveries, interrupted ? 1 : 0);
+    assert.deepEqual(
+      f.actions,
+      interrupted ? ['press @close', 'press @settings'] : ['press @settings'],
+    );
+    if (interrupted) assert.equal(result.path, 'replay');
+    else assert.deepEqual(result.blocksWritten, ['before', 'target']);
   }
 });
 
@@ -571,6 +556,29 @@ test('a quoted wait behind an unchanged optional pop-up declines it once and ret
     rows.filter((row) => row.operationId === retry?.operationId).map((row) => row.outcome),
     ['retry', 'pass'],
   );
+});
+
+test('an optional Skip popup can recover after the full 15-second wait budget', async () => {
+  const f = app(screen([element('@close', 'Skip')]));
+  let clock = 0;
+  let declinedAt: number | undefined;
+  f.deps.now = () => clock;
+  f.deps.sleep = async (ms) => {
+    clock += ms;
+  };
+  const press = f.deps.press;
+  f.deps.press = async (ref, context) => {
+    declinedAt = clock;
+    assert.equal(ref, '@close');
+    return press(ref, context);
+  };
+  const result = await runPlan(parsePlan('1. Wait for "Settings"').blocks!, f.deps);
+  assert.equal(declinedAt, 15_000);
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['press @close']);
+  assert.equal(result.recoveries, 1);
+  const completion = result.steps.find((row) => row.outcome === 'pass' && row.line === 1);
+  assert.equal(completion?.t, 15_000);
 });
 
 test('a quoted wait behind a changing optional pop-up declines it once and retries the wait', async () => {

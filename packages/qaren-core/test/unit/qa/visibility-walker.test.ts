@@ -401,10 +401,7 @@ test('a visibility re-ask cannot pass when its capture or judgment exhausts the 
     };
     const result = await runPlan(parsePlan('1. Wait for the welcome text').blocks!, f.deps);
     assert.equal(result.verdict, 'FAIL');
-    assert.match(
-      result.failure?.seen ?? '',
-      delayed === 'capture' ? /SCREEN_EVIDENCE_INCOMPLETE/ : /VISIBILITY_UNSURE/,
-    );
+    assert.match(result.failure?.seen ?? '', /VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED/);
     assert.equal(f.captures(), 2);
     assert.equal(result.jev.calls, delayed === 'capture' ? 1 : 2);
     assert.equal(elapsed, PHRASE_WAIT_BUDGET_MS);

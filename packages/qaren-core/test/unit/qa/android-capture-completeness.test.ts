@@ -104,7 +104,8 @@ test('Android production adapter → capture → walker admits complete literal 
     ['1. Tap "Save"', ['press @e0']],
     ['1. Wait for "Save"', []],
     ['1. Fill "Email" with "Ada"', ['fill @e1 Ada']],
-    ['1. Scroll down', ['scroll down']],
+    // A still screen is a typed no-op only after a second clean scroll.
+    ['1. Scroll down', ['scroll down', 'scroll down']],
     ['1. Scroll until you see "Save"', []],
     ['✓ "Save"', []],
   ] as const) {

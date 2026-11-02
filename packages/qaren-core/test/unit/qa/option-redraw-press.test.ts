@@ -10,6 +10,7 @@ import { walkBlock } from '../../../dist/qa/walker.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
 import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
 import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
+import { applyNativePrivateInputs } from '../../../dist/qa/private-input.js';
 
 const fixture = (name: string) =>
   readFileSync(new URL(`../../fixtures/tap-pixels/${name}.png`, import.meta.url));
@@ -104,6 +105,43 @@ test('a stable visible toggle with no accessibility state passes on its first pr
     'pixel shot',
   ]);
 });
+
+for (const policy of [undefined, 'strict', 'non-strict'] as const) {
+  for (const carrier of ['ordinary', 'test-pii', 'secret', 'secure'] as const) {
+    test(`${policy ?? 'absent'} pixel-only toggles respect ${carrier} screenshot privacy`, async () => {
+      const before = fixture('toggle1-before'),
+        after = fixture('toggle1-after');
+      const f = fake([option(before)], [before, after, after]);
+      const privacy = new ObservedPrivacy();
+      f.deps.privacy = privacy;
+      f.deps.videoPolicy = policy;
+      if (carrier === 'ordinary' || carrier === 'secure') {
+        const nodes = [
+          {
+            ref: '@carrier',
+            type: carrier === 'secure' ? 'SecureTextField' : 'Other',
+            value: carrier === 'ordinary' ? 'synthetic-toggle-value' : undefined,
+          },
+        ];
+        privacy.observe(applyNativePrivateInputs(join(nodes, []), nodes));
+      }
+      const inputs =
+        carrier === 'test-pii' || carrier === 'secret'
+          ? new RunInputs(
+              { FIXTURE: 'synthetic-toggle-value' },
+              ['FIXTURE'],
+              privacy,
+              carrier === 'test-pii' ? ['FIXTURE'] : [],
+            )
+          : undefined;
+      const run = () => walkBlock(tap, f.deps, 0, [], privacy);
+      const outcome = inputs ? await withInputs(inputs, run) : await run();
+      const allowed = policy === 'non-strict' && (carrier === 'ordinary' || carrier === 'test-pii');
+      assert.equal(outcome.block.outcome, allowed ? 'pass' : 'fail');
+      assert.equal(f.calls.filter((call) => call === 'pixel shot').length, allowed ? 3 : 0);
+    });
+  }
+}
 
 test('an unchanged chip still fails after two attempts', async () => {
   const before = fixture('chip-before'),
@@ -446,3 +484,65 @@ test('failed baseline recapture prevents dispatch even when comparison bytes are
     );
   }
 });
+
+for (const shot of [1, 2, 3]) {
+  for (const phase of ['before', 'during']) {
+    test(`RedBox in pixel shot ${shot} (${phase}) preserves dispatch safety`, async () => {
+      const before = fixture('toggle1-before');
+      const after = fixture('toggle1-after');
+      const f = fake([option(before)], [before, after, after]);
+      let captures = 0;
+      let shots = 0;
+      let seen = false;
+      let dismissed = false;
+      let selected = false;
+      let overlayDuringShot = false;
+      f.deps.captureScreen = async () => {
+        captures++;
+        const show =
+          (phase === 'before' && captures === [0, 2, 5, 7][shot]) ||
+          overlayDuringShot ||
+          (shot === 1 && seen && !dismissed);
+        overlayDuringShot = false;
+        if (show) {
+          seen = true;
+          return {
+            ...option(before),
+            front: 'dev-redbox',
+            devError: { variant: 'redbox', dismissRef: '@dismiss' },
+          };
+        }
+        return option(before);
+      };
+      f.deps.comparisonScreenshot = async () => {
+        f.calls.push('pixel shot');
+        if (phase === 'during' && ++shots === shot) overlayDuringShot = true;
+        return selected ? after : before;
+      };
+      f.deps.press = async (ref, context) => {
+        context!.authorize();
+        f.calls.push(`press ${ref}`);
+        if (ref === '@dismiss') dismissed = true;
+        else selected = !selected;
+        return { ok: true, proven: false, executed: true };
+      };
+      f.deps.hideDevMenu = async () => assert.fail('RedBox uses its own Dismiss');
+      const outcome = await walkBlock(tap, f.deps);
+      assert.equal(seen, true);
+      assert.deepEqual(
+        f.calls.filter((call) => call.startsWith('press')),
+        shot === 1 ? ['press @dismiss', 'press @option'] : ['press @option'],
+      );
+      if (shot === 1) {
+        assert.equal(selected, true);
+        assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome));
+        assert.deepEqual(
+          outcome.rows.filter((row) => row.retryCause === 'DEV_REDBOX').map((row) => row.devError),
+          [{ variant: 'redbox', dismissal: 1 }],
+        );
+      } else {
+        assert.equal(outcome.refusal?.code, 'DEV_REDBOX_ACTION_UNCERTAIN');
+      }
+    });
+  }
+}

@@ -560,18 +560,145 @@ test('a bare scroll that moves the screen is done after one dispatch', async () 
   assert.equal(f.calls.filter((c) => c === 'scroll down').length, 1);
 });
 
-test('a bare scroll that moves nothing retries once, then fails: never a silent pass', async () => {
+test('a bare scroll that moves nothing twice passes as a typed no-op, never a silent pass', async () => {
   const f = fake([screen(['List bottom'])]);
   const outcome = await walkBlock(block('1. Scroll down\n'), f.deps);
-  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.equal(outcome.failure, undefined);
   assert.equal(f.calls.filter((c) => c === 'scroll down').length, 2);
+  assert.ok(!f.calls.some((c) => c.startsWith('press') || c === 'back'), 'no recovery tap');
   assert.deepEqual(
     f.rows.map((r) => [r.attempt, r.outcome]),
     [
       [1, 'retry'],
-      [2, 'fail'],
+      [2, 'pass'],
     ],
   );
+  const [retry, pass] = f.rows;
+  assert.equal(retry.operationId, pass.operationId);
+  assert.equal(retry.scrollDetail, undefined);
+  assert.deepEqual(pass.scrollDetail, { status: 'no_visible_change', attempts: 2 });
+  // The streamed row is value-free; the ledger row keeps the fixed reason.
+  assert.equal(pass.reason, undefined);
+  assert.match(
+    renderReason(outcome.rows.at(-1)?.reason ?? '', (text) => text),
+    /^SCROLL_NO_VISIBLE_CHANGE: .*not proof that the end of the content was reached/,
+  );
+});
+
+// Every scripted scroll result in order; the last one repeats.
+function scrolls(f: Fake, results: ActResult[]): void {
+  const queue = [...results];
+  f.deps.scroll = async (direction) => {
+    f.calls.push(`scroll ${direction}`);
+    return queue.length > 1 ? queue.shift()! : queue[0];
+  };
+}
+
+const SCROLL_NOT_EXECUTED: ActResult = {
+  ok: false,
+  proven: false,
+  executed: false,
+  mutation: 'none',
+  error: 'the action did not execute',
+};
+
+test('a bare scroll whose dispatch may have mutated fails at once, even on a changed capture', async () => {
+  const f = fake([screen(['List top']), screen(['List bottom'])], {
+    scroll: { ok: false, proven: false, mutation: 'possible', error: 'scroll timed out' },
+  });
+  const outcome = await walkBlock(block('1. Scroll down\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(outcome.failure?.cause, 'scroll_dispatch_failed');
+  assert.equal(f.calls.filter((c) => c === 'scroll down').length, 1);
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /scroll timed out/,
+  );
+});
+
+test('a bare scroll with an error on an otherwise ok result never passes on a changed capture', async () => {
+  const f = fake([screen(['List top']), screen(['List bottom'])], {
+    scroll: { ok: true, proven: false, error: 'scroll settle timed out' },
+  });
+  const outcome = await walkBlock(block('1. Scroll down\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(outcome.failure?.cause, 'scroll_dispatch_failed');
+  assert.equal(f.calls.filter((c) => c === 'scroll down').length, 1);
+});
+
+test('a bare scroll that was not executed never passes, unchanged or changed', async () => {
+  for (const screens of [[screen(['List'])], [screen(['List top']), screen(['List bottom'])]]) {
+    const f = fake(screens, { scroll: SCROLL_NOT_EXECUTED });
+    const outcome = await walkBlock(block('1. Scroll down\n'), f.deps);
+    assert.equal(outcome.block.outcome, 'fail');
+    assert.equal(outcome.failure?.cause, 'scroll_dispatch_failed');
+    assert.ok(f.rows.every((row) => row.scrollDetail === undefined));
+  }
+});
+
+test('a first scroll that was not executed then an unchanged success is no typed no-op', async () => {
+  const f = fake([screen(['List'])]);
+  scrolls(f, [SCROLL_NOT_EXECUTED, { ok: true, proven: false }]);
+  const outcome = await walkBlock(block('1. Scroll down\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(outcome.failure?.cause, 'scroll_dispatch_failed');
+  assert.equal(f.calls.filter((c) => c === 'scroll down').length, 2);
+});
+
+test('a first scroll that was not executed then a moving one passes on the move', async () => {
+  const top = screen(['List top']);
+  const f = fake([top, top, top, screen(['List bottom'])]);
+  scrolls(f, [SCROLL_NOT_EXECUTED, { ok: true, proven: false }]);
+  const outcome = await walkBlock(block('1. Scroll down\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.equal(f.rows.at(-1)?.scrollDetail, undefined);
+});
+
+test('a proven scroll on an unchanged screen still needs the two-attempt no-op gate', async () => {
+  const f = fake([screen(['List bottom'])], { scroll: { ok: true, proven: true } });
+  const outcome = await walkBlock(block('1. Scroll down\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.equal(f.calls.filter((c) => c === 'scroll down').length, 2);
+  assert.deepEqual(f.rows.at(-1)?.scrollDetail, { status: 'no_visible_change', attempts: 2 });
+});
+
+test('a bare scroll that brings a system dialog to the front fails as a context change', async () => {
+  const f = fake([screen(['List']), screen(['Allow'], { front: 'dialog' })]);
+  const outcome = await walkBlock(block('1. Scroll down\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(outcome.failure?.cause, 'scroll_context_changed');
+  assert.equal(f.calls.filter((c) => c === 'scroll down').length, 1);
+});
+
+test('an unchanged bare scroll on an incomplete capture is no typed no-op', async () => {
+  const f = fake([screen(['List'], { coverage: { native: 'incomplete', react: 'complete' } })]);
+  const outcome = await walkBlock(block('1. Scroll down\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.ok(f.rows.every((row) => row.scrollDetail === undefined));
+});
+
+test('a single-attempt unchanged bare scroll still fails', async () => {
+  const f = fake([screen(['List'])]);
+  const outcome = await walkBlock(
+    block('1. Scroll down\n'),
+    f.deps,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { singleAttempt: true },
+  );
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(f.calls.filter((c) => c === 'scroll down').length, 1);
+  assert.ok(f.rows.every((row) => row.scrollDetail === undefined));
+});
+
+test('scroll-until whose target never appears still fails, typed as an absent target', async () => {
+  const f = fake([screen(['Top'])]);
+  const outcome = await walkBlock(block('1. Scroll down until you see "Footer"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(outcome.failure?.cause, 'scroll_target_absent');
 });
 
 test('a press whose handler reports not-ok but whose screen changed is done, not re-dispatched', async () => {

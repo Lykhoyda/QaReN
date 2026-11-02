@@ -38,6 +38,9 @@ pub struct LedgerSummary {
     pub react_coverage_gaps: Vec<ReactCoverageGap>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub react_reconnections: Vec<u64>,
+    // Plain scrolls that passed with no visible change; not proof the content ended.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub no_visible_change_scrolls: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -115,6 +118,12 @@ pub fn summarize(ledger: &Ledger) -> LedgerSummary {
             .map(|row| row.line)
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
+            .collect(),
+        no_visible_change_scrolls: ledger
+            .steps
+            .iter()
+            .filter(|row| row.outcome == "pass" && row.scroll_detail.is_some())
+            .map(|row| row.line)
             .collect(),
         react_coverage_gaps: ledger
             .steps
@@ -1223,6 +1232,60 @@ mod tests {
             }
         }
         assert!(row_line(&ledger.steps[1]).contains("(attempt 2)"));
+    }
+
+    #[test]
+    fn still_scroll_rows_keep_their_typed_detail_and_drop_unknown_ones() {
+        let ledger: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "PASS", "path": "walk", "blocks": [],
+            "steps": [
+                { "block": "b", "line": 2, "attempt": 2, "kind": "step", "resolvedBy": "exact",
+                  "t": 0, "outcome": "pass", "reason": "SCROLL_NO_VISIBLE_CHANGE: still",
+                  "scrollDetail": { "status": "no_visible_change", "attempts": 2 } },
+                { "block": "b", "line": 3, "attempt": 2, "kind": "step", "resolvedBy": "exact",
+                  "t": 0, "outcome": "pass",
+                  "scrollDetail": { "status": "reached_end", "attempts": 2 } },
+                { "block": "b", "line": 4, "attempt": 2, "kind": "step", "resolvedBy": "exact",
+                  "t": 0, "outcome": "pass",
+                  "scrollDetail": { "status": "no_visible_change", "attempts": 2, "proven": true } },
+            ],
+            "jev": { "calls": 0, "medianMs": 0 }, "llmTurns": 0, "escapes": 0, "recoveries": 0,
+        }))
+        .unwrap();
+        let json = serde_json::to_value(&ledger).unwrap();
+        assert_eq!(
+            json["steps"][0]["scrollDetail"],
+            serde_json::json!({ "status": "no_visible_change", "attempts": 2 })
+        );
+        assert!(json["steps"][1].get("scrollDetail").is_none());
+        assert!(json["steps"][2].get("scrollDetail").is_none());
+        let summary = serde_json::to_value(summarize(&ledger)).unwrap();
+        assert_eq!(summary["no_visible_change_scrolls"], serde_json::json!([2]));
+        assert!(row_line(&ledger.steps[0]).contains("SCROLL\\_NO\\_VISIBLE\\_CHANGE"));
+    }
+
+    #[test]
+    fn dev_error_retry_rows_keep_the_variant_and_count_and_drop_unknown_ones() {
+        let ledger: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "PASS", "path": "walk", "blocks": [],
+            "steps": [
+                { "block": "b", "line": 1, "attempt": 1, "kind": "step", "resolvedBy": "exact",
+                  "t": 0, "outcome": "retry", "retryCause": "DEV_REDBOX",
+                  "devError": { "variant": "logbox", "dismissal": 2 } },
+                { "block": "b", "line": 1, "attempt": 1, "kind": "step", "resolvedBy": "exact",
+                  "t": 0, "outcome": "retry", "retryCause": "DEV_REDBOX",
+                  "devError": { "variant": "toast", "dismissal": 1, "text": "stack" } },
+            ],
+            "jev": { "calls": 0, "medianMs": 0 }, "llmTurns": 0, "escapes": 0, "recoveries": 2,
+        }))
+        .unwrap();
+        let json = serde_json::to_value(&ledger).unwrap();
+        assert_eq!(json["steps"][0]["retryCause"], "DEV_REDBOX");
+        assert_eq!(
+            json["steps"][0]["devError"],
+            serde_json::json!({ "variant": "logbox", "dismissal": 2 })
+        );
+        assert!(json["steps"][1].get("devError").is_none());
     }
 
     #[test]

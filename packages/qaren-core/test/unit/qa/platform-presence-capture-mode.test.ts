@@ -51,7 +51,8 @@ test('literal-only plans with unique quoted targets use ordinary capture', async
     f.deps,
   );
   assert.equal(result.verdict, 'PASS');
-  assert.deepEqual(modes, Array(13).fill(false));
+  // The still plain scroll is a typed no-op only after its second attempt's two captures.
+  assert.deepEqual(modes, Array(15).fill(false));
   assert.equal(result.jev.calls, 0);
   assert.equal(JSON.stringify(result).includes('private-value'), false);
 });
@@ -66,7 +67,9 @@ test('standalone semantic checks and checks batched with targetless steps retain
     const modes = traceCaptures(f);
     const result = await runPlan(parsePlan(`✓ The screen is ready${next}`).blocks!, f.deps);
     assert.equal(result.verdict, 'PASS');
-    assert.deepEqual(modes, next ? [true, true, true] : [true, true]);
+    // A still plain scroll's second attempt captures ordinarily.
+    const retry = next.includes('Scroll') ? [false, false] : [];
+    assert.deepEqual(modes, next ? [true, true, true, ...retry] : [true, true]);
     assert.equal(f.deps.now(), WAIT_POLL_MS);
   }
 });
