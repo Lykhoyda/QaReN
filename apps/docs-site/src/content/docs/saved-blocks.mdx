@@ -108,6 +108,8 @@ checked-out login block already names; any other name refuses `PLAN_INPUT_MISSIN
 Its effective sensitivity must also match for every required input, including the strict
 default, so a pull request cannot downgrade an owner's secret slot.
 
-An observed React Native red box fails the current step at once and never triggers recovery.
+For development error overlays, follow the
+[step recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#step-recovery),
+including its login replay limits.
 On iOS, a change of the app's process between captures, such as a crash or restart, fails the
 walk with `APP_PROCESS_CHANGED`.

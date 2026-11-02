@@ -3097,10 +3097,14 @@ never by error text. An overlay in front is never read as the app: before a step
 resolves its target, judges a check or evaluates a wait, QaReN presses the
 overlay's own Dismiss control by its exact reference, proves the overlay gone in
 a fresh capture and runs the step again. This is a retry for a known cause, not a
-blind retry: each dismissal writes a `retry` row with `retryCause: DEV_REDBOX`,
-`devError: { variant, dismissal }` and the attempt number, and counts in
-`recoveries`. A step gets at most three dismissals; the count is per step and is
-separate from the step's two interruption recoveries. Reload and Copy are never
+blind retry: each successful dismissal writes a `retry` row with `retryCause: DEV_REDBOX`,
+`devError: { variant, dismissal }` and the step attempt number; a failed dismissal
+records its variant and dismissal number on the terminal `fail` row. Every
+dismissal attempt counts in `recoveries`. A step gets at most three dismissals,
+including across saved replay falling back to a walk. Dismissal, clearance and
+resumed execution share the step's existing deadline; overlay recovery never
+renews it. The dismissal count is separate from the step's two interruption
+recoveries. Reload and Copy are never
 pressed, and Dismiss is not proof that the step's own action worked.
 
 When the overlay cannot be cleared this way the run refuses with
@@ -3138,7 +3142,7 @@ capture. If it fails again, a second recovery may decline a different system pro
 interruption once the first is proven gone. An app interruption with the same decline label
 fails with `the app interruption did not disappear`; a different kind of interruption or
 decline label may be eligible, subject to the same guards on each recovery. A step never
-gets more than two recoveries. The order is owned by [`recover.ts`](../qaren-core/src/qa/recover.ts): a
+gets more than two interruption recoveries. The order is owned by [`recover.ts`](../qaren-core/src/qa/recover.ts): a
 recognized system prompt met during an ordinary app step is declined, never accepted
 (only an explicit `Allow the permission prompt` or `Accept the dialog` step accepts, and a
 dialog is left to the plan when its next step is a dialog step). Recovery declines a given
@@ -3164,7 +3168,7 @@ failed; `escapes` and `llmTurns`
 stay `0`. Login fills are masked like plan fills; see [Video publication](#video-publication)
 for recording eligibility.
 
-Recovery counts as a device mutation for replay eligibility: a selector miss
+Interruption recovery counts as a device mutation for replay eligibility: a selector miss
 after recovery is terminal and never initiates another re-walk. The second ordinary
 action attempt captures fresh evidence but gets no additional expiry refresh;
 phrase actions retain presence capture through readback and retries.
