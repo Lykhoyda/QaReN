@@ -322,19 +322,45 @@ test('ANT-848: Back hiding only the keyboard never permits Close or Skip on plan
   }
 });
 
-test('an unsolicited sheet after a planned Accept closes identified consent is dismissed once', async () => {
+test('an unsolicited sheet after the identified Accept destination departs is dismissed once', async () => {
   const consent = () => withModal(screen([element('@accept', 'Accept'), close('Skip')]), 'consent');
-  const home = () => withModal(screen([element('@home', 'Home', { kind: 'text' })]));
+  const home = () => withModal(screen([element('@home', 'Home', { kind: 'text' })]), 'home');
   const sheet = () => withModal(screen([close()]), 'offer');
   const f = app(opener(), { '@open': consent, '@accept': home, '@close': ready });
-  f.deps.row = (row) => {
-    if (row.line === 2 && row.outcome === 'pass') f.show(sheet());
+  f.deps.back = async () => {
+    f.actions.push('back');
+    f.show(sheet());
+    return { ok: true, proven: true, executed: true };
   };
-  const result = await run('1. Tap "Open"\n2. Tap "Accept"\n3. Wait for "Ready" to appear', f);
+  const result = await run(
+    '1. Tap "Open"\n2. Tap "Accept"\n3. Go back\n4. Wait for "Ready" to appear',
+    f,
+  );
   assert.equal(result.verdict, 'PASS', result.failure?.seen);
-  assert.deepEqual(f.actions, ['press @open', 'press @accept', 'press @close']);
+  assert.deepEqual(f.actions, ['press @open', 'press @accept', 'back', 'press @close']);
   assert.equal(result.recoveries, 1);
   assert.ok(!f.vetoes.includes('previous-plan-press'));
+});
+
+test('Accept re-arms protection for an unidentified onboarding destination and later sheet', async () => {
+  for (const laterSheet of [false, true]) {
+    const consent = () =>
+      withModal(screen([element('@accept', 'Accept'), close('Close')]), 'consent');
+    const onboarding = () =>
+      withModal(screen([element('@heading', 'Onboarding', { kind: 'text' }), close('Skip')]));
+    const f = app(opener(), { '@open': consent, '@accept': onboarding, '@close': ready });
+    if (laterSheet) {
+      f.deps.row = (row) => {
+        if (row.line === 2 && row.outcome === 'pass') f.show(withModal(screen([close()]), 'offer'));
+      };
+    }
+    const result = await run('1. Tap "Open"\n2. Tap "Accept"\n3. Wait for "Ready" to appear', f);
+    assert.equal(result.verdict, 'FAIL');
+    assert.equal(result.failure?.step, 3);
+    assert.equal(result.failure?.subreason, 'previous-plan-press');
+    assert.deepEqual(f.actions, ['press @open', 'press @accept']);
+    assert.equal(result.recoveries, 0);
+  }
 });
 
 test('scrolling every original consent element offscreen never permits dismissal', async () => {

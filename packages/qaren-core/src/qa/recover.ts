@@ -227,19 +227,11 @@ function modalContainers(screen: Screen): Array<string | undefined> | undefined 
   });
 }
 
-export function plannedSurface(after: Screen, before?: Screen): PlannedSurface | undefined {
+export function plannedSurface(after: Screen, before?: Screen): PlannedSurface {
   const containers = after.front === 'app' ? modalContainers(after) : undefined;
   const previous = before ? modalContainers(before) : undefined;
   if (containers?.length === 1 && containers[0] && !previous?.includes(containers[0]))
     return { container: containers[0] };
-  if (
-    after.front === 'app' &&
-    completeCapture(after) &&
-    containers?.length === 0 &&
-    previous?.length === 1 &&
-    previous[0]
-  )
-    return undefined;
   return {};
 }
 

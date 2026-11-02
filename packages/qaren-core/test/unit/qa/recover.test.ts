@@ -249,7 +249,7 @@ test('only complete container absence expires an identified planned surface', ()
   assert.equal(surfaceGone(at('consent'), surface), false);
   assert.equal(surfaceGone(at('offer'), surface), true);
   assert.equal(surfaceGone(at(), surface), true);
-  assert.equal(plannedSurface(at(), at('consent')), undefined);
+  assert.equal(surfaceGone(at(), plannedSurface(at(), at('consent'))), false);
   assert.equal(surfaceGone({ ...at(), front: 'dialog' }, surface), false);
   assert.equal(
     surfaceGone({ ...at(), coverage: { native: 'incomplete', react: 'complete' } }, surface),

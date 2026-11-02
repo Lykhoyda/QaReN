@@ -3180,9 +3180,11 @@ stay in memory and are never written to the ledger or logs.
 Protection crosses block and replay boundaries and retries. Waits, checks, fills,
 scrolls and keyboard-only Back never establish departure. Only a complete native
 and React capture with complete host structure proving the identified container
-absent can expire protection. A planned Accept that closes an identified modal
-without opening another modal releases protection; a later unsolicited sheet can
-then be dismissed. Recovery's decline presses and login presses never arm it.
+absent can expire protection. A planned Accept re-arms protection for its own
+destination, even when it closes an identified modal. If that destination has no
+identifiable container, protection remains on, including against later sheets.
+When an identified destination is proven gone, later unsolicited sheets can be
+dismissed. Recovery's decline presses and login presses never arm it.
 Login replay also clears the withheld-dismissal diagnostic for the retried item.
 While protected, recovery still answers system
 prompts and dev menus and still replays login, but withholds every app decline,
