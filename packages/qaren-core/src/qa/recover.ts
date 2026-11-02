@@ -138,11 +138,7 @@ export function dismissCandidate(
     return undefined;
   };
   if (screen.front !== 'app') return rejected('front');
-  if (
-    (screen.captureCoverage?.native ?? screen.coverage?.native) !== 'complete' ||
-    screen.coverage?.react !== 'complete'
-  )
-    return rejected('coverage');
+  if (!completeCapture(screen)) return rejected('coverage');
   if (!planTargets.length) return rejected('current-target', 0);
   const targetIndex = planTargets.findIndex(
     (target, index) =>
@@ -209,6 +205,41 @@ export function dismissCandidate(
       return [{ index, failed, ...(association ? { association } : {}) }];
     }),
   );
+}
+
+const completeCapture = (screen: Screen): boolean =>
+  (screen.captureCoverage?.native ?? screen.coverage?.native) === 'complete' &&
+  screen.coverage?.react === 'complete';
+
+// Memory-only identities of on-screen elements: test ID, else kind and label.
+const surfaceKeys = (screen: Screen): Set<string> =>
+  new Set(
+    screen.elements.flatMap((e) =>
+      e.offscreen
+        ? []
+        : e.testID !== undefined
+          ? [`id:${e.testID}`]
+          : e.label !== undefined
+            ? [`${e.kind}:${e.label}`]
+            : [],
+    ),
+  );
+
+// The surface a planned press opened: what it brought on screen, else all it shows. Empty while a
+// system surface hides it; the caller then adopts the next app screen recovery sees.
+export function plannedSurface(after: Screen, before?: Screen): ReadonlySet<string> {
+  if (after.front !== 'app') return new Set();
+  const shown = surfaceKeys(after);
+  const kept = before ? surfaceKeys(before) : new Set<string>();
+  const added = new Set([...shown].filter((key) => !kept.has(key)));
+  return added.size ? added : shown;
+}
+
+// Only a complete capture can show the planned surface gone; anything less keeps it protected.
+export function surfaceGone(screen: Screen, surface: ReadonlySet<string>): boolean {
+  if (!completeCapture(screen)) return false;
+  const present = surfaceKeys(screen);
+  return ![...surface].some((key) => present.has(key));
 }
 
 function hasPlannedReactAncestor(

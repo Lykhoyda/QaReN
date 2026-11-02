@@ -294,6 +294,56 @@ test('ANT-848: Back hiding only the keyboard never permits Close or Skip on plan
   }
 });
 
+// The consent the plan opens, closed by Go back onto Home; a sheet then covers the next target.
+function consentThenSheet(consentDecline: string) {
+  const consent = () =>
+    screen([element('@heading', 'Consent', { kind: 'text' }), close(consentDecline)]);
+  const home = () => screen([element('@home', 'Home', { kind: 'text' })]);
+  const sheet = () => screen([element('@home', 'Home', { kind: 'text' }), close('Close')]);
+  const f = app(opener(), { '@open': consent, '@close': ready });
+  f.deps.back = async () => {
+    f.actions.push('back');
+    f.show(home());
+    return { ok: true, proven: true, executed: true };
+  };
+  f.deps.row = (row) => {
+    if (row.line === 2 && row.outcome === 'pass') f.show(sheet());
+  };
+  return f;
+}
+
+test('an unsolicited sheet after the planned consent closed is dismissed once', async () => {
+  const f = consentThenSheet('Skip');
+  const result = await run('1. Tap "Open"\n2. Go back\n3. Wait for "Ready" to appear', f);
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['press @open', 'back', 'press @close']);
+  assert.equal(result.recoveries, 1);
+  assert.ok(!f.vetoes.includes('previous-plan-press'));
+});
+
+test('a later sheet sharing the closed consent decline label stays protected', async () => {
+  // Label-only identities cannot tell the two Close controls apart, so recovery refuses rather than guess.
+  const f = consentThenSheet('Close');
+  const result = await run('1. Tap "Open"\n2. Go back\n3. Wait for "Ready" to appear', f);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, ['press @open', 'back']);
+  assert.equal(result.failure?.subreason, 'previous-plan-press');
+});
+
+test('a sheet that the planned press opened with its screen stays protected after a passing wait', async () => {
+  const sheetHome = () =>
+    screen([element('@sheet', 'Sheet', { kind: 'text' }), element('@card', 'Card'), close()]);
+  const f = app(opener(), { '@open': sheetHome, '@close': ready });
+  const result = await run(
+    '1. Tap "Open"\n2. Wait for "Sheet" to appear\n3. Wait for "Ready" to appear',
+    f,
+  );
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, ['press @open']);
+  assert.equal(result.failure?.step, 3);
+  assert.equal(result.failure?.subreason, 'previous-plan-press');
+});
+
 test('an unsolicited sheet before any planned press still recovers', async () => {
   const f = app(destination(), { '@close': ready });
   const result = await run('1. Wait for "Ready" to appear', f);

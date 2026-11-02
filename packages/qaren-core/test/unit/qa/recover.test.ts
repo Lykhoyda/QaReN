@@ -1,6 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dismissCandidate, recover } from '../../../dist/qa/recover.js';
+import {
+  dismissCandidate,
+  plannedSurface,
+  recover,
+  surfaceGone,
+} from '../../../dist/qa/recover.js';
 import type { RecoverDeps } from '../../../dist/qa/recover.js';
 import {
   ancestorsOf,
@@ -212,6 +217,37 @@ test('a target after a planned press withholds the decline, including ambiguous 
   assert.equal(dismissCandidate(sheetScreen(true, []), [after], record), undefined);
   assert.equal(vetoes.length, 1);
   assert.notEqual(vetoes[0], 'previous-plan-press');
+});
+
+test('a planned surface is what the press added, and only a complete capture shows it gone', () => {
+  const complete = { native: 'complete', react: 'complete' } as const;
+  const at = (labels: string[], extra: Partial<Screen> = {}): Screen =>
+    screen('app', {
+      elements: labels.map((label, i) => ({
+        ref: `@${i}`,
+        kind: 'button',
+        label,
+        hittable: true,
+        disabled: false,
+        secure: false,
+        offscreen: false,
+      })),
+      coverage: complete,
+      ...extra,
+    });
+  const surface = plannedSurface(at(['Back', 'Consent', 'Skip']), at(['Back', 'Open']));
+  assert.deepEqual([...surface].sort(), ['button:Consent', 'button:Skip']);
+  assert.deepEqual([...plannedSurface(at(['Same']), at(['Same']))], ['button:Same']);
+  assert.equal(plannedSurface({ ...at(['Allow']), front: 'dialog' }).size, 0);
+  assert.equal(surfaceGone(at(['Back', 'Skip']), surface), false);
+  assert.equal(surfaceGone(at(['Back', 'Home']), surface), true);
+  assert.equal(
+    surfaceGone(
+      at(['Back', 'Home'], { coverage: { native: 'incomplete', react: 'complete' } }),
+      surface,
+    ),
+    false,
+  );
 });
 
 test('an uncovered id target still vetoes recovery', () => {

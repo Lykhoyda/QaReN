@@ -96,7 +96,9 @@ import {
   type LoginMarker,
   type RecoveryTarget,
   dismissCandidate,
+  plannedSurface,
   recover,
+  surfaceGone,
 } from './recover.js';
 import type {
   BlockOutcome,
@@ -409,7 +411,8 @@ export interface WalkSequence {
   window?: { fromMs: number; typed: number };
   // System prompts recovery declined in this run; a repeat ask is the plan author's to answer.
   declinedPrompts?: Set<string>;
-  plannedPress?: boolean;
+  // Memory-only keys of the surface the last accepted planned press opened; recovery never declines it.
+  plannedPress?: ReadonlySet<string>;
 }
 
 function recordMediaLatch(
@@ -552,6 +555,8 @@ async function walkBlockScoped(
   let resolvedBy: LedgerRow['resolvedBy'] = 'exact';
   let cached: { item: Item; observation: Observation; decision: ScreenDecision } | undefined;
   let latest: Screen = { elements: [], visibleText: [], front: 'app' };
+  // The screen before the current item ran, so a planned press's surface is what it added.
+  let itemBase: Screen | undefined;
   let line = 0;
   let mutationStarted = false;
   // The Fill ladder rung of the current item's last fill dispatch, and when the item began.
@@ -1217,7 +1222,7 @@ async function walkBlockScoped(
         opts.recover !== false &&
         block.items.some((item) => item.line === row.line && item.kind === 'press')
       )
-        sequence.plannedPress = true;
+        sequence.plannedPress = plannedSurface(latest, itemBase);
     }
     rows.push(timed);
     deps.row(valueFree(timed));
@@ -2009,6 +2014,9 @@ async function walkBlockScoped(
           await shoot(item),
         );
     }
+    const surface = sequence.plannedPress;
+    if (surface?.size === 0) sequence.plannedPress = plannedSurface(fresh.screen);
+    else if (surface && surfaceGone(fresh.screen, surface)) sequence.plannedPress = undefined;
     const planTargets = [
       {
         ...(recoveryTarget(item) ?? { phrase: '' }),
@@ -2213,6 +2221,7 @@ async function walkBlockScoped(
       continue;
     }
     pressVetoed = undefined;
+    itemBase = latest;
     mutationStarted = false;
     fillMethod = undefined;
     fillMismatch = undefined;
