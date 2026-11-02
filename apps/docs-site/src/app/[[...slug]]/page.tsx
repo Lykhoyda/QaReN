@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, ResolvingMetadata } from 'next';
 import { notFound } from 'next/navigation';
 import { content } from '../../content.ts';
 import { DocsLayout } from '../../design/DocsLayout.tsx';
@@ -18,14 +18,22 @@ async function pageFor(props: Props): Promise<Page> {
   return pages.find((page) => page.slug === slug) ?? notFound();
 }
 
-export async function generateMetadata(props: Props): Promise<Metadata> {
+export async function generateMetadata(
+  props: Props,
+  parent: ResolvingMetadata,
+): Promise<Metadata> {
   const page = await pageFor(props);
   const url = `${BASE_PATH}${pagePath(page.slug)}`;
   return {
     title: page.title,
     description: page.description,
     alternates: { canonical: url },
-    openGraph: { title: page.title, description: page.description, url },
+    openGraph: {
+      ...(await parent).openGraph,
+      title: page.title,
+      description: page.description,
+      url,
+    },
   };
 }
 
