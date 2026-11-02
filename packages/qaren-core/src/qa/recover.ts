@@ -1,12 +1,6 @@
 import type { Target } from './plan.js';
-import {
-  ancestorsOf,
-  elementFrame,
-  hostAssociationIdentity,
-  type Element,
-  type Screen,
-} from './screen.js';
-import type { HostAssociationDiagnostic } from './host-association.js';
+import { ancestorsOf, hostAssociationIdentity, type Element, type Screen } from './screen.js';
+import { hostPath, type HostAssociationDiagnostic } from './host-association.js';
 import { targetOnScreen } from './resolve.js';
 import type { Reason } from './untrusted.js';
 import type { ActResult } from './walker.js';
@@ -159,9 +153,6 @@ export function dismissCandidate(
   );
   if (targetIndex !== -1)
     return rejected(targetIndex === 0 ? 'current-target' : 'later-target', targetIndex);
-  const protectedTargets = screen.elements.filter((e) =>
-    planTargets.some((target) => matchesTarget(e, target)),
-  );
   const failedPredicate = (
     e: Element,
   ): InterruptionDiagnostic['elements'][number]['failed'] | undefined => {
@@ -172,22 +163,11 @@ export function dismissCandidate(
     if (e.semantic.visibility !== 'visible') return 'not-visible';
     if (e.secure) return 'secure';
     if (
-      protectedTargets.some((target) => {
-        if (target === e || ancestorsOf(e).includes(target)) return true;
-        // Native trees can flatten containers; containment only vetoes a dismissal.
-        const outer = elementFrame(target);
-        const inner = elementFrame(e);
-        return (
-          outer !== undefined &&
-          inner !== undefined &&
-          inner.width > 0 &&
-          inner.height > 0 &&
-          inner.x >= outer.x &&
-          inner.y >= outer.y &&
-          inner.x + inner.width <= outer.x + outer.width &&
-          inner.y + inner.height <= outer.y + outer.height
-        );
-      })
+      matchesTarget(e, planTargets[0]) ||
+      ancestorsOf(e).some((ancestor) =>
+        planTargets.some((target) => matchesTarget(ancestor, target)),
+      ) ||
+      hasPlannedReactAncestor(screen, e, planTargets)
     )
       return 'target-ancestor';
     return undefined;
@@ -225,7 +205,39 @@ export function dismissCandidate(
   );
 }
 
-function matchesTarget(element: Element, target: Target): boolean {
+function hasPlannedReactAncestor(
+  screen: Screen,
+  element: Element,
+  targets: readonly RecoveryTarget[],
+): boolean {
+  const evidence = screen.reactHostEvidence;
+  const typography = evidence?.typography;
+  if (!element.testID || !evidence?.complete || !typography?.complete) return false;
+  return evidence.hosts.some((host, index) => {
+    if (host.testID !== element.testID) return false;
+    for (const parent of hostPath(typography, index)?.slice(1) ?? []) {
+      const id = evidence.hosts[parent]?.testID;
+      if (
+        id &&
+        targets.some(
+          (target) =>
+            matchesTarget({ testID: id }, target) ||
+            screen.elements.some((e) => e.testID === id && matchesTarget(e, target)),
+        )
+      )
+        return true;
+      const type = typography.nodes[parent].hostType;
+      // A modal is a separate surface; its React parents do not own the controls inside it.
+      if (type === 'Modal' || type === 'RCTModalHostView') break;
+    }
+    return false;
+  });
+}
+
+function matchesTarget(
+  element: Pick<Element, 'testID' | 'label' | 'semantic'>,
+  target: Target,
+): boolean {
   return (
     target.quoted !== undefined &&
     ((target.exact !== 'text' && element.testID === target.quoted) ||

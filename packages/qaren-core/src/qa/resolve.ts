@@ -467,14 +467,7 @@ export function clearanceBand(element: Element, screen: Screen): NativeNode['rec
   const behind = floor ? screen.elements.indexOf(floor) : 0;
   for (const [i, other] of screen.elements.entries()) {
     // An overlay is a touchable non-text element outside the target's own lineage whose frame straddles a band edge.
-    if (
-      lineage.has(other) ||
-      ancestorsOf(other).includes(element) ||
-      other.kind === 'text' ||
-      other.offscreen ||
-      !other.hittable
-    )
-      continue;
+    if (lineage.has(other) || other.kind === 'text' || other.offscreen || !other.hittable) continue;
     // Rows of the target's own list, and anything drawn before that list or its window, lie under it, never over it.
     if (i < behind || (container && ancestorsOf(other).includes(container))) continue;
     if (

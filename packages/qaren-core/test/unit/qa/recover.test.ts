@@ -2,7 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { dismissCandidate, recover } from '../../../dist/qa/recover.js';
 import type { RecoverDeps } from '../../../dist/qa/recover.js';
-import { join, type NativeNode, type Screen } from '../../../dist/qa/screen.js';
+import {
+  ancestorsOf,
+  hostAssociationIdentity,
+  join,
+  type NativeNode,
+  type ReactHostEvidence,
+  type Screen,
+} from '../../../dist/qa/screen.js';
 import { centreCovered, targetEvidence } from '../../../dist/qa/resolve.js';
 import { parsePlan, type Target } from '../../../dist/qa/plan.js';
 import { runPlan } from '../../../dist/qa/walker.js';
@@ -235,61 +242,95 @@ for (const exact of [undefined, 'text', 'id'] as const) {
   });
 }
 
-function plannedSheetScreen(exact: 'id' | 'text', flattenedClose = false): Screen {
-  const rect = { x: 0, y: 0, width: 400, height: 800 };
+function flattenedSheetScreen(label?: string): Screen {
+  const window = { x: 0, y: 0, width: 402, height: 874 };
+  const sheet = { x: 0, y: 62, width: 402, height: 812 };
   const nodes: NativeNode[] = [
-    { ref: '@app', type: 'Application' },
-    { ref: '@window', type: 'Window', parentIndex: 0, rect },
+    { ref: '@app', type: 'Application', rect: window },
+    { ref: '@window', type: 'Window', parentIndex: 0, rect: window },
+    { ref: '@wrapper', type: 'Other', parentIndex: 1, label: 'Close', rect: sheet },
     {
       ref: '@sheet',
       type: 'Other',
-      parentIndex: 1,
-      identifier: exact === 'id' ? 'planned-sheet' : undefined,
-      label: exact === 'text' ? 'Offer' : undefined,
-      hittable: true,
-      rect: { x: 0, y: 300, width: 400, height: 500 },
-    },
-    {
-      ref: '@sheet-body',
-      type: 'Other',
       parentIndex: 2,
+      identifier: 'qa-sheet',
+      label,
       hittable: true,
-      rect: { x: 0, y: 500, width: 400, height: 300 },
+      rect: sheet,
     },
     {
       ref: '@close',
       type: 'Button',
-      parentIndex: flattenedClose ? 1 : 3,
-      identifier: 'close-control',
+      parentIndex: 2,
+      identifier: 'qa-sheet-close',
       label: 'Close',
       hittable: true,
-      rect: { x: 20, y: 550, width: 100, height: 40 },
+      rect: { x: 326, y: 72.67, width: 62, height: 31.33 },
     },
+    { ref: '@other-window', type: 'Window', parentIndex: 0, rect: window },
   ];
-  return join(nodes, [], 'app', { native: 'complete', react: 'complete' }, undefined, {
-    source: 'xcui-live',
-    nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
-  });
+  const hostEvidence: ReactHostEvidence = {
+    complete: true,
+    hosts: [
+      { testID: 'app-root', role: null, roleSource: 'none', capabilities: {} },
+      { testID: 'qa-sheet-home', role: null, roleSource: 'none', capabilities: {} },
+      { role: null, roleSource: 'none', capabilities: {} },
+      { testID: 'qa-sheet', role: null, roleSource: 'none', capabilities: {} },
+      {
+        testID: 'qa-sheet-close',
+        role: 'button',
+        roleSource: 'role',
+        capabilities: { press: true },
+      },
+    ],
+    typography: {
+      version: 1,
+      complete: true,
+      durationMs: 1,
+      coordinateSpace: 'window-points',
+      nodes: [
+        window,
+        window,
+        { ...sheet, y: 0 },
+        { ...sheet, y: 0 },
+        { x: 326, y: 10.67, width: 62, height: 31.33 },
+      ].map((rect, hostIndex) => ({
+        hostIndex,
+        parentHostIndex: hostIndex === 0 ? null : hostIndex - 1,
+        rootIndex: 0,
+        hostType: hostIndex === 2 ? 'RCTModalHostView' : 'RCTView',
+        rect,
+        text: { kind: 'none' },
+      })),
+    },
+  };
+  return join(
+    nodes,
+    [
+      { testID: 'qa-sheet-home', role: 'view' },
+      { testID: 'qa-sheet', role: 'view', label },
+      { testID: 'qa-sheet-close', role: 'button', label: 'Close' },
+    ],
+    'app',
+    { native: 'complete', react: 'complete' },
+    hostEvidence,
+    {
+      source: 'xcui-live',
+      nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+    },
+  );
 }
 
-for (const exact of ['id', 'text'] as const) {
-  test(`a planned sheet is not covered by its own body (${exact})`, () => {
-    const snapshot = plannedSheetScreen(exact);
-    assert.equal(centreCovered(snapshot.elements[2], snapshot), false);
-    if (exact === 'id')
-      assert.equal(
-        targetEvidence({ phrase: 'planned-sheet', quoted: 'planned-sheet', exact }, snapshot),
-        'pass',
-      );
-  });
-
-  test(`a planned sheet protects Close when native ancestry is flattened (${exact})`, async () => {
-    const snapshot = plannedSheetScreen(exact, true);
-    const quoted = exact === 'id' ? 'planned-sheet' : 'Offer';
-    const targets = [
-      { phrase: 'Absent', quoted: 'Absent' },
-      { phrase: quoted, quoted, exact, laterBlock: true },
-    ];
+for (const exact of [undefined, 'id', 'text'] as const) {
+  test(`a flattened modal protects its planned container despite the presentation offset (${exact})`, async () => {
+    const quoted = exact === 'text' ? 'Offer' : 'qa-sheet';
+    const snapshot = flattenedSheetScreen(exact === 'text' ? quoted : undefined);
+    const close = snapshot.elements.find((e) => e.testID === 'qa-sheet-close')!;
+    const sheet = snapshot.elements.find((e) => e.testID === 'qa-sheet')!;
+    assert.equal(ancestorsOf(close).includes(sheet), false);
+    assert.equal(hostAssociationIdentity(close), 'frame-mismatch');
+    assert.equal(hostAssociationIdentity(sheet), 'frame-mismatch');
+    assert.equal(centreCovered(sheet, snapshot), false);
     let presses = 0;
     const d = deps({
       dismiss: async () => {
@@ -297,17 +338,98 @@ for (const exact of ['id', 'text'] as const) {
         return 'pass';
       },
     });
-    assert.equal(await recover(snapshot, d.deps, undefined, targets), undefined);
+    assert.equal(
+      await recover(snapshot, d.deps, undefined, [
+        { phrase: 'Item 1', quoted: 'Item 1' },
+        { phrase: quoted, quoted, exact, laterBlock: true },
+      ]),
+      undefined,
+    );
     assert.equal(presses, 0);
   });
+}
 
-  test(`a covered Close control cannot be its own recovery action (${exact})`, () => {
-    const snapshot = plannedSheetScreen(exact, true);
-    const quoted = exact === 'id' ? 'close-control' : 'Close';
-    assert.equal(centreCovered(snapshot.elements[4], snapshot), true);
+for (const type of ['Modal', 'RCTModalHostView']) {
+  test(`a modal host separates its controls from the underlying React home (${type})`, () => {
+    const snapshot = flattenedSheetScreen();
+    snapshot.reactHostEvidence!.typography!.nodes[2].hostType = type;
+    assert.deepEqual(
+      dismissCandidate(snapshot, [
+        { phrase: 'Item 1', quoted: 'Item 1' },
+        { phrase: 'qa-sheet-home', quoted: 'qa-sheet-home', exact: 'id', laterBlock: true },
+      ]),
+      { label: 'Close' },
+    );
+  });
+}
+
+for (const exact of ['id', 'text'] as const) {
+  test(`a covered planned decline control is not used as recovery (${exact})`, () => {
+    const nodes: NativeNode[] = [
+      { ref: '@app', type: 'Application' },
+      {
+        ref: '@window',
+        type: 'Window',
+        parentIndex: 0,
+        rect: { x: 0, y: 0, width: 400, height: 800 },
+      },
+      {
+        ref: '@close',
+        type: 'Button',
+        parentIndex: 1,
+        identifier: 'close',
+        label: 'Close',
+        hittable: true,
+        rect: { x: 20, y: 450, width: 100, height: 40 },
+      },
+      {
+        ref: '@overlay',
+        type: 'Other',
+        parentIndex: 1,
+        hittable: true,
+        rect: { x: 0, y: 400, width: 400, height: 400 },
+      },
+    ];
+    const snapshot = join(nodes, [], 'app', { native: 'complete', react: 'complete' }, undefined, {
+      source: 'xcui-live',
+      nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+    });
+    const quoted = exact === 'id' ? 'close' : 'Close';
+    assert.equal(centreCovered(snapshot.elements[2], snapshot), true);
     assert.equal(dismissCandidate(snapshot, [{ phrase: quoted, quoted, exact }]), undefined);
   });
 }
+
+test('a covered large target containing an unrelated Close frame recovers with one press', async () => {
+  const card: NativeNode = {
+    ref: '@large-home',
+    type: 'Other',
+    parentIndex: 2,
+    identifier: 'large-home',
+    rect: { x: 0, y: 300, width: 400, height: 300 },
+  };
+  let snapshot = sheetScreen(true, ['Close'], [card]);
+  const target = snapshot.elements.find((e) => e.testID === 'large-home')!;
+  assert.equal(centreCovered(target, snapshot), true);
+  assert.deepEqual(dismissCandidate(snapshot, [{ phrase: 'large-home', quoted: 'large-home' }]), {
+    label: 'Close',
+  });
+  const f = walker(
+    [snapshot],
+    scriptedJudge(() => assert.fail('no model needed')),
+  );
+  f.deps.captureScreen = async () => snapshot;
+  f.deps.hideDevMenu = async () => assert.fail('no dev menu');
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    snapshot = sheetScreen(true, [], [card]);
+    return { ok: true, proven: false, executed: true };
+  };
+  const result = await runPlan(parsePlan('1. Wait for "large-home"').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS', `${result.failure?.seen}; actions=${f.actions}`);
+  assert.deepEqual(f.actions, ['press @decline0']);
+  assert.equal(result.recoveries, 1);
+});
 
 for (const exact of [undefined, 'id'] as const) {
   test(`an uncovered id carrier with an offscreen twin still vetoes recovery (${exact})`, () => {
