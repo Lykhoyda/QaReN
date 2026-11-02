@@ -217,6 +217,8 @@ mod tests {
             entry_mismatch: None,
             dialog: None,
             method: None,
+            keyboard_cleared: None,
+            retry_cause: None,
         }
     }
 

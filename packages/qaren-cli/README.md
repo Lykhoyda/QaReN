@@ -761,13 +761,29 @@ semantic change, one or two capture attempts, and `heldPress: not_tried_unsafe`.
 This is a structural heuristic: capture does not prove horizontal scrolling,
 its responder behavior, or a selected-state contract. iOS omits false selected
 state, so an invisible successful toggle and a swallowed tap look alike. QaReN
-sends no second tap or held press that could undo the toggle. The refusal does
-not prove that the app callback failed. The fixed next action is
+sends no held press or second tap. The refusal does not prove that the app callback
+failed. The fixed next action is
 `rerun_then_ask_app_team_expose_selection_in_row_list`. The refusal includes this
 guidance, with N post-tap observations and M milliseconds from tap dispatch to
 the final readback:
 
 > The tap did not change the control's selected state (N observations over M ms); the control sits in a row-shaped scrolling list, which can swallow synthetic taps. Next: re-run once; if it repeats on the same control, ask the app team to make the selection reachable for automated taps (for example by disabling the list's own scrolling for this set) or to expose the selected state another way.
+
+On iOS, before tapping a candidate matching the row-choice heuristic above, QaReN
+attempts to dismiss a visible keyboard through the keyboard guard's dismissal chain
+(a native hide control, then the app's own `Keyboard.dismiss()`). It then requires the
+same target identity and frame across two consecutive captures, re-resolves the target
+and taps it once. The row records `keyboardCleared: native-control | js` only when a
+dismissal tier reports success and the settled capture no longer reports a visible
+keyboard. An unsuccessful dismissal still permits one tap after the target settles;
+it records no clearance. A target that does not settle, changes identity or moves
+from its settled frame before dispatch fails without that tap.
+`RN_KEYBOARD_GUARD=0` turns this pre-tap clearance off.
+
+When that clearance did not run or did not hold, keyboard closure and an unchanged
+capture cannot prove the target did not mutate, even when a peer in the same scroll
+container reports selection. QaReN preserves `PRESS_NOT_REGISTERED` without a second tap
+when the target's selection cannot be verified.
 
 Its ordered
 recovery ladder skips held press as unsafe and app/Metro/runner restart, device

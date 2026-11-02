@@ -218,6 +218,22 @@ export async function dismissKeyboardWithParity(deps: KeyboardDismissDeps): Prom
   );
 }
 
+/** The tier that proved a parity-chain dismissal; none when no tier hid a visible keyboard. */
+export function dismissalTier(result: ToolResult): 'native-control' | 'js' | 'none' {
+  if (result.isError) return 'none';
+  try {
+    const data = (
+      JSON.parse(result.content[0]?.text ?? '{}') as {
+        data?: { dismissed?: unknown; via?: unknown };
+      }
+    ).data;
+    if (data?.dismissed !== true) return 'none';
+    return data.via === 'js' ? 'js' : 'native-control';
+  } catch {
+    return 'none';
+  }
+}
+
 /**
  * #379 KEYBOARD_OCCLUDED auto-heal (JS-first, per D1250's fill pattern).
  * Bounded by construction: retryTap is the raw tap, so a second refusal flows

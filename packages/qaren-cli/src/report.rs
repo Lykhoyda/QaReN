@@ -1194,6 +1194,38 @@ mod tests {
     }
 
     #[test]
+    fn press_rows_keep_keyboard_clearance_and_retry_cause_and_drop_unknown_ones() {
+        let ledger: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "PASS", "path": "walk", "blocks": [],
+            "steps": [
+                { "block": "b", "line": 4, "attempt": 1, "kind": "step", "resolvedBy": "exact",
+                  "t": 0, "outcome": "retry", "keyboardCleared": "js",
+                  "retryCause": "KEYBOARD_SWALLOWED_TAP" },
+                { "block": "b", "line": 4, "attempt": 2, "kind": "step", "resolvedBy": "exact",
+                  "t": 0, "outcome": "pass", "keyboardCleared": "native-control",
+                  "retryCause": "KEYBOARD_SWALLOWED_TAP" },
+                { "block": "b", "line": 5, "attempt": 1, "kind": "step", "resolvedBy": "exact",
+                  "t": 0, "outcome": "pass", "keyboardCleared": "telepathy",
+                  "retryCause": "BAD_LUCK" },
+                { "block": "b", "line": 6, "attempt": 1, "kind": "step", "resolvedBy": "exact",
+                  "t": 0, "outcome": "pass" },
+            ],
+            "jev": { "calls": 0, "medianMs": 0 }, "llmTurns": 0, "escapes": 0, "recoveries": 0,
+        }))
+        .unwrap();
+        let json = serde_json::to_value(&ledger).unwrap();
+        assert_eq!(json["steps"][0]["keyboardCleared"], "js");
+        assert_eq!(json["steps"][1]["keyboardCleared"], "native-control");
+        assert_eq!(json["steps"][1]["retryCause"], "KEYBOARD_SWALLOWED_TAP");
+        for step in [&json["steps"][2], &json["steps"][3]] {
+            for key in ["keyboardCleared", "retryCause"] {
+                assert!(step.get(key).is_none(), "{key}");
+            }
+        }
+        assert!(row_line(&ledger.steps[1]).contains("(attempt 2)"));
+    }
+
+    #[test]
     fn splice_proof_section_appends_or_replaces_and_keeps_every_other_byte() {
         let s = format!("{PROOF_START}\nnew\n{PROOF_END}\n");
         let old = format!("{PROOF_START}\nold\n{PROOF_END}");
