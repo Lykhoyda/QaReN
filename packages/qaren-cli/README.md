@@ -3169,9 +3169,9 @@ ancestry. The React ancestry guard stops at a modal host, so the presenting
 screen does not protect the modal's controls.
 
 A screen the plan's own press opened is never dismissed. Every planned press
-accepted as passed protects the next executable item, including when readback
-establishes success despite a handler error or a delayed system dialog proves
-the press took effect. Protection holds whether or not the pressed control
+accepted as passed protects subsequent executable items until login replay,
+including when readback establishes success despite a handler error or a delayed
+system dialog proves the press took effect. Protection holds whether or not the pressed control
 disappeared, across block and replay boundaries and through retries. Waits, checks, fills, and scrolls retain
 the protection, so interacting with a planned modal or consent screen never
 enables automatic dismissal. Back also retains protection: a changed capture
