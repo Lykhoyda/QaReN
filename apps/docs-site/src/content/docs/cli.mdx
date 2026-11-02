@@ -25,7 +25,7 @@ qaren pr <number|url> --plan-file <plan.md> [options]
 ```
 
 Walks the plan on a detached worktree at the pull request's head. Takes the same flags as
-[`check`](../check/#flags). See [Test a pull request](../pull-requests/) for recording support.
+[`check`](../check/#flags) except the check-only inspection controls. See [Test a pull request](../pull-requests/) for recording support.
 
 ## qaren publish
 
@@ -70,10 +70,12 @@ qaren cleanup <run-id> [--json]
 qaren cleanup <run-id> [--json] --remove-app --confirm-remove-app <run-id>/<remote-serial>/<app-id>
 ```
 
-Releases what a run left behind when its teardown could not prove a resource gone, then
+Releases resources retained for inspection or left behind by incomplete teardown, then
 releases its device lease. Use it when a receipt's `next_action` names it. Cleanup only
 touches resources the run recorded as its own; anything it cannot prove is listed and left
 alone.
+See the [iOS admission and cleanup contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup)
+for inspection holds and their release.
 
 `--remove-app` also uninstalls the app, and its data, that the run installed on its leased
 Android emulator. It needs `--confirm-remove-app` naming exactly this run, its recorded
