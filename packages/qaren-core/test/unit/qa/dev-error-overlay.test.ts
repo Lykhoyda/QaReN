@@ -76,6 +76,23 @@ test('the native RedBox is a development error front with its own Dismiss contro
   );
 });
 
+test('Android native RedBox uses its own Dismiss resource rather than an app Dismiss button', () => {
+  const nodes = tree(appContent, [
+    { type: 'Other', rect: FULL, identifier: 'rn_redbox_stack' },
+    { type: 'Button', label: 'Dismiss', identifier: 'rn_redbox_dismiss_button' },
+    { type: 'Button', label: 'Reload', identifier: 'rn_redbox_reload_button' },
+  ]);
+  assert.equal(frontFromSurface(undefined, nodes), 'dev-redbox');
+  assert.deepEqual(devErrorOverlay(nodes), {
+    variant: 'redbox',
+    dismissRef: nodes.find((node) => node.identifier === 'rn_redbox_dismiss_button')!.ref,
+  });
+  assert.deepEqual(
+    devErrorOverlay(tree([{ type: 'Other', rect: FULL, identifier: 'rn_redbox_stack' }])),
+    { variant: 'redbox' },
+  );
+});
+
 test('the LogBox inspector is recognized by its fixed header and footer in one window', () => {
   const nodes = tree(appContent, logbox('error'));
   assert.equal(frontFromSurface(undefined, nodes), 'dev-redbox');

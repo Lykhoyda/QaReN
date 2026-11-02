@@ -1672,6 +1672,8 @@ const REDBOX_IDENTIFIERS = new Set([
   'redbox-copy',
   'redbox-extra',
   'redbox-error',
+  'rn_redbox_stack',
+  'rn_redbox_dismiss_button',
 ]);
 const LOGBOX_HEADER = /^Log \d+ of \d+$/u;
 
@@ -1687,7 +1689,10 @@ function windowOf(nodes: NativeNode[], index: number): number | undefined {
 // Identified by the fixed identifiers and controls React Native gives the overlay, never by error text.
 export function devErrorOverlay(nodes: NativeNode[]): DevErrorOverlay | undefined {
   if (nodes.some((node) => REDBOX_IDENTIFIERS.has(node.identifier ?? ''))) {
-    const dismiss = nodes.filter((node) => node.identifier === 'redbox-dismiss');
+    const dismiss = nodes.filter(
+      (node) =>
+        node.identifier === 'redbox-dismiss' || node.identifier === 'rn_redbox_dismiss_button',
+    );
     return { variant: 'redbox', ...(dismiss.length === 1 ? { dismissRef: dismiss[0].ref } : {}) };
   }
   const byWindow = new Map<number | undefined, number[]>();
