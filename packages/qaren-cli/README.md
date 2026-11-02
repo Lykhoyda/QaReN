@@ -456,6 +456,12 @@ qaren check --plan-file plan.md --device <simulator-UUID> --json
 qaren check --platform android --plan-file plan.md --device emulator-5554 --json
 ```
 
+`qaren check` reports progress on stderr. Metro readiness prints
+`✓ metro_ready` or `✗ metro_ready` with its duration; `▸ expo-start` only
+announces the server launch. Stopping that process during cleanup does not
+change a passed readiness mark. Set `QAREN_PROGRESS=plain` to force line output
+or `QAREN_PROGRESS=off` to disable progress.
+
 The configuration keys, defaults and validation are owned by
 [`src/config.rs`](src/config.rs). Both platforms require `appId` and
 `devClientScheme`; only `pnpm` is supported as the app package manager.

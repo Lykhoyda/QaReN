@@ -3,8 +3,13 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::core::Row;
+use crate::events::StageState;
 
 const QUICK: Duration = Duration::from_secs(1);
+// A server's lifetime is not its readiness; cleanup's TERM ends it non-zero after a passed stage.
+const SERVERS: [&str; 1] = ["expo-start"];
+// Stages projected into progress; their state, not a process exit, carries the mark.
+const STAGES: [&str; 1] = ["metro_ready"];
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 // ponytail: one process-wide reporter; `check` is the only verb that enables it.
@@ -33,11 +38,42 @@ impl Progress {
         if self.closed {
             return;
         }
+        if SERVERS.contains(&label) {
+            self.commit(&format!("▸ {label}"));
+            return;
+        }
         self.active.push((label.to_string(), now));
         if background && !self.live {
             self.commit(&format!("▸ {label}"));
         }
         self.redraw(now);
+    }
+
+    pub fn stage(&mut self, name: &str, state: StageState, now: Instant) {
+        if self.closed || !STAGES.contains(&name) {
+            return;
+        }
+        let open = self.active.iter().rposition(|(l, _)| l == name);
+        if state == StageState::Running {
+            if open.is_none() {
+                self.active.push((name.to_string(), now));
+            }
+        } else if let Some(i) = open {
+            let (_, began) = self.active.remove(i);
+            let took = elapsed(now.saturating_duration_since(began));
+            match state {
+                StageState::Passed => self.commit(&format!("✓ {name}  {took}")),
+                StageState::Failed => self.commit(&format!("✗ {name}  {took}")),
+                _ => {}
+            }
+        }
+        self.redraw(now);
+    }
+
+    pub fn close_stages(&mut self, state: StageState, except: &[&str], now: Instant) {
+        for name in STAGES.into_iter().filter(|n| !except.contains(n)) {
+            self.stage(name, state, now);
+        }
     }
 
     pub fn finished(&mut self, label: &str, ok: bool, now: Instant) {
@@ -163,6 +199,14 @@ pub fn finished(label: &str, ok: bool) {
     with(|p| p.finished(label, ok, Instant::now()));
 }
 
+pub fn stage(name: &str, state: StageState) {
+    with(|p| p.stage(name, state, Instant::now()));
+}
+
+pub fn close_stages(state: StageState, except: &[&str]) {
+    with(|p| p.close_stages(state, except, Instant::now()));
+}
+
 pub fn row(row: &Row) {
     with(|p| p.row(row, Instant::now()));
 }
@@ -246,6 +290,112 @@ mod tests {
              ▸ xcodebuild-ios\n\
              ✗ xcodebuild-ios  5.0s\n  \
              ✓   9  (exact)\n"
+        );
+    }
+
+    fn plain(f: impl FnOnce(&mut Progress, Instant)) -> String {
+        let sink = Sink::default();
+        let mut p = Progress::new(false, Box::new(sink.clone()));
+        f(&mut p, Instant::now());
+        let out = sink.0.lock().unwrap().clone();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn metro_ready_stage_is_marked_and_expo_start_exit_never_is() {
+        let out = plain(|p, t0| {
+            p.started("expo-start", true, t0);
+            p.stage("metro_ready", StageState::Running, t0);
+            p.stage(
+                "metro_ready",
+                StageState::Passed,
+                t0 + Duration::from_secs(207),
+            );
+            p.stage(
+                "metro_ready",
+                StageState::Passed,
+                t0 + Duration::from_secs(208),
+            );
+            // Cleanup TERM/reap later reports the server's non-zero exit.
+            p.finished("expo-start", false, t0 + Duration::from_secs(400));
+            p.close();
+        });
+        assert_eq!(out, "▸ expo-start\n✓ metro_ready  3:27\n");
+    }
+
+    #[test]
+    fn quick_readiness_and_skipped_or_unprojected_stages() {
+        let out = plain(|p, t0| {
+            p.stage("metro_ready", StageState::Running, t0);
+            p.stage(
+                "metro_ready",
+                StageState::Passed,
+                t0 + Duration::from_millis(300),
+            );
+            p.stage("dev_client_manifest", StageState::Running, t0);
+            p.stage(
+                "dev_client_manifest",
+                StageState::Passed,
+                t0 + Duration::from_secs(90),
+            );
+            p.stage("metro_ready", StageState::Running, t0);
+            p.stage(
+                "metro_ready",
+                StageState::Skipped,
+                t0 + Duration::from_secs(5),
+            );
+        });
+        assert_eq!(out, "✓ metro_ready  0.3s\n");
+    }
+
+    #[test]
+    fn close_stages_fails_open_metro_ready_once_unless_excluded() {
+        let out = plain(|p, t0| {
+            p.stage("metro_ready", StageState::Running, t0);
+            p.close_stages(StageState::Failed, &["metro_ready"], t0);
+            p.close_stages(StageState::Failed, &[], t0 + Duration::from_secs(2));
+            p.close_stages(StageState::Failed, &[], t0 + Duration::from_secs(3));
+            p.stage(
+                "metro_ready",
+                StageState::Passed,
+                t0 + Duration::from_secs(4),
+            );
+        });
+        assert_eq!(out, "✗ metro_ready  2.0s\n");
+    }
+
+    #[test]
+    fn finite_commands_and_early_expo_spawn_failure_keep_their_marks() {
+        let out = plain(|p, t0| {
+            p.started("expo-start", true, t0);
+            p.finished("expo-start", false, t0 + Duration::from_secs(2));
+            p.started("pnpm-install", false, t0);
+            p.finished("pnpm-install", false, t0 + Duration::from_secs(3));
+        });
+        assert_eq!(out, "▸ expo-start\n✗ pnpm-install  3.0s\n");
+    }
+
+    #[test]
+    fn live_mode_shows_metro_ready_spinner_but_never_an_expo_start_one() {
+        let sink = Sink::default();
+        let mut p = Progress::new(true, Box::new(sink.clone()));
+        let t0 = Instant::now();
+        p.started("expo-start", true, t0);
+        assert!(p.active.is_empty());
+        p.stage("metro_ready", StageState::Running, t0);
+        p.stage(
+            "metro_ready",
+            StageState::Passed,
+            t0 + Duration::from_secs(2),
+        );
+        p.close();
+        let out = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+        assert!(out.contains("▸ expo-start\n"), "{out:?}");
+        assert!(out.contains("⠋ metro_ready"), "{out:?}");
+        assert!(out.contains("✓ metro_ready  2.0s\n"), "{out:?}");
+        assert!(
+            !out.contains("⠋ expo-start") && !out.contains("✗"),
+            "{out:?}"
         );
     }
 
