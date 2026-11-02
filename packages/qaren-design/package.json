@@ -22,6 +22,7 @@
     "@types/bun": "^1.4.4",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "happy-dom": "^20.14.6",
     "react": "^19",
     "react-dom": "^19",
     "typescript7": "npm:typescript@^7.0.2"

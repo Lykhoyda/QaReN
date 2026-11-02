@@ -19,7 +19,14 @@ export function Button({
   );
   if (href) {
     return (
-      <a className={cls} href={href}>
+      <a
+        className={cls}
+        href={disabled ? undefined : href}
+        onClick={disabled ? undefined : onClick}
+        aria-disabled={disabled || undefined}
+        role={disabled ? 'link' : undefined}
+        tabIndex={disabled ? -1 : undefined}
+      >
         {children}
       </a>
     );
