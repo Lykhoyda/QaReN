@@ -6,7 +6,10 @@ import { Button } from '../src/components/Button';
 
 const window = new Window({ url: 'https://qaren.test/' });
 const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
-const previousActEnvironment = Object.getOwnPropertyDescriptor(globalThis, 'IS_REACT_ACT_ENVIRONMENT');
+const previousActEnvironment = Object.getOwnPropertyDescriptor(
+  globalThis,
+  'IS_REACT_ACT_ENVIRONMENT',
+);
 Object.defineProperty(globalThis, 'window', { configurable: true, value: window });
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', { configurable: true, value: true });
 const container = window.document.createElement('div');
@@ -22,7 +25,8 @@ afterAll(async () => {
   await window.happyDOM.close();
   if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow);
   else Reflect.deleteProperty(globalThis, 'window');
-  if (previousActEnvironment) Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', previousActEnvironment);
+  if (previousActEnvironment)
+    Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', previousActEnvironment);
   else Reflect.deleteProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT');
 });
 
@@ -30,21 +34,32 @@ afterAll(async () => {
 for (const href of [undefined, '#destination']) {
   test(`Button calls onClick when enabled (${href ? 'link' : 'button'})`, async () => {
     let clicks = 0;
-    await act(async () => root.render(
-      <Button href={href} onClick={() => clicks++}>Continue</Button>,
-    ));
-    container.firstElementChild!.dispatchEvent(new window.MouseEvent('click', {
-      bubbles: true, cancelable: true,
-    }));
+    await act(async () =>
+      root.render(
+        <Button href={href} onClick={() => clicks++}>
+          Continue
+        </Button>,
+      ),
+    );
+    container.firstElementChild!.dispatchEvent(
+      new window.MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
     expect(clicks).toBe(1);
     if (href) expect(container.firstElementChild!.getAttribute('href')).toBe(href);
   });
 
   test(`Button blocks activation when disabled (${href ? 'link' : 'button'})`, async () => {
     let clicks = 0;
-    await act(async () => root.render(
-      <Button href={href} disabled onClick={() => clicks++}>Continue</Button>,
-    ));
+    await act(async () =>
+      root.render(
+        <Button href={href} disabled onClick={() => clicks++}>
+          Continue
+        </Button>,
+      ),
+    );
     const control = container.firstElementChild!;
     control.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
     expect(clicks).toBe(0);
