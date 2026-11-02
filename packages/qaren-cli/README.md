@@ -640,6 +640,10 @@ it is never recovered, retried or re-walked, including when a handler finds twin
 at dispatch. Stored-selector resolution follows the [saved-block contract](#saved-blocks). A text element
 that is the sole text descendant of matching labelled ancestors links to the
 nearest action candidate: enabled and either hittable or offscreen for scrolling.
+If none qualifies, it links to the nearest same-label button, link, switch or
+control with supported press semantics, even when disabled or not hittable.
+A quoted press then reports that control's eligibility instead of twin ambiguity;
+an untyped child needs text provenance to collapse.
 On Android, this also applies when an ancestor has other text descendants but
 exactly one same-label heading re-kinded from `other` to `text` by the
 [native heading fact](#plan-checks-and-screen-evidence), as on a titled card.
