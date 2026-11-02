@@ -301,3 +301,111 @@ test('a check behind an error overlay is judged only after the overlay is dismis
   assert.equal(result.verdict, 'PASS');
   assert.deepEqual(f.actions, ['press @dismiss']);
 });
+
+for (const failure of ['throw', 'not-dispatched'] as const) {
+  test(`a second Dismiss that fails (${failure}) records its cause and dismissal number`, async () => {
+    const f = app(overlay(), { reappear: 1 });
+    const press = f.deps.press;
+    let dismissals = 0;
+    f.deps.press = async (ref, context) => {
+      if (++dismissals === 1) return press(ref, context);
+      f.actions.push(`press ${ref}`);
+      if (failure === 'throw') throw new Error('runner unavailable');
+      return { ok: false, executed: false };
+    };
+    const result = await runPlan(tapPlan(), f.deps);
+    assert.equal(result.code, 'DEV_REDBOX_DISMISS_FAILED');
+    assert.deepEqual(f.actions, ['press @dismiss', 'press @dismiss']);
+    assert.deepEqual(
+      result.steps
+        .filter((row) => row.devError)
+        .map((row) => [row.outcome, row.devError]),
+      [
+        ['retry', { variant: 'redbox', dismissal: 1 }],
+        ['fail', { variant: 'redbox', dismissal: 2 }],
+      ],
+    );
+  });
+}
+
+test('an uncertain planned press stays terminal when a system dialog replaces RedBox', async () => {
+  const f = app(home(), { pressed: overlay() });
+  const capture = f.deps.captureScreen;
+  let observed = false;
+  f.deps.captureScreen = async (options) => {
+    if (observed) return { ...home(), front: 'dialog' };
+    const current = await capture(options);
+    if (current.front === 'dev-redbox') observed = true;
+    return current;
+  };
+  f.deps.dialog = async () => assert.fail('uncertain actions cannot enter dialog recovery');
+  const result = await runPlan(tapPlan(), f.deps);
+  assert.equal(result.code, 'DEV_REDBOX_ACTION_UNCERTAIN');
+  assert.deepEqual(f.actions, ['press @settings']);
+});
+
+test('a RedBox at 14s cannot restart a 15s wait and accept a target at 20s', async () => {
+  const f = app(screen([]));
+  let clock = 0;
+  let dismissed = false;
+  f.deps.now = () => clock;
+  f.deps.sleep = async (ms) => {
+    clock = clock === 0 ? 14_000 : clock + ms;
+  };
+  f.deps.captureScreen = async ({ budgetMs } = {}) => {
+    assert.ok(budgetMs !== undefined && budgetMs <= 15_000 - clock);
+    return clock >= 20_000
+      ? home()
+      : clock >= 14_000 && !dismissed
+        ? overlay()
+        : screen([]);
+  };
+  f.deps.press = async (ref, context) => {
+    assert.ok(context!.deadline <= 15_000);
+    context!.authorize();
+    f.actions.push(`press ${ref}`);
+    dismissed = true;
+    return { ok: true, executed: true };
+  };
+  const result = await runPlan(parsePlan('1. Wait for "Settings"').blocks!, f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.ok(clock <= 15_000);
+  assert.deepEqual(f.actions, ['press @dismiss']);
+});
+
+for (const boundary of ['dismiss', 'clearance', 'resume', 'within-budget'] as const) {
+  for (const step of ['Wait for "Settings"', 'Scroll down until "Settings"']) {
+    test(`${step} preserves its original budget through overlay ${boundary}`, async () => {
+      const f = app(overlay());
+      let clock = 0;
+      let dismissed = false;
+      const budgets: number[] = [];
+      f.deps.now = () => clock;
+      f.deps.captureScreen = async ({ budgetMs } = {}) => {
+        assert.ok(budgetMs !== undefined);
+        budgets.push(budgetMs);
+        if (!dismissed) return overlay();
+        if (boundary === 'clearance') clock = 100_000;
+        if (boundary === 'resume' && budgets.length === 4) clock = 100_000;
+        return home();
+      };
+      f.deps.press = async (_ref, context) => {
+        context!.authorize();
+        assert.ok(context!.deadline <= budgets[0]);
+        dismissed = true;
+        clock = boundary === 'dismiss' ? 100_000 : 500;
+        return { ok: true, executed: true };
+      };
+      const result = await runPlan(parsePlan(`1. ${step}`).blocks!, f.deps);
+      if (boundary === 'resume') {
+        assert.equal(result.verdict, 'FAIL');
+        assert.equal(budgets[3], budgets[0] - 500);
+      } else if (boundary === 'within-budget') {
+        assert.equal(result.verdict, 'PASS');
+      } else {
+        assert.equal(result.verdict, 'REFUSED');
+        assert.equal(result.code, 'DEV_REDBOX_CLEARANCE_UNPROVEN');
+      }
+    });
+  }
+}

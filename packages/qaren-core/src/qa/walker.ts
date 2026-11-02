@@ -465,6 +465,7 @@ type DevErrorRefusal = keyof typeof DEV_ERROR_REFUSALS;
 
 // Capture and process refusals, ambiguity and the replay-miss path are never recovered.
 const UNRECOVERABLE = new Set([
+  'DEV_REDBOX_ACTION_UNCERTAIN',
   'SCROLL_NAVIGATED',
   'SCROLL_UNSETTLED',
   'REPLAY_SELECTOR',
@@ -573,6 +574,7 @@ async function walkBlockScoped(
   let fillHandlerAttempted = false;
   let fillHandlerRefused = false;
   let itemStartedAt = 0;
+  let itemDeadline: number | undefined;
   // A quoted wait's one layout read and one scroll, which a recovery retry does not refund.
   let enrichment: { at: number; budget: number; waited?: number } | undefined;
   let waitAttempt: 'scroll' | 'none' = 'none';
@@ -636,7 +638,7 @@ async function walkBlockScoped(
     assertion = false,
     recovery = false,
     purpose: 'resolve' | 'provenance' = 'resolve',
-    until?: number,
+    until = itemDeadline,
   ): Promise<Observation> => {
     assertActive();
     cached = undefined;
@@ -646,6 +648,7 @@ async function walkBlockScoped(
     const requirePresence = assertion || (!!target && target.quoted === undefined);
     const platformPresence = requirePresence || purpose === 'provenance';
     const startedAt = deps.now();
+    if (until !== undefined && startedAt >= until) throw new CaptureDeadline();
     const id = ++sequence.observation;
     latestObservation = id;
     const captureLine = line;
@@ -708,6 +711,7 @@ async function walkBlockScoped(
           ms: deps.now() - privacyStarted,
         });
       assertActive();
+      if (until !== undefined && deps.now() >= until) throw new CaptureDeadline();
       const timing = admitObservation(startedAt, deps.now());
       if (timing) captured.set(latest, { at: timing.completedAt, id });
       if (!timing)
@@ -1280,6 +1284,7 @@ async function walkBlockScoped(
     miss = false,
     // The refusal code when a step failed on its target; false when the walk ended for another cause.
     targetCode?: string | false,
+    devError?: LedgerRow['devError'],
   ): WalkOutcome => {
     const target = item.kind === 'check' ? undefined : stepTarget(item);
     if (target?.quoted !== undefined) emitQuotedTargetDiagnostic(screen, target.quoted, item.line);
@@ -1348,6 +1353,7 @@ async function walkBlockScoped(
     const withheld = privacy.textWithheld(last);
     emit({
       ...row,
+      ...(devError ? { devError } : {}),
       ...(ref ? { ref } : {}),
       ...(screenshot ? { screenshot } : {}),
       outcome: miss ? 'retry' : 'fail',
@@ -1955,7 +1961,7 @@ async function walkBlockScoped(
     item: Item,
     attempt: number,
     reason: string,
-    until?: number,
+    until = itemDeadline,
   ): Promise<'retry' | WalkOutcome | undefined> => {
     const first = recovered.get(item);
     if (opts.recover === false || !deps.hideDevMenu) return undefined;
@@ -2225,8 +2231,23 @@ async function walkBlockScoped(
     until?: number,
   ): Promise<'retry' | WalkOutcome> => {
     let observation = fresh;
+    const previousDismissal = devErrorDismissals.get(item);
+    let devError: LedgerRow['devError'] =
+      fresh.screen.devError && previousDismissal
+        ? { variant: fresh.screen.devError.variant, dismissal: previousDismissal }
+        : undefined;
     const refuse = (cause: DevErrorRefusal): WalkOutcome => ({
-      ...failed(item, attempt, DEV_ERROR_REFUSALS[cause], observation.screen, undefined),
+      ...failed(
+        item,
+        attempt,
+        DEV_ERROR_REFUSALS[cause],
+        observation.screen,
+        undefined,
+        undefined,
+        false,
+        false,
+        devError,
+      ),
       refusal: { code: `DEV_REDBOX_${cause}`, message: DEV_ERROR_REFUSALS[cause] },
     });
     if (mutationStarted) return refuse('ACTION_UNCERTAIN');
@@ -2236,12 +2257,13 @@ async function walkBlockScoped(
       const overlay = observation.screen.devError;
       const ref = overlay?.dismissRef;
       if (!overlay || !ref) return refuse('NO_SAFE_DISMISS');
+      devError = { variant: overlay.variant, dismissal };
       devErrorDismissals.set(item, dismissal);
       recoveries += 1;
       const dispatched = dispatchedOn;
       let acted: ActResult;
       try {
-        acted = await mutate(item, observation, (context) => deps.press(ref, context));
+        acted = await mutate(item, observation, (context) => deps.press(ref, context), until);
       } catch (error) {
         if (isAbort(error)) throw error;
         acted = { ok: false, proven: false, executed: false };
@@ -2255,7 +2277,7 @@ async function walkBlockScoped(
         ...base(item, attempt),
         outcome: 'retry',
         retryCause: 'DEV_REDBOX',
-        devError: { variant: overlay.variant, dismissal },
+        devError,
         reason: `a development error overlay was in front; dismissed it with its own Dismiss control (${dismissal} of ${DEV_ERROR_DISMISSALS}); retrying the step`,
       });
       try {
@@ -2289,6 +2311,12 @@ async function walkBlockScoped(
     enrichment = undefined;
     waitAttempt = 'none';
     itemStartedAt = deps.now();
+    itemDeadline =
+      item.kind === 'wait'
+        ? itemStartedAt + (item.target.quoted === undefined ? PHRASE_WAIT_BUDGET_MS : WAIT_BUDGET_MS)
+        : item.kind === 'scroll' && item.until
+          ? itemStartedAt + PHRASE_WAIT_BUDGET_MS
+          : undefined;
     let pixelBaselineTaken = false;
     let pixelBaseline:
       | { target: NonNullable<ReturnType<typeof pixelTarget>>; crop: PixelCrop }
@@ -2370,8 +2398,8 @@ async function walkBlockScoped(
         if (item.kind === 'wait') {
           resolvedBy = item.target.quoted === undefined ? 'jev' : resolvedBy;
           const budget = item.target.quoted === undefined ? PHRASE_WAIT_BUDGET_MS : WAIT_BUDGET_MS;
-          const waitStarted = deps.now();
-          const deadline = waitStarted + budget;
+          const waitStarted = itemStartedAt;
+          const deadline = itemDeadline!;
           const held = cached?.item === item ? cached : undefined;
           let observation: Observation;
           try {
@@ -2648,7 +2676,7 @@ async function walkBlockScoped(
                 ? `"${item.target.quoted}" did not appear within ${budget / 1000}s; the screen did not change across ${absent} observations`
                 : ITEM_DEADLINE_EXCEEDED);
             // A classified React-only miss already spent its layout read; recovery gets no fresh time for another.
-            const recovering = await recovery(item, 1, reason, reactOnly ? deadline : undefined);
+            const recovering = await recovery(item, 1, reason, deadline);
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
             if (unchanged) {
@@ -2682,7 +2710,7 @@ async function walkBlockScoped(
 
         if (item.kind === 'scroll' && item.until) {
           resolvedBy = item.until.quoted === undefined ? 'jev' : resolvedBy;
-          const deadline = deps.now() + PHRASE_WAIT_BUDGET_MS;
+          const deadline = itemDeadline!;
           const held = cached?.item === item ? cached : undefined;
           let observation = held?.observation ?? (await capture(item));
           cached = undefined;
@@ -3784,7 +3812,7 @@ async function walkBlockScoped(
         continue items;
       } catch (caught) {
         if (isAbort(caught)) throw caught;
-        let error = caught;
+        let error = caught instanceof CaptureDeadline ? new EvidenceExpired(true) : caught;
         if (
           error instanceof ResolutionError &&
           !UNRECOVERABLE.has(error.code) &&
