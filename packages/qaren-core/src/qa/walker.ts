@@ -155,7 +155,6 @@ import {
   type WalkResult,
   type LedgerFailure,
   type LedgerPath,
-  type DevErrorMoved,
   type LedgerRow,
   type FillMethod,
   type EntryMismatch,
@@ -468,25 +467,21 @@ type DevErrorRefusal = keyof typeof DEV_ERROR_REFUSALS;
 const refusalCode = (error: string | undefined): string | undefined =>
   /^([A-Z][A-Z0-9_]{2,63}):/u.exec(error ?? '')?.[1];
 
-// The runner's moved-target message carries frames, element types and whether each side has an
-// identifier, never label text; only those parsed parts are kept.
 const FRAME = String.raw`(-?\d+(?:\.\d+)?(?:,-?\d+(?:\.\d+)?){3})`;
-const IDENTITY = String.raw`(?: \(([A-Za-z]{1,32}(?:\(\d{1,3}\))?), (?:label \d+ chars|no label), (has id|no id)\))?`;
+const IDENTITY = String.raw`(?: \((?:[A-Za-z]{1,32}(?:\(\d{1,3}\))?), (?:label \d+ chars|no label), (has id|no id)\))?`;
 const MOVED = new RegExp(
   `retained ${FRAME}${IDENTITY}; live ${FRAME}${IDENTITY}(?:; labels (?:match|differ), ids (?:match|differ))?; delta ${FRAME}`,
   'u',
 );
-export function movedGeometry(error: string | undefined): DevErrorMoved | undefined {
+function movedGeometry(error: string | undefined) {
   const m = MOVED.exec(error ?? '');
   if (!m) return undefined;
   const frame = (text: string) => text.split(',').map(Number);
   return {
     retained: frame(m[1]),
-    live: frame(m[4]),
-    delta: frame(m[7]),
-    ...(m[3] ? { path: m[3] === 'has id' ? ('identifier' as const) : ('label' as const) } : {}),
-    ...(m[2] ? { retainedType: m[2] } : {}),
-    ...(m[5] ? { liveType: m[5] } : {}),
+    live: frame(m[3]),
+    delta: frame(m[5]),
+    ...(m[2] ? { path: m[2] === 'has id' ? 'identifier' : 'label' } : {}),
   };
 }
 
@@ -2340,7 +2335,6 @@ async function walkBlockScoped(
         const code = refusalCode(acted.error);
         const moved =
           code === 'TARGET_MOVED_BEFORE_DISPATCH' ? movedGeometry(acted.error) : undefined;
-        if (moved) devError = { variant: overlay.variant, dismissal, moved };
         try {
           deps.note?.(
             `dev-error-dismiss-failed=${code ?? 'unknown'}${moved ? ` moved=${JSON.stringify(moved)}` : ''}`,

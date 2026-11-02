@@ -481,61 +481,6 @@ pub enum ScrollStatus {
 pub struct DevErrorDismissal {
     pub variant: DevErrorVariant,
     pub dismissal: u8,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub moved: Option<DevErrorMoved>,
-}
-
-// The runner's value-free geometry for a Dismiss refused as moved: frames x,y,width,height in points.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DevErrorMoved {
-    pub retained: [f64; 4],
-    pub live: [f64; 4],
-    pub delta: [f64; 4],
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<DevErrorResolvePath>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retained_type: Option<ElementType>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub live_type: Option<ElementType>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum DevErrorResolvePath {
-    Identifier,
-    Label,
-}
-
-// An XCUIElement type name such as `Other` or `Element(7)`; anything else is rejected.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(try_from = "String", into = "String")]
-pub struct ElementType(String);
-
-impl TryFrom<String> for ElementType {
-    type Error = &'static str;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        let (name, rest) = value.split_at(value.find('(').unwrap_or(value.len()));
-        let digits = rest.strip_prefix('(').and_then(|r| r.strip_suffix(')'));
-        let ok = (1..=32).contains(&name.len())
-            && name.bytes().all(|b| b.is_ascii_alphabetic())
-            && (rest.is_empty()
-                || digits.is_some_and(|d| {
-                    (1..=3).contains(&d.len()) && d.bytes().all(|b| b.is_ascii_digit())
-                }));
-        if ok {
-            Ok(Self(value))
-        } else {
-            Err("invalid element type")
-        }
-    }
-}
-
-impl From<ElementType> for String {
-    fn from(value: ElementType) -> Self {
-        value.0
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
