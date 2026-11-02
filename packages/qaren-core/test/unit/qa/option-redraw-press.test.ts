@@ -484,3 +484,63 @@ test('failed baseline recapture prevents dispatch even when comparison bytes are
     );
   }
 });
+
+for (const shot of [1, 2, 3]) {
+  for (const phase of ['before', 'during']) {
+    test(`RedBox in pixel shot ${shot} (${phase}) preserves dispatch safety`, async () => {
+      const before = fixture('toggle1-before');
+      const after = fixture('toggle1-after');
+      const f = fake([option(before)], [before, after, after]);
+      let captures = 0;
+      let shots = 0;
+      let seen = false;
+      let dismissed = false;
+      let overlayDuringShot = false;
+      f.deps.captureScreen = async () => {
+        captures++;
+        const show =
+          (phase === 'before' && captures === [0, 2, 5, 7][shot]) ||
+          overlayDuringShot ||
+          (shot === 1 && seen && !dismissed);
+        overlayDuringShot = false;
+        if (show) {
+          seen = true;
+          return {
+            ...option(before),
+            front: 'dev-redbox',
+            devError: { variant: 'redbox', dismissRef: '@dismiss' },
+          };
+        }
+        return option(before);
+      };
+      const screenshot = f.deps.comparisonScreenshot!;
+      f.deps.comparisonScreenshot = async () => {
+        const bytes = await screenshot();
+        if (phase === 'during' && ++shots === shot) overlayDuringShot = true;
+        return bytes;
+      };
+      f.deps.press = async (ref, context) => {
+        context!.authorize();
+        f.calls.push(`press ${ref}`);
+        if (ref === '@dismiss') dismissed = true;
+        return { ok: true, proven: shot === 1, executed: true };
+      };
+      f.deps.hideDevMenu = async () => assert.fail('RedBox uses its own Dismiss');
+      const outcome = await walkBlock(tap, f.deps);
+      assert.equal(seen, true);
+      assert.deepEqual(
+        f.calls.filter((call) => call.startsWith('press')),
+        shot === 1 ? ['press @dismiss', 'press @option'] : ['press @option'],
+      );
+      if (shot === 1) {
+        assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome));
+        assert.deepEqual(
+          outcome.rows.filter((row) => row.retryCause === 'DEV_REDBOX').map((row) => row.devError),
+          [{ variant: 'redbox', dismissal: 1 }],
+        );
+      } else {
+        assert.equal(outcome.refusal?.code, 'DEV_REDBOX_ACTION_UNCERTAIN');
+      }
+    });
+  }
+}

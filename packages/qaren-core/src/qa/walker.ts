@@ -984,7 +984,11 @@ async function walkBlockScoped(
         crop: bytes && allowed() ? cropPng(bytes, target.frame, target.scale) : undefined,
       };
     } catch (error) {
-      if (isAbort(error)) throw error;
+      if (
+        isAbort(error) ||
+        (error instanceof ResolutionError && error.code.startsWith('DEV_REDBOX_'))
+      )
+        throw error;
       return { stable: false };
     }
   };
