@@ -93,6 +93,21 @@ fn usage_errors_exit_2_with_empty_stdout() {
 }
 
 #[test]
+fn hold_flags_are_check_only() {
+    for flag in ["--hold", "--no-hold"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_qaren"))
+            .args(["pr", "12", "--plan-file", "missing", flag])
+            .env("QAREN_HOLD_ON_FAIL", "1")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr)
+            .contains("--hold and --no-hold are only valid for check"));
+    }
+}
+
+#[test]
 fn fresh_install_is_check_only_and_opt_in() {
     for verb in ["prepare", "prewarm", "status", "cleanup", "complete"] {
         let mut args = vec![verb, "missing", "--fresh-install"];
