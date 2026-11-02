@@ -118,6 +118,63 @@ test('a planned modal stays protected across a passing wait and check', async ()
   }
 });
 
+test('a planned consent stays protected across fills and scrolls in both directions', async () => {
+  for (const decline of ['Close', 'Skip']) {
+    for (const action of [
+      'Scroll down',
+      'Scroll up',
+      'Scroll down until "Signature"',
+      'Scroll up until "Signature"',
+      'Fill "Name" with "Example"',
+    ]) {
+      const modal = (scrolled = false) =>
+        screen([
+          element('@name', 'Name', { kind: 'input' }),
+          element('@heading', scrolled ? 'Signature' : 'Consent', { kind: 'text' }),
+          close(decline),
+        ]);
+      const f = app(screen([element('@open', 'Open consent')]), {
+        '@open': modal,
+        '@close': () => screen([element('@continue', 'Continue')]),
+      });
+      f.deps.scroll = async (direction) => {
+        f.actions.push(`scroll ${direction}`);
+        f.show(modal(true));
+        return { ok: true, proven: true, executed: true };
+      };
+      f.deps.fill = async (ref) => {
+        f.actions.push(`fill ${ref}`);
+        return { ok: true, proven: true, executed: true };
+      };
+      const result = await run(
+        `1. Tap "Open consent"\n2. ${action}\n### Continue\n3. Wait for "Continue" to appear`,
+        f,
+      );
+      assert.equal(result.verdict, 'FAIL', `${decline}: ${action}`);
+      assert.equal(result.failure?.step, 3, `${decline}: ${action}`);
+      assert.equal(result.failure?.subreason, 'previous-plan-press', `${decline}: ${action}`);
+      assert.deepEqual(f.actions, [
+        'press @open',
+        action.startsWith('Fill') ? 'fill @name' : `scroll ${action.split(' ')[1]}`,
+      ]);
+      assert.equal(result.recoveries, 0);
+    }
+  }
+});
+
+test('a Back without a changed capture retains protection', async () => {
+  const f = app(opener(), { '@open': destination, '@close': ready });
+  f.deps.back = async () => {
+    f.actions.push('back');
+    return { ok: true, proven: true, executed: true };
+  };
+  const result = await run('1. Tap "Open"\n2. Go back\n3. Wait for "Ready" to appear', f);
+  assert.equal(result.verdict, 'FAIL');
+  assert.equal(result.failure?.step, 3);
+  assert.equal(result.failure?.subreason, 'previous-plan-press');
+  assert.deepEqual(f.actions, ['press @open', 'back']);
+});
+
 test('a failed check right after a planned press says the dismissal was withheld', async () => {
   const f = app(opener(), { '@open': destination, '@close': ready });
   const result = await run('1. Tap "Open"\n✓ "Ready"', f);
@@ -142,7 +199,7 @@ test('a later planned Close stays untapped by recovery', async () => {
   assert.deepEqual(f.actions, ['press @open']);
 });
 
-test('protection ends after the item that followed the press', async () => {
+test('protection ends after a successful Back with a changed capture', async () => {
   const f = app(opener(), { '@open': () => screen([element('@back', 'Next')]) });
   f.deps.back = async () => {
     f.actions.push('back');
