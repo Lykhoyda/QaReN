@@ -57,8 +57,6 @@ export interface LedgerRow {
   keyboardCleared?: 'native-control' | 'js';
   // Why this press was sent a second time.
   retryCause?: 'KEYBOARD_SWALLOWED_TAP';
-  // What this press's verdict rested on; none when nothing confirmed it.
-  pressEvidence?: 'selected' | 'effect' | 'screen-change' | 'none';
 }
 
 // The value-free announcement that a plan line begins; its row later carries the same operationId.

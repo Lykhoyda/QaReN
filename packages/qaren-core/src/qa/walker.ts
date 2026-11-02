@@ -1,5 +1,6 @@
 import {
   selectionPressCandidate,
+  selectionStateReadable,
   outsideTargetChange,
   targetUnchanged,
   KEYBOARD_SWALLOWED_TAP,
@@ -35,9 +36,6 @@ import {
   screenSignature,
   alertPressEffect,
   insideAlert,
-  insideKeyboard,
-  isScrollContainer,
-  ancestorsOf,
   elementFrame,
   applicationFrame,
   isNativeInput,
@@ -2899,16 +2897,14 @@ async function walkBlockScoped(
                 );
                 break;
               }
-              // A visible keyboard takes a tap inside a scroll view to dismiss itself; clear it first, as the user's own tap would.
               if (
                 item.kind === 'press' &&
+                deps.platform === 'ios' &&
                 deps.dismissKeyboard &&
                 !keyboardAttempted &&
                 before.screen.keyboardVisible === true &&
                 element !== undefined &&
-                !isNativeInput(element) &&
-                !insideKeyboard(element) &&
-                ancestorsOf(element).some(isScrollContainer)
+                selectionPressCandidate(element, before.screen)
               ) {
                 keyboardAttempted = true;
                 const target = element;
@@ -3209,7 +3205,6 @@ async function walkBlockScoped(
                 ...base(item, attempt),
                 outcome: 'fail',
                 reason: message,
-                pressEvidence: 'none',
               });
               return {
                 block: { key: block.slug, outcome: 'fail', source: 'discovered' },
@@ -3261,13 +3256,14 @@ async function walkBlockScoped(
             }
             selectionExited = !targetPresent(observed.screen);
             if (!selectionExited && !act!.proven && current?.selected !== true) {
-              // Under React's touch contract a tap the keyboard took never reached the control, so one more cannot double-toggle it.
               if (
                 attempt === 1 &&
                 attempt < maxAttempts &&
                 before.screen.keyboardVisible === true &&
                 observed.screen.keyboardVisible === false &&
-                targetUnchanged(before.screen, observed.screen, selectionTarget, current)
+                targetUnchanged(before.screen, observed.screen, selectionTarget, current) &&
+                (selectionStateReadable(before.screen, selectionTarget) ||
+                  (current !== undefined && selectionStateReadable(observed.screen, current)))
               ) {
                 deps.pressReadback?.(undefined);
                 retryCause = 'KEYBOARD_SWALLOWED_TAP';
@@ -3391,18 +3387,6 @@ async function walkBlockScoped(
                   (element ? elementSelector(element) : undefined),
               ),
               outcome: 'pass',
-              ...(item.kind === 'press'
-                ? {
-                    pressEvidence:
-                      selectionProven || alreadySelected
-                        ? 'selected'
-                        : alertOnly
-                          ? 'none'
-                          : act!.proven
-                            ? 'effect'
-                            : 'screen-change',
-                  }
-                : {}),
               ...(act!.dialog ? { dialog: act!.dialog } : {}),
               ...(fillReason
                 ? { reason: redact(fillReason) }
@@ -3662,7 +3646,6 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     ...(row.method ? { method: row.method } : {}),
     ...(row.keyboardCleared ? { keyboardCleared: row.keyboardCleared } : {}),
     ...(row.retryCause ? { retryCause: row.retryCause } : {}),
-    ...(row.pressEvidence ? { pressEvidence: row.pressEvidence } : {}),
     ...(row.entryMismatch ? { entryMismatch: row.entryMismatch } : {}),
     ...(row.screenshotWithheld ? { screenshotWithheld: row.screenshotWithheld } : {}),
     ...(screenshot ? { screenshot } : {}),

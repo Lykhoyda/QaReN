@@ -68,8 +68,9 @@ action: `Accept the dialog if it appears` and `Do not dismiss the alert` refuse.
 
 For real-tap verification, including already-selected controls and selection toggles, see the
 [press evidence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#occluded-taps-and-focus).
-On iOS, a tap on a control inside a scrolling list now dismisses a visible keyboard first and retries once when
-the keyboard provably took the tap; the receipt names both.
+On iOS, a tap on an unselected native row-choice candidate dismisses a visible keyboard first.
+A single retry requires keyboard closure, unchanged target semantics, and readable native selection
+from a peer in the same scroll container; the receipt records clearance and retry cause.
 
 ## Runtime inputs
 

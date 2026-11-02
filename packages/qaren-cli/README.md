@@ -769,9 +769,8 @@ the final readback:
 
 > The tap did not change the control's selected state (N observations over M ms); the control sits in a row-shaped scrolling list, which can swallow synthetic taps. Next: re-run once; if it repeats on the same control, ask the app team to make the selection reachable for automated taps (for example by disabling the list's own scrolling for this set) or to expose the selected state another way.
 
-A visible keyboard takes a tap inside a scroll view to dismiss itself. On iOS, before a
-tap whose target sits inside a scroll container and is neither a text input nor a
-keyboard key, QaReN first hides a visible keyboard through the same dismissal chain the
+On iOS, before a tap on an unselected native row-choice candidate inside a scroll
+container, QaReN first hides a visible keyboard through the same dismissal chain the
 keyboard guard uses (a native hide control, then the app's own `Keyboard.dismiss()`),
 waits for the target to hold one frame across captures, re-resolves it by identity and
 taps it once. The row records `keyboardCleared: native-control | js`. A target that does
@@ -781,12 +780,11 @@ was dismissed before this tap. `RN_KEYBOARD_GUARD=0` turns this clearance off.
 When that clearance did not run or did not hold, a row-list candidate is retried exactly
 once, and only when every fact holds: the keyboard was visible in the capture the tap
 was dispatched from, it is hidden in the readback, the bound target is still present and
-not reported selected, and its own captured semantics did not change. The retry row and
-the step's final row carry `retryCause: KEYBOARD_SWALLOWED_TAP`, and a pass after it
+not reported selected, its own captured semantics did not change, and a peer button in
+the same scroll container reports native selection before or after the tap. Without
+that readable selection evidence, an invisible successful toggle cannot be ruled out.
+The retry row and the step's final row carry `retryCause: KEYBOARD_SWALLOWED_TAP`, and a pass after it
 shows as attempt 2. Without every fact the `PRESS_NOT_REGISTERED` refusal above stands.
-Every passing press row records `pressEvidence`: `selected` (bound selection),
-`effect` (authoritative effect proof), `screen-change`, or `none` (an unverified press,
-and the refusal row).
 
 Its ordered
 recovery ladder skips held press as unsafe and app/Metro/runner restart, device

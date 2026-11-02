@@ -1,4 +1,3 @@
-// A visible keyboard takes a chip tap inside a scrolling row; the walker clears it first and retries once only when it provably did.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parsePlan } from '../../../dist/qa/plan.js';
@@ -10,6 +9,9 @@ interface Shape {
   keyboard?: boolean;
   selected?: boolean;
   peer?: boolean;
+  peerSelected?: boolean;
+  listHeight?: number;
+  outsideSelected?: boolean;
   inScroll?: boolean;
   frameX?: number;
   testID?: string;
@@ -19,6 +21,9 @@ function screen({
   keyboard = false,
   selected = false,
   peer = true,
+  peerSelected = false,
+  listHeight = 100,
+  outsideSelected = false,
   inScroll = true,
   frameX = 20,
   testID = 'chip',
@@ -29,7 +34,8 @@ function screen({
       ref: '@input',
       index: 1,
       parentIndex: 0,
-      type: 'TextField',
+      type: outsideSelected ? 'Button' : 'TextField',
+      ...(outsideSelected ? { selected: true } : {}),
       identifier: 'amount',
       hittable: true,
       rect: { x: 20, y: 100, width: 300, height: 44 },
@@ -39,7 +45,7 @@ function screen({
       index: 2,
       parentIndex: 0,
       type: inScroll ? 'ScrollView' : 'Other',
-      rect: { x: 0, y: 200, width: 400, height: 100 },
+      rect: { x: 0, y: 200, width: 400, height: listHeight },
     },
     {
       ref: '@chip',
@@ -60,6 +66,7 @@ function screen({
             parentIndex: 2,
             type: 'Button',
             label: 'Peer',
+            ...(peerSelected ? { selected: true } : {}),
             hittable: true,
             rect: { x: 140, y: 220, width: 100, height: 44 },
           },
@@ -127,7 +134,7 @@ const tap = parsePlan('1. Tap "chip"\n').blocks![0];
 const count = (f: ReturnType<typeof fake>, prefix: string) =>
   f.calls.filter((call) => call.startsWith(prefix)).length;
 
-test('a visible keyboard is dismissed before a tap inside a scroll container, then the chip is tapped once', async () => {
+test('a visible keyboard is dismissed before a row-choice tap, then the chip is tapped once', async () => {
   const f = withDismissal(
     fake([screen({ keyboard: true }), screen(), screen(), screen({ selected: true })]),
   );
@@ -136,7 +143,6 @@ test('a visible keyboard is dismissed before a tap inside a scroll container, th
   assert.deepEqual(f.calls, ['capture', 'dismiss', 'capture', 'capture', 'press @chip', 'capture']);
   const row = outcome.rows.at(-1)!;
   assert.equal(row.keyboardCleared, 'js');
-  assert.equal(row.pressEvidence, 'selected');
   assert.equal(row.retryCause, undefined);
   assert.equal(outcome.rows.length, 1);
 });
@@ -153,6 +159,9 @@ test('the native tier is recorded when it cleared the keyboard', async () => {
 for (const [name, shape] of [
   ['no keyboard', {}],
   ['a target outside any scroll container', { inScroll: false }],
+  ['an ordinary button in a vertical list', { listHeight: 500 }],
+  ['a row button without peers', { peer: false }],
+  ['an already selected chip', { selected: true }],
 ] as const) {
   test(`${name} sends no dismissal`, async () => {
     const f = withDismissal(
@@ -218,15 +227,15 @@ test('a dismissal that cannot prove the keyboard hidden still taps once on the r
 
 // Without the walker's dismissal (keyboard guard off), the selection guard is the only defence.
 const swallowed = () => [
-  screen({ keyboard: true }),
-  screen(),
-  screen(),
-  screen(),
-  screen(),
+  screen({ keyboard: true, peerSelected: true }),
+  screen({ peerSelected: true }),
+  screen({ peerSelected: true }),
+  screen({ peerSelected: true }),
+  screen({ peerSelected: true }),
   screen({ selected: true }),
 ];
 
-test('a tap the keyboard provably swallowed is retried exactly once and the pass is marked retried', async () => {
+test('a keyboard-closing tap with readable native selection is retried once', async () => {
   const f = fake(swallowed());
   const outcome = await walkBlock(tap, f.deps);
   assert.equal(outcome.block.outcome, 'pass', outcome.failure?.seen);
@@ -239,20 +248,70 @@ test('a tap the keyboard provably swallowed is retried exactly once and the pass
     ],
   );
   assert.match(String(outcome.rows[0].reason), /KEYBOARD_SWALLOWED_TAP/);
-  assert.equal(outcome.rows[1].pressEvidence, 'selected');
+});
+
+test('an invisible successful toggle that closes the keyboard is never retried', async () => {
+  const f = fake([screen({ keyboard: true }), screen(), screen()]);
+  let selected = false;
+  f.deps.press = async (ref) => {
+    f.calls.push(`press ${ref}`);
+    selected = !selected;
+    return { ok: true, proven: false };
+  };
+  const outcome = await walkBlock(tap, f.deps);
+  assert.equal(count(f, 'press'), 1);
+  assert.equal(selected, true);
+  assert.equal(outcome.refusal?.code, 'PRESS_NOT_REGISTERED');
+  assert.equal(outcome.rows.some((row) => row.retryCause !== undefined), false);
+});
+
+for (const when of ['before', 'after'] as const) {
+  test(`native selection readable only ${when} the tap permits one retry`, async () => {
+    const screens = swallowed();
+    for (const snapshot of when === 'before' ? screens.slice(1) : screens.slice(0, 1)) {
+      delete snapshot.elements.find((e) => e.ref === '@peer')!.selected;
+    }
+    const f = fake(screens);
+    const outcome = await walkBlock(tap, f.deps);
+    assert.equal(outcome.block.outcome, 'pass', outcome.failure?.seen);
+    assert.equal(count(f, 'press'), 2);
+  });
+}
+
+test('native selection outside the target scroll container cannot authorize a retry', async () => {
+  const screens = [
+    screen({ keyboard: true, outsideSelected: true }),
+    screen({ outsideSelected: true }),
+  ];
+  const f = fake(screens);
+  const outcome = await walkBlock(tap, f.deps);
+  assert.equal(count(f, 'press'), 1);
+  assert.equal(outcome.refusal?.code, 'PRESS_NOT_REGISTERED');
+});
+
+test('Android row-choice taps do not trigger pre-tap keyboard clearance', async () => {
+  const f = withDismissal(fake([screen({ keyboard: true }), screen({ selected: true })]));
+  f.deps.platform = 'android';
+  const outcome = await walkBlock(tap, f.deps);
+  assert.equal(outcome.block.outcome, 'pass', outcome.failure?.seen);
+  assert.equal(count(f, 'dismiss'), 0);
+  assert.equal(count(f, 'press'), 1);
 });
 
 test('a second swallowed tap is refused, never a third press', async () => {
-  const f = fake([screen({ keyboard: true }), screen(), screen(), screen(), screen(), screen()]);
+  const f = fake([screen({ keyboard: true, peerSelected: true }), screen({ peerSelected: true })]);
   const outcome = await walkBlock(tap, f.deps);
   assert.equal(outcome.refusal?.code, 'PRESS_NOT_REGISTERED');
   assert.equal(count(f, 'press'), 2);
 });
 
 for (const [missing, screens] of [
-  ['keyboard visible at dispatch', [screen(), screen(), screen()]],
-  ['keyboard hidden after', [screen({ keyboard: true })]],
-  ['target subtree unchanged', [screen({ keyboard: true }), screen(), screen()]],
+  ['keyboard visible at dispatch', [screen({ peerSelected: true })]],
+  ['keyboard hidden after', [screen({ keyboard: true, peerSelected: true })]],
+  [
+    'target subtree unchanged',
+    [screen({ keyboard: true, peerSelected: true }), screen({ peerSelected: true })],
+  ],
 ] as const) {
   test(`no retry without the fact: ${missing}`, async () => {
     const after = [...screens];
@@ -283,14 +342,13 @@ test('no retry when the target is not a selection candidate (no peer in the row)
   );
 });
 
-test('a stateless row control with the keyboard up: one dismissal, one tap, no retry, no press evidence', async () => {
+test('a stateless row control with the keyboard up: one dismissal, one tap, no retry', async () => {
   const f = withDismissal(fake([screen({ keyboard: true }), screen(), screen()]));
   const outcome = await walkBlock(tap, f.deps);
   assert.equal(count(f, 'dismiss'), 1);
   assert.equal(count(f, 'press'), 1);
   assert.equal(outcome.refusal?.code, 'PRESS_NOT_REGISTERED');
   const row = outcome.rows.at(-1)!;
-  assert.equal(row.pressEvidence, 'none');
   assert.equal(row.keyboardCleared, 'js');
   assert.equal(row.retryCause, undefined);
 });
@@ -302,7 +360,6 @@ test('the streamed row channel carries the new fields and no app text', async ()
   await walkBlock(tap, f.deps);
   const text = JSON.stringify(streamed);
   assert.match(text, /"retryCause":"KEYBOARD_SWALLOWED_TAP"/);
-  assert.match(text, /"pressEvidence":"selected"/);
   assert.doesNotMatch(text, /Choice|chip|amount/);
 });
 

@@ -1111,7 +1111,7 @@ mod tests {
     }
 
     #[test]
-    fn press_rows_keep_keyboard_clearance_retry_cause_and_evidence_and_drop_unknown_ones() {
+    fn press_rows_keep_keyboard_clearance_and_retry_cause_and_drop_unknown_ones() {
         let ledger: Ledger = serde_json::from_value(serde_json::json!({
             "verdict": "PASS", "path": "walk", "blocks": [],
             "steps": [
@@ -1120,10 +1120,10 @@ mod tests {
                   "retryCause": "KEYBOARD_SWALLOWED_TAP" },
                 { "block": "b", "line": 4, "attempt": 2, "kind": "step", "resolvedBy": "exact",
                   "t": 0, "outcome": "pass", "keyboardCleared": "native-control",
-                  "retryCause": "KEYBOARD_SWALLOWED_TAP", "pressEvidence": "selected" },
+                  "retryCause": "KEYBOARD_SWALLOWED_TAP" },
                 { "block": "b", "line": 5, "attempt": 1, "kind": "step", "resolvedBy": "exact",
                   "t": 0, "outcome": "pass", "keyboardCleared": "telepathy",
-                  "retryCause": "BAD_LUCK", "pressEvidence": "vibes" },
+                  "retryCause": "BAD_LUCK" },
                 { "block": "b", "line": 6, "attempt": 1, "kind": "step", "resolvedBy": "exact",
                   "t": 0, "outcome": "pass" },
             ],
@@ -1134,9 +1134,8 @@ mod tests {
         assert_eq!(json["steps"][0]["keyboardCleared"], "js");
         assert_eq!(json["steps"][1]["keyboardCleared"], "native-control");
         assert_eq!(json["steps"][1]["retryCause"], "KEYBOARD_SWALLOWED_TAP");
-        assert_eq!(json["steps"][1]["pressEvidence"], "selected");
         for step in [&json["steps"][2], &json["steps"][3]] {
-            for key in ["keyboardCleared", "retryCause", "pressEvidence"] {
+            for key in ["keyboardCleared", "retryCause"] {
                 assert!(step.get(key).is_none(), "{key}");
             }
         }

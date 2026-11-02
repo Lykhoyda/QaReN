@@ -160,10 +160,6 @@ export function isScrollContainer(element: Element): boolean {
   return scrollContainers.has(element);
 }
 
-export function insideKeyboard(element: Element): boolean {
-  return keyboards.has(element) || ancestorsOf(element).some((a) => keyboards.has(a));
-}
-
 export function isWindow(element: Element): boolean {
   return windows.has(element);
 }
@@ -1612,7 +1608,8 @@ function behindAlertRows(screen: Screen): { rows: string[]; overlay: Set<string>
       holders.has(e) ||
       alerts.has(e) ||
       insideAlert(e) ||
-      insideKeyboard(e),
+      keyboards.has(e) ||
+      ancestorsOf(e).some((a) => keyboards.has(a)),
   );
   return { rows: labelled.map(row), overlay: new Set(overlay.map(row)) };
 }
