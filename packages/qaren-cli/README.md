@@ -933,10 +933,13 @@ reason. A later plan check still decides whether the intended screen followed.
 A plain `Scroll down` or `Scroll up` is a gesture, not an assertion. It passes
 when a cleanly dispatched scroll changes the app screen. When the first scroll
 leaves the screen unchanged, QaReN scrolls once more under the same operation
-id; if both scrolls dispatched cleanly onto complete, unchanged app captures,
+id; if both scrolls dispatched cleanly with complete native app captures
+before and after each attempt and neither changed the screen,
 the step passes with reason `SCROLL_NO_VISIBLE_CHANGE` and the row field
 `scrollDetail: {"status":"no_visible_change","attempts":2}`, and no recovery tap
-runs. That is not proof the content ended: QaReN has no end-of-list detector.
+runs. An unchanged scroll with incomplete captures or only one attempt
+(including after recovery) still fails without `scrollDetail`.
+A no-op result does not prove the content ended: QaReN has no end-of-list detector.
 The receipt's `ledger.no_visible_change_scrolls` lists those lines and is
 omitted when empty. A runner's own success proof never stands in for a
 changed or still capture. A scroll that errored or did not execute never passes
