@@ -2328,7 +2328,8 @@ async function walkBlockScoped(
         startedAt,
         deadline:
           item.kind === 'wait'
-            ? startedAt + (item.target.quoted === undefined ? PHRASE_WAIT_BUDGET_MS : WAIT_BUDGET_MS)
+            ? startedAt +
+              (item.target.quoted === undefined ? PHRASE_WAIT_BUDGET_MS : WAIT_BUDGET_MS)
             : item.kind === 'scroll' && item.until
               ? startedAt + PHRASE_WAIT_BUDGET_MS
               : undefined,

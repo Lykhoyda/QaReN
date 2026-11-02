@@ -317,9 +317,7 @@ for (const failure of ['throw', 'not-dispatched'] as const) {
     assert.equal(result.code, 'DEV_REDBOX_DISMISS_FAILED');
     assert.deepEqual(f.actions, ['press @dismiss', 'press @dismiss']);
     assert.deepEqual(
-      result.steps
-        .filter((row) => row.devError)
-        .map((row) => [row.outcome, row.devError]),
+      result.steps.filter((row) => row.devError).map((row) => [row.outcome, row.devError]),
       [
         ['retry', { variant: 'redbox', dismissal: 1 }],
         ['fail', { variant: 'redbox', dismissal: 2 }],
@@ -355,11 +353,7 @@ test('a RedBox at 14s cannot restart a 15s wait and accept a target at 20s', asy
   f.deps.captureScreen = async ({ budgetMs } = {}) => {
     if (budgetMs === undefined) assert.equal(clock, 15_000);
     else assert.ok(budgetMs <= 15_000 - clock);
-    return clock >= 20_000
-      ? home()
-      : clock >= 14_000 && !dismissed
-        ? overlay()
-        : screen([]);
+    return clock >= 20_000 ? home() : clock >= 14_000 && !dismissed ? overlay() : screen([]);
   };
   f.deps.press = async (ref, context) => {
     assert.ok(context!.deadline <= 15_000);
