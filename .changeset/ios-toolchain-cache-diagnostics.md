@@ -2,4 +2,4 @@
 "qaren": patch
 ---
 
-Explain iOS precompiled-module toolchain mismatches and warn when the native cache volume is unavailable.
+Warn about iOS precompiled-module compiler incompatibility and provide the next step for build failures caused by it.

@@ -20,7 +20,7 @@ The plugin root is two directories above this skill's base directory. Resolve on
 5. Any other refusal: stop and quote the installer's message.
 
 Run `<qaren path> doctor` before setup continues. Stop on a `FAIL` and give its fix.
-Present `ios-toolchain-match` and `native-cache-root` warnings before building.
+Present `ios-toolchain-match` warnings before building.
 `DEVELOPER_DIR`, `TOOLCHAINS`, `EXPO_USE_PRECOMPILED_MODULES` and
 `RCT_USE_PREBUILT_RNCORE` are inherited. Native source/precompiled switches take
 effect at pod installation; changing an export does not change existing Pods.

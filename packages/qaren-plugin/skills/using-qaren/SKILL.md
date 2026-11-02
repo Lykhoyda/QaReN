@@ -23,8 +23,8 @@ Follow `recovery_next_rung` and honor `recovery_unavailable_rungs`. Obtain the
 user's approval before native regeneration or dependency changes. For an Expo
 compiler mismatch, keep the selected environment exported through pod installation,
 preparation and the retried walk; complete cleanup of a recovery prepare run before
-retrying QA, and stop if cleanup is incomplete. Restore unavailable cache storage
-before retrying; restarting the app or device cannot repair compiler compatibility.
+retrying QA, and stop if cleanup is incomplete. Restarting the app or device
+cannot repair compiler compatibility.
 
 For a retained iOS runner, run `qaren cleanup <run-id> --json`; follow its `next_action` if ownership remains unproven.
 

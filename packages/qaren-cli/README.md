@@ -35,8 +35,7 @@ installed linkage warns to regenerate Pods. `expo-modules-jsi` interfaces are
 still checked. A `SKIP` means compiler compatibility was not assessed.
 Doctor reads static app config
 without executing it. See [native build recovery](#native-fingerprint-build-selection)
-for the remedies. `native-cache-root` explains a cold cache or unavailable
-storage before a build; neither check installs Pods or changes storage.
+for the remedies. The check neither installs Pods nor changes storage.
 
 Doctor prints the running binary's version, path, build, runtime and the
 [`QAREN_HOME`](#release-and-source-builds-side-by-side) in use, then one
@@ -59,7 +58,6 @@ applicable or its subject was not assessed, as explained in the row's detail.
 |---|---|
 | `xcode`, `ios-runtime` | `xcodebuild -version`; an available iOS simulator runtime, and the configured `ios.runtime` by name or identifier |
 | `ios-toolchain-match` | Expo interface compiler comparison described above |
-| `native-cache-root` | Cache filesystem availability; see [native build recovery](#native-fingerprint-build-selection) |
 | `node`, `pnpm` | `QAREN_NODE` or `node` on `PATH` is 24 or newer; a configured `nodePath` is only checked to be an executable file, never run; `pnpm` runs |
 | `pnpm-source` | The first executable `pnpm` on `PATH` and its resolved source; an offline exec probe in the app root must prove process-group preservation to pass, otherwise the row warns with the fix for `PNPM_PROCESS_GROUP_UNSUPPORTED`; a probe that times out warns as `PNPM_PROBE_TIMED_OUT` with a re-run step instead of version advice |
 | `corepack`, `cocoapods` | `corepack` and `pod` run (warnings) |
@@ -4089,9 +4087,7 @@ step: update compatible `expo-modules-jsi` and `expo-modules-core` patch version
 or select a compatible installed Xcode with `DEVELOPER_DIR`.
 
 Receipts report normalized `toolchain` information: selected Xcode, Swift version,
-and observed Expo module linkage. Unknown evidence remains unknown. Doctor warns
-when the configured cache volume is unmounted; restore it before building or
-explicitly select a mounted private absolute `QAREN_NATIVE_CACHE_ROOT`.
+and observed Expo module linkage. Unknown evidence remains unknown.
 
 **Expo native identity (iOS).** When the app's `package.json` declares `expo` in
 `dependencies`, `devDependencies`, `optionalDependencies` or `peerDependencies`,
