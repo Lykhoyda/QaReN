@@ -634,6 +634,10 @@ it is never recovered, retried or re-walked, including when a handler finds twin
 at dispatch. Stored-selector resolution follows the [saved-block contract](#saved-blocks). A text element
 that is the sole text descendant of matching labelled ancestors links to the
 nearest action candidate: enabled and either hittable or offscreen for scrolling.
+If none qualifies, it links to the nearest same-label button, link, switch or
+control with supported press semantics, even when disabled or not hittable.
+A quoted press then reports that control's eligibility instead of twin ambiguity;
+an untyped child needs text provenance to collapse.
 On Android, this also applies when an ancestor has other text descendants but
 exactly one same-label heading re-kinded from `other` to `text` by the
 [native heading fact](#plan-checks-and-screen-evidence), as on a titled card.
@@ -718,12 +722,8 @@ When nothing matches exactly, a quoted press target equal to one whole
 comma-separated segment of exactly one actionable element's merged label (for
 example `Item 2` in `Item 2, Status 2`) names that element; two such elements
 refuse as ambiguous. A label-only native row keeps its accessibility-label
-evidence even when its React role re-kinds it. The single text child of a typed or
-press-capable control with the same label is that control's
-label even while the control is disabled or not hittable, so a quoted press reports
-that one control's eligibility instead of `TARGET_AMBIGUOUS`; an untyped child needs
-text provenance to collapse. Separate
-controls in distinct subtrees with the same label still refuse as ambiguous. The
+evidence even when its React role re-kinds it. Separate controls in distinct
+subtrees with the same label still refuse as ambiguous. The
 [label-echo tests](../qaren-core/test/unit/qa/label-echo.test.ts) cover these cases.
 The refusal lists
 each candidate without its label or value: kind, testID or `no-id`, and the
