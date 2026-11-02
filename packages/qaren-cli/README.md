@@ -1178,8 +1178,9 @@ protected value is masked whole. `suggestion` is one plan edit for the miss
 reason; it carries no app text and points to `failure.screen`, and supplies
 the walk's `next_action`, subject to the [cleanup precedence](#ios-admission-and-cleanup).
 It describes what was observed and never
-proposes a Wait for an enabled state, because a quoted Wait passes on a disabled control. When one of
-the last 20 `check` runs failed the same plan line with the same code and
+proposes a Wait for an enabled state, because a quoted Wait passes on a disabled control.
+Repeat matching applies only to target-class failures carrying a `subreason`.
+When one of the last 20 `check` runs failed the same plan line with the same code and
 subreason on the same platform, app, recorded Git revision, worktree fingerprint
 and plan hash, `failure.repeat` names it and the walk's guidance leads with
 "same failure, plan unchanged". For `evidence-incomplete`, the notice instead
@@ -2596,8 +2597,9 @@ shutdown of only that simulator, obtain approval first if it is lent, then retry
 QaReN has no standalone shutdown command. Missing driver proof means retain and report;
 storage failures require restoring
 write access before one cleanup retry. Fresh preparation follows proven absence.
-An unclean check keeps its original failure code. Its `next_action` follows runner
-recovery advice when present; otherwise it points to this run's cleanup. Any existing
+An unclean check keeps its original failure code. For a non-held run, its
+`next_action` follows runner recovery advice when present; otherwise it points
+to this run's cleanup. Any existing
 target suggestion or repeat guidance follows those cleanup instructions in both
 `failure.next_action` and top-level `next_action`. Lost lease
 or owner proof selects retain-and-report advice, never simulator shutdown.
@@ -2685,7 +2687,11 @@ event carries `held: true`, and the record stays in the walking phase. `qaren st
 reports the hold beside its live probes, and `qaren doctor --device <udid>` adds the holding run
 to the `ios-lane` row. The hold ends with `qaren cleanup <run-id>`, or with the next run on that
 device, which reclaims the dead holder through the same cleanup. Holds do not expire.
-The receipt's `next_action` is `qaren cleanup <run-id> --json`.
+The receipt's top-level `next_action` is `qaren cleanup <run-id> --json`.
+Its `failure.next_action` keeps the plan edit or repeat guidance first, followed by
+the retained resources, `qaren status <run-id>` and `qaren cleanup <run-id> --json`.
+If runner recovery is required, the recovery instructions take precedence as
+described above.
 
 `--hold` and `--no-hold` apply only to `check`; `pr` always uses normal teardown and rejects them.
 Android never holds; `--hold` there adds the receipt note `hold unsupported on android`.
