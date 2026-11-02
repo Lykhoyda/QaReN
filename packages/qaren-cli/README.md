@@ -971,7 +971,8 @@ vertical change among identities unique in both captures. The
 [readback implementation](../qaren-core/src/qa/walker.ts) owns these diagnostics.
 A second occlusion fails with that same off-screen explanation; wrapper fallback
 reports that nothing was typed. This refusal does not become
-`ACTION_OUTCOME_UNCERTAIN`. Checks and waits gain only the keyboard rule below.
+`ACTION_OUTCOME_UNCERTAIN`. For check and wait visibility rules, see the
+[screen evidence contract](#plan-checks-and-screen-evidence).
 See the [occlusion regressions](../qaren-core/test/unit/qa/occlusion-walker.test.ts).
 
 ### Fill verification and keyboard fallback
@@ -3035,6 +3036,9 @@ A non-exempt on-screen, uncovered target in the current block, uncertain absence
 for a target subject to the absence guard, or a control inside any plan target prevents
 dismissal. Phrase-only current targets cannot establish this
 deterministic absence guard.
+Planned-container protection follows native ancestry and proven React host
+ancestry. The React ancestry guard stops at a modal host, so the presenting
+screen does not protect the modal's controls.
 
 With `TYPESAFE_API_KEY`, Jev may veto a selected control when the screen may be
 related to the step or its purpose is uncertain. It never chooses a control,
