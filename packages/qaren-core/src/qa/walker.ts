@@ -94,9 +94,12 @@ import {
 import {
   type InterruptionDiagnostic,
   type LoginMarker,
+  type PlannedSurface,
   type RecoveryTarget,
   dismissCandidate,
+  plannedSurface,
   recover,
+  surfaceGone,
 } from './recover.js';
 import type {
   BlockOutcome,
@@ -410,6 +413,7 @@ export interface WalkSequence {
   window?: { fromMs: number; typed: number };
   // System prompts recovery declined in this run; a repeat ask is the plan author's to answer.
   declinedPrompts?: Set<string>;
+  plannedPress?: PlannedSurface;
 }
 
 function recordMediaLatch(
@@ -484,6 +488,9 @@ function movedGeometry(error: string | undefined) {
     ...(m[2] ? { path: m[2] === 'has id' ? 'identifier' : 'label' } : {}),
   };
 }
+
+const PREVIOUS_PLAN_PRESS =
+  '; the previous planned press succeeded; the next target was not found; automatic app dismissal was withheld';
 
 // Capture and process refusals, ambiguity and the replay-miss path are never recovered.
 const UNRECOVERABLE = new Set([
@@ -587,6 +594,7 @@ async function walkBlockScoped(
   let resolvedBy: LedgerRow['resolvedBy'] = 'exact';
   let cached: { item: Item; observation: Observation; decision: ScreenDecision } | undefined;
   let latest: Screen = { elements: [], visibleText: [], front: 'app' };
+  let pressBase: Screen | undefined;
   let line = 0;
   let mutationStarted = false;
   // The Fill ladder rung of the current item's last fill dispatch, and when the item began.
@@ -1268,7 +1276,14 @@ async function walkBlockScoped(
       // Row timing is passive; the row is recorded without it.
     }
     const timed = timing ? { ...row, timing } : row;
-    if (row.outcome === 'pass' && !opts.login) sequence.planPassed = true;
+    if (row.outcome === 'pass' && !opts.login) {
+      sequence.planPassed = true;
+      if (
+        opts.recover !== false &&
+        block.items.some((item) => item.line === row.line && item.kind === 'press')
+      )
+        sequence.plannedPress = plannedSurface(latest, pressBase);
+    }
     rows.push(timed);
     deps.row(valueFree(timed));
   };
@@ -1374,6 +1389,15 @@ async function walkBlockScoped(
       } catch {
         // Diagnostics cannot change the failed step's outcome.
       }
+    }
+    if (pressVetoed === item && ((target && targetCode) || item.kind === 'check')) {
+      // A check has no target diagnostics, so it keeps the note but no subreason.
+      if (target)
+        lastScreen = {
+          ...(lastScreen.screen ? { screen: lastScreen.screen } : {}),
+          subreason: 'previous-plan-press',
+        };
+      reason = [...segments(reason), PREVIOUS_PLAN_PRESS];
     }
     const withheld = privacy.textWithheld(last);
     emit({
@@ -1929,6 +1953,8 @@ async function walkBlockScoped(
   };
   // The login block walks with this walk's privacy, so its typed values stay masked.
   let loginReplayed = false;
+  // The item whose recovery withheld an app dismissal because a planned press opened the screen.
+  let pressVetoed: Item | undefined;
   const replayLogin = async () => {
     const login = deps.login?.block;
     if (!login) {
@@ -1943,6 +1969,8 @@ async function walkBlockScoped(
     }
     loginReplayed = true;
     sequence.window = undefined;
+    sequence.plannedPress = undefined;
+    pressVetoed = undefined;
     let taken = 0;
     const counted: WalkerDeps = {
       ...deps,
@@ -2051,8 +2079,13 @@ async function walkBlockScoped(
           await shoot(item),
         );
     }
+    const surface = sequence.plannedPress;
+    if (surface && surfaceGone(fresh.screen, surface)) sequence.plannedPress = undefined;
     const planTargets = [
-      recoveryTarget(item) ?? { phrase: '' },
+      {
+        ...(recoveryTarget(item) ?? { phrase: '' }),
+        ...(sequence.plannedPress ? { afterPlannedPress: true } : {}),
+      },
       ...block.items.slice(block.items.indexOf(item) + 1).flatMap((remaining) => {
         const target = recoveryTarget(remaining);
         return target?.quoted !== undefined ? [target] : [];
@@ -2060,6 +2093,7 @@ async function walkBlockScoped(
       ...(opts.laterTargets ?? []),
     ];
     const interruptionRejected = (record: InterruptionDiagnostic, observation?: number) => {
+      if (record.veto === 'previous-plan-press') pressVetoed = item;
       try {
         deps.note?.(
           `interruption-rejected=${JSON.stringify({ line: item.line, ...(observation === undefined ? {} : { observation }), ...record })}`,
@@ -2378,6 +2412,8 @@ async function walkBlockScoped(
       if (item.kind === 'echo') declareEcho(item.input);
       continue;
     }
+    pressVetoed = undefined;
+    pressBase = undefined;
     mutationStarted = false;
     fillMethod = undefined;
     fillMismatch = undefined;
@@ -3405,17 +3441,19 @@ async function walkBlockScoped(
                 selectionStartedAt = deps.now();
               }
               act = await mutate(item, before, async (context) => {
-                return item.kind === 'press'
-                  ? deps.press(ref!, context)
-                  : item.kind === 'fill'
-                    ? deps.fill(ref!, fillText(item), context, secretFill(item), () =>
-                        promoteFill(item, element?.testID),
-                      )
-                    : item.kind === 'scroll'
-                      ? deps.scroll(item.direction, context)
-                      : item.kind === 'back'
-                        ? deps.back(context)
-                        : deps.dialog(item.action, context);
+                if (item.kind === 'press') {
+                  pressBase = before.screen;
+                  return deps.press(ref!, context);
+                }
+                return item.kind === 'fill'
+                  ? deps.fill(ref!, fillText(item), context, secretFill(item), () =>
+                      promoteFill(item, element?.testID),
+                    )
+                  : item.kind === 'scroll'
+                    ? deps.scroll(item.direction, context)
+                    : item.kind === 'back'
+                      ? deps.back(context)
+                      : deps.dialog(item.action, context);
               });
               if (item.kind === 'fill') fillMethod = act.method ?? 'keyboard';
               if (!act.ok && act.ambiguous) {

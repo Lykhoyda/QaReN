@@ -80,7 +80,7 @@ export interface LedgerFailure {
   // Target-class failures only: the last observed screen, one suggested plan edit and the miss reason.
   screen?: ScreenNow;
   suggestion?: string;
-  subreason?: TargetMissDiagnostic['reason'] | 'ambiguous';
+  subreason?: TargetMissDiagnostic['reason'] | 'ambiguous' | 'previous-plan-press';
   // Why a scroll step failed; set only by the walker, never read from reason prose.
   cause?: 'scroll_dispatch_failed' | 'scroll_context_changed' | 'scroll_target_absent';
 }
