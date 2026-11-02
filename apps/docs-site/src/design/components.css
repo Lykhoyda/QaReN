@@ -1,0 +1,257 @@
+/* Local stub of the QaReN component styles the docs site uses, copied from the design system's
+   bundle.css (fonts load from the document head instead of an @import). Replaced by
+   @qaren/design/components.css. Every value comes from tokens.css. */
+
+:root,
+[data-theme='dark'] {
+  color-scheme: dark;
+}
+[data-theme='light'] {
+  color-scheme: light;
+}
+
+.qr-root {
+  box-sizing: border-box;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+.qr-root *,
+.qr-root *::before,
+.qr-root *::after {
+  box-sizing: border-box;
+}
+.qr-root :focus-visible {
+  outline: var(--border-focus) solid var(--focus);
+  outline-offset: var(--border-focus-offset);
+}
+
+.qr-wordmark {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.12em;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1;
+  color: var(--text);
+  text-decoration: none;
+}
+.qr-cursor {
+  display: inline-block;
+  width: 0.55em;
+  height: 0.95em;
+  align-self: center;
+  background: var(--accent);
+  border-radius: var(--radius-sm);
+  transform: translateY(0.04em);
+}
+
+.qr-link {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  transition: text-decoration-color var(--duration-fast) var(--ease-standard);
+}
+.qr-link:hover {
+  text-decoration-color: var(--accent-text);
+  text-decoration-thickness: 2px;
+}
+
+.qr-code-inline {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 0.1em 0.35em;
+  background: var(--surface-2);
+  color: var(--text);
+  border: var(--border-hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.qr-codeblock {
+  background: var(--surface);
+  border: var(--border-hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.qr-codeblock pre {
+  margin: 0;
+  padding: var(--space-4);
+  overflow-x: auto;
+  font: 400 14px/1.6 var(--font-mono);
+  color: var(--text);
+}
+
+.qr-table-wrap {
+  border: var(--border-hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+  background: var(--surface);
+}
+.qr-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  line-height: 1.55;
+}
+.qr-table th {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-2);
+  font: 500 12px/1.4 var(--font-mono);
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  border-bottom: var(--border-hairline) solid var(--border);
+}
+.qr-table td {
+  padding: var(--space-3);
+  border-top: var(--border-hairline) solid var(--border);
+  vertical-align: top;
+}
+.qr-table tr:first-child td {
+  border-top: 0;
+}
+
+.qr-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  height: 56px;
+  padding: 0 var(--space-5);
+  background: var(--surface);
+  border-bottom: var(--border-hairline) solid var(--border);
+}
+.qr-nav__home {
+  display: inline-flex;
+  color: var(--text);
+}
+.qr-nav__links {
+  display: flex;
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  flex: 1;
+}
+.qr-nav__link {
+  font-size: 14px;
+  color: var(--muted);
+  text-decoration: none;
+  padding: var(--space-2) 0;
+  border-bottom: 2px solid transparent;
+}
+.qr-nav__link:hover {
+  color: var(--text);
+}
+.qr-nav__link[aria-current='page'] {
+  color: var(--text);
+  border-bottom-color: var(--text);
+}
+
+.qr-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3) var(--space-5);
+  padding: var(--space-5);
+  border-top: var(--border-hairline) solid var(--border);
+  font-size: 14px;
+  color: var(--muted);
+}
+.qr-footer .qr-wordmark {
+  font-size: 14px;
+  color: var(--muted);
+}
+.qr-footer__links {
+  display: flex;
+  gap: var(--space-4);
+  margin: 0 0 0 auto;
+  padding: 0;
+  list-style: none;
+}
+
+/* Docs layout: the design system's DocsPage composition with its inline styles as classes. */
+.qr-docs {
+  display: grid;
+  grid-template-columns: 256px minmax(0, 1fr);
+  gap: 56px;
+  padding: 40px 40px 64px;
+}
+.qr-docs__side p.label {
+  color: var(--muted);
+  margin: 0 0 var(--space-2);
+}
+.qr-docs__group {
+  margin-bottom: 28px;
+}
+.qr-docs__side ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+.qr-docs__side a {
+  display: block;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  text-decoration: none;
+  color: var(--muted);
+}
+.qr-docs__side a:hover {
+  color: var(--text);
+}
+.qr-docs__side a[aria-current='page'] {
+  color: var(--text);
+  background: var(--surface-2);
+  font-weight: 600;
+}
+.qr-docs__toggle {
+  display: none;
+}
+.qr-docs__main {
+  max-width: 760px;
+  min-width: 0;
+}
+.qr-docs__main > .label {
+  color: var(--muted);
+  margin: 0 0 var(--space-2);
+}
+.qr-docs__main > h1 {
+  margin: 0 0 var(--space-4);
+}
+.qr-docs__main > .lead {
+  color: var(--muted);
+  margin: 0 0 var(--space-2);
+}
+
+@media (max-width: 860px) {
+  .qr-docs {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-5);
+    padding: var(--space-5) var(--space-4) var(--space-7);
+  }
+  .qr-docs__toggle {
+    display: block;
+  }
+  .qr-docs__toggle summary {
+    cursor: pointer;
+    font: 500 14px/1.4 var(--font-sans);
+    padding: var(--space-2) 0;
+  }
+  .qr-docs__side--wide {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qr-root * {
+    transition: none !important;
+  }
+}

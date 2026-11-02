@@ -1,141 +1,21 @@
----
-title: Getting started
-description: Install qaren and the QaReN plugin, run /qaren:setup and reach a first passing check.
----
-
-import { Steps } from '@astrojs/starlight/components';
-import AgentInstallPrompt from '../../components/AgentInstallPrompt.mdx';
+Placeholder. This page keeps its address and outline; its content moves here in the content migration.
 
 ## Requirements
 
-- An Apple silicon Mac with Xcode.
-- Node 24 or newer, with Corepack.
-- `pnpm` on `PATH`; with Corepack, `corepack enable pnpm` provides it; see [launcher compatibility](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#doctor) for Corepack and bootstrap shims.
-- An Expo app that uses `expo-dev-client` and pnpm, with a `pnpm-lock.yaml`.
-
-QaReN 2.0 supports iOS simulators on Apple silicon.
-
 ## Install
 
-Choose one of three options. Your agent can prepare the prerequisites above, or you
-can install the plugin yourself if they are already available.
-
 ### Ask your agent to install (recommended)
-
-Open Claude Code, Codex or Cursor in your app. Other agents are untested. Copy this prompt
-using the copy button in the code block, then paste it into your agent:
-
-<AgentInstallPrompt />
-
-The agent may need you to complete an Xcode download, accept its license, install an
-iOS simulator runtime or finish a host's plugin UI step before it can continue.
 
 ## Install without the prompt
 
 ### Install the plugin yourself
 
-Use the commands for your host:
-
-```sh
-# Claude Code
-claude plugin marketplace add Lykhoyda/QaReN
-claude plugin install qaren@qaren
-# Codex
-codex plugin marketplace add Lykhoyda/QaReN
-codex plugin add qaren@qaren
-# Cursor: add the marketplace, then install qaren from /plugin > Marketplace in
-# cursor-agent, or from Customize > Plugins in the editor
-cursor-agent plugin marketplace add https://github.com/Lykhoyda/QaReN
-```
-
-Then run `/qaren:setup` from your app's root. In Codex or Cursor, you can ask the
-agent to set up QaReN using the installed setup skill. Setup installs the matching
-CLI and runs the first smoke check; see [what setup does](#what-qarensetup-does).
-
 ### Install from source
-
-This option also needs Rust and Cargo from [rustup.rs](https://rustup.rs).
-
-For an unreleased build or when the matching release asset is unavailable, install
-from a checkout of the [repository](https://github.com/Lykhoyda/QaReN):
-
-<Steps>
-
-1. Clone the checkout and install `qaren` from it:
-
-   ```sh
-   git clone https://github.com/Lykhoyda/QaReN.git qaren-src
-   cd qaren-src
-   bash scripts/install-qaren-from-source.sh
-   ```
-
-   Use the binary path the installer prints; see the [source-build contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#release-and-source-builds-side-by-side).
-
-2. From your app's root directory, start Claude Code with the checkout's plugin:
-
-   ```sh
-   claude --plugin-dir <checkout>/packages/qaren-plugin
-   ```
-
-   `<checkout>` is the absolute path of `qaren-src`.
-
-3. Run the setup skill:
-
-   ```text
-   /qaren:setup
-   ```
-
-</Steps>
 
 ### Where `qaren` lands on PATH
 
-Follow the [installation contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plugin-runtime-installation) for PATH selection, existing-command protection and interrupted-install recovery.
-Use the binary path the installer prints and keep its default options.
-
 ### Run a release and a source build side by side
-
-Follow [release and source builds side by side](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#release-and-source-builds-side-by-side) for source versioning, state lookup and shared device locks.
 
 ## What `/qaren:setup` does
 
-Setup runs six steps from the app's root directory. When a step stops, it gives the one
-reason and the fix.
-
-1. **CLI.** It verifies or installs the plugin's matching `qaren` runtime; follow the
-   [installation contract](https://github.com/Lykhoyda/QaReN/blob/main/packages/qaren-cli/README.md#plugin-runtime-installation)
-   for verification, PATH linking and the source fallback.
-2. **App.** It checks that `package.json` lists `expo` and `expo-dev-client` and that
-   `pnpm-lock.yaml` exists. It asks before running `pnpm install`. It reads the bundle
-   identifier and the app's `slug` from `pnpm exec expo config`; when that fails, it asks
-   you for both values rather than guessing.
-3. **Config.** It writes `.qaren/config.yaml`:
-
-   ```yaml
-   appId: <bundle identifier>
-   devClientScheme: exp+<slug>
-   ```
-
-   `exp+<slug>` is the scheme `expo-dev-client` generates. When the app's config turns that
-   scheme off, setup asks you for the scheme the app registers instead. An existing config
-   is shown next to the detected values and changed only with your consent. See [Configuration](../configuration/) for every key.
-4. **Device.** It reads the simulator inventory and never boots, shuts down or erases a
-   simulator itself. With one booted simulator it passes no device flag. With none, it
-   picks the newest available iPhone and passes `--boot-device --device <udid>`, so
-   `qaren` boots it under its device lease. With several, it asks you which one.
-5. **Smoke plan.** It reads the app's launch path in source, picks a text shown on the
-   first screen, and writes `.qaren/plans/smoke.md`. This plan needs no
-   `TYPESAFE_API_KEY`.
-6. **Run.** It starts the first `qaren check` detached, because a cold native build can
-   take longer than the host's command limit, and follows the run until it ends. Within a
-   minute the progress log names the run, and you can watch it in your own terminal with
-   `qaren watch <run-id>`. It then reports the receipt's `result`, `run_id` and
-   `next_action`.
-
-On `pass`, QaReN is set up. If a `pass` receipt's `next_action` is a `qaren cleanup` command,
-teardown was incomplete and setup offers to run it.
-
 ## First check
-
-Setup already ran the smoke plan. Now [ask your agent](../plugin/) to QA something you
-changed, for example "QA the onboarding change". It writes the plan, runs it and reports
-the result.

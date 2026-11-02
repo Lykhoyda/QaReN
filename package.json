@@ -4,7 +4,6 @@
   "description": "Yarn workspace for QaReN: the qaren CLI, its TypeScript core, the plugin package, native runners and the docs site.",
   "packageManager": "yarn@4.17.0",
   "workspaces": [
-    "apps/*",
     "packages/*"
   ],
   "scripts": {
@@ -13,8 +12,8 @@
     "build": "yarn build:core && yarn build:observe",
     "build:core": "yarn workspace qaren-core build",
     "build:observe": "cd packages/qaren-cli/observe && npm install && npm run build",
-    "build:docs": "yarn workspace qaren-docs build",
-    "docs:generate": "yarn workspace qaren-docs generate",
+    "build:docs": "cd apps/docs-site && bun install --frozen-lockfile && bun run build",
+    "docs:generate": "cd apps/docs-site && bun run generate",
     "test": "yarn workspace qaren-core test",
     "test:coverage": "yarn workspace qaren-core test:coverage",
     "test:integration": "yarn workspace qaren-core test:integration",

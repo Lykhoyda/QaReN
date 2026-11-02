@@ -1,0 +1,112 @@
+/* QaReN tokens, copied from the design system (tokens.css). Replaced by @qaren/design/tokens.css. */
+
+:root,
+[data-theme='dark'] {
+  --bg: #0b0f14;
+  --surface: #151b23;
+  --surface-2: #1c242e;
+  --border: #2a3441;
+  --border-strong: #6b778b;
+  --text: #e8ecf1;
+  --muted: #98a2b3;
+  --accent: #f5b83d;
+  --accent-text: #f5b83d;
+  --on-accent: #0b0f14;
+  --pass: #3fd68b;
+  --on-pass: #0b0f14;
+  --pass-tint: #0f2a1e;
+  --fail: #ff6b6b;
+  --on-fail: #0b0f14;
+  --fail-tint: #2e1519;
+  --focus: var(--accent-text);
+  --shadow-pane: 0 12px 32px rgba(0, 0, 0, 0.45);
+  --shadow-none: none;
+}
+
+[data-theme='light'] {
+  --bg: #f4f6f8;
+  --surface: #ffffff;
+  --surface-2: #eaeef2;
+  --border: #d5dbe3;
+  --border-strong: #7a8597;
+  --text: #0f1720;
+  --muted: #566273;
+  --accent: #f5b83d;
+  --accent-text: #8a5a00;
+  --on-accent: #0b0f14;
+  --pass: #0e7a44;
+  --on-pass: #ffffff;
+  --pass-tint: #e4f4ea;
+  --fail: #c62f35;
+  --on-fail: #ffffff;
+  --fail-tint: #fbe8e8;
+  --focus: var(--accent-text);
+  --shadow-pane: 0 1px 2px rgba(15, 23, 32, 0.06), 0 8px 24px rgba(15, 23, 32, 0.08);
+  --shadow-none: none;
+}
+
+:root {
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 80px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-pill: 999px;
+  --border-hairline: 1px;
+  --border-focus: 2px;
+  --border-focus-offset: 2px;
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-cursor: 1100ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+.h1 {
+  font-family: var(--font-sans);
+  font-size: 40px;
+  line-height: 1.15;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.h2 {
+  font-family: var(--font-sans);
+  font-size: 28px;
+  line-height: 1.25;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+.h3 {
+  font-family: var(--font-sans);
+  font-size: 20px;
+  line-height: 1.35;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.lead {
+  font-family: var(--font-sans);
+  font-size: 18px;
+  line-height: 1.6;
+  font-weight: 400;
+}
+.body {
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.65;
+  font-weight: 400;
+}
+.label {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.4;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}

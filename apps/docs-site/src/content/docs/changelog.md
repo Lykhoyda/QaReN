@@ -5,6 +5,92 @@ description: "Release history for QaReN"
 
 ## Plugin
 
+### 2.0.6
+
+#### Patch Changes
+
+- 03b30c0: Dismiss optional sheets through their fixed decline control when they cover the waited target.
+- 73a76fb: Warn about iOS precompiled-module compiler incompatibility and provide the next step for build failures caused by it.
+- 0dd3a26: On iOS, taps on unselected native row-choice candidates attempt keyboard dismissal before settling and tapping the target once, record successful clearance in the receipt, and refuse when selection cannot be verified.
+- 04d1bb0: A text label inside a pressable that is disabled or not hittable now resolves to that one control instead of refusing the quoted press as `TARGET_AMBIGUOUS`; separate same-label controls stay ambiguous.
+- e2325a2: A step that fails on its target now reports the last observed screen's controls with their age, a suggested plan edit as the next step, and an earlier identical failure on the same plan and revision.
+- 16d2bbe: Start Metro-only Expo commands offline by default and bound manifest warm-up with actionable diagnostics for slow request handlers and stalled watchers or slow volumes.
+- 5f61a5a: Mark the Metro readiness stage in `qaren check` progress instead of the `expo-start` process exit, so stopping Metro at cleanup no longer shows a failed `expo-start` after the stage passed.
+
+### 2.0.5
+
+#### Patch Changes
+
+- dd11744: A tap on a control that was already selected and stays selected now passes with the evidence `already selected, no change` instead of failing as an unchanged screen; a toggle still passes on its new state.
+- c5f63a7: Retry uncertain dev-overlay reads within the startup budget and report recovery guidance.
+- 83b7448: Retry transient fresh-install identity uncertainty once within the existing admission allowance and report the terminal probe evidence.
+- 02ca999: Failed iOS `check` walks and target refusals after admission now retain Metro, the simulator and the device lease for inspection until `qaren cleanup <run-id>` or the next run on that device; check-only `--hold` and `--no-hold` override the defaults, while `CI`, a `## Cleanup` plan section, `--shutdown-device-on-exit` and `QAREN_HOLD_ON_FAIL=0` preserve normal teardown by default.
+- 02ca999: iOS runs now start Metro bound to localhost, so a Metro kept for inspection after a failed check is not reachable from the local network.
+- a31233e: Recover owned iOS runner drivers and simulator hosts during explicit cleanup while preserving automatic teardown safety.
+- dd11744: Prevent unrelated screen changes from passing unverified selection-control taps and avoid repeating a press whose selection effect cannot be observed.
+
+### 2.0.4
+
+#### Patch Changes
+
+- b55a5dc: Make a copyable agent setup prompt the primary installation path in the docs and README while keeping per-host plugin commands and manual source installation.
+- e075ccb: Show the copyable agent install prompt on the docs landing page and share it with the installation guide.
+- 05d6a08: Add an explicit non-strict video policy for test data while preserving detected SECRET withholding and strict publication defaults.
+- 3570f2c: Enforce resource teardown for post-record check failures and verify cleanup for every core refusal code.
+- a90f8e7: Keep explicit runtime linking within the current HOME and report the written link and potential PATH shadows.
+- 1765403: Preserve GitHub tokens for QaReN-owned GitHub commands while keeping other subprocesses isolated and refusing unavailable authentication with setup guidance.
+- 7151b4c: Use each crash report's capture time for iOS lane-health attribution and gracefully cancel native-suite and recovery drivers without force-killing initializing XCTest helpers.
+- f97a39b: iOS preparation now waits within its build budget and releases the native build lock after verified cache publication, with safe holder diagnostics.
+- 529e1d8: Fix native iOS suite log-helper dispatch and safely recover simulator leases after a failed spawn.
+- 6cb42d2: A tap on an option that exposes no accessibility state now passes when the tapped control visibly changes on screen within its own bounds.
+- fb253ea: Prevent false passing option taps after delayed layout shifts by rechecking target geometry after comparison screenshots.
+- ccd43fc: Recover iOS dev-client attach stalls with bounded manifest-probe backoff and up to two additional relaunches when no bundle request arrives and a probe exceeds the client timeout.
+- a9a4457: Refuse incompatible pnpm bootstrap launchers before resource acquisition with an actionable typed reason and report pnpm's source in doctor.
+- 3b080c3: Retry a timed-out pnpm process-group probe with a doubled bound inside the dependency-install budget, and refuse a persistent timeout as `PNPM_PROBE_TIMED_OUT` instead of reporting a supported pnpm as unsupported.
+- 7b2c3b0: Default iOS `qaren prepare` now reuses a free QaReN-created simulator from a per-home pool capped by `ios.max_devices`, and `--new` keeps the previous fresh temporary simulator.
+- 09db4d3: Add the proofInDescription config key: qaren publish also writes the verdict, tested commit, comment link and the uploaded video into a QaReN-owned section of the pull request description, replacing it on a new head and preserving the author's text.
+- cd4c6ab: Prevent host readback of TEST-PII inputs whose values collide with a SECRET input.
+- 72d511c: Runtime inputs now follow SECRET, TEST-PII and PUBLIC tiers: TEST-PII Fill readback, failure screen text and core.log are redacted by declared values while subprocess logs and media stay withheld, secure fields promote inputs to SECRET, and SECRET refusals report only value-free mismatch facts.
+- ff50db8: A quoted wait whose only match is mounted in React but absent from the native screen now ends within its own deadline with `TARGET_REACT_ONLY` and a next step, refusing early or scrolling once when the field's layout shows why, instead of reporting visibility uncertainty.
+- cb7d66e: Rename the Android runner directory and release zip to `qaren-android-runner` and label the emulator app `QaReN Android Runner`; the package id is unchanged, so the next run replaces an installed runner in place, and the old `packages/rn-android-runner/` build output can be deleted.
+- 11f497f: Rename the iOS runner directory and release zip to `qaren-ios-runner`, label the simulator apps `QaReN` and `QaReN-Runner`, allow removal of the old `packages/rn-fast-runner/build/` directory, and use `RN_RUNNER_BUILD=local` on source checkouts until 2.0.4 is published.
+- 98dce90: Allow explicitly declared TEST-PII fills to use ordinary readback on readable non-secure fields with private native labels while retaining SECRET protections and recording value-free privacy causes.
+- 7d45ccb: A Fill into a code field that submits itself and leaves the screen no longer waits about ten seconds reading back the vanished field; its result is unchanged.
+- 2b7af1d: An iOS simulator a run explicitly owns now has its locale and keyboard pinned before launch, `check` then proves its first screen before row 1 and refuses as `LANE_NOT_WARM` otherwise, the receipt records the lane once as `lane`, and `qaren doctor --device <UUID>` checks the pinned settings.
+
+### 2.0.3
+
+#### Patch Changes
+
+- 4197438: Make a copyable agent setup prompt the primary installation path in the docs and README while keeping per-host plugin commands and manual source installation.
+- 4197438: Show the copyable agent install prompt on the docs landing page and share it with the installation guide.
+- 4197438: Add an explicit non-strict video policy for test data while preserving detected SECRET withholding and strict publication defaults.
+- 4197438: Use each crash report's capture time for iOS lane-health attribution and gracefully cancel native-suite and recovery drivers without force-killing initializing XCTest helpers.
+- 4197438: Fix native iOS suite log-helper dispatch and safely recover simulator leases after a failed spawn.
+- 4197438: A tap on an option that exposes no accessibility state now passes when the tapped control visibly changes on screen within its own bounds.
+- 4197438: Prevent false passing option taps after delayed layout shifts by rechecking target geometry after comparison screenshots.
+- 4197438: Refuse incompatible pnpm bootstrap launchers before resource acquisition with an actionable typed reason and report pnpm's source in doctor.
+- 4197438: Default iOS `qaren prepare` now reuses a free QaReN-created simulator from a per-home pool capped by `ios.max_devices`, and `--new` keeps the previous fresh temporary simulator.
+- 4197438: Prevent host readback of TEST-PII inputs whose values collide with a SECRET input.
+- 4197438: Runtime inputs now follow SECRET, TEST-PII and PUBLIC tiers: TEST-PII Fill readback, failure screen text and core.log are redacted by declared values while subprocess logs and media stay withheld, secure fields promote inputs to SECRET, and SECRET refusals report only value-free mismatch facts.
+- 4197438: Allow explicitly declared TEST-PII fills to use ordinary readback on readable non-secure fields with private native labels while retaining SECRET protections and recording value-free privacy causes.
+- 4197438: A Fill into a code field that submits itself and leaves the screen no longer waits about ten seconds reading back the vanished field; its result is unchanged.
+- 4197438: An iOS simulator a run explicitly owns now has its locale and keyboard pinned before launch, `check` then proves its first screen before row 1 and refuses as `LANE_NOT_WARM` otherwise, the receipt records the lane once as `lane`, and `qaren doctor --device <UUID>` checks the pinned settings.
+
+### 2.0.2
+
+#### Patch Changes
+
+- ae42998: iOS teardown now asks the XCUITest runner to shut down before falling back to signals, and checks record matching SpringBoard crash reports as lane-health notes without changing the run result.
+- 5520dcf: Present QaReN in the README and docs site as a QA engineer for your coding agent, with the qaren CLI reference grouped under How it works.
+- 670083e: A released qaren and a source build now install side by side: `QAREN_HOME` moves runs, state, runtimes and the runner cache, source builds are versioned `<version>-dev.<commit>`, and the installer no longer relinks the other line's `qaren` without `--link`.
+
+### 2.0.1
+
+#### Patch Changes
+
+- ff0d5a5: Point runner downloads, the installer, plugin manifests and documentation links at the renamed Lykhoyda/QaReN repository and its https://lykhoyda.github.io/QaReN/ docs site.
+
 ### 2.0.0
 
 #### Major Changes

@@ -1,4 +1,3 @@
-apps/docs-site/astro.config.mjs
 packages/qaren-core/test/fixtures/crashing-worker.mjs
 packages/qaren-core/test/fixtures/fake-worker.mjs
 packages/qaren-core/test/fixtures/partial-then-echo-worker.mjs
