@@ -2995,6 +2995,7 @@ fn plan_identity(plan: &str) -> (String, u64) {
 
 // Informational: the newest of the last REPEAT_SCAN check runs that failed this plan step the same way on the same recorded revision.
 fn repeat_of(runs_root: &Path, record: &RunRecord, failure: &Failure) -> Option<Repeat> {
+    failure.subreason.as_ref()?;
     let plan = record.plan_sha256.as_deref()?;
     // shortcut: subtracts every marker line, which flag() prepends; a marker a person moves mid-plan shifts only the lines after it, so a step above it would not match.
     let unmarked_step =
@@ -3444,6 +3445,39 @@ mod last_screen_tests {
         assert_eq!(repeat.count, 1);
         assert!(repeat_note(&failure, &repeat)
             .starts_with("same failure, plan unchanged: run check-20261030T081500Z"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_render_error_does_not_repeat_an_unchanged_tap_failure() {
+        let root = runs_root("repeat-non-target");
+        let unchanged: core::LedgerFailure = serde_json::from_value(json!({
+            "step": 2,
+            "seen": "the screen stayed unchanged after tapping Submit"
+        }))
+        .unwrap();
+        let mut earlier = record("check-20261030T081500Z", "abc");
+        earlier.failure = Some(step_failure(&unchanged));
+        earlier.save(&root).unwrap();
+        let render_error: core::LedgerFailure = serde_json::from_value(json!({
+            "step": 2,
+            "seen": "Render Error: the destination screen could not render"
+        }))
+        .unwrap();
+        let failure = walk_failure(
+            None,
+            &|| plan_step_failure(Some(&render_error)),
+            Some(&render_error),
+            &root,
+            &record("check-20261030T082000Z", "abc"),
+        );
+        assert_eq!(failure.code, FailureCode::PlanStepFailed);
+        assert_eq!(failure.step, Some(2));
+        assert!(failure.repeat.is_none());
+        assert_eq!(
+            failure.next_action.as_str(),
+            "read the report, fix the app or the plan, then re-run"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
