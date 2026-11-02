@@ -89,6 +89,15 @@ test('accepts a root-hosted link without a base', () => {
   assert.match(result.stdout, /ok {2}no broken internal links or assets/);
 });
 
+test('accepts permanent wildcard redirects for home, top-level and nested docs URLs', () => {
+  const result = verifyHomepageLink('/check/', '', '');
+
+  for (const path of ['/', '/cli/', '/actions/rn-flow-1/']) {
+    assert.ok(result.stdout.includes(`ok  vercel.json redirects /QaReN${path} permanently`));
+  }
+  assert.doesNotMatch(result.stderr, /FAIL {2}vercel.json redirects/);
+});
+
 test('accepts one h1 followed by headings that skip no level', () => {
   const result = verifyHomepageLink('check/', '<h1>QaReN</h1><h2>Get started</h2><h3>Install</h3>');
 

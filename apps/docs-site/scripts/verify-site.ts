@@ -161,12 +161,18 @@ const redirects: Redirect[] = existsSync(VERCEL_JSON)
 for (const { slug } of pages)
   check(
     `vercel.json redirects ${OLD_BASE}${pagePath(slug)} permanently`,
-    redirects.some(
-      (r) =>
-        r.source === `${OLD_BASE}${pagePath(slug)}` &&
-        r.destination === pagePath(slug) &&
-        r.permanent === true,
-    ),
+    redirects.some((r) => {
+      if (r.permanent !== true) return false;
+      const oldPath = `${OLD_BASE}${pagePath(slug)}`;
+      if (r.source.endsWith('/:path*')) {
+        const prefix = r.source.slice(0, -6);
+        return (
+          oldPath.startsWith(prefix) &&
+          r.destination.replace(':path*', oldPath.slice(prefix.length)) === pagePath(slug)
+        );
+      }
+      return r.source === oldPath && r.destination === pagePath(slug);
+    }),
   );
 
 console.log('\nverify-site: CLI drift');
