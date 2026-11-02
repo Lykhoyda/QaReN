@@ -3111,7 +3111,7 @@ When the overlay cannot be cleared this way the run refuses with
 | `DEV_REDBOX_DISMISS_FAILED` | The Dismiss press was not dispatched; it is not retried | `restart_app_from_plan_start` |
 | `DEV_REDBOX_NO_SAFE_DISMISS` | No single Dismiss control (a syntax error, an ambiguous control, or an overlay inside a login replay, which never recovers) | `restart_app_from_plan_start` |
 | `DEV_REDBOX_CLEARANCE_UNPROVEN` | A fresh capture could not prove the overlay gone | `restart_app_from_plan_start` |
-| `DEV_REDBOX_ACTION_UNCERTAIN` | The overlay was first seen after the step's action was sent; nothing is dismissed or replayed | `inspect_app_error_before_rerun` |
+| `DEV_REDBOX_ACTION_UNCERTAIN` | The overlay was first seen after the step's action was sent, or after another recovery already acted in the same step; nothing is dismissed or replayed | `inspect_app_error_before_rerun` |
 
 A restart from plan start loses app state; the error may race the app again. A
 device restart or an unchanged native rebuild cannot fix it. A run that passes
@@ -3121,7 +3121,9 @@ While an overlay is captured, even behind an alert, every textual report
 (`failure.seen`, the last observed screen, target diagnostics) carries only
 `A development error overlay was in front; N lines withheld.`, with no stack,
 path or message text, and no screenshot is taken. Admission leaves an overlay to
-the first step's dismissal instead of waiting out the dev-menu budget. A React
+the first step's dismissal instead of waiting out the dev-menu budget; a
+[warm lane](#warm-lane) still refuses `LANE_NOT_WARM` when its first screen is
+covered by one. A React
 render error that only the React capture reports, with no overlay in the native
 capture, still fails the current step immediately, including during login
 replay, and never triggers recovery. The regressions are in
