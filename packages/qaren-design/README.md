@@ -1,8 +1,8 @@
 # @qaren/design
 
-The QaReN design system, **Verdict Log: a calm terminal at night**, as a workspace package: colour, type and spacing tokens, the component stylesheet, and typed React components. It is the brand for every QaReN surface, starting with the docs site.
+The QaReN design system, **Verdict Log: a calm terminal at night**, as a workspace package: colour, type and spacing tokens, the component stylesheet, and typed React components. It is the brand for every QaReN surface; the docs site is planned to be its first user.
 
-This package is the canonical copy. The design system artifact (https://claude.ai/artifact/9wASKvBDC7Lx4ooS66t7YD) stays the design source for new layouts; changes reach this package through `scripts/sync-design.ts` and a reviewed pull request. Imported from artifact version `1793660106-9400` (tokens synced 2026-11-02).
+This package is the canonical copy. The design source stays where new layouts are drawn; changes reach this package through `scripts/sync-design.ts` and a reviewed pull request. Imported from design source version `1793660106-9400` (tokens synced 2026-11-02).
 
 ## Contents
 
@@ -10,9 +10,9 @@ This package is the canonical copy. The design system artifact (https://claude.a
 | --- | --- |
 | `tokens.json` | Every token with its usage rule. The source for the contrast check. |
 | `tokens.css` | The tokens as CSS custom properties for the `dark` and `light` themes, plus the type classes (`display`, `h1` to `h3`, `lead`, `body`, `body-sm`, `wordmark`, `verdict`, `label`, `code`, `code-sm`). |
-| `components.css` | Component styles. The artifact's `bundle.css` without its font import, followed by the package-owned docs layout section. |
+| `components.css` | Component styles. The design source's `bundle.css` without its font import, followed by the package-owned docs layout section. |
 | `contrast.md` | Every text and mark pair with its WCAG 2 ratio in both themes. |
-| `src/` | The components, ported from the artifact's `bundle.js` against its `index.d.ts` prop contract. |
+| `src/` | The components, ported from the design source's `bundle.js` against its `index.d.ts` prop contract. |
 
 ## Use it
 
@@ -52,16 +52,16 @@ Brand: `Logo`. Verdict: `VerdictPill`, `StepList`, `VideoProofCard`, `PRCommentS
 </DocsLayout>
 ```
 
-`DocsLayout` is the artifact's DocsPage layout: the nav bar, a 256px sidebar whose current item is marked by `surface-2` and weight 600, a 760px reading column, and the footer. Below 860px wide the sidebar stacks above the column. The page kicker, title and body are page content, not part of the layout.
+`DocsLayout` is the design source's DocsPage layout: the nav bar, a 256px sidebar whose current item is marked by `surface-2` and weight 600, a 760px reading column, and the footer. Below 860px wide the sidebar stacks above the column. The page kicker, title and body are page content, not part of the layout.
 
 ## The rules the components keep
 
 1. **The verdict is the loudest element.** Nothing else uses `pass` or `fail` at a larger size than the `VerdictPill`.
 2. **The verdict is always a word.** PASS or FAIL with a check or cross; every step and ledger row writes its status (`pending`, `running`, `passed`, `failed`) as text. Never colour alone.
 3. **One accent per screen.** A primary button, a running step, a caution callout or the wordmark's cursor: pick one.
-4. **No invented output.** `PRCommentSummary`, `TerminalPane` and `CodeBlock` show a Placeholder badge until `placeholder={false}`; set it only for content copied from a real run.
+4. **No invented output.** `PRCommentSummary` and `TerminalPane` show a Placeholder badge until `placeholder={false}`; set it only for content copied from a real run. `CodeBlock` shows the badge only with `placeholder`: pass it for any block that shows invented output.
 
-The full guidance (voice, colour, type, logo, motion, layouts) lives in the design system artifact.
+The full guidance (voice, colour, type, logo, motion, layouts) lives in the design source.
 
 ## Scripts
 
@@ -71,6 +71,6 @@ Run with Bun from this directory, or through `corepack yarn workspace @qaren/des
 | --- | --- |
 | `test` | `tsc --noEmit`, then `bun test` (one render test per component), then `check-contrast`. CI runs it. |
 | `check-contrast` | Recomputes the table in `contrast.md` from `tokens.json` and fails when a pair is under its floor (4.5:1 text, 3:1 marks) in either theme, or when `contrast.md` no longer matches the tokens. `--write` rewrites the table. |
-| `sync <path>` | Refreshes `tokens.css`, `tokens.json`, `contrast.md` and `components.css` from a saved copy of the artifact's `project/` folder on local disk, keeps the package-owned docs layout section, and lists what changed. It never reads the network. Components are ported by hand from `components/bundle.js` and `index.d.ts`. |
+| `sync <path>` | Refreshes `tokens.css`, `tokens.json`, `contrast.md` and `components.css` from a saved copy of the design source's `project/` folder on local disk, keeps the package-owned docs layout section, and lists what changed. It never reads the network. Components are ported by hand from `components/bundle.js` and `index.d.ts`. |
 
 TypeScript 7 is installed under the alias `typescript7` because Yarn's built-in TypeScript patch does not apply to version 7; `tsc` in this package resolves to it.

@@ -1,4 +1,4 @@
-// Refreshes tokens and styles from a saved copy of the design system artifact's
+// Refreshes tokens and styles from a saved copy of the design source's
 // project/ folder on local disk. It never reads the network. Usage:
 //   bun scripts/sync-design.ts <path to saved project/ folder>
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -26,7 +26,7 @@ export function componentsCss(bundleCss: string, currentComponentsCss: string): 
 export function sync(source: string, pkgDir: string): { file: string; changed: boolean }[] {
   const read = (path: string) => {
     if (!existsSync(path))
-      throw new Error(`missing ${path}; pass the saved artifact's project/ folder`);
+      throw new Error(`missing ${path}; pass the saved design source's project/ folder`);
     return readFileSync(path, 'utf8');
   };
   JSON.parse(read(join(source, 'tokens.json')));
@@ -51,7 +51,7 @@ if (import.meta.main) {
   const source = process.argv[2];
   if (!source || /^[a-z]+:\/\//i.test(source)) {
     console.error(
-      'usage: bun scripts/sync-design.ts <local path to the saved artifact project/ folder>',
+      'usage: bun scripts/sync-design.ts <local path to the saved design source project/ folder>',
     );
     process.exit(2);
   }
