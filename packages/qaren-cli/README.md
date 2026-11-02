@@ -943,14 +943,11 @@ changed or still capture. A scroll that errored or did not execute never passes
 on a changed capture; one whose effect is uncertain fails at once, and one
 that brings another front, such as a system dialog, fails without a retry.
 These failures carry `failure.cause` `scroll_dispatch_failed` or
-`scroll_context_changed`, and `next_action` `inspect_scroll_dispatch` or
-`inspect_last_observed_screen`, with every reset rung of `failure.recovery`
-inapplicable. A refused scroll that changed nothing keeps the ordinary
-recovery, such as hiding a dev menu, before that failure. To require content,
-write `Scroll down until "<text>"`: it still fails when the target never
-appears, with cause `scroll_target_absent` and `next_action`
-`inspect_scroll_target`. A repeat of a typed scroll failure keeps that
-`next_action`.
+`scroll_context_changed`. A refused scroll that changed nothing keeps the
+ordinary recovery, such as hiding a dev menu, before that failure. To require
+content, write `Scroll down until "<text>"`: it still fails when the target
+never appears, with cause `scroll_target_absent`. These causes are diagnostic
+metadata and preserve existing guidance and repeat behavior.
 
 While it serves commands, the iOS runner contains XCTest UI automation issues,
 such as a read of an element that vanished, instead of letting XCTest end its

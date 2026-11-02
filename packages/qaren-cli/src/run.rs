@@ -11,7 +11,7 @@ use crate::config::CheckConfig;
 use crate::core::{self, Budgets, CoreRequest, CoreTarget, Verdict};
 use crate::events::{self, StageState};
 use crate::exec::{CmdSpec, Runner};
-use crate::failure::{Failure, FailureCode, FailureRecovery, Recovery, RecoveryReason, Repeat};
+use crate::failure::{Failure, FailureCode, Repeat};
 use crate::github::{self, PrInfo};
 use crate::lease;
 use crate::publish::PrRunRecord;
@@ -2969,30 +2969,8 @@ fn walk_failure(
             failure.suggestion = Some(suggestion.clone());
         }
     }
-    // A typed scroll cause names one inspection, never a reset rung; a repeat keeps that machine next_action.
-    let cause = ledger.and_then(|seen| seen.cause);
-    if let Some(cause) = cause {
-        let (reason, next_action) = match cause {
-            core::StepCause::ScrollDispatchFailed => (
-                RecoveryReason::ScrollDispatchFailed,
-                "inspect_scroll_dispatch",
-            ),
-            core::StepCause::ScrollContextChanged => (
-                RecoveryReason::ScrollContextChanged,
-                "inspect_last_observed_screen",
-            ),
-            core::StepCause::ScrollTargetAbsent => {
-                (RecoveryReason::ScrollTargetAbsent, "inspect_scroll_target")
-            }
-        };
-        failure.step = ledger.map(|seen| seen.step);
-        failure.next_action = OutputText::from_output(next_action);
-        failure.recovery = Some(Box::new(FailureRecovery::Build(Recovery::from(reason))));
-    }
     if let Some(repeat) = repeat_of(runs_root, record, &failure) {
-        if cause.is_none() {
-            failure.next_action = OutputText::from_output(&repeat_note(&failure, &repeat));
-        }
+        failure.next_action = OutputText::from_output(&repeat_note(&failure, &repeat));
         failure.repeat = Some(repeat);
     }
     failure
@@ -3474,51 +3452,24 @@ mod last_screen_tests {
     }
 
     #[test]
-    fn a_typed_scroll_cause_names_one_inspection_and_keeps_it_on_a_repeat() {
-        for (cause, action) in [
-            ("scroll_dispatch_failed", "inspect_scroll_dispatch"),
-            ("scroll_context_changed", "inspect_last_observed_screen"),
-            ("scroll_target_absent", "inspect_scroll_target"),
+    fn scroll_causes_round_trip_and_unknown_causes_are_dropped() {
+        for cause in [
+            "scroll_dispatch_failed",
+            "scroll_context_changed",
+            "scroll_target_absent",
         ] {
-            let root = runs_root(&format!("scroll-{cause}"));
-            let seen: core::LedgerFailure = serde_json::from_value(json!({
-                "step": 3, "seen": "scroll failed", "cause": cause,
-                "subreason": "not-scrollable", "suggestion": "add a wait before line 3"
-            }))
-            .unwrap();
-            let failed = || {
-                walk_failure(
-                    None,
-                    &|| plan_step_failure(Some(&seen)),
-                    Some(&seen),
-                    &root,
-                    &record("check-20261030T082000Z", "abc"),
-                )
-            };
-            let mut earlier = record("check-20261030T081500Z", "abc");
-            earlier.failure = Some(failed());
-            earlier.save(&root).unwrap();
-            let failure = failed();
-            assert_eq!(failure.step, Some(3));
-            assert!(failure.repeat.is_some(), "{cause}");
-            assert_eq!(failure.next_action.as_str(), action);
-            let json = serde_json::to_value(&failure).unwrap();
-            let recovery = &json["recovery"];
-            assert_eq!(recovery["reason"], cause);
-            assert_eq!(recovery["action"], action);
-            assert_eq!(recovery["next_rung"], Value::Null);
-            assert_eq!(recovery["destroys_state"], false);
-            assert_eq!(recovery["requires_user_ok"], false);
-            let rungs = recovery["ladder"].as_array().unwrap();
-            assert_eq!(rungs.len(), 5);
-            assert!(rungs.iter().all(|rung| rung["applicable"] == false
-                && rung["destroys_state"] == false
-                && rung["requires_user_ok"] == false));
-            let _ = std::fs::remove_dir_all(root);
+            let wire = json!({ "step": 3, "seen": "scroll failed", "cause": cause });
+            let failure: core::LedgerFailure = serde_json::from_value(wire.clone()).unwrap();
+            assert!(failure.cause.is_some(), "{cause}");
+            assert_eq!(serde_json::to_value(&failure).unwrap(), wire);
         }
         let unknown: core::LedgerFailure =
             serde_json::from_value(json!({ "step": 3, "seen": "x", "cause": "gremlins" })).unwrap();
         assert!(unknown.cause.is_none());
+        assert_eq!(
+            serde_json::to_value(&unknown).unwrap(),
+            json!({ "step": 3, "seen": "x" })
+        );
     }
 
     #[test]
