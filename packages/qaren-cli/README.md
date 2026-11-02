@@ -987,11 +987,11 @@ the list, such as a screen's rows under a sheet, never counts; for a target in n
 list, nothing drawn before its window counts, such as the app screen behind a modal. A target at
 or below that band's centre scrolls down; one above it scrolls up. Sticky overlays
 can narrow the band even without a keyboard or when the clip is entirely above it.
-On iOS, capture order is not paint order, so an overlay inferred from it never
-refuses a press on its own. When a press's centre is still past the band after that
-one scroll, or the scroll was refused with nothing moved (for example
-`SCROLL_BAND_TOO_SMALL` on a band only a few points tall), inside its clip and with
-the keyboard proven hidden, the walker sends the
+On iOS, capture order is not paint order. When a press target still resolves
+after that one scroll, or after the scroll was refused with nothing moved (for
+example `SCROLL_BAND_TOO_SMALL` on a band only a few points tall), and its centre
+is still past the inferred band but inside its clip with the keyboard proven
+hidden, the walker sends the
 tap with `requireLiveHit`: only when its fresh, bounded `isHittable` read of the
 resolved target returns true does the runner activate that live element with
 XCTest's element tap, letting XCTest choose a hittable point instead of tapping
