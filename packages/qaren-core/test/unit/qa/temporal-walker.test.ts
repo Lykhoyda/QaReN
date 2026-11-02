@@ -805,7 +805,7 @@ test('late host finalization refuses before judgment while remembering private v
   assert.equal(result.verdict, 'FAIL');
   assert.match(
     result.failure!.seen,
-    /SCREEN_EVIDENCE_INCOMPLETE.*historical context, previously on screen: \[screen text withheld: a secure field is on screen\]$/,
+    /SCREEN_EVIDENCE_INCOMPLETE.*last observed on screen: \[screen text withheld: a secure field is on screen\]$/,
   );
   assert.ok(!JSON.stringify(result).includes(secret));
   assert.equal(shots, 0);

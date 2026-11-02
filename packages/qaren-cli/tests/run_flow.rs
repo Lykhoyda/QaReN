@@ -3210,6 +3210,36 @@ fn a_failed_ios_check_holds_metro_the_simulator_and_the_lease_for_inspection() {
 }
 
 #[test]
+fn a_held_target_failure_keeps_its_plan_edit_ahead_of_the_inspection_steps() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    let suggestion = "the target of line 2 was not on the last observed screen; consider inserting the missing step before line 2";
+    let result = HELD_FAIL.replace(
+        r#""kind":"step"}"#,
+        &format!(r#""kind":"step","subreason":"absent","suggestion":"{suggestion}"}}"#),
+    );
+    script_held_result(&mut mock, &repo, &result, 1);
+
+    let (receipt, _) = run_with_events(&mut mock, &request(&repo, &app, 30));
+
+    assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
+    assert!(receipt.held.is_some());
+    assert_eq!(
+        receipt.next_action,
+        format!("qaren cleanup {} --json", run_id())
+    );
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.suggestion.as_ref().unwrap().as_str(), suggestion);
+    assert!(
+        failure.next_action.starts_with(&format!(
+            "{suggestion}; metro, simulator, device_lease were retained at the last observed screen"
+        )),
+        "{}",
+        failure.next_action
+    );
+}
+
+#[test]
 fn cancellation_after_held_cleanup_releases_resources_and_clears_the_hold() {
     let (repo, app) = app_repo();
     let mut mock = MockRunner::new();

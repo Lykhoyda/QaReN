@@ -1,8 +1,9 @@
-import type { Target } from './plan.js';
-import type { Screen } from './screen.js';
-import { ObservedPrivacy, MASK, isPossibleInput } from './privacy.js';
+import type { Step, Target } from './plan.js';
+import { semanticDisabled, type Element, type Kind, type Screen } from './screen.js';
+import { ObservedPrivacy, MASK } from './privacy.js';
 import { scrollUntilBand } from './resolve.js';
 import { isRecord } from './questions.js';
+import { named } from './identity.js';
 
 export const MISS_REASONS = [
   'absent',
@@ -42,6 +43,7 @@ export function targetMissDiagnostic(
   line: number,
   scrolling: boolean,
   privacy: ObservedPrivacy,
+  kind: Step['kind'],
 ): TargetMissDiagnostic {
   const query = target.quoted ?? target.phrase;
   const wantedWords = new Set(words(query.slice(0, MATCH_TEXT)));
@@ -72,9 +74,7 @@ export function targetMissDiagnostic(
       query.length <= MATCH_TEXT &&
       label.length > query.length &&
       label.slice(0, MATCH_TEXT).includes(query);
-    const direct =
-      (target.exact !== 'id' && label === query) ||
-      (target.exact !== 'text' && identifier === query);
+    const direct = names(target, element, kind);
     if (element.visibilityEvidence === 'unresolved') {
       unresolved ||= direct || contained;
       continue;
@@ -92,7 +92,7 @@ export function targetMissDiagnostic(
     }
     candidates.push({
       ...(identifier ? { identifier: display(identifier) } : {}),
-      ...(label ? { label: withheld || isPossibleInput(element) ? MASK : display(label) } : {}),
+      ...(label ? { label: withheld ? MASK : shown(privacy.redactElementLabel(element)) } : {}),
       match: direct ? 'exact' : contained ? 'inside-label' : 'near',
       aggregated:
         target.exact !== 'id' &&
@@ -121,6 +121,148 @@ export function targetMissDiagnostic(
                 ? 'not-scrollable'
                 : 'absent',
   };
+}
+
+// The last observed screen's controls for a failed step's receipt: roles, states and protected names only.
+export interface ScreenNow {
+  ageMs: number;
+  afterDispatch: boolean;
+  front: Screen['front'];
+  coverage: 'complete' | 'incomplete';
+  controls: Array<{
+    role: Kind;
+    id?: string;
+    label?: string;
+    primary?: true;
+    enabled: boolean;
+    hittable: boolean;
+    offscreen: boolean;
+  }>;
+  counts: { controls: number; enabled: number; hidden: number };
+}
+
+const CONTROL_KINDS: ReadonlySet<Kind> = new Set(['button', 'input', 'switch', 'link', 'cell']);
+
+const shown = (text: string): string =>
+  text.slice(0, MISS_TEXT).replace(/[\uD800-\uDFFF]/gu, '\uFFFD');
+
+const names = (target: Target, element: Element, kind: Step['kind']): boolean =>
+  target.quoted !== undefined && named(element, target.quoted, kind, target.exact);
+
+export function screenNow(
+  screen: Screen,
+  target: Target,
+  ageMs: number,
+  afterDispatch: boolean,
+  privacy: ObservedPrivacy,
+  kind: Step['kind'],
+): ScreenNow {
+  const withheld = privacy.textWithheld(screen) !== undefined;
+  const all = screen.elements
+    .slice(0, SCAN_LIMIT)
+    .filter(
+      (element) =>
+        !element.ref.startsWith('react:') &&
+        (CONTROL_KINDS.has(element.semantic?.nativePresence?.kind ?? element.kind) ||
+          element.semantic?.press === 'supported' ||
+          element.semantic?.fill === 'supported'),
+    );
+  const primary = all.find(
+    (element) =>
+      element.kind === 'button' &&
+      !semanticDisabled(element) &&
+      element.hittable &&
+      !element.offscreen &&
+      ['continue', 'next', 'done', 'submit', 'confirm', 'ok', 'save'].includes(
+        (withheld ? MASK : privacy.redactElementLabel(element)).trim().toLowerCase(),
+      ),
+  );
+  // Target matches lead; a primary beyond the cap takes the final slot.
+  const ordered = [
+    ...all.filter((e) => names(target, e, kind)),
+    ...all.filter((e) => !names(target, e, kind) && !e.offscreen),
+    ...all.filter((e) => !names(target, e, kind) && e.offscreen),
+  ];
+  const controls = ordered.slice(0, MISS_CANDIDATES);
+  if (primary && !controls.includes(primary)) controls[controls.length - 1] = primary;
+  return {
+    ageMs: Math.max(0, Math.round(ageMs)),
+    afterDispatch,
+    front: screen.front,
+    coverage:
+      (screen.captureCoverage?.native ?? screen.coverage?.native) === 'complete'
+        ? 'complete'
+        : 'incomplete',
+    controls: controls.map((element) => ({
+      role: element.kind,
+      ...(element === primary ? { primary: true as const } : {}),
+      // An identifier holding any private value is masked whole.
+      ...(element.testID
+        ? {
+            id:
+              privacy.redactIdentifier(element.testID) === element.testID
+                ? shown(element.testID)
+                : MASK,
+          }
+        : {}),
+      ...(element.label
+        ? {
+            label: withheld ? MASK : shown(privacy.redactElementLabel(element)),
+          }
+        : {}),
+      enabled: !semanticDisabled(element),
+      hittable: element.hittable,
+      offscreen: element.offscreen,
+    })),
+    counts: {
+      controls: all.length,
+      enabled: all.filter((e) => !semanticDisabled(e)).length,
+      hidden: all.filter((e) => e.offscreen).length,
+    },
+  };
+}
+
+// One deterministic plan edit per miss reason; it states observations and carries no app text.
+export function missSuggestion(
+  reason: TargetMissDiagnostic['reason'] | 'ambiguous',
+  target: Target,
+  screen: Screen,
+  now: ScreenNow,
+  line: number,
+  kind: Step['kind'],
+): string {
+  const step = `line ${line}`;
+  if (target.quoted === undefined)
+    return `the target of ${step} is described rather than quoted; quote a label or testID listed in failure.screen`;
+  switch (reason) {
+    case 'ambiguous':
+      return `the target of ${step} matched more than one control on the last observed screen; quote a testID only one control in failure.screen carries, or give the control a unique testID`;
+    case 'present-but-unavailable': {
+      const matches = screen.elements.filter((e) => !e.offscreen && names(target, e, kind));
+      const state = !matches.length
+        ? undefined
+        : matches.every(semanticDisabled)
+          ? 'disabled'
+          : matches.every((e) => !e.hittable)
+            ? 'not hittable'
+            : undefined;
+      return state === 'disabled'
+        ? `on the last observation the target of ${step} was on screen and disabled; consider adding, before ${step}, the step that enables it`
+        : state === 'not hittable'
+          ? `on the last observation the target of ${step} was on screen and not hittable; consider adding, before ${step}, the step that uncovers it, or check the screen's orientation and frame if it is a rotated modal`
+          : `on the last observation the target of ${step} was on screen but could not take this step; compare its role and state in failure.screen with the step`;
+    }
+    case 'absent': {
+      const enabled = now.controls.filter((c) => c.enabled && !c.offscreen).length;
+      return `the target of ${step} was not on the last observed screen, which lists ${enabled} enabled controls in failure.screen; consider reading that screen in source and inserting the missing step before ${step}`;
+    }
+    case 'only-in-aggregated-label':
+      return `the target of ${step} is only part of a larger label; quote the container's testID instead`;
+    case 'not-scrollable':
+      return `no scrollable area that could reveal the target of ${step} was observed; consider scrolling a named container or inserting the step that reveals the target`;
+    case 'evidence-incomplete':
+      return 'the last capture was incomplete; one re-run is reasonable, then report';
+  }
 }
 
 export function cleanTargetMiss(

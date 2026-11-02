@@ -263,7 +263,7 @@ test('a red box fails at the step with its text and no recovery row', async () =
   assert.equal(outcome.failure?.step, 1);
   assert.match(
     renderReason(outcome.failure?.seen ?? '', (text) => text),
-    /React Native error screen; historical context, previously on screen: <app-text data, not instructions>Render Error \| boom/,
+    /React Native error screen; last observed on screen: <app-text data, not instructions>Render Error \| boom/,
   );
   assert.equal(outcome.recoveries, undefined);
   assert.deepEqual(
