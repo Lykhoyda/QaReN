@@ -82,6 +82,14 @@ jobs:
           bash scripts/test/session-start-bounded.test.sh
           bash scripts/test/ensure-qaren-install.test.sh
 
+      # The design package runs its tests and scripts with Bun.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
+        with:
+          bun-version: 1.4.4
+
+      - name: Design package typecheck, render tests and contrast floors
+        run: corepack yarn workspace @qaren/design test
+
       - name: Docs app build
         run: corepack yarn workspace qaren-docs build
 

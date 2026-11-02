@@ -1,0 +1,29 @@
+{
+  "name": "@qaren/design",
+  "private": true,
+  "type": "module",
+  "description": "QaReN design system (Verdict Log): tokens, component styles and typed React components.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./tokens.css": "./tokens.css",
+    "./tokens.json": "./tokens.json",
+    "./components.css": "./components.css"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "check-contrast": "bun scripts/check-contrast.ts",
+    "sync": "bun scripts/sync-design.ts",
+    "test": "tsc --noEmit && bun test && bun scripts/check-contrast.ts"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "react": "^19",
+    "react-dom": "^19",
+    "typescript7": "npm:typescript@^7.0.2"
+  }
+}

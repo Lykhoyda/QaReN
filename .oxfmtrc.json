@@ -8,6 +8,8 @@
     ".astro/",
     ".superpowers/",
     ".remember/",
+    "packages/qaren-design/tokens.css",
+    "packages/qaren-design/components.css",
     "*.md",
     "*.mdx",
     "*.json",
