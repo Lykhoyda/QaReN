@@ -3173,9 +3173,11 @@ passes with a dispatched, error-free action, the next executable item is
 protected, whether or not the pressed control disappeared, across block and
 replay boundaries and through retries. Waits, checks, fills, and scrolls retain
 the protection, so interacting with a planned modal or consent screen never
-enables automatic dismissal. A successful planned Back with a changed capture
-or a login replay clears it; a later successful planned press protects its new
-destination. Recovery's own decline press and login presses never set it. While protected, recovery still answers system
+enables automatic dismissal. Back also retains protection: a changed capture
+can reflect a hidden keyboard rather than departure from the protected screen.
+A login replay clears it; a later successful planned press protects its new
+destination. Recovery's own decline press and login presses never set it.
+While protected, recovery still answers system
 prompts and dev menus and still replays login, but withholds every app decline,
 including the recheck before dispatch, and an ambiguous decline set does not
 refuse. A failing target-class step then reports subreason `previous-plan-press`,

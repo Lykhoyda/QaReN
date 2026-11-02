@@ -199,23 +199,41 @@ test('a later planned Close stays untapped by recovery', async () => {
   assert.deepEqual(f.actions, ['press @open']);
 });
 
-test('protection ends after a successful Back with a changed capture', async () => {
-  const f = app(opener(), { '@open': () => screen([element('@back', 'Next')]) });
-  f.deps.back = async () => {
-    f.actions.push('back');
-    f.show(destination());
-    return { ok: true, proven: false, executed: true };
-  };
-  const press = f.deps.press;
-  f.deps.press = async (ref, context) => {
-    const acted = await press(ref, context);
-    if (ref === '@close') f.show(ready());
-    return acted;
-  };
-  const result = await run('1. Tap "Open"\n2. Go back\n3. Wait for "Ready" to appear', f);
-  assert.equal(result.verdict, 'PASS', result.failure?.seen);
-  assert.deepEqual(f.actions, ['press @open', 'back', 'press @close']);
-  assert.equal(result.recoveries, 1);
+test('ANT-848: Back hiding only the keyboard never permits Close or Skip on planned consent', async () => {
+  for (const decline of ['Close', 'Skip']) {
+    const consent = (keyboard = false): Screen => ({
+      ...screen([
+        element('@heading', 'Consent', { kind: 'text' }),
+        element('@name', 'Name', { kind: 'input' }),
+        close(decline),
+      ]),
+      ...(keyboard ? { keyboardVisible: true, keylessKeyboard: true } : {}),
+    });
+    const f = app(screen([element('@open', 'Open consent')]), {
+      '@open': consent,
+      '@close': () => screen([element('@continue', 'Continue')]),
+    });
+    f.deps.fill = async (ref) => {
+      f.actions.push(`fill ${ref}`);
+      f.show(consent(true));
+      return { ok: true, proven: true, executed: true };
+    };
+    f.deps.back = async () => {
+      f.actions.push('back');
+      f.show(consent());
+      return { ok: true, proven: false, executed: true };
+    };
+    const result = await run(
+      '1. Tap "Open consent"\n2. Fill "Name" with "Example"\n3. Go back\n4. Wait for "Continue" to appear',
+      f,
+    );
+    assert.equal(result.verdict, 'FAIL', decline);
+    assert.equal(result.failure?.step, 4, decline);
+    assert.equal(result.failure?.subreason, 'previous-plan-press', decline);
+    assert.deepEqual(f.actions, ['press @open', 'fill @name', 'back'], decline);
+    assert.equal(result.recoveries, 0, decline);
+    assert.ok(f.vetoes.includes('previous-plan-press'), decline);
+  }
 });
 
 test('an unsolicited sheet before any planned press still recovers', async () => {

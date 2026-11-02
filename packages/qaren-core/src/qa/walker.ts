@@ -3577,14 +3577,6 @@ async function walkBlockScoped(
               act!.executed !== false
             )
               sequence.plannedPress = true;
-            else if (
-              item.kind === 'back' &&
-              changed &&
-              act!.ok &&
-              act!.error === undefined &&
-              act!.executed !== false
-            )
-              sequence.plannedPress = undefined;
             if (act!.dialog)
               deps.note?.(
                 `dialog-tap ${JSON.stringify({ v: 1, line: item.line, label: act!.dialog.label, rect: act!.dialog.rect })}`,
