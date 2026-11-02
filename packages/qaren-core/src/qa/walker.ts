@@ -3295,7 +3295,6 @@ async function walkBlockScoped(
               )
                 throw dialogInFront();
               if (item.kind === 'press' && !pixelBaselineTaken) {
-                pixelBaselineTaken = true;
                 const target = element && pixelTarget(before.screen, element);
                 if (target) {
                   const shot = await pixelShot(item, target);
@@ -3307,6 +3306,7 @@ async function walkBlockScoped(
                   }
                   if (shot.crop) pixelBaseline = { target, crop: shot.crop };
                 }
+                pixelBaselineTaken = true;
               }
               selectionTarget =
                 item.kind === 'press' &&

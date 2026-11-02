@@ -495,6 +495,7 @@ for (const shot of [1, 2, 3]) {
       let shots = 0;
       let seen = false;
       let dismissed = false;
+      let selected = false;
       let overlayDuringShot = false;
       f.deps.captureScreen = async () => {
         captures++;
@@ -513,17 +514,17 @@ for (const shot of [1, 2, 3]) {
         }
         return option(before);
       };
-      const screenshot = f.deps.comparisonScreenshot!;
       f.deps.comparisonScreenshot = async () => {
-        const bytes = await screenshot();
+        f.calls.push('pixel shot');
         if (phase === 'during' && ++shots === shot) overlayDuringShot = true;
-        return bytes;
+        return selected ? after : before;
       };
       f.deps.press = async (ref, context) => {
         context!.authorize();
         f.calls.push(`press ${ref}`);
         if (ref === '@dismiss') dismissed = true;
-        return { ok: true, proven: shot === 1, executed: true };
+        else selected = !selected;
+        return { ok: true, proven: false, executed: true };
       };
       f.deps.hideDevMenu = async () => assert.fail('RedBox uses its own Dismiss');
       const outcome = await walkBlock(tap, f.deps);
@@ -533,6 +534,7 @@ for (const shot of [1, 2, 3]) {
         shot === 1 ? ['press @dismiss', 'press @option'] : ['press @option'],
       );
       if (shot === 1) {
+        assert.equal(selected, true);
         assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome));
         assert.deepEqual(
           outcome.rows.filter((row) => row.retryCause === 'DEV_REDBOX').map((row) => row.devError),
