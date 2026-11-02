@@ -25,6 +25,17 @@ export interface EntryMismatch {
   caseEq: boolean;
 }
 
+// The runner's value-free geometry for a Dismiss refused as moved: frames x,y,width,height in points.
+export interface DevErrorMoved {
+  retained: number[];
+  live: number[];
+  delta: number[];
+  // How the runner re-found the target: by its accessibility identifier or by its label.
+  path?: 'identifier' | 'label';
+  retainedType?: string;
+  liveType?: string;
+}
+
 export interface LedgerRow {
   block: string;
   operationId?: number;
@@ -58,7 +69,7 @@ export interface LedgerRow {
   // Why this step was sent again: a swallowed press, or a dismissed development error overlay.
   retryCause?: 'KEYBOARD_SWALLOWED_TAP' | 'DEV_REDBOX';
   // The overlay variant and dismissal attempt number, including failed attempts, never its text.
-  devError?: { variant: 'redbox' | 'logbox'; dismissal: number };
+  devError?: { variant: 'redbox' | 'logbox'; dismissal: number; moved?: DevErrorMoved };
   // A plain scroll that passed although two dispatched attempts left the screen unchanged.
   scrollDetail?: { status: 'no_visible_change'; attempts: 2 };
 }

@@ -155,6 +155,7 @@ import {
   type WalkResult,
   type LedgerFailure,
   type LedgerPath,
+  type DevErrorMoved,
   type LedgerRow,
   type FillMethod,
   type EntryMismatch,
@@ -466,6 +467,28 @@ type DevErrorRefusal = keyof typeof DEV_ERROR_REFUSALS;
 // The runner's refusal code only: a value-free token, never the message after it.
 const refusalCode = (error: string | undefined): string | undefined =>
   /^([A-Z][A-Z0-9_]{2,63}):/u.exec(error ?? '')?.[1];
+
+// The runner's moved-target message carries frames, element types and whether each side has an
+// identifier, never label text; only those parsed parts are kept.
+const FRAME = String.raw`(-?\d+(?:\.\d+)?(?:,-?\d+(?:\.\d+)?){3})`;
+const IDENTITY = String.raw`(?: \(([A-Za-z]{1,32}(?:\(\d{1,3}\))?), (?:label \d+ chars|no label), (has id|no id)\))?`;
+const MOVED = new RegExp(
+  `retained ${FRAME}${IDENTITY}; live ${FRAME}${IDENTITY}(?:; labels (?:match|differ), ids (?:match|differ))?; delta ${FRAME}`,
+  'u',
+);
+export function movedGeometry(error: string | undefined): DevErrorMoved | undefined {
+  const m = MOVED.exec(error ?? '');
+  if (!m) return undefined;
+  const frame = (text: string) => text.split(',').map(Number);
+  return {
+    retained: frame(m[1]),
+    live: frame(m[4]),
+    delta: frame(m[7]),
+    ...(m[3] ? { path: m[3] === 'has id' ? ('identifier' as const) : ('label' as const) } : {}),
+    ...(m[2] ? { retainedType: m[2] } : {}),
+    ...(m[5] ? { liveType: m[5] } : {}),
+  };
+}
 
 // Capture and process refusals, ambiguity and the replay-miss path are never recovered.
 const UNRECOVERABLE = new Set([
@@ -2315,13 +2338,24 @@ async function walkBlockScoped(
       }
       if (!acted.ok || acted.executed === false) {
         const code = refusalCode(acted.error);
+        const moved =
+          code === 'TARGET_MOVED_BEFORE_DISPATCH' ? movedGeometry(acted.error) : undefined;
+        if (moved) devError = { variant: overlay.variant, dismissal, moved };
         try {
-          deps.note?.(`dev-error-dismiss-failed=${code ?? 'unknown'}`);
+          deps.note?.(
+            `dev-error-dismiss-failed=${code ?? 'unknown'}${moved ? ` moved=${JSON.stringify(moved)}` : ''}`,
+          );
         } catch {
           /* Diagnostics cannot change recovery. */
         }
         // Only a refusal that proves no gesture ran may be followed by another Dismiss, within the bound.
-        if (acted.mutation !== 'none' || dismissal >= DEV_ERROR_DISMISSALS)
+        // shortcut: LogBox's Dismiss has no identifier, so the runner re-finds it by label and refuses it as
+        // moved every time; refuse at once until the runner's label path is fixed.
+        if (
+          acted.mutation !== 'none' ||
+          dismissal >= DEV_ERROR_DISMISSALS ||
+          (overlay.variant === 'logbox' && code === 'TARGET_MOVED_BEFORE_DISPATCH')
+        )
           return refuse('DISMISS_FAILED', code);
         emit({
           ...base(item, attempt),

@@ -3089,7 +3089,11 @@ Selection-proof refusals bypass step recovery; follow the
 
 Development error overlay recognition covers iOS RedBox and LogBox and Android
 native RedBox. Android native RedBox recognition has automated test coverage only,
-with no Android device proof; Android LogBox is out of scope.
+with no Android device proof; Android LogBox is out of scope. On iOS, LogBox is
+currently recognize-and-refuse: its Dismiss control has no accessibility identifier,
+and the runner refuses the press as `TARGET_MOVED_BEFORE_DISPATCH`. That refusal is
+not retried. The step refuses `DEV_REDBOX_DISMISS_FAILED`, and the LogBox is never
+read as app content. RedBox dismissal is unaffected.
 The overlays are recognized in the native capture by the
 fixed identifiers and controls React Native gives them (`redbox-dismiss`, `redbox-reload`,
 `redbox-copy`, `redbox-error`, `rn_redbox_stack`, `rn_redbox_dismiss_button`, or one window holding `Dismiss`, `Minimize` and a
@@ -3115,7 +3119,7 @@ When the overlay cannot be cleared this way the run refuses with
 | Cause | When | `next_action` |
 | --- | --- | --- |
 | `DEV_REDBOX_REPEATED` | The overlay was still in front after three dismissals in one step | `restart_app_from_plan_start` |
-| `DEV_REDBOX_DISMISS_FAILED` | The Dismiss press failed or was not dispatched. A press the runner refused before any gesture is observed again and pressed again within the three; one that may have run a gesture is never repeated. When available, the detail includes the runner's value-free refusal code (`runner refused: <CODE>`). The log records `dev-error-dismiss-failed=<CODE>` in `logs/core.log`, using `unknown` when no code is available | `restart_app_from_plan_start` |
+| `DEV_REDBOX_DISMISS_FAILED` | The Dismiss press failed or was not dispatched. A press the runner refused before any gesture is observed again and pressed again within the three; one that may have run a gesture is never repeated. A LogBox Dismiss refused as `TARGET_MOVED_BEFORE_DISPATCH` is never pressed again. When available, the detail includes the runner's value-free refusal code (`runner refused: <CODE>`). The log records `dev-error-dismiss-failed=<CODE>` in `logs/core.log`, using `unknown` when no code is available. For a moved refusal, the log line and the attempt's `devError.moved` also carry the runner's value-free geometry: the retained and live frames, their delta, the element types, and whether the target was re-found by identifier or label | `restart_app_from_plan_start` |
 | `DEV_REDBOX_NO_SAFE_DISMISS` | No single Dismiss control (a syntax error, an ambiguous control, or an overlay inside a login replay, which never recovers) | `restart_app_from_plan_start` |
 | `DEV_REDBOX_CLEARANCE_UNPROVEN` | A fresh capture could not prove the overlay gone | `restart_app_from_plan_start` |
 | `DEV_REDBOX_ACTION_UNCERTAIN` | The overlay was first seen after the step's action was sent, or after another recovery already acted in the same step; nothing is dismissed or replayed | `inspect_app_error_before_rerun` |

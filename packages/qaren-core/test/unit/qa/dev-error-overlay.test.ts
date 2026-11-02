@@ -5,7 +5,7 @@ import { runPlan } from '../../../dist/qa/walker.js';
 import { devErrorOverlay, frontFromSurface } from '../../../dist/qa/screen.js';
 import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
 import { nativeDevOverlayObservation } from '../../../dist/qa/capture.js';
-import { DEV_ERROR_DISMISSALS } from '../../../dist/qa/walker.js';
+import { DEV_ERROR_DISMISSALS, movedGeometry } from '../../../dist/qa/walker.js';
 import { QaDispatchError } from '../../../dist/domain/qa-dispatch.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
 import { element, screen } from './judgment-fixtures.ts';
@@ -483,7 +483,7 @@ const refused = (code: string) => ({
 });
 
 test('a LogBox Dismiss refused before any gesture is observed again and pressed again', async () => {
-  const f = logboxApp([refused('TARGET_MOVED_BEFORE_DISPATCH'), 'ok']);
+  const f = logboxApp([refused('FOCUS_TARGET_OCCLUDED'), 'ok']);
   const result = await runPlan(tapPlan(), f.deps);
   assert.equal(result.verdict, 'PASS');
   assert.deepEqual(f.actions, ['press @lbdismiss', 'press @lbdismiss', 'press @settings']);
@@ -495,13 +495,10 @@ test('a LogBox Dismiss refused before any gesture is observed again and pressed 
       { variant: 'logbox', dismissal: 2 },
     ],
   );
-  assert.match(
-    rows[0].reason!,
-    /refused before any gesture \(TARGET_MOVED_BEFORE_DISPATCH\) \(1 of 3\)/,
-  );
+  assert.match(rows[0].reason!, /refused before any gesture \(FOCUS_TARGET_OCCLUDED\) \(1 of 3\)/);
   assert.deepEqual(
     f.notes.filter((n) => n.startsWith('dev-error-dismiss-failed=')),
-    ['dev-error-dismiss-failed=TARGET_MOVED_BEFORE_DISPATCH'],
+    ['dev-error-dismiss-failed=FOCUS_TARGET_OCCLUDED'],
   );
   assert.ok(!JSON.stringify(result).includes('CANARY'));
 });
@@ -544,23 +541,85 @@ test('an overlay refusal message does not repeat its own code', async () => {
   assert.ok(!result.message.startsWith('DEV_REDBOX_'), result.message);
 });
 
-test('a LogBox Dismiss whose dispatch throws a moved-target refusal is pressed again', async () => {
-  const f = logboxApp(['ok']);
+const MOVED =
+  'TARGET_MOVED_BEFORE_DISPATCH: target moved before dispatch (retained 0.0,800.0,201.0,48.0 (Other, label 7 chars, no id); live 0.0,766.5,201.0,48.0 (Other, label 7 chars, no id); labels match, ids match; delta 0.0,-33.5,0.0,0.0; tolerance 1.0); no tap or typing was performed. CANARY_TAIL';
+const movedGeometryOfLogBox = {
+  retained: [0, 800, 201, 48],
+  live: [0, 766.5, 201, 48],
+  delta: [0, -33.5, 0, 0],
+  path: 'label',
+  retainedType: 'Other',
+  liveType: 'Other',
+};
+
+test("the runner's moved message yields only frames, delta, types and the resolve path", () => {
+  assert.deepEqual(movedGeometry(MOVED), movedGeometryOfLogBox);
+  assert.equal(
+    movedGeometry('TARGET_MOVED_BEFORE_DISPATCH: target moved before dispatch; no tap'),
+    undefined,
+  );
+  assert.equal(movedGeometry(undefined), undefined);
+});
+
+test('a LogBox Dismiss refused as moved is not retried and refuses with the runner geometry', async () => {
+  const f = logboxApp([{ ok: false, proven: false, mutation: 'none', error: MOVED }]);
+  const result = await runPlan(tapPlan(), f.deps);
+  assert.equal(result.verdict, 'REFUSED');
+  assert.equal(result.code, 'DEV_REDBOX_DISMISS_FAILED');
+  assert.match(result.message, /runner refused: TARGET_MOVED_BEFORE_DISPATCH$/);
+  assert.deepEqual(f.actions, ['press @lbdismiss']);
+  const terminal = result.steps.at(-1)!;
+  assert.equal(terminal.outcome, 'fail');
+  assert.deepEqual(terminal.devError, {
+    variant: 'logbox',
+    dismissal: 1,
+    moved: movedGeometryOfLogBox,
+  });
+  assert.deepEqual(
+    f.notes.filter((n) => n.startsWith('dev-error-dismiss-failed=')),
+    [
+      `dev-error-dismiss-failed=TARGET_MOVED_BEFORE_DISPATCH moved=${JSON.stringify(movedGeometryOfLogBox)}`,
+    ],
+  );
+  assert.ok(!JSON.stringify(result).includes('CANARY'));
+});
+
+test('a LogBox Dismiss whose dispatch throws a moved-target refusal is not retried', async () => {
+  const f = logboxApp([]);
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    throw new QaDispatchError('TARGET_MOVED_BEFORE_DISPATCH');
+  };
+  const result = await runPlan(tapPlan(), f.deps);
+  assert.equal(result.verdict, 'REFUSED');
+  assert.equal(result.code, 'DEV_REDBOX_DISMISS_FAILED');
+  assert.deepEqual(f.actions, ['press @lbdismiss']);
+});
+
+test('a RedBox Dismiss refused as moved keeps its geometry and is pressed again', async () => {
+  const f = app(overlay());
   const press = f.deps.press;
-  let thrown = false;
+  let refusedOnce = false;
   f.deps.press = async (ref, context) => {
-    if (ref === '@lbdismiss' && !thrown) {
-      thrown = true;
+    if (ref === '@dismiss' && !refusedOnce) {
+      refusedOnce = true;
       f.actions.push(`press ${ref}`);
-      throw new QaDispatchError('TARGET_MOVED_BEFORE_DISPATCH');
+      return {
+        ok: false,
+        proven: false,
+        mutation: 'none',
+        error: MOVED.replaceAll('no id', 'has id'),
+      };
     }
     return press(ref, context);
   };
   const result = await runPlan(tapPlan(), f.deps);
   assert.equal(result.verdict, 'PASS');
-  assert.deepEqual(f.actions, ['press @lbdismiss', 'press @lbdismiss', 'press @settings']);
-  assert.match(
-    result.steps.find((row) => row.retryCause === 'DEV_REDBOX')!.reason!,
-    /\(TARGET_MOVED_BEFORE_DISPATCH\) \(1 of 3\)/,
-  );
+  assert.deepEqual(f.actions, ['press @dismiss', 'press @dismiss', 'press @settings']);
+  const first = result.steps.find((row) => row.retryCause === 'DEV_REDBOX')!;
+  assert.deepEqual(first.devError, {
+    variant: 'redbox',
+    dismissal: 1,
+    moved: { ...movedGeometryOfLogBox, path: 'identifier' },
+  });
 });

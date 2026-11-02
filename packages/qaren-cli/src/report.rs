@@ -1289,6 +1289,33 @@ mod tests {
     }
 
     #[test]
+    fn dev_error_rows_keep_moved_geometry_and_drop_an_invalid_element_type() {
+        let moved = serde_json::json!({
+            "retained": [0.0, 800.0, 201.0, 48.0], "live": [0.0, 766.5, 201.0, 48.0],
+            "delta": [0.0, -33.5, 0.0, 0.0], "path": "label",
+            "retainedType": "Other", "liveType": "Element(7)"
+        });
+        let mut bad = moved.clone();
+        bad["liveType"] = serde_json::json!("Other label text");
+        let ledger: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "PASS", "path": "walk", "blocks": [],
+            "steps": [
+                { "block": "b", "line": 1, "attempt": 1, "kind": "step", "resolvedBy": "exact",
+                  "t": 0, "outcome": "fail",
+                  "devError": { "variant": "logbox", "dismissal": 1, "moved": moved } },
+                { "block": "b", "line": 1, "attempt": 1, "kind": "step", "resolvedBy": "exact",
+                  "t": 0, "outcome": "fail",
+                  "devError": { "variant": "logbox", "dismissal": 1, "moved": bad } },
+            ],
+            "jev": { "calls": 0, "medianMs": 0 }, "llmTurns": 0, "escapes": 0, "recoveries": 1,
+        }))
+        .unwrap();
+        let json = serde_json::to_value(&ledger).unwrap();
+        assert_eq!(json["steps"][0]["devError"]["moved"], moved);
+        assert!(json["steps"][1].get("devError").is_none());
+    }
+
+    #[test]
     fn splice_proof_section_appends_or_replaces_and_keeps_every_other_byte() {
         let s = format!("{PROOF_START}\nnew\n{PROOF_END}\n");
         let old = format!("{PROOF_START}\nold\n{PROOF_END}");
