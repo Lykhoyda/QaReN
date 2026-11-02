@@ -256,7 +256,10 @@ test('an invisible successful toggle that closes the keyboard is never retried',
   assert.equal(count(f, 'press'), 1);
   assert.equal(selected, true);
   assert.equal(outcome.refusal?.code, 'PRESS_NOT_REGISTERED');
-  assert.equal(outcome.rows.some((row) => row.retryCause !== undefined), false);
+  assert.equal(
+    outcome.rows.some((row) => row.retryCause !== undefined),
+    false,
+  );
 });
 
 for (const when of ['before', 'after'] as const) {
