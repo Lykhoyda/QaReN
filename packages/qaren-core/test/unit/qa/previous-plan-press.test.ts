@@ -209,7 +209,7 @@ test('a planned consent stays protected across fills and scrolls in both directi
         f,
       );
       assert.equal(result.verdict, 'FAIL', `${decline}: ${action}`);
-      assert.equal(result.failure?.step, 3, `${decline}: ${action}`);
+      assert.equal(result.failure?.step, 4, `${decline}: ${action}`);
       assert.equal(result.failure?.subreason, 'previous-plan-press', `${decline}: ${action}`);
       assert.deepEqual(f.actions, [
         'press @open',
