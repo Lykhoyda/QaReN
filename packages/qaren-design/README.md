@@ -52,13 +52,15 @@ Brand: `Logo`. Verdict: `VerdictPill`, `StepList`, `VideoProofCard`, `PRCommentS
 </DocsLayout>
 ```
 
-`DocsLayout` is the design source's DocsPage layout: the nav bar, a 256px sidebar whose current item is marked by `surface-2` and weight 600, a 760px reading column, and the footer. Below 860px wide the sidebar stacks above the column. The page kicker, title and body are page content, not part of the layout.
+`DocsLayout` is the design source's DocsPage layout: the nav bar, a 256px sidebar whose current item is marked by `surface-2` and weight 600, a reading column capped at 760px, and the footer. At 860px wide or narrower the sidebar stacks above the column. The page kicker, title and body are page content, not part of the layout.
 
-## The rules the components keep
+## Composition rules
 
-1. **The verdict is the loudest element.** Nothing else uses `pass` or `fail` at a larger size than the `VerdictPill`.
+Components provide the styles and status labels; the consuming page owns visual hierarchy and the accent count.
+
+1. **The verdict is the loudest element.** Choose the `VerdictPill` size and surrounding content so the verdict dominates the page.
 2. **The verdict is always a word.** PASS or FAIL with a check or cross; every step and ledger row writes its status (`pending`, `running`, `passed`, `failed`) as text. Never colour alone.
-3. **One accent per screen.** A primary button, a running step, a caution callout or the wordmark's cursor: pick one.
+3. **One accent per screen.** A primary button, a running step, a caution callout or a logo or wordmark cursor: pick one. `NavBar` includes an amber logo cursor, so `DocsLayout` already uses the accent; keep its action secondary and omit additional accent elements in its content.
 4. **No invented output.** `PRCommentSummary` and `TerminalPane` show a Placeholder badge until `placeholder={false}`; set it only for content copied from a real run. `CodeBlock` shows the badge only with `placeholder`: pass it for any block that shows invented output.
 
 The full guidance (voice, colour, type, logo, motion, layouts) lives in the design source.
