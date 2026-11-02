@@ -6,6 +6,7 @@ import { devErrorOverlay, frontFromSurface } from '../../../dist/qa/screen.js';
 import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
 import { nativeDevOverlayObservation } from '../../../dist/qa/capture.js';
 import { DEV_ERROR_DISMISSALS } from '../../../dist/qa/walker.js';
+import { QaDispatchError } from '../../../dist/domain/qa-dispatch.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
 import { element, screen } from './judgment-fixtures.ts';
 
@@ -524,4 +525,25 @@ test('an overlay refusal message does not repeat its own code', async () => {
   assert.equal(result.verdict, 'REFUSED');
   assert.equal(result.code, 'DEV_REDBOX_ACTION_UNCERTAIN');
   assert.ok(!result.message.startsWith('DEV_REDBOX_'), result.message);
+});
+
+test('a LogBox Dismiss whose dispatch throws a moved-target refusal is pressed again', async () => {
+  const f = logboxApp(['ok']);
+  const press = f.deps.press;
+  let thrown = false;
+  f.deps.press = async (ref, context) => {
+    if (ref === '@lbdismiss' && !thrown) {
+      thrown = true;
+      f.actions.push(`press ${ref}`);
+      throw new QaDispatchError('TARGET_MOVED_BEFORE_DISPATCH');
+    }
+    return press(ref, context);
+  };
+  const result = await runPlan(tapPlan(), f.deps);
+  assert.equal(result.verdict, 'PASS');
+  assert.deepEqual(f.actions, ['press @lbdismiss', 'press @lbdismiss', 'press @settings']);
+  assert.match(
+    result.steps.find((row) => row.retryCause === 'DEV_REDBOX')!.reason!,
+    /\(TARGET_MOVED_BEFORE_DISPATCH\) \(1 of 3\)/,
+  );
 });
