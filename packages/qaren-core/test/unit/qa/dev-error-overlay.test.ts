@@ -6,7 +6,7 @@ import { devErrorOverlay, frontFromSurface } from '../../../dist/qa/screen.js';
 import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
 import { nativeDevOverlayObservation } from '../../../dist/qa/capture.js';
 import { DEV_ERROR_DISMISSALS } from '../../../dist/qa/walker.js';
-import type { WalkerDeps } from '../../../dist/qa/walker.js';
+import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
 import { element, screen } from './judgment-fixtures.ts';
 
 // Value-free shapes from React Native's RCTRedBox and LogBox inspector sources, not recorded from a device.
@@ -404,3 +404,124 @@ for (const boundary of ['dismiss', 'clearance', 'resume', 'within-budget'] as co
     });
   }
 }
+
+// React Native's LogBox footer: an accessible TouchableWithoutFeedback (an `Other` labelled by its
+// text, with no accessibility identifier) inside a SafeAreaView, in the inspector's own window.
+const logboxFooter = [
+  { type: 'Other', rect: FULL },
+  { type: 'StaticText', label: 'Log 1 of 1', rect: rect(150, 60, 100, 20), parent: 1 },
+  { type: 'StaticText', label: 'CANARY_MESSAGE', rect: rect(16, 120, 370, 40), parent: 1 },
+  { type: 'Other', rect: rect(0, 800, 201, 48), parent: 1 },
+  { type: 'Other', label: 'Dismiss', rect: rect(0, 800, 201, 48), parent: 4 },
+  { type: 'Other', rect: rect(201, 800, 201, 48), parent: 1 },
+  { type: 'Other', label: 'Minimize', rect: rect(201, 800, 201, 48), parent: 6 },
+];
+
+test('the LogBox footer Dismiss is selected in its own window, not the app button of the same name', () => {
+  const nodes = tree(appContent, logboxFooter);
+  assert.equal(frontFromSurface(undefined, nodes), 'dev-redbox');
+  const own = nodes.find((node) => node.type === 'Other' && node.label === 'Dismiss')!;
+  assert.deepEqual(devErrorOverlay(nodes), { variant: 'logbox', dismissRef: own.ref });
+});
+
+const logboxScreen = (): Screen => ({
+  ...screen([
+    element('@lbdismiss', 'Dismiss', { kind: 'other' }),
+    element('@lbminimize', 'Minimize', { kind: 'other' }),
+    element('@stack', CANARY, { kind: 'text' }),
+  ]),
+  front: 'dev-redbox',
+  devError: { variant: 'logbox', dismissRef: '@lbdismiss' },
+});
+
+// Presses of the LogBox Dismiss answer from `outcomes` in order; any other press reaches the app.
+function logboxApp(outcomes: Array<'ok' | ActResult>) {
+  const f = app(logboxScreen());
+  let current = logboxScreen();
+  f.deps.captureScreen = async () => current;
+  f.deps.press = async (ref, context) => {
+    f.actions.push(`press ${ref}`);
+    if (ref !== '@lbdismiss') {
+      context!.authorize();
+      current = screen([element('@done', 'Done')]);
+      return { ok: true, proven: false, executed: true };
+    }
+    const outcome = outcomes.shift() ?? 'ok';
+    if (outcome !== 'ok') return outcome;
+    context!.authorize();
+    current = home();
+    return { ok: true, proven: false, executed: true };
+  };
+  const notes: string[] = [];
+  f.deps.note = (line) => notes.push(line);
+  return { ...f, notes };
+}
+
+const refused = (code: string) => ({
+  ok: false,
+  proven: false,
+  mutation: 'none' as const,
+  error: `${code}: CANARY_RUNNER_DETAIL`,
+});
+
+test('a LogBox Dismiss refused before any gesture is observed again and pressed again', async () => {
+  const f = logboxApp([refused('TARGET_MOVED_BEFORE_DISPATCH'), 'ok']);
+  const result = await runPlan(tapPlan(), f.deps);
+  assert.equal(result.verdict, 'PASS');
+  assert.deepEqual(f.actions, ['press @lbdismiss', 'press @lbdismiss', 'press @settings']);
+  const rows = result.steps.filter((row) => row.retryCause === 'DEV_REDBOX');
+  assert.deepEqual(
+    rows.map((row) => row.devError),
+    [
+      { variant: 'logbox', dismissal: 1 },
+      { variant: 'logbox', dismissal: 2 },
+    ],
+  );
+  assert.match(
+    rows[0].reason!,
+    /refused before any gesture \(TARGET_MOVED_BEFORE_DISPATCH\) \(1 of 3\)/,
+  );
+  assert.deepEqual(
+    f.notes.filter((n) => n.startsWith('dev-error-dismiss-failed=')),
+    ['dev-error-dismiss-failed=TARGET_MOVED_BEFORE_DISPATCH'],
+  );
+  assert.ok(!JSON.stringify(result).includes('CANARY'));
+});
+
+test('a LogBox Dismiss refused on every attempt stops at the bound and names the runner code', async () => {
+  const f = logboxApp([
+    refused('FOCUS_TARGET_OCCLUDED'),
+    refused('FOCUS_TARGET_OCCLUDED'),
+    refused('FOCUS_TARGET_OCCLUDED'),
+  ]);
+  const result = await runPlan(tapPlan(), f.deps);
+  assert.equal(result.verdict, 'REFUSED');
+  assert.equal(result.code, 'DEV_REDBOX_DISMISS_FAILED');
+  assert.match(result.message, /runner refused: FOCUS_TARGET_OCCLUDED$/);
+  assert.deepEqual(f.actions, ['press @lbdismiss', 'press @lbdismiss', 'press @lbdismiss']);
+  assert.deepEqual(
+    result.steps
+      .filter((row) => row.retryCause === 'DEV_REDBOX')
+      .map((row) => row.devError?.dismissal),
+    [1, 2],
+  );
+  assert.ok(!JSON.stringify(result).includes('CANARY'));
+});
+
+test('a LogBox Dismiss failure that may have run a gesture is refused at once with its code', async () => {
+  const f = logboxApp([{ ok: false, proven: false, error: 'ACTION_OUTCOME_UNCERTAIN: CANARY' }]);
+  const result = await runPlan(tapPlan(), f.deps);
+  assert.equal(result.verdict, 'REFUSED');
+  assert.equal(result.code, 'DEV_REDBOX_DISMISS_FAILED');
+  assert.match(result.message, /runner refused: ACTION_OUTCOME_UNCERTAIN$/);
+  assert.deepEqual(f.actions, ['press @lbdismiss']);
+  assert.ok(!JSON.stringify(result).includes('CANARY'));
+});
+
+test('an overlay refusal message does not repeat its own code', async () => {
+  const f = app(home(), { pressed: overlay() });
+  const result = await runPlan(tapPlan(), f.deps);
+  assert.equal(result.verdict, 'REFUSED');
+  assert.equal(result.code, 'DEV_REDBOX_ACTION_UNCERTAIN');
+  assert.ok(!result.message.startsWith('DEV_REDBOX_'), result.message);
+});

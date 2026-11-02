@@ -454,8 +454,7 @@ export const DEV_ERROR_DISMISSALS = 3;
 // Closed causes of a DEV_REDBOX refusal; the messages carry no app text.
 const DEV_ERROR_REFUSALS = {
   REPEATED: `a development error overlay was still in front after ${DEV_ERROR_DISMISSALS} dismissals in this step; nothing else was tapped`,
-  DISMISS_FAILED:
-    "the development error overlay's Dismiss control was not dispatched; it was not retried",
+  DISMISS_FAILED: "the development error overlay's Dismiss control was not dispatched",
   NO_SAFE_DISMISS:
     'a development error overlay is in front with no single Dismiss control to press; nothing was tapped',
   CLEARANCE_UNPROVEN: 'the development error overlay was not proven gone after Dismiss',
@@ -463,6 +462,10 @@ const DEV_ERROR_REFUSALS = {
     "a development error overlay appeared after the step's action was sent; it was not dismissed and the step was not replayed",
 } as const;
 type DevErrorRefusal = keyof typeof DEV_ERROR_REFUSALS;
+
+// The runner's refusal code only: a value-free token, never the message after it.
+const refusalCode = (error: string | undefined): string | undefined =>
+  /^([A-Z][A-Z0-9_]{2,63}):/u.exec(error ?? '')?.[1];
 
 // Capture and process refusals, ambiguity and the replay-miss path are never recovered.
 const UNRECOVERABLE = new Set([
@@ -2246,20 +2249,39 @@ async function walkBlockScoped(
       fresh.screen.devError && previousDismissal
         ? { variant: fresh.screen.devError.variant, dismissal: previousDismissal }
         : undefined;
-    const refuse = (cause: DevErrorRefusal): WalkOutcome => ({
-      ...failed(
-        item,
-        attempt,
-        DEV_ERROR_REFUSALS[cause],
-        observation.screen,
-        undefined,
-        undefined,
-        false,
-        false,
-        devError,
-      ),
-      refusal: { code: `DEV_REDBOX_${cause}`, message: DEV_ERROR_REFUSALS[cause] },
-    });
+    const refuse = (cause: DevErrorRefusal, runnerCode?: string): WalkOutcome => {
+      const message = `${DEV_ERROR_REFUSALS[cause]}${runnerCode ? `; runner refused: ${runnerCode}` : ''}`;
+      return {
+        ...failed(
+          item,
+          attempt,
+          message,
+          observation.screen,
+          undefined,
+          undefined,
+          false,
+          false,
+          devError,
+        ),
+        refusal: { code: `DEV_REDBOX_${cause}`, message },
+      };
+    };
+    const reobserve = async (): Promise<boolean> => {
+      try {
+        observation =
+          until === undefined
+            ? await capture(undefined, true, true)
+            : await captureOnce(undefined, true, true, 'resolve', until);
+        return true;
+      } catch (error) {
+        if (
+          error instanceof CaptureDeadline ||
+          (error instanceof ResolutionError && error.code === 'SCREEN_EVIDENCE_INCOMPLETE')
+        )
+          return false;
+        throw error;
+      }
+    };
     if (mutationStarted) return refuse('ACTION_UNCERTAIN');
     while (observation.screen.front === 'dev-redbox') {
       const dismissal = budget.devErrorDismissals + 1;
@@ -2276,13 +2298,41 @@ async function walkBlockScoped(
         acted = await mutate(item, observation, (context) => deps.press(ref, context), until);
       } catch (error) {
         if (isAbort(error)) throw error;
-        acted = { ok: false, proven: false, executed: false };
+        acted = {
+          ok: false,
+          proven: false,
+          executed: false,
+          ...(error instanceof QaDispatchError ? { error: `${error.code}: ` } : {}),
+          // The runner refused before any gesture, as the walker's own moved-target retry relies on.
+          ...(error instanceof QaDispatchError && error.code === 'TARGET_MOVED_BEFORE_DISPATCH'
+            ? { mutation: 'none' as const }
+            : {}),
+        };
       } finally {
         // The overlay's own Dismiss is not the step's action, so the step stays unmutated.
         mutationStarted = false;
         dispatchedOn = dispatched;
       }
-      if (!acted.ok || acted.executed === false) return refuse('DISMISS_FAILED');
+      if (!acted.ok || acted.executed === false) {
+        const code = refusalCode(acted.error);
+        try {
+          deps.note?.(`dev-error-dismiss-failed=${code ?? 'unknown'}`);
+        } catch {
+          /* Diagnostics cannot change recovery. */
+        }
+        // Only a refusal that proves no gesture ran may be followed by another Dismiss, within the bound.
+        if (acted.mutation !== 'none' || dismissal >= DEV_ERROR_DISMISSALS)
+          return refuse('DISMISS_FAILED', code);
+        emit({
+          ...base(item, attempt),
+          outcome: 'retry',
+          retryCause: 'DEV_REDBOX',
+          devError,
+          reason: `a development error overlay was in front; its Dismiss control was refused before any gesture${code ? ` (${code})` : ''} (${dismissal} of ${DEV_ERROR_DISMISSALS}); observing it again`,
+        });
+        if (!(await reobserve())) return refuse('CLEARANCE_UNPROVEN');
+        continue;
+      }
       emit({
         ...base(item, attempt),
         outcome: 'retry',
@@ -2290,19 +2340,7 @@ async function walkBlockScoped(
         devError,
         reason: `a development error overlay was in front; dismissed it with its own Dismiss control (${dismissal} of ${DEV_ERROR_DISMISSALS}); retrying the step`,
       });
-      try {
-        observation =
-          until === undefined
-            ? await capture(undefined, true, true)
-            : await captureOnce(undefined, true, true, 'resolve', until);
-      } catch (error) {
-        if (
-          error instanceof CaptureDeadline ||
-          (error instanceof ResolutionError && error.code === 'SCREEN_EVIDENCE_INCOMPLETE')
-        )
-          return refuse('CLEARANCE_UNPROVEN');
-        throw error;
-      }
+      if (!(await reobserve())) return refuse('CLEARANCE_UNPROVEN');
     }
     return 'retry';
   };
@@ -3927,7 +3965,13 @@ async function walkBlockScoped(
           (error.code === 'APP_PROCESS_UNKNOWN' ||
             error.code === 'SCROLL_NAVIGATED' ||
             error.code.startsWith('DEV_REDBOX_'))
-            ? { code: error.code, message: error.message }
+            ? {
+                code: error.code,
+                // The receipt adds the code itself; an overlay refusal's message must not repeat it.
+                message: error.code.startsWith('DEV_REDBOX_')
+                  ? error.message.slice(error.code.length + 2)
+                  : error.message,
+              }
             : undefined;
         const caughtOutcome = failed(
           item,
