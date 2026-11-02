@@ -596,6 +596,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
   let retried: unknown;
   let devObservation: DevelopmentTargetCounts | undefined;
   let devTargetSeen = false;
+  let registeredTargetSeen = false;
   let waitingForTargets = false;
   let activeDeadline = refuseStalledAt;
   const registeredTimeout = new CDPProbeTimeoutError('Registered-target attach deadline exceeded');
@@ -637,7 +638,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
     return await withDeadline(deadline, attachTimeout, async () => {
       for (;;) {
         if (
-          devTargetSeen &&
+          (devTargetSeen || registeredTargetSeen) &&
           !waitingForTargets &&
           performance.now() >= Math.min(deadline, patientRefuseAt)
         )
@@ -650,10 +651,20 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
           activeDeadline = Math.min(deadline, patientRefuseAt);
           const waitTargets = steps.waitTargets;
           if (waitTargets) {
-            const targetsDeadline = devTargetSeen ? activeDeadline : deadline;
+            const targetsDeadline =
+              devTargetSeen || registeredTargetSeen ? activeDeadline : deadline;
             await withDeadline(targetsDeadline, registeredTimeout, () =>
               waitTargets(targetsDeadline),
             );
+            if (!registeredTargetSeen) {
+              registeredTargetSeen = true;
+              if (patientUntil === undefined)
+                patientRefuseAt = Math.min(
+                  deadline,
+                  Math.max(patientRefuseAt, performance.now() + steps.attachBudgetMs),
+                );
+              activeDeadline = Math.min(deadline, patientRefuseAt);
+            }
           }
           await withDeadline(
             !steps.waitTargets && waitingForTargets ? deadline : activeDeadline,
@@ -939,7 +950,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
         ? 'react_readiness_timeout'
         : devMissing
           ? 'non_dev_bundle'
-          : devTargetSeen || (error === registeredTimeout && retried === undefined)
+          : devTargetSeen || (attaching && error === registeredTimeout && retried === undefined)
             ? 'no_dev_target_unknown'
             : admissionInnerClass(cause);
     // A refusal says whether the app ran and asked Metro for its bundle, whatever stopped the attach.
