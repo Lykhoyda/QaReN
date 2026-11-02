@@ -17,6 +17,7 @@ import {
   isSnapshotCacheValid,
   markSnapshotDirty,
   IME_KEY_FLAG,
+  REQUIRE_LIVE_HIT_FLAG,
   settleAfterMutation,
 } from '../agent-device-wrapper.js';
 import { buildIosProbes } from '../lifecycle/settle.js';
@@ -840,6 +841,8 @@ interface PressArgs {
   waitForFocusMs?: number;
   settleTimeoutMs?: number;
   retryIfNoChange?: boolean;
+  // iOS: tap only when the runner's live hit read proves the target hittable.
+  requireLiveHit?: boolean;
 }
 
 // Story 04 (#385): thread a caller-supplied settle budget into runNative.
@@ -968,6 +971,7 @@ export function createDevicePressHandler(
     if (args.doubleTap) flags.push('--double-tap');
     if (args.count && args.count > 1) flags.push('--count', String(args.count));
     if (args.holdMs && args.holdMs > 0) flags.push('--hold-ms', String(args.holdMs));
+    if (args.requireLiveHit) flags.push(REQUIRE_LIVE_HIT_FLAG);
     const identity = target ? getCachedSignature(target) : null;
     const tap = async (ref = target): Promise<ToolResult> =>
       surfaceKeyboardGuard(

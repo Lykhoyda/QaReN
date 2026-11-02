@@ -2480,3 +2480,202 @@ test('Android: occluded twice stays off screen after one scroll, never an uncert
   );
   assert.doesNotMatch(JSON.stringify(outcome), /ACTION_OUTCOME_UNCERTAIN/);
 });
+
+// A list pulled up under a transparent header: its clip starts at y 20, its rows start at the
+// header inset (116). A childless, full-width leaf beside the list's ancestor, listed after it and
+// starting at that inset, is inferred as a sticky overlay though nothing is drawn over the row.
+function pulledUpList(keyboard: boolean | 'unknown' = false, type = 'Other'): Screen {
+  const full = { x: 0, y: 0, width: 402, height: 874 };
+  const screen = covered(
+    join(
+      [
+        { ref: '@app', index: 0, type: 'Application', rect: full },
+        { ref: '@win', index: 1, parentIndex: 0, type: 'Window', rect: full },
+        { ref: '@root', index: 2, parentIndex: 1, type: 'Other', rect: full },
+        { ref: '@step', index: 3, parentIndex: 2, type: 'Other', rect: { ...full, height: 792 } },
+        {
+          ref: '@scroll',
+          index: 4,
+          parentIndex: 3,
+          type: 'ScrollView',
+          rect: { x: 0, y: 20, width: 402, height: 762 },
+        },
+        {
+          ref: '@content',
+          index: 5,
+          parentIndex: 4,
+          type: 'Other',
+          rect: { x: 0, y: 20, width: 402, height: 762 },
+        },
+        {
+          ref: '@target',
+          index: 6,
+          parentIndex: 5,
+          type,
+          identifier: 'row-1',
+          label: 'PRIVATE-row',
+          hittable: true,
+          rect: { x: 21, y: 249, width: 360, height: 56 },
+        },
+        { ref: '@shade', index: 7, parentIndex: 2, type: 'Other', hittable: true, rect: full },
+        {
+          ref: '@cover',
+          index: 8,
+          parentIndex: 2,
+          type: 'Other',
+          hittable: true,
+          rect: { x: 0, y: 116, width: 402, height: 758 },
+        },
+      ],
+      [],
+    ),
+  );
+  screen.keyboardVisible = keyboard === 'unknown' ? undefined : keyboard;
+  return screen;
+}
+
+const LIVE_HIT_CUTTER = {
+  ref: '@cover',
+  kind: targetOf(pulledUpList(), '@cover')?.kind,
+  frame: { x: 0, y: 116, width: 402, height: 758 },
+  edge: 'bottom',
+  before: { top: 20, bottom: 782 },
+  after: { top: 20, bottom: 116 },
+};
+
+function liveHitFake(
+  result: ActResult | undefined,
+  platform: 'ios' | 'android' = 'ios',
+  screen = pulledUpList,
+) {
+  let pressed = false;
+  const f = fake([screen()], {});
+  const options: unknown[] = [];
+  const events: WalkerTimingDiagnostic[] = [];
+  f.deps.platform = platform;
+  f.deps.captureScreen = async () => {
+    f.calls.push('capture');
+    return pressed && !result ? done() : screen();
+  };
+  f.deps.press = async (ref, _context, option) => {
+    f.calls.push(`press ${ref}`);
+    options.push(option);
+    pressed = true;
+    return result ?? { ok: true, proven: false };
+  };
+  f.deps.diagnostic = (event) => events.push(event);
+  return { ...f, options, events };
+}
+
+test('the inferred cutter is the later full-width leaf at the content inset, not a full-screen one', () => {
+  const screen = pulledUpList();
+  let facts: CentreCoverageDiagnostic | undefined;
+  assert.equal(
+    centreCovered(targetOf(screen, '@target')!, screen, (value) => (facts = value)),
+    true,
+  );
+  assert.equal(facts?.branch, 'overlay');
+  assert.equal(facts?.keyboardVisible, false);
+  assert.deepEqual(facts?.cutter, LIVE_HIT_CUTTER);
+});
+
+test('an iOS press under an inferred overlay dispatches once the live hit read proves it', async () => {
+  const f = liveHitFake(undefined);
+  const outcome = await walkBlock(block('1. Tap "row-1"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(
+    f.calls.filter((call) => call !== 'capture'),
+    ['scroll down', 'press @target'],
+  );
+  assert.deepEqual(f.options, [{ requireLiveHit: true }]);
+  assert.equal(f.events.filter((event) => event.code === 'CENTRE_COVERED').length, 0);
+});
+
+const liveHitRefused = (reason: string): ActResult => ({
+  ok: false,
+  proven: false,
+  mutation: 'none',
+  error: `LIVE_HIT_UNPROVEN: LIVE_HIT_UNPROVEN: ${reason}; the live hit read did not prove the target hittable and no tap was performed.`,
+});
+
+for (const [name, result, shown] of [
+  ['false', liveHitRefused('not-hittable'), 'not-hittable'],
+  ['unavailable', liveHitRefused('deadline'), 'deadline'],
+  ['ambiguous', liveHitRefused('ambiguous'), 'ambiguous'],
+  ['expired', liveHitRefused('expired'), 'expired'],
+  ['moved', liveHitRefused('moved'), 'moved'],
+  [
+    'from a runner without the strict read',
+    {
+      ok: false,
+      proven: false,
+      mutation: 'none',
+      error: 'RN_FAST_RUNNER_STALE: RN_FAST_RUNNER_STALE: the active iOS runner cannot require it',
+    },
+    'RN_FAST_RUNNER_STALE',
+  ],
+] as const) {
+  test(`a live hit read ${name} refuses the press with the inferred cutter named`, async () => {
+    const f = liveHitFake(result);
+    const outcome = await walkBlock(block('1. Tap "row-1"\n'), f.deps);
+    assert.equal(outcome.block.outcome, 'fail');
+    assert.deepEqual(
+      f.calls.filter((call) => call !== 'capture'),
+      ['scroll down', 'press @target'],
+    );
+    assert.deepEqual(f.options, [{ requireLiveHit: true }]);
+    const seen = renderReason(outcome.failure?.seen ?? '', (text) => text);
+    assert.match(seen, /"row-1" stayed off screen after one scroll/);
+    assert.ok(
+      seen.includes(
+        `inferred band cutter @cover (${LIVE_HIT_CUTTER.kind}) at 0,116,402,758 moved the band bottom from 782 to 116; the live hit read refused the press (${shown}); no tap was performed`,
+      ),
+      seen,
+    );
+    const terminal = f.events.filter((event) => event.code === 'CENTRE_COVERED');
+    assert.equal(terminal.length, 1);
+    // The decision log line is JSON: the cutter survives the round trip field for field.
+    const logged = JSON.parse(JSON.stringify(terminal[0])) as WalkerTimingDiagnostic;
+    assert.deepEqual(logged.clearanceDiagnostic, {
+      predicate: {
+        framePresent: true,
+        viewportPresent: true,
+        viewportOutside: false,
+        keyboardVisible: false,
+        keyboardFramePresent: null,
+        keyboardCoverage: null,
+        centreInsideKeyboard: null,
+        branch: 'overlay',
+        cutter: LIVE_HIT_CUTTER,
+      },
+      scrollOrigin: 'centre-covered',
+      requestedDirection: 'down',
+      targetCentreChanged: false,
+    });
+    const published = JSON.stringify({ outcome, events: f.events });
+    assert.ok(!published.includes('PRIVATE-'));
+    assert.ok(!JSON.stringify(f.events).includes('@target'));
+  });
+}
+
+for (const [name, platform, screen, step] of [
+  ['keyboard state unknown', 'ios', () => pulledUpList('unknown'), '1. Tap "row-1"\n'],
+  ['keyboard visible', 'ios', () => pulledUpList(true), '1. Tap "row-1"\n'],
+  ['fill', 'ios', () => pulledUpList(false, 'TextField'), '1. Fill "row-1" with "x"\n'],
+  ['Android', 'android', () => pulledUpList(), '1. Tap "row-1"\n'],
+] as const) {
+  test(`an inferred overlay still refuses before dispatch (${name}), naming the cutter`, async () => {
+    const f = liveHitFake(undefined, platform, screen);
+    const outcome = await walkBlock(block(step), f.deps);
+    assert.equal(outcome.block.outcome, 'fail');
+    assert.deepEqual(
+      f.calls.filter((call) => call !== 'capture'),
+      ['scroll down'],
+    );
+    assert.deepEqual(f.options, []);
+    assert.match(
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
+      /stayed off screen after one scroll: .*; inferred band cutter @cover \(\w+\) at 0,116,402,758 moved the band bottom from 782 to 116;/,
+    );
+  });
+}

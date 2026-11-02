@@ -124,6 +124,7 @@ const READY_TIMEOUT_MS = resolveReadyTimeoutMs();
 // ready-signal timeout is widened for the build path.
 const BUILD_READY_TIMEOUT_MS = 360_000;
 const HTTP_TIMEOUT_MS = 10_000;
+const STRICT_LIVE_HIT_CAPABILITY = 'STRICT_LIVE_HIT_V1';
 const FAST_RUNNER_PROJECT = resolveNativeRunnerDir('qaren-ios-runner');
 
 // xcodebuild chunks can split handshake lines, so the parser retains incomplete lines.
@@ -1829,6 +1830,8 @@ export interface RunIOSArgs {
   direction?: 'up' | 'down' | 'left' | 'right';
   scale?: number;
   platformPresence?: boolean;
+  /** Tap only when the live hit read proves the target hittable; refuse otherwise. */
+  requireLiveHit?: boolean;
   labelProvenance?: number[];
   presenceBudgetMs?: number;
   interactiveOnly?: boolean;
@@ -2711,6 +2714,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
   if (args.focusY !== undefined) body.focusY = args.focusY;
   if (args.focusWaitMs !== undefined) body.focusWaitMs = args.focusWaitMs;
   if (args.focused === true) body.focused = true;
+  if (args.requireLiveHit === true) body.requireLiveHit = true;
   if (args.operationToken !== undefined) body.operationToken = args.operationToken;
 
   // Transport-level refusals must surface as typed results from every runner
@@ -2738,6 +2742,19 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       'RN_FAST_RUNNER_STALE: the active iOS runner cannot safely validate exact keyboard targets; reopen the device session to rebuild before retrying.',
       'RN_FAST_RUNNER_STALE',
       { missingFeatures: ['EXACT_KEYBOARD_TARGET_GUARD'], dispatched: false },
+    );
+  }
+
+  // An older runner ignores requireLiveHit and taps on an unavailable read; refuse before sending.
+  if (
+    args.command === 'tap' &&
+    args.requireLiveHit === true &&
+    !lastKnownCapabilities.includes(STRICT_LIVE_HIT_CAPABILITY)
+  ) {
+    return failResult(
+      'RN_FAST_RUNNER_STALE: the active iOS runner cannot require a live hit read before a tap; no tap was performed. Reopen the device session to rebuild before retrying.',
+      'RN_FAST_RUNNER_STALE',
+      { missingFeatures: [STRICT_LIVE_HIT_CAPABILITY], dispatched: false, mutation: 'none' },
     );
   }
 

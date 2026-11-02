@@ -471,10 +471,11 @@ export function buildRunIOSArgs(
     case 'press':
     case 'tap': {
       const ref = positionals[0] && pinnedElementRef(positionals[0]);
+      const strict = cliArgs.includes(REQUIRE_LIVE_HIT_FLAG) ? { requireLiveHit: true } : {};
       if (ref && ref.startsWith('@')) {
         const center = isRefMapFresh() ? refCenter(ref) : null;
         if (!center) {
-          return { command: 'tap', _staleRef: ref, ...(bundleId ? { bundleId } : {}) };
+          return { command: 'tap', _staleRef: ref, ...strict, ...(bundleId ? { bundleId } : {}) };
         }
         const target = getFreshRefTarget(ref);
         const built: import('./runners/qaren-ios-runner-client.js').RunIOSArgs = {
@@ -496,6 +497,7 @@ export function buildRunIOSArgs(
                 keyboardStateAtSnapshot: target.keyboardStateAtSnapshot!,
               }
             : {}),
+          ...strict,
           ...(bundleId ? { bundleId } : {}),
         };
         // Client-only identity must not leak onto the JSON wire or perturb the
@@ -509,7 +511,7 @@ export function buildRunIOSArgs(
       if (Number.isNaN(x) || Number.isNaN(y)) {
         throw new Error(`buildRunIOSArgs: tap requires a @ref or numeric x, y`);
       }
-      return { command: 'tap', x, y, ...(bundleId ? { bundleId } : {}) };
+      return { command: 'tap', x, y, ...strict, ...(bundleId ? { bundleId } : {}) };
     }
     case 'system-alert-tap':
       return {
@@ -1535,6 +1537,7 @@ export function selfHealEnabled(env: NodeJS.ProcessEnv): boolean {
 const RETRYABLE_TAP_COMMANDS = new Set<string>(['tap', 'longPress']);
 
 export const IME_KEY_FLAG = '--ime-key';
+export const REQUIRE_LIVE_HIT_FLAG = '--require-live-hit';
 
 export interface TapRetryPolicy {
   eligible: boolean;

@@ -695,6 +695,7 @@ extension QarenIosRunnerTests {
   func liveTargetCheck(app: XCUIApplication, command: Command, deadline: Double, checkHittability: Bool = true) -> DispatchGuard.TargetCheck {
     lastMovedFrames = nil
     lastLiveTarget = nil
+    lastLiveCheckUnavailable = "expired"
     guard let index = command.snapshotNodeIndex,
           let retained = retainedSnapshotTargets[index],
           retained.generation == currentSnapshotGeneration,
@@ -706,8 +707,11 @@ extension QarenIosRunnerTests {
     } else if let label = retained.label {
       predicate = NSPredicate(format: "label == %@", label)
     } else {
+      lastLiveCheckUnavailable = "no-identity"
       return .unavailable
     }
+    // Deadline, or a frame or hittability read that threw.
+    lastLiveCheckUnavailable = "unavailable"
     let expected = CGRect(
       x: retained.rect.x, y: retained.rect.y,
       width: retained.rect.width, height: retained.rect.height
@@ -724,6 +728,9 @@ extension QarenIosRunnerTests {
             self.elementTypeName($0.elementType) == retained.type
           }
         })
+        if exception != nil || matches.count != 1 {
+          self.lastLiveCheckUnavailable = exception != nil ? "exception" : matches.isEmpty ? "absent" : "ambiguous"
+        }
         return exception == nil && matches.count == 1 ? matches[0] : nil
       },
       matchesFrame: { target in

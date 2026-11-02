@@ -477,6 +477,13 @@ extension QarenIosRunnerTests {
           keyboardGuardStatus = status
         }
         let liveCheck = liveTargetCheck(app: activeApp, command: command, deadline: ProcessInfo.processInfo.systemUptime + 0.3)
+        if command.requireLiveHit == true,
+           let reason = DispatchGuard.strictRefusal(liveCheck, unavailableReason: lastLiveCheckUnavailable) {
+          return Response(
+            ok: false,
+            error: ErrorPayload(code: "LIVE_HIT_UNPROVEN", message: "LIVE_HIT_UNPROVEN: \(reason); the live hit read did not prove the target hittable and no tap was performed.", mutation: "none")
+          )
+        }
         switch DispatchGuard.decide(liveHittable: liveCheck.hittable, keyboardContainsPoint: false, targetMoved: liveCheck == .moved) {
         case .moved:
           return movedDispatchResponse()

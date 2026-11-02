@@ -32,6 +32,16 @@ final class DispatchGuardTests: XCTestCase {
     XCTAssertEqual(DispatchGuard.tapAnchor(point: point, liveTarget: row, alerts: [.zero]), .firstWindow)
   }
 
+  func testStrictTapProceedsOnlyOnAProvenLiveHit() {
+    XCTAssertNil(DispatchGuard.strictRefusal(.hittable(true), unavailableReason: "deadline"))
+    XCTAssertEqual(DispatchGuard.strictRefusal(.hittable(false), unavailableReason: nil), "not-hittable")
+    XCTAssertEqual(DispatchGuard.strictRefusal(.moved, unavailableReason: "deadline"), "moved")
+    for reason in ["expired", "no-identity", "absent", "ambiguous", "exception", "unavailable"] {
+      XCTAssertEqual(DispatchGuard.strictRefusal(.unavailable, unavailableReason: reason), reason)
+    }
+    XCTAssertEqual(DispatchGuard.strictRefusal(.unavailable, unavailableReason: nil), "unavailable")
+  }
+
   func testUnavailableHitTestProceeds() {
     XCTAssertEqual(DispatchGuard.decide(liveHittable: nil, keyboardContainsPoint: false), .proceed)
   }

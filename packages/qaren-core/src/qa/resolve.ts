@@ -367,6 +367,18 @@ export interface CentreCoverageDiagnostic {
   keyboardCoverage: boolean | null;
   centreInsideKeyboard: boolean | null;
   branch: 'viewport' | 'keyboard' | 'overlay' | 'none';
+  // Overlay branch only: the inferred band cutter on the edge the centre fell past, never the proven cover.
+  cutter?: BandCut | null;
+}
+
+// One clearanceBand edge move: capture-local geometry only, no label, identifier or value.
+export interface BandCut {
+  ref: string;
+  kind: Element['kind'];
+  frame: { x: number; y: number; width: number; height: number };
+  edge: 'top' | 'bottom';
+  before: { top: number; bottom: number };
+  after: { top: number; bottom: number };
 }
 
 // Keyboard-owned targets bypass keyboard and overlay coverage, never the trusted viewport clip.
@@ -424,14 +436,18 @@ export function centreCovered(
   }
   // A centre under a sticky overlay inside the clip is as untouchable as one under the keyboard;
   // at or below the keyboard top the keyboard clause alone decides.
-  const band = viewport && clearanceBand(element, screen);
+  const cutters: Partial<Record<BandCut['edge'], BandCut>> = {};
+  const band = viewport && clearanceBand(element, screen, (cut) => (cutters[cut.edge] = cut));
   const keyboardTop = visible !== false ? screen.keyboardFrame?.y : undefined;
-  return result(
+  const above = !!band && y < band.y;
+  if (
     band &&
-      (y < band.y || (y >= band.y + band.height && (keyboardTop === undefined || y < keyboardTop)))
-      ? 'overlay'
-      : 'none',
-  );
+    (above || (y >= band.y + band.height && (keyboardTop === undefined || y < keyboardTop)))
+  ) {
+    facts.cutter = cutters[above ? 'top' : 'bottom'] ?? null;
+    return result('overlay');
+  }
+  return result('none');
 }
 
 // Pixels an untouchable centre travels to the middle of the band a finger can touch.
@@ -452,7 +468,11 @@ const sameRect = (a: NativeNode['rect'], b: NativeNode['rect']): boolean =>
 export const KEYBOARD_EDGE_INSET = 48;
 
 // The part of a target's clip a finger can touch: above a visible keyboard, between sticky overlays.
-export function clearanceBand(element: Element, screen: Screen): NativeNode['rect'] {
+export function clearanceBand(
+  element: Element,
+  screen: Screen,
+  observe?: (cut: BandCut) => void,
+): NativeNode['rect'] {
   const viewport = elementViewport(element);
   if (!viewport) return undefined;
   const keyboard = screen.keyboardVisible !== false ? screen.keyboardFrame : undefined;
@@ -478,9 +498,20 @@ export function clearanceBand(element: Element, screen: Screen): NativeNode['rec
       continue;
     const rect = elementFrame(other);
     if (!rect || rect.width < viewport.width / 2) continue;
+    const before = { top, bottom };
     if (rect.y < bottom && rect.y + rect.height >= bottom && rect.y > top) bottom = rect.y;
     if (rect.y <= top && rect.y + rect.height > top && rect.y + rect.height < bottom)
       top = rect.y + rect.height;
+    for (const edge of ['top', 'bottom'] as const)
+      if (before[edge] !== (edge === 'top' ? top : bottom))
+        observe?.({
+          ref: other.ref,
+          kind: other.kind,
+          frame: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+          edge,
+          before,
+          after: { top, bottom },
+        });
   }
   return bottom > top ? { ...viewport, y: top, height: bottom - top } : undefined;
 }
