@@ -1,5 +1,17 @@
 # qaren
 
+## 2.0.5
+
+### Patch Changes
+
+- dd11744: A tap on a control that was already selected and stays selected now passes with the evidence `already selected, no change` instead of failing as an unchanged screen; a toggle still passes on its new state.
+- c5f63a7: Retry uncertain dev-overlay reads within the startup budget and report recovery guidance.
+- 83b7448: Retry transient fresh-install identity uncertainty once within the existing admission allowance and report the terminal probe evidence.
+- 02ca999: Failed iOS `check` walks and target refusals after admission now retain Metro, the simulator and the device lease for inspection until `qaren cleanup <run-id>` or the next run on that device; check-only `--hold` and `--no-hold` override the defaults, while `CI`, a `## Cleanup` plan section, `--shutdown-device-on-exit` and `QAREN_HOLD_ON_FAIL=0` preserve normal teardown by default.
+- 02ca999: iOS runs now start Metro bound to localhost, so a Metro kept for inspection after a failed check is not reachable from the local network.
+- a31233e: Recover owned iOS runner drivers and simulator hosts during explicit cleanup while preserving automatic teardown safety.
+- dd11744: Prevent unrelated screen changes from passing unverified selection-control taps and avoid repeating a press whose selection effect cannot be observed.
+
 ## 2.0.4
 
 ### Patch Changes
