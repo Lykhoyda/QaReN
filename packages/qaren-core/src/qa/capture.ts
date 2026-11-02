@@ -11,6 +11,7 @@ import type { ToolResult } from '../utils.js';
 import { foregroundSurfaceFromSnapshot } from '../handlers/expo-dev-menu.js';
 import { isRecord } from './questions.js';
 import {
+  devErrorOverlay,
   frontFromSurface,
   join,
   joinedSnapshotDiagnostics,
@@ -509,7 +510,8 @@ export function nativeDevOverlayObservation(observation: NativeObservation): Dev
       error: coverage === 'incomplete' ? 'coverage_incomplete' : 'coverage_unknown',
     };
   const front = frontFromSurface(observation.surface, observation.nodes ?? []);
-  if (front === 'dev-fab' || front === 'dev-menu') return { state: 'shown', front };
+  if (front === 'dev-fab' || front === 'dev-menu' || front === 'dev-redbox')
+    return { state: 'shown', front };
   return { state: 'clear', front };
 }
 
@@ -719,6 +721,7 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
           : {}),
       });
     }
+    const devError = devErrorOverlay(nodes);
     const screen = applyNativePrivateInputs(
       {
         ...join(
@@ -742,6 +745,7 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
           ? { pointScale: native.pointScale }
           : {}),
         captureCoverage,
+        ...(devError ? { devError } : {}),
         ...(react.renderError === true ? { renderError: true } : {}),
         ...(reactConnection ? { reactConnection } : {}),
       },

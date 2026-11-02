@@ -69,6 +69,7 @@ pub enum FailureCode {
     CoreRefused,
     PressNotRegistered,
     BlockStartMissing,
+    DevRedbox,
     JevUnreachable,
     JevAuthFailed,
     JevRequestInvalid,
@@ -111,6 +112,7 @@ impl FailureCode {
                 | FailureCode::PressNotRegistered
                 | FailureCode::CoreRefused
                 | FailureCode::BlockStartMissing
+                | FailureCode::DevRedbox
                 | FailureCode::JevUnreachable
                 | FailureCode::JevAuthFailed
                 | FailureCode::JevRequestInvalid
@@ -536,6 +538,12 @@ impl Failure {
                 "re-run once without --fresh-install or --restart-device; if build work is active, wait for it to finish first",
             "DEV_MENU_HIDE_UNVERIFIED_NOT_HIDDEN" | "DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED" =>
                 "re-run once without --fresh-install; if it persists, report the value-free refusal",
+            // A development error overlay: the cause decides whether a restart may help.
+            "DEV_REDBOX_REPEATED"
+            | "DEV_REDBOX_DISMISS_FAILED"
+            | "DEV_REDBOX_NO_SAFE_DISMISS"
+            | "DEV_REDBOX_CLEARANCE_UNPROVEN" => "restart_app_from_plan_start",
+            "DEV_REDBOX_ACTION_UNCERTAIN" => "inspect_app_error_before_rerun",
             _ => "resolve the refusal, then re-run",
         }
     }

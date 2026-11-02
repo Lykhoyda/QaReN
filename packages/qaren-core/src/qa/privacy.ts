@@ -40,6 +40,9 @@ export const SCREEN_TEXT_WITHHELD = '[screen text withheld: a secure field is on
 export const INPUT_SCREEN_TEXT_WITHHELD =
   '[screen text withheld: the run holds secret runtime inputs]';
 
+export const devErrorWithheld = (lines: number): string =>
+  `A development error overlay was in front; ${lines} lines withheld.`;
+
 export function concealsScreen(screen: Screen): boolean {
   return screen.elements.some((element) => element.secure);
 }
@@ -1067,6 +1070,8 @@ export class ObservedPrivacy {
 
   // Beside a SECRET input undeclared personal data cannot be masked by value; TEST-PII runs accept that.
   textWithheld(screen: Screen): string | undefined {
+    // An error overlay shows stack frames, paths and interpolated values: only its line count leaves.
+    if (screen.devError) return devErrorWithheld(screen.visibleText.length);
     if (concealsScreen(screen)) return SCREEN_TEXT_WITHHELD;
     if (this.strictInputValues.size) return INPUT_SCREEN_TEXT_WITHHELD;
   }

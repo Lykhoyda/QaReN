@@ -336,3 +336,23 @@ test('reconnect failure returns the value-free read failure without overlay effe
   assert.match(env.error!, /reads=0;.*last_error=transport/);
   assert.doesNotMatch(env.error!, /private connection detail/);
 });
+
+test('admission leaves an error overlay to the first step instead of waiting out its budget', async () => {
+  const calls: string[] = [];
+  const env = parseEnvelope(
+    await clearDevOverlays({
+      deadline: performance.now() + 5_000,
+      async devSettings({ action }) {
+        calls.push(action);
+        return okResult({ executed: true });
+      },
+      async observeDevOverlay() {
+        calls.push('read');
+        return { state: 'shown', front: 'dev-redbox' };
+      },
+      log() {},
+    }),
+  );
+  assert.equal(env.ok, true);
+  assert.equal(calls.filter((call) => call === 'read').length, 1);
+});

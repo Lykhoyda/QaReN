@@ -3087,11 +3087,45 @@ nested in its repository they do not make the next run's candidate dirty.
 Selection-proof refusals bypass step recovery; follow the
 [press evidence contract](#occluded-taps-and-focus) before retrying.
 
-An observed React Native red box fails the current step immediately, including
-during login replay, with error-screen evidence in `failure.seen` projected through
-the [input value masking contract](#input-value-masking).
-It is checked before accepting a step or refusing incomplete semantic evidence,
-and never triggers recovery.
+React Native's development error overlays, the native RedBox and the LogBox
+inspector, are recognized in the native capture by the fixed identifiers and
+controls React Native gives them (`redbox-dismiss`, `redbox-reload`,
+`redbox-copy`, `redbox-error`, or one window holding `Dismiss`, `Minimize` and a
+`Log N of M` header, or the syntax-error `Failed to compile` header and footer),
+never by error text. An overlay in front is never read as the app: before a step
+resolves its target, judges a check or evaluates a wait, QaReN presses the
+overlay's own Dismiss control by its exact reference, proves the overlay gone in
+a fresh capture and runs the step again. This is a retry for a known cause, not a
+blind retry: each dismissal writes a `retry` row with `retryCause: DEV_REDBOX`,
+`devError: { variant, dismissal }` and the attempt number, and counts in
+`recoveries`. A step gets at most three dismissals; the count is per step and is
+separate from the step's two interruption recoveries. Reload and Copy are never
+pressed, and Dismiss is not proof that the step's own action worked.
+
+When the overlay cannot be cleared this way the run refuses with
+`failure.code: DEV_REDBOX` (exit 4). The cause opens `failure.detail`:
+
+| Cause | When | `next_action` |
+| --- | --- | --- |
+| `DEV_REDBOX_REPEATED` | The overlay was still in front after three dismissals in one step | `restart_app_from_plan_start` |
+| `DEV_REDBOX_DISMISS_FAILED` | The Dismiss press was not dispatched; it is not retried | `restart_app_from_plan_start` |
+| `DEV_REDBOX_NO_SAFE_DISMISS` | No single Dismiss control (a syntax error, an ambiguous control, or an overlay inside a login replay, which never recovers) | `restart_app_from_plan_start` |
+| `DEV_REDBOX_CLEARANCE_UNPROVEN` | A fresh capture could not prove the overlay gone | `restart_app_from_plan_start` |
+| `DEV_REDBOX_ACTION_UNCERTAIN` | The overlay was first seen after the step's action was sent; nothing is dismissed or replayed | `inspect_app_error_before_rerun` |
+
+A restart from plan start loses app state; the error may race the app again. A
+device restart or an unchanged native rebuild cannot fix it. A run that passes
+after a dismissal passed with an app error recorded in its rows, not without one.
+
+While an overlay is captured, even behind an alert, every textual report
+(`failure.seen`, the last observed screen, target diagnostics) carries only
+`A development error overlay was in front; N lines withheld.`, with no stack,
+path or message text, and no screenshot is taken. Admission leaves an overlay to
+the first step's dismissal instead of waiting out the dev-menu budget. A React
+render error that only the React capture reports, with no overlay in the native
+capture, still fails the current step immediately, including during login
+replay, and never triggers recovery. The regressions are in
+[`dev-error-overlay.test.ts`](../qaren-core/test/unit/qa/dev-error-overlay.test.ts).
 
 An action without success evidence after its one retry, a step target that
 does not resolve, a definite failed check, an unmet quoted wait, or a phrase check still

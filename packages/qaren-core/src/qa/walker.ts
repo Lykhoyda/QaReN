@@ -447,6 +447,22 @@ const promptSignature = (screen: Screen): string =>
     screen.elements.flatMap((e) => (e.kind === 'button' && e.label !== undefined ? [e.label] : [])),
   ]);
 
+// A development error overlay is a known cause: its own Dismiss runs at most this often per step.
+export const DEV_ERROR_DISMISSALS = 3;
+
+// Closed causes of a DEV_REDBOX refusal; the messages carry no app text.
+const DEV_ERROR_REFUSALS = {
+  REPEATED: `a development error overlay was still in front after ${DEV_ERROR_DISMISSALS} dismissals in this step; nothing else was tapped`,
+  DISMISS_FAILED:
+    "the development error overlay's Dismiss control was not dispatched; it was not retried",
+  NO_SAFE_DISMISS:
+    'a development error overlay is in front with no single Dismiss control to press; nothing was tapped',
+  CLEARANCE_UNPROVEN: 'the development error overlay was not proven gone after Dismiss',
+  ACTION_UNCERTAIN:
+    "a development error overlay appeared after the step's action was sent; it was not dismissed and the step was not replayed",
+} as const;
+type DevErrorRefusal = keyof typeof DEV_ERROR_REFUSALS;
+
 // Capture and process refusals, ambiguity and the replay-miss path are never recovered.
 const UNRECOVERABLE = new Set([
   'SCROLL_NAVIGATED',
@@ -584,6 +600,8 @@ async function walkBlockScoped(
   };
   // The interruption a step's first decline answered; null once no further recovery is allowed.
   const recovered = new Map<Item, string | null>();
+  // Error-overlay dismissals per step, kept apart from the interruption budget above.
+  const devErrorDismissals = new Map<Item, number>();
   const metric = (
     stage: TimingEvent['stage'],
     observation?: Observation,
@@ -660,13 +678,27 @@ async function walkBlockScoped(
         if (error instanceof AppProcessGoneError) throw processChanged();
         throw error;
       }
-      if (latest.front === 'picker' || latest.front === 'dev-fab' || latest.front === 'dev-menu')
+      if (
+        latest.front === 'picker' ||
+        latest.front === 'dev-fab' ||
+        latest.front === 'dev-menu' ||
+        latest.front === 'dev-redbox'
+      )
         sequence.publicationInterrupted = true;
       const privacyStarted = deps.timing ? deps.now() : 0;
       privacy.observe(latest);
       recordMediaLatch(privacy, sequence, deps, line);
       guardAppProcess(deps.appProcess, latest.appProcessIdentifier);
-      if (latest.renderError) throw new RenderError();
+      // A natively identified overlay gets its bounded dismissal; React's error flag alone still fails.
+      if (latest.renderError && latest.front !== 'dev-redbox') throw new RenderError();
+      // The overlay is never read as the app: recovery dismisses it, or the step refuses.
+      if (latest.front === 'dev-redbox' && !recovery) {
+        const cause: DevErrorRefusal = mutationStarted ? 'ACTION_UNCERTAIN' : 'NO_SAFE_DISMISS';
+        throw new ResolutionError({
+          refuse: `DEV_REDBOX_${cause}`,
+          reason: DEV_ERROR_REFUSALS[cause],
+        });
+      }
       if (deps.timing)
         observeTiming(timingObserver, {
           stage: 'privacy-history',
@@ -1367,7 +1399,7 @@ async function walkBlockScoped(
       withheldRows.set(item.line, latch.reason);
       return undefined;
     }
-    if (metadataOnly) {
+    if (metadataOnly || latest.devError) {
       metric('screenshot', undefined, { outcome: 'withheld' });
       return undefined;
     }
@@ -1951,6 +1983,12 @@ async function walkBlockScoped(
       }
       return undefined;
     }
+    if (fresh.screen.front === 'dev-redbox') {
+      // An overlay dismissal never spends the step's interruption recovery.
+      if (first === undefined) recovered.delete(item);
+      else recovered.set(item, first);
+      return devErrorRecovery(item, attempt, fresh, until);
+    }
     // A system alert the plan's next step answers is the author's, not recovery's.
     const next = block.items[block.items.indexOf(item) + 1];
     if (fresh.screen.front === 'dialog' && next?.kind === 'dialog') return undefined;
@@ -2177,6 +2215,57 @@ async function walkBlockScoped(
           ...failed(item, attempt, result.refuse.message, fresh.screen, shot),
           refusal: result.refuse,
         };
+  };
+
+  // Dismisses the overlay with its own control, never replaying a step whose action may have run.
+  const devErrorRecovery = async (
+    item: Item,
+    attempt: number,
+    fresh: Observation,
+    until?: number,
+  ): Promise<'retry' | WalkOutcome> => {
+    let observation = fresh;
+    const refuse = (cause: DevErrorRefusal): WalkOutcome => ({
+      ...failed(item, attempt, DEV_ERROR_REFUSALS[cause], observation.screen, undefined),
+      refusal: { code: `DEV_REDBOX_${cause}`, message: DEV_ERROR_REFUSALS[cause] },
+    });
+    if (mutationStarted) return refuse('ACTION_UNCERTAIN');
+    while (observation.screen.front === 'dev-redbox') {
+      const dismissal = (devErrorDismissals.get(item) ?? 0) + 1;
+      if (dismissal > DEV_ERROR_DISMISSALS) return refuse('REPEATED');
+      const overlay = observation.screen.devError;
+      const ref = overlay?.dismissRef;
+      if (!overlay || !ref) return refuse('NO_SAFE_DISMISS');
+      devErrorDismissals.set(item, dismissal);
+      recoveries += 1;
+      const dispatched = dispatchedOn;
+      const acted = await mutate(item, observation, (context) => deps.press(ref, context));
+      // The overlay's own Dismiss is not the step's action, so the step stays unmutated.
+      mutationStarted = false;
+      dispatchedOn = dispatched;
+      if (!acted.ok || acted.executed === false) return refuse('DISMISS_FAILED');
+      emit({
+        ...base(item, attempt),
+        outcome: 'retry',
+        retryCause: 'DEV_REDBOX',
+        devError: { variant: overlay.variant, dismissal },
+        reason: `a development error overlay was in front; dismissed it with its own Dismiss control (${dismissal} of ${DEV_ERROR_DISMISSALS}); retrying the step`,
+      });
+      try {
+        observation =
+          until === undefined
+            ? await capture(undefined, true, true)
+            : await captureOnce(undefined, true, true, 'resolve', until);
+      } catch (error) {
+        if (
+          error instanceof CaptureDeadline ||
+          (error instanceof ResolutionError && error.code === 'SCREEN_EVIDENCE_INCOMPLETE')
+        )
+          return refuse('CLEARANCE_UNPROVEN');
+        throw error;
+      }
+    }
+    return 'retry';
   };
 
   items: for (const item of block.items) {
@@ -3777,7 +3866,9 @@ async function walkBlockScoped(
           error.code === 'REPLAY_SELECTOR';
         const resolutionRefusal =
           error instanceof ResolutionError &&
-          (error.code === 'APP_PROCESS_UNKNOWN' || error.code === 'SCROLL_NAVIGATED')
+          (error.code === 'APP_PROCESS_UNKNOWN' ||
+            error.code === 'SCROLL_NAVIGATED' ||
+            error.code.startsWith('DEV_REDBOX_'))
             ? { code: error.code, message: error.message }
             : undefined;
         const caughtOutcome = failed(
