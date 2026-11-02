@@ -535,7 +535,9 @@ async function openSession(
             target.metroPort,
             Math.max(
               1,
-              Math.min(REACT_READY_TIMEOUT_MS, remainingMs(), deadline - performance.now()),
+              Math.floor(
+                Math.min(REACT_READY_TIMEOUT_MS, remainingMs(), deadline - performance.now()),
+              ),
             ),
             REACT_READY_POLL_MS,
             stop.signal,
