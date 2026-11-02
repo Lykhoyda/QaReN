@@ -1,5 +1,17 @@
 # qaren
 
+## 2.0.6
+
+### Patch Changes
+
+- 03b30c0: Dismiss optional sheets through their fixed decline control when they cover the waited target.
+- 73a76fb: Warn about iOS precompiled-module compiler incompatibility and provide the next step for build failures caused by it.
+- 0dd3a26: On iOS, taps on unselected native row-choice candidates attempt keyboard dismissal before settling and tapping the target once, record successful clearance in the receipt, and refuse when selection cannot be verified.
+- 04d1bb0: A text label inside a pressable that is disabled or not hittable now resolves to that one control instead of refusing the quoted press as `TARGET_AMBIGUOUS`; separate same-label controls stay ambiguous.
+- e2325a2: A step that fails on its target now reports the last observed screen's controls with their age, a suggested plan edit as the next step, and an earlier identical failure on the same plan and revision.
+- 16d2bbe: Start Metro-only Expo commands offline by default and bound manifest warm-up with actionable diagnostics for slow request handlers and stalled watchers or slow volumes.
+- 5f61a5a: Mark the Metro readiness stage in `qaren check` progress instead of the `expo-start` process exit, so stopping Metro at cleanup no longer shows a failed `expo-start` after the stage passed.
+
 ## 2.0.5
 
 ### Patch Changes
