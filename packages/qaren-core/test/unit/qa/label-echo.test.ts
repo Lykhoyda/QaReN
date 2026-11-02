@@ -335,6 +335,99 @@ for (const [y, direction] of [
   });
 }
 
+// A control that is not actionable yet (disabled until a canvas touch) still owns its own label.
+for (const state of [{ enabled: false }, { hittable: false }]) {
+  test(`a pressable with ${JSON.stringify(state)} and its text label are one identity`, () => {
+    const nodes = pressable(app(), { id: 'consent-skip', y: 700, texts: ['Skip'] });
+    Object.assign(nodes[2], state);
+    // React proves the untyped native wrapper is a button.
+    const react = [{ testID: 'consent-skip', role: 'button' }];
+    const screen = join(nodes, react);
+    const outcomes = [undefined, 'text'].map((exact) => {
+      const target = { ...press.target, ...(exact ? { exact: 'text' as const } : {}) };
+      const identities = exactIdentities(screen, target, 'press');
+      assert.deepEqual(
+        identities.map(({ element }) => element.ref),
+        ['@p2'],
+      );
+      assert.equal(targetVisible(target, screen), true);
+      const resolved = prepareTarget({ ...press, target }, screen);
+      assert.ok(!('refuse' in resolved) || resolved.refuse !== 'TARGET_AMBIGUOUS', resolved.reason);
+      return 'ref' in resolved ? resolved.ref : 'refuse' in resolved ? resolved.refuse : 'other';
+    });
+    // The one control is not eligible yet; readiness refusals belong to the press owner.
+    assert.deepEqual(outcomes, ['TARGET_NOT_FOUND', 'REPLAY_SELECTOR']);
+
+    nodes.push({
+      ref: '@link',
+      index: nodes.length,
+      parentIndex: 1,
+      type: 'Link',
+      label: 'Skip',
+      hittable: true,
+      rect: { x: 150, y: 780, width: 60, height: 24 },
+    });
+    const twin = prepareTarget(press, join(nodes, react));
+    assert.ok('refuse' in twin && twin.refuse === 'TARGET_AMBIGUOUS', JSON.stringify(twin));
+
+    // Without React a testID alone does not prove the untyped wrapper is a control.
+    const unproven = pressable(app(), { id: 'consent-skip', y: 700, texts: ['Skip'] });
+    Object.assign(unproven[2], state);
+    assert.equal(exactIdentities(join(unproven, []), press.target, 'press').length, 2);
+  });
+}
+
+test('a disabled Button keeps its label over an inner same-label layout wrapper', () => {
+  const nodes: NativeNode[] = [
+    ...app(),
+    {
+      ref: '@button',
+      index: 2,
+      parentIndex: 1,
+      type: 'Button',
+      label: 'Skip',
+      identifier: 'Skip',
+      enabled: false,
+      hittable: true,
+      rect: { x: 20, y: 700, width: 350, height: 48 },
+    },
+    {
+      ref: '@layout',
+      index: 3,
+      parentIndex: 2,
+      type: 'Other',
+      label: 'Skip',
+      identifier: 'layout',
+      hittable: false,
+      rect: { x: 30, y: 705, width: 320, height: 40 },
+    },
+    {
+      ref: '@text',
+      index: 4,
+      parentIndex: 3,
+      type: 'StaticText',
+      label: 'Skip',
+      hittable: true,
+      rect: { x: 150, y: 712, width: 60, height: 24 },
+    },
+  ];
+  const identities = exactIdentities(join(nodes, []), press.target, 'press');
+  assert.deepEqual(
+    identities.map(({ element }) => element.ref),
+    ['@button'],
+  );
+});
+
+test('an untyped child without text provenance stays a separate candidate', () => {
+  const nodes = pressable(app(), { id: 'consent-skip', y: 700, texts: ['Skip'] });
+  nodes[3] = { ...nodes[3], type: 'Other' };
+  const resolved = prepareTarget(press, join(nodes, []));
+  assert.ok(
+    'refuse' in resolved && resolved.refuse === 'TARGET_AMBIGUOUS',
+    JSON.stringify(resolved),
+  );
+});
+
 test('a Skip pressable and a separate inline Skip link stay ambiguous', () => {
   const nodes = pressable(app(), { id: 'consent-skip', y: 700, texts: ['Skip'] });
   nodes.push({

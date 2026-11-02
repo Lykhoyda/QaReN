@@ -718,8 +718,12 @@ When nothing matches exactly, a quoted press target equal to one whole
 comma-separated segment of exactly one actionable element's merged label (for
 example `Item 2` in `Item 2, Status 2`) names that element; two such elements
 refuse as ambiguous. A label-only native row keeps its accessibility-label
-evidence even when its React role re-kinds it. Separate controls in distinct
-subtrees with the same label still refuse as ambiguous. The
+evidence even when its React role re-kinds it. The single text child of a typed or
+press-capable control with the same label is that control's
+label even while the control is disabled or not hittable, so a quoted press reports
+that one control's eligibility instead of `TARGET_AMBIGUOUS`; an untyped child needs
+text provenance to collapse. Separate
+controls in distinct subtrees with the same label still refuse as ambiguous. The
 [label-echo tests](../qaren-core/test/unit/qa/label-echo.test.ts) cover these cases.
 The refusal lists
 each candidate without its label or value: kind, testID or `no-id`, and the
