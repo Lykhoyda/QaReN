@@ -1,6 +1,6 @@
 import type { Target } from './plan.js';
 import { ancestorsOf, hostAssociationIdentity, type Element, type Screen } from './screen.js';
-import { hostPath, type HostAssociationDiagnostic } from './host-association.js';
+import { hostPath, MODAL_HOST_TYPES, type HostAssociationDiagnostic } from './host-association.js';
 import { targetOnScreen } from './resolve.js';
 import type { Reason } from './untrusted.js';
 import type { ActResult } from './walker.js';
@@ -212,7 +212,7 @@ function hasPlannedReactAncestor(
 ): boolean {
   const evidence = screen.reactHostEvidence;
   const typography = evidence?.typography;
-  if (!element.testID || !evidence?.complete || !typography?.complete) return false;
+  if (!element.testID || !evidence?.complete || !typography) return false;
   return evidence.hosts.some((host, index) => {
     if (host.testID !== element.testID) return false;
     for (const parent of hostPath(typography, index)?.slice(1) ?? []) {
@@ -228,7 +228,7 @@ function hasPlannedReactAncestor(
         return true;
       const type = typography.nodes[parent].hostType;
       // A modal is a separate surface; its React parents do not own the controls inside it.
-      if (type === 'Modal' || type === 'RCTModalHostView') break;
+      if (MODAL_HOST_TYPES.has(type ?? '')) break;
     }
     return false;
   });

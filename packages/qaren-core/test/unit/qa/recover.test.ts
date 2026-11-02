@@ -242,7 +242,7 @@ for (const exact of [undefined, 'text', 'id'] as const) {
   });
 }
 
-function flattenedSheetScreen(label?: string): Screen {
+function flattenedSheetScreen(label?: string, measurementsComplete = true): Screen {
   const window = { x: 0, y: 0, width: 402, height: 874 };
   const sheet = { x: 0, y: 62, width: 402, height: 812 };
   const nodes: NativeNode[] = [
@@ -285,7 +285,7 @@ function flattenedSheetScreen(label?: string): Screen {
     ],
     typography: {
       version: 1,
-      complete: true,
+      complete: measurementsComplete,
       durationMs: 1,
       coordinateSpace: 'window-points',
       nodes: [
@@ -348,6 +348,25 @@ for (const exact of [undefined, 'id', 'text'] as const) {
     assert.equal(presses, 0);
   });
 }
+
+test('missing measurements do not erase the planned React container ancestry', async () => {
+  const snapshot = flattenedSheetScreen(undefined, false);
+  let presses = 0;
+  const d = deps({
+    dismiss: async () => {
+      presses++;
+      return 'pass';
+    },
+  });
+  assert.equal(
+    await recover(snapshot, d.deps, undefined, [
+      { phrase: 'Item 1', quoted: 'Item 1' },
+      { phrase: 'qa-sheet', quoted: 'qa-sheet', laterBlock: true },
+    ]),
+    undefined,
+  );
+  assert.equal(presses, 0);
+});
 
 for (const type of ['Modal', 'RCTModalHostView']) {
   test(`a modal host separates its controls from the underlying React home (${type})`, () => {
