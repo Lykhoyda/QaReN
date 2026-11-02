@@ -705,7 +705,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
         } catch (error) {
           if (isAbort(error)) throw error;
           if (error === registeredTimeout) throw error;
-          devObservation = undefined;
+          if (!(error instanceof TargetListAttemptTimeoutError)) devObservation = undefined;
           if (error instanceof DevTargetUnavailableError) {
             devTargetSeen = true;
             devObservation = error.counts;
