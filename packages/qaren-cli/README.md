@@ -980,11 +980,11 @@ The walker handles this refusal with one directional scroll toward the centre
 of the target's visible clip band: its trusted clipping viewport cut off 48 pt
 above the top of an observed keyboard unless the keyboard is proven hidden, and between
 sticky overlays. A touchable, non-text element at least half the clip's width,
-outside the target's own scroll content and drawn after it, that crosses the
+outside the target's own scroll content and listed after it in the capture, that crosses the
 band's bottom edge ends the band at its top (a sticky footer); one across the
-band's top edge starts the band below it (a sticky header). Content drawn behind
+band's top edge starts the band below it (a sticky header). Content listed before
 the list, such as a screen's rows under a sheet, never counts; for a target in no
-list, nothing drawn before its window counts, such as the app screen behind a modal. A target at
+list, nothing listed before its window counts, such as the app screen behind a modal. A target at
 or below that band's centre scrolls down; one above it scrolls up. Sticky overlays
 can narrow the band even without a keyboard or when the clip is entirely above it.
 On iOS, capture order is not paint order. When a press target still resolves
@@ -1002,9 +1002,9 @@ read that threw or ran out of time) refuses `LIVE_HIT_UNPROVEN` with no tap, and
 with “stayed off screen after one scroll” and the inferred band cutter described
 under [clearance diagnostics](#clearance-diagnostics). The scroll
 that ran before the refusal remains a performed action. Fills, scroll-until, waits
-and Android keep the inferred overlay rule; their overlay refusals, and an iOS
-press whose keyboard is not proven hidden, name the inferred cutter and say why
-no live hit read was asked. A runner without `STRICT_LIVE_HIT_V1` refuses `RN_FAST_RUNNER_STALE` before anything
+and Android keep the inferred overlay rule. For press and fill clearance failures
+caused by an inferred overlay, the step names the cutter and says why no live hit read was asked when
+the strict path is ineligible. A runner without `STRICT_LIVE_HIT_V1` refuses `RN_FAST_RUNNER_STALE` before anything
 is sent; reopen the device session to rebuild it.
 The walker passes that band to the shared scroll handler so the drag starts
 inside it, narrowing the existing keyboard-safe band. A caller band is also kept
