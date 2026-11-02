@@ -356,6 +356,12 @@ jobs:
             --android-sha256 "$ANDROID_SHA256" --android-bytes "$ANDROID_BYTES" \
             --qaren-darwin-arm64-sha256 "$QAREN_ARM64_SHA256" --qaren-darwin-arm64-bytes "$QAREN_ARM64_BYTES"
 
+      - name: Set up Java for Android producer tests
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
       # GH#439: same single-entrypoint rule as ci.yml — globs live in
       # package.json only (plain `yarn test`, no coverage: this job gates the
       # release merge, coverage visibility belongs to the PR run).

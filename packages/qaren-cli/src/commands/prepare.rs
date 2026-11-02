@@ -216,6 +216,18 @@ pub(crate) fn finish_receipt(ctx: Ctx, result: ReceiptResult, failure: Option<Fa
     for (name, value) in &ctx.notes {
         receipt.outcomes.insert(name.clone(), value.clone());
     }
+    receipt.held = ctx.record.held.clone();
+    let failure = failure.map(|mut failure| {
+        if let Some(held) = &receipt.held {
+            let run_id = &ctx.record.run_id;
+            failure.next_action = crate::redact::OutputText::from_output(&format!(
+                "{}; {} were retained at the last observed screen: look, run qaren status {run_id} for live probes, then qaren cleanup {run_id} --json",
+                failure.next_action,
+                held.retained.join(", ")
+            ));
+        }
+        failure
+    });
     receipt.recovery = failure.as_ref().and_then(|f| f.build_recovery().cloned());
     receipt.failure = failure;
     receipt.next_action = next_action;
@@ -562,6 +574,7 @@ fn prepare_validated(
         failure: None,
         history: Vec::new(),
         terminal: None,
+        held: None,
         build_lock: None,
     };
     if let Err(f) = record.save(&args.runs_root) {
@@ -2853,7 +2866,12 @@ pub(crate) fn run_clean_preparation(ctx: &mut Ctx, plan: &BuildPlan) -> Result<(
 fn spawn_metro_only(ctx: &mut Ctx) -> Result<(), Failure> {
     let port = qaren_metro_port(&ctx.record.scenario);
     let project_root = ctx.record.candidate.project_root.clone();
-    let spec = metro::start_spec(&project_root, port, metro::expo_online(ctx.runner));
+    let spec = metro::start_spec(
+        &project_root,
+        port,
+        ctx.record.scenario.platform == Platform::Ios,
+        metro::expo_online(ctx.runner),
+    );
     let metro_log = RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id)
         .join("logs")
         .join("metro.log");
@@ -4911,6 +4929,7 @@ fn dry_run_receipt(
             planned.push(metro::start_spec(
                 &cand.project_root,
                 port,
+                true,
                 metro::expo_online(runner),
             ));
             planned.push(ios::build_spec(
@@ -5065,6 +5084,7 @@ fn dry_run_receipt(
                 planned.push(metro::start_spec(
                     &cand.project_root,
                     port,
+                    true,
                     metro::expo_online(runner),
                 ));
                 planned.push(ios::install_app_spec(udid, &artifact_path));
@@ -5099,6 +5119,7 @@ fn dry_run_receipt(
                 planned.push(metro::start_spec(
                     &cand.project_root,
                     port,
+                    false,
                     metro::expo_online(runner),
                 ));
                 planned.push(metro::manifest_spec(port, "android"));
@@ -5419,6 +5440,7 @@ mod launch_tests {
                 failure: None,
                 history: Vec::new(),
                 terminal: None,
+                held: None,
                 build_lock: None,
             };
             let run_dir = RunRecord::run_dir(&root, &record.run_id);

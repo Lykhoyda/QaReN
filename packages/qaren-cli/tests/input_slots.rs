@@ -180,6 +180,7 @@ fn missing_check_and_pr_inputs_refuse_before_device_run_claim_or_worktree_alloca
             pr: pr.then(|| PrTarget {
                 target: "12".into(),
             }),
+            hold: None,
         };
         let receipt = with_input_scope(owner(&[]), || qaren::run::run(&mut runner, &req));
         assert_eq!(receipt.result, ReceiptResult::Refused);
@@ -412,6 +413,7 @@ fn a_pr_head_login_block_cannot_request_inputs_the_owner_never_declared() {
             pr: Some(PrTarget {
                 target: "12".into(),
             }),
+            hold: None,
         };
         let inputs = owner(&[
             ("QAREN_INPUT_PASSWORD", "declared-synthetic"),
@@ -507,6 +509,7 @@ fn privacy_preflight_refusal_is_distinct_from_invalid_inputs() {
                 step_seconds: 30,
             },
             pr: None,
+            hold: None,
         };
         let inputs = owner(&[("QAREN_INPUT_PASSWORD", "admitted-synthetic")]);
         let receipt = with_input_scope(inputs, || qaren::run::run(&mut runner, &req));
@@ -609,6 +612,7 @@ fn fixture_inventory_metadata_and_preflight_must_agree_before_device_selection()
                 step_seconds: 30,
             },
             pr: None,
+            hold: None,
         };
         let receipt = with_input_scope(
             owner(&[("QAREN_INPUT_PASSWORD", "synthetic-fixture")]),

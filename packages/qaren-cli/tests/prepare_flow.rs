@@ -3577,7 +3577,7 @@ fn ios_reuse_dry_run_lists_each_launch_step_once_in_execution_order() {
             &ios_spec.runtime,
         ),
         ios::bootstatus_spec("<udid>", scenario.deadlines.device_boot_seconds),
-        metro::start_spec(&project, 8791, false),
+        metro::start_spec(&project, 8791, true, false),
         ios::install_app_spec("<udid>", &artifact),
         metro::request_probe_spec(8791),
         metro::manifest_spec(8791, "ios"),
