@@ -42,6 +42,55 @@ final class DispatchGuardTests: XCTestCase {
     XCTAssertEqual(DispatchGuard.strictRefusal(.unavailable, unavailableReason: nil), "unavailable")
   }
 
+  func testStrictTapActivatesPartiallyExposedRowInsteadOfCoveredCentre() {
+    let row = CGRect(x: 0, y: 100, width: 402, height: 60)
+    let header = CGRect(x: 0, y: 0, width: 402, height: 140)
+    let capturedCentre = CGPoint(x: row.midX, y: row.midY)
+    XCTAssertTrue(header.contains(capturedCentre))
+    XCTAssertGreaterThan(row.maxY, header.maxY)
+    XCTAssertNil(DispatchGuard.strictRefusal(.hittable(true), unavailableReason: nil))
+    var activated: CGRect?
+    var coordinateTaps = 0
+    XCTAssertTrue(DispatchGuard.dispatchTap(
+      requireLiveHit: true,
+      liveTarget: row,
+      activate: { activated = $0; return true },
+      coordinate: { coordinateTaps += 1 }
+    ))
+    XCTAssertEqual(activated, row)
+    XCTAssertEqual(coordinateTaps, 0)
+  }
+
+  func testStrictTapNeverFallsBackWhenNativeActivationIsUnavailable() {
+    for target in [nil, 1] as [Int?] {
+      var activations = 0
+      var coordinateTaps = 0
+      XCTAssertFalse(DispatchGuard.dispatchTap(
+        requireLiveHit: true,
+        liveTarget: target,
+        activate: { _ in activations += 1; return false },
+        coordinate: { coordinateTaps += 1 }
+      ))
+      XCTAssertEqual(activations, target == nil ? 0 : 1)
+      XCTAssertEqual(coordinateTaps, 0)
+    }
+  }
+
+  func testOrdinaryTapKeepsCoordinatesRegardlessOfLiveTarget() {
+    for target in [nil, 1] as [Int?] {
+      var activations = 0
+      var coordinateTaps = 0
+      XCTAssertTrue(DispatchGuard.dispatchTap(
+        requireLiveHit: false,
+        liveTarget: target,
+        activate: { _ in activations += 1; return true },
+        coordinate: { coordinateTaps += 1 }
+      ))
+      XCTAssertEqual(activations, 0)
+      XCTAssertEqual(coordinateTaps, 1)
+    }
+  }
+
   func testUnavailableHitTestProceeds() {
     XCTAssertEqual(DispatchGuard.decide(liveHittable: nil, keyboardContainsPoint: false), .proceed)
   }

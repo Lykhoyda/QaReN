@@ -47,6 +47,20 @@ enum DispatchGuard {
     }
   }
 
+  static func dispatchTap<T>(
+    requireLiveHit: Bool,
+    liveTarget: T?,
+    activate: (T) -> Bool,
+    coordinate: () -> Void
+  ) -> Bool {
+    if requireLiveHit {
+      guard let liveTarget else { return false }
+      return activate(liveTarget)
+    }
+    coordinate()
+    return true
+  }
+
   // Proven frame movement refuses even when hittability is unavailable.
   static func decide(liveHittable: Bool?, keyboardContainsPoint: Bool, targetMoved: Bool = false) -> Decision {
     if targetMoved { return .moved }

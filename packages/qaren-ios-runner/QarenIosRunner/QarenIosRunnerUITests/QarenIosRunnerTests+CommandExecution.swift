@@ -502,10 +502,29 @@ extension QarenIosRunnerTests {
         anchor = resolved.element
 #endif
         var outcome = RunnerInteractionOutcome.performed
+        var dispatched = false
         let timing = measureGesture {
           withTemporaryScrollIdleTimeoutIfSupported(activeApp) {
-            outcome = tapAt(app: activeApp, x: x, y: y, anchor: anchor)
+            dispatched = DispatchGuard.dispatchTap(
+              requireLiveHit: command.requireLiveHit == true,
+              liveTarget: lastLiveTarget,
+              activate: { target in
+#if os(tvOS)
+                return false
+#else
+                self.gesture { target.tap() }
+                return true
+#endif
+              },
+              coordinate: { outcome = self.tapAt(app: activeApp, x: x, y: y, anchor: anchor) }
+            )
           }
+        }
+        guard dispatched else {
+          return Response(
+            ok: false,
+            error: ErrorPayload(code: "LIVE_HIT_UNPROVEN", message: "LIVE_HIT_UNPROVEN: native target activation unavailable; no tap was performed.", mutation: "none")
+          )
         }
         if let response = unsupportedResponse(for: outcome) {
           return response

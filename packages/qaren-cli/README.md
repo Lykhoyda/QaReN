@@ -987,17 +987,18 @@ can narrow the band even without a keyboard or when the clip is entirely above i
 On iOS, capture order is not paint order, so an overlay inferred from it never
 refuses a press on its own. When a press's centre is still past the band after that
 one scroll, inside its clip and with the keyboard proven hidden, the walker sends the
-tap with `requireLiveHit`: the runner taps only when its fresh, bounded `isHittable`
-read of the resolved target returns true. A false read, a moved target, or an
-unavailable read (expired snapshot, no identity, absent or ambiguous match, a
+tap with `requireLiveHit`: only when its fresh, bounded `isHittable` read of the
+resolved target returns true does the runner activate that live element with
+XCTest's element tap, letting XCTest choose a hittable point instead of tapping
+the captured centre. If native element activation is unavailable, it refuses
+`LIVE_HIT_UNPROVEN` with no tap and never falls back to coordinates.
+A false read, a moved target, or an unavailable read (expired snapshot, no identity, absent or ambiguous match, a
 read that threw or ran out of time) refuses `LIVE_HIT_UNPROVEN` with no tap, and the step fails
 with “stayed off screen after one scroll” naming the inferred band cutter by its
 capture-local ref, kind, frame and the band edge it moved, never its label,
 identifier or value. The cutter is inferred, not the proven cover, and the scroll
-that ran before the refusal remains a performed action. `isHittable` is
-element-level: it does not prove the exact centre point uncovered under a partial
-cover. Fills, scroll-until, waits and Android keep the inferred overlay rule. A
-runner without `STRICT_LIVE_HIT_V1` refuses `RN_FAST_RUNNER_STALE` before anything
+that ran before the refusal remains a performed action. Fills, scroll-until, waits
+and Android keep the inferred overlay rule. A runner without `STRICT_LIVE_HIT_V1` refuses `RN_FAST_RUNNER_STALE` before anything
 is sent; reopen the device session to rebuild it.
 The walker passes that band to the shared scroll handler so the drag starts
 inside it, narrowing the existing keyboard-safe band. A caller band is also kept
