@@ -341,6 +341,26 @@ const liveHitRefusal = (error: string | undefined): string =>
   error?.match(/^[A-Z_]+/)?.[0] ??
   'unavailable';
 
+// Why no live hit read decided an inferred overlay; empty for other covers.
+const unaskedLiveHit = (
+  kind: Item['kind'],
+  platform: BlockPlatform | undefined,
+  facts: Readonly<CentreCoverageDiagnostic> | null,
+): string => {
+  if (facts?.branch !== 'overlay') return '';
+  const why =
+    kind !== 'press'
+      ? `a ${kind} keeps the inferred rule`
+      : platform !== 'ios'
+        ? 'this platform keeps the inferred rule'
+        : facts.keyboardVisible !== false
+          ? 'the keyboard is not proven hidden'
+          : facts.viewportOutside !== false
+            ? 'its centre is not inside its clip'
+            : undefined;
+  return why ? `; no live hit read was asked: ${why}` : '';
+};
+
 // Capture-local geometry of the inferred cutter; labels, identifiers and values stay withheld.
 const cutterText = (facts: Readonly<CentreCoverageDiagnostic> | null): string => {
   const cut = facts?.cutter;
@@ -2873,6 +2893,8 @@ async function walkBlockScoped(
           let occluded: 'up' | 'down' | undefined;
           // Set once a clearance scroll left an inferred overlay: the press goes out live-hit-strict.
           let liveHit: Readonly<CentreCoverageDiagnostic> | undefined;
+          // The centre verdict that asked for the clearance scroll.
+          let clearanceCoverage: Readonly<CentreCoverageDiagnostic> | null = null;
           let clearance: number | undefined;
           let within: NativeNode['rect'];
           let scrollNeedsReadback = false;
@@ -3031,6 +3053,18 @@ async function walkBlockScoped(
                       (preScroll.screen.semanticUnassociatedReact ?? 0)
                   )
                     throw new EvidenceExpired(false);
+                  const clearing = scrollOrigin === 'centre-covered' ? clearanceCoverage : null;
+                  // A refused clearance drag moved nothing; an inferred iOS overlay still goes to the live hit read.
+                  if (
+                    !result.ok &&
+                    result.mutation === 'none' &&
+                    item.kind === 'press' &&
+                    deps.platform === 'ios' &&
+                    inferredOverlay(clearing)
+                  ) {
+                    scrollNeedsReadback = false;
+                    continue;
+                  }
                   if (
                     (resolution.origin === 'named-offscreen' || (!result.ok && !result.proven)) &&
                     screenSignature(before.screen) === signature
@@ -3038,13 +3072,29 @@ async function walkBlockScoped(
                     outcome = failed(
                       item,
                       attempt,
-                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}`,
+                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}${cutterText(clearing)}${unaskedLiveHit(item.kind, deps.platform, clearing)}`,
                       before.screen,
                       await shoot(item),
                       undefined,
                       false,
                       'TARGET_NOT_FOUND',
                     );
+                    if (clearing)
+                      diagnostic(
+                        item,
+                        before,
+                        'decision',
+                        'CENTRE_COVERED',
+                        undefined,
+                        undefined,
+                        undefined,
+                        {
+                          predicate: clearing,
+                          scrollOrigin,
+                          requestedDirection: scrollDirection,
+                          targetCentreChanged: null,
+                        },
+                      );
                     break;
                   }
                   scrollNeedsReadback = false;
@@ -3183,7 +3233,7 @@ async function walkBlockScoped(
                   outcome = failed(
                     item,
                     attempt,
-                    `"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${cutterText(centreDiagnostic)}`,
+                    `"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${cutterText(centreDiagnostic)}${unaskedLiveHit(item.kind, deps.platform, centreDiagnostic)}`,
                     before.screen,
                     await shoot(item),
                     ref,
@@ -3208,6 +3258,7 @@ async function walkBlockScoped(
                   break;
                 }
                 refusedIdentity = element;
+                clearanceCoverage = centreDiagnostic;
                 occluded = clearanceScroll(element, before.screen);
                 scrollOrigin = 'centre-covered';
                 clearance = keyboardClearance(element, before.screen);
@@ -3286,7 +3337,7 @@ async function walkBlockScoped(
                 outcome = failed(
                   item,
                   attempt,
-                  `"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${cutterText(liveHit)}; the live hit read refused the press (${liveHitRefusal(act.error)}); no tap was performed`,
+                  `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${cutterText(liveHit)}; the live hit read refused the press (${liveHitRefusal(act.error)}); no tap was performed`,
                   before.screen,
                   await shoot(item),
                   ref,

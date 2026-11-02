@@ -2484,7 +2484,7 @@ test('Android: occluded twice stays off screen after one scroll, never an uncert
 // A list pulled up under a transparent header: its clip starts at y 20, its rows start at the
 // header inset (116). A childless, full-width leaf beside the list's ancestor, listed after it and
 // starting at that inset, is inferred as a sticky overlay though nothing is drawn over the row.
-function pulledUpList(keyboard: boolean | 'unknown' = false, type = 'Other'): Screen {
+function pulledUpList(keyboard: boolean | 'unknown' = false, type = 'Other', clipTop = 20): Screen {
   const full = { x: 0, y: 0, width: 402, height: 874 };
   const screen = covered(
     join(
@@ -2498,14 +2498,14 @@ function pulledUpList(keyboard: boolean | 'unknown' = false, type = 'Other'): Sc
           index: 4,
           parentIndex: 3,
           type: 'ScrollView',
-          rect: { x: 0, y: 20, width: 402, height: 762 },
+          rect: { x: 0, y: clipTop, width: 402, height: 782 - clipTop },
         },
         {
           ref: '@content',
           index: 5,
           parentIndex: 4,
           type: 'Other',
-          rect: { x: 0, y: 20, width: 402, height: 762 },
+          rect: { x: 0, y: clipTop, width: 402, height: 782 - clipTop },
         },
         {
           ref: '@target',
@@ -2677,5 +2677,108 @@ for (const [name, platform, screen, step] of [
       renderReason(outcome.failure?.seen ?? '', (text) => text),
       /stayed off screen after one scroll: .*; inferred band cutter @cover \(\w+\) at 0,116,402,758 moved the band bottom from 782 to 116;/,
     );
+  });
+}
+
+// The device fixture: the list's clip starts at 110 and the later leaf at 116, so the band is 6 pt and
+// the clearance drag is refused before anything moves.
+const SIX_POINT_CUTTER = {
+  ...LIVE_HIT_CUTTER,
+  before: { top: 110, bottom: 782 },
+  after: { top: 110, bottom: 116 },
+};
+const BAND_TOO_SMALL: ActResult = {
+  ok: false,
+  proven: false,
+  mutation: 'none',
+  error: 'SCROLL_BAND_TOO_SMALL: SCROLL_BAND_TOO_SMALL: the 6px band cannot host a 48px drag',
+};
+
+function sixPointBand(
+  result: ActResult | undefined,
+  platform: 'ios' | 'android' = 'ios',
+  screen = () => pulledUpList(false, 'Other', 110),
+) {
+  const f = liveHitFake(result, platform, screen);
+  f.deps.scroll = async (direction) => {
+    f.calls.push(`scroll ${direction}`);
+    return BAND_TOO_SMALL;
+  };
+  return f;
+}
+
+test('a 6 pt band refuses the clearance drag, then the live hit read decides the press', async () => {
+  const f = sixPointBand(undefined);
+  const outcome = await walkBlock(block('1. Tap "row-1"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(
+    f.calls.filter((call) => call !== 'capture'),
+    ['scroll down', 'press @target'],
+  );
+  assert.deepEqual(f.options, [{ requireLiveHit: true }]);
+});
+
+test('a 6 pt band with an unproven live hit read refuses with the cutter and the verdict', async () => {
+  const f = sixPointBand(liveHitRefused('not-hittable'));
+  const outcome = await walkBlock(block('1. Tap "row-1"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.deepEqual(f.options, [{ requireLiveHit: true }]);
+  const seen = renderReason(outcome.failure?.seen ?? '', (text) => text);
+  assert.match(seen, /^SCROLL_BAND_TOO_SMALL: .*"row-1" stayed off screen after one scroll/);
+  assert.ok(
+    seen.includes(
+      'moved the band bottom from 782 to 116; the live hit read refused the press (not-hittable); no tap was performed',
+    ),
+    seen,
+  );
+  const terminal = f.events.filter((event) => event.code === 'CENTRE_COVERED');
+  assert.equal(terminal.length, 1);
+  const logged = JSON.parse(JSON.stringify(terminal[0])) as WalkerTimingDiagnostic;
+  assert.deepEqual(logged.clearanceDiagnostic?.predicate?.cutter, SIX_POINT_CUTTER);
+  assert.ok(!JSON.stringify({ outcome, events: f.events }).includes('PRIVATE-'));
+});
+
+for (const [name, platform, screen, step, why] of [
+  [
+    'keyboard state unknown',
+    'ios',
+    () => pulledUpList('unknown', 'Other', 110),
+    '1. Tap "row-1"\n',
+    'the keyboard is not proven hidden',
+  ],
+  [
+    'fill',
+    'ios',
+    () => pulledUpList(false, 'TextField', 110),
+    '1. Fill "row-1" with "x"\n',
+    'a fill keeps the inferred rule',
+  ],
+  [
+    'Android',
+    'android',
+    () => pulledUpList(false, 'Other', 110),
+    '1. Tap "row-1"\n',
+    'this platform keeps the inferred rule',
+  ],
+] as const) {
+  test(`a 6 pt band still refuses before dispatch (${name}), naming the cutter and why no live read ran`, async () => {
+    const f = sixPointBand(undefined, platform, screen);
+    const outcome = await walkBlock(block(step), f.deps);
+    assert.equal(outcome.block.outcome, 'fail');
+    assert.deepEqual(
+      f.calls.filter((call) => call !== 'capture'),
+      ['scroll down'],
+    );
+    assert.deepEqual(f.options, []);
+    const seen = renderReason(outcome.failure?.seen ?? '', (text) => text);
+    assert.ok(
+      seen.includes(
+        `stayed off screen after one scroll; inferred band cutter @cover (${LIVE_HIT_CUTTER.kind}) at 0,116,402,758 moved the band bottom from 782 to 116; no live hit read was asked: ${why}`,
+      ),
+      seen,
+    );
+    const terminal = f.events.filter((event) => event.code === 'CENTRE_COVERED');
+    assert.equal(terminal.length, 1);
+    assert.deepEqual(terminal[0].clearanceDiagnostic?.predicate?.cutter, SIX_POINT_CUTTER);
   });
 }
