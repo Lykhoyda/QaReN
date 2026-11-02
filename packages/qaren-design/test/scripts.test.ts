@@ -23,6 +23,11 @@ describe('check-contrast', () => {
     expect(failures(measure(tokens))).toEqual([]);
     expect(failures(measure(lowered))).toContain('muted on bg (light): 1.68:1 is below 4.5:1');
   });
+
+  test('does not round a ratio up to its floor', () => {
+    const row = { fg: 'a', bg: 'b', where: '', floor: 4.5, ratios: { dark: 4.496, light: 5 } };
+    expect(failures([row])).toEqual(['a on b (dark): 4.50:1 is below 4.5:1']);
+  });
 });
 
 describe('sync-design', () => {

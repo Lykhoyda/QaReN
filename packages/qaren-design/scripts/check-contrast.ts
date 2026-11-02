@@ -97,10 +97,10 @@ export function measure(tokens: Tokens): Row[] {
   }));
 }
 
-/** Rows below their floor, as readable lines. Compares the rounded value the table shows. */
+/** Rows below their floor, as readable lines. The raw ratio is compared: WCAG does not round up to a floor. */
 export function failures(rows: Row[]): string[] {
   return rows.flatMap((r) =>
-    THEMES.filter((t) => r.floor !== null && Number(r.ratios[t].toFixed(2)) < r.floor).map(
+    THEMES.filter((t) => r.floor !== null && r.ratios[t] < r.floor).map(
       (t) => `${r.fg} on ${r.bg} (${t}): ${r.ratios[t].toFixed(2)}:1 is below ${r.floor}:1`,
     ),
   );
@@ -110,7 +110,7 @@ export function renderTable(rows: Row[]): string {
   const cell = (r: Row, t: Theme) => {
     const v = `${r.ratios[t].toFixed(2)}:1`;
     if (r.floor === null) return `${v} (n/a)`;
-    return `${v} (${Number(r.ratios[t].toFixed(2)) >= r.floor ? 'pass' : 'fail'})`;
+    return `${v} (${r.ratios[t] >= r.floor ? 'pass' : 'fail'})`;
   };
   return [
     '| Pair | Where it appears | Floor | Dark | Light (docs) |',
