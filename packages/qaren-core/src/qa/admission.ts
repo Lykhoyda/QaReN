@@ -647,7 +647,6 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
         try {
           attaching = true;
           lastStarted = 'attach';
-          devObservation = undefined;
           activeDeadline = Math.min(deadline, patientRefuseAt);
           const waitTargets = steps.waitTargets;
           if (waitTargets) {
@@ -671,6 +670,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
             registeredTimeout,
             () => steps.attach(activeDeadline),
           );
+          devObservation = undefined;
           if (performance.now() >= activeDeadline) throw registeredTimeout;
           devTargetSeen = false;
           waitingForTargets = false;
@@ -705,6 +705,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
         } catch (error) {
           if (isAbort(error)) throw error;
           if (error === registeredTimeout) throw error;
+          devObservation = undefined;
           if (error instanceof DevTargetUnavailableError) {
             devTargetSeen = true;
             devObservation = error.counts;
