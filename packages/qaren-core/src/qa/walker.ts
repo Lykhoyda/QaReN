@@ -1906,6 +1906,7 @@ async function walkBlockScoped(
     loginReplayed = true;
     sequence.window = undefined;
     sequence.plannedPress = undefined;
+    pressVetoed = undefined;
     let taken = 0;
     const counted: WalkerDeps = {
       ...deps,

@@ -347,6 +347,38 @@ test('a login replay clears protection and its own press never sets it', async (
   assert.ok(!f.vetoes.includes('previous-plan-press'));
 });
 
+test('login replay clears the previous dismissal veto from a retried target or check failure', async () => {
+  for (const next of ['2. Wait for "Dashboard" to appear', '✓ "Dashboard"']) {
+    const wall = () =>
+      screen([
+        element('@signin', 'Sign in', { testID: 'login-screen' }),
+        element('@cancel', 'Cancel'),
+      ]);
+    const f = app(opener(), {
+      '@open': wall,
+      '@signin': () => screen([element('@home', 'Home')]),
+    });
+    f.deps.login = {
+      marker: { id: 'login-screen' },
+      block: { ...parsePlan('1. Tap "Sign in"').blocks![0], slug: 'login' },
+    };
+    const result = await run(`1. Tap "Open"\n${next}`, f);
+    assert.equal(result.verdict, 'FAIL', next);
+    assert.equal(result.failure?.step, 2, next);
+    assert.ok(f.vetoes.includes('previous-plan-press'), next);
+    assert.equal(result.recoveries, 1, next);
+    assert.deepEqual(f.actions, ['press @open', 'press @signin'], next);
+    assert.ok(result.steps.some((row) => row.reason?.includes('recovered: login')), next);
+    assert.doesNotMatch(result.failure?.seen ?? '', /automatic app dismissal was withheld/, next);
+    if (next.startsWith('2.')) {
+      assert.equal(result.failure?.subreason, 'absent');
+      assert.match(result.failure?.suggestion ?? '', /inserting the missing step/);
+    } else {
+      assert.equal(result.failure?.subreason, undefined);
+    }
+  }
+});
+
 test('a capture failure after a planned press keeps its own cause', async () => {
   const f = app(opener(), { '@open': destination });
   const capture = f.deps.captureScreen;
