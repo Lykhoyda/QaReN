@@ -3099,8 +3099,9 @@ resolves its target, judges a check or evaluates a wait, QaReN presses the
 overlay's own Dismiss control by its exact reference, proves the overlay gone in
 a fresh capture and runs the step again. This is a retry for a known cause, not a
 blind retry: each successful dismissal writes a `retry` row with `retryCause: DEV_REDBOX`,
-`devError: { variant, dismissal }` and the step attempt number; a failed dismissal
-records its variant and dismissal number on the terminal `fail` row. Every
+`devError: { variant, dismissal }` and the step attempt number. A failed dismissal
+proven not to have sent a gesture writes the same metadata on a `retry` row when
+another attempt remains; otherwise it records the metadata on the terminal `fail` row. Every
 dismissal attempt counts in `recoveries`. A step gets at most three dismissals,
 including across saved replay falling back to a walk. Dismissal, clearance and
 resumed execution share the step's existing deadline; overlay recovery never
@@ -3114,7 +3115,7 @@ When the overlay cannot be cleared this way the run refuses with
 | Cause | When | `next_action` |
 | --- | --- | --- |
 | `DEV_REDBOX_REPEATED` | The overlay was still in front after three dismissals in one step | `restart_app_from_plan_start` |
-| `DEV_REDBOX_DISMISS_FAILED` | The Dismiss press was not dispatched. A press the runner refused before any gesture is observed again and pressed again within the three; one that may have run a gesture is never repeated. The detail ends with the runner's value-free refusal code (`runner refused: <CODE>`), also logged as `dev-error-dismiss-failed=<CODE>` in `logs/core.log` | `restart_app_from_plan_start` |
+| `DEV_REDBOX_DISMISS_FAILED` | The Dismiss press failed or was not dispatched. A press the runner refused before any gesture is observed again and pressed again within the three; one that may have run a gesture is never repeated. When available, the detail includes the runner's value-free refusal code (`runner refused: <CODE>`). The log records `dev-error-dismiss-failed=<CODE>` in `logs/core.log`, using `unknown` when no code is available | `restart_app_from_plan_start` |
 | `DEV_REDBOX_NO_SAFE_DISMISS` | No single Dismiss control (a syntax error, an ambiguous control, or an overlay inside a login replay, which never recovers) | `restart_app_from_plan_start` |
 | `DEV_REDBOX_CLEARANCE_UNPROVEN` | A fresh capture could not prove the overlay gone | `restart_app_from_plan_start` |
 | `DEV_REDBOX_ACTION_UNCERTAIN` | The overlay was first seen after the step's action was sent, or after another recovery already acted in the same step; nothing is dismissed or replayed | `inspect_app_error_before_rerun` |
