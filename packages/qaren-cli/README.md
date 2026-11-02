@@ -3087,9 +3087,10 @@ nested in its repository they do not make the next run's candidate dirty.
 Selection-proof refusals bypass step recovery; follow the
 [press evidence contract](#occluded-taps-and-focus) before retrying.
 
-React Native's development error overlays, the native RedBox and the LogBox
-inspector, are recognized in the native capture by the fixed identifiers and
-controls React Native gives them (`redbox-dismiss`, `redbox-reload`,
+Development error overlay recognition covers iOS RedBox and LogBox only.
+Android's native RedBox (`rn_redbox_stack` / `rn_redbox_dismiss_button`) is a
+tracked follow-up. The iOS overlays are recognized in the native capture by the
+fixed identifiers and controls React Native gives them (`redbox-dismiss`, `redbox-reload`,
 `redbox-copy`, `redbox-error`, or one window holding `Dismiss`, `Minimize` and a
 `Log N of M` header, or the syntax-error `Failed to compile` header and footer),
 never by error text. An overlay in front is never read as the app: before a step
