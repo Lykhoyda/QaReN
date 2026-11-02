@@ -19,7 +19,7 @@ export const SITE_DESCRIPTION =
   'QaReN is a QA engineer for your coding agent. It tries your React Native change on an iOS simulator and reports PASS or FAIL with the evidence.';
 export const GITHUB_URL = 'https://github.com/Lykhoyda/QaReN';
 
-/** '' on Vercel; '/QaReN' for a GitHub Pages build. */
+// The /QaReN base-path mode is only for GitHub Pages and is removed at the Vercel cutover.
 export const BASE_PATH = process.env.DOCS_BASE_PATH ?? '';
 
 const vercelHost = process.env.VERCEL_PROJECT_PRODUCTION_URL;
