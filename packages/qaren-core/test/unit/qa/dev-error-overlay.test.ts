@@ -586,6 +586,8 @@ test('a LogBox Dismiss whose dispatch throws a moved-target refusal is not retri
 
 test('a RedBox Dismiss refused as moved logs its geometry and is pressed again', async () => {
   const f = app(overlay());
+  const notes: string[] = [];
+  f.deps.note = (line) => notes.push(line);
   const press = f.deps.press;
   let refusedOnce = false;
   f.deps.press = async (ref, context) => {
@@ -610,7 +612,7 @@ test('a RedBox Dismiss refused as moved logs its geometry and is pressed again',
     dismissal: 1,
   });
   assert.deepEqual(
-    f.notes.filter((n) => n.startsWith('dev-error-dismiss-failed=')),
+    notes.filter((n) => n.startsWith('dev-error-dismiss-failed=')),
     [
       `dev-error-dismiss-failed=TARGET_MOVED_BEFORE_DISPATCH moved=${JSON.stringify({ ...movedGeometryOfLogBox, path: 'identifier' })}`,
     ],
