@@ -23,7 +23,10 @@ qaren doctor [--json] [--config .qaren/config.yaml] [--device <simulator-UUID>]
 On macOS, `ios-toolchain-match` compares the selected Swift compiler with public
 simulator interfaces in installed `expo-modules-core` and `expo-modules-jsi`
 XCFrameworks, including hoisted packages and packages resolved through the app's
-Expo installation. Failed or conflicting package resolution remains unknown.
+Expo installation. An XCFramework that CocoaPods extracted into the app's
+`ios/Pods/<Pod>/` is read first, because that copy is the one linked; the
+package is read only when the Pods copy has no interface.
+Failed or conflicting package resolution remains unknown.
 A newer compiler produces a warning, not a compatibility verdict;
 incomplete or ambiguous evidence remains unknown. Doctor skips the
 `expo-modules-core` interface comparison only when installed Pods prove source

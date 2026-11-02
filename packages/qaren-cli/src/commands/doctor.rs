@@ -1994,6 +1994,49 @@ mod tests {
         }
     }
 
+    #[test]
+    fn ios_toolchain_reads_precompiled_interfaces_extracted_into_pods() {
+        for extracted in [true, false] {
+            let s = Scratch::new("pods-interface");
+            let app = s.dir("app");
+            s.file("app/package.json", r#"{"dependencies":{"expo":"56.0.0"}}"#);
+            pods_linkage_fixture(&s, true);
+            // The npm package ships only tarballs, behind more entries than the walk budget.
+            s.file("app/node_modules/expo-modules-core/prebuilds/output/debug/xcframeworks/ExpoModulesCore.tar.gz", "tarball");
+            for i in 0..300 {
+                s.file(
+                    &format!("app/node_modules/expo-modules-core/ios/Source{i}.swift"),
+                    "",
+                );
+            }
+            let mut runner = MockRunner::new();
+            if extracted {
+                let framework = "app/ios/Pods/ExpoModulesCore/ExpoModulesCore.xcframework";
+                s.file(&format!("{framework}/Info.plist"), "synthetic plist");
+                s.file(&format!("{framework}/simulator/ExpoModulesCore.framework/Modules/ExpoModulesCore.swiftmodule/arm64.swiftinterface"), "// swift-compiler-version: Apple Swift version 6.3.1 (swiftlang-test clang-test)\n");
+                plist_probe(&mut runner);
+                runner.expect_run("node -e", CmdOutput::success("null"));
+            }
+            let compiler = crate::ios_toolchain::CompilerIdentity {
+                swift: crate::ios_toolchain::SwiftVersion::parse("6.4"),
+                ..Default::default()
+            };
+            let check = ios_toolchain_match(&mut runner, &app, Some(compiler));
+            assert_eq!(check.status, Status::Warn, "{check:?}");
+            if extracted {
+                assert!(
+                    check.detail.contains("expo-modules-core (6.3.1)"),
+                    "{check:?}"
+                );
+                assert!(check.detail.contains("is newer than"));
+                assert_eq!(check.fix.as_deref(), Some(crate::ios_toolchain::SOURCE_FIX));
+            } else {
+                assert!(check.detail.contains("compatibility unknown"), "{check:?}");
+            }
+            assert_eq!(runner.remaining(), 0);
+        }
+    }
+
     fn pods_linkage_fixture(s: &Scratch, precompiled: bool) {
         s.file(
             "app/ios/Pods/Local Podspecs/ExpoModulesCore.podspec.json",

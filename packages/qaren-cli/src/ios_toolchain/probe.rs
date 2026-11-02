@@ -446,9 +446,26 @@ fn inspect_packages(
             observation.incomplete = true;
             break;
         }
-        let mut expected_slices = BTreeSet::new();
-        let mut seen_slices = BTreeSet::new();
-        let mut framework_found = false;
+        // CocoaPods extracts a precompiled tarball into ios/Pods/<Pod>/; that copy is what links.
+        let pods = app.join("ios/Pods").join(module);
+        let before = observation.interfaces.len();
+        if pods.symlink_metadata().is_ok_and(|m| m.is_dir())
+            && !inspect_root(
+                runner,
+                &pods,
+                package,
+                module,
+                started,
+                &mut visited,
+                &mut headers,
+                &mut observation.interfaces,
+            )
+        {
+            observation.incomplete = true;
+        }
+        if observation.interfaces.len() > before {
+            continue;
+        }
         let resolved = if uses_expo {
             resolved_package_root(runner, app, package)
         } else {
@@ -460,197 +477,16 @@ fn inspect_packages(
             }
             continue;
         };
-        let Ok(file) = File::open(&root) else {
-            observation.incomplete = true;
-            continue;
-        };
-        let mut pending = vec![(file, PathBuf::new(), None::<PathBuf>)];
-        while let Some((dir, relative, slice)) = pending.pop() {
-            if visited >= 256 || headers >= 32 || started.elapsed() >= Duration::from_secs(2) {
-                observation.incomplete = true;
-                break;
-            }
-            let Ok(entries) = std::fs::read_dir(root.join(&relative)) else {
-                observation.incomplete = true;
-                continue;
-            };
-            for entry in entries {
-                visited += 1;
-                if visited > 256 || started.elapsed() >= Duration::from_secs(2) {
-                    observation.incomplete = true;
-                    break;
-                }
-                let Ok(entry) = entry else {
-                    observation.incomplete = true;
-                    continue;
-                };
-                let name = entry.file_name();
-                let path = relative.join(&name);
-                let Ok(kind) = entry.file_type() else {
-                    observation.incomplete = true;
-                    continue;
-                };
-                if kind.is_symlink() {
-                    observation.incomplete = true;
-                    continue;
-                }
-                if kind.is_dir() {
-                    if path.components().count() > 12 {
-                        observation.incomplete = true;
-                        continue;
-                    }
-                    let Some(child) = open_child(&dir, &name, true) else {
-                        observation.incomplete = true;
-                        continue;
-                    };
-                    if path.extension().is_some_and(|ext| ext == "xcframework") {
-                        framework_found = true;
-                        let Some(plist) =
-                            read_bytes(&root, &path.join("Info.plist"), 64 * 1024, false)
-                        else {
-                            observation.incomplete = true;
-                            continue;
-                        };
-                        let remaining = Duration::from_secs(2)
-                            .saturating_sub(started.elapsed())
-                            .as_secs();
-                        if remaining == 0 {
-                            observation.incomplete = true;
-                            continue;
-                        }
-                        let decoded = runner.run_private(
-                            &CmdSpec::new(
-                                "expo-xcframework-plist",
-                                "/usr/bin/plutil",
-                                &["-convert", "json", "-o", "-", "--", "-"],
-                                remaining,
-                            ),
-                            &plist,
-                        );
-                        if decoded.stdout().len() > 64 * 1024 {
-                            observation.incomplete = true;
-                            continue;
-                        }
-                        let value = decoded
-                            .clean()
-                            .then(|| serde_json::from_str::<Value>(decoded.stdout()).ok())
-                            .flatten();
-                        let Some(libraries) = value
-                            .as_ref()
-                            .and_then(|p| p.get("AvailableLibraries"))
-                            .and_then(Value::as_array)
-                        else {
-                            observation.incomplete = true;
-                            continue;
-                        };
-                        if libraries.len() > 32 {
-                            observation.incomplete = true;
-                            continue;
-                        }
-                        for library in libraries {
-                            if library.get("SupportedPlatform").and_then(Value::as_str)
-                                == Some("ios")
-                                && library
-                                    .get("SupportedPlatformVariant")
-                                    .and_then(Value::as_str)
-                                    == Some("simulator")
-                            {
-                                let Some(id) = library
-                                    .get("LibraryIdentifier")
-                                    .and_then(Value::as_str)
-                                    .filter(|s| {
-                                        !s.is_empty()
-                                            && s.bytes().all(|b| {
-                                                b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
-                                            })
-                                    })
-                                else {
-                                    observation.incomplete = true;
-                                    continue;
-                                };
-                                if !expected_slices.insert(path.join(id)) {
-                                    observation.incomplete = true;
-                                    continue;
-                                }
-                                if let Some(slice_dir) =
-                                    open_child(&child, std::ffi::OsStr::new(id), true)
-                                {
-                                    let slice_path = path.join(id);
-                                    pending.push((slice_dir, slice_path.clone(), Some(slice_path)));
-                                } else {
-                                    observation.incomplete = true;
-                                }
-                            }
-                        }
-                    } else {
-                        pending.push((child, path, slice.clone()));
-                    }
-                } else if kind.is_file()
-                    && slice.is_some()
-                    && path.extension().is_some_and(|e| e == "swiftinterface")
-                {
-                    let name = name.to_string_lossy();
-                    if name.ends_with(".private.swiftinterface")
-                        || name.ends_with(".package.swiftinterface")
-                    {
-                        continue;
-                    }
-                    if relative.file_name().is_none_or(|name| {
-                        name != std::ffi::OsStr::new(&format!("{module}.swiftmodule"))
-                    }) || relative
-                        .parent()
-                        .and_then(Path::file_name)
-                        .is_none_or(|name| name != "Modules")
-                        || relative
-                            .parent()
-                            .and_then(Path::parent)
-                            .and_then(Path::file_name)
-                            .is_none_or(|name| {
-                                name != std::ffi::OsStr::new(&format!("{module}.framework"))
-                            })
-                    {
-                        continue;
-                    }
-                    headers += 1;
-                    let version = read_bounded(&root, &path, 16 * 1024, true).and_then(|text| {
-                        let mut headers = text
-                            .lines()
-                            .filter_map(|line| line.strip_prefix("// swift-compiler-version: "));
-                        let header = headers.next()?;
-                        if headers.next().is_some() {
-                            return None;
-                        }
-                        SwiftVersion::from_compiler(header)
-                    });
-                    match version {
-                        Some(swift) => {
-                            seen_slices.insert(slice.clone().expect("simulator slice"));
-                            observation.interfaces.push(Interface { package, swift });
-                        }
-                        None => observation.incomplete = true,
-                    }
-                    if headers >= 32 {
-                        observation.incomplete = true;
-                        break;
-                    }
-                }
-            }
-            pending.sort_by_key(|(_, relative, slice)| {
-                if slice.is_some() {
-                    3
-                } else if relative
-                    .components()
-                    .any(|c| matches!(c.as_os_str().to_str(), Some("ios" | "apple" | "Products")))
-                {
-                    2
-                } else {
-                    0
-                }
-            });
-        }
-        if (framework_found && expected_slices.is_empty())
-            || !expected_slices.is_subset(&seen_slices)
-        {
+        if !inspect_root(
+            runner,
+            &root,
+            package,
+            module,
+            started,
+            &mut visited,
+            &mut headers,
+            &mut observation.interfaces,
+        ) {
             observation.incomplete = true;
         }
     }
@@ -658,6 +494,213 @@ fn inspect_packages(
         observation.incomplete = true;
     }
     observation
+}
+
+/// Reads the simulator-slice interfaces of every XCFramework under `root`; false when the read was incomplete.
+#[allow(clippy::too_many_arguments)]
+fn inspect_root(
+    runner: &mut dyn Runner,
+    root: &Path,
+    package: &'static str,
+    module: &str,
+    started: Instant,
+    visited: &mut usize,
+    headers: &mut usize,
+    interfaces: &mut Vec<Interface>,
+) -> bool {
+    let mut complete = true;
+    let mut expected_slices = BTreeSet::new();
+    let mut seen_slices = BTreeSet::new();
+    let mut framework_found = false;
+    let Ok(file) = File::open(root) else {
+        return false;
+    };
+    let mut pending = vec![(file, PathBuf::new(), None::<PathBuf>)];
+    while let Some((dir, relative, slice)) = pending.pop() {
+        if *visited >= 256 || *headers >= 32 || started.elapsed() >= Duration::from_secs(2) {
+            complete = false;
+            break;
+        }
+        let Ok(entries) = std::fs::read_dir(root.join(&relative)) else {
+            complete = false;
+            continue;
+        };
+        for entry in entries {
+            *visited += 1;
+            if *visited > 256 || started.elapsed() >= Duration::from_secs(2) {
+                complete = false;
+                break;
+            }
+            let Ok(entry) = entry else {
+                complete = false;
+                continue;
+            };
+            let name = entry.file_name();
+            let path = relative.join(&name);
+            let Ok(kind) = entry.file_type() else {
+                complete = false;
+                continue;
+            };
+            if kind.is_symlink() {
+                complete = false;
+                continue;
+            }
+            if kind.is_dir() {
+                if path.components().count() > 12 {
+                    complete = false;
+                    continue;
+                }
+                let Some(child) = open_child(&dir, &name, true) else {
+                    complete = false;
+                    continue;
+                };
+                if path.extension().is_some_and(|ext| ext == "xcframework") {
+                    framework_found = true;
+                    let Some(plist) = read_bytes(root, &path.join("Info.plist"), 64 * 1024, false)
+                    else {
+                        complete = false;
+                        continue;
+                    };
+                    let remaining = Duration::from_secs(2)
+                        .saturating_sub(started.elapsed())
+                        .as_secs();
+                    if remaining == 0 {
+                        complete = false;
+                        continue;
+                    }
+                    let decoded = runner.run_private(
+                        &CmdSpec::new(
+                            "expo-xcframework-plist",
+                            "/usr/bin/plutil",
+                            &["-convert", "json", "-o", "-", "--", "-"],
+                            remaining,
+                        ),
+                        &plist,
+                    );
+                    if decoded.stdout().len() > 64 * 1024 {
+                        complete = false;
+                        continue;
+                    }
+                    let value = decoded
+                        .clean()
+                        .then(|| serde_json::from_str::<Value>(decoded.stdout()).ok())
+                        .flatten();
+                    let Some(libraries) = value
+                        .as_ref()
+                        .and_then(|p| p.get("AvailableLibraries"))
+                        .and_then(Value::as_array)
+                    else {
+                        complete = false;
+                        continue;
+                    };
+                    if libraries.len() > 32 {
+                        complete = false;
+                        continue;
+                    }
+                    for library in libraries {
+                        if library.get("SupportedPlatform").and_then(Value::as_str) == Some("ios")
+                            && library
+                                .get("SupportedPlatformVariant")
+                                .and_then(Value::as_str)
+                                == Some("simulator")
+                        {
+                            let Some(id) = library
+                                .get("LibraryIdentifier")
+                                .and_then(Value::as_str)
+                                .filter(|s| {
+                                    !s.is_empty()
+                                        && s.bytes().all(|b| {
+                                            b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+                                        })
+                                })
+                            else {
+                                complete = false;
+                                continue;
+                            };
+                            if !expected_slices.insert(path.join(id)) {
+                                complete = false;
+                                continue;
+                            }
+                            if let Some(slice_dir) =
+                                open_child(&child, std::ffi::OsStr::new(id), true)
+                            {
+                                let slice_path = path.join(id);
+                                pending.push((slice_dir, slice_path.clone(), Some(slice_path)));
+                            } else {
+                                complete = false;
+                            }
+                        }
+                    }
+                } else {
+                    pending.push((child, path, slice.clone()));
+                }
+            } else if kind.is_file()
+                && slice.is_some()
+                && path.extension().is_some_and(|e| e == "swiftinterface")
+            {
+                let name = name.to_string_lossy();
+                if name.ends_with(".private.swiftinterface")
+                    || name.ends_with(".package.swiftinterface")
+                {
+                    continue;
+                }
+                if relative.file_name().is_none_or(|name| {
+                    name != std::ffi::OsStr::new(&format!("{module}.swiftmodule"))
+                }) || relative
+                    .parent()
+                    .and_then(Path::file_name)
+                    .is_none_or(|name| name != "Modules")
+                    || relative
+                        .parent()
+                        .and_then(Path::parent)
+                        .and_then(Path::file_name)
+                        .is_none_or(|name| {
+                            name != std::ffi::OsStr::new(&format!("{module}.framework"))
+                        })
+                {
+                    continue;
+                }
+                *headers += 1;
+                let version = read_bounded(root, &path, 16 * 1024, true).and_then(|text| {
+                    let mut headers = text
+                        .lines()
+                        .filter_map(|line| line.strip_prefix("// swift-compiler-version: "));
+                    let header = headers.next()?;
+                    if headers.next().is_some() {
+                        return None;
+                    }
+                    SwiftVersion::from_compiler(header)
+                });
+                match version {
+                    Some(swift) => {
+                        seen_slices.insert(slice.clone().expect("simulator slice"));
+                        interfaces.push(Interface { package, swift });
+                    }
+                    None => complete = false,
+                }
+                if *headers >= 32 {
+                    complete = false;
+                    break;
+                }
+            }
+        }
+        pending.sort_by_key(|(_, relative, slice)| {
+            if slice.is_some() {
+                3
+            } else if relative
+                .components()
+                .any(|c| matches!(c.as_os_str().to_str(), Some("ios" | "apple" | "Products")))
+            {
+                2
+            } else {
+                0
+            }
+        });
+    }
+    if (framework_found && expected_slices.is_empty()) || !expected_slices.is_subset(&seen_slices) {
+        complete = false;
+    }
+    complete
 }
 
 #[cfg(test)]
