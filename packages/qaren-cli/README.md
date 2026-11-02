@@ -3171,10 +3171,11 @@ screen does not protect the modal's controls.
 A screen the plan's own press opened is never dismissed. Every planned press
 accepted as passed, including when readback establishes success despite a handler
 error or a delayed system dialog proves the press took effect, records the surface
-it opened. When complete React host evidence identifies a newly opened modal
-container by its modal type and test ID or native ID, protection tracks that
-container. Novelty requires complete captures immediately before dispatch and
-after the press; a missing or incomplete baseline keeps protection unknown. Otherwise its identity is unknown and protection stays on until a later
+it opened. When complete React host evidence shows exactly one modal container
+after the press, identified by its modal type and test ID or native ID and absent
+before dispatch, protection tracks that container. Novelty requires complete
+captures and complete React host evidence before and after the press. Otherwise
+its identity is unknown and protection stays on until a later
 accepted planned press replaces it or login replay clears it. A press accepted
 behind a system dialog also keeps this conservative protection. These identities
 stay in memory and are never written to the ledger or logs.
@@ -3199,8 +3200,7 @@ was not found; automatic app dismissal was withheld`, and the walk's
 inapplicable. A failed check after such a veto carries the same `failure.seen`
 note without a subreason. A sheet that appears while the planned surface is still on
 screen, including one that opens together with it, is therefore not dismissed
-either; insert the plan's own step for it. Once that surface is gone, unsolicited
-sheets are declined as usual.
+either; insert the plan's own step for it.
 
 With `TYPESAFE_API_KEY`, Jev may veto a selected control when the screen may be
 related to the step or its purpose is uncertain. It never chooses a control,
