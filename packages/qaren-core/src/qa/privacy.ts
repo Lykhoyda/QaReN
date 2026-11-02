@@ -998,7 +998,14 @@ export class ObservedPrivacy {
     return !this.sensitivePixels;
   }
 
-  // The published video starts here, still showing the latest screen; screenshots keep the run-wide flag.
+  screenshotLatch(policy?: 'strict' | 'non-strict' | 'undeclared'): MediaLatch | undefined {
+    return policy === 'non-strict'
+      ? (this.secretWindowLatch ??
+          (this.strictInputValues.size ? { reason: 'runtime-input' } : undefined))
+      : this.firstLatch;
+  }
+
+  // Published media starts here, still showing the latest screen; strict screenshots keep the run-wide flag.
   startWindow(): void {
     this.sensitiveInWindow = this.sensitiveLatest;
     this.windowLatch = this.latestLatch;

@@ -22,7 +22,7 @@ function native(type: string, value?: string) {
   return observed;
 }
 
-test('non-strict allows ordinary values while preserving the strict verdict and screenshots', async () => {
+test('non-strict allows ordinary values while preserving the strict video verdict', async () => {
   for (const type of ['Other', 'TextField']) {
     for (const policy of ['undeclared', 'strict', 'non-strict'] as const) {
       const f = walker(
@@ -35,9 +35,15 @@ test('non-strict allows ordinary values while preserving the strict verdict and 
       assert.equal(result.videoPolicy, policy);
       assert.equal(result.videoPublication, 'withheld-privacy');
       assert.equal(result.nonStrictPublication, 'eligible');
-      assert.ok(result.steps.every((step) => !step.screenshot));
+      assert.ok(
+        result.steps.every((step) => Boolean(step.screenshot) === (policy === 'non-strict')),
+      );
       assert.equal(result.mediaWithheld?.video !== undefined, policy !== 'non-strict');
-      assert.ok(result.steps.every((step) => step.screenshotWithheld));
+      assert.ok(
+        result.steps.every(
+          (step) => Boolean(step.screenshotWithheld) === (policy !== 'non-strict'),
+        ),
+      );
       assert.ok(!JSON.stringify(result).includes(canary));
     }
   }
@@ -107,7 +113,11 @@ test('an empty secure field still vetoes non-strict video after a harmless first
   f.deps.videoPolicy = 'non-strict';
   const result = await runPlan(parsePlan('✓ "Ready"\n✓ "Ready"\n✓ "Ready"').blocks!, f.deps);
   assert.equal(result.nonStrictPublication, 'withheld-secret');
-  assert.equal(result.mediaWithheld?.screenshots?.reason, 'generic-value');
+  assert.deepEqual(result.mediaWithheld?.screenshots, {
+    reason: 'secure-field',
+    line: 2,
+    count: 2,
+  });
   assert.deepEqual(result.mediaWithheld?.video, { reason: 'secure-field', line: 2 });
 });
 
@@ -363,7 +373,8 @@ test('a PUBLIC literal fill into a readable native label-private field can publi
   assert.equal(result.verdict, 'PASS');
   assert.equal(result.videoPublication, 'withheld-fill');
   assert.equal(result.nonStrictPublication, 'eligible');
-  assert.equal(result.steps[0].screenshotWithheld, 'input-value');
+  assert.equal(result.steps[0].screenshotWithheld, undefined);
+  assert.ok(result.steps[0].screenshot);
 });
 
 for (const policy of [undefined, 'strict', 'non-strict'] as const) {
