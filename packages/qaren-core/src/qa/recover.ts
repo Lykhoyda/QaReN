@@ -211,35 +211,42 @@ const completeCapture = (screen: Screen): boolean =>
   (screen.captureCoverage?.native ?? screen.coverage?.native) === 'complete' &&
   screen.coverage?.react === 'complete';
 
-// Memory-only identities of on-screen elements: test ID, else kind and label.
-const surfaceKeys = (screen: Screen): Set<string> =>
-  new Set(
-    screen.elements.flatMap((e) =>
-      e.offscreen
-        ? []
-        : e.testID !== undefined
-          ? [`id:${e.testID}`]
-          : e.label !== undefined
-            ? [`${e.kind}:${e.label}`]
-            : [],
-    ),
-  );
-
-// The surface a planned press opened: what it brought on screen, else all it shows. Empty while a
-// system surface hides it; the caller then adopts the next app screen recovery sees.
-export function plannedSurface(after: Screen, before?: Screen): ReadonlySet<string> {
-  if (after.front !== 'app') return new Set();
-  const shown = surfaceKeys(after);
-  const kept = before ? surfaceKeys(before) : new Set<string>();
-  const added = new Set([...shown].filter((key) => !kept.has(key)));
-  return added.size ? added : shown;
+export interface PlannedSurface {
+  container?: string;
 }
 
-// Only a complete capture can show the planned surface gone; anything less keeps it protected.
-export function surfaceGone(screen: Screen, surface: ReadonlySet<string>): boolean {
-  if (!completeCapture(screen)) return false;
-  const present = surfaceKeys(screen);
-  return ![...surface].some((key) => present.has(key));
+function modalContainers(screen: Screen): Array<string | undefined> | undefined {
+  const evidence = screen.reactHostEvidence;
+  const typography = evidence?.typography;
+  if (!evidence?.complete || !typography?.complete) return undefined;
+  return typography.nodes.flatMap((node, index) => {
+    if (!MODAL_HOST_TYPES.has(node.hostType ?? '')) return [];
+    const host = evidence.hosts[index];
+    const id = host?.testID || host?.nativeID;
+    return [id ? JSON.stringify([node.hostType, id]) : undefined];
+  });
+}
+
+export function plannedSurface(after: Screen, before?: Screen): PlannedSurface | undefined {
+  const containers = after.front === 'app' ? modalContainers(after) : undefined;
+  const previous = before ? modalContainers(before) : undefined;
+  if (containers?.length === 1 && containers[0] && !previous?.includes(containers[0]))
+    return { container: containers[0] };
+  if (
+    after.front === 'app' &&
+    completeCapture(after) &&
+    containers?.length === 0 &&
+    previous?.length === 1 &&
+    previous[0]
+  )
+    return undefined;
+  return {};
+}
+
+export function surfaceGone(screen: Screen, surface: PlannedSurface): boolean {
+  if (screen.front !== 'app' || !completeCapture(screen) || !surface.container) return false;
+  const containers = modalContainers(screen);
+  return containers !== undefined && !containers.includes(surface.container);
 }
 
 function hasPlannedReactAncestor(

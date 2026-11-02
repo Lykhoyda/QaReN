@@ -94,6 +94,7 @@ import {
 import {
   type InterruptionDiagnostic,
   type LoginMarker,
+  type PlannedSurface,
   type RecoveryTarget,
   dismissCandidate,
   plannedSurface,
@@ -411,8 +412,7 @@ export interface WalkSequence {
   window?: { fromMs: number; typed: number };
   // System prompts recovery declined in this run; a repeat ask is the plan author's to answer.
   declinedPrompts?: Set<string>;
-  // Memory-only keys of the surface the last accepted planned press opened; recovery never declines it.
-  plannedPress?: ReadonlySet<string>;
+  plannedPress?: PlannedSurface;
 }
 
 function recordMediaLatch(
@@ -2015,8 +2015,7 @@ async function walkBlockScoped(
         );
     }
     const surface = sequence.plannedPress;
-    if (surface?.size === 0) sequence.plannedPress = plannedSurface(fresh.screen);
-    else if (surface && surfaceGone(fresh.screen, surface)) sequence.plannedPress = undefined;
+    if (surface && surfaceGone(fresh.screen, surface)) sequence.plannedPress = undefined;
     const planTargets = [
       {
         ...(recoveryTarget(item) ?? { phrase: '' }),

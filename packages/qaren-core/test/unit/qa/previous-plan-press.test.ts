@@ -12,6 +12,34 @@ const ready = () => screen([element('@ready', 'Ready')]);
 const destination = () => screen([element('@title', 'Details', { kind: 'text' }), close()]);
 const close = (label = 'Close') => element('@close', label);
 
+function withModal(snapshot: Screen, id?: string): Screen {
+  const present = id !== undefined;
+  return {
+    ...snapshot,
+    reactHostEvidence: {
+      complete: true,
+      hosts: present ? [{ testID: id, role: null, roleSource: 'none', capabilities: {} }] : [],
+      typography: {
+        version: 1,
+        complete: true,
+        durationMs: 0,
+        coordinateSpace: 'window-points',
+        nodes: present
+          ? [
+              {
+                hostIndex: 0,
+                parentHostIndex: null,
+                rootIndex: 0,
+                hostType: 'RCTModalHostView',
+                text: { kind: 'none' },
+              },
+            ]
+          : [],
+      },
+    },
+  };
+}
+
 // `pressed` maps a pressed ref to the screen it leads to; unknown refs keep the screen.
 function app(initial: Screen, pressed: Record<string, () => Screen>) {
   let current = initial;
@@ -294,40 +322,52 @@ test('ANT-848: Back hiding only the keyboard never permits Close or Skip on plan
   }
 });
 
-// The consent the plan opens, closed by Go back onto Home; a sheet then covers the next target.
-function consentThenSheet(consentDecline: string) {
-  const consent = () =>
-    screen([element('@heading', 'Consent', { kind: 'text' }), close(consentDecline)]);
-  const home = () => screen([element('@home', 'Home', { kind: 'text' })]);
-  const sheet = () => screen([element('@home', 'Home', { kind: 'text' }), close('Close')]);
-  const f = app(opener(), { '@open': consent, '@close': ready });
-  f.deps.back = async () => {
-    f.actions.push('back');
-    f.show(home());
-    return { ok: true, proven: true, executed: true };
-  };
+test('an unsolicited sheet after a planned Accept closes identified consent is dismissed once', async () => {
+  const consent = () => withModal(screen([element('@accept', 'Accept'), close('Skip')]), 'consent');
+  const home = () => withModal(screen([element('@home', 'Home', { kind: 'text' })]));
+  const sheet = () => withModal(screen([close()]), 'offer');
+  const f = app(opener(), { '@open': consent, '@accept': home, '@close': ready });
   f.deps.row = (row) => {
     if (row.line === 2 && row.outcome === 'pass') f.show(sheet());
   };
-  return f;
-}
-
-test('an unsolicited sheet after the planned consent closed is dismissed once', async () => {
-  const f = consentThenSheet('Skip');
-  const result = await run('1. Tap "Open"\n2. Go back\n3. Wait for "Ready" to appear', f);
+  const result = await run('1. Tap "Open"\n2. Tap "Accept"\n3. Wait for "Ready" to appear', f);
   assert.equal(result.verdict, 'PASS', result.failure?.seen);
-  assert.deepEqual(f.actions, ['press @open', 'back', 'press @close']);
+  assert.deepEqual(f.actions, ['press @open', 'press @accept', 'press @close']);
   assert.equal(result.recoveries, 1);
   assert.ok(!f.vetoes.includes('previous-plan-press'));
 });
 
-test('a later sheet sharing the closed consent decline label stays protected', async () => {
-  // Label-only identities cannot tell the two Close controls apart, so recovery refuses rather than guess.
-  const f = consentThenSheet('Close');
-  const result = await run('1. Tap "Open"\n2. Go back\n3. Wait for "Ready" to appear', f);
-  assert.equal(result.verdict, 'FAIL');
-  assert.deepEqual(f.actions, ['press @open', 'back']);
-  assert.equal(result.failure?.subreason, 'previous-plan-press');
+test('scrolling every original consent element offscreen never permits dismissal', async () => {
+  for (const identified of [true, false]) {
+    for (const direction of ['up', 'down']) {
+      const wrap = (snapshot: Screen) => (identified ? withModal(snapshot, 'consent') : snapshot);
+      const f = app(opener(), {
+        '@open': () => wrap(screen([element('@heading', 'Consent', { kind: 'text' })])),
+        '@close': ready,
+      });
+      f.deps.scroll = async () => {
+        f.actions.push(`scroll ${direction}`);
+        f.show(
+          wrap(
+            screen([
+              element('@heading', 'Consent', { kind: 'text', offscreen: true }),
+              element('@end', 'End of terms', { kind: 'text' }),
+              close('Skip'),
+            ]),
+          ),
+        );
+        return { ok: true, proven: true, executed: true };
+      };
+      const result = await run(
+        `1. Tap "Open"\n2. Scroll ${direction}\n3. Wait for "Ready" to appear`,
+        f,
+      );
+      assert.equal(result.verdict, 'FAIL');
+      assert.equal(result.failure?.subreason, 'previous-plan-press');
+      assert.deepEqual(f.actions, ['press @open', `scroll ${direction}`]);
+      assert.equal(result.recoveries, 0);
+    }
+  }
 });
 
 test('a sheet that the planned press opened with its screen stays protected after a passing wait', async () => {

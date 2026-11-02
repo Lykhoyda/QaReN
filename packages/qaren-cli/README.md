@@ -3171,19 +3171,19 @@ screen does not protect the modal's controls.
 A screen the plan's own press opened is never dismissed. Every planned press
 accepted as passed, including when readback establishes success despite a handler
 error or a delayed system dialog proves the press took effect, records the surface
-it opened: the on-screen elements it added (by test ID, else kind and label), or
-everything on screen when it added nothing new. A press accepted behind a system
-dialog adopts the next app screen recovery sees. This identity stays in memory and
-is never written to the ledger or logs. Protection holds whether or not the pressed
-control disappeared, across block and replay boundaries and through retries, while
-that surface is on screen. Waits, checks, fills, scrolls and Back keep it, so
-interacting with a planned modal or consent screen, or hiding its keyboard, never
-enables automatic dismissal. Protection ends only when a complete capture shows none
-of the surface's elements; an incomplete capture keeps it. A later accepted planned
-press replaces the surface with its own, and a login replay clears protection and the
-withheld-dismissal diagnostic for the retried item. Recovery's own decline press and
-login presses never set it. Label-only controls cannot be told apart, so a later
-sheet whose decline shares the protected surface's label keeps it protected.
+it opened. When complete React host evidence identifies a newly opened modal
+container by its modal type and test ID or native ID, protection tracks that
+container. Otherwise its identity is unknown and protection stays on until a later
+accepted planned press replaces it or login replay clears it. A press accepted
+behind a system dialog also keeps this conservative protection. These identities
+stay in memory and are never written to the ledger or logs.
+Protection crosses block and replay boundaries and retries. Waits, checks, fills,
+scrolls and keyboard-only Back never establish departure. Only a complete native
+and React capture with complete host structure proving the identified container
+absent can expire protection. A planned Accept that closes an identified modal
+without opening another modal releases protection; a later unsolicited sheet can
+then be dismissed. Recovery's decline presses and login presses never arm it.
+Login replay also clears the withheld-dismissal diagnostic for the retried item.
 While protected, recovery still answers system
 prompts and dev menus and still replays login, but withholds every app decline,
 including the recheck before dispatch, and an ambiguous decline set does not

@@ -219,35 +219,59 @@ test('a target after a planned press withholds the decline, including ambiguous 
   assert.notEqual(vetoes[0], 'previous-plan-press');
 });
 
-test('a planned surface is what the press added, and only a complete capture shows it gone', () => {
-  const complete = { native: 'complete', react: 'complete' } as const;
-  const at = (labels: string[], extra: Partial<Screen> = {}): Screen =>
+test('only complete container absence expires an identified planned surface', () => {
+  const at = (id?: string): Screen =>
     screen('app', {
-      elements: labels.map((label, i) => ({
-        ref: `@${i}`,
-        kind: 'button',
-        label,
-        hittable: true,
-        disabled: false,
-        secure: false,
-        offscreen: false,
-      })),
-      coverage: complete,
-      ...extra,
+      coverage: { native: 'complete', react: 'complete' },
+      reactHostEvidence: {
+        complete: true,
+        hosts: id ? [{ testID: id, role: null, roleSource: 'none', capabilities: {} }] : [],
+        typography: {
+          version: 1,
+          complete: true,
+          durationMs: 0,
+          coordinateSpace: 'window-points',
+          nodes: id
+            ? [
+                {
+                  hostIndex: 0,
+                  parentHostIndex: null,
+                  rootIndex: 0,
+                  hostType: 'Modal',
+                  text: { kind: 'none' },
+                },
+              ]
+            : [],
+        },
+      },
     });
-  const surface = plannedSurface(at(['Back', 'Consent', 'Skip']), at(['Back', 'Open']));
-  assert.deepEqual([...surface].sort(), ['button:Consent', 'button:Skip']);
-  assert.deepEqual([...plannedSurface(at(['Same']), at(['Same']))], ['button:Same']);
-  assert.equal(plannedSurface({ ...at(['Allow']), front: 'dialog' }).size, 0);
-  assert.equal(surfaceGone(at(['Back', 'Skip']), surface), false);
-  assert.equal(surfaceGone(at(['Back', 'Home']), surface), true);
+  const surface = plannedSurface(at('consent'), at())!;
+  assert.equal(surfaceGone(at('consent'), surface), false);
+  assert.equal(surfaceGone(at('offer'), surface), true);
+  assert.equal(surfaceGone(at(), surface), true);
+  assert.equal(plannedSurface(at(), at('consent')), undefined);
+  assert.equal(surfaceGone({ ...at(), front: 'dialog' }, surface), false);
   assert.equal(
-    surfaceGone(
-      at(['Back', 'Home'], { coverage: { native: 'incomplete', react: 'complete' } }),
-      surface,
-    ),
+    surfaceGone({ ...at(), coverage: { native: 'incomplete', react: 'complete' } }, surface),
     false,
   );
+  assert.equal(surfaceGone({ ...at(), reactHostEvidence: undefined }, surface), false);
+  const incomplete = at();
+  incomplete.reactHostEvidence!.typography!.complete = false;
+  assert.equal(surfaceGone(incomplete, surface), false);
+  const nativeId = at('consent');
+  nativeId.reactHostEvidence!.hosts[0] = {
+    nativeID: 'consent',
+    role: null,
+    roleSource: 'none',
+    capabilities: {},
+  };
+  assert.equal(surfaceGone(nativeId, surface), false);
+  const anonymous = at('consent');
+  delete anonymous.reactHostEvidence!.hosts[0].testID;
+  assert.equal(surfaceGone(at(), plannedSurface(anonymous)!), false);
+  const unknown = plannedSurface(screen('app'))!;
+  assert.equal(surfaceGone(at(), unknown), false);
 });
 
 test('an uncovered id target still vetoes recovery', () => {
