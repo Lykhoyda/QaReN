@@ -997,7 +997,8 @@ vertical change among identities unique in both captures. The
 [readback implementation](../qaren-core/src/qa/walker.ts) owns these diagnostics.
 A second occlusion fails with that same off-screen explanation; wrapper fallback
 reports that nothing was typed. This refusal does not become
-`ACTION_OUTCOME_UNCERTAIN`. Checks and waits gain only the keyboard rule below.
+`ACTION_OUTCOME_UNCERTAIN`. For check and wait visibility rules, see the
+[screen evidence contract](#plan-checks-and-screen-evidence).
 See the [occlusion regressions](../qaren-core/test/unit/qa/occlusion-walker.test.ts).
 
 ### Fill verification and keyboard fallback
@@ -1498,9 +1499,13 @@ Literal checks, quoted waits and scroll-until text do not count text or merged
 labels whose centre lies under a captured keyboard unless the keyboard is
 proven hidden. A docked full-width keyboard covers from its frame's top to the
 screen bottom, because its chrome paints below the frame XCUI reports. The
-keyboard's own keys and the chrome in its window stay visible. Literal checks and
-waits do not treat other overlays as occlusion evidence: see
-[Limitations](#limitations-recorded-not-papered-over). Scroll-until uses the
+keyboard's own keys and the chrome in its window stay visible. Literal checks
+do not treat other overlays as occlusion evidence. Quoted waits additionally
+reject text when every matching literal contributor has its centre covered by
+the detected overlay clearance band; matching unresolved text keeps the verdict
+unsure. An uncovered occurrence still satisfies the wait, and missing geometry
+alone does not prove coverage. An eligible unmet wait can enter
+[step recovery](#step-recovery) to dismiss an interruption. Scroll-until uses the
 overlay clearance policy below.
 Quoted and phrase target resolution scrolls up when the target's centre lies at
 or above the top of its effective trusted clipping viewport, and down otherwise;
@@ -3084,15 +3089,19 @@ See the [recovery regressions](../qaren-core/test/unit/qa/walker-recover.test.ts
 and [freshness regressions](../qaren-core/test/unit/qa/temporal-walker.test.ts).
 
 App interruptions need no app-specific configuration. Recovery requires complete
-native capture and React coverage, with the current quoted target (or literal
-check) and the later quoted targets of the current block absent from a fresh
-capture. Targets in later blocks never block recovery by being visible; they
+native capture and React coverage, with no on-screen, uncovered match for the
+current quoted target (or literal check) or the later quoted targets of the
+current block in a fresh capture. A target whose centre is covered by a detected
+sheet or scrim does not prevent recovery merely because it remains in the capture.
+Targets in later blocks never block recovery by being visible; they
 only keep their own planned control and controls inside them. A later target
 declared as a decline label from the list below
 (case-insensitive, unless explicitly targeted by ID) is exempt from this absence
 guard, so non-control text such as `Maybe later` does not prevent closing a sheet
 with `Close`. The current target is never exempt. ID-only targets are checked by
-test ID, text-only targets by text, and unqualified targets by either.
+test ID, text-only targets by contained label or value text (including composed
+input text), and unqualified targets by either. Any on-screen, uncovered match
+vetoes dismissal, even when another matching ID is offscreen.
 Exactly one eligible control must be visible, hittable, enabled,
 non-secure and have proven press support, with one of these exact English labels:
 `Close`, `Not now`, `Not Now`, `Maybe later`, `Later`, `Skip`, `No thanks`,
@@ -3103,10 +3112,13 @@ effective selector is left for that step; decline-label matching is case-insensi
 Within a replayed block, recovery retains the declared target for the exemption
 and uses its stored selector to protect the planned control. Targets in later
 blocks use their declared identities until those blocks are prepared for replay.
-A visible non-exempt target in the current block, uncertain absence for a target
-subject to the absence guard, or a control inside any plan target prevents
+A non-exempt on-screen, uncovered target in the current block, uncertain absence
+for a target subject to the absence guard, or a control inside any plan target prevents
 dismissal. Phrase-only current targets cannot establish this
 deterministic absence guard.
+Planned-container protection follows native ancestry and proven React host
+ancestry. The React ancestry guard stops at a modal host, so the presenting
+screen does not protect the modal's controls.
 
 With `TYPESAFE_API_KEY`, Jev may veto a selected control when the screen may be
 related to the step or its purpose is uncertain. It never chooses a control,
@@ -4586,12 +4598,8 @@ now encoded once and replayed deterministically.
 - app_id validation is one shared grammar (dot-separated `[A-Za-z0-9_-]`
   segments), not per-platform store rules; invalid-but-well-formed ids fail
   later as visible `BUILD_FAILED`.
-- **Literal checks judge accessibility presence, not paint.** Text inside the
-  screen, window and scroll clip counts as visible even when an overlay paints
-  over it, such as an absolutely positioned sticky footer or another later
-  sibling that XCUI still reports hittable. Only the keyboard is treated as an
-  occluder for literal checks and waits; scroll-until follows the
-  [overlay clearance policy](#plan-checks-and-screen-evidence).
+- For the limits of overlay detection in literal checks, quoted waits and
+  scroll-until, see the [screen evidence contract](#plan-checks-and-screen-evidence).
 - The historical Expo SDK 56 artifact-discovery gap in the timing evidence
   predates the current finite iOS build path. Those measurements do not validate
   this implementation; exact-head device acceptance remains separate.

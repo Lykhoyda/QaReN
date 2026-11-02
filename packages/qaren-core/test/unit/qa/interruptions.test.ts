@@ -10,9 +10,18 @@ import { cleanDiagnostic } from '../../../dist/qa/diagnostics.js';
 import type { StoredBlock } from '../../../dist/qa/blocks.js';
 import type { Block } from '../../../dist/qa/plan.js';
 import { NativeSnapshotIncomplete } from '../../../dist/qa/private-input.js';
-import type { Screen } from '../../../dist/qa/screen.js';
+import { join as joinScreen, type Screen } from '../../../dist/qa/screen.js';
 import type { WalkerDeps } from '../../../dist/qa/walker.js';
 import { choice, element, screen, scriptedJudge } from './judgment-fixtures.ts';
+
+function observedButtons(elements: Screen['elements']) {
+  return joinScreen(
+    elements.map((e) => ({ ref: e.ref, type: 'Button', label: e.label, hittable: true })),
+    [],
+    'app',
+    { native: 'complete', react: 'complete' },
+  );
+}
 
 function app(initial: Screen) {
   let current = initial;
@@ -143,14 +152,14 @@ test('a target appearing before dispatch prevents the interruption tap', async (
   f.deps.captureScreen = async () =>
     ++captures < 3
       ? promo()
-      : screen([element('@close', 'Close'), element('@settings', 'Settings')]);
+      : observedButtons([element('@close', 'Close'), element('@settings', 'Settings')]);
   const result = await runPlan(plan(), f.deps);
   assert.notEqual(result.verdict, 'PASS');
   assert.deepEqual(f.actions, []);
 });
 
 test('the current target on an unchanged screen prevents dismissal', async () => {
-  const f = app(screen([element('@close', 'Close'), element('@settings', 'Settings')]));
+  const f = app(observedButtons([element('@close', 'Close'), element('@settings', 'Settings')]));
   f.deps.press = async (ref) => {
     f.actions.push(`press ${ref}`);
     return { ok: true, proven: false, executed: true };
@@ -160,7 +169,7 @@ test('the current target on an unchanged screen prevents dismissal', async () =>
 });
 
 test('a later target in the same block prevents dismissal and reports a value-free rejection', async () => {
-  const f = app(screen([element('@close', 'Close'), element('@profile', 'Profile')]));
+  const f = app(observedButtons([element('@close', 'Close'), element('@profile', 'Profile')]));
   const events: unknown[] = [];
   f.deps.interruptionRejected = (event) => events.push(event);
   const result = await runPlan(parsePlan('1. Tap "Settings"\n2. Tap "Profile"').blocks!, f.deps);
@@ -909,7 +918,7 @@ test('a dispatched decline counts when its read-back refuses incomplete capture'
 
 test('a second app interruption still respects later plan targets and consent boundaries', async () => {
   for (const second of [
-    screen([element('@skip', 'Skip'), element('@profile', 'Profile')]),
+    observedButtons([element('@skip', 'Skip'), element('@profile', 'Profile')]),
     screen([element('@allow', 'Allow')]),
   ]) {
     const f = app(promo());
