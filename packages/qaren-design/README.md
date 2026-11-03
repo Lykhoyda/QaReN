@@ -1,10 +1,10 @@
 # @qaren/design
 
-@qaren/design is a mirror of the QaReN design system in Claude Design: <https://claude.ai/artifact/9wASKvBDC7Lx4ooS66t7YD>. Edit in Claude Design, never here. It is the brand for every QaReN surface; the docs site consumes its tokens.
+@qaren/design is a mirror of the QaReN design system in Claude Design: <https://claude.ai/artifact/9wASKvBDC7Lx4ooS66t7YD>. Edit branding and mirrored files in Claude Design, then sync them here. The adapter, scripts and tests are maintained in this package. It is the brand for every QaReN surface; the docs site consumes its tokens.
 
 Every file under `design/` is a file of the artifact's `project/` folder, byte for byte, at version `1793686235-1e19` (`design-source.json` records the version and each file's sha256). The mirror holds only what code consumes: `README.md`, `tokens.css`, `tokens.json`, `contrast.md` and `components/bundle.js`, `bundle.css` and `index.d.ts`. `design-system.json`, the assets, and each component's preview and README stay in Claude Design.
 
-The design guidance is `design/README.md`; this file does not restate it.
+The design guidance, including the required page wrapper and themes, is in [design/README.md](design/README.md#components).
 
 ## Use it
 
@@ -18,10 +18,14 @@ The components come from `design/components/bundle.js` through a build-time wrap
 
 Fonts: `bundle.css` imports Inter and JetBrains Mono from Google Fonts.
 
+`DocsLayout` is no longer exported; consumers compose their own page layout using the mirrored components.
+
 ## Update
 
+Run the commands below from `packages/qaren-design/`.
+
 1. In Claude Design, list the artifact's files and save the version and the sha256 of each mirrored `project/` path as `inventory.json`: `{ "version": "<version>", "files": { "tokens.css": "<sha256>", ... } }`.
-2. Read each of those files and save them under one folder, keeping their paths below `project/`.
+2. Read each of those files and save them under one folder, keeping their paths relative to `project/` (for example, `<folder>/components/bundle.js`). Keep `inventory.json` outside that folder; the folder must contain exactly the files listed in the inventory.
 3. Run `bun scripts/sync-design.ts <folder> --inventory <inventory.json>`. It refuses, before touching anything, when a file is missing, extra, a symlink or differs from its hash; otherwise it replaces `design/` and writes `design-source.json`.
 4. Put the new version in this README, run `bun run test`, and commit `design/`, `design-source.json` and the README.
 
