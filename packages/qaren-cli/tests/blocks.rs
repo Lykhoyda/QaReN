@@ -264,6 +264,39 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 #[test]
+fn worktree_drift_omits_only_untracked_watchman_cookie_files() {
+    let clean = Default::default();
+    let cookies = [
+        "?? .watchman-cookie-host-123-4",
+        "?? apps/mobile/.watchman-cookie-host-123-4",
+    ]
+    .map(str::to_string)
+    .into();
+    assert!(worktree_drift(&clean, &cookies).is_empty());
+    assert!(worktree_drift(&cookies, &clean).is_empty());
+    for (entry, expected) in [
+        (" M .watchman-cookie-x", vec![".watchman-cookie-x"]),
+        ("A  .watchman-cookie-x", vec![".watchman-cookie-x"]),
+        ("?? .watchman-cookie-x/", vec![".watchman-cookie-x/"]),
+        ("?? .watchman-cookie", vec![".watchman-cookie"]),
+        ("?? .watchman-cookies.txt", vec![".watchman-cookies.txt"]),
+        (
+            "R  .watchman-cookie-a\0old.txt",
+            vec![".watchman-cookie-a", "old.txt"],
+        ),
+        (
+            "C  new.txt\0.watchman-cookie-b",
+            vec![".watchman-cookie-b", "new.txt"],
+        ),
+    ] {
+        assert_eq!(
+            worktree_drift(&clean, &[entry.to_string()].into()),
+            expected
+        );
+    }
+}
+
+#[test]
 fn worktree_drift_excludes_saved_blocks_and_reports_other_changed_paths() {
     let root = temp_dir("drift");
     git(&root, &["init", "-q"]);

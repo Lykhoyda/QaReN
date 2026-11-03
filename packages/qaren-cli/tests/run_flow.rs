@@ -2217,6 +2217,44 @@ fn simultaneous_checks_on_distinct_devices_do_not_collide_at_the_same_millisecon
 }
 
 #[test]
+fn check_ignores_new_watchman_cookies_but_rejects_other_changes_after_the_walk() {
+    for (entry, expected) in [
+        ("?? .watchman-cookie-host-123-4\0", ReceiptResult::Pass),
+        ("?? stray.txt\0", ReceiptResult::Fail),
+    ] {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        script_preflight(&mut mock, &repo);
+        script_provision(&mut mock);
+        script_drift_status(&mut mock);
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+        script_core_identity(&mut mock);
+        mock.expect_run("(exclude).qaren/actions", CmdOutput::success(entry));
+        script_teardown_with_status(
+            &mut mock,
+            &format!("{UNTRACKED_PLAN}{entry}"),
+            CmdOutput::success("1 1 S\n6000 6000 S\n"),
+            false,
+            UDID,
+            Some(hosts_absent()),
+        );
+
+        let receipt = run(&mut mock, &request(&repo, &app, 30));
+
+        assert_eq!(receipt.result, expected, "{:?}", receipt.failure);
+        assert_eq!(mock.remaining(), 0);
+        if expected == ReceiptResult::Pass {
+            assert_eq!(receipt.outcomes["candidate_drift"], "none");
+            assert!(receipt.worktree_drift.is_empty());
+        } else {
+            assert_eq!(receipt.failure.unwrap().code, FailureCode::CandidateDrifted);
+            assert_eq!(receipt.worktree_drift, vec!["stray.txt"]);
+        }
+    }
+}
+
+#[test]
 fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
     let (repo, app) = app_repo();
     let mut mock = MockRunner::new();
