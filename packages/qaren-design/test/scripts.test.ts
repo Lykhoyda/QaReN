@@ -146,7 +146,7 @@ describe('build-adapter', () => {
       expect(adapter.default).toEqual({ Logo: React.createElement, Badge: React.useState });
       expect(adapter.Logo).toBe(React.createElement);
       expect(adapter.Badge).toBe(React.useState);
-      expect(globalThis.window).toBe(browserWindow);
+      expect<unknown>(globalThis.window).toBe(browserWindow);
       expect(browserWindow).toEqual({ React: 'existing React', QaReN: 'existing QaReN' });
     } finally {
       if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow);
