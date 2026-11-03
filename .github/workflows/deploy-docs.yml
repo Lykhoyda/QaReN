@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'apps/docs-site/**'
+      - 'packages/qaren-design/**'
       - 'packages/qaren-plugin/CHANGELOG.md'
       - 'packages/qaren-core/CHANGELOG.md'
       - 'packages/qaren-cli/src/main.rs'
