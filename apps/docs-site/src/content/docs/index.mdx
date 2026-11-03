@@ -1,13 +1,113 @@
-Placeholder. This page keeps its address and outline; its content moves here in the content migration.
+---
+title: QaReN
+description: QaReN is a QA engineer for your coding agent. It tries your React Native change on an iOS simulator and reports PASS or FAIL with the evidence.
+---
 
-## Get started
+QaReN checks your coding agent's React Native changes in the running app. The agent writes
+a short Markdown plan of what to tap, what to wait for and what must be on screen. QaReN
+builds your working tree, walks that plan on an iOS simulator and returns PASS or FAIL, with
+a step-by-step report and a ledger you can open. It works with Claude Code, Codex and Cursor
+on an Apple silicon Mac, for Expo apps that use `expo-dev-client` and pnpm.
 
-## Your agent says it is done. Did anyone open the app?
+## Quickstart
 
-## What a check looks like
+1. **Install the plugin** for your agent:
 
-## Why you can trust the verdict
+   ```sh
+   # Claude Code
+   claude plugin marketplace add Lykhoyda/QaReN
+   claude plugin install qaren@qaren
+   # Codex
+   codex plugin marketplace add Lykhoyda/QaReN
+   codex plugin add qaren@qaren
+   ```
 
-## Built for
+   For Cursor, the copy-paste install prompt and a source build, see
+   [Getting started](getting-started/#install).
 
-## How it works
+2. **Run setup** from your app's root directory:
+
+   ```text
+   /qaren:setup
+   ```
+
+   Setup installs the matching `qaren` CLI, writes `.qaren/config.yaml`, picks a
+   simulator and runs a first smoke check. See [what setup does](getting-started/#what-qarensetup-does).
+
+3. **Run a check.** Ask your agent to "QA the onboarding change", or walk a plan yourself:
+
+   ```sh
+   qaren check --plan-file .qaren/plans/smoke.md --json
+   ```
+
+   The receipt is JSON on stdout and exit code `0` means pass. See [Check a plan](check/).
+
+## Example
+
+This plan, from the repository's test app, goes from onboarding to the tasks tab. Numbered
+lines are steps; lines that start with `✓` must be on screen.
+
+```md
+# Literal smoke on the workspace test-app
+
+Runs from a fresh install (the gate uninstalls the app first), so the onboarding gate is the first screen.
+
+## QA
+
+### Onboarding to the tasks tab
+
+1. Tap "onboarding-skip"
+2. Tap "onboarding-done"
+3. Wait for "Welcome" to appear
+✓ "Welcome"
+4. Tap "tab-tasks"
+5. Wait for "task-header" to appear
+✓ "Tasks ("
+```
+
+`qaren check` walked it on an iOS simulator and wrote this `report.md` (screenshot links
+removed). Each line number points back into the plan:
+
+```md
+# QaReN check: PASS
+
+Run `check-20261011T133730Z` · ios · `com.rndevagent.testapp` · device qaren-check
+
+## What was walked
+
+- ✓ line 9: 1. Tap "onboarding-skip"
+- ✓ line 10: 2. Tap "onboarding-done"
+- ✓ line 11: 3. Wait for "Welcome" to appear
+- ✓ line 12: ✓ "Welcome"
+- ✓ line 13: 4. Tap "tab-tasks"
+- ✓ line 14: 5. Wait for "task-header" to appear
+- ✓ line 15: ✓ "Tasks ("
+
+## Blocks
+
+- onboarding-to-the-tasks-tab: pass (discovered)
+
+## Run details
+
+steps 7 · jev.calls 0 · jev.medianMs 0 · jev.inputTokens 0 · llmTurns 0 · escapes 0 · recoveries 0 · path walk
+stepMedianMs 2596 · stepP95Ms 4462 · walkMs 15840 · steps 7 (7 passed, 0 failed)
+```
+
+A passing block that is eligible is saved under `.qaren/actions/`, and the next run replays it
+by the exact elements it used instead of searching again; see [Saved blocks](saved-blocks/).
+
+## Guides
+
+- [Getting started](getting-started/): requirements, every install option and what setup does.
+- [Use QaReN from your agent](plugin/): the plugin's three skills and what each host loads.
+- [Write a plan](plans/): the plan grammar and what a check reads from the screen.
+- [Test a pull request](pull-requests/): walk a plan at a pull request's head and post the result.
+- [Saved blocks](saved-blocks/): how passing blocks are saved, replayed and patched.
+
+## Reference
+
+- [The qaren CLI](cli/): every verb, argument and flag.
+- [Check a plan](check/): the receipt, exit codes and the run directory.
+- [Configuration](configuration/): every key in `.qaren/config.yaml`.
+- [Watch a run](watch/): follow a run live, locally or over ssh.
+- [Troubleshooting](troubleshooting/): the common refusals and failures, and the fix for each.

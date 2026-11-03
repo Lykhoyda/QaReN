@@ -118,3 +118,32 @@ test('rejects a heading that skips a level', () => {
   assert.equal(result.status, 1);
   assert.match(result.stderr, /FAIL {2}index\.html heading order starts at h1 and skips no level/);
 });
+
+test('accepts a same-page link whose target id exists', () => {
+  const result = verifyHomepageLink(
+    'check/',
+    '<a href="#install">Install</a><h2 id="install">Install</h2>',
+  );
+
+  assert.match(result.stdout, /ok {2}index\.html same-page links all have a target/);
+});
+
+test('rejects a same-page link with no target id', () => {
+  const result = verifyHomepageLink(
+    'check/',
+    '<a href="#install">Install</a><h2 id="setup">Setup</h2>',
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /#install has no target in index\.html/);
+});
+
+test('rejects placeholder copy left from the scaffold', () => {
+  const result = verifyHomepageLink(
+    'check/',
+    '<p>Placeholder. This page keeps its address and outline; its content moves here in the content migration.</p>',
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /index\.html still carries placeholder copy/);
+});

@@ -24,3 +24,15 @@ test('plainMarkdown drops frontmatter, ESM lines and JSX tags but keeps fenced c
     ),
   );
 });
+
+test('plainMarkdown keeps prose lines that start with the word import or export', () => {
+  const source = [
+    "export const meta = { title: 'x' };",
+    'export identifiers through the same masking step.',
+    'import paths stay relative.',
+  ].join('\n');
+
+  expect(plainMarkdown(source)).toBe(
+    ['export identifiers through the same masking step.', 'import paths stay relative.'].join('\n'),
+  );
+});

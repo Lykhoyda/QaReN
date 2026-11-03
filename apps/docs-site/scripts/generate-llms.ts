@@ -24,7 +24,12 @@ export function plainMarkdown(source: string): string {
     .flatMap((line) => {
       if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
       if (fenced || /^\s*(```|~~~)/.test(line)) return [line];
-      if (/^(import|export)\s/.test(line)) return [];
+      if (
+        /^(import\s.*\sfrom\s|import\s+['"]|export\s+(const|let|function|default|async|\{|\*))/.test(
+          line,
+        )
+      )
+        return [];
       const text = line.replace(/<\/?[A-Z][\w.]*(?:\s[^<>]*)?\/?>/g, '');
       return text.trim() === '' && line.trim() !== '' ? [] : [text];
     })

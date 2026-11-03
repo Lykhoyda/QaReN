@@ -5,6 +5,15 @@ description: "Release history for QaReN"
 
 ## Plugin
 
+### 2.0.7
+
+#### Patch Changes
+
+- f242818: Recognize iOS RedBox and LogBox and Android native RedBox overlays during walks, record bounded attempts to dismiss them with their own control, and refuse `DEV_REDBOX` when safe progress cannot be proven without exposing error text.
+- c09643d: Plain scrolls that leave the screen unchanged after two clean attempts now pass with the typed reason `SCROLL_NO_VISIBLE_CHANGE`, while dispatch errors, uncertain effects, context changes, and missing scroll-until targets still fail with diagnostic causes and existing guidance.
+- 709124f: Never dismiss a screen, modal or consent screen that the plan's own previous press opened; a missing next target now fails with `previous-plan-press` instead of tapping Skip or Close.
+- adee5e4: Make screenshots follow the existing video privacy mode while continuing to withhold protected fields and values.
+
 ### 2.0.6
 
 #### Patch Changes

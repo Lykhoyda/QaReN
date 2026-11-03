@@ -125,6 +125,19 @@ for (const { slug } of pages) {
   );
 }
 
+for (const file of htmlFiles()) {
+  const name = relative(DIST, file);
+  const html = readFileSync(file, 'utf8');
+  const ids = new Set([...html.matchAll(/\sid="([^"]+)"/g)].map(([, id]) => id));
+  const missing = [...html.matchAll(/href="#([^"]+)"/g)].filter(([, id]) => !ids.has(id));
+  check(`${name} same-page links all have a target`, missing.length === 0);
+  for (const [, id] of missing) console.error(`  #${id} has no target in ${name}`);
+  if (/placeholder\. this page keeps its address/i.test(html)) {
+    failed += 1;
+    console.error(`FAIL  ${name} still carries placeholder copy`);
+  }
+}
+
 console.log('\nverify-site: generated files');
 const sitemap = exists('sitemap.xml') ? page('sitemap.xml') : '';
 for (const { slug } of pages)
