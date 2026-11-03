@@ -18,9 +18,10 @@ literal checks evaluate the screen text locally.
 | `✓ "Welcome"` | No: a literal check, whose entire payload is one quoted string. |
 | Recognized back, dialog and fixed-scroll steps | No. |
 
-For target matching and saved-block replay, follow the CLI's
-[plan and screen-evidence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence)
-and [saved-block contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#saved-blocks).
+An unchanged saved block replays its stored identities without Jev for quoted targets
+and literal checks. Phrase checks still ask Jev. See the
+[saved-block contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#saved-blocks)
+for replay eligibility and when a block walks again.
 
 See [Write a plan](../plans/) for the supported grammar.
 
@@ -39,25 +40,25 @@ owns the guards and limits on that veto.
 
 ## What Jev sees
 
-Jev receives captured screen evidence and the plan's phrase, subject to QaReN's
-masking rules. Masking is not a guarantee that all undeclared on-screen data is protected:
-an unknown pre-filled secret echoed as ordinary text can still reach the judge.
-
-The [input value masking contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#input-value-masking)
-owns identity tokens, secure-field protection and their privacy limits. The
-[runtime-input contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs)
-owns input tiers, derived-value masking and media eligibility. Read those contracts
-before using private inputs.
+Jev receives captured screen evidence and the plan's phrase; protected values use opaque
+identity tokens in model requests, while durable text uses `•••`. Runtime inputs default
+to SECRET, and a secure field promotes its runtime input to SECRET even if marked TEST-PII.
+Model-facing secure-field protection uses known-value masking, so an unknown pre-filled
+secret echoed as ordinary text can still reach Jev. See the
+[input value masking contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#input-value-masking)
+and [runtime-input contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs)
+for the protection rules and their limits, including separate media eligibility.
 
 ## Receipts and timings
 
-Read the [receipt](../check/#the-receipt) for the run's verdict, failure and available
-artifact paths. [Watch a run](../watch/#what-it-shows) displays step timings, including
-time spent asking Jev.
-
-The CLI's [walk timing contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#walk-timing)
-owns the ledger fields and their limits, including `jevMs`. It overlaps the timing
-partition, so do not add it to `total`.
+The [receipt](../check/#the-receipt) reports the run's verdict, failure and available
+artifact paths; the walk writes `ledger.json` and `report.md` when it reaches reporting.
+Each walked attempt row's `timing.jevMs` records judgment time within `resolveMs`, including
+HTTP retries and backoff; it overlaps the timing partition, so do not add it to `total`.
+The report prints speed summaries, while [Watch a run](../watch/#what-it-shows) displays
+step timings, including time spent asking Jev. See the
+[walk timing contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#walk-timing)
+for the fields and their limits.
 
 ## Write a plan that needs no key
 
