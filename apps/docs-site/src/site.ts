@@ -1,5 +1,3 @@
-// The one page table: routes, sidebar, metadata, sitemap, llms files and redirects all read it.
-
 export type Page = {
   /** URL path under the base, without slashes; '' is the home page. */
   slug: string;
