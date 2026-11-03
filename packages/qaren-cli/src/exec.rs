@@ -88,6 +88,10 @@ pub struct CmdOutput {
 pub struct PrivateOutput(CmdOutput);
 
 impl PrivateOutput {
+    pub fn duration_ms(&self) -> u64 {
+        self.0.duration_ms
+    }
+
     pub fn clean(&self) -> bool {
         self.0.ok() && self.0.stderr.is_empty()
     }

@@ -146,7 +146,10 @@ impl<'a> Ctx<'a> {
             })
         {
             let cleanup = format!("qaren cleanup {} --json", self.record.run_id);
-            let next = if failure.code == FailureCode::ManifestNotWarm {
+            let next = if matches!(
+                failure.code,
+                FailureCode::ManifestNotWarm | FailureCode::WatchmanVolumeStalled
+            ) {
                 format!("{cleanup}; then {}", failure.next_action)
             } else {
                 let remedy = self
@@ -5365,6 +5368,41 @@ fn run_budgeted_attempt(
     Ok(Some(output))
 }
 
+fn run_budgeted_private(
+    ctx: &mut Ctx,
+    spec: &CmdSpec,
+    input: &[u8],
+    deadline: u64,
+    attempts: &mut usize,
+) -> Result<Option<crate::exec::PrivateOutput>, Failure> {
+    ensure_running(ctx.runner, "build")?;
+    let remaining_ms = deadline.saturating_sub(ctx.runner.monotonic_ms());
+    if remaining_ms < 1000 {
+        ctx.runner.sleep(Duration::from_millis(remaining_ms));
+        ensure_running(ctx.runner, "build")?;
+        ctx.notes
+            .push(("launch_ready_budget".into(), "spent".into()));
+        return Ok(None);
+    }
+    let mut bounded = spec.clone();
+    bounded.timeout_seconds = bounded.timeout_seconds.min(remaining_ms / 1000);
+    let output = ctx.runner.run_private(&bounded, input);
+    *attempts += 1;
+    let label = format!("{}_attempt_{}", spec.label, attempts);
+    ctx.timings.push((label.clone(), output.duration_ms()));
+    ctx.notes.push((
+        label,
+        format!(
+            "ok={}; timed out={}; timeout_seconds={}",
+            output.exit_code() == Some(0) && !output.timed_out(),
+            output.timed_out(),
+            bounded.timeout_seconds
+        ),
+    ));
+    ensure_running(ctx.runner, "build")?;
+    Ok(Some(output))
+}
+
 fn warm_dev_client_manifest(ctx: &mut Ctx, port: u16, deadline: u64) -> Result<(), Failure> {
     ensure_running(ctx.runner, "build")?;
     if deadline.saturating_sub(ctx.runner.monotonic_ms()) < 1000 {
@@ -5408,14 +5446,33 @@ fn warm_dev_client_manifest(ctx: &mut Ctx, port: u16, deadline: u64) -> Result<(
                     &ctx.record.candidate.project_root,
                 );
                 if let Some(output) = run_budgeted_attempt(ctx, &spec, warm.deadline_ms, &mut 0)? {
-                    let probe = crate::adapters::watchman::VolumeProbe::from_output(&output);
+                    use crate::adapters::watchman::{self, VolumeProbe};
+                    let mut probe = VolumeProbe::from_output(&output);
+                    if probe == VolumeProbe::Ready
+                        && warm.deadline_ms.saturating_sub(ctx.runner.monotonic_ms())
+                            >= watchman::SYNC_MS + 1000
+                    {
+                        let root =
+                            watchman::watch_root(&output).expect("ready watch-project has a root");
+                        if let Some(sync) = run_budgeted_private(
+                            ctx,
+                            &watchman::clock_sync_spec(watchman::SYNC_MS),
+                            &watchman::clock_sync_input(&root, watchman::SYNC_MS),
+                            warm.deadline_ms,
+                            &mut 0,
+                        )? {
+                            probe = VolumeProbe::from_sync_output(&sync);
+                        }
+                    }
                     ctx.notes
                         .push(("watchman_volume_probe".into(), probe.as_str().into()));
                     warm.watchman_volume_probe = Some(probe);
                     if matches!(
                         probe,
-                        crate::adapters::watchman::VolumeProbe::TimedOut
-                            | crate::adapters::watchman::VolumeProbe::Rejected
+                        VolumeProbe::TimedOut
+                            | VolumeProbe::Rejected
+                            | VolumeProbe::SyncRejected
+                            | VolumeProbe::Stalled
                     ) {
                         return Err(warm.refusal());
                     }

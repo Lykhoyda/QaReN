@@ -42,7 +42,8 @@ Doctor prints the running binary's version, path, build, runtime and the
 `PASS`, `WARN`, `FAIL` or `SKIP` row per check, each problem with its manual fix.
 It reads files and runs bounded version, package-resolution, process-group, inventory, host-statistics and Watchman probes.
 When an app config is valid, the five-second `watch-project` probe may establish a watch on its candidate directory;
-it never starts a Watchman service, starts a device or resets a service. It does not run ADB
+the subsequent [cookie sync](#ios-simulator-lifecycle) writes a cookie in the resolved watch root and may leave it there on timeout.
+Doctor never starts a Watchman service, starts a device or resets a service. It does not run ADB
 or start an ADB server. In text and JSON output, Doctor never prints
 file contents, environment variable values, credentials or any other config value;
 it may name the configured iOS runtime and Android AVD. It also prints diagnostic
@@ -66,7 +67,7 @@ applicable or its subject was not assessed, as explained in the row's detail.
 | `simulator-service` | A five-second `simctl list devices -j` probe on macOS; attributable uninterruptible simulator process evidence when unresponsive |
 | `expo-offline` | Metro-only Expo commands start offline by default; warns when `EXPO_OFFLINE=0` enables account lookups |
 | `watchman-health` | A read-only, five-second watch-list probe without starting Watchman |
-| `watchman-volume-probe` | A five-second `watch-project` probe on the candidate directory; a timeout or rejection fails with volume-permission and FSEvents recovery steps |
+| `watchman-volume-probe` | Candidate watch admission and [cookie sync](#ios-simulator-lifecycle); admission timeout, rejection or a confirmed cookie timeout fails, while unavailable or invalid responses warn |
 | `candidate-volume-speed` | A bounded small-file read sample on the candidate volume; warns about slow reads, with unknown results disclosed |
 | `host-load` | One-, five- and fifteen-minute load averages, logical CPU count and sampled CPU idle; warns about readiness deadlines under load |
 | `native-build-lock` | Read-only iOS [build-lock observation](#native-fingerprint-build-selection); never claims or reclaims the lock |
@@ -2219,10 +2220,32 @@ active. Check the volume and doctor before coordinating
 a Watchman reset and retrying once. When the request-handler probe times out,
 a five-second `watch-project` probe checks the candidate volume if at least
 five seconds remain after the file sample described below. This probe may
-establish a watch on the candidate directory. A confirmed timeout or rejection
-refuses immediately with "watchman cannot watch this volume" and steps for removable-volume permissions, FSEvents
-state or reconnecting the volume. Its value-free result is recorded at
-`outcomes.watchman_volume_probe`; no watcher fallback or automatic reset is attempted.
+establish a watch on the candidate directory. After admission, if at least five
+seconds still remain on the same warm-up clock, QaReN requests a `clock` with
+`sync_timeout=4000` on the resolved watch root through private JSON stdin. Its
+child has a five-second cap, clamped to the remaining whole seconds; near the
+budget boundary it may time out before Watchman returns its cookie error, which
+leaves the sync unavailable and continues manifest warm-up. A recognized cookie timeout refuses immediately
+with `WATCHMAN_VOLUME_STALLED` (exit 4): "the file watcher is stalled or still
+crawling the root". The next steps cover removable-volume permissions, FSEvents
+state and reconnecting the volume; if fseventsd is busy, wait for other watchers
+or large copies to finish, or coordinate a watchman reset with other sessions,
+then re-run once. Doctor runs the same admission and sync probes.
+
+Four seconds is an uncalibrated early-refusal threshold: a crawl that finishes
+shortly afterward might have warmed within the remaining budget, so this can
+cost a re-run. A timed-out sync may leave a cookie in the watch root; QaReN
+excludes these cookie files from candidate drift checks. Preparation writes no
+sync cookie when the request-handler probe does not time out. This check saves the
+manifest retry loop; it runs after build and install. A watch-project timeout
+or rejection, or a rejected sync, also refuses before the loop with its specific
+cause under `MANIFEST_NOT_WARM`; an unavailable or malformed sync falls through
+to normal manifest warm-up. The value-free result (`ready`, `stalled`,
+`timed_out`, `rejected` or `unavailable`) is recorded at
+`outcomes.watchman_volume_probe`. If the sync is skipped for lack of budget,
+`ready` proves watch-project admission only; a `watchman-clock-sync_attempt_1`
+outcome identifies a sync that ran. Raw sync output is withheld, and no watcher
+fallback or automatic reset is attempted.
 
 After a request-handler timeout or the first manifest answer taking at least
 10 seconds, QaReN also samples up to 32 small files on the candidate volume

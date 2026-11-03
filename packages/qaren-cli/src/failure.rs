@@ -20,6 +20,7 @@ pub enum FailureCode {
     PnpmProbeTimedOut,
     MetroPortOccupied,
     ManifestNotWarm,
+    WatchmanVolumeStalled,
     RunAlreadyExists,
     RunRecordUnavailable,
     RunRecordInvalid,
@@ -89,6 +90,7 @@ impl FailureCode {
             self,
             FailureCode::DepsNotPrewarmed
                 | FailureCode::ManifestNotWarm
+                | FailureCode::WatchmanVolumeStalled
                 | FailureCode::PnpmProcessGroupUnsupported
                 | FailureCode::PnpmProbeTimedOut
                 | FailureCode::DeviceClaimContended
