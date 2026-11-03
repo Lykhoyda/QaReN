@@ -30,9 +30,8 @@ export function plainMarkdown(source: string): string {
         )
       )
         return [];
-      const text = line.replace(
-        /(`+).*?\1|<\/?[A-Z][\w.]*(?:\s[^<>]*)?\/?>/g,
-        (match, backticks) => (backticks ? match : ''),
+      const text = line.replace(/(`+).*?\1|<\/?[A-Z][\w.]*(?:\s[^<>]*)?\/?>/g, (match, backticks) =>
+        backticks ? match : '',
       );
       return text.trim() === '' && line.trim() !== '' ? [] : [text];
     })
