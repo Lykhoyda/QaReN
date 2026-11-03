@@ -3509,7 +3509,8 @@ polling. A proven `__DEV__ === true` probe invalidates earlier non-dev certainty
 if setup subsequently stalls. Target/context replacement also clears that certainty.
 An empty scan, undefined or unknown development state, or a failed or pending
 scan without retained all-false evidence cannot establish production mode.
-Those cases refuse with receipt
+After a registered candidate failed to prove development mode, those cases
+refuse with receipt
 `CORE_REFUSED`, inner `CDP_NOT_CONNECTED/no_dev_target_unknown` and
 `inspect_development_target`. A proven dev bundle that does not start React
 refuses with inner `CDP_NOT_CONNECTED/react_readiness_timeout` and
@@ -3526,7 +3527,11 @@ approval and ownership proof. Total walk expiry before admission uses
 `inspect_admission_budget`; elapsed time alone does not establish bundle mode.
 A live app with no registered target and a received or unknown bundle-request
 signal keeps waiting within the walk budget; once a target registers, setup uses
-the registered-target deadline. Patient no-target manifest recovery below keeps
+the registered-target deadline. Before any target registers, a no-target wait
+can refuse after the attach limit when the app is proven dead or Metro has
+received no bundle request since the latest launch. Liveness and bundle-request
+evidence are re-read at that boundary; each relaunch rebases the request count.
+Patient no-target manifest recovery below keeps
 its distinct warming, relaunch and post-relaunch attach deadlines, all clipped
 to the remaining walk budget.
 Target readiness and attachment accept only a runtime Metro reports with the
