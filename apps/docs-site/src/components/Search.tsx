@@ -85,18 +85,23 @@ export function Search() {
   return (
     <div role="search" className="qr-search" onKeyDown={move}>
       <label className="qr-search__label" htmlFor="qr-search-input">
-        Search the docs
+        Search docs
       </label>
-      <input
-        id="qr-search-input"
-        ref={input}
-        className="qr-search__input"
-        type="search"
-        placeholder="Search  /"
-        autoComplete="off"
-        value={query}
-        onChange={(event) => setQuery(event.target.value)}
-      />
+      <div className="qr-search__box">
+        <input
+          id="qr-search-input"
+          ref={input}
+          className="qr-search__input"
+          type="search"
+          placeholder="Search docs"
+          autoComplete="off"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+        <kbd className="qr-search__key" aria-hidden="true">
+          /
+        </kbd>
+      </div>
       {query.trim() ? (
         <div className="qr-search__panel">
           <p className="qr-search__status" role="status">

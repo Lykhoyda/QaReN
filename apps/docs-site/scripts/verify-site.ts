@@ -138,6 +138,24 @@ for (const file of htmlFiles()) {
   }
 }
 
+for (const file of htmlFiles()) {
+  const name = relative(DIST, file);
+  const html = readFileSync(file, 'utf8');
+  const frames = html.split(' data-copy="').length - 1;
+  if (frames > 0)
+    check(
+      `${name} code blocks each have a Copy button`,
+      html.split('class="docs-copy"').length - 1 === frames,
+    );
+}
+pages.forEach(({ slug }, i) => {
+  if (!slug) return; // The home page has its own layout without pager or contents.
+  const html = exists(pageFile(slug)) ? page(pageFile(slug)) : '';
+  check(`${slug} links the previous page`, html.includes('rel="prev"'));
+  check(`${slug} links the next page`, i === pages.length - 1 || html.includes('rel="next"'));
+  check(`${slug} has an On this page list`, html.includes('aria-label="On this page"'));
+});
+
 console.log('\nverify-site: generated files');
 const sitemap = exists('sitemap.xml') ? page('sitemap.xml') : '';
 for (const { slug } of pages)
@@ -165,6 +183,10 @@ for (const { slug, title } of pages) {
     check(`llms-small.txt names ${title}`, llmsSmall.includes(`# ${title}\n`));
 }
 check('pagefind index built', exists('pagefind/pagefind.js'));
+// Home.tsx renders the home page; index.mdx carries the same copy into the llms files.
+const homeHtml = exists('index.html') ? page('index.html') : '';
+for (const [, heading] of homeHtml.matchAll(/<h2[^>]*>([^<]+)<\/h2>/g))
+  check(`llms-full.txt carries the home section "${heading}"`, llmsFull.includes(`## ${heading}`));
 
 console.log('\nverify-site: old-URL redirects');
 type Redirect = { source: string; destination: string; permanent?: boolean };

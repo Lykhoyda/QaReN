@@ -1,9 +1,12 @@
 import type { Metadata, ResolvingMetadata } from 'next';
 import { notFound } from 'next/navigation';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { DocsPage } from '../../components/DocsPage.tsx';
+import { Home } from '../../components/Home.tsx';
 import { content } from '../../content.ts';
-import { DocsLayout } from '../../design/DocsLayout.tsx';
-import { BASE_PATH, groupOf, pages, pagePath, type Page } from '../../site.ts';
-import { sideGroups } from '../side-groups.ts';
+import { BASE_PATH, pages, pagePath, type Page } from '../../site.ts';
+import { tableOfContents } from '../../toc.ts';
 
 type Props = { params: Promise<{ slug?: string[] }> };
 
@@ -36,15 +39,17 @@ export async function generateMetadata(props: Props, parent: ResolvingMetadata):
 
 export default async function DocPage(props: Props) {
   const page = await pageFor(props);
+  if (page.slug === '') return <Home />;
   const { default: Content } = await content[page.file]();
+  const source = readFileSync(join(process.cwd(), 'src/content/docs', page.file), 'utf8');
   return (
-    <DocsLayout
-      groups={sideGroups(page)}
-      kicker={groupOf(page).label}
+    <DocsPage
+      current={page}
       title={page.title}
-      lead={page.description}
+      description={page.description}
+      toc={tableOfContents(source)}
     >
       <Content />
-    </DocsLayout>
+    </DocsPage>
   );
 }

@@ -54,8 +54,23 @@ export const groups: Group[] = [
     ],
   },
   {
-    label: 'How QaReN works',
+    label: 'How it works',
     pages: [
+      {
+        slug: 'cli',
+        file: 'cli.mdx',
+        label: 'The qaren CLI',
+        title: 'The qaren CLI',
+        description: 'Every qaren verb, its arguments and its flags.',
+      },
+      {
+        slug: 'check',
+        file: 'check.mdx',
+        label: 'Check a plan',
+        title: 'Check a plan',
+        description:
+          "Run qaren check against the working tree, read the receipt and find the run's evidence.",
+      },
       {
         slug: 'pull-requests',
         file: 'pull-requests.mdx',
@@ -80,31 +95,19 @@ export const groups: Group[] = [
           'How a passing block is saved, replayed on the next run, and patched when the app changes.',
       },
       {
+        slug: 'actions/rn-flow-1',
+        file: 'actions/rn-flow-1.md',
+        label: 'rn-flow/1 replay dialect',
+        title: 'rn-flow@1 replay dialect',
+        description:
+          'The contract for replaying saved actions — which Maestro-format commands compile, how selectors resolve, which domain runs each step, and the budgets every wait uses.',
+      },
+      {
         slug: 'configuration',
         file: 'configuration.mdx',
         label: 'Configuration',
         title: 'Configuration',
         description: 'Every key in .qaren/config.yaml, with its type, default and meaning.',
-      },
-    ],
-  },
-  {
-    label: 'Reference',
-    pages: [
-      {
-        slug: 'cli',
-        file: 'cli.mdx',
-        label: 'The qaren CLI',
-        title: 'The qaren CLI',
-        description: 'Every qaren verb, its arguments and its flags.',
-      },
-      {
-        slug: 'check',
-        file: 'check.mdx',
-        label: 'Check a plan',
-        title: 'Check a plan',
-        description:
-          "Run qaren check against the working tree, read the receipt and find the run's evidence.",
       },
       {
         slug: 'watch',
@@ -120,14 +123,11 @@ export const groups: Group[] = [
         title: 'Troubleshooting',
         description: 'The refusals and failures you meet most, and what to do about each.',
       },
-      {
-        slug: 'actions/rn-flow-1',
-        file: 'actions/rn-flow-1.md',
-        label: 'rn-flow/1 replay dialect',
-        title: 'rn-flow@1 replay dialect',
-        description:
-          'The contract for replaying saved actions — which Maestro-format commands compile, how selectors resolve, which domain runs each step, and the budgets every wait uses.',
-      },
+    ],
+  },
+  {
+    label: 'Project',
+    pages: [
       {
         slug: 'changelog',
         file: 'changelog.md',

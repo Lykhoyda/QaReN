@@ -1,18 +1,8 @@
 import type { Metadata } from 'next';
 import { Inter, JetBrains_Mono } from 'next/font/google';
 import type { ReactNode } from 'react';
-import { Search } from '../components/Search.tsx';
-import '../design/tokens.css';
-import '../design/components.css';
-import { Footer, NavBar } from '../design/index.tsx';
-import {
-  BASE_PATH,
-  GITHUB_URL,
-  SITE_DESCRIPTION,
-  SITE_NAME,
-  SITE_ORIGIN,
-  pagePath,
-} from '../site.ts';
+import '@qaren/design/tokens.css';
+import { BASE_PATH, SITE_DESCRIPTION, SITE_NAME, SITE_ORIGIN, pagePath } from '../site.ts';
 import './site.css';
 
 const inter = Inter({
@@ -61,29 +51,25 @@ const structuredData = {
 
 const home = `${BASE_PATH}${pagePath('')}`;
 
+// Runs before paint: the stored Light/Dark choice, else dark on the home page and light on docs.
+const themeScript = `try{var t=localStorage.getItem('qaren-theme');document.documentElement.dataset.theme=t==='dark'||t==='light'?t:location.pathname===${JSON.stringify(home)}?'dark':'light'}catch(e){}`;
+
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" data-theme="light" className={`${inter.variable} ${mono.variable}`}>
-      <body className="qr-root">
-        <a className="qr-skip" href="#main">
+    <html
+      lang="en"
+      data-theme="light"
+      className={`${inter.variable} ${mono.variable}`}
+      suppressHydrationWarning
+    >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+      </head>
+      <body>
+        <a className="docs-skip plain" href="#main">
           Skip to content
         </a>
-        <NavBar
-          homeHref={home}
-          links={[
-            { label: 'Docs', href: home },
-            { label: 'CLI reference', href: `${BASE_PATH}${pagePath('cli')}` },
-            { label: 'Changelog', href: `${BASE_PATH}${pagePath('changelog')}` },
-          ]}
-          action={<Search />}
-        />
         {children}
-        <Footer
-          links={[
-            { label: 'GitHub', href: GITHUB_URL },
-            { label: 'Changelog', href: `${BASE_PATH}${pagePath('changelog')}` },
-          ]}
-        />
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}

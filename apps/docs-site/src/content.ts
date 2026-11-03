@@ -4,7 +4,6 @@ type Loader = () => Promise<{ default: MDXContent }>;
 
 // Keyed by Page.file in site.ts; static imports so the bundler compiles each page.
 export const content: Record<string, Loader> = {
-  'index.mdx': () => import('./content/docs/index.mdx'),
   'getting-started.mdx': () => import('./content/docs/getting-started.mdx'),
   'plugin.mdx': () => import('./content/docs/plugin.mdx'),
   'pull-requests.mdx': () => import('./content/docs/pull-requests.mdx'),

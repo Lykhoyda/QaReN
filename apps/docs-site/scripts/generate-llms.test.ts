@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test';
+import { AGENT_PROMPT } from '../src/agent-prompt.ts';
 import { plainMarkdown } from './generate-llms.ts';
 
 test('plainMarkdown drops frontmatter, ESM lines and JSX tags but keeps fenced code', () => {
@@ -53,4 +54,14 @@ test('plainMarkdown preserves inline code while stripping surrounding JSX', () =
       'Use ```<Kept />```.',
     ].join('\n'),
   );
+});
+
+test('plainMarkdown writes the setup prompt in place of its component', () => {
+  const out = plainMarkdown(
+    ['Copy this prompt:', '', '<AgentPrompt />', '', 'Then run it.'].join('\n'),
+  );
+
+  expect(out).toContain('```text\nSet up QaReN in this app');
+  expect(out).toContain(`${AGENT_PROMPT}\n\`\`\``);
+  expect(out).not.toContain('<AgentPrompt');
 });

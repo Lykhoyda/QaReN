@@ -1,6 +1,7 @@
 // Writes public/llms.txt, llms-full.txt and llms-small.txt from the MDX sources in sidebar order.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { AGENT_PROMPT } from '../src/agent-prompt.ts';
 import {
   BASE_PATH,
   SITE_DESCRIPTION,
@@ -18,26 +19,31 @@ const SITE = `${SITE_ORIGIN}${BASE_PATH}`;
 /** Markdown body without frontmatter, ESM lines or JSX tags; fenced code is kept verbatim. */
 export function plainMarkdown(source: string): string {
   let fenced = false;
-  return source
-    .replace(/^---\n[\s\S]*?\n---\n/, '')
-    .split('\n')
-    .flatMap((line) => {
-      if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
-      if (fenced || /^\s*(```|~~~)/.test(line)) return [line];
-      if (
-        /^(import\s.*\sfrom\s|import\s+['"]|export\s+(const|let|function|default|async|\{|\*))/.test(
-          line,
+  return (
+    source
+      .replace(/^---\n[\s\S]*?\n---\n/, '')
+      // The setup prompt component renders this text; keep it for readers of the llms files.
+      .replace(/^<AgentPrompt \/>$/m, '```text\n' + AGENT_PROMPT + '\n```')
+      .split('\n')
+      .flatMap((line) => {
+        if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
+        if (fenced || /^\s*(```|~~~)/.test(line)) return [line];
+        if (
+          /^(import\s.*\sfrom\s|import\s+['"]|export\s+(const|let|function|default|async|\{|\*))/.test(
+            line,
+          )
         )
-      )
-        return [];
-      const text = line.replace(/(`+).*?\1|<\/?[A-Z][\w.]*(?:\s[^<>]*)?\/?>/g, (match, backticks) =>
-        backticks ? match : '',
-      );
-      return text.trim() === '' && line.trim() !== '' ? [] : [text];
-    })
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+          return [];
+        const text = line.replace(
+          /(`+).*?\1|<\/?[A-Z][\w.]*(?:\s[^<>]*)?\/?>/g,
+          (match, backticks) => (backticks ? match : ''),
+        );
+        return text.trim() === '' && line.trim() !== '' ? [] : [text];
+      })
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+  );
 }
 
 function section(page: Page): string {
