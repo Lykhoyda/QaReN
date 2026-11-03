@@ -3497,7 +3497,8 @@ target dispatch; sink failures leave the outcome unchanged. It stays out of the
 public result and ledger, as covered by the
 [occlusion regressions](../qaren-core/test/unit/qa/occlusion-walker.test.ts).
 
-`ledger.json` adds a `timing` object to each walked attempt row, in milliseconds.
+`ledger.json` adds a `timing` object to each walked attempt row; duration fields
+are in milliseconds.
 `captureMs`, `resolveMs` (decision), `actMs`, `postCaptureMs` and `otherMs`
 partition `total`, the elapsed window between consecutive row timestamps
 (starting at the walk for the first row). `nativeMs`, `reactMs` and optional

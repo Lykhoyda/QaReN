@@ -1,6 +1,6 @@
 import type { TimingEvent } from './timing.js';
 
-// Top-level fields partition the row window; native, react, presence and Jev break down capture and decision.
+// Only capture, resolve, act, post-capture and other durations partition the row window.
 export interface RowTiming {
   captureMs: number;
   nativeMs: number;
