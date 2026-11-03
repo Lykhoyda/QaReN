@@ -178,7 +178,7 @@ export async function waitForExactPortTargets(
   // Simulators share host loopback: another device's runtime on this port is not the run's.
   deviceName?: string,
   bundleId?: string,
-  onTargetsMissing?: () => void,
+  onTargetsObserved?: (targets: HermesTarget[]) => void,
 ): Promise<void> {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new RangeError('port must be an integer between 1 and 65535');
@@ -235,7 +235,7 @@ export async function waitForExactPortTargets(
           : onDevice.length === 0
             ? 'other_device'
             : 'other_bundle';
-      if (!ready) onTargetsMissing?.();
+      onTargetsObserved?.(raw);
     }
     remaining = deadline - performance.now();
     if (remaining <= 0) break;
@@ -1176,6 +1176,14 @@ export async function discoverExactPort(
       ? { platform: platformFilterOrFilters }
       : (platformFilterOrFilters ?? {});
   const raw = await fetchTargets(currentPort, DISCOVERY_TIMEOUT_MS * 2);
+  return selectExactPortTargets(raw, currentPort, filters);
+}
+
+export function selectExactPortTargets(
+  raw: HermesTarget[],
+  currentPort: number,
+  filters: SelectTargetFilters,
+): DiscoveryResult {
   const validTargets = filterValidTargets(raw).filter((target) => {
     try {
       const { hostname, port } = new URL(target.webSocketDebuggerUrl);

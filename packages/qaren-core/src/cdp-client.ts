@@ -848,8 +848,17 @@ export class CDPClient {
     };
   }
 
-  noteMissingDevelopmentTargets(): void {
-    this.publishDevelopmentTargets(undefined);
+  noteDevelopmentTargetCandidates(targets: HermesTarget[]): void {
+    const candidates = JSON.stringify(
+      targets.map((target) => [target.id, target.webSocketDebuggerUrl]).sort(),
+    );
+    if (
+      targets.length === 0 ||
+      (this._developmentTargetCandidates !== undefined &&
+        this._developmentTargetCandidates !== candidates)
+    )
+      this.publishDevelopmentTargets(undefined);
+    this._developmentTargetCandidates = candidates;
   }
 
   private publishDevelopmentTargets(counts: DevelopmentTargetCounts | undefined): void {
@@ -1565,17 +1574,7 @@ export class CDPClient {
       setDevelopmentTargets: (counts) => {
         this.publishDevelopmentTargets(counts);
       },
-      setDevelopmentTargetCandidates: (targets) => {
-        const candidates = JSON.stringify(
-          targets.map((target) => [target.id, target.webSocketDebuggerUrl]).sort(),
-        );
-        if (
-          this._developmentTargetCandidates !== undefined &&
-          this._developmentTargetCandidates !== candidates
-        )
-          this.publishDevelopmentTargets(undefined);
-        this._developmentTargetCandidates = candidates;
-      },
+      setDevelopmentTargetCandidates: (targets) => this.noteDevelopmentTargetCandidates(targets),
       sendWithTimeout: (method, params, ms) => this.sendWithTimeout(method, params, ms),
       handleMessage: (data) => this.handleMessage(data),
       handleClose: (code) => this.handleClose(code),

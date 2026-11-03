@@ -14,17 +14,25 @@ import type { Envelope, Refusal, WireRequest } from '../../../dist/qa/wire.js';
 
 const root = fileURLToPath(new URL('../../../../../', import.meta.url));
 
-async function admission(t: TestContext, afterFalse: 'empty' | 'pending') {
+async function admission(
+  t: TestContext,
+  afterFalse: 'empty' | 'pending' | 'replacement-id' | 'replacement-url' | 'unchanged',
+) {
   const runDir = await mkdtemp(join(tmpdir(), 'qaren-empty-targets-'));
   let falseProbes = 0;
   let emptyReads = 0;
+  let postFalseReads = 0;
   let setupRequests = 0;
   let port = 0;
   const server = createServer((request, response) => {
     if (request.url === '/status') return response.end('packager-status:running');
     if (request.url !== '/json/list') return response.end('{}');
-    if (falseProbes > 0 && afterFalse === 'pending') return;
-    const empty = falseProbes > 0;
+    if (falseProbes > 0) {
+      postFalseReads++;
+      if (afterFalse === 'pending' || (afterFalse !== 'empty' && postFalseReads > 1)) return;
+    }
+    const replaced = falseProbes > 0;
+    const empty = replaced && afterFalse === 'empty';
     if (empty) emptyReads++;
     response.setHeader('Content-Type', 'application/json');
     response.end(
@@ -33,13 +41,16 @@ async function admission(t: TestContext, afterFalse: 'empty' | 'pending') {
           ? []
           : [
               {
-                id: 'synthetic-target',
+                id:
+                  replaced && afterFalse === 'replacement-id'
+                    ? 'synthetic-replacement'
+                    : 'synthetic-target',
                 title: 'com.example.synthetic',
                 appId: 'com.example.synthetic',
                 description: 'com.example.synthetic',
                 deviceName: 'Sandbox iPhone',
                 vm: 'Hermes',
-                webSocketDebuggerUrl: `ws://127.0.0.1:${port}/target`,
+                webSocketDebuggerUrl: `ws://127.0.0.1:${port}/${replaced && afterFalse === 'replacement-url' ? 'replacement' : 'target'}`,
               },
             ],
       ),
@@ -157,7 +168,7 @@ async function admission(t: TestContext, afterFalse: 'empty' | 'pending') {
     messages.some((message) => message.type === 'row' && (message.payload.line ?? 0) > 0),
     false,
   );
-  return { result: { code: result.code, admission: result.admission }, emptyReads };
+  return { result: { code: result.code, admission: result.admission }, emptyReads, postFalseReads };
 }
 
 test(
@@ -185,3 +196,22 @@ test(
     assert.equal(result.admission.targetsTotal, 1);
   },
 );
+
+for (const afterFalse of ['replacement-id', 'replacement-url', 'unchanged'] as const) {
+  test(
+    `a completed ${afterFalse} readiness read reconciles evidence before a stalled exact read`,
+    { timeout: 30_000 },
+    async (t) => {
+      const { result, postFalseReads } = await admission(t, afterFalse);
+      assert.equal(postFalseReads, 2, 'readiness completed before the exact read stalled');
+      const unchanged = afterFalse === 'unchanged';
+      assert.equal(result.code, unchanged ? 'DEV_TARGET_MISSING' : 'CDP_NOT_CONNECTED');
+      assert.equal(
+        result.admission.inner,
+        unchanged ? 'non_dev_bundle' : 'no_dev_target_unknown',
+      );
+      assert.equal(result.admission.devFalse ?? 0, unchanged ? 1 : 0);
+      assert.equal(result.admission.targetsTotal ?? 0, unchanged ? 1 : 0);
+    },
+  );
+}
