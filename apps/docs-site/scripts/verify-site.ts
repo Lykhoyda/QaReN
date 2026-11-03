@@ -107,6 +107,7 @@ console.log('\nverify-site: page structure');
 for (const file of htmlFiles()) {
   const name = relative(DIST, file);
   const html = readFileSync(file, 'utf8');
+  check(`${name} defaults to dark`, /<html\b[^>]*\bdata-theme="dark"/.test(html));
   const levels = [...html.matchAll(/<h([1-6])[\s>]/g)].map(([, level]) => Number(level));
   check(`${name} has one h1`, levels.filter((level) => level === 1).length === 1);
   const skipped = levels.findIndex((level, i) => i > 0 && level > levels[i - 1] + 1);
