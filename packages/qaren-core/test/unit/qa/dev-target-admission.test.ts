@@ -14,12 +14,15 @@ async function targets(t: { after(fn: () => void): void }, modes: unknown[]) {
     socket.on('message', (bytes) => {
       const message = JSON.parse(String(bytes));
       const mode = modes[Number(request.url!.slice(1))];
+      if (mode === 'pending-probe' && message.params?.expression?.includes('__DEV__')) return;
       const world = mode === undefined ? {} : { __DEV__: mode };
       const value =
         message.method === 'Runtime.evaluate'
           ? runInNewContext(message.params.expression, world)
           : undefined;
-      socket.send(JSON.stringify({ id: message.id, result: { result: { value } } }));
+      socket.send(
+        JSON.stringify({ id: message.id, result: { result: { type: typeof value, value } } }),
+      );
     });
   });
   const list: HermesTarget[] = modes.map((_, index) => ({
@@ -251,4 +254,40 @@ test('unfinished scans retain same-candidate evidence and invalidate replaced ca
   h.list.splice(0);
   await assert.rejects(client.connectExact(h.port, {}, 'qa', 1));
   assert.equal(observation?.devFalse, 0, 'a completed empty scan replaces the false scan');
+});
+
+test('a completed probe timeout retains the prior same-target false scan', async (t) => {
+  const modes: unknown[] = [false];
+  const h = await targets(t, modes);
+  const client = new CDPClient(h.port);
+  t.after(() => client.disconnect());
+  t.mock.method(globalThis, 'fetch', async () => ({ json: async () => h.list }));
+  let observation: { devFalse: number } | undefined;
+  client.observeDevelopmentTargets((counts) => {
+    observation = counts;
+  });
+  await assert.rejects(client.connectExact(h.port, {}, 'qa', 1));
+  assert.equal(observation?.devFalse, 1);
+  modes[0] = 'pending-probe';
+  await assert.rejects(client.connectExact(h.port, {}, 'qa', 1));
+  assert.equal(observation?.devFalse, 1, 'a timed-out probe is not a completed development scan');
+});
+
+test('QA reconnect retries a transient probe failure while retaining the development gate', async (t) => {
+  const h = await targets(t, [true]);
+  let probes = 0;
+  h.ctx.sendWithTimeout = async () => {
+    if (++probes === 1) throw new Error('temporary runtime failure');
+    return {};
+  };
+  await discoverAndConnect(
+    h.ctx,
+    h.port,
+    {},
+    async () => ({ port: h.port, targets: h.list }),
+    'qa',
+    2,
+  );
+  assert.equal(probes, 2);
+  assert.deepEqual(h.setup, [0]);
 });

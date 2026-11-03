@@ -19,7 +19,10 @@ export function allTargetsNonDev(counts: DevelopmentTargetCounts): boolean {
 }
 
 export class DevTargetUnavailableError extends Error {
-  constructor(readonly counts: DevelopmentTargetCounts) {
+  constructor(
+    readonly counts: DevelopmentTargetCounts,
+    readonly complete = true,
+  ) {
     super('No scoped target proved development mode');
     this.name = 'DevTargetUnavailableError';
   }

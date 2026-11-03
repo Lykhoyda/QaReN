@@ -2405,6 +2405,7 @@ for (const mode of [
   'late_true',
   'late_undefined',
   'failed_scan',
+  'incomplete_scan',
   'pending_scan',
   'replaced',
 ] as const) {
@@ -2420,6 +2421,11 @@ for (const mode of [
         attempts++;
         if (attempts > 1 && mode === 'late_true') return;
         if (attempts > 1 && mode === 'failed_scan') throw new CDPProbeTimeoutError('scan failed');
+        if (attempts > 1 && mode === 'incomplete_scan')
+          throw new DevTargetUnavailableError(
+            { targetsTotal: 1, devTrue: 0, devFalse: 0, devUndefined: 0, devUnknown: 1 },
+            false,
+          );
         if (attempts > 1 && mode === 'pending_scan') await new Promise(() => {});
         if (attempts > 1 && mode === 'replaced') throw new CDPTargetClosedError('replaced');
         const undefinedTarget = mode === 'undefined' || (mode === 'late_undefined' && attempts > 1);
@@ -2446,7 +2452,11 @@ for (const mode of [
       assert.equal(calls.filter((call) => call === 'open').length, 1);
     } else {
       assert.ok(result instanceof HandlerError);
-      const nonDev = mode === 'false' || mode === 'pending_scan' || mode === 'failed_scan';
+      const nonDev =
+        mode === 'false' ||
+        mode === 'pending_scan' ||
+        mode === 'failed_scan' ||
+        mode === 'incomplete_scan';
       assert.equal(result.code, nonDev ? 'DEV_TARGET_MISSING' : 'CDP_NOT_CONNECTED');
       assert.equal(result.meta?.inner, nonDev ? 'non_dev_bundle' : 'no_dev_target_unknown');
       assert.ok(!calls.includes('open'));
@@ -2535,3 +2545,26 @@ for (const listState of ['pending', 'timed_out', 'ready_at_deadline', 'empty'] a
     assert.equal(relaunches, 0, 'unavailable development targets never enable no-target relaunch');
   });
 }
+
+test('walk expiry before registration keeps the attach diagnostic when the inner timer fires first', async (t) => {
+  const clock = mockClock(t);
+  const schedule = globalThis.setTimeout;
+  let timers = 0;
+  t.mock.method(globalThis, 'setTimeout', (callback: () => void, ms: number) =>
+    schedule(callback, ms + (++timers === 1 ? 1 : 0)),
+  );
+  const { stop, steps } = harness({
+    remainingMs: () => 1000 - performance.now(),
+    waitTargets: async () => new Promise(() => {}),
+    attach: async () => assert.fail('no target has registered'),
+  });
+  const pending = admit(steps, stop);
+  const outcome = pending.catch((error: HandlerError) => error);
+  clock.cleanup(stop, pending);
+  await nextTurn();
+  await clock.advance(1000);
+  const error = await outcome;
+  assert.ok(error instanceof HandlerError);
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  assert.equal(error.meta?.inner, 'cdp_probe_timeout');
+});

@@ -260,6 +260,7 @@ export async function discoverAndConnect(
     devUnknown: 0,
   };
   let connectedTarget: HermesTarget | null = null;
+  let complete = true;
   for (let idx = 0; idx < sorted.length; idx++) {
     const candidate = sorted[idx];
     const isLast = idx === sorted.length - 1;
@@ -297,6 +298,8 @@ export async function discoverAndConnect(
       if (isAbort(err)) throw err;
       if (err instanceof ConnectionSetupSupersededError) throw err;
       if (intent === 'qa') {
+        if (!(err instanceof DevCandidateUnavailableError || err instanceof CDPTargetClosedError))
+          complete = false;
         const state = err instanceof DevCandidateUnavailableError ? err.state : 'unknown';
         if (state === 'false') counts.devFalse++;
         else if (state === 'undefined') counts.devUndefined++;
@@ -323,8 +326,8 @@ export async function discoverAndConnect(
 
   if (ctx.isDisposed()) throw new ConnectionSetupSupersededError();
   if (!connectedTarget) {
-    ctx.setDevelopmentTargets?.(counts);
-    throw new DevTargetUnavailableError(counts);
+    if (complete) ctx.setDevelopmentTargets?.(counts);
+    throw new DevTargetUnavailableError(counts, complete);
   }
 
   logger.info(
@@ -467,7 +470,7 @@ async function connectToTarget(
   // Fed into formatConnectFailureMessage at the end.
   const attempts: { handshakeOk: boolean; probeTimedOut: boolean; handshakeTimedOut: boolean }[] =
     [];
-  for (let i = 0; i < (intent === 'qa' ? 1 : retries); i++) {
+  for (let i = 0; i < retries; i++) {
     if (ctx.isDisposed() || ctx.isSoftReconnectRequested()) {
       throw new Error('Client disposed or preempted during connection');
     }
@@ -548,7 +551,7 @@ async function connectToTarget(
         closeConnectionAttempt(ctx, attemptWs);
         throw err;
       }
-      if (intent === 'qa') {
+      if (intent === 'qa' && (err instanceof DevCandidateUnavailableError || i === retries - 1)) {
         closeConnectionAttempt(ctx, attemptWs);
         ctx.setHelpersInjected(false);
         ctx.setConnectedTarget(null);

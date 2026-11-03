@@ -658,8 +658,10 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
           if (waitTargets) {
             const targetsDeadline =
               devTargetSeen || registeredTargetSeen ? activeDeadline : deadline;
-            await withDeadline(targetsDeadline, registeredTimeout, () =>
-              waitTargets(targetsDeadline),
+            await withDeadline(
+              targetsDeadline,
+              registeredTargetSeen ? registeredTimeout : attachTimeout,
+              () => waitTargets(targetsDeadline),
             );
             if (!registeredTargetSeen) {
               registeredTargetSeen = true;
@@ -722,7 +724,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
             devObservation = undefined;
           if (error instanceof DevTargetUnavailableError) {
             devTargetSeen = true;
-            devObservation = error.counts;
+            if (error.complete) devObservation = error.counts;
           }
           const remaining = Math.min(deadline - performance.now(), steps.remainingMs());
           const unproven = unprovenPlatformSelection(error);
