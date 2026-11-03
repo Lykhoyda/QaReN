@@ -1436,23 +1436,37 @@ fn run_inner(
                     ));
                 }
             }
-            // Only the uploaded copy starts at the admitted app, or after a pre-plan login; the local recording stays complete.
+            // The copy skips setup while preserving admission and pre-plan login boundaries.
             let video = if video == VideoStatus::Available || outcome.ledger.publication_interrupted
             {
-                let offset = outcome
-                    .ledger
-                    .publish_from_ms
-                    .or(outcome.ledger.admitted_at_ms)
-                    .map(|at| at.saturating_sub(recording_from));
+                let offset = outcome.ledger.admitted_at_ms.map(|admitted| {
+                    admitted
+                        .max(outcome.ledger.publish_from_ms.unwrap_or(admitted))
+                        .saturating_sub(recording_from)
+                        .max(outcome.first_step_start_ms.unwrap_or(0))
+                });
                 // Row t is relative to t0, taken after the recording started, so it can only cut before the true last-row frame.
                 let end = outcome.ledger.steps.iter().map(|s| s.t).max();
-                record::publication_copy(
+                let video = record::publication_copy(
                     ctx.runner,
                     &run_dir,
                     offset,
                     end,
                     outcome.ledger.publication_interrupted,
-                )
+                );
+                if video == VideoStatus::Available {
+                    if let Some((start, end)) = offset.zip(end).and_then(|(start, end)| {
+                        let admitted = outcome.ledger.admitted_at_ms?;
+                        Some((
+                            recording_from.checked_add(start)?.checked_sub(admitted)?,
+                            recording_from.checked_add(end)?.checked_sub(admitted)?,
+                        ))
+                    }) {
+                        ctx.notes
+                            .push(("video_window".into(), format!("start={start}; end={end}")));
+                    }
+                }
+                video
             } else {
                 video
             };
