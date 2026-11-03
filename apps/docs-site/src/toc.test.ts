@@ -28,11 +28,14 @@ test('tableOfContents lists h2 and h3 outside fences with GitHub-style ids', () 
   ]);
 });
 
-test('tableOfContents keeps only h2 entries on pages with more than 40 headings', () => {
+test('tableOfContents keeps h2 and h3 entries on pages with more than 40 headings', () => {
   const source = Array.from({ length: 21 }, (_, i) => `## v${i}\n### Patch Changes`).join('\n');
 
   const toc = tableOfContents(source);
-  expect(toc).toHaveLength(21);
-  expect(toc.every((entry) => entry.depth === 2)).toBe(true);
-  expect(toc[1]).toEqual({ depth: 2, text: 'v1', id: 'v1' });
+  expect(toc).toHaveLength(42);
+  expect(toc.filter((entry) => entry.depth === 2)).toHaveLength(21);
+  expect(toc.filter((entry) => entry.depth === 3)).toHaveLength(21);
+  expect(toc[1]).toEqual({ depth: 3, text: 'Patch Changes', id: 'patch-changes' });
+  expect(toc[2]).toEqual({ depth: 2, text: 'v1', id: 'v1' });
+  expect(toc[41]).toEqual({ depth: 3, text: 'Patch Changes', id: 'patch-changes-20' });
 });

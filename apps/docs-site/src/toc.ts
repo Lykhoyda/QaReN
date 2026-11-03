@@ -36,6 +36,5 @@ export function tableOfContents(source: string): TocEntry[] {
     const depth = heading[1].length;
     if (depth === 2 || depth === 3) entries.push({ depth, text, id });
   }
-  // Long pages such as the changelog list only their sections.
-  return entries.length > 40 ? entries.filter((entry) => entry.depth === 2) : entries;
+  return entries;
 }

@@ -43,20 +43,28 @@ happened.
 Every run ends in PASS, FAIL or a refusal with a typed reason and the next action to take.
 Your agent reads it as JSON; your scripts read the exit code.
 
+exit 0 pass · 1 fail · 4 refused
+
 ### Evidence you can open
 
 Each run keeps a step-by-step ledger and a readable report at the paths its receipt names.
 A pull request run adds a screen recording when one can be captured.
+
+report.md · ledger.json · run.json · logs/events.jsonl
 
 ### It tests what you changed
 
 QaReN builds your working tree, or a pull request's head, and fails the run if the code
 changes while the plan is being walked, so a drifted run can never pass.
 
+CANDIDATE_DRIFTED is never a pass
+
 ### Faster on every run
 
 A passing block that is eligible is saved under `.qaren/actions/` and replayed next time by
 the exact elements it used, so repeat checks skip the search.
+
+ledger.blocks: replayed · patched · discovered
 
 ## Built for
 
@@ -69,6 +77,10 @@ the exact elements it used, so repeat checks skip the search.
 
 Open Claude Code, Codex or Cursor in your app. Copy this prompt, then paste it into your
 agent to set up QaReN for iOS simulators on an Apple silicon Mac:
+
+1. Copy the prompt.
+2. Paste it into your agent, from the app root.
+3. It stops and tells you if a step needs you, such as an Xcode download or a plugin UI step.
 
 <AgentPrompt />
 
