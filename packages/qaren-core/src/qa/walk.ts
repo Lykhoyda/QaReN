@@ -764,8 +764,8 @@ async function openSession(
           }),
         ),
       ),
-    press: (ref, qaContext) =>
-      act(() => press({ ref, qaContext, qaTiming: { now, observe: timing } }), false, {
+    press: (ref, qaContext, options) =>
+      act(() => press({ ref, qaContext, ...options, qaTiming: { now, observe: timing } }), false, {
         now,
         observe: timing,
       }),

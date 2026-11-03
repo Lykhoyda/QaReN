@@ -215,7 +215,12 @@ export interface WalkerDeps {
     // A wait's remaining time: the capture rejects with CaptureDeadline once it is spent.
     budgetMs?: number;
   }): Promise<Screen>;
-  press(ref: string, context: QaDispatchContext): Promise<ActResult>;
+  // requireLiveHit: the runner taps only when its live hit read proves the target hittable.
+  press(
+    ref: string,
+    context: QaDispatchContext,
+    options?: { requireLiveHit: true },
+  ): Promise<ActResult>;
   fill(
     ref: string,
     text: string,
@@ -321,6 +326,48 @@ interface Observation {
 const FILL_LADDER_BUDGET_MS = 120_000;
 const ITEM_DEADLINE_EXCEEDED = 'VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED';
 const KEYBOARD_DISMISSED = '; the keyboard was dismissed before this tap';
+const OFF_SCREEN_AFTER_SCROLL =
+  'stayed off screen after one scroll: its centre is past the visible area or under the keyboard';
+
+// An overlay inferred from capture order alone: centre inside its clip, no keyboard in play.
+const inferredOverlay = (facts: Readonly<CentreCoverageDiagnostic> | null) =>
+  facts?.branch === 'overlay' && facts.viewportOutside === false && facts.keyboardVisible === false
+    ? facts
+    : undefined;
+
+// The runner's fixed reason word, or the bare code; never the rest of a native message.
+const liveHitRefusal = (error: string | undefined): string =>
+  error?.match(/LIVE_HIT_UNPROVEN: ([a-z-]+)/)?.[1] ??
+  error?.match(/^[A-Z_]+/)?.[0] ??
+  'unavailable';
+
+// Why no live hit read decided an inferred overlay; empty for other covers.
+const unaskedLiveHit = (
+  kind: Item['kind'],
+  platform: BlockPlatform | undefined,
+  facts: Readonly<CentreCoverageDiagnostic> | null,
+): string => {
+  if (facts?.branch !== 'overlay') return '';
+  const why =
+    kind !== 'press'
+      ? `a ${kind} keeps the inferred rule`
+      : platform !== 'ios'
+        ? 'this platform keeps the inferred rule'
+        : facts.keyboardVisible !== false
+          ? 'the keyboard is not proven hidden'
+          : facts.viewportOutside !== false
+            ? 'its centre is not inside its clip'
+            : undefined;
+  return why ? `; no live hit read was asked: ${why}` : '';
+};
+
+// Capture-local geometry of the inferred cutter; labels, identifiers and values stay withheld.
+const cutterText = (facts: Readonly<CentreCoverageDiagnostic> | null): string => {
+  const cut = facts?.cutter;
+  if (!cut) return '';
+  const { x, y, width, height } = cut.frame;
+  return `; inferred band cutter ${cut.ref} (${cut.kind}) at ${x},${y},${width},${height} moved the band ${cut.edge} from ${cut.before[cut.edge]} to ${cut.after[cut.edge]}`;
+};
 
 class EvidenceExpired extends Error {
   constructor(readonly itemExpired = false) {
@@ -2979,6 +3026,22 @@ async function walkBlockScoped(
         let scrollRefused = false;
         let settledFrame: string | undefined;
         let keyboardAttempted = false;
+        const centreChanged = (current: Element | undefined): boolean | null => {
+          const originalFrame = refusedIdentity && elementFrame(refusedIdentity);
+          const currentFrame = current && elementFrame(current);
+          const centres =
+            originalFrame && currentFrame
+              ? [
+                  originalFrame.x + originalFrame.width / 2,
+                  originalFrame.y + originalFrame.height / 2,
+                  currentFrame.x + currentFrame.width / 2,
+                  currentFrame.y + currentFrame.height / 2,
+                ]
+              : undefined;
+          return centres?.every(Number.isFinite)
+            ? centres[0] !== centres[2] || centres[1] !== centres[3]
+            : null;
+        };
         const captureBeforeDispatch = (): Promise<Observation> =>
           (item.kind === 'press' || item.kind === 'fill') &&
           (scrolled || sequence.momentum || fillIdentity !== undefined)
@@ -3041,6 +3104,10 @@ async function walkBlockScoped(
           let initial = held?.decision;
           let freshness = attempt === 1 ? 1 : 0;
           let occluded: 'up' | 'down' | undefined;
+          // Set once a clearance scroll left an inferred overlay: the press goes out live-hit-strict.
+          let liveHit: Readonly<CentreCoverageDiagnostic> | undefined;
+          // The centre verdict that asked for the clearance scroll.
+          let clearanceCoverage: Readonly<CentreCoverageDiagnostic> | null = null;
           let clearance: number | undefined;
           let within: NativeNode['rect'];
           let scrollNeedsReadback = false;
@@ -3199,6 +3266,18 @@ async function walkBlockScoped(
                       (preScroll.screen.semanticUnassociatedReact ?? 0)
                   )
                     throw new EvidenceExpired(false);
+                  const clearing = scrollOrigin === 'centre-covered' ? clearanceCoverage : null;
+                  // A refused clearance drag moved nothing; an inferred iOS overlay still goes to the live hit read.
+                  if (
+                    !result.ok &&
+                    result.mutation === 'none' &&
+                    item.kind === 'press' &&
+                    deps.platform === 'ios' &&
+                    inferredOverlay(clearing)
+                  ) {
+                    scrollNeedsReadback = false;
+                    continue;
+                  }
                   if (
                     (resolution.origin === 'named-offscreen' || (!result.ok && !result.proven)) &&
                     screenSignature(before.screen) === signature
@@ -3206,13 +3285,29 @@ async function walkBlockScoped(
                     outcome = failed(
                       item,
                       attempt,
-                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}`,
+                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}${cutterText(clearing)}${unaskedLiveHit(item.kind, deps.platform, clearing)}`,
                       before.screen,
                       await shoot(item),
                       undefined,
                       false,
                       'TARGET_NOT_FOUND',
                     );
+                    if (clearing)
+                      diagnostic(
+                        item,
+                        before,
+                        'decision',
+                        'CENTRE_COVERED',
+                        undefined,
+                        undefined,
+                        undefined,
+                        {
+                          predicate: clearing,
+                          scrollOrigin,
+                          requestedDirection: scrollDirection,
+                          targetCentreChanged: null,
+                        },
+                      );
                     break;
                   }
                   scrollNeedsReadback = false;
@@ -3336,35 +3431,28 @@ async function walkBlockScoped(
                 continue;
               }
               let centreDiagnostic: Readonly<CentreCoverageDiagnostic> | null = null;
-              if (
+              const centreIsCovered =
                 (item.kind === 'press' || item.kind === 'fill') &&
                 element !== undefined &&
                 centreCovered(element, before.screen, (facts) => {
                   centreDiagnostic = facts;
-                })
-              ) {
+                });
+              const overlay = centreIsCovered ? inferredOverlay(centreDiagnostic) : undefined;
+              // List order is not paint order: an inferred overlay alone never refuses an iOS press.
+              if (scrolled && overlay && item.kind === 'press' && deps.platform === 'ios')
+                liveHit = overlay;
+              else if (centreIsCovered && element !== undefined) {
                 if (scrolled) {
                   outcome = failed(
                     item,
                     attempt,
-                    `"${item.target.phrase}" stayed off screen after one scroll: its centre is past the visible area or under the keyboard`,
+                    `"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${cutterText(centreDiagnostic)}${unaskedLiveHit(item.kind, deps.platform, centreDiagnostic)}`,
                     before.screen,
                     await shoot(item),
                     ref,
                     false,
                     'TARGET_NOT_FOUND',
                   );
-                  const originalFrame = refusedIdentity && elementFrame(refusedIdentity);
-                  const currentFrame = elementFrame(element);
-                  const centres =
-                    originalFrame && currentFrame
-                      ? [
-                          originalFrame.x + originalFrame.width / 2,
-                          originalFrame.y + originalFrame.height / 2,
-                          currentFrame.x + currentFrame.width / 2,
-                          currentFrame.y + currentFrame.height / 2,
-                        ]
-                      : undefined;
                   diagnostic(
                     item,
                     before,
@@ -3377,14 +3465,13 @@ async function walkBlockScoped(
                       predicate: centreDiagnostic,
                       scrollOrigin,
                       requestedDirection: scrollDirection,
-                      targetCentreChanged: centres?.every(Number.isFinite)
-                        ? centres[0] !== centres[2] || centres[1] !== centres[3]
-                        : null,
+                      targetCentreChanged: centreChanged(element),
                     },
                   );
                   break;
                 }
                 refusedIdentity = element;
+                clearanceCoverage = centreDiagnostic;
                 occluded = clearanceScroll(element, before.screen);
                 scrollOrigin = 'centre-covered';
                 clearance = keyboardClearance(element, before.screen);
@@ -3443,7 +3530,9 @@ async function walkBlockScoped(
               act = await mutate(item, before, async (context) => {
                 if (item.kind === 'press') {
                   pressBase = before.screen;
-                  return deps.press(ref!, context);
+                  return liveHit
+                    ? deps.press(ref!, context, { requireLiveHit: true })
+                    : deps.press(ref!, context);
                 }
                 return item.kind === 'fill'
                   ? deps.fill(ref!, fillText(item), context, secretFill(item), () =>
@@ -3456,6 +3545,35 @@ async function walkBlockScoped(
                       : deps.dialog(item.action, context);
               });
               if (item.kind === 'fill') fillMethod = act.method ?? 'keyboard';
+              // Not hittable, unavailable, ambiguous, expired or moved: the inferred overlay refuses.
+              if (liveHit && item.kind === 'press' && !act.ok && act.mutation === 'none') {
+                outcome = failed(
+                  item,
+                  attempt,
+                  `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${cutterText(liveHit)}; the live hit read refused the press (${liveHitRefusal(act.error)}); no tap was performed`,
+                  before.screen,
+                  await shoot(item),
+                  ref,
+                  false,
+                  'TARGET_NOT_FOUND',
+                );
+                diagnostic(
+                  item,
+                  before,
+                  'decision',
+                  'CENTRE_COVERED',
+                  undefined,
+                  undefined,
+                  undefined,
+                  {
+                    predicate: liveHit,
+                    scrollOrigin,
+                    requestedDirection: scrollDirection,
+                    targetCentreChanged: centreChanged(element),
+                  },
+                );
+                break;
+              }
               if (!act.ok && act.ambiguous) {
                 outcome = failed(
                   item,
