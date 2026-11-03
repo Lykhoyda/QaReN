@@ -1571,7 +1571,7 @@ for (const nativeType of ['Other', 'TextField']) {
         return okResult({ typed: true });
       }
       if (args[0] === 'verify-input')
-        return okResult({ verifyVerdict: 'exact', verifyStable: true });
+        return okResult({ verifyVerdict: nativeFills > 0 ? 'exact' : 'mismatch', verifyStable: true });
       throw new Error(`unexpected command ${args[0]}`);
     });
     fake.deps.fill = async (ref, text, context) => {
