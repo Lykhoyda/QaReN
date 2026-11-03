@@ -24,7 +24,7 @@ import {
   withEchoScope,
 } from './inputs.js';
 import { isAbort, cancellationSignal, withDeadline } from '../domain/cancellation.js';
-import { ANY_METHOD, parseStep, type Block, type Item, type Target } from './plan.js';
+import { fillLabels, parseStep, type Block, type Item, type Target } from './plan.js';
 import {
   type Element,
   type Screen,
@@ -227,6 +227,7 @@ export interface WalkerDeps {
     context: QaDispatchContext,
     privateValue?: boolean,
     onPrivateInput?: () => void,
+    alwaysRetype?: boolean,
   ): Promise<ActResult>;
   // iOS only: type, proven only by a matching React read-back; testID identifies the pre-dispatch focus veto.
   typeFocused?(
@@ -237,6 +238,7 @@ export interface WalkerDeps {
     requireFocused?: boolean,
     privateValue?: boolean,
     onPrivateInput?: () => void,
+    alwaysRetype?: boolean,
   ): Promise<ActResult>;
   // iOS only: positive React proof that the input with this testID is focused.
   reactFocused?(testID: string): Promise<boolean>;
@@ -1878,6 +1880,7 @@ async function walkBlockScoped(
           proofMode,
           secretFill(item, again.element),
           () => promoteFill(item, again.element.testID ?? again.oracleTestID),
+          item.alwaysRetype,
         ),
       );
     } catch (error) {
@@ -1950,8 +1953,15 @@ async function walkBlockScoped(
     currentInputs()?.expectEcho(quoted, item.input);
     try {
       entry = await mutate(item, before, (context) =>
-        deps.typeFocused!(quoted, fillText(item), quoted, context, true, secretFill(item), () =>
-          promoteFill(item, quoted),
+        deps.typeFocused!(
+          quoted,
+          fillText(item),
+          quoted,
+          context,
+          true,
+          secretFill(item),
+          () => promoteFill(item, quoted),
+          item.alwaysRetype,
         ),
       );
     } catch (error) {
@@ -3535,8 +3545,13 @@ async function walkBlockScoped(
                     : deps.press(ref!, context);
                 }
                 return item.kind === 'fill'
-                  ? deps.fill(ref!, fillText(item), context, secretFill(item), () =>
-                      promoteFill(item, element?.testID),
+                  ? deps.fill(
+                      ref!,
+                      fillText(item),
+                      context,
+                      secretFill(item),
+                      () => promoteFill(item, element?.testID),
+                      item.alwaysRetype,
                     )
                   : item.kind === 'scroll'
                     ? deps.scroll(item.direction, context)
@@ -4308,7 +4323,8 @@ export function loginBlock(slug: string, stored: StoredBlock): Block {
           ...(step.input !== undefined
             ? { input: step.input, ...(step.sensitivity ? { sensitivity: step.sensitivity } : {}) }
             : { text: step.text! }),
-          ...(ANY_METHOD.test(step.raw) ? { anyMethod: true as const } : {}),
+          ...fillLabels(step.raw).flags,
+          ...(step.alwaysRetype ? { alwaysRetype: true as const } : {}),
           ...at,
         };
       case 'scroll':

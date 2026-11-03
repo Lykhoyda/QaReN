@@ -154,8 +154,8 @@ for (const before of ['', 'decoy@example.test', TEXT, LONG]) {
     const { env, dispatched, clears } = await run({ value: before, focused: true });
     assert.equal(env.ok, true);
     assert.equal(env.meta.verify, 'exact');
-    assert.deepEqual(dispatched, [[TEXT]]);
-    assert.deepEqual(clears, before ? [before.length] : []);
+    assert.deepEqual(dispatched, before === TEXT ? [] : [[TEXT]]);
+    assert.deepEqual(clears, before && before !== TEXT ? [before.length] : []);
   });
 }
 

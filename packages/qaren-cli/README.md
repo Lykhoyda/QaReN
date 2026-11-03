@@ -1212,11 +1212,22 @@ Every dispatched Fill records the rung it used as `method` on its ledger row, in
 streamed rows, interrupted-run reconstruction and capture-failure rows. The report
 shows it as `via <method>`:
 
+0. `already-set`: on iOS the field already held the exact value on a fresh, stable read, so nothing
+   was cleared or typed. This is value evidence, not typing proof; the passing row records no value.
 1. `keyboard`: typed through the keyboard (native element typing, or focused typing into an
    empty field).
 2. `clear-type`: the field held text, so it was cleared through the input's own change
    handler and then typed through the keyboard.
 3. `set-handler`: entry through the input's change handler was attempted, followed by exact verification if set.
+
+A secure field is never pre-read for skipping. Private values are compared inside the app;
+only comparison metadata leaves it. Unreadable, placeholder, formatted, case-only and unstable
+matches keep the existing typing path. Android and the keyboard fallback keep typing.
+To require a change event even when the value already matches, add a trailing `(always retype)`,
+for example `Fill "name" with input NAME (secret) (always retype)`. It combines with
+`(any method)` in either order, case-insensitively. Behaviour labels must trail the line;
+a label written within the target stays part of that target under the existing grammar.
+Saved blocks retain `(always retype)`, including login replay.
 
 When rung 1 or 2 refuses with `TEXT_ENTRY_UNVERIFIED` and a mutation of `none` or
 `observed` (never `possible`), iOS steps once to rung 3 inside a 2-minute budget from the

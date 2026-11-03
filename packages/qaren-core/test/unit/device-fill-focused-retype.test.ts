@@ -134,8 +134,11 @@ test('readback metrics contain only verdict and duration', async () => {
     [
       ['start', 'ok'],
       ['end', 'failed'],
+      ['start', 'ok'],
+      ['end', 'failed'],
     ],
   );
   assert.equal(typeof readbacks[1].ms, 'number');
+  assert.equal(typeof readbacks[3].ms, 'number');
   assert.doesNotMatch(JSON.stringify(metrics), /SYNTH|WRAP/);
 });

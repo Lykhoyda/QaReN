@@ -1061,6 +1061,7 @@ export interface FillArgs {
   skipFinalValidation?: boolean;
   /** Replace the field's content instead of appending. */
   clearFirst?: boolean;
+  alwaysRetype?: boolean;
   privateValue?: boolean;
   onPrivateInput?: () => void;
   /** Fill ladder rung 3: set the value through the input's change handler, then verify it. */
@@ -1070,12 +1071,15 @@ export interface FillArgs {
 }
 
 // The Fill ladder rung a result came from, carried as meta.fillMethod.
-export type FillRung = 'keyboard' | 'clear-type' | 'set-handler';
+export type FillRung = 'already-set' | 'keyboard' | 'clear-type' | 'set-handler';
 
 function withFillMethod(result: ToolResult, method: FillRung): ToolResult {
   try {
     const envelope = JSON.parse(result.content[0].text) as { meta?: Record<string, unknown> };
-    envelope.meta = { ...envelope.meta, fillMethod: method };
+    envelope.meta = {
+      ...envelope.meta,
+      fillMethod: envelope.meta?.fillMethod === 'already-set' ? 'already-set' : method,
+    };
     return { ...result, content: [{ ...result.content[0], text: JSON.stringify(envelope) }] };
   } catch {
     return result;
@@ -1249,6 +1253,14 @@ function verifiedFillResult(
   );
 }
 
+function alreadySetFillResult(args: FillArgs, oracle: 'native' | 'react-tree'): ToolResult {
+  return verifiedFillResult('native', args.text.length, {
+    fillMethod: 'already-set',
+    mutation: 'none',
+    verifiedOracle: oracle,
+  });
+}
+
 interface FillFailureOpts {
   mutation: FillMutationDisposition;
   pathsTried: string[];
@@ -1329,7 +1341,7 @@ export interface ExactFillTiers {
 // bind exactly one native input and emit success only from stable exact native verification.
 export async function performExactFill(
   args: FillArgs,
-  _client: CDPClient | null,
+  client: CDPClient | null,
   tiers: ExactFillTiers,
 ): Promise<ToolResult> {
   const pathsTried: string[] = [];
@@ -1401,6 +1413,30 @@ export async function performExactFill(
       mutation: mutationSeen === 'none' ? 'none' : 'possible',
       pathsTried,
     });
+  }
+  args.qaContext?.check();
+  if (getActiveSession()?.platform === 'ios' && !binding.secure && !args.alwaysRetype) {
+    const alreadySet = args.privateValue
+      ? (await comparePrivateInput(client, binding.inputTestId, args, { beforeTyping: true }))
+          .verdict === 'exact'
+      : await runNativeVerifyInput(binding, args.text, undefined, args.qaContext).then(
+          ({ verdict, stable }) => verdict === 'exact' && stable,
+        );
+    args.qaContext?.check();
+    if (tiers.abortSignal?.aborted) {
+      return fillFailure(
+        'TEXT_ENTRY_UNVERIFIED',
+        'device_fill was cancelled before native typing.',
+        {
+          mutation: 'none',
+          pathsTried,
+        },
+      );
+    }
+    if (alreadySet) {
+      if (args.privateValue) args.onPrivateInput?.();
+      return alreadySetFillResult(args, args.privateValue ? 'react-tree' : 'native');
+    }
   }
   const focusCenter = isRefMapFresh() ? refCenter(binding.focusRef) : null;
   const exactTarget = {
@@ -1658,6 +1694,7 @@ async function comparePrivateInput(
   client: CDPClient | null,
   testID: string | null,
   args: Pick<FillArgs, 'text' | 'qaContext' | 'qaTiming'>,
+  options: { beforeTyping?: true; requireFocused?: true } = {},
 ): Promise<{ verdict: ReactValueVerification; mismatch?: EntryMismatch }> {
   return measureTiming(
     args.qaTiming?.observe,
@@ -1666,7 +1703,9 @@ async function comparePrivateInput(
     async (): Promise<{ verdict: ReactValueVerification; mismatch?: EntryMismatch }> => {
       let mismatch = false;
       let facts: EntryMismatch | undefined;
-      for (let attempt = 0; attempt < 6; attempt++) {
+      const attempts = options.beforeTyping ? 1 : 6;
+      for (let attempt = 0; attempt < attempts; attempt++) {
+        if (options.beforeTyping) args.qaContext?.check();
         if (args.qaContext?.expired) break;
         const state = await readReactInputValue(client, testID, {
           protectSecure: true,
@@ -1674,8 +1713,13 @@ async function comparePrivateInput(
           valueState: true,
           compareTo: args.text,
         });
-        if (state?.exact === true) {
+        const eligible = (read: typeof state) =>
+          read?.exact === true &&
+          (!options.beforeTyping ||
+            (read.controlled && read.secure !== true && (!options.requireFocused || read.focused)));
+        if (eligible(state)) {
           await cancellableSleep(150);
+          if (options.beforeTyping) args.qaContext?.check();
           if (args.qaContext?.expired) break;
           const confirm = await readReactInputValue(client, testID, {
             protectSecure: true,
@@ -1683,13 +1727,14 @@ async function comparePrivateInput(
             valueState: true,
             compareTo: args.text,
           });
-          if (confirm?.exact === true) return { verdict: 'exact' };
+          if (options.beforeTyping) args.qaContext?.check();
+          if (eligible(confirm)) return { verdict: 'exact' };
           mismatch ||= confirm?.exact === false;
           facts = confirm?.mismatch ?? facts;
         }
         mismatch ||= state?.exact === false;
         facts = state?.mismatch ?? facts;
-        if (attempt < 5) await cancellableSleep(100);
+        if (attempt < attempts - 1) await cancellableSleep(100);
       }
       return mismatch
         ? { verdict: 'mismatch', ...(facts ? { mismatch: facts } : {}) }
@@ -1859,7 +1904,7 @@ export async function performFocusedFill(
   args: FillArgs,
   client: CDPClient | null,
 ): Promise<ToolResult> {
-  const rung = { cleared: false };
+  const rung = { cleared: false, alreadySet: false };
   const result = await focusedFill(args, client, rung);
   return withFillMethod(result, rung.cleared ? 'clear-type' : 'keyboard');
 }
@@ -1867,7 +1912,7 @@ export async function performFocusedFill(
 async function focusedFill(
   args: FillArgs,
   client: CDPClient | null,
-  rung: { cleared: boolean },
+  rung: { cleared: boolean; alreadySet: boolean },
 ): Promise<ToolResult> {
   const pathsTried = ['focused'];
   if (getActiveSession()?.platform === 'android') {
@@ -1940,6 +1985,19 @@ async function focusedFill(
           { mutation: 'none' },
         );
       }
+      args.qaContext?.check();
+      if (!secure && !args.alwaysRetype) {
+        const comparison = await comparePrivateInput(client, oracleTestId, args, {
+          beforeTyping: true,
+          requireFocused: true,
+        });
+        args.qaContext?.check();
+        if (comparison.verdict === 'exact') {
+          if (privateValue) args.onPrivateInput?.();
+          rung.alreadySet = true;
+          return alreadySetFillResult(args, 'react-tree');
+        }
+      }
       expectedBeforeClear = before;
       expectedContentLength = contentLength;
       if (contentLength === undefined && !secure) {
@@ -2007,6 +2065,7 @@ async function focusedFill(
     return type(args.text.slice(first.length));
   };
   const native = await dispatchFill();
+  if (rung.alreadySet) return native;
   if (native.isError) {
     const mutation = extractMutationDisposition(native);
     if (mutation === 'none') {
@@ -2312,7 +2371,7 @@ export function createDeviceFillHandler(
       ? performSetFill(args, cdpClientOrNull(getClient))
       : args.focused === true
         ? performFocusedFill(args, cdpClientOrNull(getClient))
-        : withFillMethod(await performExactFill(args, null, {}), 'keyboard'),
+        : withFillMethod(await performExactFill(args, cdpClientOrNull(getClient), {}), 'keyboard'),
   );
 }
 

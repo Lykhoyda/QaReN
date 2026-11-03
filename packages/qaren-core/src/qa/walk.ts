@@ -449,7 +449,10 @@ function entryMismatchFrom(error: unknown): Pick<ActResult, 'entryMismatch'> {
 
 function fillMethodOf(meta: Record<string, unknown> | undefined): ActResult['method'] {
   const method = meta?.fillMethod;
-  return method === 'keyboard' || method === 'clear-type' || method === 'set-handler'
+  return method === 'already-set' ||
+    method === 'keyboard' ||
+    method === 'clear-type' ||
+    method === 'set-handler'
     ? method
     : undefined;
 }
@@ -780,7 +783,7 @@ async function openSession(
         now,
         observe: timing,
       }),
-    fill: (ref, text, qaContext, privateValue, onPrivateInput) =>
+    fill: (ref, text, qaContext, privateValue, onPrivateInput, alwaysRetype) =>
       act(
         () =>
           fill({
@@ -789,6 +792,7 @@ async function openSession(
             qaContext,
             privateValue,
             onPrivateInput,
+            alwaysRetype,
             qaTiming: { now, observe: timing },
           }),
         true,
@@ -894,6 +898,7 @@ async function openSession(
             requireFocused,
             privateValue,
             onPrivateInput,
+            alwaysRetype,
           ) =>
             act(
               () =>
@@ -906,6 +911,7 @@ async function openSession(
                   requireFocused,
                   skipFinalValidation: true,
                   clearFirst: true,
+                  alwaysRetype,
                   privateValue,
                   onPrivateInput,
                   qaContext,

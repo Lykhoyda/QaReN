@@ -875,3 +875,17 @@ test('a recipe with a protected value anywhere is withheld', () => {
   }
   assert.ok('markdown' in recipeOf(recipeSource, secrets('Hunter2')));
 });
+
+for (const body of ['"value"', 'input NAME (secret)', 'input NAME (test-pii)']) {
+  test(`saved login preserves always-retype for ${body}`, () => {
+    const block = blockOf(`### Login\n1. Fill "name" with ${body} (always retype) (any method)`);
+    const stored = readBlock(serialized(block, passRows(block, { 2: { id: 'name' } })));
+    assert.ok(!('invalid' in stored));
+    assert.equal(stored.steps[0].alwaysRetype, true);
+    assert.equal(loginBlock('login', stored).items[0].alwaysRetype, true);
+    assert.equal(loginBlock('login', stored).items[0].anyMethod, true);
+    assert.equal(storedMatches(block, stored), true);
+    delete stored.steps[0].alwaysRetype;
+    assert.equal(storedMatches(block, stored), false);
+  });
+}
