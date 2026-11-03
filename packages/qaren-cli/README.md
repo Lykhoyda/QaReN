@@ -2200,7 +2200,9 @@ five seconds remain after the file sample described below. This probe may
 establish a watch on the candidate directory. After admission, if at least five
 seconds still remain on the same warm-up clock, QaReN requests a `clock` with
 `sync_timeout=4000` on the resolved watch root through private JSON stdin. Its
-child has a five-second cap. A recognized cookie timeout refuses immediately
+child has a five-second cap, clamped to the remaining whole seconds; near the
+budget boundary it may time out before Watchman returns its cookie error, which
+leaves the sync unavailable and continues manifest warm-up. A recognized cookie timeout refuses immediately
 with `WATCHMAN_VOLUME_STALLED` (exit 4): "the file watcher is stalled or still
 crawling the root". The next steps cover removable-volume permissions, FSEvents
 state and reconnecting the volume; if fseventsd is busy, wait for other watchers
@@ -2217,7 +2219,9 @@ or rejection, or a rejected sync, also refuses before the loop with its specific
 cause under `MANIFEST_NOT_WARM`; an unavailable or malformed sync falls through
 to normal manifest warm-up. The value-free result (`ready`, `stalled`,
 `timed_out`, `rejected` or `unavailable`) is recorded at
-`outcomes.watchman_volume_probe`; raw sync output is withheld, and no watcher
+`outcomes.watchman_volume_probe`. If the sync is skipped for lack of budget,
+`ready` proves watch-project admission only; a `watchman-clock-sync_attempt_1`
+outcome identifies a sync that ran. Raw sync output is withheld, and no watcher
 fallback or automatic reset is attempted.
 
 After a request-handler timeout or the first manifest answer taking at least

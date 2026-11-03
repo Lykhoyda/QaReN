@@ -1651,6 +1651,61 @@ fn watchman_cookie_stall_and_sync_rejection_refuse_before_manifest_or_launch() {
 }
 
 #[test]
+fn unavailable_sync_preserves_the_manifest_exhaustion_reason() {
+    for sync in [
+        CmdOutput {
+            timed_out: true,
+            duration_ms: 5000,
+            ..Default::default()
+        },
+        CmdOutput::success("private-invalid-sync-output"),
+    ] {
+        let repo = common::temp_repo();
+        let scenario = write_scenario(
+            &repo,
+            &format!(
+                "{}deadlines:\n  manifest_warmup_seconds: 30\n",
+                ios_scenario_yaml(8791)
+            ),
+        );
+        let mut mock = MockRunner::new();
+        script_watchman_sync_probe(&mut mock, &repo);
+        mock.expect_run("watchman", sync);
+        for _ in 0..2 {
+            mock.expect_run(
+                "expo-platform",
+                CmdOutput {
+                    timed_out: true,
+                    duration_ms: 15_000,
+                    ..Default::default()
+                },
+            );
+        }
+        mock.advance_on = Some(("expo-platform".into(), 15_000));
+        common::script_ios_metro_cleanup(&mut mock);
+        let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(failure.code, FailureCode::ManifestNotWarm);
+        assert_eq!(receipt.result, ReceiptResult::Refused);
+        assert!(failure
+            .detail
+            .starts_with("dev client manifest did not warm within its stage budget"));
+        assert!(!failure.detail.contains("watch-project"));
+        assert_eq!(receipt.outcomes["watchman_volume_probe"], "unavailable");
+        assert!(receipt.outcomes["manifest_warmup"].contains("watchman_volume_probe=unavailable"));
+        assert_eq!(
+            mock.calls
+                .iter()
+                .filter(|c| c.label == "metro-manifest")
+                .count(),
+            2
+        );
+        assert!(!receipt.to_json().contains("private-invalid-sync-output"));
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
 fn ready_or_unavailable_cookie_sync_continues_the_existing_warm_path() {
     for (sync, outcome) in [
         (CmdOutput::success(r#"{"clock":"c:1"}"#), "ready"),

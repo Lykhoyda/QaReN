@@ -163,7 +163,7 @@ impl Warmup {
             next.push_str(crate::volume::SLOW_VOLUME_FIX);
         }
         let reason = match self.watchman_volume_probe {
-            Some(probe @ (VolumeProbe::Stalled | VolumeProbe::TimedOut | VolumeProbe::Rejected | VolumeProbe::SyncRejected | VolumeProbe::SyncUnavailable)) => probe.reason().to_string(),
+            Some(probe @ (VolumeProbe::Stalled | VolumeProbe::TimedOut | VolumeProbe::Rejected | VolumeProbe::SyncRejected)) => probe.reason().to_string(),
             _ => format!("dev client manifest did not warm within its stage budget or {MAX_ATTEMPTS}-attempt cap"),
         };
         Failure::new(
