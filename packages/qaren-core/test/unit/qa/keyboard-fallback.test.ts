@@ -1904,7 +1904,10 @@ for (const nativeType of ['Other', 'TextField']) {
         return okResult({ typed: true });
       }
       if (args[0] === 'verify-input')
-        return okResult({ verifyVerdict: 'exact', verifyStable: true });
+        return okResult({
+          verifyVerdict: nativeFills > 0 ? 'exact' : 'mismatch',
+          verifyStable: true,
+        });
       throw new Error(`unexpected command ${args[0]}`);
     });
     fake.deps.fill = async (ref, text, context) => {
@@ -2635,6 +2638,37 @@ for (const focus of [false, 'throw'] as const) {
 
 const otpPlan = (value = '1234') =>
   `## QA\n\n### Code\n\n1. Fill "qa-otp-code" with "${value}"\n2. Tap "qa-hidden-submit"\n`;
+
+for (const withWrapper of [false, true]) {
+  for (const alwaysRetype of [false, true]) {
+    test(`observable focused fallback preserves skip and retype (wrapper: ${withWrapper}, retype: ${alwaysRetype})`, async () => {
+      const fake = app({
+        ...(withWrapper ? {} : { initial: [submit] }),
+        initialKeyboard: true,
+        reactFocused: true,
+      });
+      const type = fake.deps.typeFocused!;
+      let forwarded: boolean | undefined;
+      fake.deps.typeFocused = async (...args) => {
+        forwarded = args[7];
+        if (args[7]) return { ...(await type(...args)), proven: true, method: 'keyboard' };
+        args[6]?.();
+        return { ok: true, proven: true, method: 'already-set', mutation: 'none' };
+      };
+      const markdown = (withWrapper ? plan() : otpPlan()).replace(
+        /^(1\. Fill .*)$/m,
+        `$1${alwaysRetype ? ' (always retype)' : ''}`,
+      );
+      const outcome = await walkBlock(blocks(markdown)[0], fake.deps);
+      assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
+      assert.equal(forwarded, alwaysRetype ? true : undefined);
+      assert.equal(outcome.rows[0].method, alwaysRetype ? 'keyboard' : 'already-set');
+      assert.equal(outcome.rows[0].reason, undefined);
+      assert.equal(fake.typed.length, alwaysRetype ? 1 : 0);
+      assert.equal(fake.log.includes('press @wrap'), withWrapper);
+    });
+  }
+}
 
 test('P3: keyboard up with no tappable target types once into the field React reports focused', async () => {
   const fake = app({ initial: [submit], initialKeyboard: true, reactFocused: true });

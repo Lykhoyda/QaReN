@@ -1188,12 +1188,23 @@ mod tests {
                   "t": 0, "outcome": "pass", "method": "clear-type" },
                 { "block": "b", "line": 6, "attempt": 1, "kind": "step", "resolvedBy": "exact",
                   "t": 0, "outcome": "pass", "method": "telepathy" },
+                { "block": "b", "line": 7, "attempt": 1, "kind": "step", "resolvedBy": "exact",
+                  "t": 0, "outcome": "pass", "method": "already-set" },
             ],
             "jev": { "calls": 0, "medianMs": 0 }, "llmTurns": 0, "escapes": 0, "recoveries": 0,
         }))
         .unwrap();
         assert!(row_line(&ledger.steps[0]).ends_with("; via set-handler\n"));
         assert!(row_line(&ledger.steps[1]).ends_with("; via clear-type\n"));
+        assert_eq!(
+            ledger.steps[3].method,
+            Some(crate::core::FillMethod::AlreadySet)
+        );
+        assert!(row_line(&ledger.steps[3]).ends_with("; via already-set\n"));
+        assert_eq!(
+            serde_json::to_value(&ledger.steps[3]).unwrap()["method"],
+            "already-set"
+        );
         assert_eq!(ledger.steps[2].method, None);
         assert!(!row_line(&ledger.steps[2]).contains("via"));
         assert_eq!(

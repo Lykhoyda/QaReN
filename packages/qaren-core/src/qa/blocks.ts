@@ -34,6 +34,7 @@ export interface StoredStep {
   text?: string;
   input?: string;
   sensitivity?: 'non-secret';
+  alwaysRetype?: true;
   direction?: 'down' | 'up';
   until?: Selector;
   action?: 'accept' | 'dismiss';
@@ -255,6 +256,10 @@ function storedStep(raw: string, commands: Command[]): StoredStep | undefined {
   const tap = selectorFrom(map(first, 'tapOn'));
   if (commands.length === 1 && tap) return { raw, kind: 'press', selector: tap };
   const typed = map(second, 'inputText');
+  const alwaysRetype =
+    declared && !('refuse' in declared) && declared.kind === 'fill' && declared.alwaysRetype
+      ? { alwaysRetype: true as const }
+      : {};
   if (
     commands.length === 2 &&
     tap &&
@@ -266,7 +271,7 @@ function storedStep(raw: string, commands: Command[]): StoredStep | undefined {
       declared.input !== undefined
     )
   )
-    return { raw, kind: 'fill', selector: tap, text: typed };
+    return { raw, kind: 'fill', selector: tap, text: typed, ...alwaysRetype };
   const slot = only(typed, ['input']) ?? only(typed, ['input', 'sensitivity']);
   if (commands.length === 2 && tap && validInputName(slot?.input)) {
     const declared = parseStep(planLineBody(raw));
@@ -284,6 +289,7 @@ function storedStep(raw: string, commands: Command[]): StoredStep | undefined {
       kind: 'fill',
       selector: tap,
       input: slot.input,
+      ...alwaysRetype,
       ...(declared.sensitivity ? { sensitivity: declared.sensitivity } : {}),
     };
   }
@@ -378,7 +384,8 @@ export function storedMatches(block: Block, stored: StoredBlock): boolean {
         return (
           step.text === item.text &&
           step.input === item.input &&
-          step.sensitivity === item.sensitivity
+          step.sensitivity === item.sensitivity &&
+          step.alwaysRetype === item.alwaysRetype
         );
       if (item.kind === 'scroll')
         return step.direction === item.direction && !!step.until === !!item.until;

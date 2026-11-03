@@ -12,7 +12,7 @@ export interface Target {
 }
 
 // anyMethod: a value set through the input's change handler counts as this step's proof.
-export type Fill = { kind: 'fill'; target: Target; anyMethod?: true } & (
+export type Fill = { kind: 'fill'; target: Target; anyMethod?: true; alwaysRetype?: true } & (
   | { text: string; input?: never; sensitivity?: never }
   | { input: string; text?: never; sensitivity?: 'non-secret' }
 );
@@ -136,16 +136,27 @@ const ECHO = /^expect\s+input\b(.*)$/i;
 
 type Grammar = Step | { refuse: string } | null;
 
-export const ANY_METHOD = /\s+\(any method\)\s*$/i;
 const TIER_NOTE = /\s+\((?:non-secret|test-pii|secret)\)\s*$/i;
 const RELAXING_NOTE = /\s+\((?:non-secret|test-pii)\)\s*$/i;
 
+export function fillLabels(line: string): {
+  body: string;
+  flags: { anyMethod?: true; alwaysRetype?: true };
+} {
+  const flags: { anyMethod?: true; alwaysRetype?: true } = {};
+  let label: RegExpExecArray | null;
+  while ((label = /\s+\((any method|always retype)\)\s*$/i.exec(line))) {
+    if (label[1].toLowerCase() === 'any method') flags.anyMethod = true;
+    else flags.alwaysRetype = true;
+    line = line.slice(0, label.index);
+  }
+  return { body: line, flags };
+}
+
 function parseFill(line: string): Grammar {
-  const anyMethod = ANY_METHOD.exec(line);
-  const fill = parseFillBody(anyMethod ? line.slice(0, anyMethod.index) : line);
-  return anyMethod && fill && 'kind' in fill && fill.kind === 'fill'
-    ? { ...fill, anyMethod: true }
-    : fill;
+  const labels = fillLabels(line);
+  const fill = parseFillBody(labels.body);
+  return fill && 'kind' in fill && fill.kind === 'fill' ? { ...fill, ...labels.flags } : fill;
 }
 
 function parseFillBody(rest: string): Grammar {

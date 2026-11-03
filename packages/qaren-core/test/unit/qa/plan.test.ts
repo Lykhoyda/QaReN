@@ -458,3 +458,32 @@ test('(any method) marks a literal or runtime-input fill and composes with (non-
   assert.equal('anyMethod' in (parseStep('Fill "email" with "a@b.test"') ?? {}), false);
   assert.equal(parseStep('Tap "Submit" (any method)')?.kind, 'press');
 });
+
+for (const labels of [
+  '(always retype)',
+  '(any method) (always retype)',
+  '(always retype) (any method)',
+  '(ALWAYS RETYPE) (ANY METHOD)',
+]) {
+  for (const body of ['"value"', 'input NAME (secret)', 'input NAME (test-pii)']) {
+    test(`Fill parses trailing behaviour labels: ${body} ${labels}`, () => {
+      const step = parseStep(`Fill "name" with ${body} ${labels}`);
+      assert.ok(step && 'kind' in step && step.kind === 'fill');
+      assert.equal(step.alwaysRetype, true);
+      assert.equal(step.anyMethod, /any method/i.test(labels) ? true : undefined);
+      assert.equal(step.sensitivity, body.includes('test-pii') ? 'non-secret' : undefined);
+    });
+  }
+}
+
+test('quoted and misplaced retype labels stay target text', () => {
+  for (const line of [
+    'Fill "name (always retype)" with "value"',
+    'Type "value" into (always retype) name',
+  ]) {
+    const step = parseStep(line);
+    assert.ok(step && 'kind' in step && step.kind === 'fill');
+    assert.equal(step.alwaysRetype, undefined);
+    assert.ok(step.target.phrase.includes('(always retype)'));
+  }
+});

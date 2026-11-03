@@ -516,6 +516,7 @@ pub enum RetryCause {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum FillMethod {
+    AlreadySet,
     Keyboard,
     ClearType,
     SetHandler,
@@ -524,6 +525,7 @@ pub enum FillMethod {
 impl FillMethod {
     pub fn as_str(self) -> &'static str {
         match self {
+            FillMethod::AlreadySet => "already-set",
             FillMethod::Keyboard => "keyboard",
             FillMethod::ClearType => "clear-type",
             FillMethod::SetHandler => "set-handler",
