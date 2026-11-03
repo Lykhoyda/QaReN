@@ -43,12 +43,15 @@ async function admission(
     }
     const replaced = falseProbes > 0;
     if (replaced && afterFalse === 'late-empty') {
-      setTimeout(() => {
-        emptyReads++;
-        emptyAt = performance.now();
-        response.setHeader('Content-Type', 'application/json');
-        response.end('[]');
-      }, Math.max(0, firstListAt + 3200 - performance.now()));
+      setTimeout(
+        () => {
+          emptyReads++;
+          emptyAt = performance.now();
+          response.setHeader('Content-Type', 'application/json');
+          response.end('[]');
+        },
+        Math.max(0, firstListAt + 3200 - performance.now()),
+      );
       return;
     }
     const empty = replaced && afterFalse === 'empty';
@@ -267,10 +270,7 @@ for (const afterFalse of ['replacement-id', 'replacement-url', 'unchanged'] as c
       assert.equal(postFalseReads, 2, 'readiness completed before the exact read stalled');
       const unchanged = afterFalse === 'unchanged';
       assert.equal(result.code, unchanged ? 'DEV_TARGET_MISSING' : 'CDP_NOT_CONNECTED');
-      assert.equal(
-        result.admission.inner,
-        unchanged ? 'non_dev_bundle' : 'no_dev_target_unknown',
-      );
+      assert.equal(result.admission.inner, unchanged ? 'non_dev_bundle' : 'no_dev_target_unknown');
       assert.equal(result.admission.devFalse ?? 0, unchanged ? 1 : 0);
       assert.equal(result.admission.targetsTotal ?? 0, unchanged ? 1 : 0);
     },
