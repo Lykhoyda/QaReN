@@ -1839,17 +1839,17 @@ async function walkBlockScoped(
     const readyBy = deps.now() + KEYBOARD_READY_MS;
     let after = await settledCapture(item);
     const bound = () => bindFillIdentity(item, after.screen, target.oracleTestID);
-    const waitForKeyboard = async (skipWait: boolean, readyBy: number) => {
+    const waitForKeyboard = async (skipWait: boolean, deadline: number) => {
       for (
         let captures = 1;
         !skipWait &&
         after.screen.keyboardVisible !== true &&
         bound()?.kind !== 'strict' &&
         captures < KEYBOARD_READY_CAPTURES &&
-        deps.now() < readyBy;
+        deps.now() < deadline;
         captures += 1
       ) {
-        await pause(Math.min(WAIT_POLL_MS, Math.max(0, readyBy - deps.now())));
+        await pause(Math.min(WAIT_POLL_MS, Math.max(0, deadline - deps.now())));
         after = await settledCapture(item);
       }
     };
@@ -1868,7 +1868,7 @@ async function walkBlockScoped(
       try {
         focused = (await deps.reactFocused(target.oracleTestID)) === true;
       } catch (error) {
-        if (isAbort(error) || error instanceof QaDispatchError) throw error;
+        if (isAbort(error)) throw error;
       }
       if (focused) {
         let blurred = false;

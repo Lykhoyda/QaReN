@@ -884,7 +884,10 @@ async function openSession(
           ...(resolveKeyboardGuard(process.env)
             ? {
                 blurFocusedInput: (qaContext: QaDispatchContext) =>
-                  stop.track(() => dismissViaJs(getClient(), qaContext)),
+                  stop.track(async () => {
+                    const client = cdpClientOrNull(getClient);
+                    return client ? dismissViaJs(client, qaContext) : false;
+                  }),
                 dismissKeyboard: (qaContext: QaDispatchContext) =>
                   stop.track(() => dismissKeyboardForQa(getClient, qaContext)),
               }

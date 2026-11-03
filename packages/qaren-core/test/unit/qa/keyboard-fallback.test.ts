@@ -771,6 +771,19 @@ for (const [name, options] of [
         renderReason(outcome.failure?.seen ?? '', (text) => text),
         /the focused field could not be blurred/,
       );
+    if (options.blur === 'throw')
+      assert.doesNotMatch(
+        renderReason(outcome.failure?.seen ?? '', (text) => text),
+        /the focused field could not be blurred/,
+      );
+    assert.deepEqual(
+      fake.notes,
+      options.blur === false || options.blur === 'throw'
+        ? [
+            `keyboard-refocus {"v":1,"line":${outcome.rows[0].line},"focused":true,"blurred":false,"raised":false}`,
+          ]
+        : [],
+    );
     assert.doesNotMatch(JSON.stringify({ outcome, notes: fake.notes }), /PRIVATE-/);
   });
 }
@@ -873,6 +886,49 @@ for (const stage of ['blur', 'retap']) {
     );
     assert.equal(fake.typed.length, 0);
     assert.equal(fake.log.includes('press @submit'), false);
+  });
+}
+
+for (const stage of ['blur', 'after-blur', 'retap', 'after-retap'] as const) {
+  test(`expired evidence during refocus ${stage} never types or sends a third tap`, async () => {
+    const fake = refocusApp();
+    let expired = false;
+    const expire = async () => {
+      expired = true;
+      await fake.deps.sleep(60_000);
+    };
+    if (stage === 'blur') {
+      const blur = fake.deps.blurFocusedInput!;
+      fake.deps.blurFocusedInput = async (context) => {
+        await expire();
+        return blur(context);
+      };
+    } else if (stage === 'retap') {
+      const press = fake.deps.press;
+      fake.deps.press = async (ref, context) => {
+        if (ref === '@rebound') await expire();
+        return press(ref, context);
+      };
+    } else {
+      const capture = fake.deps.captureScreen!;
+      fake.deps.captureScreen = async (...args) => {
+        const screen = await capture(...args);
+        if (!expired && fake.state() === (stage === 'after-blur' ? 'blurred' : 'refocused'))
+          await expire();
+        return screen;
+      };
+    }
+    const outcome = await walkBlock(blocks(plan())[0], fake.deps);
+    assert.equal(expired, true);
+    assert.equal(outcome.block.outcome, 'fail');
+    assert.deepEqual(fake.typed, []);
+    assert.equal(fake.log.filter((entry) => entry === 'press @wrap').length, 1);
+    assert.equal(
+      fake.log.filter((entry) => entry === 'press @rebound').length,
+      stage === 'after-retap' ? 1 : 0,
+    );
+    assert.equal(fake.log.includes('press @submit'), false);
+    assert.equal(fake.log.filter((entry) => entry === 'blur').length, stage === 'blur' ? 0 : 1);
   });
 }
 
