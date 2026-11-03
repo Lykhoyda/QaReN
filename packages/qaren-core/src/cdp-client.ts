@@ -848,6 +848,10 @@ export class CDPClient {
     };
   }
 
+  noteMissingDevelopmentTargets(): void {
+    this.publishDevelopmentTargets(undefined);
+  }
+
   private publishDevelopmentTargets(counts: DevelopmentTargetCounts | undefined): void {
     this._developmentTargets = counts;
     for (const observe of this._developmentTargetObservers) observe(counts);

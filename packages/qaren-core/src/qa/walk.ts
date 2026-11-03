@@ -543,6 +543,7 @@ async function openSession(
             stop.signal,
             devicePin,
             appId,
+            () => cdp.noteMissingDevelopmentTargets(),
           );
         },
         attach: async (deadline) => {

@@ -3503,8 +3503,9 @@ cleanup/fresh prepare cannot correct bundle mode; a corrected build requires
 separate authorization.
 
 The last complete scan survives transient failures and deadline-interrupted
-rediscovery or connection attempts. A newer complete scan replaces it; a proven
-`__DEV__ === true` probe invalidates earlier non-dev certainty immediately, even
+rediscovery or connection attempts. A newer complete scan replaces it; a completed
+read with no matching targets clears it immediately, even while readiness keeps
+polling. A proven `__DEV__ === true` probe invalidates earlier non-dev certainty immediately, even
 if setup subsequently stalls. Target/context replacement also clears that certainty.
 An empty scan, undefined or unknown development state, or a failed or pending
 scan without retained all-false evidence cannot establish production mode.
