@@ -8,6 +8,7 @@ export const content: Record<string, Loader> = {
   'plugin.mdx': () => import('./content/docs/plugin.mdx'),
   'pull-requests.mdx': () => import('./content/docs/pull-requests.mdx'),
   'plans.mdx': () => import('./content/docs/plans.mdx'),
+  'jev.mdx': () => import('./content/docs/jev.mdx'),
   'saved-blocks.mdx': () => import('./content/docs/saved-blocks.mdx'),
   'configuration.mdx': () => import('./content/docs/configuration.mdx'),
   'cli.mdx': () => import('./content/docs/cli.mdx'),

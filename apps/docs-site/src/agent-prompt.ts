@@ -1,6 +1,5 @@
-// The setup prompt readers paste into their agent. Rendered by AgentPrompt on Home and
-// Getting started, and written into the llms files by scripts/generate-llms.ts.
-export const AGENT_PROMPT = `Set up QaReN in this app, from the app root, for my current host (Claude Code, Codex or Cursor).
+// Shared setup prompt for Home, Getting started and the generated llms files.
+export const AGENT_PROMPT = `Set up QaReN in this app, from the app root, for my current host (Claude Code, Codex or Cursor). The QaReN repository is https://github.com/Lykhoyda/QaReN.
 
 Check that this is an Apple silicon Mac and a pnpm Expo app using expo-dev-client with pnpm-lock.yaml. Install missing Node 24 or newer, Corepack and pnpm using user-writable locations. Check that full Xcode and an iOS simulator runtime are installed and ready. If a prerequisite needs administrator access, a license agreement or a manual download, stop and tell me the exact step I need to complete. Do not use sudo.
 
