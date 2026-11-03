@@ -8987,7 +8987,7 @@ fn a_cancel_during_the_git_probes_claims_nothing_and_runs_nothing_after_it() {
 }
 
 // Writes the recorder's raw capture and each encode's output, as the real tools would.
-struct Encoding(PrRunner);
+struct Encoding(PrRunner, Option<u64>);
 
 impl Runner for Encoding {
     fn env_var(&self, name: &str) -> Option<String> {
@@ -9009,6 +9009,7 @@ impl Runner for Encoding {
     }
     fn spawn_group_unchecked(&mut self, spec: &CmdSpec, log: &Path) -> std::io::Result<Spawned> {
         if spec.label == "simctl-record-video" {
+            self.1 = Some(self.now_epoch_ms());
             let raw = PathBuf::from(spec.args.last().unwrap());
             std::fs::write(&raw, vec![0u8; 4096]).unwrap();
             let other = raw
@@ -9041,20 +9042,32 @@ impl Runner for Encoding {
 // R8: only this run's own raw capture is reclaimed, and only once a playable encode replaces it.
 #[test]
 fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
-    for encodes in [true, false] {
+    for (encodes, first_start, login_offset) in [
+        (true, None, None),
+        (false, None, None),
+        (true, Some(0), None),
+        (true, Some(12_000), None),
+        (true, Some(12_000), Some(20_000)),
+        (true, Some(12_000), Some(5_000)),
+        (true, None, Some(20_000)),
+    ] {
         let (repo, app) = app_repo();
         let wt = repo.join("runs").join(run_id()).join("wt");
-        let mut runner = Encoding(PrRunner {
-            inner: MockRunner::new(),
-            app: app.clone(),
-            recorder_persisted_before_spawn: None,
-            fail_core_spawn: false,
-            planted_worktree_config: None,
-            worktree_config_planted: false,
-            fail_host_checkpoint: false,
-        });
+        let mut runner = Encoding(
+            PrRunner {
+                inner: MockRunner::new(),
+                app: app.clone(),
+                recorder_persisted_before_spawn: None,
+                fail_core_spawn: false,
+                planted_worktree_config: None,
+                worktree_config_planted: false,
+                fail_host_checkpoint: false,
+            },
+            None,
+        );
         let mock = &mut runner.0.inner;
         let admitted = mock.now_epoch_ms() + 4_100;
+        let login = login_offset.map(|offset| admitted + offset);
         if encodes {
             // PR1142's recorder start delay (t0 - recording_from).
             mock.advance_on = Some(("ps -p 7100".into(), 559));
@@ -9071,6 +9084,30 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
                 &format!("\"recoveries\":0,\"admittedAtMs\":{admitted}"),
             )
             .replace("\"t\":200", "\"t\":33526");
+        let mut messages: Vec<serde_json::Value> = stdout
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        if let Some(login) = login {
+            messages.last_mut().unwrap()["payload"]["publishFromMs"] = login.into();
+        }
+        if let Some(t) = first_start {
+            messages.insert(
+                0,
+                serde_json::json!({
+                    "v": 1, "runId": run_id(), "type": "start",
+                    "payload": { "operationId": 1, "line": 1, "kind": "step", "t": t }
+                }),
+            );
+        }
+        let stdout = messages
+            .iter_mut()
+            .enumerate()
+            .map(|(i, message)| {
+                message["seq"] = (i + 2).into();
+                format!("{message}\n")
+            })
+            .collect::<String>();
         mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
         script_core_identity(mock);
         script_drift_status(mock);
@@ -9127,9 +9164,26 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
             };
             // The cut lands at full-video max(row.t), never rebased past the recorder start delay into teardown.
             assert_eq!(ms("-ss") + ms("-t"), 33_526);
+            let request: serde_json::Value =
+                serde_json::from_str(runner.0.inner.piped_stdin_text(1).trim()).unwrap();
+            let t0 = request["payload"]["t0"].as_u64().unwrap();
+            let expected_start = admitted
+                .max(login.unwrap_or(admitted))
+                .max(first_start.map(|t| t0 + t).unwrap_or(admitted));
+            let recording_from = runner.1.unwrap();
+            assert_eq!(ms("-ss"), expected_start - recording_from);
+            assert_eq!(
+                receipt.outcomes["video_window"],
+                format!(
+                    "start={}; end={}",
+                    expected_start - admitted,
+                    recording_from + 33_526 - admitted
+                )
+            );
             assert_eq!(receipt.outcomes["reclaimed"], "media/raw.mov: 4096 bytes");
         } else {
             assert!(!receipt.outcomes.contains_key("reclaimed"));
+            assert!(!receipt.outcomes.contains_key("video_window"));
         }
     }
 }

@@ -797,6 +797,7 @@ pub struct CoreOutcome {
     pub group_survived: bool,
     // The child sent its admitted envelope: the bundle, dev overlays and any warm-lane first screen were proven.
     pub admitted: bool,
+    pub first_step_start_ms: Option<u64>,
 }
 
 pub fn spawn_spec(
@@ -1293,6 +1294,7 @@ struct Inbox {
     last_seq: u64,
     rows: Vec<Row>,
     starts: usize,
+    first_step_start_ms: Option<u64>,
     admitted: bool,
     drivers: Vec<i32>,
     announced: usize,
@@ -1370,7 +1372,7 @@ impl Inbox {
                     }
                 }
             }
-            // A start is telemetry only: it neither resets the step deadline nor becomes a ledger row.
+            // Starts bound publication but neither reset the deadline nor become ledger rows.
             (Some("start"), Some(payload)) => {
                 if self.starts >= MAX_ROWS {
                     self.violation = Some(format!("more than {MAX_ROWS} step starts"));
@@ -1383,6 +1385,7 @@ impl Inbox {
                             && matches!(start.kind.as_str(), "step" | "check") =>
                     {
                         self.starts += 1;
+                        self.first_step_start_ms.get_or_insert(start.t);
                         crate::events::step(&start);
                         false
                     }
@@ -1462,6 +1465,7 @@ pub fn wait(
         last_seq: 1,
         rows: Vec::new(),
         starts: 0,
+        first_step_start_ms: None,
         admitted: false,
         drivers: Vec::new(),
         announced: 0,
@@ -1601,6 +1605,7 @@ pub fn wait(
         }
     }
     let admitted = inbox.admitted;
+    let first_step_start_ms = inbox.first_step_start_ms;
     let (ledger, verdict, failure) = interpret(inbox, exit, deadline_failure, killed_after_result);
     CoreOutcome {
         pid,
@@ -1610,6 +1615,7 @@ pub fn wait(
         failure,
         group_survived,
         admitted,
+        first_step_start_ms,
     }
 }
 

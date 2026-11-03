@@ -2444,24 +2444,30 @@ fn a_malformed_runner_driver_announcement_is_a_protocol_violation() {
 }
 
 #[test]
-fn step_starts_are_telemetry_and_never_ledger_rows() {
+fn the_first_step_start_is_retained_without_becoming_a_ledger_row() {
     let repo = common::temp_repo();
     let rows = [row(1, 1, "pass")];
     let stdout = format!(
-        "{}\n{}\n{}\n",
+        "{}\n{}\n{}\n{}\n",
         envelope(
             2,
             "start",
             r#"{"operationId":1,"line":1,"kind":"step","t":50}"#
         ),
-        envelope(3, "row", &rows[0]),
-        envelope(4, "result", &pass_ledger(&rows))
+        envelope(
+            3,
+            "start",
+            r#"{"operationId":1,"line":1,"kind":"step","t":80}"#
+        ),
+        envelope(4, "row", &rows[0]),
+        envelope(5, "result", &pass_ledger(&rows))
     );
     let mut mock = MockRunner::new();
     mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
     let outcome = run_child(&mut mock, &repo.join("core.log"));
     assert_eq!(outcome.verdict, Verdict::Pass);
     assert_eq!(outcome.ledger.steps.len(), 1);
+    assert_eq!(outcome.first_step_start_ms, Some(50));
 }
 
 #[test]
