@@ -2492,6 +2492,55 @@ for (const remaining of [750, 20000]) {
   });
 }
 
+test('an overdue target-list timeout refuses before starting recovery probes', async (t) => {
+  const { DevTargetUnavailableError } = await import('../../../dist/cdp/connect.js');
+  const clock = mockClock(t);
+  let scans = 0;
+  let probes = 0;
+  let settled = false;
+  const { calls, stop, steps } = harness({
+    attachBudgetMs: 1000,
+    remainingMs: () => 20_000,
+    waitTargets: async (deadline) => {
+      if (++scans === 1) return;
+      // Host contention can advance wall time before queued deadline timers run.
+      t.mock.method(performance, 'now', () => deadline);
+      throw new TargetListAttemptTimeoutError('target list timed out');
+    },
+    attach: async () => {
+      throw new DevTargetUnavailableError({
+        targetsTotal: 1,
+        devTrue: 0,
+        devFalse: 1,
+        devUndefined: 0,
+        devUnknown: 0,
+      });
+    },
+    appAlive: async () => {
+      probes++;
+      return true;
+    },
+    bundleRequested: async () => {
+      probes++;
+      return undefined;
+    },
+  });
+  const pending = admit(steps, stop).catch((error: HandlerError) => {
+    settled = true;
+    return error;
+  });
+  clock.cleanup(stop, pending);
+  await nextTurn();
+  await clock.advance(500);
+  assert.equal(probes, 0, 'ANT-841 forbids recovery work beyond the attach budget');
+  assert.equal(settled, true, 'refusal must not wait for a queued deadline timer');
+  const error = await pending;
+  assert.equal(error.code, 'DEV_TARGET_MISSING');
+  assert.equal(error.meta?.devFalse, 1);
+  assert.equal(error.meta?.elapsedMs, 1000);
+  assert.deepEqual(calls, ['close']);
+});
+
 for (const listState of ['pending', 'timed_out', 'ready_at_deadline', 'empty'] as const) {
   test(`a ${listState} rediscovery after false stays inside the registered attach budget`, async (t) => {
     const { DevTargetUnavailableError } = await import('../../../dist/cdp/connect.js');

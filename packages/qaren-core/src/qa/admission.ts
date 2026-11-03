@@ -740,6 +740,12 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
           const noTarget =
             !devTargetSeen && stalledAttach && !(error instanceof TargetListAttemptTimeoutError);
           waitingForTargets = noTarget;
+          if (
+            (devTargetSeen || registeredTargetSeen) &&
+            !waitingForTargets &&
+            performance.now() >= activeDeadline
+          )
+            throw registeredTimeout;
           const probeStall =
             error instanceof CDPProbeTimeoutError || error instanceof CDPHandshakeTimeoutError;
           if (probeStall && stallSeenAt === undefined) stallSeenAt = performance.now();

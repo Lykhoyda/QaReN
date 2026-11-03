@@ -27,6 +27,7 @@ async function admission(
   const runDir = await mkdtemp(join(tmpdir(), 'qaren-empty-targets-'));
   let falseProbes = 0;
   let falseAt = 0;
+  let firstListAt = 0;
   let emptyAt = 0;
   let emptyReads = 0;
   let postFalseReads = 0;
@@ -35,6 +36,7 @@ async function admission(
   const server = createServer((request, response) => {
     if (request.url === '/status') return response.end('packager-status:running');
     if (request.url !== '/json/list') return response.end('{}');
+    if (firstListAt === 0) firstListAt = performance.now();
     if (falseProbes > 0) {
       postFalseReads++;
       if (afterFalse === 'pending' || (afterFalse !== 'empty' && postFalseReads > 1)) return;
@@ -46,7 +48,7 @@ async function admission(
         emptyAt = performance.now();
         response.setHeader('Content-Type', 'application/json');
         response.end('[]');
-      }, 3000);
+      }, Math.max(0, firstListAt + 3200 - performance.now()));
       return;
     }
     const empty = replaced && afterFalse === 'empty';
@@ -226,7 +228,7 @@ async function admission(
     emptyReads,
     postFalseReads,
     elapsedAfterFalse,
-    emptyDelay: emptyAt - falseAt,
+    emptyDelay: emptyAt - firstListAt,
   };
 }
 
