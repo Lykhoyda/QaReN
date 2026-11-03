@@ -59,6 +59,7 @@ import {
 import type { ToolResult } from '../utils.js';
 import type { QaDispatchContext } from '../domain/qa-dispatch.js';
 import { resolveKeyboardGuard } from '../runners/keyboard-guard.js';
+import { cleanAdmissionFacts } from './admission-facts.js';
 import { HandlerError, adapt, describeError, fillEvidence, unwrap } from './adapt.js';
 import {
   AppProcessGoneError,
@@ -528,26 +529,36 @@ async function openSession(
         attachBudgetMs: request.attachBudgetMs,
         ...(target.manifestWarm ? { launchWarm: target.manifestWarm } : {}),
         remainingMs,
-        attach: async (deadline) => {
+        waitTargets: async (deadline) => {
           attachStage = 'wait_targets';
           await waitForExactPortTargets(
             target.metroPort,
-            Math.max(1, Math.min(REACT_READY_TIMEOUT_MS, remainingMs())),
+            Math.max(
+              1,
+              Math.floor(
+                Math.min(REACT_READY_TIMEOUT_MS, remainingMs(), deadline - performance.now()),
+              ),
+            ),
             REACT_READY_POLL_MS,
             stop.signal,
             devicePin,
             appId,
+            (targets) => cdp.noteDevelopmentTargetCandidates(targets),
           );
+        },
+        attach: async (deadline) => {
           attachStage = 'connect_exact';
           await cdp.connectExact(
             target.metroPort,
             { platform, bundleId: appId, ...(devicePin ? { deviceName: devicePin } : {}) },
-            'default',
+            'qa',
             1,
             undefined,
             deadline,
           );
         },
+        developmentTargets: () => cdp.developmentTargets,
+        observeDevelopmentTargets: (observe) => cdp.observeDevelopmentTargets(observe),
         bundleReady: (deadline) => awaitBundleReady((expr) => cdp.evaluate(expr), deadline),
         // Same launch the CLI made: once Metro answers the manifest in time, terminate and open the dev client on its Metro.
         ...(platform === 'ios'
@@ -1044,13 +1055,19 @@ async function mainRequest(
     if (close) await close();
     return exitAfterDrain(code);
   };
-  const refuse = (code: string, message: string, close?: () => Promise<void>): Promise<never> =>
+  const refuse = (
+    code: string,
+    message: string,
+    close?: () => Promise<void>,
+    admission?: unknown,
+  ): Promise<never> =>
     finish(
       {
         verdict: 'REFUSED',
         code,
         message,
         lease: request.lease,
+        ...(admission === undefined ? {} : { admission: cleanAdmissionFacts(admission) }),
         jev: summarizeJev(request.preflightCalls ?? []),
       },
       close,
@@ -1112,7 +1129,7 @@ async function mainRequest(
     );
   } catch (error) {
     const { code, message } = describeError(error);
-    return refuse(code, message);
+    return refuse(code, message, undefined, error instanceof HandlerError ? error.meta : undefined);
   }
   if (stop.stopping)
     return refuse('RUN_CANCELLED', 'the run was cancelled before the walk started', () =>

@@ -277,20 +277,24 @@ for (const [name, attach, relaunches] of [
   ],
   ['a never-settling attach', () => new Promise<void>(() => undefined), 0],
 ] as const) {
-  test(`${name} against a registered target keeps the walk budget`, async (t) => {
+  test(`${name} against a registered target refuses within the attach budget`, async (t) => {
     const fixture = stalled(t, { attach, bundleRequested: undefined });
-    await fixture.waiting();
+    assert.equal((await fixture.run()).code, 'CDP_NOT_CONNECTED');
+    assert.ok(fixture.elapsed() <= 120_000);
     assert.equal(fixture.relaunches(), relaunches);
   });
 }
 
-test('React that never becomes ready keeps the walk budget without a no-target relaunch', async (t) => {
+test('React that never becomes ready refuses within the attach budget without a no-target relaunch', async (t) => {
   const fixture = stalled(t, {
     attach: async () => undefined,
     bundleReady: () => new Promise(() => undefined),
     bundleRequested: undefined,
   });
-  await fixture.waiting();
+  const refusal = await fixture.run();
+  assert.equal(refusal.code, 'CDP_NOT_CONNECTED');
+  assert.equal(refusal.meta.inner, 'react_readiness_timeout');
+  assert.ok(fixture.elapsed() <= 120_000);
   assert.equal(fixture.relaunches(), 0);
 });
 
@@ -500,6 +504,28 @@ test('patient warming recovers transient slow QaReN manifest probes and records 
       .map((event) => [event.relaunch, event.ms]),
     [['ready', 0]],
   );
+});
+
+test('first target registration after patient recovery retains the post-relaunch deadline', async (t) => {
+  let launched = false;
+  const fixture = patient(t, {
+    attachBudgetMs: 60_000,
+    waitTargets: async () => {
+      if (!launched) throw new TargetReadinessTimeoutError('no target', 'empty');
+    },
+    attach: async (deadline) => assert.equal(deadline, 60_000),
+    relaunch: async () => {
+      launched = true;
+    },
+    bundleReady: async (deadline) => {
+      assert.equal(deadline, 60_000);
+      await new Promise(() => {});
+    },
+  });
+  const error = await fixture.run();
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  assert.equal(error.meta.inner, 'react_readiness_timeout');
+  assert.equal(fixture.elapsed(), 60_000);
 });
 
 test('persistent slow QaReN probes refuse after one bounded patient window with timings', async (t) => {

@@ -85,8 +85,9 @@ ready for Xcode.
 
 Optional preparation budgets for `check` and `pr`: a native build time limit,
 a dependency-install time limit, a simulator-boot time limit, a manifest warm-up
-limit, and a dev-client attach limit after which an attach without a target is refused when the app has
-exited or Metro has received no bundle request since launch.
+limit, and a dev-client attach limit. For registered-target deadlines, no-target
+waiting and patient recovery, see the authoritative
+[admission and recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan).
 
 | Key                    | Default (seconds) |
 | ---------------------- | ----------------- |

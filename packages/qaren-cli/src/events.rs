@@ -265,8 +265,11 @@ impl Events {
         self.stage("steps", StageState::Running, None, None);
     }
 
-    pub fn core_t0(&mut self, t0: u64) {
-        self.submit("coreT0", json!({ "t0": t0 }));
+    pub fn core_t0(&mut self, t0: u64, walk_budget_ms: u64, attach_budget_ms: u64) {
+        self.submit(
+            "coreT0",
+            json!({ "t0": t0, "walkBudgetMs": walk_budget_ms, "attachBudgetMs": attach_budget_ms }),
+        );
     }
 
     pub fn step(&mut self, start: &StepStart) {
@@ -502,8 +505,8 @@ pub fn admitted() {
     with(Events::admitted);
 }
 
-pub fn core_t0(t0: u64) {
-    with(|e| e.core_t0(t0));
+pub fn core_t0(t0: u64, walk_budget_ms: u64, attach_budget_ms: u64) {
+    with(|e| e.core_t0(t0, walk_budget_ms, attach_budget_ms));
 }
 
 pub fn step(start: &StepStart) {
@@ -606,7 +609,7 @@ mod tests {
                 stage("preflight", StageState::Passed, None, None);
                 cmd("native-build", Edge::Start, None, None);
                 cmd("native-build", Edge::End, Some(true), Some(10));
-                core_t0(100);
+                core_t0(100, 1_200_000, 120_000);
                 admitted();
                 super::row(&row(3, json!({})));
                 close_running(StageState::Failed, Some("PLAN_STEP_FAILED"), &[]);
@@ -641,7 +644,7 @@ mod tests {
         ev.cmd("pnpm-install", Edge::Start, None, None);
         ev.cmd("pnpm-install", Edge::End, Some(true), Some(21400));
         ev.stage("attach", StageState::Running, None, None);
-        ev.core_t0(1_770_000_000_000);
+        ev.core_t0(1_770_000_000_000, 1_200_000, 120_000);
         ev.admitted();
         ev.row(&row(0, json!({})));
         ev.row(&row(3, json!({})));
@@ -691,7 +694,10 @@ mod tests {
             got[5].payload,
             json!({"label": "pnpm-install", "edge": "end", "ok": true, "ms": 21400})
         );
-        assert_eq!(got[7].payload, json!({"t0": 1_770_000_000_000u64}));
+        assert_eq!(
+            got[7].payload,
+            json!({"t0": 1_770_000_000_000u64, "walkBudgetMs":1_200_000, "attachBudgetMs":120_000})
+        );
         assert_eq!(got[8].payload, json!({}));
         assert_eq!(got[12].payload["line"], 3);
         assert_eq!(got[12].payload["timing"]["actMs"], 1100);

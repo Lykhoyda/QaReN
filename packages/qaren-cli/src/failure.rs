@@ -1,4 +1,6 @@
+pub(crate) mod admission;
 use crate::redact::OutputText;
+pub use admission::{AdmissionCause, AdmissionFacts, AdmissionRecovery};
 use serde::{Deserialize, Serialize};
 
 pub(crate) const WATCHMAN_VOLUME_FIX: &str = "watchman cannot watch this volume; on macOS, FSEvents (fseventsd) state or removable-volume permissions may be blocking it: allow watchman under System Settings > Privacy & Security > Files and Folders > Removable Volumes, or coordinate an fseventsd reset, or reconnect the volume; then re-run qaren doctor once";
@@ -67,6 +69,7 @@ pub enum FailureCode {
     PlanStepFailed,
     MetroOriginMismatch,
     CoreRefused,
+    DevTargetMissing,
     PressNotRegistered,
     BlockStartMissing,
     DevRedbox,
@@ -110,6 +113,7 @@ impl FailureCode {
                 | FailureCode::PlatformUnsupported
                 | FailureCode::MetroOriginMismatch
                 | FailureCode::PressNotRegistered
+                | FailureCode::DevTargetMissing
                 | FailureCode::CoreRefused
                 | FailureCode::BlockStartMissing
                 | FailureCode::DevRedbox
@@ -195,6 +199,7 @@ pub struct Failure {
 pub enum FailureRecovery {
     Build(Recovery),
     Press(PressRecovery),
+    Admission(AdmissionRecovery),
 }
 
 impl FailureRecovery {
@@ -202,6 +207,7 @@ impl FailureRecovery {
         match self {
             Self::Build(recovery) => Self::Build(recovery.with_own_cleanup(run_id)),
             Self::Press(recovery) => Self::Press(recovery),
+            Self::Admission(recovery) => Self::Admission(recovery),
         }
     }
 }
@@ -555,6 +561,18 @@ impl Failure {
             Some(FailureRecovery::Build(recovery)) => Some(recovery),
             _ => None,
         }
+    }
+
+    pub fn with_admission_recovery(
+        mut self,
+        cause: AdmissionCause,
+        facts: Option<AdmissionFacts>,
+    ) -> Self {
+        self.next_action = OutputText::from_output(cause.action().1);
+        self.recovery = Some(Box::new(FailureRecovery::Admission(
+            AdmissionRecovery::new(cause, facts),
+        )));
+        self
     }
 
     pub fn core_refusal_next_action(code: &str) -> &'static str {

@@ -155,6 +155,7 @@ for (const method of ['Network.enable', 'Log.enable', 'Profiler.enable', 'HeapPr
       {
         metroPort: fake.port,
         readinessMs: 30_000,
+        attachBudgetMs: 120_000,
         remainingMs: () => deadline - performance.now(),
         attach: async (attachDeadline) => {
           await client.connectExact(
@@ -214,6 +215,7 @@ test('concurrent exact-port admission survives a slow target-list attempt at low
         {
           metroPort: port,
           readinessMs: 30_000,
+          attachBudgetMs: 120_000,
           remainingMs: () => deadline - performance.now(),
           attach: () => waitForExactPortTargets(port, 30_000, 500),
           foreignDriver: async () => undefined,
@@ -286,6 +288,7 @@ test('a never-responsive native page exhausts one admission deadline and closes 
     {
       metroPort: fake.port,
       readinessMs: 30_000,
+      attachBudgetMs: 120_000,
       remainingMs: () => deadline - performance.now(),
       attach: async (attachDeadline) => {
         deadlines.push(attachDeadline);
@@ -401,6 +404,7 @@ test('two exact sessions admit when a native page answers beyond the five-probe 
             {
               metroPort: fake.port,
               readinessMs: 30_000,
+              attachBudgetMs: 120_000,
               remainingMs: () => deadline - performance.now(),
               attach: async (attachDeadline) => {
                 await waitForExactPortTargets(fake.port, 30_000, 500);
@@ -498,6 +502,7 @@ for (const phase of ['first probe', 'bundle readiness', 'origin proof']) {
         {
           metroPort: fake.port,
           readinessMs: 30_000,
+          attachBudgetMs: 120_000,
           remainingMs: () => deadline - performance.now(),
           attach: async (attachDeadline) => {
             await client.connectExact(

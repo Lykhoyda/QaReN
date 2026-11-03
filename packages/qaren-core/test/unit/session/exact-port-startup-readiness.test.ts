@@ -705,7 +705,11 @@ for (const delay of [1000, 1001]) {
       });
       const waiting = assert.rejects(
         waitForExactPortTargets(managedPort, 1000, 500),
-        /Timed out waiting for CDP targets on port 8341 after 1000ms/,
+        (error: TargetReadinessTimeoutError) => {
+          assert.equal(error.constructor, TargetReadinessTimeoutError);
+          assert.equal(error.state, 'ready');
+          return true;
+        },
       );
       await setImmediate();
       await clock.advance(delay);
