@@ -90,7 +90,7 @@
       h('span', { className: 'qr-ledger-row__i', role: 'cell' }, props.index),
       h(Mark, { status: st }),
       h('span', { className: 'qr-ledger-row__action', role: 'cell' }, props.action),
-      h('span', { className: 'qr-ledger-row__target', role: 'cell', title: props.target }, props.target),
+      h('span', { className: 'qr-ledger-row__target', role: 'cell', title: typeof props.target === 'string' ? props.target : undefined }, props.target),
       h('span', { className: 'qr-ledger-row__dur', role: 'cell' }, props.duration || ''),
       h('span', { className: cx('qr-status', 'qr-status--' + st), role: 'cell' }, STATUS_WORD[st]));
   }
@@ -122,7 +122,10 @@
 
   function Button(props) {
     var cls = cx('qr-btn', 'qr-btn--' + (props.variant || 'secondary'), props.size === 'sm' ? 'qr-btn--sm' : null, props.className);
-    if (props.href) return h('a', { className: cls, href: props.href }, props.children);
+    if (props.href) {
+      if (props.disabled) return h('a', { className: cls, 'aria-disabled': 'true', tabIndex: -1 }, props.children);
+      return h('a', { className: cls, href: props.href, onClick: props.onClick }, props.children);
+    }
     return h('button', { className: cls, type: props.type || 'button', disabled: props.disabled, onClick: props.onClick }, props.children);
   }
 

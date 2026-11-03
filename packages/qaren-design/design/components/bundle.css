@@ -69,7 +69,9 @@
 .qr-btn--secondary:hover { background: var(--surface-2); }
 .qr-btn--ghost { background: transparent; color: var(--text); }
 .qr-btn--ghost:hover { background: var(--surface-2); }
-.qr-btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+.qr-btn[disabled], .qr-btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; pointer-events: auto; }
+.qr-btn--primary[aria-disabled="true"]:hover { filter: none; }
+.qr-btn--secondary[aria-disabled="true"]:hover, .qr-btn--ghost[aria-disabled="true"]:hover { background: transparent; }
 
 /* ---------- link ---------- */
 .qr-link {

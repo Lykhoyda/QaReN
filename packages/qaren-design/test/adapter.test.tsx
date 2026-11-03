@@ -60,6 +60,25 @@ describe('generated adapter', () => {
       'class="qr-logo" width="93.4375" height="26" viewBox="0 0 230 64"',
     );
   });
+
+  test('a disabled link Button has no href and leaves the tab order', () => {
+    expect(
+      renderToStaticMarkup(
+        <QaReN.Button href="/next" disabled>
+          Next
+        </QaReN.Button>,
+      ),
+    ).toBe('<a class="qr-btn qr-btn--secondary" aria-disabled="true" tabindex="-1">Next</a>');
+  });
+
+  test('LedgerRow sets a title only for a string target', () => {
+    const row = (target: ReactElement | string) =>
+      renderToStaticMarkup(
+        <QaReN.LedgerRow index={1} status="passed" action="see" target={target} />,
+      );
+    expect(row('Welcome')).toContain('title="Welcome"');
+    expect(row(<b>Welcome</b>)).not.toContain('title=');
+  });
 });
 
 describe('hydration on React 19', () => {
@@ -81,6 +100,7 @@ describe('hydration on React 19', () => {
 
   test('a server-rendered page hydrates without errors and stays interactive', async () => {
     let clicks = 0;
+    let linkClicks = 0;
     const page = (
       <div className="qr-root" data-theme="dark">
         {Object.values(cases).map(([element], i) => (
@@ -88,6 +108,16 @@ describe('hydration on React 19', () => {
         ))}
         <QaReN.Button variant="primary" onClick={() => clicks++}>
           Check
+        </QaReN.Button>
+        <QaReN.Button
+          href="#next"
+          className="link-button"
+          onClick={(event) => {
+            event.preventDefault();
+            linkClicks++;
+          }}
+        >
+          Next
         </QaReN.Button>
       </div>
     );
@@ -104,10 +134,13 @@ describe('hydration on React 19', () => {
     );
     await act(async () => {
       (container.querySelector('.qr-btn--primary') as unknown as HTMLElement).click();
+      (container.querySelector('.link-button') as unknown as HTMLElement).click();
     });
     expect(recoverable).toEqual([]);
     expect(consoleError).not.toHaveBeenCalled();
     expect(clicks).toBe(1);
+    // An enabled link Button keeps its onClick.
+    expect(linkClicks).toBe(1);
     // The adapter's module-scoped window kept bundle.js off the real one.
     expect((dom as unknown as { QaReN?: unknown }).QaReN).toBeUndefined();
     consoleError.mockRestore();

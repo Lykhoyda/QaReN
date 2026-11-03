@@ -2,7 +2,7 @@
 
 @qaren/design is a mirror of the QaReN design system in Claude Design: <https://claude.ai/artifact/9wASKvBDC7Lx4ooS66t7YD>. Edit branding and mirrored files in Claude Design, then sync them here. The adapter, scripts and tests are maintained in this package. It is the brand for every QaReN surface; the docs site consumes its tokens.
 
-Every file under `design/` is a file of the artifact's `project/` folder, byte for byte, at version `1793686235-1e19` (`design-source.json` records the version and each file's sha256). The mirror holds only what code consumes: `README.md`, `tokens.css`, `tokens.json`, `contrast.md` and `components/bundle.js`, `bundle.css` and `index.d.ts`. `design-system.json`, the assets, and each component's preview and README stay in Claude Design.
+Every file under `design/` is a file of the artifact's `project/` folder, byte for byte, at version `1793708863-7918` (`design-source.json` records the version and each file's sha256). The mirror holds only what code consumes: `README.md`, `tokens.css`, `tokens.json`, `contrast.md` and `components/bundle.js`, `bundle.css` and `index.d.ts`. `design-system.json`, the assets, and each component's preview and README stay in Claude Design.
 
 The design guidance, including the required page wrapper and themes, is in [design/README.md](design/README.md#components).
 
