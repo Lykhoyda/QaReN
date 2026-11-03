@@ -33,7 +33,7 @@ import { runPlan, type ActResult } from '../../../dist/qa/walker.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { captureScreen } from '../../../dist/qa/capture.js';
 import { nativeCapture } from './platform-presence-fixtures.ts';
-import { walker, scriptedJudge } from './judgment-fixtures.ts';
+import { walker, scriptedJudge, screen, element } from './judgment-fixtures.ts';
 import type { ToolResult } from '../../../dist/utils.js';
 
 function fixture(throwSink = false) {
@@ -540,6 +540,48 @@ test('retained settle metadata admits only measured finite facts without replaci
   unmeasured.retainSettle(hostile);
   assert.equal(getterCalls, 0);
   assert.equal(unmeasured.settleMeta, undefined);
+});
+
+test('a refused action retains its outcome and measured settle on the same ledger row', async () => {
+  const run = async (timed: boolean) => {
+    const f = walker(
+      [screen([element('@save', 'Save')])],
+      scriptedJudge(() => assert.fail('quoted targets need no judge')),
+    );
+    if (timed) f.deps.timing = () => {};
+    const adapter = fixture();
+    f.deps.press = () =>
+      adapter.act(
+        async () => ({
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                ok: true,
+                data: { executed: false },
+                meta: { settle: { method: 'snapshot-eq' }, timings_ms: { settle: 12.4 } },
+              }),
+            },
+          ],
+        }),
+        true,
+      );
+    return runPlan(parsePlan('1. Tap "Save"').blocks!, f.deps);
+  };
+  const timed = await run(true);
+  const plain = await run(false);
+  assert.equal(timed.verdict, 'FAIL');
+  assert.ok(timed.steps.length > 0);
+  assert.deepEqual(timed.failure, plain.failure);
+  assert.deepEqual(
+    timed.steps.map(({ timing: _timing, ...row }) => row),
+    plain.steps,
+  );
+  for (const row of timed.steps) {
+    assert.match(row.reason ?? '', /the action did not execute/);
+    assert.equal(row.timing?.settleMethod, 'snapshot-eq');
+    assert.equal(row.timing?.settleMs, 12);
+  }
 });
 
 for (const [kind, plan, dispatches] of [

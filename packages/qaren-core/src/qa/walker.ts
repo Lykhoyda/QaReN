@@ -4749,6 +4749,7 @@ function withRowTiming(deps: WalkerDeps): WalkerDeps {
       }
       observe(event);
     },
+    // Action adapters use the session observer; returned settle facts enter the row only here.
     rowSettle: (event) => timer.observe(event),
     rowTiming: (t) => {
       const calls = deps.judge?.calls ?? [];
