@@ -1018,7 +1018,7 @@ a.plain {
 }
 
 /* ---------- narrower screens ---------- */
-@media (max-width: 1180px) {
+@media (width < 1180px) {
   .docs-toc {
     display: none;
   }
