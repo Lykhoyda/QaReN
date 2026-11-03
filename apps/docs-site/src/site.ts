@@ -7,6 +7,7 @@ export type Page = {
   label: string;
   /** The page's h1 and document title. */
   title: string;
+  /** One line; `backticks` mark inline code, rendered as code under the title. */
   description: string;
 };
 
@@ -42,7 +43,7 @@ export const groups: Group[] = [
         label: 'Getting started',
         title: 'Getting started',
         description:
-          'Install qaren and the QaReN plugin, run /qaren:setup and reach a first passing check.',
+          'Install `qaren` and the QaReN plugin, run `/qaren:setup` and reach a first passing check.',
       },
       {
         slug: 'plugin',
@@ -61,7 +62,7 @@ export const groups: Group[] = [
         file: 'cli.mdx',
         label: 'The qaren CLI',
         title: 'The qaren CLI',
-        description: 'Every qaren verb, its arguments and its flags.',
+        description: 'Every `qaren` verb, its arguments and its flags.',
       },
       {
         slug: 'check',
@@ -69,7 +70,7 @@ export const groups: Group[] = [
         label: 'Check a plan',
         title: 'Check a plan',
         description:
-          "Run qaren check against the working tree, read the receipt and find the run's evidence.",
+          "Run `qaren check` against the working tree, read the receipt and find the run's evidence.",
       },
       {
         slug: 'pull-requests',
@@ -77,14 +78,14 @@ export const groups: Group[] = [
         label: 'Test a pull request',
         title: 'Test a pull request',
         description:
-          "Walk a plan at a pull request's head with qaren pr, then post the result with qaren publish.",
+          "Walk a plan at a pull request's head with `qaren pr`, then post the result with `qaren publish`.",
       },
       {
         slug: 'plans',
         file: 'plans.mdx',
         label: 'Write a plan',
         title: 'Write a plan',
-        description: 'The Markdown grammar qaren walks, and what a check reads from the screen.',
+        description: 'The Markdown grammar `qaren` walks, and what a check reads from the screen.',
       },
       {
         slug: 'saved-blocks',
@@ -107,14 +108,14 @@ export const groups: Group[] = [
         file: 'configuration.mdx',
         label: 'Configuration',
         title: 'Configuration',
-        description: 'Every key in .qaren/config.yaml, with its type, default and meaning.',
+        description: 'Every key in `.qaren/config.yaml`, with its type, default and meaning.',
       },
       {
         slug: 'watch',
         file: 'watch.mdx',
         label: 'Watch a run',
         title: 'Watch a run',
-        description: 'Follow a qaren check or qaren pr run live, locally or over ssh.',
+        description: 'Follow a `qaren check` or `qaren pr` run live, locally or over ssh.',
       },
       {
         slug: 'troubleshooting',
@@ -150,6 +151,11 @@ export const pages: Page[] = groups.flatMap((group) => group.pages);
 /** Site-relative path of a page with the trailing slash every URL keeps. */
 export function pagePath(slug: string): string {
   return slug ? `/${slug}/` : '/';
+}
+
+/** A description as plain text, for meta tags. */
+export function plainDescription(page: Page): string {
+  return page.description.replaceAll('`', '');
 }
 
 export function groupOf(page: Page): Group {

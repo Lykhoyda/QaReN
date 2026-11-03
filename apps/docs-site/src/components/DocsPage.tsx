@@ -88,7 +88,19 @@ export function DocsPage({
           <article className="docs-article" data-pagefind-body={searchable ? '' : undefined}>
             {current ? <p className="docs-label">{groupOf(current).label}</p> : null}
             <h1 className="docs-title">{title}</h1>
-            {description ? <p className="docs-lead">{description}</p> : null}
+            {description ? (
+              <p className="docs-lead">
+                {description.split('`').map((part, i) =>
+                  i % 2 ? (
+                    <code key={i} className="docs-ic">
+                      {part}
+                    </code>
+                  ) : (
+                    part
+                  ),
+                )}
+              </p>
+            ) : null}
             <div className="docs-prose">{children}</div>
             {current ? <Pager current={current} /> : null}
             {/* The changelog is generated, so it has no source to edit. */}

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { DocsPage } from '../../components/DocsPage.tsx';
 import { Home } from '../../components/Home.tsx';
 import { content } from '../../content.ts';
-import { BASE_PATH, pages, pagePath, type Page } from '../../site.ts';
+import { BASE_PATH, pages, pagePath, plainDescription, type Page } from '../../site.ts';
 import { tableOfContents } from '../../toc.ts';
 
 type Props = { params: Promise<{ slug?: string[] }> };
@@ -26,12 +26,12 @@ export async function generateMetadata(props: Props, parent: ResolvingMetadata):
   const url = `${BASE_PATH}${pagePath(page.slug)}`;
   return {
     title: page.title,
-    description: page.description,
+    description: plainDescription(page),
     alternates: { canonical: url },
     openGraph: {
       ...(await parent).openGraph,
       title: page.title,
-      description: page.description,
+      description: plainDescription(page),
       url,
     },
   };

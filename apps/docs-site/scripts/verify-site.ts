@@ -154,6 +154,10 @@ pages.forEach(({ slug }, i) => {
   check(`${slug} links the previous page`, html.includes('rel="prev"'));
   check(`${slug} links the next page`, i === pages.length - 1 || html.includes('rel="next"'));
   check(`${slug} has an On this page list`, html.includes('aria-label="On this page"'));
+  check(
+    `${slug} meta description is plain text`,
+    !/<meta name="description" content="[^"]*`/.test(html),
+  );
 });
 
 console.log('\nverify-site: generated files');
