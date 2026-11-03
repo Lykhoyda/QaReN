@@ -1,15 +1,17 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { SITE_ORIGIN, pagePath, pages } from '../src/site.ts';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
+const HERE = import.meta.dirname;
 const DIST = process.env.DOCS_DIST ?? resolve(HERE, '../dist');
+const VERCEL_JSON = resolve(HERE, '../vercel.json');
 const MAIN_RS = resolve(HERE, '../../../packages/qaren-cli/src/main.rs');
 const PLUGIN_JSON = resolve(HERE, '../../../packages/qaren-plugin/.claude-plugin/plugin.json');
-const BASE = '/QaReN';
+const BASE = process.env.DOCS_BASE_PATH ?? '';
+const OLD_BASE = '/QaReN';
 let failed = 0;
 
-function check(name, cond) {
+function check(name: string, cond: boolean): void {
   if (cond) {
     console.log(`  ok  ${name}`);
   } else {
@@ -18,15 +20,16 @@ function check(name, cond) {
   }
 }
 
-function exists(relPath) {
+function exists(relPath: string): boolean {
   return existsSync(join(DIST, relPath));
 }
 
-function page(relPath) {
+function page(relPath: string): string {
   return readFileSync(join(DIST, relPath), 'utf8');
 }
 
-function htmlFiles(dir = DIST) {
+function htmlFiles(dir = DIST): string[] {
+  if (!existsSync(dir)) return [];
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
     if (statSync(path).isDirectory()) return htmlFiles(path);
@@ -34,11 +37,15 @@ function htmlFiles(dir = DIST) {
   });
 }
 
+function pageFile(slug: string): string {
+  return join(slug, 'index.html');
+}
+
 // KNOWN pre-existing broken references, skipped by the link check with a reason.
 // Not introduced by this plan; remove an entry once the underlying asset ships.
-const KNOWN_BROKEN = new Set();
+const KNOWN_BROKEN = new Set<string>();
 
-function checkInternalLinks() {
+function checkInternalLinks(): void {
   let broken = 0;
   for (const file of htmlFiles()) {
     const html = readFileSync(file, 'utf8');
@@ -46,13 +53,13 @@ function checkInternalLinks() {
     for (const [, href] of html.matchAll(/(?:href|src)="([^"#?]+)[#?]?[^"]*"/g)) {
       if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(href)) continue;
       const url = new URL(href, pageUrl).pathname.replace(/\/$/, '') || '/';
-      if (url !== BASE && !url.startsWith(`${BASE}/`)) {
+      if (BASE && url !== BASE && !url.startsWith(`${BASE}/`)) {
         broken += 1;
         console.error(`  link outside the site base ${url} in ${file.slice(DIST.length)}`);
         continue;
       }
       if (KNOWN_BROKEN.has(url)) continue;
-      const rel = url === BASE ? '' : url.slice(BASE.length + 1);
+      const rel = url === (BASE || '/') ? '' : url.slice(BASE.length + 1);
       if (
         /\.(css|js|png|svg|txt|xml|ico|json|webmanifest|woff2?|ttf|webp|avif|jpe?g|gif|mp4)$/.test(
           rel,
@@ -64,8 +71,7 @@ function checkInternalLinks() {
         }
         continue;
       }
-      const target = rel === '' ? 'index.html' : join(rel, 'index.html');
-      if (!exists(target) && !exists(rel)) {
+      if (!exists(join(rel, 'index.html')) && !exists(rel)) {
         broken += 1;
         console.error(`  broken link ${url} in ${file.slice(DIST.length)}`);
       }
@@ -75,32 +81,142 @@ function checkInternalLinks() {
 }
 
 console.log('verify-site: pages');
-check('dist exists (run `yarn build` first)', existsSync(DIST));
-for (const slug of [
-  '',
-  'getting-started',
-  'plans',
-  'check',
-  'pull-requests',
-  'watch',
-  'saved-blocks',
-  'actions/rn-flow-1',
-  'configuration',
-  'cli',
-  'troubleshooting',
-  'plugin',
-  'changelog',
-]) {
-  check(`${slug || 'index'} built`, exists(join(slug, 'index.html')));
-}
+check('dist exists (run `bun run build` first)', existsSync(DIST));
+for (const { slug } of pages) check(`${slug || 'index'} built`, exists(pageFile(slug)));
+check('404.html built', exists('404.html'));
 
 console.log('\nverify-site: links');
 checkInternalLinks();
-const unbased = htmlFiles().filter((file) =>
-  /href="\/(?!\/|QaReN(?:\/|"))/.test(readFileSync(file, 'utf8')),
+const rootRelative = /(?:href|src)="(\/(?!\/)[^"]*)"/g;
+const misbased = htmlFiles().filter((file) =>
+  [...readFileSync(file, 'utf8').matchAll(rootRelative)].some(([, href]) =>
+    BASE
+      ? href !== BASE && !href.startsWith(`${BASE}/`)
+      : href === OLD_BASE || href.startsWith(`${OLD_BASE}/`),
+  ),
 );
-check('internal links carry the base path', unbased.length === 0);
-for (const file of unbased) console.error(`  link without base in ${relative(DIST, file)}`);
+check(
+  BASE
+    ? 'internal links carry the base path'
+    : `internal links do not carry the old ${OLD_BASE} base`,
+  misbased.length === 0,
+);
+for (const file of misbased) console.error(`  link with the wrong base in ${relative(DIST, file)}`);
+
+console.log('\nverify-site: page structure');
+for (const file of htmlFiles()) {
+  const name = relative(DIST, file);
+  const html = readFileSync(file, 'utf8');
+  const levels = [...html.matchAll(/<h([1-6])[\s>]/g)].map(([, level]) => Number(level));
+  check(`${name} has one h1`, levels.filter((level) => level === 1).length === 1);
+  const skipped = levels.findIndex((level, i) => i > 0 && level > levels[i - 1] + 1);
+  check(`${name} heading order starts at h1 and skips no level`, levels[0] === 1 && skipped === -1);
+  if (/\bclass="[^"]*\bsl-|starlight/i.test(html)) {
+    failed += 1;
+    console.error(`FAIL  ${name} carries Starlight markup`);
+  }
+}
+for (const { slug } of pages) {
+  const html = exists(pageFile(slug)) ? page(pageFile(slug)) : '';
+  const canonical = /<link rel="canonical" href="([^"]+)"/.exec(html)?.[1] ?? '';
+  check(
+    `${slug || 'index'} canonical is ${SITE_ORIGIN}${BASE}${pagePath(slug)}`,
+    canonical === `${SITE_ORIGIN}${BASE}${pagePath(slug)}`,
+  );
+}
+
+for (const file of htmlFiles()) {
+  const name = relative(DIST, file);
+  const html = readFileSync(file, 'utf8');
+  const ids = new Set([...html.matchAll(/\sid="([^"]+)"/g)].map(([, id]) => id));
+  const missing = [...html.matchAll(/href="#([^"]+)"/g)].filter(([, id]) => !ids.has(id));
+  check(`${name} same-page links all have a target`, missing.length === 0);
+  for (const [, id] of missing) console.error(`  #${id} has no target in ${name}`);
+  if (/placeholder\. this page keeps its address/i.test(html)) {
+    failed += 1;
+    console.error(`FAIL  ${name} still carries placeholder copy`);
+  }
+}
+
+for (const file of htmlFiles()) {
+  const name = relative(DIST, file);
+  const html = readFileSync(file, 'utf8');
+  const frames = html.split(' data-copy="').length - 1;
+  if (frames > 0)
+    check(
+      `${name} code blocks each have a Copy button`,
+      html.split('class="docs-copy"').length - 1 === frames,
+    );
+}
+pages.forEach(({ slug }, i) => {
+  if (!slug) return; // The home page has its own layout without pager or contents.
+  const html = exists(pageFile(slug)) ? page(pageFile(slug)) : '';
+  check(`${slug} links the previous page`, html.includes('rel="prev"'));
+  check(`${slug} links the next page`, i === pages.length - 1 || html.includes('rel="next"'));
+  check(`${slug} has an On this page list`, html.includes('aria-label="On this page"'));
+  check(
+    `${slug} meta description is plain text`,
+    !/<meta name="description" content="[^"]*`/.test(html),
+  );
+});
+
+console.log('\nverify-site: generated files');
+const sitemap = exists('sitemap.xml') ? page('sitemap.xml') : '';
+for (const { slug } of pages)
+  check(
+    `sitemap lists ${slug || 'index'}`,
+    sitemap.includes(`<loc>${SITE_ORIGIN}${BASE}${pagePath(slug)}</loc>`),
+  );
+check(
+  'robots.txt points at the sitemap',
+  exists('robots.txt') && page('robots.txt').includes(`Sitemap: ${SITE_ORIGIN}${BASE}/sitemap.xml`),
+);
+const llms = exists('llms.txt') ? page('llms.txt') : '';
+const llmsFull = exists('llms-full.txt') ? page('llms-full.txt') : '';
+const llmsSmall = exists('llms-small.txt') ? page('llms-small.txt') : '';
+check(
+  'llms.txt links both documentation sets',
+  llms.includes('/llms-full.txt') && llms.includes('/llms-small.txt'),
+);
+for (const { slug, title } of pages) {
+  check(
+    `llms.txt and llms-full.txt name ${title}`,
+    llms.includes(title) && llmsFull.includes(`# ${title}\n`),
+  );
+  if (slug !== 'changelog')
+    check(`llms-small.txt names ${title}`, llmsSmall.includes(`# ${title}\n`));
+}
+check('pagefind index built', exists('pagefind/pagefind.js'));
+// Home.tsx renders the home page; index.mdx carries the same copy into the llms files.
+const homeHtml = exists('index.html') ? page('index.html') : '';
+for (const [, heading] of homeHtml.matchAll(/<h2[^>]*>([^<]+)<\/h2>/g))
+  check(`llms-full.txt carries the home section "${heading}"`, llmsFull.includes(`## ${heading}`));
+
+console.log('\nverify-site: old-URL redirects');
+type Redirect = { source: string; destination: string; permanent?: boolean };
+const redirects: Redirect[] = existsSync(VERCEL_JSON)
+  ? (JSON.parse(readFileSync(VERCEL_JSON, 'utf8')).redirects ?? [])
+  : [];
+for (const { slug } of pages)
+  check(
+    `vercel.json redirects ${OLD_BASE}${pagePath(slug)} permanently`,
+    redirects.some((r) => {
+      if (r.permanent !== true) return false;
+      const oldPath = `${OLD_BASE}${pagePath(slug)}`;
+      const [prefix, suffix] = r.source.split(':path*');
+      if (suffix !== undefined) {
+        return (
+          oldPath.startsWith(prefix) &&
+          oldPath.endsWith(suffix) &&
+          r.destination.replace(
+            ':path*',
+            oldPath.slice(prefix.length, suffix ? -suffix.length : undefined),
+          ) === pagePath(slug)
+        );
+      }
+      return r.source === oldPath && r.destination === pagePath(slug);
+    }),
+  );
 
 console.log('\nverify-site: CLI drift');
 const usage = /const USAGE: &str = "((?:[^"\\]|\\.)*)";/.exec(readFileSync(MAIN_RS, 'utf8'))?.[1];
@@ -114,8 +230,8 @@ for (const verb of verbs)
   check(`cli page has a qaren ${verb} section`, cliHtml.includes(`id="qaren-${verb}"`));
 
 console.log('\nverify-site: skill drift');
-const skills = (JSON.parse(readFileSync(PLUGIN_JSON, 'utf8')).skills ?? []).map((path) =>
-  path.replace(/^\.\/skills\//, ''),
+const skills: string[] = (JSON.parse(readFileSync(PLUGIN_JSON, 'utf8')).skills ?? []).map(
+  (path: string) => path.replace(/^\.\/skills\//, ''),
 );
 check('plugin manifest lists skills', skills.length > 0);
 const pluginHtml = exists('plugin/index.html') ? page('plugin/index.html') : '';

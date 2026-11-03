@@ -28,7 +28,7 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
 - `packages/qaren-ios-runner/` (package `qaren-ios-runner`) and
   `packages/qaren-android-runner/` (package `qaren-android-runner`): native
   runner sources.
-- `apps/docs-site/` (package `qaren-docs`): deliverable QaReN documentation site.
+- `apps/docs-site/` (package `qaren-docs`): standalone Bun documentation site, outside the Yarn workspace.
 - Engineering processes, plans, stories, audits and research live in the
   workspace [`docs/`](https://github.com/Lykhoyda/qaren-workspace/tree/main/docs/);
   never add a top-level `docs/` tree here. Captain-approved architecture records
@@ -142,8 +142,7 @@ Doctrine for the kept handlers, each with one owner:
   seed after the snapshot seal walk, and skip publication if the toolchain
   fingerprint changed.
 - Saved actions compile to `rn-flow/1` replay plans in one place,
-  `flow/compile.ts` (`dist/qa/walk.js --compile`); the dialect contract is
-  `apps/docs-site/src/content/docs/actions/rn-flow-1.md`. Change semantics
+  `flow/compile.ts` (`dist/qa/walk.js --compile`). Change semantics
   there, never per action; regenerate the goldens under
   `test/fixtures/rn-flow-1/plans/` with `UPDATE_GOLDEN=1` and review the diff.
 - Learned-action compatibility is diagnosed read-only by
@@ -199,7 +198,7 @@ Suite records and redacted logs live in `native-suites/<run-id>` under the [QaRe
 - A changeset must land in the same PR as the change it describes
   (`scripts/require-changeset.sh` watches `packages/qaren-core/src`,
   `packages/qaren-cli/src` and `packages/qaren-plugin/{commands,skills,hooks,scripts}`).
-  The frontmatter key is `qaren`; `qaren-core`, both runners and `qaren-docs`
+  The frontmatter key is `qaren`; `qaren-core` and both runners
   are ignored in `.changeset/config.json`.
 - `packages/qaren-plugin/package.json` is the version source.
   `corepack yarn version-packages` runs `changeset version`,

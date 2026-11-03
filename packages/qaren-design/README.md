@@ -1,6 +1,6 @@
 # @qaren/design
 
-The QaReN design system, **Verdict Log: a calm terminal at night**, as a workspace package: colour, type and spacing tokens, the component stylesheet, and typed React components. It is the brand for every QaReN surface; the docs site is planned to be its first user.
+The QaReN design system, **Verdict Log: a calm terminal at night**, as a workspace package: colour, type and spacing tokens, the component stylesheet, and typed React components. It is the brand for every QaReN surface; the docs site consumes its tokens.
 
 This package is the canonical copy. The design source stays where new layouts are drawn; changes reach this package through `scripts/sync-design.ts` and a reviewed pull request. Imported from design source version `1793660106-9400` (tokens synced 2026-11-02).
 

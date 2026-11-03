@@ -487,7 +487,7 @@ The configuration keys, defaults and validation are owned by
 `--config` selects another configuration file.
 
 For optional preparation budgets, see the
-[deadline configuration reference](../../apps/docs-site/src/content/docs/configuration.mdx#deadlines).
+[deadline defaults and validation](src/scenario.rs).
 
 For private registries whose credentials use other environment names, declare the
 names in the operator-selected configuration (empty by default):
@@ -2182,7 +2182,7 @@ Metro rebuilds the manifest
 per request and one answer does not predict the client's own. Each request is
 recorded; slower answers and request timeouts restart the count. This stage has
 its own `deadlines.manifest_warmup_seconds` clock (see
-[configuration defaults and limits](../../apps/docs-site/src/content/docs/configuration.mdx#deadlines))
+[deadline defaults and validation](src/scenario.rs))
 and a 64-attempt cap, also bounded by the remaining
 `build_seconds` budget. Exhaustion refuses with `MANIFEST_NOT_WARM` (exit 4),
 without launching the client. Each request is capped to the remaining stage
@@ -2411,9 +2411,9 @@ build at the start of a session; later runs find the lane pinned and write nothi
 ### Runtime inputs
 
 `Fill "staging-password" with input PASSWORD` types the value of `QAREN_INPUT_PASSWORD`;
-see the [plan guide](../../apps/docs-site/src/content/docs/plans.mdx) for the grammar and
-value bounds. The owner resolves the value before running qaren; qaren reads no `.env`
-file, reference or secret store.
+see the [plan parser](../qaren-core/src/qa/plan.ts) for the grammar and
+[input validation](../qaren-core/src/qa/inputs.ts) for value bounds. The owner resolves the
+value before running qaren; qaren reads no `.env` file, reference or secret store.
 
 Inputs are SECRET unless their named Fill explicitly opts in to TEST-PII with
 `(test-pii)` (or the older spelling `(non-secret)`), for example
@@ -4444,9 +4444,8 @@ launch and readiness run afterwards, and the final drift checks still run
 after readiness. A contended iOS claim waits, polling every second, within the
 same build budget (`deadlines.build_seconds`) that the prebuild, build,
 verification and publication then share; see the
-[deadline contract](../../apps/docs-site/src/content/docs/configuration.mdx#deadlines)
-for subprocess caps and the teardown exception. A synchronous cache copy already
-in progress is not interrupted; its completion is checked against the window
+[deadline defaults and validation](src/scenario.rs).
+A synchronous cache copy already in progress is not interrupted; its completion is checked against the window
 before publication. Output retirement
 and readiness run outside this window. Running that budget out while waiting is a refusal (`BUILD_CONTENDED`,
 exit 4) whose next action names the holder run, whether it is alive, whether
