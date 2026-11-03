@@ -6,7 +6,7 @@ type Theme = 'light' | 'dark';
 
 /** Light/Dark switch; the choice is kept in localStorage and applied before paint by layout.tsx. */
 export function ThemeSwitch() {
-  const [theme, setTheme] = useState<Theme>('light');
+  const [theme, setTheme] = useState<Theme>('dark');
   useEffect(() => {
     setTheme(document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light');
   }, []);

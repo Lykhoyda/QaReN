@@ -4,11 +4,8 @@ import { themeScript } from './theme-script.ts';
 
 const run = new Function('document', 'location', 'localStorage', themeScript);
 
-for (const [path, defaultTheme] of [
-  ['/', 'dark'],
-  ['/check/', 'light'],
-] as const) {
-  test(`theme script applies ${defaultTheme} before reading blocked storage on ${path}`, () => {
+for (const path of ['/', '/check/', '/jev/', '/getting-started/']) {
+  test(`theme script applies dark before reading blocked storage on ${path}`, () => {
     const document = { documentElement: { dataset: { theme: 'light' } } };
     let themeAtRead: string | undefined;
     let keyRead: string | undefined;
@@ -24,8 +21,8 @@ for (const [path, defaultTheme] of [
       },
     );
     expect(keyRead).toBe('qaren-theme');
-    expect(themeAtRead).toBe(defaultTheme);
-    expect(document.documentElement.dataset.theme).toBe(defaultTheme);
+    expect(themeAtRead).toBe('dark');
+    expect(document.documentElement.dataset.theme).toBe('dark');
   });
 
   for (const stored of ['light', 'dark', null, 'invalid']) {
@@ -42,7 +39,7 @@ for (const [path, defaultTheme] of [
         },
       );
       expect(document.documentElement.dataset.theme).toBe(
-        stored === 'light' || stored === 'dark' ? stored : defaultTheme,
+        stored === 'light' || stored === 'dark' ? stored : 'dark',
       );
     });
   }
