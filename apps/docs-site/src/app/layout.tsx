@@ -2,7 +2,8 @@ import type { Metadata } from 'next';
 import { Inter, JetBrains_Mono } from 'next/font/google';
 import type { ReactNode } from 'react';
 import '@qaren/design/tokens.css';
-import { BASE_PATH, SITE_DESCRIPTION, SITE_NAME, SITE_ORIGIN, pagePath } from '../site.ts';
+import { BASE_PATH, SITE_DESCRIPTION, SITE_NAME, SITE_ORIGIN } from '../site.ts';
+import { themeScript } from '../theme-script.ts';
 import './site.css';
 
 const inter = Inter({
@@ -48,11 +49,6 @@ const structuredData = {
   author: { '@type': 'Person', name: 'Anton Lykhoyda', url: 'https://github.com/Lykhoyda' },
   offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
 };
-
-const home = `${BASE_PATH}${pagePath('')}`;
-
-// Runs before paint: the stored Light/Dark choice, else dark on the home page and light on docs.
-const themeScript = `try{var t=localStorage.getItem('qaren-theme');document.documentElement.dataset.theme=t==='dark'||t==='light'?t:location.pathname===${JSON.stringify(home)}?'dark':'light'}catch(e){}`;
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
