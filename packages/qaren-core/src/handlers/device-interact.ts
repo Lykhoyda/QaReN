@@ -894,7 +894,10 @@ function snapshotNodes(result: unknown): FlatNode[] | null {
   }
 }
 
-async function dismissViaJs(client: CDPClient, qaContext?: QaDispatchContext): Promise<boolean> {
+export async function dismissViaJs(
+  client: CDPClient,
+  qaContext?: QaDispatchContext,
+): Promise<boolean> {
   qaContext?.authorize();
   const r = await client.evaluate('__QAREN.dismissKeyboard()');
   if (typeof r.value !== 'string') return false;

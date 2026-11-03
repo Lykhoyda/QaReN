@@ -1134,6 +1134,7 @@ substitute for that identity. If the same input becomes natively observable,
 strict verification resumes. Otherwise the keyboard must become visible and
 the target must remain eligible. React evidence that the intended input is
 unfocused vetoes typing.
+If React reports the field focused after the tap but no keyboard is observed, iOS fallback blurs it through JavaScript, re-finds the same identity on a fresh settled capture, and taps once more with a bounded keyboard wait; a failed blur, missing identity, refused tap, or still-hidden keyboard refuses without typing.
 
 When the keyboard is already up, iOS fallback types only with positive React
 proof that the intended input is focused. With an eligible target, QaReN taps it,

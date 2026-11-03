@@ -89,12 +89,17 @@ interface AppOptions {
   expireBeforeType?: boolean;
   questions?: Questions[];
   reactFocused?: boolean | 'throw';
+  blur?: boolean | 'throw';
+  afterBlur?: Screen;
+  afterRetap?: Screen[];
+  retap?: ActResult;
   hosts?: ReactHostObservation[];
   reactUnavailable?: boolean;
 }
 
 function app(options: AppOptions = {}) {
-  let state: 'idle' | 'focused' | 'typed' | 'accepted' = 'idle';
+  let state: 'idle' | 'focused' | 'blurred' | 'refocused' | 'typed' | 'accepted' = 'idle';
+  let refocusedCaptures = 0;
   let focusedCaptures = 0;
   let time = 0;
   let expire = false;
@@ -128,9 +133,13 @@ function app(options: AppOptions = {}) {
         options.initialKeyboard === 'absent' ? undefined : (options.initialKeyboard ?? false),
         options.hosts,
       );
-    if (state === 'focused') {
-      const screens = options.focused ?? [screenOf(initial, true, options.hosts)];
-      const next = screens[Math.min(focusedCaptures++, screens.length - 1)];
+    if (state === 'blurred') return options.afterBlur ?? screenOf(initial, false, options.hosts);
+    if (state === 'focused' || state === 'refocused') {
+      const screens = (state === 'refocused' ? options.afterRetap : options.focused) ?? [
+        screenOf(initial, true, options.hosts),
+      ];
+      const index = state === 'refocused' ? refocusedCaptures++ : focusedCaptures++;
+      const next = screens[Math.min(index, screens.length - 1)];
       if (options.expireBeforeType && next.keyboardVisible) expire = true;
       return next;
     }
@@ -150,6 +159,10 @@ function app(options: AppOptions = {}) {
     async press(ref, context) {
       context.authorize();
       log.push(`press ${ref}`);
+      if (state === 'blurred') {
+        state = 'refocused';
+        return options.retap ?? { ok: true, proven: false };
+      }
       if (ref === '@wrap' && state === 'idle') state = 'focused';
       if (ref === '@submit') state = 'accepted';
       return options.press ?? { ok: true, proven: false };
@@ -186,6 +199,17 @@ function app(options: AppOptions = {}) {
             focusReads.push(testID);
             if (options.reactFocused === 'throw') throw new Error('PRIVATE-read-failure');
             return options.reactFocused === true;
+          },
+        }),
+    ...(options.blur === undefined
+      ? {}
+      : {
+          async blurFocusedInput(context) {
+            context.authorize();
+            log.push('blur');
+            if (options.blur === 'throw') throw new Error('PRIVATE-blur-failure');
+            if (options.blur) state = 'blurred';
+            return options.blur;
           },
         }),
     note: (line: string) => {
@@ -676,6 +700,259 @@ for (const [name, after, reason] of [
     );
   });
 }
+
+const reboundWrapper = wrapper('Email', { ref: '@rebound' });
+const hiddenKeyboard = screenOf([wrapper(), submit], false);
+const reboundScreen = (keyboard?: boolean) => screenOf([reboundWrapper, submit], keyboard);
+const refocusApp = (options: AppOptions = {}) =>
+  app({
+    reactFocused: true,
+    blur: true,
+    focused: [hiddenKeyboard],
+    afterBlur: reboundScreen(false),
+    afterRetap: [reboundScreen(true)],
+    ...options,
+  });
+
+for (const proofMode of [false, true]) {
+  test(`focused hidden-keyboard recovery re-taps only the fresh ref and waits (proof mode ${proofMode})`, async () => {
+    const fake = refocusApp({
+      initialKeyboard: proofMode,
+      afterRetap: [reboundScreen(false), reboundScreen(false), reboundScreen(true)],
+    });
+    const outcome = await walkBlock(blocks(plan())[0], fake.deps);
+    assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
+    assert.deepEqual(steps(fake.log), [
+      'press @wrap',
+      'blur',
+      'press @rebound',
+      'type @rebound',
+      'press @submit',
+    ]);
+    assert.deepEqual(fake.typed, [{ ref: '@rebound', text: EMAIL, testID: 'qa-hidden-email' }]);
+    assert.deepEqual(fake.focusRequirements, [proofMode]);
+    assert.deepEqual(
+      fake.focusReads,
+      proofMode ? ['qa-hidden-email', 'qa-hidden-email'] : ['qa-hidden-email'],
+    );
+    assert.ok(
+      fake.notes.includes(
+        `keyboard-refocus {"v":1,"line":${outcome.rows[0].line},"focused":true,"blurred":true,"raised":true}`,
+      ),
+    );
+  });
+}
+
+for (const [name, options] of [
+  ['blur helper absent', { blur: undefined }],
+  ['focus helper absent', { reactFocused: undefined }],
+  ['unfocused', { reactFocused: false }],
+  ['focus unreadable', { reactFocused: 'throw' }],
+  ['blur refused', { blur: false }],
+  ['blur threw', { blur: 'throw' }],
+] as const) {
+  test(`hidden-keyboard recovery refuses without re-tapping when ${name}`, async () => {
+    const fake = refocusApp(options);
+    const outcome = await walkBlock(blocks(plan())[0], fake.deps);
+    assert.equal(outcome.block.outcome, 'fail');
+    assert.match(
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
+      /tapping "qa-hidden-email" raised no keyboard/,
+    );
+    assert.deepEqual(
+      steps(fake.log),
+      options.blur === false || options.blur === 'throw'
+        ? ['press @wrap', 'blur']
+        : ['press @wrap'],
+    );
+    assert.deepEqual(fake.typed, []);
+    if (options.blur === false)
+      assert.match(
+        renderReason(outcome.failure?.seen ?? '', (text) => text),
+        /the focused field could not be blurred/,
+      );
+    assert.doesNotMatch(JSON.stringify({ outcome, notes: fake.notes }), /PRIVATE-/);
+  });
+}
+
+for (const [name, afterBlur] of [
+  ['gone', screenOf([submit], false)],
+  ['ref reassigned', screenOf([wrapper('Email', { testID: 'other-input' }), submit], false, [])],
+  ['ambiguous', screenOf([wrapper(), reboundWrapper, submit], false)],
+  ['offscreen', screenOf([wrapper('Email', { offscreen: true }), submit], false)],
+] as const) {
+  test(`blurred field ${name} refuses without a second tap`, async () => {
+    const fake = refocusApp({ afterBlur });
+    const outcome = await walkBlock(blocks(plan())[0], fake.deps);
+    assert.equal(outcome.block.outcome, 'fail');
+    assert.deepEqual(steps(fake.log), ['press @wrap', 'blur']);
+    assert.deepEqual(fake.typed, []);
+    assert.match(
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
+      /TARGET_NOT_FOUND/,
+    );
+  });
+}
+
+test('an input observed after the refocus tap resumes strict filling', async () => {
+  const input = element('@input', 'Email', {
+    kind: 'input',
+    nativeKind: 'input',
+    testID: 'qa-hidden-email',
+  });
+  const fake = refocusApp({ afterRetap: [screenOf([reboundWrapper, input, submit], false)] });
+  const outcome = await walkBlock(blocks(plan())[0], fake.deps);
+  assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
+  assert.deepEqual(steps(fake.log), [
+    'press @wrap',
+    'blur',
+    'press @rebound',
+    'fill @input',
+    'press @submit',
+  ]);
+});
+
+for (const error of ['TAP_FAILED: no', 'FOCUS_TARGET_OCCLUDED: covered']) {
+  test(`a refused refocus tap (${error}) never scrolls, types or re-taps`, async () => {
+    const fake = refocusApp({ retap: { ok: false, proven: false, mutation: 'none', error } });
+    const outcome = await walkBlock(blocks(plan())[0], fake.deps);
+    assert.equal(outcome.block.outcome, 'fail');
+    assert.match(
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
+      new RegExp(error),
+    );
+    assert.deepEqual(steps(fake.log), ['press @wrap', 'blur', 'press @rebound']);
+    assert.deepEqual(fake.typed, []);
+  });
+}
+
+for (const keyboard of [false, undefined]) {
+  test(`keyboard ${keyboard === false ? 'hidden' : 'unknown'} after refocus refuses after exactly one re-tap`, async () => {
+    const fake = refocusApp({ afterRetap: [reboundScreen(keyboard)] });
+    const outcome = await walkBlock(blocks(plan())[0], fake.deps);
+    assert.equal(outcome.block.outcome, 'fail');
+    assert.match(
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
+      /focus was reported after the first tap and the keyboard stayed hidden after a blur and a second tap; nothing was typed/,
+    );
+    assert.deepEqual(steps(fake.log), ['press @wrap', 'blur', 'press @rebound']);
+    assert.deepEqual(fake.typed, []);
+    assert.deepEqual(fake.notes, [
+      `keyboard-refocus {"v":1,"line":${outcome.rows[0].line},"focused":true,"blurred":true,"raised":false}`,
+    ]);
+  });
+}
+
+for (const stage of ['blur', 'retap']) {
+  test(`cancellation during refocus ${stage} preserves RUN_CANCELLED and never types`, async () => {
+    const fake = refocusApp();
+    let cancelled = false;
+    fake.deps.cancelled = () => cancelled;
+    if (stage === 'blur') {
+      fake.deps.blurFocusedInput = async (context) => {
+        context.authorize();
+        cancelled = true;
+        context.check();
+        return true;
+      };
+    } else {
+      const press = fake.deps.press;
+      fake.deps.press = async (ref, context) => {
+        const result = await press(ref, context);
+        if (ref === '@rebound') {
+          cancelled = true;
+          context.check();
+        }
+        return result;
+      };
+    }
+    const outcome = await walkBlock(blocks(plan())[0], fake.deps);
+    assert.match(
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
+      /RUN_CANCELLED/,
+    );
+    assert.equal(fake.typed.length, 0);
+    assert.equal(fake.log.includes('press @submit'), false);
+  });
+}
+
+test('refocus recovery spends the original fill-ladder budget', async () => {
+  const fake = refocusApp({ type: MISMATCH });
+  const calls = ladder(fake);
+  const blur = fake.deps.blurFocusedInput!;
+  fake.deps.blurFocusedInput = async (context) => {
+    const result = await blur(context);
+    await fake.deps.sleep(121_000);
+    return result;
+  };
+  const outcome = await walkBlock(blocks(plan())[0], fake.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.deepEqual(calls, []);
+  assert.deepEqual(steps(fake.log), ['press @wrap', 'blur', 'press @rebound', 'type @rebound']);
+});
+
+for (const runtime of [false, true]) {
+  test(`refocus preserves concealment and typing privacy for ${runtime ? 'runtime input' : 'literal fill'}`, async () => {
+    const value = 'SECRET-REFOCUS-CANARY';
+    const fake = refocusApp();
+    const flags: Array<boolean | undefined> = [];
+    const type = fake.deps.typeFocused!;
+    fake.deps.typeFocused = async (ref, text, testID, context, focused, privateValue) => {
+      flags.push(privateValue);
+      return type(ref, text, testID, context, focused, privateValue);
+    };
+    const markdown = runtime
+      ? '## QA\n### Private fill\n1. Fill "qa-hidden-email" with input EMAIL'
+      : plan(value, 'qa-hidden-email', '');
+    const parsed = blocks(markdown);
+    const result = await withInputs(
+      new RunInputs(runtime ? { EMAIL: value } : {}, runtime ? ['EMAIL'] : []),
+      () => walkBlock(parsed[0], fake.deps),
+    );
+    assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
+    assert.deepEqual(flags, [runtime]);
+    assert.deepEqual(result.privateFills, runtime ? undefined : [result.rows[0].line]);
+    assert.equal(
+      fake.log.some((entry) => entry.startsWith('shot ')),
+      false,
+    );
+    assert.equal(
+      JSON.stringify({ result, notes: fake.notes, questions: fake.questions }).includes(value),
+      false,
+    );
+    assert.equal(fake.log.filter((line) => line === 'press @rebound').length, 1);
+    assert.equal(fake.log.includes('press @submit'), false);
+  });
+}
+
+for (const platform of ['ios', 'android'] as const) {
+  test(`observable strict ${platform} fill never uses refocus recovery`, async () => {
+    const input = element('@input', 'Email', {
+      kind: 'input',
+      nativeKind: 'input',
+      testID: 'qa-hidden-email',
+    });
+    const fake = refocusApp({ initial: [input, submit] });
+    fake.deps.platform = platform;
+    const result = await walkBlock(blocks(plan())[0], fake.deps);
+    assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
+    assert.deepEqual(
+      steps(fake.log).filter((entry) => !entry.startsWith('shot ')),
+      ['fill @input', 'press @submit'],
+    );
+    assert.deepEqual(fake.focusReads, []);
+    assert.deepEqual(fake.notes, []);
+  });
+}
+
+test('Android hidden keyboard never uses the iOS refocus recovery', async () => {
+  const fake = refocusApp();
+  fake.deps.platform = 'android';
+  const result = await walkBlock(blocks(plan())[0], fake.deps);
+  assert.equal(result.block.outcome, 'fail');
+  assert.deepEqual(steps(fake.log), ['press @wrap']);
+  assert.deepEqual(fake.focusReads, []);
+});
 
 test('U7: a target replaced by another identity after the tap fails without typing', async () => {
   const other = element('@other', 'qa-hidden-email', { kind: 'other', testID: 'something-else' });
