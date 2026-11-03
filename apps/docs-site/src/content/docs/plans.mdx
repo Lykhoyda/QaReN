@@ -128,7 +128,7 @@ that a value is test data, and a misclassified secret is read and only redacted 
 declares an expected label echo; it does not assert that the value is visible. Its row
 passes without capturing the screen or dispatching an action. The name must follow the
 input-name rules above and be used by a fill in this plan. Malformed declarations and
-names unused by any fill refuse `PLAN_UNPARSEABLE`, without falling back to Jev.
+names unused by any fill refuse `PLAN_UNPARSEABLE`, without falling back to [Jev](../jev/).
 There is no `no longer` form or heading-level declaration.
 
 - Every input the plan or the configured login block names must be set and non-empty, even
@@ -188,6 +188,8 @@ limits and fields mounted in React but absent from the native screen, see the CL
 [wait evidence and recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence).
 
 ## When the plan needs `TYPESAFE_API_KEY`
+
+See [Jev: how QaReN judges phrase steps](../jev/) for its role, privacy limits and timings.
 
 Phrase targets, phrase checks and lines with no verb the grammar knows need Jev, so they
 need `TYPESAFE_API_KEY`. A plan with any of them runs a Jev readiness probe first; a

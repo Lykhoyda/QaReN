@@ -1,0 +1,105 @@
+---
+title: 'Jev: how QaReN judges phrase steps'
+description: When QaReN asks Jev to resolve a phrase or judge a check, what it can see, and how to run without a key.
+---
+
+Jev is QaReN's screen judge. QaReN asks it to resolve targets described in words and
+judge phrase checks against captured screen evidence. Quoted targets resolve locally;
+literal checks evaluate the screen text locally.
+
+## Which lines need Jev
+
+| Plan line | Uses Jev? |
+| --- | --- |
+| `Tap the tasks tab` | Yes: a phrase target. Phrase press, fill, wait and scroll-until targets need Jev. |
+| `✓ The heading shows "Welcome" and no error is visible` | Yes: a phrase check. Text outside the quotes makes the whole expectation a phrase. |
+| A line with a verb the grammar does not recognize | Requires Jev readiness during preflight, even if another line is unparseable. |
+| `Tap "tab-tasks"` or `Wait for "Welcome" to appear` | No: a quoted target. Prefer a `testID` over a label for action targets. |
+| `✓ "Welcome"` | No: a literal check, whose entire payload is one quoted string. |
+| Recognized back, dialog and fixed-scroll steps | No. |
+
+For phrase actions, the selected control's observed name must contain the words in the
+phrase that name it; otherwise the step refuses `TARGET_NOT_FOUND`. Jev does not break
+ties for ambiguous quoted targets: they refuse `TARGET_AMBIGUOUS`.
+
+An unchanged [saved block](../saved-blocks/#replay-then-walk) replays by its stored
+identities without Jev for quoted targets or literal checks. Phrase checks still ask Jev.
+
+See [Write a plan](../plans/) for the supported grammar.
+
+## Key and readiness
+
+Set `TYPESAFE_API_KEY` in the environment that runs QaReN when the plan needs Jev.
+It is an [environment variable](../configuration/#environment), not a YAML config key.
+Such a plan runs a fixed Jev readiness probe before device selection or leasing.
+A missing or rejected key refuses `JEV_UNREACHABLE` before any device is selected.
+
+A plan containing only quoted targets and literal checks needs no key. Without a key,
+that plan makes no Jev calls.
+
+When a key is available, app-interruption recovery may ask Jev for a safety veto even
+in a plan with only quoted targets. Jev can veto a selected dismissal control when the
+screen may relate to the step or its purpose is uncertain. It never chooses that control,
+breaks a tie or authorizes a tap. Without the key, recovery uses deterministic guards only.
+See the [step recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#step-recovery).
+
+## What Jev sees
+
+Jev judges captured screen evidence and the plan's phrase, subject to QaReN's masking
+rules. Protected values in model requests use opaque identity tokens. These tokens
+preserve complete-value identity for comparisons without exposing the value; fragment
+masks do not prove complete-value identity. An unobserved protected value or hidden input
+content cannot prove a check.
+
+Runtime input values are redacted before being sent to Jev. Inputs default to SECRET;
+a secure field promotes its runtime input to SECRET even if the plan marks it TEST-PII.
+A SECRET value is never read back to the host; a readable, non-secure TEST-PII field uses
+in-memory readback under the runtime-input rules.
+
+Secure-field privacy has a limit: model-facing evidence uses known-value masking. An
+unknown pre-filled secret echoed as ordinary text can still reach the judge. Values held
+only in app state are outside the secure-field presence rule. Do not assume all
+undeclared data on screen is protected.
+
+Durable text uses `•••` for value masks. Screenshot and video eligibility follow a
+separate policy. Read the [input value masking contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#input-value-masking)
+and [runtime-input contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs)
+for the full bounds and privacy limits.
+
+## Receipts and timings
+
+Read the [receipt](../check/#the-receipt) for the run's verdict, failure and available
+artifact paths. A failed Jev readiness probe appears as `JEV_UNREACHABLE`. The walk
+writes `ledger.json` and `report.md` when it reaches reporting.
+
+Each walked attempt row in `ledger.json` has a `timing` object in milliseconds.
+`jevMs` measures judgment time within `resolveMs`, including HTTP retries and backoff.
+It overlaps the timing partition: do not add it to `total`. The report shows the
+`speed` summary; inspect the ledger for individual breakdowns.
+[Watch a run](../watch/#what-it-shows) displays each step's act, capture and Jev timings,
+including login-recovery steps.
+
+See [walk timing](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#walk-timing)
+for the fields and their limits.
+
+## Write a plan that needs no key
+
+Quote every action target and make each check's entire payload one quoted string.
+Use visible labels and `testID`s read from the app's source. For example:
+
+```markdown
+## QA
+
+### Open tasks
+
+1. Tap "tab-tasks"
+2. Wait for "Tasks" to appear
+✓ "Tasks"
+```
+
+This plan needs no `TYPESAFE_API_KEY`. Without one, it runs without Jev. Adding a check
+such as `✓ The heading shows "Tasks"` would make it a phrase check and require the key.
+
+The [CLI's plan and screen-evidence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence)
+and the plugin's [using-qaren skill](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-plugin/skills/using-qaren/SKILL.md#write-a-plan)
+are the sources for these plan-writing rules.

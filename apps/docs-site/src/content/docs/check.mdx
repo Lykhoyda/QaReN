@@ -23,7 +23,7 @@ plan preflight -> device selection -> lease + durable run record
                -> app preparation -> screen proof -> walk -> teardown
 ```
 
-The plan is parsed first, so an unparseable plan or a missing Jev key refuses before any
+The plan is parsed first, so an unparseable plan or a missing [Jev](../jev/) key refuses before any
 device is touched. The run then leases the device, prepares the app and its own Metro,
 walks the plan and cleans up owned resources. By default, the simulator or emulator
 stays running and the installed app stays. Failed iOS checks can hold resources for inspection;

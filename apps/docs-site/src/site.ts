@@ -88,6 +88,14 @@ export const groups: Group[] = [
         description: 'The Markdown grammar `qaren` walks, and what a check reads from the screen.',
       },
       {
+        slug: 'jev',
+        file: 'jev.mdx',
+        label: 'Jev: phrase judgments',
+        title: 'Jev: how QaReN judges phrase steps',
+        description:
+          'When QaReN asks Jev to resolve a phrase or judge a check, what it can see, and how to run without a key.',
+      },
+      {
         slug: 'saved-blocks',
         file: 'saved-blocks.mdx',
         label: 'Saved blocks',
