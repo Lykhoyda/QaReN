@@ -42,7 +42,8 @@ Doctor prints the running binary's version, path, build, runtime and the
 `PASS`, `WARN`, `FAIL` or `SKIP` row per check, each problem with its manual fix.
 It reads files and runs bounded version, package-resolution, process-group, inventory, host-statistics and Watchman probes.
 When an app config is valid, the five-second `watch-project` probe may establish a watch on its candidate directory;
-it never starts a Watchman service, starts a device or resets a service. It does not run ADB
+the subsequent [cookie sync](#ios-simulator-lifecycle) writes a cookie in the resolved watch root and may leave it there on timeout.
+Doctor never starts a Watchman service, starts a device or resets a service. It does not run ADB
 or start an ADB server. In text and JSON output, Doctor never prints
 file contents, environment variable values, credentials or any other config value;
 it may name the configured iOS runtime and Android AVD. It also prints diagnostic
@@ -66,7 +67,7 @@ applicable or its subject was not assessed, as explained in the row's detail.
 | `simulator-service` | A five-second `simctl list devices -j` probe on macOS; attributable uninterruptible simulator process evidence when unresponsive |
 | `expo-offline` | Metro-only Expo commands start offline by default; warns when `EXPO_OFFLINE=0` enables account lookups |
 | `watchman-health` | A read-only, five-second watch-list probe without starting Watchman |
-| `watchman-volume-probe` | A five-second `watch-project` probe followed by a four-second cookie sync on the resolved watch root; a cookie timeout fails with the stalled-watcher cause and FSEvents recovery steps |
+| `watchman-volume-probe` | Candidate watch admission and [cookie sync](#ios-simulator-lifecycle); admission timeout, rejection or a confirmed cookie timeout fails, while unavailable or invalid responses warn |
 | `candidate-volume-speed` | A bounded small-file read sample on the candidate volume; warns about slow reads, with unknown results disclosed |
 | `host-load` | One-, five- and fifteen-minute load averages, logical CPU count and sampled CPU idle; warns about readiness deadlines under load |
 | `native-build-lock` | Read-only iOS [build-lock observation](#native-fingerprint-build-selection); never claims or reclaims the lock |
@@ -2212,8 +2213,8 @@ then re-run once. Doctor runs the same admission and sync probes.
 Four seconds is an uncalibrated early-refusal threshold: a crawl that finishes
 shortly afterward might have warmed within the remaining budget, so this can
 cost a re-run. A timed-out sync may leave a cookie in the watch root; QaReN
-excludes these cookie files from candidate drift checks. Healthy preparation
-runs keep the existing trigger and write no sync cookie. This check saves the
+excludes these cookie files from candidate drift checks. Preparation writes no
+sync cookie when the request-handler probe does not time out. This check saves the
 manifest retry loop; it runs after build and install. A watch-project timeout
 or rejection, or a rejected sync, also refuses before the loop with its specific
 cause under `MANIFEST_NOT_WARM`; an unavailable or malformed sync falls through
