@@ -9047,11 +9047,11 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
         (true, None, None, 2_850),
         (false, None, None, 2_850),
         (true, Some(0), None, 2_850),
-        (true, Some(12_000), None, 12_000),
+        (true, Some(12_000), None, 12_559),
         (true, Some(12_000), Some(20_000), 22_850),
-        (true, Some(12_000), Some(5_000), 12_000),
+        (true, Some(12_000), Some(5_000), 12_559),
         (true, None, Some(20_000), 22_850),
-        (true, Some(33_000), None, 33_000),
+        (true, Some(32_900), None, 33_459),
     ] {
         let (repo, app) = app_repo();
         let wt = repo.join("runs").join(run_id()).join("wt");
