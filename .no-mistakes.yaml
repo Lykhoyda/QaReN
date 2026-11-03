@@ -1,8 +1,9 @@
-# Pin local no-mistakes lint and format to this repo's oxlint/oxfmt scripts.
+# Install locked workspace dependencies before the oxlint/oxfmt scripts.
 # Keep commands.test absent so the pipeline does not override the default test path.
+# commands and test.instructions are read from main; changes take effect after develop merges into main.
 commands:
-  lint: yarn lint
-  format: yarn format
+  lint: corepack yarn install --immutable && corepack yarn lint
+  format: corepack yarn install --immutable && corepack yarn format
 
 # Test agents never see real simulators; a run that needs real devices bypasses the wrapper under explicit human control.
 test:
@@ -10,6 +11,9 @@ test:
     Run every qaren, xcrun, simctl, xcodebuild, adb and maestro command, and any script or test that reaches a simulator or emulator, through scripts/qaren-sim-sandbox.sh (for example `scripts/qaren-sim-sandbox.sh qaren check --plan-file plan.md`).
     It runs the command in an isolated HOME with xcrun, simctl, devicectl, xcodebuild and adb shims that show one fake booted iPhone and no Android device and refuse every other device command, and a maestro that reports itself unavailable; export QAREN_SANDBOX_DIR to keep one sandbox across calls, and add scenario-specific shims to its bin/.
     Never list, boot, install on, or drive a real simulator or emulator, and never bypass the shims with an absolute xcrun, simctl, xcodebuild, adb or maestro path. A step that stops because the sandbox has no real device (a `qaren-sim-sandbox:` refused or not-available message, or a refusal for a missing device, adb server or simulator service) is not live-validated: report it as such rather than retrying on a real device. Investigate any other failure as a real test failure.
+    Sandbox-only verification is the expected outcome for scenarios that require a real simulator or emulator. Report each such scenario as "not live-validated; covered by device QA after the PR" with severity info and action no-op. Do not raise an ask-user finding or block solely because these scenarios could not be driven live, including when 0 of N scenarios were driven live. Keep sandbox verification evidence separate from live-device acceptance; never report these scenarios as live-validated or PASS.
+    Run the relevant hermetic checks that can execute in the sandbox. Actual test failures, failed assertions, and failures unrelated to unavailable real devices remain blocking; do not reclassify them as expected sandbox limitations.
+    In structured evidence, keep device-dependent scenarios result "untested" and live false, with the sandbox limitation and deferred device QA in reason. When at least one relevant sandbox check has run with recorded passing evidence, all other relevant checks have passed, and these expected device limitations are the only remaining gaps, return overall verdict "go", even with 0 live scenarios; this permits sandbox verification to proceed and does not assert live-device acceptance. Do not return "inconclusive" or "no-surface" solely for these expected limitations, since those verdicts create an ask-user gate. Use "no-go" for real failures and "inconclusive" for other unresolved verification gaps.
 
 # One automatic review fix round, then the review parks for a decision.
 auto_fix:
