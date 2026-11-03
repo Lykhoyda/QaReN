@@ -7,13 +7,13 @@
   "trailingSlash": true,
   "redirects": [
     {
-      "source": "/QaReN",
+      "source": "/QaReN/",
       "destination": "/",
       "permanent": true
     },
     {
-      "source": "/QaReN/:path*",
-      "destination": "/:path*",
+      "source": "/QaReN/:path*/",
+      "destination": "/:path*/",
       "permanent": true
     }
   ]

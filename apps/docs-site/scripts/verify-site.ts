@@ -164,11 +164,15 @@ for (const { slug } of pages)
     redirects.some((r) => {
       if (r.permanent !== true) return false;
       const oldPath = `${OLD_BASE}${pagePath(slug)}`;
-      if (r.source.endsWith('/:path*')) {
-        const prefix = r.source.slice(0, -6);
+      const [prefix, suffix] = r.source.split(':path*');
+      if (suffix !== undefined) {
         return (
           oldPath.startsWith(prefix) &&
-          r.destination.replace(':path*', oldPath.slice(prefix.length)) === pagePath(slug)
+          oldPath.endsWith(suffix) &&
+          r.destination.replace(
+            ':path*',
+            oldPath.slice(prefix.length, suffix ? -suffix.length : undefined),
+          ) === pagePath(slug)
         );
       }
       return r.source === oldPath && r.destination === pagePath(slug);

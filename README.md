@@ -61,9 +61,7 @@ Choose one of three installation options. QaReN 2.0 supports iOS simulators on A
 
 ### Ask your agent to install (recommended)
 
-Open Claude Code, Codex or Cursor in your app and paste this prompt. The
-[getting started page](https://lykhoyda.github.io/QaReN/getting-started/#ask-your-agent-to-install-recommended)
-has a copy button for the same prompt.
+Open Claude Code, Codex or Cursor in your app and paste this prompt.
 
 ```text
 Set up QaReN in this app, from the app root, for my current host
