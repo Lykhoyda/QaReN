@@ -189,16 +189,8 @@ limits and fields mounted in React but absent from the native screen, see the CL
 
 ## When the plan needs `TYPESAFE_API_KEY`
 
-See [Jev: how QaReN judges phrase steps](../jev/) for its role, privacy limits and timings.
-
-Phrase targets, phrase checks and lines with no verb the grammar knows need Jev, so they
-need `TYPESAFE_API_KEY`. A plan with any of them runs a Jev readiness probe first; a
-missing or rejected key refuses `JEV_UNREACHABLE` before a device is selected.
-
-A plan with only quoted targets and literal checks needs no key; without one it makes no
-Jev calls. Back, dialog, echo and plain scroll steps never call Jev. For key-free steps and
-the optional Jev safety veto during interruption recovery, see the CLI guide's
-[plan readiness contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence).
+See [Jev: how QaReN judges phrase steps](../jev/#which-lines-need-jev) for which lines
+need a key, how to write a key-free plan, and the readiness and recovery contracts.
 
 ## Refusals before the walk
 
