@@ -2974,7 +2974,8 @@ receipt lists `blocks_written`, `blocks_not_saved` (block and reason), `hints`
 [reusable sign-in example](#reusable-sign-in-example)) and, as a
 diagnostic that never changes the verdict,
 `worktree_drift`: app-root paths whose `git status` changed during the walk, outside
-`.qaren/actions`. This status-only diagnostic is separate from the
+`.qaren/actions` and excluding untracked watchman sync cookies. This status-only
+diagnostic is separate from the
 [candidate provenance check](#candidate-provenance), which can fail the run.
 
 The receipt's `ledger.blocks` counts `replayed`, `patched` and `discovered` blocks.
@@ -3645,6 +3646,11 @@ absence and executable permission bits, so editing an already-dirty file is
 still detected. Repository-root `.qaren/` state is excluded, as are the selected
 app root's `.qaren/actions` entry itself, such as an untracked main-copy link, and
 direct `.yaml` and `.yml` action files under it.
+Untracked watchman sync cookies (`.watchman-cookie-*`) anywhere in the repository
+are excluded because watchman creates and removes them in the watch root during
+synced queries; tracked or modified files and directory entries of that name
+remain changes. This also excludes an untracked file or symlink deliberately
+named like a cookie, without any Git ignore configuration.
 Changes outside these exclusions, including a nested app's `.qaren/config.yaml`
 or source files, and renames crossing the excluded boundary remain candidate
 changes.

@@ -1785,6 +1785,14 @@ pub(crate) fn porcelain_entries(stdout: &str) -> BTreeSet<String> {
 pub fn worktree_drift(before: &BTreeSet<String>, after: &BTreeSet<String>) -> Vec<String> {
     before
         .symmetric_difference(after)
+        .filter(|entry| {
+            let mut paths = entry.get(3..).unwrap_or(entry).split('\0');
+            !candidate::is_untracked_watchman_cookie(
+                entry.get(..2).unwrap_or(""),
+                paths.next().unwrap_or(""),
+                paths.next(),
+            )
+        })
         .flat_map(|entry| {
             entry
                 .get(3..)

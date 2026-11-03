@@ -1,12 +1,67 @@
 mod common;
 
-use qaren::candidate::{resolve, verify_unchanged_with};
-use qaren::exec::{CmdSpec, RealRunner, Runner};
+use qaren::candidate::{resolve, verify_unchanged_with, worktree_fingerprint};
+use qaren::exec::{CmdOutput, CmdSpec, MockRunner, RealRunner, Runner};
 use std::path::Path;
 
 fn git(repo: &Path, args: &[&str]) {
     let output = RealRunner::new().run(&CmdSpec::new("git", "git", args, 20).cwd(repo));
     assert!(output.ok(), "{}", output.summary());
+}
+
+#[test]
+fn watchman_cookies_do_not_change_candidate_cleanliness_or_fingerprints() {
+    for (before, after, edit, expected_error) in [
+        ("", "?? .watchman-cookie-host-123-4\0", false, None),
+        ("?? .watchman-cookie-host-123-4\0", "", false, None),
+        (
+            "",
+            "?? .watchman-cookie-host-123-4\0 M test-app/App.tsx\0",
+            false,
+            Some("cleanliness changed"),
+        ),
+        (
+            " M test-app/App.tsx\0",
+            " M test-app/App.tsx\0?? test-app/.watchman-cookie-host-123-4\0",
+            false,
+            None,
+        ),
+        (
+            " M test-app/App.tsx\0",
+            " M test-app/App.tsx\0?? test-app/.watchman-cookie-host-123-4\0",
+            true,
+            Some("contents changed"),
+        ),
+    ] {
+        let repo = common::temp_repo();
+        let app_file = repo.join("test-app/App.tsx");
+        std::fs::write(&app_file, "before").unwrap();
+        let scenario = common::scenario_from(&common::ios_scenario_yaml(8793));
+        let mut runner = MockRunner::new();
+        runner.expect_run("git", CmdOutput::success(&repo.to_string_lossy()));
+        runner.expect_run("git", CmdOutput::success("abc"));
+        runner.expect_run("git", CmdOutput::success(before));
+        let baseline = resolve(&mut runner, &scenario, &repo).unwrap();
+        assert_eq!(baseline.git_dirty, before.contains("App.tsx"));
+        if !baseline.git_dirty {
+            assert_eq!(
+                baseline.worktree_fingerprint,
+                Some(worktree_fingerprint(&repo, "").unwrap())
+            );
+        }
+        if edit {
+            std::fs::write(app_file, "after").unwrap();
+        }
+        runner.expect_run("git", CmdOutput::success("abc"));
+        runner.expect_run("git", CmdOutput::success(after));
+        let result = verify_unchanged_with(&mut runner, &baseline, false);
+        match expected_error {
+            Some(expected) => assert!(result.unwrap_err().contains(expected)),
+            None => assert!(result.is_ok(), "{result:?}"),
+        }
+        assert_eq!(runner.remaining(), 0);
+        std::fs::remove_dir_all(repo).unwrap();
+    }
 }
 
 fn check_integration_drift(extra_path: Option<&str>, tracked: bool) -> bool {
