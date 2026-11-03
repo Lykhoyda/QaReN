@@ -1066,8 +1066,9 @@ See the [occlusion regressions](../qaren-core/test/unit/qa/occlusion-walker.test
 
 ### Fill verification and keyboard fallback
 
-Fills use strict native value verification first. A strict fill replaces the
-field's content: the bound input is cleared before typing, and verification
+Fills use strict native value verification first. An eligible iOS field can skip
+typing under the [already-set rules](#fill-ladder). Otherwise a strict fill replaces
+the field's content: the bound input is cleared before typing, and verification
 expects exactly the plan text. For keyboard fallback's replacement request and
 read-back policy, see below.
 Rebinding an input without a testID requires its original label and native type;
@@ -1151,7 +1152,8 @@ either mutation. A false, unbound, unreadable or failed read before clearing ret
 Each walker focus decision logs one value-free `fallback-focus` line.
 
 For non-secure focused fields, QaReN checks the current content before typing.
-An empty field receives text directly. A nonempty controlled field (at most 256
+The [already-set rules](#fill-ladder) apply before replacement. When typing is
+needed, an empty field receives text directly. A nonempty controlled field (at most 256
 characters), including a private runtime input, is cleared through the input's own
 change handler inside the app. The clear checks that the input is still focused
 and controlled and returns no value. The host requires two consecutive empty
@@ -1208,7 +1210,7 @@ covered by the [fallback tests](../qaren-core/test/unit/qa/keyboard-fallback.tes
 
 #### Fill ladder
 
-Every dispatched Fill records the rung it used as `method` on its ledger row, including
+Every Fill records the rung it used as `method` on its ledger row, including
 streamed rows, interrupted-run reconstruction and capture-failure rows. The report
 shows it as `via <method>`:
 
