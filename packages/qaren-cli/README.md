@@ -1222,7 +1222,9 @@ shows it as `via <method>`:
 
 A secure field is never pre-read for skipping. Private values are compared inside the app;
 only comparison metadata leaves it. Unreadable, placeholder, formatted, case-only and unstable
-matches keep the existing typing path. Android and the keyboard fallback keep typing.
+matches keep the existing typing path. Android and keyboard fallback without an observable input
+keep typing. An observable, controlled iOS input reached through fallback can skip after two
+exact comparisons that also prove focus.
 To require a change event even when the value already matches, add a trailing `(always retype)`,
 for example `Fill "name" with input NAME (secret) (always retype)`. It combines with
 `(any method)` in either order, case-insensitively. Behaviour labels must trail the line;

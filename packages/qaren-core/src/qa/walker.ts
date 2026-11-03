@@ -4323,7 +4323,7 @@ export function loginBlock(slug: string, stored: StoredBlock): Block {
           ...(step.input !== undefined
             ? { input: step.input, ...(step.sensitivity ? { sensitivity: step.sensitivity } : {}) }
             : { text: step.text! }),
-          ...fillLabels(step.raw).flags,
+          ...(fillLabels(step.raw).flags.anyMethod ? { anyMethod: true as const } : {}),
           ...(step.alwaysRetype ? { alwaysRetype: true as const } : {}),
           ...at,
         };

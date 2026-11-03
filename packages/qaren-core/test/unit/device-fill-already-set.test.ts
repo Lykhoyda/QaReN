@@ -222,6 +222,18 @@ test('an exact stable pre-read survives the exported handler without native typi
   );
 });
 
+test('a private pre-read does not report a typing readback metric', async () => {
+  const timings: unknown[] = [];
+  const result = await run({
+    args: {
+      privateValue: true,
+      qaTiming: { now: () => 1, observe: (event) => timings.push(event) },
+    },
+  });
+  skipped(result.env);
+  assert.deepEqual(timings, []);
+});
+
 for (const verdict of [
   'mismatch',
   'case-normalized',

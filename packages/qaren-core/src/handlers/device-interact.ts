@@ -1697,7 +1697,7 @@ async function comparePrivateInput(
   options: { beforeTyping?: true; requireFocused?: true } = {},
 ): Promise<{ verdict: ReactValueVerification; mismatch?: EntryMismatch }> {
   return measureTiming(
-    args.qaTiming?.observe,
+    options.beforeTyping ? undefined : args.qaTiming?.observe,
     args.qaTiming?.now ?? (() => performance.now()),
     'type-readback',
     async (): Promise<{ verdict: ReactValueVerification; mismatch?: EntryMismatch }> => {
