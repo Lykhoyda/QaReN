@@ -51,7 +51,11 @@ for (const retry of ['empty', 'presence'] as const) {
           },
         };
       },
-      react: async () => ({ interactive: [], verdict, hostEvidence: { hosts: [], complete: true } }),
+      react: async () => ({
+        interactive: [],
+        verdict,
+        hostEvidence: { hosts: [], complete: true },
+      }),
     });
     assert.equal(observed.coverage?.native, 'complete');
     assert.equal(calls, 2);
