@@ -3,7 +3,7 @@ import GithubSlugger from 'github-slugger';
 
 export type TocEntry = { depth: 2 | 3; text: string; id: string };
 
-/** Heading text as rehype-slug sees it: inline code kept, link targets, emphasis and escapes dropped. */
+// Keep labels as text; React escapes them when rendering the TOC.
 function plainText(markdown: string): string {
   // Odd segments are code spans and stay verbatim.
   return markdown
@@ -13,7 +13,6 @@ function plainText(markdown: string): string {
         ? part
         : part
             .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
-            .replace(/<[^>]+>/g, '')
             .replace(/(\*\*|__|\*|_)(\S.*?)\1/g, '$2')
             .replace(/\\([\\`*_{}[\]()#+\-.!|<>])/g, '$1'),
     )

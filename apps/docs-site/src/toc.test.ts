@@ -1,5 +1,21 @@
 import { expect, test } from 'bun:test';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { DocsPage } from './components/DocsPage.tsx';
 import { tableOfContents } from './toc.ts';
+
+test('TOC labels render tag-shaped input as text rather than HTML elements', () => {
+  const label = '<script>alert(1)</script> <scr<script>ipt> `code <tag>`';
+  const toc = tableOfContents(`## ${label}`);
+  expect(toc[0].text).toBe('<script>alert(1)</script> <scr<script>ipt> code <tag>');
+
+  // The HTML serialization contract requires angle brackets in text nodes to be escaped.
+  const html = renderToStaticMarkup(createElement(DocsPage, { title: 'Test', toc }));
+  expect(html).toContain(
+    '&lt;script&gt;alert(1)&lt;/script&gt; &lt;scr&lt;script&gt;ipt&gt; code &lt;tag&gt;</a>',
+  );
+  expect(html).not.toContain('<script>');
+});
 
 // Expected ids follow GitHub's anchor rules, which rehype-slug implements; the build's
 // verify-site check proves them against the rendered pages.
