@@ -16,10 +16,18 @@ const root = fileURLToPath(new URL('../../../../../', import.meta.url));
 
 async function admission(
   t: TestContext,
-  afterFalse: 'empty' | 'pending' | 'replacement-id' | 'replacement-url' | 'unchanged',
+  afterFalse:
+    | 'empty'
+    | 'pending'
+    | 'replacement-id'
+    | 'replacement-url'
+    | 'unchanged'
+    | 'late-empty',
 ) {
   const runDir = await mkdtemp(join(tmpdir(), 'qaren-empty-targets-'));
   let falseProbes = 0;
+  let falseAt = 0;
+  let emptyAt = 0;
   let emptyReads = 0;
   let postFalseReads = 0;
   let setupRequests = 0;
@@ -32,6 +40,15 @@ async function admission(
       if (afterFalse === 'pending' || (afterFalse !== 'empty' && postFalseReads > 1)) return;
     }
     const replaced = falseProbes > 0;
+    if (replaced && afterFalse === 'late-empty') {
+      setTimeout(() => {
+        emptyReads++;
+        emptyAt = performance.now();
+        response.setHeader('Content-Type', 'application/json');
+        response.end('[]');
+      }, 3000);
+      return;
+    }
     const empty = replaced && afterFalse === 'empty';
     if (empty) emptyReads++;
     response.setHeader('Content-Type', 'application/json');
@@ -70,7 +87,10 @@ async function admission(
         { __DEV__: false },
         { timeout: 100 },
       );
-      if (value === 'false') falseProbes++;
+      if (value === 'false') {
+        falseProbes++;
+        falseAt = performance.now();
+      }
       socket.send(
         JSON.stringify({ id: message.id, result: { result: { type: typeof value, value } } }),
       );
@@ -119,6 +139,38 @@ async function admission(
     [
       join(root, 'scripts/qaren-sim-sandbox.sh'),
       process.execPath,
+      ...(afterFalse === 'late-empty'
+        ? [
+            '--import',
+            `data:text/javascript,${encodeURIComponent(`
+              import childProcess from 'node:child_process';
+              import { syncBuiltinESMExports } from 'node:module';
+              let empty = false;
+              const fetch = globalThis.fetch;
+              globalThis.fetch = async (...args) => {
+                const response = await fetch(...args);
+                if (String(args[0]).endsWith('/json/list')) {
+                  const json = response.json.bind(response);
+                  response.json = async () => {
+                    const targets = await json();
+                    if (Array.isArray(targets) && targets.length === 0) empty = true;
+                    return targets;
+                  };
+                }
+                return response;
+              };
+              const execFileSync = childProcess.execFileSync;
+              childProcess.execFileSync = (file, args, ...rest) => {
+                if (empty && (String(file).endsWith('xcrun') || String(file).endsWith('adb'))) {
+                  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 6000);
+                  throw new Error('Slow device inventory');
+                }
+                return execFileSync(file, args, ...rest);
+              };
+              syncBuiltinESMExports();
+            `)}`,
+          ]
+        : []),
       join(root, 'packages/qaren-core/dist/qa/walk.js'),
     ],
     {
@@ -146,6 +198,7 @@ async function admission(
     `${JSON.stringify({ v: 1, runId, seq: 1, type: 'request', payload: request })}\n`,
   );
   const [exit, signal] = await closed;
+  const elapsedAfterFalse = performance.now() - falseAt;
   clearTimeout(timeout);
   assert.equal(signal, null, stderr);
   assert.equal(exit, 4, stderr);
@@ -168,7 +221,13 @@ async function admission(
     messages.some((message) => message.type === 'row' && (message.payload.line ?? 0) > 0),
     false,
   );
-  return { result: { code: result.code, admission: result.admission }, emptyReads, postFalseReads };
+  return {
+    result: { code: result.code, admission: result.admission },
+    emptyReads,
+    postFalseReads,
+    elapsedAfterFalse,
+    emptyDelay: emptyAt - falseAt,
+  };
 }
 
 test(
@@ -215,3 +274,20 @@ for (const afterFalse of ['replacement-id', 'replacement-url', 'unchanged'] as c
     },
   );
 }
+
+test(
+  'an empty read near attach expiry refuses on time despite slow device inventory',
+  { timeout: 30_000 },
+  async (t) => {
+    const { result, emptyReads, elapsedAfterFalse, emptyDelay } = await admission(t, 'late-empty');
+    assert.equal(emptyReads, 1);
+    assert.ok(emptyDelay >= 2800, 'the completed empty read arrives near the 4000ms deadline');
+    assert.ok(
+      elapsedAfterFalse < 5500,
+      'the attach budget allows 1500ms for scheduling and teardown',
+    );
+    assert.equal(result.code, 'CDP_NOT_CONNECTED');
+    assert.equal(result.admission.devFalse ?? 0, 0);
+    assert.equal(result.admission.targetsTotal ?? 0, 0);
+  },
+);

@@ -235,7 +235,11 @@ export async function waitForExactPortTargets(
           : onDevice.length === 0
             ? 'other_device'
             : 'other_bundle';
-      onTargetsObserved?.(raw);
+      onTargetsObserved?.(
+        filterValidTargets(onDevice).filter(
+          (target) => bundleId === undefined || targetMatchesBundleId(target, bundleId),
+        ),
+      );
     }
     remaining = deadline - performance.now();
     if (remaining <= 0) break;
@@ -1176,14 +1180,6 @@ export async function discoverExactPort(
       ? { platform: platformFilterOrFilters }
       : (platformFilterOrFilters ?? {});
   const raw = await fetchTargets(currentPort, DISCOVERY_TIMEOUT_MS * 2);
-  return selectExactPortTargets(raw, currentPort, filters);
-}
-
-export function selectExactPortTargets(
-  raw: HermesTarget[],
-  currentPort: number,
-  filters: SelectTargetFilters,
-): DiscoveryResult {
   const validTargets = filterValidTargets(raw).filter((target) => {
     try {
       const { hostname, port } = new URL(target.webSocketDebuggerUrl);

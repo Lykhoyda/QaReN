@@ -17,7 +17,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { CDPClient } from '../cdp-client.js';
-import { selectExactPortTargets, waitForExactPortTargets } from '../cdp/discovery.js';
+import { waitForExactPortTargets } from '../cdp/discovery.js';
 import { REACT_READY_POLL_MS, REACT_READY_TIMEOUT_MS } from '../cdp/setup.js';
 import {
   clearDevOverlays,
@@ -543,14 +543,7 @@ async function openSession(
             stop.signal,
             devicePin,
             appId,
-            (targets) =>
-              cdp.noteDevelopmentTargetCandidates(
-                selectExactPortTargets(targets, target.metroPort, {
-                  platform,
-                  bundleId: appId,
-                  ...(devicePin ? { deviceName: devicePin } : {}),
-                }).targets,
-              ),
+            (targets) => cdp.noteDevelopmentTargetCandidates(targets),
           );
         },
         attach: async (deadline) => {
