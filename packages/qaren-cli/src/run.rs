@@ -1443,14 +1443,7 @@ fn run_inner(
                     admitted
                         .max(outcome.ledger.publish_from_ms.unwrap_or(admitted))
                         .saturating_sub(recording_from)
-                        .max(
-                            outcome
-                                .first_step_start_ms
-                                .map(|t| {
-                                    t.saturating_add(core_request.t0.saturating_sub(recording_from))
-                                })
-                                .unwrap_or(0),
-                        )
+                        .max(outcome.first_step_start_ms.unwrap_or(0))
                 });
                 // Row t is relative to t0, taken after the recording started, so it can only cut before the true last-row frame.
                 let end = outcome.ledger.steps.iter().map(|s| s.t).max();
