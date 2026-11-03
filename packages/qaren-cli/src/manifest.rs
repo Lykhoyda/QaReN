@@ -7,19 +7,39 @@ pub(crate) const MAX_ATTEMPTS: usize = 64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VolumeProbe {
     Ready,
+    Stalled,
     TimedOut,
     Rejected,
     Unavailable,
+    SyncRejected,
+    SyncUnavailable,
 }
 
 impl VolumeProbe {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ready => "ready",
+            Self::Stalled => "stalled",
             Self::TimedOut => "timed_out",
-            Self::Rejected => "rejected",
-            Self::Unavailable => "unavailable",
+            Self::Rejected | Self::SyncRejected => "rejected",
+            Self::Unavailable | Self::SyncUnavailable => "unavailable",
         }
+    }
+
+    pub(crate) fn reason(self) -> &'static str {
+        match self {
+            Self::Ready => "watchman observed a sync cookie within 4 s for the candidate watch root",
+            Self::Stalled => "watchman accepted the candidate root but did not observe a sync cookie within 4 s: the file watcher is stalled or still crawling the root",
+            Self::TimedOut => "watchman watch-project did not answer within 5 s for the candidate volume",
+            Self::Rejected => "watchman rejected watch-project for the candidate directory; raw output withheld",
+            Self::Unavailable => "watchman volume admission is unknown; the service is unavailable or its response is invalid",
+            Self::SyncRejected => "watchman rejected the sync for the candidate watch root; raw output withheld",
+            Self::SyncUnavailable => "watchman sync is unknown; the service did not answer the sync within its limit or its response is invalid",
+        }
+    }
+
+    pub(crate) fn stalled_fix() -> String {
+        format!("the sync cookie was not observed: {}; if fseventsd is busy, wait for other watchers or large copies to finish, or coordinate a watchman reset with other sessions, then re-run once", crate::failure::WATCHMAN_VOLUME_FIX)
     }
 }
 
@@ -114,9 +134,11 @@ impl Warmup {
     }
 
     pub fn refusal(&self) -> Failure {
-        let mut next = if matches!(
+        let mut next = if self.watchman_volume_probe == Some(VolumeProbe::Stalled) {
+            VolumeProbe::stalled_fix()
+        } else if matches!(
             self.watchman_volume_probe,
-            Some(VolumeProbe::TimedOut | VolumeProbe::Rejected)
+            Some(VolumeProbe::TimedOut | VolumeProbe::Rejected | VolumeProbe::SyncRejected)
         ) {
             crate::failure::WATCHMAN_VOLUME_FIX.to_string()
         } else if self.request_probe_timed_out && self.request_probe_limit_ms == 15_000 {
@@ -141,13 +163,16 @@ impl Warmup {
             next.push_str(crate::volume::SLOW_VOLUME_FIX);
         }
         let reason = match self.watchman_volume_probe {
-            Some(VolumeProbe::TimedOut) => "watchman watch-project did not answer within 5 s for the candidate volume".to_string(),
-            Some(VolumeProbe::Rejected) => "watchman rejected watch-project for the candidate directory".to_string(),
+            Some(probe @ (VolumeProbe::Stalled | VolumeProbe::TimedOut | VolumeProbe::Rejected | VolumeProbe::SyncRejected | VolumeProbe::SyncUnavailable)) => probe.reason().to_string(),
             _ => format!("dev client manifest did not warm within its stage budget or {MAX_ATTEMPTS}-attempt cap"),
         };
         Failure::new(
             "build",
-            FailureCode::ManifestNotWarm,
+            if self.watchman_volume_probe == Some(VolumeProbe::Stalled) {
+                FailureCode::WatchmanVolumeStalled
+            } else {
+                FailureCode::ManifestNotWarm
+            },
             format!("{reason}: {}; median successful answer is compared with the dev client's 10 s limit", self.summary()),
             next,
         )
