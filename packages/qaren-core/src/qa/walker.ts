@@ -169,6 +169,7 @@ import {
 } from './ledger.js';
 
 export interface ActResult {
+  settle?: Pick<TimingEvent, 'method' | 'ms'>;
   executed?: boolean;
   ok: boolean;
   proven: boolean;
@@ -282,6 +283,7 @@ export interface WalkerDeps {
   loginOutcome?(outcome: BlockOutcome): void;
   timing?: TimingObserver;
   rowTiming?(t: number): RowTiming;
+  rowSettle?: TimingObserver;
   // iOS only: the app process every capture must still belong to, set by the first capture.
   appProcess?: { expected?: number };
   hideDevMenu?(): Promise<ActResult>;
@@ -1240,6 +1242,14 @@ async function walkBlockScoped(
       // A scroll step's momentum outlives the step and its block; the next targeted dispatch settles first.
       if (item.kind === 'scroll') sequence.momentum = true;
       const result = await send(context);
+      if (deps.rowSettle && result.settle)
+        observeTiming(deps.rowSettle, {
+          ...result.settle,
+          stage: 'settle',
+          edge: 'end',
+          outcome: 'ok',
+          at: deps.now(),
+        });
       if (result.entryMismatch) fillMismatch = result.entryMismatch;
       context.assertComplete();
       diagnostic(item, observation, 'dispatch', 'COMPLETED', context.authorizations);
@@ -4739,6 +4749,7 @@ function withRowTiming(deps: WalkerDeps): WalkerDeps {
       }
       observe(event);
     },
+    rowSettle: (event) => timer.observe(event),
     rowTiming: (t) => {
       const calls = deps.judge?.calls ?? [];
       const elapsed = deps.judge?.elapsedMs;

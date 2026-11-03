@@ -29,7 +29,11 @@ import { recover } from '../../../dist/qa/recover.js';
 import { observeTiming, type TimingContext, type TimingEvent } from '../../../dist/qa/timing.js';
 import { createStop } from '../../../dist/qa/stop.js';
 import { AppProcessGoneError } from '../../../dist/qa/capture.js';
-import type { ActResult } from '../../../dist/qa/walker.js';
+import { runPlan, type ActResult } from '../../../dist/qa/walker.js';
+import { parsePlan } from '../../../dist/qa/plan.js';
+import { captureScreen } from '../../../dist/qa/capture.js';
+import { nativeCapture } from './platform-presence-fixtures.ts';
+import { walker, scriptedJudge } from './judgment-fixtures.ts';
 import type { ToolResult } from '../../../dist/utils.js';
 
 function fixture(throwSink = false) {
@@ -88,7 +92,7 @@ const unknown = {
   ms: 'unknown',
 };
 
-test('act exposes only existing allowlisted settle metadata before discarding it', async () => {
+test('act carries only measured allowlisted settle metadata', async () => {
   for (const method of ['screen-static', 'snapshot-eq', 'window-gate', 'timeout']) {
     const f = fixture();
     let calls = 0;
@@ -108,6 +112,8 @@ test('act exposes only existing allowlisted settle metadata before discarding it
     }, true);
     assert.equal(outcome.ok, true);
     assert.equal(outcome.proven, true);
+    assert.equal(outcome.settle?.method, method);
+    assert.equal(outcome.settle?.ms, 2513);
     assert.equal(calls, 1);
     assert.deepEqual(f.logs, [
       `action-settle=${JSON.stringify({ method, settled: method !== 'timeout', hierarchyChanged: false, ms: 2513 })}`,
@@ -142,6 +148,7 @@ test('missing or malformed settle metadata is unknown, never disabled or false',
     const outcome = await f.act(async () => result(meta), false);
     assert.equal(outcome.ok, true);
     assert.equal(outcome.proven, false);
+    assert.equal('settle' in outcome, false);
     assert.deepEqual(f.logs, [`action-settle=${JSON.stringify(unknown)}`]);
     assert.ok(!f.logs.join('').includes('PRIVATE-'));
   }
@@ -159,6 +166,8 @@ test('settle reporting preserves handler errors, rejected promises, and sink fai
       assert.equal(outcome.ok, ok);
       assert.equal(outcome.proven, ok);
       assert.equal(outcome.error, ok ? undefined : 'TEST_FAILURE: handler failed');
+      assert.equal(outcome.settle?.method, 'timeout');
+      assert.equal(outcome.settle?.ms, 0);
       assert.deepEqual(f.logs, [
         `action-settle=${JSON.stringify({ ...unknown, method: 'timeout', settled: false, ms: 0 })}`,
       ]);
@@ -532,3 +541,85 @@ test('retained settle metadata admits only measured finite facts without replaci
   assert.equal(getterCalls, 0);
   assert.equal(unmeasured.settleMeta, undefined);
 });
+
+for (const [kind, plan, dispatches] of [
+  ['tap', '1. Tap "save"', 1],
+  ['fill', '1. Fill "save" with "demo"', 1],
+  ['wait', '1. Wait for "Save" to appear', 0],
+  ['scroll', '1. Scroll down', 1],
+  ['scroll-reached', '1. Scroll until you see "Save"', 0],
+] as const) {
+  test(`${kind} ledger rows carry measured preparation and only dispatched settles without diagnostics`, async () => {
+    const f = walker(
+      [],
+      scriptedJudge(() => assert.fail('quoted targets need no judge')),
+    );
+    const adapter = fixture(true);
+    let now = 0;
+    let captures = 0;
+    let sends = 0;
+    f.deps.now = () => now;
+    f.deps.timing = () => {};
+    f.deps.captureScreen = async (options) => {
+      const native = nativeCapture();
+      captures++;
+      if (kind === 'fill') native.nodes[1].type = 'TextField';
+      if (kind === 'scroll' && sends) native.nodes[1].label = 'Done';
+      return captureScreen({
+        appId: 'com.test',
+        now: () => now,
+        timing: options?.timing,
+        native: async () => {
+          now += 100;
+          return {
+            ...native,
+            presenceCapture: {
+              ...native.presenceCapture,
+              diagnostics: {
+                preparationSamples: 6,
+                preparationResets: 0,
+                phaseMs: { preparation: 80 },
+                label: 'PRIVATE-capture',
+              },
+            },
+          };
+        },
+        react: async () => ({
+          interactive: [],
+          verdict: { state: 'ok', complete: true },
+          hostEvidence: { hosts: [], complete: true },
+        }),
+      });
+    };
+    const dispatch = () =>
+      adapter.act(async () => {
+        sends++;
+        now += 30;
+        return result({
+          settle: { method: 'snapshot-eq' },
+          timings_ms: { settle: 12.4 },
+          value: 'PRIVATE-action',
+        });
+      }, true);
+    f.deps.press = dispatch;
+    f.deps.fill = dispatch;
+    f.deps.scroll = dispatch;
+    const ledger = await runPlan(parsePlan(plan).blocks!, f.deps);
+    assert.equal(ledger.verdict, 'PASS', JSON.stringify(ledger.failure));
+    assert.equal(sends, dispatches);
+    assert.equal(ledger.steps.length, 1);
+    const timing = ledger.steps[0].timing!;
+    assert.equal(timing.preparationSamples, captures * 6);
+    assert.equal(timing.preparationResets, 0);
+    assert.ok(captures > 0);
+    if (dispatches) {
+      assert.equal(timing.settleMethod, 'snapshot-eq');
+      assert.equal(timing.settleMs, 12);
+    } else {
+      assert.equal('settleMethod' in timing, false);
+      assert.equal('settleMs' in timing, false);
+    }
+    assert.deepEqual(f.rows[0].timing, timing);
+    assert.ok(!JSON.stringify(timing).includes('PRIVATE-'));
+  });
+}

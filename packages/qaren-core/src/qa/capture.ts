@@ -894,6 +894,7 @@ function observeNativeTiming(capture: unknown, observer: TimingObserver, at: num
   const diagnostics = isRecord(capture.diagnostics) ? capture.diagnostics : undefined;
   const phases = isRecord(diagnostics?.phaseMs) ? diagnostics.phaseMs : {};
   const samples = preparationSampleCount(diagnostics?.preparationSamples);
+  const resets = preparationSampleCount(diagnostics?.preparationResets);
   for (const phase of PRESENCE_PHASES) {
     if (typeof phases[phase] === 'number')
       observeTiming(observer, {
@@ -903,6 +904,7 @@ function observeNativeTiming(capture: unknown, observer: TimingObserver, at: num
         at,
         ms: phases[phase],
         ...(phase === 'preparation' && samples !== undefined ? { count: samples } : {}),
+        ...(phase === 'preparation' && resets !== undefined ? { resets } : {}),
       });
   }
 }

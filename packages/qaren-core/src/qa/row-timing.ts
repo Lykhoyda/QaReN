@@ -6,6 +6,10 @@ export interface RowTiming {
   nativeMs: number;
   reactMs: number;
   presenceMs?: number;
+  settleMethod?: TimingEvent['method'] | 'mixed';
+  settleMs?: number;
+  preparationSamples?: number;
+  preparationResets?: number;
   resolveMs: number;
   jevMs: number;
   actMs: number;
@@ -32,6 +36,10 @@ interface Window {
   resolve: number;
   act: number;
   acted: boolean;
+  settleMethod?: RowTiming['settleMethod'];
+  settleMs?: number;
+  preparationSamples?: number;
+  preparationResets?: number;
 }
 
 const emptyWindow = (): Window => ({
@@ -55,6 +63,12 @@ export function createRowTimer(startedAt: number): RowTimer {
   let window = emptyWindow();
   return {
     observe(event) {
+      if (event.stage === 'native-preparation' && event.edge === 'point') {
+        if (event.count !== undefined)
+          window.preparationSamples = (window.preparationSamples ?? 0) + event.count;
+        if (event.resets !== undefined)
+          window.preparationResets = (window.preparationResets ?? 0) + event.resets;
+      }
       const ms = event.ms;
       if (ms === undefined) return;
       if (event.stage === 'native-production') {
@@ -62,6 +76,13 @@ export function createRowTimer(startedAt: number): RowTimer {
         return;
       }
       if (event.edge !== 'end') return;
+      if (event.stage === 'settle') {
+        const method = event.method ?? 'unknown';
+        window.settleMethod =
+          window.settleMethod === undefined || window.settleMethod === method ? method : 'mixed';
+        window.settleMs = (window.settleMs ?? 0) + ms;
+        return;
+      }
       switch (event.stage) {
         case 'capture':
           if (window.acted) window.postCapture += ms;
@@ -104,6 +125,15 @@ export function createRowTimer(startedAt: number): RowTimer {
         nativeMs: Math.round(window.native),
         reactMs: Math.round(window.react),
         ...(window.presence !== undefined ? { presenceMs: Math.round(window.presence) } : {}),
+        ...(window.settleMs !== undefined
+          ? { settleMethod: window.settleMethod, settleMs: Math.round(window.settleMs) }
+          : {}),
+        ...(window.preparationSamples !== undefined
+          ? { preparationSamples: window.preparationSamples }
+          : {}),
+        ...(window.preparationResets !== undefined
+          ? { preparationResets: window.preparationResets }
+          : {}),
         resolveMs,
         jevMs: Math.round(jevMs),
         actMs,

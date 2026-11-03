@@ -552,6 +552,7 @@ test('preparation diagnostics expose only scalar quiet-window facts on success a
         at: 900,
         ms: 700.25,
         count: 8,
+        resets: 1,
       },
     );
     assert.equal(events.find((event) => event.stage === 'native-production')?.ms, 900);
@@ -586,7 +587,11 @@ test('preparation diagnostics expose only scalar quiet-window facts on success a
     await captureScreen({
       native: async () => ({
         presenceCapture: {
-          diagnostics: { preparationSamples: value, phaseMs: { preparation: secret } },
+          diagnostics: {
+            preparationSamples: value,
+            preparationResets: value,
+            phaseMs: { preparation: secret },
+          },
         },
       }),
       react: async () => ({}),

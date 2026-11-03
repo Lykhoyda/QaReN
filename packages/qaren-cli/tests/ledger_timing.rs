@@ -197,3 +197,54 @@ fn media_withholding_round_trips_and_unknown_causes_are_passive() {
     assert!(serialized.get("mediaWithheld").is_none());
     assert!(serialized["steps"][0].get("screenshotWithheld").is_none());
 }
+
+#[test]
+fn settle_and_preparation_facts_round_trip_and_remain_optional() {
+    for method in [
+        "window-gate",
+        "screen-static",
+        "snapshot-eq",
+        "timeout",
+        "unknown",
+        "mixed",
+    ] {
+        let mut measured = timing();
+        measured["settleMethod"] = json!(method);
+        measured["settleMs"] = json!(0);
+        measured["preparationSamples"] = json!(14);
+        measured["preparationResets"] = json!(0);
+        let raw = json!({"block":"qa","line":1,"attempt":1,"kind":"step",
+            "resolvedBy":"exact","t":120,"outcome":"pass","timing":measured});
+        let parsed: Row = serde_json::from_value(raw.clone()).unwrap();
+        let facts = parsed.timing.as_ref().unwrap();
+        assert_eq!(facts.settle_ms, Some(0));
+        assert_eq!(facts.preparation_samples, Some(14));
+        assert_eq!(facts.preparation_resets, Some(0));
+        assert_eq!(serde_json::to_value(parsed).unwrap(), raw);
+    }
+    let legacy: qaren::core::RowTiming = serde_json::from_value(timing()).unwrap();
+    assert!(legacy.settle_method.is_none());
+    assert!(legacy.settle_ms.is_none());
+    assert!(legacy.preparation_samples.is_none());
+    assert!(legacy.preparation_resets.is_none());
+    assert_eq!(serde_json::to_value(legacy).unwrap(), timing());
+}
+
+#[test]
+fn malformed_settle_and_preparation_facts_cannot_reject_a_row() {
+    for (field, value) in [
+        ("settleMethod", json!("PRIVATE-method")),
+        ("settleMs", json!(-1)),
+        ("preparationSamples", json!(1.5)),
+        ("preparationResets", json!("PRIVATE-count")),
+    ] {
+        let mut measured = timing();
+        measured[field] = value;
+        let parsed: Row = serde_json::from_value(json!({"block":"qa","line":1,
+            "attempt":1,"kind":"step","resolvedBy":"exact","t":120,
+            "outcome":"pass","timing":measured}))
+        .unwrap();
+        assert_eq!(parsed.outcome, "pass");
+        assert!(parsed.timing.is_none());
+    }
+}

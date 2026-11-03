@@ -3507,6 +3507,17 @@ the partition and must not be added to `total`. Post-action captures start
 after an authorized dispatch; captures after a dispatch refused before
 authorization remain in `captureMs`.
 
+Optional `settleMethod` and `settleMs` record measured client settle within the
+row window. Milliseconds sum across dispatched actions; the method is
+`window-gate`, `screen-static`, `snapshot-eq`, `timeout` or `unknown`, or `mixed`
+when methods differ. Optional `preparationSamples` and `preparationResets` sum
+the native presence preparation counts across all captures in that window,
+including pre-action and post-action captures. These fields are value-free,
+available without private-input diagnostics, and omitted when not measured;
+a measured zero is retained. Settle time overlaps `actMs` and preparation
+counts add no time to the partition. Waits and scrolls that only capture can
+carry preparation counts without a client settle.
+
 The ledger's `speed` summary groups timed action/check rows by operation, keeping
 login-replay steps separate from plan steps that share a line and kind. Every retry,
 passing and failing attempt of one operation sums into one logical-step duration,

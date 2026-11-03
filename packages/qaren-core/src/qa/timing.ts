@@ -201,6 +201,7 @@ export interface TimingEvent {
   useMs?: number;
   ageMs?: number;
   count?: number;
+  resets?: number;
   nextLine?: number;
   presence?: number;
   budgetMs?: number;
@@ -292,6 +293,15 @@ export function cleanTimingEvent(value: unknown): TimingEvent | undefined {
     const word = (words as readonly string[]).find((word) => word === input[key]);
     if (input.stage !== 'screenshot' || input.outcome !== 'withheld' || !word) return undefined;
     Object.assign(event, { [key]: word });
+  }
+  if (input.resets !== undefined) {
+    if (
+      input.stage !== 'native-preparation' ||
+      !Number.isSafeInteger(input.resets) ||
+      (input.resets as number) < 0
+    )
+      return undefined;
+    event.resets = input.resets as number;
   }
   const admission = input.stage === 'admission' && input.edge === 'point';
   for (const [key, values] of Object.entries(ADMISSION_WORDS)) {
