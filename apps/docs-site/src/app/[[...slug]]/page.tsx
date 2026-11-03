@@ -18,10 +18,7 @@ async function pageFor(props: Props): Promise<Page> {
   return pages.find((page) => page.slug === slug) ?? notFound();
 }
 
-export async function generateMetadata(
-  props: Props,
-  parent: ResolvingMetadata,
-): Promise<Metadata> {
+export async function generateMetadata(props: Props, parent: ResolvingMetadata): Promise<Metadata> {
   const page = await pageFor(props);
   const url = `${BASE_PATH}${pagePath(page.slug)}`;
   return {
