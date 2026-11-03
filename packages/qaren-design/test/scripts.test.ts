@@ -1,8 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import * as React from 'react';
 import { adapterJs, bundleNames } from '../scripts/build-adapter';
 import { check, parseTable, ratio, resolve, type Tokens } from '../scripts/check-contrast';
 import { checkMirror } from '../scripts/check-design-mirror';
@@ -129,11 +131,27 @@ describe('build-adapter', () => {
     );
   });
 
-  test('wraps the bundle byte for byte and supplies React through a module-scoped window', () => {
-    const bundle = `${header}(function () { window.QaReN = { Logo: 1, Badge: 2 }; })();\n`;
+  test('preserves bundle bytes, injects React and exports identities without changing the global window', async () => {
+    const bundle = `${header}(function () { window.QaReN = { Logo: window.React.createElement, Badge: window.React.useState }; })();\n`;
     const js = adapterJs(bundle, bundleNames(bundle));
     expect(js).toContain(bundle);
-    expect(js).toContain('const window = { React };');
-    expect(js).toContain('export const Badge = QaReN.Badge;');
+    const dir = mkdtempSync(fileURLToPath(new URL('../.adapter-test-', import.meta.url)));
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    const browserWindow = { React: 'existing React', QaReN: 'existing QaReN' };
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: browserWindow });
+    try {
+      const modulePath = join(dir, 'index.js');
+      writeFileSync(modulePath, js);
+      const adapter = await import(modulePath);
+      expect(adapter.default).toEqual({ Logo: React.createElement, Badge: React.useState });
+      expect(adapter.Logo).toBe(React.createElement);
+      expect(adapter.Badge).toBe(React.useState);
+      expect(globalThis.window).toBe(browserWindow);
+      expect(browserWindow).toEqual({ React: 'existing React', QaReN: 'existing QaReN' });
+    } finally {
+      if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow);
+      else Reflect.deleteProperty(globalThis, 'window');
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

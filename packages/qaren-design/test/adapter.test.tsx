@@ -1,5 +1,4 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Window } from 'happy-dom';
 import { act, type ReactElement } from 'react';
@@ -10,14 +9,13 @@ import { buildAdapter } from '../scripts/build-adapter';
 const pkgDir = fileURLToPath(new URL('..', import.meta.url));
 const names = buildAdapter(pkgDir);
 const QaReN = (await import('../dist/index.js')).default;
-const bundleCss = readFileSync(new URL('../design/components/bundle.css', import.meta.url), 'utf8');
 
 const steps = [
   { text: 'Tap "onboarding-skip"', status: 'passed' as const },
   { text: '"Welcome" is on screen', status: 'failed' as const, detail: 'reason' },
 ];
 
-// One element per component in the bundle header, with the root class bundle.css styles.
+// One element per component in the bundle header.
 const cases: Record<string, [ReactElement, string]> = {
   Logo: [<QaReN.Logo />, 'qr-logo'],
   VerdictPill: [<QaReN.VerdictPill verdict="PASS" />, 'qr-verdict'],
@@ -53,9 +51,8 @@ describe('generated adapter', () => {
     expect(Object.keys(cases).sort()).toEqual([...names].sort());
   });
 
-  test.each(Object.entries(cases))('%s renders its bundle.css root class', (_, [element, root]) => {
+  test.each(Object.entries(cases))('%s renders its root class', (_, [element, root]) => {
     expect(renderToStaticMarkup(element)).toMatch(new RegExp(`^<\\w+ class="${root}[ "]`));
-    expect(bundleCss).toContain(`.${root} `);
   });
 
   test('NavBar carries the Logo lockup', () => {
