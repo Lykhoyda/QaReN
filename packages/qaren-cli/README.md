@@ -3884,10 +3884,12 @@ recording offsets, accepting up to the recorder-start delay of lead-in rather
 than moving the end cut into teardown. Admission and login recording offsets
 remain lower bounds, so nothing before either boundary is published.
 Sensitive observations from admission onwards withhold it. The uploaded copy
-ends at the last step row, so the device session closing after the walk never
+ends at the conservative last-row offset, which can precede that row's recorded
+frame by the recorder-start delay, so device session closing after the walk never
 reaches it; the local recording stays complete. A missing or non-positive window
 withholds the copy. The receipt's `video_window` outcome records `start=<ms>; end=<ms>`,
-both measured from admission, for a successfully prepared copy.
+both measured from admission, for a successfully prepared copy when both offsets
+can be calculated without overflow or underflow.
 
 A successful saved login replay before any plan step passes moves the uploaded
 copy's start to the end of that replay if later than the first step's start.
