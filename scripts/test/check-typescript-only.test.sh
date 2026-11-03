@@ -16,19 +16,20 @@ trap 'rm -rf "$TMP"' EXIT
 # Fixture repo: a git repo with a mix of baseline, new, and excluded JS.
 git -C "$TMP" init -q
 git -C "$TMP" config commit.gpgsign false
-mkdir -p "$TMP/packages/qaren-core/dist" "$TMP/packages/qaren-cli/observe/dist" "$TMP/.yarn/releases" "$TMP/test/unit" "$TMP/scripts"
+mkdir -p "$TMP/packages/qaren-core/dist" "$TMP/packages/qaren-cli/observe/dist" "$TMP/.yarn/releases" "$TMP/packages/qaren-design/design/components" "$TMP/test/unit" "$TMP/scripts"
 echo "x" > "$TMP/test/unit/legacy.test.js"
 echo "x" > "$TMP/scripts/tool.mjs"
 echo "x" > "$TMP/packages/qaren-core/dist/generated.js"
 echo "x" > "$TMP/packages/qaren-cli/observe/dist/generated.js"
 echo "x" > "$TMP/.yarn/releases/yarn-4.17.0.cjs"
+echo "x" > "$TMP/packages/qaren-design/design/components/bundle.js"
 git -C "$TMP" add -A
 git -C "$TMP" -c user.email=t@t -c user.name=t commit -qm fixture
 
 BASE="$TMP/baseline.txt"
 printf 'test/unit/legacy.test.js\nscripts/tool.mjs\n' > "$BASE"
 
-# 1. Baseline-covered JS passes; dist/ outputs and Yarn releases are ignored.
+# 1. Baseline-covered JS passes; dist/ outputs, Yarn releases and the design mirror are ignored.
 if REPO_ROOT="$TMP" BASELINE_FILE="$BASE" bash "$SCRIPT" >/dev/null; then
   ok "baseline + exclusions pass"
 else bad "expected pass with full baseline"; fi

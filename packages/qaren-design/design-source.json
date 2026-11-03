@@ -1,0 +1,14 @@
+{
+  "url": "https://claude.ai/artifact/9wASKvBDC7Lx4ooS66t7YD",
+  "slug": "485916a1-d5ad-44bf-9142-4869eeebc892",
+  "version": "1793686235-1e19",
+  "files": {
+    "README.md": "74d551678dccbbe4b5584e663dadd5730a86696a6b4982a9e113efe3cba3a242",
+    "components/bundle.css": "296987b562260ebd52e5f5321186f236da83843e897c0c24250a53839e4c4d05",
+    "components/bundle.js": "4d1e43e985799ba1701a188cd177454606e10e3aea042acac458f5f0fedd4ca1",
+    "components/index.d.ts": "d10e50c7cd7b27ea34bf4e2b825b511fd3a7dcc09f126e3ae7ef77484e3e4869",
+    "contrast.md": "6d0cdb937154c421010a0e93a4012ca49448b79a4f4b43b6d8ced6dee803e485",
+    "tokens.css": "c7b8e6bd099eac9fafb4f731b422dc444416afa78552c0f1855eb3c02aeda86c",
+    "tokens.json": "10312579c684a1a8753718562eac8cdf641007c670462519015b9b2a18577525"
+  }
+}

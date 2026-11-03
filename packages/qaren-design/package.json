@@ -2,18 +2,23 @@
   "name": "@qaren/design",
   "private": true,
   "type": "module",
-  "description": "QaReN design system (Verdict Log): tokens, component styles and typed React components.",
+  "description": "QaReN design system (Verdict Log): a verbatim mirror of the Claude Design artifact, with a generated adapter for its components.",
   "exports": {
-    ".": "./src/index.ts",
-    "./tokens.css": "./tokens.css",
-    "./tokens.json": "./tokens.json",
-    "./components.css": "./components.css"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./tokens.css": "./design/tokens.css",
+    "./tokens.json": "./design/tokens.json",
+    "./components.css": "./design/components/bundle.css"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "build": "bun scripts/build-adapter.ts",
+    "typecheck": "bun run build && tsc --noEmit && tsc --noEmit -p tsconfig.dist.json",
     "check-contrast": "bun scripts/check-contrast.ts",
+    "check-mirror": "bun scripts/check-design-mirror.ts",
     "sync": "bun scripts/sync-design.ts",
-    "test": "tsc --noEmit && bun test && bun scripts/check-contrast.ts"
+    "test": "bun run typecheck && bun test && bun scripts/check-contrast.ts && bun scripts/check-design-mirror.ts"
   },
   "peerDependencies": {
     "react": "^19.0.0"
