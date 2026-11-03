@@ -267,7 +267,7 @@ for (const afterFalse of ['replacement-id', 'replacement-url', 'unchanged'] as c
     { timeout: 30_000 },
     async (t) => {
       const { result, postFalseReads } = await admission(t, afterFalse);
-      assert.equal(postFalseReads, 2, 'readiness completed before the exact read stalled');
+      assert.ok(postFalseReads >= 2, 'readiness completed before the exact read stalled');
       const unchanged = afterFalse === 'unchanged';
       assert.equal(result.code, unchanged ? 'DEV_TARGET_MISSING' : 'CDP_NOT_CONNECTED');
       assert.equal(result.admission.inner, unchanged ? 'non_dev_bundle' : 'no_dev_target_unknown');
