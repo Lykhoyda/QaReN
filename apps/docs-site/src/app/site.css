@@ -73,6 +73,7 @@ a.plain {
 .docs-ic {
   font-family: var(--font-mono);
   font-size: 0.9em;
+  overflow-wrap: anywhere;
   background: var(--surface-2);
   border-radius: var(--radius-sm);
   padding: 1px 6px;
