@@ -768,7 +768,7 @@ __metadata:
     "@types/bun": "npm:^1.4.4"
     "@types/react": "npm:^19"
     "@types/react-dom": "npm:^19"
-    happy-dom: "npm:^20.14.6"
+    happy-dom: "npm:^21.0.4"
     react: "npm:^19"
     react-dom: "npm:^19"
     typescript7: "npm:typescript@^7.0.2"
@@ -1334,9 +1334,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"happy-dom@npm:^20.14.6":
-  version: 20.14.6
-  resolution: "happy-dom@npm:20.14.6"
+"happy-dom@npm:^21.0.4":
+  version: 21.0.4
+  resolution: "happy-dom@npm:21.0.4"
   dependencies:
     "@types/node": "npm:>=20.0.0"
     "@types/whatwg-mimetype": "npm:^3.0.2"
@@ -1345,7 +1345,7 @@ __metadata:
     entities: "npm:^7.0.1"
     whatwg-mimetype: "npm:^3.0.0"
     ws: "npm:^8.21.0"
-  checksum: 10/d1bc335233067b044e625e969eaadc28a774dda5ca413d919e18d911f3edea44b7eaa286f43cd8992533acd6d469ab1f7467a0e8e7f7cd27d4bf4d45f1f3ab02
+  checksum: 10/708a07432283cab0a29a10571b06cf27c0e30a933bf5f7fe948e18f78ce3875127b09fbed9aa7c6c5d23b06f4dad824eb73bc7a0cbe356febf5f66efb36aabce
   languageName: node
   linkType: hard
 
