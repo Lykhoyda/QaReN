@@ -13,7 +13,7 @@ literal checks evaluate the screen text locally.
 | --- | --- |
 | `Tap the tasks tab` | Yes: a phrase target. Phrase press, fill, wait and scroll-until targets need Jev. |
 | `✓ The heading shows "Welcome" and no error is visible` | Yes: a phrase check. Text outside the quotes makes the whole expectation a phrase. |
-| A line with a verb the grammar does not recognize | Requires Jev readiness during preflight, even if another line is unparseable. |
+| A line with a verb the grammar does not recognize | Yes: an unrecognized verb requires Jev. |
 | `Tap "tab-tasks"` or `Wait for "Welcome" to appear` | No: a quoted target. Prefer a `testID` over a label for action targets. |
 | `✓ "Welcome"` | No: a literal check, whose entire payload is one quoted string. |
 | Recognized back, dialog and fixed-scroll steps | No. |
@@ -30,9 +30,9 @@ See [Write a plan](../plans/) for the supported grammar.
 ## Key and readiness
 
 Set `TYPESAFE_API_KEY` in the environment that runs QaReN when the plan needs Jev.
-It is an [environment variable](../configuration/#environment), not a YAML config key.
-Such a plan runs a fixed Jev readiness probe before device selection or leasing.
-A missing or rejected key refuses `JEV_UNREACHABLE` before any device is selected.
+See [environment variables](../configuration/#environment).
+The fixed Jev readiness probe runs even when another line is unparseable; a missing or
+rejected key refuses `JEV_UNREACHABLE` before device selection or leasing.
 
 A plan containing only quoted targets and literal checks needs no key. Without a key,
 that plan makes no Jev calls.
@@ -51,10 +51,10 @@ preserve complete-value identity for comparisons without exposing the value; fra
 masks do not prove complete-value identity. An unobserved protected value or hidden input
 content cannot prove a check.
 
-Runtime input values are redacted before being sent to Jev. Inputs default to SECRET;
-a secure field promotes its runtime input to SECRET even if the plan marks it TEST-PII.
-A SECRET value is never read back to the host; a readable, non-secure TEST-PII field uses
-in-memory readback under the runtime-input rules.
+Runtime input values follow those masking rules before Jev receives a request. Derived
+email forms and case variants get a plain mask rather than the full value's identity
+token. Inputs default to SECRET; a secure field or a field whose check subject cannot
+be read safely promotes its runtime input to SECRET even if the plan marks it TEST-PII.
 
 Secure-field privacy has a limit: model-facing evidence uses known-value masking. An
 unknown pre-filled secret echoed as ordinary text can still reach the judge. Values held
@@ -85,20 +85,24 @@ for the fields and their limits.
 ## Write a plan that needs no key
 
 Quote every action target and make each check's entire payload one quoted string.
-Use visible labels and `testID`s read from the app's source. For example:
+Use visible labels and `testID`s read from the app's source. The plugin's task example
+uses quoted targets and literal checks:
 
 ```markdown
 ## QA
 
-### Open tasks
+### Add a task
 
 1. Tap "tab-tasks"
-2. Wait for "Tasks" to appear
-✓ "Tasks"
+2. Tap "add-task"
+3. Fill "task-title" with "Buy milk"
+4. Tap "save-task"
+5. Wait for "Buy milk" to appear
+✓ "Buy milk"
 ```
 
-This plan needs no `TYPESAFE_API_KEY`. Without one, it runs without Jev. Adding a check
-such as `✓ The heading shows "Tasks"` would make it a phrase check and require the key.
+This plan needs no `TYPESAFE_API_KEY`. Without one, it runs without Jev. Adding text
+outside a check's quoted payload makes it a phrase check and requires the key.
 
 The [CLI's plan and screen-evidence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence)
 and the plugin's [using-qaren skill](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-plugin/skills/using-qaren/SKILL.md#write-a-plan)
