@@ -242,6 +242,8 @@ export interface WalkerDeps {
   reactFocused?(testID: string): Promise<boolean>;
   // iOS only: hides a visible keyboard, native tier then JS tier; none when neither proved it hidden.
   dismissKeyboard?(context: QaDispatchContext): Promise<'native-control' | 'js' | 'none'>;
+  // iOS only: blur the focused input even when the native keyboard is hidden.
+  blurFocusedInput?(context: QaDispatchContext): Promise<boolean>;
   // iOS only: Fill ladder rung 3, the input's change handler receives the whole value, then it is verified.
   setByHandler?(
     testID: string,
@@ -1837,23 +1839,100 @@ async function walkBlockScoped(
     const readyBy = deps.now() + KEYBOARD_READY_MS;
     let after = await settledCapture(item);
     const bound = () => bindFillIdentity(item, after.screen, target.oracleTestID);
-    for (
-      let captures = 1;
-      !proofMode &&
+    const waitForKeyboard = async (skipWait: boolean, deadline: number) => {
+      for (
+        let captures = 1;
+        !skipWait &&
+        after.screen.keyboardVisible !== true &&
+        bound()?.kind !== 'strict' &&
+        captures < KEYBOARD_READY_CAPTURES &&
+        deps.now() < deadline;
+        captures += 1
+      ) {
+        await pause(Math.min(WAIT_POLL_MS, Math.max(0, deadline - deps.now())));
+        after = await settledCapture(item);
+      }
+    };
+    await waitForKeyboard(proofMode, readyBy);
+    let binding = bound();
+    if (binding?.kind === 'strict')
+      return { ...binding.strict, observation: after, identity: target.oracleTestID, scrolled };
+    let refocused = false;
+    if (
       after.screen.keyboardVisible !== true &&
-      bound()?.kind !== 'strict' &&
-      captures < KEYBOARD_READY_CAPTURES &&
-      deps.now() < readyBy;
-      captures += 1
+      deps.platform !== 'android' &&
+      deps.reactFocused &&
+      deps.blurFocusedInput
     ) {
-      await pause(Math.min(WAIT_POLL_MS, Math.max(0, readyBy - deps.now())));
-      after = await settledCapture(item);
+      let focused = false;
+      try {
+        focused = (await deps.reactFocused(target.oracleTestID)) === true;
+      } catch (error) {
+        if (isAbort(error)) throw error;
+      }
+      if (focused) {
+        let blurred = false;
+        try {
+          try {
+            await mutate(item, after, async (context) => {
+              blurred = await deps.blurFocusedInput!(context);
+              return { ok: true, proven: false };
+            });
+          } catch (error) {
+            if (
+              isAbort(error) ||
+              error instanceof EvidenceExpired ||
+              error instanceof QaDispatchError
+            )
+              throw error;
+            return nothingTyped(`tapping "${quoted}" raised no keyboard`, after.screen);
+          }
+          if (!blurred)
+            return nothingTyped(
+              `tapping "${quoted}" raised no keyboard; the focused field could not be blurred`,
+              after.screen,
+            );
+          after = await settledCapture(item);
+          usable(after, item);
+          const rebound = bindDispatchIdentity(
+            { ...item, kind: 'press' },
+            after.screen,
+            target.element,
+          );
+          if (!('ref' in rebound))
+            return nothingTyped(
+              'TARGET_NOT_FOUND: the focused field no longer resolves uniquely after blur',
+              after.screen,
+              'TARGET_NOT_FOUND',
+            );
+          const retap = await mutate(item, after, (context) => deps.press(rebound.ref, context));
+          if (!retap.ok)
+            return nothingTyped(
+              `${retap.error ?? 'the tap was not dispatched'}; tapping "${quoted}" failed`,
+              after.screen,
+              retap.ambiguous ? 'TARGET_AMBIGUOUS' : undefined,
+            );
+          refocused = true;
+          const retryReadyBy = deps.now() + KEYBOARD_READY_MS;
+          after = await settledCapture(item);
+          await waitForKeyboard(false, retryReadyBy);
+          binding = bound();
+        } finally {
+          deps.note?.(
+            `keyboard-refocus ${JSON.stringify({ v: 1, line: item.line, focused: true, blurred, raised: refocused && after.screen.keyboardVisible === true })}`,
+          );
+        }
+      }
     }
-    const binding = bound();
     if (binding?.kind === 'strict')
       return { ...binding.strict, observation: after, identity: target.oracleTestID, scrolled };
     if (after.screen.keyboardVisible !== true)
-      return nothingTyped(`tapping "${quoted}" raised no keyboard`, after.screen);
+      return nothingTyped(
+        refocused
+          ? 'focus was reported after the first tap and the keyboard stayed hidden after a blur and a second tap'
+          : `tapping "${quoted}" raised no keyboard`,
+        after.screen,
+      );
     const again = binding?.kind === 'fallback' ? binding.fallback : undefined;
     if (!again)
       return nothingTyped(

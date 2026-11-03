@@ -32,6 +32,7 @@ import {
   createDevicePressHandler,
   createDeviceScrollHandler,
   dismissKeyboardForQa,
+  dismissViaJs,
   readReactInputValue,
   entryMismatchOf,
 } from '../handlers/device-interact.js';
@@ -882,6 +883,11 @@ async function openSession(
           // RN_KEYBOARD_GUARD=0 turns off every QaReN keyboard clearance, this one included.
           ...(resolveKeyboardGuard(process.env)
             ? {
+                blurFocusedInput: (qaContext: QaDispatchContext) =>
+                  stop.track(async () => {
+                    const client = cdpClientOrNull(getClient);
+                    return client ? dismissViaJs(client, qaContext) : false;
+                  }),
                 dismissKeyboard: (qaContext: QaDispatchContext) =>
                   stop.track(() => dismissKeyboardForQa(getClient, qaContext)),
               }
