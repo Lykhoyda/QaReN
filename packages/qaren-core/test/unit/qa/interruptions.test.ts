@@ -412,6 +412,35 @@ test('a non-executing decline cannot count as recovery even if the screen change
   assert.equal(result.recoveries, 1);
 });
 
+for (const disposition of ['failed', 'not-executed', 'success'] as const) {
+  test(`${disposition} decline retains measured settle exactly once`, async () => {
+    const f = app(promo());
+    const press = f.deps.press;
+    f.deps.timing = () => {};
+    f.deps.press = async (ref, context) => {
+      const result = await press(ref, context);
+      return ref === '@close'
+        ? {
+            ...result,
+            ok: disposition !== 'failed',
+            executed: disposition !== 'not-executed',
+            settle: { method: 'snapshot-eq', ms: 12.4 },
+          }
+        : result;
+    };
+    const result = await runPlan(plan(), f.deps);
+    assert.equal(result.verdict, disposition === 'success' ? 'PASS' : 'FAIL');
+    if (disposition !== 'success') {
+      assert.match(result.failure?.seen ?? '', /INTERRUPTION_NOT_DISPATCHED/);
+      assert.deepEqual(f.actions, ['press @close']);
+    }
+    const measured = result.steps.filter((row) => row.timing?.settleMs !== undefined);
+    assert.equal(measured.length, 1);
+    assert.equal(measured[0].timing?.settleMethod, 'snapshot-eq');
+    assert.equal(measured[0].timing?.settleMs, 12);
+  });
+}
+
 test('interruption support actions do not become required commands in the saved block', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'qaren-interruption-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

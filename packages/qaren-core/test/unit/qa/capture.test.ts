@@ -11,6 +11,55 @@ import { assertionView, visibilityView } from '../../../dist/qa/screen.js';
 import type { DigestEntry, NativeNode, ReactHostEvidence } from '../../../dist/qa/screen.js';
 import { nativeCapture } from './platform-presence-fixtures.ts';
 import type { TimingEvent } from '../../../dist/qa/timing.js';
+import { createRowTimer } from '../../../dist/qa/row-timing.js';
+
+for (const retry of ['empty', 'presence'] as const) {
+  test(`${retry} retry preparation counts include every native acquisition once`, async () => {
+    const timer = createRowTimer(0);
+    let calls = 0;
+    const observed = await captureScreen({
+      appId: 'com.test',
+      requirePrivateInputs: true,
+      platformPresence: true,
+      timing: timer.observe,
+      native: async (budgetMs) => {
+        const source = nativeCapture();
+        const first = ++calls === 1;
+        return {
+          ...source,
+          ...(first
+            ? {
+                keyboardVisible: undefined,
+                nodes: retry === 'empty' ? [] : source.nodes,
+                snapshotVerdict: {
+                  state: 'degraded',
+                  nodeCount: retry === 'empty' ? 0 : source.nodes.length,
+                  refMapUpdated: false,
+                  reasons: [retry === 'empty' ? 'empty-capture' : 'snapshot-ref-freshness-unknown'],
+                },
+              }
+            : {}),
+          presenceCapture: {
+            ...source.presenceCapture,
+            appliedBudgetMs: budgetMs,
+            complete: !first,
+            diagnostics: {
+              preparationSamples: first ? 8 : 6,
+              preparationResets: first ? 2 : 0,
+              phaseMs: { preparation: 500 },
+            },
+          },
+        };
+      },
+      react: async () => ({ interactive: [], verdict, hostEvidence: { hosts: [], complete: true } }),
+    });
+    assert.equal(observed.coverage?.native, 'complete');
+    assert.equal(calls, 2);
+    const timing = timer.take(1000, 0);
+    assert.equal(timing.preparationSamples, 14);
+    assert.equal(timing.preparationResets, 2);
+  });
+}
 
 const nodes: NativeNode[] = [
   {

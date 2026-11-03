@@ -599,6 +599,8 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
               deps.native(presenceBudgetMs),
             ),
       );
+      throwIfCancelled();
+      if (deps.timing) observeNativeTiming(native.presenceCapture, deps.timing, now());
     } catch (error) {
       if (isAbort(error)) throw error;
       if (error === retryRefusal && retryRefusal instanceof NativeSnapshotIncomplete)
@@ -641,7 +643,6 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
   }
   // A read finishing after its scope ended publishes nothing more.
   throwIfCancelled();
-  if (deps.timing) observeNativeTiming(native.presenceCapture, deps.timing, now());
   if (deps.warn) {
     try {
       for (const cause of presenceDiagnostics({ systemModal: native.systemModal }))
