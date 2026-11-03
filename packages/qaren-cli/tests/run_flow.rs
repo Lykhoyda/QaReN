@@ -8987,7 +8987,7 @@ fn a_cancel_during_the_git_probes_claims_nothing_and_runs_nothing_after_it() {
 }
 
 // Writes the recorder's raw capture and each encode's output, as the real tools would.
-struct Encoding(PrRunner, Option<u64>);
+struct Encoding(PrRunner, Option<u64>, u64);
 
 impl Runner for Encoding {
     fn env_var(&self, name: &str) -> Option<String> {
@@ -9019,7 +9019,7 @@ impl Runner for Encoding {
                 .join("check-other/media/raw.mov");
             std::fs::create_dir_all(other.parent().unwrap()).unwrap();
             std::fs::write(other, b"foreign").unwrap();
-            self.0.sleep(std::time::Duration::from_millis(559));
+            self.0.sleep(std::time::Duration::from_millis(self.2));
         }
         self.0.spawn_group_unchecked(spec, log)
     }
@@ -9043,15 +9043,16 @@ impl Runner for Encoding {
 // R8: only this run's own raw capture is reclaimed, and only once a playable encode replaces it.
 #[test]
 fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
-    for (encodes, first_start, login_offset, expected_offset) in [
-        (true, None, None, 2_850),
-        (false, None, None, 2_850),
-        (true, Some(0), None, 2_850),
-        (true, Some(12_000), None, 12_000),
-        (true, Some(12_000), Some(20_000), 22_850),
-        (true, Some(12_000), Some(5_000), 12_000),
-        (true, None, Some(20_000), 22_850),
-        (true, Some(33_000), None, 33_000),
+    for (encodes, first_start, login_offset, expected_offset, recorder_delay) in [
+        (true, None, None, 2_850, 559),
+        (false, None, None, 2_850, 559),
+        (true, Some(0), None, 2_850, 559),
+        (true, Some(12_000), None, 12_000, 559),
+        (true, Some(12_000), Some(20_000), 22_850, 559),
+        (true, Some(12_000), Some(5_000), 12_000, 559),
+        (true, None, Some(20_000), 22_850, 559),
+        (true, Some(33_000), None, 33_000, 559),
+        (true, Some(10_000), None, 10_000, 8_000),
     ] {
         let (repo, app) = app_repo();
         let wt = repo.join("runs").join(run_id()).join("wt");
@@ -9066,6 +9067,7 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
                 fail_host_checkpoint: false,
             },
             None,
+            recorder_delay,
         );
         let mock = &mut runner.0.inner;
         let admitted = mock.now_epoch_ms() + 4_100;
@@ -9160,13 +9162,13 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
                 let at = args.iter().position(|a| a == flag).unwrap();
                 (args[at + 1].parse::<f64>().unwrap() * 1000.0).round() as u64
             };
-            // The cut lands at full-video max(row.t), never rebased past the recorder start delay into teardown.
+            // Keep the ledger end conservative; the short walk must retain 526 ms.
             assert_eq!(ms("-ss") + ms("-t"), 33_526);
             let request: serde_json::Value =
                 serde_json::from_str(runner.0.inner.piped_stdin_text(1).trim()).unwrap();
             let t0 = request["payload"]["t0"].as_u64().unwrap();
             let recording_from = runner.1.unwrap();
-            assert_eq!(t0 - recording_from, 559);
+            assert_eq!(t0 - recording_from, recorder_delay);
             assert_eq!(ms("-ss"), expected_offset);
             assert_eq!(ms("-t"), 33_526 - expected_offset);
             assert!(ms("-ss") >= admitted - recording_from);
