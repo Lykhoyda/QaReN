@@ -1439,17 +1439,12 @@ fn run_inner(
             // The copy skips setup while preserving admission and pre-plan login boundaries.
             let video = if video == VideoStatus::Available || outcome.ledger.publication_interrupted
             {
-                let start = outcome.ledger.admitted_at_ms.map(|admitted| {
+                let offset = outcome.ledger.admitted_at_ms.map(|admitted| {
                     admitted
                         .max(outcome.ledger.publish_from_ms.unwrap_or(admitted))
-                        .max(
-                            outcome
-                                .first_step_start_ms
-                                .and_then(|t| core_request.t0.checked_add(t))
-                                .unwrap_or(admitted),
-                        )
+                        .saturating_sub(recording_from)
+                        .max(outcome.first_step_start_ms.unwrap_or(0))
                 });
-                let offset = start.map(|at| at.saturating_sub(recording_from));
                 // Row t is relative to t0, taken after the recording started, so it can only cut before the true last-row frame.
                 let end = outcome.ledger.steps.iter().map(|s| s.t).max();
                 let video = record::publication_copy(
@@ -1460,10 +1455,10 @@ fn run_inner(
                     outcome.ledger.publication_interrupted,
                 );
                 if video == VideoStatus::Available {
-                    if let Some((start, end)) = start.zip(end).and_then(|(start, end)| {
+                    if let Some((start, end)) = offset.zip(end).and_then(|(start, end)| {
                         let admitted = outcome.ledger.admitted_at_ms?;
                         Some((
-                            start.checked_sub(admitted)?,
+                            recording_from.checked_add(start)?.checked_sub(admitted)?,
                             recording_from.checked_add(end)?.checked_sub(admitted)?,
                         ))
                     }) {

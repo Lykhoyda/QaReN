@@ -3879,6 +3879,8 @@ in `pr.json`. A plan containing any fill/type step keeps the recording local,
 even if that step never executes. Otherwise, the uploaded copy starts at the
 first plan step's start, or admission after [overlay clearance](#check-a-plan)
 if the step start is earlier or unavailable.
+The step bounds share the ledger timeline, so recorder startup can leave a
+short lead-in before the first step; admission and login remain lower bounds.
 Sensitive observations from admission onwards withhold it. The uploaded copy
 ends at the last step row, so the device session closing after the walk never
 reaches it; the local recording stays complete. A missing or non-positive window
