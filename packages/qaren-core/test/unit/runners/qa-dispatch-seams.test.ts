@@ -639,32 +639,34 @@ test('QA exact fill uses no-recovery snapshot preparation', async () => {
   assert.equal(context.authorizations, 0);
 });
 
-test('an exact fill the runner refuses on a moved frame stays latched and attests no mutation', async () => {
-  session();
-  const sends = runner((body) =>
-    body.command === 'snapshot'
-      ? snapshot('Input', 'TextField', 'input')
-      : {
-          ok: false,
-          error: {
-            code: 'NO_TEXT_INPUT_TARGET',
-            message:
-              'NO_TEXT_INPUT_TARGET: the described text input is no longer present on screen',
-            mutation: 'none',
+for (const alwaysRetype of [false, true]) {
+  test(`an exact fill moved-frame refusal stays latched (always retype: ${alwaysRetype})`, async () => {
+    session();
+    const sends = runner((body) =>
+      body.command === 'snapshot'
+        ? snapshot('Input', 'TextField', 'input')
+        : {
+            ok: false,
+            error: {
+              code: 'NO_TEXT_INPUT_TARGET',
+              message:
+                'NO_TEXT_INPUT_TARGET: the described text input is no longer present on screen',
+              mutation: 'none',
+            },
           },
-        },
-  );
-  const context = new QaDispatchContext(10, () => 1);
-  await assert.rejects(
-    createDeviceFillHandler(() => {
-      throw new Error('no CDP');
-    })({ ref: 'input', text: 'hello', qaContext: context }),
-    /ACTION_CONTEXT_CHANGED/,
-  );
-  assert.deepEqual(sends, ['snapshot', 'type']);
-  assert.equal(context.authorizations, 1);
-  assert.equal(context.refusedBeforeMutation, true);
-});
+    );
+    const context = new QaDispatchContext(10, () => 1);
+    await assert.rejects(
+      createDeviceFillHandler(() => {
+        throw new Error('no CDP');
+      })({ ref: 'input', text: 'hello', qaContext: context, alwaysRetype }),
+      /ACTION_CONTEXT_CHANGED/,
+    );
+    assert.deepEqual(sends, ['snapshot', alwaysRetype ? 'type' : 'verifyInput']);
+    assert.equal(context.authorizations, alwaysRetype ? 1 : 0);
+    assert.equal(context.refusedBeforeMutation, alwaysRetype);
+  });
+}
 
 test('exact fill preparation cannot renew the original mutation deadline', async () => {
   session();
@@ -778,8 +780,8 @@ for (const mode of ['proof', 'transition'] as const) {
       const env = JSON.parse(result.content[0].text);
       const allowed = focused === true;
       const prefix = allowed
-        ? ['focus', 'health', 'focus', 'type', 'health']
-        : ['focus', 'health', 'focus'];
+        ? ['focus', 'focus', 'health', 'focus', 'type', 'health']
+        : ['focus', 'focus', 'health', 'focus'];
       assert.deepEqual(events.slice(0, prefix.length), prefix);
       if (!allowed) assert.ok(events.slice(prefix.length).every((event) => event === 'focus'));
       assert.deepEqual(sends, allowed ? ['type', 'type'] : []);
