@@ -1,69 +1,35 @@
 # @qaren/design
 
-The QaReN design system, **Verdict Log: a calm terminal at night**, as a workspace package: colour, type and spacing tokens, the component stylesheet, and typed React components. It is the brand for every QaReN surface; the docs site consumes its tokens.
+@qaren/design is a mirror of the QaReN design system in Claude Design: <https://claude.ai/artifact/9wASKvBDC7Lx4ooS66t7YD>. Edit branding and mirrored files in Claude Design, then sync them here. The adapter, scripts and tests are maintained in this package. It is the brand for every QaReN surface; the docs site consumes its tokens.
 
-This package is the canonical copy. The design source stays where new layouts are drawn; changes reach this package through `scripts/sync-design.ts` and a reviewed pull request. Imported from design source version `1793660106-9400` (tokens synced 2026-11-02).
+Every file under `design/` is a file of the artifact's `project/` folder, byte for byte, at version `1793708863-7918` (`design-source.json` records the version and each file's sha256). The mirror holds only what code consumes: `README.md`, `tokens.css`, `tokens.json`, `contrast.md` and `components/bundle.js`, `bundle.css` and `index.d.ts`. `design-system.json`, the assets, and each component's preview and README stay in Claude Design.
 
-## Contents
-
-| File | What it is |
-| --- | --- |
-| `tokens.json` | Every token with its usage rule. The source for the contrast check. |
-| `tokens.css` | The tokens as CSS custom properties for the `dark` and `light` themes, plus the type classes (`display`, `h1` to `h3`, `lead`, `body`, `body-sm`, `wordmark`, `verdict`, `label`, `code`, `code-sm`). |
-| `components.css` | Component styles. The design source's `bundle.css` without its font import, followed by the package-owned docs layout section. |
-| `contrast.md` | Every text and mark pair with its WCAG 2 ratio in both themes. |
-| `src/` | The components, ported from the design source's `bundle.js` against its `index.d.ts` prop contract. |
+The design guidance, including the required page wrapper and themes, is in [design/README.md](design/README.md#components).
 
 ## Use it
 
 ```tsx
 import '@qaren/design/tokens.css';
 import '@qaren/design/components.css';
-import { DocsLayout, VerdictPill } from '@qaren/design';
+import { VerdictPill } from '@qaren/design';
 ```
 
-Load the two font families in the document head. The stylesheets make no network request of their own:
+The components come from `design/components/bundle.js` through a build-time wrapper, `scripts/build-adapter.ts`, which writes `dist/index.js` and `dist/index.d.ts` (gitignored; run `build` before using the package). The wrapper gives the bundle React through a module-scoped `window`, so the same file renders on the server and in the browser without touching the global. Props types are the artifact's `index.d.ts`. React 19 is a peer dependency; interactive components such as a `Button` with `onClick` need a client boundary in the consumer.
 
-```html
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link
-  rel="stylesheet"
-  href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
-/>
-```
+Fonts: `bundle.css` imports Inter and JetBrains Mono from Google Fonts.
 
-Wrap a page in an element with class `qr-root` and `data-theme="dark"` (the brand) or `data-theme="light"` (docs). A nested `data-theme` switches the theme locally. `DocsLayout` renders its own light `qr-root`.
+`DocsLayout` is no longer exported; consumers compose their own page layout using the mirrored components.
 
-The package exports TypeScript source (`src/index.ts`); the consumer's bundler compiles it. React 19 is a peer dependency.
+## Update
 
-### Components
+Run the commands below from `packages/qaren-design/`.
 
-Brand: `Logo`. Verdict: `VerdictPill`, `StepList`, `VideoProofCard`, `PRCommentSummary`, `LedgerRow`. Core: `Wordmark`, `Button`, `Link`, `CodeBlock`, `InlineCode`, `TerminalPane`, `Card`, `Badge`, `Callout`, `Table`, `NavBar`, `Footer`. Layout: `DocsLayout`.
+1. In Claude Design, list the artifact's files and save the version and the sha256 of each mirrored `project/` path as `inventory.json`: `{ "version": "<version>", "files": { "tokens.css": "<sha256>", ... } }`.
+2. Read each of those files and save them under one folder, keeping their paths relative to `project/` (for example, `<folder>/components/bundle.js`). Keep `inventory.json` outside that folder; the folder must contain exactly the files listed in the inventory.
+3. Run `bun scripts/sync-design.ts <folder> --inventory <inventory.json>`. It refuses, before touching anything, when a file is missing, extra, a symlink or differs from its hash; otherwise it replaces `design/` and writes `design-source.json`.
+4. Put the new version in this README, run `bun run test`, and commit `design/`, `design-source.json` and the README.
 
-```tsx
-<DocsLayout
-  nav={{ links: [{ label: 'Docs', href: '/QaReN/', active: true }] }}
-  groups={[{ label: 'How QaReN works', items: [{ label: 'Write a plan', href: '/QaReN/plans/', active: true }] }]}
-  footer={{ links: [{ label: 'GitHub', href: 'https://github.com/Lykhoyda/QaReN' }] }}
->
-  <p className="label">How QaReN works</p>
-  <h1 className="h1">Write a plan</h1>
-</DocsLayout>
-```
-
-`DocsLayout` is the design source's DocsPage layout: the nav bar, a 256px sidebar whose current item is marked by `surface-2` and weight 600, a reading column capped at 760px, and the footer. At 860px wide or narrower the sidebar stacks above the column. The page kicker, title and body are page content, not part of the layout.
-
-## Composition rules
-
-Components provide the styles and status labels; the consuming page owns visual hierarchy and the accent count.
-
-1. **The verdict is the loudest element.** Choose the `VerdictPill` size and surrounding content so the verdict dominates the page.
-2. **The verdict is always a word.** PASS or FAIL with a check or cross; every step and ledger row writes its status (`pending`, `running`, `passed`, `failed`) as text. Never colour alone.
-3. **One accent per screen.** A primary button, a running step, a caution callout or a logo or wordmark cursor: pick one. `NavBar` includes an amber logo cursor, so `DocsLayout` already uses the accent; keep its action secondary and omit additional accent elements in its content.
-4. **No invented output.** `PRCommentSummary` and `TerminalPane` show a Placeholder badge until `placeholder={false}`; set it only for content copied from a real run. `CodeBlock` shows the badge only with `placeholder`: pass it for any block that shows invented output.
-
-The full guidance (voice, colour, type, logo, motion, layouts) lives in the design source.
+CI fails when `design/` and the lock disagree. It cannot see that Claude Design has a newer version; that needs a sync.
 
 ## Scripts
 
@@ -71,8 +37,11 @@ Run with Bun from this directory, or through `corepack yarn workspace @qaren/des
 
 | Script | What it does |
 | --- | --- |
-| `test` | `tsc --noEmit`, then `bun test` (one render test per component), then `check-contrast`. CI runs it. |
-| `check-contrast` | Recomputes the table in `contrast.md` from `tokens.json` and fails when a pair is under its floor (4.5:1 text, 3:1 marks) in either theme, or when `contrast.md` no longer matches the tokens. `--write` rewrites the table. |
-| `sync <path>` | Refreshes `tokens.css`, `tokens.json`, `contrast.md` and `components.css` from a saved copy of the design source's `project/` folder on local disk, keeps the package-owned docs layout section, and lists what changed. It never reads the network. Components are ported by hand from `components/bundle.js` and `index.d.ts`. |
+| `build` | Writes the component adapter into `dist/`. |
+| `typecheck` | `build`, then `tsc` on the scripts and tests and on the generated `dist/index.d.ts` with library checks on. A component in the bundle header without a matching `<Name>Props` in `index.d.ts` fails here. |
+| `test` | `typecheck`, then `bun test` (every component server-rendered, a hydration check on React 19, the scripts), `check-contrast` and `check-mirror`. CI runs it. |
+| `check-contrast` | Recomputes every pair in `design/contrast.md` from `design/tokens.json` and fails when a pair is under its floor or the table disagrees with the tokens. Read-only: fix a failure in Claude Design. |
+| `check-mirror` | Fails when a file under `design/` is changed, missing, extra or a symlink, or this README does not name the locked version. |
+| `sync <folder> --inventory <file>` | The update step above. It never reads the network. |
 
 TypeScript 7 is installed under the alias `typescript7` because Yarn's built-in TypeScript patch does not apply to version 7; `tsc` in this package resolves to it.

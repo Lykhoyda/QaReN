@@ -41,7 +41,8 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
   descriptions, review replies, and shipped artifacts: never name, quote, link
   to, cite, or present behavior as copied from competing repositories or
   implementation approaches.
-- New source and test code must be TypeScript (`.ts`/`.tsx`) or Rust. The
+- Outside the [locked design mirror](packages/qaren-design/README.md), new
+  source and test code must be TypeScript (`.ts`/`.tsx`) or Rust. The
   grandfathered `.js`/`.mjs` files are listed in
   `scripts/js-migration-baseline.txt`; do not grow that baseline casually.
 - In `packages/qaren-core` the names are final and have no alias: `QAREN_*`

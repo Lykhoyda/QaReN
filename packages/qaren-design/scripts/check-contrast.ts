@@ -1,9 +1,13 @@
-// Recomputes the contrast table in contrast.md from tokens.json with the WCAG 2 formula.
-// Fails when a pair is below its floor in either theme, or when contrast.md no longer
-// matches the tokens. `--write` rewrites the table in contrast.md.
-import { readFileSync, writeFileSync } from 'node:fs';
+// Read-only floor check over the mirrored design: recomputes every pair in the table of
+// design/contrast.md from design/tokens.json with the WCAG 2 formula. Fails when a pair is below
+// its floor in either theme, or when a ratio in the table disagrees with the tokens at the table's
+// two-decimal rounding. Both files come from Claude Design, so a failure is fixed there.
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-type Theme = 'dark' | 'light';
+export type Theme = 'dark' | 'light';
+const THEMES: Theme[] = ['dark', 'light'];
 interface ColorToken {
   name: string;
   value: Record<Theme, string>;
@@ -11,50 +15,6 @@ interface ColorToken {
 export interface Tokens {
   color: { tokens: ColorToken[] };
 }
-interface Pair {
-  fg: string;
-  bg: string;
-  where: string;
-  floor: number | null;
-}
-
-const THEMES: Theme[] = ['dark', 'light'];
-
-// [foreground, background, where it appears, floor]; a null floor is a decorative row, reported only.
-export const PAIRS: Pair[] = (
-  [
-    ['text', 'bg', 'Body and headings on the page', 4.5],
-    ['text', 'surface', 'Body in cards, code, terminal', 4.5],
-    ['text', 'surface-2', 'Inline code, table headers', 4.5],
-    ['muted', 'bg', 'Captions, footer', 4.5],
-    ['muted', 'surface', 'Metadata in cards, code comments', 4.5],
-    ['muted', 'surface-2', 'Table header labels', 4.5],
-    ['accent-text', 'bg', 'Running step label, link hover', 4.5],
-    ['accent-text', 'surface', 'Running step label in a pane', 4.5],
-    ['on-accent', 'accent', 'Primary button label', 4.5],
-    ['pass', 'bg', 'The word PASS on the page', 4.5],
-    ['pass', 'surface', 'The word PASS in a pane', 4.5],
-    ['pass', 'pass-tint', 'PASS in a passed row or PR header', 4.5],
-    ['on-pass', 'pass', 'PASS pill', 4.5],
-    ['fail', 'bg', 'The word FAIL on the page', 4.5],
-    ['fail', 'surface', 'The word FAIL in a pane', 4.5],
-    ['fail', 'fail-tint', 'FAIL in a failed row, danger callout title', 4.5],
-    ['on-fail', 'fail', 'FAIL pill', 4.5],
-    ['text', 'pass-tint', 'Body on a passed row', 4.5],
-    ['text', 'fail-tint', 'Body on a failed row or danger callout', 4.5],
-    ['muted', 'pass-tint', 'Metadata on a passed row', 4.5],
-    ['muted', 'fail-tint', 'Metadata on a failed row', 4.5],
-    ['focus', 'bg', 'Focus ring on the page', 3],
-    ['focus', 'surface', 'Focus ring in a card', 3],
-    ['border-strong', 'bg', 'Secondary button outline', 3],
-    ['border-strong', 'surface', 'Control outline in a card', 3],
-    ['pass', 'surface', 'Passed step mark', 3],
-    ['fail', 'surface', 'Failed step mark', 3],
-    ['accent', 'bg', 'Cursor block, primary button fill edge', null],
-    ['border', 'bg', 'Hairline divider', null],
-    ['pass', 'fail', 'PASS against FAIL (hue alone)', null],
-  ] as const
-).map(([fg, bg, where, floor]) => ({ fg, bg, where, floor }));
 
 /** A colour token's hex for a theme, following "{other}" references. */
 export function resolve(tokens: Tokens, name: string, theme: Theme, seen: string[] = []): string {
@@ -83,71 +43,61 @@ export function ratio(a: string, b: string): number {
   return (hi + 0.05) / (lo + 0.05);
 }
 
-export interface Row extends Pair {
-  ratios: Record<Theme, number>;
+/** One table row: the pair, its floor (null for a decorative row) and the ratio the table prints per theme. */
+export interface Row {
+  fg: string;
+  bg: string;
+  floor: number | null;
+  printed: Record<Theme, string>;
 }
 
-export function measure(tokens: Tokens): Row[] {
-  return PAIRS.map((p) => ({
-    ...p,
-    ratios: {
-      dark: ratio(resolve(tokens, p.fg, 'dark'), resolve(tokens, p.bg, 'dark')),
-      light: ratio(resolve(tokens, p.fg, 'light'), resolve(tokens, p.bg, 'light')),
-    },
-  }));
+const ROW =
+  /^\| `([\w-]+)` on `([\w-]+)` \| [^|]* \| (none|[\d.]+:1) \| ([\d.]+):1 \([^)]*\) \| ([\d.]+):1 \([^)]*\) \|$/;
+
+/** The pair rows of contrast.md's table. Throws on a table row it cannot read. */
+export function parseTable(doc: string): Row[] {
+  const rows = doc
+    .split('\n')
+    .filter((l) => l.startsWith('|') && !l.startsWith('| Pair ') && !l.startsWith('| ---'))
+    .map((line) => {
+      const m = ROW.exec(line);
+      if (!m) throw new Error(`contrast.md row not understood: ${line}`);
+      return {
+        fg: m[1],
+        bg: m[2],
+        floor: m[3] === 'none' ? null : Number.parseFloat(m[3]),
+        printed: { dark: m[4], light: m[5] },
+      };
+    });
+  if (!rows.length) throw new Error('contrast.md has no pair rows');
+  return rows;
 }
 
-/** Rows below their floor, as readable lines. The raw ratio is compared: WCAG does not round up to a floor. */
-export function failures(rows: Row[]): string[] {
+/** Floor failures and printed ratios that disagree with the tokens, as readable lines. WCAG does not round up to a floor. */
+export function check(tokens: Tokens, rows: Row[]): string[] {
   return rows.flatMap((r) =>
-    THEMES.filter((t) => r.floor !== null && r.ratios[t] < r.floor).map(
-      (t) => `${r.fg} on ${r.bg} (${t}): ${r.ratios[t].toFixed(2)}:1 is below ${r.floor}:1`,
-    ),
+    THEMES.flatMap((t) => {
+      const value = ratio(resolve(tokens, r.fg, t), resolve(tokens, r.bg, t));
+      const pair = `${r.fg} on ${r.bg} (${t})`;
+      const out: string[] = [];
+      if (value.toFixed(2) !== r.printed[t])
+        out.push(`${pair}: contrast.md says ${r.printed[t]}:1, tokens give ${value.toFixed(2)}:1`);
+      if (r.floor !== null && value < r.floor)
+        out.push(`${pair}: ${value.toFixed(2)}:1 is below ${r.floor}:1`);
+      return out;
+    }),
   );
 }
 
-export function renderTable(rows: Row[]): string {
-  const cell = (r: Row, t: Theme) => {
-    const v = `${r.ratios[t].toFixed(2)}:1`;
-    if (r.floor === null) return `${v} (n/a)`;
-    return `${v} (${r.ratios[t] >= r.floor ? 'pass' : 'fail'})`;
-  };
-  return [
-    '| Pair | Where it appears | Floor | Dark | Light (docs) |',
-    '| --- | --- | --- | --- | --- |',
-    ...rows.map(
-      (r) =>
-        `| \`${r.fg}\` on \`${r.bg}\` | ${r.where} | ${r.floor === null ? 'none' : `${r.floor}:1`} | ${cell(r, 'dark')} | ${cell(r, 'light')} |`,
-    ),
-  ].join('\n');
-}
-
-/** Replaces the first Markdown table in doc with table. */
-export function replaceTable(doc: string, table: string): string {
-  const lines = doc.split('\n');
-  const start = lines.findIndex((l) => l.startsWith('|'));
-  if (start < 0) throw new Error('contrast.md has no table');
-  let end = start;
-  while (end < lines.length && lines[end].startsWith('|')) end++;
-  return [...lines.slice(0, start), table, ...lines.slice(end)].join('\n');
-}
-
 if (import.meta.main) {
-  const dir = new URL('..', import.meta.url);
-  const tokens: Tokens = JSON.parse(readFileSync(new URL('tokens.json', dir), 'utf8'));
-  const docUrl = new URL('contrast.md', dir);
-  const doc = readFileSync(docUrl, 'utf8');
-  const rows = measure(tokens);
-  const expected = replaceTable(doc, renderTable(rows));
-  const problems = failures(rows);
-  if (process.argv.includes('--write')) {
-    writeFileSync(docUrl, expected);
-    console.log('contrast.md table rewritten from tokens.json');
-  } else if (expected !== doc) {
-    problems.push(
-      'contrast.md does not match tokens.json; run `bun run check-contrast --write` and review the diff',
-    );
+  if (process.argv.length > 2) {
+    console.error('check-contrast takes no arguments; contrast.md is edited in Claude Design');
+    process.exit(2);
   }
+  const design = fileURLToPath(new URL('../design', import.meta.url));
+  const tokens: Tokens = JSON.parse(readFileSync(join(design, 'tokens.json'), 'utf8'));
+  const rows = parseTable(readFileSync(join(design, 'contrast.md'), 'utf8'));
+  const problems = check(tokens, rows);
   if (problems.length) {
     console.error(problems.join('\n'));
     process.exit(1);

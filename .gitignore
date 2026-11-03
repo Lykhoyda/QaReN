@@ -7,6 +7,9 @@ packages/qaren-core/dist/
 packages/qaren-cli/observe/dist/
 packages/qaren-cli/observe/node_modules/
 packages/qaren-cli/target/
+# The design package's generated component adapter (scripts/build-adapter.ts).
+packages/qaren-design/dist/
+packages/qaren-design/design.next/
 
 # Local stub toolchains written by validation sandboxes.
 .test-sandbox/

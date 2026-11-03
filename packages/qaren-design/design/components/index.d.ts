@@ -1,6 +1,8 @@
-// Prop contract ported from the design system's index.d.ts.
+// QaReN design system components. Global: window.QaReN. Every component renders
+// class-based markup styled by components/bundle.css over tokens.css; wrap pages in
+// an element with class "qr-root" and data-theme="dark" or "light".
 
-import type { MouseEventHandler, ReactNode } from 'react';
+import type { ReactNode, MouseEventHandler } from 'react';
 
 export type Verdict = 'PASS' | 'FAIL';
 export type StepStatus = 'pending' | 'running' | 'passed' | 'failed';
@@ -190,19 +192,5 @@ export interface NavBarProps {
 export interface FooterProps {
   note?: ReactNode;
   links?: NavLink[];
-  className?: string;
-}
-
-/** One sidebar group of the docs layout: a mono label over its page links. */
-export interface DocsNavGroup {
-  label: string;
-  items: NavLink[];
-}
-/** The docs page: nav bar, a 256px sidebar, a 760px reading column and the footer, in the light theme. */
-export interface DocsLayoutProps {
-  nav: NavBarProps;
-  groups: DocsNavGroup[];
-  footer?: FooterProps;
-  children: ReactNode;
   className?: string;
 }

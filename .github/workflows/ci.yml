@@ -87,7 +87,7 @@ jobs:
         with:
           bun-version-file: apps/docs-site/package.json
 
-      - name: Design package typecheck, render tests and contrast floors
+      - name: Design package typecheck, render tests, contrast floors and mirror check
         run: corepack yarn workspace @qaren/design test
 
       - name: Docs app build

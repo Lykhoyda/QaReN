@@ -1,63 +1,69 @@
-// Refreshes tokens and styles from a saved copy of the design source's
-// project/ folder on local disk. It never reads the network. Usage:
-//   bun scripts/sync-design.ts <path to saved project/ folder>
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+// Replaces design/ with a saved copy of the Claude Design artifact's files, after proving the
+// copy equals the artifact's own file listing. It never reads the network. Usage:
+//   bun scripts/sync-design.ts <saved project/ folder> --inventory <inventory.json>
+// inventory.json: { "version": "<artifact version>", "files": { "<path under project/>": "<sha256>" } }
+import { cpSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { compare, listTree, type Lock } from './check-design-mirror';
 
-/** Everything from this line to the end of components.css is owned by the package and kept by sync. */
-export const PACKAGE_OWNED =
-  '/* ---------- docs layout (package-owned; sync-design keeps it) ---------- */';
+export const ARTIFACT_URL = 'https://claude.ai/artifact/9wASKvBDC7Lx4ooS66t7YD';
+export const ARTIFACT_SLUG = '485916a1-d5ad-44bf-9142-4869eeebc892';
 
-/** bundle.css without the font import: the document head loads the fonts, so the stylesheet makes no network request. */
-export function componentsCss(bundleCss: string, currentComponentsCss: string): string {
-  const css = bundleCss.replace(
-    /^@import url\(['"]?https:\/\/fonts\.googleapis\.com\/[^)]*\);\n+/m,
-    '',
-  );
-  if (/@import/.test(css))
-    throw new Error('bundle.css has an @import the sync does not know how to drop');
-  const owned = currentComponentsCss.indexOf(PACKAGE_OWNED);
-  if (owned < 0) throw new Error('components.css lost its package-owned docs layout section');
-  return `${css.trimEnd()}\n\n${currentComponentsCss.slice(owned)}`;
+export interface Inventory {
+  version: string;
+  files: Record<string, string>;
 }
 
-/** Copies the synced files from source into pkgDir and returns each file with whether it changed. */
-export function sync(source: string, pkgDir: string): { file: string; changed: boolean }[] {
-  const read = (path: string) => {
-    if (!existsSync(path))
-      throw new Error(`missing ${path}; pass the saved design source's project/ folder`);
-    return readFileSync(path, 'utf8');
-  };
-  JSON.parse(read(join(source, 'tokens.json')));
-  const next: Record<string, string> = {
-    'tokens.css': read(join(source, 'tokens.css')),
-    'tokens.json': read(join(source, 'tokens.json')),
-    'contrast.md': read(join(source, 'contrast.md')),
-    'components.css': componentsCss(
-      read(join(source, 'components/bundle.css')),
-      read(join(pkgDir, 'components.css')),
-    ),
-  };
-  return Object.entries(next).map(([file, text]) => {
-    const target = join(pkgDir, file);
-    const changed = !existsSync(target) || readFileSync(target, 'utf8') !== text;
-    if (changed) writeFileSync(target, text);
-    return { file, changed };
-  });
+/** Verifies folder against inventory, then replaces pkgDir/design and writes the lock. Throws before writing on any difference. */
+export function sync(folder: string, inventory: Inventory, pkgDir: string): Lock {
+  if (!inventory.version || !inventory.files || !Object.keys(inventory.files).length)
+    throw new Error('inventory needs a version and at least one file');
+  for (const path of Object.keys(inventory.files)) {
+    if (path.startsWith('/') || path.split('/').some((s) => s === '..' || s === '' || s === '.'))
+      throw new Error(`inventory path escapes the folder: ${path}`);
+  }
+  const problems = compare(inventory.files, listTree(folder));
+  if (problems.length)
+    throw new Error(`saved folder does not match the inventory:\n${problems.join('\n')}`);
+
+  // Stage and re-verify before swapping, so a failed copy never leaves a partial design/.
+  const design = join(pkgDir, 'design');
+  const staged = `${design}.next`;
+  rmSync(staged, { recursive: true, force: true });
+  for (const path of Object.keys(inventory.files)) {
+    mkdirSync(dirname(join(staged, path)), { recursive: true });
+    cpSync(join(folder, path), join(staged, path));
+  }
+  const copied = compare(inventory.files, listTree(staged));
+  if (copied.length) throw new Error(`copy into ${staged} failed:\n${copied.join('\n')}`);
+  rmSync(design, { recursive: true, force: true });
+  renameSync(staged, design);
+  const files = Object.fromEntries(
+    Object.entries(inventory.files).sort(([a], [b]) => (a < b ? -1 : 1)),
+  );
+  const lock: Lock = { url: ARTIFACT_URL, slug: ARTIFACT_SLUG, version: inventory.version, files };
+  writeFileSync(join(pkgDir, 'design-source.json'), `${JSON.stringify(lock, null, 2)}\n`);
+  return lock;
 }
 
 if (import.meta.main) {
-  const source = process.argv[2];
-  if (!source || /^[a-z]+:\/\//i.test(source)) {
+  const [folder, flag, inventoryPath] = process.argv.slice(2);
+  if (
+    !folder ||
+    flag !== '--inventory' ||
+    !inventoryPath ||
+    [folder, inventoryPath].some((a) => /^[a-z]+:\/\//i.test(a))
+  ) {
     console.error(
-      'usage: bun scripts/sync-design.ts <local path to the saved design source project/ folder>',
+      'usage: bun scripts/sync-design.ts <saved project/ folder> --inventory <inventory.json>',
     );
     process.exit(2);
   }
-  const results = sync(source, fileURLToPath(new URL('..', import.meta.url)));
-  for (const r of results) console.log(`${r.changed ? 'changed  ' : 'unchanged'} ${r.file}`);
+  const inventory: Inventory = JSON.parse(readFileSync(inventoryPath, 'utf8'));
+  const lock = sync(folder, inventory, fileURLToPath(new URL('..', import.meta.url)));
+  for (const [path, sha] of Object.entries(lock.files)) console.log(`${sha}  design/${path}`);
   console.log(
-    'Components are ported by hand: compare components/bundle.js and index.d.ts with src/, then run `bun run test` and review `git diff`.',
+    `design/ now mirrors ${lock.url} at version ${lock.version}; update the version in README.md, then commit design/ and design-source.json.`,
   );
 }

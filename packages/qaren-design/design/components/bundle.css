@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
 /* QaReN components. Every value comes from tokens.css; nothing here declares a colour. */
 
 :root, [data-theme="dark"] { color-scheme: dark; }
@@ -67,7 +69,9 @@
 .qr-btn--secondary:hover { background: var(--surface-2); }
 .qr-btn--ghost { background: transparent; color: var(--text); }
 .qr-btn--ghost:hover { background: var(--surface-2); }
-.qr-btn[disabled], .qr-btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
+.qr-btn[disabled], .qr-btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; pointer-events: auto; }
+.qr-btn--primary[aria-disabled="true"]:hover { filter: none; }
+.qr-btn--secondary[aria-disabled="true"]:hover, .qr-btn--ghost[aria-disabled="true"]:hover { background: transparent; }
 
 /* ---------- link ---------- */
 .qr-link {
@@ -390,30 +394,3 @@ a.qr-card:hover { border-color: var(--border-strong); }
 }
 
 .qr-table td .qr-code-inline { white-space: nowrap; }
-
-/* ---------- docs layout (package-owned; sync-design keeps it) ---------- */
-/* The DocsPage layout preview's inline styles, as classes. */
-.qr-docs__body {
-  display: grid;
-  grid-template-columns: 256px minmax(0, 1fr);
-  gap: 56px;
-  padding: 40px 40px 64px;
-}
-.qr-docs__group { margin-bottom: 28px; }
-.qr-docs__group-label { color: var(--muted); margin: 0 0 var(--space-2); }
-.qr-docs__list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
-.qr-docs__link {
-  display: block;
-  padding: 6px 10px;
-  border-radius: var(--radius-md);
-  font-size: 14px;
-  text-decoration: none;
-  color: var(--muted);
-}
-.qr-docs__link:hover { color: var(--text); }
-.qr-docs__link[aria-current="page"] { color: var(--text); background: var(--surface-2); font-weight: 600; }
-.qr-docs__main { max-width: 760px; min-width: 0; }
-
-@media (max-width: 860px) {
-  .qr-docs__body { grid-template-columns: minmax(0, 1fr); gap: var(--space-6); padding: var(--space-5); }
-}

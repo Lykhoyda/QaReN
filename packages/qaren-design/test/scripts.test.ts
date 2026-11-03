@@ -1,74 +1,157 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { failures, measure, ratio, resolve, type Tokens } from '../scripts/check-contrast';
-import { PACKAGE_OWNED, componentsCss, sync } from '../scripts/sync-design';
+import { fileURLToPath } from 'node:url';
+import * as React from 'react';
+import { adapterJs, bundleNames } from '../scripts/build-adapter';
+import { check, parseTable, ratio, resolve, type Tokens } from '../scripts/check-contrast';
+import { checkMirror } from '../scripts/check-design-mirror';
+import { sync, type Inventory } from '../scripts/sync-design';
 
-const tokens: Tokens = JSON.parse(readFileSync(new URL('../tokens.json', import.meta.url), 'utf8'));
+const design = new URL('../design/', import.meta.url);
+const tokens: Tokens = JSON.parse(readFileSync(new URL('tokens.json', design), 'utf8'));
+const contrast = readFileSync(new URL('contrast.md', design), 'utf8');
+const sha = (text: string) => createHash('sha256').update(text).digest('hex');
+const tmp = (name: string) => mkdtempSync(join(tmpdir(), `qr-${name}-`));
 
 describe('check-contrast', () => {
-  test('uses the WCAG 2 ratio', () => {
+  test('uses the WCAG 2 ratio and follows token references', () => {
     expect(ratio('#000000', '#ffffff')).toBeCloseTo(21, 5);
-    expect(ratio('#ffffff', '#ffffff')).toBe(1);
-  });
-
-  test('follows token references', () => {
     expect(resolve(tokens, 'focus', 'light')).toBe('#8a5a00');
   });
 
-  test('reports a pair that drops below its floor', () => {
+  test('the mirrored table agrees with the mirrored tokens', () => {
+    expect(parseTable(contrast)).toHaveLength(30);
+    expect(check(tokens, parseTable(contrast))).toEqual([]);
+  });
+
+  test('reports a printed ratio that disagrees with the tokens, and a pair under its floor', () => {
     const lowered: Tokens = structuredClone(tokens);
     lowered.color.tokens.find((t) => t.name === 'muted')!.value.light = '#c0c0c0';
-    expect(failures(measure(tokens))).toEqual([]);
-    expect(failures(measure(lowered))).toContain('muted on bg (light): 1.68:1 is below 4.5:1');
+    const problems = check(lowered, parseTable(contrast));
+    expect(problems).toContain('muted on bg (light): contrast.md says 5.72:1, tokens give 1.68:1');
+    expect(problems).toContain('muted on bg (light): 1.68:1 is below 4.5:1');
   });
 
   test('does not round a ratio up to its floor', () => {
-    const row = { fg: 'a', bg: 'b', where: '', floor: 4.5, ratios: { dark: 4.496, light: 5 } };
-    expect(failures([row])).toEqual(['a on b (dark): 4.50:1 is below 4.5:1']);
+    const both = (hex: string) => ({ dark: hex, light: hex });
+    const pair: Tokens = {
+      color: {
+        tokens: [
+          { name: 'a', value: both('#70768e') },
+          { name: 'b', value: both('#ffffff') },
+        ],
+      },
+    };
+    const row = { fg: 'a', bg: 'b', floor: 4.5, printed: both('4.50') };
+    expect(check(pair, [row])).toEqual([
+      'a on b (dark): 4.50:1 is below 4.5:1',
+      'a on b (light): 4.50:1 is below 4.5:1',
+    ]);
+  });
+
+  test('refuses a table row it cannot read', () => {
+    expect(() => parseTable('| `a` on `b` | x | 4.5:1 | lots | 1.00:1 (pass) |')).toThrow(
+      /not understood/,
+    );
   });
 });
 
-describe('sync-design', () => {
-  const bundle =
-    "@import url('https://fonts.googleapis.com/css2?family=Inter&display=swap');\n\n.qr-root { color: var(--text); }\n";
+describe('sync-design and check-design-mirror', () => {
+  const files = { 'tokens.css': ':root {}\n', 'components/bundle.js': '/* js */\n' };
+  const inventory = (version = 'v1'): Inventory => ({
+    version,
+    files: Object.fromEntries(Object.entries(files).map(([p, t]) => [p, sha(t)])),
+  });
+  const saved = () => {
+    const dir = tmp('saved');
+    mkdirSync(join(dir, 'components'));
+    for (const [p, t] of Object.entries(files)) writeFileSync(join(dir, p), t);
+    return dir;
+  };
+  const pkg = (version = 'v1') => {
+    const dir = tmp('pkg');
+    writeFileSync(join(dir, 'README.md'), `mirror at version ${version}\n`);
+    return dir;
+  };
 
-  test('drops the font import and keeps the package-owned section', () => {
-    const current = `.old {}\n\n${PACKAGE_OWNED}\n.qr-docs {}\n`;
-    expect(componentsCss(bundle, current)).toBe(
-      `.qr-root { color: var(--text); }\n\n${PACKAGE_OWNED}\n.qr-docs {}\n`,
+  test('replaces design/ and writes the lock from the inventory', () => {
+    const dir = pkg();
+    mkdirSync(join(dir, 'design'));
+    writeFileSync(join(dir, 'design/stale.md'), 'old\n');
+    const lock = sync(saved(), inventory(), dir);
+    expect(lock.version).toBe('v1');
+    expect(JSON.parse(readFileSync(join(dir, 'design-source.json'), 'utf8'))).toEqual(lock);
+    expect(readFileSync(join(dir, 'design/components/bundle.js'), 'utf8')).toBe('/* js */\n');
+    expect(checkMirror(dir)).toEqual([]);
+  });
+
+  test('refuses a folder that differs from the inventory, before touching design/', () => {
+    const folder = saved();
+    writeFileSync(join(folder, 'extra.md'), 'x\n');
+    const dir = pkg();
+    expect(() => sync(folder, inventory(), dir)).toThrow(/extra extra\.md/);
+    writeFileSync(join(folder, 'tokens.css'), ':root { --x: 1; }\n');
+    expect(() => sync(folder, inventory(), dir)).toThrow(/changed tokens\.css/);
+    expect(() => sync(tmp('empty'), inventory(), dir)).toThrow(/missing tokens\.css/);
+    expect(() => readFileSync(join(dir, 'design-source.json'))).toThrow();
+  });
+
+  test('refuses a symlink in the folder and a path escape in the inventory', () => {
+    const folder = saved();
+    symlinkSync(join(folder, 'tokens.css'), join(folder, 'link.css'));
+    expect(() => sync(folder, inventory(), pkg())).toThrow(/link\.css is not a regular file/);
+    const escape = inventory();
+    escape.files['../outside.css'] = sha('x');
+    expect(() => sync(saved(), escape, pkg())).toThrow(/escapes/);
+  });
+
+  test('the mirror check catches edits, extras, missing files and a stale README version', () => {
+    const dir = pkg();
+    sync(saved(), inventory(), dir);
+    writeFileSync(join(dir, 'design/tokens.css'), ':root { --edited: 1; }\n');
+    writeFileSync(join(dir, 'design/new.md'), 'x\n');
+    expect(checkMirror(dir)).toEqual(['extra new.md', 'changed tokens.css']);
+    writeFileSync(join(dir, 'README.md'), 'mirror at version v0\n');
+    expect(checkMirror(dir)).toContain('README.md does not name the locked version v1');
+  });
+});
+
+describe('build-adapter', () => {
+  const header =
+    '/* @ds-bundle: {"format":4,"namespace":"QaReN","components":[{"name":"Logo"},{"name":"Badge"}]} */\n';
+
+  test('reads component names from the bundle header', () => {
+    expect(bundleNames(`${header}(function () {})();\n`)).toEqual(['Logo', 'Badge']);
+    expect(() => bundleNames('(function () {})();\n')).toThrow(/@ds-bundle/);
+    expect(() => bundleNames('/* @ds-bundle: {"components":[{"name":"x;y"}]} */\n')).toThrow(
+      /unexpected/,
     );
   });
 
-  test('refuses other imports and a components.css without the owned section', () => {
-    expect(() => componentsCss("@import url('x.css');\n.a {}", PACKAGE_OWNED)).toThrow(/@import/);
-    expect(() => componentsCss(bundle, '.a {}')).toThrow(/package-owned/);
-  });
-
-  test('copies the saved files and reports what changed', () => {
-    const src = mkdtempSync(join(tmpdir(), 'qr-sync-src-'));
-    const pkg = mkdtempSync(join(tmpdir(), 'qr-sync-pkg-'));
-    mkdirSync(join(src, 'components'));
-    writeFileSync(join(src, 'tokens.css'), ':root {}\n');
-    writeFileSync(join(src, 'tokens.json'), '{}\n');
-    writeFileSync(join(src, 'contrast.md'), '# Contrast\n');
-    writeFileSync(join(src, 'components/bundle.css'), bundle);
-    writeFileSync(join(pkg, 'components.css'), `${PACKAGE_OWNED}\n`);
-    writeFileSync(join(pkg, 'tokens.css'), ':root {}\n');
-
-    expect(sync(src, pkg)).toEqual([
-      { file: 'tokens.css', changed: false },
-      { file: 'tokens.json', changed: true },
-      { file: 'contrast.md', changed: true },
-      { file: 'components.css', changed: true },
-    ]);
-    expect(sync(src, pkg).every((r) => !r.changed)).toBe(true);
-    expect(readFileSync(join(pkg, 'components.css'), 'utf8')).not.toContain('@import');
-  });
-
-  test('refuses a source folder without the saved files', () => {
-    const empty = mkdtempSync(join(tmpdir(), 'qr-sync-empty-'));
-    expect(() => sync(empty, empty)).toThrow(/missing/);
+  test('preserves bundle bytes, injects React and exports identities without changing the global window', async () => {
+    const bundle = `${header}(function () { window.QaReN = { Logo: window.React.createElement, Badge: window.React.useState }; })();\n`;
+    const js = adapterJs(bundle, bundleNames(bundle));
+    expect(js).toContain(bundle);
+    const dir = mkdtempSync(fileURLToPath(new URL('../.adapter-test-', import.meta.url)));
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    const browserWindow = { React: 'existing React', QaReN: 'existing QaReN' };
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: browserWindow });
+    try {
+      const modulePath = join(dir, 'index.js');
+      writeFileSync(modulePath, js);
+      const adapter = await import(modulePath);
+      expect(adapter.default).toEqual({ Logo: React.createElement, Badge: React.useState });
+      expect(adapter.Logo).toBe(React.createElement);
+      expect(adapter.Badge).toBe(React.useState);
+      expect<unknown>(globalThis.window).toBe(browserWindow);
+      expect(browserWindow).toEqual({ React: 'existing React', QaReN: 'existing QaReN' });
+    } finally {
+      if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow);
+      else Reflect.deleteProperty(globalThis, 'window');
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
