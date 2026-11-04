@@ -743,7 +743,7 @@ export function bindExactFillTarget(
   nodes: SnapshotNode[],
   rawRef: string,
   priorSignature?: RefSignature | null,
-  options?: { placeholderConfirmed: true },
+  options?: { placeholderCandidate: true },
 ): ExactBindOutcome {
   const clean = rawRef.replace(/^@/, '');
   const positional = /^e\d+$/.test(clean);
@@ -758,7 +758,7 @@ export function bindExactFillTarget(
       const inputs = nodes.filter((candidate) => isRecognizedInputType(candidate.type));
       const candidate = inputs[0];
       if (
-        options?.placeholderConfirmed &&
+        options?.placeholderCandidate &&
         priorSignature &&
         inputs.length === 1 &&
         cleanNodeRef(candidate) === clean &&
@@ -1442,7 +1442,7 @@ export async function performExactFill(
   ) {
     const nativeAcquisition = nativeCaptureCoverage(snap.acquisition ?? {});
     const candidate = bindExactFillTarget(snap.nodes, args.ref, priorSignature, {
-      placeholderConfirmed: true,
+      placeholderCandidate: true,
     });
     if (nativeAcquisition === 'complete' && candidate.ok) {
       try {

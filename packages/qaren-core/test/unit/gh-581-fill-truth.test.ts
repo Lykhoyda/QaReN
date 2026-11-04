@@ -1035,7 +1035,9 @@ function placeholderClient(tree: unknown = placeholderTree(), failure?: string) 
         if (failure) throw new Error(failure);
         return operation(async (expression) => {
           expressions.push(expression);
-          return { v: 1, id: '851', state: 'ready', tree: JSON.stringify(tree) };
+          return tree === 'render-error'
+            ? { v: 1, id: '851', state: 'refused', reason: 'render-error' }
+            : { v: 1, id: '851', state: 'ready', tree: JSON.stringify(tree) };
         });
       },
     },
@@ -1182,6 +1184,7 @@ for (const [name, tree, failure] of [
     { ...placeholderTree(), hostEvidence: { ...placeholderTree().hostEvidence, complete: false } },
   ],
   ['unreadable tree', undefined, `private read failed: ${placeholderKey}`],
+  ['render error', 'render-error'],
 ] as const) {
   test(`QA placeholder identity refuses ${name} without leaking the key`, async (t) => {
     const client = placeholderClient(tree, failure);
@@ -1267,3 +1270,35 @@ test('positional unnamed device_fill without the QA identity keeps its original 
     ['snapshot'],
   );
 });
+
+for (const [name, platform, useContext, useClient] of [
+  ['without QA context', 'ios', false, true],
+  ['on Android', 'android', true, true],
+  ['without a React client', 'ios', true, false],
+] as const) {
+  test(`placeholder identity cannot opt into confirmation ${name}`, async () => {
+    const client = placeholderClient();
+    const context = useContext ? new QaDispatchContext(10, () => 1) : undefined;
+    const observed = await withFillSeam({ platform, nodes: [unnamedInput] as never }, async () => {
+      try {
+        return await performExactFill(
+          { ref: '@e1', text: 'query', placeholderIdentity: placeholderKey, qaContext: context },
+          useClient ? (client.client as never) : null,
+          {},
+        );
+      } catch (error) {
+        return (error as Error).message;
+      }
+    });
+    if (context) {
+      assert.equal(observed.result, 'ACTION_CONTEXT_CHANGED');
+      assert.equal(context.authorizations, 0);
+    } else assert.match(envelope(observed.result as never).error, /no robust pre-refresh identity/);
+    assert.equal(client.reads, 0);
+    assert.deepEqual(
+      observed.calls.map((call) => call.cliArgs[0]),
+      ['snapshot'],
+    );
+    assert.equal(JSON.stringify(observed).includes(placeholderKey), false);
+  });
+}

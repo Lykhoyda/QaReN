@@ -372,7 +372,7 @@ for (const identifier of [undefined, '']) {
         nodes,
         '@e1',
         { ...prior, label: undefined },
-        { placeholderConfirmed: true },
+        { placeholderCandidate: true },
       ).ok,
       false,
     );
@@ -382,7 +382,7 @@ for (const identifier of [undefined, '']) {
 const unnamedRect = { x: 20, y: 100, width: 300, height: 44 };
 const unnamed = { ref: '@e1', type: 'TextField', rect: unnamedRect };
 const unnamedPrior = { type: 'TextField', rect: unnamedRect };
-const confirmed = { placeholderConfirmed: true } as const;
+const confirmed = { placeholderCandidate: true } as const;
 
 test('live-confirmed placeholder binds only the sole unchanged unnamed native input', () => {
   const result = bindExactFillTarget([unnamed], '@e1', unnamedPrior, confirmed);
