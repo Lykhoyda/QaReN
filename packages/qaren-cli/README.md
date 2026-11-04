@@ -3948,12 +3948,15 @@ withholds the copy. The receipt's `video_window` outcome records `start=<ms>; en
 both measured from admission, for a successfully prepared copy when both offsets
 can be calculated without overflow or underflow.
 
-After preparing an eligible published copy, QaReN checks for frozen video intervals
-of at least two seconds. If an interval spans two or more plan lines whose saved
-screenshots have different decoded pixels, the receipt adds
+After preparing an eligible published iOS copy, QaReN checks for frozen video intervals
+of at least two seconds. If an interval spans two or more plan rows whose saved
+screenshots differ beyond the same pixel-noise tolerance as the video, the receipt adds
 `video_continuity: suspected-stall <ms> over lines a–b` and the publication comment
 notes that those screenshots carry the evidence. Frozen times are mapped through
-the publication trim offset to the rows' wall times. This is a suspected recorder
+the publication trim offset to the rows' wall times, excluding the recorder-start
+uncertainty at interval edges. Screenshot pixels are compared at the published
+video's size and pixel format; login and recovery-block rows are excluded.
+This is a suspected recorder
 discontinuity, not proof of its cause; the video is kept and publication and privacy
 rules still apply. Withheld screenshots or a failed detector produce no note;
 absence of a note does not prove continuity.

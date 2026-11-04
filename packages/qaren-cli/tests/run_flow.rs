@@ -9162,15 +9162,16 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
                         ..CmdOutput::success("")
                     },
                 );
-                for value in ['a', 'b'] {
-                    mock.expect_run(
-                        "framehash",
-                        CmdOutput::success(&format!(
-                            "#dimensions 0: 16x16\n0, 0, 0, 1, 1024, {}\n",
-                            value.to_string().repeat(64)
-                        )),
-                    );
-                }
+                mock.expect_run("ffprobe", CmdOutput::success("16x16"));
+                mock.expect_run(
+                    "filter_complex",
+                    CmdOutput {
+                        stderr:
+                            "lavfi.freezedetect.freeze_start: 0\nlavfi.freezedetect.freeze_end: 1\n"
+                                .into(),
+                        ..CmdOutput::success("frame=2\nprogress=end\n")
+                    },
+                );
             }
         } else {
             mock.expect_run("ffmpeg", CmdOutput::failed(1, "encode failed"));

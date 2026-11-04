@@ -2,8 +2,9 @@ use super::{probe_duration_ms, published_video_path, VideoPublication, FFMPEG_SE
 use crate::core::Ledger;
 use crate::exec::{CmdSpec, Runner};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
+
+const FREEZE_NOISE: &str = "-60dB";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -79,50 +80,90 @@ fn screenshot_path(run_dir: &Path, relative: &str) -> Option<PathBuf> {
     (shot.starts_with(root) && shot.is_file()).then_some(shot)
 }
 
-fn pixel_hash(runner: &mut dyn Runner, shot: &Path) -> Option<String> {
+fn video_dimensions(runner: &mut dyn Runner, video: &Path) -> Option<(u32, u32)> {
+    let output = runner.run(&CmdSpec::new(
+        "ffprobe-video-dimensions",
+        "ffprobe",
+        &[
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=s=x:p=0",
+            &video.to_string_lossy(),
+        ],
+        30,
+    ));
+    let (width, height) = output
+        .ok()
+        .then(|| output.stdout.trim().split_once('x'))??;
+    let dimensions = (width.parse().ok()?, height.parse().ok()?);
+    (dimensions.0 > 0 && dimensions.1 > 0).then_some(dimensions)
+}
+
+fn pixels_differ(
+    runner: &mut dyn Runner,
+    first: &Path,
+    second: &Path,
+    dimensions: (u32, u32),
+) -> Option<bool> {
+    let (width, height) = dimensions;
+    // Two still frames one second apart reuse the video's freeze threshold.
+    let filter = format!(
+        "[0:v]scale={width}:{height},format=yuv420p,setsar=1[a];[1:v]scale={width}:{height},format=yuv420p,setsar=1[b];[a][b]concat=n=2:v=1:a=0,setpts=N/TB,freezedetect=noise={FREEZE_NOISE}:duration=0.5[out]"
+    );
     let output = runner.run(&CmdSpec::new(
         "ffmpeg-screenshot-pixels",
         "ffmpeg",
         &[
+            "-hide_banner",
+            "-nostats",
             "-v",
-            "error",
+            "info",
             "-i",
-            &shot.to_string_lossy(),
+            &first.to_string_lossy(),
+            "-i",
+            &second.to_string_lossy(),
+            "-filter_complex",
+            &filter,
             "-map",
-            "0:v:0",
+            "[out]",
+            "-fps_mode",
+            "passthrough",
             "-frames:v",
-            "1",
-            "-pix_fmt",
-            "rgba",
+            "2",
+            "-an",
+            "-progress",
+            "pipe:1",
             "-f",
-            "framehash",
-            "-hash",
-            "sha256",
+            "null",
             "-",
         ],
         30,
     ));
-    if !output.ok() {
-        return None;
-    }
-    let dimensions = output
-        .stdout
-        .lines()
-        .find(|s| s.starts_with("#dimensions 0: "))?;
-    let mut frames = output
-        .stdout
-        .lines()
-        .filter(|s| !s.starts_with('#') && !s.trim().is_empty());
-    let fields: Vec<_> = frames.next()?.split(',').map(str::trim).collect();
-    if frames.next().is_some()
-        || fields.len() != 6
-        || fields[0] != "0"
-        || fields[5].len() != 64
-        || !fields[5].bytes().all(|b| b.is_ascii_hexdigit())
+    if !output.ok()
+        || output
+            .stdout
+            .lines()
+            .filter_map(|line| line.strip_prefix("frame="))
+            .next_back()?
+            != "2"
+        || output.stdout.lines().last()? != "progress=end"
     {
         return None;
     }
-    Some(format!("{dimensions}:{}", fields[5]))
+    match frozen_intervals(&output.stderr, 2000)?.as_slice() {
+        [(0, 1000)] => Some(true),
+        [(0, 2000)] => Some(false),
+        _ => None,
+    }
+}
+
+fn plan_screenshot(row: &crate::core::Row, ledger: &Ledger) -> bool {
+    row.line > 0 && row.screenshot.is_some() && ledger.blocks.iter().any(|b| b.key == row.block)
 }
 
 pub fn detect_continuity(
@@ -130,6 +171,7 @@ pub fn detect_continuity(
     run_dir: &Path,
     ledger: &Ledger,
     recording_from_ms: u64,
+    recording_ready_ms: u64,
     publication_offset_ms: u64,
     row_origin_ms: u64,
 ) -> Vec<VideoStall> {
@@ -149,11 +191,8 @@ pub fn detect_continuity(
     let mut shots = ledger
         .steps
         .iter()
-        .filter(|r| r.line > 0 && r.screenshot.is_some());
-    let Some(first) = shots.next() else {
-        return Vec::new();
-    };
-    if !shots.any(|row| row.line != first.line) {
+        .filter(|row| plan_screenshot(row, ledger));
+    if shots.next().is_none() || shots.next().is_none() {
         return Vec::new();
     }
     detect(
@@ -161,6 +200,7 @@ pub fn detect_continuity(
         run_dir,
         ledger,
         recording_from_ms,
+        recording_ready_ms,
         publication_offset_ms,
         row_origin_ms,
     )
@@ -172,9 +212,13 @@ fn detect(
     run_dir: &Path,
     ledger: &Ledger,
     recording_from_ms: u64,
+    recording_ready_ms: u64,
     publication_offset_ms: u64,
     row_origin_ms: u64,
 ) -> Option<Vec<VideoStall>> {
+    if recording_ready_ms < recording_from_ms {
+        return None;
+    }
     let video = published_video_path(run_dir);
     let duration = probe_duration_ms(runner, &video)?;
     let output = runner.run(&CmdSpec::new(
@@ -188,7 +232,7 @@ fn detect(
             "-i",
             &video.to_string_lossy(),
             "-vf",
-            "freezedetect=noise=-60dB:duration=2",
+            &format!("freezedetect=noise={FREEZE_NOISE}:duration=2"),
             "-an",
             "-f",
             "null",
@@ -201,45 +245,48 @@ fn detect(
     }
     let intervals = frozen_intervals(&output.stderr, duration)?;
     let publication_from = recording_from_ms.checked_add(publication_offset_ms)?;
-    let mut hashes = BTreeMap::new();
+    let publication_ready = recording_ready_ms.checked_add(publication_offset_ms)?;
+    let mut dimensions = None;
     let mut stalls = Vec::new();
     for (start, end) in intervals {
-        let start_wall = publication_from.checked_add(start)?;
+        // Require containment for every recorder start between spawn and readiness.
+        let start_wall = publication_ready.checked_add(start)?;
         let end_wall = publication_from.checked_add(end)?;
         let rows: Vec<_> = ledger
             .steps
             .iter()
             .filter(|row| {
-                row.line > 0
-                    && row.screenshot.is_some()
+                plan_screenshot(row, ledger)
                     && row_origin_ms
                         .checked_add(row.t)
                         .is_some_and(|at| at >= start_wall && at < end_wall)
             })
             .collect();
-        if !rows
-            .iter()
-            .any(|r| rows.iter().any(|other| r.line != other.line))
-        {
+        if rows.len() < 2 {
             continue;
         }
-        let mut pixels = Vec::new();
-        for row in rows {
-            let shot = screenshot_path(run_dir, row.screenshot.as_deref()?)?;
-            if !hashes.contains_key(&shot) {
-                hashes.insert(shot.clone(), pixel_hash(runner, &shot)?);
+        let size = match dimensions {
+            Some(size) => size,
+            None => {
+                let size = video_dimensions(runner, &video)?;
+                dimensions = Some(size);
+                size
             }
-            pixels.push((row.line, hashes.get(&shot)?.clone()));
+        };
+        let first = screenshot_path(run_dir, rows[0].screenshot.as_deref()?)?;
+        let mut different = false;
+        for row in &rows[1..] {
+            let shot = screenshot_path(run_dir, row.screenshot.as_deref()?)?;
+            if shot != first && pixels_differ(runner, &first, &shot, size)? {
+                different = true;
+                break;
+            }
         }
-        if pixels.iter().any(|(line, hash)| {
-            pixels
-                .iter()
-                .any(|(other, value)| line != other && hash != value)
-        }) {
+        if different {
             stalls.push(VideoStall {
                 duration_ms: end - start,
-                first_line: pixels.iter().map(|(line, _)| *line).min()?,
-                last_line: pixels.iter().map(|(line, _)| *line).max()?,
+                first_line: rows.iter().map(|row| row.line).min()?,
+                last_line: rows.iter().map(|row| row.line).max()?,
             });
         }
     }
@@ -260,7 +307,7 @@ mod tests {
             std::fs::write(dir.join(format!("screenshots/{name}.png")), "fixture").unwrap();
         }
         let ledger = serde_json::from_value(serde_json::json!({
-            "verdict":"PASS", "path":"walk", "videoPublication":"eligible", "blocks":[],
+            "verdict":"PASS", "path":"walk", "videoPublication":"eligible", "blocks":[{"key":"plan","outcome":"pass","source":"discovered"}],
             "steps":[
                 {"block":"plan","line":7,"attempt":1,"kind":"step","resolvedBy":"exact",
                  "t":6500,"outcome":"pass","screenshot":"screenshots/a.png"},
@@ -273,11 +320,19 @@ mod tests {
         (dir, ledger)
     }
 
-    fn hash(value: char) -> CmdOutput {
-        CmdOutput::success(&format!(
-            "#dimensions 0: 16x16\n0, 0, 0, 1, 1024, {}\n",
-            value.to_string().repeat(64)
-        ))
+    fn comparison(runner: &mut MockRunner, different: bool) {
+        runner.expect_run("ffprobe", CmdOutput::success("16x16"));
+        runner.expect_run(
+            "filter_complex",
+            CmdOutput {
+                stderr: if different {
+                    "lavfi.freezedetect.freeze_start: 0\nlavfi.freezedetect.freeze_end: 1\n".into()
+                } else {
+                    "lavfi.freezedetect.freeze_start: 0\n".into()
+                },
+                ..CmdOutput::success("frame=2\nprogress=end\n")
+            },
+        );
     }
 
     fn detector(log: &str) -> MockRunner {
@@ -297,9 +352,9 @@ mod tests {
     fn differing_pixels_during_a_freeze_produce_a_numeric_receipt_and_sentence() {
         let (dir, ledger) = fixture();
         let mut runner = detector(FREEZE);
-        runner.expect_run("framehash", hash('a'));
-        runner.expect_run("framehash", hash('b'));
-        let stalls = detect_continuity(&mut runner, &dir, &ledger, 100_000, 5_000, 101_000);
+        comparison(&mut runner, true);
+        let stalls =
+            detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000);
         assert_eq!(
             stalls,
             vec![VideoStall {
@@ -321,9 +376,11 @@ mod tests {
     fn matching_pixels_do_not_imply_a_recorder_stall() {
         let (dir, ledger) = fixture();
         let mut runner = detector(FREEZE);
-        runner.expect_run("framehash", hash('a'));
-        runner.expect_run("framehash", hash('a'));
-        assert!(detect_continuity(&mut runner, &dir, &ledger, 100_000, 5_000, 101_000).is_empty());
+        comparison(&mut runner, false);
+        assert!(
+            detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000)
+                .is_empty()
+        );
         assert_eq!(runner.remaining(), 0);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -333,11 +390,43 @@ mod tests {
         let (dir, ledger) = fixture();
         for (recording, offset, origin) in [(100_000, 15_000, 101_000), (100_000, 5_000, 120_000)] {
             let mut runner = detector(FREEZE);
-            assert!(
-                detect_continuity(&mut runner, &dir, &ledger, recording, offset, origin).is_empty()
-            );
+            assert!(detect_continuity(
+                &mut runner,
+                &dir,
+                &ledger,
+                recording,
+                recording,
+                offset,
+                origin
+            )
+            .is_empty());
             assert_eq!(runner.remaining(), 0);
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn startup_uncertainty_excludes_a_previous_step_at_the_freeze_edge() {
+        let (dir, ledger) = fixture();
+        let mut runner = detector(FREEZE);
+        assert!(
+            detect_continuity(&mut runner, &dir, &ledger, 100_000, 101_000, 5_000, 101_000)
+                .is_empty()
+        );
+        assert_eq!(runner.remaining(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn changing_retry_screenshots_on_one_plan_line_are_still_evidence() {
+        let (dir, mut ledger) = fixture();
+        ledger.steps[1].line = 7;
+        ledger.steps[1].attempt = 2;
+        let mut runner = detector(FREEZE);
+        comparison(&mut runner, true);
+        let stalls =
+            detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000);
+        assert_eq!(stalls[0].receipt(), "suspected-stall 8000 over lines 7–7");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -349,10 +438,10 @@ mod tests {
         );
         let (dir, ledger) = fixture();
         let mut runner = detector("lavfi.freezedetect.freeze_start: 2.5\n");
-        runner.expect_run("framehash", hash('a'));
-        runner.expect_run("framehash", hash('b'));
+        comparison(&mut runner, true);
         assert_eq!(
-            detect_continuity(&mut runner, &dir, &ledger, 100_000, 5_000, 101_000)[0].duration_ms,
+            detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000)[0]
+                .duration_ms,
             9500
         );
         std::fs::remove_dir_all(dir).unwrap();
@@ -375,19 +464,30 @@ mod tests {
             let mut runner = MockRunner::new();
             runner.expect_run("ffprobe", CmdOutput::success("12.0"));
             runner.expect_run("freezedetect", output);
-            assert!(
-                detect_continuity(&mut runner, &dir, &ledger, 100_000, 5_000, 101_000).is_empty()
-            );
+            assert!(detect_continuity(
+                &mut runner,
+                &dir,
+                &ledger,
+                100_000,
+                100_000,
+                5_000,
+                101_000
+            )
+            .is_empty());
             assert_eq!(runner.remaining(), 0);
         }
         let mut runner = detector(FREEZE);
-        runner.expect_run("framehash", CmdOutput::failed(1, "invalid image"));
-        assert!(detect_continuity(&mut runner, &dir, &ledger, 100_000, 5_000, 101_000).is_empty());
+        runner.expect_run("ffprobe", CmdOutput::success("16x16"));
+        runner.expect_run("filter_complex", CmdOutput::failed(1, "invalid image"));
+        assert!(
+            detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000)
+                .is_empty()
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    fn withheld_screenshots_or_video_and_single_line_retries_are_not_examined() {
+    fn withheld_screenshots_or_video_and_missing_shots_are_not_examined() {
         let (dir, ledger) = fixture();
         for variant in 0..4 {
             let mut ledger = ledger.clone();
@@ -397,16 +497,26 @@ mod tests {
                         Some(crate::core::WithholdCause::RuntimeInput)
                 }
                 1 => ledger.video_publication = Some(VideoPublication::WithheldPrivacy),
-                2 => ledger.steps[1].line = 7,
+                2 => {
+                    ledger.steps[0].block = "login".into();
+                    ledger.steps[1].block = "login".into();
+                }
                 _ => ledger
                     .steps
                     .iter_mut()
                     .for_each(|row| row.screenshot = None),
             }
             let mut runner = MockRunner::new();
-            assert!(
-                detect_continuity(&mut runner, &dir, &ledger, 100_000, 5_000, 101_000).is_empty()
-            );
+            assert!(detect_continuity(
+                &mut runner,
+                &dir,
+                &ledger,
+                100_000,
+                100_000,
+                5_000,
+                101_000
+            )
+            .is_empty());
             assert!(runner.calls.is_empty());
         }
         std::fs::remove_dir_all(dir).unwrap();
@@ -453,7 +563,7 @@ mod tests {
                 "-f",
                 "lavfi",
                 "-i",
-                "color=black:s=16x16:r=30:d=12",
+                "color=black:s=640x480:r=30:d=12",
                 "-c:v",
                 "libx264",
             ],
@@ -466,7 +576,7 @@ mod tests {
                 "-f",
                 "lavfi",
                 "-i",
-                "color=black:s=16x16",
+                "color=black:s=640x480",
                 "-frames:v",
                 "1",
                 "-compression_level",
@@ -475,11 +585,19 @@ mod tests {
             &first,
         );
         generate(
-            &["-f", "lavfi", "-i", "color=white:s=16x16", "-frames:v", "1"],
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "color=white:s=640x480",
+                "-frames:v",
+                "1",
+            ],
             &second,
         );
         let mut runner = crate::exec::RealRunner::new();
-        let stalls = detect_continuity(&mut runner, &dir, &ledger, 100_000, 5_000, 101_000);
+        let stalls =
+            detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000);
         assert_eq!(
             stalls,
             vec![VideoStall {
@@ -493,7 +611,7 @@ mod tests {
                 "-f",
                 "lavfi",
                 "-i",
-                "color=black:s=16x16",
+                "color=black:s=640x480",
                 "-frames:v",
                 "1",
                 "-compression_level",
@@ -505,7 +623,26 @@ mod tests {
             std::fs::read(first).unwrap(),
             std::fs::read(second).unwrap()
         );
-        assert!(detect_continuity(&mut runner, &dir, &ledger, 100_000, 5_000, 101_000).is_empty());
+        assert!(
+            detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000)
+                .is_empty()
+        );
+        generate(&["-f", "lavfi", "-i", "color=black:s=640x480:r=30:d=12,drawbox=x=0:y=0:w=2:h=2:color=white:t=fill:enable='gte(t,4)'", "-c:v", "libx264"], &published_video_path(&dir));
+        generate(
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "color=black:s=640x480,drawbox=x=0:y=0:w=2:h=2:color=white:t=fill",
+                "-frames:v",
+                "1",
+            ],
+            &dir.join("screenshots/b.png"),
+        );
+        assert!(
+            detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000)
+                .is_empty()
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

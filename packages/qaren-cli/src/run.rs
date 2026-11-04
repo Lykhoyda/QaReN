@@ -1033,6 +1033,7 @@ fn run_inner(
         } else {
             events::stage("recording", StageState::Skipped, None, None);
         }
+        let recording_ready = ctx.runner.now_epoch_ms();
         if req.platform == Platform::Ios && resolved_inputs.has_inputs() {
             ctx.notes.push((
                 "platform_log".to_string(),
@@ -1456,12 +1457,13 @@ fn run_inner(
                     outcome.ledger.publication_interrupted,
                 );
                 if video == VideoStatus::Available {
-                    if let Some(offset) = offset {
+                    if let Some(offset) = offset.filter(|_| req.platform == Platform::Ios) {
                         video_continuity = record::detect_continuity(
                             ctx.runner,
                             &run_dir,
                             &outcome.ledger,
                             recording_from,
+                            recording_ready,
                             offset,
                             core_request.t0,
                         );
