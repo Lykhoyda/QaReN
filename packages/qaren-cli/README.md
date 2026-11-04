@@ -3949,13 +3949,17 @@ both measured from admission, for a successfully prepared copy when both offsets
 can be calculated without overflow or underflow.
 
 After preparing an eligible published iOS copy, QaReN checks for frozen video intervals
-of at least two seconds. If an interval spans two or more plan rows whose saved
+of at least two seconds. If an interval contains two or more eligible plan rows whose saved
 screenshots differ beyond the same pixel-noise tolerance as the video, the receipt adds
 `video_continuity: suspected-stall <ms> over lines a–b` and the publication comment
 notes that those screenshots carry the evidence. Frozen times are mapped through
 the publication trim offset to the rows' wall times, excluding the recorder-start
 uncertainty at interval edges. Screenshot pixels are compared at the published
-video's size and pixel format; only rows from the plan's recorded blocks are compared.
+video's size and pixel format; only passing or failing rows from the plan's recorded
+blocks are compared. Each row must have timing that bounds screenshot acquisition
+entirely inside the interval, from row completion minus total row duration through
+row completion. Rows without that proof and recovery retry rows with reused
+screenshots are omitted.
 This is a suspected recorder discontinuity, not proof of its cause; the video is
 kept and publication and privacy rules still apply. Withheld screenshots or a failed detector produce no note;
 absence of a note does not prove continuity.
