@@ -285,7 +285,10 @@ test('separately emitted unnamed TextInput layers fill their single attested inp
 
 test('separate nested inputs sharing a placeholder still refuse, including a React-only competitor', async () => {
   const react = await observe([unnamedInput(), unnamedInput()]);
-  assert.deepEqual(react.hostEvidence?.hosts.map((host) => host.capabilities.fill), [true, true]);
+  assert.deepEqual(
+    react.hostEvidence?.hosts.map((host) => host.capabilities.fill),
+    [true, true],
+  );
   for (const nodes of [
     [unnamedNativeInput],
     [unnamedNativeInput, { ...unnamedNativeInput, ref: '@other' }],
