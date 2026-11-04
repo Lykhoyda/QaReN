@@ -3955,10 +3955,9 @@ screenshots differ beyond the same pixel-noise tolerance as the video, the recei
 notes that those screenshots carry the evidence. Frozen times are mapped through
 the publication trim offset to the rows' wall times, excluding the recorder-start
 uncertainty at interval edges. Screenshot pixels are compared at the published
-video's size and pixel format; login and recovery-block rows are excluded.
-This is a suspected recorder
-discontinuity, not proof of its cause; the video is kept and publication and privacy
-rules still apply. Withheld screenshots or a failed detector produce no note;
+video's size and pixel format; only rows from the plan's recorded blocks are compared.
+This is a suspected recorder discontinuity, not proof of its cause; the video is
+kept and publication and privacy rules still apply. Withheld screenshots or a failed detector produce no note;
 absence of a note does not prove continuity.
 
 A successful saved login replay before any plan step passes moves the uploaded
