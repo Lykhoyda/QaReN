@@ -767,6 +767,24 @@ extension QarenIosRunnerTests {
     return check
   }
 
+  func readHitProbe(app: XCUIApplication, command: Command) -> String {
+    let savedTarget = lastLiveTarget
+    let savedFrames = lastMovedFrames
+    let savedUnavailable = lastLiveCheckUnavailable
+    defer {
+      lastLiveTarget = savedTarget
+      lastMovedFrames = savedFrames
+      lastLiveCheckUnavailable = savedUnavailable
+    }
+    let check = liveTargetCheck(app: app, command: command, deadline: ProcessInfo.processInfo.systemUptime + 0.3)
+    switch check {
+    case .hittable(true): return "hittable"
+    case .hittable(false): return "not-hittable"
+    case .moved: return "moved"
+    case .unavailable: return "unavailable"
+    }
+  }
+
   func movedDispatchResponse() -> Response {
     let message = lastMovedFrames.map {
       DispatchGuard.movedMessage(

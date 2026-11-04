@@ -1,7 +1,7 @@
 {
   "name": "qaren",
   "version": "2.0.8",
-  "description": "QaReN: a QA companion for React Native harnesses — walks a plan on the simulator or emulator, records the run, and reports PASS/FAIL with video.",
+  "description": "A QA engineer for your coding agent. It tests each React Native change on a simulator and tells you PASS or FAIL, with video proof.",
   "author": {
     "name": "Anton Lykhoyda",
     "url": "https://github.com/Lykhoyda"
@@ -23,7 +23,7 @@
   "interface": {
     "displayName": "QaReN",
     "shortDescription": "QA a React Native app on a device with evidence",
-    "longDescription": "Run the qaren CLI from Codex to QA a pull request or the working tree on an iOS simulator or Android emulator and read the receipt back.",
+    "longDescription": "A QA engineer for your coding agent. It tests each React Native change on a simulator and tells you PASS or FAIL, with video proof. Run the qaren CLI from Codex on an iOS simulator or Android emulator and read the receipt back; guided setup covers iOS.",
     "developerName": "Anton Lykhoyda",
     "category": "Developer Tools",
     "capabilities": [

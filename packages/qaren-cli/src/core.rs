@@ -465,6 +465,131 @@ pub struct Row {
         deserialize_with = "passive"
     )]
     pub dev_error: Option<DevErrorDismissal>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "overlay_checks"
+    )]
+    pub overlay_checks: Option<Vec<OverlayHitReceipt>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub scroll_band: Option<ScrollBandReceipt>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OverlayHitReceipt {
+    pub observation: u64,
+    pub live_hit: HitProbeResult,
+    pub predicate: OverlayCoverage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum HitProbeResult {
+    Hittable,
+    NotHittable,
+    Moved,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OverlayCoverage {
+    pub frame_present: bool,
+    pub viewport_present: Option<bool>,
+    pub viewport_outside: Option<bool>,
+    pub keyboard_visible: Option<bool>,
+    pub keyboard_frame_present: Option<bool>,
+    pub keyboard_coverage: Option<bool>,
+    pub centre_inside_keyboard: Option<bool>,
+    pub branch: OverlayBranch,
+    pub cutter: Option<BandCut>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum OverlayBranch {
+    Overlay,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BandCut {
+    #[serde(rename = "ref", deserialize_with = "native_capture_ref")]
+    pub reference: String,
+    pub kind: CarrierKind,
+    pub frame: DialogRect,
+    pub edge: BandEdge,
+    pub before: BandEdges,
+    pub after: BandEdges,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum CarrierKind {
+    Button,
+    Input,
+    Switch,
+    Link,
+    Cell,
+    Text,
+    Image,
+    Other,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum BandEdge {
+    Top,
+    Bottom,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct BandEdges {
+    pub top: f64,
+    pub bottom: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ScrollBandReceipt {
+    pub status: ScrollBandStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub band: Option<DialogRect>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ScrollBandStatus {
+    NoGeometry,
+    OverlayCut,
+    Clear,
+}
+
+fn native_capture_ref<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    let value = String::deserialize(deserializer)?;
+    if value.len() <= 20
+        && value.strip_prefix("@e").is_some_and(|suffix| {
+            !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
+        })
+    {
+        Ok(value)
+    } else {
+        Err(serde::de::Error::custom("invalid native capture reference"))
+    }
+}
+
+fn overlay_checks<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<OverlayHitReceipt>>, D::Error> {
+    Ok(passive(deserializer)?.filter(|checks: &Vec<OverlayHitReceipt>| checks.len() <= 64))
 }
 
 // A plain scroll that passed although every dispatched attempt left the screen unchanged; never an end-of-content proof.

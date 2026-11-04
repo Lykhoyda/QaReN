@@ -538,9 +538,10 @@ export function buildRunIOSArgs(
       const delayRaw = optionValue(flagArgs, '--delay-ms');
       const delayMs =
         delayRaw !== undefined && !Number.isNaN(Number(delayRaw)) ? Number(delayRaw) : undefined;
-      const extra: { delayMs?: number; clearFirst?: boolean } = {};
+      const extra: { delayMs?: number; clearFirst?: boolean; requireLiveHit?: true } = {};
       if (delayMs !== undefined) extra.delayMs = delayMs;
       if (flagArgs.includes('--clear-first')) extra.clearFirst = true;
+      if (flagArgs.includes(REQUIRE_LIVE_HIT_FLAG)) extra.requireLiveHit = true;
       // Story 04 (#385) M2 guard: an explicit --at-x/--at-y pin bypasses @ref
       // re-resolution entirely so a settle's ref-map refresh can't retarget.
       const atX = optionValue(flagArgs, '--at-x');
