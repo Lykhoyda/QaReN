@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest a new capability or a change to how QaReN behaves.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: The behaviour you want, described from the user's side.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: Workarounds or other approaches you considered.
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: Your app setup, agent host, or examples that help explain the request.

@@ -220,10 +220,9 @@ The 1.x source stays on the
 
 ## Development
 
-See the [CLI build instructions](packages/qaren-cli/README.md#build) and the
-[repository guide](AGENTS.md) for package ownership, validation commands and changesets.
-Report bugs in [GitHub Issues](https://github.com/Lykhoyda/QaReN/issues) or with
-`/qaren:feedback`; see [SECURITY.md](SECURITY.md) for vulnerabilities.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for reporting issues, setting up a checkout,
+checking changes and opening a pull request. The [repository guide](AGENTS.md) covers
+package ownership; see [SECURITY.md](SECURITY.md) for vulnerabilities.
 
 QaReN is released under the [MIT License](LICENSE).
 
