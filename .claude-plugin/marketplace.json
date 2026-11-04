@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "qaren",
-  "description": "A QA engineer for your coding agent.",
+  "description": "A QA engineer for your coding agent. It tests each React Native change on a simulator and tells you PASS or FAIL, with video proof.",
   "owner": {
     "name": "Anton Lykhoyda"
   },
