@@ -637,12 +637,12 @@ Plans contain a `## QA` section, named `###` blocks, numbered actions and
 [parser](../qaren-core/src/qa/plan.ts) for accepted grammar. Quoted press and fill
 targets resolve observed labels or test IDs locally. A Fill also accepts an input's
 React placeholder; an empty native input without an ID or label receives that name
-only in a complete capture where it is the sole native input and the sole React
-input candidate is unused, visible to React, has no test ID and is not a composite
-wrapper. Competing inputs, including offscreen and React-only inputs, leave it
-unnamed. Distinct matches are
-counted before kind, disabled, hittability, offscreen or React-only filters, so two
-or more refuse with `TARGET_AMBIGUOUS`, without a Jev tie-break, even if the
+only when both native and React captures are complete, it is the sole native input,
+and the sole React input candidate is unused, visible to React, has no test ID and
+is not a composite wrapper. Competing inputs, including offscreen and React-only inputs, leave it
+unnamed. Distinct matches are counted before kind, disabled, hittability, offscreen
+or React-only filters, so two or more refuse with `TARGET_AMBIGUOUS`, without a Jev
+tie-break, even if the
 target adds positional words such as `Tap "Save" at the bottom`. Outside fills,
 a React-only element whose testID equals the quoted value is not counted while a
 native element carries that testID, so a quoted press, wait or scroll reaches
