@@ -811,6 +811,7 @@ export function join(
     height = Math.max(height, n.rect.y + n.rect.height);
   }
   const used = new Set<number>();
+  const unnamedInputs: Element[] = [];
   // Unnamed role-only entries and custom wrappers do not count as independent controls.
   let semanticUnassociatedReact = digest.filter(
     (d) => !d.hidden && !((d.handlerless || d.compositeWrapper) && !d.testID),
@@ -982,6 +983,14 @@ export function join(
     if (value !== undefined) element.value = value;
     const placeholder = nonEmpty(match?.placeholder);
     if (placeholder) element.placeholder = placeholder;
+    if (
+      nativeKind === 'input' &&
+      !testID &&
+      !label &&
+      (n.value === undefined || n.value === '') &&
+      !match
+    )
+      unnamedInputs.push(element);
     if (n.rect) {
       element.where = thirds(n.rect.y + n.rect.height / 2, height, [
         'top',
@@ -1014,6 +1023,18 @@ export function join(
     localCapabilities.set(element, local);
     return element;
   });
+  const nativeInputs = elements.filter((e) => e.kind === 'input');
+  const digestInputs = digest.flatMap((d, i) =>
+    inputRole(d.role) || d.capabilities?.fill === true ? [i] : [],
+  );
+  if (nativeInputs.length === 1 && unnamedInputs.length === 1 && digestInputs.length === 1) {
+    const index = digestInputs[0];
+    const candidate = digest[index];
+    if (!used.has(index) && !candidate.testID && !candidate.hidden && !candidate.compositeWrapper) {
+      const placeholder = nonEmpty(candidate.placeholder);
+      if (placeholder) unnamedInputs[0].placeholder = placeholder;
+    }
+  }
   for (const [index, label] of androidDescendantLabels(
     nodes,
     elements,

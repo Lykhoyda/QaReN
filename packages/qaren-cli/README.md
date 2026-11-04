@@ -635,7 +635,11 @@ Plans contain a `## QA` section, named `###` blocks, numbered actions and
 [literal](../qaren-core/test/fixtures/plans/literal.md) and
 [phrase](../qaren-core/test/fixtures/plans/phrases.md) fixtures and the
 [parser](../qaren-core/src/qa/plan.ts) for accepted grammar. Quoted press and fill
-targets resolve observed labels or test IDs locally. Distinct matches are
+targets resolve observed labels or test IDs locally. A Fill also accepts an input's
+React placeholder; an empty native input without an ID or label receives that name
+only when it is the sole native input and the sole React input candidate is unused,
+visible to React, has no test ID and is not a composite wrapper. Competing inputs,
+including offscreen and React-only inputs, leave it unnamed. Distinct matches are
 counted before kind, disabled, hittability, offscreen or React-only filters, so two
 or more refuse with `TARGET_AMBIGUOUS`, without a Jev tie-break, even if the
 target adds positional words such as `Tap "Save" at the bottom`. Outside fills,
