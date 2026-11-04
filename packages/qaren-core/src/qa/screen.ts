@@ -983,13 +983,7 @@ export function join(
     if (value !== undefined) element.value = value;
     const placeholder = nonEmpty(match?.placeholder);
     if (placeholder) element.placeholder = placeholder;
-    if (
-      nativeKind === 'input' &&
-      !testID &&
-      !label &&
-      (n.value === undefined || n.value === '') &&
-      !match
-    )
+    if (nativeKind === 'input' && !testID && !label && (n.value === undefined || n.value === ''))
       unnamedInputs.push(element);
     if (n.rect) {
       element.where = thirds(n.rect.y + n.rect.height / 2, height, [
@@ -1027,7 +1021,13 @@ export function join(
   const digestInputs = digest.flatMap((d, i) =>
     inputRole(d.role) || d.capabilities?.fill === true ? [i] : [],
   );
-  if (nativeInputs.length === 1 && unnamedInputs.length === 1 && digestInputs.length === 1) {
+  if (
+    coverage?.native === 'complete' &&
+    coverage.react === 'complete' &&
+    nativeInputs.length === 1 &&
+    unnamedInputs.length === 1 &&
+    digestInputs.length === 1
+  ) {
     const index = digestInputs[0];
     const candidate = digest[index];
     if (!used.has(index) && !candidate.testID && !candidate.hidden && !candidate.compositeWrapper) {

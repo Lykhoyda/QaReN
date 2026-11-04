@@ -80,6 +80,22 @@ test('competing native inputs block the name even when offscreen, labelled or po
   }
 });
 
+test('partial, unknown and unattested captures cannot prove a unique placeholder pairing', async () => {
+  for (const coverage of [
+    { native: 'complete', react: 'incomplete' },
+    { native: 'incomplete', react: 'complete' },
+    { native: 'complete', react: 'unknown' },
+    { native: 'unknown', react: 'complete' },
+    undefined,
+  ] as const) {
+    const observed = join([input], [candidate], 'app', coverage);
+    assert.equal(observed.elements[0].placeholder, undefined);
+    const result = await resolve(observed);
+    assert.ok('refuse' in result);
+    assert.equal(result.refuse, 'TARGET_NOT_FOUND');
+  }
+});
+
 test('competing React inputs block the name, including React-only and composite wrappers', async () => {
   for (const extra of [
     { ...candidate, placeholder: 'Other search' },
