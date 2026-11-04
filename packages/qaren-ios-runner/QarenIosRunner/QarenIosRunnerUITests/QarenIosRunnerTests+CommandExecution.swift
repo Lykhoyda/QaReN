@@ -818,7 +818,7 @@ extension QarenIosRunnerTests {
       if command.focused == true {
         if command.requireLiveHit == true {
           return Response(ok: false, error: ErrorPayload(
-            code: "LIVE_HIT_UNPROVEN", message: "LIVE_HIT_UNPROVEN: no-identity; no focus or typing was performed.", mutation: "none"
+            code: "LIVE_HIT_UNPROVEN", message: "LIVE_HIT_UNPROVEN: focused-mode; no focus or typing was performed.", mutation: "none"
           ))
         }
         return executeFocusedType(
@@ -848,7 +848,7 @@ extension QarenIosRunnerTests {
         inputResolution = resolution
       }
       if command.requireLiveHit == true {
-        let check = liveTargetCheck(app: activeApp, command: command, deadline: hitTestDeadline)
+        let check = liveTargetCheck(app: activeApp, command: command, deadline: ProcessInfo.processInfo.systemUptime + 0.3)
         if let reason = DispatchGuard.strictRefusal(check, unavailableReason: lastLiveCheckUnavailable) {
           return Response(ok: false, error: ErrorPayload(
             code: "LIVE_HIT_UNPROVEN", message: "LIVE_HIT_UNPROVEN: \(reason); no focus or typing was performed.", mutation: "none"

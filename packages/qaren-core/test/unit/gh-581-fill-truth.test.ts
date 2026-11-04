@@ -967,3 +967,31 @@ test('a native read-back differing only by letter case is unverified with case e
   assert.doesNotMatch(JSON.stringify(env), /Hello|Ada/);
   assert.equal(calls.filter((c) => c.cliArgs[0] === 'fill').length, 1, 'no retype');
 });
+
+for (const code of ['LIVE_HIT_UNPROVEN', 'RN_FAST_RUNNER_STALE'] as const) {
+  test(`strict Fill preserves ${code} through the handler boundary without a typing fallback`, async () => {
+    const { result, calls } = await withFillSeam(
+      { fill: () => failResult('strict focus unavailable', code, { mutation: 'none' }) },
+      () =>
+        performExactFill(
+          { alwaysRetype: true, requireLiveHit: true, ref: '@e3', text: 'x' },
+          null,
+          NATIVE_ONLY,
+        ),
+    );
+    const env = envelope(result);
+    assert.equal(env.code, code);
+    assert.equal(env.meta.mutation, 'none');
+    const fills = calls.filter((call) => call.cliArgs[0] === 'fill');
+    assert.equal(fills.length, 1);
+    assert.ok(fills[0].cliArgs.includes('--require-live-hit'));
+    assert.equal(
+      calls.filter((call) => ['press', 'type', 'verify-input'].includes(call.cliArgs[0])).length,
+      0,
+    );
+    assert.throws(
+      () => unwrap(result),
+      (error) => error instanceof HandlerError && error.code === code,
+    );
+  });
+}

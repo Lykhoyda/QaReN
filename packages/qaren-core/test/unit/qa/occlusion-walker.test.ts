@@ -3129,3 +3129,29 @@ for (const surface of ['Sheet', 'Alert'] as const) {
     );
   });
 }
+
+test('a later Fill attempt does not inherit an earlier overlay probe receipt', async () => {
+  const f = overlayProbeFake('hittable', 'TextField');
+  const capture = f.deps.captureScreen;
+  let fills = 0;
+  f.deps.captureScreen = async (options) => {
+    const screen = await capture(options);
+    if (fills > 0)
+      screen.elements = screen.elements.filter(
+        (element) => !['@cover', '@shade'].includes(element.ref),
+      );
+    return screen;
+  };
+  f.deps.fill = async () => {
+    fills++;
+    return fills === 1
+      ? { ok: false, proven: false, mutation: 'none', error: 'TRANSIENT_TARGET: no mutation' }
+      : { ok: true, proven: true };
+  };
+  const outcome = await walkBlock(block('1. Fill "row-1" with "x"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.equal(fills, 2);
+  assert.equal(outcome.rows[0].overlayChecks?.[0].liveHit, 'hittable');
+  assert.ok((outcome.rows[0].overlayChecks?.[0].observation ?? 0) > 0);
+  assert.equal(outcome.rows.at(-1)?.overlayChecks, undefined);
+});

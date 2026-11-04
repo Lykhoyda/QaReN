@@ -34,6 +34,7 @@ export class OverlayHits {
 }
 
 export interface OverlayHitReceipt {
+  observation: number;
   liveHit: HitProbeResult;
   predicate: Readonly<CentreCoverageDiagnostic>;
 }

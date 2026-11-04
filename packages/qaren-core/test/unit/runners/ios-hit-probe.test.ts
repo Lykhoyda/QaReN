@@ -29,7 +29,7 @@ ${read('DispatchGuard.swift')}
 ${section(models, 'enum CommandType:', 'struct Response:')}
 ${section(models, 'struct SnapshotRect:', 'struct SnapshotNode:')}
 ${section(models, 'struct RetainedSnapshotTarget', 'struct RecordedExactTypeTarget')}
-struct ErrorPayload { let code: String; let message: String; let mutation: String; var reason: String? = nil }
+struct ErrorPayload { var code: String? = nil; let message: String; var mutation: String? = nil; var reason: String? = nil }
 struct DataPayload { var snapshotGeneration: Int? = nil; var hitProbe: String? = nil }
 struct Response { let ok: Bool; var data: DataPayload? = nil; var error: ErrorPayload? = nil }
 struct QuiescenceStatus { var capabilities: [String] = []; static func current() -> Self { Self() } }
@@ -43,6 +43,9 @@ final class XCUIElement {
   var frame = CGRect(x: 20, y: 20, width: 300, height: 40)
   var hit = true
   var delay = 0.0
+  var focused = false
+  var taps = 0
+  func tap() { taps += 1; focused = true }
   var isHittable: Bool { Thread.sleep(forTimeInterval: delay); return hit }
 }
 struct FakeQuery {
@@ -68,7 +71,33 @@ enum RunnerObjCExceptionCatcher {
     read(); return nil
   }
 }
+enum TypeTargetOutcome { case failure(Response); case bound(XCUIElement, Int, String) }
 final class Harness {
+  static let occludedDispatchMessage = "occluded"
+  var resolutionDelay = 0.0
+  var typed = 0
+  func withTemporaryScrollIdleTimeoutIfSupported(_ app: XCUIApplication, _ operation: () -> Void) { operation() }
+  func resolveTypeCommandTarget(app: XCUIApplication, command: Command) -> TypeTargetOutcome {
+    Thread.sleep(forTimeInterval: resolutionDelay)
+    return .bound(app.nodes[0], 0, "exact")
+  }
+  func isExactInputFocused(app: XCUIApplication, element: XCUIElement) -> Bool { element.focused }
+  func waitForExactInputFocus(app: XCUIApplication, element: XCUIElement, timeoutMs: Int) -> Bool { element.focused }
+  func keyboardFrameIfVisible(app: XCUIApplication) -> CGRect? { nil }
+  func tapAt(app: XCUIApplication, x: Double, y: Double) { preconditionFailure("strict focus must never use coordinates") }
+  func gesture(_ operation: () -> Void) { operation() }
+  func movedDispatchResponse() -> Response {
+    Response(ok: false, error: ErrorPayload(code: "TARGET_MOVED_BEFORE_DISPATCH", message: "moved", mutation: "none"))
+  }
+  func executeFocusedType(app: XCUIApplication, text: String, replace: Bool, prepareReplacement: Bool, deleteCount: Int) -> Response {
+    typed += 1; return Response(ok: true)
+  }
+  func type(_ command: Command) -> Response {
+    let activeApp = currentApp!
+${section(section(execution, '    case .type:', '    case .verifyInput:'), '      guard let text = command.text else {', '      var keyboardWait:')}
+    typed += 1
+    return Response(ok: true)
+  }
   var currentBundleId: String? = "dev.fixture"
   var currentApp: XCUIApplication?
   func execute(_ command: Command) -> Response { executeHitProbe(command: command) }
@@ -131,6 +160,29 @@ target.frame.origin.y = 20
 RunnerObjCExceptionCatcher.fail = true; probe("unavailable"); RunnerObjCExceptionCatcher.fail = false
 target.delay = 0.32; probe("unavailable"); target.delay = 0
 precondition(h.liveTargetCheck(app: app, command: command(), deadline: 0) == .unavailable)
+func typeCommand(focused: Bool = false) -> Command {
+  try! decoder.decode(Command.self, from: Data("{\\"command\\":\\"type\\",\\"text\\":\\"x\\",\\"snapshotGeneration\\":7,\\"snapshotNodeIndex\\":6,\\"requireLiveHit\\":true,\\"focused\\":\\(focused)}".utf8))
+}
+for scenario in ["negative", "unavailable", "moved", "late", "ambiguous", "focused-mode"] {
+  app.nodes = [target]; target.hit = true; target.delay = 0; target.focused = false; target.taps = 0
+  target.frame.origin.y = 20; h.typed = 0; retain()
+  if scenario == "negative" { target.hit = false }
+  if scenario == "unavailable" { retain(nil, nil) }
+  if scenario == "moved" { target.frame.origin.y = 25 }
+  if scenario == "late" { target.delay = 0.32 }
+  if scenario == "ambiguous" { app.nodes.append(XCUIElement()) }
+  let result = h.type(typeCommand(focused: scenario == "focused-mode"))
+  precondition(!result.ok, "strict focus admitted \\(scenario)")
+  precondition(target.taps == 0 && h.typed == 0, "strict refusal mutated \\(scenario)")
+}
+app.nodes = [target]; target.hit = true; target.delay = 0; target.focused = false; target.taps = 0
+h.typed = 0; h.resolutionDelay = 0.35; retain()
+precondition(h.type(typeCommand()).ok, "strict focus needs a fresh post-resolution deadline")
+precondition(target.taps == 1 && h.typed == 1)
+h.resolutionDelay = 0; target.taps = 0; h.typed = 0; target.focused = true
+precondition(h.type(typeCommand()).ok)
+precondition(target.taps == 0 && h.typed == 1)
+
 `,
   });
   assert.equal(result.status, 0, result.stderr || String(result.error));

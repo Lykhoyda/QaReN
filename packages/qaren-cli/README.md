@@ -1017,7 +1017,9 @@ reuses the result only within that observation and native snapshot generation.
 The row's `overlayChecks` records `liveHit` and the value-free cutter facts.
 
 An iOS Fill under the same inferred cover also requires a positive read-only
-probe before skipping the clearance scroll. Its native focus then independently
+probe to skip inferred-overlay clearance. A negative or unavailable probe ends
+the Fill without a clearance scroll, focus or typing; this read-only refusal
+also applies to older runners. Its native focus then independently
 requires a fresh positive live hit read and activates the bound input itself,
 with no coordinate fallback. A wrapper fallback taps through the strict press
 path before keyboard typing. A missing or negative strict focus read refuses

@@ -2764,7 +2764,9 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
     missingStrictFeatures.length
   ) {
     return failResult(
-      'RN_FAST_RUNNER_STALE: the active iOS runner cannot require this live hit read; no tap or typing was performed. Reopen the device session to rebuild before retrying.',
+      args.command === 'tap'
+        ? 'RN_FAST_RUNNER_STALE: the active iOS runner cannot require a live hit read before a tap; no tap was performed. Reopen the device session to rebuild before retrying.'
+        : 'RN_FAST_RUNNER_STALE: the active iOS runner cannot require a live hit read before focus; no focus or typing was performed. Reopen the device session to rebuild before retrying.',
       'RN_FAST_RUNNER_STALE',
       { missingFeatures: missingStrictFeatures, dispatched: false, mutation: 'none' },
     );

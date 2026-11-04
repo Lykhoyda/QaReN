@@ -352,6 +352,8 @@ const ITEM_DEADLINE_EXCEEDED = 'VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED';
 const KEYBOARD_DISMISSED = '; the keyboard was dismissed before this tap';
 const OFF_SCREEN_AFTER_SCROLL =
   'stayed off screen after one scroll: its centre is past the visible area or under the keyboard';
+const INFERRED_FILL_UNAVAILABLE =
+  'has no proven hit point under the inferred overlay; no clearance scroll was attempted';
 
 // An overlay inferred from capture order alone: centre inside its clip, no keyboard in play.
 const inferredOverlay = (facts: Readonly<CentreCoverageDiagnostic> | null) =>
@@ -373,7 +375,7 @@ const unaskedLiveHit = (
 ): string => {
   if (facts?.branch !== 'overlay') return '';
   const why =
-    kind !== 'press'
+    kind !== 'press' && kind !== 'fill'
       ? `a ${kind} keeps the inferred rule`
       : platform !== 'ios'
         ? 'this platform keeps the inferred rule'
@@ -381,7 +383,9 @@ const unaskedLiveHit = (
           ? 'the keyboard is not proven hidden'
           : facts.viewportOutside !== false
             ? 'its centre is not inside its clip'
-            : undefined;
+            : kind === 'fill'
+              ? 'this cover is ineligible for a read-only hit probe'
+              : undefined;
   return why ? `; no live hit read was asked: ${why}` : '';
 };
 
@@ -1620,7 +1624,7 @@ async function walkBlockScoped(
       row = { observation: observation.id, checks: [] };
       overlayRows.set(item.line, row);
     }
-    row.checks.push({ liveHit: result, predicate: facts });
+    row.checks.push({ observation: observation.id, liveHit: result, predicate: facts });
     return result;
   };
   const visibilityProbe = (
@@ -1896,7 +1900,7 @@ async function walkBlockScoped(
       deps.platform === 'ios' && inferredOverlayCoverage(target.element, before.screen);
     if (overlay && (await probeOverlay(item, before, target.element)) !== 'hittable')
       return nothingTyped(
-        `"${quoted}" ${OFF_SCREEN_AFTER_SCROLL}${cutterText(overlay)}`,
+        `"${quoted}" ${INFERRED_FILL_UNAVAILABLE}${cutterText(overlay)}`,
         before.screen,
         'TARGET_NOT_FOUND',
       );
@@ -2039,7 +2043,7 @@ async function walkBlockScoped(
             deps.platform === 'ios' && inferredOverlayCoverage(rebound.element, after.screen);
           if (retryOverlay && (await probeOverlay(item, after, rebound.element)) !== 'hittable')
             return nothingTyped(
-              `"${quoted}" ${OFF_SCREEN_AFTER_SCROLL}${cutterText(retryOverlay)}`,
+              `"${quoted}" ${INFERRED_FILL_UNAVAILABLE}${cutterText(retryOverlay)}`,
               after.screen,
               'TARGET_NOT_FOUND',
             );
@@ -2724,6 +2728,8 @@ async function walkBlockScoped(
       | { target: NonNullable<ReturnType<typeof pixelTarget>>; crop: PixelCrop }
       | undefined;
     attempts: for (;;) {
+      overlayRows.delete(item.line);
+      scrollBands.delete(item.line);
       line = item.line;
       deps.start?.({
         operationId: operationFor(item.line),
@@ -3283,6 +3289,8 @@ async function walkBlockScoped(
         const maxAttempts = recovered.has(item) || opts.singleAttempt ? 1 : 2;
         for (let attempt = 1; attempt <= maxAttempts && !outcome; attempt += 1) {
           currentAttempt = attempt;
+          overlayRows.delete(item.line);
+          scrollBands.delete(item.line);
           let selectionTarget: Element | undefined;
           let selectionDeadline = Infinity;
           let selectionStartedAt = 0;
@@ -3683,7 +3691,7 @@ async function walkBlockScoped(
                   outcome = failed(
                     item,
                     attempt,
-                    `"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${cutterText(centreDiagnostic)}`,
+                    `"${item.target.phrase}" ${INFERRED_FILL_UNAVAILABLE}${cutterText(centreDiagnostic)}`,
                     before.screen,
                     await shoot(item),
                     ref,
