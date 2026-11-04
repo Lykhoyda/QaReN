@@ -1021,19 +1021,40 @@ export function join(
   const digestInputs = digest.flatMap((d, i) =>
     inputRole(d.role) || d.capabilities?.fill === true ? [i] : [],
   );
+  const digestInputGroups = new Set(
+    digestInputs.map((index) => {
+      const hosts = digest[index].inputHostIndices;
+      return reactHostEvidence?.complete === true &&
+        hosts?.length === 1 &&
+        reactHostEvidence.hosts[hosts[0]]?.capabilities.fill === true
+        ? `host:${hosts[0]}`
+        : `entry:${index}`;
+    }),
+  );
   if (
     coverage?.native === 'complete' &&
     coverage.react === 'complete' &&
     nativeInputs.length === 1 &&
     unnamedInputs.length === 1 &&
-    digestInputs.length === 1
+    digestInputGroups.size === 1 &&
+    (reactHostEvidence?.hosts.filter((h) => h.capabilities.fill === true).length ?? 0) <= 1 &&
+    digestInputs.every(
+      (index) =>
+        !used.has(index) &&
+        !digest[index].testID &&
+        !digest[index].hidden &&
+        (digest[index].inputHostIndices === undefined ||
+          digest[index].inputHostIndices.length === 1),
+    )
   ) {
-    const index = digestInputs[0];
-    const candidate = digest[index];
-    if (!used.has(index) && !candidate.testID && !candidate.hidden && !candidate.compositeWrapper) {
-      const placeholder = nonEmpty(candidate.placeholder);
-      if (placeholder) unnamedInputs[0].placeholder = placeholder;
-    }
+    const placeholders = new Set(
+      digestInputs.flatMap((index) => {
+        const candidate = digest[index];
+        const placeholder = !candidate.compositeWrapper && nonEmpty(candidate.placeholder);
+        return placeholder ? [placeholder] : [];
+      }),
+    );
+    if (placeholders.size === 1) unnamedInputs[0].placeholder = [...placeholders][0];
   }
   for (const [index, label] of androidDescendantLabels(
     nodes,

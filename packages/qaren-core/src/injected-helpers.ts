@@ -1643,7 +1643,7 @@ export const INJECTED_HELPERS = `
             var baseName = componentName && componentName.slice(componentName.lastIndexOf('.') + 1);
             wrapperCandidate = !isHostFiber(ifiber) && baseName && baseName !== 'View' && baseName !== 'RCTView'
               && !HOST_KIND_LOOKUP[baseName] && !INTERACTIVE_NAMES[baseName] && !iprops.role && !iprops.accessibilityRole ? entry : null;
-            if (wrapperCandidate || (!isHostFiber(ifiber) && itid)) inputAncestors = inputAncestors.concat([entry]);
+            if (wrapperCandidate || (!isHostFiber(ifiber) && (itid || entry.capabilities.fill))) inputAncestors = inputAncestors.concat([entry]);
             if (hostIndex !== null && hostEvidence.hosts[hostIndex].capabilities.fill === true) entry.inputHostIndices = [hostIndex];
           }
         }

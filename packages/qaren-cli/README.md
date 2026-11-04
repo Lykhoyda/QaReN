@@ -638,8 +638,10 @@ Plans contain a `## QA` section, named `###` blocks, numbered actions and
 targets resolve observed labels or test IDs locally. A Fill also accepts an input's
 React placeholder; an empty native input without an ID or label receives that name
 only when both native and React captures are complete, it is the sole native input,
-and the sole React input candidate is unused, visible to React, has no test ID and
-is not a composite wrapper. Competing inputs, including offscreen and React-only inputs, leave it
+and the React candidates prove one input: nested entries count together only when
+complete host evidence links them to the same input host. All candidates must be
+unused, visible to React and have no test ID; non-wrapper entries must agree on one
+placeholder. Competing inputs, including offscreen and React-only inputs, leave it
 unnamed. Distinct matches are counted before kind, disabled, hittability, offscreen
 or React-only filters, so two or more refuse with `TARGET_AMBIGUOUS`, without a Jev
 tie-break, even if the

@@ -114,6 +114,51 @@ test('competing React inputs block the name, including React-only and composite 
   }
 });
 
+test('shared input-host grouping refuses conflicting names, identities and incomplete ancestry', async () => {
+  const first = { ...candidate, inputHostIndices: [0] };
+  const host = {
+    role: 'textinput',
+    roleSource: 'none' as const,
+    capabilities: { fill: true as const },
+  };
+  for (const [extra, evidence] of [
+    [
+      { ...first, placeholder: 'Other search' },
+      { complete: true, hosts: [host] },
+    ],
+    [
+      { ...first, hidden: true },
+      { complete: true, hosts: [host] },
+    ],
+    [
+      { ...first, testID: 'other' },
+      { complete: true, hosts: [host] },
+    ],
+    [
+      { ...first, inputHostIndices: undefined },
+      { complete: true, hosts: [host] },
+    ],
+    [
+      { ...first, inputHostIndices: [1] },
+      { complete: true, hosts: [host, host] },
+    ],
+    [
+      { ...first, inputHostIndices: [0, 1] },
+      { complete: true, hosts: [host, host] },
+    ],
+    [first, { complete: false, hosts: [host] }],
+  ] as const) {
+    const observed = joinScreen([input], [first, extra], 'app', undefined, {
+      ...evidence,
+      hosts: [...evidence.hosts],
+    });
+    assert.equal(observed.elements[0].placeholder, undefined);
+    const result = await resolve(observed);
+    assert.ok('refuse' in result);
+    assert.equal(result.refuse, 'TARGET_NOT_FOUND');
+  }
+});
+
 test('hidden, composite, identified, blank and non-input entries cannot name an input', async () => {
   for (const entry of [
     { ...candidate, hidden: true },

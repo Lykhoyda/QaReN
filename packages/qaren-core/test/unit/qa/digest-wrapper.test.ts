@@ -8,6 +8,9 @@ import { PrivateInputCaptureError } from '../../../dist/qa/private-input.js';
 import { join, semanticActionView, visibilityView } from '../../../dist/qa/screen.js';
 import { prepareTarget } from '../../../dist/qa/resolve.js';
 import { exactIdentities } from '../../../dist/qa/identity.js';
+import { parsePlan } from '../../../dist/qa/plan.js';
+import { runPlan } from '../../../dist/qa/walker.js';
+import { scriptedJudge, walker } from './judgment-fixtures.ts';
 import { nativeCapture } from './platform-presence-fixtures.ts';
 
 interface FiberSpec {
@@ -224,4 +227,87 @@ test('merged EmailField input retains its placeholder for Fill Email', async () 
     exactIdentities(screen, { quoted: 'email', phrase: 'email', exact: 'id' }, 'fill').length,
     1,
   );
+});
+
+const unnamedInput = (): FiberSpec => {
+  const props = { placeholder: 'Scratch note', onChangeText: handler };
+  return {
+    name: 'NoteField',
+    props: { ...props, onPress: handler },
+    children: [
+      {
+        name: 'TextInput',
+        props,
+        children: [
+          {
+            name: 'InternalTextInput',
+            props,
+            children: [{ hostType: 'RCTSinglelineTextInputView', props }],
+          },
+        ],
+      },
+    ],
+  };
+};
+const unnamedNativeInput = {
+  ref: '@note',
+  type: 'TextField',
+  hittable: true,
+  enabled: true,
+  rect: { x: 20, y: 100, width: 300, height: 44 },
+};
+
+test('nested unnamed TextInput layers name and fill their single native input', async () => {
+  const react = await observe([unnamedInput()]);
+  assert.equal(react.interactive!.length, 4);
+  assert.ok(react.interactive!.some((entry) => entry.compositeWrapper));
+  const screen = join(
+    [unnamedNativeInput],
+    react.interactive!,
+    'app',
+    { native: 'complete', react: 'complete' },
+    react.hostEvidence,
+  );
+  const target = prepareTarget(
+    { kind: 'fill', target: { quoted: 'Scratch note', phrase: 'Scratch note' }, text: 'alpha' },
+    screen,
+  );
+  assert.ok('ref' in target, JSON.stringify(target));
+  assert.equal(target.ref, '@note');
+  const f = walker(
+    [screen],
+    scriptedJudge(() => assert.fail('literal Fill needs no judgment')),
+  );
+  const ledger = await runPlan(parsePlan('1. Fill "Scratch note" with "alpha"').blocks!, f.deps);
+  assert.equal(ledger.verdict, 'PASS');
+  assert.deepEqual(f.actions, ['fill @note alpha']);
+});
+
+test('separate nested inputs sharing a placeholder still refuse, including a React-only competitor', async () => {
+  const react = await observe([unnamedInput(), unnamedInput()]);
+  for (const nodes of [
+    [unnamedNativeInput],
+    [unnamedNativeInput, { ...unnamedNativeInput, ref: '@other' }],
+  ]) {
+    const screen = join(
+      nodes,
+      react.interactive!,
+      'app',
+      { native: 'complete', react: 'complete' },
+      react.hostEvidence,
+    );
+    const f = walker(
+      [screen],
+      scriptedJudge(() => assert.fail('literal Fill needs no judgment')),
+    );
+    const target = prepareTarget(
+      { kind: 'fill', target: { quoted: 'Scratch note', phrase: 'Scratch note' }, text: 'alpha' },
+      screen,
+    );
+    assert.ok('refuse' in target);
+    assert.equal(target.refuse, 'TARGET_NOT_FOUND');
+    const ledger = await runPlan(parsePlan('1. Fill "Scratch note" with "alpha"').blocks!, f.deps);
+    assert.equal(ledger.verdict, 'FAIL');
+    assert.deepEqual(f.actions, []);
+  }
 });
