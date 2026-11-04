@@ -135,7 +135,7 @@ export async function discoverAllMetroPorts(ports: number[], timeout: number): P
 export class TargetReadinessTimeoutError extends Error {
   constructor(
     message: string,
-    readonly state?: 'empty' | 'other_device' | 'other_bundle' | 'list_timeout',
+    readonly state?: 'empty' | 'other_device' | 'other_bundle' | 'list_timeout' | 'ready',
   ) {
     super(message);
   }
@@ -178,6 +178,7 @@ export async function waitForExactPortTargets(
   // Simulators share host loopback: another device's runtime on this port is not the run's.
   deviceName?: string,
   bundleId?: string,
+  onTargetsObserved?: (targets: HermesTarget[]) => void,
 ): Promise<void> {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new RangeError('port must be an integer between 1 and 65535');
@@ -227,7 +228,18 @@ export async function waitForExactPortTargets(
         : onDevice.some((target) => targetMatchesBundleId(target, bundleId));
     if (fetched) {
       otherBundleOnly = bundleId !== undefined && onDevice.length > 0 && !ready;
-      state = raw.length === 0 ? 'empty' : onDevice.length === 0 ? 'other_device' : 'other_bundle';
+      state = ready
+        ? 'ready'
+        : raw.length === 0
+          ? 'empty'
+          : onDevice.length === 0
+            ? 'other_device'
+            : 'other_bundle';
+      onTargetsObserved?.(
+        filterValidTargets(onDevice).filter(
+          (target) => bundleId === undefined || targetMatchesBundleId(target, bundleId),
+        ),
+      );
     }
     remaining = deadline - performance.now();
     if (remaining <= 0) break;

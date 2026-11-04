@@ -143,17 +143,22 @@ test('cancelling a later block never flushes an earlier saved action', async () 
   }
 });
 
-test('the attach deadline interrupts a stalled connect and records the host load', async () => {
+test('the attach deadline interrupts a stalled connect and records the host load', async (t) => {
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const stop = createStop();
+  t.after(() => stop.begin());
   const calls: string[] = [];
   const pending = admit(
     {
       metroPort: 8081,
       readinessMs: 30_000,
+      attachBudgetMs: 120_000,
       remainingMs: () => 25,
       load: () => 42,
       attach: async (deadline) => {
-        assert.ok(deadline > performance.now());
+        assert.equal(deadline, 25);
         calls.push('attach');
         await sleep(60_000);
         calls.push('late connect');
@@ -172,7 +177,12 @@ test('the attach deadline interrupts a stalled connect and records the host load
     },
     stop,
   );
-  await assert.rejects(pending, /CDP attach deadline exceeded.*host 1-minute load 42.0/);
+  const refused = assert.rejects(pending, /CDP attach deadline exceeded.*host 1-minute load 42.0/);
+  await setImmediate();
+  assert.deepEqual(calls, ['attach']);
+  now = 25;
+  t.mock.timers.tick(25);
+  await refused;
   await setImmediate();
   assert.deepEqual(calls, ['attach', 'cleanup']);
 });

@@ -15,14 +15,15 @@ const verifier = resolve(
   'verify-site.ts',
 );
 
-function verifyHomepageLink(href: string, content = '') {
+// The verifier is a Bun script; DOCS_BASE_PATH selects a GitHub Pages (/QaReN) or root-hosted build.
+function verifyHomepageLink(href: string, content = '', basePath = '/QaReN') {
   const dist = mkdtempSync(join(tmpdir(), 'verify-site-'));
   try {
     mkdirSync(join(dist, 'check'));
     writeFileSync(join(dist, 'index.html'), `<a href="${href}">link</a>${content}`);
     writeFileSync(join(dist, 'check', 'index.html'), '<p>check</p>');
-    return spawnSync(process.execPath, [verifier], {
-      env: { ...process.env, DOCS_DIST: dist },
+    return spawnSync('bun', [verifier], {
+      env: { ...process.env, DOCS_DIST: dist, DOCS_BASE_PATH: basePath },
       encoding: 'utf8',
     });
   } finally {
@@ -72,3 +73,77 @@ for (const name of ['cdp_get_tree', 'device_snapshot', 'device_boot_seconds_extr
     );
   });
 }
+
+test('rejects a root-hosted link that still carries the old /QaReN base', () => {
+  const result = verifyHomepageLink('/QaReN/check/', '', '');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /link with the wrong base in index\.html/);
+  assert.match(result.stderr, /FAIL {2}internal links do not carry the old \/QaReN base/);
+});
+
+test('accepts a root-hosted link without a base', () => {
+  const result = verifyHomepageLink('/check/', '', '');
+
+  assert.match(result.stdout, /ok {2}internal links do not carry the old \/QaReN base/);
+  assert.match(result.stdout, /ok {2}no broken internal links or assets/);
+});
+
+test('accepts permanent wildcard redirects for home, top-level and nested docs URLs', () => {
+  const result = verifyHomepageLink('/check/', '', '');
+
+  for (const path of ['/', '/cli/', '/actions/rn-flow-1/']) {
+    assert.ok(result.stdout.includes(`ok  vercel.json redirects /QaReN${path} permanently`));
+  }
+  assert.doesNotMatch(result.stderr, /FAIL {2}vercel.json redirects/);
+});
+
+test('accepts one h1 followed by headings that skip no level', () => {
+  const result = verifyHomepageLink('check/', '<h1>QaReN</h1><h2>Get started</h2><h3>Install</h3>');
+
+  assert.match(result.stdout, /ok {2}index\.html has one h1/);
+  assert.match(result.stdout, /ok {2}index\.html heading order starts at h1 and skips no level/);
+});
+
+test('rejects a page with two h1 headings', () => {
+  const result = verifyHomepageLink('check/', '<h1>One</h1><h1>Two</h1>');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /FAIL {2}index\.html has one h1/);
+});
+
+test('rejects a heading that skips a level', () => {
+  const result = verifyHomepageLink('check/', '<h1>QaReN</h1><h3>Install</h3>');
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /FAIL {2}index\.html heading order starts at h1 and skips no level/);
+});
+
+test('accepts a same-page link whose target id exists', () => {
+  const result = verifyHomepageLink(
+    'check/',
+    '<a href="#install">Install</a><h2 id="install">Install</h2>',
+  );
+
+  assert.match(result.stdout, /ok {2}index\.html same-page links all have a target/);
+});
+
+test('rejects a same-page link with no target id', () => {
+  const result = verifyHomepageLink(
+    'check/',
+    '<a href="#install">Install</a><h2 id="setup">Setup</h2>',
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /#install has no target in index\.html/);
+});
+
+test('rejects placeholder copy left from the scaffold', () => {
+  const result = verifyHomepageLink(
+    'check/',
+    '<p>Placeholder. This page keeps its address and outline; its content moves here in the content migration.</p>',
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /index\.html still carries placeholder copy/);
+});

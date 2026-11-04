@@ -1,22 +1,35 @@
 {
   "name": "qaren-docs",
-  "type": "module",
   "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.4",
   "scripts": {
-    "generate": "node scripts/generate-changelog.ts",
-    "dev": "yarn generate && astro dev",
-    "build": "yarn generate && astro build && node scripts/verify-site.ts",
-    "verify": "node scripts/verify-site.ts",
-    "preview": "astro preview"
+    "generate": "bun scripts/generate-changelog.ts && bun scripts/generate-llms.ts",
+    "dev": "bun run generate && bun --bun next dev",
+    "typecheck": "tsc --noEmit",
+    "build": "bun test && bun run generate && bun run typecheck && bun --bun next build && pagefind --site dist --output-subdir pagefind && bun scripts/verify-site.ts",
+    "verify": "bun scripts/verify-site.ts"
   },
   "dependencies": {
-    "@astrojs/starlight": "^0.38.3",
-    "astro": "^6.0.1",
-    "remark-gfm": "^4.0.1",
-    "sharp": "^0.34.2",
-    "starlight-llms-txt": "0.10.0"
+    "@mdx-js/loader": "^3.1.1",
+    "@mdx-js/react": "^3.1.1",
+    "@next/mdx": "^16.4.4",
+    "@qaren/design": "file:../../packages/qaren-design",
+    "github-slugger": "^2.0.0",
+    "next": "^16.4.4",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "rehype-slug": "^6.0.0",
+    "remark-frontmatter": "^5.0.0",
+    "remark-gfm": "^4.0.1"
   },
-  "engines": {
-    "node": ">=24"
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "@types/mdx": "^2.0.14",
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "pagefind": "^1.6.0",
+    "typescript": "^7.0.2"
   }
 }

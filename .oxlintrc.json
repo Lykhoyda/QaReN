@@ -8,8 +8,10 @@
     "dist/",
     "WebDriverAgent/",
     ".claude/worktrees/",
-    ".astro/",
+    ".next/",
+    "next-env.d.ts",
     ".superpowers/",
-    ".remember/"
+    ".remember/",
+    "packages/qaren-design/design/"
   ]
 }

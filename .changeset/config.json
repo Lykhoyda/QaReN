@@ -10,7 +10,6 @@
   "ignore": [
     "qaren-core",
     "qaren-ios-runner",
-    "qaren-android-runner",
-    "qaren-docs"
+    "qaren-android-runner"
   ]
 }

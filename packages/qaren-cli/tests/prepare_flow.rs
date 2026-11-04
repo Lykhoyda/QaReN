@@ -1498,6 +1498,9 @@ fn manifest_timeout_records_the_request_handler_cause_without_raw_output() {
         );
         script_volume_sample(&mut mock, false);
         mock.expect_run("watch-project", watch_output);
+        if expected_watch == "ready" {
+            mock.expect_run("watchman", CmdOutput::success(r#"{"clock":"c:1"}"#));
+        }
         for _ in 0..2 {
             mock.expect_run(
                 "expo-platform",
@@ -1587,6 +1590,245 @@ fn a_confirmed_watchman_volume_stall_refuses_without_looping_or_launching() {
             .calls
             .iter()
             .any(|c| matches!(c.label.as_str(), "metro-manifest" | "simctl-launch")));
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+fn script_watchman_sync_probe(mock: &mut MockRunner, repo: &std::path::Path) {
+    script_ios_prepare_before_request_probe(mock, repo);
+    mock.expect_run(
+        "qaren-request-probe",
+        CmdOutput {
+            timed_out: true,
+            duration_ms: 15_000,
+            ..Default::default()
+        },
+    );
+    script_volume_sample(mock, false);
+    mock.expect_run(
+        "watch-project",
+        CmdOutput::success(r#"{"watch":"/resolved-private-root"}"#),
+    );
+}
+
+#[test]
+fn watchman_cookie_stall_and_sync_rejection_refuse_before_manifest_or_launch() {
+    for (error, outcome, code) in [
+        ("/private-watchman-output: timed out waiting for cookie file to be observed by watcher within 4000 milliseconds", "stalled", FailureCode::WatchmanVolumeStalled),
+        ("private-watchman-output", "rejected", FailureCode::ManifestNotWarm),
+    ] {
+        let repo = common::temp_repo();
+        let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+        let mut mock = MockRunner::new();
+        script_watchman_sync_probe(&mut mock, &repo);
+        mock.expect_run("watchman", CmdOutput { duration_ms: 4000, ..CmdOutput::success(&serde_json::json!({"error":error}).to_string()) });
+        common::script_ios_metro_cleanup(&mut mock);
+        let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(failure.code, code);
+        assert_eq!(failure.phase, "build");
+        assert!(failure.code.is_refusal());
+        assert_eq!(receipt.result, ReceiptResult::Refused);
+        assert_eq!(receipt.outcomes["watchman_volume_probe"], outcome);
+        assert!(receipt.outcomes["manifest_warmup"].contains(&format!("watchman_volume_probe={outcome}")));
+        assert_eq!(receipt.timings_ms["watchman-clock-sync_attempt_1"], 4000);
+        assert_eq!(receipt.outcomes["watchman-clock-sync_attempt_1"], "ok=true; timed out=false; timeout_seconds=5");
+        assert!(!failure.detail.contains("watch-project"));
+        assert!(failure.detail.contains("sync"));
+        assert!(failure.next_action.contains("fseventsd"));
+        assert!(failure.next_action.contains("qaren cleanup"));
+        if outcome == "stalled" {
+            assert!(failure.detail.contains("the file watcher is stalled or still crawling the root"));
+            assert!(failure.next_action.contains("sync cookie"));
+            assert!(receipt.to_json().contains("WATCHMAN_VOLUME_STALLED"));
+        }
+        assert!(!receipt.to_json().contains("private-watchman-output"));
+        assert!(!receipt.to_json().contains("resolved-private-root"));
+        assert!(!mock.calls.iter().any(|c| matches!(c.label.as_str(), "metro-manifest" | "simctl-launch")));
+        assert!(mock.private_inputs.iter().any(|input| serde_json::from_slice::<serde_json::Value>(input).ok() == Some(serde_json::json!(["clock", "/resolved-private-root", {"sync_timeout":4000}]))));
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn unavailable_sync_preserves_the_manifest_exhaustion_reason() {
+    for sync in [
+        CmdOutput {
+            timed_out: true,
+            duration_ms: 5000,
+            ..Default::default()
+        },
+        CmdOutput::success("private-invalid-sync-output"),
+    ] {
+        let repo = common::temp_repo();
+        let scenario = write_scenario(
+            &repo,
+            &format!(
+                "{}deadlines:\n  manifest_warmup_seconds: 30\n",
+                ios_scenario_yaml(8791)
+            ),
+        );
+        let mut mock = MockRunner::new();
+        script_watchman_sync_probe(&mut mock, &repo);
+        mock.expect_run("watchman", sync);
+        for _ in 0..2 {
+            mock.expect_run(
+                "expo-platform",
+                CmdOutput {
+                    timed_out: true,
+                    duration_ms: 15_000,
+                    ..Default::default()
+                },
+            );
+        }
+        mock.advance_on = Some(("expo-platform".into(), 15_000));
+        common::script_ios_metro_cleanup(&mut mock);
+        let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(failure.code, FailureCode::ManifestNotWarm);
+        assert_eq!(receipt.result, ReceiptResult::Refused);
+        assert!(failure
+            .detail
+            .starts_with("dev client manifest did not warm within its stage budget"));
+        assert!(!failure.detail.contains("watch-project"));
+        assert_eq!(receipt.outcomes["watchman_volume_probe"], "unavailable");
+        assert!(receipt.outcomes["manifest_warmup"].contains("watchman_volume_probe=unavailable"));
+        assert_eq!(
+            mock.calls
+                .iter()
+                .filter(|c| c.label == "metro-manifest")
+                .count(),
+            2
+        );
+        assert!(!receipt.to_json().contains("private-invalid-sync-output"));
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn ready_or_unavailable_cookie_sync_continues_the_existing_warm_path() {
+    for (sync, outcome) in [
+        (CmdOutput::success(r#"{"clock":"c:1"}"#), "ready"),
+        (
+            CmdOutput {
+                timed_out: true,
+                duration_ms: 5000,
+                ..Default::default()
+            },
+            "unavailable",
+        ),
+    ] {
+        let repo = common::temp_repo();
+        let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+        let mut mock = MockRunner::new();
+        script_watchman_sync_probe(&mut mock, &repo);
+        mock.expect_run("watchman", sync);
+        mock.expect_run("expo-platform", manifest_answered_in(4999));
+        mock.expect_run("expo-platform", manifest_answered_in(4999));
+        common::script_devmenu_defaults(&mut mock, CmdOutput::success(""));
+        common::script_ios_launch(&mut mock);
+        script_ios_readiness(&mut mock);
+        mock.expect_run("ls-files", CmdOutput::success(""));
+        common::script_xcode(&mut mock);
+        let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Ready,
+            "{}",
+            receipt.to_json()
+        );
+        assert_eq!(receipt.outcomes["watchman_volume_probe"], outcome);
+        let labels: Vec<_> = mock.calls.iter().map(|c| c.label.as_str()).collect();
+        assert!(
+            labels
+                .iter()
+                .position(|l| *l == "watchman-clock-sync")
+                .unwrap()
+                < labels.iter().position(|l| *l == "metro-manifest").unwrap()
+        );
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn cookie_sync_requires_five_seconds_left_on_the_original_warm_clock() {
+    for remaining in [4999, 5000] {
+        let repo = common::temp_repo();
+        let scenario = write_scenario(
+            &repo,
+            &format!(
+                "{}deadlines:\n  manifest_warmup_seconds: 30\n",
+                ios_scenario_yaml(8791)
+            ),
+        );
+        let mut mock = MockRunner::new();
+        script_watchman_sync_probe(&mut mock, &repo);
+        mock.advance_on = Some(("watch-project".into(), 30_000 - remaining));
+        if remaining == 5000 {
+            mock.expect_run("watchman", CmdOutput::success(r#"{"clock":"c:1"}"#));
+        }
+        mock.expect_run(
+            "expo-platform",
+            CmdOutput::failed(1, "private-manifest-error"),
+        );
+        common::script_ios_metro_cleanup(&mut mock);
+        let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+        assert_eq!(
+            receipt.failure.as_ref().unwrap().code,
+            FailureCode::BuildFailed
+        );
+        let syncs: Vec<_> = mock
+            .calls
+            .iter()
+            .filter(|c| c.label == "watchman-clock-sync")
+            .collect();
+        assert_eq!(syncs.len(), usize::from(remaining == 5000));
+        if remaining == 5000 {
+            assert_eq!(syncs[0].timeout_seconds, 5);
+        }
+        assert_eq!(
+            mock.calls
+                .iter()
+                .find(|c| c.label == "metro-manifest")
+                .unwrap()
+                .timeout_seconds,
+            remaining / 1000
+        );
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn cancellation_after_watch_project_or_during_sync_preempts_all_manifest_requests() {
+    for after in [
+        "watch-project",
+        "watchman --no-spawn --no-local --output-encoding=json -j",
+    ] {
+        let repo = common::temp_repo();
+        let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+        let mut mock = MockRunner::new();
+        script_watchman_sync_probe(&mut mock, &repo);
+        if after != "watch-project" {
+            mock.expect_run("watchman", CmdOutput::success(r#"{"clock":"c:1"}"#));
+        }
+        mock.cancel_after = Some((after.into(), "received SIGTERM".into()));
+        common::script_ios_metro_cleanup(&mut mock);
+        let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+        assert_eq!(
+            receipt.failure.as_ref().unwrap().code,
+            FailureCode::RunCancelled
+        );
+        assert!(!mock
+            .calls
+            .iter()
+            .any(|c| matches!(c.label.as_str(), "metro-manifest" | "simctl-launch")));
+        assert_eq!(
+            mock.calls
+                .iter()
+                .filter(|c| c.label == "watchman-clock-sync")
+                .count(),
+            usize::from(after != "watch-project")
+        );
         assert_eq!(mock.remaining(), 0);
     }
 }

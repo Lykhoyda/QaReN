@@ -1,0 +1,20 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "installCommand": "bun install",
+  "buildCommand": "bun run build",
+  "outputDirectory": ".next",
+  "trailingSlash": true,
+  "redirects": [
+    {
+      "source": "/QaReN/",
+      "destination": "/",
+      "permanent": true
+    },
+    {
+      "source": "/QaReN/:path*/",
+      "destination": "/:path*/",
+      "permanent": true
+    }
+  ]
+}

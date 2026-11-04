@@ -63,8 +63,8 @@ copy; see the [saved-block contract](https://github.com/Lykhoyda/QaReN/blob/deve
 For plain-scroll no-op results and when to use `Scroll down until "Settings"`, see the
 [plain scroll contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#occluded-taps-and-focus).
 
-A fill needs its text in quotes, or a [runtime input](#runtime-inputs). For iOS entry methods, handler recovery,
-verification and the `(any method)` label, see the authoritative
+A fill needs its text in quotes, or a [runtime input](#runtime-inputs). For iOS entry methods, already-set skipping, handler recovery,
+verification and the `(any method)` and `(always retype)` labels, see the authoritative
 [Fill ladder contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#fill-ladder).
 A dialog step needs exactly one unconditional
 action: `Accept the dialog if it appears` and `Do not dismiss the alert` refuse.
@@ -128,7 +128,7 @@ that a value is test data, and a misclassified secret is read and only redacted 
 declares an expected label echo; it does not assert that the value is visible. Its row
 passes without capturing the screen or dispatching an action. The name must follow the
 input-name rules above and be used by a fill in this plan. Malformed declarations and
-names unused by any fill refuse `PLAN_UNPARSEABLE`, without falling back to Jev.
+names unused by any fill refuse `PLAN_UNPARSEABLE`, without falling back to [Jev](../jev/).
 There is no `no longer` form or heading-level declaration.
 
 - Every input the plan or the configured login block names must be set and non-empty, even
@@ -189,14 +189,8 @@ limits and fields mounted in React but absent from the native screen, see the CL
 
 ## When the plan needs `TYPESAFE_API_KEY`
 
-Phrase targets, phrase checks and lines with no verb the grammar knows need Jev, so they
-need `TYPESAFE_API_KEY`. A plan with any of them runs a Jev readiness probe first; a
-missing or rejected key refuses `JEV_UNREACHABLE` before a device is selected.
-
-A plan with only quoted targets and literal checks needs no key; without one it makes no
-Jev calls. Back, dialog, echo and plain scroll steps never call Jev. For key-free steps and
-the optional Jev safety veto during interruption recovery, see the CLI guide's
-[plan readiness contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence).
+See [Jev: how QaReN judges phrase steps](../jev/#which-lines-need-jev) for which lines
+need a key, how to write a key-free plan, and the readiness and recovery contracts.
 
 ## Refusals before the walk
 

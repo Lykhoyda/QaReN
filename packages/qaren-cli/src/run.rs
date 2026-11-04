@@ -1109,7 +1109,11 @@ fn run_inner(
             }
         });
         let core_log = run_dir.join("logs").join("core.log");
-        events::core_t0(core_request.t0);
+        events::core_t0(
+            core_request.t0,
+            core_request.walk_budget_ms,
+            core_request.attach_budget_ms,
+        );
         events::stage("attach", StageState::Running, None, None);
         let runner_started_at = ctx.runner.now_epoch_ms();
         let core_child = match core::spawn_private(
@@ -1378,6 +1382,28 @@ fn run_inner(
                 })),
             ),
         };
+        if let (Some(failure), Verdict::Refused { code, .. }) = (&mut failure, &outcome.verdict) {
+            let cause = if code == "RUN_CANCELLED"
+                && !outcome.admitted
+                && outcome.ledger.press_evidence.is_none()
+            {
+                Some(crate::failure::AdmissionCause::RunCancelled)
+            } else {
+                outcome
+                    .ledger
+                    .admission
+                    .as_ref()
+                    .and_then(|facts| crate::failure::AdmissionCause::from_inner(&facts.inner))
+            };
+            if let Some(cause) = cause {
+                if code != "RUN_CANCELLED" {
+                    failure.phase = "attach".to_string();
+                }
+                *failure = failure
+                    .clone()
+                    .with_admission_recovery(cause, outcome.ledger.admission.clone());
+            }
+        }
         if outcome.ledger.press_evidence.is_some() {
             if let (Some(failure), Verdict::Refused { code, .. }) = (&mut failure, &outcome.verdict)
             {
@@ -1410,23 +1436,37 @@ fn run_inner(
                     ));
                 }
             }
-            // Only the uploaded copy starts at the admitted app, or after a pre-plan login; the local recording stays complete.
+            // The copy skips setup while preserving admission and pre-plan login boundaries.
             let video = if video == VideoStatus::Available || outcome.ledger.publication_interrupted
             {
-                let offset = outcome
-                    .ledger
-                    .publish_from_ms
-                    .or(outcome.ledger.admitted_at_ms)
-                    .map(|at| at.saturating_sub(recording_from));
+                let offset = outcome.ledger.admitted_at_ms.map(|admitted| {
+                    admitted
+                        .max(outcome.ledger.publish_from_ms.unwrap_or(admitted))
+                        .saturating_sub(recording_from)
+                        .max(outcome.first_step_start_ms.unwrap_or(0))
+                });
                 // Row t is relative to t0, taken after the recording started, so it can only cut before the true last-row frame.
                 let end = outcome.ledger.steps.iter().map(|s| s.t).max();
-                record::publication_copy(
+                let video = record::publication_copy(
                     ctx.runner,
                     &run_dir,
                     offset,
                     end,
                     outcome.ledger.publication_interrupted,
-                )
+                );
+                if video == VideoStatus::Available {
+                    if let Some((start, end)) = offset.zip(end).and_then(|(start, end)| {
+                        let admitted = outcome.ledger.admitted_at_ms?;
+                        Some((
+                            recording_from.checked_add(start)?.checked_sub(admitted)?,
+                            recording_from.checked_add(end)?.checked_sub(admitted)?,
+                        ))
+                    }) {
+                        ctx.notes
+                            .push(("video_window".into(), format!("start={start}; end={end}")));
+                    }
+                }
+                video
             } else {
                 video
             };
@@ -1759,6 +1799,14 @@ pub(crate) fn porcelain_entries(stdout: &str) -> BTreeSet<String> {
 pub fn worktree_drift(before: &BTreeSet<String>, after: &BTreeSet<String>) -> Vec<String> {
     before
         .symmetric_difference(after)
+        .filter(|entry| {
+            let mut paths = entry.get(3..).unwrap_or(entry).split('\0');
+            !candidate::is_untracked_watchman_cookie(
+                entry.get(..2).unwrap_or(""),
+                paths.next().unwrap_or(""),
+                paths.next(),
+            )
+        })
         .flat_map(|entry| {
             entry
                 .get(3..)
@@ -1774,6 +1822,7 @@ pub fn worktree_drift(before: &BTreeSet<String>, after: &BTreeSet<String>) -> Ve
 
 fn refusal_code(code: &str) -> FailureCode {
     match code {
+        "DEV_TARGET_MISSING" => FailureCode::DevTargetMissing,
         "PRESS_NOT_REGISTERED" => FailureCode::PressNotRegistered,
         "METRO_ORIGIN_MISMATCH" => FailureCode::MetroOriginMismatch,
         "PLAN_INPUT_MISSING" => FailureCode::PlanInputMissing,

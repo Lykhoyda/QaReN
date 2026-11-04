@@ -14,7 +14,7 @@ Refusals exit `4` and mean the run could not start or could not decide; failures
 | -------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | `PLAN_UNPARSEABLE`         | A plan line has no step or check the grammar knows               | Fix each listed line; see [Write a plan](../plans/)                              |
 | `PLAN_INPUT_MISSING`       | A runtime input is unset or empty, or a PR login block names an undeclared one | Set each listed `QAREN_INPUT_<NAME>`; see [Runtime inputs](../plans/#runtime-inputs)       |
-| `JEV_UNREACHABLE`          | The plan needs Jev and the readiness probe did not succeed       | Set a valid `TYPESAFE_API_KEY`, or quote every target and `✓` line                          |
+| `JEV_UNREACHABLE`          | The plan needs [Jev](../jev/#key-and-readiness) and the readiness probe did not succeed       | Set a valid `TYPESAFE_API_KEY`, or quote every target and `✓` line                          |
 | `JEV_AUTH_FAILED`          | Jev rejected the key                                             | Check `TYPESAFE_API_KEY`                                                                    |
 | `SCENARIO_UNREADABLE`      | `.qaren/config.yaml` cannot be read                              | Create it with at least `appId`                                                             |
 | `SCENARIO_INVALID`         | The configuration does not parse or fails validation            | Fix the key a validation detail names; see [Configuration](../configuration/)    |
@@ -24,6 +24,12 @@ Refusals exit `4` and mean the run could not start or could not decide; failures
 | `PNPM_PROBE_TIMED_OUT` | The pnpm exec probe timed out on every attempt within the dependency-install budget; the launcher was not judged | Re-run when the machine is less loaded, or run `qaren doctor`; `failure.detail` lists the attempts |
 | `GITHUB_AUTH_UNAVAILABLE` | PR lookup could not use GitHub authentication | Follow the [GitHub authentication contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#test-a-pull-request) |
 | `DISK_BUDGET_EXCEEDED`     | Under 1 GiB free for the run storage root or the app, or under about 10 GiB for a clean iOS build | Free space on the volume `failure.detail` names, then re-run                                |
+
+## Development target admission
+
+For `DEV_TARGET_MISSING` or admission-time `CORE_REFUSED`, follow the receipt's
+`next_action` and recovery rungs using the authoritative
+[admission and recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan).
 
 ## Development overlays before step 1
 
@@ -49,6 +55,7 @@ and [iOS admission diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/p
 | `DEVICE_BUSY`        | Another run holds the device's lease                                | Wait for that run to finish, or clean it up with `qaren cleanup <its-run-id>`; a live holder is never stolen |
 | `ARTIFACT_INSTALL_FAILED` | The cached dev-client verification or installation failed | Follow `next_action`; see the [cached-install recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan) |
 | `APP_EXITED_AT_LAUNCH` | The launched app exited before it became ready; on iOS the detail cites the simulator crash report | Follow `next_action`, which for a missing app-embedded framework is a CocoaPods reinstall; see the [launch readiness contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle) |
+| `WATCHMAN_VOLUME_STALLED` | Watchman reported a cookie-sync timeout | Follow `next_action`; see the [launch readiness contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle) for bounds, diagnostics and recovery |
 | `MANIFEST_NOT_WARM` | Dev-client manifest warm-up refused before launch | Follow `next_action`; see the [launch readiness contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle) for bounds, diagnostics and recovery |
 | `LANE_NOT_WARM` | The owned simulator failed the [warm-lane contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#warm-lane) | Follow `next_action` and `failure.detail`; use the linked contract for settings, first-screen requirements and doctor diagnostics |
 
@@ -77,7 +84,7 @@ The screen layer's own codes appear at the start of `failure.detail` or in the r
 | `VISIBILITY_UNSURE`          | A wait ended with the target's visibility still unsure                        |
 | `SCREEN_EVIDENCE_INCOMPLETE` | The captured screen was not complete enough to act on safely                  |
 | `APP_PROCESS_CHANGED`        | On iOS, the app crashed or restarted between captures                         |
-| `CDP_NOT_CONNECTED`          | The app's JavaScript runtime did not attach in time, or a target wait made no progress past [`deadlines.attach_seconds`](../configuration/#deadlines); the detail names the stalled boundary, app liveness, bundle request and host load |
+| `CDP_NOT_CONNECTED`          | Runtime attachment or readiness could not be established; see the [admission and recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan) for typed causes, deadlines and diagnostic fields |
 | `REACT_COVERAGE_LOST`        | The JS/React connection remained lost at the end of an otherwise passing walk; the walk saves no new blocks. See the [React coverage contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan) |
 
 ## Teardown, cleanup and publish

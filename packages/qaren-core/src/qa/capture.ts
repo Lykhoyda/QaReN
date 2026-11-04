@@ -599,6 +599,8 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
               deps.native(presenceBudgetMs),
             ),
       );
+      throwIfCancelled();
+      if (deps.timing) observeNativeTiming(native.presenceCapture, deps.timing, now());
     } catch (error) {
       if (isAbort(error)) throw error;
       if (error === retryRefusal && retryRefusal instanceof NativeSnapshotIncomplete)
@@ -641,7 +643,6 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
   }
   // A read finishing after its scope ended publishes nothing more.
   throwIfCancelled();
-  if (deps.timing) observeNativeTiming(native.presenceCapture, deps.timing, now());
   if (deps.warn) {
     try {
       for (const cause of presenceDiagnostics({ systemModal: native.systemModal }))
@@ -894,6 +895,7 @@ function observeNativeTiming(capture: unknown, observer: TimingObserver, at: num
   const diagnostics = isRecord(capture.diagnostics) ? capture.diagnostics : undefined;
   const phases = isRecord(diagnostics?.phaseMs) ? diagnostics.phaseMs : {};
   const samples = preparationSampleCount(diagnostics?.preparationSamples);
+  const resets = preparationSampleCount(diagnostics?.preparationResets);
   for (const phase of PRESENCE_PHASES) {
     if (typeof phases[phase] === 'number')
       observeTiming(observer, {
@@ -903,6 +905,7 @@ function observeNativeTiming(capture: unknown, observer: TimingObserver, at: num
         at,
         ms: phases[phase],
         ...(phase === 'preparation' && samples !== undefined ? { count: samples } : {}),
+        ...(phase === 'preparation' && resets !== undefined ? { resets } : {}),
       });
   }
 }

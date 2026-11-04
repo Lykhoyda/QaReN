@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'apps/docs-site/**'
+      - 'packages/qaren-design/**'
       - 'packages/qaren-plugin/CHANGELOG.md'
       - 'packages/qaren-core/CHANGELOG.md'
       - 'packages/qaren-cli/src/main.rs'
@@ -24,22 +25,24 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      DOCS_BASE_PATH: /QaReN
+      DOCS_SITE_URL: https://lykhoyda.github.io
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2 — Phase 134.5 SHA pin
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0 — Phase 134.5 SHA pin
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
         with:
-          node-version: '24'
-          cache: yarn
-          cache-dependency-path: yarn.lock
+          bun-version-file: apps/docs-site/package.json
 
-      - run: corepack enable
-      - run: corepack yarn install --immutable
+      - run: bun install --frozen-lockfile
+        working-directory: apps/docs-site
 
       - name: Build docs
-        run: corepack yarn workspace qaren-docs build
+        run: bun run build
+        working-directory: apps/docs-site
 
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0 — Phase 134.5 SHA pin
         with:

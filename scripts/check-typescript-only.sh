@@ -10,6 +10,7 @@
 #   packages/qaren-core/dist/          — tsc output (gitignored; generated)
 #   packages/qaren-cli/observe/dist/   — vite bundle output
 #   .yarn/releases/                    — pinned Yarn binary selected by yarnPath
+#   packages/qaren-design/design/      — verbatim mirror of the Claude Design artifact
 #   node_modules                       — never tracked anyway
 #
 # Shrinking the baseline (migrating a file to TS) is always allowed; growing
@@ -29,7 +30,7 @@ if [ ! -f "$BASELINE" ]; then
 fi
 
 current="$(git -C "$ROOT" ls-files '*.js' '*.mjs' '*.cjs' |
-  grep -v -E '^packages/qaren-core/dist/|^packages/qaren-cli/observe/dist/|^\.yarn/releases/|(^|/)node_modules/' || true)"
+  grep -v -E '^packages/qaren-core/dist/|^packages/qaren-design/design/|^packages/qaren-cli/observe/dist/|^\.yarn/releases/|(^|/)node_modules/' || true)"
 
 violations="$(comm -23 <(printf '%s\n' "$current" | sort) <(sort "$BASELINE"))"
 

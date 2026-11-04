@@ -670,7 +670,7 @@ pub fn finalize(runner: &mut dyn Runner, run_dir: &Path) -> VideoStatus {
 pub fn publication_copy(
     runner: &mut dyn Runner,
     run_dir: &Path,
-    admitted_offset_ms: Option<u64>,
+    start_offset_ms: Option<u64>,
     end_offset_ms: Option<u64>,
     publication_interrupted: bool,
 ) -> VideoStatus {
@@ -679,18 +679,25 @@ pub fn publication_copy(
     if publication_interrupted {
         return VideoStatus::Unavailable("app continuity was interrupted after admission".into());
     }
-    let Some(offset) = admitted_offset_ms else {
+    let Some(offset) = start_offset_ms else {
         return VideoStatus::Unavailable("no admitted app frame was recorded".into());
+    };
+    let Some(duration) = end_offset_ms
+        .and_then(|end| end.checked_sub(offset))
+        .filter(|duration| *duration > 0)
+    else {
+        return VideoStatus::Unavailable("no positive publication window was recorded".into());
     };
     let start = format!("{}.{:03}", offset / 1000, offset % 1000);
     let source = video_path(run_dir).to_string_lossy().into_owned();
-    let mut input = vec!["-ss".to_string(), start, "-i".to_string(), source];
-    if let Some(d) = end_offset_ms
-        .and_then(|end| end.checked_sub(offset))
-        .filter(|d| *d > 0)
-    {
-        input.extend(["-t".to_string(), format!("{}.{:03}", d / 1000, d % 1000)]);
-    }
+    let input = [
+        "-ss".to_string(),
+        start,
+        "-i".to_string(),
+        source,
+        "-t".to_string(),
+        format!("{}.{:03}", duration / 1000, duration % 1000),
+    ];
     let input: Vec<&str> = input.iter().map(String::as_str).collect();
     if !ffmpeg_encode(runner, &input, &out, None) || probe_duration_ms(runner, &out).is_none() {
         let _ = std::fs::remove_file(&out);
@@ -854,25 +861,23 @@ mod tests {
     }
 
     #[test]
-    fn without_a_positive_window_the_copy_is_untrimmed_at_the_end() {
+    fn without_a_positive_window_no_copy_is_published() {
         for end in [None, Some(12_000), Some(12_345)] {
             let run_dir = temp_run_dir();
             std::fs::write(video_path(&run_dir), "complete").unwrap();
-            let mut runner = SizedEncodes {
-                mock: MockRunner::new(),
-                sizes: vec![10],
-            };
-            runner.mock.expect_run("ffmpeg", CmdOutput::success(""));
-            runner
-                .mock
-                .expect_run("ffprobe", CmdOutput::success("5.0\n"));
+            std::fs::write(published_video_path(&run_dir), "stale").unwrap();
+            let mut runner = MockRunner::new();
             assert_eq!(
                 publication_copy(&mut runner, &run_dir, Some(12_345), end, false),
-                VideoStatus::Available,
+                VideoStatus::Unavailable("no positive publication window was recorded".into()),
                 "end: {end:?}"
             );
-            assert!(!runner.mock.calls[0].args.iter().any(|a| a == "-t"));
-            assert_eq!(runner.mock.remaining(), 0);
+            assert!(runner.calls.is_empty());
+            assert!(!published_video_path(&run_dir).exists());
+            assert_eq!(
+                std::fs::read_to_string(video_path(&run_dir)).unwrap(),
+                "complete"
+            );
             std::fs::remove_dir_all(run_dir).unwrap();
         }
     }

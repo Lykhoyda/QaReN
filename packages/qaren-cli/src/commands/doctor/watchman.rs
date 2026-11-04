@@ -14,12 +14,21 @@ pub(super) fn checks(runner: &mut dyn Runner, app_root: Option<&Path>) -> Vec<Ch
         return rows;
     };
     let output = runner.run(&crate::adapters::watchman::watch_project_spec(app_root));
-    use crate::adapters::watchman::VolumeProbe;
-    rows.push(match VolumeProbe::from_output(&output) {
-        VolumeProbe::Ready => Check::pass("watchman-volume-probe", "watchman watch-project answered for the candidate directory within 5 s"),
-        VolumeProbe::TimedOut => Check::fail("watchman-volume-probe", "watchman watch-project did not answer for the candidate volume within 5 s", crate::failure::WATCHMAN_VOLUME_FIX),
-        VolumeProbe::Rejected => Check::fail("watchman-volume-probe", "watchman rejected watch-project for the candidate directory; raw output withheld", crate::failure::WATCHMAN_VOLUME_FIX),
-        VolumeProbe::Unavailable => Check::warn("watchman-volume-probe", "watchman volume admission is unknown; the service is unavailable or its response is invalid", "check watchman-health and the candidate volume, then re-run doctor; Metro may use its fallback watcher when watchman is unavailable"),
+    use crate::adapters::watchman::{self, VolumeProbe};
+    let mut probe = VolumeProbe::from_output(&output);
+    if probe == VolumeProbe::Ready {
+        let root = watchman::watch_root(&output).expect("ready watch-project has a root");
+        let sync = runner.run_private(
+            &watchman::clock_sync_spec(watchman::SYNC_MS),
+            &watchman::clock_sync_input(&root, watchman::SYNC_MS),
+        );
+        probe = VolumeProbe::from_sync_output(&sync);
+    }
+    rows.push(match probe {
+        VolumeProbe::Ready => Check::pass("watchman-volume-probe", probe.reason()),
+        VolumeProbe::Stalled => Check::fail("watchman-volume-probe", probe.reason(), &VolumeProbe::stalled_fix()),
+        VolumeProbe::TimedOut | VolumeProbe::Rejected | VolumeProbe::SyncRejected => Check::fail("watchman-volume-probe", probe.reason(), crate::failure::WATCHMAN_VOLUME_FIX),
+        VolumeProbe::Unavailable | VolumeProbe::SyncUnavailable => Check::warn("watchman-volume-probe", probe.reason(), "check watchman-health and the candidate volume, then re-run doctor; Metro may use its fallback watcher when watchman is unavailable"),
     });
     rows
 }
@@ -72,7 +81,35 @@ fn health(runner: &mut dyn Runner) -> Check {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapters::watchman::VolumeProbe;
     use crate::exec::{CmdOutput, MockRunner};
+
+    #[test]
+    fn cookie_timeout_fails_the_volume_row_with_the_shared_stalled_cause() {
+        let mut runner = MockRunner::new();
+        runner.expect_run("watch-list", CmdOutput::success(r#"{"roots":[]}"#));
+        runner.expect_run(
+            "watch-project",
+            CmdOutput::success(r#"{"watch":"/resolved"}"#),
+        );
+        runner.expect_run(
+            "watchman",
+            CmdOutput::success(r#"{"error":"private-root: timed out waiting for cookie file"}"#),
+        );
+        let rows = checks(&mut runner, Some(Path::new("/resolved/project")));
+        assert_eq!(rows[1].status, super::super::Status::Fail);
+        assert!(
+            format!("{rows:?}").contains("the file watcher is stalled or still crawling the root")
+        );
+        assert!(!format!("{rows:?}").contains("private-root"));
+        assert!(rows[1].fix.as_ref().unwrap().contains("sync cookie"));
+        assert!(rows[1].fix.as_ref().unwrap().contains("fseventsd"));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&runner.private_inputs[0]).unwrap(),
+            serde_json::json!(["clock", "/resolved", {"sync_timeout":4000}])
+        );
+        assert_eq!(runner.remaining(), 0);
+    }
 
     #[test]
     fn no_candidate_establishes_no_watch() {
@@ -121,7 +158,11 @@ mod tests {
         ] {
             let mut runner = MockRunner::new();
             runner.expect_run("watch-list", CmdOutput::success(r#"{"roots":[]}"#));
+            let ready = VolumeProbe::from_output(&output) == VolumeProbe::Ready;
             runner.expect_run("watch-project", output);
+            if ready {
+                runner.expect_run("watchman", CmdOutput::success(r#"{"clock":"c:1"}"#));
+            }
             let rows = checks(&mut runner, Some(Path::new("/")));
             assert_eq!(rows[1].status, status);
             assert!(!format!("{rows:?}").contains("private error"));

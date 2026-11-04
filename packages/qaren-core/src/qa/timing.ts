@@ -98,6 +98,9 @@ export const ADMISSION_INNER_CLASSES = [
   'target_list_empty',
   'target_other_device',
   'bundle_readiness_timeout',
+  'non_dev_bundle',
+  'no_dev_target_unknown',
+  'react_readiness_timeout',
   'cdp_probe_timeout',
   'cdp_handshake_timeout',
   'cdp_target_closed',
@@ -121,7 +124,19 @@ const ADMISSION_WORDS = {
   liveness: ADMISSION_LIVENESS,
   bundleRequest: ADMISSION_BUNDLE_REQUESTS,
 } as const;
-const ADMISSION_NUMBERS = ['attempt', 'relaunches', 'elapsedMs', 'remainingMs'] as const;
+const ADMISSION_NUMBERS = [
+  'attempt',
+  'relaunches',
+  'elapsedMs',
+  'remainingMs',
+  'attachBudgetMs',
+  'walkBudgetMs',
+  'targetsTotal',
+  'devTrue',
+  'devFalse',
+  'devUndefined',
+  'devUnknown',
+] as const;
 const HEALTH_DETAILS = [
   'refused',
   'reset',
@@ -186,6 +201,7 @@ export interface TimingEvent {
   useMs?: number;
   ageMs?: number;
   count?: number;
+  resets?: number;
   nextLine?: number;
   presence?: number;
   budgetMs?: number;
@@ -216,6 +232,13 @@ export interface TimingEvent {
   bundleRequest?: (typeof ADMISSION_BUNDLE_REQUESTS)[number];
   elapsedMs?: number;
   remainingMs?: number;
+  attachBudgetMs?: number;
+  walkBudgetMs?: number;
+  targetsTotal?: number;
+  devTrue?: number;
+  devFalse?: number;
+  devUndefined?: number;
+  devUnknown?: number;
   healthDetail?: HealthDetail;
   hostChild?: 'alive' | 'exited' | 'unknown';
   exitCode?: number;
@@ -271,6 +294,15 @@ export function cleanTimingEvent(value: unknown): TimingEvent | undefined {
     if (input.stage !== 'screenshot' || input.outcome !== 'withheld' || !word) return undefined;
     Object.assign(event, { [key]: word });
   }
+  if (input.resets !== undefined) {
+    if (
+      input.stage !== 'native-preparation' ||
+      !Number.isSafeInteger(input.resets) ||
+      (input.resets as number) < 0
+    )
+      return undefined;
+    event.resets = input.resets as number;
+  }
   const admission = input.stage === 'admission' && input.edge === 'point';
   for (const [key, values] of Object.entries(ADMISSION_WORDS)) {
     if (input[key] === undefined) continue;
@@ -323,6 +355,8 @@ export function cleanTimingEvent(value: unknown): TimingEvent | undefined {
       number < 0 ||
       number > Number.MAX_SAFE_INTEGER
     )
+      return undefined;
+    if ((ADMISSION_NUMBERS as readonly string[]).includes(key) && !Number.isSafeInteger(number))
       return undefined;
     event[key] = number;
   }

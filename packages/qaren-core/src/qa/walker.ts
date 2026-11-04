@@ -24,7 +24,7 @@ import {
   withEchoScope,
 } from './inputs.js';
 import { isAbort, cancellationSignal, withDeadline } from '../domain/cancellation.js';
-import { ANY_METHOD, parseStep, type Block, type Item, type Target } from './plan.js';
+import { fillLabels, parseStep, type Block, type Item, type Target } from './plan.js';
 import {
   type Element,
   type Screen,
@@ -169,6 +169,7 @@ import {
 } from './ledger.js';
 
 export interface ActResult {
+  settle?: Pick<TimingEvent, 'method' | 'ms'>;
   executed?: boolean;
   ok: boolean;
   proven: boolean;
@@ -227,6 +228,7 @@ export interface WalkerDeps {
     context: QaDispatchContext,
     privateValue?: boolean,
     onPrivateInput?: () => void,
+    alwaysRetype?: boolean,
   ): Promise<ActResult>;
   // iOS only: type, proven only by a matching React read-back; testID identifies the pre-dispatch focus veto.
   typeFocused?(
@@ -237,11 +239,14 @@ export interface WalkerDeps {
     requireFocused?: boolean,
     privateValue?: boolean,
     onPrivateInput?: () => void,
+    alwaysRetype?: boolean,
   ): Promise<ActResult>;
   // iOS only: positive React proof that the input with this testID is focused.
   reactFocused?(testID: string): Promise<boolean>;
   // iOS only: hides a visible keyboard, native tier then JS tier; none when neither proved it hidden.
   dismissKeyboard?(context: QaDispatchContext): Promise<'native-control' | 'js' | 'none'>;
+  // iOS only: blur the focused input even when the native keyboard is hidden.
+  blurFocusedInput?(context: QaDispatchContext): Promise<boolean>;
   // iOS only: Fill ladder rung 3, the input's change handler receives the whole value, then it is verified.
   setByHandler?(
     testID: string,
@@ -278,6 +283,7 @@ export interface WalkerDeps {
   loginOutcome?(outcome: BlockOutcome): void;
   timing?: TimingObserver;
   rowTiming?(t: number): RowTiming;
+  rowSettle?: TimingObserver;
   // iOS only: the app process every capture must still belong to, set by the first capture.
   appProcess?: { expected?: number };
   hideDevMenu?(): Promise<ActResult>;
@@ -1206,6 +1212,16 @@ async function walkBlockScoped(
     }
   };
   let dispatchStarted: number | undefined;
+  const observeRowSettle = (result: ActResult): void => {
+    if (deps.rowSettle && result.settle)
+      observeTiming(deps.rowSettle, {
+        ...result.settle,
+        stage: 'settle',
+        edge: 'end',
+        outcome: 'ok',
+        at: deps.now(),
+      });
+  };
   const mutate = async (
     item: Item,
     observation: Observation,
@@ -1236,6 +1252,7 @@ async function walkBlockScoped(
       // A scroll step's momentum outlives the step and its block; the next targeted dispatch settles first.
       if (item.kind === 'scroll') sequence.momentum = true;
       const result = await send(context);
+      observeRowSettle(result);
       if (result.entryMismatch) fillMismatch = result.entryMismatch;
       context.assertComplete();
       diagnostic(item, observation, 'dispatch', 'COMPLETED', context.authorizations);
@@ -1837,23 +1854,100 @@ async function walkBlockScoped(
     const readyBy = deps.now() + KEYBOARD_READY_MS;
     let after = await settledCapture(item);
     const bound = () => bindFillIdentity(item, after.screen, target.oracleTestID);
-    for (
-      let captures = 1;
-      !proofMode &&
+    const waitForKeyboard = async (skipWait: boolean, deadline: number) => {
+      for (
+        let captures = 1;
+        !skipWait &&
+        after.screen.keyboardVisible !== true &&
+        bound()?.kind !== 'strict' &&
+        captures < KEYBOARD_READY_CAPTURES &&
+        deps.now() < deadline;
+        captures += 1
+      ) {
+        await pause(Math.min(WAIT_POLL_MS, Math.max(0, deadline - deps.now())));
+        after = await settledCapture(item);
+      }
+    };
+    await waitForKeyboard(proofMode, readyBy);
+    let binding = bound();
+    if (binding?.kind === 'strict')
+      return { ...binding.strict, observation: after, identity: target.oracleTestID, scrolled };
+    let refocused = false;
+    if (
       after.screen.keyboardVisible !== true &&
-      bound()?.kind !== 'strict' &&
-      captures < KEYBOARD_READY_CAPTURES &&
-      deps.now() < readyBy;
-      captures += 1
+      deps.platform !== 'android' &&
+      deps.reactFocused &&
+      deps.blurFocusedInput
     ) {
-      await pause(Math.min(WAIT_POLL_MS, Math.max(0, readyBy - deps.now())));
-      after = await settledCapture(item);
+      let focused = false;
+      try {
+        focused = (await deps.reactFocused(target.oracleTestID)) === true;
+      } catch (error) {
+        if (isAbort(error)) throw error;
+      }
+      if (focused) {
+        let blurred = false;
+        try {
+          try {
+            await mutate(item, after, async (context) => {
+              blurred = await deps.blurFocusedInput!(context);
+              return { ok: true, proven: false };
+            });
+          } catch (error) {
+            if (
+              isAbort(error) ||
+              error instanceof EvidenceExpired ||
+              error instanceof QaDispatchError
+            )
+              throw error;
+            return nothingTyped(`tapping "${quoted}" raised no keyboard`, after.screen);
+          }
+          if (!blurred)
+            return nothingTyped(
+              `tapping "${quoted}" raised no keyboard; the focused field could not be blurred`,
+              after.screen,
+            );
+          after = await settledCapture(item);
+          usable(after, item);
+          const rebound = bindDispatchIdentity(
+            { ...item, kind: 'press' },
+            after.screen,
+            target.element,
+          );
+          if (!('ref' in rebound))
+            return nothingTyped(
+              'TARGET_NOT_FOUND: the focused field no longer resolves uniquely after blur',
+              after.screen,
+              'TARGET_NOT_FOUND',
+            );
+          const retap = await mutate(item, after, (context) => deps.press(rebound.ref, context));
+          if (!retap.ok)
+            return nothingTyped(
+              `${retap.error ?? 'the tap was not dispatched'}; tapping "${quoted}" failed`,
+              after.screen,
+              retap.ambiguous ? 'TARGET_AMBIGUOUS' : undefined,
+            );
+          refocused = true;
+          const retryReadyBy = deps.now() + KEYBOARD_READY_MS;
+          after = await settledCapture(item);
+          await waitForKeyboard(false, retryReadyBy);
+          binding = bound();
+        } finally {
+          deps.note?.(
+            `keyboard-refocus ${JSON.stringify({ v: 1, line: item.line, focused: true, blurred, raised: refocused && after.screen.keyboardVisible === true })}`,
+          );
+        }
+      }
     }
-    const binding = bound();
     if (binding?.kind === 'strict')
       return { ...binding.strict, observation: after, identity: target.oracleTestID, scrolled };
     if (after.screen.keyboardVisible !== true)
-      return nothingTyped(`tapping "${quoted}" raised no keyboard`, after.screen);
+      return nothingTyped(
+        refocused
+          ? 'focus was reported after the first tap and the keyboard stayed hidden after a blur and a second tap'
+          : `tapping "${quoted}" raised no keyboard`,
+        after.screen,
+      );
     const again = binding?.kind === 'fallback' ? binding.fallback : undefined;
     if (!again)
       return nothingTyped(
@@ -1878,6 +1972,7 @@ async function walkBlockScoped(
           proofMode,
           secretFill(item, again.element),
           () => promoteFill(item, again.element.testID ?? again.oracleTestID),
+          item.alwaysRetype,
         ),
       );
     } catch (error) {
@@ -1950,8 +2045,15 @@ async function walkBlockScoped(
     currentInputs()?.expectEcho(quoted, item.input);
     try {
       entry = await mutate(item, before, (context) =>
-        deps.typeFocused!(quoted, fillText(item), quoted, context, true, secretFill(item), () =>
-          promoteFill(item, quoted),
+        deps.typeFocused!(
+          quoted,
+          fillText(item),
+          quoted,
+          context,
+          true,
+          secretFill(item),
+          () => promoteFill(item, quoted),
+          item.alwaysRetype,
         ),
       );
     } catch (error) {
@@ -2241,12 +2343,14 @@ async function walkBlockScoped(
                   });
                 dispatched = true;
                 const result = await deps.press(ref, context);
-                if (!result.ok || result.executed === false)
+                if (!result.ok || result.executed === false) {
+                  observeRowSettle(result);
                   throw new ResolutionError({
                     refuse: 'INTERRUPTION_NOT_DISPATCHED',
                     reason:
                       'the decline control was not dispatched successfully; it was not retried',
                   });
+                }
                 return result;
               },
               screenshot: (name) => {
@@ -3535,8 +3639,13 @@ async function walkBlockScoped(
                     : deps.press(ref!, context);
                 }
                 return item.kind === 'fill'
-                  ? deps.fill(ref!, fillText(item), context, secretFill(item), () =>
-                      promoteFill(item, element?.testID),
+                  ? deps.fill(
+                      ref!,
+                      fillText(item),
+                      context,
+                      secretFill(item),
+                      () => promoteFill(item, element?.testID),
+                      item.alwaysRetype,
                     )
                   : item.kind === 'scroll'
                     ? deps.scroll(item.direction, context)
@@ -4308,7 +4417,8 @@ export function loginBlock(slug: string, stored: StoredBlock): Block {
           ...(step.input !== undefined
             ? { input: step.input, ...(step.sensitivity ? { sensitivity: step.sensitivity } : {}) }
             : { text: step.text! }),
-          ...(ANY_METHOD.test(step.raw) ? { anyMethod: true as const } : {}),
+          ...(fillLabels(step.raw).flags.anyMethod ? { anyMethod: true as const } : {}),
+          ...(step.alwaysRetype ? { alwaysRetype: true as const } : {}),
           ...at,
         };
       case 'scroll':
@@ -4644,6 +4754,8 @@ function withRowTiming(deps: WalkerDeps): WalkerDeps {
       }
       observe(event);
     },
+    // Action adapters use the session observer; returned settle facts enter the row only here.
+    rowSettle: (event) => timer.observe(event),
     rowTiming: (t) => {
       const calls = deps.judge?.calls ?? [];
       const elapsed = deps.judge?.elapsedMs;

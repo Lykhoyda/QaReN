@@ -190,6 +190,19 @@ fn serialize_porcelain_z<'a>(entries: impl IntoIterator<Item = PorcelainEntry<'a
     serialized
 }
 
+pub(crate) fn is_untracked_watchman_cookie(
+    status: &str,
+    path: &str,
+    original_path: Option<&str>,
+) -> bool {
+    status == "??"
+        && original_path.is_none()
+        && !path.ends_with('/')
+        && Path::new(path)
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with(".watchman-cookie-"))
+}
+
 pub fn porcelain_without_qaren_state(
     porcelain_stdout: &str,
     repo_root: &Path,
@@ -205,23 +218,24 @@ pub fn porcelain_without_qaren_state(
         return porcelain_stdout.to_string();
     };
     serialize_porcelain_z(entries.into_iter().filter(|entry| {
-        !entry.paths().all(|path| {
-            let path_ref = Path::new(path);
-            is_qaren_state_path(path)
-                || actions.as_deref().is_some_and(|actions| {
-                    path_ref == actions
-                        || path_ref.parent() == Some(actions)
+        !is_untracked_watchman_cookie(entry.status, entry.path, entry.original_path)
+            && !entry.paths().all(|path| {
+                let path_ref = Path::new(path);
+                is_qaren_state_path(path)
+                    || actions.as_deref().is_some_and(|actions| {
+                        path_ref == actions
+                            || path_ref.parent() == Some(actions)
+                                && path_ref.extension().is_some_and(|extension| {
+                                    extension == "yaml" || extension == "yml"
+                                })
+                    })
+                    || plans.as_deref().is_some_and(|plans| {
+                        path_ref.parent() == Some(plans)
                             && path_ref
                                 .extension()
-                                .is_some_and(|extension| extension == "yaml" || extension == "yml")
-                })
-                || plans.as_deref().is_some_and(|plans| {
-                    path_ref.parent() == Some(plans)
-                        && path_ref
-                            .extension()
-                            .is_some_and(|extension| extension == "md")
-                })
-        })
+                                .is_some_and(|extension| extension == "md")
+                    })
+            })
     }))
 }
 
@@ -813,6 +827,29 @@ mod tests {
             ),
             ""
         );
+    }
+
+    #[test]
+    fn drops_only_untracked_watchman_cookie_files() {
+        for porcelain in [
+            "?? .watchman-cookie-host-123-4\0",
+            "?? apps/mobile/.watchman-cookie-host-123-4\0",
+        ] {
+            assert_eq!(porcelain_without_qaren_state(porcelain), "");
+        }
+        for porcelain in [
+            " M .watchman-cookie-host-123-4\0",
+            "A  .watchman-cookie-x\0",
+            "?? .watchman-cookies.txt\0",
+            "?? .watchman-cookie\0",
+            "?? .watchman-cookie-x/\0",
+            "?? .watchman-cookie-x/source.ts\0",
+            "R  .watchman-cookie-a\0old.txt\0",
+            "C  new.txt\0.watchman-cookie-b\0",
+            "?? .watchman-cookie-host-123-4",
+        ] {
+            assert_eq!(porcelain_without_qaren_state(porcelain), porcelain);
+        }
     }
 
     #[test]

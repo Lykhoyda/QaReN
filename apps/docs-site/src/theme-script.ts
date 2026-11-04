@@ -1,0 +1,1 @@
+export const themeScript = `document.documentElement.dataset.theme='dark';try{var t=localStorage.getItem('qaren-theme');if(t==='dark'||t==='light')document.documentElement.dataset.theme=t}catch(e){}`;

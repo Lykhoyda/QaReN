@@ -23,7 +23,7 @@ plan preflight -> device selection -> lease + durable run record
                -> app preparation -> screen proof -> walk -> teardown
 ```
 
-The plan is parsed first, so an unparseable plan or a missing Jev key refuses before any
+The plan is parsed first, so an unparseable plan or a missing [Jev](../jev/) key refuses before any
 device is touched. The run then leases the device, prepares the app and its own Metro,
 walks the plan and cleans up owned resources. By default, the simulator or emulator
 stays running and the installed app stays. Failed iOS checks can hold resources for inspection;
@@ -127,8 +127,9 @@ The [run storage contract](https://github.com/Lykhoyda/QaReN/blob/develop/packag
 
 `check` records the commit, the lockfile hash and a fingerprint of the working tree before
 the walk and checks them again after it. A change in between fails the run with
-`CANDIDATE_DRIFTED`, which can never be a pass. Edits to saved block files under
-`.qaren/actions/` are not counted as drift.
+`CANDIDATE_DRIFTED`, which can never be a pass. See the
+[candidate provenance contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#candidate-provenance)
+for excluded paths and untracked Watchman cookies.
 
 ## Leases, cancellation and cleanup
 

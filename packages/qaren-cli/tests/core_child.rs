@@ -349,10 +349,7 @@ fn fresh_admission_reprobe_shares_the_original_allowance_and_rejects_late_result
         assert_eq!(summary["deadlineExceeded"], terminal != "clear");
         assert_eq!(mock.remaining(), 0);
         if expected_attempts > 0 {
-            assert_eq!(
-                mock.calls[0].timeout_seconds,
-                allowance.min(30_000) / 1000
-            );
+            assert_eq!(mock.calls[0].timeout_seconds, allowance.min(30_000) / 1000);
         }
         if expected_attempts == 2 {
             assert_eq!(
@@ -889,6 +886,63 @@ fn slot_diagnostics_retain_only_allowlisted_events_without_affecting_the_result(
                 serde_json::from_str::<serde_json::Value>(expected).unwrap()
             );
         }
+    });
+}
+
+#[test]
+fn preparation_reset_counts_preserve_private_metrics_and_reject_invalid_facts() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use serde_json::json;
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    let repo = common::temp_repo();
+    let inputs = Arc::new(InputValues::from_entries([(
+        OsString::from("QAREN_INPUT_PASSWORD"),
+        OsString::from("private-synthetic-value"),
+    )]));
+    with_input_scope(inputs, || {
+        let metric = json!({
+            "kind": "metric", "stage": "native-preparation", "edge": "point", "outcome": "ok",
+            "at": 200, "ms": 80.5, "count": 6, "resets": 0
+        });
+        let mut reset = metric.clone();
+        reset["resets"] = json!(2);
+        let mut payloads = vec![metric.clone(), reset.clone()];
+        for value in [
+            json!(-1),
+            json!(0.5),
+            json!(9007199254740992_u64),
+            json!("private-synthetic-value"),
+            json!(null),
+        ] {
+            let mut invalid = metric.clone();
+            invalid["resets"] = value;
+            payloads.push(invalid);
+        }
+        let mut wrong_stage = metric.clone();
+        wrong_stage["stage"] = json!("native-total");
+        payloads.push(wrong_stage);
+        let mut stdout = String::new();
+        for (i, value) in payloads.iter().enumerate() {
+            stdout.push_str(&envelope(i as u64 + 2, "diagnostic", &value.to_string()));
+            stdout.push('\n');
+        }
+        stdout.push_str(&envelope(
+            payloads.len() as u64 + 2,
+            "result",
+            &pass_ledger(&[]),
+        ));
+        stdout.push('\n');
+        let mut mock = MockRunner::new();
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+        let result = run_child(&mut mock, &repo.join("core.log"));
+        assert_eq!(result.verdict, Verdict::Pass);
+        let stored = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
+        let actual: Vec<serde_json::Value> = stored
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(actual, [metric, reset]);
     });
 }
 
@@ -2287,6 +2341,7 @@ fn cancellation_after_core_spawn_prevents_request_dispatch() {
 fn deadline_before_admission_refuses_but_after_admission_fails() {
     for (admitted, stdout) in [
         (false, String::new()),
+        (false, (2..102).map(|seq| envelope(seq, "diagnostic", r#"{"kind":"metric","stage":"admission","edge":"point","outcome":"unknown","at":0,"admission":"retry","attachBudgetMs":120000,"walkBudgetMs":1200000}"#) + "\n").collect::<String>()),
         (
             false,
             format!("{}\n", envelope(2, "row", &row(0, 1, "pass"))),
@@ -2446,24 +2501,30 @@ fn a_malformed_runner_driver_announcement_is_a_protocol_violation() {
 }
 
 #[test]
-fn step_starts_are_telemetry_and_never_ledger_rows() {
+fn the_first_step_start_is_retained_without_becoming_a_ledger_row() {
     let repo = common::temp_repo();
     let rows = [row(1, 1, "pass")];
     let stdout = format!(
-        "{}\n{}\n{}\n",
+        "{}\n{}\n{}\n{}\n",
         envelope(
             2,
             "start",
             r#"{"operationId":1,"line":1,"kind":"step","t":50}"#
         ),
-        envelope(3, "row", &rows[0]),
-        envelope(4, "result", &pass_ledger(&rows))
+        envelope(
+            3,
+            "start",
+            r#"{"operationId":1,"line":1,"kind":"step","t":80}"#
+        ),
+        envelope(4, "row", &rows[0]),
+        envelope(5, "result", &pass_ledger(&rows))
     );
     let mut mock = MockRunner::new();
     mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
     let outcome = run_child(&mut mock, &repo.join("core.log"));
     assert_eq!(outcome.verdict, Verdict::Pass);
     assert_eq!(outcome.ledger.steps.len(), 1);
+    assert_eq!(outcome.first_step_start_ms, Some(50));
 }
 
 #[test]
@@ -2960,4 +3021,130 @@ fn signal_cancellation_preserves_validated_press_evidence_from_the_child_result(
         evidence
     );
     assert!(*mock.piped_terminated[0].lock().unwrap());
+}
+
+fn dev_admission_facts() -> serde_json::Value {
+    serde_json::json!({
+        "attempt": 2, "lastStarted": "retry_wait", "lastCompleted": "attach", "inner": "non_dev_bundle",
+        "relaunches": 0, "relaunchFailed": false, "liveness": "not_probed",
+        "elapsedMs": 120000, "remainingMs": 1080000, "budgetMs": 1200000,
+        "attachBudgetMs": 120000, "walkBudgetMs": 1200000,
+        "targetsTotal": 1, "devTrue": 0, "devFalse": 1, "devUndefined": 0, "devUnknown": 0
+    })
+}
+
+#[test]
+fn development_target_refusal_preserves_structured_facts() {
+    let repo = common::temp_repo();
+    let facts = dev_admission_facts();
+    let result = serde_json::json!({"verdict":"REFUSED", "code":"DEV_TARGET_MISSING", "message":"development bundle required", "lease":request().lease, "admission":facts});
+    let mut mock = MockRunner::new();
+    mock.expect_spawn_piped(
+        "walk.js",
+        9000,
+        &(envelope(2, "result", &result.to_string()) + "\n"),
+        Some(4),
+    );
+    let outcome = run_child(&mut mock, &repo.join("core.log"));
+    assert!(
+        matches!(outcome.verdict, Verdict::Refused { ref code, .. } if code == "DEV_TARGET_MISSING")
+    );
+    assert_eq!(
+        serde_json::to_value(outcome.ledger).unwrap()["admission"],
+        facts
+    );
+}
+
+#[test]
+fn malformed_development_target_facts_fail_closed() {
+    for (key, value) in [
+        ("devFalse", serde_json::json!(-1)),
+        ("devTrue", serde_json::json!(1)),
+        ("targetsTotal", serde_json::json!(0)),
+        ("inner", serde_json::json!("private-canary")),
+        ("targetId", serde_json::json!("private-canary")),
+        ("elapsedMs", serde_json::json!(0.5)),
+    ] {
+        let repo = common::temp_repo();
+        let mut facts = dev_admission_facts();
+        facts[key] = value;
+        let result = serde_json::json!({"verdict":"REFUSED", "code":"DEV_TARGET_MISSING", "message":"development bundle required", "lease":request().lease, "admission":facts});
+        let mut mock = MockRunner::new();
+        mock.expect_spawn_piped(
+            "walk.js",
+            9000,
+            &(envelope(2, "result", &result.to_string()) + "\n"),
+            Some(4),
+        );
+        let outcome = run_child(&mut mock, &repo.join("core.log"));
+        assert_eq!(outcome.verdict, Verdict::Fail, "{key}");
+        assert_eq!(
+            outcome.failure.unwrap().code,
+            FailureCode::CoreResultMissing
+        );
+    }
+}
+
+#[test]
+fn continuous_diagnostics_before_any_row_cannot_extend_the_total_watchdog() {
+    use qaren::exec::{CmdSpec, RealRunner};
+    let repo = common::temp_repo();
+    let script = r#"
+      const reader = require('node:readline').createInterface({input: process.stdin});
+      reader.once('line', input => {
+        const {runId} = JSON.parse(input);
+        let seq = 1;
+        setInterval(() => process.stdout.write(JSON.stringify({v:1,runId,seq:++seq,type:'diagnostic',payload:{kind:'metric',stage:'admission',edge:'point',outcome:'unknown',at:seq,admission:'retry',walkBudgetMs:1000,attachBudgetMs:120000}}) + '\n'), 10);
+      });
+    "#;
+    let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries([(
+        std::ffi::OsString::from("QAREN_INPUT_UNUSED"),
+        std::ffi::OsString::from("synthetic-unused-input"),
+    )]));
+    qaren::redact::with_input_scope(inputs, || {
+        let mut runner = RealRunner::with_log_executable(env!("CARGO_BIN_EXE_qaren").into());
+        let spec = CmdSpec::new("diagnostic-fixture", "node", &["-e", script], 10);
+        let child = core::spawn(&mut runner, &spec, &repo.join("core.log"), &request()).unwrap();
+        let started = std::time::Instant::now();
+        let outcome = core::wait(
+            &mut runner,
+            child,
+            Budgets {
+                walk_seconds: 1,
+                step_seconds: 10,
+            },
+            &mut |_, _| {},
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(7));
+        assert!(outcome.ledger.steps.is_empty());
+        assert!(
+            matches!(outcome.verdict, Verdict::Refused { ref code, .. } if code == "CDP_NOT_CONNECTED")
+        );
+        let failure = outcome.failure.unwrap();
+        assert_eq!(failure.next_action.as_str(), "inspect_admission_budget");
+        assert!(!outcome.group_survived);
+        let stored = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
+        assert!(stored.lines().count() > 10);
+    });
+}
+
+#[test]
+fn malformed_unknown_development_facts_never_echo_raw_decoder_values() {
+    let repo = common::temp_repo();
+    let mut facts = dev_admission_facts();
+    facts["inner"] = "no_dev_target_unknown".into();
+    facts["elapsedMs"] = "private-admission-canary".into();
+    let result = serde_json::json!({"verdict":"REFUSED", "code":"CDP_NOT_CONNECTED", "message":"development state unknown", "admission":facts});
+    let mut mock = MockRunner::new();
+    mock.expect_spawn_piped(
+        "walk.js",
+        9000,
+        &(envelope(2, "result", &result.to_string()) + "\n"),
+        Some(4),
+    );
+    let outcome = run_child(&mut mock, &repo.join("core.log"));
+    assert_eq!(outcome.verdict, Verdict::Fail);
+    let failure = outcome.failure.unwrap();
+    assert_eq!(failure.code, FailureCode::CoreResultMissing);
+    assert!(!failure.detail.contains("private-admission-canary"));
 }

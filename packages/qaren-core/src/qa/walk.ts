@@ -32,6 +32,7 @@ import {
   createDevicePressHandler,
   createDeviceScrollHandler,
   dismissKeyboardForQa,
+  dismissViaJs,
   readReactInputValue,
   entryMismatchOf,
 } from '../handlers/device-interact.js';
@@ -59,6 +60,7 @@ import {
 import type { ToolResult } from '../utils.js';
 import type { QaDispatchContext } from '../domain/qa-dispatch.js';
 import { resolveKeyboardGuard } from '../runners/keyboard-guard.js';
+import { cleanAdmissionFacts } from './admission-facts.js';
 import { HandlerError, adapt, describeError, fillEvidence, unwrap } from './adapt.js';
 import {
   AppProcessGoneError,
@@ -284,10 +286,11 @@ function act(
           tappedRect?: unknown;
         }>(result);
         const method = fillMethodOf(meta);
-        logActionSettle(meta, timing);
+        const settle = logActionSettle(meta, timing);
         const keyboard = actionKeyboard(meta);
         if (data?.executed === false || data?.tapped === false)
           return {
+            ...settle,
             ok: false,
             proven: false,
             executed: false,
@@ -317,6 +320,7 @@ function act(
             : undefined;
         const chars = data?.caseNormalizedChars;
         return {
+          ...settle,
           ok: true,
           proven: proven || verified,
           ...(keyboard !== undefined ? { keyboardShown: keyboard } : {}),
@@ -326,10 +330,14 @@ function act(
           ...(method ? { method } : {}),
         };
       } catch (error) {
-        logActionSettle(error instanceof HandlerError ? error.meta : undefined, timing);
+        const settle = logActionSettle(
+          error instanceof HandlerError ? error.meta : undefined,
+          timing,
+        );
         const keyboard = actionKeyboard(error instanceof HandlerError ? error.meta : undefined);
         const { code, message } = describeError(error);
         return {
+          ...settle,
           ok: false,
           proven: false,
           mutation: extractMutationDisposition(result),
@@ -346,7 +354,7 @@ function act(
     },
     (error) => {
       if (error instanceof AppProcessGoneError) throw error;
-      logActionSettle(
+      const settle = logActionSettle(
         error instanceof HandlerError
           ? error.meta
           : error instanceof QaDispatchError
@@ -356,6 +364,7 @@ function act(
       );
       const { code, message } = describeError(error);
       return {
+        ...settle,
         ok: false,
         proven: false,
         mutation:
@@ -403,7 +412,11 @@ function actionKeyboard(meta?: Record<string, unknown>): boolean | undefined {
   return shown;
 }
 
-function logActionSettle(meta?: Record<string, unknown>, timing?: TimingContext): void {
+function logActionSettle(
+  meta?: Record<string, unknown>,
+  timing?: TimingContext,
+): Pick<ActResult, 'settle'> {
+  let measured: Pick<ActResult, 'settle'> = {};
   try {
     const settle = isRecord(meta?.settle) ? meta.settle : {};
     const ms = isRecord(meta?.timings_ms) ? meta.timings_ms.settle : undefined;
@@ -423,6 +436,8 @@ function logActionSettle(meta?: Record<string, unknown>, timing?: TimingContext)
           ? ms
           : 'unknown',
     };
+    if (typeof summary.ms === 'number')
+      measured = { settle: { method: summary.method, ms: summary.ms } };
     if (timing)
       observeTiming(timing.observe, {
         stage: 'settle',
@@ -438,6 +453,7 @@ function logActionSettle(meta?: Record<string, unknown>, timing?: TimingContext)
   } catch {
     // Diagnostics cannot change an action's outcome.
   }
+  return measured;
 }
 
 function entryMismatchFrom(error: unknown): Pick<ActResult, 'entryMismatch'> {
@@ -448,7 +464,10 @@ function entryMismatchFrom(error: unknown): Pick<ActResult, 'entryMismatch'> {
 
 function fillMethodOf(meta: Record<string, unknown> | undefined): ActResult['method'] {
   const method = meta?.fillMethod;
-  return method === 'keyboard' || method === 'clear-type' || method === 'set-handler'
+  return method === 'already-set' ||
+    method === 'keyboard' ||
+    method === 'clear-type' ||
+    method === 'set-handler'
     ? method
     : undefined;
 }
@@ -528,26 +547,36 @@ async function openSession(
         attachBudgetMs: request.attachBudgetMs,
         ...(target.manifestWarm ? { launchWarm: target.manifestWarm } : {}),
         remainingMs,
-        attach: async (deadline) => {
+        waitTargets: async (deadline) => {
           attachStage = 'wait_targets';
           await waitForExactPortTargets(
             target.metroPort,
-            Math.max(1, Math.min(REACT_READY_TIMEOUT_MS, remainingMs())),
+            Math.max(
+              1,
+              Math.floor(
+                Math.min(REACT_READY_TIMEOUT_MS, remainingMs(), deadline - performance.now()),
+              ),
+            ),
             REACT_READY_POLL_MS,
             stop.signal,
             devicePin,
             appId,
+            (targets) => cdp.noteDevelopmentTargetCandidates(targets),
           );
+        },
+        attach: async (deadline) => {
           attachStage = 'connect_exact';
           await cdp.connectExact(
             target.metroPort,
             { platform, bundleId: appId, ...(devicePin ? { deviceName: devicePin } : {}) },
-            'default',
+            'qa',
             1,
             undefined,
             deadline,
           );
         },
+        developmentTargets: () => cdp.developmentTargets,
+        observeDevelopmentTargets: (observe) => cdp.observeDevelopmentTargets(observe),
         bundleReady: (deadline) => awaitBundleReady((expr) => cdp.evaluate(expr), deadline),
         // Same launch the CLI made: once Metro answers the manifest in time, terminate and open the dev client on its Metro.
         ...(platform === 'ios'
@@ -769,7 +798,7 @@ async function openSession(
         now,
         observe: timing,
       }),
-    fill: (ref, text, qaContext, privateValue, onPrivateInput) =>
+    fill: (ref, text, qaContext, privateValue, onPrivateInput, alwaysRetype) =>
       act(
         () =>
           fill({
@@ -778,6 +807,7 @@ async function openSession(
             qaContext,
             privateValue,
             onPrivateInput,
+            alwaysRetype,
             qaTiming: { now, observe: timing },
           }),
         true,
@@ -871,6 +901,11 @@ async function openSession(
           // RN_KEYBOARD_GUARD=0 turns off every QaReN keyboard clearance, this one included.
           ...(resolveKeyboardGuard(process.env)
             ? {
+                blurFocusedInput: (qaContext: QaDispatchContext) =>
+                  stop.track(async () => {
+                    const client = cdpClientOrNull(getClient);
+                    return client ? dismissViaJs(client, qaContext) : false;
+                  }),
                 dismissKeyboard: (qaContext: QaDispatchContext) =>
                   stop.track(() => dismissKeyboardForQa(getClient, qaContext)),
               }
@@ -883,6 +918,7 @@ async function openSession(
             requireFocused,
             privateValue,
             onPrivateInput,
+            alwaysRetype,
           ) =>
             act(
               () =>
@@ -895,6 +931,7 @@ async function openSession(
                   requireFocused,
                   skipFinalValidation: true,
                   clearFirst: true,
+                  alwaysRetype,
                   privateValue,
                   onPrivateInput,
                   qaContext,
@@ -1044,13 +1081,19 @@ async function mainRequest(
     if (close) await close();
     return exitAfterDrain(code);
   };
-  const refuse = (code: string, message: string, close?: () => Promise<void>): Promise<never> =>
+  const refuse = (
+    code: string,
+    message: string,
+    close?: () => Promise<void>,
+    admission?: unknown,
+  ): Promise<never> =>
     finish(
       {
         verdict: 'REFUSED',
         code,
         message,
         lease: request.lease,
+        ...(admission === undefined ? {} : { admission: cleanAdmissionFacts(admission) }),
         jev: summarizeJev(request.preflightCalls ?? []),
       },
       close,
@@ -1112,7 +1155,7 @@ async function mainRequest(
     );
   } catch (error) {
     const { code, message } = describeError(error);
-    return refuse(code, message);
+    return refuse(code, message, undefined, error instanceof HandlerError ? error.meta : undefined);
   }
   if (stop.stopping)
     return refuse('RUN_CANCELLED', 'the run was cancelled before the walk started', () =>

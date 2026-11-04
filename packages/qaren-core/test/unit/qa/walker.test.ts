@@ -1408,7 +1408,7 @@ test('a native fill refusal steps once to the change handler for an input with a
   assert.match(outcome.rows[0].reason ?? '', /^FILL_SET_BY_HANDLER: /);
 });
 
-for (const method of ['keyboard', 'clear-type', 'set-handler'] as const) {
+for (const method of ['already-set', 'keyboard', 'clear-type', 'set-handler'] as const) {
   for (const captureFails of [false, true]) {
     test(`${method} survives streamed reconstruction after ${captureFails ? 'failed' : 'successful'} capture`, async () => {
       const field = fixtureElement('@email', 'Email', { kind: 'input', testID: 'email' });
@@ -1492,3 +1492,72 @@ for (const retrySucceeds of [false, true]) {
     );
   });
 }
+
+for (const alwaysRetype of [false, true]) {
+  test(`a saved login forwards always-retype=${alwaysRetype} to Fill`, async () => {
+    const field = fixtureElement('@name', 'Name', { kind: 'input', testID: 'name' });
+    const f = fake([fixtureScreen([field])]);
+    const plan = block(
+      `### Login\n1. Fill "name" with "value"${alwaysRetype ? ' (always retype)' : ''}`,
+    );
+    const serialized = serializeBlock(
+      plan,
+      [
+        {
+          block: plan.slug,
+          line: 2,
+          attempt: 1,
+          kind: 'step',
+          resolvedBy: 'exact',
+          t: 0,
+          outcome: 'pass',
+          selector: { id: 'name' },
+        },
+      ],
+      { appId: 'com.test', platform: 'ios' },
+    );
+    assert.ok('yaml' in serialized);
+    const stored = readBlock(serialized.yaml);
+    assert.ok(!('invalid' in stored));
+    const { loginBlock } = await import('../../../dist/qa/walker.js');
+    let forwarded: boolean | undefined;
+    f.deps.fill = async (_ref, _text, _context, _private, _latch, retype) => {
+      forwarded = retype;
+      return {
+        ok: true,
+        proven: true,
+        method: retype ? 'keyboard' : 'already-set',
+        mutation: retype ? 'observed' : 'none',
+      };
+    };
+    const outcome = await walkBlock(loginBlock('login', stored), f.deps);
+    assert.equal(forwarded, alwaysRetype ? true : undefined);
+    assert.equal(outcome.block.outcome, 'pass');
+    assert.equal(outcome.rows[0].method, alwaysRetype ? 'keyboard' : 'already-set');
+    assert.equal(outcome.rows[0].reason, undefined);
+    assert.equal(JSON.stringify(outcome.rows).includes('value'), false);
+  });
+}
+
+test('an already-set private fill latches media and leaves a value-free passing row', async () => {
+  const value = 'private-skip-sentinel';
+  const field = fixtureElement('@name', 'Name', { kind: 'input', testID: 'name' });
+  const f = fake([fixtureScreen([field])]);
+  const inputs = new RunInputs({ NAME: value }, ['NAME'], undefined, ['NAME']);
+  let latched = false;
+  f.deps.fill = async (_ref, text, _context, _private, latch) => {
+    assert.equal(text, value);
+    latch?.();
+    latched = true;
+    return { ok: true, proven: true, method: 'already-set', mutation: 'none' };
+  };
+  const outcome = await withInputs(inputs, () =>
+    runPlan([block('1. Fill "name" with input NAME (test-pii)')], f.deps),
+  );
+  assert.equal(latched, true);
+  assert.equal(outcome.verdict, 'PASS');
+  assert.equal(outcome.steps[0].method, 'already-set');
+  assert.equal(outcome.steps[0].reason, undefined);
+  assert.equal(outcome.videoPublication, 'withheld-fill');
+  assert.equal(JSON.stringify(outcome).includes(value), false);
+});

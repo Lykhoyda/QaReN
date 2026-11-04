@@ -14,7 +14,7 @@ export const REACT_GAPS = ['unknown', 'incomplete', 'reconnected', 'lost'] as co
 export type ReactConnectionEvent = 'lost' | 'reconnected';
 
 // The Fill ladder rung a fill row used: keyboard typing, in-app clear then typing, or the change handler.
-export type FillMethod = 'keyboard' | 'clear-type' | 'set-handler';
+export type FillMethod = 'already-set' | 'keyboard' | 'clear-type' | 'set-handler';
 
 // Observed and expected lengths, shared prefix and suffix lengths, and whether only letter case differs.
 export interface EntryMismatch {

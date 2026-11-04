@@ -1,3 +1,8 @@
+import {
+  DevTargetUnavailableError,
+  allTargetsNonDev,
+  type DevelopmentTargetCounts,
+} from '../domain/dev-target.js';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { loadavg } from 'node:os';
@@ -21,6 +26,7 @@ import {
   CDPProbeTimeoutError,
   CDPHandshakeTimeoutError,
   CDPTargetClosedError,
+  ConnectionSetupSupersededError,
 } from '../cdp/connect.js';
 import { REACT_READY_POLL_MS } from '../cdp/setup.js';
 import { CDPRequestTimeoutError } from '../cdp/transport.js';
@@ -43,9 +49,14 @@ export interface AdmissionSteps {
   // Baseline stall refusal limit; patient manifest recovery may extend it.
   attachBudgetMs: number;
   remainingMs(): number;
+  waitTargets?(deadline: number): Promise<void>;
   attach(deadline: number): Promise<void>;
   // Inside the attach deadline: the attached client must have run its bundle before anything reads it.
   bundleReady?(deadline: number): Promise<void>;
+  developmentTargets?(): DevelopmentTargetCounts | undefined;
+  observeDevelopmentTargets?(
+    observe: (counts: DevelopmentTargetCounts | undefined) => void,
+  ): () => void;
   manifest?(deadline: number, retry: ManifestRetry): Promise<ManifestWarm>;
   // Only a proven slow manifest probe permits additional relaunches.
   relaunch?(deadline: number): Promise<ManifestWarm | void>;
@@ -91,6 +102,13 @@ export type AdmissionRefusalFacts = {
   elapsedMs: number;
   remainingMs: number;
   budgetMs: number;
+  attachBudgetMs?: number;
+  walkBudgetMs?: number;
+  targetsTotal?: number;
+  devTrue?: number;
+  devFalse?: number;
+  devUndefined?: number;
+  devUnknown?: number;
   inference?: PlatformInferenceSummary;
   warmMs?: number;
   warmAttempts?: number;
@@ -112,6 +130,8 @@ export function admissionInnerClass(error: unknown): AdmissionInnerClass {
         return 'target_selection_platform_not_found';
     }
   }
+  if (error instanceof DevTargetUnavailableError)
+    return allTargetsNonDev(error.counts) ? 'non_dev_bundle' : 'no_dev_target_unknown';
   if (error instanceof TargetListAttemptTimeoutError) return 'target_list_attempt_timeout';
   if (error instanceof BundleReadinessTimeoutError) return 'bundle_readiness_timeout';
   if (error instanceof TargetReadinessTimeoutError && error.state === 'empty')
@@ -175,6 +195,19 @@ export function formatAdmissionRefusal(
     elapsedMs: count(facts.elapsedMs),
     remainingMs: count(facts.remainingMs),
     budgetMs: count(facts.budgetMs),
+    ...Object.fromEntries(
+      [
+        'attachBudgetMs',
+        'walkBudgetMs',
+        'targetsTotal',
+        'devTrue',
+        'devFalse',
+        'devUndefined',
+        'devUnknown',
+      ]
+        .filter((key) => facts[key] !== undefined)
+        .map((key) => [key, count(facts[key])]),
+    ),
     ...(facts.warmMs === undefined ? {} : { warmMs: count(facts.warmMs) }),
     ...(facts.warmAttempts === undefined ? {} : { warmAttempts: count(facts.warmAttempts) }),
   };
@@ -237,6 +270,8 @@ export function admissionMetric(
 
 function transientReadinessFailure(error: unknown): boolean {
   return (
+    error instanceof DevTargetUnavailableError ||
+    error instanceof ConnectionSetupSupersededError ||
     error instanceof TargetReadinessTimeoutError ||
     error instanceof CDPProbeTimeoutError ||
     error instanceof CDPHandshakeTimeoutError ||
@@ -287,17 +322,21 @@ export async function awaitBundleReady(
   deadline: number,
   pollMs = REACT_READY_POLL_MS,
 ): Promise<void> {
-  for (;;) {
-    try {
-      if ((await interruptible(() => evaluate(REACT_READY_PROBE_JS))).value === true) return;
-    } catch (error) {
-      if (isAbort(error) || error instanceof CDPTargetClosedError) throw error;
+  const timeout = new BundleReadinessTimeoutError(
+    'React never became ready on the attached client',
+  );
+  return withDeadline(deadline, timeout, async () => {
+    for (;;) {
+      try {
+        if ((await interruptible(() => evaluate(REACT_READY_PROBE_JS))).value === true) return;
+      } catch (error) {
+        if (isAbort(error) || error instanceof CDPTargetClosedError) throw error;
+      }
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) throw timeout;
+      await sleep(Math.min(pollMs, remaining));
     }
-    const remaining = deadline - performance.now();
-    if (remaining <= 0)
-      throw new TargetReadinessTimeoutError('React never became ready on the attached client');
-    await sleep(Math.min(pollMs, remaining));
-  }
+  });
 }
 
 export interface BundleReloadSteps {
@@ -539,7 +578,7 @@ export async function awaitDevClientManifest(
 async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Proven> {
   const started = performance.now();
   const deadline = started + steps.remainingMs();
-  const refuseStalledAt = started + steps.attachBudgetMs;
+  const refuseStalledAt = Math.min(deadline, started + steps.attachBudgetMs);
   const relaunchAt = started + steps.readinessMs;
   let relaunches = 0;
   let patientUntil: number | undefined;
@@ -558,6 +597,15 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
   let lastStarted: AdmissionBoundary = 'attach';
   let lastCompleted: AdmissionBoundary | 'none' = 'none';
   let retried: unknown;
+  let devObservation: DevelopmentTargetCounts | undefined;
+  const stopObservingTargets = steps.observeDevelopmentTargets?.((counts) => {
+    devObservation = counts;
+  });
+  let devTargetSeen = false;
+  let registeredTargetSeen = false;
+  let waitingForTargets = false;
+  let activeDeadline = refuseStalledAt;
+  const registeredTimeout = new CDPProbeTimeoutError('Registered-target attach deadline exceeded');
   let selectionRetries = 0;
   let warm = steps.launchWarm;
   const attachTimeout = new CDPProbeTimeoutError('CDP attach deadline exceeded');
@@ -595,34 +643,89 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
     if (signal.aborted) observeCancellation();
     return await withDeadline(deadline, attachTimeout, async () => {
       for (;;) {
+        if (
+          (devTargetSeen || registeredTargetSeen) &&
+          !waitingForTargets &&
+          performance.now() >= Math.min(deadline, patientRefuseAt)
+        )
+          throw registeredTimeout;
         attempt++;
         try {
           attaching = true;
           lastStarted = 'attach';
-          await steps.attach(deadline);
+          activeDeadline = Math.min(deadline, patientRefuseAt);
+          const waitTargets = steps.waitTargets;
+          if (waitTargets) {
+            const targetsDeadline =
+              devTargetSeen || registeredTargetSeen ? activeDeadline : deadline;
+            await withDeadline(
+              targetsDeadline,
+              registeredTargetSeen ? registeredTimeout : attachTimeout,
+              () => waitTargets(targetsDeadline),
+            );
+            if (!registeredTargetSeen) {
+              registeredTargetSeen = true;
+              if (patientUntil === undefined)
+                patientRefuseAt = Math.min(
+                  deadline,
+                  Math.max(patientRefuseAt, performance.now() + steps.attachBudgetMs),
+                );
+              activeDeadline = Math.min(deadline, patientRefuseAt);
+            }
+          }
+          await withDeadline(
+            !steps.waitTargets && waitingForTargets ? deadline : activeDeadline,
+            registeredTimeout,
+            () => steps.attach(activeDeadline),
+          );
+          devObservation = undefined;
+          if (performance.now() >= activeDeadline) throw registeredTimeout;
+          devTargetSeen = false;
+          waitingForTargets = false;
+          retried = undefined;
           lastCompleted = 'attach';
-          if (steps.bundleReady) {
-            lastStarted = 'bundle_ready';
-            await steps.bundleReady(deadline);
-            lastCompleted = 'bundle_ready';
-          }
-          attaching = false;
-          if (!opened) {
-            lastStarted = 'foreign_driver';
-            await refuseForeignDriver(steps);
-            lastCompleted = 'foreign_driver';
-            lastStarted = 'open';
-            await interruptible(steps.open);
-            lastCompleted = 'open';
-            opened = true;
-          }
-          lastStarted = 'prove';
-          const proof = await interruptible(steps.prove);
-          lastCompleted = 'prove';
-          if (!proof.ok) throw new HandlerError(proof.code, proof.message);
-          return proof;
+          return await withDeadline(activeDeadline, registeredTimeout, async () => {
+            if (steps.bundleReady) {
+              lastStarted = 'bundle_ready';
+              await steps.bundleReady(activeDeadline);
+              lastCompleted = 'bundle_ready';
+            }
+            if (performance.now() >= activeDeadline) throw registeredTimeout;
+            attaching = false;
+            if (!opened) {
+              lastStarted = 'foreign_driver';
+              await refuseForeignDriver(steps);
+              lastCompleted = 'foreign_driver';
+              if (performance.now() >= activeDeadline) throw registeredTimeout;
+              lastStarted = 'open';
+              await interruptible(steps.open);
+              lastCompleted = 'open';
+              opened = true;
+            }
+            if (performance.now() >= activeDeadline) throw registeredTimeout;
+            lastStarted = 'prove';
+            const proof = await interruptible(steps.prove);
+            if (performance.now() >= activeDeadline) throw registeredTimeout;
+            lastCompleted = 'prove';
+            if (!proof.ok) throw new HandlerError(proof.code, proof.message);
+            return proof;
+          });
         } catch (error) {
           if (isAbort(error)) throw error;
+          if (error === registeredTimeout) throw error;
+          if (
+            error instanceof CDPTargetClosedError ||
+            error instanceof ConnectionSetupSupersededError ||
+            (error instanceof TargetReadinessTimeoutError &&
+              (error.state === 'empty' ||
+                error.state === 'other_device' ||
+                error.state === 'other_bundle'))
+          )
+            devObservation = undefined;
+          if (error instanceof DevTargetUnavailableError) {
+            devTargetSeen = true;
+            if (error.complete) devObservation = error.counts;
+          }
           const remaining = Math.min(deadline - performance.now(), steps.remainingMs());
           const unproven = unprovenPlatformSelection(error);
           if (
@@ -634,7 +737,15 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
           retried = error;
           const stalledAttach =
             lastStarted === 'attach' && error instanceof TargetReadinessTimeoutError;
-          const noTarget = stalledAttach && !(error instanceof TargetListAttemptTimeoutError);
+          const noTarget =
+            !devTargetSeen && stalledAttach && !(error instanceof TargetListAttemptTimeoutError);
+          waitingForTargets = noTarget;
+          if (
+            (devTargetSeen || registeredTargetSeen) &&
+            !waitingForTargets &&
+            performance.now() >= activeDeadline
+          )
+            throw registeredTimeout;
           const probeStall =
             error instanceof CDPProbeTimeoutError || error instanceof CDPHandshakeTimeoutError;
           if (probeStall && stallSeenAt === undefined) stallSeenAt = performance.now();
@@ -645,6 +756,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
               performance.now() >= Math.max(relaunchAt, stallSeenAt + steps.readinessMs));
           let probed = false;
           if (
+            !devTargetSeen &&
             !opened &&
             (relaunches === 0 ||
               (patientUntil !== undefined &&
@@ -830,7 +942,13 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
           lastStarted = 'retry_wait';
           if (unproven) clearFailedPackageProbes();
           const pause = unproven ? selectionRetryDelayMs(++selectionRetries) : REACT_READY_POLL_MS;
-          await sleep(Math.min(pause, remaining));
+          await sleep(
+            Math.min(
+              pause,
+              remaining,
+              noTarget ? Infinity : Math.max(0, activeDeadline - performance.now()),
+            ),
+          );
           lastCompleted = 'retry_wait';
         }
       }
@@ -845,12 +963,24 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
     const load = (steps.load ?? (() => loadavg()[0]))();
     const boundary = facts('none').lastStarted;
     const cause =
-      error === attachTimeout && (boundary === 'attach' || boundary === 'retry_wait')
+      (error === attachTimeout || error === registeredTimeout) &&
+      (boundary === 'attach' || boundary === 'retry_wait')
         ? (retried ?? error)
         : error;
-    const inner = admissionInnerClass(cause);
+    const devMissing = devObservation !== undefined && allTargetsNonDev(devObservation);
+    const inner =
+      boundary === 'bundle_ready'
+        ? 'react_readiness_timeout'
+        : devMissing
+          ? 'non_dev_bundle'
+          : devTargetSeen || (attaching && error === registeredTimeout && retried === undefined)
+            ? 'no_dev_target_unknown'
+            : admissionInnerClass(cause);
     // A refusal says whether the app ran and asked Metro for its bundle, whatever stopped the attach.
-    if (attaching) {
+    if (
+      attaching &&
+      !['non_dev_bundle', 'no_dev_target_unknown', 'react_readiness_timeout'].includes(inner)
+    ) {
       const probeDeadline = Math.min(deadline, performance.now() + steps.remainingMs());
       if (liveness === 'not_probed' && probeDeadline > performance.now()) {
         try {
@@ -866,6 +996,14 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
     try {
       refusal = {
         ...facts(inner),
+        ...(['non_dev_bundle', 'no_dev_target_unknown', 'react_readiness_timeout'].includes(inner)
+          ? {
+              attachBudgetMs: Math.round(activeDeadline - started),
+              walkBudgetMs: Math.round(deadline - started),
+              ...(devObservation ??
+                (boundary === 'bundle_ready' ? steps.developmentTargets?.() : undefined)),
+            }
+          : {}),
         ...(cause instanceof TargetSelectionError && cause.inference
           ? { inference: cause.inference }
           : {}),
@@ -881,12 +1019,22 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
         : patientUntil !== undefined
           ? `; host contention is the likely cause; QaReN manifest probes ${probeTimings.join(', ')} ms; relaunches ${relaunchTimings.join(', ')} ms`
           : `; likely cause: the dev client's manifest request outlasted its ${DEV_CLIENT_REQUEST_TIMEOUT_MS / 1000}s timeout, so it never requested a bundle`;
+    const typedMessage =
+      inner === 'non_dev_bundle'
+        ? 'No scoped target uses a development JS bundle'
+        : inner === 'no_dev_target_unknown'
+          ? 'Development mode could not be established before the attach deadline'
+          : inner === 'react_readiness_timeout'
+            ? 'React did not become ready before the attach deadline'
+            : undefined;
     throw new HandlerError(
-      'CDP_NOT_CONNECTED',
-      `cannot attach to the dev client through Metro ${steps.metroPort}: ${describeError(error).message} (observed ${refusal?.lastStarted ?? lastStarted}: ${inner}; app ${liveness}; bundle request ${bundleRequest}${warm ? `; last manifest warm-up ${warm.ms} ms after ${warm.attempts} attempts` : ''}${manifestCause}; host 1-minute load ${load.toFixed(1)}${relaunchFailure === undefined ? '' : `; relaunch failed: ${relaunchFailure}`})`,
+      devMissing ? 'DEV_TARGET_MISSING' : 'CDP_NOT_CONNECTED',
+      typedMessage ??
+        `cannot attach to the dev client through Metro ${steps.metroPort}: ${describeError(error).message} (observed ${refusal?.lastStarted ?? lastStarted}: ${inner}; app ${liveness}; bundle request ${bundleRequest}${warm ? `; last manifest warm-up ${warm.ms} ms after ${warm.attempts} attempts` : ''}${manifestCause}; host 1-minute load ${load.toFixed(1)}${relaunchFailure === undefined ? '' : `; relaunch failed: ${relaunchFailure}`})`,
       refusal,
     );
   } finally {
+    stopObservingTargets?.();
     signal.removeEventListener('abort', observeCancellation);
   }
 }

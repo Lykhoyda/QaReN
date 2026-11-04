@@ -1,5 +1,5 @@
 use crate::exec::{CmdOutput, CmdSpec, DeadlineRunner, Runner};
-use crate::failure::{Failure, FailureCode};
+use crate::failure::{AdmissionCause, AdmissionFacts, Failure, FailureCode};
 use crate::redact::redact_secrets;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -209,6 +209,12 @@ pub struct MediaWithheld {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Ledger {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "AdmissionFacts::deserialize_optional"
+    )]
+    pub admission: Option<AdmissionFacts>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub press_evidence: Option<PressEvidence>,
     pub verdict: String,
@@ -510,6 +516,7 @@ pub enum RetryCause {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum FillMethod {
+    AlreadySet,
     Keyboard,
     ClearType,
     SetHandler,
@@ -518,6 +525,7 @@ pub enum FillMethod {
 impl FillMethod {
     pub fn as_str(self) -> &'static str {
         match self {
+            FillMethod::AlreadySet => "already-set",
             FillMethod::Keyboard => "keyboard",
             FillMethod::ClearType => "clear-type",
             FillMethod::SetHandler => "set-handler",
@@ -683,6 +691,17 @@ where
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SettleMethod {
+    WindowGate,
+    ScreenStatic,
+    SnapshotEq,
+    Timeout,
+    Unknown,
+    Mixed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RowTiming {
     pub capture_ms: u64,
@@ -690,6 +709,14 @@ pub struct RowTiming {
     pub react_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presence_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settle_method: Option<SettleMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settle_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preparation_samples: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preparation_resets: Option<u64>,
     pub resolve_ms: u64,
     pub jev_ms: u64,
     pub act_ms: u64,
@@ -791,6 +818,7 @@ pub struct CoreOutcome {
     pub group_survived: bool,
     // The child sent its admitted envelope: the bundle, dev overlays and any warm-lane first screen were proven.
     pub admitted: bool,
+    pub first_step_start_ms: Option<u64>,
 }
 
 pub fn spawn_spec(
@@ -1287,6 +1315,7 @@ struct Inbox {
     last_seq: u64,
     rows: Vec<Row>,
     starts: usize,
+    first_step_start_ms: Option<u64>,
     admitted: bool,
     drivers: Vec<i32>,
     announced: usize,
@@ -1364,7 +1393,7 @@ impl Inbox {
                     }
                 }
             }
-            // A start is telemetry only: it neither resets the step deadline nor becomes a ledger row.
+            // Starts bound publication but neither reset the deadline nor become ledger rows.
             (Some("start"), Some(payload)) => {
                 if self.starts >= MAX_ROWS {
                     self.violation = Some(format!("more than {MAX_ROWS} step starts"));
@@ -1377,6 +1406,7 @@ impl Inbox {
                             && matches!(start.kind.as_str(), "step" | "check") =>
                     {
                         self.starts += 1;
+                        self.first_step_start_ms.get_or_insert(start.t);
                         crate::events::step(&start);
                         false
                     }
@@ -1456,6 +1486,7 @@ pub fn wait(
         last_seq: 1,
         rows: Vec::new(),
         starts: 0,
+        first_step_start_ms: None,
         admitted: false,
         drivers: Vec::new(),
         announced: 0,
@@ -1569,12 +1600,20 @@ pub fn wait(
             } else {
                 reason
             };
-            deadline_failure = Some(Failure::new(
-                "walk",
+            let mut failure = Failure::new(
+                if code == FailureCode::CoreRefused {
+                    "attach"
+                } else {
+                    "walk"
+                },
                 code,
                 reason,
                 "inspect the core log for the stuck or misbehaving step, then re-run",
-            ));
+            );
+            if code == FailureCode::CoreRefused {
+                failure = failure.with_admission_recovery(AdmissionCause::AdmissionBudget, None);
+            }
+            deadline_failure = Some(failure);
             child.handle.kill_group();
             killed_at = Some(now);
         } else if let Some(at) = result_at {
@@ -1587,6 +1626,7 @@ pub fn wait(
         }
     }
     let admitted = inbox.admitted;
+    let first_step_start_ms = inbox.first_step_start_ms;
     let (ledger, verdict, failure) = interpret(inbox, exit, deadline_failure, killed_after_result);
     CoreOutcome {
         pid,
@@ -1596,6 +1636,7 @@ pub fn wait(
         failure,
         group_survived,
         admitted,
+        first_step_start_ms,
     }
 }
 
@@ -1768,6 +1809,14 @@ fn refusal_ledger(result: &Value, rows: &[Row], seen: &str) -> Result<Ledger, St
             return Err(format!("{field} must be a string when supplied"));
         }
     }
+    if result.get("code").and_then(Value::as_str) == Some("DEV_TARGET_MISSING") {
+        let facts: AdmissionFacts =
+            serde_json::from_value(result.get("admission").cloned().unwrap_or(Value::Null))
+                .map_err(|_| "DEV_TARGET_MISSING requires admission facts".to_string())?;
+        if !facts.valid() || !facts.all_false() {
+            return Err("DEV_TARGET_MISSING requires complete all-false facts".to_string());
+        }
+    }
     let mut normalized = serde_json::to_value(synthesized_ledger(rows, "REFUSED", seen))
         .map_err(|error| error.to_string())?;
     for field in [
@@ -1781,6 +1830,7 @@ fn refusal_ledger(result: &Value, rows: &[Row], seen: &str) -> Result<Ledger, St
         "failure",
         "blocksWritten",
         "pressEvidence",
+        "admission",
     ] {
         if let Some(value) = result.get(field) {
             if value.is_null() {
@@ -1857,6 +1907,7 @@ fn synthesized_failure(rows: &[Row], seen: &str) -> LedgerFailure {
 pub fn synthesized_ledger(rows: &[Row], verdict: &str, seen: &str) -> Ledger {
     let steps: Vec<Row> = rows.to_vec();
     Ledger {
+        admission: None,
         press_evidence: None,
         verdict: verdict.to_string(),
         video_publication: None,

@@ -42,7 +42,8 @@ Doctor prints the running binary's version, path, build, runtime and the
 `PASS`, `WARN`, `FAIL` or `SKIP` row per check, each problem with its manual fix.
 It reads files and runs bounded version, package-resolution, process-group, inventory, host-statistics and Watchman probes.
 When an app config is valid, the five-second `watch-project` probe may establish a watch on its candidate directory;
-it never starts a Watchman service, starts a device or resets a service. It does not run ADB
+the subsequent [cookie sync](#ios-simulator-lifecycle) writes a cookie in the resolved watch root and may leave it there on timeout.
+Doctor never starts a Watchman service, starts a device or resets a service. It does not run ADB
 or start an ADB server. In text and JSON output, Doctor never prints
 file contents, environment variable values, credentials or any other config value;
 it may name the configured iOS runtime and Android AVD. It also prints diagnostic
@@ -66,7 +67,7 @@ applicable or its subject was not assessed, as explained in the row's detail.
 | `simulator-service` | A five-second `simctl list devices -j` probe on macOS; attributable uninterruptible simulator process evidence when unresponsive |
 | `expo-offline` | Metro-only Expo commands start offline by default; warns when `EXPO_OFFLINE=0` enables account lookups |
 | `watchman-health` | A read-only, five-second watch-list probe without starting Watchman |
-| `watchman-volume-probe` | A five-second `watch-project` probe on the candidate directory; a timeout or rejection fails with volume-permission and FSEvents recovery steps |
+| `watchman-volume-probe` | Candidate watch admission and [cookie sync](#ios-simulator-lifecycle); admission timeout, rejection or a confirmed cookie timeout fails, while unavailable or invalid responses warn |
 | `candidate-volume-speed` | A bounded small-file read sample on the candidate volume; warns about slow reads, with unknown results disclosed |
 | `host-load` | One-, five- and fifteen-minute load averages, logical CPU count and sampled CPU idle; warns about readiness deadlines under load |
 | `native-build-lock` | Read-only iOS [build-lock observation](#native-fingerprint-build-selection); never claims or reclaims the lock |
@@ -487,7 +488,7 @@ The configuration keys, defaults and validation are owned by
 `--config` selects another configuration file.
 
 For optional preparation budgets, see the
-[deadline configuration reference](../../apps/docs-site/src/content/docs/configuration.mdx#deadlines).
+[deadline defaults and validation](src/scenario.rs).
 
 For private registries whose credentials use other environment names, declare the
 names in the operator-selected configuration (empty by default):
@@ -1066,8 +1067,9 @@ See the [occlusion regressions](../qaren-core/test/unit/qa/occlusion-walker.test
 
 ### Fill verification and keyboard fallback
 
-Fills use strict native value verification first. A strict fill replaces the
-field's content: the bound input is cleared before typing, and verification
+Fills use strict native value verification first. An eligible iOS field can skip
+typing under the [already-set rules](#fill-ladder). Otherwise a strict fill replaces
+the field's content: the bound input is cleared before typing, and verification
 expects exactly the plan text. For keyboard fallback's replacement request and
 read-back policy, see below.
 Rebinding an input without a testID requires its original label and native type;
@@ -1134,6 +1136,13 @@ substitute for that identity. If the same input becomes natively observable,
 strict verification resumes. Otherwise the keyboard must become visible and
 the target must remain eligible. React evidence that the intended input is
 unfocused vetoes typing.
+If React reports the field focused after the tap but no keyboard is observed,
+iOS fallback blurs it through JavaScript, re-finds the same identity on a fresh
+settled capture, and taps once more with a bounded keyboard wait.
+`RN_KEYBOARD_GUARD=0` disables this recovery. A failed blur, missing identity,
+or refused tap refuses without typing. After the second tap, the same input
+becoming natively observable resumes strict verification; otherwise a
+still-hidden keyboard refuses without typing.
 
 When the keyboard is already up, iOS fallback types only with positive React
 proof that the intended input is focused. With an eligible target, QaReN taps it,
@@ -1151,7 +1160,8 @@ either mutation. A false, unbound, unreadable or failed read before clearing ret
 Each walker focus decision logs one value-free `fallback-focus` line.
 
 For non-secure focused fields, QaReN checks the current content before typing.
-An empty field receives text directly. A nonempty controlled field (at most 256
+The [already-set rules](#fill-ladder) apply before replacement. When typing is
+needed, an empty field receives text directly. A nonempty controlled field (at most 256
 characters), including a private runtime input, is cleared through the input's own
 change handler inside the app. The clear checks that the input is still focused
 and controlled and returns no value. The host requires two consecutive empty
@@ -1208,15 +1218,28 @@ covered by the [fallback tests](../qaren-core/test/unit/qa/keyboard-fallback.tes
 
 #### Fill ladder
 
-Every dispatched Fill records the rung it used as `method` on its ledger row, including
+Every Fill records the rung it used as `method` on its ledger row, including
 streamed rows, interrupted-run reconstruction and capture-failure rows. The report
 shows it as `via <method>`:
 
+0. `already-set`: on iOS the field already held the exact value on a fresh, stable read, so nothing
+   was cleared or typed. This is value evidence, not typing proof; the passing row records no value.
 1. `keyboard`: typed through the keyboard (native element typing, or focused typing into an
    empty field).
 2. `clear-type`: the field held text, so it was cleared through the input's own change
    handler and then typed through the keyboard.
 3. `set-handler`: entry through the input's change handler was attempted, followed by exact verification if set.
+
+A secure field is never pre-read for skipping. Private values are compared inside the app;
+only comparison metadata leaves it. Unreadable, placeholder, formatted, case-only and unstable
+matches keep the existing typing path. Android and keyboard fallback without an observable input
+keep typing. An observable, controlled iOS input reached through fallback can skip after two
+exact comparisons that also prove focus.
+To require a change event even when the value already matches, add a trailing `(always retype)`,
+for example `Fill "name" with input NAME (secret) (always retype)`. It combines with
+`(any method)` in either order, case-insensitively. Behaviour labels must trail the line;
+a label written within the target stays part of that target under the existing grammar.
+Saved blocks retain `(always retype)`, including login replay.
 
 When rung 1 or 2 refuses with `TEXT_ENTRY_UNVERIFIED` and a mutation of `none` or
 `observed` (never `possible`), iOS steps once to rung 3 inside a 2-minute budget from the
@@ -2182,7 +2205,7 @@ Metro rebuilds the manifest
 per request and one answer does not predict the client's own. Each request is
 recorded; slower answers and request timeouts restart the count. This stage has
 its own `deadlines.manifest_warmup_seconds` clock (see
-[configuration defaults and limits](../../apps/docs-site/src/content/docs/configuration.mdx#deadlines))
+[deadline defaults and validation](src/scenario.rs))
 and a 64-attempt cap, also bounded by the remaining
 `build_seconds` budget. Exhaustion refuses with `MANIFEST_NOT_WARM` (exit 4),
 without launching the client. Each request is capped to the remaining stage
@@ -2197,10 +2220,32 @@ active. Check the volume and doctor before coordinating
 a Watchman reset and retrying once. When the request-handler probe times out,
 a five-second `watch-project` probe checks the candidate volume if at least
 five seconds remain after the file sample described below. This probe may
-establish a watch on the candidate directory. A confirmed timeout or rejection
-refuses immediately with "watchman cannot watch this volume" and steps for removable-volume permissions, FSEvents
-state or reconnecting the volume. Its value-free result is recorded at
-`outcomes.watchman_volume_probe`; no watcher fallback or automatic reset is attempted.
+establish a watch on the candidate directory. After admission, if at least five
+seconds still remain on the same warm-up clock, QaReN requests a `clock` with
+`sync_timeout=4000` on the resolved watch root through private JSON stdin. Its
+child has a five-second cap, clamped to the remaining whole seconds; near the
+budget boundary it may time out before Watchman returns its cookie error, which
+leaves the sync unavailable and continues manifest warm-up. A recognized cookie timeout refuses immediately
+with `WATCHMAN_VOLUME_STALLED` (exit 4): "the file watcher is stalled or still
+crawling the root". The next steps cover removable-volume permissions, FSEvents
+state and reconnecting the volume; if fseventsd is busy, wait for other watchers
+or large copies to finish, or coordinate a watchman reset with other sessions,
+then re-run once. Doctor runs the same admission and sync probes.
+
+Four seconds is an uncalibrated early-refusal threshold: a crawl that finishes
+shortly afterward might have warmed within the remaining budget, so this can
+cost a re-run. A timed-out sync may leave a cookie in the watch root; QaReN
+excludes these cookie files from candidate drift checks. Preparation writes no
+sync cookie when the request-handler probe does not time out. This check saves the
+manifest retry loop; it runs after build and install. A watch-project timeout
+or rejection, or a rejected sync, also refuses before the loop with its specific
+cause under `MANIFEST_NOT_WARM`; an unavailable or malformed sync falls through
+to normal manifest warm-up. The value-free result (`ready`, `stalled`,
+`timed_out`, `rejected` or `unavailable`) is recorded at
+`outcomes.watchman_volume_probe`. If the sync is skipped for lack of budget,
+`ready` proves watch-project admission only; a `watchman-clock-sync_attempt_1`
+outcome identifies a sync that ran. Raw sync output is withheld, and no watcher
+fallback or automatic reset is attempted.
 
 After a request-handler timeout or the first manifest answer taking at least
 10 seconds, QaReN also samples up to 32 small files on the candidate volume
@@ -2411,9 +2456,9 @@ build at the start of a session; later runs find the lane pinned and write nothi
 ### Runtime inputs
 
 `Fill "staging-password" with input PASSWORD` types the value of `QAREN_INPUT_PASSWORD`;
-see the [plan guide](../../apps/docs-site/src/content/docs/plans.mdx) for the grammar and
-value bounds. The owner resolves the value before running qaren; qaren reads no `.env`
-file, reference or secret store.
+see the [plan parser](../qaren-core/src/qa/plan.ts) for the grammar and
+[input validation](../qaren-core/src/qa/inputs.ts) for value bounds. The owner resolves the
+value before running qaren; qaren reads no `.env` file, reference or secret store.
 
 Inputs are SECRET unless their named Fill explicitly opts in to TEST-PII with
 `(test-pii)` (or the older spelling `(non-secret)`), for example
@@ -2974,7 +3019,8 @@ receipt lists `blocks_written`, `blocks_not_saved` (block and reason), `hints`
 [reusable sign-in example](#reusable-sign-in-example)) and, as a
 diagnostic that never changes the verdict,
 `worktree_drift`: app-root paths whose `git status` changed during the walk, outside
-`.qaren/actions`. This status-only diagnostic is separate from the
+`.qaren/actions` and excluding untracked watchman sync cookies. This status-only
+diagnostic is separate from the
 [candidate provenance check](#candidate-provenance), which can fail the run.
 
 The receipt's `ledger.blocks` counts `replayed`, `patched` and `discovered` blocks.
@@ -3451,7 +3497,8 @@ target dispatch; sink failures leave the outcome unchanged. It stays out of the
 public result and ledger, as covered by the
 [occlusion regressions](../qaren-core/test/unit/qa/occlusion-walker.test.ts).
 
-`ledger.json` adds a `timing` object to each walked attempt row, in milliseconds.
+`ledger.json` adds a `timing` object to each walked attempt row; duration fields
+are in milliseconds.
 `captureMs`, `resolveMs` (decision), `actMs`, `postCaptureMs` and `otherMs`
 partition `total`, the elapsed window between consecutive row timestamps
 (starting at the walk for the first row). `nativeMs`, `reactMs` and optional
@@ -3460,6 +3507,17 @@ decision, including HTTP retries and their backoff. These breakdowns overlap
 the partition and must not be added to `total`. Post-action captures start
 after an authorized dispatch; captures after a dispatch refused before
 authorization remain in `captureMs`.
+
+Optional `settleMethod` and `settleMs` record measured client settle within the
+row window. Milliseconds sum across dispatched actions; the method is
+`window-gate`, `screen-static`, `snapshot-eq`, `timeout` or `unknown`, or `mixed`
+when methods differ. Optional `preparationSamples` and `preparationResets` sum
+the native presence preparation counts across all captures in that window,
+including pre-action and post-action captures. These fields are value-free,
+available without private-input diagnostics, and omitted when not measured;
+a measured zero is retained. Settle time overlaps `actMs` and preparation
+counts add no time to the partition. Waits and scrolls that only capture can
+carry preparation counts without a client settle.
 
 The ledger's `speed` summary groups timed action/check rows by operation, keeping
 login-replay steps separate from plan steps that share a line and kind. Every retry,
@@ -3482,24 +3540,58 @@ The [row timing implementation](../qaren-core/src/qa/row-timing.ts) owns
 aggregation; [CLI decoding](src/core.rs) and [report rendering](src/report.rs)
 own consumption.
 
-Launch admission shares the remaining walk deadline across target readiness,
-WebSocket handshakes, probes and retry sleeps; retries and relaunches never
-renew it. Outside patient manifest recovery below, a stall without progress refuses
-earlier, once `deadlines.attach_seconds`
-(default 120; see the [deadline configuration reference](../../apps/docs-site/src/content/docs/configuration.mdx#deadlines)) has passed since admission began:
-a target-list wait that saw no target on the selected device, or whose list
-requests went unanswered, ends admission when the app job is proven dead or Metro
-has received no bundle request since the latest launch. Each relaunch rebases
-the request count on Metro's count just before it (an unreadable count leaves the
-signal unknown), and liveness and the request signal are re-read at that point, so
-a request from an earlier launch keeps neither a dead nor a relaunched app waiting. The refusal follows the first readiness window ending
-after that limit, and a relaunch made just before it still gets its full window. A
-received request, an unknown or unreadable request signal (including Metro owned by
-an `expo run:*` build and platforms without the signal), a registered target whose
-probes or handshakes stall, and React that is not yet ready keep the walk deadline.
-The refusal names the stalled `attach` boundary and its stage. The connect-time dev-build check
-and helper injection wait for the runtime's answer until that deadline rather
-than a fixed request timeout; no answer by the deadline is a readiness timeout.
+Launch admission requires a development JS bundle with `__DEV__ === true`.
+Registered-target connection, setup, React readiness and origin proof share
+`min(remaining walk budget, deadlines.attach_seconds)` (120 seconds by default).
+This window starts when the first target registers after an initial no-target wait;
+patient recovery retains its separate post-relaunch deadline.
+Retries do not renew this deadline. Each candidate's handshake, responsive-JS
+probe and development-state probe are capped at 1500 ms and clipped to the
+active deadline, so an unresponsive candidate leaves time to inspect the next
+scoped candidate. Other CDP clients retain their existing fallback behavior.
+
+If the latest complete scan finds only explicitly false targets,
+QaReN refuses `DEV_TARGET_MISSING` (exit 4) before any plan step, with
+`next_action: use_development_bundle`. Check the launch URL and build variant;
+a dev-client native build alone does not prove the JS bundle uses development
+mode. An unchanged retry cannot repair bundle mode. Restart only the owned app
+and Metro after proving stale Metro served the wrong bundle and obtaining
+approval for volatile state loss. Device restart, unchanged native rebuild and
+cleanup/fresh prepare cannot correct bundle mode; a corrected build requires
+separate authorization.
+
+The last complete scan survives transient failures and deadline-interrupted
+rediscovery or connection attempts. A newer complete scan replaces it; a completed
+read with no matching targets clears it immediately, even while readiness keeps
+polling. A proven `__DEV__ === true` probe invalidates earlier non-dev certainty immediately, even
+if setup subsequently stalls. Target/context replacement also clears that certainty.
+An empty scan, undefined or unknown development state, or a failed or pending
+scan without retained all-false evidence cannot establish production mode.
+After a registered candidate failed to prove development mode, those cases
+refuse with receipt
+`CORE_REFUSED`, inner `CDP_NOT_CONNECTED/no_dev_target_unknown` and
+`inspect_development_target`. A proven dev bundle that does not start React
+refuses with inner `CDP_NOT_CONNECTED/react_readiness_timeout` and
+`inspect_bundle_readiness`. A late dev target may admit only if setup, readiness
+and proof all finish before the same deadline. Cancellation wins over admission.
+
+`failure.recovery` carries the typed cause, instruction, stage/count/budget facts
+and five ordered rungs with applicability, state-loss and approval fields.
+Inspect terminal evidence first; a changed new run gets a new budget. Resource
+restarts require evidence of stale owned resources, device restarts require a
+proven device fault, native rebuilds require a proven native mismatch, and owned
+cleanup/fresh prepare is the last resource reset. State-losing actions require
+approval and ownership proof. Total walk expiry before admission uses
+`inspect_admission_budget`; elapsed time alone does not establish bundle mode.
+A live app with no registered target and a received or unknown bundle-request
+signal keeps waiting within the walk budget; once a target registers, setup uses
+the registered-target deadline. Before any target registers, a no-target wait
+can refuse after the attach limit when the app is proven dead or Metro has
+received no bundle request since the latest launch. Liveness and bundle-request
+evidence are re-read at that boundary; each relaunch rebases the request count.
+Patient no-target manifest recovery below keeps
+its distinct warming, relaunch and post-relaunch attach deadlines, all clipped
+to the remaining walk budget.
 Target readiness and attachment accept only a runtime Metro reports with the
 requested `appId` bundle identity (and on iOS, under the run's simulator name on
 that same target), so another app on the selected device or another booted
@@ -3611,6 +3703,11 @@ absence and executable permission bits, so editing an already-dirty file is
 still detected. Repository-root `.qaren/` state is excluded, as are the selected
 app root's `.qaren/actions` entry itself, such as an untracked main-copy link, and
 direct `.yaml` and `.yml` action files under it.
+Untracked watchman sync cookies (`.watchman-cookie-*`) anywhere in the repository
+are excluded because watchman creates and removes them in the watch root during
+synced queries; tracked or modified files and directory entries of that name
+remain changes. This also excludes an untracked file or symlink deliberately
+named like a cookie, without any Git ignore configuration.
 Changes outside these exclusions, including a nested app's `.qaren/config.yaml`
 or source files, and renames crossing the excluded boundary remain candidate
 changes.
@@ -3836,14 +3933,24 @@ The following eligibility rules describe strict and undeclared runs. Both modes 
 
 Video publication eligibility and a value-free withholding reason are persisted
 in `pr.json`. A plan containing any fill/type step keeps the recording local,
-even if that step never executes. Otherwise, the uploaded copy starts when the
-walk proved the app's bundle and passed [overlay clearance](#check-a-plan).
+even if that step never executes. Otherwise, the uploaded copy starts at the
+first plan step's start, or admission after [overlay clearance](#check-a-plan)
+if the step start is earlier or unavailable.
+The first step's start and last-row end use the existing ledger bounds as
+recording offsets, accepting up to the recorder-start delay of lead-in rather
+than moving the end cut into teardown. Admission and login recording offsets
+remain lower bounds, so nothing before either boundary is published.
 Sensitive observations from admission onwards withhold it. The uploaded copy
-ends at the last step row, so the device session closing after the walk never
-reaches it; the local recording stays complete.
+ends at the conservative last-row offset, which can precede that row's recorded
+frame by the recorder-start delay, so device session closing after the walk never
+reaches it; the local recording stays complete. A missing or non-positive window
+withholds the copy. The receipt's `video_window` outcome records `start=<ms>; end=<ms>`,
+both measured from admission, for a successfully prepared copy when both offsets
+can be calculated without overflow or underflow.
 
 A successful saved login replay before any plan step passes moves the uploaded
-copy's start to the end of that replay. Its fills alone do not withhold the video.
+copy's start to the end of that replay if later than the first step's start.
+Its fills alone do not withhold the video.
 The last observed login screen must be clean: a typed or private value still
 visible there, or observed at any later capture, withholds the video for the rest
 of that window. Complete values of three or more characters also withhold capture
@@ -4410,9 +4517,8 @@ launch and readiness run afterwards, and the final drift checks still run
 after readiness. A contended iOS claim waits, polling every second, within the
 same build budget (`deadlines.build_seconds`) that the prebuild, build,
 verification and publication then share; see the
-[deadline contract](../../apps/docs-site/src/content/docs/configuration.mdx#deadlines)
-for subprocess caps and the teardown exception. A synchronous cache copy already
-in progress is not interrupted; its completion is checked against the window
+[deadline defaults and validation](src/scenario.rs).
+A synchronous cache copy already in progress is not interrupted; its completion is checked against the window
 before publication. Output retirement
 and readiness run outside this window. Running that budget out while waiting is a refusal (`BUILD_CONTENDED`,
 exit 4) whose next action names the holder run, whether it is alive, whether
