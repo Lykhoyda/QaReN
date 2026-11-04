@@ -163,7 +163,10 @@ fn pixels_differ(
 }
 
 fn plan_screenshot(row: &crate::core::Row, ledger: &Ledger) -> bool {
-    row.line > 0 && row.screenshot.is_some() && ledger.blocks.iter().any(|b| b.key == row.block)
+    row.line > 0
+        && matches!(row.outcome.as_str(), "pass" | "fail")
+        && row.screenshot.is_some()
+        && ledger.blocks.iter().any(|b| b.key == row.block)
 }
 
 pub fn detect_continuity(
@@ -457,7 +460,28 @@ mod tests {
     }
 
     #[test]
-    fn changing_retry_screenshots_on_one_plan_line_are_still_evidence() {
+    fn recovery_screenshots_captured_before_nested_rows_are_not_stall_evidence() {
+        let (dir, ledger) = fixture();
+        for kind in ["step", "check"] {
+            let mut ledger = ledger.clone();
+            let mut nested = ledger.steps[0].clone();
+            nested.block = "@interruption".into();
+            nested.t = 6000;
+            nested.screenshot = None;
+            ledger.steps[0].kind = kind.into();
+            ledger.steps[0].outcome = "retry".into();
+            ledger.steps[0].timing.as_mut().unwrap().total = 1000;
+            ledger.steps[1].timing.as_mut().unwrap().total = 2000;
+            ledger.steps.insert(0, nested);
+            let mut runner = MockRunner::new();
+            assert!(detect_continuity(&mut runner, &dir, &ledger, 0, 0, 0, 0).is_empty());
+            assert!(runner.calls.is_empty());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn changing_fresh_attempt_screenshots_on_one_plan_line_are_still_evidence() {
         let (dir, mut ledger) = fixture();
         ledger.steps[1].line = 7;
         ledger.steps[1].attempt = 2;
@@ -644,6 +668,42 @@ mod tests {
                 first_line: 7,
                 last_line: 8
             }]
+        );
+        let mut recovered = ledger.clone();
+        let mut nested = recovered.steps[0].clone();
+        nested.block = "@interruption".into();
+        nested.t = 6000;
+        nested.screenshot = None;
+        recovered.steps[0].outcome = "retry".into();
+        recovered.steps[0].timing.as_mut().unwrap().total = 1000;
+        recovered.steps[1].timing.as_mut().unwrap().total = 2000;
+        let mut next = recovered.steps[1].clone();
+        next.line = 9;
+        next.t = 10_000;
+        next.timing.as_mut().unwrap().total = 1000;
+        next.screenshot = Some("screenshots/c.png".into());
+        std::fs::copy(&second, dir.join("screenshots/c.png")).unwrap();
+        recovered.steps.insert(0, nested);
+        recovered.steps.push(next);
+        generate(
+            &[
+                "-f", "lavfi", "-i",
+                "color=black:s=640x480:r=30:d=12,drawbox=x=0:y=0:w=iw:h=ih:color=white:t=fill:enable='gte(t,5)'",
+                "-c:v", "libx264",
+            ],
+            &published_video_path(&dir),
+        );
+        assert!(detect_continuity(&mut runner, &dir, &recovered, 0, 0, 0, 0).is_empty());
+        generate(
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "color=black:s=640x480:r=30:d=12",
+                "-c:v",
+                "libx264",
+            ],
+            &published_video_path(&dir),
         );
         generate(
             &[
