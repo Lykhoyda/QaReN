@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { captureScreen } from '../../../dist/qa/capture.js';
 import { parsePlan, parseStep } from '../../../dist/qa/plan.js';
 import { inputCheckSubject, redactEvidence } from '../../../dist/qa/privacy.js';
 import { resolveTarget } from '../../../dist/qa/resolve.js';
 import { describe, join } from '../../../dist/qa/screen.js';
-import type { DigestEntry, NativeNode, Screen } from '../../../dist/qa/screen.js';
+import type {
+  DigestEntry,
+  NativeNode,
+  ReactHostEvidence,
+  Screen,
+} from '../../../dist/qa/screen.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import { scriptedJudge, walker } from './judgment-fixtures.ts';
 
@@ -20,6 +26,10 @@ const candidate: DigestEntry = {
   inputHostIndices: [0],
   placeholder: 'Search items',
   capabilities: { press: false, fill: true },
+};
+const inputHosts: ReactHostEvidence = {
+  complete: true,
+  hosts: [{ role: 'textinput', roleSource: 'role', capabilities: { fill: true } }],
 };
 const noJudge = () => scriptedJudge(() => assert.fail('quoted targets do not need Jev'));
 const joinScreen: typeof join = (
@@ -174,11 +184,120 @@ test('same-host layers pair in either order without erasing coverage gaps', asyn
     assert.ok('ref' in result);
     assert.equal(result.ref, '@input');
     assert.equal(observed.semanticUnassociatedReact, 2);
+    for (const acquired of ['complete', 'unknown', 'incomplete'] as const) {
+      const ordinary = join(
+        [input],
+        digest,
+        'app',
+        { native: 'unknown', react: 'complete' },
+        inputHosts,
+        undefined,
+        acquired,
+      );
+      const result = await resolve(ordinary);
+      if (acquired === 'complete') {
+        assert.equal(ordinary.elements[0].placeholder, 'Search items');
+        assert.ok('ref' in result);
+        assert.equal(result.ref, '@input');
+      } else {
+        assert.equal(ordinary.elements[0].placeholder, undefined);
+        assert.ok('refuse' in result);
+        assert.equal(result.refuse, 'TARGET_NOT_FOUND');
+      }
+    }
     for (const react of ['unknown', 'incomplete'] as const) {
       const partial = joinScreen([input], digest, 'app', { native: 'complete', react });
       assert.equal(partial.elements[0].placeholder, undefined);
       assert.ok('refuse' in (await resolve(partial)));
     }
+  }
+});
+
+test('unknown native coverage without acquisition evidence cannot pair attested hosts', async () => {
+  const observed = join(
+    [input],
+    [candidate],
+    'app',
+    { native: 'unknown', react: 'complete' },
+    inputHosts,
+  );
+  assert.equal(observed.elements[0].placeholder, undefined);
+  const result = await resolve(observed);
+  assert.ok('refuse' in result);
+  assert.equal(result.refuse, 'TARGET_NOT_FOUND');
+});
+
+test('ordinary capture carries acquisition proof through placeholder resolution and Fill dispatch', async () => {
+  const f = walker([], noJudge());
+  let captures = 0;
+  f.deps.captureScreen = async (options) => {
+    assert.notEqual(options?.platformPresence, true);
+    captures += 1;
+    const observed = await captureScreen({
+      native: async () => ({
+        nodes: [input],
+        truncated: false,
+        normalizationDroppedNodes: 0,
+        snapshotVerdict: { state: 'ok', nodeCount: 1, refMapUpdated: true, reasons: [] },
+      }),
+      react: async () => ({
+        interactive: [{ ...candidate, compositeWrapper: true }, candidate],
+        verdict: { state: 'ok', path: 'interactive', complete: true },
+        hostEvidence: inputHosts,
+      }),
+    });
+    assert.deepEqual(observed.captureCoverage, { native: 'complete', react: 'complete' });
+    assert.deepEqual(observed.coverage, { native: 'unknown', react: 'complete' });
+    assert.equal(observed.elements[0].placeholder, 'Search items');
+    return observed;
+  };
+  const ledger = await runPlan(parsePlan('1. Fill "Search items" with "query"').blocks!, f.deps);
+  assert.equal(ledger.verdict, 'PASS');
+  assert.ok(captures > 0);
+  assert.deepEqual(f.actions, ['fill @input query']);
+});
+
+test('ordinary acquisition keeps distinct, hidden, offscreen and conflicting inputs competing', async () => {
+  for (const [nodes, digest, hosts] of [
+    [[input, { ...input, ref: '@other' }], [candidate], inputHosts],
+    [
+      [input, { ...input, ref: '@other', rect: { x: 20, y: -500, width: 300, height: 44 } }],
+      [candidate, { ...candidate, inputHostIndices: [1] }],
+      { complete: true, hosts: [...inputHosts.hosts, inputHosts.hosts[0]] },
+    ],
+    [
+      [input, { ...input, ref: '@other' }],
+      [candidate, { ...candidate, hidden: true, inputHostIndices: [1] }],
+      { complete: true, hosts: [...inputHosts.hosts, { ...inputHosts.hosts[0], hidden: true }] },
+    ],
+    [
+      [input],
+      [candidate, { ...candidate, inputHostIndices: [1] }],
+      { complete: true, hosts: [...inputHosts.hosts, inputHosts.hosts[0]] },
+    ],
+    [[input], [candidate, { ...candidate, placeholder: 'Other search' }], inputHosts],
+    [[input], [candidate, { ...candidate, inputHostIndices: [1] }], inputHosts],
+  ] as const) {
+    const observed = join(
+      [...nodes],
+      [...digest],
+      'app',
+      { native: 'unknown', react: 'complete' },
+      { ...hosts, hosts: [...hosts.hosts] },
+      undefined,
+      'complete',
+    );
+    assert.ok(observed.elements.every((element) => element.placeholder === undefined));
+    const result = await resolve(observed);
+    assert.ok('refuse' in result);
+    assert.equal(result.refuse, 'TARGET_NOT_FOUND');
+    const f = walker(
+      [{ ...observed, captureCoverage: { native: 'complete', react: 'complete' } }],
+      noJudge(),
+    );
+    const ledger = await runPlan(parsePlan('1. Fill "Search items" with "query"').blocks!, f.deps);
+    assert.equal(ledger.verdict, 'FAIL');
+    assert.deepEqual(f.actions, []);
   }
 });
 

@@ -637,8 +637,9 @@ Plans contain a `## QA` section, named `###` blocks, numbered actions and
 [parser](../qaren-core/src/qa/plan.ts) for accepted grammar. Quoted press and fill
 targets resolve observed labels or test IDs locally. A Fill also accepts an input's
 React placeholder; an empty native input without an ID or label receives that name
-only with complete native and React coverage and attested host evidence proving
-one candidate input. Separately emitted React layers count as one input only when
+only with complete native acquisition and React coverage and attested host evidence
+proving one candidate input, including ordinary captures without platform presence.
+Separately emitted React layers count as one input only when
 they attest to the same single input host and agree on its placeholder.
 A competitor
 (or donor) is excluded only through a consistent, unique entry-to-input-host-to-native-node

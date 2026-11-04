@@ -739,6 +739,7 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
           },
           hostEvidence,
           nativePresence ?? (native.presenceCapture !== undefined ? 'unknown' : undefined),
+          captureCoverage.native,
         ),
         ...(typeof native.pointScale === 'number' &&
         Number.isFinite(native.pointScale) &&

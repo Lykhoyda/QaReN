@@ -629,6 +629,7 @@ export function join(
   coverage?: Screen['coverage'],
   reactHostEvidence?: ReactHostEvidence,
   nativePresence?: NativePresence | 'unknown',
+  nativeAcquisition?: NonNullable<Screen['coverage']>['native'],
 ): Screen {
   const presenceMode =
     nativePresence !== undefined || nodes.some((node) => Object.hasOwn(node, 'presence'));
@@ -1077,8 +1078,8 @@ export function join(
   );
   const unnamed = unnamedInputs.filter((element) => nativeInputs.includes(element));
   if (
-    coverage?.native === 'complete' &&
-    coverage.react === 'complete' &&
+    (nativeAcquisition ?? coverage?.native) === 'complete' &&
+    coverage?.react === 'complete' &&
     reactHostEvidence?.complete === true &&
     nativeInputs.length === 1 &&
     unnamed.length === 1 &&
