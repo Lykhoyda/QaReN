@@ -184,25 +184,27 @@ test('same-host layers pair in either order without erasing coverage gaps', asyn
     assert.ok('ref' in result);
     assert.equal(result.ref, '@input');
     assert.equal(observed.semanticUnassociatedReact, 2);
-    for (const acquired of ['complete', 'unknown', 'incomplete'] as const) {
-      const ordinary = join(
-        [input],
-        digest,
-        'app',
-        { native: 'unknown', react: 'complete' },
-        inputHosts,
-        undefined,
-        acquired,
-      );
-      const result = await resolve(ordinary);
-      if (acquired === 'complete') {
-        assert.equal(ordinary.elements[0].placeholder, 'Search items');
-        assert.ok('ref' in result);
-        assert.equal(result.ref, '@input');
-      } else {
-        assert.equal(ordinary.elements[0].placeholder, undefined);
-        assert.ok('refuse' in result);
-        assert.equal(result.refuse, 'TARGET_NOT_FOUND');
+    for (const native of ['unknown', 'incomplete'] as const) {
+      for (const acquired of ['complete', 'unknown', 'incomplete'] as const) {
+        const ordinary = join(
+          [input],
+          digest,
+          'app',
+          { native, react: 'complete' },
+          inputHosts,
+          undefined,
+          acquired,
+        );
+        const result = await resolve(ordinary);
+        if (acquired === 'complete') {
+          assert.equal(ordinary.elements[0].placeholder, 'Search items');
+          assert.ok('ref' in result);
+          assert.equal(result.ref, '@input');
+        } else {
+          assert.equal(ordinary.elements[0].placeholder, undefined);
+          assert.ok('refuse' in result);
+          assert.equal(result.refuse, 'TARGET_NOT_FOUND');
+        }
       }
     }
     for (const react of ['unknown', 'incomplete'] as const) {
@@ -234,6 +236,7 @@ test('ordinary capture carries acquisition proof through placeholder resolution 
     assert.notEqual(options?.platformPresence, true);
     captures += 1;
     const observed = await captureScreen({
+      requirePrivateInputs: true,
       native: async () => ({
         nodes: [input],
         truncated: false,
@@ -278,26 +281,31 @@ test('ordinary acquisition keeps distinct, hidden, offscreen and conflicting inp
     [[input], [candidate, { ...candidate, placeholder: 'Other search' }], inputHosts],
     [[input], [candidate, { ...candidate, inputHostIndices: [1] }], inputHosts],
   ] as const) {
-    const observed = join(
-      [...nodes],
-      [...digest],
-      'app',
-      { native: 'unknown', react: 'complete' },
-      { ...hosts, hosts: [...hosts.hosts] },
-      undefined,
-      'complete',
-    );
-    assert.ok(observed.elements.every((element) => element.placeholder === undefined));
-    const result = await resolve(observed);
-    assert.ok('refuse' in result);
-    assert.equal(result.refuse, 'TARGET_NOT_FOUND');
-    const f = walker(
-      [{ ...observed, captureCoverage: { native: 'complete', react: 'complete' } }],
-      noJudge(),
-    );
-    const ledger = await runPlan(parsePlan('1. Fill "Search items" with "query"').blocks!, f.deps);
-    assert.equal(ledger.verdict, 'FAIL');
-    assert.deepEqual(f.actions, []);
+    for (const native of ['unknown', 'incomplete'] as const) {
+      const observed = join(
+        [...nodes],
+        [...digest],
+        'app',
+        { native, react: 'complete' },
+        { ...hosts, hosts: [...hosts.hosts] },
+        undefined,
+        'complete',
+      );
+      assert.ok(observed.elements.every((element) => element.placeholder === undefined));
+      const result = await resolve(observed);
+      assert.ok('refuse' in result);
+      assert.equal(result.refuse, 'TARGET_NOT_FOUND');
+      const f = walker(
+        [{ ...observed, captureCoverage: { native: 'complete', react: 'complete' } }],
+        noJudge(),
+      );
+      const ledger = await runPlan(
+        parsePlan('1. Fill "Search items" with "query"').blocks!,
+        f.deps,
+      );
+      assert.equal(ledger.verdict, 'FAIL');
+      assert.deepEqual(f.actions, []);
+    }
   }
 });
 

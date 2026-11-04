@@ -639,6 +639,8 @@ targets resolve observed labels or test IDs locally. A Fill also accepts an inpu
 React placeholder; an empty native input without an ID or label receives that name
 only with complete native acquisition and React coverage and attested host evidence
 proving one candidate input, including ordinary captures without platform presence.
+Unknown or incomplete presence keeps every input in contention even when native
+acquisition is complete.
 Separately emitted React layers count as one input only when
 they attest to the same single input host and agree on its placeholder.
 A competitor
@@ -649,7 +651,8 @@ When React coverage is unknown or incomplete, a missed Fill with one unnamed
 on-screen input reports `evidence-incomplete`, names that coverage class, and
 suggests targeting the field by test id. Distinct matches are counted before kind,
 disabled, hittability, offscreen or React-only filters, so two or more refuse with
-`TARGET_AMBIGUOUS`, without a Jev tie-break, even if the target adds positional words such as `Tap "Save" at the bottom`. Outside fills,
+`TARGET_AMBIGUOUS`, without a Jev tie-break, even if the target adds positional words
+such as `Tap "Save" at the bottom`. Outside fills,
 a React-only element whose testID equals the quoted value is not counted while a
 native element carries that testID, so a quoted press, wait or scroll reaches
 the native element; two native elements sharing it still refuse. A fill counts
