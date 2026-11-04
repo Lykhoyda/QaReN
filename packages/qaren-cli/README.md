@@ -885,7 +885,7 @@ Resolution, frame comparison and hit testing share one 300 ms deadline.
 Missing retained identity, a generation mismatch, zero or ambiguous live
 matches, and failed or over-budget checks leave the check unavailable and
 permit ordinary dispatch as before; the [strict overlay path](#covered-target-recovery)
-instead requires a proven live hit. Stable taps check `XCUIElement.isHittable`; exact
+instead requires a proven live hit. Stable taps check `XCUIElement.isHittable`; ordinary exact
 fills use the frame guard without an extra hittability read, then keep the
 existing focus-point check when a focus tap is needed. An input's hit test
 applies only when the focus point lies inside its frame; a wrapper-centre focus
@@ -1044,9 +1044,9 @@ inside it, narrowing the existing keyboard-safe band. A caller band is also kept
 clear of the system gesture edges: 48 dp from the top and bottom window edges on
 Android, using the snapshot's display density, and 20 pt from the top and 34 pt
 from the bottom on iOS. Callers passing no band
-use the existing keyboard-safe band. On both iOS and Android, a target whose centre
-is covered by the observed keyboard or a sticky overlay gets a scroll sized to move that centre
-toward the middle of that band. Precise vertical drags normally keep a 10% dead zone at
+use the existing keyboard-safe band. When keyboard or overlay clearance requires
+a scroll, it is sized to move the target's centre toward the middle of that band.
+Precise vertical drags normally keep a 10% dead zone at
 touch-down and stop at least one pixel inside the far band edge; short bands shrink the
 start inset to allow at least 48 px of travel. A clearance scroll without
 a band keeps the cap of 60% of the screen area above the keyboard, without a
@@ -1646,11 +1646,11 @@ remaining vertical span supplies the drag band; an exhausted span refuses
 display density when available. Without a scroll container, the centred window
 drag is retained.
 Quoted scroll-until uses the current ordinary capture for target visibility and
-geometry, with no additional platform-presence confirmation. A target whose tap
-point is covered by a front overlay requires another safe drag within the original
-six-drag and time budgets. An edge can remain under a floating control when the
-tap point is clear; drag bands still exclude the overlay frame. Phrase capture
-policy is unchanged.
+geometry, with the [iOS inferred-overlay probe](#covered-target-recovery) governing
+completion under an inferred cover. Otherwise, a target whose tap point is covered
+by a front overlay requires another safe drag within the original six-drag and
+time budgets. An edge can remain under a floating control when the tap point is
+clear; drag bands still exclude the overlay frame. Phrase capture policy is unchanged.
 Selected-tab changes or disappearance/replacement of the dragged list refuse
 `SCROLL_NAVIGATED` before searching a different screen. An identified list matches
 by type and testID through keyboard/header resizing; unidentified lists retain the
@@ -3523,7 +3523,7 @@ The cutter is inferred, not the proven cover. Unread or unavailable facts
 remain `null`; target text, identifiers and target coordinates are excluded. The
 [walker](../qaren-core/src/qa/walker.ts) owns the event layout; the
 [centre predicate](../qaren-core/src/qa/resolve.ts) owns its coverage facts.
-On the [strict iOS overlay path](#covered-target-recovery), this event follows
+On the [strict iOS overlay press path](#covered-target-recovery), this event follows
 a live-hit refusal with mutation `none`, rather than the inference alone.
 The event preserves the failed step and grants no further scroll or
 target dispatch; sink failures leave the outcome unchanged. It stays out of the
