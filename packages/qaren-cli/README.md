@@ -3497,7 +3497,8 @@ target dispatch; sink failures leave the outcome unchanged. It stays out of the
 public result and ledger, as covered by the
 [occlusion regressions](../qaren-core/test/unit/qa/occlusion-walker.test.ts).
 
-`ledger.json` adds a `timing` object to each walked attempt row, in milliseconds.
+`ledger.json` adds a `timing` object to each walked attempt row; duration fields
+are in milliseconds.
 `captureMs`, `resolveMs` (decision), `actMs`, `postCaptureMs` and `otherMs`
 partition `total`, the elapsed window between consecutive row timestamps
 (starting at the walk for the first row). `nativeMs`, `reactMs` and optional
@@ -3506,6 +3507,17 @@ decision, including HTTP retries and their backoff. These breakdowns overlap
 the partition and must not be added to `total`. Post-action captures start
 after an authorized dispatch; captures after a dispatch refused before
 authorization remain in `captureMs`.
+
+Optional `settleMethod` and `settleMs` record measured client settle within the
+row window. Milliseconds sum across dispatched actions; the method is
+`window-gate`, `screen-static`, `snapshot-eq`, `timeout` or `unknown`, or `mixed`
+when methods differ. Optional `preparationSamples` and `preparationResets` sum
+the native presence preparation counts across all captures in that window,
+including pre-action and post-action captures. These fields are value-free,
+available without private-input diagnostics, and omitted when not measured;
+a measured zero is retained. Settle time overlaps `actMs` and preparation
+counts add no time to the partition. Waits and scrolls that only capture can
+carry preparation counts without a client settle.
 
 The ledger's `speed` summary groups timed action/check rows by operation, keeping
 login-replay steps separate from plan steps that share a line and kind. Every retry,

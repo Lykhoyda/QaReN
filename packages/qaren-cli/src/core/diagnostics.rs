@@ -423,6 +423,7 @@ fn clean(value: &Value) -> Option<Value> {
                 "useMs",
                 "ageMs",
                 "count",
+                "resets",
                 "nextLine",
                 "presence",
                 "budgetMs",
@@ -514,6 +515,9 @@ fn clean(value: &Value) -> Option<Value> {
                 || fields.get("stage")?.as_str()? != "screenshot"
                 || fields.get("outcome")?.as_str()? != "withheld")
         {
+            return None;
+        }
+        if key == "resets" && fields.get("stage")?.as_str()? != "native-preparation" {
             return None;
         }
         if key == "readinessReason"
@@ -614,7 +618,9 @@ fn clean(value: &Value) -> Option<Value> {
                 || (["block-outcome", "interruption-rejected"].contains(&kind)
                     && key == "line"
                     && number == 0.0)
-                || ((kind == "interruption-rejected" || ADMISSION_KEYS.contains(&key.as_str()))
+                || ((kind == "interruption-rejected"
+                    || key == "resets"
+                    || ADMISSION_KEYS.contains(&key.as_str()))
                     && number.fract() != 0.0)
             {
                 return None;

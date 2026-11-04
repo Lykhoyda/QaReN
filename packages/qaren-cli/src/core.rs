@@ -691,6 +691,17 @@ where
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SettleMethod {
+    WindowGate,
+    ScreenStatic,
+    SnapshotEq,
+    Timeout,
+    Unknown,
+    Mixed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RowTiming {
     pub capture_ms: u64,
@@ -698,6 +709,14 @@ pub struct RowTiming {
     pub react_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presence_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settle_method: Option<SettleMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settle_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preparation_samples: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preparation_resets: Option<u64>,
     pub resolve_ms: u64,
     pub jev_ms: u64,
     pub act_ms: u64,

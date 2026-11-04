@@ -9,6 +9,7 @@ import {
   separateRowOperations,
   summarizeSpeed,
 } from '../../../dist/qa/row-timing.js';
+import { observeTiming } from '../../../dist/qa/timing.js';
 import type { TimingEvent } from '../../../dist/qa/timing.js';
 import { runPlan, walkBlock } from '../../../dist/qa/walker.js';
 import { choice, element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
@@ -414,4 +415,80 @@ test('login recovery and the retried plan step produce separate ledger speed sta
     passed: 2,
     failed: 0,
   });
+});
+
+test('settle and preparation facts sum within a row, keep zero, and reset at its boundary', () => {
+  const timer = createRowTimer(0);
+  timer.observe({ ...end('settle', 12.4), method: 'snapshot-eq' });
+  timer.observe({ ...end('settle', 0), method: 'snapshot-eq' });
+  timer.observe({
+    stage: 'native-preparation',
+    edge: 'point',
+    outcome: 'ok',
+    at: 0,
+    count: 6,
+    resets: 0,
+  });
+  timer.observe({
+    stage: 'native-preparation',
+    edge: 'point',
+    outcome: 'failed',
+    at: 0,
+    ms: 500,
+    count: 8,
+    resets: 2,
+  });
+  const first = timer.take(50, 0);
+  assert.equal(first.settleMethod, 'snapshot-eq');
+  assert.equal(first.settleMs, 12);
+  assert.equal(first.preparationSamples, 14);
+  assert.equal(first.preparationResets, 2);
+  assert.equal(first.total, 50);
+  assert.equal(first.otherMs, 50);
+  const next = timer.take(60, 0);
+  for (const field of ['settleMethod', 'settleMs', 'preparationSamples', 'preparationResets'])
+    assert.ok(!(field in next));
+  timer.observe({ ...end('settle', 0), method: 'timeout' });
+  timer.observe({ ...end('settle', 1), method: 'snapshot-eq' });
+  timer.observe({
+    stage: 'native-preparation',
+    edge: 'point',
+    outcome: 'ok',
+    at: 0,
+    count: 0,
+    resets: 0,
+  });
+  const mixed = timer.take(70, 0);
+  assert.equal(mixed.settleMethod, 'mixed');
+  assert.equal(mixed.settleMs, 1);
+  assert.equal(mixed.preparationSamples, 0);
+  assert.equal(mixed.preparationResets, 0);
+});
+
+test('preparation reset metrics reject invalid counts and keep measured zero', () => {
+  const events: TimingEvent[] = [];
+  for (const resets of [-1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, 'PRIVATE-count'])
+    observeTiming((event) => events.push(event), {
+      stage: 'native-preparation',
+      edge: 'point',
+      outcome: 'ok',
+      at: 0,
+      resets,
+    } as TimingEvent);
+  observeTiming((event) => events.push(event), {
+    stage: 'native-total',
+    edge: 'end',
+    outcome: 'ok',
+    at: 0,
+    resets: 1,
+  });
+  assert.deepEqual(events, []);
+  observeTiming((event) => events.push(event), {
+    stage: 'native-preparation',
+    edge: 'point',
+    outcome: 'ok',
+    at: 0,
+    resets: 0,
+  });
+  assert.equal(events[0].resets, 0);
 });

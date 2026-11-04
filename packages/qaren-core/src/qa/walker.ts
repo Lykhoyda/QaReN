@@ -169,6 +169,7 @@ import {
 } from './ledger.js';
 
 export interface ActResult {
+  settle?: Pick<TimingEvent, 'method' | 'ms'>;
   executed?: boolean;
   ok: boolean;
   proven: boolean;
@@ -282,6 +283,7 @@ export interface WalkerDeps {
   loginOutcome?(outcome: BlockOutcome): void;
   timing?: TimingObserver;
   rowTiming?(t: number): RowTiming;
+  rowSettle?: TimingObserver;
   // iOS only: the app process every capture must still belong to, set by the first capture.
   appProcess?: { expected?: number };
   hideDevMenu?(): Promise<ActResult>;
@@ -1210,6 +1212,16 @@ async function walkBlockScoped(
     }
   };
   let dispatchStarted: number | undefined;
+  const observeRowSettle = (result: ActResult): void => {
+    if (deps.rowSettle && result.settle)
+      observeTiming(deps.rowSettle, {
+        ...result.settle,
+        stage: 'settle',
+        edge: 'end',
+        outcome: 'ok',
+        at: deps.now(),
+      });
+  };
   const mutate = async (
     item: Item,
     observation: Observation,
@@ -1240,6 +1252,7 @@ async function walkBlockScoped(
       // A scroll step's momentum outlives the step and its block; the next targeted dispatch settles first.
       if (item.kind === 'scroll') sequence.momentum = true;
       const result = await send(context);
+      observeRowSettle(result);
       if (result.entryMismatch) fillMismatch = result.entryMismatch;
       context.assertComplete();
       diagnostic(item, observation, 'dispatch', 'COMPLETED', context.authorizations);
@@ -2330,12 +2343,14 @@ async function walkBlockScoped(
                   });
                 dispatched = true;
                 const result = await deps.press(ref, context);
-                if (!result.ok || result.executed === false)
+                if (!result.ok || result.executed === false) {
+                  observeRowSettle(result);
                   throw new ResolutionError({
                     refuse: 'INTERRUPTION_NOT_DISPATCHED',
                     reason:
                       'the decline control was not dispatched successfully; it was not retried',
                   });
+                }
                 return result;
               },
               screenshot: (name) => {
@@ -4739,6 +4754,8 @@ function withRowTiming(deps: WalkerDeps): WalkerDeps {
       }
       observe(event);
     },
+    // Action adapters use the session observer; returned settle facts enter the row only here.
+    rowSettle: (event) => timer.observe(event),
     rowTiming: (t) => {
       const calls = deps.judge?.calls ?? [];
       const elapsed = deps.judge?.elapsedMs;

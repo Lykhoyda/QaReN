@@ -286,10 +286,11 @@ function act(
           tappedRect?: unknown;
         }>(result);
         const method = fillMethodOf(meta);
-        logActionSettle(meta, timing);
+        const settle = logActionSettle(meta, timing);
         const keyboard = actionKeyboard(meta);
         if (data?.executed === false || data?.tapped === false)
           return {
+            ...settle,
             ok: false,
             proven: false,
             executed: false,
@@ -319,6 +320,7 @@ function act(
             : undefined;
         const chars = data?.caseNormalizedChars;
         return {
+          ...settle,
           ok: true,
           proven: proven || verified,
           ...(keyboard !== undefined ? { keyboardShown: keyboard } : {}),
@@ -328,10 +330,14 @@ function act(
           ...(method ? { method } : {}),
         };
       } catch (error) {
-        logActionSettle(error instanceof HandlerError ? error.meta : undefined, timing);
+        const settle = logActionSettle(
+          error instanceof HandlerError ? error.meta : undefined,
+          timing,
+        );
         const keyboard = actionKeyboard(error instanceof HandlerError ? error.meta : undefined);
         const { code, message } = describeError(error);
         return {
+          ...settle,
           ok: false,
           proven: false,
           mutation: extractMutationDisposition(result),
@@ -348,7 +354,7 @@ function act(
     },
     (error) => {
       if (error instanceof AppProcessGoneError) throw error;
-      logActionSettle(
+      const settle = logActionSettle(
         error instanceof HandlerError
           ? error.meta
           : error instanceof QaDispatchError
@@ -358,6 +364,7 @@ function act(
       );
       const { code, message } = describeError(error);
       return {
+        ...settle,
         ok: false,
         proven: false,
         mutation:
@@ -405,7 +412,11 @@ function actionKeyboard(meta?: Record<string, unknown>): boolean | undefined {
   return shown;
 }
 
-function logActionSettle(meta?: Record<string, unknown>, timing?: TimingContext): void {
+function logActionSettle(
+  meta?: Record<string, unknown>,
+  timing?: TimingContext,
+): Pick<ActResult, 'settle'> {
+  let measured: Pick<ActResult, 'settle'> = {};
   try {
     const settle = isRecord(meta?.settle) ? meta.settle : {};
     const ms = isRecord(meta?.timings_ms) ? meta.timings_ms.settle : undefined;
@@ -425,6 +436,8 @@ function logActionSettle(meta?: Record<string, unknown>, timing?: TimingContext)
           ? ms
           : 'unknown',
     };
+    if (typeof summary.ms === 'number')
+      measured = { settle: { method: summary.method, ms: summary.ms } };
     if (timing)
       observeTiming(timing.observe, {
         stage: 'settle',
@@ -440,6 +453,7 @@ function logActionSettle(meta?: Record<string, unknown>, timing?: TimingContext)
   } catch {
     // Diagnostics cannot change an action's outcome.
   }
+  return measured;
 }
 
 function entryMismatchFrom(error: unknown): Pick<ActResult, 'entryMismatch'> {

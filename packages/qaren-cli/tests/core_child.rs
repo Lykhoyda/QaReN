@@ -890,6 +890,63 @@ fn slot_diagnostics_retain_only_allowlisted_events_without_affecting_the_result(
 }
 
 #[test]
+fn preparation_reset_counts_preserve_private_metrics_and_reject_invalid_facts() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use serde_json::json;
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    let repo = common::temp_repo();
+    let inputs = Arc::new(InputValues::from_entries([(
+        OsString::from("QAREN_INPUT_PASSWORD"),
+        OsString::from("private-synthetic-value"),
+    )]));
+    with_input_scope(inputs, || {
+        let metric = json!({
+            "kind": "metric", "stage": "native-preparation", "edge": "point", "outcome": "ok",
+            "at": 200, "ms": 80.5, "count": 6, "resets": 0
+        });
+        let mut reset = metric.clone();
+        reset["resets"] = json!(2);
+        let mut payloads = vec![metric.clone(), reset.clone()];
+        for value in [
+            json!(-1),
+            json!(0.5),
+            json!(9007199254740992_u64),
+            json!("private-synthetic-value"),
+            json!(null),
+        ] {
+            let mut invalid = metric.clone();
+            invalid["resets"] = value;
+            payloads.push(invalid);
+        }
+        let mut wrong_stage = metric.clone();
+        wrong_stage["stage"] = json!("native-total");
+        payloads.push(wrong_stage);
+        let mut stdout = String::new();
+        for (i, value) in payloads.iter().enumerate() {
+            stdout.push_str(&envelope(i as u64 + 2, "diagnostic", &value.to_string()));
+            stdout.push('\n');
+        }
+        stdout.push_str(&envelope(
+            payloads.len() as u64 + 2,
+            "result",
+            &pass_ledger(&[]),
+        ));
+        stdout.push('\n');
+        let mut mock = MockRunner::new();
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+        let result = run_child(&mut mock, &repo.join("core.log"));
+        assert_eq!(result.verdict, Verdict::Pass);
+        let stored = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
+        let actual: Vec<serde_json::Value> = stored
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(actual, [metric, reset]);
+    });
+}
+
+#[test]
 fn readiness_reasons_reach_private_diagnostics_only_as_classified_end_events() {
     use qaren::redact::{with_input_scope, InputValues};
     use serde_json::json;
