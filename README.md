@@ -5,7 +5,7 @@ Native change; QaReN tries it in your app on an iOS simulator and comes back wit
 and the evidence behind it.
 
 [![CI](https://github.com/Lykhoyda/QaReN/actions/workflows/ci.yml/badge.svg)](https://github.com/Lykhoyda/QaReN/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-lykhoyda.github.io%2FQaReN-blue)](https://lykhoyda.github.io/QaReN/)
+[![Docs](https://img.shields.io/badge/docs-qaren--agent.vercel.app-blue)](https://qaren-agent.vercel.app/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 A coding agent checks its work with types, lint and unit tests. It does not tap through
@@ -23,7 +23,7 @@ it writes a short plan of what to check, and QaReN runs that plan in the real ap
 - **Faster on every run.** Eligible passing blocks are saved and replayed next time by
   the exact elements they used.
 
-Read the [docs](https://lykhoyda.github.io/QaReN/), or [set it up](#set-up-qaren) in your
+Read the [docs](https://qaren-agent.vercel.app/), or [set it up](#set-up-qaren) in your
 agent.
 
 ## How it works
