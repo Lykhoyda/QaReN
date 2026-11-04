@@ -1082,22 +1082,30 @@ export function join(
     reactHostEvidence?.complete === true &&
     nativeInputs.length === 1 &&
     unnamed.length === 1 &&
-    digestInputs.length === 1 &&
     activeHosts?.length === 1
   ) {
-    const index = digestInputs[0];
-    const candidate = digest[index];
-    const placeholder = nonEmpty(candidate.placeholder);
+    const candidate = digestInputs
+      .map((index) => digest[index])
+      .find((entry) => !entry.compositeWrapper && nonEmpty(entry.placeholder));
+    const placeholder = nonEmpty(candidate?.placeholder);
+    const hostIndex = candidate?.inputHostIndices?.[0];
     if (
-      !used.has(index) &&
-      !candidate.testID &&
-      !candidate.hidden &&
-      !candidate.compositeWrapper &&
       placeholder &&
-      candidate.inputHostIndices?.length === 1 &&
-      reactHostEvidence.hosts[candidate.inputHostIndices[0]]?.capabilities.fill === true &&
-      !reactHostEvidence.hosts[candidate.inputHostIndices[0]].hidden &&
-      reactHostEvidence.hosts[candidate.inputHostIndices[0]].testID === candidate.testID
+      hostIndex !== undefined &&
+      reactHostEvidence.hosts[hostIndex] === activeHosts[0] &&
+      !activeHosts[0].hidden &&
+      !activeHosts[0].testID &&
+      digestInputs.every((index) => {
+        const entry = digest[index];
+        return (
+          !used.has(index) &&
+          !entry.testID &&
+          !entry.hidden &&
+          entry.inputHostIndices?.length === 1 &&
+          entry.inputHostIndices[0] === hostIndex &&
+          (entry.placeholder === undefined || nonEmpty(entry.placeholder) === placeholder)
+        );
+      })
     )
       unnamed[0].placeholder = placeholder;
   }

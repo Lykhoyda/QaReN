@@ -638,9 +638,8 @@ Plans contain a `## QA` section, named `###` blocks, numbered actions and
 targets resolve observed labels or test IDs locally. A Fill also accepts an input's
 React placeholder; an empty native input without an ID or label receives that name
 only with complete native and React coverage and attested host evidence proving
-one candidate input. Separately emitted entries remain competitors; only the
-collector's existing identity-forwarding rule merges duplicates. Unnamed component
-layers without a forwarding identity can still refuse; give the field a test ID.
+one candidate input. Separately emitted React layers count as one input only when
+they attest to the same single input host and agree on its placeholder.
 A competitor
 (or donor) is excluded only through a consistent, unique entry-to-input-host-to-native-node
 chain proving it offscreen or accessibility-hidden on that capture; keyboard cover

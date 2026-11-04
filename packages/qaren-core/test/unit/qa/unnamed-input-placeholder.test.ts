@@ -100,11 +100,10 @@ test('partial, unknown and unattested captures cannot prove a unique placeholder
   }
 });
 
-test('competing React inputs block the name, including React-only and composite wrappers', async () => {
+test('competing React inputs block the name, including React-only inputs', async () => {
   for (const extra of [
     { ...candidate, placeholder: 'Other search' },
     { ...candidate, testID: 'react-only' },
-    { ...candidate, compositeWrapper: true as const },
     { ...candidate, hidden: true },
     { role: 'other', capabilities: { press: false, fill: true } },
   ]) {
@@ -161,6 +160,46 @@ test('shared input-host grouping refuses conflicting names, identities and incom
     assert.ok('refuse' in result);
     assert.equal(result.refuse, 'TARGET_NOT_FOUND');
   }
+});
+
+test('same-host layers pair in either order without erasing coverage gaps', async () => {
+  const layers = [
+    { ...candidate, compositeWrapper: true as const },
+    { ...candidate, placeholder: undefined },
+    candidate,
+  ];
+  for (const digest of [layers, [...layers].reverse()]) {
+    const observed = joinScreen([input], digest);
+    const result = await resolve(observed);
+    assert.ok('ref' in result);
+    assert.equal(result.ref, '@input');
+    assert.equal(observed.semanticUnassociatedReact, 2);
+    for (const react of ['unknown', 'incomplete'] as const) {
+      const partial = joinScreen([input], digest, 'app', { native: 'complete', react });
+      assert.equal(partial.elements[0].placeholder, undefined);
+      assert.ok('refuse' in (await resolve(partial)));
+    }
+  }
+});
+
+test('two attested input hosts cannot donate a placeholder to one native input', async () => {
+  const observed = joinScreen(
+    [input],
+    [candidate, { ...candidate, inputHostIndices: [1] }],
+    'app',
+    undefined,
+    {
+      complete: true,
+      hosts: [
+        { role: 'textinput', roleSource: 'none', capabilities: { fill: true } },
+        { role: 'textinput', roleSource: 'none', capabilities: { fill: true } },
+      ],
+    },
+  );
+  const f = walker([observed], noJudge());
+  const ledger = await runPlan(parsePlan('1. Fill "Search items" with "query"').blocks!, f.deps);
+  assert.equal(ledger.verdict, 'FAIL');
+  assert.deepEqual(f.actions, []);
 });
 
 test('hidden, composite, identified, blank and non-input entries cannot name an input', async () => {

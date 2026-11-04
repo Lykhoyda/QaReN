@@ -257,7 +257,7 @@ const unnamedNativeInput = {
   rect: { x: 20, y: 100, width: 300, height: 44 },
 };
 
-test('separately emitted unnamed TextInput layers remain competing inputs', async () => {
+test('separately emitted unnamed TextInput layers fill their single attested input', async () => {
   const react = await observe([unnamedInput()]);
   assert.equal(react.interactive!.length, 4);
   assert.ok(react.interactive!.some((entry) => entry.compositeWrapper));
@@ -272,18 +272,20 @@ test('separately emitted unnamed TextInput layers remain competing inputs', asyn
     { kind: 'fill', target: { quoted: 'Scratch note', phrase: 'Scratch note' }, text: 'alpha' },
     screen,
   );
-  assert.ok('refuse' in target, JSON.stringify(target));
+  assert.ok('element' in target, JSON.stringify(target));
+  assert.equal(target.element.ref, '@note');
   const f = walker(
     [screen],
     scriptedJudge(() => assert.fail('literal Fill needs no judgment')),
   );
   const ledger = await runPlan(parsePlan('1. Fill "Scratch note" with "alpha"').blocks!, f.deps);
-  assert.equal(ledger.verdict, 'FAIL');
-  assert.deepEqual(f.actions, []);
+  assert.equal(ledger.verdict, 'PASS');
+  assert.deepEqual(f.actions, ['fill @note alpha']);
 });
 
 test('separate nested inputs sharing a placeholder still refuse, including a React-only competitor', async () => {
   const react = await observe([unnamedInput(), unnamedInput()]);
+  assert.deepEqual(react.hostEvidence?.hosts.map((host) => host.capabilities.fill), [true, true]);
   for (const nodes of [
     [unnamedNativeInput],
     [unnamedNativeInput, { ...unnamedNativeInput, ref: '@other' }],
