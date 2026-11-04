@@ -1,19 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { runInNewContext } from 'node:vm';
 
 import { helperExpr, bridgeWithFallback } from '../../dist/cdp/helper-expr.js';
-
-/**
- * Regression: the helper-expr injection guard must accept JSON object/array
- * arguments — getConsole({...}), dispatchAction({...}) — not just quoted-string
- * args, while still rejecting injection. The original guard banned `{}` outright,
- * which broke cdp_console_log (handshake OK, but the helper call was refused).
- * The guard now validates the argument list is pure JSON *data* (which cannot
- * carry executable code), so it is both more permissive (object literals) AND
- * stricter (rejects nested calls the old `[^;{}]*` regex let through).
- */
-
-// ── Accepts every legitimate production call shape ──
 
 test('accepts a JSON object-literal argument (getConsole) — the regression', () => {
   assert.equal(
@@ -25,7 +14,7 @@ test('accepts a JSON object-literal argument (getConsole) — the regression', (
 test('accepts a nested-object argument (dispatchAction)', () => {
   const call =
     'dispatchAction({"action":"tasks/add","payload":{"title":"x"},"readPath":"tasks.items"})';
-  assert.equal(helperExpr(call, false), `__QAREN.${call}`);
+  assert.equal(helperExpr(call, false), `__QAREN.${call.replace('tasks/add', 'tasks\\u002fadd')}`);
 });
 
 test('accepts the bare `undefined` token (store-state absent path/type)', () => {
@@ -47,13 +36,10 @@ test('accepts no-arg calls on either bridge', () => {
   assert.equal(helperExpr('clearConsole()', false), '__QAREN.clearConsole()');
 });
 
-test('does NOT corrupt a JSON string value of "undefined" (validation-only normalization)', () => {
+test('does NOT corrupt a JSON string value of "undefined"', () => {
   const call = 'dispatchAction({"action":"x","payload":"undefined"})';
-  // accepted, and the interpolated call keeps the original string intact
   assert.equal(helperExpr(call, true), `__RN_DEV_BRIDGE__.${call}`);
 });
-
-// ── Still rejects injection (defense in depth) ──
 
 test('REJECTS statement-injection via `;`', () => {
   assert.throws(() => helperExpr('getConsole(); stealSecrets()', true), /refusing to interpolate/);
@@ -73,4 +59,42 @@ test('bridgeWithFallback validates the same way and wraps both bridges', () => {
   assert.match(out, /__RN_DEV_BRIDGE__\.getStoreState\("x", undefined\)/);
   assert.match(out, /__QAREN\.getStoreState\("x", undefined\)/);
   assert.throws(() => bridgeWithFallback('getConsole(evil())', true), /refusing to interpolate/);
+});
+
+test('escapes code-sensitive characters while preserving argument values on both routes', () => {
+  const args = ['</script>\u2028\u2029', { value: 'undefined, "quoted" \\ path' }, [1, null, true]];
+  const call = `isTestIdFrontmost(${args.map((arg) => JSON.stringify(arg)).join(', ')}, undefined)`;
+  for (const build of [helperExpr, bridgeWithFallback]) {
+    for (const bridgeDetected of [false, true]) {
+      const expression = build(call, bridgeDetected);
+      assert.doesNotMatch(expression, /[<>/\u2028\u2029]/);
+      assert.ok(expression.includes('\\u003c\\u002fscript\\u003e\\u2028\\u2029'));
+      const helper = { isTestIdFrontmost: (...received) => JSON.stringify(received) };
+      const fallback = { isTestIdFrontmost: () => JSON.stringify({ error: 'retry' }) };
+      for (const bridge of [helper, fallback]) {
+        assert.equal(
+          runInNewContext(expression, { __QAREN: helper, __RN_DEV_BRIDGE__: bridge }),
+          JSON.stringify([...args, undefined]),
+        );
+        if (build === helperExpr) break;
+      }
+    }
+  }
+});
+
+test('refuses executable arguments and malformed JSON through either entry point', () => {
+  for (const build of [helperExpr, bridgeWithFallback]) {
+    for (const bridgeDetected of [false, true]) {
+      for (const call of [
+        'getConsole({"x":stealSecrets()})',
+        'getConsole("safe", stealSecrets())',
+        'getConsole("safe"); stealSecrets()//)',
+        'getConsole("unterminated)',
+        'getConsole([1, 2)',
+        'getConsole(1,)',
+      ]) {
+        assert.throws(() => build(call, bridgeDetected), /refusing to interpolate/);
+      }
+    }
+  }
 });
