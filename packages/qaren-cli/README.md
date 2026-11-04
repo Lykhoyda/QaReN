@@ -641,10 +641,10 @@ only with complete native acquisition and React coverage and attested host evide
 proving one candidate input, including ordinary captures without platform presence.
 Unknown or incomplete presence keeps every input in contention even when native
 acquisition is complete.
-Separately emitted React layers count as one input only when
-they attest to the same single input host and agree on its placeholder.
-A competitor
-(or donor) is excluded only through a consistent, unique entry-to-input-host-to-native-node
+Separately emitted React layers count as one input only when they attest to the
+same single input host. A non-wrapper layer must supply the placeholder; other
+layers may omit it, but any placeholders they expose must agree.
+A competitor (or donor) is excluded only through a consistent, unique entry-to-input-host-to-native-node
 chain proving it offscreen or accessibility-hidden on that capture; keyboard cover
 does not exclude it. React-only inputs and uncertain associations still compete.
 When React coverage is unknown or incomplete, a missed Fill with one unnamed
