@@ -8990,6 +8990,9 @@ fn a_cancel_during_the_git_probes_claims_nothing_and_runs_nothing_after_it() {
 struct Encoding(PrRunner, Option<u64>, u64, bool);
 
 impl Runner for Encoding {
+    fn adb_server_version(&self, port: u16) -> Result<u32, String> {
+        self.0.adb_server_version(port)
+    }
     fn env_var(&self, name: &str) -> Option<String> {
         self.0.env_var(name)
     }
@@ -9003,7 +9006,20 @@ impl Runner for Encoding {
     }
     fn execute(&mut self, spec: &CmdSpec, interruptible: bool) -> CmdOutput {
         if spec.label == "ffmpeg-encode" {
-            std::fs::write(spec.args.last().unwrap(), vec![0u8; 64]).unwrap();
+            let output = Path::new(spec.args.last().unwrap());
+            std::fs::write(output, vec![0u8; 64]).unwrap();
+            if self.3 {
+                let shots = output
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join("screenshots");
+                std::fs::create_dir_all(&shots).unwrap();
+                for name in ["a", "b"] {
+                    std::fs::write(shots.join(format!("{name}.png")), "fixture").unwrap();
+                }
+            }
         }
         self.0.execute(spec, interruptible)
     }
@@ -10184,29 +10200,39 @@ fn script_android_pr_ready(mock: &mut MockRunner) {
 
 #[test]
 fn android_pr_on_api_37_starts_the_recorder() {
-    android_pr_video_flow(37);
+    android_pr_video_flow(37, false);
 }
 
 #[test]
 fn android_pr_on_api_33_keeps_the_walk_with_an_explicit_video_unavailable_reason() {
-    android_pr_video_flow(33);
+    android_pr_video_flow(33, false);
 }
 
-fn android_pr_video_flow(api: u16) {
+#[test]
+fn an_eligible_android_publication_does_not_run_the_ios_continuity_detector() {
+    android_pr_video_flow(37, true);
+}
+
+fn android_pr_video_flow(api: u16, encodes: bool) {
     let (repo, app) = app_repo();
     let mut req = android_request(&repo, &app);
     req.pr = pr_request(&repo, &app).pr;
     let wt = req.runs_root.join(run_id()).join("wt");
-    let mut runner = PrRunner {
-        inner: android_mock(),
-        app: app.clone(),
-        recorder_persisted_before_spawn: None,
-        fail_core_spawn: false,
-        planted_worktree_config: None,
-        worktree_config_planted: false,
-        fail_host_checkpoint: false,
-    };
-    let mock = &mut runner.inner;
+    let mut runner = Encoding(
+        PrRunner {
+            inner: android_mock(),
+            app: app.clone(),
+            recorder_persisted_before_spawn: None,
+            fail_core_spawn: false,
+            planted_worktree_config: None,
+            worktree_config_planted: false,
+            fail_host_checkpoint: false,
+        },
+        None,
+        0,
+        encodes,
+    );
+    let mock = &mut runner.0.inner;
     script_android_pr_preflight(mock, &repo, &wt, api);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
     mock.expect_run("ls-files", CmdOutput::success(""));
@@ -10227,7 +10253,29 @@ fn android_pr_video_flow(api: u16) {
         mock.expect_run("ps", CmdOutput::success("adb shell screenrecord"));
         mock.expect_run("shell pgrep -f", CmdOutput::success("42\n"));
     }
-    mock.expect_spawn_piped("walk.js", 9000, &pr_pass_stdout(), Some(0));
+    let stdout = if encodes {
+        pr_pass_stdout()
+            .lines()
+            .map(|line| {
+                let mut message: serde_json::Value = serde_json::from_str(line).unwrap();
+                if message["type"] == "result" {
+                    let ledger = &mut message["payload"];
+                    ledger["admittedAtMs"] = 1.into();
+                    ledger["videoPublication"] = "eligible".into();
+                    let rows = ledger["steps"].as_array_mut().unwrap();
+                    rows[0]["screenshot"] = "screenshots/a.png".into();
+                    let mut second = rows[0].clone();
+                    second["line"] = 8.into();
+                    second["screenshot"] = "screenshots/b.png".into();
+                    rows.push(second);
+                }
+                format!("{message}\n")
+            })
+            .collect::<String>()
+    } else {
+        pr_pass_stdout()
+    };
+    mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
     script_core_identity(mock);
     script_drift_status(mock);
     script_pr_provenance_recheck(mock);
@@ -10248,7 +10296,15 @@ fn android_pr_video_flow(api: u16) {
     mock.expect_run("du -sk", CmdOutput::success("4\n"));
     mock.expect_run("worktree remove --force", CmdOutput::success(""));
     if api >= 34 {
-        mock.expect_run("which ffmpeg", CmdOutput::failed(1, ""));
+        if encodes {
+            mock.expect_run("which ffmpeg", CmdOutput::success("/opt/ffmpeg\n"));
+            mock.expect_run("ffmpeg", CmdOutput::success(""));
+            mock.expect_run("ffprobe", CmdOutput::success("1.0\n"));
+            mock.expect_run("ffmpeg", CmdOutput::success(""));
+            mock.expect_run("ffprobe", CmdOutput::success("0.1\n"));
+        } else {
+            mock.expect_run("which ffmpeg", CmdOutput::failed(1, ""));
+        }
     }
     mock.expect_run(
         "gh pr view https://github.com/o/r/pull/12",
@@ -10258,9 +10314,9 @@ fn android_pr_video_flow(api: u16) {
     let receipt = run(&mut runner, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     if api >= 34 {
-        assert_eq!(runner.recorder_persisted_before_spawn, Some(true));
+        assert_eq!(runner.0.recorder_persisted_before_spawn, Some(true));
         assert_subsequence(
-            &labels(&runner.inner),
+            &labels(&runner.0.inner),
             &[
                 "adb-screenrecord",
                 "core-walk",
@@ -10272,11 +10328,11 @@ fn android_pr_video_flow(api: u16) {
         );
         assert_eq!(receipt.cleanup["recorder"], "removed");
     } else {
-        assert_eq!(runner.recorder_persisted_before_spawn, None);
-        assert!(labels(&runner.inner)
+        assert_eq!(runner.0.recorder_persisted_before_spawn, None);
+        assert!(labels(&runner.0.inner)
             .iter()
             .any(|label| label == "core-walk"));
-        assert!(!labels(&runner.inner)
+        assert!(!labels(&runner.0.inner)
             .iter()
             .any(|label| label == "adb-screenrecord"));
         assert_eq!(
@@ -10285,8 +10341,28 @@ fn android_pr_video_flow(api: u16) {
         );
     }
     assert_eq!(receipt.cleanup["device_lease"], "removed");
-    assert_eq!(runner.inner.remaining(), 0);
-    no_ios_or_expo_android_build(&runner.inner);
+    assert_eq!(runner.0.inner.remaining(), 0);
+    no_ios_or_expo_android_build(&runner.0.inner);
+    if encodes {
+        let pr: qaren::publish::PrRunRecord = serde_json::from_slice(
+            &std::fs::read(req.runs_root.join(run_id()).join("pr.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(pr.video, qaren::record::VideoStatus::Available);
+        assert!(req
+            .runs_root
+            .join(run_id())
+            .join("media/video-published.mp4")
+            .is_file());
+        assert!(!receipt.outcomes.contains_key("video_continuity"));
+        assert!(pr.video_continuity.is_empty());
+        assert!(!runner
+            .0
+            .inner
+            .calls
+            .iter()
+            .any(|c| c.label == "ffmpeg-video-continuity"));
+    }
 }
 
 struct DeadlineCase {
