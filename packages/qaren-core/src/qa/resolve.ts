@@ -1,3 +1,4 @@
+import type { OverlayHits } from './live-hit.js';
 import { fillText } from './inputs.js';
 import type { Check, Step, Target } from './plan.js';
 import type { Selector } from './ledger.js';
@@ -19,6 +20,8 @@ import {
   forwardedInputOf,
   isScrollContainer,
   isWindow,
+  insideAlert,
+  hasNativeSheet,
   reactOnlyFactsOf,
   scrollContainerType,
   semanticActionView,
@@ -449,6 +452,68 @@ export function centreCovered(
   return result('none');
 }
 
+// Only app-local list-order inference is eligible for a live hit override.
+export function inferredOverlayCoverage(
+  element: Element,
+  screen: Screen,
+): Readonly<CentreCoverageDiagnostic> | undefined {
+  let facts: Readonly<CentreCoverageDiagnostic> | undefined;
+  centreCovered(element, screen, (value) => {
+    facts = value;
+  });
+  if (
+    facts?.branch !== 'overlay' ||
+    facts.viewportOutside !== false ||
+    facts.keyboardVisible !== false ||
+    screen.front !== 'app' ||
+    hasNativeSheet(screen) ||
+    screen.elements.some(insideAlert) ||
+    element.offscreen
+  )
+    return undefined;
+  return facts;
+}
+
+export function overlayProbeCoverage(
+  element: Element,
+  screen: Screen,
+): Readonly<CentreCoverageDiagnostic> | undefined {
+  const facts = inferredOverlayCoverage(element, screen);
+  if (!facts || element.ref.startsWith('react:') || (!element.testID && !element.label))
+    return undefined;
+  const same = screen.elements.filter(
+    (other) =>
+      !other.ref.startsWith('react:') &&
+      (element.testID
+        ? other.testID === element.testID
+        : other.label === element.label && other.kind === element.kind),
+  );
+  return same.length === 1 ? facts : undefined;
+}
+
+function presenceCovered(element: Element, screen: Screen, hits?: OverlayHits): boolean {
+  return (
+    centreCovered(element, screen) &&
+    !(hits?.get(element, screen) === 'hittable' && overlayProbeCoverage(element, screen))
+  );
+}
+
+export function overlayProbeCandidates(target: Target, screen: Screen): Element[] {
+  const matches = exactIdentities(screen, target, 'wait').map(({ element }) => element);
+  if (target.quoted !== undefined && target.exact !== 'id') {
+    for (const element of literalTextProjection(screen).elements)
+      if (
+        contributesLiteralText(element) &&
+        (element.kind === 'input' && element.value !== undefined
+          ? `${element.label ?? element.placeholder ?? element.testID ?? 'input'}: ${element.value}`
+          : element.label) === target.quoted &&
+        !matches.includes(element)
+      )
+        matches.push(element);
+  }
+  return matches.filter((element) => inferredOverlayCoverage(element, screen) !== undefined);
+}
+
 // Pixels an untouchable centre travels to the middle of the band a finger can touch.
 export function keyboardClearance(element: Element, screen: Screen): number | undefined {
   const frame = elementFrame(element);
@@ -572,8 +637,10 @@ function clearOfFrontOverlays(
   return best ? { ...band, y: best.top, height: best.bottom - best.top } : undefined;
 }
 
-export function scrollTargetCovered(element: Element, screen: Screen): boolean {
-  if (centreCovered(element, screen)) return true;
+export function scrollTargetCovered(element: Element, screen: Screen, hits?: OverlayHits): boolean {
+  if (presenceCovered(element, screen, hits)) return true;
+  if (hits?.get(element, screen) === 'hittable' && overlayProbeCoverage(element, screen))
+    return false;
   const container = ancestorsOf(element).find(isScrollContainer);
   const frame = elementFrame(element);
   if (!container || !frame) return false;
@@ -588,11 +655,16 @@ export function scrollTargetCovered(element: Element, screen: Screen): boolean {
   );
 }
 
-export function scrollUntilEvidence(target: Target, screen: Screen): LiteralVerdict {
-  const evidence = targetEvidence(target, screen);
+export function scrollUntilEvidence(
+  target: Target,
+  screen: Screen,
+  hits?: OverlayHits,
+): LiteralVerdict {
+  const evidence = targetEvidence(target, screen, hits);
   if (evidence !== 'pass') return evidence;
   const matches = exactIdentities(screen, target, 'wait', 'refresh');
-  return matches.length && matches.every(({ element }) => scrollTargetCovered(element, screen))
+  return matches.length &&
+    matches.every(({ element }) => scrollTargetCovered(element, screen, hits))
     ? 'fail'
     : evidence;
 }
@@ -658,24 +730,47 @@ export function scrollUntilContainer(target: Target, screen: Screen): Element | 
   return best;
 }
 
-export function scrollUntilBand(target: Target, screen: Screen): NativeNode['rect'] {
+export interface ScrollBandReceipt {
+  status: 'no-geometry' | 'overlay-cut' | 'clear';
+  band?: NonNullable<NativeNode['rect']>;
+}
+
+export function scrollUntilBand(
+  target: Target,
+  screen: Screen,
+  observe?: (receipt: ScrollBandReceipt) => void,
+): NativeNode['rect'] {
   const container = scrollUntilContainer(target, screen);
-  if (!container) return undefined;
+  if (!container) {
+    observe?.({ status: 'no-geometry' });
+    return undefined;
+  }
   const matches = exactIdentities(screen, target, 'scroll');
   const element = matches.length === 1 ? matches[0].element : undefined;
   let band: NativeNode['rect'];
+  let inferredCut = false;
   if (element) {
     band = !element.offscreen
-      ? clearanceBand(element, screen)
+      ? clearanceBand(element, screen, () => {
+          inferredCut = true;
+        })
       : aboveKeyboard(elementViewport(element), screen);
   }
   if (!band && (!element || element.offscreen)) {
     const frame = elementFrame(container);
     if (frame) band = aboveKeyboard(clip(frame, elementViewport(container)), screen);
   }
-  if (!band) return undefined;
+  if (!band) {
+    observe?.({ status: inferredCut ? 'overlay-cut' : 'no-geometry' });
+    return undefined;
+  }
   const clear = clearOfFrontOverlays(container, band, screen);
-  return clear ?? { ...band, height: 0 };
+  const result = clear ?? { ...band, height: 0 };
+  observe?.({
+    status: inferredCut || !sameRect(band, result) ? 'overlay-cut' : 'clear',
+    band: result,
+  });
+  return result;
 }
 
 const GENERIC_TARGET_WORDS = new Set(
@@ -851,7 +946,7 @@ function textIdentities(quoted: string, screen: Screen): number {
   return Math.min(occurrences, identities || occurrences);
 }
 
-export function targetEvidence(target: Target, screen: Screen): LiteralVerdict {
+export function targetEvidence(target: Target, screen: Screen, hits?: OverlayHits): LiteralVerdict {
   if (target.quoted === undefined) return 'fail';
   if (target.exact === 'id') {
     const matches = replayIdentities(exactIdentities(screen, target, 'wait'), target, 'wait').map(
@@ -862,9 +957,9 @@ export function targetEvidence(target: Target, screen: Screen): LiteralVerdict {
         refuse: matches.length > 1 ? 'TARGET_AMBIGUOUS' : 'REPLAY_SELECTOR',
         reason: `${matches.length} identities match the stored id "${target.quoted}"`,
       });
-    return !matches[0].offscreen && !centreCovered(matches[0], screen) ? 'pass' : 'fail';
+    return !matches[0].offscreen && !presenceCovered(matches[0], screen, hits) ? 'pass' : 'fail';
   }
-  if (!target.exact && idSeen(target.quoted, screen)) return 'pass';
+  if (!target.exact && idSeen(target.quoted, screen, hits)) return 'pass';
   const text = literalEvidence(screen, target.quoted, 'equals').verdict;
   if (target.exact === 'text') {
     if (text === 'unsure') return text;
@@ -883,7 +978,7 @@ export function targetEvidence(target: Target, screen: Screen): LiteralVerdict {
           ? `${e.label ?? e.placeholder ?? e.testID ?? 'input'}: ${e.value}`
           : e.label) === target.quoted,
     );
-    if (carriers.length && carriers.every((e) => centreCovered(e, screen)))
+    if (carriers.length && carriers.every((e) => presenceCovered(e, screen, hits)))
       return screen.unresolvedText?.some((line) => line === target.quoted) ? 'unsure' : 'fail';
   }
   return text;
@@ -895,18 +990,20 @@ function idIdentities(id: string, screen: Screen): Identity[] {
   return replayIdentities(exactIdentities(screen, target, 'wait'), target, 'wait');
 }
 
-function idSeen(id: string | undefined, screen: Screen): boolean {
+function idSeen(id: string | undefined, screen: Screen, hits?: OverlayHits): boolean {
   const ids = id ? idIdentities(id, screen) : [];
-  return ids.length === 1 && !ids[0].element.offscreen && !centreCovered(ids[0].element, screen);
+  return (
+    ids.length === 1 && !ids[0].element.offscreen && !presenceCovered(ids[0].element, screen, hits)
+  );
 }
 
-export function targetOnScreen(screen: Screen, target: Target): boolean {
+export function targetOnScreen(screen: Screen, target: Target, hits?: OverlayHits): boolean {
   const quoted = target.quoted;
   if (quoted === undefined) return true;
   if (
     target.exact !== 'text' &&
     idIdentities(quoted, screen).some(
-      ({ element }) => !element.offscreen && !centreCovered(element, screen),
+      ({ element }) => !element.offscreen && !presenceCovered(element, screen, hits),
     )
   )
     return true;
@@ -925,13 +1022,17 @@ export function targetOnScreen(screen: Screen, target: Target): boolean {
             e.value !== undefined &&
             `${e.label ?? e.placeholder ?? e.testID ?? 'input'}: ${e.value}`.includes(quoted))) &&
         !e.offscreen &&
-        !centreCovered(e, screen),
+        !presenceCovered(e, screen, hits),
     )
   );
 }
 
 // Why a quoted wait saw no match, from identifiers and frames only, never labels or text.
-export function presenceMiss(target: Target, screen: Screen): string | undefined {
+export function presenceMiss(
+  target: Target,
+  screen: Screen,
+  hits?: OverlayHits,
+): string | undefined {
   const quoted = target.quoted;
   if (quoted === undefined || target.exact === 'text') return undefined;
   const ids = idIdentities(quoted, screen).map(({ element }) => element);
@@ -946,7 +1047,7 @@ export function presenceMiss(target: Target, screen: Screen): string | undefined
       ? 'is in the React tree but not the native capture'
       : only.offscreen
         ? 'is offscreen'
-        : branch !== 'none'
+        : presenceCovered(only, screen, hits)
           ? `has its centre covered (${branch})`
           : undefined;
     return why && `the element carrying the identifier "${quoted}" ${why}: ${list(ids)}`;
@@ -1061,7 +1162,11 @@ export function reactOnlyTimeout(c: ReactOnlyWaitCounts): string {
   ].join('; ');
 }
 
-export function aggregateTargetVisible(target: Target, screen: Screen): boolean {
+export function aggregateTargetVisible(
+  target: Target,
+  screen: Screen,
+  hits?: OverlayHits,
+): boolean {
   if (
     target.quoted === undefined ||
     target.exact !== undefined ||
@@ -1110,12 +1215,12 @@ export function aggregateTargetVisible(target: Target, screen: Screen): boolean 
     !element.secure &&
     !nativeLabelMayBeValue(element) &&
     !keyboardCoversElement(element) &&
-    !scrollTargetCovered(element, screen)
+    !scrollTargetCovered(element, screen, hits)
   );
 }
 
-export function targetVisible(target: Target, screen: Screen): boolean {
-  return targetEvidence(target, screen) === 'pass';
+export function targetVisible(target: Target, screen: Screen, hits?: OverlayHits): boolean {
+  return targetEvidence(target, screen, hits) === 'pass';
 }
 
 export function elementSelector(element: Element): Selector | undefined {
@@ -1123,10 +1228,14 @@ export function elementSelector(element: Element): Selector | undefined {
   return element.label ? { text: element.label } : undefined;
 }
 
-export function visibleSelector(target: Target, screen: Screen): Selector | undefined {
+export function visibleSelector(
+  target: Target,
+  screen: Screen,
+  hits?: OverlayHits,
+): Selector | undefined {
   const quoted = target.quoted;
-  if (quoted === undefined || !targetVisible(target, screen)) return undefined;
-  if (target.exact !== 'text' && idSeen(quoted, screen)) return { id: quoted };
+  if (quoted === undefined || !targetVisible(target, screen, hits)) return undefined;
+  if (target.exact !== 'text' && idSeen(quoted, screen, hits)) return { id: quoted };
   if (target.exact === 'id') return undefined;
   if (literalEvidence(screen, quoted, 'equals').verdict !== 'pass') return undefined;
   const labelled = exactIdentities(
@@ -1136,7 +1245,9 @@ export function visibleSelector(target: Target, screen: Screen): Selector | unde
   )
     .map(({ element }) => element)
     .filter((e) => !e.offscreen);
-  return target.exact === undefined && labelled.length === 1 && idSeen(labelled[0].testID, screen)
+  return target.exact === undefined &&
+    labelled.length === 1 &&
+    idSeen(labelled[0].testID, screen, hits)
     ? { id: labelled[0].testID! }
     : textIdentities(quoted, screen) === 1
       ? { text: quoted }

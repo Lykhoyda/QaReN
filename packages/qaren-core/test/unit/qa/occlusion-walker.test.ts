@@ -1,3 +1,5 @@
+import type { LedgerRow } from '../../../dist/qa/ledger.js';
+import { OverlayHits, type HitProbeResult } from '../../../dist/qa/live-hit.js';
 // A runner occlusion refusal at dispatch scrolls once and retries the same identity.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -12,7 +14,14 @@ import { capturePrivateScreen } from '../../../dist/qa/privacy.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
 import { checkQaNativeOutcome } from '../../../dist/runners/qa-native-policy.js';
 import type { QaDispatchContext } from '../../../dist/domain/qa-dispatch.js';
-import { centreCovered, type CentreCoverageDiagnostic } from '../../../dist/qa/resolve.js';
+import {
+  centreCovered,
+  scrollUntilBand,
+  scrollTargetCovered,
+  targetEvidence,
+  targetOnScreen,
+  type CentreCoverageDiagnostic,
+} from '../../../dist/qa/resolve.js';
 import type { WalkerTimingDiagnostic } from '../../../dist/qa/walker.js';
 import type { TimingEvent } from '../../../dist/qa/timing.js';
 import { ANDROID_LIST, IOS_LIST, androidOptionSheet, iosOptionSheet } from './sheet-fixtures.ts';
@@ -2484,7 +2493,12 @@ test('Android: occluded twice stays off screen after one scroll, never an uncert
 // A list pulled up under a transparent header: its clip starts at y 20, its rows start at the
 // header inset (116). A childless, full-width leaf beside the list's ancestor, listed after it and
 // starting at that inset, is inferred as a sticky overlay though nothing is drawn over the row.
-function pulledUpList(keyboard: boolean | 'unknown' = false, type = 'Other', clipTop = 20): Screen {
+function pulledUpList(
+  keyboard: boolean | 'unknown' = false,
+  type = 'Other',
+  clipTop = 20,
+  frontSurface?: 'Sheet' | 'Alert',
+): Screen {
   const full = { x: 0, y: 0, width: 402, height: 874 };
   const screen = covered(
     join(
@@ -2526,6 +2540,18 @@ function pulledUpList(keyboard: boolean | 'unknown' = false, type = 'Other', cli
           hittable: true,
           rect: { x: 0, y: 116, width: 402, height: 758 },
         },
+        ...(frontSurface
+          ? [
+              {
+                ref: '@front-surface',
+                index: 9,
+                parentIndex: 2,
+                type: frontSurface,
+                hittable: true,
+                rect: full,
+              },
+            ]
+          : []),
       ],
       [],
     ),
@@ -2661,7 +2687,6 @@ for (const [name, result, shown] of [
 for (const [name, platform, screen, step] of [
   ['keyboard state unknown', 'ios', () => pulledUpList('unknown'), '1. Tap "row-1"\n'],
   ['keyboard visible', 'ios', () => pulledUpList(true), '1. Tap "row-1"\n'],
-  ['fill', 'ios', () => pulledUpList(false, 'TextField'), '1. Fill "row-1" with "x"\n'],
   ['Android', 'android', () => pulledUpList(), '1. Tap "row-1"\n'],
 ] as const) {
   test(`an inferred overlay still refuses before dispatch (${name}), naming the cutter`, async () => {
@@ -2747,13 +2772,6 @@ for (const [name, platform, screen, step, why] of [
     'the keyboard is not proven hidden',
   ],
   [
-    'fill',
-    'ios',
-    () => pulledUpList(false, 'TextField', 110),
-    '1. Fill "row-1" with "x"\n',
-    'a fill keeps the inferred rule',
-  ],
-  [
     'Android',
     'android',
     () => pulledUpList(false, 'Other', 110),
@@ -2780,5 +2798,334 @@ for (const [name, platform, screen, step, why] of [
     const terminal = f.events.filter((event) => event.code === 'CENTRE_COVERED');
     assert.equal(terminal.length, 1);
     assert.deepEqual(terminal[0].clearanceDiagnostic?.predicate?.cutter, SIX_POINT_CUTTER);
+  });
+}
+
+function overlayProbeFake(result: HitProbeResult, type = 'Other') {
+  let focused = false;
+  const screens: Screen[] = [];
+  const f = fake([pulledUpList(false, type)], {});
+  const probes: { ref: string; generation: number }[] = [];
+  const options: unknown[] = [];
+  const streamed: LedgerRow[] = [];
+  f.deps.row = (row) => streamed.push(row);
+  const makeScreen = () => {
+    const screen = pulledUpList(focused, type);
+    screen.nativeGeneration = 7;
+    if (type === 'Wrapper') {
+      const target = targetOf(screen, '@target')!;
+      target.testID = 'row-1-pressable';
+      screen.reactHostEvidence = {
+        complete: true,
+        hosts: [{ testID: 'row-1', capabilities: { fill: true } }],
+      };
+    }
+    screens.push(screen);
+    return screen;
+  };
+  f.deps.platform = 'ios';
+  f.deps.captureScreen = async () => {
+    f.calls.push('capture');
+    return makeScreen();
+  };
+  f.deps.hitProbe = async (ref, context, generation) => {
+    assert.equal(context.authorizations, 0);
+    probes.push({ ref, generation });
+    return result;
+  };
+  f.deps.press = async (ref, _context, option) => {
+    f.calls.push(`press ${ref}`);
+    options.push(option);
+    focused = true;
+    return { ok: true, proven: false };
+  };
+  f.deps.fill = async (ref, _text, _context, _private, _promote, _retype, option) => {
+    f.calls.push(`fill ${ref}`);
+    options.push(option);
+    return { ok: true, proven: true };
+  };
+  f.deps.typeFocused = async (ref) => {
+    f.calls.push(`type ${ref}`);
+    return { ok: true, proven: true };
+  };
+  return { ...f, probes, options, screens, streamed };
+}
+
+for (const mode of ['discovery-id', 'discovery-text', 'id', 'text'] as const) {
+  const exact = mode === 'id' || mode === 'text' ? mode : undefined;
+  const text = mode === 'text' || mode === 'discovery-text';
+  for (const result of ['hittable', 'not-hittable', 'moved', 'unavailable'] as const) {
+    test(`an inferred-overlay wait ${mode} uses a read-only ${result} verdict`, async () => {
+      const f = overlayProbeFake(result, text ? 'StaticText' : 'Other');
+      const plan = block(`1. Wait for "${text ? 'PRIVATE-row' : 'row-1'}"\n`);
+      const step = plan.items[0];
+      assert.equal(step.kind, 'wait');
+      if (step.kind === 'wait' && exact) step.target.exact = exact;
+      const outcome = await walkBlock(plan, f.deps);
+      assert.equal(outcome.block.outcome, result === 'hittable' ? 'pass' : 'fail');
+      assert.ok(f.probes.length > 0);
+      assert.ok(f.probes.every(({ ref, generation }) => ref === '@target' && generation === 7));
+      assert.equal(f.probes.length, f.screens.length, 'one probe per captured poll');
+      assert.deepEqual(
+        f.calls.filter((call) => call !== 'capture'),
+        [],
+      );
+      const receipt = outcome.rows.at(-1)?.overlayChecks;
+      assert.equal(receipt?.[0].liveHit, result);
+      assert.deepEqual(receipt?.[0].predicate.cutter, LIVE_HIT_CUTTER);
+      assert.deepEqual(f.streamed.at(-1)?.overlayChecks, receipt);
+      assert.ok(!JSON.stringify(receipt).includes('PRIVATE-'));
+      if (result !== 'hittable')
+        assert.match(
+          renderReason(outcome.failure?.seen ?? '', (text) => text),
+          result === 'not-hittable'
+            ? /the live hit read found no hit point/
+            : /no live hit read was available/,
+        );
+    });
+  }
+}
+
+for (const type of ['TextField', 'Wrapper']) {
+  for (const result of ['hittable', 'not-hittable', 'moved', 'unavailable'] as const) {
+    test(`inferred-overlay fill by ${type} takes strict focus only after ${result}`, async () => {
+      const f = overlayProbeFake(result, type);
+      const outcome = await walkBlock(block('1. Fill "row-1" with "x"\n'), f.deps);
+      assert.equal(
+        outcome.block.outcome,
+        result === 'hittable' ? 'pass' : 'fail',
+        JSON.stringify(outcome.failure),
+      );
+      assert.deepEqual(f.probes, [{ ref: '@target', generation: 7 }]);
+      assert.equal(outcome.rows.at(-1)?.overlayChecks?.[0].liveHit, result);
+      if (result === 'hittable') {
+        assert.deepEqual(f.options, [{ requireLiveHit: true }]);
+        assert.deepEqual(
+          f.calls.filter((call) => call !== 'capture'),
+          type === 'Wrapper' ? ['press @target', 'type @target'] : ['fill @target'],
+        );
+      } else {
+        assert.deepEqual(
+          f.calls.filter((call) => call !== 'capture'),
+          [],
+        );
+        assert.match(
+          renderReason(outcome.failure?.seen ?? '', (text) => text),
+          result === 'not-hittable'
+            ? /the live hit read found no hit point/
+            : /no live hit read was available/,
+        );
+      }
+    });
+  }
+}
+
+for (const type of ['TextField', 'Wrapper']) {
+  test(`an unavailable strict focus read never types through the ${type} ladder`, async () => {
+    const f = overlayProbeFake('hittable', type);
+    const refuse: ActResult = {
+      ok: false,
+      proven: false,
+      mutation: 'none',
+      error: 'LIVE_HIT_UNPROVEN: unavailable',
+    };
+    if (type === 'Wrapper')
+      f.deps.press = async (_ref, _context, options) => {
+        assert.deepEqual(options, { requireLiveHit: true });
+        return refuse;
+      };
+    else
+      f.deps.fill = async (_ref, _text, _context, _private, _promote, _retype, options) => {
+        assert.deepEqual(options, { requireLiveHit: true });
+        return refuse;
+      };
+    f.deps.typeFocused = async () => assert.fail('no typing after a refused focus');
+    const outcome = await walkBlock(block('1. Fill "row-1" with "x"\n'), f.deps);
+    assert.equal(outcome.block.outcome, 'fail');
+    assert.match(
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
+      /LIVE_HIT_UNPROVEN/,
+    );
+    assert.deepEqual(
+      f.calls.filter((call) => call !== 'capture'),
+      [],
+    );
+  });
+}
+
+test('scroll-until completion accepts a positive probe without dragging the zero band', async () => {
+  const f = overlayProbeFake('hittable');
+  const outcome = await walkBlock(block('1. Scroll down until "row-1"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(f.probes, [{ ref: '@target', generation: 7 }]);
+  assert.deepEqual(
+    f.calls.filter((call) => call !== 'capture'),
+    [],
+  );
+  assert.equal(outcome.rows[0].overlayChecks?.[0].liveHit, 'hittable');
+  assert.equal(scrollUntilBand({ quoted: 'row-1', phrase: 'row-1' }, f.screens[0])?.height, 0);
+});
+
+test('an unmet scroll-until keeps the zero static band and records the overlay cut', async () => {
+  const f = overlayProbeFake('not-hittable');
+  let refused = 0;
+  f.deps.scroll = async (_direction, _context, _distance, within) => {
+    assert.equal(within?.height, 0);
+    refused++;
+    return BAND_TOO_SMALL;
+  };
+  const outcome = await walkBlock(block('1. Scroll down until "row-1"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(refused, 1);
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /SCROLL_BAND_TOO_SMALL/,
+  );
+  assert.equal(outcome.rows.at(-1)?.scrollBand?.status, 'overlay-cut');
+  assert.equal(outcome.rows.at(-1)?.scrollBand?.band?.height, 0);
+  assert.deepEqual(
+    f.calls.filter((call) => call !== 'capture'),
+    [],
+  );
+});
+
+test('missing scroll geometry has a distinct receipt from an overlay-cut band', () => {
+  const receipts: unknown[] = [];
+  assert.equal(
+    scrollUntilBand({ quoted: 'missing', phrase: 'missing' }, done(), (receipt) =>
+      receipts.push(receipt),
+    ),
+    undefined,
+  );
+  assert.deepEqual(receipts, [{ status: 'no-geometry' }]);
+});
+
+for (const scenario of [
+  'keyboard',
+  'keyboard-unknown',
+  'front',
+  'outside',
+  'clear',
+  'Android',
+  'anonymous',
+  'duplicate',
+] as const) {
+  test(`the live overlay probe never bypasses ${scenario}`, async () => {
+    const screen = pulledUpList(
+      scenario === 'keyboard' ? true : scenario === 'keyboard-unknown' ? 'unknown' : false,
+      'TextField',
+      scenario === 'outside' ? 400 : 20,
+    );
+    screen.nativeGeneration = 7;
+    if (scenario === 'front') screen.front = 'picker';
+    if (scenario === 'clear')
+      screen.elements = screen.elements.filter((e) => !['@cover', '@shade'].includes(e.ref));
+    if (scenario === 'anonymous') {
+      delete targetOf(screen, '@target')!.testID;
+      delete targetOf(screen, '@target')!.label;
+    }
+    if (scenario === 'duplicate')
+      screen.elements.push({ ...targetOf(screen, '@target')!, ref: '@duplicate' });
+    const f = fake([screen], {});
+    f.deps.platform = scenario === 'Android' ? 'android' : 'ios';
+    f.deps.hitProbe = async () => assert.fail('ineligible carrier must not be probed');
+    await walkBlock(block('1. Fill "row-1" with "x"\n'), f.deps);
+  });
+}
+
+test('an old probe adapter leaves the inferred refusal and performs no mutation', async () => {
+  const f = overlayProbeFake('hittable', 'TextField');
+  delete f.deps.hitProbe;
+  const outcome = await walkBlock(block('1. Fill "row-1" with "x"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.deepEqual(
+    f.calls.filter((call) => call !== 'capture'),
+    [],
+  );
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /no live hit read was available/,
+  );
+});
+
+test('a late positive probe is discarded before fill focus', async () => {
+  const f = overlayProbeFake('hittable', 'TextField');
+  let now = 0;
+  f.deps.now = () => now;
+  f.deps.hitProbe = async (_ref, context) => {
+    now = context.deadline + 1;
+    return 'hittable';
+  };
+  const outcome = await walkBlock(block('1. Fill "row-1" with "x"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(outcome.rows.at(-1)?.overlayChecks?.[0].liveHit, 'unavailable');
+  assert.deepEqual(
+    f.calls.filter((call) => call !== 'capture'),
+    [],
+  );
+});
+
+test('positive evidence does not override a front-only completion cover or replay ambiguity', () => {
+  const screen = pulledUpList();
+  screen.nativeGeneration = 7;
+  const target = targetOf(screen, '@target')!;
+  const hits = new OverlayHits(screen);
+  hits.set(target, 'hittable');
+  assert.equal(
+    targetEvidence({ quoted: 'row-1', phrase: 'row-1', exact: 'id' }, screen, hits),
+    'pass',
+  );
+  assert.equal(targetOnScreen(screen, { quoted: 'row-1', phrase: 'row-1' }, hits), true);
+  screen.elements.push({ ...target, ref: '@duplicate' });
+  assert.throws(
+    () => targetEvidence({ quoted: 'row-1', phrase: 'row-1', exact: 'id' }, screen, hits),
+    /TARGET_AMBIGUOUS/,
+  );
+  const frontOnly = pulledUpList();
+  frontOnly.elements = frontOnly.elements.filter((e) => e.ref !== '@cover');
+  const carried = targetOf(frontOnly, '@target')!;
+  assert.equal(centreCovered(carried, frontOnly), false);
+  const frontHits = new OverlayHits(frontOnly);
+  frontHits.set(carried, 'hittable');
+  assert.equal(scrollTargetCovered(carried, frontOnly, frontHits), true);
+});
+
+test('a positive probe cannot manufacture unresolved literal text', async () => {
+  const screen = pulledUpList();
+  screen.unresolvedText = ['Unresolved phrase'];
+  const hits = new OverlayHits(screen);
+  hits.set(targetOf(screen, '@target')!, 'hittable');
+  assert.equal(
+    targetEvidence({ quoted: 'Unresolved phrase', phrase: 'Unresolved phrase' }, screen, hits),
+    'unsure',
+  );
+});
+
+test('live evidence is scoped to one observation and generation even when an element object is reused', () => {
+  const screen = pulledUpList();
+  screen.nativeGeneration = 7;
+  const carrier = targetOf(screen, '@target')!;
+  const hits = new OverlayHits(screen);
+  hits.set(carrier, 'hittable');
+  const target = { quoted: 'row-1', phrase: 'row-1', exact: 'id' as const };
+  assert.equal(targetEvidence(target, screen, hits), 'pass');
+  assert.equal(targetEvidence(target, { ...screen }, hits), 'fail');
+  screen.nativeGeneration = 8;
+  assert.equal(targetEvidence(target, screen, hits), 'fail');
+});
+
+for (const surface of ['Sheet', 'Alert'] as const) {
+  test(`a native ${surface} in the app capture never reaches the overlay probe`, async () => {
+    const screen = pulledUpList(false, 'Other', 20, surface);
+    screen.nativeGeneration = 7;
+    const f = fake([screen], {});
+    f.deps.platform = 'ios';
+    f.deps.hitProbe = async () => assert.fail('a front surface retains static refusal');
+    const outcome = await walkBlock(block('1. Wait for "row-1"\n'), f.deps);
+    assert.equal(outcome.block.outcome, 'fail');
+    assert.deepEqual(
+      f.calls.filter((call) => call !== 'capture'),
+      [],
+    );
   });
 }

@@ -330,6 +330,7 @@ export type ToolErrorCode =
   // inside the visible keyboard (typed by the runner; mutation:'none').
   | 'TEXT_TARGET_FOCUS_FAILED'
   | 'FOCUS_TARGET_OCCLUDED'
+  | 'LIVE_HIT_UNPROVEN'
   | 'TYPE_OPERATION_FAILED' // runner type raised; field value unknown (mutation:'possible')
   | 'VERIFY_OPERATION_FAILED' // runner verifyInput failed to execute
   | 'TYPE_IDLE_TIMEOUT' // Android idle-detect fired post-dispatch; unverified (mutation:'possible')

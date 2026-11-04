@@ -1002,11 +1002,41 @@ A false read, a moved target, or an unavailable read (expired snapshot, no ident
 read that threw or ran out of time) refuses `LIVE_HIT_UNPROVEN` with no tap, and the step fails
 with “stayed off screen after one scroll” and the inferred band cutter described
 under [clearance diagnostics](#clearance-diagnostics). The scroll
-that ran before the refusal remains a performed action. Fills, scroll-until, waits
-and Android keep the inferred overlay rule. For press and fill clearance failures
-caused by an inferred overlay, the step names the cutter and says why no live hit read was asked when
-the strict path is ineligible. A runner without `STRICT_LIVE_HIT_V1` refuses `RN_FAST_RUNNER_STALE` before anything
-is sent; reopen the device session to rebuild it.
+that ran before the refusal remains a performed action. Press behavior is unchanged.
+
+On iOS, quoted waits and scroll-until completion can override that inferred cover
+with a read-only `hitProbe`. It runs only for a unique captured native carrier,
+inside its clip, with the keyboard proven hidden and the app in front. A fresh
+positive platform hit read proves that a hit point exists for that carrier; it
+does not prove its centre or full frame is exposed. Replay uniqueness and literal
+text evidence remain required. A negative read retains the inferred refusal and
+adds “the live hit read found no hit point”; an unavailable, moved or late read,
+an anonymous or ambiguous identity, or an older runner retains the refusal with
+“no live hit read was available”. Each poll probes a carrier at most once and
+reuses the result only within that observation and native snapshot generation.
+The row's `overlayChecks` records `liveHit` and the value-free cutter facts.
+
+An iOS Fill under the same inferred cover also requires a positive read-only
+probe before skipping the clearance scroll. Its native focus then independently
+requires a fresh positive live hit read and activates the bound input itself,
+with no coordinate fallback. A wrapper fallback taps through the strict press
+path before keyboard typing. A missing or negative strict focus read refuses
+`LIVE_HIT_UNPROVEN` before focus or typing; it cannot enter a less strict Fill
+rung. Ordinary keyboard and viewport clearance, front surfaces, and Android
+keep their existing rules.
+
+| Optional iOS capability | Required for |
+| --- | --- |
+| `STRICT_LIVE_HIT_V1` | Strict overlay presses and Fill focus |
+| `LIVE_HIT_PROBE_V1` | Read-only overlay probes and the runner generation supporting strict Fill focus |
+
+A missing required capability refuses before dispatch; reopen the device session
+to rebuild the runner. A target hit point never authorizes a drag corridor:
+scroll-until drags retain every static overlay cut, including cuts caused by
+transparent containers. A zero or undersized band still refuses
+`SCROLL_BAND_TOO_SMALL`. The row's `scrollBand.status` distinguishes
+`no-geometry`, `overlay-cut` and `clear`; a plain `Scroll down` remains a
+plan-level option when no keyboard is up.
 The walker passes that band to the shared scroll handler so the drag starts
 inside it, narrowing the existing keyboard-safe band. A caller band is also kept
 clear of the system gesture edges: 48 dp from the top and bottom window edges on
@@ -1590,7 +1620,8 @@ screen bottom, because its chrome paints below the frame XCUI reports. The
 keyboard's own keys and the chrome in its window stay visible. Literal checks
 do not treat other overlays as occlusion evidence. Quoted waits additionally
 reject text when every matching literal contributor has its centre covered by
-the detected overlay clearance band; matching unresolved text keeps the verdict
+the detected overlay clearance band, unless the scoped iOS live probe above
+proves that carrier has a hit point; matching unresolved text keeps the verdict
 unsure. An uncovered occurrence still satisfies the wait, and missing geometry
 alone does not prove coverage. An eligible unmet wait can enter
 [step recovery](#step-recovery) to dismiss an interruption. Scroll-until uses the

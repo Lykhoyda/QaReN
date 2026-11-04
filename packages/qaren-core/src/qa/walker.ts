@@ -1,4 +1,11 @@
 import {
+  hitProbeNote,
+  OverlayHits,
+  type HitProbeIdentity,
+  type HitProbeResult,
+  type OverlayHitReceipt,
+} from './live-hit.js';
+import {
   selectionPressCandidate,
   outsideTargetChange,
   PRESS_NOT_REGISTERED_REASON,
@@ -48,6 +55,9 @@ import {
   decideScreen,
   elementSelector,
   centreCovered,
+  inferredOverlayCoverage,
+  overlayProbeCoverage,
+  overlayProbeCandidates,
   clearanceBand,
   clearanceScroll,
   keyboardClearance,
@@ -194,6 +204,12 @@ export interface ActResult {
 }
 
 export interface WalkerDeps {
+  hitProbe?(
+    ref: string,
+    context: QaDispatchContext,
+    generation: number,
+    identity: HitProbeIdentity,
+  ): Promise<HitProbeResult>;
   platform?: BlockPlatform;
   pressReadback?(evidence: PressEvidence | undefined): void;
   readLabelProvenance?(
@@ -229,6 +245,7 @@ export interface WalkerDeps {
     privateValue?: boolean,
     onPrivateInput?: () => void,
     alwaysRetype?: boolean,
+    options?: { requireLiveHit: true },
   ): Promise<ActResult>;
   // iOS only: type, proven only by a matching React read-back; testID identifies the pre-dispatch focus veto.
   typeFocused?(
@@ -322,6 +339,7 @@ export interface WalkerTimingDiagnostic {
 }
 
 interface Observation {
+  overlayHits?: OverlayHits;
   id: number;
   screen: Screen;
   timing: ObservationTiming;
@@ -1308,8 +1326,16 @@ async function walkBlockScoped(
     }
     return operationId;
   };
+  const scrollBands = new Map<number, LedgerRow['scrollBand']>();
+  const bandFor = (item: Item, target: Target, screen: Screen) =>
+    scrollUntilBand(target, screen, (receipt) => scrollBands.set(item.line, receipt));
+  const overlayRows = new Map<number, { observation: number; checks: OverlayHitReceipt[] }>();
   const withheldRows = new Map<number, NonNullable<LedgerRow['screenshotWithheld']>>();
   const emit = (row: WalkRow): void => {
+    const scrollBand = scrollBands.get(row.line);
+    if (scrollBand) row = { ...row, scrollBand };
+    const overlayChecks = overlayRows.get(row.line)?.checks;
+    if (overlayChecks?.length) row = { ...row, overlayChecks };
     if (fillHandlerRefused)
       row = {
         ...row,
@@ -1367,8 +1393,8 @@ async function walkBlockScoped(
       : target.exact === 'text'
         ? { text: target.quoted }
         : undefined;
-  const targetSelector = (target: Target, screen: Screen) =>
-    stored(visibleSelector(target, screen));
+  const targetSelector = (target: Target, observation: Observation) =>
+    stored(visibleSelector(target, observation.screen, observation.overlayHits));
   const base = (item: Item, attempt: number): Omit<LedgerRow, 'outcome'> => ({
     block: block.slug,
     line: item.line,
@@ -1390,6 +1416,12 @@ async function walkBlockScoped(
     targetCode?: string | false,
     devError?: LedgerRow['devError'],
   ): WalkOutcome => {
+    const notes = [
+      ...new Set(
+        (overlayRows.get(item.line)?.checks ?? []).map(({ liveHit }) => hitProbeNote(liveHit)),
+      ),
+    ].join('');
+    if (notes) reason = [...segments(reason), notes];
     const target = item.kind === 'check' ? undefined : stepTarget(item);
     if (target?.quoted !== undefined) emitQuotedTargetDiagnostic(screen, target.quoted, item.line);
     const row = base(item, attempt);
@@ -1539,6 +1571,58 @@ async function walkBlockScoped(
     assertActive();
     return shot;
   };
+  const probeOverlay = async (
+    item: Item,
+    observation: Observation,
+    element: Element,
+    deadline = Infinity,
+  ): Promise<HitProbeResult> => {
+    const facts = inferredOverlayCoverage(element, observation.screen);
+    if (!facts) return 'unavailable';
+    const hits = (observation.overlayHits ??= new OverlayHits(observation.screen));
+    const cached = hits.get(element, observation.screen);
+    if (cached) return cached;
+    let result: HitProbeResult = 'unavailable';
+    const generation = observation.screen.nativeGeneration;
+    if (
+      deps.platform === 'ios' &&
+      deps.hitProbe &&
+      generation !== undefined &&
+      overlayProbeCoverage(element, observation.screen)
+    ) {
+      const context = new QaDispatchContext(
+        observationDeadline(observation.timing, deadline),
+        deps.now,
+        () => cancellationSignal()?.aborted === true,
+        item.line,
+      );
+      const timedOut = new Error('hit-probe-deadline');
+      try {
+        const read = await withDeadline(
+          performance.now() + Math.max(0, context.deadline - deps.now()),
+          timedOut,
+          () =>
+            deps.hitProbe!(element.ref, context, generation, {
+              identifier: element.testID,
+              label: element.label,
+              rect: elementFrame(element)!,
+            }),
+        );
+        if (!context.expired) result = read;
+      } catch (error) {
+        if (isAbort(error) || (error instanceof QaDispatchError && error.code === 'RUN_CANCELLED'))
+          throw error;
+      }
+    }
+    hits.set(element, result);
+    let row = overlayRows.get(item.line);
+    if (row?.observation !== observation.id) {
+      row = { observation: observation.id, checks: [] };
+      overlayRows.set(item.line, row);
+    }
+    row.checks.push({ liveHit: result, predicate: facts });
+    return result;
+  };
   const visibilityProbe = (
     item: Item & { kind: 'wait' | 'scroll' },
     deadline = Infinity,
@@ -1552,7 +1636,14 @@ async function walkBlockScoped(
       let decision = initial;
       while (deps.now() < deadline) {
         checkObservation?.(observation.screen);
+        if (overlayRows.get(item.line)?.observation !== observation.id)
+          overlayRows.delete(item.line);
         try {
+          if (deps.platform === 'ios') {
+            const target = item.kind === 'wait' ? item.target : item.until!;
+            for (const element of overlayProbeCandidates(target, observation.screen))
+              await probeOverlay(item, observation, element, deadline);
+          }
           decision = await decide(observation, undefined, item, deadline, decision);
           if (
             item.kind === 'scroll' &&
@@ -1561,7 +1652,8 @@ async function walkBlockScoped(
             decision.visibility.verdict === 'present'
           ) {
             const elements = observation.screen.elements.filter(
-              (element) => !scrollTargetCovered(element, observation.screen),
+              (element) =>
+                !scrollTargetCovered(element, observation.screen, observation.overlayHits),
             );
             if (elements.length !== observation.screen.elements.length)
               decision = await decide(
@@ -1584,8 +1676,11 @@ async function walkBlockScoped(
         }
         const target = item.kind === 'wait' ? item.target : item.until!;
         if (target.quoted !== undefined) {
-          const evidence = targetEvidence(target, observation.screen);
-          if (evidence !== 'pass' && aggregateTargetVisible(target, observation.screen)) {
+          const evidence = targetEvidence(target, observation.screen, observation.overlayHits);
+          if (
+            evidence !== 'pass' &&
+            aggregateTargetVisible(target, observation.screen, observation.overlayHits)
+          ) {
             try {
               deps.labelProvenanceDiagnostic?.({
                 kind: 'label-provenance',
@@ -1598,7 +1693,9 @@ async function walkBlockScoped(
             return { observation, found: true };
           }
           const scrollEvidence =
-            item.kind === 'scroll' ? scrollUntilEvidence(target, observation.screen) : evidence;
+            item.kind === 'scroll'
+              ? scrollUntilEvidence(target, observation.screen, observation.overlayHits)
+              : evidence;
           return {
             observation,
             found: scrollEvidence === 'pass',
@@ -1795,15 +1892,33 @@ async function walkBlockScoped(
     recordMediaLatch(privacy, sequence, deps, line);
     if (item.input === undefined && !privateFills.includes(item.line)) privateFills.push(item.line);
     let tap: ActResult | undefined;
-    if (!centreCovered(target.element, before.screen))
+    const overlay =
+      deps.platform === 'ios' && inferredOverlayCoverage(target.element, before.screen);
+    if (overlay && (await probeOverlay(item, before, target.element)) !== 'hittable')
+      return nothingTyped(
+        `"${quoted}" ${OFF_SCREEN_AFTER_SCROLL}${cutterText(overlay)}`,
+        before.screen,
+        'TARGET_NOT_FOUND',
+      );
+    if (overlay || !centreCovered(target.element, before.screen))
       try {
-        tap = await mutate(item, before, (context) => deps.press(target.element.ref, context));
+        tap = await mutate(item, before, (context) =>
+          overlay
+            ? deps.press(target.element.ref, context, { requireLiveHit: true })
+            : deps.press(target.element.ref, context),
+        );
       } catch (error) {
         if (isAbort(error)) throw error;
         if (error instanceof EvidenceExpired)
           return nothingTyped(`the evidence expired before tapping "${quoted}"`, before.screen);
         throw error;
       }
+    if (overlay && tap && !tap.ok)
+      return nothingTyped(
+        `${tap.error ?? 'LIVE_HIT_UNPROVEN'}${cutterText(overlay)}`,
+        before.screen,
+        'TARGET_NOT_FOUND',
+      );
     if (
       !tap ||
       (!tap.ok && tap.mutation === 'none' && tap.error?.startsWith('FOCUS_TARGET_OCCLUDED:'))
@@ -1920,7 +2035,19 @@ async function walkBlockScoped(
               after.screen,
               'TARGET_NOT_FOUND',
             );
-          const retap = await mutate(item, after, (context) => deps.press(rebound.ref, context));
+          const retryOverlay =
+            deps.platform === 'ios' && inferredOverlayCoverage(rebound.element, after.screen);
+          if (retryOverlay && (await probeOverlay(item, after, rebound.element)) !== 'hittable')
+            return nothingTyped(
+              `"${quoted}" ${OFF_SCREEN_AFTER_SCROLL}${cutterText(retryOverlay)}`,
+              after.screen,
+              'TARGET_NOT_FOUND',
+            );
+          const retap = await mutate(item, after, (context) =>
+            retryOverlay
+              ? deps.press(rebound.ref, context, { requireLiveHit: true })
+              : deps.press(rebound.ref, context),
+          );
           if (!retap.ok)
             return nothingTyped(
               `${retap.error ?? 'the tap was not dispatched'}; tapping "${quoted}" failed`,
@@ -2797,7 +2924,7 @@ async function walkBlockScoped(
                       view.where === 'below' ? 'down' : 'up',
                       context,
                       undefined,
-                      scrollUntilBand(item.target, before),
+                      bandFor(item, item.target, before),
                     ),
                   deadline,
                 );
@@ -2955,7 +3082,9 @@ async function walkBlockScoped(
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
             if (unchanged) {
-              const miss = !reactOnly && presenceMiss(item.target, observation.screen);
+              const miss =
+                !reactOnly &&
+                presenceMiss(item.target, observation.screen, observation.overlayHits);
               return judged(
                 failed(
                   item,
@@ -2977,7 +3106,7 @@ async function walkBlockScoped(
           emit({
             ...base(item, 1),
             ...(shot ? { screenshot: shot } : {}),
-            ...targetSelector(item.target, observation.screen),
+            ...targetSelector(item.target, observation),
             outcome: 'pass',
           });
           continue items;
@@ -3045,7 +3174,7 @@ async function walkBlockScoped(
                     scrollUntilDirection(item.until!, observation.screen, item.direction),
                     context,
                     undefined,
-                    scrollUntilBand(item.until!, observation.screen),
+                    bandFor(item, item.until!, observation.screen),
                   ),
                 deadline,
               );
@@ -3088,7 +3217,7 @@ async function walkBlockScoped(
             emit({
               ...base(item, Math.max(attempts, 1)),
               ...(shot ? { screenshot: shot } : {}),
-              ...targetSelector(item.until, observation.screen),
+              ...targetSelector(item.until, observation),
               outcome: 'pass',
             });
             continue items;
@@ -3534,6 +3663,7 @@ async function walkBlockScoped(
                 initial = undefined;
                 continue;
               }
+              let strictFillFocus = false;
               let centreDiagnostic: Readonly<CentreCoverageDiagnostic> | null = null;
               const centreIsCovered =
                 (item.kind === 'press' || item.kind === 'fill') &&
@@ -3543,7 +3673,27 @@ async function walkBlockScoped(
                 });
               const overlay = centreIsCovered ? inferredOverlay(centreDiagnostic) : undefined;
               // List order is not paint order: an inferred overlay alone never refuses an iOS press.
-              if (scrolled && overlay && item.kind === 'press' && deps.platform === 'ios')
+              if (
+                item.kind === 'fill' &&
+                element &&
+                deps.platform === 'ios' &&
+                inferredOverlayCoverage(element, before.screen)
+              ) {
+                if ((await probeOverlay(item, before, element)) !== 'hittable') {
+                  outcome = failed(
+                    item,
+                    attempt,
+                    `"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${cutterText(centreDiagnostic)}`,
+                    before.screen,
+                    await shoot(item),
+                    ref,
+                    false,
+                    'TARGET_NOT_FOUND',
+                  );
+                  break;
+                }
+                strictFillFocus = true;
+              } else if (scrolled && overlay && item.kind === 'press' && deps.platform === 'ios')
                 liveHit = overlay;
               else if (centreIsCovered && element !== undefined) {
                 if (scrolled) {
@@ -3646,6 +3796,7 @@ async function walkBlockScoped(
                       secretFill(item),
                       () => promoteFill(item, element?.testID),
                       item.alwaysRetype,
+                      strictFillFocus ? { requireLiveHit: true } : undefined,
                     )
                   : item.kind === 'scroll'
                     ? deps.scroll(item.direction, context)
@@ -3654,6 +3805,26 @@ async function walkBlockScoped(
                       : deps.dialog(item.action, context);
               });
               if (item.kind === 'fill') fillMethod = act.method ?? 'keyboard';
+              if (
+                strictFillFocus &&
+                !act.ok &&
+                act.mutation === 'none' &&
+                /^(LIVE_HIT_UNPROVEN|RN_FAST_RUNNER_STALE|FOCUS_TARGET_OCCLUDED):/.test(
+                  act.error ?? '',
+                )
+              ) {
+                outcome = failed(
+                  item,
+                  attempt,
+                  `${act.error ?? 'LIVE_HIT_UNPROVEN'}${cutterText(centreDiagnostic)}; no focus or typing was performed`,
+                  before.screen,
+                  await shoot(item),
+                  ref,
+                  false,
+                  'TARGET_NOT_FOUND',
+                );
+                break;
+              }
               // Not hittable, unavailable, ambiguous, expired or moved: the inferred overlay refuses.
               if (liveHit && item.kind === 'press' && !act.ok && act.mutation === 'none') {
                 outcome = failed(
@@ -4333,6 +4504,8 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     ...(row.keyboardCleared ? { keyboardCleared: row.keyboardCleared } : {}),
     ...(row.retryCause ? { retryCause: row.retryCause } : {}),
     ...(row.scrollDetail ? { scrollDetail: row.scrollDetail } : {}),
+    ...(row.scrollBand ? { scrollBand: row.scrollBand } : {}),
+    ...(row.overlayChecks ? { overlayChecks: row.overlayChecks } : {}),
     ...(row.entryMismatch ? { entryMismatch: row.entryMismatch } : {}),
     ...(row.screenshotWithheld ? { screenshotWithheld: row.screenshotWithheld } : {}),
     ...(screenshot ? { screenshot } : {}),
