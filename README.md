@@ -7,6 +7,7 @@ and the evidence behind it.
 [![CI](https://github.com/Lykhoyda/QaReN/actions/workflows/ci.yml/badge.svg)](https://github.com/Lykhoyda/QaReN/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-qaren--agent.vercel.app-blue)](https://qaren-agent.vercel.app/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![X](https://img.shields.io/badge/X-%40qaren__agent-black?logo=x)](https://x.com/qaren_agent)
 
 A coding agent checks its work with types, lint and unit tests. It does not tap through
 the app, so a screen that never appears or a flow that breaks halfway reaches review, or
@@ -24,7 +25,7 @@ it writes a short plan of what to check, and QaReN runs that plan in the real ap
   the exact elements they used.
 
 Read the [docs](https://qaren-agent.vercel.app/), or [set it up](#set-up-qaren) in your
-agent.
+agent. Follow updates on [X](https://x.com/qaren_agent).
 
 ## How it works
 
