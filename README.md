@@ -1,6 +1,6 @@
 # QaReN
 
-**A QA engineer for your coding agent.** Claude Code, Codex or Cursor writes the React
+**QaReN (QA for React Native) is a QA engineer for your coding agent.** Claude Code, Codex or Cursor writes the React
 Native change; QaReN tries it in your app on an iOS simulator and comes back with PASS or FAIL,
 and the evidence behind it.
 
