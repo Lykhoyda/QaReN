@@ -640,10 +640,9 @@ React placeholder. For an unnamed positional input on iOS, dispatch uses one add
 bounded React confirmation read to re-confirm that placeholder against the live tree
 and the sole native input of a complete snapshot. Its positional ref, native type
 and frame must still match the captured input. An empty native input without an ID
-or label receives that name only with complete native acquisition and React coverage and attested host evidence
-proving one candidate input, including ordinary captures without platform presence.
-Unknown or incomplete presence keeps every input in contention even when native
-acquisition is complete.
+or label receives that name only with complete native acquisition and React coverage
+and attested host evidence proving a sole native input and a sole React input host,
+including ordinary captures without platform presence.
 Separately emitted React layers count as one input only when they attest to the
 same single input host. A non-wrapper layer must supply the placeholder; other
 layers may omit it, but any placeholders they expose must agree.
