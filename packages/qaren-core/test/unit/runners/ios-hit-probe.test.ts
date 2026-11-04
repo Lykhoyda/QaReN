@@ -15,7 +15,8 @@ function section(source: string, start: string, end: string): string {
   return source.slice(from, to);
 }
 
-test('the read-only Swift hit probe binds the retained generation and restores dispatch bookkeeping', () => {
+test('the read-only Swift hit probe binds the retained generation and restores dispatch bookkeeping', (t) => {
+  if (process.platform !== 'darwin') return t.skip('requires the macOS Swift toolchain');
   const interaction = read('QarenIosRunnerTests+Interaction.swift');
   const models = read('QarenIosRunnerTests+Models.swift');
   const execution = read('QarenIosRunnerTests+CommandExecution.swift');
