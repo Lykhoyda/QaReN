@@ -81,6 +81,7 @@ export interface DevErrorOverlay {
 }
 
 export interface Screen {
+  nativeGeneration?: number;
   pointScale?: number;
   renderError?: boolean;
   elements: Element[];
@@ -153,6 +154,7 @@ const literalTextContributors = new WeakSet<Element>();
 const scrollContainers = new WeakMap<Element, string>();
 const windows = new WeakSet<Element>();
 const alerts = new WeakSet<Element>();
+const sheets = new WeakSet<Element>();
 const keyboards = new WeakSet<Element>();
 const applications = new WeakSet<Element>();
 // Press/fill from the element's own React evidence, without the screen-wide capability gaps.
@@ -171,6 +173,10 @@ export function contributesLiteralText(element: Element): boolean {
 
 export function isScrollContainer(element: Element): boolean {
   return scrollContainers.has(element);
+}
+
+export function hasNativeSheet(screen: Screen): boolean {
+  return screen.elements.some((element) => sheets.has(element) && !element.offscreen);
 }
 
 export function isWindow(element: Element): boolean {
@@ -1325,6 +1331,7 @@ export function join(
     if (n.type === 'Window') windows.add(elements[i]);
     if (n.type === 'Application') applications.add(elements[i]);
     if (isAppAlertType(n.type)) alerts.add(elements[i]);
+    if (n.type === 'Sheet') sheets.add(elements[i]);
     if (n.type === 'Keyboard' || (ownWindow && windowOf(i) === keyboardWindow))
       keyboards.add(elements[i]);
     if (duplicates.has(i) || elements[i].kind !== 'text') return;

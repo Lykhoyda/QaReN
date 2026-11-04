@@ -1,3 +1,4 @@
+import type { HitProbeIdentity } from './live-hit.js';
 import type { PressEvidence } from './selection-press.js';
 import { devOverlayDeadline } from '../domain/dev-overlay.js';
 import { QaDispatchError } from '../domain/qa-dispatch.js';
@@ -53,6 +54,7 @@ import { foreignFlowGate } from '../lifecycle/foreign-flow-gate.js';
 import { androidForeignDriverMessage } from '../runners/external-runner-detect.js';
 import {
   readIOSLabelProvenance,
+  readIOSHitProbe,
   observeAppProcess,
   observeRunnerDrivers,
   observeRunnerRelaunches,
@@ -793,12 +795,22 @@ async function openSession(
           }),
         ),
       ),
+    ...(platform === 'ios'
+      ? {
+          hitProbe: (
+            ref: string,
+            context: QaDispatchContext,
+            generation: number,
+            identity: HitProbeIdentity,
+          ) => stop.track(() => readIOSHitProbe(ref, appId, generation, context, identity)),
+        }
+      : {}),
     press: (ref, qaContext, options) =>
       act(() => press({ ref, qaContext, ...options, qaTiming: { now, observe: timing } }), false, {
         now,
         observe: timing,
       }),
-    fill: (ref, text, qaContext, privateValue, onPrivateInput, alwaysRetype, identity) =>
+    fill: (ref, text, qaContext, privateValue, onPrivateInput, alwaysRetype, options) =>
       act(
         () =>
           fill({
@@ -808,7 +820,8 @@ async function openSession(
             privateValue,
             onPrivateInput,
             alwaysRetype,
-            placeholderIdentity: identity?.placeholder,
+            requireLiveHit: options?.requireLiveHit,
+            placeholderIdentity: options?.placeholder,
             qaTiming: { now, observe: timing },
           }),
         true,

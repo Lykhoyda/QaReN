@@ -1,3 +1,4 @@
+import { HIT_PROBE_RESULTS, type HitProbeResult, type HitProbeIdentity } from '../qa/live-hit.js';
 import {
   cleanProvenanceReadDiagnostic,
   labelProvenanceFromWire,
@@ -125,6 +126,7 @@ const READY_TIMEOUT_MS = resolveReadyTimeoutMs();
 const BUILD_READY_TIMEOUT_MS = 360_000;
 const HTTP_TIMEOUT_MS = 10_000;
 const STRICT_LIVE_HIT_CAPABILITY = 'STRICT_LIVE_HIT_V1';
+const LIVE_HIT_PROBE_CAPABILITY = 'LIVE_HIT_PROBE_V1';
 const FAST_RUNNER_PROJECT = resolveNativeRunnerDir('qaren-ios-runner');
 
 // xcodebuild chunks can split handshake lines, so the parser retains incomplete lines.
@@ -1799,6 +1801,7 @@ export interface RunIOSArgs {
   command:
     | 'snapshot'
     | 'tap'
+    | 'hitProbe'
     | 'swipe'
     | 'drag'
     | 'longPress'
@@ -2612,12 +2615,14 @@ async function requireQaFastRunner(
 export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
   const advisorySnapshot = args.command === 'snapshot' && args.advisorySnapshot === true;
   const qaReadOnly =
-    (args.qaContext !== undefined || args.qaReadOnly === true) && !isMutatingCommand(args.command);
+    args.command === 'hitProbe' ||
+    ((args.qaContext !== undefined || args.qaReadOnly === true) &&
+      !isMutatingCommand(args.command));
   if (args.qaReadOnly && isMutatingCommand(args.command)) {
     if (args.qaContext) args.qaContext.invalidate();
     throw new QaDispatchError('ACTION_CONTEXT_CHANGED');
   }
-  if (args.qaContext || args.qaReadOnly) {
+  if (args.qaContext || args.qaReadOnly || args.command === 'hitProbe') {
     const ready = await requireQaFastRunner(
       args.qaContext,
       args.bundleId,
@@ -2745,17 +2750,56 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
     );
   }
 
-  // An older runner ignores requireLiveHit and taps on an unavailable read; refuse before sending.
+  // Strict fills also require the probe generation: older strict-tap runners ignore the type flag.
+  const strictFeatures = [
+    STRICT_LIVE_HIT_CAPABILITY,
+    ...(args.command === 'type' ? [LIVE_HIT_PROBE_CAPABILITY] : []),
+  ];
+  const missingStrictFeatures = strictFeatures.filter(
+    (feature) => !lastKnownCapabilities.includes(feature),
+  );
   if (
-    args.command === 'tap' &&
+    (args.command === 'tap' || args.command === 'type') &&
     args.requireLiveHit === true &&
-    !lastKnownCapabilities.includes(STRICT_LIVE_HIT_CAPABILITY)
+    missingStrictFeatures.length
   ) {
     return failResult(
-      'RN_FAST_RUNNER_STALE: the active iOS runner cannot require a live hit read before a tap; no tap was performed. Reopen the device session to rebuild before retrying.',
+      args.command === 'tap'
+        ? 'RN_FAST_RUNNER_STALE: the active iOS runner cannot require a live hit read before a tap; no tap was performed. Reopen the device session to rebuild before retrying.'
+        : 'RN_FAST_RUNNER_STALE: the active iOS runner cannot require a live hit read before focus; no focus or typing was performed. Reopen the device session to rebuild before retrying.',
       'RN_FAST_RUNNER_STALE',
-      { missingFeatures: [STRICT_LIVE_HIT_CAPABILITY], dispatched: false, mutation: 'none' },
+      { missingFeatures: missingStrictFeatures, dispatched: false, mutation: 'none' },
     );
+  }
+
+  if (args.command === 'hitProbe' && !lastKnownCapabilities.includes(LIVE_HIT_PROBE_CAPABILITY)) {
+    return failResult(
+      'The active iOS runner cannot read a live hit point; no action was performed.',
+      'RN_FAST_RUNNER_STALE',
+      { missingFeatures: [LIVE_HIT_PROBE_CAPABILITY], dispatched: false, mutation: 'none' },
+    );
+  }
+
+  if (args.command === 'hitProbe') {
+    const observedRunner = runnerState;
+    if (!observedRunner) return okResult({ hitProbe: 'unavailable' });
+    try {
+      args.qaContext?.check();
+      const reply = await sendCommandOnce(
+        observedRunner.port,
+        { ...body, commandId: generateCommandId() },
+        commandTimeoutMs(args.command),
+        args.qaContext,
+        args.qaTiming,
+      );
+      if (!reply.ok || runnerState !== observedRunner || args.qaContext?.expired)
+        return okResult({ hitProbe: 'unavailable' });
+      return okResult(reply.data ?? { hitProbe: 'unavailable' });
+    } catch (error) {
+      throwIfCancelled();
+      if (error instanceof QaDispatchError && error.code === 'RUN_CANCELLED') throw error;
+      return okResult({ hitProbe: 'unavailable' });
+    }
   }
 
   // An older runner could only tap a SpringBoard alert by coordinate through the app, which proves nothing.
@@ -3285,6 +3329,60 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
     ...(keyboardRelayoutRecovered ? { keyboardGuard: 'auto_dismissed' } : {}),
   };
   return okResult(resp.data ?? {}, Object.keys(finalMeta).length ? { meta: finalMeta } : undefined);
+}
+
+export async function readIOSHitProbe(
+  ref: string,
+  bundleId: string,
+  generation: number,
+  qaContext: QaDispatchContext,
+  identity: HitProbeIdentity,
+): Promise<HitProbeResult> {
+  const target = getFreshRefTarget(ref);
+  if (
+    !target ||
+    target.snapshotGeneration !== generation ||
+    (identity.identifier
+      ? target.snapshotIdentifier !== identity.identifier
+      : target.snapshotLabel !== identity.label) ||
+    (['x', 'y', 'width', 'height'] as const).some(
+      (key) => target.rect[key] !== identity.rect[key],
+    ) ||
+    (!target.snapshotIdentifier && !target.snapshotLabel) ||
+    qaContext.expired
+  )
+    return 'unavailable';
+  try {
+    const response = await runIOS({
+      command: 'hitProbe',
+      bundleId,
+      qaContext,
+      qaReadOnly: true,
+      targetBounds: target.rect,
+      snapshotGeneration: target.snapshotGeneration,
+      snapshotNodeIndex: target.snapshotNodeIndex,
+      snapshotElementType: target.snapshotElementType,
+      snapshotIdentifier: target.snapshotIdentifier,
+      snapshotLabel: target.snapshotLabel,
+    });
+    if (
+      response.isError ||
+      qaContext.expired ||
+      JSON.stringify(getFreshRefTarget(ref)) !== JSON.stringify(target)
+    )
+      return 'unavailable';
+    const data = (
+      JSON.parse(response.content[0]?.text ?? '{}') as {
+        data?: { hitProbe?: unknown; snapshotGeneration?: unknown };
+      }
+    ).data;
+    if (data?.snapshotGeneration !== generation) return 'unavailable';
+    return HIT_PROBE_RESULTS.find((result) => result === data?.hitProbe) ?? 'unavailable';
+  } catch (error) {
+    if (isAbort(error) || (error instanceof QaDispatchError && error.code === 'RUN_CANCELLED'))
+      throw error;
+    return 'unavailable';
+  }
 }
 
 export async function readIOSLabelProvenance(

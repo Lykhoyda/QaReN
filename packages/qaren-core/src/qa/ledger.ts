@@ -1,3 +1,5 @@
+import type { ScrollBandReceipt } from './resolve.js';
+import type { OverlayHitReceipt } from './live-hit.js';
 import type { PressEvidence } from './selection-press.js';
 import type { MediaLatch, WithholdCause } from './privacy.js';
 export type RowOutcome = 'pass' | 'fail' | 'retry';
@@ -26,6 +28,8 @@ export interface EntryMismatch {
 }
 
 export interface LedgerRow {
+  overlayChecks?: OverlayHitReceipt[];
+  scrollBand?: ScrollBandReceipt;
   block: string;
   operationId?: number;
   line: number;

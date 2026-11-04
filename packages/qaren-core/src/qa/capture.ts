@@ -737,6 +737,12 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
       (native.appProcessIdentifier as number) > 0
     )
       screen.appProcessIdentifier = native.appProcessIdentifier as number;
+    if (
+      typeof native.snapshotGeneration === 'number' &&
+      Number.isSafeInteger(native.snapshotGeneration) &&
+      native.snapshotGeneration >= 0
+    )
+      screen.nativeGeneration = native.snapshotGeneration;
     if (typeof native.keyboardVisible === 'boolean')
       screen.keyboardVisible = native.keyboardVisible;
     if (deps.warn) {

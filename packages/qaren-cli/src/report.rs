@@ -1246,6 +1246,56 @@ mod tests {
     }
 
     #[test]
+    fn overlay_receipts_survive_the_ledger_and_discard_untyped_data() {
+        let check = serde_json::json!({
+            "observation": 7, "liveHit": "hittable", "predicate": {
+                "framePresent": true, "viewportPresent": true, "viewportOutside": false,
+                "keyboardVisible": false, "keyboardFramePresent": null, "keyboardCoverage": null,
+                "centreInsideKeyboard": null, "branch": "overlay", "cutter": {
+                    "ref": "@e8", "kind": "other", "frame": { "x": 0.0, "y": 116.0, "width": 402.0, "height": 758.0 },
+                    "edge": "bottom", "before": { "top": 20.0, "bottom": 782.0 }, "after": { "top": 20.0, "bottom": 116.0 }
+                }
+            }
+        });
+        let mut row = serde_json::json!({
+            "block": "b", "line": 1, "attempt": 1, "kind": "step", "resolvedBy": "exact", "t": 0, "outcome": "pass",
+            "overlayChecks": [check], "scrollBand": { "status": "overlay-cut", "band": { "x": 0.0, "y": 20.0, "width": 402.0, "height": 0.0 } }
+        });
+        let parsed: crate::core::Row = serde_json::from_value(row.clone()).unwrap();
+        let saved = serde_json::to_value(parsed).unwrap();
+        assert_eq!(saved["overlayChecks"], row["overlayChecks"]);
+        assert_eq!(saved["scrollBand"], row["scrollBand"]);
+        for verdict in ["not-hittable", "moved", "unavailable"] {
+            row["overlayChecks"][0]["liveHit"] = verdict.into();
+            let parsed: crate::core::Row = serde_json::from_value(row.clone()).unwrap();
+            assert_eq!(
+                serde_json::to_value(parsed).unwrap()["overlayChecks"][0]["liveHit"],
+                verdict
+            );
+        }
+        for status in ["no-geometry", "clear"] {
+            row["scrollBand"] = serde_json::json!({ "status": status });
+            let parsed: crate::core::Row = serde_json::from_value(row.clone()).unwrap();
+            assert_eq!(
+                serde_json::to_value(parsed).unwrap()["scrollBand"]["status"],
+                status
+            );
+        }
+        row["overlayChecks"][0]["predicate"]["cutter"]["ref"] = "private-value".into();
+        row["scrollBand"]["status"] = "private-value".into();
+        let parsed: crate::core::Row = serde_json::from_value(row.clone()).unwrap();
+        let saved = serde_json::to_value(parsed).unwrap();
+        assert!(saved.get("overlayChecks").is_none());
+        assert!(saved.get("scrollBand").is_none());
+        row["overlayChecks"] = serde_json::to_value(vec![check; 65]).unwrap();
+        let parsed: crate::core::Row = serde_json::from_value(row).unwrap();
+        assert!(serde_json::to_value(parsed)
+            .unwrap()
+            .get("overlayChecks")
+            .is_none());
+    }
+
+    #[test]
     fn still_scroll_rows_keep_their_typed_detail_and_drop_unknown_ones() {
         let ledger: Ledger = serde_json::from_value(serde_json::json!({
             "verdict": "PASS", "path": "walk", "blocks": [],
