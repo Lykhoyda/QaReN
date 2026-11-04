@@ -49,17 +49,9 @@ The development binary is `packages/qaren-cli/target/debug/qaren`. To install a 
 your checkout beside a released `qaren`, follow
 [Install from source](README.md#install-from-source).
 
-## Where things live
-
-- `packages/qaren-cli/`: the Rust CLI. It owns the run, the device and Metro.
-- `packages/qaren-core/`: the TypeScript process that reads the app's screen.
-- `packages/qaren-plugin/`: the agent plugin: manifests, the session hook and skills.
-- `packages/qaren-ios-runner/` and `packages/qaren-android-runner/`: native runners.
-- `apps/docs-site/`: the documentation site.
-
-New source and test code must be TypeScript or Rust. Do not commit generated files:
-`packages/qaren-core/dist/`, `packages/qaren-cli/target/`, `packages/qaren-cli/observe/dist/`,
-simulator screenshots or logs.
+Follow the [editing rules](AGENTS.md#editing-rules) for source languages and files that
+must stay out of commits; use the [repository map](AGENTS.md#repository-map) to find the
+package to edit.
 
 ## Check your change
 
@@ -73,14 +65,13 @@ corepack yarn build && corepack yarn test
 cargo test --manifest-path packages/qaren-cli/Cargo.toml --locked
 ```
 
-Core unit tests run against the built `dist/`, so rebuild with `corepack yarn build:core`
-after editing `packages/qaren-core/src/` or the tests check the old build. For a docs site
-change, run `corepack yarn build:docs` (needs [Bun](https://bun.sh)). For an Android runner
+The commands above need no simulator. For a docs site change, run
+`corepack yarn build:docs` (needs [Bun](https://bun.sh)). For an Android runner
 change, run `corepack yarn test:native:android` (needs a JDK and the Android SDK); the iOS
 runner's tests need a simulator, as the [repository guide](AGENTS.md#validation-commands)
 describes.
 
-These tests need no simulator. If your change affects what happens on a device, say in the
+If your change affects what happens on a device, say in the
 pull request whether you tried it on a simulator, and how.
 
 ## Add a changeset
@@ -113,7 +104,7 @@ Docs, tests and CI changes need no changeset.
    works, and anything a reviewer should watch for. Write for someone who has not seen
    the issue.
 
-The required CI checks, `Build & Test`, `Lint & format` and `Require changeset`, must pass
-before a pull request can merge.
+CI runs the checks defined in [ci.yml](.github/workflows/ci.yml); keep them green before
+requesting a merge.
 
 By contributing, you agree that your work is released under the [MIT License](LICENSE).
