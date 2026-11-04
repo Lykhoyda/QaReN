@@ -230,6 +230,7 @@ export interface WalkerDeps {
     privateValue?: boolean,
     onPrivateInput?: () => void,
     alwaysRetype?: boolean,
+    identity?: { placeholder: string },
   ): Promise<ActResult>;
   // iOS only: type, proven only by a matching React read-back; testID identifies the pre-dispatch focus veto.
   typeFocused?(
@@ -3652,6 +3653,9 @@ async function walkBlockScoped(
                       secretFill(item),
                       () => promoteFill(item, element?.testID),
                       item.alwaysRetype,
+                      element && !element.testID && !element.label && element.placeholder
+                        ? { placeholder: element.placeholder }
+                        : undefined,
                     )
                   : item.kind === 'scroll'
                     ? deps.scroll(item.direction, context)

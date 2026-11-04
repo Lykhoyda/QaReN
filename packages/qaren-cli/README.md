@@ -636,7 +636,8 @@ Plans contain a `## QA` section, named `###` blocks, numbered actions and
 [phrase](../qaren-core/test/fixtures/plans/phrases.md) fixtures and the
 [parser](../qaren-core/src/qa/plan.ts) for accepted grammar. Quoted press and fill
 targets resolve observed labels or test IDs locally. A Fill also accepts an input's
-React placeholder; an empty native input without an ID or label receives that name
+React placeholder; at dispatch the placeholder is re-confirmed against the live React
+tree and the sole native input of a complete snapshot. An empty native input without an ID or label receives that name
 only with complete native acquisition and React coverage and attested host evidence
 proving one candidate input, including ordinary captures without platform presence.
 Unknown or incomplete presence keeps every input in contention even when native

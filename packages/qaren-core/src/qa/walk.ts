@@ -798,7 +798,7 @@ async function openSession(
         now,
         observe: timing,
       }),
-    fill: (ref, text, qaContext, privateValue, onPrivateInput, alwaysRetype) =>
+    fill: (ref, text, qaContext, privateValue, onPrivateInput, alwaysRetype, identity) =>
       act(
         () =>
           fill({
@@ -808,6 +808,7 @@ async function openSession(
             privateValue,
             onPrivateInput,
             alwaysRetype,
+            placeholderIdentity: identity?.placeholder,
             qaTiming: { now, observe: timing },
           }),
         true,

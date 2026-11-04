@@ -14,6 +14,8 @@ const { updateRefMapFromFlat, clearRefMap } = await import('../../dist/fast-runn
 const { okResult, failResult } = await import('../../dist/utils.js');
 const { HandlerError, fillEvidence, unwrap } = await import('../../dist/qa/adapt.js');
 const { QaDispatchContext } = await import('../../dist/domain/qa-dispatch.js');
+const { createTimingObserver, observeDispatchPhases, formatTimingEvent } =
+  await import('../../dist/qa/timing.js');
 
 const NODES = [
   {
@@ -57,6 +59,12 @@ interface SeamConfig {
   platform?: 'ios' | 'android';
   nodes?: typeof NODES;
   snapshot?: (count: number) => typeof NODES;
+  snapshotEvidence?: {
+    truncated?: boolean;
+    normalizationDroppedNodes?: number;
+    snapshotVerdict?: unknown;
+  };
+  authorize?: boolean;
   fill?: (call: Call, fillCount: number) => ReturnType<typeof okResult>;
   verify?: (call: Call, verifyCount: number) => ReturnType<typeof okResult>;
 }
@@ -86,9 +94,30 @@ async function withFillSeam<T>(
         snapshotGeneration: 6 + snapshotCount,
         keyboardVisible: false,
       });
-      return okResult({ nodes: snapshotNodes });
+      const evidence = config.snapshotEvidence;
+      return okResult(
+        {
+          nodes: snapshotNodes,
+          truncated: evidence?.truncated ?? false,
+          normalizationDroppedNodes: evidence?.normalizationDroppedNodes ?? 0,
+        },
+        {
+          meta: {
+            snapshotVerdict:
+              evidence && 'snapshotVerdict' in evidence
+                ? evidence.snapshotVerdict
+                : {
+                    state: 'ok',
+                    nodeCount: snapshotNodes.length,
+                    refMapUpdated: true,
+                    reasons: [],
+                  },
+          },
+        },
+      );
     }
     if (cliArgs[0] === 'fill') {
+      if (config.authorize) (opts.qaContext as InstanceType<typeof QaDispatchContext>)?.authorize();
       fillCount += 1;
       lastFill = { target: cliArgs[1], text: cliArgs[2] };
       return config.fill
@@ -966,4 +995,275 @@ test('a native read-back differing only by letter case is unverified with case e
   assert.equal(env.meta.mutation, 'observed');
   assert.doesNotMatch(JSON.stringify(env), /Hello|Ada/);
   assert.equal(calls.filter((c) => c.cliArgs[0] === 'fill').length, 1, 'no retype');
+});
+
+const placeholderKey = 'placeholder-privacy-sentinel-851';
+const unnamedInput = {
+  ref: '@e1',
+  type: 'TextField',
+  rect: { x: 20, y: 100, width: 300, height: 44 },
+};
+const placeholderEntry = {
+  role: 'textinput',
+  inputHostIndices: [0],
+  placeholder: placeholderKey,
+  capabilities: { press: false, fill: true },
+};
+const placeholderTree = () => ({
+  interactive: [placeholderEntry],
+  hostEvidence: {
+    complete: true,
+    hosts: [{ role: 'textinput', roleSource: 'role', capabilities: { fill: true } }],
+  },
+  verdict: { state: 'ok', path: 'interactive', complete: true },
+});
+
+function placeholderClient(tree: unknown = placeholderTree(), failure?: string) {
+  let reads = 0;
+  const expressions: string[] = [];
+  return {
+    get reads() {
+      return reads;
+    },
+    expressions,
+    client: {
+      isConnected: true,
+      async withPrivateHelperWorld(
+        operation: (evaluate: (expression: string) => Promise<unknown>) => Promise<unknown>,
+      ) {
+        reads++;
+        if (failure) throw new Error(failure);
+        return operation(async (expression) => {
+          expressions.push(expression);
+          return { v: 1, id: '851', state: 'ready', tree: JSON.stringify(tree) };
+        });
+      },
+    },
+  };
+}
+
+test('QA placeholder identity confirms once before native fill without entering output sinks', async (t) => {
+  for (const layers of [
+    [placeholderEntry],
+    [{ ...placeholderEntry, compositeWrapper: true }, placeholderEntry],
+  ]) {
+    const client = placeholderClient({ ...placeholderTree(), interactive: layers });
+    const context = new QaDispatchContext(10, () => 1);
+    const output: string[] = [];
+    const stdout = t.mock.method(process.stdout, 'write', (chunk: unknown) => {
+      output.push(String(chunk));
+      return true;
+    });
+    const stderr = t.mock.method(process.stderr, 'write', (chunk: unknown) => {
+      output.push(String(chunk));
+      return true;
+    });
+    const events: unknown[] = [];
+    observeDispatchPhases({
+      now: () => 1,
+      observe: createTimingObserver((event) => {
+        events.push(event);
+        process.stderr.write(formatTimingEvent(event));
+      }),
+    });
+    let observed;
+    try {
+      observed = await withFillSeam({ nodes: [unnamedInput] as never, authorize: true }, () =>
+        performExactFill(
+          {
+            ref: '@e1',
+            text: 'query',
+            placeholderIdentity: placeholderKey,
+            qaContext: context,
+            alwaysRetype: true,
+          },
+          client.client as never,
+          {},
+        ),
+      );
+    } finally {
+      observeDispatchPhases(undefined);
+      stdout.mock.restore();
+      stderr.mock.restore();
+    }
+    assert.equal(envelope(observed.result).ok, true);
+    assert.equal(client.reads, 1);
+    assert.deepEqual(
+      observed.calls.map((call) => call.cliArgs[0]),
+      ['snapshot', 'fill', 'verify-input'],
+    );
+    assert.ok(events.length >= 2);
+    assert.ok(output.length >= 2);
+    assert.equal(context.authorizations, 1);
+    assert.doesNotThrow(() => context.assertComplete());
+    assert.equal(
+      JSON.stringify([
+        observed,
+        output,
+        events,
+        client.expressions,
+        context.refusalDiagnostic,
+      ]).includes(placeholderKey),
+      false,
+    );
+  }
+});
+
+for (const [name, snapshotEvidence] of [
+  ['truncated', { truncated: true }],
+  ['dropped', { normalizationDroppedNodes: 1 }],
+  [
+    'degraded',
+    { snapshotVerdict: { state: 'degraded', nodeCount: 1, refMapUpdated: true, reasons: [] } },
+  ],
+  [
+    'map update failed',
+    { snapshotVerdict: { state: 'ok', nodeCount: 1, refMapUpdated: false, reasons: [] } },
+  ],
+  ['verdict missing', { snapshotVerdict: undefined }],
+  [
+    'node count mismatch',
+    { snapshotVerdict: { state: 'ok', nodeCount: 2, refMapUpdated: true, reasons: [] } },
+  ],
+] as const) {
+  test(`QA placeholder identity refuses ${name} binding acquisition before the React read`, async () => {
+    const client = placeholderClient();
+    const context = new QaDispatchContext(10, () => 1);
+    const { result, calls } = await withFillSeam(
+      { nodes: [unnamedInput] as never, snapshotEvidence },
+      async () => {
+        try {
+          return await performExactFill(
+            { ref: '@e1', text: 'query', placeholderIdentity: placeholderKey, qaContext: context },
+            client.client as never,
+            {},
+          );
+        } catch (error) {
+          return error;
+        }
+      },
+    );
+    assert.equal((result as Error).message, 'ACTION_CONTEXT_CHANGED');
+    assert.equal(context.authorizations, 0);
+    assert.equal(client.reads, 0);
+    assert.deepEqual(
+      calls.map((call) => call.cliArgs[0]),
+      ['snapshot'],
+    );
+  });
+}
+
+for (const [name, tree, failure] of [
+  [
+    'changed placeholder',
+    { ...placeholderTree(), interactive: [{ ...placeholderEntry, placeholder: 'Other search' }] },
+  ],
+  [
+    'two fill hosts',
+    {
+      ...placeholderTree(),
+      hostEvidence: {
+        complete: true,
+        hosts: [...placeholderTree().hostEvidence.hosts, ...placeholderTree().hostEvidence.hosts],
+      },
+    },
+  ],
+  ['hidden entry', { ...placeholderTree(), interactive: [{ ...placeholderEntry, hidden: true }] }],
+  [
+    'test id entry',
+    { ...placeholderTree(), interactive: [{ ...placeholderEntry, testID: 'another' }] },
+  ],
+  [
+    'incomplete React',
+    { ...placeholderTree(), verdict: { state: 'degraded', path: 'interactive', complete: false } },
+  ],
+  [
+    'incomplete hosts',
+    { ...placeholderTree(), hostEvidence: { ...placeholderTree().hostEvidence, complete: false } },
+  ],
+  ['unreadable tree', undefined, `private read failed: ${placeholderKey}`],
+] as const) {
+  test(`QA placeholder identity refuses ${name} without leaking the key`, async (t) => {
+    const client = placeholderClient(tree, failure);
+    const context = new QaDispatchContext(10, () => 1);
+    const output: string[] = [];
+    const stdout = t.mock.method(process.stdout, 'write', (chunk: unknown) => {
+      output.push(String(chunk));
+      return true;
+    });
+    const stderr = t.mock.method(process.stderr, 'write', (chunk: unknown) => {
+      output.push(String(chunk));
+      return true;
+    });
+    const log = t.mock.method(console, 'log', (...args: unknown[]) => {
+      output.push(JSON.stringify(args));
+    });
+    const events: unknown[] = [];
+    observeDispatchPhases({
+      now: () => 1,
+      observe: createTimingObserver((event) => {
+        events.push(event);
+        process.stderr.write(formatTimingEvent(event));
+      }),
+    });
+    let observed;
+    try {
+      observed = await withFillSeam({ nodes: [unnamedInput] as never }, async () => {
+        try {
+          return await performExactFill(
+            { ref: '@e1', text: 'query', placeholderIdentity: placeholderKey, qaContext: context },
+            client.client as never,
+            {},
+          );
+        } catch (error) {
+          const { describeError } = await import('../../dist/qa/adapt.js');
+          return describeError(error);
+        }
+      });
+    } finally {
+      observeDispatchPhases(undefined);
+      stdout.mock.restore();
+      stderr.mock.restore();
+      log.mock.restore();
+    }
+    assert.deepEqual(observed.result, {
+      code: 'UNEXPECTED_ERROR',
+      message: 'ACTION_CONTEXT_CHANGED',
+    });
+    assert.ok(events.length >= 2);
+    assert.ok(output.length >= 2);
+    assert.equal(context.refusal?.code, 'ACTION_CONTEXT_CHANGED');
+    assert.equal(context.authorizations, 0);
+    assert.equal(client.reads, 1);
+    assert.deepEqual(
+      observed.calls.map((call) => call.cliArgs[0]),
+      ['snapshot'],
+    );
+    assert.equal(
+      JSON.stringify([
+        observed,
+        output,
+        events,
+        client.expressions,
+        context.refusalDiagnostic,
+      ]).includes(placeholderKey),
+      false,
+    );
+  });
+}
+
+test('positional unnamed device_fill without the QA identity keeps its original refusal', async () => {
+  const client = placeholderClient();
+  const { result, calls } = await withFillSeam({ nodes: [unnamedInput] as never }, () =>
+    performExactFill({ ref: '@e1', text: 'query' }, client.client as never, {}),
+  );
+  assert.match(
+    envelope(result).error,
+    /ref @e1 has no robust pre-refresh identity for unique rebinding/,
+  );
+  assert.equal(client.reads, 0);
+  assert.deepEqual(
+    calls.map((call) => call.cliArgs[0]),
+    ['snapshot'],
+  );
 });

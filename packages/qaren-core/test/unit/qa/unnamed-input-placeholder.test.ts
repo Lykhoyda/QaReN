@@ -65,7 +65,14 @@ test('one unnamed empty input receives only the unique React placeholder and can
     assert.ok('ref' in result);
     assert.equal(result.ref, '@input');
     const f = walker([observed], noJudge());
+    let identity;
+    const fill = f.deps.fill;
+    f.deps.fill = (...args) => {
+      identity = args[6];
+      return fill(...args);
+    };
     const ledger = await runPlan(parsePlan('1. Fill "Search items" with "query"').blocks!, f.deps);
+    assert.deepEqual(identity, { placeholder: 'Search items' });
     assert.equal(ledger.verdict, 'PASS');
     assert.deepEqual(f.actions, ['fill @input query']);
   }
@@ -483,4 +490,20 @@ test('placeholder names and echoed cross-field values remain masked in outward e
   assert.equal(judge.requests.length, 0);
   assert.match(checked.failure?.seen ?? '', /SCREEN_EVIDENCE_INCOMPLETE/);
   assert.equal(JSON.stringify({ checked, prompts: judge.requests }).includes(secret), false);
+});
+
+test('label and test-id fills do not forward a placeholder identity', async () => {
+  for (const naming of [{ label: 'Search items' }, { identifier: 'Search items' }]) {
+    const observed = joinScreen([{ ...input, ...naming }], [candidate]);
+    const f = walker([observed], noJudge());
+    let identity = 'not called' as unknown;
+    const fill = f.deps.fill;
+    f.deps.fill = (...args) => {
+      identity = args[6];
+      return fill(...args);
+    };
+    const ledger = await runPlan(parsePlan('1. Fill "Search items" with "query"').blocks!, f.deps);
+    assert.equal(ledger.verdict, 'PASS');
+    assert.equal(identity, undefined);
+  }
 });
