@@ -1024,64 +1024,11 @@ export function join(
     localCapabilities.set(element, local);
     return element;
   });
-  const inactiveInputs = new Map<number, number>();
-  if (
-    coverage?.native === 'complete' &&
-    coverage.react === 'complete' &&
-    reactHostEvidence?.complete
-  ) {
-    const inputAssociations = reactHostEvidence.hosts.some(
-      (host) => host.hidden && host.capabilities.fill,
-    )
-      ? associateHosts(nodes, reactHostEvidence, presence, undefined, undefined, true)
-      : associations;
-    digest.forEach((entry, index) => {
-      if (!inputRole(entry.role) && entry.capabilities?.fill !== true) return;
-      const hosts = entry.inputHostIndices;
-      if (hosts?.length !== 1) return;
-      const hostIndex = hosts[0];
-      const host = reactHostEvidence.hosts[hostIndex];
-      const association = inputAssociations.get(hostIndex);
-      if (
-        !host ||
-        host.capabilities.fill !== true ||
-        !association ||
-        entry.testID !== host.testID ||
-        !!entry.hidden !== !!host.hidden
-      )
-        return;
-      const nativeIndex = association.nativeIndex;
-      if (
-        kindOf(nodes[nativeIndex].type) !== 'input' ||
-        underKeyboard(nodes[nativeIndex], nativeIndex) ||
-        presence?.nodes[nativeIndex]?.unknownReason === 'keyboard-covered'
-      )
-        return;
-      const unknownReason = presence?.nodes[nativeIndex]?.unknownReason;
-      if (unknownReason && !['empty-frame', 'not-hittable', 'clipped'].includes(unknownReason))
-        return;
-      if (
-        offscreen.has(nativeIndex) ||
-        (host.hidden === true &&
-          presence?.nodes[nativeIndex]?.status === 'unknown' &&
-          unknownReason !== 'clipped')
-      )
-        inactiveInputs.set(index, nativeIndex);
-    });
-  }
-  const excludedNative = new Set(inactiveInputs.values());
-  const nativeInputs = elements.filter(
-    (e, index) => e.kind === 'input' && !excludedNative.has(index),
-  );
+  const nativeInputs = elements.filter((e) => e.kind === 'input');
   const digestInputs = digest.flatMap((d, i) =>
-    (inputRole(d.role) || d.capabilities?.fill === true) && !inactiveInputs.has(i) ? [i] : [],
+    inputRole(d.role) || d.capabilities?.fill === true ? [i] : [],
   );
-  const inactiveHosts = new Set(
-    [...inactiveInputs.keys()].map((index) => digest[index].inputHostIndices![0]),
-  );
-  const activeHosts = reactHostEvidence?.hosts.filter(
-    (host, index) => host.capabilities.fill === true && !inactiveHosts.has(index),
-  );
+  const activeHosts = reactHostEvidence?.hosts.filter((host) => host.capabilities.fill === true);
   const unnamed = unnamedInputs.filter((element) => nativeInputs.includes(element));
   if (
     (nativeAcquisition ?? coverage?.native) === 'complete' &&

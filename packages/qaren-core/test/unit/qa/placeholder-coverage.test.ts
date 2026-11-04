@@ -92,32 +92,30 @@ function fixture() {
   return { nodes, digest, hosts, presence, capture };
 }
 
-// The amendment permits exclusion only with a consistent capture-local chain; geometry alone cannot exclude React entries.
-test('an offscreen input with a unique host chain leaves the active placeholder fillable', async () => {
-  const f = fixture();
-  const screen = f.capture();
-  const result = prepareTarget(fill, screen);
-  assert.ok('ref' in result, JSON.stringify(result));
-  assert.equal(result.ref, '@input');
-  const w = walker(
-    [screen],
-    scriptedJudge(() => assert.fail('quoted Fill needs no model')),
-  );
-  const ledger = await runPlan(parsePlan('1. Fill "Search items" with "query"').blocks!, w.deps);
-  assert.equal(ledger.verdict, 'PASS');
-  assert.deepEqual(w.actions, ['fill @input query']);
-});
-
-test('an accessibility-hidden input is excluded only when the native observation does not contradict it', () => {
-  const f = fixture();
-  f.nodes[3].rect = { ...f.nodes[3].rect!, y: 200 };
-  f.hosts.typography!.nodes[1].rect = f.nodes[3].rect;
-  f.hosts.hosts[1].hidden = true;
-  f.digest[1].hidden = true;
-  assert.ok('ref' in prepareTarget(fill, f.capture()));
-  f.presence.nodes[3].status = 'observed';
-  assert.ok('refuse' in prepareTarget(fill, f.capture()));
-});
+for (const competitor of ['on-screen', 'offscreen', 'accessibility-hidden'] as const) {
+  test(`a second ${competitor} native input withholds the placeholder and refuses Fill`, async () => {
+    const f = fixture();
+    if (competitor !== 'offscreen') {
+      f.nodes[3].rect = { ...f.nodes[3].rect!, y: 200 };
+      f.hosts.typography!.nodes[1].rect = f.nodes[3].rect;
+    }
+    if (competitor === 'on-screen') f.presence.nodes[3].status = 'observed';
+    if (competitor === 'accessibility-hidden') {
+      f.hosts.hosts[1].hidden = true;
+      f.digest[1].hidden = true;
+    }
+    const screen = f.capture();
+    assert.equal(screen.elements.find((e) => e.ref === '@input')?.placeholder, undefined);
+    assert.ok('refuse' in prepareTarget(fill, screen));
+    const w = walker(
+      [screen],
+      scriptedJudge(() => assert.fail('quoted Fill needs no model')),
+    );
+    const ledger = await runPlan(parsePlan('1. Fill "Search items" with "query"').blocks!, w.deps);
+    assert.equal(ledger.verdict, 'FAIL');
+    assert.deepEqual(w.actions, []);
+  });
+}
 
 test('on-screen, keyboard-covered, React-only and stale or conflicting associations stay competitors', () => {
   const changes: Array<(f: ReturnType<typeof fixture>) => void> = [

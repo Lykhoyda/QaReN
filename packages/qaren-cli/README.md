@@ -647,11 +647,8 @@ acquisition is complete.
 Separately emitted React layers count as one input only when they attest to the
 same single input host. A non-wrapper layer must supply the placeholder; other
 layers may omit it, but any placeholders they expose must agree.
-A competitor (or donor) is excluded only through a consistent, unique entry-to-input-host-to-native-node
-chain proving it offscreen or accessibility-hidden on that capture; keyboard cover
-does not exclude it. React-only inputs and uncertain associations still compete.
-Competitor exclusion affects resolution only; placeholder dispatch still requires
-one native input in the entire binding snapshot.
+A second native input anywhere in the capture, including off screen or hidden,
+keeps the placeholder withheld; no competitor exclusion is performed.
 When React coverage is unknown or incomplete, a missed Fill with one unnamed
 on-screen input reports `evidence-incomplete`, names that coverage class, and
 suggests targeting the field by test id. Distinct matches are counted before kind,
