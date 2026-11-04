@@ -112,6 +112,7 @@ import {
   missSuggestion,
   screenNow,
   targetMissDiagnostic,
+  placeholderPairingGap,
   type TargetMissDiagnostic,
 } from './target-miss.js';
 import {
@@ -1416,6 +1417,11 @@ async function walkBlockScoped(
             reason = typeof reason === 'string' ? reason + detail : [...segments(reason), detail];
           }
           deps.targetMiss?.(diagnostic);
+        }
+        const pairingGap = placeholderPairingGap(target, screen, item.kind);
+        if (pairingGap) {
+          const detail = `; placeholder pairing was unavailable because React coverage on this screen is ${pairingGap}; target the field by test id`;
+          reason = typeof reason === 'string' ? reason + detail : [...segments(reason), detail];
         }
         const seen = captured.get(last);
         if (seen && targetCode) {

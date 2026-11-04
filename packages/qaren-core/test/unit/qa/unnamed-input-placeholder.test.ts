@@ -17,6 +17,7 @@ const input: NativeNode = {
 };
 const candidate: DigestEntry = {
   role: 'textinput',
+  inputHostIndices: [0],
   placeholder: 'Search items',
   capabilities: { press: false, fill: true },
 };
@@ -26,7 +27,10 @@ const joinScreen: typeof join = (
   digest,
   front,
   coverage = { native: 'complete', react: 'complete' },
-  hosts,
+  hosts = {
+    complete: true,
+    hosts: [{ role: 'textinput', roleSource: 'none', capabilities: { fill: true } }],
+  },
   presence,
 ) => join(nodes, digest, front, coverage, hosts, presence);
 

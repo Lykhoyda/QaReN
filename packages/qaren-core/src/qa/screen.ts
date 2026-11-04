@@ -1017,44 +1017,84 @@ export function join(
     localCapabilities.set(element, local);
     return element;
   });
-  const nativeInputs = elements.filter((e) => e.kind === 'input');
-  const digestInputs = digest.flatMap((d, i) =>
-    inputRole(d.role) || d.capabilities?.fill === true ? [i] : [],
-  );
-  const digestInputGroups = new Set(
-    digestInputs.map((index) => {
-      const hosts = digest[index].inputHostIndices;
-      return reactHostEvidence?.complete === true &&
-        hosts?.length === 1 &&
-        reactHostEvidence.hosts[hosts[0]]?.capabilities.fill === true
-        ? `host:${hosts[0]}`
-        : `entry:${index}`;
-    }),
-  );
+  const inactiveInputs = new Map<number, number>();
   if (
     coverage?.native === 'complete' &&
     coverage.react === 'complete' &&
-    nativeInputs.length === 1 &&
-    unnamedInputs.length === 1 &&
-    digestInputGroups.size === 1 &&
-    (reactHostEvidence?.hosts.filter((h) => h.capabilities.fill === true).length ?? 0) <= 1 &&
-    digestInputs.every(
-      (index) =>
-        !used.has(index) &&
-        !digest[index].testID &&
-        !digest[index].hidden &&
-        (digest[index].inputHostIndices === undefined ||
-          digest[index].inputHostIndices.length === 1),
-    )
+    reactHostEvidence?.complete
   ) {
-    const placeholders = new Set(
-      digestInputs.flatMap((index) => {
-        const candidate = digest[index];
-        const placeholder = !candidate.compositeWrapper && nonEmpty(candidate.placeholder);
-        return placeholder ? [placeholder] : [];
-      }),
-    );
-    if (placeholders.size === 1) unnamedInputs[0].placeholder = [...placeholders][0];
+    const inputAssociations = reactHostEvidence.hosts.some(
+      (host) => host.hidden && host.capabilities.fill,
+    )
+      ? associateHosts(nodes, reactHostEvidence, presence, undefined, undefined, true)
+      : associations;
+    digest.forEach((entry, index) => {
+      if (!inputRole(entry.role) && entry.capabilities?.fill !== true) return;
+      const hosts = entry.inputHostIndices;
+      if (hosts?.length !== 1) return;
+      const hostIndex = hosts[0];
+      const host = reactHostEvidence.hosts[hostIndex];
+      const association = inputAssociations.get(hostIndex);
+      if (
+        !host ||
+        host.capabilities.fill !== true ||
+        !association ||
+        entry.testID !== host.testID ||
+        !!entry.hidden !== !!host.hidden
+      )
+        return;
+      const nativeIndex = association.nativeIndex;
+      if (
+        kindOf(nodes[nativeIndex].type) !== 'input' ||
+        underKeyboard(nodes[nativeIndex], nativeIndex) ||
+        presence?.nodes[nativeIndex]?.unknownReason === 'keyboard-covered'
+      )
+        return;
+      if (
+        offscreen.has(nativeIndex) ||
+        (host.hidden === true && presence?.nodes[nativeIndex]?.status === 'unknown')
+      )
+        inactiveInputs.set(index, nativeIndex);
+    });
+  }
+  const excludedNative = new Set(inactiveInputs.values());
+  const nativeInputs = elements.filter(
+    (e, index) => e.kind === 'input' && !excludedNative.has(index),
+  );
+  const digestInputs = digest.flatMap((d, i) =>
+    (inputRole(d.role) || d.capabilities?.fill === true) && !inactiveInputs.has(i) ? [i] : [],
+  );
+  const inactiveHosts = new Set(
+    [...inactiveInputs.keys()].map((index) => digest[index].inputHostIndices![0]),
+  );
+  const activeHosts = reactHostEvidence?.hosts.filter(
+    (host, index) => host.capabilities.fill === true && !inactiveHosts.has(index),
+  );
+  const unnamed = unnamedInputs.filter((element) => nativeInputs.includes(element));
+  if (
+    coverage?.native === 'complete' &&
+    coverage.react === 'complete' &&
+    reactHostEvidence?.complete === true &&
+    nativeInputs.length === 1 &&
+    unnamed.length === 1 &&
+    digestInputs.length === 1 &&
+    activeHosts?.length === 1
+  ) {
+    const index = digestInputs[0];
+    const candidate = digest[index];
+    const placeholder = nonEmpty(candidate.placeholder);
+    if (
+      !used.has(index) &&
+      !candidate.testID &&
+      !candidate.hidden &&
+      !candidate.compositeWrapper &&
+      placeholder &&
+      candidate.inputHostIndices?.length === 1 &&
+      reactHostEvidence.hosts[candidate.inputHostIndices[0]]?.capabilities.fill === true &&
+      !reactHostEvidence.hosts[candidate.inputHostIndices[0]].hidden &&
+      reactHostEvidence.hosts[candidate.inputHostIndices[0]].testID === candidate.testID
+    )
+      unnamed[0].placeholder = placeholder;
   }
   for (const [index, label] of androidDescendantLabels(
     nodes,

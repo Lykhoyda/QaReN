@@ -330,6 +330,7 @@ export function associateHosts(
   presence: NativePresence | undefined,
   diagnostics?: Map<number, HostAssociationDiagnostic>,
   reactCovered?: Set<number>,
+  includeHiddenInputs = false,
 ): Map<number, HostAssociation> {
   const associations = new Map<number, HostAssociation>();
   const note = (index: number, facts: Partial<HostAssociationDiagnostic>) => {
@@ -459,7 +460,7 @@ export function associateHosts(
         ));
     // Native input accessibility frames can be inset from their React host's outer frame.
     const matchingGeometry = inputHost
-      ? !evidence.hosts[host.hostIndex].hidden &&
+      ? (!evidence.hosts[host.hostIndex].hidden || includeHiddenInputs) &&
         containsInputFrame(host.rect, nodes[nativeIndex].rect, window, transform)
       : matchingFrame;
     note(host.hostIndex, {
@@ -501,7 +502,12 @@ export function associateHosts(
   const offscreen = offscreenNodes(nodes, presence);
   const anchors = new Map(
     [...structural].filter(([hostIndex, i]) => {
-      const eligible = positive(i) || offscreen.has(i);
+      const eligible =
+        positive(i) ||
+        offscreen.has(i) ||
+        (includeHiddenInputs &&
+          evidence.hosts[hostIndex].hidden === true &&
+          evidence.hosts[hostIndex].capabilities.fill === true);
       note(hostIndex, { presenceProofCount: Number(eligible) });
       return eligible;
     }),

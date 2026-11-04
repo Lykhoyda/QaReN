@@ -637,13 +637,16 @@ Plans contain a `## QA` section, named `###` blocks, numbered actions and
 [parser](../qaren-core/src/qa/plan.ts) for accepted grammar. Quoted press and fill
 targets resolve observed labels or test IDs locally. A Fill also accepts an input's
 React placeholder; an empty native input without an ID or label receives that name
-only when both native and React captures are complete, it is the sole native input,
-and the React candidates prove one input: nested entries count together only when
-complete host evidence links them to the same input host. All candidates must be
-unused, visible to React and have no test ID; non-wrapper entries must agree on one
-placeholder. Competing inputs, including offscreen and React-only inputs, leave it
-unnamed. Distinct matches are counted before kind, disabled, hittability, offscreen
-or React-only filters, so two or more refuse with `TARGET_AMBIGUOUS`, without a Jev
+only with complete native and React coverage and attested host evidence proving
+one candidate input. Separately emitted entries remain competitors; only the
+collector's existing identity-forwarding rule merges duplicates. A competitor
+(or donor) is excluded only through a consistent, unique entry-to-input-host-to-native-node
+chain proving it offscreen or accessibility-hidden on that capture; keyboard cover
+does not exclude it. React-only inputs and uncertain associations still compete.
+When React coverage is unknown or incomplete, a missed Fill with one unnamed
+on-screen input reports `evidence-incomplete`, names that coverage class, and
+suggests targeting the field by test id. Distinct matches are counted before kind,
+disabled, hittability, offscreen or React-only filters, so two or more refuse with `TARGET_AMBIGUOUS`, without a Jev
 tie-break, even if the
 target adds positional words such as `Tap "Save" at the bottom`. Outside fills,
 a React-only element whose testID equals the quoted value is not counted while a
