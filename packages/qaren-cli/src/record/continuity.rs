@@ -166,7 +166,32 @@ fn plan_screenshot(row: &crate::core::Row, ledger: &Ledger) -> bool {
     row.line > 0
         && matches!(row.outcome.as_str(), "pass" | "fail")
         && row.screenshot.is_some()
+        && row.screenshot_withheld.is_none()
         && ledger.blocks.iter().any(|b| b.key == row.block)
+}
+
+fn withheld_spans(
+    ledger: &Ledger,
+    row_origin_ms: u64,
+    publication_from: u64,
+) -> Option<Vec<(u64, u64)>> {
+    let mut spans = Vec::new();
+    for row in ledger
+        .steps
+        .iter()
+        .filter(|r| r.screenshot_withheld.is_some())
+    {
+        let end = row_origin_ms.checked_add(row.t)?;
+        if end < publication_from {
+            continue;
+        }
+        let start = match &row.timing {
+            Some(timing) => row_origin_ms.checked_add(row.t.checked_sub(timing.total)?)?,
+            None => publication_from,
+        };
+        spans.push((start, end));
+    }
+    Some(spans)
 }
 
 pub fn detect_continuity(
@@ -177,26 +202,21 @@ pub fn detect_continuity(
     recording_ready_ms: u64,
     publication_offset_ms: u64,
     row_origin_ms: u64,
-) -> Vec<VideoStall> {
+) -> Option<Vec<VideoStall>> {
     let strict = ledger.video_publication.clone().unwrap_or_default();
     if ledger
         .video_policy
         .publication(&strict, ledger.non_strict_publication.as_ref())
         != VideoPublication::Eligible
-        || ledger
-            .media_withheld
-            .as_ref()
-            .is_some_and(|m| m.screenshots.is_some())
-        || ledger.steps.iter().any(|r| r.screenshot_withheld.is_some())
     {
-        return Vec::new();
+        return None;
     }
     let mut shots = ledger
         .steps
         .iter()
         .filter(|row| plan_screenshot(row, ledger));
     if shots.next().is_none() || shots.next().is_none() {
-        return Vec::new();
+        return None;
     }
     detect(
         runner,
@@ -207,7 +227,6 @@ pub fn detect_continuity(
         publication_offset_ms,
         row_origin_ms,
     )
-    .unwrap_or_default()
 }
 
 fn detect(
@@ -249,9 +268,18 @@ fn detect(
     let intervals = frozen_intervals(&output.stderr, duration)?;
     let publication_from = recording_from_ms.checked_add(publication_offset_ms)?;
     let publication_ready = recording_ready_ms.checked_add(publication_offset_ms)?;
+    let withheld = withheld_spans(ledger, row_origin_ms, publication_from)?;
     let mut dimensions = None;
     let mut stalls = Vec::new();
     for (start, end) in intervals {
+        let outer_start = publication_from.checked_add(start)?;
+        let outer_end = publication_ready.checked_add(end)?;
+        if withheld
+            .iter()
+            .any(|&(from, to)| from <= outer_end && to >= outer_start)
+        {
+            continue;
+        }
         // Require containment for every recorder start between spawn and readiness.
         let start_wall = publication_ready.checked_add(start)?;
         let end_wall = publication_from.checked_add(end)?;
@@ -274,6 +302,13 @@ fn detect(
         if rows.len() < 2 {
             continue;
         }
+        let first_line = rows.iter().map(|row| row.line).min()?;
+        let last_line = rows.iter().map(|row| row.line).max()?;
+        if ledger.steps.iter().any(|row| {
+            row.screenshot_withheld.is_some() && (first_line..=last_line).contains(&row.line)
+        }) {
+            continue;
+        }
         let size = match dimensions {
             Some(size) => size,
             None => {
@@ -294,8 +329,8 @@ fn detect(
         if different {
             stalls.push(VideoStall {
                 duration_ms: end - start,
-                first_line: rows.iter().map(|row| row.line).min()?,
-                last_line: rows.iter().map(|row| row.line).max()?,
+                first_line,
+                last_line,
             });
         }
     }
@@ -359,13 +394,250 @@ mod tests {
         runner
     }
 
+    fn withheld(ledger: &Ledger, t: u64, total: Option<u64>) -> crate::core::Row {
+        let mut row = ledger.steps[0].clone();
+        row.line = 3;
+        row.t = t;
+        row.screenshot_withheld = Some(crate::core::WithholdCause::RuntimeInput);
+        row.screenshot = Some("must-not-be-opened.png".into());
+        row.timing = total.map(|total| {
+            let mut timing = row.timing.clone().unwrap();
+            timing.total = total;
+            timing
+        });
+        row
+    }
+
+    #[test]
+    fn pre_window_withheld_rows_and_the_summary_do_not_veto_kept_screenshots() {
+        let (dir, ledger) = fixture();
+        for summary in [false, true] {
+            let mut ledger = ledger.clone();
+            // Pre-window rows are discarded before their acquisition timing is inspected.
+            ledger.steps.push(withheld(&ledger, 1000, Some(2000)));
+            if summary {
+                ledger.media_withheld = Some(
+                    serde_json::from_value(serde_json::json!({
+                        "screenshots":{"reason":"runtime-input","line":3}
+                    }))
+                    .unwrap(),
+                );
+            }
+            let mut runner = detector(FREEZE);
+            comparison(&mut runner, true);
+            let stalls =
+                detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000)
+                    .unwrap();
+            assert_eq!(stalls[0].receipt(), "suspected-stall 8000 over lines 7–8");
+            assert_eq!(runner.remaining(), 0);
+            assert!(runner.calls.iter().all(|call| !call
+                .args
+                .iter()
+                .any(|arg| arg.contains("must-not-be-opened"))));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn withheld_time_spans_veto_touching_intervals_before_comparison() {
+        let (dir, ledger) = fixture();
+        // Frozen wall span is [107500, 115500], row origin is 101000.
+        for (t, total, ready, skipped) in [
+            (8000, Some(500), 100_000, true),
+            (7000, Some(2000), 100_000, true),
+            (15000, Some(1000), 100_000, true),
+            (6500, Some(500), 100_000, true),
+            (15000, Some(500), 100_000, true),
+            (8000, Some(0), 100_000, true),
+            (8000, None, 100_000, true),
+            (15001, Some(500), 100_000, false),
+            (1000, None, 100_000, false),
+            (1000, Some(500), 100_000, false),
+            // Only the generous envelope touches this row; kept rows still qualify.
+            (6500, Some(0), 100_250, true),
+            (15000, Some(250), 100_250, true),
+        ] {
+            let mut ledger = ledger.clone();
+            ledger.steps[0].timing.as_mut().unwrap().total = 200;
+            ledger.steps.push(withheld(&ledger, t, total));
+            let mut runner = detector(FREEZE);
+            if !skipped {
+                comparison(&mut runner, true);
+            }
+            let stalls =
+                detect_continuity(&mut runner, &dir, &ledger, 100_000, ready, 5_000, 101_000)
+                    .unwrap();
+            assert_eq!(
+                stalls.is_empty(),
+                skipped,
+                "t={t}, total={total:?}, ready={ready}"
+            );
+            assert_eq!(runner.calls.len(), if skipped { 2 } else { 4 });
+            assert_eq!(runner.remaining(), 0);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn all_withheld_rows_are_scanned_regardless_of_plan_membership() {
+        let (dir, ledger) = fixture();
+        for (block, outcome, line, path) in [
+            ("login", "pass", 3, false),
+            ("unlisted", "retry", 0, true),
+            ("plan", "fail", 0, false),
+        ] {
+            let mut ledger = ledger.clone();
+            let mut row = withheld(&ledger, 8000, Some(500));
+            row.block = block.into();
+            row.outcome = outcome.into();
+            row.line = line;
+            if !path {
+                row.screenshot = None;
+            }
+            ledger.steps.push(row);
+            let mut runner = detector(FREEZE);
+            assert_eq!(
+                detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000),
+                Some(vec![])
+            );
+            assert_eq!(runner.calls.len(), 2);
+            assert_eq!(runner.remaining(), 0);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn withheld_line_numbers_are_never_in_a_reported_range() {
+        let (dir, ledger) = fixture();
+        for (line, attempt) in [(8, 1), (7, 1)] {
+            let mut ledger = ledger.clone();
+            ledger.steps[0].attempt = 2;
+            ledger.steps[1].line = 9;
+            let mut row = withheld(&ledger, 1000, Some(500));
+            row.line = line;
+            row.attempt = attempt;
+            ledger.steps.push(row);
+            let mut runner = detector(FREEZE);
+            assert_eq!(
+                detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000),
+                Some(vec![])
+            );
+            assert_eq!(runner.calls.len(), 2);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn later_rows(ledger: &mut Ledger) {
+        for (index, t) in [(0, 11_000), (1, 13_000)] {
+            let mut row = ledger.steps[index].clone();
+            row.line += 2;
+            row.t = t;
+            ledger.steps.push(row);
+        }
+    }
+
+    #[test]
+    fn withholding_skips_only_the_overlapping_interval() {
+        let (dir, mut ledger) = fixture();
+        later_rows(&mut ledger);
+        ledger.steps.push(withheld(&ledger, 8000, Some(500)));
+        let mut runner = detector("lavfi.freezedetect.freeze_start: 2.5\nlavfi.freezedetect.freeze_end: 5.5\nlavfi.freezedetect.freeze_start: 6\nlavfi.freezedetect.freeze_end: 10.5\n");
+        comparison(&mut runner, true);
+        assert_eq!(
+            detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000),
+            Some(vec![VideoStall {
+                duration_ms: 4500,
+                first_line: 9,
+                last_line: 10
+            }])
+        );
+        assert_eq!(runner.calls.len(), 4);
+        assert_eq!(runner.remaining(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn uncertain_withheld_bounds_fail_the_entire_detector() {
+        let (dir, ledger) = fixture();
+        for (t, total, origin, offset) in [
+            (8000, Some(8001), 101_000, 5000),
+            (u64::MAX, Some(500), 101_000, 5000),
+            (8000, Some(500), 101_000, u64::MAX),
+        ] {
+            let mut ledger = ledger.clone();
+            ledger.steps.push(withheld(&ledger, t, total));
+            let mut runner = detector(FREEZE);
+            assert!(detect_continuity(
+                &mut runner,
+                &dir,
+                &ledger,
+                100_000,
+                100_000,
+                offset,
+                origin
+            )
+            .is_none());
+            assert_eq!(runner.calls.len(), 2);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn complete_without_freezes_is_distinct_from_probe_and_path_failures() {
+        let (dir, ledger) = fixture();
+        let mut runner = detector("");
+        assert_eq!(
+            detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000),
+            Some(vec![])
+        );
+        assert_eq!(runner.remaining(), 0);
+        let mut runner = MockRunner::new();
+        runner.expect_run("ffprobe", CmdOutput::failed(1, "probe failed"));
+        assert!(
+            detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000)
+                .is_none()
+        );
+        let mut runner = detector(FREEZE);
+        runner.expect_run("ffprobe", CmdOutput::failed(1, "dimensions failed"));
+        assert!(
+            detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000)
+                .is_none()
+        );
+        let mut ledger = ledger.clone();
+        ledger.steps[1].screenshot = Some("missing.png".into());
+        let mut runner = detector(FREEZE);
+        runner.expect_run("ffprobe", CmdOutput::success("16x16"));
+        assert!(
+            detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000)
+                .is_none()
+        );
+        assert_eq!(runner.remaining(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_later_comparison_failure_discards_earlier_stalls() {
+        let (dir, mut ledger) = fixture();
+        later_rows(&mut ledger);
+        let mut runner = detector("lavfi.freezedetect.freeze_start: 2.5\nlavfi.freezedetect.freeze_end: 5.5\nlavfi.freezedetect.freeze_start: 6\nlavfi.freezedetect.freeze_end: 10.5\n");
+        comparison(&mut runner, true);
+        runner.expect_run("filter_complex", CmdOutput::failed(1, "comparison failed"));
+        assert!(
+            detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000)
+                .is_none()
+        );
+        assert_eq!(runner.remaining(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn differing_pixels_during_a_freeze_produce_a_numeric_receipt_and_sentence() {
         let (dir, ledger) = fixture();
         let mut runner = detector(FREEZE);
         comparison(&mut runner, true);
         let stalls =
-            detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000);
+            detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000)
+                .unwrap();
         assert_eq!(
             stalls,
             vec![VideoStall {
@@ -390,6 +662,7 @@ mod tests {
         comparison(&mut runner, false);
         assert!(
             detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000)
+                .unwrap()
                 .is_empty()
         );
         assert_eq!(runner.remaining(), 0);
@@ -410,6 +683,7 @@ mod tests {
                 offset,
                 origin
             )
+            .unwrap()
             .is_empty());
             assert_eq!(runner.remaining(), 0);
         }
@@ -422,6 +696,7 @@ mod tests {
         let mut runner = detector(FREEZE);
         assert!(
             detect_continuity(&mut runner, &dir, &ledger, 100_000, 101_000, 5_000, 101_000)
+                .unwrap()
                 .is_empty()
         );
         assert_eq!(runner.remaining(), 0);
@@ -451,6 +726,7 @@ mod tests {
                     5_000,
                     101_000,
                 )
+                .unwrap()
                 .is_empty());
                 assert_eq!(runner.remaining(), 0);
                 assert_eq!(runner.calls.len(), 2);
@@ -474,7 +750,7 @@ mod tests {
             ledger.steps[1].timing.as_mut().unwrap().total = 2000;
             ledger.steps.insert(0, nested);
             let mut runner = MockRunner::new();
-            assert!(detect_continuity(&mut runner, &dir, &ledger, 0, 0, 0, 0).is_empty());
+            assert!(detect_continuity(&mut runner, &dir, &ledger, 0, 0, 0, 0).is_none());
             assert!(runner.calls.is_empty());
         }
         std::fs::remove_dir_all(dir).unwrap();
@@ -488,7 +764,8 @@ mod tests {
         let mut runner = detector(FREEZE);
         comparison(&mut runner, true);
         let stalls =
-            detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000);
+            detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000)
+                .unwrap();
         assert_eq!(stalls[0].receipt(), "suspected-stall 8000 over lines 7–7");
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -503,7 +780,8 @@ mod tests {
         let mut runner = detector("lavfi.freezedetect.freeze_start: 2.5\n");
         comparison(&mut runner, true);
         assert_eq!(
-            detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000)[0]
+            detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000)
+                .unwrap()[0]
                 .duration_ms,
             9500
         );
@@ -536,7 +814,7 @@ mod tests {
                 5_000,
                 101_000
             )
-            .is_empty());
+            .is_none());
             assert_eq!(runner.remaining(), 0);
         }
         let mut runner = detector(FREEZE);
@@ -544,13 +822,13 @@ mod tests {
         runner.expect_run("filter_complex", CmdOutput::failed(1, "invalid image"));
         assert!(
             detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000)
-                .is_empty()
+                .is_none()
         );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    fn withheld_screenshots_or_video_and_missing_shots_are_not_examined() {
+    fn ineligible_video_or_fewer_than_two_kept_plan_shots_are_not_examined() {
         let (dir, ledger) = fixture();
         for variant in 0..4 {
             let mut ledger = ledger.clone();
@@ -579,9 +857,25 @@ mod tests {
                 5_000,
                 101_000
             )
-            .is_empty());
+            .is_none());
             assert!(runner.calls.is_empty());
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn strict_post_login_withholding_still_has_no_screenshots_to_compare() {
+        let (dir, mut ledger) = fixture();
+        ledger.video_policy = super::super::VideoPolicy::Strict;
+        for row in &mut ledger.steps {
+            row.screenshot_withheld = Some(crate::core::WithholdCause::RuntimeInput);
+        }
+        let mut runner = MockRunner::new();
+        assert!(
+            detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000)
+                .is_none()
+        );
+        assert!(runner.calls.is_empty());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -660,7 +954,8 @@ mod tests {
         );
         let mut runner = crate::exec::RealRunner::new();
         let stalls =
-            detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000);
+            detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000)
+                .unwrap();
         assert_eq!(
             stalls,
             vec![VideoStall {
@@ -693,7 +988,9 @@ mod tests {
             ],
             &published_video_path(&dir),
         );
-        assert!(detect_continuity(&mut runner, &dir, &recovered, 0, 0, 0, 0).is_empty());
+        assert!(detect_continuity(&mut runner, &dir, &recovered, 0, 0, 0, 0)
+            .unwrap()
+            .is_empty());
         generate(
             &[
                 "-f",
@@ -724,6 +1021,7 @@ mod tests {
         );
         assert!(
             detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000)
+                .unwrap()
                 .is_empty()
         );
         generate(&["-f", "lavfi", "-i", "color=black:s=640x480:r=30:d=12,drawbox=x=0:y=0:w=2:h=2:color=white:t=fill:enable='gte(t,4)'", "-c:v", "libx264"], &published_video_path(&dir));
@@ -740,6 +1038,7 @@ mod tests {
         );
         assert!(
             detect_continuity(&mut runner, &dir, &ledger, 100_000, 100_000, 5_000, 101_000)
+                .unwrap()
                 .is_empty()
         );
         std::fs::remove_dir_all(dir).unwrap();

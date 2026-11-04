@@ -1458,7 +1458,7 @@ fn run_inner(
                 );
                 if video == VideoStatus::Available {
                     if let Some(offset) = offset.filter(|_| req.platform == Platform::Ios) {
-                        video_continuity = record::detect_continuity(
+                        if let Some(stalls) = record::detect_continuity(
                             ctx.runner,
                             &run_dir,
                             &outcome.ledger,
@@ -1466,15 +1466,19 @@ fn run_inner(
                             recording_ready,
                             offset,
                             core_request.t0,
-                        );
-                        if !video_continuity.is_empty() {
+                        ) {
+                            video_continuity = stalls;
                             ctx.notes.push((
                                 "video_continuity".into(),
-                                video_continuity
-                                    .iter()
-                                    .map(record::VideoStall::receipt)
-                                    .collect::<Vec<_>>()
-                                    .join("; "),
+                                if video_continuity.is_empty() {
+                                    "examined".into()
+                                } else {
+                                    video_continuity
+                                        .iter()
+                                        .map(record::VideoStall::receipt)
+                                        .collect::<Vec<_>>()
+                                        .join("; ")
+                                },
                             ));
                         }
                     }

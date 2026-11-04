@@ -3961,8 +3961,14 @@ entirely inside the interval, from row completion minus total row duration throu
 row completion. Rows without that proof and recovery retry rows with reused
 screenshots are omitted.
 This is a suspected recorder discontinuity, not proof of its cause; the video is
-kept and publication and privacy rules still apply. Withheld screenshots or a failed detector produce no note;
-absence of a note does not prove continuity.
+kept and publication and privacy rules still apply. Withheld rows are skipped;
+an interval touching a withheld row's time span or containing its line number is
+not evaluated. A failed or gated detector produces no note. The receipt-only
+`video_continuity: examined` marker records successful detector completion without
+proving continuity, including when every interval was skipped; absence of a note
+does not prove continuity. The detector reads only the prepared publication copy
+and kept screenshots, writes no media and uploads nothing new. Strict run-wide
+screenshot withholding can leave no kept plan screenshots to compare after login.
 
 A successful saved login replay before any plan step passes moves the uploaded
 copy's start to the end of that replay if later than the first step's start.

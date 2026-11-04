@@ -9050,19 +9050,35 @@ impl Runner for Encoding {
 // R8: only this run's own raw capture is reclaimed, and only once a playable encode replaces it.
 #[test]
 fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
-    for (encodes, first_start, login_offset, expected_offset, recorder_delay, stall) in [
-        (true, None, None, 2_850, 559, false),
-        (true, None, None, 2_850, 559, true),
-        (false, None, None, 2_850, 559, false),
-        (true, Some(0), None, 2_850, 559, false),
-        (true, Some(12_000), None, 12_000, 559, false),
-        (true, Some(12_000), Some(20_000), 22_850, 559, false),
-        (true, Some(12_000), Some(5_000), 12_000, 559, false),
-        (true, None, Some(20_000), 22_850, 559, false),
-        (true, Some(33_000), None, 33_000, 559, false),
-        (true, Some(10_000), None, 10_000, 8_000, false),
+    for (encodes, first_start, login_offset, expected_offset, recorder_delay, diagnostic) in [
+        (true, None, None, 2_850, 559, "off"),
+        (true, None, None, 2_850, 559, "stall"),
+        (false, None, None, 2_850, 559, "off"),
+        (true, Some(0), None, 2_850, 559, "off"),
+        (true, Some(12_000), None, 12_000, 559, "off"),
+        (true, Some(12_000), Some(20_000), 22_850, 559, "off"),
+        (true, Some(12_000), Some(5_000), 12_000, 559, "off"),
+        (true, None, Some(20_000), 22_850, 559, "off"),
+        (true, Some(33_000), None, 33_000, 559, "off"),
+        (true, Some(10_000), None, 10_000, 8_000, "off"),
+        (true, None, None, 2_850, 559, "no-freeze"),
+        (true, None, None, 2_850, 559, "identical"),
+        (true, None, None, 2_850, 559, "withheld"),
+        (true, None, None, 2_850, 559, "duration-failed"),
+        (true, None, None, 2_850, 559, "dimensions-failed"),
+        (true, None, None, 2_850, 559, "pixels-failed"),
+        (true, None, None, 2_850, 559, "malformed"),
+        (true, None, None, 2_850, 559, "missing"),
+        (true, None, None, 2_850, 559, "late-failed"),
     ] {
+        let stall = diagnostic != "off";
+
         let (repo, app) = app_repo();
+        if stall && diagnostic != "withheld" {
+            let config = app.join(".qaren/config.yaml");
+            let contents = std::fs::read_to_string(&config).unwrap();
+            std::fs::write(config, format!("{contents}video: non-strict\n")).unwrap();
+        }
         let wt = repo.join("runs").join(run_id()).join("wt");
         let mut runner = Encoding(
             PrRunner {
@@ -9118,6 +9134,29 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
             let rows = result["payload"]["steps"].as_array_mut().unwrap();
             rows[0] = first;
             rows.insert(1, second);
+            let mut withheld = rows[0].clone();
+            withheld["block"] = "login".into();
+            withheld["line"] = 3.into();
+            withheld["t"] = if diagnostic == "withheld" { 15_000 } else { 0 }.into();
+            withheld["screenshotWithheld"] = "runtime-input".into();
+            withheld.as_object_mut().unwrap().remove("screenshot");
+            rows.push(withheld);
+            if diagnostic == "missing" {
+                rows[1]["screenshot"] = "missing.png".into();
+            }
+            if diagnostic == "late-failed" {
+                rows[1]["t"] = 12_000.into();
+                for (index, t) in [(0, 22_000), (1, 24_000)] {
+                    let mut later = rows[index].clone();
+                    later["line"] = (9 + index).into();
+                    later["t"] = t.into();
+                    rows.push(later);
+                }
+            }
+            if diagnostic != "withheld" {
+                result["payload"]["videoPolicy"] = "non-strict".into();
+                result["payload"]["nonStrictPublication"] = "eligible".into();
+            }
         }
         if let Some(login) = login {
             messages.last_mut().unwrap()["payload"]["publishFromMs"] = login.into();
@@ -9158,24 +9197,53 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
             mock.expect_run("ffmpeg", CmdOutput::success(""));
             mock.expect_run("ffprobe", CmdOutput::success("0.1\n"));
             if stall {
-                mock.expect_run("ffprobe", CmdOutput::success("30.676"));
                 mock.expect_run(
-                    "freezedetect",
-                    CmdOutput {
-                        stderr: "lavfi.freezedetect.freeze_start: 0\n".into(),
-                        ..CmdOutput::success("")
+                    "ffprobe",
+                    if diagnostic == "duration-failed" {
+                        CmdOutput::failed(1, "duration failed")
+                    } else {
+                        CmdOutput::success("30.676")
                     },
                 );
-                mock.expect_run("ffprobe", CmdOutput::success("16x16"));
-                mock.expect_run(
-                    "filter_complex",
-                    CmdOutput {
-                        stderr:
-                            "lavfi.freezedetect.freeze_start: 0\nlavfi.freezedetect.freeze_end: 1\n"
-                                .into(),
-                        ..CmdOutput::success("frame=2\nprogress=end\n")
-                    },
-                );
+                if diagnostic != "duration-failed" {
+                    let log = match diagnostic {
+                        "no-freeze" => "",
+                        "malformed" => "lavfi.freezedetect.freeze_start: NaN\n",
+                        "late-failed" => "lavfi.freezedetect.freeze_start: 0\nlavfi.freezedetect.freeze_end: 15\nlavfi.freezedetect.freeze_start: 16\n",
+                        _ => "lavfi.freezedetect.freeze_start: 0\n",
+                    };
+                    mock.expect_run(
+                        "freezedetect",
+                        CmdOutput {
+                            stderr: log.into(),
+                            ..CmdOutput::success("")
+                        },
+                    );
+                    if !matches!(diagnostic, "no-freeze" | "malformed" | "withheld") {
+                        mock.expect_run(
+                            "ffprobe",
+                            if diagnostic == "dimensions-failed" {
+                                CmdOutput::failed(1, "dimensions failed")
+                            } else {
+                                CmdOutput::success("16x16")
+                            },
+                        );
+                        if !matches!(diagnostic, "dimensions-failed" | "missing") {
+                            mock.expect_run("filter_complex", if diagnostic == "pixels-failed" {
+                                CmdOutput::failed(1, "pixels failed")
+                            } else { CmdOutput {
+                                stderr: if diagnostic == "identical" { "lavfi.freezedetect.freeze_start: 0\n" } else { "lavfi.freezedetect.freeze_start: 0\nlavfi.freezedetect.freeze_end: 1\n" }.into(),
+                                ..CmdOutput::success("frame=2\nprogress=end\n")
+                            }});
+                            if diagnostic == "late-failed" {
+                                mock.expect_run(
+                                    "filter_complex",
+                                    CmdOutput::failed(1, "later pixels failed"),
+                                );
+                            }
+                        }
+                    }
+                }
             }
         } else {
             mock.expect_run("ffmpeg", CmdOutput::failed(1, "encode failed"));
@@ -9195,6 +9263,26 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
         )
         .unwrap();
         if stall {
+            let ledger: qaren::core::Ledger = serde_json::from_slice(
+                &std::fs::read(repo.join("runs").join(run_id()).join("ledger.json")).unwrap(),
+            )
+            .unwrap();
+            let login = ledger
+                .steps
+                .iter()
+                .find(|row| row.block == "login")
+                .unwrap();
+            assert_eq!(
+                login.screenshot_withheld,
+                Some(qaren::core::WithholdCause::RuntimeInput)
+            );
+            assert!(login.screenshot.is_none());
+            assert!(ledger.media_withheld.is_none());
+            if diagnostic != "withheld" {
+                assert_eq!(ledger.video_policy, qaren::record::VideoPolicy::NonStrict);
+            }
+        }
+        if diagnostic == "stall" {
             assert_eq!(
                 receipt.outcomes["video_continuity"],
                 "suspected-stall 30676 over lines 7–8"
@@ -9207,6 +9295,9 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
                     last_line: 8,
                 }]
             );
+        } else if matches!(diagnostic, "no-freeze" | "identical" | "withheld") {
+            assert_eq!(receipt.outcomes["video_continuity"], "examined");
+            assert!(pr.video_continuity.is_empty());
         } else {
             assert!(!receipt.outcomes.contains_key("video_continuity"));
             assert!(pr.video_continuity.is_empty());
