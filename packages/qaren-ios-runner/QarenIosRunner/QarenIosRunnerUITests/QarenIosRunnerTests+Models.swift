@@ -5,6 +5,7 @@ import XCTest
 
 enum CommandType: String, Codable, CaseIterable {
   case tap
+  case hitProbe
   case mouseClick
   case tapSeries
   case longPress
@@ -75,14 +76,12 @@ struct Command: Codable {
   var snapshotLabel: String? = nil
   var snapshotIdentifier: String? = nil
   var keyboardStateAtSnapshot: Bool? = nil
-  // GH #581: declared focus-tap point for exact `type` (wrapper center when the
-  // caller targeted a `${name}-pressable`, input center otherwise) and the
-  // bounded wait for focus to land after that tap.
+  // Declared exact-input focus point and bounded focus wait.
   var focusX: Double? = nil
   var focusY: Double? = nil
   var focusWaitMs: Int? = nil
   var focused: Bool? = nil
-  // Tap only when the live hit read proves the target hittable.
+  // Tap or focus only when the live hit read proves the target hittable.
   var requireLiveHit: Bool? = nil
   var prepareReplacement: Bool? = nil
   var replacementDeleteCount: Int? = nil
@@ -176,6 +175,7 @@ struct SnapshotDiagnostics: Codable {
 }
 
 struct DataPayload: Codable {
+  var hitProbe: String? = nil
   let message: String?
   let text: String?
   let found: Bool?

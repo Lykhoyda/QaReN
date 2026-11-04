@@ -1048,6 +1048,7 @@ export function createDeviceLongPressHandler(
 // --- Fill (exact target + final verification — GH #581) ---
 
 export interface FillArgs {
+  requireLiveHit?: boolean;
   qaTiming?: TimingContext;
   qaContext?: QaDispatchContext;
   ref: string;
@@ -1277,7 +1278,9 @@ function fillFailure(
     | 'NO_TEXT_INPUT_TARGET'
     | 'FOCUS_TARGET_OCCLUDED'
     | 'TEXT_ENTRY_UNVERIFIED'
-    | 'TARGET_AMBIGUOUS',
+    | 'TARGET_AMBIGUOUS'
+    | 'LIVE_HIT_UNPROVEN'
+    | 'RN_FAST_RUNNER_STALE',
   message: string,
   opts: FillFailureOpts,
 ): ToolResult {
@@ -1451,7 +1454,13 @@ export async function performExactFill(
   const operationToken = randomUUID();
   const primary = await runNative(
     // A fill replaces the field's content; verification expects exactly args.text.
-    ['fill', binding.inputRef, args.text, '--clear-first'],
+    [
+      'fill',
+      binding.inputRef,
+      args.text,
+      '--clear-first',
+      ...(args.requireLiveHit ? [REQUIRE_LIVE_HIT_FLAG] : []),
+    ],
     {
       ...settleOpts(args),
       exactTarget: { ...exactTarget, operationToken },
@@ -1503,7 +1512,10 @@ export async function performExactFill(
     if (mutation === 'none') {
       const code = extractErrorCode(primary);
       return fillFailure(
-        code === 'FOCUS_TARGET_OCCLUDED' || code === 'TARGET_AMBIGUOUS'
+        code === 'FOCUS_TARGET_OCCLUDED' ||
+          code === 'TARGET_AMBIGUOUS' ||
+          code === 'LIVE_HIT_UNPROVEN' ||
+          code === 'RN_FAST_RUNNER_STALE'
           ? code
           : 'NO_TEXT_INPUT_TARGET',
         `device_fill's native attempt was refused before mutation: ${extractErrorText(primary)}`,

@@ -33,7 +33,7 @@ test('actual Swift preparation and retry loop cannot activate, retarget or recov
   const prepare = section(
     source,
     '  private func executeOnMain(command:',
-    '    // GH #581: the recorded type target',
+    '    switch command.command {',
   );
   const result = spawnSync('swift', ['-'], {
     encoding: 'utf8',
@@ -44,7 +44,7 @@ ${section(read('Models'), 'enum CommandType:', 'struct Response:')}
 ${section(read('Models'), 'struct SnapshotRect:', 'struct SnapshotNode:')}
 struct ErrorPayload { var code: String? = nil; let message: String; var mutation: String? = nil; var reason: String? = nil }
 struct CandidateLabelProvenanceDiagnostics { var outcome: String }
-struct DataPayload { var nodes: [Int]? = nil; var labelProvenanceDiagnostics: CandidateLabelProvenanceDiagnostics? = nil }
+struct DataPayload { var snapshotGeneration: Int? = nil; var hitProbe: String? = nil; var nodes: [Int]? = nil; var labelProvenanceDiagnostics: CandidateLabelProvenanceDiagnostics? = nil }
 func runnerPayload(_ payload: DataPayload, appProcessIdentifier: Int?) -> DataPayload { payload }
 struct Response { let ok: Bool; var data: DataPayload? = nil; var error: ErrorPayload? = nil }
 enum RunnerErrorDomain { static let exception = "exception"; static let general = "general" }
@@ -104,6 +104,7 @@ class Harness {
     return DataPayload()
   }
   func retainSnapshotTargets(_ nodes: [Int]) {}
+  func readHitProbe(app: XCUIApplication, command: Command) -> String { "unavailable" }
   func observedProcessIdentifier(_ target: XCUIApplication) -> Int? { 7 }
   var alertTaps = 0
   func systemAlertTap(label: String?) -> Response { alertTaps += 1; return Response(ok: true) }
