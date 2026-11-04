@@ -638,8 +638,9 @@ Plans contain a `## QA` section, named `###` blocks, numbered actions and
 targets resolve observed labels or test IDs locally. A Fill also accepts an input's
 React placeholder. For an unnamed positional input on iOS, dispatch uses one additional
 bounded React confirmation read to re-confirm that placeholder against the live tree
-and the sole native input of a complete snapshot. An empty native input without an ID or label receives that name
-only with complete native acquisition and React coverage and attested host evidence
+and the sole native input of a complete snapshot. Its positional ref, native type
+and frame must still match the captured input. An empty native input without an ID
+or label receives that name only with complete native acquisition and React coverage and attested host evidence
 proving one candidate input, including ordinary captures without platform presence.
 Unknown or incomplete presence keeps every input in contention even when native
 acquisition is complete.
@@ -1090,8 +1091,9 @@ typing under the [already-set rules](#fill-ladder). Otherwise a strict fill repl
 the field's content: the bound input is cleared before typing, and verification
 expects exactly the plan text. For keyboard fallback's replacement request and
 read-back policy, see below.
-Rebinding an input without a testID requires its original label and native type;
-the same frame alone cannot substitute a different input.
+Rebinding an input without a testID requires its original label and native type,
+except for the guarded [unnamed placeholder pairing](#check-a-plan).
+The same frame alone cannot substitute a different input.
 For strict fills, only a stable exact read-back
 verifies a fill. A masked secure read-back or an unreadable one records a
 passing row with reason `UNVERIFIED_FILL`, never a verified pass; an empty or
