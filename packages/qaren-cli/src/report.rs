@@ -525,6 +525,7 @@ pub struct PrRun<'a> {
     pub tested_sha: &'a str,
     pub tested_older_commit: bool,
     pub video: &'a VideoStatus,
+    pub video_continuity: &'a [crate::record::VideoStall],
     pub screenshot: Option<&'a str>,
     pub plan_sha256: &'a str,
     pub video_publication: &'a VideoPublication,
@@ -584,7 +585,10 @@ fn video_lines(input: &ReportInput<'_>, pr: &PrRun<'_>, clean: &dyn Fn(&str) -> 
         }
     } else {
         match pr.video {
-            VideoStatus::Available => out.push_str(VIDEO_ATTACHED),
+            VideoStatus::Available => {
+                out.push_str(VIDEO_ATTACHED);
+                out.push_str(&continuity_lines(pr));
+            }
             VideoStatus::TooLarge => {
                 out.push_str("Video: the recording was too large to attach.\n\n")
             }
@@ -594,6 +598,13 @@ fn video_lines(input: &ReportInput<'_>, pr: &PrRun<'_>, clean: &dyn Fn(&str) -> 
         }
     }
     out
+}
+
+fn continuity_lines(pr: &PrRun<'_>) -> String {
+    pr.video_continuity
+        .iter()
+        .map(|stall| format!("{}\n\n", stall.sentence()))
+        .collect()
 }
 
 const VIDEO_ATTACHED: &str = "Video of the walk is attached below.\n\n";
@@ -612,7 +623,9 @@ pub fn render_pr_description(
     let clean = |raw: &str| prose(&public(&redact_machine(raw, machine)));
     let short: String = pr.tested_sha.chars().take(7).collect();
     let video = match video_url {
-        Some(url) => url.to_string(),
+        Some(url) => format!("{url}\n\n{}", continuity_lines(pr))
+            .trim_end()
+            .to_string(),
         None => video_lines(input, pr, &clean)
             .replace(VIDEO_ATTACHED, "Video: attached to the QaReN comment.\n\n")
             .trim_end()
@@ -786,6 +799,7 @@ mod tests {
                     tested_sha: "abcdef1234567",
                     tested_older_commit: false,
                     video: &VideoStatus::Available,
+                    video_continuity: &[],
                     screenshot: None,
                     plan_sha256: "plan-hash",
                     video_publication: &VideoPublication::Eligible,
@@ -867,6 +881,7 @@ mod tests {
                     tested_sha: "abcdef1234567",
                     tested_older_commit: false,
                     video: &VideoStatus::Available,
+                    video_continuity: &[],
                     screenshot: None,
                     plan_sha256: "plan-hash",
                     video_publication: &VideoPublication::Eligible,
@@ -1081,6 +1096,7 @@ mod tests {
                 tested_sha: "abcdef1234567",
                 tested_older_commit: false,
                 video: &VideoStatus::Available,
+                video_continuity: &[],
                 screenshot: None,
                 plan_sha256: "plan-hash",
                 video_publication: &VideoPublication::Eligible,
@@ -1385,6 +1401,7 @@ mod tests {
                     tested_sha: "abcdef1234567",
                     tested_older_commit: false,
                     video,
+                    video_continuity: &[],
                     screenshot: None,
                     plan_sha256: "plan-hash",
                     video_publication: publication,

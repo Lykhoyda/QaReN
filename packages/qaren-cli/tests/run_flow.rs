@@ -8987,7 +8987,7 @@ fn a_cancel_during_the_git_probes_claims_nothing_and_runs_nothing_after_it() {
 }
 
 // Writes the recorder's raw capture and each encode's output, as the real tools would.
-struct Encoding(PrRunner, Option<u64>, u64);
+struct Encoding(PrRunner, Option<u64>, u64, bool);
 
 impl Runner for Encoding {
     fn env_var(&self, name: &str) -> Option<String> {
@@ -9012,6 +9012,13 @@ impl Runner for Encoding {
             self.1 = Some(self.now_epoch_ms());
             let raw = PathBuf::from(spec.args.last().unwrap());
             std::fs::write(&raw, vec![0u8; 4096]).unwrap();
+            if self.3 {
+                let shots = raw.parent().unwrap().parent().unwrap().join("screenshots");
+                std::fs::create_dir_all(&shots).unwrap();
+                for name in ["a", "b"] {
+                    std::fs::write(shots.join(format!("{name}.png")), "fixture").unwrap();
+                }
+            }
             let other = raw
                 .ancestors()
                 .nth(3)
@@ -9043,16 +9050,17 @@ impl Runner for Encoding {
 // R8: only this run's own raw capture is reclaimed, and only once a playable encode replaces it.
 #[test]
 fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
-    for (encodes, first_start, login_offset, expected_offset, recorder_delay) in [
-        (true, None, None, 2_850, 559),
-        (false, None, None, 2_850, 559),
-        (true, Some(0), None, 2_850, 559),
-        (true, Some(12_000), None, 12_000, 559),
-        (true, Some(12_000), Some(20_000), 22_850, 559),
-        (true, Some(12_000), Some(5_000), 12_000, 559),
-        (true, None, Some(20_000), 22_850, 559),
-        (true, Some(33_000), None, 33_000, 559),
-        (true, Some(10_000), None, 10_000, 8_000),
+    for (encodes, first_start, login_offset, expected_offset, recorder_delay, stall) in [
+        (true, None, None, 2_850, 559, false),
+        (true, None, None, 2_850, 559, true),
+        (false, None, None, 2_850, 559, false),
+        (true, Some(0), None, 2_850, 559, false),
+        (true, Some(12_000), None, 12_000, 559, false),
+        (true, Some(12_000), Some(20_000), 22_850, 559, false),
+        (true, Some(12_000), Some(5_000), 12_000, 559, false),
+        (true, None, Some(20_000), 22_850, 559, false),
+        (true, Some(33_000), None, 33_000, 559, false),
+        (true, Some(10_000), None, 10_000, 8_000, false),
     ] {
         let (repo, app) = app_repo();
         let wt = repo.join("runs").join(run_id()).join("wt");
@@ -9068,6 +9076,7 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
             },
             None,
             recorder_delay,
+            stall,
         );
         let mock = &mut runner.0.inner;
         let admitted = mock.now_epoch_ms() + 4_100;
@@ -9088,6 +9097,24 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
+        if stall {
+            let mut extra = messages[1].clone();
+            extra["payload"]["line"] = 7.into();
+            extra["payload"]["t"] = 10_000.into();
+            extra["payload"]["screenshot"] = "screenshots/a.png".into();
+            let first = extra["payload"].clone();
+            messages.insert(2, extra.clone());
+            messages[2]["payload"]["line"] = 8.into();
+            messages[2]["payload"]["t"] = 20_000.into();
+            messages[2]["payload"]["screenshot"] = "screenshots/b.png".into();
+            let second = messages[2]["payload"].clone();
+            messages[1]["payload"] = first.clone();
+            let result = messages.last_mut().unwrap();
+            result["payload"]["videoPublication"] = "eligible".into();
+            let rows = result["payload"]["steps"].as_array_mut().unwrap();
+            rows[0] = first;
+            rows.insert(1, second);
+        }
         if let Some(login) = login {
             messages.last_mut().unwrap()["payload"]["publishFromMs"] = login.into();
         }
@@ -9126,6 +9153,25 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
             mock.expect_run("ffprobe", CmdOutput::success("3.5\n"));
             mock.expect_run("ffmpeg", CmdOutput::success(""));
             mock.expect_run("ffprobe", CmdOutput::success("0.1\n"));
+            if stall {
+                mock.expect_run("ffprobe", CmdOutput::success("30.676"));
+                mock.expect_run(
+                    "freezedetect",
+                    CmdOutput {
+                        stderr: "lavfi.freezedetect.freeze_start: 0\n".into(),
+                        ..CmdOutput::success("")
+                    },
+                );
+                for value in ['a', 'b'] {
+                    mock.expect_run(
+                        "framehash",
+                        CmdOutput::success(&format!(
+                            "#dimensions 0: 16x16\n0, 0, 0, 1, 1024, {}\n",
+                            value.to_string().repeat(64)
+                        )),
+                    );
+                }
+            }
         } else {
             mock.expect_run("ffmpeg", CmdOutput::failed(1, "encode failed"));
         }
@@ -9139,6 +9185,27 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
 
         assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
         assert_eq!(runner.0.inner.remaining(), 0);
+        let pr: qaren::publish::PrRunRecord = serde_json::from_slice(
+            &std::fs::read(repo.join("runs").join(run_id()).join("pr.json")).unwrap(),
+        )
+        .unwrap();
+        if stall {
+            assert_eq!(
+                receipt.outcomes["video_continuity"],
+                "suspected-stall 30676 over lines 7–8"
+            );
+            assert_eq!(
+                pr.video_continuity,
+                vec![qaren::record::VideoStall {
+                    duration_ms: 30_676,
+                    first_line: 7,
+                    last_line: 8,
+                }]
+            );
+        } else {
+            assert!(!receipt.outcomes.contains_key("video_continuity"));
+            assert!(pr.video_continuity.is_empty());
+        }
         let media = repo.join("runs").join(run_id()).join("media");
         assert_eq!(
             !media.join("raw.mov").exists(),
@@ -10562,6 +10629,7 @@ fn video_declaration_reaches_the_child_and_durable_run_outputs() {
                     tested_sha: PR_HEAD,
                     tested_older_commit: false,
                     video: &qaren::record::VideoStatus::Available,
+                    video_continuity: &[],
                     screenshot: None,
                     plan_sha256: "0",
                     video_publication: &qaren::record::VideoPublication::WithheldPrivacy,

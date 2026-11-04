@@ -1421,6 +1421,7 @@ fn run_inner(
         }
         let mut tested_older_commit = None;
         let mut published_video = None;
+        let mut video_continuity = Vec::new();
         if let Some(pr) = &pr_state {
             let raw = record::raw_capture(&run_dir.join("media"));
             let video = video.unwrap_or_else(|| record::finalize(ctx.runner, &run_dir));
@@ -1455,6 +1456,26 @@ fn run_inner(
                     outcome.ledger.publication_interrupted,
                 );
                 if video == VideoStatus::Available {
+                    if let Some(offset) = offset {
+                        video_continuity = record::detect_continuity(
+                            ctx.runner,
+                            &run_dir,
+                            &outcome.ledger,
+                            recording_from,
+                            offset,
+                            core_request.t0,
+                        );
+                        if !video_continuity.is_empty() {
+                            ctx.notes.push((
+                                "video_continuity".into(),
+                                video_continuity
+                                    .iter()
+                                    .map(record::VideoStall::receipt)
+                                    .collect::<Vec<_>>()
+                                    .join("; "),
+                            ));
+                        }
+                    }
                     if let Some((start, end)) = offset.zip(end).and_then(|(start, end)| {
                         let admitted = outcome.ledger.admitted_at_ms?;
                         Some((
@@ -1559,6 +1580,7 @@ fn run_inner(
                 device: device.name.clone(),
                 plan_sha256: sha256_hex(plan.as_bytes()),
                 video,
+                video_continuity,
                 video_withholding_reason: video_publication
                     .withholding_reason()
                     .map(str::to_string),

@@ -3948,6 +3948,16 @@ withholds the copy. The receipt's `video_window` outcome records `start=<ms>; en
 both measured from admission, for a successfully prepared copy when both offsets
 can be calculated without overflow or underflow.
 
+After preparing an eligible published copy, QaReN checks for frozen video intervals
+of at least two seconds. If an interval spans two or more plan lines whose saved
+screenshots have different decoded pixels, the receipt adds
+`video_continuity: suspected-stall <ms> over lines a–b` and the publication comment
+notes that those screenshots carry the evidence. Frozen times are mapped through
+the publication trim offset to the rows' wall times. This is a suspected recorder
+discontinuity, not proof of its cause; the video is kept and publication and privacy
+rules still apply. Withheld screenshots or a failed detector produce no note;
+absence of a note does not prove continuity.
+
 A successful saved login replay before any plan step passes moves the uploaded
 copy's start to the end of that replay if later than the first step's start.
 Its fills alone do not withhold the video.
