@@ -257,9 +257,15 @@ fn detect(
             .iter()
             .filter(|row| {
                 plan_screenshot(row, ledger)
+                    && row.timing.as_ref().is_some_and(|timing| {
+                        row.t
+                            .checked_sub(timing.total)
+                            .and_then(|from| row_origin_ms.checked_add(from))
+                            .is_some_and(|from| from >= start_wall)
+                    })
                     && row_origin_ms
                         .checked_add(row.t)
-                        .is_some_and(|at| at >= start_wall && at < end_wall)
+                        .is_some_and(|at| at < end_wall)
             })
             .collect();
         if rows.len() < 2 {
@@ -310,9 +316,11 @@ mod tests {
             "verdict":"PASS", "path":"walk", "videoPublication":"eligible", "blocks":[{"key":"plan","outcome":"pass","source":"discovered"}],
             "steps":[
                 {"block":"plan","line":7,"attempt":1,"kind":"step","resolvedBy":"exact",
-                 "t":6500,"outcome":"pass","screenshot":"screenshots/a.png"},
+                 "t":7000,"outcome":"pass","screenshot":"screenshots/a.png",
+                 "timing":{"captureMs":0,"nativeMs":0,"reactMs":0,"resolveMs":0,"jevMs":0,"actMs":0,"postCaptureMs":0,"otherMs":500,"total":500}},
                 {"block":"plan","line":8,"attempt":1,"kind":"step","resolvedBy":"exact",
-                 "t":9000,"outcome":"pass","screenshot":"screenshots/b.png"}
+                 "t":9000,"outcome":"pass","screenshot":"screenshots/b.png",
+                 "timing":{"captureMs":0,"nativeMs":0,"reactMs":0,"resolveMs":0,"jevMs":0,"actMs":0,"postCaptureMs":0,"otherMs":500,"total":500}}
             ],
             "jev":{"calls":0,"medianMs":0},"llmTurns":0,"escapes":0,"recoveries":0
         }))
@@ -414,6 +422,37 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(runner.remaining(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn delivery_inside_a_freeze_does_not_prove_acquisition_inside_it() {
+        let (dir, ledger) = fixture();
+        for index in 0..2 {
+            for total in [None, Some(2000), Some(10_000)] {
+                let mut ledger = ledger.clone();
+                match total {
+                    Some(total) => ledger.steps[index].timing.as_mut().unwrap().total = total,
+                    None => ledger.steps[index].timing = None,
+                }
+                if index == 1 {
+                    ledger.steps[index].t = 8000;
+                }
+                let mut runner = detector(FREEZE);
+                assert!(detect_continuity(
+                    &mut runner,
+                    &dir,
+                    &ledger,
+                    100_000,
+                    100_000,
+                    5_000,
+                    101_000,
+                )
+                .is_empty());
+                assert_eq!(runner.remaining(), 0);
+                assert_eq!(runner.calls.len(), 2);
+            }
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 

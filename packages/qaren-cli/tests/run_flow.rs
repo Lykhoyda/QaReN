@@ -9101,6 +9101,10 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
             let mut extra = messages[1].clone();
             extra["payload"]["line"] = 7.into();
             extra["payload"]["t"] = 10_000.into();
+            extra["payload"]["timing"] = serde_json::json!({
+                "captureMs":0,"nativeMs":0,"reactMs":0,"resolveMs":0,"jevMs":0,
+                "actMs":0,"postCaptureMs":0,"otherMs":1000,"total":1000
+            });
             extra["payload"]["screenshot"] = "screenshots/a.png".into();
             let first = extra["payload"].clone();
             messages.insert(2, extra.clone());
