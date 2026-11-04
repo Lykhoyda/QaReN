@@ -1050,9 +1050,14 @@ export function join(
         presence?.nodes[nativeIndex]?.unknownReason === 'keyboard-covered'
       )
         return;
+      const unknownReason = presence?.nodes[nativeIndex]?.unknownReason;
+      if (unknownReason && !['empty-frame', 'not-hittable', 'clipped'].includes(unknownReason))
+        return;
       if (
         offscreen.has(nativeIndex) ||
-        (host.hidden === true && presence?.nodes[nativeIndex]?.status === 'unknown')
+        (host.hidden === true &&
+          presence?.nodes[nativeIndex]?.status === 'unknown' &&
+          unknownReason !== 'clipped')
       )
         inactiveInputs.set(index, nativeIndex);
     });

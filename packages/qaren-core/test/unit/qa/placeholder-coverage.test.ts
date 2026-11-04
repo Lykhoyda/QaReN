@@ -9,7 +9,7 @@ import {
 import type { NativePresence } from '../../../dist/qa/native-presence.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { prepareTarget } from '../../../dist/qa/resolve.js';
-import { targetMissDiagnostic } from '../../../dist/qa/target-miss.js';
+import { placeholderPairingGap, targetMissDiagnostic } from '../../../dist/qa/target-miss.js';
 import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import { scriptedJudge, walker } from './judgment-fixtures.ts';
@@ -182,6 +182,28 @@ test('on-screen, keyboard-covered, React-only and stale or conflicting associati
   }
 });
 
+test('ambiguous or unavailable native presence keeps hidden and offscreen inputs competing', () => {
+  for (const reason of [
+    'ambiguous-descriptor',
+    'match-count-mismatch',
+    'post-hit-mismatch',
+    'read-unavailable',
+  ] as const) {
+    for (const hidden of [false, true]) {
+      const f = fixture();
+      if (hidden) {
+        f.nodes[3].rect = { ...f.nodes[3].rect!, y: 200 };
+        f.hosts.typography!.nodes[1].rect = f.nodes[3].rect;
+        f.hosts.hosts[1].hidden = true;
+        f.digest[1].hidden = true;
+      }
+      f.presence.nodes[3].unknownReason = reason;
+      assert.equal(f.capture().elements[2].placeholder, undefined);
+      assert.ok('refuse' in prepareTarget(fill, f.capture()));
+    }
+  }
+});
+
 test('an inactive donor cannot name the on-screen input', () => {
   const f = fixture();
   delete f.digest[0].placeholder;
@@ -250,3 +272,28 @@ for (const react of ['unknown', 'incomplete'] as const) {
     );
   });
 }
+
+test('a joined host-evidence downgrade is reported even when acquisition was complete', () => {
+  const f = fixture();
+  f.nodes.pop();
+  f.presence.nodes.pop();
+  const screen = join(
+    f.nodes,
+    [],
+    'app',
+    { native: 'complete', react: 'incomplete' },
+    undefined,
+    f.presence,
+  );
+  screen.captureCoverage = { native: 'complete', react: 'complete' };
+  assert.equal(
+    targetMissDiagnostic(target, screen, 1, false, new ObservedPrivacy(), 'fill').reason,
+    'evidence-incomplete',
+  );
+  const phrase = { phrase: 'the insurer search field' };
+  assert.equal(placeholderPairingGap(phrase, screen, 'fill'), undefined);
+  assert.equal(
+    targetMissDiagnostic(phrase, screen, 1, false, new ObservedPrivacy(), 'fill').reason,
+    'evidence-incomplete',
+  );
+});

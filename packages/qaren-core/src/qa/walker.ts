@@ -1418,7 +1418,7 @@ async function walkBlockScoped(
           }
           deps.targetMiss?.(diagnostic);
         }
-        const pairingGap = placeholderPairingGap(target, screen, item.kind);
+        const pairingGap = placeholderPairingGap(target, last, item.kind);
         if (pairingGap) {
           const detail = `; placeholder pairing was unavailable because React coverage on this screen is ${pairingGap}; target the field by test id`;
           reason = typeof reason === 'string' ? reason + detail : [...segments(reason), detail];

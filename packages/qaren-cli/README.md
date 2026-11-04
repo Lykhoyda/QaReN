@@ -639,16 +639,17 @@ targets resolve observed labels or test IDs locally. A Fill also accepts an inpu
 React placeholder; an empty native input without an ID or label receives that name
 only with complete native and React coverage and attested host evidence proving
 one candidate input. Separately emitted entries remain competitors; only the
-collector's existing identity-forwarding rule merges duplicates. A competitor
+collector's existing identity-forwarding rule merges duplicates. Unnamed component
+layers without a forwarding identity can still refuse; give the field a test ID.
+A competitor
 (or donor) is excluded only through a consistent, unique entry-to-input-host-to-native-node
 chain proving it offscreen or accessibility-hidden on that capture; keyboard cover
 does not exclude it. React-only inputs and uncertain associations still compete.
 When React coverage is unknown or incomplete, a missed Fill with one unnamed
 on-screen input reports `evidence-incomplete`, names that coverage class, and
 suggests targeting the field by test id. Distinct matches are counted before kind,
-disabled, hittability, offscreen or React-only filters, so two or more refuse with `TARGET_AMBIGUOUS`, without a Jev
-tie-break, even if the
-target adds positional words such as `Tap "Save" at the bottom`. Outside fills,
+disabled, hittability, offscreen or React-only filters, so two or more refuse with
+`TARGET_AMBIGUOUS`, without a Jev tie-break, even if the target adds positional words such as `Tap "Save" at the bottom`. Outside fills,
 a React-only element whose testID equals the quoted value is not counted while a
 native element carries that testID, so a quoted press, wait or scroll reaches
 the native element; two native elements sharing it still refuse. A fill counts

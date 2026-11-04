@@ -42,9 +42,15 @@ export function placeholderPairingGap(
   screen: Screen,
   kind: Step['kind'],
 ): 'unknown' | 'incomplete' | undefined {
-  const coverage = screen.captureCoverage?.react ?? screen.coverage?.react ?? 'unknown';
+  const observed = [screen.captureCoverage?.react, screen.coverage?.react];
+  const coverage = observed.includes('incomplete')
+    ? 'incomplete'
+    : observed.includes('unknown') || observed.every((side) => side === undefined)
+      ? 'unknown'
+      : 'complete';
   if (
     kind !== 'fill' ||
+    target.quoted === undefined ||
     target.exact === 'id' ||
     coverage === 'complete' ||
     screen.elements.some((element) => names(target, element, kind))
