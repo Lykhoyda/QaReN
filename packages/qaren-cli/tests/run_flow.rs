@@ -2390,6 +2390,12 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
         .as_str()
         .unwrap()
         .ends_with("/logs/metro.bundle-requests"));
+    assert!(bundle_requests["outcomesPath"]
+        .as_str()
+        .unwrap()
+        .ends_with("/logs/metro.bundle-outcomes"));
+    assert_eq!(bundle_requests["completedAtLaunch"], 0, "{bundle_requests}");
+    assert_eq!(bundle_requests["failedAtLaunch"], 0, "{bundle_requests}");
     assert_eq!(
         request_line["payload"]["target"]["manifestWarm"],
         serde_json::json!({ "ms": 0, "attempts": 2 })
@@ -10814,6 +10820,12 @@ fn admission_refusal_codes_recovery_and_private_facts_reach_the_receipt_and_end_
                 "inspect_development_target",
             ),
             (
+                "dev_runtime_unproven",
+                "CDP_NOT_CONNECTED",
+                FailureCode::CoreRefused,
+                "inspect_development_target",
+            ),
+            (
                 "react_readiness_timeout",
                 "CDP_NOT_CONNECTED",
                 FailureCode::CoreRefused,
@@ -10826,7 +10838,7 @@ fn admission_refusal_codes_recovery_and_private_facts_reach_the_receipt_and_end_
             script_provision(&mut mock);
             script_drift_status(&mut mock);
             script_host_probe(&mut mock, UDID, hosts_absent());
-            let facts = serde_json::json!({
+            let mut facts = serde_json::json!({
                 "attempt":2,"lastStarted":"attach","lastCompleted":"retry_wait","inner":inner,
                 "relaunches":0,"relaunchFailed":false,"liveness":"not_probed",
                 "elapsedMs":120000,"remainingMs":1080000,"budgetMs":1200000,
@@ -10834,6 +10846,15 @@ fn admission_refusal_codes_recovery_and_private_facts_reach_the_receipt_and_end_
                 "targetsTotal":1,"devTrue":0,"devFalse": if inner == "non_dev_bundle" {1} else {0},
                 "devUndefined":0,"devUnknown": if inner == "non_dev_bundle" {0} else {1}
             });
+            if inner == "dev_runtime_unproven" {
+                facts["relaunches"] = 1.into();
+                facts["bundleRequest"] = "received".into();
+                facts["bundleBuilt"] = "none".into();
+                facts["foreignPages"] = 1.into();
+                facts["sameNameDevices"] = 1.into();
+                facts["devUndefined"] = 1.into();
+                facts["devUnknown"] = 0.into();
+            }
             let refusal = serde_json::json!({"verdict":"REFUSED","code":code,"message":"admission refused","admission":facts});
             mock.expect_spawn_piped(
                 "walk.js",

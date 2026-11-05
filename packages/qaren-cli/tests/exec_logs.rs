@@ -238,6 +238,64 @@ fn the_metro_drain_counts_bundle_requests_value_free_even_when_its_log_is_withhe
     assert_eq!(stored, format!("{PRIVATE_KEY_WITHHELD}\n"));
 }
 
+fn drained_bundle_outcomes(lines: &[&str]) -> Option<String> {
+    let dir = common::temp_repo();
+    let log = dir.join("metro.log");
+    let script: String = lines
+        .iter()
+        .map(|line| format!("printf '%b\\n' '{line}'\n"))
+        .collect();
+    let spec = shell(&format!("{script}printf 'tail line\\n'\n: > done"), &dir)
+        .env("DEBUG", qaren::exec::log::METRO_REQUEST_LOG);
+    let mut runner = RealRunner::with_log_executable(env!("CARGO_BIN_EXE_qaren").into());
+    runner.spawn_group(&spec, &log).unwrap();
+    until(|| dir.join("done").exists());
+    until(|| {
+        runner.flush_logs().unwrap();
+        let stored = std::fs::read_to_string(&log).unwrap_or_default();
+        stored.contains("tail line") || stored.contains(PRIVATE_KEY_WITHHELD)
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    runner.flush_logs().unwrap();
+    let outcomes = std::fs::read_to_string(qaren::exec::log::bundle_outcomes_path(&log)).ok();
+    assert_eq!(
+        outcomes.as_deref().map(str::trim),
+        qaren::exec::log::read_bundle_outcomes(&log)
+            .map(|(completed, failed)| format!("{completed} {failed}"))
+            .as_deref(),
+        "the reader agrees with the file"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+    outcomes
+}
+
+#[test]
+fn the_metro_drain_counts_expo_bundle_outcome_lines_even_when_its_log_is_withheld() {
+    let outcomes = drained_bundle_outcomes(&[
+        PROBE,
+        "iOS Bundled 5ms index.ts (10 modules)",
+        "\\033[32m\\033[1miOS\\033[22m Bundled \\033[39m\\033[2m150ms\\033[22m\\033[0m\\033[2m index.ts (1 module)\\033[22m",
+        "Bundled  index.ts (3 modules)",
+        "quoting a private key",
+        "iOS Bundling failed 12ms index.ts (2 modules)",
+        BUNDLE,
+    ]);
+    assert_eq!(outcomes.as_deref(), Some("3 1\n"));
+}
+
+#[test]
+fn only_expo_outcome_lines_count_and_a_logged_request_arms_the_outcome_signal() {
+    let outcomes = drained_bundle_outcomes(&[
+        PROBE,
+        " LOG  Bundled the cart",
+        "iOS path/index.ts ▓▓▓░░ 36.6% (4790/7922)",
+        "HTTP 200 multipart/mixed index.bundle",
+        "Rebundled 5ms index.ts (10 modules)",
+    ]);
+    assert_eq!(outcomes.as_deref(), Some("0 0\n"));
+    assert_eq!(drained_bundle_outcomes(&["tail only"]), None);
+}
+
 #[test]
 fn the_bundle_request_count_exists_only_once_metro_logs_a_request() {
     let (count, _) = drained_bundle_requests(&["iOS Bundled 5ms index.ts (10 modules)"], true);

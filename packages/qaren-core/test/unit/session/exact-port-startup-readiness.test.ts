@@ -12,6 +12,7 @@ import {
   TargetListAttemptTimeoutError,
   TargetReadinessTimeoutError,
   TargetSelectionError,
+  advertisedPages,
   discoverExactPort,
   listTargetsOnExactPort,
   waitForExactPortTargets,
@@ -958,4 +959,66 @@ test('cancellation interrupts the polling sleep before another readiness request
   stop.begin();
   await assert.rejects(waiting, /RUN_CANCELLED/);
   assert.equal(reads.mock.callCount(), 1);
+});
+
+test('advertised pages count foreign device names and same-name devices value-free', () => {
+  const sibling = target({ id: 'sibling-1', deviceName: 'qaren-check' });
+  assert.deepEqual(
+    advertisedPages([target(), sibling, { ...sibling, id: 'sibling-2' }], 'iPhone'),
+    {
+      foreignPages: 1,
+      sameNameDevices: 1,
+    },
+  );
+  assert.deepEqual(
+    advertisedPages(
+      [
+        target({ id: 'owned-1' }),
+        target({ id: 'twin-1' }),
+        target({ id: 'twin-2', appId: 'com.example.other' }),
+      ],
+      'iPhone',
+      'com.example.app',
+    ),
+    { foreignPages: 0, sameNameDevices: 2 },
+    'a second device under the pinned name running the app is counted; another app is not',
+  );
+  assert.deepEqual(
+    advertisedPages(
+      [target({ deviceName: '  ' }), target({ deviceName: undefined }), target({ id: 'nodash' })],
+      'iPhone',
+    ),
+    { foreignPages: 0, sameNameDevices: 0 },
+    'blank names and ids without a device part fabricate no device',
+  );
+  assert.deepEqual(advertisedPages([sibling], undefined), {}, 'no pin leaves both unknown');
+});
+
+test('readiness reports the latest advertised pages and forgets them when a read fails', async (t) => {
+  let reads = 0;
+  const clock = setup(t, (_url, options) =>
+    ++reads === 2
+      ? new Promise<Response>((_resolve, reject) =>
+          options?.signal?.addEventListener('abort', () => reject(options.signal?.reason)),
+        )
+      : Promise.resolve(Response.json([target({ id: 'sibling-1', deviceName: 'qaren-check' })])),
+  );
+  const observed: unknown[] = [];
+  const waiting = waitForExactPortTargets(
+    managedPort,
+    30_000,
+    500,
+    undefined,
+    'iPhone',
+    undefined,
+    undefined,
+    (pages) => observed.push(pages),
+  ).catch((error: unknown) => error);
+  await setImmediate();
+  assert.deepEqual(observed, [{ foreignPages: 1, sameNameDevices: 0 }]);
+  await clock.advance(500);
+  await clock.advance(10_000);
+  assert.deepEqual(observed.at(-1), {}, 'a failed read is not presented as current');
+  await clock.advance(30_000);
+  assert.ok((await waiting) instanceof TargetReadinessTimeoutError);
 });

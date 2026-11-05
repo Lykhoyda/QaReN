@@ -327,7 +327,14 @@ export async function discoverAndConnect(
   if (ctx.isDisposed()) throw new ConnectionSetupSupersededError();
   if (!connectedTarget) {
     if (complete) ctx.setDevelopmentTargets?.(counts);
-    throw new DevTargetUnavailableError(counts, complete);
+    throw new DevTargetUnavailableError(
+      counts,
+      complete,
+      sorted
+        .map((target) => target.id)
+        .sort()
+        .join('\n'),
+    );
   }
 
   logger.info(

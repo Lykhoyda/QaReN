@@ -69,8 +69,8 @@ pub(crate) struct Ctx<'a> {
     pub(crate) timings: Vec<(String, u64)>,
     pub(crate) notes: Vec<(String, String)>,
     pub(crate) verb: &'static str,
-    // Metro's drained bundle-request count when the CLI launched the app.
-    pub(crate) bundle_requests_at_launch: Option<u64>,
+    // Metro's drained bundle-request count and (completed, failed) outcomes when the CLI launched the app.
+    pub(crate) bundle_requests_at_launch: Option<(u64, (u64, u64))>,
     // The dev client manifest warm-up that cleared the launch.
     pub(crate) manifest_warm: Option<crate::core::ManifestWarm>,
     // The run owns this exact iOS simulator and pins its locale and keyboard before launch.
@@ -3302,12 +3302,12 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     };
     enter_substage(ctx, Some("app_launch"));
     if matches!(ctx.record.scenario.platform, Platform::Ios) {
-        ctx.bundle_requests_at_launch = ctx
-            .record
-            .resources
-            .metro
-            .as_ref()
-            .map(|metro| crate::exec::log::read_bundle_requests(&metro.log).unwrap_or(0));
+        ctx.bundle_requests_at_launch = ctx.record.resources.metro.as_ref().map(|metro| {
+            (
+                crate::exec::log::read_bundle_requests(&metro.log).unwrap_or(0),
+                crate::exec::log::read_bundle_outcomes(&metro.log).unwrap_or((0, 0)),
+            )
+        });
     }
     let launched = run_launch_command(ctx, &launch, deadline, &mut attempts, &mut |ctx| {
         proven = ios_udid

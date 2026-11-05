@@ -70,6 +70,9 @@ pub struct ManifestWarm {
 pub struct MetroBundleRequests {
     pub path: PathBuf,
     pub at_launch: u64,
+    pub outcomes_path: PathBuf,
+    pub completed_at_launch: u64,
+    pub failed_at_launch: u64,
 }
 
 // The borrowed emulator the core's adb calls are pinned to.

@@ -3618,11 +3618,37 @@ An empty scan, undefined or unknown development state, or a failed or pending
 scan without retained all-false evidence cannot establish production mode.
 After a registered candidate failed to prove development mode, those cases
 refuse with receipt
-`CORE_REFUSED`, inner `CDP_NOT_CONNECTED/no_dev_target_unknown` and
+`CORE_REFUSED`, inner `CDP_NOT_CONNECTED/no_dev_target_unknown` (or
+`dev_runtime_unproven` when every page still answers undefined, below) and
 `inspect_development_target`. A proven dev bundle that does not start React
 refuses with inner `CDP_NOT_CONNECTED/react_readiness_timeout` and
 `inspect_bundle_readiness`. A late dev target may admit only if setup, readiness
 and proof all finish before the same deadline. Cancellation wins over admission.
+
+A complete scan in which every page answers `__DEV__` undefined puts admission
+in an idle state; an incomplete, unknown, mixed or changed scan restarts it.
+After max(readiness window, 60 s) of continuous idle, admission re-reads
+liveness and Metro's bundle counters. A bundle completion since the latest
+launch, or a bundle request inside that window, extends the wait once by the
+same window. Otherwise iOS relaunches the app once, through the same manifest
+warm-up as patient recovery and under its relaunch cap, clipped to the attach
+deadline and the walk budget; an empty list after that relaunch still qualifies
+for patient recovery. A second full idle window after the relaunch, or the
+attach deadline while still idle, refuses `CORE_REFUSED` with inner
+`CDP_NOT_CONNECTED/dev_runtime_unproven` and `inspect_development_target`.
+Without a relaunch (Android, or too little budget) an idle page refuses only at
+the attach deadline. Nothing attaches to a page whose development mode is
+unproven. The facts add `bundleBuilt` (`completed`, `failed`, `none` or
+`unknown`, from the Expo CLI's `Bundled` and `Bundling failed` lines since the
+latest launch) beside `bundleRequest`; both count every device on that Metro
+port. They also add `foreignPages`, the number of other device names with pages
+on the port, and `sameNameDevices`, the number of Metro device connections
+advertising the app under the run's simulator name; each is absent when unknown
+(no simulator pin, or the latest target-list read failed). Several same-name
+devices still refuse as ambiguous at selection. A positive `foreignPages` adds
+"give each lane its own `metroPort` and its own simulator name" to the refusal;
+zero does not prove the port private, because a device whose inspector socket
+has no page is invisible to the target list.
 
 `failure.recovery` carries the typed cause, instruction, stage/count/budget facts
 and five ordered rungs with applicability, state-loss and approval fields.

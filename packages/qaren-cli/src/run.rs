@@ -1076,10 +1076,15 @@ fn run_inner(
                 metro_bundle_requests: ctx
                     .bundle_requests_at_launch
                     .zip(ctx.record.resources.metro.as_ref())
-                    .map(|(at_launch, metro)| core::MetroBundleRequests {
-                        path: crate::exec::log::bundle_requests_path(&metro.log),
-                        at_launch,
-                    }),
+                    .map(
+                        |((at_launch, (completed, failed)), metro)| core::MetroBundleRequests {
+                            path: crate::exec::log::bundle_requests_path(&metro.log),
+                            at_launch,
+                            outcomes_path: crate::exec::log::bundle_outcomes_path(&metro.log),
+                            completed_at_launch: completed,
+                            failed_at_launch: failed,
+                        },
+                    ),
                 manifest_warm: ctx.manifest_warm.clone(),
                 warm_lane: ctx.record.resources.lane.is_some(),
             },

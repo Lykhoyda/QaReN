@@ -18,7 +18,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { CDPClient } from '../cdp-client.js';
-import { waitForExactPortTargets } from '../cdp/discovery.js';
+import { waitForExactPortTargets, type AdvertisedPages } from '../cdp/discovery.js';
 import { REACT_READY_POLL_MS, REACT_READY_TIMEOUT_MS } from '../cdp/setup.js';
 import {
   clearDevOverlays,
@@ -537,6 +537,7 @@ async function openSession(
     target.metroBundleRequests && launchBundleRequests(target.metroBundleRequests);
   const walkDeadline = performance.now() + remainingMs();
   let attachStage: 'wait_targets' | 'connect_exact' | undefined;
+  let pages: AdvertisedPages = {};
   const logRefusal = (error: unknown): never => {
     logAdmissionRefusal(error, attachStage, log);
     throw error;
@@ -564,8 +565,12 @@ async function openSession(
             devicePin,
             appId,
             (targets) => cdp.noteDevelopmentTargetCandidates(targets),
+            (observed) => {
+              pages = observed;
+            },
           );
         },
+        pages: () => pages,
         attach: async (deadline) => {
           attachStage = 'connect_exact';
           await cdp.connectExact(
@@ -618,6 +623,12 @@ async function openSession(
                 );
                 return requested;
               },
+              ...(bundleRequests
+                ? {
+                    bundleRequestCount: () => bundleRequests.count(),
+                    bundleBuilt: () => bundleRequests.built(),
+                  }
+                : {}),
             }
           : {}),
         // The lease coordinates qaren processes only; a foreign Maestro, XCUITest or UIAutomator driver is a probe.

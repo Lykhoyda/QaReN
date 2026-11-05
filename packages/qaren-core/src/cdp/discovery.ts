@@ -169,6 +169,36 @@ export async function fetchTargets(
   }
 }
 
+// Value-free counts from one target-list read; a field is absent when unknown (no pin, or the read failed).
+export interface AdvertisedPages {
+  // Distinct non-blank device names other than the pin among advertised pages.
+  foreignPages?: number;
+  // Distinct Metro device connections advertising the run's app under the pinned name.
+  sameNameDevices?: number;
+}
+
+export function advertisedPages(
+  raw: readonly HermesTarget[],
+  pinnedDevice: string | undefined,
+  bundleId?: string,
+): AdvertisedPages {
+  if (pinnedDevice === undefined) return {};
+  const foreign = new Set<string>();
+  const sameName = new Set<string>();
+  for (const target of raw) {
+    const name = typeof target?.deviceName === 'string' ? target.deviceName.trim() : '';
+    if (name === '') continue;
+    if (name !== pinnedDevice) foreign.add(name);
+    else if (bundleId === undefined || targetMatchesBundleId(target, bundleId)) {
+      // Metro ids are `<device>-<page>`; an id without a device part names no device.
+      const id = typeof target.id === 'string' ? target.id : '';
+      const cut = id.lastIndexOf('-');
+      if (cut > 0) sameName.add(id.slice(0, cut));
+    }
+  }
+  return { foreignPages: foreign.size, sameNameDevices: sameName.size };
+}
+
 // Readiness only: exact discovery still owns target selection and authority.
 export async function waitForExactPortTargets(
   port: number,
@@ -179,6 +209,7 @@ export async function waitForExactPortTargets(
   deviceName?: string,
   bundleId?: string,
   onTargetsObserved?: (targets: HermesTarget[]) => void,
+  onPagesObserved?: (pages: AdvertisedPages) => void,
 ): Promise<void> {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new RangeError('port must be an integer between 1 and 65535');
@@ -241,6 +272,7 @@ export async function waitForExactPortTargets(
         ),
       );
     }
+    onPagesObserved?.(fetched ? advertisedPages(raw, pinnedDevice, bundleId) : {});
     remaining = deadline - performance.now();
     if (remaining <= 0) break;
     if (ready) return;
