@@ -56,7 +56,7 @@ pub(crate) struct Warmup {
     pub watchman_volume_probe: Option<VolumeProbe>,
     pub slow_volume: bool,
     pub expo_online: bool,
-    // The app embeds the fingerprint runtimeVersion policy and the dev server never served the pin: the pin state.
+    // Pin state when manifest probes ran for a fingerprint build without a resolver marker.
     pub fingerprint_pin: Option<&'static str>,
 }
 

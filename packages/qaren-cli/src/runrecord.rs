@@ -570,7 +570,7 @@ pub struct RunRecord {
     // What this run saw of the native-build lock; ownership stays in resources.build_lock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_lock: Option<BuildLockObservation>,
-    // The runtime version the installed artifact embeds and whether the dev server served the pin.
+    // The runtime version the installed artifact embeds and whether the resolver returned the pin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_version: Option<crate::expo_updates::RuntimeVersion>,
 }
