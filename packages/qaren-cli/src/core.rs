@@ -686,14 +686,9 @@ const DECLINE_LABELS: [&str; 9] = [
 fn decline_label<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<String>, D::Error> {
+    // Any other word drops only the label, so the cover fact survives a vocabulary change in the core.
     let value = String::deserialize(deserializer)?;
-    if DECLINE_LABELS.contains(&value.as_str()) {
-        Ok(Some(value))
-    } else {
-        Err(serde::de::Error::custom(
-            "label outside the dismiss vocabulary",
-        ))
-    }
+    Ok(DECLINE_LABELS.contains(&value.as_str()).then_some(value))
 }
 
 fn bounded<'de, D, T>(deserializer: D) -> Result<Option<Vec<T>>, D::Error>

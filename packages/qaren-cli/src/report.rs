@@ -1470,7 +1470,14 @@ mod tests {
             assert!(row_line(&parsed).contains(&format!("; set aside @e4 ({reason})")));
         }
         // An app label, a non-capture reference or an unknown reason never reaches the saved ledger.
+        // An app label drops only the label; the cover fact stays.
         row["coveredBy"]["label"] = "Pay now".into();
+        let saved =
+            serde_json::to_value(serde_json::from_value::<crate::core::Row>(row.clone()).unwrap())
+                .unwrap();
+        assert_eq!(saved["coveredBy"]["ref"], "@e8");
+        assert!(saved["coveredBy"].get("label").is_none());
+        row["coveredBy"]["ref"] = "private-value".into();
         row["candidateExclusions"][0]["reason"] = "hidden".into();
         row["collapsed"][0]["into"] = "private-value".into();
         let saved =

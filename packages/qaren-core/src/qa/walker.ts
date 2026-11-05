@@ -1791,6 +1791,7 @@ async function walkBlockScoped(
       screen,
       contenders.filter((element) => !exclusions.some((x) => x.ref === element.ref)),
       exclusions,
+      decided.collapsed,
     );
   };
   const probeOverlay = async (

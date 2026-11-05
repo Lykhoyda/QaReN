@@ -109,6 +109,7 @@ export type Resolution =
       // Ambiguous press or fill: the refs still in contention, for the walker's live hit read.
       contenders?: string[];
       candidateExclusions?: CandidateExclusion[];
+      collapsed?: CollapsedCandidate[];
     };
 
 export class ResolutionError extends Error {
@@ -221,6 +222,7 @@ export function contend(
   screen: Screen,
   left: readonly Element[],
   exclusions: CandidateExclusion[],
+  collapsed: CollapsedCandidate[] = [],
 ): Resolution {
   const quoted = stepTarget(step)?.quoted;
   const excluded = exclusions.length
@@ -231,7 +233,10 @@ export function contend(
         })
         .join('; ')}`
     : '';
-  const recorded = exclusions.length ? { candidateExclusions: exclusions } : {};
+  const recorded = {
+    ...(exclusions.length ? { candidateExclusions: exclusions } : {}),
+    ...(collapsed.length ? { collapsed } : {}),
+  };
   if (!left.length)
     return {
       refuse: 'TARGET_NOT_FOUND',
@@ -362,6 +367,7 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
         screen,
         identities.map(({ element }) => element),
         exclusions,
+        collapsed,
       );
     if (identities.length > 1)
       return {

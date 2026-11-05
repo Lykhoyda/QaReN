@@ -275,21 +275,40 @@ test('a three-level chain of wrappers collapses to the innermost control', async
   );
 });
 
-test('a collapsed pair beside a third same-label control stays ambiguous', async () => {
-  ambiguous(
-    prepareTarget(
-      tap(),
-      await capture([
-        ...recorded(),
-        {
-          type: 'Button',
-          label: 'Close',
-          id: 'footer-close',
-          rect: { x: 20, y: 700, width: 100, height: 40 },
-          host: { press: true },
-        },
-      ]),
-    ),
+test('a collapsed pair beside a third same-label control stays ambiguous and keeps the collapse', async () => {
+  const screen = await capture([
+    ...recorded(),
+    {
+      type: 'Button',
+      label: 'Close',
+      id: 'footer-close',
+      rect: { x: 20, y: 700, width: 100, height: 40 },
+      host: { press: true },
+    },
+  ]);
+  const result = prepareTarget(tap(), screen);
+  ambiguous(result);
+  const collapsed = [{ ref: '@e2', kind: 'button', frame: OUTER, into: '@e3' }];
+  assert.ok('refuse' in result);
+  assert.deepEqual(result.collapsed, collapsed);
+  // A live read that rules out the third control resolves to the inner, still recording the collapse.
+  const w = walker(
+    [],
+    scriptedJudge(() => assert.fail('exact targets are model-free')),
+  );
+  w.deps.captureScreen = async () => {
+    screen.nativeGeneration = 7;
+    return screen;
+  };
+  w.deps.platform = 'ios';
+  w.deps.hitProbe = async (ref) => (ref === '@e4' ? 'not-hittable' : 'hittable');
+  const run = await runPlan(parsePlan('1. Tap "Close"').blocks!, w.deps);
+  assert.deepEqual(w.actions, ['press @e3']);
+  const row = ('steps' in run ? run.steps : []).find((r) => r.line === 1);
+  assert.deepEqual(row?.collapsed, collapsed);
+  assert.deepEqual(
+    row?.candidateExclusions?.map(({ ref, reason }) => [ref, reason]),
+    [['@e4', 'not-hittable']],
   );
 });
 
