@@ -1406,13 +1406,15 @@ native builds and the walker do not. GitHub token values are masked in durable
 text and JSON, including errors and publication comments. Log helpers receive
 redaction values over the private control socket rather than their environment;
 a token containing a carriage return or newline withholds subprocess logs.
-The existing `pnpm-install` and `expo-prebuild` exceptions retain
+The `pnpm-install`, `expo-prebuild`, `deps-cache-pnpm` and `deps-cache-config` exceptions retain
 `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `YARN_NPM_AUTH_TOKEN`, `COREPACK_NPM_TOKEN`,
 `GITHUB_TOKEN` and `GH_TOKEN` for dependency preparation. The optional
 [`registryAuthEnv`](#check-a-plan) list adds exact-name exemptions only for those
-two labels. A nonempty list withholds both streams before returning captured
-output or persisting command logs, even when the listed variables are absent or
-already conventionally allowed; exit status and deadlines remain unchanged.
+four labels. The cache probes capture output privately in memory without logging
+it. For install and prebuild, a nonempty list withholds both streams before
+returning captured output or persisting command logs, even when the listed
+variables are absent or already conventionally allowed; exit status and
+deadlines remain unchanged.
 Omitting the list or setting it to `[]` preserves existing output behavior.
 Names that the scrub already passes retain their ordinary inheritance elsewhere.
 `qaren prewarm` carries the list to its install step, but its preceding
@@ -3945,8 +3947,8 @@ dependency registry exceptions and redaction.
 `qaren pr` reuses installed dependencies by default when pnpm's effective
 `nodeLinker` is `hoisted` and all installed modules live at the repository root
 or the app root. It restores filesystem clones into the new checkout, then still
-runs `pnpm install --frozen-lockfile` to validate the lockfile and manifests and
-run the project's install scripts. Other layouts use the normal cold install.
+runs `pnpm install --frozen-lockfile` to validate the lockfile and manifests.
+Other layouts use the normal cold install.
 See [pnpm's layout settings](https://pnpm.io/settings#nodeLinker).
 
 The cache key binds the lockfile bytes, repository and app path, root and app
