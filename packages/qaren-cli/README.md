@@ -157,8 +157,11 @@ fifteen-minute load is reported without independently triggering a warning.
 Host commands have three-second budgets, except `top` and the simulator inventory
 which have five seconds each; subprocess termination can add up to five seconds
 per timeout. Missing, malformed or timed-out host statistics warn with a manual
-next step. A simulator inventory timeout alone warns: it does not identify a
-wedged device. Any other `simctl` failure shows its error and points to
+next step. Doctor makes one simulator inventory read and reports measured latency
+for every simulator-service diagnosis, using the shared
+[inventory validity rule](#ios-simulator-lifecycle). An unreadable response warns;
+a simulator inventory timeout alone also warns: it does not identify a
+wedged device. A `simctl` command failure shows its error and points to
 `sudo xcodebuild -runFirstLaunch` or an Xcode update; the corresponding
 `ios-runtime` or `simulator-service` row fails. `ios-runtime` warns on a timeout.
 A device inventory timeout together with an uninterruptible `launchd_sim` whose argv
@@ -2231,6 +2234,26 @@ unknown, transitional, absent or ambiguous inventory is refused without an alter
 device. `--shutdown-device-on-exit` alone requires a `Booted` target; combine it with
 `--boot-device` or `--restart-device` to accept a `Shutdown` target.
 
+Simulator inventory reads for `check` selection, borrowed-target observation,
+restart admission, post-boot proof, shutdown readback and pre-install or pre-launch
+proof share one transport and validity rule. An unusable read is retried up to
+three times, with ten-second read limits and two-second pauses, bounded by the
+caller's remaining deadline and checked for cancellation before and after reads.
+Post-boot and post-shutdown proofs have their own bounded read budget so a slow
+mutation does not consume their proof time. Command failures, timeouts, nonempty
+stderr, stdout at or above one MiB, invalid JSON, a non-object `devices` field or
+non-array runtime lists are unusable. A usable response still has to satisfy the
+caller's exact selected-device identity and power-state checks.
+
+Before mutation, exhausted inventory reads refuse with
+`SIMULATOR_INVENTORY_UNAVAILABLE` (exit 4), with safe attempt count, elapsed latency,
+last-result facts and recovery advice: wait for host load to drop, retry and use
+`qaren doctor` to inspect the service. If a preparation deadline expires during
+pre-install or pre-launch proof, the caller retains its preparation timeout.
+Post-boot proof keeps `SIMULATOR_BOOT_FAILED`, with unavailable-read facts or the
+observed state and read latency; bootstatus failures are unchanged. Unresolved
+post-shutdown readback retains the lease for cleanup recovery.
+
 Default cleanup leaves the borrowed simulator running and keeps the installed app.
 `--shutdown-device-on-exit --device <simulator-UUID>` opts into shutdown
 during teardown, including post-arm cancellation and dead-owner recovery, subject to the
@@ -4191,11 +4214,9 @@ name one available simulator whose device type and runtime equal the
 scenario's `ios.device_type` and `ios.runtime`. Names, `booted` and partial
 UUIDs are usage errors (exit `2`, no receipt); unavailable, ambiguous or
 mismatched targets refuse with `DEVICE_UNAVAILABLE` before anything is
-claimed. When `simctl list` does not answer usably in three bounded reads
-while re-proving the target before a device step, the run refuses with
-`SIMULATOR_INVENTORY_UNAVAILABLE` (exit `4`) instead of reporting the
-simulator as not booted; `qaren doctor` shows the simulator service row. The
-proof right after a boot keeps `SIMULATOR_BOOT_FAILED`. A Booted target is used as is. A Shutdown target refuses unless
+claimed. Inventory retries and proof failures follow the
+[iOS simulator lifecycle contract](#ios-simulator-lifecycle).
+A Booted target is used as is. A Shutdown target refuses unless
 `--boot-device` authorizes booting it, with the same meaning as on `check`
 (see [iOS simulator lifecycle](#ios-simulator-lifecycle)). `--boot-device`
 without `--device`, or either `--restart-device` or `--shutdown-device-on-exit`
