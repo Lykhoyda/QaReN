@@ -318,7 +318,7 @@ export type ToolErrorCode =
   | 'RN_ANDROID_RUNNER_DOWN' // #243: qaren-android-runner not reachable (cold-start race / can't bind port)
   | 'APP_LAUNCH_FAILED' // app launcher failed after the native runner was already ready
   | 'SCREENSHOT_FAILED' // qaren-android-runner screenshot response missing pngBase64 payload
-  | 'PATH_NOT_FOUND' // expect_redux when getStoreState surfaces __agent_error
+  | 'PATH_NOT_FOUND'
   | 'STORE_TRUNCATED' // expect_redux when store payload exceeded safeStringify cap
   // Phase 134.2: appId / packageName validation at adb shell boundary.
   | 'INVALID_APPID' // device_permission
