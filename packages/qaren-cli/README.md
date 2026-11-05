@@ -1354,10 +1354,10 @@ age (`ageMs`) and whether a device action ran after it (`afterDispatch`);
 `counts` covers all controls in the first 2,000 captured elements, before the
 20-control cap. Non-target causes, including render errors and failed scroll
 dispatches, carry none of these three failure fields. Labels follow the
-[input value masking contract](#input-value-masking), and are masked whole beside a
-secure field or a secret input, where testIDs remain; a testID holding a
-protected value is masked whole. `suggestion` is one plan edit for the miss
-reason; it carries no app text and points to `failure.screen`, and supplies
+[input value masking contract](#input-value-masking), including its fixed-control-word
+exception when screen text is withheld; testIDs remain unless they hold a
+protected value, in which case they are masked whole. `suggestion` is one plan edit
+for the miss reason; it carries no app text and points to `failure.screen`, and supplies
 the walk's `next_action`, subject to the [cleanup precedence](#ios-admission-and-cleanup).
 It describes what was observed and never
 proposes a Wait for an enabled state, because a quoted Wait passes on a disabled control.
@@ -2089,8 +2089,7 @@ private-value masking described below.
 
 ### Input value masking
 
-**Screens with a secure field.** Target-miss diagnostic candidate labels are
-withheld as `•••`. Failure screen-text evidence becomes
+**Screens with a secure field.** Failure screen-text evidence becomes
 `[screen text withheld: a secure field is on screen]`, and moved-target identity
 labels become `•••`, whenever the capture contains any secure field, including
 empty or offscreen fields. The failure reason remains available, but its appended
@@ -2108,15 +2107,18 @@ input cannot be masked by value, so while the run holds a SECRET input, failure 
 evidence and app-derived identities in failure reasons, including moved-target
 identities, become `[screen text withheld: the run holds secret runtime inputs]`.
 A run whose inputs are all TEST-PII keeps that text, redacted by the declared values only.
-Existing secure-screen replacements take precedence. Target-miss diagnostic
-candidate labels become `•••`, except a label that is exactly one of QaReN's own
-decline words or `Allow`, `Enable` or `Turn on`, is not on a possible input and
-matches no private value, so the blocking control is still named; possible-input
-labels are also withheld without runtime inputs. These failure-text replacements reach all outputs described in
+Existing secure-screen replacements take precedence. These failure-text
+replacements reach all outputs described in
 [App-derived failure text](#app-derived-failure-text). The step, its plan target,
 failure reason and geometry remain, subject to known-value masking. Runs without
 SECRET runtime inputs keep their screen-text context under the other masking rules below
 and the secure-field rule above.
+
+When either rule withholds screen text, target-miss diagnostic candidate labels
+become `•••`, except an exact label from the [recovery decline list](#step-recovery)
+or `Allow`, `Enable` or `Turn on` that is not on a possible input and matches no
+private value, so the blocking control is still named. Possible-input labels are
+also withheld without runtime inputs.
 
 The Android runner keeps exact-fill values and reconstructable fallback
 keycodes out of device logs. Its device-tool snapshots also avoid logging
@@ -3416,9 +3418,8 @@ native capture and React coverage, with no on-screen, uncovered match for the
 current quoted target (or literal check) or the later quoted targets of the
 current block in a fresh capture. A target whose centre is covered by a detected
 sheet or scrim does not prevent recovery merely because it remains in the capture.
-Outside the independent-screen classification below, targets in later blocks never
-block recovery by being visible; they only keep their own planned control and
-controls inside them. A later target
+Targets in later blocks never block recovery by being visible; they only keep
+their own planned control and controls inside them. A later target
 declared as a decline label from the list below
 (case-insensitive, unless explicitly targeted by ID) is exempt from this absence
 guard, so non-control text such as `Maybe later` does not prevent closing a sheet
