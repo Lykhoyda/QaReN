@@ -1151,6 +1151,7 @@ const afterPress: RecoveryTarget = { ...waitHome, afterPlannedPress: true, press
 test('a permission opt-in after a planned press is dismissed with its soft decline', () => {
   for (const [decline, accept] of [
     ['Skip', 'Yes, notify me'],
+    ['Skip', 'Yes, notify me about all updates'],
     ['Not now', 'Allow notifications'],
     ["Don't allow", 'Allow'],
     ['Don’t allow', 'Enable'],
@@ -1170,7 +1171,6 @@ test('Close, consent accepts, a lone Skip or a third control are not a permissio
     optIn('Skip', 'Accept'),
     optIn('Skip', 'Allow all'),
     optIn('Skip', 'Accept all'),
-    optIn('Skip', 'Yes, notify me about all updates'),
     optIn('Skip', 'Notification settings'),
     optIn('Not now', 'Yes, turn off notifications'),
     optIn('Not now', 'Yes, do not notify me'),
@@ -1207,7 +1207,7 @@ test('press readback must prove the opt-in was absent, and base consent never ta
     assert.equal(result, undefined);
     assert.equal(records[0]?.veto, 'previous-plan-press');
   }
-  for (const accept of ['Allow all', 'Accept all', 'Enable all notifications']) {
+  for (const accept of ['Allow all', 'Accept all', 'Agree to all', 'Enable all']) {
     assert.equal(decide(optIn('Skip', accept), [waitHome]).result, undefined);
   }
   assert.equal(plannedSurface(optIn()).optIn, true);
@@ -1293,6 +1293,32 @@ test('a new identified sheet over the planned screen is dismissed with its own C
       .result,
     { label: 'Close', screenClass: 'presented-layer' },
   );
+});
+
+test('the closed accept-all list protects every decline, including on a presented layer', () => {
+  for (const accept of ['Allow all', 'aCcEpT aLl', 'Agree to all', 'ENABLE ALL']) {
+    for (const decline of ['Skip', 'Close', 'Not now', 'Later', "Don't allow", 'Don’t allow']) {
+      assert.equal(decide(optIn(decline, accept), [waitHome]).result, undefined);
+      const layer = presented({ extraModal: 'home' });
+      layer.elements[1].label = decline;
+      layer.elements.push(element('@accept', accept));
+      const { result, records } = decide(layer, [{ ...afterPress, pressBaseline: [key('home')] }]);
+      assert.equal(result, undefined);
+      assert.equal(records[0]?.veto, 'previous-plan-press');
+    }
+  }
+});
+
+test('navigation containing all does not block an independent presented campaign', () => {
+  for (const label of ['View all offers', 'See all', 'Show all', 'Accept all offers']) {
+    const layer = presented({ extraModal: 'home' });
+    layer.elements[1].label = 'Skip';
+    layer.elements.push(element('@offers', label));
+    assert.deepEqual(decide(layer, [{ ...afterPress, pressBaseline: [key('home')] }]).result, {
+      label: 'Skip',
+      screenClass: 'presented-layer',
+    });
+  }
 });
 
 test('incomplete, anonymous, duplicate or unrelated sheet evidence keeps the press protection', () => {

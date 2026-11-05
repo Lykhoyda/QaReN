@@ -3479,8 +3479,11 @@ readback proved that shape absent: exactly
 two controls with proven press and fill evidence and no input, one a decline
 other than `Close`, `Dismiss` or `Cancel`, the other an accept that starts with
 `Allow`, `Enable`, `Turn on` or `Notify me`, or starts with `Yes` and mentions
-notifications, without negation or an accept label containing `all`; Skip is never
-taken on an accept-all consent screen. A presented sheet is the other: complete
+notifications, without negation or a whole-label, case-insensitive match from the
+closed accept-all list: `Allow all`, `Accept all`, `Agree to all`, `Enable all`.
+A screen offering a decline and one of those accept-all controls is base consent;
+none of its declines is taken, including on a presented layer. Navigation labels
+such as `View all offers`, `See all` or `Show all` do not identify consent. A presented sheet is the other: complete
 React host evidence at the press and now, a non-empty press-time modal baseline,
 every identified modal container from the press still present,
 exactly one new identified one, no anonymous or duplicate container identity, and

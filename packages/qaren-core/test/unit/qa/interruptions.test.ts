@@ -80,6 +80,34 @@ test('a present optional pop-up is declined once before retrying the missing tar
   assert.ok(row?.screenshot);
 });
 
+test('a campaign with Skip and navigation containing all is declined and the plan continues', async () => {
+  for (const label of ['View all offers', 'See all', 'Show all', 'Accept all offers']) {
+    const f = app(screen([element('@close', 'Skip'), element('@offers', label)]));
+    ticking(f);
+    const result = await runPlan(plan(), f.deps);
+    assert.equal(result.verdict, 'PASS', label);
+    assert.deepEqual(f.actions, ['press @close', 'press @settings'], label);
+    assert.equal(result.recoveries, 1, label);
+    const retry = result.steps.find((row) => row.outcome === 'retry');
+    assert.match(retry?.reason ?? '', /dismissed an app screen with Skip/, label);
+    assert.equal(retry?.interruption?.outcome, 'dismissed', label);
+  }
+});
+
+test('a closed-list accept-all consent screen never has any decline taken', async () => {
+  for (const accept of ['Allow all', 'aCcEpT aLl', 'Agree to all', 'ENABLE ALL']) {
+    for (const decline of ['Skip', 'Close', 'Not now', 'Later', "Don't allow", 'Don’t allow']) {
+      const f = app(screen([element('@close', decline), element('@accept', accept)]));
+      ticking(f);
+      const result = await runPlan(plan(), f.deps);
+      assert.equal(result.verdict, 'FAIL', `${decline}: ${accept}`);
+      assert.deepEqual(f.actions, []);
+      assert.equal(result.recoveries, 0);
+      assert.equal(result.steps.at(-1)?.interruption?.veto, 'no-candidate');
+    }
+  }
+});
+
 test('a recovery revalidation that rejects the screen still records its React coverage gap', async () => {
   const f = app(promo());
   const acquire = f.deps.captureScreen;

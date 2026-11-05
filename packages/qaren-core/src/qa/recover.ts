@@ -113,9 +113,8 @@ const DECLINE_LOWER = new Set([...DECLINE_LABELS].map((label) => label.toLowerCa
 const SOFT_DECLINES = new Set(
   [...DECLINE_LABELS].filter((label) => !['Close', 'Dismiss', 'Cancel'].includes(label)),
 );
-// QaReN's own permission-accept vocabulary, extended by evidence; affirmative only, so a
-// destination such as notification settings is never an accept.
 const PERMISSION_ACCEPT = /^(?:(?:allow|enable|turn on)\b|yes\b.*\bnotif|notify me\b)/iu;
+const ACCEPT_ALL = new Set(['allow all', 'accept all', 'agree to all', 'enable all']);
 const NEGATION = /\b(?:not|no|off|stop|never|don['’]t|disable)\b/iu;
 // Control labels that are QaReN's fixed words, so naming one discloses nothing from the app.
 export const FIXED_CONTROL_WORDS: ReadonlySet<string> = new Set([
@@ -236,14 +235,17 @@ export function dismissCandidate(
     return undefined;
   };
   const acceptAll = screen.elements.some(
-    (e) => !e.offscreen && e.semantic?.press === 'supported' && /\ball\b/iu.test(e.label ?? ''),
+    (e) =>
+      !e.offscreen &&
+      e.semantic?.press === 'supported' &&
+      ACCEPT_ALL.has(e.label?.toLowerCase() ?? ''),
   );
   const candidates = screen.elements.filter(
     (e) => e.label !== undefined && DECLINE_LABELS.has(e.label) && failedPredicate(e) === undefined,
   );
   const only = candidates.length === 1 ? candidates[0] : undefined;
   const screenClass: InterruptionScreenClass | undefined =
-    !only || (only.label === 'Skip' && acceptAll) || !planTargetsAbsent(screen, planTargets)
+    !only || acceptAll || !planTargetsAbsent(screen, planTargets)
       ? undefined
       : (!planTargets[0].afterPlannedPress || planTargets[0].pressOptIn === false) &&
           optInShaped(screen) === only
@@ -255,6 +257,7 @@ export function dismissCandidate(
   // Only a dismissal that would otherwise happen is withheld, so an ordinary miss keeps its own cause.
   if (candidates.length && planTargets[0].afterPlannedPress && !screenClass)
     return rejected('previous-plan-press', 0);
+  if (acceptAll) return rejected('no-candidate');
   if (candidates.length > 1)
     return {
       refuse: {
@@ -262,7 +265,6 @@ export function dismissCandidate(
         message: 'several decline controls are visible; nothing was tapped',
       },
     };
-  if (only?.label === 'Skip' && acceptAll) return rejected('no-candidate');
   if (candidates.length === 1) {
     const label = candidates[0].label!.toLowerCase();
     const plannedIndex = planTargets.findIndex(
@@ -336,7 +338,7 @@ export function optInShaped(screen: Screen): Element | undefined {
     accept.semantic.visibility === 'visible' &&
     PERMISSION_ACCEPT.test(accept.label ?? '') &&
     !NEGATION.test(accept.label ?? '') &&
-    !/\ball\b/iu.test(accept.label ?? '')
+    !ACCEPT_ALL.has(accept.label?.toLowerCase() ?? '')
     ? decline
     : undefined;
 }
