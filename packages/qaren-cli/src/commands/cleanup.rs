@@ -366,7 +366,7 @@ pub fn cleanup_with_policy(
         _ => None,
     };
     if owner == Some(PidLiveness::AliveMatching)
-        || ((guarded_simulator || cache_owned)
+        || (guarded_simulator
             && !matches!(owner, Some(PidLiveness::Dead | PidLiveness::AliveForeign)))
     {
         if had_runner {
@@ -381,8 +381,6 @@ pub fn cleanup_with_policy(
             vec![(
                 if guarded_simulator {
                     "simulator"
-                } else if cache_owned {
-                    "deps_cache"
                 } else {
                     "core"
                 }
@@ -738,7 +736,10 @@ pub fn cleanup_with_policy(
         .clone()
         .filter(|r| r.reader || r.staging)
     {
-        let outcome = if owner_alive {
+        // Only this leg needs the owner proven gone; an unknown owner keeps its markers.
+        let outcome = if owner_alive
+            || !matches!(owner, Some(PidLiveness::Dead | PidLiveness::AliveForeign))
+        {
             owner_refusal()
         } else {
             let cleanup_identity =

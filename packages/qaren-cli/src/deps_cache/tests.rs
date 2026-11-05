@@ -213,6 +213,14 @@ fn miss_then_hit_still_installs_and_stages_before_build_mutation() {
     assert!(ctx.notes.contains(&("deps_cache".into(), "hit".into())));
     crate::commands::prepare::install_deps(&mut ctx).unwrap();
     assert_eq!(ctx.record.phase, Phase::DepsInstalled);
+    // A hit already has its entry, so staging runs no command at all.
+    let before = ctx.runner.commands_executed();
+    stage(&mut ctx).unwrap();
+    assert_eq!(ctx.runner.commands_executed(), before);
+    assert!(!ctx.record.resources.deps_cache.as_ref().unwrap().staging);
+    assert!(!staging_dir(entry.parent().unwrap(), "second")
+        .unwrap()
+        .exists());
     std::fs::write(
         f.0.join("repo/node_modules/root-package/index.js"),
         "changed",
@@ -735,7 +743,8 @@ fn explicit_cache_cleanup_reclaims_dead_staging_and_retains_unknown_readers() {
 
 #[test]
 fn run_cleanup_drops_only_its_markers_and_stage_and_refuses_live_or_unknown_owners() {
-    for live in [false, true] {
+    for state in ["dead", "live", "unknown"] {
+        let live = state != "dead";
         let f = Fixture::new();
         let (repo, mut resource) = seed_entry(&f, &"1".repeat(64), 1);
         resource.reader = true;
@@ -748,11 +757,20 @@ fn run_cleanup_drops_only_its_markers_and_stage_and_refuses_live_or_unknown_owne
         let mut runner = MockRunner::new();
         let mut ctx = f.context(&mut runner, "owned");
         ctx.record.resources.deps_cache = Some(resource);
+        ctx.record.resources.lease = Some(crate::lease::Lease {
+            run_id: "owned".into(),
+            token: "t".into(),
+            lock_dir: f.0.join("locks/absent"),
+            holder: "owned".into(),
+            released_orphan: None,
+        });
         ctx.save().unwrap();
         drop(ctx);
-        if live {
+        if state == "live" {
             runner.expect_run("lstart=", CmdOutput::success("start"));
             runner.expect_run("stat=", CmdOutput::success("S"));
+        } else if state == "unknown" {
+            runner.expect_run("lstart=", CmdOutput::failed(1, "unreadable"));
         } else {
             runner.expect_run("lstart=", CmdOutput::failed(1, ""));
             runner.expect_run("lstart=", CmdOutput::success("cleanup-start"));
@@ -762,8 +780,18 @@ fn run_cleanup_drops_only_its_markers_and_stage_and_refuses_live_or_unknown_owne
         assert_eq!(entry.join(".readers/owned").exists(), live);
         assert_eq!(stage.exists(), live);
         assert!(entry.join(".readers/other").exists());
+        // An unknown owner no longer stops the legs that never needed it proven gone.
         assert_eq!(
-            receipt.cleanup["deps_cache"],
+            receipt.cleanup.contains_key("device_lease"),
+            state != "live"
+        );
+        // A live owner refuses the whole run; an unknown one refuses only this leg.
+        assert_eq!(
+            receipt.cleanup[if state == "live" {
+                "core"
+            } else {
+                "deps_cache"
+            }],
             if live {
                 "refused: the run's qaren process is alive or unproven gone"
             } else {

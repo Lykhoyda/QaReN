@@ -422,12 +422,7 @@ pub(crate) fn restore(ctx: &mut Ctx, repository: &Path, enabled: bool) -> Result
         }
         Ok(Some(entry)) => {
             let result = (|| {
-                supported_modules(&repo, app_rel)?;
-                let bytes = entry.modules.iter().try_fold(0u64, |n, rel| {
-                    let path = entry_path.join("tree").join(rel);
-                    tree_bytes(&path, &path).map(|size| n.saturating_add(size))
-                })?;
-                space(ctx.runner, &[&ctx.runs_root, &repo], bytes)?;
+                space(ctx.runner, &[&ctx.runs_root, &repo], entry.bytes)?;
                 restore_modules(ctx.runner, &entry_path.join("tree"), &repo, &entry.modules)
             })();
             match result {
@@ -636,6 +631,10 @@ pub(crate) fn stage(ctx: &mut Ctx) -> Result<(), Failure> {
         .unwrap()
         .to_path_buf();
     let dir = repo_dir(&ctx.runs_root, &resource).unwrap();
+    // Publish keeps an existing entry, so a second copy of a hit would only be deleted.
+    if directory(&dir.join(&resource.key), false).unwrap_or(false) {
+        return Ok(());
+    }
     let staged = staging_dir(&dir, &ctx.record.run_id).unwrap();
     resource.staging = true;
     ctx.record.resources.deps_cache = Some(resource.clone());
@@ -894,7 +893,11 @@ pub fn inventory(runs_root: &Path) -> Result<String, String> {
                 .is_some_and(safe_hash)
             {
                 entries += 1;
-                bytes = bytes.saturating_add(tree_bytes(&entry, &entry)?);
+                let recorded: Entry = serde_json::from_slice(
+                    &std::fs::read(entry.join("entry.json")).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+                bytes = bytes.saturating_add(recorded.bytes);
             }
         }
     }
