@@ -163,10 +163,19 @@ export function dismissCandidate(
       !(index > 0 && sole && (target.kind === 'press' || target.kind === 'fill')) &&
       targetOnScreen(screen, target),
   );
-  if (targetIndex !== -1)
-    return targetIndex === 0
-      ? rejected('current-target', 0)
-      : rejected('later-target', targetIndex, [], 'presence');
+  if (targetIndex !== -1) {
+    if (targetIndex === 0) return rejected('current-target', 0);
+    const target = planTargets[targetIndex];
+    const ownsDecline = screen.elements.some(
+      (e) =>
+        !e.offscreen &&
+        e.label !== undefined &&
+        DECLINE_LABELS.has(e.label) &&
+        (matchesTarget(e, target) ||
+          (target.exact !== 'id' && target.quoted?.toLowerCase() === e.label.toLowerCase())),
+    );
+    return rejected('later-target', targetIndex, [], ownsDecline ? 'ownership' : 'presence');
+  }
   const failedPredicate = (
     e: Element,
   ): InterruptionDiagnostic['elements'][number]['failed'] | undefined => {

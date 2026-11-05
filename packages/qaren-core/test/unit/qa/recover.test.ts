@@ -964,6 +964,29 @@ test('a later step naming Close by label or id keeps it, with ownership provenan
   }
 });
 
+test('later ID targets own the decline for every step kind with one or multiple controls', () => {
+  const second: NativeNode = {
+    ref: '@continue',
+    type: 'Button',
+    label: 'Continue',
+    hittable: true,
+  };
+  for (const extra of [[], [second]]) {
+    for (const kind of ['wait', 'check', 'press', 'fill'] as const) {
+      const { result, records } = decide(fullScreenPromo(...extra), [
+        waitHome,
+        later('promo-close', kind, { exact: 'id' }),
+      ]);
+      assert.equal(result, undefined, kind);
+      assert.equal(records.length, 1, kind);
+      assert.equal(records[0].veto, 'later-target', kind);
+      assert.equal(records[0].provenance, 'ownership', kind);
+      assert.equal(records[0].targetIndex, 1, kind);
+      assert.equal(records[0].soleDecline, extra.length === 0, kind);
+    }
+  }
+});
+
 test('a second control of any state defeats the sole-decline exemption', () => {
   const input: NativeNode = { ref: '@email', type: 'TextField', label: 'Email', hittable: true };
   const button: NativeNode = { ref: '@go', type: 'Button', label: 'Continue', hittable: true };
