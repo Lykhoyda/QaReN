@@ -169,6 +169,7 @@ export function dismissCandidate(
     const ownsDecline = screen.elements.some(
       (e) =>
         !e.offscreen &&
+        e.semantic?.press === 'supported' &&
         e.label !== undefined &&
         DECLINE_LABELS.has(e.label) &&
         (matchesTarget(e, target) ||

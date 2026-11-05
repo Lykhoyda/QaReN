@@ -1132,31 +1132,67 @@ test('a later wait on the sole Close ID keeps it and suggests the owning line', 
     assert.deepEqual(row.interruption, receipt);
 });
 
-test('a Close that stays after its one press records the aimed centre and is not retried', async () => {
+test('a wait on decline-labelled static text keeps presence provenance without an owning-line edit', async () => {
   const nodes = [
-    {
-      ref: '@close',
-      type: 'Button',
-      label: 'Close',
-      hittable: true,
-      rect: { x: 340, y: 10, width: 40, height: 30 },
-    },
+    { ref: '@close', type: 'Button', identifier: 'promo-close', label: 'Close', hittable: true },
+    { ref: '@copy', type: 'StaticText', identifier: 'promo-copy', label: 'Close' },
   ];
-  const framed = () =>
+  const f = app(
     joinScreen(nodes, [], 'app', { native: 'complete', react: 'complete' }, undefined, {
       source: 'xcui-live',
       nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
-    });
-  const f = app(framed());
+    }),
+  );
   ticking(f);
-  f.deps.press = async (ref) => {
-    f.actions.push(`press ${ref}`);
-    return { ok: true, proven: false, executed: true };
-  };
-  const result = await runPlan(waitPlan(), f.deps);
+  const result = await runPlan(waitPlan('2. Wait for "promo-copy" to appear'), f.deps);
   assert.equal(result.verdict, 'FAIL');
-  assert.deepEqual(f.actions, ['press @close']);
-  const receipt = result.steps.at(-1)?.interruption;
-  assert.equal(receipt?.outcome, 'did-not-disappear');
-  assert.equal(receipt?.pressCentreY, 25);
+  assert.deepEqual(f.actions, []);
+  assert.doesNotMatch(result.failure?.suggestion ?? '', /targets this control/);
+  assert.deepEqual(result.steps.at(-1)?.interruption, {
+    considered: true,
+    outcome: 'vetoed',
+    veto: 'later-target',
+    provenance: 'presence',
+    targetLine: 2,
+    targetKind: 'wait',
+    soleDecline: true,
+  });
 });
+
+for (const [disposition, pressResult, dispatched] of [
+  ['acknowledged', { ok: true, executed: true }, true],
+  ['possible mutation', { ok: false, mutation: 'possible' }, true],
+  ['observed mutation', { ok: false, mutation: 'observed' }, true],
+  ['unknown mutation', { ok: false }, true],
+  ['no mutation', { ok: false, mutation: 'none' }, false],
+  ['not executed', { ok: true, executed: false }, false],
+] as const) {
+  test(`a ${disposition} decline retains dispatch evidence without retrying`, async () => {
+    const nodes = [
+      {
+        ref: '@close',
+        type: 'Button',
+        label: 'Close',
+        hittable: true,
+        rect: { x: 340, y: 10, width: 40, height: 30 },
+      },
+    ];
+    const framed = () =>
+      joinScreen(nodes, [], 'app', { native: 'complete', react: 'complete' }, undefined, {
+        source: 'xcui-live',
+        nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+      });
+    const f = app(framed());
+    ticking(f);
+    f.deps.press = async (ref) => {
+      f.actions.push(`press ${ref}`);
+      return { ...pressResult, proven: false };
+    };
+    const result = await runPlan(waitPlan(), f.deps);
+    assert.equal(result.verdict, 'FAIL');
+    assert.deepEqual(f.actions, ['press @close']);
+    const receipt = result.steps.at(-1)?.interruption;
+    assert.equal(receipt?.outcome, dispatched ? 'did-not-disappear' : 'not-dispatched');
+    assert.equal(receipt?.pressCentreY, dispatched ? 25 : undefined);
+  });
+}
