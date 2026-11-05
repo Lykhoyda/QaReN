@@ -2680,6 +2680,11 @@ fn android_prepare_happy_path_leases_tunnels_and_pins_serial() {
         receipt.failure
     );
     assert_eq!(mock.remaining(), 0);
+    let runtime = serde_json::to_value(receipt.runtime_version.as_ref().unwrap()).unwrap();
+    assert_eq!(runtime["embedded_policy"], "unsupported");
+    assert_eq!(runtime["pin"], "unsupported");
+    assert_eq!(runtime["source"], "artifact");
+    assert!(runtime.get("value_sha256_prefix").is_none());
     let device = receipt.device.unwrap();
     assert_eq!(device.farm_slot, Some(1));
     assert_eq!(
@@ -2707,6 +2712,10 @@ fn android_prepare_happy_path_leases_tunnels_and_pins_serial() {
     assert!(
         record.resources.app_install.is_none(),
         "no hashed artifact means no install provenance can be claimed"
+    );
+    assert_eq!(
+        serde_json::to_value(&record.runtime_version).unwrap(),
+        runtime
     );
     let vendor_key = record.resources.adb_vendor_key.as_ref().unwrap();
     assert!(vendor_key.ends_with("nuc-adbkey"));
@@ -7899,4 +7908,41 @@ fn ios_metro_preserves_effective_pnpm_options_or_inherited_fallback() {
         assert!(!receipt.to_json().contains("private-config-error"));
         assert_eq!(mock.remaining(), 0);
     }
+}
+
+#[test]
+fn fingerprint_policy_is_not_diagnosed_before_any_manifest_attempt() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    embed_fingerprint_policy(&mut mock, scenario.parent().unwrap().to_path_buf(), false);
+    script_ios_prepare_before_request_probe_reading(&mut mock, &repo, |m| {
+        m.expect_run(
+            "plutil -convert json",
+            CmdOutput::success(r#"{"EXUpdatesRuntimeVersion":"file:fingerprint"}"#),
+        );
+    });
+    mock.advance_on = Some(("qaren-request-probe".into(), 2_400_000));
+    mock.expect_run(
+        "qaren-request-probe",
+        CmdOutput {
+            timed_out: true,
+            duration_ms: 15_000,
+            ..Default::default()
+        },
+    );
+    common::script_ios_metro_cleanup(&mut mock);
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::ManifestNotWarm);
+    assert_eq!(
+        receipt.runtime_version.as_ref().unwrap().embedded_policy,
+        qaren::expo_updates::EmbeddedPolicy::Fingerprint
+    );
+    assert!(!mock.calls.iter().any(|spec| spec.label == "metro-manifest"));
+    assert!(!failure.detail.to_string().contains("fingerprint"));
+    assert!(!failure.next_action.contains("runtime_version.pin"));
+    assert!(!failure.next_action.contains("runtimeVersion"));
+    assert!(failure.next_action.contains("Metro answered /status"));
+    assert_eq!(mock.remaining(), 0);
 }

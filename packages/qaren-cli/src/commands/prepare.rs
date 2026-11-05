@@ -2136,6 +2136,9 @@ fn allocate_android(ctx: &mut Ctx, android_home: Option<&str>) -> Result<(), Fai
 }
 
 pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
+    if ctx.record.scenario.platform == Platform::Android {
+        ctx.record.runtime_version = Some(crate::expo_updates::RuntimeVersion::android());
+    }
     let platform = platform_dir(ctx.record.scenario.platform);
     let repo_root = ctx.record.candidate.repo_root.clone();
     let project_root = ctx.record.candidate.project_root.clone();
@@ -3174,7 +3177,6 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
             install_cached_ios_app(ctx, &sim.udid, &artifact, deadline)?;
         }
         Platform::Android => {
-            ctx.record.runtime_version = Some(crate::expo_updates::RuntimeVersion::android());
             let (adb, serial, server_port) =
                 ctx.record.resources.adb_endpoint().expect("allocated");
             ensure_running(ctx.runner, "build")?;
@@ -5581,7 +5583,8 @@ fn warm_dev_client_manifest(ctx: &mut Ctx, port: u16, deadline: u64) -> Result<(
             .runtime_version
             .as_ref()
             .filter(|rv| {
-                rv.embedded_policy == crate::expo_updates::EmbeddedPolicy::Fingerprint
+                warm.attempts > 0
+                    && rv.embedded_policy == crate::expo_updates::EmbeddedPolicy::Fingerprint
                     && !crate::expo_updates::resolved(&run_dir)
             })
             .map(|rv| rv.pin.as_str());
