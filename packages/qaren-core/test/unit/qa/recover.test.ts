@@ -4,6 +4,7 @@ import {
   dismissCandidate,
   plannedSurface,
   recover,
+  soleDecline,
   surfaceGone,
 } from '../../../dist/qa/recover.js';
 import type {
@@ -868,10 +869,17 @@ function fullScreenPromo(...extra: NativeNode[]): Screen {
       ...node,
     })),
   ];
-  return join(nodes, [], 'app', { native: 'complete', react: 'complete' }, undefined, {
-    source: 'xcui-live',
-    nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
-  });
+  return join(
+    nodes,
+    [],
+    'app',
+    { native: 'complete', react: 'complete' },
+    { hosts: [], complete: true },
+    {
+      source: 'xcui-live',
+      nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+    },
+  );
 }
 const waitHome: RecoveryTarget = { phrase: 'Home', quoted: 'Home', kind: 'wait', line: 7 };
 const later = (
@@ -919,10 +927,17 @@ test('a later same-block press on the container of the sole Close still keeps it
     { ref: '@sheet', type: 'Other', parentIndex: 1, identifier: 'promo-sheet' },
     { ref: '@close', type: 'Button', parentIndex: 2, label: 'Close', hittable: true },
   ];
-  const snapshot = join(nodes, [], 'app', { native: 'complete', react: 'complete' }, undefined, {
-    source: 'xcui-live',
-    nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
-  });
+  const snapshot = join(
+    nodes,
+    [],
+    'app',
+    { native: 'complete', react: 'complete' },
+    { hosts: [], complete: true },
+    {
+      source: 'xcui-live',
+      nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+    },
+  );
   const { result, records } = decide(snapshot, [
     waitHome,
     later('promo-sheet', 'press', { exact: 'id' }),
@@ -1004,6 +1019,74 @@ test('a later wait or check on decline-labelled static text vetoes by presence',
     assert.equal(records[0].veto, 'later-target');
     assert.equal(records[0].targetIndex, 1);
     assert.equal(records[0].provenance, 'presence');
+  }
+});
+
+test('unassociated press or fill hosts keep a later custom control protected by presence', () => {
+  const nodes: NativeNode[] = [
+    { ref: '@close', type: 'Button', label: 'Close', hittable: true },
+    { ref: '@continue', type: 'Other', label: 'Continue', hittable: true },
+  ];
+  for (const capability of ['press', 'fill'] as const) {
+    const snapshot = join(
+      nodes,
+      [],
+      'app',
+      { native: 'complete', react: 'complete' },
+      {
+        complete: true,
+        hosts: [
+          {
+            testID: 'unassociated-control',
+            role: null,
+            roleSource: 'none',
+            capabilities: { [capability]: true },
+          },
+        ],
+      },
+      {
+        source: 'xcui-live',
+        nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+      },
+    );
+    assert.equal(snapshot.elements[0].semantic?.press, 'supported');
+    assert.equal(snapshot.elements[1].semantic?.[capability], 'unknown');
+    assert.equal(snapshot[capability === 'press' ? 'pressGapCount' : 'fillGapCount'], 1);
+    const { result, records } = decide(snapshot, [waitHome, later('Continue', 'press')]);
+    assert.equal(result, undefined);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].veto, 'later-target');
+    assert.equal(records[0].targetIndex, 1);
+    assert.equal(records[0].provenance, 'presence');
+    assert.equal(records[0].soleDecline, false);
+  }
+});
+
+test('association gaps and unknown on-screen capabilities cannot prove a sole decline', () => {
+  const snapshot = fullScreenPromo();
+  assert.equal(soleDecline(snapshot), true);
+  for (const gap of [
+    { pressEvidenceGap: 'React host evidence incomplete' },
+    { pressGapCount: 1 },
+    { fillGapCount: 1 },
+  ])
+    assert.equal(soleDecline({ ...snapshot, ...gap }), false);
+  for (const capability of ['press', 'fill'] as const) {
+    const uncertain = snapshot.elements.map((element) =>
+      element.ref === '@title'
+        ? { ...element, semantic: { ...element.semantic!, [capability]: 'unknown' as const } }
+        : element,
+    );
+    assert.equal(soleDecline({ ...snapshot, elements: uncertain }), false);
+    assert.equal(
+      soleDecline({
+        ...snapshot,
+        elements: uncertain.map((element) =>
+          element.ref === '@title' ? { ...element, offscreen: true } : element,
+        ),
+      }),
+      true,
+    );
   }
 });
 

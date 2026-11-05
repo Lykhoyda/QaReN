@@ -236,6 +236,18 @@ const CONTROL_KINDS = new Set<Element['kind']>(['button', 'input', 'switch', 'li
 
 // Exactly one on-screen control, in any state, and it carries a decline label.
 export function soleDecline(screen: Screen): boolean {
+  if (
+    screen.pressEvidenceGap !== undefined ||
+    (screen.pressGapCount ?? 0) > 0 ||
+    (screen.fillGapCount ?? 0) > 0 ||
+    screen.elements.some(
+      (e) =>
+        !e.offscreen &&
+        !e.semantic?.nativePresence?.structural &&
+        (e.semantic?.press === 'unknown' || e.semantic?.fill === 'unknown'),
+    )
+  )
+    return false;
   const controls = screen.elements.filter(
     (e) =>
       !e.offscreen &&

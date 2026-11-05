@@ -1046,10 +1046,17 @@ function fullScreenPromo(): Screen {
     { ref: '@close', type: 'Button', identifier: 'promo-close', label: 'Close', hittable: true },
     { ref: '@copy', type: 'StaticText', label: 'Save on Premium today' },
   ];
-  return joinScreen(nodes, [], 'app', { native: 'complete', react: 'complete' }, undefined, {
-    source: 'xcui-live',
-    nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
-  });
+  return joinScreen(
+    nodes,
+    [],
+    'app',
+    { native: 'complete', react: 'complete' },
+    { hosts: [], complete: true },
+    {
+      source: 'xcui-live',
+      nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+    },
+  );
 }
 
 test('a later tap whose text is in the promo copy no longer keeps a sole-Close promo up', async () => {
@@ -1138,10 +1145,17 @@ test('a wait on decline-labelled static text keeps presence provenance without a
     { ref: '@copy', type: 'StaticText', identifier: 'promo-copy', label: 'Close' },
   ];
   const f = app(
-    joinScreen(nodes, [], 'app', { native: 'complete', react: 'complete' }, undefined, {
-      source: 'xcui-live',
-      nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
-    }),
+    joinScreen(
+      nodes,
+      [],
+      'app',
+      { native: 'complete', react: 'complete' },
+      { hosts: [], complete: true },
+      {
+        source: 'xcui-live',
+        nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+      },
+    ),
   );
   ticking(f);
   const result = await runPlan(waitPlan('2. Wait for "promo-copy" to appear'), f.deps);
@@ -1178,10 +1192,17 @@ for (const [disposition, pressResult, dispatched] of [
       },
     ];
     const framed = () =>
-      joinScreen(nodes, [], 'app', { native: 'complete', react: 'complete' }, undefined, {
-        source: 'xcui-live',
-        nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
-      });
+      joinScreen(
+        nodes,
+        [],
+        'app',
+        { native: 'complete', react: 'complete' },
+        { hosts: [], complete: true },
+        {
+          source: 'xcui-live',
+          nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+        },
+      );
     const f = app(framed());
     ticking(f);
     f.deps.press = async (ref) => {
