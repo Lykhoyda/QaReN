@@ -2944,25 +2944,25 @@ fn spawn_metro_only(ctx: &mut Ctx) -> Result<(), Failure> {
             &crate::exec::CmdSpec::new(
                 "pnpm-node-options",
                 "pnpm",
-                &["config", "get", "node-options"],
+                &["config", "get", "node-options", "--json"],
                 15,
             )
             .cwd(&project_root),
             &[],
         );
-        if output.exit_code() == Some(0)
+        let read = (output.exit_code() == Some(0)
             && !output.timed_out()
-            && ctx.runner.cancellation().is_none()
-        {
-            let value = output.stdout().trim();
-            (value != "undefined" && !value.is_empty()).then(|| value.to_string())
-        } else {
+            && ctx.runner.cancellation().is_none())
+        .then(|| metro::parse_pnpm_node_options(output.stdout()))
+        .flatten();
+        if read.is_none() {
             ctx.notes.push((
                 "pnpm_node_options".into(),
-                "effective configuration unavailable; inherited NODE_OPTIONS used".into(),
+                "effective configuration unavailable or unreadable; inherited NODE_OPTIONS used"
+                    .into(),
             ));
-            None
         }
+        read.flatten()
     } else {
         None
     };

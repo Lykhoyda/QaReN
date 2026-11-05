@@ -58,6 +58,23 @@ pub fn dev_server_node_options(base: Option<&str>, preload: Option<&Path>) -> St
     options.join(" ")
 }
 
+// Reads `pnpm config get node-options --json`: a JSON string, or nothing (`undefined`/`null` from older output)
+// when unset. pnpm prints any warning before the value, so only the last line counts, and a line that is not a
+// clean JSON string is unreadable (None) rather than ever becoming Node options.
+pub fn parse_pnpm_node_options(stdout: &str) -> Option<Option<String>> {
+    match stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .last()
+    {
+        None | Some("undefined" | "null") => Some(None),
+        Some(line) => serde_json::from_str::<String>(line)
+            .ok()
+            .map(|value| Some(value).filter(|value| !value.trim().is_empty())),
+    }
+}
+
 // Expo serves `/` and `/status` itself; only Metro's own handler logs this path, arming the drained count before launch.
 pub fn request_probe_spec(port: u16) -> CmdSpec {
     CmdSpec::new(

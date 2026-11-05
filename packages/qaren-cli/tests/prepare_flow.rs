@@ -7843,13 +7843,33 @@ fn borrowed_prepare_reprobes_identity_before_and_after_dependencies() {
 
 #[test]
 fn ios_metro_preserves_effective_pnpm_options_or_inherited_fallback() {
+    // pnpm prints any warning on stdout before the value; the warning text must never become Node options.
+    const WARNING: &str = "WARN  Unsupported setting \"force\" in the environment\n";
     for (output, base, fallback) in [
         (
-            CmdOutput::success("--max-old-space-size=4096\n"),
+            CmdOutput::success("\"--max-old-space-size=4096\"\n"),
             "--max-old-space-size=4096",
             false,
         ),
+        (
+            CmdOutput::success(&format!("{WARNING}\"--max-old-space-size=4096\"\n")),
+            "--max-old-space-size=4096",
+            false,
+        ),
+        (CmdOutput::success(""), "--trace-warnings", false),
         (CmdOutput::success("undefined\n"), "--trace-warnings", false),
+        (
+            CmdOutput::success(&format!("{WARNING}undefined\n")),
+            "--trace-warnings",
+            false,
+        ),
+        // Only a warning, or a raw value that is not a clean JSON string: no configured options.
+        (CmdOutput::success(WARNING), "--trace-warnings", true),
+        (
+            CmdOutput::success("--max-old-space-size=4096\n"),
+            "--trace-warnings",
+            true,
+        ),
         (
             CmdOutput::failed(1, "private-config-error"),
             "--trace-warnings",

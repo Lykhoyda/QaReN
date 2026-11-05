@@ -2305,8 +2305,11 @@ and escaping. It composes that value (or inherited `NODE_OPTIONS` when unset)
 with IPv4-first DNS and a quoted `--require` of the preload, then passes the
 result through both `NODE_OPTIONS` and `npm_config_node_options` and pnpm's
 `--config.node-options` override so workspace settings cannot remove it.
-If the query fails, times out or is cancelled, it uses inherited `NODE_OPTIONS`
-and records a value-free fallback note; cancellation still prevents startup.
+The query uses `--json` and only its last output line counts, so a warning pnpm
+prints first never becomes Node options. If the query fails, times out or is
+cancelled, or that line is not a clean JSON string, it uses inherited
+`NODE_OPTIONS` and records a value-free fallback note; cancellation still
+prevents startup.
 A native-side configuration override is not visible in the artifact.
 
 A request-handler timeout after `/status` responds names startup or a
