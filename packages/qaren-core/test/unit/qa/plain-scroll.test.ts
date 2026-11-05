@@ -77,10 +77,12 @@ async function run(
     act,
   );
   const bands: (Rect | undefined)[] = [];
+  const distances: (number | undefined)[] = [];
   f.deps.platform = 'ios';
   const dispatch = f.deps.scroll;
   f.deps.scroll = async (dir, context, clearance, band) => {
     bands.push(band);
+    distances.push(clearance);
     return dispatch(dir, context, clearance, band);
   };
   const plan = parsePlan(`1. Scroll ${direction}\n`);
@@ -94,18 +96,18 @@ async function run(
     undefined,
     { singleAttempt },
   );
-  return { ...f, bands, result };
+  return { ...f, bands, distances, result };
 }
 
 // The executable coordinate builder is the oracle for whether a selected band really hosts a drag.
-function coordinates(band: Rect | undefined, direction: 'up' | 'down' = 'down') {
+function coordinates(band: Rect | undefined, direction: 'up' | 'down' = 'down', distance?: number) {
   clearRefMap();
   updateRefMapFromFlat([{ ref: '@window', type: 'Window', rect: WINDOW }] as never, {
     snapshotGeneration: 1,
     keyboardVisible: false,
   });
   try {
-    return buildDirectionalScrollCliArgs(direction, undefined, undefined, undefined, band);
+    return buildDirectionalScrollCliArgs(direction, 0.6, undefined, distance, band);
   } finally {
     clearRefMap();
   }
@@ -161,6 +163,34 @@ test('a full-height side rail keeps the centre drag clear instead of falsely ref
   const [, x] = coordinates(f.bands[0]).map(Number);
   assert.equal(x, 200);
   assert.equal(f.rows.at(-1)?.scrollBand?.status, 'overlay-cut');
+});
+
+test('a header leaving only a 26pt strip refuses instead of dragging the covered viewport centre', async () => {
+  const f = await run([screen({ extra: [overlay({ x: 0, y: 0, width: 400, height: 570 })] })]);
+  assert.deepEqual(f.bands, []);
+  assert.equal(f.result.failure?.cause, 'scroll_container_unreachable');
+  assert.equal(f.rows.at(-1)?.scrollBand?.status, 'unreachable');
+  assert.equal(f.rows.at(-1)?.scrollDetail, undefined);
+});
+
+test('plain scroll preserves viewport travel and clamps it to a smaller selected band', async () => {
+  for (const direction of ['up', 'down'] as const) {
+    const full = await run([screen({ list: WINDOW })], { direction });
+    assert.equal(full.distances[0], 192);
+    const [, , start, , end] = coordinates(full.bands[0], direction, full.distances[0]).map(Number);
+    assert.equal(Math.abs(end - start), 192);
+
+    const small = await run([screen({ list: { ...LIST, height: 100 } })], { direction });
+    assert.equal(small.distances[0], 192);
+    const [, , smallStart, , smallEnd] = coordinates(
+      small.bands[0],
+      direction,
+      small.distances[0],
+    ).map(Number);
+    assert.equal(Math.abs(smallEnd - smallStart), 89);
+    assert.ok(smallStart >= 200 && smallStart < 300);
+    assert.ok(smallEnd >= 200 && smallEnd < 300);
+  }
 });
 
 test('no container and an intrinsically empty CollectionView use a no-geometry viewport fallback', async () => {

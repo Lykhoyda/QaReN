@@ -3905,7 +3905,7 @@ async function walkBlockScoped(
               }
               if (item.kind === 'scroll') {
                 plainBand = plainScrollBand(before.screen, item.direction, deps.platform);
-                const { container: _container, ...receipt } = plainBand;
+                const { container: _container, distance: _distance, ...receipt } = plainBand;
                 scrollBands.set(item.line, receipt);
                 if (plainBand.status === 'unreachable') {
                   outcome = withCause(
@@ -3950,7 +3950,7 @@ async function walkBlockScoped(
                     ? deps.scroll(
                         item.direction,
                         context,
-                        undefined,
+                        plainBand?.distance,
                         plainBand?.container ? plainBand.band : undefined,
                       )
                     : item.kind === 'back'

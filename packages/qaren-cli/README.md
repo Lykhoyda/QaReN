@@ -966,7 +966,9 @@ A plain `Scroll down` or `Scroll up` is a gesture, not an assertion. It passes
 when a cleanly dispatched scroll changes the app screen, including descendant
 frame movement too small to change the screen signature. With complete native
 geometry, it chooses the largest scroll-container band clear of front overlays
-and the keyboard; `scrollBand` records the choice. A container covered at its
+and the keyboard; `scrollBand` records the choice. The gesture preserves its
+viewport travel distance, clamped to fit inside the selected band. When no
+positive band remains, or the selected band cannot host a drag, a container covered at its
 clip centre refuses before dispatch with `SCROLL_CONTAINER_UNREACHABLE` and
 cause `scroll_container_unreachable`, suggesting a scroll-until target or removing
 the step. A side rail that leaves the centre clear still permits a drag.

@@ -128,10 +128,10 @@ function fixture(established = false) {
       }
     return screen;
   };
-  f.deps.scroll = async (direction, context, _distance, band) => {
+  f.deps.scroll = async (direction, context, distance, band) => {
     context!.authorize();
     endpoints.push(
-      buildDirectionalScrollCliArgs(direction, 0.6, undefined, undefined, band)
+      buildDirectionalScrollCliArgs(direction, 0.6, undefined, distance, band)
         .slice(1, 5)
         .map(Number),
     );
@@ -395,7 +395,7 @@ test('plain scroll uses its container band and retains ordinary capture', async 
     assert.equal(result.block.outcome, 'pass');
     assert.equal(f.drags(), 1);
     assert.equal(result.rows.at(-1)?.scrollBand?.status, 'clear');
-    assert.deepEqual(f.endpoints, [[201, 758, 201, 21]]);
+    assert.deepEqual(f.endpoints, [[201, 758, 201, 548]]);
     assert.ok(f.modes.every((presence) => !presence));
   } finally {
     clearRefMap();

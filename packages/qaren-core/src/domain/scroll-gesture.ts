@@ -1,6 +1,8 @@
 // shortcut: 48px clears touch slop up to 6x density; prefer runner-provided slop when available.
 export const MIN_DRAG_TRAVEL = 48;
 export const MIN_SCROLL_BAND_HEIGHT = MIN_DRAG_TRAVEL + 2;
+const CLEARANCE_BAND_FRACTION = 0.6;
+const SWIPE_FRACTION = 0.4;
 
 export type ScrollBand = { x?: number; y?: number; width: number; height: number };
 
@@ -39,7 +41,9 @@ export function computeScrollFromDirection(
   const cy = Math.round((screen.y ?? 0) + screen.height / 2);
   const caller = screen.x !== undefined || screen.y !== undefined;
   const deadZone = Math.max(1, Math.min(screen.height * 0.1, screen.height - MIN_DRAG_TRAVEL - 1));
-  const span = caller ? Math.floor(screen.height - deadZone - 1) : screen.height * 0.6;
+  const span = caller
+    ? Math.floor(screen.height - deadZone - 1)
+    : screen.height * CLEARANCE_BAND_FRACTION;
   const dy = Math.round(
     distance !== undefined && Number.isFinite(distance) && distance > 0
       ? caller
@@ -47,9 +51,9 @@ export function computeScrollFromDirection(
         : Math.min(distance, span)
       : caller
         ? span
-        : screen.height * 0.4 * amount,
+        : screen.height * SWIPE_FRACTION * amount,
   );
-  const dx = Math.round(screen.width * 0.4 * amount);
+  const dx = Math.round(screen.width * SWIPE_FRACTION * amount);
   if (caller && (direction === 'down' || direction === 'up')) {
     const start =
       direction === 'down'

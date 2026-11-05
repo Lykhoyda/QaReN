@@ -4,6 +4,7 @@ import {
   trimScrollBand,
   scrollBandTooSmall,
   computeScrollFromDirection,
+  type ScrollBand as Band,
 } from '../domain/scroll-gesture.js';
 import { randomUUID } from 'node:crypto';
 import { measureDispatchPhase, measureTiming, type TimingContext } from '../qa/timing.js';
@@ -2554,8 +2555,6 @@ export function buildDirectionalSwipeCliArgs(
     String(duration),
   ];
 }
-
-type Band = import('../domain/scroll-gesture.js').ScrollBand;
 
 function dragBand(within?: Band): Band {
   return trimScrollBand(

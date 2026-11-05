@@ -781,6 +781,7 @@ function centreCorridor(
 
 export interface PlainScrollBand extends ScrollBandReceipt {
   container?: Element;
+  distance?: number;
 }
 
 export function plainScrollBand(
@@ -819,15 +820,35 @@ export function plainScrollBand(
   )[0];
   if (!chosen) return unreachable ?? { status: 'no-geometry' };
   if (!root) return { status: 'no-geometry' };
+  const keyboardTop = screen.keyboardVisible !== false ? (screen.keyboardFrame?.y ?? null) : null;
+  const viewportGesture = computeScrollFromDirection(
+    direction,
+    0.6,
+    trimScrollBand(undefined, root, keyboardTop),
+  )!;
+  const distance = Math.abs(viewportGesture.y2 - viewportGesture.y1);
   const gesture = trimScrollBand(
     chosen.band,
     root,
-    screen.keyboardVisible !== false ? (screen.keyboardFrame?.y ?? null) : null,
+    keyboardTop,
     platform === 'android' ? 48 * (screen.pointScale ?? 1) : undefined,
   );
-  if (scrollBandTooSmall(gesture) || !computeScrollFromDirection(direction, 0.5, gesture))
+  if (
+    scrollBandTooSmall(gesture) ||
+    !computeScrollFromDirection(direction, 0.6, gesture, distance)
+  ) {
+    if (chosen.status === 'overlay-cut') {
+      const frame = elementFrame(chosen.container!)!;
+      const clipped = aboveKeyboard(
+        clip(clip(frame, elementViewport(chosen.container!)), root),
+        screen,
+      );
+      if (clipped && !centreCorridor(chosen.container!, clipped, screen))
+        return { status: 'unreachable', band: clipped, container: chosen.container };
+    }
     return { status: 'too-small', band: chosen.band };
-  return chosen;
+  }
+  return { ...chosen, distance };
 }
 
 export function scrollUntilBand(
