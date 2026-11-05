@@ -512,8 +512,6 @@ pub struct InterruptionReceipt {
     pub sole_decline: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_class: Option<InterruptionScreenClass>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub press_centre_y: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -583,9 +581,6 @@ impl InterruptionReceipt {
                 .filter(|sole| *sole)
                 .map(|_| "only control is the decline".to_string()),
             self.screen_class.map(word),
-            self.press_centre_y
-                .filter(|y| y.is_finite())
-                .map(|y| format!("press centre y {y:.0} pt")),
         ]
         .into_iter()
         .flatten()

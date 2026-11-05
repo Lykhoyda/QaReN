@@ -899,12 +899,11 @@ mod tests {
                   "t": 0, "outcome": "fail", "interruption": receipt },
                 { "block": "b", "line": 8, "attempt": 1, "kind": "step", "resolvedBy": "exact",
                   "t": 0, "outcome": "fail", "interruption": { "considered": true,
-                  "outcome": "did-not-disappear", "pressCentreY": 25.0 } }
+                  "outcome": "did-not-disappear" } }
             ],
             "jev": { "calls": 0, "medianMs": 0 },
             "llmTurns": 0, "escapes": 0, "recoveries": 0,
-            "failure": { "step": 7, "seen": "the target did not appear",
-                "suggestion": "line 9 targets this control; if the interruption is optional, move that step before line 7 or remove it" },
+            "failure": { "step": 7, "seen": "the target did not appear" },
         }))
         .unwrap();
         let report = render(&ReportInput {
@@ -918,17 +917,12 @@ mod tests {
             "interruption recovery: vetoed (later-target; ownership; line 9 (press); only control is the decline)"
         ));
         assert!(!report.contains("did-not-disappear"));
-        assert!(report.contains(
-            "Suggested plan edit: line 9 targets this control; if the interruption is optional, move that step before line 7 or remove it"
-        ));
+        assert!(!report.contains("Suggested plan edit:"));
         let stayed: crate::core::InterruptionReceipt = serde_json::from_value(
-            serde_json::json!({ "considered": true, "outcome": "did-not-disappear", "pressCentreY": 25.0 }),
+            serde_json::json!({ "considered": true, "outcome": "did-not-disappear" }),
         )
         .unwrap();
-        assert_eq!(
-            stayed.summary(),
-            "interruption recovery: did-not-disappear (press centre y 25 pt)"
-        );
+        assert_eq!(stayed.summary(), "interruption recovery: did-not-disappear");
         for class in ["permission-opt-in", "presented-layer"] {
             let classed = serde_json::json!({ "considered": true, "outcome": "dismissed", "screenClass": class });
             let parsed: crate::core::InterruptionReceipt =

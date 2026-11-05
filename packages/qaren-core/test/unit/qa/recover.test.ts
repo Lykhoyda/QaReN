@@ -1146,7 +1146,7 @@ const optIn = (decline = 'Skip', accept = 'Yes, notify me', ...extra: Element[])
     element('@accept', accept),
     ...extra,
   ]);
-const afterPress: RecoveryTarget = { ...waitHome, afterPlannedPress: true };
+const afterPress: RecoveryTarget = { ...waitHome, afterPlannedPress: true, pressOptIn: false };
 
 test('a permission opt-in after a planned press is dismissed with its soft decline', () => {
   for (const [decline, accept] of [
@@ -1168,6 +1168,9 @@ test('Close, consent accepts, a lone Skip or a third control are not a permissio
     optIn('Skip', 'Agree'),
     optIn('Skip', 'Continue'),
     optIn('Skip', 'Accept'),
+    optIn('Skip', 'Allow all'),
+    optIn('Skip', 'Accept all'),
+    optIn('Skip', 'Yes, notify me about all updates'),
     optIn('Skip', 'Notification settings'),
     optIn('Not now', 'Yes, turn off notifications'),
     optIn('Not now', 'Yes, do not notify me'),
@@ -1196,6 +1199,23 @@ test('Close, consent accepts, a lone Skip or a third control are not a permissio
     assert.equal(result, undefined);
     assert.equal(records[0].veto, 'previous-plan-press');
   }
+});
+
+test('press readback must prove the opt-in was absent, and base consent never takes Skip', () => {
+  for (const pressOptIn of [true, undefined]) {
+    const { result, records } = decide(optIn(), [{ ...afterPress, pressOptIn }]);
+    assert.equal(result, undefined);
+    assert.equal(records[0]?.veto, 'previous-plan-press');
+  }
+  for (const accept of ['Allow all', 'Accept all', 'Enable all notifications']) {
+    assert.equal(decide(optIn('Skip', accept), [waitHome]).result, undefined);
+  }
+  assert.equal(plannedSurface(optIn()).optIn, true);
+  assert.equal(plannedSurface(fixtureScreen([])).optIn, false);
+  assert.equal(
+    plannedSurface({ ...optIn(), coverage: { native: 'incomplete', react: 'complete' } }).optIn,
+    undefined,
+  );
 });
 
 test('any plan target that could be on the opt-in keeps it the plan’s own', () => {
@@ -1267,9 +1287,6 @@ function presented(
 const key = (id: string) => JSON.stringify(['RCTModalHostView', id]);
 
 test('a new identified sheet over the planned screen is dismissed with its own Close', () => {
-  const { result, records } = decide(presented(), [{ ...afterPress, pressBaseline: [] }]);
-  assert.deepEqual(result, { label: 'Close', screenClass: 'presented-layer' });
-  assert.deepEqual(records, []);
   // The press's own modal stays beneath the new sheet.
   assert.deepEqual(
     decide(presented({ extraModal: 'home' }), [{ ...afterPress, pressBaseline: [key('home')] }])
@@ -1281,37 +1298,69 @@ test('a new identified sheet over the planned screen is dismissed with its own C
 test('incomplete, anonymous, duplicate or unrelated sheet evidence keeps the press protection', () => {
   const cases: Array<[string, Screen, RecoveryTarget]> = [
     ['no baseline', presented(), afterPress],
+    ['empty baseline', presented(), { ...afterPress, pressBaseline: [] }],
     ['present at the press', presented(), { ...afterPress, pressBaseline: [key('sheet')] }],
     ['anonymous baseline', presented(), { ...afterPress, pressBaseline: [undefined] }],
-    ['anonymous sheet', presented({ modalId: '' }), { ...afterPress, pressBaseline: [] }],
-    ['duplicate sheet', presented({ extraModal: 'sheet' }), { ...afterPress, pressBaseline: [] }],
-    ['Close without an id', presented({ closeId: '' }), { ...afterPress, pressBaseline: [] }],
-    ['Close outside', presented({ closeInside: false }), { ...afterPress, pressBaseline: [] }],
-    ['extra window', presented({ extraModal: 'other' }), { ...afterPress, pressBaseline: [] }],
+    [
+      'anonymous sheet',
+      presented({ modalId: '', extraModal: 'home' }),
+      { ...afterPress, pressBaseline: [key('home')] },
+    ],
+    [
+      'duplicate sheet',
+      presented({ extraModal: 'sheet' }),
+      { ...afterPress, pressBaseline: [key('sheet')] },
+    ],
+    [
+      'Close without an id',
+      presented({ closeId: '', extraModal: 'home' }),
+      { ...afterPress, pressBaseline: [key('home')] },
+    ],
+    [
+      'Close outside',
+      presented({ closeInside: false, extraModal: 'home' }),
+      { ...afterPress, pressBaseline: [key('home')] },
+    ],
+    [
+      'extra window',
+      presented({ extraModal: 'other' }),
+      { ...afterPress, pressBaseline: [key('home')] },
+    ],
     ['replaced modal', presented(), { ...afterPress, pressBaseline: [key('home')] }],
     [
       'duplicate baseline',
       presented({ extraModal: 'home' }),
       { ...afterPress, pressBaseline: [key('home'), key('home')] },
     ],
-    ['press gap', { ...presented(), pressGapCount: 1 }, { ...afterPress, pressBaseline: [] }],
+    [
+      'press gap',
+      { ...presented({ extraModal: 'home' }), pressGapCount: 1 },
+      { ...afterPress, pressBaseline: [key('home')] },
+    ],
     [
       'unassociated React',
-      { ...presented(), semanticUnassociatedReact: 1 },
-      { ...afterPress, pressBaseline: [] },
+      { ...presented({ extraModal: 'home' }), semanticUnassociatedReact: 1 },
+      { ...afterPress, pressBaseline: [key('home')] },
     ],
-    ['unquoted later', presented(), { ...afterPress, pressBaseline: [], unquotedLater: true }],
+    [
+      'unquoted later',
+      presented({ extraModal: 'home' }),
+      { ...afterPress, pressBaseline: [key('home')], unquotedLater: true },
+    ],
   ];
   for (const [name, snapshot, target] of cases) {
     const { result, records } = decide(snapshot, [target]);
     assert.equal(result, undefined, name);
     assert.equal(records[0]?.veto, 'previous-plan-press', name);
   }
-  const incomplete = presented();
+  const incomplete = presented({ extraModal: 'home' });
   incomplete.reactHostEvidence!.typography!.complete = false;
-  assert.equal(decide(incomplete, [{ ...afterPress, pressBaseline: [] }]).result, undefined);
-  const laterOnSheet = decide(presented(), [
-    { ...afterPress, pressBaseline: [] },
+  assert.equal(
+    decide(incomplete, [{ ...afterPress, pressBaseline: [key('home')] }]).result,
+    undefined,
+  );
+  const laterOnSheet = decide(presented({ extraModal: 'home' }), [
+    { ...afterPress, pressBaseline: [key('home')] },
     later('sheet-title', 'wait', { laterBlock: true, exact: 'id' }),
   ]);
   assert.equal(laterOnSheet.result, undefined);

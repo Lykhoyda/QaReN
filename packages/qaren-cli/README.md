@@ -3439,8 +3439,6 @@ non-secure and have proven press support, with one of these exact English labels
 Zero candidates leave the original failure in place; several refuse
 `INTERRUPTION_AMBIGUOUS` without tapping. A candidate matching a later target's
 effective selector is left for that step; decline-label matching is case-insensitive.
-That step's line is then named in the failure's suggested plan edit: move it before
-the failing line if the interruption is optional, or remove it.
 Within a replayed block, recovery retains the declared target for the exemption
 and uses its stored selector to protect the planned control. Targets in later
 blocks use their declared identities until those blocks are prepared for replay.
@@ -3476,12 +3474,15 @@ While protected, a decline is still taken on a screen that is independent of the
 press, and only when no plan target could be on it: no remaining step in this or
 a later block has a target without quoted text, and no target of any step, in any
 block, is on screen, decline labels included, and press, fill and React association
-evidence is complete. A permission opt-in is one: exactly
+evidence is complete. A permission opt-in is one only when the complete press
+readback proved that shape absent: exactly
 two controls with proven press and fill evidence and no input, one a decline
 other than `Close`, `Dismiss` or `Cancel`, the other an accept that starts with
 `Allow`, `Enable`, `Turn on` or `Notify me`, or starts with `Yes` and mentions
-notifications. A presented sheet is the other: complete React host evidence at
-the press and now, every identified modal container from the press still present,
+notifications, without negation or an accept label containing `all`; Skip is never
+taken on an accept-all consent screen. A presented sheet is the other: complete
+React host evidence at the press and now, a non-empty press-time modal baseline,
+every identified modal container from the press still present,
 exactly one new identified one, no anonymous or duplicate container identity, and
 a decline whose test ID belongs to exactly one host inside that new container.
 The step's receipt then records `screenClass` (`permission-opt-in` or
@@ -3498,14 +3499,11 @@ subreason `previous-plan-press`, and `failure.seen` includes
 was not found; automatic app dismissal was withheld`, and the walk's
 `next_action` is `inspect_last_observed_screen`, also on a repeat, with a
 `failure.recovery` of reason `previous_plan_press` whose five rungs are all
-inapplicable. When the last screen's only control is a decline, or it has a
-permission opt-in's shape, the failure's suggested plan edit is to add a step
-that taps the decline, or an optional step for a screen that only sometimes
-appears, which plans do not support yet. A failed check after such a veto
+inapplicable. A failed check after such a veto
 carries the same `failure.seen` note without a subreason. Apart from a presented
 sheet as defined above, a sheet that appears while the planned surface is still on
 screen, including one that opens together with it, is therefore not dismissed
-either; insert the plan's own step for it.
+either.
 
 With `TYPESAFE_API_KEY`, Jev may veto a selected control when the screen may be
 related to the step or its purpose is uncertain. It never chooses a control,
@@ -3538,9 +3536,7 @@ step's ledger row carries an `interruption` receipt: `considered`, an `outcome`
 veto, whether a later-target veto came from `presence` or `ownership`, the target's
 plan line and step kind, whether the decline was the screen's only control, the
 `screenClass` a dismissed screen was recognised as (`permission-opt-in` or
-`presented-layer`), and,
-when a dispatched decline stayed, the vertical centre in points of the control
-the press aimed at; the report prints it as one line under the failure. A Jev veto
+`presented-layer`); the report prints it as one line under the failure. A Jev veto
 or a guard change before dispatch records `not-dispatched`. A dismissal stays on
 the row through the step's retry. A no-candidate veto also reports
 each decline-labelled element's first failed predicate; press capability failures

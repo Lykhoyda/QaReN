@@ -21,6 +21,7 @@ export interface RecoveryTarget extends Target {
   afterPlannedPress?: boolean;
   // Modal containers in the capture that passed that press; absent when it was incomplete.
   pressBaseline?: ReadonlyArray<string | undefined>;
+  pressOptIn?: boolean;
   // A remaining step's target has no quoted text, so its presence on screen cannot be ruled out.
   unquotedLater?: boolean;
 }
@@ -234,14 +235,18 @@ export function dismissCandidate(
       return 'target-ancestor';
     return undefined;
   };
+  const acceptAll = screen.elements.some(
+    (e) => !e.offscreen && e.semantic?.press === 'supported' && /\ball\b/iu.test(e.label ?? ''),
+  );
   const candidates = screen.elements.filter(
     (e) => e.label !== undefined && DECLINE_LABELS.has(e.label) && failedPredicate(e) === undefined,
   );
   const only = candidates.length === 1 ? candidates[0] : undefined;
   const screenClass: InterruptionScreenClass | undefined =
-    !only || !planTargetsAbsent(screen, planTargets)
+    !only || (only.label === 'Skip' && acceptAll) || !planTargetsAbsent(screen, planTargets)
       ? undefined
-      : optInShaped(screen) === only
+      : (!planTargets[0].afterPlannedPress || planTargets[0].pressOptIn === false) &&
+          optInShaped(screen) === only
         ? 'permission-opt-in'
         : planTargets[0].afterPlannedPress &&
             presentedLayer(screen, planTargets[0].pressBaseline, only)
@@ -257,6 +262,7 @@ export function dismissCandidate(
         message: 'several decline controls are visible; nothing was tapped',
       },
     };
+  if (only?.label === 'Skip' && acceptAll) return rejected('no-candidate');
   if (candidates.length === 1) {
     const label = candidates[0].label!.toLowerCase();
     const plannedIndex = planTargets.findIndex(
@@ -329,7 +335,8 @@ export function optInShaped(screen: Screen): Element | undefined {
     accept.semantic?.press === 'supported' &&
     accept.semantic.visibility === 'visible' &&
     PERMISSION_ACCEPT.test(accept.label ?? '') &&
-    !NEGATION.test(accept.label ?? '')
+    !NEGATION.test(accept.label ?? '') &&
+    !/\ball\b/iu.test(accept.label ?? '')
     ? decline
     : undefined;
 }
@@ -357,7 +364,7 @@ function presentedLayer(
   const evidence = screen.reactHostEvidence;
   const typography = evidence?.typography;
   const hosts = modalHosts(screen);
-  if (!baseline || !hosts || !evidence || !typography || !candidate.testID) return false;
+  if (!baseline?.length || !hosts || !evidence || !typography || !candidate.testID) return false;
   const ids = hosts.map((host) => host.key);
   // Anonymous or duplicate identities never prove absence.
   if (
@@ -385,6 +392,7 @@ const completeCapture = (screen: Screen): boolean =>
 
 export interface PlannedSurface {
   container?: string;
+  optIn?: boolean;
   // Every modal container in the capture that passed the press, for later novelty checks.
   baseline?: Array<string | undefined>;
 }
@@ -407,7 +415,15 @@ const modalContainers = (screen: Screen): Array<string | undefined> | undefined 
 export function plannedSurface(after: Screen, before?: Screen): PlannedSurface {
   const baseline =
     after.front === 'app' && completeCapture(after) ? modalContainers(after) : undefined;
-  const surface: PlannedSurface = baseline ? { baseline } : {};
+  const surface: PlannedSurface = {
+    ...(baseline ? { baseline } : {}),
+    ...(after.front === 'app' &&
+    completeCapture(after) &&
+    provenControls(after) !== undefined &&
+    !after.semanticUnassociatedReact
+      ? { optIn: optInShaped(after) !== undefined }
+      : {}),
+  };
   if (!before || before.front !== 'app' || !completeCapture(before) || !baseline) return surface;
   const previous = modalContainers(before);
   if (previous && baseline.length === 1 && baseline[0] && !previous.includes(baseline[0]))

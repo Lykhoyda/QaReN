@@ -84,8 +84,6 @@ export interface InterruptionReceipt {
   soleDecline?: boolean;
   // The fixed class a dismissed screen was recognised as, when one applied.
   screenClass?: InterruptionScreenClass;
-  // Vertical centre, in points, of the decline control a dispatched press aimed at.
-  pressCentreY?: number;
 }
 
 // The value-free announcement that a plan line begins; its row later carries the same operationId.

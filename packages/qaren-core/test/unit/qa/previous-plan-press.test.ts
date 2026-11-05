@@ -102,14 +102,7 @@ test('a missing wait after a passed planned press leaves the opened screen and f
     assert.equal(result.recoveries, 0, name);
     assert.equal(result.failure?.step, 2, name);
     assert.equal(result.failure?.subreason, 'previous-plan-press', name);
-    // A screen whose only control is the decline is named as a plan edit; others keep no suggestion.
-    if (name === 'opener gone' || name === 'decline named Skip')
-      assert.match(
-        result.failure?.suggestion ?? '',
-        /add a step before line 2 .*optional step/,
-        name,
-      );
-    else assert.equal(result.failure?.suggestion, undefined, name);
+    assert.equal(result.failure?.suggestion, undefined, name);
     assert.ok(result.failure?.screen, name);
     assert.match(
       result.failure?.seen ?? '',
@@ -132,7 +125,13 @@ test('a permission opt-in after a planned press is declined once, recorded and t
         element('@decline', decline),
         element('@accept', 'Yes, notify me'),
       ]);
-    const f = app(opener(), { '@open': optIn, '@decline': ready });
+    const f = app(opener(), {
+      '@open': () => screen([element('@heading', 'Home', { kind: 'text' })]),
+      '@decline': ready,
+    });
+    f.deps.row = (row) => {
+      if (row.line === 1 && row.outcome === 'pass') f.show(optIn());
+    };
     const result = await run('1. Tap "Open"\n2. Wait for "Ready" to appear', f);
     assert.equal(result.verdict, 'PASS', result.failure?.seen);
     assert.deepEqual(f.actions, ['press @open', 'press @decline'], decline);
@@ -148,6 +147,51 @@ test('a permission opt-in after a planned press is declined once, recorded and t
   }
 });
 
+test('a consent or opt-in already present at planned press readback stays protected', async () => {
+  for (const accept of ['Allow all', 'Accept all', 'Enable all notifications', 'Allow']) {
+    const consent = () => screen([close('Skip'), element('@accept', accept)]);
+    const f = app(screen([element('@open', 'Open consent')]), {
+      '@open': consent,
+      '@close': () => screen([element('@continue', 'Continue')]),
+    });
+    const result = await run('1. Tap "Open consent"\n2. Wait for "Continue" to appear', f);
+    assert.equal(result.verdict, 'FAIL', accept);
+    assert.equal(result.failure?.subreason, 'previous-plan-press', accept);
+    assert.deepEqual(f.actions, ['press @open'], accept);
+    assert.equal(result.recoveries, 0, accept);
+  }
+});
+
+test('a consent modal arriving after an empty press baseline stays protected', async () => {
+  const consent = withModal(screen([close('Skip')]), 'consent');
+  consent.elements[0].testID = 'skip';
+  consent.reactHostEvidence!.hosts.push({
+    testID: 'skip',
+    role: null,
+    roleSource: 'none',
+    capabilities: {},
+  });
+  consent.reactHostEvidence!.typography!.nodes.push({
+    hostIndex: 1,
+    parentHostIndex: 0,
+    rootIndex: 0,
+    hostType: 'View',
+    text: { kind: 'none' },
+  });
+  const f = app(opener(), {
+    '@open': () => withModal(screen([element('@heading', 'Loading', { kind: 'text' })])),
+    '@close': ready,
+  });
+  f.deps.row = (row) => {
+    if (row.line === 1 && row.outcome === 'pass') f.show(consent);
+  };
+  const result = await run('1. Tap "Open"\n2. Wait for "Ready" to appear', f);
+  assert.equal(result.verdict, 'FAIL');
+  assert.equal(result.failure?.subreason, 'previous-plan-press');
+  assert.deepEqual(f.actions, ['press @open']);
+  assert.equal(result.recoveries, 0);
+});
+
 test('an opt-in a later unquoted step could target stays the planned press’s own', async () => {
   const optIn = () => screen([element('@skip', 'Skip'), element('@accept', 'Allow')]);
   const f = app(opener(), { '@open': optIn, '@skip': ready });
@@ -158,7 +202,7 @@ test('an opt-in a later unquoted step could target stays the planned press’s o
   assert.equal(result.verdict, 'FAIL');
   assert.deepEqual(f.actions, ['press @open']);
   assert.equal(result.failure?.subreason, 'previous-plan-press');
-  assert.match(result.failure?.suggestion ?? '', /optional step/);
+  assert.equal(result.failure?.suggestion, undefined);
 });
 
 test('ANT-848: a planned press accepted despite a handler error protects its consent screen', async () => {

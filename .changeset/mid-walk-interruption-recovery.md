@@ -2,4 +2,4 @@
 "qaren": patch
 ---
 
-Decline a permission opt-in, or a new sheet presented over the screen a planned tap opened, during the walk when no plan target could be on it, recognise "Don't allow" as a decline, record the recognised screen class on the step's receipt, and name a blocking decline or permission control even when the run withholds screen text.
+Decline a permission opt-in proven absent at planned press readback or a newly identified sheet above a non-empty preserved modal baseline when no plan target could be on it, never Skip accept-all consent, recognise "Don't allow", record the screen class, and name blocking controls even with screen text withheld.

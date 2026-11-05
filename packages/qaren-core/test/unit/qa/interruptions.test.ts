@@ -1096,16 +1096,12 @@ test('a later tap whose text is in the promo copy no longer keeps a sole-Close p
   }
 });
 
-test('a later step naming the sole Close keeps the promo and suggests moving that step', async () => {
+test('a later step naming the sole Close keeps the promo and records ownership', async () => {
   const f = app(promo());
   ticking(f);
   const result = await runPlan(waitPlan('2. Tap "Close"'), f.deps);
   assert.equal(result.verdict, 'FAIL');
   assert.deepEqual(f.actions, []);
-  assert.equal(
-    result.failure?.suggestion,
-    'line 2 targets this control; if the interruption is optional, move that step before line 1 or remove it',
-  );
   assert.deepEqual(result.steps.at(-1)?.interruption, {
     considered: true,
     outcome: 'vetoed',
@@ -1117,16 +1113,12 @@ test('a later step naming the sole Close keeps the promo and suggests moving tha
   });
 });
 
-test('a later wait on the sole Close ID keeps it and suggests the owning line', async () => {
+test('a later wait on the sole Close ID keeps it and records the owning line', async () => {
   const f = app(fullScreenPromo());
   const streamed = ticking(f);
   const result = await runPlan(waitPlan('2. Wait for "promo-close" to appear'), f.deps);
   assert.equal(result.verdict, 'FAIL');
   assert.deepEqual(f.actions, []);
-  assert.equal(
-    result.failure?.suggestion,
-    'line 2 targets this control; if the interruption is optional, move that step before line 1 or remove it',
-  );
   const receipt = {
     considered: true,
     outcome: 'vetoed',
@@ -1185,28 +1177,7 @@ for (const [disposition, pressResult, dispatched] of [
   ['not executed', { ok: true, executed: false }, false],
 ] as const) {
   test(`a ${disposition} decline retains dispatch evidence without retrying`, async () => {
-    const nodes = [
-      {
-        ref: '@close',
-        type: 'Button',
-        label: 'Close',
-        hittable: true,
-        rect: { x: 340, y: 10, width: 40, height: 30 },
-      },
-    ];
-    const framed = () =>
-      joinScreen(
-        nodes,
-        [],
-        'app',
-        { native: 'complete', react: 'complete' },
-        { hosts: [], complete: true },
-        {
-          source: 'xcui-live',
-          nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
-        },
-      );
-    const f = app(framed());
+    const f = app(promo());
     ticking(f);
     f.deps.press = async (ref) => {
       f.actions.push(`press ${ref}`);
@@ -1217,6 +1188,5 @@ for (const [disposition, pressResult, dispatched] of [
     assert.deepEqual(f.actions, ['press @close']);
     const receipt = result.steps.at(-1)?.interruption;
     assert.equal(receipt?.outcome, dispatched ? 'did-not-disappear' : 'not-dispatched');
-    assert.equal(receipt?.pressCentreY, dispatched ? 25 : undefined);
   });
 }

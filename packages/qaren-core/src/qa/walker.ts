@@ -108,7 +108,6 @@ import {
   type PlannedSurface,
   type RecoveryTarget,
   dismissCandidate,
-  optInShaped,
   plannedSurface,
   recover,
   soleDecline,
@@ -1578,18 +1577,7 @@ async function walkBlockScoped(
           subreason: 'previous-plan-press',
         };
       reason = [...segments(reason), PREVIOUS_PLAN_PRESS];
-      if (soleDecline(last) || optInShaped(last))
-        lastScreen = {
-          ...lastScreen,
-          suggestion: `a screen with a decline control followed the previous planned press; if it always appears, add a step before line ${item.line} that taps its decline; if it appears only sometimes, it needs an optional step, which plans do not support yet`,
-        };
     }
-    const owned = interruptions.get(item.line);
-    if (owned?.provenance === 'ownership' && owned.targetLine !== undefined)
-      lastScreen = {
-        ...lastScreen,
-        suggestion: `line ${owned.targetLine} targets this control; if the interruption is optional, move that step before line ${item.line} or remove it`,
-      };
     const withheld = privacy.textWithheld(last);
     emit({
       ...row,
@@ -2494,6 +2482,7 @@ async function walkBlockScoped(
         ...(sequence.plannedPress
           ? {
               afterPlannedPress: true,
+              pressOptIn: sequence.plannedPress.optIn,
               ...(sequence.plannedPress.baseline
                 ? { pressBaseline: sequence.plannedPress.baseline }
                 : {}),
@@ -2542,7 +2531,6 @@ async function walkBlockScoped(
     let declineAttempted = false;
     let dismissStarted = false;
     let declineDispatched = false;
-    let declineCentreY: number | undefined;
     const result = await recover(
       fresh.screen,
       {
@@ -2603,7 +2591,6 @@ async function walkBlockScoped(
           };
           let taken = 0;
           let dispatched = false;
-          let observed: Screen | undefined;
           const nested = await walkBlock(
             support,
             {
@@ -2611,7 +2598,6 @@ async function walkBlockScoped(
               captureScreen: async (options) => {
                 const screen = await captureScreen({ ...options, platformPresence: true });
                 if (!dispatched) {
-                  observed = screen;
                   const candidate = dismissCandidate(screen, planTargets, (record) =>
                     interruptionRejected(record),
                   );
@@ -2631,12 +2617,6 @@ async function walkBlockScoped(
                     reason: 'the decline control was already attempted; it was not retried',
                   });
                 dispatched = true;
-                const control = observed?.elements.find((e) => e.ref === ref);
-                const frame = control && elementFrame(control);
-                // Android frames are pixels; the receipt is in points like iOS.
-                declineCentreY = frame
-                  ? (frame.y + frame.height / 2) / (observed?.pointScale ?? 1)
-                  : undefined;
                 const result = await deps.press(ref, context);
                 declineDispatched = result.executed !== false && result.mutation !== 'none';
                 if (!result.ok || result.executed === false) {
@@ -2708,9 +2688,6 @@ async function walkBlockScoped(
         outcome: declined,
         ...(result && 'handled' in result && result.screenClass
           ? { screenClass: result.screenClass }
-          : {}),
-        ...(declined === 'did-not-disappear' && declineCentreY !== undefined
-          ? { pressCentreY: declineCentreY }
           : {}),
       });
     if (!result) return undefined;
