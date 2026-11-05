@@ -1313,7 +1313,8 @@ an unverified result proof. Android has no rung 3 yet.
 
 ### Plan checks and screen evidence
 
-When a step fails on its own target (`TARGET_NOT_FOUND`, `REPLAY_SELECTOR`,
+When a step fails on its own target (`TARGET_NOT_FOUND`,
+`TARGET_NOT_FOUND_AFTER_LAUNCH`, `REPLAY_SELECTOR`,
 `TARGET_AMBIGUOUS`, an unmet quoted wait including `TARGET_REACT_ONLY`, or a
 scroll that stayed off screen),
 the receipt's `failure` carries `screen`, `suggestion` and `subreason`.
@@ -3205,6 +3206,17 @@ nested in its repository they do not make the next run's candidate dirty.
 
 Selection-proof refusals bypass step recovery; follow the
 [press evidence contract](#occluded-taps-and-focus) before retrying.
+
+The first top-level Tap or Fill of a run gets one bounded wait for a quoted
+target that is absent while the screen is still loading; a passing login replay
+re-arms it for the step it retries, or for the next Tap or Fill. Recovery runs first; when it has nothing to do, QaReN polls
+captures every 500 ms for up to 15 s from the step's start and acts only on an exact
+label or testID match, from that fresh capture. Disabled, ambiguous, off-screen,
+stored-selector and described targets keep their immediate failure. The row
+records `implicitWaitMs`. A target that never appears fails
+`TARGET_NOT_FOUND_AFTER_LAUNCH`, with the screen-change count from the presence
+read when it saw any, and a suggestion to insert a `Wait for` the target before
+that line. Any other step or block keeps the immediate failure.
 
 Development error overlay recognition covers iOS RedBox and LogBox and Android
 native RedBox. Android native RedBox recognition has automated test coverage only,

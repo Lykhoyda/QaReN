@@ -267,6 +267,7 @@ mod tests {
             overlay_checks: None,
             scroll_band: None,
             dev_error: None,
+            implicit_wait_ms: None,
         }
     }
 

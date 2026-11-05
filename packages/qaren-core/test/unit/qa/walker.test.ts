@@ -890,7 +890,8 @@ test('a failing fill keeps the typed value out of the reason and the evidence li
   assert.equal(ledger.verdict, 'FAIL');
   const dumped = JSON.stringify({ rows: f.rows, failure: ledger.failure });
   assert.equal(dumped.includes('hunter2'), false, dumped);
-  assert.match(ledger.failure?.seen ?? '', /•••/);
+  // The first step's launch suggestion names its target, masked like the reason.
+  assert.match(ledger.failure?.suggestion ?? '', /Wait for "•••"/);
 });
 
 test('a value typed earlier in the run never reaches a later failure, even when the screen shows it', async () => {

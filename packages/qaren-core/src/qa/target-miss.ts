@@ -303,6 +303,14 @@ export function missSuggestion(
   }
 }
 
+// The first step after launch polled out its allowance; `quoted` is the plan's own literal, already redacted.
+export function launchMissSuggestion(quoted: string, line: number, waitLine?: number): string {
+  const insert = `insert Wait for "${quoted}" before line ${line}`;
+  return waitLine === undefined
+    ? `${insert}; the first screen had not rendered it yet`
+    : `${insert}, or move line ${waitLine}'s wait to an element that renders with it`;
+}
+
 export function cleanTargetMiss(
   value: Record<string, unknown>,
 ): Record<string, unknown> | undefined {

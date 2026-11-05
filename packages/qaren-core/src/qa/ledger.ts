@@ -65,6 +65,8 @@ export interface LedgerRow {
   devError?: { variant: 'redbox' | 'logbox'; dismissal: number };
   // A plain scroll that passed although two dispatched attempts left the screen unchanged.
   scrollDetail?: { status: 'no_visible_change'; attempts: 2 };
+  // How long the first Tap or Fill after launch polled for its absent target.
+  implicitWaitMs?: number;
 }
 
 // The value-free announcement that a plan line begins; its row later carries the same operationId.
