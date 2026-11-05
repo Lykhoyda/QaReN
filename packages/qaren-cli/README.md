@@ -963,13 +963,28 @@ passing press with its line and reason, and is omitted when empty. The row's
 reason. A later plan check still decides whether the intended screen followed.
 
 A plain `Scroll down` or `Scroll up` is a gesture, not an assertion. It passes
-when a cleanly dispatched scroll changes the app screen. When the first scroll
-leaves the screen unchanged, QaReN scrolls once more under the same operation
+when a cleanly dispatched scroll changes the app screen, including descendant
+frame movement too small to change the screen signature. With complete native
+geometry, it chooses the largest scroll-container band clear of front overlays
+and the keyboard; `scrollBand` records the choice. A container covered at its
+clip centre refuses before dispatch with `SCROLL_CONTAINER_UNREACHABLE` and
+cause `scroll_container_unreachable`, suggesting a scroll-until target or removing
+the step. A side rail that leaves the centre clear still permits a drag.
+No captured container or an empty frame keeps the viewport gesture with
+`scrollBand.status: "no-geometry"`; a band too small for the handler's actual
+rounded drag does the same with `"too-small"`.
+When the first scroll leaves the screen unchanged, QaReN scrolls once more under the same operation
 id; if both scrolls dispatched cleanly with complete native app captures
 before and after each attempt and neither changed the screen,
 the step passes with reason `SCROLL_NO_VISIBLE_CHANGE` and the row field
 `scrollDetail: {"status":"no_visible_change","attempts":2}`, and no recovery tap
-runs. An unchanged scroll with incomplete captures or only one attempt
+runs. If both attempts instead prove unchanged descendant frames with content
+extending beyond the container in the scroll direction, the row carries
+`scrollDetail.status: "no_visible_change_content_remains"`; live progress and
+the report warn that nothing moved although content extends beyond the scroll
+view. This is geometric evidence, not proof of remaining scroll range, so the
+step still passes. Missing or ambiguous geometry keeps the ordinary note.
+An unchanged scroll with incomplete captures or only one attempt
 (including after recovery) still fails without `scrollDetail`.
 A no-op result does not prove the content ended: QaReN has no end-of-list detector.
 The receipt's `ledger.no_visible_change_scrolls` lists those lines and is

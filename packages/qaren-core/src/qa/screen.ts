@@ -145,6 +145,7 @@ export function reactOnlyFactsOf(element: Element): ReactOnlyFacts | undefined {
 
 const labelAncestors = new WeakMap<Element, Element[]>();
 const soleLabelTexts = new WeakMap<Element, Element>();
+const nativeTypes = new WeakMap<Element, string>();
 const elementFrames = new WeakMap<Element, NonNullable<NativeNode['rect']>>();
 const nativeAncestors = new WeakMap<Element, Element[]>();
 const elementViewports = new WeakMap<Element, NonNullable<NativeNode['rect']>>();
@@ -198,6 +199,10 @@ export function soleLabelTextOf(element: Element): Element | undefined {
 // Native tree ancestors, nearest first.
 export function ancestorsOf(element: Element): readonly Element[] {
   return nativeAncestors.get(element) ?? [];
+}
+
+export function nativeTypeOf(element: Element): string | undefined {
+  return nativeTypes.get(element);
 }
 
 export function elementFrame(element: Element): NativeNode['rect'] {
@@ -1266,6 +1271,7 @@ export function join(
   }
   const textDescendants = new Map<number, number[]>();
   nodes.forEach((n, i) => {
+    if (n.type) nativeTypes.set(elements[i], n.type);
     if (n.rect) elementFrames.set(elements[i], n.rect);
     if (underKeyboard(n, i)) keyboardCoveredElements.add(elements[i]);
     const ancestors: Element[] = [];

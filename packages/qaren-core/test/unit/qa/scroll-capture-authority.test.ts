@@ -388,13 +388,14 @@ test('under-bar continuation retains the six-drag bound', async () => {
   }
 });
 
-test('plain scroll retains its centered gesture and ordinary capture', async () => {
+test('plain scroll uses its container band and retains ordinary capture', async () => {
   const f = fixture();
   try {
     const result = await walkBlock(parsePlan('1. Scroll down').blocks![0], f.f.deps);
     assert.equal(result.block.outcome, 'pass');
     assert.equal(f.drags(), 1);
-    assert.deepEqual(f.endpoints, [[201, 542, 201, 332]]);
+    assert.equal(result.rows.at(-1)?.scrollBand?.status, 'clear');
+    assert.deepEqual(f.endpoints, [[201, 758, 201, 21]]);
     assert.ok(f.modes.every((presence) => !presence));
   } finally {
     clearRefMap();

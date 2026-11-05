@@ -64,7 +64,7 @@ export interface LedgerRow {
   // The overlay variant and dismissal attempt number, including failed attempts, never its text.
   devError?: { variant: 'redbox' | 'logbox'; dismissal: number };
   // A plain scroll that passed although two dispatched attempts left the screen unchanged.
-  scrollDetail?: { status: 'no_visible_change'; attempts: 2 };
+  scrollDetail?: { status: 'no_visible_change' | 'no_visible_change_content_remains'; attempts: 2 };
   // How long the first Tap or Fill after launch polled for its absent target.
   implicitWaitMs?: number;
 }
@@ -88,7 +88,11 @@ export interface LedgerFailure {
   suggestion?: string;
   subreason?: TargetMissDiagnostic['reason'] | 'ambiguous' | 'previous-plan-press';
   // Why a scroll step failed; set only by the walker, never read from reason prose.
-  cause?: 'scroll_dispatch_failed' | 'scroll_context_changed' | 'scroll_target_absent';
+  cause?:
+    | 'scroll_dispatch_failed'
+    | 'scroll_context_changed'
+    | 'scroll_target_absent'
+    | 'scroll_container_unreachable';
 }
 
 export interface BlockResult {

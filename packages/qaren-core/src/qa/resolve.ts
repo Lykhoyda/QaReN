@@ -1,3 +1,8 @@
+import {
+  trimScrollBand,
+  scrollBandTooSmall,
+  computeScrollFromDirection,
+} from '../domain/scroll-gesture.js';
 import type { OverlayHits } from './live-hit.js';
 import { fillText } from './inputs.js';
 import type { Check, Step, Target } from './plan.js';
@@ -10,6 +15,7 @@ import {
   type AssertionEvidence,
   type VisibilityBlockerDiagnostic,
   actionView,
+  applicationFrame,
   isNativeInput,
   ancestorsOf,
   keyboardCoversElement,
@@ -731,8 +737,97 @@ export function scrollUntilContainer(target: Target, screen: Screen): Element | 
 }
 
 export interface ScrollBandReceipt {
-  status: 'no-geometry' | 'overlay-cut' | 'clear';
+  status: 'no-geometry' | 'overlay-cut' | 'clear' | 'unreachable' | 'too-small';
   band?: NonNullable<NativeNode['rect']>;
+}
+
+export function containerBand(
+  container: Element,
+  screen: Screen,
+  within?: NativeNode['rect'],
+): ScrollBandReceipt {
+  const frame = elementFrame(container);
+  const band = within ?? (frame && aboveKeyboard(clip(frame, elementViewport(container)), screen));
+  if (!band) return { status: 'no-geometry' };
+  const clear = clearOfFrontOverlays(container, band, screen);
+  const result = clear ?? { ...band, height: 0 };
+  return { status: sameRect(band, result) ? 'clear' : 'overlay-cut', band: result };
+}
+
+function centreCorridor(
+  container: Element,
+  band: NonNullable<NativeNode['rect']>,
+  screen: Screen,
+): NativeNode['rect'] {
+  const x = band.x + band.width / 2;
+  const y = band.y + band.height / 2;
+  const overlays = frontOverlayFrames(container, band, screen);
+  if (overlays.some((r) => x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height))
+    return undefined;
+  const padding = 4 * (screen.pointScale ?? 1);
+  let radius = band.width / 2;
+  for (const r of overlays) {
+    if (r.x + r.width <= x) radius = Math.min(radius, x - r.x - r.width - padding);
+    else if (r.x > x) radius = Math.min(radius, r.x - x - padding);
+  }
+  if (radius <= 0) return { ...band, width: 0 };
+  return (
+    clearOfFrontOverlays(container, { ...band, x: x - radius, width: radius * 2 }, screen) ?? {
+      ...band,
+      height: 0,
+    }
+  );
+}
+
+export interface PlainScrollBand extends ScrollBandReceipt {
+  container?: Element;
+}
+
+export function plainScrollBand(
+  screen: Screen,
+  direction: 'up' | 'down',
+  platform?: 'ios' | 'android',
+): PlainScrollBand {
+  if ((screen.captureCoverage?.native ?? screen.coverage?.native) !== 'complete')
+    return { status: 'no-geometry' };
+  const root =
+    applicationFrame(screen) ?? screen.elements.filter(isWindow).map(elementFrame).find(Boolean);
+  const candidates: PlainScrollBand[] = [];
+  let unreachable: PlainScrollBand | undefined;
+  for (const container of screen.elements) {
+    if (!isScrollContainer(container) || horizontalOnlyContainer(scrollContainerType(container)))
+      continue;
+    const frame = elementFrame(container);
+    if (!frame || frame.width <= 0 || frame.height <= 0) continue;
+    const visible = clip(clip(frame, elementViewport(container)), root);
+    if (!visible) continue;
+    const clipped = aboveKeyboard(visible, screen);
+    if (!clipped) continue;
+    const receipt = containerBand(container, screen, clipped);
+    let band = receipt.band;
+    if (band && band.height <= 0) {
+      band = centreCorridor(container, clipped, screen);
+      if (!band) {
+        unreachable = { status: 'unreachable', band: clipped, container };
+        continue;
+      }
+    }
+    if (band) candidates.push({ ...receipt, band, container });
+  }
+  const chosen = candidates.sort(
+    (a, b) => b.band!.width * b.band!.height - a.band!.width * a.band!.height,
+  )[0];
+  if (!chosen) return unreachable ?? { status: 'no-geometry' };
+  if (!root) return { status: 'no-geometry' };
+  const gesture = trimScrollBand(
+    chosen.band,
+    root,
+    screen.keyboardVisible !== false ? (screen.keyboardFrame?.y ?? null) : null,
+    platform === 'android' ? 48 * (screen.pointScale ?? 1) : undefined,
+  );
+  if (scrollBandTooSmall(gesture) || !computeScrollFromDirection(direction, 0.5, gesture))
+    return { status: 'too-small', band: chosen.band };
+  return chosen;
 }
 
 export function scrollUntilBand(
@@ -757,20 +852,17 @@ export function scrollUntilBand(
       : aboveKeyboard(elementViewport(element), screen);
   }
   if (!band && (!element || element.offscreen)) {
-    const frame = elementFrame(container);
-    if (frame) band = aboveKeyboard(clip(frame, elementViewport(container)), screen);
+    const receipt = containerBand(container, screen);
+    observe?.(receipt);
+    return receipt.band;
   }
   if (!band) {
     observe?.({ status: inferredCut ? 'overlay-cut' : 'no-geometry' });
     return undefined;
   }
-  const clear = clearOfFrontOverlays(container, band, screen);
-  const result = clear ?? { ...band, height: 0 };
-  observe?.({
-    status: inferredCut || !sameRect(band, result) ? 'overlay-cut' : 'clear',
-    band: result,
-  });
-  return result;
+  const receipt = containerBand(container, screen, band);
+  observe?.({ ...receipt, status: inferredCut ? 'overlay-cut' : receipt.status });
+  return receipt.band;
 }
 
 const GENERIC_TARGET_WORDS = new Set(
