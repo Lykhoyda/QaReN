@@ -786,8 +786,8 @@ live frame equals that owner's frame; the tap goes to the unchanged point. A lat
 screen change cannot turn a proven no-mutation refusal into a passing action.
 For an iOS native-backed button outside an alert, not reported selected, inside
 a scroll container no taller than three times the target's height and with a visible enabled button
-beside it on the same row, QaReN requires exactly one match for the target's
-identity, retaining its original reference and reporting selected after the press,
+beside it on the same row, QaReN requires the target to be re-identified as
+described below and report selected after the press,
 while that identity remains on screen. Identity is kind plus testID when present,
 otherwise kind plus label on an element without a testID. If no element
 with that identity remains after the tap, the existing screen-change contract
@@ -818,11 +818,13 @@ When it was not (`target_identity_unavailable`):
 
 > The tapped control could not be re-identified after the tap (N observations over M ms), so its selected state was not read; one tap was sent.
 
-After a tap the runner reports as dispatched without error, the control is
-re-identified by its testID when exactly one native element carries it, even
-under a new element reference; React-only entries with the same testID are not
-counted. Any other tap keeps the stricter rule: exactly one match under the
-same element reference.
+After a tap the runner reports as dispatched successfully without error,
+React-only entries are excluded from identity matches. Exactly one remaining
+match re-identifies the control, even under a new element reference when the
+target has a testID; a target without a testID must retain its original reference.
+Multiple native matches, or only a React-only entry remaining, leave the control
+unbound. A tap not reported as dispatched successfully without error keeps the
+stricter rule: exactly one identity match under the same element reference.
 
 On iOS, before tapping a candidate matching the row-choice heuristic above, QaReN
 attempts to dismiss a visible keyboard through the keyboard guard's dismissal chain
