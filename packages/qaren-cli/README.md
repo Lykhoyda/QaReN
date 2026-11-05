@@ -2307,8 +2307,9 @@ result through both `NODE_OPTIONS` and `npm_config_node_options` and pnpm's
 `--config.node-options` override so workspace settings cannot remove it.
 The query uses `--json`: pnpm 9 and later print a JSON string after any warning,
 while pnpm 8 prints the raw value, so pnpm's warning and notice lines are dropped
-and one remaining raw line is the value. If the query fails, times out or is
-cancelled, or anything other than one value is left, it uses inherited
+(colour codes included) and one remaining raw line of Node flags is the value.
+If the query fails, times out or is cancelled, or anything other than one value
+is left, it uses inherited
 `NODE_OPTIONS` and records a value-free fallback note; cancellation still
 prevents startup.
 A native-side configuration override is not visible in the artifact.

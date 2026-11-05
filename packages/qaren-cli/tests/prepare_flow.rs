@@ -7876,9 +7876,27 @@ fn ios_metro_preserves_effective_pnpm_options_or_inherited_fallback() {
             "--max-old-space-size=4096",
             false,
         ),
-        // Anything but one value left after pnpm's notices: no configured options, logged.
+        // A coloured warning (FORCE_COLOR) is still a warning.
+        (
+            CmdOutput::success(
+                "\u{1b}[33mWARN\u{1b}[39m  Unsupported setting\n--max-old-space-size=4096\n",
+            ),
+            "--max-old-space-size=4096",
+            false,
+        ),
+        (
+            CmdOutput::success("\u{1b}[33m WARN \u{1b}[39m Unsupported setting\n"),
+            "--trace-warnings",
+            false,
+        ),
+        // Anything but one Node-flag value left after pnpm's notices: no configured options, logged.
         (
             CmdOutput::success("unexpected output\n--max-old-space-size=4096\n"),
+            "--trace-warnings",
+            true,
+        ),
+        (
+            CmdOutput::success("Some unrecognised message\n"),
             "--trace-warnings",
             true,
         ),
