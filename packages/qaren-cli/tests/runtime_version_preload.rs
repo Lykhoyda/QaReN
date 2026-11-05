@@ -111,6 +111,74 @@ fn pin(fx: &Fixture, body: &str) {
 }
 
 #[test]
+fn pnpm_workspace_node_options_preserve_the_runtime_pin() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fx = fixture("pnpm");
+    write(
+        &fx.app.join("package.json"),
+        r#"{"name":"pin-fixture","private":true,"packageManager":"pnpm@11.5.2"}"#,
+    );
+    if Command::new("pnpm")
+        .arg("--version")
+        .current_dir(&fx.app)
+        .output()
+        .is_err()
+    {
+        std::fs::remove_dir_all(fx.app.parent().unwrap()).unwrap();
+        return;
+    }
+    write(
+        &fx.app.join("pnpm-workspace.yaml"),
+        "nodeOptions: --max-old-space-size=${HEAP}\nverifyDepsBeforeRun: never\n",
+    );
+    let configured = Command::new("pnpm")
+        .args(["config", "get", "node-options"])
+        .env("HEAP", "4096")
+        .current_dir(&fx.app)
+        .output()
+        .unwrap();
+    assert!(configured.status.success(), "{configured:?}");
+    let base = String::from_utf8(configured.stdout).unwrap();
+    assert_eq!(base.trim(), "--max-old-space-size=4096");
+    let expo = fx.app.join("node_modules/.bin/expo");
+    write(
+        &expo,
+        &format!(
+            r#"#!/usr/bin/env node
+const mw = require({});
+mw("ios").then(value => console.log(JSON.stringify({{ value, options: process.env.NODE_OPTIONS, npmOptions: process.env.npm_config_node_options }})));
+"#,
+            serde_json::Value::from(fx.store_cli.join(MIDDLEWARE).join("ExpoGoManifestHandlerMiddleware.js").to_str().unwrap())
+        ),
+    );
+    std::fs::set_permissions(&expo, std::fs::Permissions::from_mode(0o755)).unwrap();
+    pin(&fx, r#"{"platform":"ios","value":"abc123"}"#);
+    let preload = write_preload(&fx.run_dir, &fx.app).unwrap();
+    let spec = metro::start_spec(&fx.app, 8791, true, false, Some(&preload), Some(base.trim()));
+    let output = Command::new(&spec.program)
+        .args(&spec.args)
+        .envs(spec.env.iter().cloned())
+        .env("HEAP", "4096")
+        .current_dir(&fx.app)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let served: serde_json::Value = serde_json::from_str(stdout.lines().last().unwrap()).unwrap();
+    // F3 requires the embedded pin plus the project's options in the actual dev-server child.
+    assert_eq!(served["value"], "abc123");
+    let expected = format!(
+        "--max-old-space-size=4096 --dns-result-order=ipv4first --require \"{}\"",
+        preload.display()
+    );
+    assert_eq!(served["options"], expected);
+    assert_eq!(served["npmOptions"], expected);
+    assert!(fx.run_dir.join(RESOLVED_MARKER).exists());
+    std::fs::remove_dir_all(fx.app.parent().unwrap()).unwrap();
+}
+
+#[test]
 fn the_pinned_platform_is_served_and_attested_by_pid_everything_else_delegates() {
     if !node() {
         return;

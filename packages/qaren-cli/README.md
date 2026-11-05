@@ -2285,7 +2285,8 @@ names that cause first and suggests a fixed development `runtimeVersion`, or
 your own dev server from a scratch copy with the resolved string. Before starting iOS Metro, QaReN asks pnpm for its effective `node-options`,
 including workspace, user and global configuration and pnpm's interpolation and
 escaping. It composes that value (or inherited `NODE_OPTIONS` when unset) with
-IPv4-first DNS and the preload, then passes the result through both variables.
+IPv4-first DNS and the preload, then passes the result through both variables
+and pnpm's `--config.node-options` override so workspace settings cannot remove it.
 If the query fails, times out or is cancelled, it uses inherited `NODE_OPTIONS`
 and records a value-free fallback note; cancellation still prevents startup. A native-side configuration override is
 not visible in the artifact.

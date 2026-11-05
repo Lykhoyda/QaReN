@@ -31,8 +31,12 @@ pub fn start_spec(
     }
     // Node resolves `localhost` to ::1 first, so --localhost alone listens on IPv6 while every probe and the app use 127.0.0.1.
     let options = dev_server_node_options(node_options, preload);
-    spec.env("NODE_OPTIONS", &options)
-        .env("npm_config_node_options", &options)
+    let mut spec = spec
+        .env("NODE_OPTIONS", &options)
+        .env("npm_config_node_options", &options);
+    // pnpm workspace nodeOptions overrides the environment unless supplied on its command line.
+    spec.args.insert(0, format!("--config.node-options={options}"));
+    spec
 }
 
 // Appends to the base options instead of replacing them; the preload path is quoted for Node's parser.

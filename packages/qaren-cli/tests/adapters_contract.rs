@@ -1612,7 +1612,15 @@ fn ios_metro_binds_to_loopback_and_android_metro_keeps_its_reverse_path() {
     let android = metro::start_spec(Path::new("/repo/app"), 8791, false, false, None, None);
     assert_eq!(
         ios.args,
-        ["exec", "expo", "start", "--port", "8791", "--localhost"]
+        [
+            "--config.node-options=--dns-result-order=ipv4first",
+            "exec",
+            "expo",
+            "start",
+            "--port",
+            "8791",
+            "--localhost"
+        ]
     );
     assert_eq!(android.args, ["exec", "expo", "start", "--port", "8791"]);
     // The probes and the app's initialUrl use 127.0.0.1, so iOS Metro must resolve localhost to IPv4 first.
