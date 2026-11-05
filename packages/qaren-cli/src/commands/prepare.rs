@@ -5633,32 +5633,38 @@ mod launch_tests {
             "candidate": { "project_root": "/app", "app_id": "com.example.app", "revision": "HEAD" },
             "ios": { "device_type": "com.apple.CoreSimulator.SimDeviceType.iPhone-17", "runtime": "com.apple.CoreSimulator.SimRuntime.iOS-26-5" }
         })).unwrap();
-        let mut runner = crate::exec::MockRunner::new();
-        runner.advance_on = Some(("simctl list".into(), 1000));
-        runner.expect_run(
-            "simctl list",
-            CmdOutput {
-                timed_out: true,
-                ..Default::default()
-            },
-        );
-        let deadline = runner.monotonic_ms() + 3000;
-        let failure = observe_borrowed_ios(
-            &mut runner,
-            &scenario,
-            "1DC408C4-51DA-4C4F-ACA1-39881C916FDD",
-            Some(deadline),
-        )
-        .unwrap_err();
-        assert_eq!(failure.code, FailureCode::ReadyDeadlineExceeded);
-        assert!(!failure.code.is_refusal());
-        assert!(failure
-            .detail
-            .contains("1 attempts over 1.0 s (last: deadline spent)"));
-        // No pause is spent when a further read could not start within the budget.
-        assert_eq!(runner.monotonic_ms(), deadline - 2000);
-        assert_eq!(runner.calls.len(), 1);
-        assert_eq!(runner.calls[0].timeout_seconds, 3);
+        for (budget, read_ms, attempts, unspent_ms, timeout_s) in [
+            (3000, 1000, 1, 2000, 3),
+            (31_000, 9000, 3, 0, 9),
+            (34_000, 10_000, 3, 0, 10),
+        ] {
+            let mut runner = crate::exec::MockRunner::new();
+            runner.advance_on = Some(("simctl list".into(), read_ms));
+            for _ in 0..attempts {
+                runner.expect_run(
+                    "simctl list",
+                    CmdOutput {
+                        timed_out: true,
+                        ..Default::default()
+                    },
+                );
+            }
+            let deadline = runner.monotonic_ms() + budget;
+            let failure = observe_borrowed_ios(
+                &mut runner,
+                &scenario,
+                "1DC408C4-51DA-4C4F-ACA1-39881C916FDD",
+                Some(deadline),
+            )
+            .unwrap_err();
+            assert_eq!(failure.code, FailureCode::ReadyDeadlineExceeded);
+            assert!(!failure.code.is_refusal());
+            assert!(failure.detail.contains("last: deadline spent"));
+            assert_eq!(runner.monotonic_ms(), deadline - unspent_ms);
+            assert_eq!(runner.calls.len(), attempts);
+            assert_eq!(runner.calls.last().unwrap().timeout_seconds, timeout_s);
+            assert_eq!(runner.remaining(), 0);
+        }
     }
 
     #[test]

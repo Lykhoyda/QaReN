@@ -136,14 +136,16 @@ fn cancellation_during_the_final_read_wins_over_success_and_exhaustion() {
     for output in [timeout(), CmdOutput::success(&inventory("Booted"))] {
         let mut runner = MockRunner::new();
         runner.cancel_after = Some(("simctl list".into(), "received SIGTERM".into()));
+        runner.advance_on = Some(("simctl list".into(), 5000));
         runner.expect_run("simctl list", output);
+        let deadline = runner.monotonic_ms() + 5000;
         let error = ios::read_inventory(
             &mut runner,
             InventoryRead {
                 attempts: 1,
                 per_read_timeout: Duration::from_secs(5),
                 pause: Duration::ZERO,
-                deadline_ms: None,
+                deadline_ms: Some(deadline),
                 cwd: None,
                 env: vec![],
                 between: &mut running,

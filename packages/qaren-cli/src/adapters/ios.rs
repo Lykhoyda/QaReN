@@ -417,9 +417,6 @@ pub fn read_inventory(
                 InventoryReadLast::Interrupted(Box::new(failure)),
             ));
         }
-        if attempts >= opts.attempts {
-            return Err(unavailable(runner, attempts, last));
-        }
         let remaining = opts.deadline_ms.map_or(u64::MAX, |deadline| {
             deadline.saturating_sub(runner.monotonic_ms())
         });
@@ -430,6 +427,9 @@ pub fn read_inventory(
                 attempts,
                 InventoryReadLast::DeadlineSpent,
             ));
+        }
+        if attempts >= opts.attempts {
+            return Err(unavailable(runner, attempts, last));
         }
         let mut spec = list_devices_spec();
         spec.timeout_seconds = timeout_ms / 1000;
