@@ -4010,11 +4010,18 @@ async function walkBlockScoped(
           if (selectionTarget && !(!act!.ok && act!.mutation === 'none')) {
             const targetPresent = (screen: Screen): boolean =>
               screen.elements.some((candidate) => sameIdentity(candidate, selectionTarget!));
+            // After a clean dispatch a testID binds its one native control whatever its positional ref;
+            // React-only leftovers are not that control. An unclean press keeps the strict same-ref rule.
+            const clean = act!.ok && !act!.error;
             const boundTarget = (screen: Screen): Element | undefined => {
-              const matches = screen.elements.filter((candidate) =>
-                sameIdentity(candidate, selectionTarget!),
+              const matches = screen.elements.filter(
+                (candidate) =>
+                  sameIdentity(candidate, selectionTarget!) &&
+                  !(clean && candidate.ref.startsWith('react:')),
               );
-              return matches.length === 1 && matches[0].ref === selectionTarget!.ref
+              return matches.length === 1 &&
+                (matches[0].ref === selectionTarget!.ref ||
+                  (clean && selectionTarget!.testID !== undefined))
                 ? matches[0]
                 : undefined;
             };
@@ -4089,7 +4096,7 @@ async function walkBlockScoped(
             if (!selectionExited && !act!.proven && current?.selected !== true) {
               return refusePress(
                 'PRESS_NOT_REGISTERED',
-                `${evidence().outsideTargetChange ? PRESS_OUTSIDE_CHANGE_REASON : PRESS_NOT_REGISTERED_REASON} ${selectionPressGuidance(captures, observed.timing.completedAt - selectionStartedAt)}`,
+                `${evidence().outsideTargetChange ? PRESS_OUTSIDE_CHANGE_REASON : PRESS_NOT_REGISTERED_REASON} ${selectionPressGuidance(captures, observed.timing.completedAt - selectionStartedAt, current !== undefined)}`,
               );
             }
             deps.pressReadback?.(undefined);
