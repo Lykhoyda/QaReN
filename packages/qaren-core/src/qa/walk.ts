@@ -10,6 +10,7 @@ import {
   cancellationSignal,
   interruptible,
   withCancellation,
+  withDeadline,
   sleep,
 } from '../domain/cancellation.js';
 import { readFileSync, realpathSync } from 'node:fs';
@@ -580,6 +581,9 @@ async function openSession(
             1,
             undefined,
             deadline,
+            (observed) => {
+              pages = observed;
+            },
           );
         },
         developmentTargets: () => cdp.developmentTargets,
@@ -599,9 +603,15 @@ async function openSession(
                 );
                 return manifest;
               },
-              relaunch: async () => {
-                bundleRequests?.relaunching();
-                await relaunchIosDevClient(appId, target.deviceId, devClientLaunchUrl(target));
+              relaunch: async (deadline) => {
+                await withDeadline(
+                  deadline,
+                  new Error('Dev-client relaunch deadline exceeded'),
+                  async () => {
+                    bundleRequests?.relaunching();
+                    await relaunchIosDevClient(appId, target.deviceId, devClientLaunchUrl(target));
+                  },
+                );
               },
               appAlive: async () => {
                 const alive = await isAppRunning('ios', appId, undefined, target.deviceId);

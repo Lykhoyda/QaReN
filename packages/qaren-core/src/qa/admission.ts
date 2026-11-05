@@ -763,7 +763,9 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
     const launchStarted = performance.now();
     let outcome: TimingEvent['outcome'] = 'failed';
     try {
-      const launched = await interruptible(() => relaunch(launchDeadline));
+      const launched = await withDeadline(launchDeadline, attachTimeout, () =>
+        relaunch(launchDeadline),
+      );
       if (launched) warm = launched;
       outcome = 'ok';
     } finally {
@@ -783,6 +785,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
   // One extension for visible bundle progress, then one relaunch; a later full window refuses.
   const idleWindowExpired = async (error: unknown): Promise<void> => {
     if (!idle) return;
+    if (idleRelaunches > 0) throw error;
     liveness = await probeLiveness(steps);
     bundleRequest = await probeBundleRequest(steps);
     bundleBuilt = readBundleBuilt(steps);
@@ -795,7 +798,6 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
       idle = { ...idle, since: performance.now(), requests };
       return;
     }
-    if (idleRelaunches > 0) throw error;
     const bound = Math.min(activeDeadline, performance.now() + steps.remainingMs());
     const relaunch = steps.relaunch;
     if (
@@ -1150,7 +1152,11 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
               throw error;
           }
           if (idle && performance.now() - idle.since >= idleWindowMs)
-            await idleWindowExpired(error);
+            await withDeadline(
+              Math.min(activeDeadline, performance.now() + steps.remainingMs()),
+              registeredTimeout,
+              () => idleWindowExpired(error),
+            );
           observe('retry', facts(admissionInnerClass(error)));
           lastStarted = 'retry_wait';
           if (unproven) clearFailedPackageProbes();
@@ -1200,7 +1206,10 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
       attaching &&
       !['non_dev_bundle', 'no_dev_target_unknown', 'react_readiness_timeout'].includes(inner)
     ) {
-      const probeDeadline = Math.min(deadline, performance.now() + steps.remainingMs());
+      const probeDeadline = Math.min(
+        inner === 'dev_runtime_unproven' ? activeDeadline : deadline,
+        performance.now() + steps.remainingMs(),
+      );
       if (liveness === 'not_probed' && probeDeadline > performance.now()) {
         try {
           liveness = await withDeadline(probeDeadline, attachTimeout, () => probeLiveness(steps));

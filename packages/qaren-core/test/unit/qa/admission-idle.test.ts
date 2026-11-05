@@ -198,6 +198,55 @@ test('a bundle request inside the window extends it once', async (t) => {
   assert.ok(fixture.state.launchedAt[0]! >= 120_000, `${fixture.state.launchedAt[0]}`);
 });
 
+for (const progress of ['request', 'completion'] as const) {
+  test(`a late bundle ${progress} cannot extend the post-relaunch idle window`, async (t) => {
+    const fixture = idle(t, (now) => {
+      if (now >= 90_000) {
+        if (progress === 'request') fixture.state.requests = 2;
+        else fixture.state.built = 'completed';
+      }
+      return 'undefined';
+    });
+    const error = await fixture.run();
+    assert.equal(error.meta.inner, 'dev_runtime_unproven');
+    assert.equal(fixture.state.launchedAt.length, 1);
+    assert.ok(fixture.elapsed() >= 120_000 && fixture.elapsed() < 122_000);
+  });
+}
+
+for (const stalled of ['appAlive', 'foreignDriver', 'manifest', 'relaunch'] as const) {
+  test(`idle recovery bounds a stalled ${stalled} by the attach deadline`, async (t) => {
+    const fixture = idle(t, () => 'undefined', {
+      attachBudgetMs: 120_000,
+      [stalled]: () => new Promise<never>(() => {}),
+    });
+    const error = await fixture.run();
+    assert.equal(error.code, 'CDP_NOT_CONNECTED');
+    assert.equal(error.meta.inner, 'dev_runtime_unproven');
+    assert.ok(fixture.elapsed() >= 120_000 && fixture.elapsed() <= 120_500);
+    assert.equal(fixture.state.opened, 0);
+  });
+}
+
+test('manifest warm-up and relaunch share the remaining attach budget', async (t) => {
+  const fixture = idle(t, () => 'undefined', {
+    attachBudgetMs: 120_000,
+    manifest: async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 45_000));
+      return { ms: 45_000, attempts: 1 };
+    },
+    relaunch: async () => {
+      fixture.state.launchedAt.push(performance.now());
+      await new Promise<void>((resolve) => setTimeout(resolve, 30_000));
+    },
+  });
+  const error = await fixture.run();
+  assert.equal(error.meta.inner, 'dev_runtime_unproven');
+  assert.equal(fixture.state.launchedAt.length, 1);
+  assert.ok(fixture.state.launchedAt[0]! >= 105_000);
+  assert.ok(fixture.elapsed() >= 120_000 && fixture.elapsed() <= 120_500);
+});
+
 test('a page that proves development mode before the window ends is admitted without a relaunch', async (t) => {
   const fixture = idle(t, (now) => (now < 20_000 ? 'undefined' : 'true'));
   assert.deepEqual(await fixture.run(), PROVEN);

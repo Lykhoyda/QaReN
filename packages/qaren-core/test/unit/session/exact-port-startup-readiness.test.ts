@@ -1022,3 +1022,116 @@ test('readiness reports the latest advertised pages and forgets them when a read
   await clock.advance(30_000);
   assert.ok((await waiting) instanceof TargetReadinessTimeoutError);
 });
+
+for (const failure of ['connection', 'json', 'non-array'] as const) {
+  test(`readiness clears page counts after a ${failure} failure`, async (t) => {
+    let reads = 0;
+    const clock = setup(t, async () => {
+      if (++reads === 1)
+        return Response.json([target({ id: 'sibling-1', deviceName: 'qaren-check' })]);
+      if (failure === 'connection') throw new Error('ECONNREFUSED');
+      if (failure === 'json') return new Response('{');
+      return Response.json({});
+    });
+    const observed: unknown[] = [];
+    const waiting = waitForExactPortTargets(
+      managedPort,
+      30_000,
+      500,
+      undefined,
+      'iPhone',
+      undefined,
+      undefined,
+      (pages) => observed.push(pages),
+    ).catch((error: unknown) => error);
+    await setImmediate();
+    assert.deepEqual(observed, [{ foreignPages: 1, sameNameDevices: 0 }]);
+    await clock.advance(500);
+    assert.ok((await waiting) instanceof Error);
+    assert.deepEqual(observed.at(-1), {});
+  });
+}
+
+test('connectExact refreshes page counts before refusing same-name ambiguity', async (t) => {
+  let reads = 0;
+  setup(t, async () =>
+    Response.json(
+      ++reads === 1
+        ? [target()]
+        : [
+            target(),
+            target({
+              id: 'twin-1',
+              webSocketDebuggerUrl: `ws://127.0.0.1:${managedPort}/inspector/debug?device=twin&page=1`,
+            }),
+          ],
+    ),
+  );
+  const observed: unknown[] = [];
+  const observe = (pages: unknown) => observed.push(pages);
+  await waitForExactPortTargets(
+    managedPort,
+    30_000,
+    500,
+    undefined,
+    'iPhone',
+    filters.bundleId,
+    undefined,
+    observe,
+  );
+  const client = new CDPClient(managedPort);
+  t.after(() => client.disconnect());
+  await assert.rejects(
+    client.connectExact(
+      managedPort,
+      { ...filters, deviceName: 'iPhone' },
+      'qa',
+      1,
+      undefined,
+      undefined,
+      observe,
+    ),
+    (error: unknown) => error instanceof TargetSelectionError,
+  );
+  assert.deepEqual(observed, [
+    { foreignPages: 0, sameNameDevices: 1 },
+    { foreignPages: 0, sameNameDevices: 2 },
+  ]);
+  assert.equal(client.isConnected, false);
+});
+
+test('connectExact clears readiness page counts when its list read fails', async (t) => {
+  let reads = 0;
+  setup(t, async () => {
+    if (++reads === 1) return Response.json([target()]);
+    throw new Error('ECONNREFUSED');
+  });
+  const observed: unknown[] = [];
+  const observe = (pages: unknown) => observed.push(pages);
+  await waitForExactPortTargets(
+    managedPort,
+    30_000,
+    500,
+    undefined,
+    'iPhone',
+    filters.bundleId,
+    undefined,
+    observe,
+  );
+  const client = new CDPClient(managedPort);
+  t.after(() => client.disconnect());
+  await assert.rejects(
+    client.connectExact(
+      managedPort,
+      { ...filters, deviceName: 'iPhone' },
+      'qa',
+      1,
+      undefined,
+      undefined,
+      observe,
+    ),
+    /ECONNREFUSED/,
+  );
+  assert.deepEqual(observed, [{ foreignPages: 0, sameNameDevices: 1 }, {}]);
+  assert.equal(client.isConnected, false);
+});
