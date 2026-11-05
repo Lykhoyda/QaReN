@@ -1,4 +1,9 @@
-import type { ScrollBandReceipt } from './resolve.js';
+import type {
+  CandidateExclusion,
+  CollapsedCandidate,
+  CoveredBy,
+  ScrollBandReceipt,
+} from './resolve.js';
 import type { OverlayHitReceipt } from './live-hit.js';
 import type { PressEvidence } from './selection-press.js';
 import type { MediaLatch, WithholdCause } from './privacy.js';
@@ -71,6 +76,12 @@ export interface LedgerRow {
   implicitWaitMs?: number;
   // What interruption recovery decided for this step; value-free.
   interruption?: InterruptionReceipt;
+  // Same-label wrappers counted as the control they wrap.
+  collapsed?: CollapsedCandidate[];
+  // Same-label candidates set aside on proof before the target was chosen or refused.
+  candidateExclusions?: CandidateExclusion[];
+  // What covered the target's centre before the tap.
+  coveredBy?: CoveredBy;
 }
 
 export interface InterruptionReceipt {

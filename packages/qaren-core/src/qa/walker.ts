@@ -81,6 +81,11 @@ import {
   reactOnlyTimeout,
   reactOnlyViewport,
   visibleSelector,
+  contend,
+  excludedCandidate,
+  probeIdentifiable,
+  MAX_HIT_PROBES,
+  type CandidateExclusion,
 } from './resolve.js';
 import { literalEvidence, type LiteralNearMiss } from './evidence.js';
 import { scrollMotion } from './scroll-motion.js';
@@ -111,6 +116,7 @@ import {
   type PlannedSurface,
   type RecoveryTarget,
   dismissCandidate,
+  isDeclineLabel,
   plannedSurface,
   optInShaped,
   recover,
@@ -412,7 +418,7 @@ const cutterText = (facts: Readonly<CentreCoverageDiagnostic> | null): string =>
   const cut = facts?.cutter;
   if (!cut) return '';
   const { x, y, width, height } = cut.frame;
-  return `; inferred band cutter ${cut.ref} (${cut.kind}) at ${x},${y},${width},${height} moved the band ${cut.edge} from ${cut.before[cut.edge]} to ${cut.after[cut.edge]}`;
+  return `; covered by ${cut.kind} at ${x},${y},${width},${height} (inferred band cutter ${cut.ref} moved the band ${cut.edge} from ${cut.before[cut.edge]} to ${cut.after[cut.edge]})`;
 };
 
 class EvidenceExpired extends Error {
@@ -1387,6 +1393,10 @@ async function walkBlockScoped(
   const bandFor = (item: Item, target: Target, screen: Screen) =>
     scrollUntilBand(target, screen, (receipt) => scrollBands.set(item.line, receipt));
   const overlayRows = new Map<number, { observation: number; checks: OverlayHitReceipt[] }>();
+  const targetRows = new Map<
+    number,
+    Pick<LedgerRow, 'collapsed' | 'candidateExclusions' | 'coveredBy'>
+  >();
   const withheldRows = new Map<number, NonNullable<LedgerRow['screenshotWithheld']>>();
   // Per line, what interruption recovery last decided; a dismissal stays on this line's later rows.
   const interruptions = new Map<number, InterruptionReceipt>();
@@ -1397,6 +1407,7 @@ async function walkBlockScoped(
     // A veto on an earlier attempt says nothing about a pass; a dismissal explains it.
     if (interruption && (row.outcome !== 'pass' || interruption.outcome === 'dismissed'))
       row = { ...row, interruption };
+    row = { ...row, ...targetRows.get(row.line) };
     const overlayChecks = overlayRows.get(row.line)?.checks;
     if (overlayChecks?.length) row = { ...row, overlayChecks };
     if (fillHandlerRefused)
@@ -1713,6 +1724,75 @@ async function walkBlockScoped(
     assertActive();
     return shot;
   };
+  // One read-only iOS live hit read inside the observation's expiry; a late or failed read is 'unavailable'.
+  const readHit = async (
+    item: Item,
+    observation: Observation,
+    element: Element,
+    deadline = Infinity,
+  ): Promise<HitProbeResult> => {
+    const generation = observation.screen.nativeGeneration;
+    const rect = elementFrame(element);
+    if (deps.platform !== 'ios' || !deps.hitProbe || generation === undefined || !rect)
+      return 'unavailable';
+    const context = new QaDispatchContext(
+      observationDeadline(observation.timing, deadline),
+      deps.now,
+      () => cancellationSignal()?.aborted === true,
+      item.line,
+    );
+    const timedOut = new Error('hit-probe-deadline');
+    try {
+      const read = await withDeadline(
+        performance.now() + Math.max(0, context.deadline - deps.now()),
+        timedOut,
+        () =>
+          deps.hitProbe!(element.ref, context, generation, {
+            identifier: element.testID,
+            label: element.label,
+            rect,
+          }),
+      );
+      if (!context.expired) return read;
+    } catch (error) {
+      if (isAbort(error) || (error instanceof QaDispatchError && error.code === 'RUN_CANCELLED'))
+        throw error;
+    }
+    return 'unavailable';
+  };
+  // Same-label duplicates left after proof: up to four the runner can identify get a live hit read.
+  const probeDuplicates = async (
+    item: Item & { kind: 'press' | 'fill' },
+    observation: Observation,
+    decided: Resolution,
+  ): Promise<Resolution> => {
+    if (!('refuse' in decided) || !decided.contenders) return decided;
+    const screen = observation.screen;
+    if (deps.platform !== 'ios' || !deps.hitProbe || screen.nativeGeneration === undefined)
+      return decided;
+    const contenders = decided.contenders.flatMap((ref) =>
+      screen.elements.filter((element) => element.ref === ref),
+    );
+    if (contenders.some((element) => !probeIdentifiable(element, screen) || !elementFrame(element)))
+      return {
+        ...decided,
+        reason: `${decided.reason}; cannot probe: the runner cannot identify each candidate uniquely`,
+      };
+    const exclusions: CandidateExclusion[] = [...(decided.candidateExclusions ?? [])];
+    for (const element of contenders.slice(0, MAX_HIT_PROBES)) {
+      // A read that would outlive the observation never runs.
+      if (deps.now() >= observationDeadline(observation.timing)) break;
+      if ((await readHit(item, observation, element)) === 'not-hittable')
+        exclusions.push(excludedCandidate(element, 'not-hittable'));
+    }
+    if (exclusions.length === (decided.candidateExclusions?.length ?? 0)) return decided;
+    return contend(
+      item,
+      screen,
+      contenders.filter((element) => !exclusions.some((x) => x.ref === element.ref)),
+      exclusions,
+    );
+  };
   const probeOverlay = async (
     item: Item,
     observation: Observation,
@@ -1724,38 +1804,9 @@ async function walkBlockScoped(
     const hits = (observation.overlayHits ??= new OverlayHits(observation.screen));
     const cached = hits.get(element, observation.screen);
     if (cached) return cached;
-    let result: HitProbeResult = 'unavailable';
-    const generation = observation.screen.nativeGeneration;
-    if (
-      deps.platform === 'ios' &&
-      deps.hitProbe &&
-      generation !== undefined &&
-      overlayProbeCoverage(element, observation.screen)
-    ) {
-      const context = new QaDispatchContext(
-        observationDeadline(observation.timing, deadline),
-        deps.now,
-        () => cancellationSignal()?.aborted === true,
-        item.line,
-      );
-      const timedOut = new Error('hit-probe-deadline');
-      try {
-        const read = await withDeadline(
-          performance.now() + Math.max(0, context.deadline - deps.now()),
-          timedOut,
-          () =>
-            deps.hitProbe!(element.ref, context, generation, {
-              identifier: element.testID,
-              label: element.label,
-              rect: elementFrame(element)!,
-            }),
-        );
-        if (!context.expired) result = read;
-      } catch (error) {
-        if (isAbort(error) || (error instanceof QaDispatchError && error.code === 'RUN_CANCELLED'))
-          throw error;
-      }
-    }
+    const result = overlayProbeCoverage(element, observation.screen)
+      ? await readHit(item, observation, element, deadline)
+      : 'unavailable';
     hits.set(element, result);
     let row = overlayRows.get(item.line);
     if (row?.observation !== observation.id) {
@@ -2964,6 +3015,7 @@ async function walkBlockScoped(
     attempts: for (;;) {
       overlayRows.delete(item.line);
       scrollBands.delete(item.line);
+      targetRows.delete(item.line);
       line = item.line;
       // Support blocks walk without recovery and never spend it; a login replay re-arms it for this retry.
       if (
@@ -3536,6 +3588,7 @@ async function walkBlockScoped(
           overlayRows.delete(item.line);
           scrollBands.delete(item.line);
           let plainBand: PlainScrollBand | undefined;
+          targetRows.delete(item.line);
           let selectionTarget: Element | undefined;
           let selectionDeadline = Infinity;
           let selectionStartedAt = 0;
@@ -3620,7 +3673,7 @@ async function walkBlockScoped(
                   refusedIdentity === undefined
                     ? bindFillIdentity(item, before.screen, fillIdentity)
                     : undefined;
-                const decided =
+                const prepared: Resolution =
                   occluded !== undefined
                     ? { scroll: occluded }
                     : refusedIdentity !== undefined
@@ -3633,6 +3686,15 @@ async function walkBlockScoped(
                               reason: 'the original input identity no longer resolves uniquely',
                             }
                         : decision.target!;
+                const decided = await probeDuplicates(item, before, prepared);
+                targetRows.set(item.line, {
+                  ...('collapsed' in decided && decided.collapsed
+                    ? { collapsed: decided.collapsed }
+                    : {}),
+                  ...('candidateExclusions' in decided && decided.candidateExclusions
+                    ? { candidateExclusions: decided.candidateExclusions }
+                    : {}),
+                });
                 occluded = undefined;
                 let resolution: Exclude<Resolution, { refuse: string }>;
                 if ('refuse' in decided) {
@@ -3925,6 +3987,20 @@ async function walkBlockScoped(
                   centreDiagnostic = facts;
                 });
               const overlay = centreIsCovered ? inferredOverlay(centreDiagnostic) : undefined;
+              // Name what covers the target before any tap; a label only from QaReN's dismiss vocabulary.
+              const cut = (centreDiagnostic as Readonly<CentreCoverageDiagnostic> | null)?.cutter;
+              if (cut) {
+                const label = before.screen.elements.find((e) => e.ref === cut.ref)?.label;
+                targetRows.set(item.line, {
+                  ...targetRows.get(item.line),
+                  coveredBy: {
+                    ref: cut.ref,
+                    kind: cut.kind,
+                    frame: cut.frame,
+                    ...(isDeclineLabel(label) ? { label } : {}),
+                  },
+                });
+              }
               // List order is not paint order: an inferred overlay alone never refuses an iOS press.
               if (
                 item.kind === 'fill' &&
@@ -4868,6 +4944,9 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     ...(row.scrollBand ? { scrollBand: row.scrollBand } : {}),
     ...(row.interruption ? { interruption: row.interruption } : {}),
     ...(row.overlayChecks ? { overlayChecks: row.overlayChecks } : {}),
+    ...(row.collapsed ? { collapsed: row.collapsed } : {}),
+    ...(row.candidateExclusions ? { candidateExclusions: row.candidateExclusions } : {}),
+    ...(row.coveredBy ? { coveredBy: row.coveredBy } : {}),
     ...(row.entryMismatch ? { entryMismatch: row.entryMismatch } : {}),
     ...(row.screenshotWithheld ? { screenshotWithheld: row.screenshotWithheld } : {}),
     ...(screenshot ? { screenshot } : {}),

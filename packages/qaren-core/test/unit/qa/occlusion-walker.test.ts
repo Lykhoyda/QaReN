@@ -2643,8 +2643,16 @@ for (const [name, result, shown] of [
 ] as const) {
   test(`a live hit read ${name} refuses the press with the inferred cutter named`, async () => {
     const f = liveHitFake(result);
+    const streamed: LedgerRow[] = [];
+    f.deps.row = (row) => streamed.push(row);
     const outcome = await walkBlock(block('1. Tap "row-1"\n'), f.deps);
     assert.equal(outcome.block.outcome, 'fail');
+    // The pre-tap observation names what covers the target, value-free, on the streamed row.
+    assert.deepEqual(streamed.at(-1)?.coveredBy, {
+      ref: '@cover',
+      kind: LIVE_HIT_CUTTER.kind,
+      frame: LIVE_HIT_CUTTER.frame,
+    });
     assert.deepEqual(
       f.calls.filter((call) => call !== 'capture'),
       ['scroll down', 'press @target'],
@@ -2654,7 +2662,7 @@ for (const [name, result, shown] of [
     assert.match(seen, /"row-1" stayed off screen after one scroll/);
     assert.ok(
       seen.includes(
-        `inferred band cutter @cover (${LIVE_HIT_CUTTER.kind}) at 0,116,402,758 moved the band bottom from 782 to 116; the live hit read refused the press (${shown}); no tap was performed`,
+        `covered by ${LIVE_HIT_CUTTER.kind} at 0,116,402,758 (inferred band cutter @cover moved the band bottom from 782 to 116); the live hit read refused the press (${shown}); no tap was performed`,
       ),
       seen,
     );
@@ -2700,7 +2708,7 @@ for (const [name, platform, screen, step] of [
     assert.deepEqual(f.options, []);
     assert.match(
       renderReason(outcome.failure?.seen ?? '', (text) => text),
-      /stayed off screen after one scroll: .*; inferred band cutter @cover \(\w+\) at 0,116,402,758 moved the band bottom from 782 to 116;/,
+      /stayed off screen after one scroll: .*; covered by \w+ at 0,116,402,758 \(inferred band cutter @cover moved the band bottom from 782 to 116\);/,
     );
   });
 }
@@ -2752,7 +2760,7 @@ test('a 6 pt band with an unproven live hit read refuses with the cutter and the
   assert.match(seen, /^SCROLL_BAND_TOO_SMALL: .*"row-1" stayed off screen after one scroll/);
   assert.ok(
     seen.includes(
-      'moved the band bottom from 782 to 116; the live hit read refused the press (not-hittable); no tap was performed',
+      'moved the band bottom from 782 to 116); the live hit read refused the press (not-hittable); no tap was performed',
     ),
     seen,
   );
@@ -2791,7 +2799,7 @@ for (const [name, platform, screen, step, why] of [
     const seen = renderReason(outcome.failure?.seen ?? '', (text) => text);
     assert.ok(
       seen.includes(
-        `stayed off screen after one scroll; inferred band cutter @cover (${LIVE_HIT_CUTTER.kind}) at 0,116,402,758 moved the band bottom from 782 to 116; no live hit read was asked: ${why}`,
+        `stayed off screen after one scroll; covered by ${LIVE_HIT_CUTTER.kind} at 0,116,402,758 (inferred band cutter @cover moved the band bottom from 782 to 116); no live hit read was asked: ${why}`,
       ),
       seen,
     );

@@ -121,6 +121,10 @@ export const FIXED_CONTROL_WORDS: ReadonlySet<string> = new Set([
   'Turn on',
 ]);
 
+export function isDeclineLabel(label: string | undefined): label is string {
+  return label !== undefined && DECLINE_LABELS.has(label);
+}
+
 export const INTERRUPTION_VETOES = [
   'front',
   'coverage',

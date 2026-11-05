@@ -280,8 +280,27 @@ fn row_line_with(row: &Row, prose: &dyn Fn(&str) -> String) -> String {
     } else {
         ""
     };
+    let rect = |r: &crate::core::DialogRect| format!("{},{},{},{}", r.x, r.y, r.width, r.height);
+    let kind = |k: &crate::core::CarrierKind| format!("{k:?}").to_lowercase();
+    let target = [
+        row.collapsed
+            .iter()
+            .flatten()
+            .map(|c| format!("; counted wrapper {} as {}", c.reference, c.into))
+            .collect::<String>(),
+        row.candidate_exclusions
+            .iter()
+            .flatten()
+            .map(|x| format!("; set aside {} ({})", x.reference, x.reason.as_str()))
+            .collect(),
+        row.covered_by
+            .as_ref()
+            .map(|c| format!("; covered by {} at {}", kind(&c.kind), rect(&c.frame)))
+            .unwrap_or_default(),
+    ]
+    .concat();
     format!(
-        "- {mark} line {}{text}{retry}{reason}{kept}{method}{coverage}{reconnect}\n",
+        "- {mark} line {}{text}{retry}{reason}{kept}{method}{coverage}{reconnect}{target}\n",
         row.line
     )
 }
@@ -1421,6 +1440,44 @@ mod tests {
             .unwrap()
             .get("overlayChecks")
             .is_none());
+    }
+
+    #[test]
+    fn target_facts_survive_the_ledger_render_and_drop_untyped_data() {
+        let frame = serde_json::json!({ "x": 0.0, "y": 116.0, "width": 402.0, "height": 758.0 });
+        let mut row = serde_json::json!({
+            "block": "b", "line": 1, "attempt": 1, "kind": "step", "resolvedBy": "exact", "t": 0, "outcome": "pass",
+            "collapsed": [{ "ref": "@e2", "kind": "button", "frame": frame, "into": "@e3" }],
+            "candidateExclusions": [{ "ref": "@e4", "kind": "button", "frame": frame, "reason": "clipped-by-viewport" }],
+            "coveredBy": { "ref": "@e8", "kind": "other", "frame": frame, "label": "Close" }
+        });
+        let keys = ["collapsed", "candidateExclusions", "coveredBy"];
+        let parsed: crate::core::Row = serde_json::from_value(row.clone()).unwrap();
+        let saved = serde_json::to_value(&parsed).unwrap();
+        for key in keys {
+            assert_eq!(saved[key], row[key], "{key}");
+        }
+        let line = row_line(&parsed);
+        assert!(
+            line.ends_with(
+                "; counted wrapper @e2 as @e3; set aside @e4 (clipped-by-viewport); covered by other at 0,116,402,758\n"
+            ),
+            "{line}"
+        );
+        for reason in ["offscreen-by-frame", "under-keyboard", "not-hittable"] {
+            row["candidateExclusions"][0]["reason"] = reason.into();
+            let parsed: crate::core::Row = serde_json::from_value(row.clone()).unwrap();
+            assert!(row_line(&parsed).contains(&format!("; set aside @e4 ({reason})")));
+        }
+        // An app label, a non-capture reference or an unknown reason never reaches the saved ledger.
+        row["coveredBy"]["label"] = "Pay now".into();
+        row["candidateExclusions"][0]["reason"] = "hidden".into();
+        row["collapsed"][0]["into"] = "private-value".into();
+        let saved =
+            serde_json::to_value(serde_json::from_value::<crate::core::Row>(row).unwrap()).unwrap();
+        for key in keys {
+            assert!(saved.get(key).is_none(), "{key}");
+        }
     }
 
     #[test]

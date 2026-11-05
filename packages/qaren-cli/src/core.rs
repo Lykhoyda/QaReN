@@ -492,6 +492,24 @@ pub struct Row {
         deserialize_with = "passive"
     )]
     pub interruption: Option<InterruptionReceipt>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "bounded"
+    )]
+    pub collapsed: Option<Vec<CollapsedCandidate>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "bounded"
+    )]
+    pub candidate_exclusions: Option<Vec<CandidateExclusion>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub covered_by: Option<CoveredBy>,
 }
 
 // Value-free interruption decision for a step.
@@ -589,6 +607,101 @@ impl InterruptionReceipt {
         }
         text
     }
+}
+
+
+// A same-label wrapper counted as the control it wraps.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CollapsedCandidate {
+    #[serde(rename = "ref", deserialize_with = "native_capture_ref")]
+    pub reference: String,
+    pub kind: CarrierKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<DialogRect>,
+    #[serde(deserialize_with = "native_capture_ref")]
+    pub into: String,
+}
+
+// A same-label candidate set aside on proof before the target was chosen or refused.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateExclusion {
+    #[serde(rename = "ref", deserialize_with = "native_capture_ref")]
+    pub reference: String,
+    pub kind: CarrierKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<DialogRect>,
+    pub reason: ExclusionReason,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExclusionReason {
+    OffscreenByFrame,
+    ClippedByViewport,
+    UnderKeyboard,
+    NotHittable,
+}
+
+impl ExclusionReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OffscreenByFrame => "offscreen-by-frame",
+            Self::ClippedByViewport => "clipped-by-viewport",
+            Self::UnderKeyboard => "under-keyboard",
+            Self::NotHittable => "not-hittable",
+        }
+    }
+}
+
+// What covered the target's centre before the tap; a label only from the core's fixed dismiss vocabulary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CoveredBy {
+    #[serde(rename = "ref", deserialize_with = "native_capture_ref")]
+    pub reference: String,
+    pub kind: CarrierKind,
+    pub frame: DialogRect,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "decline_label"
+    )]
+    pub label: Option<String>,
+}
+
+const DECLINE_LABELS: [&str; 9] = [
+    "Close",
+    "Not now",
+    "Not Now",
+    "Maybe later",
+    "Later",
+    "Skip",
+    "No thanks",
+    "Dismiss",
+    "Cancel",
+];
+
+fn decline_label<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    let value = String::deserialize(deserializer)?;
+    if DECLINE_LABELS.contains(&value.as_str()) {
+        Ok(Some(value))
+    } else {
+        Err(serde::de::Error::custom(
+            "label outside the dismiss vocabulary",
+        ))
+    }
+}
+
+fn bounded<'de, D, T>(deserializer: D) -> Result<Option<Vec<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    Ok(passive(deserializer)?.filter(|items: &Vec<T>| !items.is_empty() && items.len() <= 64))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

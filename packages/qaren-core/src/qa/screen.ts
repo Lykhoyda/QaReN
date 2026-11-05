@@ -172,6 +172,52 @@ export function touchPolicy(element: Element): 'transparent' | 'opaque' | undefi
   return touchPolicies.get(element);
 }
 
+// What the capture proves about whether a user can reach an element; `unknown` is unproven, never hidden.
+export type Reach =
+  | 'reachable'
+  | 'offscreen-by-frame'
+  | 'clipped-by-viewport'
+  | 'under-keyboard'
+  | 'unlocated'
+  | 'unknown';
+const reaches = new WeakMap<Element, Reach>();
+
+export function reachOf(element: Element): Reach {
+  return reaches.get(element) ?? (element.ref.startsWith('react:') ? 'unlocated' : 'unknown');
+}
+
+// Whole-frame facts only: any part left on screen, inside its clip and off the keyboard stays reachable.
+function frameReach(
+  rect: NativeNode['rect'],
+  screen: NativeNode['rect'],
+  clip: NativeNode['rect'],
+  keyboard: NativeNode['rect'],
+): Reach | undefined {
+  if (
+    !rect ||
+    ![rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) ||
+    rect.width <= 0 ||
+    rect.height <= 0
+  )
+    return undefined;
+  const overlaps = (r: NonNullable<NativeNode['rect']>) =>
+    rect.x < r.x + r.width &&
+    r.x < rect.x + rect.width &&
+    rect.y < r.y + r.height &&
+    r.y < rect.y + rect.height;
+  if (screen && !overlaps(screen)) return 'offscreen-by-frame';
+  if (clip && !overlaps(clip)) return 'clipped-by-viewport';
+  if (
+    keyboard &&
+    rect.x >= keyboard.x &&
+    rect.y >= keyboard.y &&
+    rect.x + rect.width <= keyboard.x + keyboard.width &&
+    rect.y + rect.height <= keyboard.y + keyboard.height
+  )
+    return 'under-keyboard';
+  return 'reachable';
+}
+
 // The matched React host's own press handler; a native button kind says nothing about it.
 const hostPresses = new WeakMap<Element, boolean>();
 
@@ -1313,6 +1359,15 @@ export function join(
     if (ancestors.length) nativeAncestors.set(elements[i], ancestors);
     const bounds = clippingViewport(viewport, i);
     if (bounds) elementViewports.set(elements[i], bounds);
+    const reach = frameReach(
+      n.rect,
+      screenRect,
+      bounds,
+      keyboardFrame && keyboardBottom !== undefined && underKeyboard(n, i)
+        ? { ...keyboardFrame, height: keyboardBottom - keyboardFrame.y }
+        : undefined,
+    );
+    if (reach) reaches.set(elements[i], reach);
     if (isScrollContainerType(n.type)) scrollContainers.set(elements[i], n.type!);
     if (n.type === 'Window') windows.add(elements[i]);
     if (n.type === 'Application') applications.add(elements[i]);

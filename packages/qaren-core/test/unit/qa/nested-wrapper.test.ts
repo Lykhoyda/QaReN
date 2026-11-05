@@ -5,7 +5,10 @@ import { captureScreen } from '../../../dist/qa/capture.js';
 import { prepareTarget } from '../../../dist/qa/resolve.js';
 import type { Screen } from '../../../dist/qa/screen.js';
 import type { ReactHostEvidence } from '../../../dist/qa/screen.js';
+import { parsePlan } from '../../../dist/qa/plan.js';
+import { runPlan } from '../../../dist/qa/walker.js';
 import { nativeCapture } from './platform-presence-fixtures.ts';
+import { scriptedJudge, walker } from './judgment-fixtures.ts';
 
 type Rect = { x: number; y: number; width: number; height: number };
 interface Spec {
@@ -200,13 +203,28 @@ test('a wrapper with any other content stays ambiguous', async () => {
 });
 
 test('an inner control that a user cannot press never collapses, and never resolves to the outer', async () => {
-  for (const change of [{ hittable: false }, { enabled: false }, { rect: { ...INNER, y: 900 } }])
+  for (const change of [{ hittable: false }, { enabled: false }])
     ambiguous(
       prepareTarget(
         tap(),
         await capture(recorded().map((spec, i) => (i === 1 ? { ...spec, ...change } : spec))),
       ),
     );
+  // Below the screen, the inner still strictly inside its outer: only the offscreen guard refuses.
+  const below = await capture(
+    recorded().map((spec) => ({ ...spec, rect: { ...spec.rect, y: spec.rect.y + 900 } })),
+  );
+  assert.equal(below.elements.find((e) => e.testID === 'close-icon')?.offscreen, true);
+  const refused = prepareTarget(tap(), below);
+  assert.ok('refuse' in refused, JSON.stringify(refused));
+  // The outer still shows above the screen's bottom edge while its inner sits wholly below it.
+  const straddling = await capture([
+    { ...recorded()[0], rect: { x: 217, y: 700, width: 185, height: 180 } },
+    { ...recorded()[1], rect: { x: 341, y: 820, width: 40, height: 40 } },
+  ]);
+  assert.equal(straddling.elements.find((e) => e.testID === 'close-icon')?.offscreen, true);
+  assert.equal(straddling.elements.find((e) => e.testID === 'header-close')?.offscreen, false);
+  assert.match(ambiguous(prepareTarget(tap(), straddling)), /nested inside candidate 1/);
 });
 
 test('geometry must prove the inner strictly inside the outer', async () => {
@@ -295,13 +313,49 @@ test('two same-label inner branches stay ambiguous', async () => {
 });
 
 test('capture order does not change the collapse', async () => {
-  // The inner listed before an unrelated control, then the outer's other descendants: same result.
-  const specs = recorded();
-  const screen = await capture([
-    { type: 'StaticText', label: 'Title', rect: { x: 20, y: 70, width: 100, height: 40 } },
-    ...specs.map((spec) => ({ ...spec, ...(spec.parent === undefined ? {} : { parent: 1 }) })),
-  ]);
-  const result = prepareTarget(tap(), screen);
-  assert.ok('ref' in result, JSON.stringify(result));
-  assert.equal(result.ref, '@e4');
+  // A parent always precedes its children, so permute the pair against identified siblings, native and React alike.
+  const sibling = (id: string, y: number): Spec => ({
+    type: 'Button',
+    label: id,
+    id,
+    rect: { x: 20, y, width: 100, height: 40 },
+    host: { press: true },
+  });
+  const pair = recorded();
+  const orders: Spec[][][] = [
+    [pair, [sibling('back', 70)], [sibling('help', 700)]],
+    [[sibling('back', 70)], pair, [sibling('help', 700)]],
+    [[sibling('back', 70)], [sibling('help', 700)], pair],
+  ];
+  for (const groups of orders) {
+    const specs: Spec[] = [];
+    for (const group of groups) {
+      const offset = specs.length;
+      specs.push(
+        ...group.map((spec) =>
+          spec.parent === undefined ? spec : { ...spec, parent: spec.parent + offset },
+        ),
+      );
+    }
+    const result = prepareTarget(tap(), await capture(specs));
+    assert.ok('ref' in result, JSON.stringify(result));
+    assert.equal(result.element.testID, 'close-icon');
+    assert.deepEqual(
+      result.collapsed?.map(({ ref, into }) => [ref, into]),
+      [[`@e${specs.indexOf(specs.find((s) => s.id === 'header-close')!) + 2}`, result.ref]],
+    );
+  }
+});
+
+test('the walk presses only the inner control and records the collapse on the step row', async () => {
+  const w = walker(
+    [],
+    scriptedJudge(() => assert.fail('exact targets are model-free')),
+  );
+  w.deps.captureScreen = () => capture(recorded());
+  const result = await runPlan(parsePlan('1. Tap "Close"').blocks!, w.deps);
+  assert.deepEqual(w.actions, ['press @e3']);
+  const row = ('steps' in result ? result.steps : []).find((r) => r.line === 1);
+  assert.deepEqual(row?.collapsed, [{ ref: '@e2', kind: 'button', frame: OUTER, into: '@e3' }]);
+  assert.deepEqual(w.rows.at(-1)?.collapsed, row?.collapsed, 'the streamed row carries it too');
 });

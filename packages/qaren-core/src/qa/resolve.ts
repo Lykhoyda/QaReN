@@ -29,6 +29,7 @@ import {
   insideAlert,
   hasNativeSheet,
   matchedHostPress,
+  reachOf,
   reactOnlyFactsOf,
   scrollContainerType,
   semanticActionView,
@@ -76,8 +77,28 @@ export interface CollapsedCandidate {
   frame?: Rect;
   into: string;
 }
+// A same-label candidate set aside on proof: its whole frame unreachable, or a live hit read found no hit point.
+export interface CandidateExclusion {
+  ref: string;
+  kind: Element['kind'];
+  frame?: Rect;
+  reason: 'offscreen-by-frame' | 'clipped-by-viewport' | 'under-keyboard' | 'not-hittable';
+}
+// What covers a present target's centre; the label only when it is QaReN's own dismiss vocabulary.
+export interface CoveredBy {
+  ref: string;
+  kind: Element['kind'];
+  frame: Rect;
+  label?: string;
+}
+export const MAX_HIT_PROBES = 4;
 export type Resolution =
-  | { ref: string; element: Element; collapsed?: CollapsedCandidate[] }
+  | {
+      ref: string;
+      element: Element;
+      collapsed?: CollapsedCandidate[];
+      candidateExclusions?: CandidateExclusion[];
+    }
   | { scroll: 'down' | 'up'; element?: Element; origin?: 'named-offscreen' }
   | {
       refuse: string;
@@ -85,6 +106,9 @@ export type Resolution =
       diagnostic?: VisibilityBlockerDiagnostic;
       // The resolver found no element matching the named target.
       missing?: true;
+      // Ambiguous press or fill: the refs still in contention, for the walker's live hit read.
+      contenders?: string[];
+      candidateExclusions?: CandidateExclusion[];
     };
 
 export class ResolutionError extends Error {
@@ -181,6 +205,53 @@ function wraps(
   );
 }
 
+const EXCLUDING = new Set<string>(['offscreen-by-frame', 'clipped-by-viewport', 'under-keyboard']);
+
+export function excludedCandidate(
+  element: Element,
+  reason: CandidateExclusion['reason'],
+): CandidateExclusion {
+  const frame = elementFrame(element);
+  return { ref: element.ref, kind: element.kind, ...(frame ? { frame } : {}), reason };
+}
+
+// One candidate left resolves; several stay ambiguous; none is not found, each exclusion named.
+export function contend(
+  step: Step,
+  screen: Screen,
+  left: readonly Element[],
+  exclusions: CandidateExclusion[],
+): Resolution {
+  const quoted = stepTarget(step)?.quoted;
+  const excluded = exclusions.length
+    ? `excluded: ${exclusions
+        .map((x) => {
+          const element = screen.elements.find((e) => e.ref === x.ref);
+          return `${element ? describeCandidate(element) : x.ref} (${x.reason})`;
+        })
+        .join('; ')}`
+    : '';
+  const recorded = exclusions.length ? { candidateExclusions: exclusions } : {};
+  if (!left.length)
+    return {
+      refuse: 'TARGET_NOT_FOUND',
+      reason: `no element labelled or identified "${quoted}" can be reached on screen; ${excluded}`,
+      ...recorded,
+    };
+  if (left.length > 1)
+    return {
+      refuse: 'TARGET_AMBIGUOUS',
+      reason: `multiple elements labelled or identified "${quoted}" match the target; candidates: ${describeCandidates(left)}${excluded && `; ${excluded}`}`,
+      contenders: left.map((e) => e.ref),
+      ...recorded,
+    };
+  const result = prepareTarget(step, { ...screen, elements: [...left] });
+  // A quoted target never asks the model; a phrase step never reaches here.
+  if ('question' in result)
+    return { refuse: 'NO_TARGET', reason: 'only a quoted target can be narrowed to one candidate' };
+  return 'ref' in result ? { ...result, ...recorded } : result;
+}
+
 // Press only: collapses wrappers from the innermost outward; never resolves to a wrapper.
 function collapseWrappers(
   identities: Identity[],
@@ -260,10 +331,38 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
   if ('refuse' in projected) return projected;
   if (target.quoted !== undefined) {
     const named = replayIdentities(exactIdentities(screen, target, step.kind), target, step.kind);
-    const { identities, collapsed } =
+    const collapse =
       step.kind === 'press' && named.length > 1
         ? collapseWrappers(named, target, screen)
         : { identities: named, collapsed: [] };
+    const { collapsed } = collapse;
+    let { identities } = collapse;
+    const acting = step.kind === 'press' || step.kind === 'fill';
+    // Set aside a candidate only on whole-frame proof, and never one nested with another candidate.
+    const exclusions: CandidateExclusion[] =
+      acting && identities.length > 1
+        ? identities.flatMap(({ element }) => {
+            const reach = reachOf(element);
+            return EXCLUDING.has(reach) &&
+              !identities.some(
+                ({ element: other }) =>
+                  ancestorsOf(element).includes(other) || ancestorsOf(other).includes(element),
+              )
+              ? [excludedCandidate(element, reach as CandidateExclusion['reason'])]
+              : [];
+          })
+        : [];
+    if (exclusions.length)
+      identities = identities.filter(
+        ({ element }) => !exclusions.some((x) => x.ref === element.ref),
+      );
+    if (acting && (identities.length > 1 || !identities.length) && named.length > 1)
+      return contend(
+        step,
+        screen,
+        identities.map(({ element }) => element),
+        exclusions,
+      );
     if (identities.length > 1)
       return {
         refuse: 'TARGET_AMBIGUOUS',
@@ -296,7 +395,12 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
     }
     return only.offscreen
       ? scrollTo(only)
-      : { ref: only.ref, element: only, ...(collapsed.length ? { collapsed } : {}) };
+      : {
+          ref: only.ref,
+          element: only,
+          ...(collapsed.length ? { collapsed } : {}),
+          ...(exclusions.length ? { candidateExclusions: exclusions } : {}),
+        };
   }
   const candidates = projected.elements;
   if (!candidates.length)
@@ -593,8 +697,12 @@ export function overlayProbeCoverage(
   screen: Screen,
 ): Readonly<CentreCoverageDiagnostic> | undefined {
   const facts = inferredOverlayCoverage(element, screen);
-  if (!facts || element.ref.startsWith('react:') || (!element.testID && !element.label))
-    return undefined;
+  return facts && probeIdentifiable(element, screen) ? facts : undefined;
+}
+
+// The runner's live hit read finds a node by its unique testID, or else by its unique label and kind.
+export function probeIdentifiable(element: Element, screen: Screen): boolean {
+  if (element.ref.startsWith('react:') || (!element.testID && !element.label)) return false;
   const same = screen.elements.filter(
     (other) =>
       !other.ref.startsWith('react:') &&
@@ -602,7 +710,7 @@ export function overlayProbeCoverage(
         ? other.testID === element.testID
         : other.label === element.label && other.kind === element.kind),
   );
-  return same.length === 1 ? facts : undefined;
+  return same.length === 1;
 }
 
 function presenceCovered(element: Element, screen: Screen, hits?: OverlayHits): boolean {
