@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
-import { INJECTED_HELPERS, REACT_READY_PROBE_JS } from '../../dist/injected-helpers.js';
+import { HELPERS_VERSION, INJECTED_HELPERS, REACT_READY_PROBE_JS } from '../../dist/injected-helpers.js';
 
 /**
  * Create a VM sandbox with mock React DevTools globals.
@@ -287,6 +287,10 @@ test('M8 probe: returns false when hook itself is absent', () => {
   assert.equal(vm.runInContext(REACT_READY_PROBE_JS, sandbox), false);
 });
 
-test('#321: helpers bundle embeds HELPERS_VERSION (value-agnostic; feature branches bump it freely above the 26 baseline)', () => {
-  assert.match(INJECTED_HELPERS, /__HELPERS_VERSION__\s*=\s*\d+/);
+test('#321: injection replaces stale helpers with the current version', () => {
+  const stale = { __v: HELPERS_VERSION - 1 };
+  const sandbox = createSandbox({ globals: { __QAREN: stale } });
+  assert.notEqual(sandbox.__QAREN, stale);
+  assert.equal(sandbox.__QAREN.__v, HELPERS_VERSION);
+  assert.equal(typeof sandbox.__QAREN.getTree, 'function');
 });

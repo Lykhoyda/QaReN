@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import vm from 'node:vm';
 import { INJECTED_HELPERS } from '../../dist/injected-helpers.js';
 import { createComponentTreeHandler } from '../../dist/handlers/component-tree.js';
 // @ts-expect-error legacy JS helper has no declaration file
@@ -13,13 +14,16 @@ function body(result: { content: Array<{ text: string }> }) {
   };
 }
 
-test('GH-588 Slice E: oversize state hint names only real narrowing/read tools', () => {
-  assert.match(
-    INJECTED_HELPERS,
-    /State exceeds the payload budget; target a smaller component via testID/,
-  );
-  assert.match(INJECTED_HELPERS, /cdp_store_state \/ cdp_evaluate/);
-  assert.doesNotMatch(INJECTED_HELPERS, /Use a filter or narrower path to reduce output size/);
+test('GH-588 Slice E: oversize navigation state emits a narrowing hint', () => {
+  const context = vm.createContext({
+    __expo_router_state__: { payload: 'x'.repeat(50_000) },
+  });
+  vm.runInContext(INJECTED_HELPERS, context);
+  const result = JSON.parse(context.__QAREN.getNavState());
+  assert.equal(result.__agent_truncated, true);
+  assert.ok(result.originalLength > 50_000);
+  assert.match(result.hint, /State exceeds the payload budget; target a smaller component via testID/);
+  assert.equal(result.payload, undefined);
 });
 
 test('GH-588 Slice E: scan budget exhaustion is self-explaining in the top-level message', async () => {
