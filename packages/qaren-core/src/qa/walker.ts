@@ -2353,6 +2353,7 @@ async function walkBlockScoped(
         if (
           exactIdentities(observation.screen, item.target, item.kind).some(
             ({ element }) =>
+              item.kind === 'fill' ||
               (item.target.exact !== 'text' && element.testID === item.target.quoted) ||
               (item.target.exact !== 'id' && element.label === item.target.quoted),
           )

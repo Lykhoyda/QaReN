@@ -3210,8 +3210,9 @@ Selection-proof refusals bypass step recovery; follow the
 The first top-level Tap or Fill of a run gets one bounded wait for a quoted
 target that is absent while the screen is still loading; a passing login replay
 re-arms it for the step it retries, or for the next Tap or Fill. Recovery runs first; when it has nothing to do, QaReN polls
-captures every 500 ms for up to 15 s from the step's start and acts only on a full
-label or testID match (never a segment of a merged label), from that fresh capture.
+captures every 500 ms for up to 15 s from the step's start and acts from that fresh
+capture. Tap requires a full label or testID match (never a segment of a merged
+label); Fill keeps its ordinary exact identities, including input placeholders.
 Disabled, ambiguous, off-screen, stored-selector and described targets keep their immediate failure. The row
 records `implicitWaitMs`. A target that never appears fails
 `TARGET_NOT_FOUND_AFTER_LAUNCH`, with the screen-change count from the presence

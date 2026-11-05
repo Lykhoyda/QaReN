@@ -451,6 +451,72 @@ test('the first Fill after launch waits for a field that renders late', async ()
   assert.ok(fill.implicitWaitMs! >= 3_000, `implicitWaitMs ${fill.implicitWaitMs}`);
 });
 
+test('a late placeholder-only input fills from the polled observation', async () => {
+  const email = element('@email', '', { kind: 'input', placeholder: 'Email' });
+  delete email.label;
+  const device = app((t) => view(t >= 4_000 ? [home, email] : [home]));
+  let polledCapture = 0;
+  const capture = device.deps.captureScreen;
+  device.deps.captureScreen = async (options) => {
+    const screen = await capture(options);
+    if (options?.budgetMs !== undefined && screen.elements.includes(email))
+      polledCapture = device.captures();
+    return screen;
+  };
+  device.deps.fill = async (ref, text) => {
+    assert.ok(polledCapture > 1);
+    assert.equal(device.captures(), polledCapture);
+    device.actions.push(`fill ${ref} ${text}`);
+    return { ok: true, proven: true };
+  };
+  const ledger = await ledgerOf('1. Fill "Email" with "Ada"\n', device.deps);
+  assert.equal(ledger.verdict, 'PASS', JSON.stringify(ledger.failure));
+  assert.deepEqual(device.actions, ['fill @email Ada']);
+  assert.ok(ledger.steps.find((row) => row.outcome === 'pass')!.implicitWaitMs! >= 3_000);
+});
+
+test('an ordinary retry cannot replenish the consumed launch allowance', async () => {
+  let refused = false;
+  let refusedAt = 0;
+  let pollStartedAt: number | undefined;
+  let pollCaptures = 0;
+  let pollsBeforeRefusal = 0;
+  const device = app(
+    (t) => view(!refused && t >= 4_000 ? [home, profile] : [home]),
+    { hideDevMenu: undefined },
+  );
+  const capture = device.deps.captureScreen;
+  device.deps.captureScreen = async (options) => {
+    if (options?.budgetMs !== undefined) {
+      assert.equal(refused, false, 'a refusal must not start another launch poll');
+      pollStartedAt ??= device.clock();
+      pollCaptures += 1;
+    }
+    return capture(options);
+  };
+  device.deps.press = async (ref) => {
+    assert.equal(ref, '@profile');
+    assert.equal(refused, false);
+    refused = true;
+    refusedAt = device.clock();
+    pollsBeforeRefusal = pollCaptures;
+    return { ok: false, proven: false, mutation: 'none', error: 'PRESS_REFUSED' };
+  };
+  const ledger = await ledgerOf('1. Tap "Profile"\n', device.deps);
+  assert.equal(refused, true);
+  assert.equal(ledger.verdict, 'FAIL');
+  assert.match(ledger.failure!.seen, /^TARGET_NOT_FOUND: /);
+  assert.ok(ledger.steps.some((row) => row.outcome === 'retry'));
+  assert.equal(failingRow(ledger).attempt, 2);
+  assert.ok(pollsBeforeRefusal > 1);
+  assert.equal(pollCaptures, pollsBeforeRefusal);
+  assert.ok(pollStartedAt !== undefined);
+  for (const row of ledger.steps)
+    assert.equal(row.implicitWaitMs, refusedAt - pollStartedAt);
+  assert.ok(device.clock() < refusedAt + 1_000);
+  assert.deepEqual(device.actions, []);
+});
+
 test('a re-walk after a replay miss is not a launch', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'qaren-launch-'));
   mkdirSync(join(dir, '.qaren'));
