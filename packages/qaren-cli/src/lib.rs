@@ -9,6 +9,7 @@ pub mod config;
 pub mod core;
 pub mod events;
 pub mod exec;
+pub mod expo_updates;
 pub mod failure;
 pub mod fingerprint;
 pub mod flow;

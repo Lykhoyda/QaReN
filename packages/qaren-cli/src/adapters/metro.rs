@@ -6,7 +6,14 @@ pub fn expo_online(runner: &dyn Runner) -> bool {
 }
 
 // The iOS simulator reaches Metro on 127.0.0.1, so iOS binds to loopback; Android keeps its adb-reverse path.
-pub fn start_spec(project_root: &Path, port: u16, localhost: bool, online: bool) -> CmdSpec {
+// `preload` is QaReN's run-local runtime-version preload (`expo_updates::write_preload`), iOS only.
+pub fn start_spec(
+    project_root: &Path,
+    port: u16,
+    localhost: bool,
+    online: bool,
+    preload: Option<&Path>,
+) -> CmdSpec {
     let port = port.to_string();
     let mut args = vec!["exec", "expo", "start", "--port", &port];
     if localhost {
@@ -23,22 +30,57 @@ pub fn start_spec(project_root: &Path, port: u16, localhost: bool, online: bool)
         return spec;
     }
     // Node resolves `localhost` to ::1 first, so --localhost alone listens on IPv6 while every probe and the app use 127.0.0.1.
+    // `pnpm exec` replaces the child's NODE_OPTIONS with a configured `node-options`, and reads
+    // npm_config_node_options over .npmrc, so a configured value is composed and passed both ways.
+    let configured = std::env::var("npm_config_node_options")
+        .ok()
+        .filter(|options| !options.trim().is_empty())
+        .or_else(|| npmrc_node_options(project_root));
     let inherited = std::env::var("NODE_OPTIONS").ok();
-    spec.env(
-        "NODE_OPTIONS",
-        &ipv4_first_node_options(inherited.as_deref()),
-    )
+    let options = dev_server_node_options(configured.as_deref().or(inherited.as_deref()), preload);
+    let spec = spec.env("NODE_OPTIONS", &options);
+    if configured.is_some() {
+        spec.env("npm_config_node_options", &options)
+    } else {
+        spec
+    }
 }
 
-// Appends to the caller's NODE_OPTIONS instead of replacing it.
-pub fn ipv4_first_node_options(inherited: Option<&str>) -> String {
-    match inherited
+// shortcut: reads only the project's own .npmrc and leaves values with interpolation, escapes or comments to
+// pnpm; a node-options set in a workspace-root, user or global rc or pnpm-workspace.yaml, or one left to pnpm,
+// still replaces these options (the receipt then shows pin=written), so resolve pnpm's effective setting if seen.
+fn npmrc_node_options(project_root: &Path) -> Option<String> {
+    let rc = std::fs::read_to_string(project_root.join(".npmrc")).ok()?;
+    let value = rc.lines().rev().find_map(|line| {
+        let (key, value) = line.split_once('=')?;
+        (key.trim() == "node-options").then(|| value.trim().to_string())
+    })?;
+    // ini parses a fully quoted value as a JSON string; anything else is taken verbatim.
+    let value = if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
+        serde_json::from_str::<String>(&value).ok()?
+    } else {
+        value
+    };
+    (!value.trim().is_empty() && !value.contains(['$', '\\', ';', '#'])).then_some(value)
+}
+
+// Appends to the base options instead of replacing them; the preload path is quoted for Node's parser.
+pub fn dev_server_node_options(base: Option<&str>, preload: Option<&Path>) -> String {
+    let mut options: Vec<String> = base
         .map(str::trim)
         .filter(|options| !options.is_empty())
-    {
-        Some(options) => format!("{options} --dns-result-order=ipv4first"),
-        None => "--dns-result-order=ipv4first".to_string(),
+        .map(str::to_string)
+        .into_iter()
+        .collect();
+    options.push("--dns-result-order=ipv4first".into());
+    if let Some(preload) = preload {
+        let escaped = preload
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        options.push(format!("--require \"{escaped}\""));
     }
+    options.join(" ")
 }
 
 // Expo serves `/` and `/status` itself; only Metro's own handler logs this path, arming the drained count before launch.

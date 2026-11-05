@@ -686,6 +686,7 @@ fn run_inner(
         terminal: None,
         held: None,
         build_lock: None,
+        runtime_version: None,
     };
     if let Err(f) = record.save(&req.runs_root) {
         return Err(lease::release_or_annotate(&lease, f));

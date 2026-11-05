@@ -2262,7 +2262,33 @@ budget. The receipt's `manifest_warmup` outcome records attempt and timeout
 counts, successful-answer minimum, median and maximum, the client's 10-second
 limit, and whether the 15-second request-handler probe timed out; elapsed time
 is at `timings_ms.manifest_warmup_elapsed`. These statistics contain no raw probe
-output. A request-handler timeout after `/status` responds names startup or a
+output.
+
+Expo's dev-client manifest handler resolves the runtime version on every
+request; under the expo-updates `fingerprint` policy that recomputes the
+project fingerprint each time, which can take longer than the client's
+10-second limit. Before install, iOS preparation reads the runtime version the
+selected `.app` embeds (`Expo.plist` `EXUpdatesRuntimeVersion`, or for
+`file:fingerprint` the app's `EXUpdates.bundle/fingerprint` resource) and
+writes it to `runtime-version-pin.json` in the run directory. QaReN's own dev
+server loads a run-local preload (`--require` in `NODE_OPTIONS`, and in
+`npm_config_node_options` when the project's `.npmrc` sets `node-options`)
+that answers the resolver with that value and appends
+`runtime-version-pin.resolved` when it does. Nothing in the candidate is edited.
+The receipt's `runtime_version` records `embedded_policy` (`literal`,
+`fingerprint`, `unconfigured` or `unsupported`), `source: artifact`, an 8-character
+`value_sha256_prefix` (never the value) and `pin`: `resolved` when the dev
+server served it, `written` when it never reached the resolver, `none` or
+`unsupported`. Android records `unsupported`. When warm-up refuses for an app
+whose embedded policy is `fingerprint` and the pin was not served, the refusal
+names that cause first and suggests a fixed development `runtimeVersion`, or
+your own dev server from a scratch copy with the resolved string. Node options
+set in a workspace-root, user or global rc, in `pnpm-workspace.yaml`, or with
+`${...}` interpolation, escapes or comments, are left to pnpm, which then
+replaces the preload (`pin: written`). A native-side configuration override is
+not visible in the artifact.
+
+A request-handler timeout after `/status` responds names startup or a
 stalled watcher as possible causes; steady answers near 30 seconds also name a
 possible external-service wait when the online override described below is
 active. Check the volume and doctor before coordinating

@@ -56,6 +56,8 @@ pub(crate) struct Warmup {
     pub watchman_volume_probe: Option<VolumeProbe>,
     pub slow_volume: bool,
     pub expo_online: bool,
+    // The app embeds the fingerprint runtimeVersion policy and the dev server never served the pin: the pin state.
+    pub fingerprint_pin: Option<&'static str>,
 }
 
 impl Warmup {
@@ -73,6 +75,7 @@ impl Warmup {
             watchman_volume_probe: None,
             slow_volume: false,
             expo_online: false,
+            fingerprint_pin: None,
         }
     }
 
@@ -162,10 +165,14 @@ impl Warmup {
             next.push_str("; ");
             next.push_str(crate::volume::SLOW_VOLUME_FIX);
         }
-        let reason = match self.watchman_volume_probe {
+        let mut reason = match self.watchman_volume_probe {
             Some(probe @ (VolumeProbe::Stalled | VolumeProbe::TimedOut | VolumeProbe::Rejected | VolumeProbe::SyncRejected)) => probe.reason().to_string(),
             _ => format!("dev client manifest did not warm within its stage budget or {MAX_ATTEMPTS}-attempt cap"),
         };
+        if let Some(pin) = self.fingerprint_pin {
+            reason = format!("the app's embedded runtimeVersion policy is fingerprint, so every dev-client manifest request may recompute the project fingerprint; the measured answers below are judged against the 5 s warm criterion and the client's 10 s limit, and host load only multiplies that cost. {reason}");
+            next = format!("QaReN could not pin the build's runtime version in its dev server (runtime_version.pin={pin}); pin a fixed runtimeVersion for development builds, or start your own dev server from a scratch copy with the resolved string; {next}");
+        }
         Failure::new(
             "build",
             if self.watchman_volume_probe == Some(VolumeProbe::Stalled) {
@@ -197,6 +204,43 @@ mod tests {
         warm.expo_online = true;
         assert!(warm.refusal().next_action.contains("external service"));
         assert!(warm.refusal().next_action.contains("unset EXPO_OFFLINE"));
+    }
+
+    #[test]
+    fn an_unpinned_fingerprint_policy_is_named_before_every_existing_hint() {
+        let mut warm = Warmup::new(0, 420, 2_400_000, true);
+        warm.expo_online = true;
+        warm.slow_volume = true;
+        for duration_ms in [5_000, 9_000, 7_000] {
+            warm.observe(&CmdOutput {
+                duration_ms,
+                ..CmdOutput::success("")
+            });
+        }
+        let plain = warm.refusal();
+        assert!(!plain.detail.to_string().contains("fingerprint"));
+        warm.fingerprint_pin = Some("written");
+        let named = warm.refusal();
+        let reason = named.detail.to_string();
+        assert!(reason.starts_with("the app's embedded runtimeVersion policy is fingerprint"));
+        assert!(reason.contains("median_answer_ms=7000"));
+        assert!(named
+            .next_action
+            .starts_with("QaReN could not pin the build's runtime version in its dev server (runtime_version.pin=written)"));
+        assert!(named.next_action.ends_with(plain.next_action.as_str()));
+        assert_eq!(named.code, FailureCode::ManifestNotWarm);
+        // No successful answer: the summary says so and no median is claimed.
+        let mut silent = Warmup::new(0, 420, 2_400_000, true);
+        silent.observe(&CmdOutput {
+            timed_out: true,
+            ..Default::default()
+        });
+        silent.fingerprint_pin = Some("unsupported");
+        assert!(silent
+            .refusal()
+            .detail
+            .to_string()
+            .contains("median_answer_ms=none"));
     }
 
     #[test]

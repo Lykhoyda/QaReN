@@ -213,6 +213,7 @@ pub fn base_record(
         terminal: None,
         held: None,
         build_lock: None,
+        runtime_version: None,
     }
 }
 

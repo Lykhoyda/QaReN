@@ -1296,7 +1296,15 @@ fn script_ios_prepare_before_manifest(mock: &mut MockRunner, repo: &std::path::P
 }
 
 fn script_ios_prepare_before_request_probe(mock: &mut MockRunner, repo: &std::path::Path) {
-    script_ios_prepare_before_install(mock, repo);
+    script_ios_prepare_before_request_probe_reading(mock, repo, |_| {});
+}
+
+fn script_ios_prepare_before_request_probe_reading(
+    mock: &mut MockRunner,
+    repo: &std::path::Path,
+    read_artifact: impl FnOnce(&mut MockRunner),
+) {
+    script_ios_prepare_reading_artifact(mock, repo, read_artifact);
     mock.expect_run("simctl install", CmdOutput::success(""));
     mock.expect_run("ps", CmdOutput::success(LSTART));
     mock.expect_run("ps", CmdOutput::success("S"));
@@ -1535,6 +1543,117 @@ fn manifest_timeout_records_the_request_handler_cause_without_raw_output() {
             .collect();
         assert_eq!(limits, [30, 15]);
         assert!(!mock.calls.iter().any(|c| c.label == "simctl-launch"));
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+// The built app embeds the fingerprint policy; with `resolved`, the dev server reports serving the pin.
+fn embed_fingerprint_policy(mock: &mut MockRunner, runs_root: std::path::PathBuf, resolved: bool) {
+    use qaren::expo_updates::RESOLVED_MARKER;
+    mock.observe = Some(Box::new(move |spec| {
+        for run in std::fs::read_dir(&runs_root)
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            // Before verification hashes the freshly built app.
+            let app = run.path().join("ios-build/testapp.app");
+            if app.is_dir() && !app.join("Expo.plist").exists() {
+                std::fs::write(app.join("Expo.plist"), "plist").unwrap();
+                std::fs::create_dir_all(app.join("EXUpdates.bundle")).unwrap();
+                std::fs::write(app.join("EXUpdates.bundle/fingerprint"), "secret-hash").unwrap();
+            }
+            if resolved && spec.label == "metro-manifest" && run.path().join("run.json").is_file() {
+                std::fs::write(run.path().join(RESOLVED_MARKER), "6001 ios\n").unwrap();
+            }
+        }
+    }));
+}
+
+#[test]
+fn a_slow_manifest_for_an_unpinned_fingerprint_app_names_the_policy_and_a_served_pin_does_not() {
+    use qaren::expo_updates::{EmbeddedPolicy, PinState, PIN_FILE};
+    for resolved in [false, true] {
+        let repo = common::temp_repo();
+        let scenario = write_scenario(
+            &repo,
+            &format!(
+                "{}deadlines:\n  manifest_warmup_seconds: 30\n",
+                ios_scenario_yaml(8791)
+            ),
+        );
+        let mut mock = MockRunner::new();
+        embed_fingerprint_policy(
+            &mut mock,
+            scenario.parent().unwrap().to_path_buf(),
+            resolved,
+        );
+        script_ios_prepare_before_request_probe_reading(&mut mock, &repo, |m| {
+            m.expect_run(
+                "plutil -convert json",
+                CmdOutput::success(r#"{"EXUpdatesRuntimeVersion":"file:fingerprint"}"#),
+            );
+        });
+        mock.expect_run("qaren-request-probe", CmdOutput::success(""));
+        let slow = CmdOutput {
+            timed_out: true,
+            duration_ms: 15_000,
+            ..Default::default()
+        };
+        mock.expect_run("expo-platform", slow.clone());
+        script_volume_sample(&mut mock, false);
+        mock.expect_run("expo-platform", slow);
+        mock.advance_on = Some(("expo-platform".into(), 15_000));
+        common::script_ios_metro_cleanup(&mut mock);
+        let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(failure.code, FailureCode::ManifestNotWarm);
+        let named = failure
+            .detail
+            .to_string()
+            .contains("runtimeVersion policy is fingerprint");
+        assert_eq!(named, !resolved);
+        assert_eq!(
+            failure
+                .next_action
+                .to_string()
+                .contains("runtime_version.pin=written"),
+            !resolved
+        );
+        assert!(failure.next_action.contains("re-run once"));
+        let runtime = receipt.runtime_version.as_ref().unwrap();
+        assert_eq!(runtime.embedded_policy, EmbeddedPolicy::Fingerprint);
+        assert_eq!(runtime.source, "artifact");
+        assert_eq!(
+            runtime.pin,
+            if resolved {
+                PinState::Resolved
+            } else {
+                PinState::Written
+            }
+        );
+        assert_eq!(
+            runtime.value_sha256_prefix.as_deref(),
+            Some(&qaren::candidate::sha256_hex(b"secret-hash")[..8])
+        );
+        assert!(!receipt.to_json().contains("secret-hash"));
+        let pin: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(
+                RunRecord::run_dir(scenario.parent().unwrap(), &receipt.run_id).join(PIN_FILE),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            pin,
+            serde_json::json!({"platform": "ios", "value": "secret-hash"})
+        );
+        // The dev server was started with the run's preload.
+        let metro = mock.calls.iter().find(|c| c.label == "expo-start").unwrap();
+        assert!(metro
+            .env
+            .iter()
+            .any(|(k, v)| k == "NODE_OPTIONS" && v.contains("runtime-version-pin.cjs")));
         assert_eq!(mock.remaining(), 0);
     }
 }
@@ -1944,6 +2063,15 @@ fn ios_prepare_cancellation_preempts_a_slow_manifest_retry() {
 }
 
 fn script_ios_prepare_before_install(mock: &mut MockRunner, repo: &std::path::Path) {
+    script_ios_prepare_reading_artifact(mock, repo, |_| {});
+}
+
+// `read_artifact` scripts the runtime-version read between artifact verification and Metro's spawn.
+fn script_ios_prepare_reading_artifact(
+    mock: &mut MockRunner,
+    repo: &std::path::Path,
+    read_artifact: impl FnOnce(&mut MockRunner),
+) {
     script_validation(mock, repo, IOS_TOOLS);
     mock.expect_run("lsof", free_port());
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
@@ -1959,6 +2087,7 @@ fn script_ios_prepare_before_install(mock: &mut MockRunner, repo: &std::path::Pa
         common::script_xcode(m);
     });
     common::script_ios_app_verification(mock);
+    read_artifact(mock);
     common::script_ios_metro_spawn(mock);
 }
 
@@ -3819,7 +3948,7 @@ fn ios_reuse_dry_run_lists_each_launch_step_once_in_execution_order() {
             &ios_spec.runtime,
         ),
         ios::bootstatus_spec("<udid>", scenario.deadlines.device_boot_seconds),
-        metro::start_spec(&project, 8791, true, false),
+        metro::start_spec(&project, 8791, true, false, None),
         ios::install_app_spec("<udid>", &artifact),
         metro::request_probe_spec(8791),
         metro::manifest_spec(8791, "ios"),
