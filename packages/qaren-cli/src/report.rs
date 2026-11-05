@@ -923,16 +923,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(stayed.summary(), "interruption recovery: did-not-disappear");
-        for class in ["permission-opt-in", "presented-layer"] {
-            let classed = serde_json::json!({ "considered": true, "outcome": "dismissed", "screenClass": class });
-            let parsed: crate::core::InterruptionReceipt =
-                serde_json::from_value(classed.clone()).unwrap();
-            assert_eq!(serde_json::to_value(&parsed).unwrap(), classed);
-            assert_eq!(
-                parsed.summary(),
-                format!("interruption recovery: dismissed ({class})")
-            );
-        }
+        let classed = serde_json::json!({ "considered": true, "outcome": "dismissed", "screenClass": "permission-opt-in" });
+        let parsed: crate::core::InterruptionReceipt =
+            serde_json::from_value(classed.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), classed);
+        assert_eq!(
+            parsed.summary(),
+            "interruption recovery: dismissed (permission-opt-in)"
+        );
+        assert!(serde_json::from_value::<crate::core::InterruptionReceipt>(
+            serde_json::json!({ "considered": true, "outcome": "dismissed", "screenClass": "presented-layer" })
+        )
+        .is_err());
         row["interruption"] = receipt.clone();
         row["interruption"]["screenClass"] = serde_json::json!("Skip");
         let parsed: crate::core::Row = serde_json::from_value(row).unwrap();

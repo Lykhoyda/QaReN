@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parsePlan } from '../../../dist/qa/plan.js';
+import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import type { Screen } from '../../../dist/qa/screen.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
@@ -102,7 +103,13 @@ test('a missing wait after a passed planned press leaves the opened screen and f
     assert.equal(result.recoveries, 0, name);
     assert.equal(result.failure?.step, 2, name);
     assert.equal(result.failure?.subreason, 'previous-plan-press', name);
-    assert.equal(result.failure?.suggestion, undefined, name);
+    if (name === 'opener gone' || name === 'decline named Skip')
+      assert.match(
+        result.failure?.suggestion ?? '',
+        /Add a step after line 1: Tap "(?:Close|Skip)"\./,
+        name,
+      );
+    else assert.equal(result.failure?.suggestion, undefined, name);
     assert.ok(result.failure?.screen, name);
     assert.match(
       result.failure?.seen ?? '',
@@ -117,34 +124,126 @@ test('a missing wait after a passed planned press leaves the opened screen and f
   }
 });
 
-test('a permission opt-in after a planned press is declined once, recorded and the plan passes', async () => {
+test('a planned press passing on loading never dismisses its delayed opt-in destination', async () => {
   for (const decline of ['Skip', 'Not now', "Don't allow"]) {
-    const optIn = () =>
-      screen([
-        element('@title', 'Never miss an update', { kind: 'text' }),
-        element('@decline', decline),
-        element('@accept', 'Yes, notify me'),
-      ]);
-    const f = app(opener(), {
-      '@open': () => screen([element('@heading', 'Home', { kind: 'text' })]),
-      '@decline': ready,
+    for (const withheld of [false, true]) {
+      for (const next of ['2. Wait for "Ready" to appear', '✓ "Ready"']) {
+        const f = app(opener(), {
+          '@open': () => withModal(screen([element('@heading', 'Loading', { kind: 'text' })])),
+          '@decline': ready,
+        });
+        if (withheld) {
+          f.deps.privacy = new ObservedPrivacy();
+          f.deps.privacy.classifyInputs(['zq-s3cret-7781']);
+        }
+        f.deps.row = (row) => {
+          if (row.line === 1 && row.outcome === 'pass')
+            f.show(
+              screen([
+                element('@title', 'zq-s3cret-7781', { kind: 'text' }),
+                element('@decline', decline),
+                element('@accept', 'Allow'),
+              ]),
+            );
+        };
+        const result = await run(`1. Tap "Open"\n${next}`, f);
+        assert.equal(result.verdict, 'FAIL');
+        assert.deepEqual(f.actions, ['press @open']);
+        assert.equal(result.recoveries, 0);
+        assert.match(
+          result.failure?.seen ?? '',
+          /a permission opt-in with a decline and an accept control is in front; the previous planned tap may have opened it, so it was not dismissed/,
+        );
+        assert.equal(result.failure?.suggestion, `Add a step after line 1: Tap "${decline}".`);
+        if (withheld) assert.ok(!JSON.stringify(result).includes('zq-s3cret-7781'));
+      }
+    }
+  }
+});
+
+test('a press inside modal A never dismisses delayed modal B while A remains mounted', async () => {
+  for (const withheld of [false, true]) {
+    const modalA = withModal(opener(), 'modal-a');
+    const modalB = withModal(screen([close()]), 'modal-b');
+    modalB.elements[0].testID = 'close-b';
+    modalB.reactHostEvidence!.hosts.push(
+      { testID: 'close-b', role: null, roleSource: 'none', capabilities: {} },
+      modalA.reactHostEvidence!.hosts[0],
+    );
+    modalB.reactHostEvidence!.typography!.nodes.push(
+      { hostIndex: 1, parentHostIndex: 0, rootIndex: 0, hostType: 'View', text: { kind: 'none' } },
+      {
+        hostIndex: 2,
+        parentHostIndex: null,
+        rootIndex: 0,
+        hostType: 'RCTModalHostView',
+        text: { kind: 'none' },
+      },
+    );
+    const f = app(modalA, {
+      '@open': () =>
+        withModal(screen([element('@loading', 'Loading', { kind: 'text' })]), 'modal-a'),
+      '@close': ready,
     });
+    if (withheld) {
+      f.deps.privacy = new ObservedPrivacy();
+      f.deps.privacy.classifyInputs(['zq-s3cret-7781']);
+      modalB.elements.push(element('@copy', 'zq-s3cret-7781', { kind: 'text' }));
+      modalB.visibleText.push('zq-s3cret-7781');
+    }
     f.deps.row = (row) => {
-      if (row.line === 1 && row.outcome === 'pass') f.show(optIn());
+      if (row.line === 1 && row.outcome === 'pass') f.show(modalB);
     };
     const result = await run('1. Tap "Open"\n2. Wait for "Ready" to appear', f);
-    assert.equal(result.verdict, 'PASS', result.failure?.seen);
-    assert.deepEqual(f.actions, ['press @open', 'press @decline'], decline);
-    assert.equal(result.recoveries, 1, decline);
-    const retry = result.steps.find((row) => row.line === 2 && row.outcome === 'retry');
-    assert.match(retry?.reason ?? '', new RegExp(`dismissed a permission opt-in with ${decline}`));
-    assert.deepEqual(retry?.interruption, {
-      considered: true,
-      outcome: 'dismissed',
-      soleDecline: false,
-      screenClass: 'permission-opt-in',
-    });
+    assert.equal(result.verdict, 'FAIL');
+    assert.deepEqual(f.actions, ['press @open']);
+    assert.equal(result.recoveries, 0);
+    assert.equal(result.failure?.subreason, 'previous-plan-press');
+    assert.match(
+      result.failure?.seen ?? '',
+      /an app (?:screen|•••) with only a decline control is in front; the previous planned tap may have opened it, so it was not dismissed/,
+    );
+    assert.equal(result.failure?.suggestion, 'Add a step after line 1: Tap "Close".');
+    if (withheld) assert.ok(!JSON.stringify(result).includes('zq-s3cret-7781'));
   }
+});
+
+test('an opt-in before a planned press or after its identified destination departs is declined once', async () => {
+  const optIn = () => screen([close('Skip'), element('@allow', 'Allow')]);
+  for (const departed of [false, true]) {
+    const f = app(departed ? withModal(opener()) : optIn(), {
+      '@open': () => withModal(screen([element('@home', 'Home', { kind: 'text' })]), 'home'),
+      '@close': ready,
+    });
+    f.deps.back = async () => {
+      f.show(withModal(optIn()));
+      return { ok: true, proven: true, executed: true };
+    };
+    const result = await run(
+      `${departed ? '1. Tap "Open"\n2. Go back\n' : ''}3. Wait for "Ready" to appear`,
+      f,
+    );
+    assert.equal(result.verdict, 'PASS', result.failure?.seen);
+    assert.deepEqual(f.actions, departed ? ['press @open', 'press @close'] : ['press @close']);
+    assert.equal(result.recoveries, 1);
+    const retry = result.steps.find((row) => row.outcome === 'retry');
+    assert.equal(retry?.interruption?.screenClass, 'permission-opt-in');
+    assert.match(retry?.reason ?? '', /dismissed a permission opt-in with Skip/);
+  }
+});
+
+test('a protected decline label matching a private value stays masked in the plan suggestion', async () => {
+  const f = app(opener(), { '@open': () => screen([close('Skip'), element('@accept', 'Allow')]) });
+  f.deps.privacy = new ObservedPrivacy();
+  f.deps.privacy.classifyInputs(['Skip']);
+  const result = await run('1. Tap "Open"\n2. Wait for "Ready" to appear', f);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, ['press @open']);
+  assert.equal(
+    result.failure?.suggestion,
+    'Add a step after line 1 that taps the decline control.',
+  );
+  assert.ok(!JSON.stringify(result.failure).includes('Skip'));
 });
 
 test('a consent or opt-in already present at planned press readback stays protected', async () => {
@@ -202,7 +301,7 @@ test('an opt-in a later unquoted step could target stays the planned press’s o
   assert.equal(result.verdict, 'FAIL');
   assert.deepEqual(f.actions, ['press @open']);
   assert.equal(result.failure?.subreason, 'previous-plan-press');
-  assert.equal(result.failure?.suggestion, undefined);
+  assert.equal(result.failure?.suggestion, 'Add a step after line 1: Tap "Skip".');
 });
 
 test('ANT-848: a planned press accepted despite a handler error protects its consent screen', async () => {

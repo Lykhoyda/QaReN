@@ -1146,9 +1146,9 @@ const optIn = (decline = 'Skip', accept = 'Yes, notify me', ...extra: Element[])
     element('@accept', accept),
     ...extra,
   ]);
-const afterPress: RecoveryTarget = { ...waitHome, afterPlannedPress: true, pressOptIn: false };
+const afterPress: RecoveryTarget = { ...waitHome, afterPlannedPress: true };
 
-test('a permission opt-in after a planned press is dismissed with its soft decline', () => {
+test('permission shape labels a permitted decline but never overrides planned press protection', () => {
   for (const [decline, accept] of [
     ['Skip', 'Yes, notify me'],
     ['Skip', 'Yes, notify me about all updates'],
@@ -1157,86 +1157,35 @@ test('a permission opt-in after a planned press is dismissed with its soft decli
     ['Don’t allow', 'Enable'],
     ['Maybe later', 'Turn on'],
   ]) {
-    const { result, records } = decide(optIn(decline, accept), [afterPress]);
-    assert.deepEqual(result, { label: decline, screenClass: 'permission-opt-in' }, decline);
-    assert.deepEqual(records, [], decline);
-  }
-});
-
-test('Close, consent accepts, a lone Skip or a third control are not a permission opt-in', () => {
-  for (const snapshot of [
-    optIn('Close'),
-    optIn('Skip', 'Agree'),
-    optIn('Skip', 'Continue'),
-    optIn('Skip', 'Accept'),
-    optIn('Skip', 'Allow all'),
-    optIn('Skip', 'Accept all'),
-    optIn('Skip', 'Notification settings'),
-    optIn('Not now', 'Yes, turn off notifications'),
-    optIn('Not now', 'Yes, do not notify me'),
-    // An accept whose visibility is not proven.
-    fixtureScreen([
-      element('@decline', 'Skip'),
-      element('@accept', 'Allow', {
-        semantic: { press: 'supported', fill: 'unsupported', visibility: 'offscreen' },
-      }),
-    ]),
-    fixtureScreen([element('@heading', 'Onboarding', { kind: 'text' }), element('@skip', 'Skip')]),
-    optIn('Skip', 'Yes, notify me', element('@more', 'Learn more')),
-    optIn('Skip', 'Yes, notify me', element('@email', 'Email', { kind: 'input' })),
-    optIn(
-      'Skip',
-      'Yes, notify me',
-      element('@hint', 'Hint', {
-        kind: 'text',
-        semantic: { press: 'unknown', fill: 'unsupported', visibility: 'visible' },
-      }),
-    ),
-    { ...optIn(), pressGapCount: 1 },
-    { ...optIn(), semanticUnassociatedReact: 1 },
-  ]) {
+    const snapshot = optIn(decline, accept);
+    assert.deepEqual(decide(snapshot, [waitHome]).result, {
+      label: decline,
+      screenClass: 'permission-opt-in',
+    });
     const { result, records } = decide(snapshot, [afterPress]);
-    assert.equal(result, undefined);
-    assert.equal(records[0].veto, 'previous-plan-press');
-  }
-});
-
-test('press readback must prove the opt-in was absent, and base consent never takes Skip', () => {
-  for (const pressOptIn of [true, undefined]) {
-    const { result, records } = decide(optIn(), [{ ...afterPress, pressOptIn }]);
     assert.equal(result, undefined);
     assert.equal(records[0]?.veto, 'previous-plan-press');
   }
-  for (const accept of ['Allow all', 'Accept all', 'Agree to all', 'Enable all']) {
-    assert.equal(decide(optIn('Skip', accept), [waitHome]).result, undefined);
-  }
-  assert.equal(plannedSurface(optIn()).optIn, true);
-  assert.equal(plannedSurface(fixtureScreen([])).optIn, false);
-  assert.equal(
-    plannedSurface({ ...optIn(), coverage: { native: 'incomplete', react: 'complete' } }).optIn,
-    undefined,
-  );
 });
 
-test('any plan target that could be on the opt-in keeps it the plan’s own', () => {
-  for (const [targets, veto] of [
-    [[{ ...afterPress, unquotedLater: true }], 'previous-plan-press'],
-    [
-      [afterPress, later('optin-title', 'wait', { laterBlock: true, exact: 'id' })],
-      'previous-plan-press',
-    ],
-    // A later step naming the decline owns it.
-    [[afterPress, later('Skip', 'press')], 'later-target'],
-  ] as Array<[RecoveryTarget[], string]>) {
-    const { result, records } = decide(optIn(), targets);
-    assert.equal(result, undefined, JSON.stringify(targets.at(-1)));
-    assert.equal(records[0]?.veto, veto, JSON.stringify(targets.at(-1)));
+test('the closed accept-all list keeps every decline outside protection too', () => {
+  for (const accept of ['Allow all', 'aCcEpT aLl', 'Agree to all', 'ENABLE ALL']) {
+    for (const decline of ['Skip', 'Close', 'Not now', 'Later', "Don't allow", 'Don’t allow']) {
+      assert.equal(decide(optIn(decline, accept), [waitHome]).result, undefined);
+    }
   }
-  // Without a planned press, the opt-in still records its class.
-  assert.deepEqual(decide(optIn(), [waitHome]).result, {
-    label: 'Skip',
-    screenClass: 'permission-opt-in',
-  });
+});
+
+test('non-permission shapes gain no receipt class', () => {
+  for (const accept of [
+    'Agree',
+    'Continue',
+    'Accept',
+    'View all offers',
+    'Yes, do not notify me',
+  ]) {
+    assert.deepEqual(decide(optIn('Skip', accept), [waitHome]).result, { label: 'Skip' });
+  }
 });
 
 // A sheet whose modal container `sheet` holds the Close control `sheet-close`.
@@ -1286,119 +1235,19 @@ function presented(
 }
 const key = (id: string) => JSON.stringify(['RCTModalHostView', id]);
 
-test('a new identified sheet over the planned screen is dismissed with its own Close', () => {
-  // The press's own modal stays beneath the new sheet.
-  assert.deepEqual(
-    decide(presented({ extraModal: 'home' }), [{ ...afterPress, pressBaseline: [key('home')] }])
-      .result,
-    { label: 'Close', screenClass: 'presented-layer' },
-  );
+test('a new identified sheet over a retained modal never overrides planned press protection', () => {
+  const { result, records } = decide(presented({ extraModal: 'home' }), [afterPress]);
+  assert.equal(result, undefined);
+  assert.equal(records[0]?.veto, 'previous-plan-press');
+  assert.deepEqual(decide(presented({ extraModal: 'home' }), [waitHome]).result, {
+    label: 'Close',
+  });
 });
 
-test('the closed accept-all list protects every decline, including on a presented layer', () => {
-  for (const accept of ['Allow all', 'aCcEpT aLl', 'Agree to all', 'ENABLE ALL']) {
-    for (const decline of ['Skip', 'Close', 'Not now', 'Later', "Don't allow", 'Don’t allow']) {
-      assert.equal(decide(optIn(decline, accept), [waitHome]).result, undefined);
-      const layer = presented({ extraModal: 'home' });
-      layer.elements[1].label = decline;
-      layer.elements.push(element('@accept', accept));
-      const { result, records } = decide(layer, [{ ...afterPress, pressBaseline: [key('home')] }]);
-      assert.equal(result, undefined);
-      assert.equal(records[0]?.veto, 'previous-plan-press');
-    }
-  }
-});
-
-test('navigation containing all does not block an independent presented campaign', () => {
-  for (const label of ['View all offers', 'See all', 'Show all', 'Accept all offers']) {
-    const layer = presented({ extraModal: 'home' });
-    layer.elements[1].label = 'Skip';
-    layer.elements.push(element('@offers', label));
-    assert.deepEqual(decide(layer, [{ ...afterPress, pressBaseline: [key('home')] }]).result, {
-      label: 'Skip',
-      screenClass: 'presented-layer',
-    });
-  }
-});
-
-test('incomplete, anonymous, duplicate or unrelated sheet evidence keeps the press protection', () => {
-  const cases: Array<[string, Screen, RecoveryTarget]> = [
-    ['no baseline', presented(), afterPress],
-    ['empty baseline', presented(), { ...afterPress, pressBaseline: [] }],
-    ['present at the press', presented(), { ...afterPress, pressBaseline: [key('sheet')] }],
-    ['anonymous baseline', presented(), { ...afterPress, pressBaseline: [undefined] }],
-    [
-      'anonymous sheet',
-      presented({ modalId: '', extraModal: 'home' }),
-      { ...afterPress, pressBaseline: [key('home')] },
-    ],
-    [
-      'duplicate sheet',
-      presented({ extraModal: 'sheet' }),
-      { ...afterPress, pressBaseline: [key('sheet')] },
-    ],
-    [
-      'Close without an id',
-      presented({ closeId: '', extraModal: 'home' }),
-      { ...afterPress, pressBaseline: [key('home')] },
-    ],
-    [
-      'Close outside',
-      presented({ closeInside: false, extraModal: 'home' }),
-      { ...afterPress, pressBaseline: [key('home')] },
-    ],
-    [
-      'extra window',
-      presented({ extraModal: 'other' }),
-      { ...afterPress, pressBaseline: [key('home')] },
-    ],
-    ['replaced modal', presented(), { ...afterPress, pressBaseline: [key('home')] }],
-    [
-      'duplicate baseline',
-      presented({ extraModal: 'home' }),
-      { ...afterPress, pressBaseline: [key('home'), key('home')] },
-    ],
-    [
-      'press gap',
-      { ...presented({ extraModal: 'home' }), pressGapCount: 1 },
-      { ...afterPress, pressBaseline: [key('home')] },
-    ],
-    [
-      'unassociated React',
-      { ...presented({ extraModal: 'home' }), semanticUnassociatedReact: 1 },
-      { ...afterPress, pressBaseline: [key('home')] },
-    ],
-    [
-      'unquoted later',
-      presented({ extraModal: 'home' }),
-      { ...afterPress, pressBaseline: [key('home')], unquotedLater: true },
-    ],
-  ];
-  for (const [name, snapshot, target] of cases) {
-    const { result, records } = decide(snapshot, [target]);
-    assert.equal(result, undefined, name);
-    assert.equal(records[0]?.veto, 'previous-plan-press', name);
-  }
-  const incomplete = presented({ extraModal: 'home' });
-  incomplete.reactHostEvidence!.typography!.complete = false;
-  assert.equal(
-    decide(incomplete, [{ ...afterPress, pressBaseline: [key('home')] }]).result,
-    undefined,
-  );
-  const laterOnSheet = decide(presented({ extraModal: 'home' }), [
-    { ...afterPress, pressBaseline: [key('home')] },
-    later('sheet-title', 'wait', { laterBlock: true, exact: 'id' }),
-  ]);
-  assert.equal(laterOnSheet.result, undefined);
-  assert.equal(laterOnSheet.records[0]?.veto, 'previous-plan-press');
-});
-
-test('the press baseline is every modal container in a complete capture that passed it', () => {
-  assert.deepEqual(plannedSurface(presented()).baseline, [key('sheet')]);
-  assert.equal(
-    plannedSurface({ ...presented(), coverage: { native: 'incomplete', react: 'complete' } })
-      .baseline,
-    undefined,
-  );
-  assert.deepEqual(plannedSurface(presented({ modalId: '' })).baseline, [undefined]);
+test('only departure of the identified planned destination releases protection', () => {
+  const surface = plannedSurface(presented(), presented({ modalId: 'before' }));
+  assert.deepEqual(surface, { container: key('sheet') });
+  assert.equal(surfaceGone(presented({ extraModal: 'home' }), surface), false);
+  assert.equal(surfaceGone(presented({ modalId: 'other' }), surface), true);
+  assert.equal(surfaceGone(presented(), plannedSurface(fixtureScreen([]))), false);
 });

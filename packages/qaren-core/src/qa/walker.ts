@@ -109,6 +109,7 @@ import {
   type RecoveryTarget,
   dismissCandidate,
   plannedSurface,
+  optInShaped,
   recover,
   soleDecline,
   surfaceGone,
@@ -474,16 +475,7 @@ export interface WalkOptions {
   login?: boolean;
   singleAttempt?: boolean;
   laterTargets?: readonly RecoveryTarget[];
-  // A later block has a step whose target has no quoted text.
-  laterUnquoted?: boolean;
 }
-
-// A target without quoted text cannot be proven absent from any screen.
-const unquotedTarget = (item: Item): boolean => {
-  if (item.kind === 'check') return !item.literal;
-  const target = stepTarget(item);
-  return target !== undefined && target.quoted === undefined;
-};
 
 const recoveryTarget = (item: Item): RecoveryTarget | undefined => {
   if (item.kind === 'check')
@@ -517,7 +509,7 @@ export interface WalkSequence {
   window?: { fromMs: number; typed: number };
   // System prompts recovery declined in this run; a repeat ask is the plan author's to answer.
   declinedPrompts?: Set<string>;
-  plannedPress?: PlannedSurface;
+  plannedPress?: PlannedSurface & { line: number };
   // Armed at launch and after a login replay; the next top-level Tap or Fill spends it.
   launchWait?: boolean;
 }
@@ -601,7 +593,6 @@ const PREVIOUS_PLAN_PRESS =
 const SCREEN_CLASS_NAMES: Record<InterruptionScreenClass | 'app', string> = {
   app: 'an app screen',
   'permission-opt-in': 'a permission opt-in',
-  'presented-layer': 'a sheet presented over the previous screen',
 };
 
 // Capture and process refusals, ambiguity and the replay-miss path are never recovered.
@@ -1439,7 +1430,7 @@ async function walkBlockScoped(
         opts.recover !== false &&
         block.items.some((item) => item.line === row.line && item.kind === 'press')
       )
-        sequence.plannedPress = plannedSurface(latest, pressBase);
+        sequence.plannedPress = { ...plannedSurface(latest, pressBase), line: row.line };
     }
     rows.push(timed);
     deps.row(valueFree(timed));
@@ -1577,6 +1568,31 @@ async function walkBlockScoped(
           subreason: 'previous-plan-press',
         };
       reason = [...segments(reason), PREVIOUS_PLAN_PRESS];
+      const optIn = optInShaped(last);
+      const decline =
+        optIn ??
+        (soleDecline(last)
+          ? last.elements.find(
+              (e) =>
+                !e.offscreen &&
+                !e.semantic?.nativePresence?.structural &&
+                e.semantic?.press === 'supported',
+            )
+          : undefined);
+      if (decline?.label && sequence.plannedPress?.line !== undefined) {
+        const shape = optIn
+          ? 'a permission opt-in with a decline and an accept control'
+          : 'an app screen with only a decline control';
+        reason = [
+          ...segments(reason),
+          `; ${shape} is in front; the previous planned tap may have opened it, so it was not dismissed`,
+        ];
+        const label = privacy.redactElementLabel(decline);
+        lastScreen.suggestion =
+          label === decline.label
+            ? redact(`Add a step after line ${sequence.plannedPress.line}: Tap "${label}".`)
+            : `Add a step after line ${sequence.plannedPress.line} that taps the decline control.`;
+      }
     }
     const withheld = privacy.textWithheld(last);
     emit({
@@ -2479,18 +2495,7 @@ async function walkBlockScoped(
     const planTargets = [
       {
         ...(recoveryTarget(item) ?? { phrase: '' }),
-        ...(sequence.plannedPress
-          ? {
-              afterPlannedPress: true,
-              pressOptIn: sequence.plannedPress.optIn,
-              ...(sequence.plannedPress.baseline
-                ? { pressBaseline: sequence.plannedPress.baseline }
-                : {}),
-            }
-          : {}),
-        ...(opts.laterUnquoted || remainingItems.some(unquotedTarget)
-          ? { unquotedLater: true }
-          : {}),
+        ...(sequence.plannedPress ? { afterPlannedPress: true } : {}),
       },
       ...remainingItems.flatMap((remaining) => {
         const target = recoveryTarget(remaining);
@@ -4955,7 +4960,6 @@ export async function runPlan(
               return target?.quoted !== undefined ? [{ ...target, laterBlock: true }] : [];
             }),
           ),
-          laterUnquoted: laterBlocks.some((later) => later.items.some(unquotedTarget)),
         },
         operations,
       );

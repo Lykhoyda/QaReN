@@ -3467,36 +3467,25 @@ scrolls and keyboard-only Back never establish departure. Only a complete native
 and React capture with complete host structure proving the identified container
 absent can expire protection. A planned Accept re-arms protection for its own
 destination, even when it closes an identified modal. If that destination has no
-identifiable container, protection remains on, including against later sheets,
-except for the two independent screens below.
+identifiable container, protection remains on, including against later sheets.
 When an identified destination is proven gone, later unsolicited sheets can be
 dismissed. Recovery's decline presses and login presses never arm it.
-While protected, a decline is still taken on a screen that is independent of the
-press, and only when no plan target could be on it: no remaining step in this or
-a later block has a target without quoted text, and neither the current target nor
-any remaining target in this or a later block is on screen, decline labels included,
-and press, fill and React association evidence is complete. A permission opt-in is
-one only when the complete press
-readback proved that shape absent: exactly
-two controls with proven press and fill evidence and no input, one a decline
-other than `Close`, `Dismiss` or `Cancel`, the other an accept that starts with
-`Allow`, `Enable`, `Turn on` or `Notify me`, or starts with `Yes` and mentions
-notifications, without negation or a whole-label, case-insensitive match from the
-closed accept-all list: `Allow all`, `Accept all`, `Agree to all`, `Enable all`.
-A screen offering a decline and one of those accept-all controls is base consent;
-none of its declines is taken, including on a presented layer. Navigation labels
-such as `View all offers`, `See all` or `Show all` do not identify consent. A presented sheet is the other: complete
-React host evidence at the press and now, a non-empty press-time modal baseline,
-every identified modal container from the press still present,
-exactly one new identified one, no anonymous or duplicate container identity, and
-a decline whose test ID belongs to exactly one host inside that new container.
-The step's receipt then records `screenClass` (`permission-opt-in` or
-`presented-layer`) and the retry row names it. A sheet already up when the press
-read back is part of the press's screen and stays protected.
+While protected, recovery dismisses no app screen: neither an opt-in shape,
+a screen absent at press readback, nor a newly identified modal proves independence
+from the planned tap. A push opt-in arriving after a planned tap must be answered
+explicitly by the plan. Opt-ins and intro sheets at launch, after login replay,
+or after an identified destination departs remain eligible for bounded recovery.
+Outside protection, a permission opt-in shape labels an otherwise permitted
+one-decline dismissal as `screenClass: permission-opt-in`; it grants no extra dismissal.
+The shape has exactly two proven controls and no input: a soft decline and a visible,
+pressable accept starting with `Allow`, `Enable`, `Turn on` or `Notify me`, or
+starting with `Yes` and mentioning notifications, without negation.
+A whole-label, case-insensitive match for `Allow all`, `Accept all`, `Agree to all`
+or `Enable all` identifies base consent; none of its declines is taken.
+Navigation labels such as `View all offers`, `See all` or `Show all` do not identify consent.
 Login replay also clears the withheld-dismissal diagnostic for the retried item.
 While protected, recovery still answers system
-prompts and dev menus and still replays login, but withholds every other app decline
-than those on the independent screens above,
+prompts and dev menus and still replays login, but withholds every app decline,
 including the recheck before dispatch, and an ambiguous decline set does not
 refuse. If login replay has not cleared the veto, a failing target-class step reports
 subreason `previous-plan-press`, and `failure.seen` includes
@@ -3505,10 +3494,11 @@ was not found; automatic app dismissal was withheld`, and the walk's
 `next_action` is `inspect_last_observed_screen`, also on a repeat, with a
 `failure.recovery` of reason `previous_plan_press` whose five rungs are all
 inapplicable. A failed check after such a veto
-carries the same `failure.seen` note without a subreason. Apart from the two
-independent screens defined above, a sheet that appears while the planned surface
+carries the same `failure.seen` note without a subreason. A sheet that appears while the planned surface
 is still on screen, including one that opens together with it, is therefore not
-dismissed either.
+dismissed either. When the protected screen is opt-in shaped or has only a decline
+control, the failure names its class even with text withheld and suggests adding
+a step after the planned press that taps the named decline, with privacy masks intact.
 
 With `TYPESAFE_API_KEY`, Jev may veto a selected control when the screen may be
 related to the step or its purpose is uncertain. It never chooses a control,
@@ -3542,8 +3532,7 @@ step's ledger row carries an `interruption` receipt: `considered`, an `outcome`
 (`vetoed`, `dismissed`, `not-dispatched`, `ambiguous` or `did-not-disappear`), the
 veto, whether a later-target veto came from `presence` or `ownership`, the target's
 plan line and step kind, whether the decline was the screen's only control, the
-`screenClass` a dismissed screen was recognised as (`permission-opt-in` or
-`presented-layer`); the report prints it as one line under the failure. A Jev veto
+`screenClass` a dismissed screen was recognised as (`permission-opt-in`); the report prints it as one line under the failure. A Jev veto
 or a guard change before dispatch records `not-dispatched`. A dismissal stays on
 the row through the step's retry. A no-candidate veto also reports
 each decline-labelled element's first failed predicate; press capability failures

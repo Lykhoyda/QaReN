@@ -19,15 +19,9 @@ export interface RecoveryTarget extends Target {
   laterBlock?: boolean;
   // The current target follows a passed planned press, so the screen in front is the plan's own.
   afterPlannedPress?: boolean;
-  // Modal containers in the capture that passed that press; absent when it was incomplete.
-  pressBaseline?: ReadonlyArray<string | undefined>;
-  pressOptIn?: boolean;
-  // A remaining step's target has no quoted text, so its presence on screen cannot be ruled out.
-  unquotedLater?: boolean;
 }
 
-// Why a screen after a planned press is independent of it, so its decline may be taken.
-export type InterruptionScreenClass = 'permission-opt-in' | 'presented-layer';
+export type InterruptionScreenClass = 'permission-opt-in';
 
 export type LoginReplay =
   | 'pass'
@@ -244,19 +238,9 @@ export function dismissCandidate(
     (e) => e.label !== undefined && DECLINE_LABELS.has(e.label) && failedPredicate(e) === undefined,
   );
   const only = candidates.length === 1 ? candidates[0] : undefined;
-  const screenClass: InterruptionScreenClass | undefined =
-    !only || acceptAll || !planTargetsAbsent(screen, planTargets)
-      ? undefined
-      : (!planTargets[0].afterPlannedPress || planTargets[0].pressOptIn === false) &&
-          optInShaped(screen) === only
-        ? 'permission-opt-in'
-        : planTargets[0].afterPlannedPress &&
-            presentedLayer(screen, planTargets[0].pressBaseline, only)
-          ? 'presented-layer'
-          : undefined;
-  // Only a dismissal that would otherwise happen is withheld, so an ordinary miss keeps its own cause.
-  if (candidates.length && planTargets[0].afterPlannedPress && !screenClass)
+  if (candidates.length && planTargets[0].afterPlannedPress)
     return rejected('previous-plan-press', 0);
+  const screenClass = only && optInShaped(screen) === only ? 'permission-opt-in' : undefined;
   if (acceptAll) return rejected('no-candidate');
   if (candidates.length > 1)
     return {
@@ -343,63 +327,15 @@ export function optInShaped(screen: Screen): Element | undefined {
     : undefined;
 }
 
-// A classified screen is independent of the plan only if no plan target could be on it.
-function planTargetsAbsent(screen: Screen, planTargets: readonly RecoveryTarget[]): boolean {
-  return (
-    // Unresolved control evidence could hide a planned control.
-    provenControls(screen) !== undefined &&
-    !screen.semanticUnassociatedReact &&
-    !planTargets[0]?.unquotedLater &&
-    // Unlike the absence guard, no target is exempt: a later-block or decline-named one counts too.
-    !planTargets.some((target) =>
-      [target, target.declared].some((t) => t !== undefined && targetOnScreen(screen, t)),
-    )
-  );
-}
-
-// A new, identified modal container presented on top of the press's screen, holding the candidate.
-function presentedLayer(
-  screen: Screen,
-  baseline: ReadonlyArray<string | undefined> | undefined,
-  candidate: Element,
-): boolean {
-  const evidence = screen.reactHostEvidence;
-  const typography = evidence?.typography;
-  const hosts = modalHosts(screen);
-  if (!baseline?.length || !hosts || !evidence || !typography || !candidate.testID) return false;
-  const ids = hosts.map((host) => host.key);
-  // Anonymous or duplicate identities never prove absence.
-  if (
-    [...baseline, ...ids].includes(undefined) ||
-    new Set(ids).size < ids.length ||
-    new Set(baseline).size < baseline.length
-  )
-    return false;
-  // A replaced modal may be the plan's next screen, so every press-time container must remain.
-  if (!baseline.every((key) => ids.includes(key))) return false;
-  const fresh = hosts.filter((host) => !baseline.includes(host.key));
-  const owners = evidence.hosts.flatMap((host, index) =>
-    host.testID === candidate.testID ? [index] : [],
-  );
-  return (
-    fresh.length === 1 &&
-    owners.length === 1 &&
-    (hostPath(typography, owners[0])?.slice(1).includes(fresh[0].index) ?? false)
-  );
-}
-
 const completeCapture = (screen: Screen): boolean =>
   (screen.captureCoverage?.native ?? screen.coverage?.native) === 'complete' &&
   screen.coverage?.react === 'complete';
 
 export interface PlannedSurface {
   container?: string;
-  optIn?: boolean;
-  // Every modal container in the capture that passed the press, for later novelty checks.
-  baseline?: Array<string | undefined>;
 }
 
-function modalHosts(screen: Screen): Array<{ key?: string; index: number }> | undefined {
+function modalContainers(screen: Screen): Array<string | undefined> | undefined {
   const evidence = screen.reactHostEvidence;
   const typography = evidence?.typography;
   if (!evidence?.complete || !typography?.complete) return undefined;
@@ -407,30 +343,24 @@ function modalHosts(screen: Screen): Array<{ key?: string; index: number }> | un
     if (!MODAL_HOST_TYPES.has(node.hostType ?? '')) return [];
     const host = evidence.hosts[index];
     const id = host?.testID || host?.nativeID;
-    return [{ ...(id ? { key: JSON.stringify([node.hostType, id]) } : {}), index }];
+    return [id ? JSON.stringify([node.hostType, id]) : undefined];
   });
 }
 
-const modalContainers = (screen: Screen): Array<string | undefined> | undefined =>
-  modalHosts(screen)?.map((host) => host.key);
-
 export function plannedSurface(after: Screen, before?: Screen): PlannedSurface {
-  const baseline =
-    after.front === 'app' && completeCapture(after) ? modalContainers(after) : undefined;
-  const surface: PlannedSurface = {
-    ...(baseline ? { baseline } : {}),
-    ...(after.front === 'app' &&
-    completeCapture(after) &&
-    provenControls(after) !== undefined &&
-    !after.semanticUnassociatedReact
-      ? { optIn: optInShaped(after) !== undefined }
-      : {}),
-  };
-  if (!before || before.front !== 'app' || !completeCapture(before) || !baseline) return surface;
+  if (
+    !before ||
+    before.front !== 'app' ||
+    after.front !== 'app' ||
+    !completeCapture(before) ||
+    !completeCapture(after)
+  )
+    return {};
+  const containers = modalContainers(after);
   const previous = modalContainers(before);
-  if (previous && baseline.length === 1 && baseline[0] && !previous.includes(baseline[0]))
-    return { ...surface, container: baseline[0] };
-  return surface;
+  if (previous && containers?.length === 1 && containers[0] && !previous.includes(containers[0]))
+    return { container: containers[0] };
+  return {};
 }
 
 export function surfaceGone(screen: Screen, surface: PlannedSurface): boolean {

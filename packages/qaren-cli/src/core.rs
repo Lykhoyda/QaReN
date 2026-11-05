@@ -518,7 +518,6 @@ pub struct InterruptionReceipt {
 #[serde(rename_all = "kebab-case")]
 pub enum InterruptionScreenClass {
     PermissionOptIn,
-    PresentedLayer,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
