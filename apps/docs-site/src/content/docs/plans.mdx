@@ -166,6 +166,9 @@ A qaren runtime without input support refuses a plan that names inputs.
 A **quoted** target, such as `Tap "tab-tasks"`, resolves locally against the labels and
 test IDs on screen. Two or more distinct matches refuse with `TARGET_AMBIGUOUS`; that
 refusal is never retried or re-walked.
+For Fill targets addressed by an input's React placeholder, see the
+[targeting rules](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan),
+including the conditions for naming an otherwise unnamed native input.
 
 A **phrase** target, such as `Tap the tasks tab`, has no quotes. Jev, QaReN's screen
 judge, picks the element, which must carry the phrase's

@@ -122,6 +122,7 @@ import {
   missSuggestion,
   screenNow,
   targetMissDiagnostic,
+  placeholderPairingGap,
   type TargetMissDiagnostic,
 } from './target-miss.js';
 import {
@@ -245,7 +246,7 @@ export interface WalkerDeps {
     privateValue?: boolean,
     onPrivateInput?: () => void,
     alwaysRetype?: boolean,
-    options?: { requireLiveHit: true },
+    options?: { requireLiveHit?: true; placeholder?: string },
   ): Promise<ActResult>;
   // iOS only: type, proven only by a matching React read-back; testID identifies the pre-dispatch focus veto.
   typeFocused?(
@@ -359,6 +360,15 @@ const INFERRED_FILL_UNAVAILABLE =
 const inferredOverlay = (facts: Readonly<CentreCoverageDiagnostic> | null) =>
   facts?.branch === 'overlay' && facts.viewportOutside === false && facts.keyboardVisible === false
     ? facts
+    : undefined;
+
+// Strict focus and an unnamed input's placeholder identity travel together; nothing when neither applies.
+const fillOptions = (strict: boolean, placeholder: string | undefined) =>
+  strict || placeholder
+    ? {
+        ...(strict ? { requireLiveHit: true as const } : {}),
+        ...(placeholder ? { placeholder } : {}),
+      }
     : undefined;
 
 // The runner's fixed reason word, or the bare code; never the rest of a native message.
@@ -1452,6 +1462,11 @@ async function walkBlockScoped(
             reason = typeof reason === 'string' ? reason + detail : [...segments(reason), detail];
           }
           deps.targetMiss?.(diagnostic);
+        }
+        const pairingGap = placeholderPairingGap(target, last, item.kind);
+        if (pairingGap) {
+          const detail = `; placeholder pairing was unavailable because React coverage on this screen is ${pairingGap}; target the field by test id`;
+          reason = typeof reason === 'string' ? reason + detail : [...segments(reason), detail];
         }
         const seen = captured.get(last);
         if (seen && targetCode) {
@@ -3804,7 +3819,12 @@ async function walkBlockScoped(
                       secretFill(item),
                       () => promoteFill(item, element?.testID),
                       item.alwaysRetype,
-                      strictFillFocus ? { requireLiveHit: true } : undefined,
+                      fillOptions(
+                        strictFillFocus,
+                        element && !element.testID && !element.label
+                          ? element.placeholder
+                          : undefined,
+                      ),
                     )
                   : item.kind === 'scroll'
                     ? deps.scroll(item.direction, context)

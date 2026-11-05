@@ -635,10 +635,25 @@ Plans contain a `## QA` section, named `###` blocks, numbered actions and
 [literal](../qaren-core/test/fixtures/plans/literal.md) and
 [phrase](../qaren-core/test/fixtures/plans/phrases.md) fixtures and the
 [parser](../qaren-core/src/qa/plan.ts) for accepted grammar. Quoted press and fill
-targets resolve observed labels or test IDs locally. Distinct matches are
-counted before kind, disabled, hittability, offscreen or React-only filters, so two
-or more refuse with `TARGET_AMBIGUOUS`, without a Jev tie-break, even if the
-target adds positional words such as `Tap "Save" at the bottom`. Outside fills,
+targets resolve observed labels or test IDs locally. A Fill also accepts an input's
+React placeholder. For an unnamed positional input on iOS, dispatch uses one additional
+bounded React confirmation read to re-confirm that placeholder against the live tree
+and the sole native input of a complete snapshot. Its positional ref, native type
+and frame must still match the captured input. An empty native input without an ID
+or label receives that name only with complete native acquisition and React coverage
+and attested host evidence proving a sole native input and a sole React input host,
+including ordinary captures without platform presence.
+Separately emitted React layers count as one input only when they attest to the
+same single input host. A non-wrapper layer must supply the placeholder; other
+layers may omit it, but any placeholders they expose must agree.
+A second native input anywhere in the capture, including off screen or hidden,
+keeps the placeholder withheld; no competitor exclusion is performed.
+When React coverage is unknown or incomplete, a missed Fill with one unnamed
+on-screen input reports `evidence-incomplete`, names that coverage class, and
+suggests targeting the field by test id. Distinct matches are counted before kind,
+disabled, hittability, offscreen or React-only filters, so two or more refuse with
+`TARGET_AMBIGUOUS`, without a Jev tie-break, even if the target adds positional words
+such as `Tap "Save" at the bottom`. Outside fills,
 a React-only element whose testID equals the quoted value is not counted while a
 native element carries that testID, so a quoted press, wait or scroll reaches
 the native element; two native elements sharing it still refuse. A fill counts
@@ -1104,8 +1119,9 @@ typing under the [already-set rules](#fill-ladder). Otherwise a strict fill repl
 the field's content: the bound input is cleared before typing, and verification
 expects exactly the plan text. For keyboard fallback's replacement request and
 read-back policy, see below.
-Rebinding an input without a testID requires its original label and native type;
-the same frame alone cannot substitute a different input.
+Rebinding an input without a testID requires its original label and native type,
+except for the guarded [unnamed placeholder pairing](#check-a-plan).
+The same frame alone cannot substitute a different input.
 For strict fills, only a stable exact read-back
 verifies a fill. A masked secure read-back or an unreadable one records a
 passing row with reason `UNVERIFIED_FILL`, never a verified pass; an empty or
