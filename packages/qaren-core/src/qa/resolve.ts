@@ -28,6 +28,7 @@ import {
   isWindow,
   insideAlert,
   hasNativeSheet,
+  matchedHostPress,
   reactOnlyFactsOf,
   scrollContainerType,
   semanticActionView,
@@ -67,8 +68,16 @@ import { clip } from './native-presence.js';
 
 export { ACT, CHECK } from './questions.js';
 export const MAX_CANDIDATES = 30;
+type Rect = NonNullable<NativeNode['rect']>;
+// A same-label wrapper counted as the control it wraps; value-free.
+export interface CollapsedCandidate {
+  ref: string;
+  kind: Element['kind'];
+  frame?: Rect;
+  into: string;
+}
 export type Resolution =
-  | { ref: string; element: Element }
+  | { ref: string; element: Element; collapsed?: CollapsedCandidate[] }
   | { scroll: 'down' | 'up'; element?: Element; origin?: 'named-offscreen' }
   | {
       refuse: string;
@@ -107,6 +116,102 @@ function describeCandidate(e: Element): string {
   return `${e.kind} ${e.testID ? `id=${e.testID}` : 'no-id'} frame=${
     frame ? [frame.x, frame.y, frame.width, frame.height].map(Math.round).join(',') : 'unknown'
   } ${e.ref.startsWith('react:') ? 'react-only' : 'native'}${forwardedInputOf(e) ? ' wraps-input' : ''}`;
+}
+
+// Each candidate, and the nearest listed candidate it is proven (by native ancestry) to sit inside.
+function describeCandidates(elements: readonly Element[]): string {
+  return elements
+    .map((e) => {
+      const outer = ancestorsOf(e).find((ancestor) => elements.includes(ancestor));
+      return `${describeCandidate(e)}${outer ? ` nested inside candidate ${elements.indexOf(outer) + 1}` : ''}`;
+    })
+    .join('; ');
+}
+
+function strictlyInside(inner: Rect | undefined, outer: Rect | undefined): boolean {
+  return (
+    !!inner &&
+    !!outer &&
+    [inner, outer].every(
+      (rect) => Object.values(rect).every(Number.isFinite) && rect.width > 0 && rect.height > 0,
+    ) &&
+    inner.x > outer.x &&
+    inner.y > outer.y &&
+    inner.x + inner.width < outer.x + outer.width &&
+    inner.y + inner.height < outer.y + outer.height
+  );
+}
+
+// The outer offers no action of its own and holds nothing but the inner (and wrappers already counted as it).
+function wraps(
+  outer: Element,
+  inner: Element,
+  absorbed: readonly Element[],
+  target: Target,
+  screen: Screen,
+): boolean {
+  const quoted = target.quoted;
+  const named = (key: 'label' | 'testID') => outer[key] === quoted && inner[key] === quoted;
+  return (
+    !outer.ref.startsWith('react:') &&
+    !inner.ref.startsWith('react:') &&
+    ancestorsOf(inner).includes(outer) &&
+    matchedHostPress(outer) === false &&
+    inner.semantic?.press === 'supported' &&
+    matchedHostPress(inner) !== false &&
+    (target.exact === 'id'
+      ? named('testID')
+      : target.exact === 'text'
+        ? named('label')
+        : named('label') || named('testID')) &&
+    inner.hittable &&
+    !inner.offscreen &&
+    !inner.disabled &&
+    inner.semantic?.disabled !== true &&
+    ancestorsOf(inner).find(isWindow) === ancestorsOf(outer).find(isWindow) &&
+    strictlyInside(elementFrame(inner), elementFrame(outer)) &&
+    screen.elements.every(
+      (e) =>
+        e === outer ||
+        e === inner ||
+        absorbed.includes(e) ||
+        !ancestorsOf(e).includes(outer) ||
+        ancestorsOf(e).includes(inner),
+    )
+  );
+}
+
+// Press only: collapses wrappers from the innermost outward; never resolves to a wrapper.
+function collapseWrappers(
+  identities: Identity[],
+  target: Target,
+  screen: Screen,
+): { identities: Identity[]; collapsed: CollapsedCandidate[] } {
+  const collapsed: CollapsedCandidate[] = [];
+  const absorbed = new Map<Element, Element[]>();
+  let kept = identities;
+  for (let changed = true; changed && kept.length > 1; ) {
+    changed = false;
+    for (const { element: outer } of kept) {
+      const inner = kept.find(
+        ({ element }) =>
+          element !== outer && wraps(outer, element, absorbed.get(element) ?? [], target, screen),
+      )?.element;
+      if (!inner) continue;
+      absorbed.set(inner, [...(absorbed.get(inner) ?? []), outer, ...(absorbed.get(outer) ?? [])]);
+      const frame = elementFrame(outer);
+      collapsed.push({
+        ref: outer.ref,
+        kind: outer.kind,
+        ...(frame ? { frame } : {}),
+        into: inner.ref,
+      });
+      kept = kept.filter(({ element }) => element !== outer);
+      changed = true;
+      break;
+    }
+  }
+  return { identities: kept, collapsed };
 }
 
 export function stepTarget(step: Step): Target | undefined {
@@ -154,15 +259,15 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
       : { elements: visibility ? screen.elements : actionView(screen) };
   if ('refuse' in projected) return projected;
   if (target.quoted !== undefined) {
-    const identities = replayIdentities(
-      exactIdentities(screen, target, step.kind),
-      target,
-      step.kind,
-    );
+    const named = replayIdentities(exactIdentities(screen, target, step.kind), target, step.kind);
+    const { identities, collapsed } =
+      step.kind === 'press' && named.length > 1
+        ? collapseWrappers(named, target, screen)
+        : { identities: named, collapsed: [] };
     if (identities.length > 1)
       return {
         refuse: 'TARGET_AMBIGUOUS',
-        reason: `multiple elements labelled or identified "${target.quoted}" match the target; candidates: ${identities.map(({ element }) => describeCandidate(element)).join('; ')}`,
+        reason: `multiple elements labelled or identified "${target.quoted}" match the target; candidates: ${describeCandidates(identities.map(({ element }) => element))}`,
       };
     const only = identities.length === 1 ? identities[0].element : undefined;
     // A strict fill acts only on a native input; React-only inputs still count toward ambiguity.
@@ -189,7 +294,9 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
         ...(only ? {} : { missing: true as const }),
       };
     }
-    return only.offscreen ? scrollTo(only) : { ref: only.ref, element: only };
+    return only.offscreen
+      ? scrollTo(only)
+      : { ref: only.ref, element: only, ...(collapsed.length ? { collapsed } : {}) };
   }
   const candidates = projected.elements;
   if (!candidates.length)

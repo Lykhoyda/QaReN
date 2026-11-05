@@ -172,6 +172,13 @@ export function touchPolicy(element: Element): 'transparent' | 'opaque' | undefi
   return touchPolicies.get(element);
 }
 
+// The matched React host's own press handler; a native button kind says nothing about it.
+const hostPresses = new WeakMap<Element, boolean>();
+
+export function matchedHostPress(element: Element): boolean | undefined {
+  return hostPresses.get(element);
+}
+
 export function keyboardCoversElement(element: Element): boolean {
   return keyboardCoveredElements.has(element);
 }
@@ -973,6 +980,14 @@ export function join(
         !!path?.some((i) => hosts[i]?.pointerEvents === 'none');
       touchPolicies.set(element, transparent ? 'transparent' : 'opaque');
     }
+    // Only a host anchored by this node's own unique testID proves its handler either way; text-content associations do not.
+    const ownPress =
+      host && testID !== undefined && host.testID === testID
+        ? host.capabilities.press === true
+        : uniqueMatch && !presenceMode && reactHostEvidence?.complete && match?.capabilities
+          ? match.capabilities.press
+          : undefined;
+    if (ownPress !== undefined) hostPresses.set(element, ownPress);
     const privateNativeLabel = presenceMode && observed?.labelSource !== 'direct';
     // Privacy may over-associate input observations without granting semantic capabilities.
     const possibleDigestInput = reactCandidates.some(
