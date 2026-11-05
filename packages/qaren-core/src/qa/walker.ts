@@ -4460,6 +4460,8 @@ async function walkBlockScoped(
       } catch (caught) {
         if (isAbort(caught)) throw caught;
         let error = caught instanceof CaptureDeadline ? new EvidenceExpired(true) : caught;
+        // A recovery probe that acts on nothing must not cost a polled step its retry budget.
+        const priorRecovery = recovered.has(item) ? { state: recovered.get(item)! } : undefined;
         if (
           error instanceof ResolutionError &&
           !UNRECOVERABLE.has(error.code) &&
@@ -4490,6 +4492,9 @@ async function walkBlockScoped(
           try {
             const observation = await launchTarget(item, allowance.startedAt + WAIT_BUDGET_MS);
             if (observation) {
+              // Recovery returned without acting to reach this poll, so restore its state from before the probe.
+              if (priorRecovery) recovered.set(item, priorRecovery.state);
+              else recovered.delete(item);
               cached = { item, observation };
               continue attempts;
             }

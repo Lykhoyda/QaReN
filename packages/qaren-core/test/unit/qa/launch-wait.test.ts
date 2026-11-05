@@ -597,6 +597,27 @@ test('an ordinary retry cannot replenish the consumed launch allowance', async (
   assert.deepEqual(device.actions, []);
 });
 
+test('a late target keeps the same retry budget as one present at once', async () => {
+  // Recovery is configured (hideDevMenu), so its no-op probe runs before the poll.
+  for (const at of [0, 4_000]) {
+    let refused = 0;
+    const device = app(lateProfile(at));
+    const press = device.deps.press;
+    device.deps.press = async (ref, context) => {
+      // The refused press leaves the app where it was, so it is not recorded as an action.
+      if (refused === 0) {
+        refused += 1;
+        return { ok: false, proven: false, mutation: 'none', error: 'PRESS_REFUSED' };
+      }
+      return press(ref, context);
+    };
+    const ledger = await ledgerOf('1. Tap "Profile"\n', device.deps);
+    assert.equal(ledger.verdict, 'PASS', `target at ${at}: ${JSON.stringify(ledger.failure)}`);
+    assert.equal(refused, 1, `target at ${at}`);
+    assert.deepEqual(device.actions, ['press @profile'], `target at ${at}`);
+  }
+});
+
 test('a re-walk after a replay miss is not a launch', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'qaren-launch-'));
   mkdirSync(join(dir, '.qaren'));
