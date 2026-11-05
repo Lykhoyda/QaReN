@@ -793,15 +793,19 @@ export function plainScrollBand(
     return { status: 'no-geometry' };
   const root =
     applicationFrame(screen) ?? screen.elements.filter(isWindow).map(elementFrame).find(Boolean);
-  const candidates: PlainScrollBand[] = [];
+  if (!root) return { status: 'no-geometry' };
+  const candidates: (PlainScrollBand & {
+    container: Element;
+    clipped: NonNullable<NativeNode['rect']>;
+  })[] = [];
   let unreachable: PlainScrollBand | undefined;
+  let tooSmall: ScrollBandReceipt | undefined;
   for (const container of screen.elements) {
     if (!isScrollContainer(container) || horizontalOnlyContainer(scrollContainerType(container)))
       continue;
     const frame = elementFrame(container);
     if (!frame || frame.width <= 0 || frame.height <= 0) continue;
     const visible = clip(clip(frame, elementViewport(container)), root);
-    if (!visible) continue;
     const clipped = aboveKeyboard(visible, screen);
     if (!clipped) continue;
     const receipt = containerBand(container, screen, clipped);
@@ -813,13 +817,14 @@ export function plainScrollBand(
         continue;
       }
     }
-    if (band) candidates.push({ ...receipt, band, container });
+    if (band && band.width > 0 && band.height > 0)
+      candidates.push({ ...receipt, band, container, clipped });
+    else if (band) tooSmall ??= { status: 'too-small', band };
   }
   const chosen = candidates.sort(
     (a, b) => b.band!.width * b.band!.height - a.band!.width * a.band!.height,
   )[0];
-  if (!chosen) return unreachable ?? { status: 'no-geometry' };
-  if (!root) return { status: 'no-geometry' };
+  if (!chosen) return unreachable ?? tooSmall ?? { status: 'no-geometry' };
   const keyboardTop = screen.keyboardVisible !== false ? (screen.keyboardFrame?.y ?? null) : null;
   const viewportGesture = computeScrollFromDirection(
     direction,
@@ -837,18 +842,15 @@ export function plainScrollBand(
     scrollBandTooSmall(gesture) ||
     !computeScrollFromDirection(direction, 0.6, gesture, distance)
   ) {
-    if (chosen.status === 'overlay-cut') {
-      const frame = elementFrame(chosen.container!)!;
-      const clipped = aboveKeyboard(
-        clip(clip(frame, elementViewport(chosen.container!)), root),
-        screen,
-      );
-      if (clipped && !centreCorridor(chosen.container!, clipped, screen))
-        return { status: 'unreachable', band: clipped, container: chosen.container };
-    }
+    if (
+      chosen.status === 'overlay-cut' &&
+      !centreCorridor(chosen.container, chosen.clipped, screen)
+    )
+      return { status: 'unreachable', band: chosen.clipped, container: chosen.container };
     return { status: 'too-small', band: chosen.band };
   }
-  return { ...chosen, distance };
+  const { clipped: _clipped, ...selection } = chosen;
+  return { ...selection, distance };
 }
 
 export function scrollUntilBand(

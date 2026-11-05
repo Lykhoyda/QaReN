@@ -173,6 +173,66 @@ test('a header leaving only a 26pt strip refuses instead of dragging the covered
   assert.equal(f.rows.at(-1)?.scrollDetail, undefined);
 });
 
+test('a zero-area corridor cannot hide a covered container when no positive band remains', async () => {
+  const f = await run([
+    screen({
+      extra: [
+        overlay(WINDOW),
+        {
+          index: 5,
+          parentIndex: 1,
+          ref: '@small',
+          type: 'ScrollView',
+          label: 'Small',
+          rect: { x: 0, y: 50, width: 100, height: 100 },
+        },
+        {
+          index: 6,
+          parentIndex: 1,
+          ref: '@rail',
+          type: 'Button',
+          label: 'Rail',
+          hittable: true,
+          rect: { x: 0, y: 50, width: 48, height: 100 },
+        },
+      ],
+    }),
+  ]);
+  assert.deepEqual(f.bands, []);
+  assert.equal(f.result.failure?.cause, 'scroll_container_unreachable');
+  assert.equal(f.rows.at(-1)?.scrollBand?.status, 'unreachable');
+});
+
+test('an overlay-cut thin strip with a clear centre keeps the too-small viewport fallback', async () => {
+  const f = await run([
+    screen({
+      extra: [
+        overlay({ x: 0, y: 200, width: 400, height: 180 }),
+        { ...overlay({ x: 0, y: 420, width: 400, height: 180 }), index: 5, ref: '@footer' },
+      ],
+    }),
+  ]);
+  assert.equal(f.result.block.outcome, 'pass');
+  assert.deepEqual(f.bands, [undefined, undefined]);
+  assert.equal(f.rows.at(-1)?.scrollBand?.status, 'too-small');
+  assert.deepEqual(f.rows.at(-1)?.scrollBand?.band, { x: 20, y: 384, width: 360, height: 32 });
+  assert.equal(f.rows.at(-1)?.scrollDetail?.status, 'no_visible_change');
+});
+
+test('a capture without an application or window frame keeps the no-geometry fallback', () => {
+  const s = {
+    ...join(
+      [
+        { index: 0, ref: '@list', type: 'ScrollView', label: 'List', rect: LIST },
+        { ...overlay(WINDOW), index: 1, parentIndex: undefined },
+      ],
+      [],
+    ),
+    coverage: { native: 'complete', react: 'complete' },
+  } as Screen;
+  assert.equal(plainScrollBand(s, 'down').status, 'no-geometry');
+});
+
 test('plain scroll preserves viewport travel and clamps it to a smaller selected band', async () => {
   for (const direction of ['up', 'down'] as const) {
     const full = await run([screen({ list: WINDOW })], { direction });
