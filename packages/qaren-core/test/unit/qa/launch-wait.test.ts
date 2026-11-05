@@ -444,7 +444,8 @@ for (const variant of ['redbox', 'logbox'] as const) {
     const retry = ledger.steps.find((row) => row.retryCause === 'DEV_REDBOX');
     assert.deepEqual(retry?.devError, { variant, dismissal: 1 });
     const press = ledger.steps.find((row) => row.outcome === 'pass');
-    assert.ok(press?.implicitWaitMs! >= 2_000);
+    assert.ok(press);
+    assert.ok(press.implicitWaitMs !== undefined && press.implicitWaitMs >= 2_000);
   });
 }
 
