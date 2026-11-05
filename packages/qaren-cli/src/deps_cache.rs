@@ -198,9 +198,15 @@ fn layout(config: &Value, repo: &Path, app_rel: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn probe(runner: &mut dyn Runner, project: &Path) -> Result<(Installer, Value), String> {
+fn probe(
+    runner: &mut dyn Runner,
+    project: &Path,
+    registry_auth_env: &[String],
+) -> Result<(Installer, Value), String> {
     let pnpm = runner.run_private(
-        &CmdSpec::new("deps-cache-pnpm", "pnpm", &["--version"], 30).cwd(project),
+        &CmdSpec::new("deps-cache-pnpm", "pnpm", &["--version"], 30)
+            .cwd(project)
+            .registry_auth_env(registry_auth_env),
         b"",
     );
     if !pnpm.clean() || pnpm.stdout().trim().is_empty() {
@@ -231,7 +237,8 @@ fn probe(runner: &mut dyn Runner, project: &Path) -> Result<(Installer, Value), 
             &["config", "list", "--json"],
             30,
         )
-        .cwd(project),
+        .cwd(project)
+        .registry_auth_env(registry_auth_env),
         b"",
     );
     if !config.clean() {
@@ -352,7 +359,11 @@ pub(crate) fn restore(ctx: &mut Ctx, repository: &Path, enabled: bool) -> Result
         note(ctx, "disabled");
         return Ok(());
     }
-    let (installer, effective) = match probe(ctx.runner, &project) {
+    let (installer, effective) = match probe(
+        ctx.runner,
+        &project,
+        &ctx.record.scenario.deps.registry_auth_env,
+    ) {
         Ok(v) => v,
         Err(reason) => {
             note(ctx, &reason);

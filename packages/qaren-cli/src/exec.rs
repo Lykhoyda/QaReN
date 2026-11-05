@@ -787,6 +787,7 @@ fn run_captured(
     } else {
         (None, Stdio::null())
     };
+    let withhold = input.is_none() && spec.withholds_registry_output();
     let input = input.unwrap_or_default();
     let mut written = 0;
     let (mut stdout, out) = UnixStream::pair()?;
@@ -871,12 +872,12 @@ fn run_captured(
     }
     Ok(CmdOutput {
         exit_code: result?,
-        stdout: if spec.withholds_registry_output() {
+        stdout: if withhold {
             String::new()
         } else {
             String::from_utf8_lossy(&out).into_owned()
         },
-        stderr: if spec.withholds_registry_output() {
+        stderr: if withhold {
             "[private output withheld]".into()
         } else {
             String::from_utf8_lossy(&err).into_owned()

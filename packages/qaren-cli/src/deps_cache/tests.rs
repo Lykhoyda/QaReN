@@ -86,6 +86,7 @@ struct CloneRunner {
     mock: MockRunner,
     clones: usize,
     fail_clone: Option<usize>,
+    authenticated_probes: bool,
 }
 impl CloneRunner {
     fn new() -> Self {
@@ -93,6 +94,7 @@ impl CloneRunner {
             mock: MockRunner::new(),
             clones: 0,
             fail_clone: None,
+            authenticated_probes: false,
         }
     }
 }
@@ -119,6 +121,35 @@ impl Runner for CloneRunner {
         input: &[u8],
         interruptible: bool,
     ) -> crate::exec::PrivateOutput {
+        if self.authenticated_probes {
+            self.mock.calls.push(spec.clone());
+            let mut child = spec.clone();
+            child.program = "/bin/sh".into();
+            let script = if spec.program == "pnpm" {
+                r#"test "$NPM_TOKEN" = synthetic-registry && test "$PRIVATE_REGISTRY_TOKEN" = synthetic-custom && test -z "$TYPESAFE_API_KEY" && test -z "$QAREN_INPUT_SLOT" || exit 1
+if [ "$1" = --version ]; then
+    echo 10.0.0
+else
+    echo '{"node-linker":"hoisted","//registry.example/:_authToken":"synthetic-registry"}'
+fi"#
+            } else {
+                r#"test -z "$NPM_TOKEN" && test -z "$PRIVATE_REGISTRY_TOKEN" || exit 1
+echo '{"version":"v24.0.0","arch":"arm64","platform":"darwin"}'"#
+            };
+            child.args = [
+                vec!["-c".into(), script.into(), "probe".into()],
+                spec.args.clone(),
+            ]
+            .concat();
+            child = child
+                .env("NPM_TOKEN", "synthetic-registry")
+                .env("PRIVATE_REGISTRY_TOKEN", "synthetic-custom")
+                .env("TYPESAFE_API_KEY", "synthetic-model")
+                .env("QAREN_INPUT_SLOT", "synthetic-input");
+            let output = RealRunner::new().execute_private(&child, input, interruptible);
+            assert!(output.clean(), "{}: {:?}", spec.label, output);
+            return output;
+        }
         self.mock.execute_private(spec, input, interruptible)
     }
     fn spawn_group_unchecked(&mut self, _: &CmdSpec, _: &Path) -> std::io::Result<Spawned> {
@@ -173,6 +204,39 @@ fn release(ctx: &mut Ctx) {
 fn entry_path(ctx: &Ctx) -> PathBuf {
     let r = ctx.record.resources.deps_cache.as_ref().unwrap();
     repo_dir(&ctx.runs_root, r).unwrap().join(&r.key)
+}
+
+#[test]
+fn authenticated_probes_match_install_credentials_without_persisting_config_secrets() {
+    let f = Fixture::new();
+    std::fs::write(
+        f.0.join("repo/app/.npmrc"),
+        "node-linker=hoisted\n//registry.example/:_authToken=${NPM_TOKEN}\n",
+    )
+    .unwrap();
+    let mut runner = CloneRunner::new();
+    runner.authenticated_probes = true;
+    disk(&mut runner.mock, u64::MAX / 1024);
+    let mut ctx = f.context(&mut runner, "authenticated");
+    ctx.record.scenario.deps.registry_auth_env = vec!["PRIVATE_REGISTRY_TOKEN".into()];
+    restore(&mut ctx, &f.0.join("repo"), true).unwrap();
+    assert!(
+        ctx.notes.contains(&("deps_cache".into(), "miss".into())),
+        "{:?}",
+        ctx.notes
+    );
+    assert!(ctx.record.resources.deps_cache.is_some());
+    let record = serde_json::to_string(&ctx.record).unwrap();
+    let notes = format!("{:?}", ctx.notes);
+    for secret in [
+        "synthetic-registry",
+        "synthetic-custom",
+        "synthetic-model",
+        "synthetic-input",
+    ] {
+        assert!(!record.contains(secret));
+        assert!(!notes.contains(secret));
+    }
 }
 
 #[test]
@@ -632,7 +696,7 @@ fn real_pnpm_tree_relocates_after_origin_is_deleted_and_remains_isolated() {
     );
     assert_eq!(install.exit_code(), Some(0), "{}", install.summary());
     assert!(!install.timed_out());
-    let (_, effective) = probe(&mut runner, &source).unwrap();
+    let (_, effective) = probe(&mut runner, &source, &[]).unwrap();
     assert!(layout(&effective, &source, Path::new("")).is_ok());
     let entry = f.0.join("entry");
     std::fs::create_dir(&entry).unwrap();
