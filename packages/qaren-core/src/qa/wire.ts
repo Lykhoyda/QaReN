@@ -402,12 +402,9 @@ export function createWriter(write: (line: string) => void, runId: string): Wire
         if (!clean) return;
         if (
           !currentInputs()?.hasInputs &&
-          ![
-            'target-miss',
-            'media-withheld',
-            'label-provenance',
-            'interruption-rejected',
-          ].includes(String(clean.kind))
+          !['target-miss', 'media-withheld', 'label-provenance', 'interruption-rejected'].includes(
+            String(clean.kind),
+          )
         )
           return;
         if (clean.kind === 'block-outcome' || clean.kind === 'login-outcome') {
