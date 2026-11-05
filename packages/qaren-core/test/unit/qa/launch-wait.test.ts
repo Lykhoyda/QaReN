@@ -563,10 +563,9 @@ test('an ordinary retry cannot replenish the consumed launch allowance', async (
   let pollStartedAt: number | undefined;
   let pollCaptures = 0;
   let pollsBeforeRefusal = 0;
-  const device = app(
-    (t) => view(!refused && t >= 4_000 ? [home, profile] : [home]),
-    { hideDevMenu: undefined },
-  );
+  const device = app((t) => view(!refused && t >= 4_000 ? [home, profile] : [home]), {
+    hideDevMenu: undefined,
+  });
   const capture = device.deps.captureScreen;
   device.deps.captureScreen = async (options) => {
     if (options?.budgetMs !== undefined) {
@@ -593,8 +592,7 @@ test('an ordinary retry cannot replenish the consumed launch allowance', async (
   assert.ok(pollsBeforeRefusal > 1);
   assert.equal(pollCaptures, pollsBeforeRefusal);
   assert.ok(pollStartedAt !== undefined);
-  for (const row of ledger.steps)
-    assert.equal(row.implicitWaitMs, refusedAt - pollStartedAt);
+  for (const row of ledger.steps) assert.equal(row.implicitWaitMs, refusedAt - pollStartedAt);
   assert.ok(device.clock() < refusedAt + 1_000);
   assert.deepEqual(device.actions, []);
 });
