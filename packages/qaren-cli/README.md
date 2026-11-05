@@ -3942,6 +3942,39 @@ checking pull request access and write permissions. See the
 [child environment contract](#plan-checks-and-screen-evidence) for token scope,
 dependency registry exceptions and redaction.
 
+`qaren pr` reuses installed dependencies by default when pnpm's effective
+`nodeLinker` is `hoisted` and all installed modules live at the repository root
+or the app root. It restores filesystem clones into the new checkout, then still
+runs `pnpm install --frozen-lockfile` to validate the lockfile and manifests and
+run the project's install scripts. Other layouts use the normal cold install.
+See [pnpm's layout settings](https://pnpm.io/settings#nodeLinker).
+
+The cache key binds the lockfile bytes, repository and app path, root and app
+package scripts and pnpm settings, `.npmrc`, `pnpm-workspace.yaml`, and the
+PATH-resolved pnpm and Node versions, architecture and platform. The installer
+identity is kept in `run.json`. Dependency lifecycle scripts that read project
+source during their first installation may retain old output across heads with
+the same key. Set `depsCache: false` in `.qaren/config.yaml` for a cold run;
+`qaren check` and `qaren prepare` do not use this cache or change prewarm policy.
+
+Installed modules are staged before native preparation can modify them and
+published only after the pre-walk candidate verification passes. Entries under
+`$QAREN_HOME/runs/deps-cache/<repository>/<key>/` are immutable apart from reader
+markers. Only clone copies are admitted; unsupported cloning or insufficient
+space disables caching for that run, with no full-copy fallback. Restore and
+staging each require 1 GiB plus the tree's apparent size in free space.
+
+Receipts report `deps_cache=hit|miss|disabled|clone-unsupported|layout-unsupported`
+and `deps_cache_restore`, `deps_cache_install`, `deps_cache_stage` and
+`deps_cache_publish` timings in milliseconds. The dependency stage stream also
+reports cache decisions. Retention keeps the two newest entries per repository
+and retains any older entry with a live or unproven reader, regardless of age.
+`qaren doctor` reports entry count, staging count and apparent bytes.
+`qaren cleanup <run-id>` removes that run's markers and staging;
+`qaren cleanup --deps-cache` removes entries without live or unproven readers
+and staging whose recorded owner is proven dead. A new publication also reclaims
+abandoned staging. Reader admission, publication and pruning share one lock.
+
 Company plans, reports and recordings must remain private and must never be
 published to public product surfaces. Publication's value and machine-identity
 redaction does not establish that company material is safe to publish.

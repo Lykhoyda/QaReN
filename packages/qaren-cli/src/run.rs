@@ -799,7 +799,7 @@ fn run_inner(
             }
         }
         if req.platform == Platform::Ios {
-            if let Err(f) = prepare::install_deps(&mut ctx) {
+            if let Err(f) = install_run_deps(&mut ctx, &config, pr_state.as_ref()) {
                 return finish_failed(ctx, f);
             }
             if let Err(f) = ios::require_build(
@@ -864,7 +864,7 @@ fn run_inner(
         }
 
         if req.platform == Platform::Android {
-            if let Err(f) = prepare::install_deps(&mut ctx) {
+            if let Err(f) = install_run_deps(&mut ctx, &config, pr_state.as_ref()) {
                 return finish_failed(ctx, f);
             }
         }
@@ -975,6 +975,11 @@ fn run_inner(
                     format!("the pull request worktree changed before the walk: {detail}"),
                     "re-run qaren pr; nothing may modify the run's worktree",
                 );
+                return finish_failed(ctx, f);
+            }
+        }
+        if pr_state.is_some() {
+            if let Err(f) = crate::deps_cache::publish(&mut ctx) {
                 return finish_failed(ctx, f);
             }
         }
@@ -2323,6 +2328,29 @@ fn hold_after_walk(
         )
 }
 
+fn install_run_deps(
+    ctx: &mut Ctx,
+    config: &CheckConfig,
+    pr: Option<&PrState>,
+) -> Result<(), Failure> {
+    if let Some(pr) = pr {
+        crate::deps_cache::restore(ctx, &pr.repo_root, config.deps_cache != Some(false))?;
+    }
+    let started = ctx.runner.now_epoch_ms();
+    let result = prepare::install_deps(ctx);
+    if pr.is_some() {
+        ctx.timings.push((
+            "deps_cache_install".into(),
+            ctx.runner.now_epoch_ms().saturating_sub(started),
+        ));
+    }
+    result?;
+    if pr.is_some() {
+        crate::deps_cache::stage(ctx)?;
+    }
+    Ok(())
+}
+
 // Returns rendered outcomes, whether every leg is clean, and whether the run's producers are proven gone.
 fn teardown(
     ctx: &mut Ctx,
@@ -2427,6 +2455,28 @@ fn teardown(
             retained_lease_outcome(&unclean, &ctx.record.run_id)
         };
         outcomes.push(("device_lease".to_string(), outcome));
+    }
+    if let Some(mut cache) = ctx
+        .record
+        .resources
+        .deps_cache
+        .clone()
+        .filter(|r| r.reader || r.staging)
+    {
+        let outcome = match crate::deps_cache::cleanup_run(
+            ctx.runner,
+            &ctx.runs_root,
+            &ctx.record.run_id,
+            ctx.record.prepare.as_ref(),
+            &mut cache,
+        ) {
+            Ok(()) => {
+                ctx.record.resources.deps_cache = Some(cache);
+                Outcome::Removed
+            }
+            Err(reason) => Outcome::Unresolved(reason),
+        };
+        outcomes.push(("deps_cache".into(), outcome));
     }
     if let Some(wt) = ctx.record.resources.pr_worktree.clone() {
         let outcome = if !crate::commands::cleanup::producers_quiescent(&outcomes) {
