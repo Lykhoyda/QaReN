@@ -494,7 +494,7 @@ pub struct Row {
     pub interruption: Option<InterruptionReceipt>,
 }
 
-// What interruption recovery decided for a step, from enums, a line number and one coordinate only.
+// Value-free interruption decision for a step.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InterruptionReceipt {

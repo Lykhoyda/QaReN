@@ -3416,8 +3416,9 @@ native capture and React coverage, with no on-screen, uncovered match for the
 current quoted target (or literal check) or the later quoted targets of the
 current block in a fresh capture. A target whose centre is covered by a detected
 sheet or scrim does not prevent recovery merely because it remains in the capture.
-Targets in later blocks never block recovery by being visible; they
-only keep their own planned control and controls inside them. A later target
+Outside the independent-screen classification below, targets in later blocks never
+block recovery by being visible; they only keep their own planned control and
+controls inside them. A later target
 declared as a decline label from the list below
 (case-insensitive, unless explicitly targeted by ID) is exempt from this absence
 guard, so non-control text such as `Maybe later` does not prevent closing a sheet
@@ -3472,9 +3473,10 @@ When an identified destination is proven gone, later unsolicited sheets can be
 dismissed. Recovery's decline presses and login presses never arm it.
 While protected, a decline is still taken on a screen that is independent of the
 press, and only when no plan target could be on it: no remaining step in this or
-a later block has a target without quoted text, and no target of any step, in any
-block, is on screen, decline labels included, and press, fill and React association
-evidence is complete. A permission opt-in is one only when the complete press
+a later block has a target without quoted text, and neither the current target nor
+any remaining target in this or a later block is on screen, decline labels included,
+and press, fill and React association evidence is complete. A permission opt-in is
+one only when the complete press
 readback proved that shape absent: exactly
 two controls with proven press and fill evidence and no input, one a decline
 other than `Close`, `Dismiss` or `Cancel`, the other an accept that starts with
@@ -3503,18 +3505,20 @@ was not found; automatic app dismissal was withheld`, and the walk's
 `next_action` is `inspect_last_observed_screen`, also on a repeat, with a
 `failure.recovery` of reason `previous_plan_press` whose five rungs are all
 inapplicable. A failed check after such a veto
-carries the same `failure.seen` note without a subreason. Apart from a presented
-sheet as defined above, a sheet that appears while the planned surface is still on
-screen, including one that opens together with it, is therefore not dismissed
-either.
+carries the same `failure.seen` note without a subreason. Apart from the two
+independent screens defined above, a sheet that appears while the planned surface
+is still on screen, including one that opens together with it, is therefore not
+dismissed either.
 
 With `TYPESAFE_API_KEY`, Jev may veto a selected control when the screen may be
 related to the step or its purpose is uncertain. It never chooses a control,
 breaks a tie, or authorizes a tap. Without the key, recovery uses only the
 deterministic guards. Recovery rechecks those guards before one exact press,
 proves the label gone in a fresh capture, and retries the original step once.
-The ledger records `recovered: dismissed an app screen with <label>` and a
-privacy-eligible screenshot; this support action is not added to the saved block.
+The retry row names the declined control and screen class as described above,
+or uses `recovered: dismissed an app screen with <label>` for an unclassified screen,
+and includes a privacy-eligible screenshot; this support action is not added to
+the saved block.
 
 Recovery requires admitted screen evidence. iOS phrase steps behind a recognized
 system or permission alert reach dialog recovery when the raw native capture is
