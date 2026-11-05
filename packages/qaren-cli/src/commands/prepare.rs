@@ -2935,12 +2935,41 @@ fn spawn_metro_only(ctx: &mut Ctx) -> Result<(), Failure> {
     } else {
         None
     };
+    let inherited = ctx.runner.env_var("NODE_OPTIONS");
+    let configured = if ios {
+        let output = ctx.runner.run_private(
+            &crate::exec::CmdSpec::new(
+                "pnpm-node-options",
+                "pnpm",
+                &["config", "get", "node-options"],
+                15,
+            )
+            .cwd(&project_root),
+            &[],
+        );
+        if output.exit_code() == Some(0)
+            && !output.timed_out()
+            && ctx.runner.cancellation().is_none()
+        {
+            let value = output.stdout().trim();
+            (value != "undefined" && !value.is_empty()).then(|| value.to_string())
+        } else {
+            ctx.notes.push((
+                "pnpm_node_options".into(),
+                "effective configuration unavailable; inherited NODE_OPTIONS used".into(),
+            ));
+            None
+        }
+    } else {
+        None
+    };
     let spec = metro::start_spec(
         &project_root,
         port,
         ios,
         metro::expo_online(ctx.runner),
         preload.as_deref(),
+        configured.as_deref().or(inherited.as_deref()),
     );
     let metro_log = run_dir.join("logs").join("metro.log");
     ensure_running(ctx.runner, "build")?;
@@ -5090,6 +5119,7 @@ fn dry_run_receipt(
                 true,
                 metro::expo_online(runner),
                 None,
+                None,
             ));
             planned.push(ios::build_spec(
                 &cand.project_root,
@@ -5246,6 +5276,7 @@ fn dry_run_receipt(
                     true,
                     metro::expo_online(runner),
                     None,
+                    None,
                 ));
                 planned.push(ios::install_app_spec(udid, &artifact_path));
                 planned.push(metro::request_probe_spec(port));
@@ -5281,6 +5312,7 @@ fn dry_run_receipt(
                     port,
                     false,
                     metro::expo_online(runner),
+                    None,
                     None,
                 ));
                 planned.push(metro::manifest_spec(port, "android"));

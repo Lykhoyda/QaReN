@@ -1601,15 +1601,15 @@ fn app_removal_parsers_are_strict() {
 
 #[test]
 fn metro_never_passes_ci_into_app_config_evaluation() {
-    let spec = metro::start_spec(Path::new("/repo/app"), 8791, true, false, None);
+    let spec = metro::start_spec(Path::new("/repo/app"), 8791, true, false, None, None);
     assert_eq!(spec.unset, ["CI"]);
     assert!(!spec.env.iter().any(|(k, _)| k == "CI"));
 }
 
 #[test]
 fn ios_metro_binds_to_loopback_and_android_metro_keeps_its_reverse_path() {
-    let ios = metro::start_spec(Path::new("/repo/app"), 8791, true, false, None);
-    let android = metro::start_spec(Path::new("/repo/app"), 8791, false, false, None);
+    let ios = metro::start_spec(Path::new("/repo/app"), 8791, true, false, None, None);
+    let android = metro::start_spec(Path::new("/repo/app"), 8791, false, false, None, None);
     assert_eq!(
         ios.args,
         ["exec", "expo", "start", "--port", "8791", "--localhost"]
@@ -1653,79 +1653,32 @@ fn ipv4_first_and_the_preload_are_appended_to_the_callers_node_options() {
 
 #[test]
 fn a_configured_pnpm_node_options_is_composed_and_passed_both_ways() {
-    let root = std::env::temp_dir().join(format!("qaren-npmrc-{}", std::process::id()));
-    std::fs::create_dir_all(&root).unwrap();
-    let preload = root.join("runtime-version-pin.cjs");
-    let env = |spec: &qaren::exec::CmdSpec, key: &str| {
-        spec.env
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.clone())
-    };
-    // shortcut: these cases assume the test process itself has no npm_config_node_options.
-    if std::env::var_os("npm_config_node_options").is_some() {
-        return;
-    }
-    let without = metro::start_spec(&root, 8791, true, false, Some(&preload));
-    assert!(env(&without, "NODE_OPTIONS")
-        .unwrap()
-        .ends_with(&format!("--require \"{}\"", preload.display())));
-    assert_eq!(env(&without, "npm_config_node_options"), None);
-    std::fs::write(
-        root.join(".npmrc"),
-        "registry=https://r.example\nnode-options=--max-old-space-size=4096\n",
-    )
-    .unwrap();
-    let with = metro::start_spec(&root, 8791, true, false, Some(&preload));
-    let composed =
-        metro::dev_server_node_options(Some("--max-old-space-size=4096"), Some(&preload));
-    assert_eq!(
-        env(&with, "NODE_OPTIONS").as_deref(),
-        Some(composed.as_str())
-    );
-    assert_eq!(
-        env(&with, "npm_config_node_options").as_deref(),
-        Some(composed.as_str())
-    );
-    // A quoted argument inside the value is kept; a fully quoted value is unquoted like ini does.
-    for (rc, expected) in [
-        (
-            r#"node-options=--require "./setup.cjs""#,
-            r#"--require "./setup.cjs""#,
-        ),
-        (
-            r#"node-options="--max-old-space-size=4096""#,
-            "--max-old-space-size=4096",
-        ),
+    let root = Path::new("/repo/app");
+    let preload = Path::new("/runs/a b/runtime-version-pin.cjs");
+    for base in [
+        None,
+        Some("--max-old-space-size=4096"),
+        Some(r#"--require "./setup.cjs""#),
     ] {
-        std::fs::write(root.join(".npmrc"), rc).unwrap();
-        let spec = metro::start_spec(&root, 8791, true, false, Some(&preload));
-        assert_eq!(
-            env(&spec, "npm_config_node_options"),
-            Some(metro::dev_server_node_options(
-                Some(expected),
-                Some(&preload)
-            )),
-            "{rc}"
-        );
+        let spec = metro::start_spec(root, 8791, true, false, Some(preload), base);
+        let expected = match base {
+            None => "--dns-result-order=ipv4first --require \"/runs/a b/runtime-version-pin.cjs\"".to_string(),
+            Some(base) => format!("{base} --dns-result-order=ipv4first --require \"/runs/a b/runtime-version-pin.cjs\""),
+        };
+        for key in ["NODE_OPTIONS", "npm_config_node_options"] {
+            assert!(spec.env.contains(&(key.into(), expected.clone())));
+        }
     }
-    // pnpm expands `${VAR}`, escapes and comments itself; a raw copy would reach Node literally.
-    for rc in [
-        "node-options=--max-old-space-size=${HEAP}\n",
-        "node-options=--max-old-space-size=4096 ; heap\n",
-    ] {
-        std::fs::write(root.join(".npmrc"), rc).unwrap();
-        let left = metro::start_spec(&root, 8791, true, false, Some(&preload));
-        assert_eq!(env(&left, "npm_config_node_options"), None, "{rc}");
-    }
-    let android = metro::start_spec(&root, 8791, false, false, None);
-    assert_eq!(env(&android, "npm_config_node_options"), None);
-    std::fs::remove_dir_all(&root).unwrap();
+    let android = metro::start_spec(root, 8791, false, false, None, None);
+    assert!(!android
+        .env
+        .iter()
+        .any(|(key, _)| key == "npm_config_node_options" || key == "NODE_OPTIONS"));
 }
 
 #[test]
 fn metro_logs_each_request_on_receipt_to_the_drained_stderr() {
-    let spec = metro::start_spec(Path::new("/repo/app"), 8791, true, false, None);
+    let spec = metro::start_spec(Path::new("/repo/app"), 8791, true, false, None, None);
     assert!(spec.env.contains(&(
         "DEBUG".to_string(),
         qaren::exec::log::METRO_REQUEST_LOG.to_string()
@@ -2091,7 +2044,8 @@ fn expo_is_offline_by_default_and_online_requires_an_explicit_override() {
         runner.environment.insert(name.into(), value.into());
         assert_eq!(metro::expo_online(&runner), online);
         for localhost in [false, true] {
-            let spec = metro::start_spec(Path::new("/repo/app"), 8791, localhost, online, None);
+            let spec =
+                metro::start_spec(Path::new("/repo/app"), 8791, localhost, online, None, None);
             assert!(spec
                 .env
                 .contains(&("EXPO_OFFLINE".into(), if online { "0" } else { "1" }.into())));

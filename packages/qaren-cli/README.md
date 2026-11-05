@@ -2271,8 +2271,8 @@ project fingerprint each time, which can take longer than the client's
 selected `.app` embeds (`Expo.plist` `EXUpdatesRuntimeVersion`, or for
 `file:fingerprint` the app's `EXUpdates.bundle/fingerprint` resource) and
 writes it to `runtime-version-pin.json` in the run directory. QaReN's own dev
-server loads a run-local preload (`--require` in `NODE_OPTIONS`, and in
-`npm_config_node_options` when the project's `.npmrc` sets `node-options`)
+server loads a run-local preload (`--require` in both `NODE_OPTIONS` and
+`npm_config_node_options`)
 that answers the resolver with that value and appends
 `runtime-version-pin.resolved` when it does. Nothing in the candidate is edited.
 The receipt's `runtime_version` records `embedded_policy` (`literal`,
@@ -2282,10 +2282,12 @@ server served it, `written` when it never reached the resolver, `none` or
 `unsupported`. Android records `unsupported`. When warm-up refuses for an app
 whose embedded policy is `fingerprint` and the pin was not served, the refusal
 names that cause first and suggests a fixed development `runtimeVersion`, or
-your own dev server from a scratch copy with the resolved string. Node options
-set in a workspace-root, user or global rc, in `pnpm-workspace.yaml`, or with
-`${...}` interpolation, escapes or comments, are left to pnpm, which then
-replaces the preload (`pin: written`). A native-side configuration override is
+your own dev server from a scratch copy with the resolved string. Before starting iOS Metro, QaReN asks pnpm for its effective `node-options`,
+including workspace, user and global configuration and pnpm's interpolation and
+escaping. It composes that value (or inherited `NODE_OPTIONS` when unset) with
+IPv4-first DNS and the preload, then passes the result through both variables.
+If the query fails, times out or is cancelled, it uses inherited `NODE_OPTIONS`
+and records a value-free fallback note; cancellation still prevents startup. A native-side configuration override is
 not visible in the artifact.
 
 A request-handler timeout after `/status` responds names startup or a

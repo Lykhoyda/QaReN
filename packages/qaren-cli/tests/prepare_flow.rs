@@ -2072,6 +2072,20 @@ fn script_ios_prepare_reading_artifact(
     repo: &std::path::Path,
     read_artifact: impl FnOnce(&mut MockRunner),
 ) {
+    script_ios_prepare_reading_artifact_with_options(
+        mock,
+        repo,
+        read_artifact,
+        CmdOutput::success("undefined\n"),
+    );
+}
+
+fn script_ios_prepare_reading_artifact_with_options(
+    mock: &mut MockRunner,
+    repo: &std::path::Path,
+    read_artifact: impl FnOnce(&mut MockRunner),
+    options: CmdOutput,
+) {
     script_validation(mock, repo, IOS_TOOLS);
     mock.expect_run("lsof", free_port());
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
@@ -2088,7 +2102,7 @@ fn script_ios_prepare_reading_artifact(
     });
     common::script_ios_app_verification(mock);
     read_artifact(mock);
-    common::script_ios_metro_spawn(mock);
+    common::script_ios_metro_spawn_with_options(mock, options);
 }
 
 // The provenance and fingerprint checks that run under the build lock before cache publication.
@@ -3948,7 +3962,7 @@ fn ios_reuse_dry_run_lists_each_launch_step_once_in_execution_order() {
             &ios_spec.runtime,
         ),
         ios::bootstatus_spec("<udid>", scenario.deadlines.device_boot_seconds),
-        metro::start_spec(&project, 8791, true, false, None),
+        metro::start_spec(&project, 8791, true, false, None, None),
         ios::install_app_spec("<udid>", &artifact),
         metro::request_probe_spec(8791),
         metro::manifest_spec(8791, "ios"),
@@ -7815,5 +7829,74 @@ fn borrowed_prepare_reprobes_identity_before_and_after_dependencies() {
             3
         );
         assert_no_simulator_power(&mock);
+    }
+}
+
+#[test]
+fn ios_metro_preserves_effective_pnpm_options_or_inherited_fallback() {
+    for (output, base, fallback) in [
+        (
+            CmdOutput::success("--max-old-space-size=4096\n"),
+            "--max-old-space-size=4096",
+            false,
+        ),
+        (CmdOutput::success("undefined\n"), "--trace-warnings", false),
+        (
+            CmdOutput::failed(1, "private-config-error"),
+            "--trace-warnings",
+            true,
+        ),
+        (
+            CmdOutput {
+                timed_out: true,
+                ..Default::default()
+            },
+            "--trace-warnings",
+            true,
+        ),
+    ] {
+        let repo = common::temp_repo();
+        std::fs::write(
+            repo.join("test-app/.npmrc"),
+            "node-options=--max-old-space-size=${HEAP}\n",
+        )
+        .unwrap();
+        let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+        let mut mock = MockRunner::new();
+        mock.environment.insert("HEAP".into(), "4096".into());
+        mock.environment
+            .insert("NODE_OPTIONS".into(), "--trace-warnings".into());
+        script_ios_prepare_reading_artifact_with_options(&mut mock, &repo, |_| {}, output);
+        mock.expect_run("simctl install", CmdOutput::success(""));
+        common::script_ios_metro_wait_and_launch(&mut mock, CmdOutput::success(""));
+        script_ios_readiness(&mut mock);
+        mock.expect_run("ls-files", CmdOutput::success(""));
+        common::script_xcode(&mut mock);
+        let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Ready,
+            "{}",
+            receipt.to_json()
+        );
+        let query = mock
+            .calls
+            .iter()
+            .find(|s| s.label == "pnpm-node-options")
+            .unwrap();
+        assert_eq!(query.cwd.as_deref(), Some(repo.join("test-app").as_path()));
+        let metro = mock.calls.iter().find(|s| s.label == "expo-start").unwrap();
+        let preload = RunRecord::run_dir(scenario.parent().unwrap(), &receipt.run_id)
+            .join("runtime-version-pin.cjs");
+        let expected = format!(
+            "{base} --dns-result-order=ipv4first --require \"{}\"",
+            preload.display()
+        );
+        for key in ["NODE_OPTIONS", "npm_config_node_options"] {
+            assert!(metro.env.contains(&(key.into(), expected.clone())));
+        }
+        assert_eq!(receipt.outcomes.contains_key("pnpm_node_options"), fallback);
+        assert!(!receipt.to_json().contains("private-config-error"));
+        assert_eq!(mock.remaining(), 0);
     }
 }

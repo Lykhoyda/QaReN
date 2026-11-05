@@ -342,6 +342,11 @@ pub fn script_ios_install_and_launch_with(mock: &mut MockRunner, defaults: CmdOu
 }
 
 pub fn script_ios_metro_spawn(mock: &mut MockRunner) {
+    script_ios_metro_spawn_with_options(mock, CmdOutput::success("undefined\n"));
+}
+
+pub fn script_ios_metro_spawn_with_options(mock: &mut MockRunner, output: CmdOutput) {
+    mock.expect_run("pnpm config get node-options", output);
     mock.expect_spawn(
         "expo start",
         qaren::exec::Spawned {
