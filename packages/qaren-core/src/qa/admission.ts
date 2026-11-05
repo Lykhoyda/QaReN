@@ -1192,6 +1192,10 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
               ? 'no_dev_target_unknown'
               : admissionInnerClass(cause);
     // A refusal says whether the app ran and asked Metro for its bundle, whatever stopped the attach.
+    if (inner === 'dev_runtime_unproven') {
+      bundleRequest = await probeBundleRequest(steps);
+      bundleBuilt = readBundleBuilt(steps);
+    }
     if (
       attaching &&
       !['non_dev_bundle', 'no_dev_target_unknown', 'react_readiness_timeout'].includes(inner)
@@ -1207,8 +1211,6 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
       if (liveness !== 'dead' && bundleRequest === 'not_probed' && steps.bundleRequested)
         bundleRequest = await probeBundleRequest(steps);
     }
-    if (inner === 'dev_runtime_unproven' && bundleBuilt === undefined)
-      bundleBuilt = readBundleBuilt(steps);
     let refusal: AdmissionRefusalFacts | undefined;
     try {
       refusal = {

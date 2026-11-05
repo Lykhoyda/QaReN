@@ -249,6 +249,35 @@ test('without a relaunch step an idle page refuses only at the attach deadline',
   assert.ok(fixture.elapsed() >= 150_000 && fixture.elapsed() <= 151_000, `${fixture.elapsed()}`);
 });
 
+test('an idle deadline reports a bundle completion after the extension decision', async (t) => {
+  const fixture = idle(
+    t,
+    (now) => {
+      if (now >= 30_000) fixture.state.requests = 2;
+      if (now >= 90_000) fixture.state.built = 'completed';
+      return 'undefined';
+    },
+    { attachBudgetMs: 120_000, bundleRequested: async () => true },
+  );
+  const error = await fixture.run();
+  assert.equal(error.meta.inner, 'dev_runtime_unproven');
+  assert.equal(error.meta.bundleBuilt, 'completed');
+  assert.match(error.message, /bundle completion on the port: completed/);
+  assert.equal(fixture.state.launchedAt.length, 0);
+});
+
+test('an idle deadline reports a request received after a no-relaunch decision', async (t) => {
+  const fixture = idle(t, () => 'undefined', {
+    remainingMs: () => 70_000 - performance.now(),
+    bundleRequested: async () => performance.now() >= 65_000,
+  });
+  const error = await fixture.run();
+  assert.equal(error.meta.inner, 'dev_runtime_unproven');
+  assert.equal(error.meta.bundleRequest, 'received');
+  assert.match(error.message, /bundle request on the port: received/);
+  assert.equal(fixture.state.launchedAt.length, 0);
+});
+
 function files(contents: Record<string, string>) {
   return (path: string) => {
     const text = contents[path];
