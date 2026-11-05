@@ -653,25 +653,30 @@ A second native input anywhere in the capture, including off screen or hidden,
 keeps the placeholder withheld; no competitor exclusion is performed.
 When React coverage is unknown or incomplete, a missed Fill with one unnamed
 on-screen input reports `evidence-incomplete`, names that coverage class, and
-suggests targeting the field by test id. Distinct matches are counted before kind,
-disabled, hittability, offscreen or React-only filters, so two or more refuse with
+suggests targeting the field by test id. Quoted targets count distinct identities
+before kind, disabled, hittability or offscreen eligibility checks, subject to the
+identity and reach proofs below. Two or more remaining matches refuse with
 `TARGET_AMBIGUOUS`, without a Jev tie-break, even if the target adds positional words
-such as `Tap "Save" at the bottom`. A press or fill narrows that count only on proof
-of what a user can reach. A press counts a same-label wrapper as the control it
-wraps when native ancestry, a React host anchored by the wrapper's own unique testID
+such as `Tap "Save" at the bottom`. For a press, wrapper collapse runs first; a
+press or fill then narrows the count only on proof of what a user can reach.
+A press counts a same-label wrapper as the control it wraps when native ancestry,
+a React host anchored by the wrapper's own unique testID
 with no press handler, no other content and strict frame containment all hold; an
 inner control that is offscreen, disabled or not hittable never collapses, and the
 wrapper is never chosen. A match whose whole frame is off screen, outside its list's
 clip or under the keyboard is set aside unless it is nested with another match; a
 later window or an inferred overlay sets nothing aside. On iOS, when every remaining
-match is uniquely identifiable, up to four get a read-only live hit read inside the
-observation's expiry, and only `not-hittable` sets one aside. The refusal marks a
-candidate "nested inside candidate N" and lists each one set aside with its reason;
+match is uniquely identifiable, the first four are considered for a read-only live
+hit read inside the observation's expiry, skipping nested candidates; only
+`not-hittable` sets one aside. Partial exposure or missing geometry alone never
+excludes a candidate, nor does an unavailable or late read. If all candidates are
+set aside, the step refuses `TARGET_NOT_FOUND`. The refusal marks a candidate
+"nested inside candidate N" and lists each one set aside with its reason;
 the row records `collapsed` and `candidateExclusions`. Outside fills,
 a React-only element whose testID equals the quoted value is not counted while a
 native element carries that testID, so a quoted press, wait or scroll reaches
-the native element; two native elements sharing it still refuse. A fill counts
-text-entry candidates plus every element carrying its testID, so a form label
+the native element; remaining native duplicates follow the counting rules above.
+A fill counts text-entry candidates plus every element carrying its testID, so a form label
 naming an input is not a twin, while a button sharing the input's testID is. A
 React-only projection collapses into the one native input only when complete
 React host evidence and digest ancestry prove it represents the same input host:
@@ -1209,9 +1214,8 @@ and no hint showing counts as empty, so clearing a plain field verifies as
 `exact`. A clear that reads back the placeholder remains `ambiguous`. Stale
 reads, and null text with unknown hint state, remain `unreadable`.
 
-Separate React-only input projections still count when matching a quoted strict fill,
-so a native input and a React-only input sharing its testID refuse as
-`TARGET_AMBIGUOUS` before any tap. A strict fill never acts on a React-only
+For quoted strict fills, React-only identity merging and duplicate counting follow
+the [targeting rules](#check-a-plan). A strict fill never acts on a React-only
 input: when one is the only match, an accessibility-hidden input represented
 only in React evidence returns `TARGET_NOT_FOUND`, allowing the guarded
 native-wrapper fallback without scrolling. A genuine offscreen native input still requests scrolling; an onscreen
