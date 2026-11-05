@@ -6550,6 +6550,11 @@ fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease()
             common::script_ios_deps(&mut mock);
             script_admission(&mut mock);
             if initial == "Shutdown" {
+                // A slow but successful boot spends the whole boot budget; the proof still reads.
+                mock.advance_on = Some((
+                    format!("simctl bootstatus {UDID}"),
+                    qaren::scenario::Deadlines::default().device_boot_seconds * 1000,
+                ));
                 mock.expect_run(
                     &format!("simctl bootstatus {UDID} -b"),
                     CmdOutput::success(""),

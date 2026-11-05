@@ -5991,6 +5991,46 @@ fn borrowed_lease_replaced_between_install_attempts_blocks_retry_launch_and_read
 }
 
 #[test]
+fn borrowed_install_that_spends_the_budget_reports_the_install_timeout() {
+    let repo = common::temp_repo();
+    let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_borrowed_until_boot(&mut mock, &repo, "Booted");
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
+    script_borrowed_build(&mut mock);
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&borrowed_inventory("Booted")),
+    );
+    mock.expect_run(
+        "simctl install",
+        CmdOutput {
+            timed_out: true,
+            ..Default::default()
+        },
+    );
+    mock.inner.advance_on = Some(("simctl install".into(), 10_000_000));
+    mock.expect_run(
+        "simctl get_app_container",
+        CmdOutput::failed(2, "No such file or directory"),
+    );
+    common::script_ios_metro_cleanup(&mut mock);
+
+    let receipt = prepare(&mut mock, &borrowed_args(&scenario_path, false));
+
+    let failure = receipt.failure.as_ref().expect("budget spent must fail");
+    assert_eq!(
+        failure.code,
+        FailureCode::ArtifactInstallFailed,
+        "{failure:?}"
+    );
+    assert!(failure.detail.contains("(install-timeout):"), "{failure:?}");
+    assert_eq!(mock.remaining(), 0);
+    assert_no_simulator_power(&mock);
+}
+
+#[test]
 fn borrowed_dry_run_plans_the_exact_target_without_creating_leasing_or_recording() {
     for (state, boot) in [("Booted", false), ("Shutdown", true)] {
         let repo = common::temp_repo();

@@ -333,6 +333,15 @@ impl<'a> InventoryRead<'a> {
             between,
         }
     }
+
+    // Proof after a boot or shutdown: its own fixed budget (3 × 10 s reads, 2 × 2 s pauses),
+    // so a slow but successful device change never leaves the proof without a read.
+    pub fn after_effect(between: &'a mut dyn FnMut(&dyn Runner) -> Result<(), Failure>) -> Self {
+        Self {
+            deadline_ms: None,
+            ..Self::device(0, between)
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -345,7 +354,8 @@ pub struct Inventory {
 #[derive(Debug)]
 pub enum InventoryReadLast {
     TimedOut { timeout_ms: u64 },
-    Failed(String),
+    // Receipts show only the exit; doctor shows the redacted summary.
+    Failed { exit: String, summary: String },
     Unparseable,
     TooLarge,
     DeadlineSpent,
@@ -365,7 +375,7 @@ impl InventoryUnavailable {
             InventoryReadLast::TimedOut { timeout_ms } => {
                 format!("timed out after {:.1} s", *timeout_ms as f64 / 1000.0)
             }
-            InventoryReadLast::Failed(summary) => format!("command failed: {summary}"),
+            InventoryReadLast::Failed { exit, .. } => format!("command failed: exit={exit}"),
             InventoryReadLast::Unparseable => "unreadable inventory".into(),
             InventoryReadLast::TooLarge => "inventory reached the 1 MiB limit".into(),
             InventoryReadLast::DeadlineSpent => "deadline spent".into(),
@@ -439,12 +449,12 @@ pub fn read_inventory(
                 timeout_ms: spec.timeout_seconds * 1000,
             }
         } else if !output.ok() {
-            InventoryReadLast::Failed(format!(
-                "exit={}",
-                output
+            InventoryReadLast::Failed {
+                exit: output
                     .exit_code
-                    .map_or("signal".into(), |code| code.to_string())
-            ))
+                    .map_or("signal".into(), |code| code.to_string()),
+                summary: output.summary(),
+            }
         } else if output.stdout.len() >= 1024 * 1024 {
             InventoryReadLast::TooLarge
         } else if !output.stderr.is_empty() {
@@ -470,7 +480,8 @@ pub fn read_inventory(
             let remaining = opts.deadline_ms.map_or(u64::MAX, |deadline| {
                 deadline.saturating_sub(runner.monotonic_ms())
             });
-            if remaining == 0 {
+            // No read can start after this pause: stop now instead of sleeping for nothing.
+            if remaining < (opts.pause.as_millis() as u64).saturating_add(1000) {
                 return Err(unavailable(
                     runner,
                     attempts,
@@ -998,7 +1009,7 @@ pub fn shutdown_selected_sim_until(
     if !runner.run(&shutdown_spec(udid)).ok() {
         return SelectedSimShutdown::ShutdownFailed;
     }
-    let after = match read_inventory(runner, InventoryRead::device(deadline_ms, between)) {
+    let after = match read_inventory(runner, InventoryRead::after_effect(between)) {
         Ok(inventory) => inventory,
         Err(_) => return SelectedSimShutdown::ReadbackInvalid,
     };

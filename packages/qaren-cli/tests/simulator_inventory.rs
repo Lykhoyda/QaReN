@@ -125,7 +125,8 @@ fn deadline_spent_in_pause_prevents_another_read_and_caps_timeout() {
         .unwrap_err();
     assert!(matches!(error.last, InventoryReadLast::DeadlineSpent));
     assert_eq!(error.attempts, 1);
-    assert_eq!(error.latency_ms, 2500);
+    // Stops at once: a 2 s pause would leave less than the 1 s a read needs.
+    assert_eq!(error.latency_ms, 500);
     assert_eq!(runner.calls[0].timeout_seconds, 2);
     assert_eq!(runner.calls.len(), 1);
 }
@@ -207,5 +208,28 @@ fn unreadable_inventory_after_shutdown_keeps_the_readback_unresolved() {
         ios::SelectedSimShutdown::ReadbackInvalid
     ));
     assert_eq!(runner.calls.len(), 5);
+    assert_eq!(runner.remaining(), 0);
+}
+
+#[test]
+fn a_slow_shutdown_that_spends_the_budget_still_reads_back_with_its_own_budget() {
+    let mut runner = MockRunner::new();
+    runner.advance_on = Some(("simctl shutdown".into(), 40_000));
+    runner.expect_run("simctl list", CmdOutput::success(&inventory("Booted")));
+    runner.expect_run("simctl shutdown", CmdOutput::success(""));
+    runner.expect_run("simctl list", CmdOutput::success(&inventory("Shutdown")));
+    let deadline = runner.monotonic_ms() + 40_000;
+    assert!(matches!(
+        ios::shutdown_selected_sim_until(
+            &mut runner,
+            UDID,
+            DEVICE_TYPE,
+            RUNTIME,
+            deadline,
+            &mut running
+        ),
+        ios::SelectedSimShutdown::ShutDown
+    ));
+    assert_eq!(runner.calls.last().unwrap().timeout_seconds, 10);
     assert_eq!(runner.remaining(), 0);
 }

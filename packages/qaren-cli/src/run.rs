@@ -2152,15 +2152,16 @@ fn boot_selected_device(
             "selected simulator lacks recorded runtime and device type",
         ));
     };
-    let deadline = ctx.runner.monotonic_ms().saturating_add(
-        ctx.record
-            .scenario
-            .deadlines
-            .device_boot_seconds
-            .saturating_mul(1000),
-    );
     let mut needs_boot = device.needs_boot;
     if restart && !device.needs_boot {
+        // The pre-shutdown proof shares the boot budget; the readback gets its own.
+        let deadline = ctx.runner.monotonic_ms().saturating_add(
+            ctx.record
+                .scenario
+                .deadlines
+                .device_boot_seconds
+                .saturating_mul(1000),
+        );
         let shutdown = ios::shutdown_selected_sim_until(
             ctx.runner,
             &device.id,
@@ -2198,7 +2199,7 @@ fn boot_selected_device(
             }
         }
     }
-    prepare::boot_borrowed_ios_until(ctx, needs_boot, deadline)
+    prepare::boot_borrowed_ios(ctx, needs_boot)
 }
 
 // A driver is recorded only as the leader of its own group, running the runner test for this simulator.

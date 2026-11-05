@@ -79,7 +79,7 @@ fn simulator_service(
         Err(unavailable) => Some(unavailable),
     };
     if let Some(ios::InventoryUnavailable {
-        last: ios::InventoryReadLast::Failed(summary),
+        last: ios::InventoryReadLast::Failed { summary, .. },
         ..
     }) = &unavailable
     {
@@ -118,7 +118,11 @@ fn simulator_service(
     } else {
         Status::Warn
     };
-    let fix = if timed_out { SERVICE_FIX } else { SIMCTL_FIX };
+    let fix = if timed_out || !stuck.is_empty() {
+        SERVICE_FIX
+    } else {
+        SIMCTL_FIX
+    };
     (
         Check::problem("simulator-service", status, detail, fix),
         None,
@@ -479,6 +483,17 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_inventory_with_a_stuck_simulator_keeps_the_service_fix() {
+        let mut runner = MockRunner::new();
+        runner.expect_run("simctl list", CmdOutput::success("{}"));
+        let processes = CmdOutput::success(&format!("U launchd_sim /runtime/launchd_sim /Users/example/Library/Developer/CoreSimulator/Devices/{UDID}/data\n"));
+        let (service, _) = simulator_service(&mut runner, &processes);
+        assert_eq!(service.status, Status::Warn);
+        assert!(service.detail.contains("unreadable inventory"));
+        assert_eq!(service.fix.as_deref(), Some(SERVICE_FIX));
+    }
+
+    #[test]
     fn mac_reports_both_platforms_and_uses_the_second_idle_sample() {
         let mut runner = MockRunner::new();
         script_mac(&mut runner, "S qemu-system-aar /sdk/qemu-system-aarch64 -avd Pixel\nS emulator /sdk/emulator -avd Pixel\nS qemu-system-x86 /usr/bin/qemu-system-x86_64 -drive server.img\n", inventory(), VM, SYS, "CPU usage: 90% user, 5% sys, 5% idle\nCPU usage: 2% user, 3% sys, 95% idle\n");
@@ -603,7 +618,7 @@ mod tests {
             let rows = checks(&mut runner, "macos");
             let service = row(&rows, "simulator-service");
             assert_eq!(service.status, Status::Fail);
-            assert!(service.detail.contains("exit=1"));
+            assert!(service.detail.contains("CoreSimulator is out of date"));
             assert_eq!(service.fix.as_deref(), Some(SIMCTL_FIX));
             assert_eq!(row(&rows, "host-devices").status, Status::Warn);
         }

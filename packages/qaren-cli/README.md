@@ -4191,7 +4191,9 @@ name one available simulator whose device type and runtime equal the
 scenario's `ios.device_type` and `ios.runtime`. Names, `booted` and partial
 UUIDs are usage errors (exit `2`, no receipt); unavailable, ambiguous or
 mismatched targets refuse with `DEVICE_UNAVAILABLE` before anything is
-claimed. A Booted target is used as is. A Shutdown target refuses unless
+claimed. When `simctl list` does not answer usably in three bounded reads,
+the run refuses with `SIMULATOR_INVENTORY_UNAVAILABLE` (exit `4`) before any
+device change; `qaren doctor` shows the simulator service row. A Booted target is used as is. A Shutdown target refuses unless
 `--boot-device` authorizes booting it, with the same meaning as on `check`
 (see [iOS simulator lifecycle](#ios-simulator-lifecycle)). `--boot-device`
 without `--device`, or either `--restart-device` or `--shutdown-device-on-exit`

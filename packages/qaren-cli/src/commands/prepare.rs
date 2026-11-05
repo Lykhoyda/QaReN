@@ -1743,8 +1743,18 @@ fn observe_borrowed_ios(
         runner,
         ios::InventoryRead::device(deadline, &mut |runner| ensure_running(runner, "device")),
     )
-    .map_err(|unavailable| {
-        unavailable.into_failure("device", FailureCode::SimulatorInventoryUnavailable)
+    .map_err(|unavailable| match unavailable.last {
+        // The caller's own preparation budget ran out, not the simulator service.
+        ios::InventoryReadLast::DeadlineSpent if deadline_ms.is_some() => Failure::new(
+            "build",
+            FailureCode::ReadyDeadlineExceeded,
+            format!(
+                "preparation deadline spent while re-proving the selected simulator; {}",
+                unavailable.detail()
+            ),
+            "re-run prepare",
+        ),
+        _ => unavailable.into_failure("device", FailureCode::SimulatorInventoryUnavailable),
     })?;
     let spec = scenario.ios.as_ref().expect("validated ios scenario");
     ios::parse_selected_sim_value(&inventory.value, udid)
@@ -1837,28 +1847,16 @@ fn reprove_borrowed_ios(
 // A long build is no continuing authority: never install, launch or report Ready on a borrowed target that changed.
 fn reprove_borrowed_prepare(ctx: &mut Ctx, deadline_ms: Option<u64>) -> Result<(), Failure> {
     if ctx.verb == "prepare" && ctx.record.resources.device_borrowed {
-        reprove_borrowed_ios(ctx, false, deadline_ms)?;
+        reprove_borrowed_ios(ctx, false, deadline_ms).map_err(|f| match f.code {
+            FailureCode::ReadyDeadlineExceeded => launch_deadline_spent(&ctx.record.run_id),
+            _ => f,
+        })?;
     }
     Ok(())
 }
 
 // Boots (only when asked) and re-proves the recorded borrowed simulator Booted with unchanged identity.
 pub(crate) fn boot_borrowed_ios(ctx: &mut Ctx, needs_boot: bool) -> Result<(), Failure> {
-    let deadline = ctx.runner.monotonic_ms().saturating_add(
-        ctx.record
-            .scenario
-            .deadlines
-            .device_boot_seconds
-            .saturating_mul(1000),
-    );
-    boot_borrowed_ios_until(ctx, needs_boot, deadline)
-}
-
-pub(crate) fn boot_borrowed_ios_until(
-    ctx: &mut Ctx,
-    needs_boot: bool,
-    deadline_ms: u64,
-) -> Result<(), Failure> {
     let failed = |detail| {
         Failure::new(
             "boot_device",
@@ -1886,9 +1884,7 @@ pub(crate) fn boot_borrowed_ios_until(
     }
     let inventory = ios::read_inventory(
         ctx.runner,
-        ios::InventoryRead::device(deadline_ms, &mut |runner| {
-            ensure_running(runner, "boot_device")
-        }),
+        ios::InventoryRead::after_effect(&mut |runner| ensure_running(runner, "boot_device")),
     )
     .map_err(|unavailable| {
         unavailable.into_failure("boot_device", FailureCode::SimulatorBootFailed)
@@ -3524,7 +3520,11 @@ fn install_cached_ios_app(
     let mut attempts = 0;
     let mut last = None;
     loop {
-        reprove_borrowed_prepare(ctx, Some(deadline))?;
+        match reprove_borrowed_prepare(ctx, Some(deadline)) {
+            // The install budget ran out during the re-proof: report the install timeout below.
+            Err(f) if f.code == FailureCode::ReadyDeadlineExceeded => break,
+            result => result?,
+        }
         let Some(installed) = run_budgeted_attempt(ctx, &spec, deadline, &mut attempts)? else {
             break;
         };
@@ -5627,7 +5627,7 @@ mod launch_tests {
     use crate::exec::CmdOutput;
 
     #[test]
-    fn borrowed_inventory_uses_the_callers_remaining_install_budget() {
+    fn borrowed_inventory_spending_the_callers_budget_reports_that_budget() {
         let scenario: Scenario = serde_json::from_value(serde_json::json!({
             "schema": "qaren/1", "name": "inventory-budget", "platform": "ios",
             "candidate": { "project_root": "/app", "app_id": "com.example.app", "revision": "HEAD" },
@@ -5650,11 +5650,13 @@ mod launch_tests {
             Some(deadline),
         )
         .unwrap_err();
-        assert_eq!(failure.code, FailureCode::SimulatorInventoryUnavailable);
+        assert_eq!(failure.code, FailureCode::ReadyDeadlineExceeded);
+        assert!(!failure.code.is_refusal());
         assert!(failure
             .detail
-            .contains("1 attempts over 3.0 s (last: deadline spent)"));
-        assert_eq!(runner.monotonic_ms(), deadline);
+            .contains("1 attempts over 1.0 s (last: deadline spent)"));
+        // No pause is spent when a further read could not start within the budget.
+        assert_eq!(runner.monotonic_ms(), deadline - 2000);
         assert_eq!(runner.calls.len(), 1);
         assert_eq!(runner.calls[0].timeout_seconds, 3);
     }
