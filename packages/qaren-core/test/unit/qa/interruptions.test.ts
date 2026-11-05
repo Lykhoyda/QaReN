@@ -368,6 +368,7 @@ test('Jev can veto a uniquely selected control, but cannot break a tie or choose
     assert.equal(result.verdict, 'REFUSED');
     assert.equal(result.code, 'INTERRUPTION_VETOED');
     assert.deepEqual(f.actions, []);
+    assert.equal(result.steps.at(-1)?.interruption?.outcome, 'not-dispatched');
   }
   const f = app(screen([element('@close', 'Close'), element('@skip', 'Skip')]));
   f.deps.interruptionVeto = true;
@@ -375,7 +376,9 @@ test('Jev can veto a uniquely selected control, but cannot break a tie or choose
     throw new Error('ambiguity must not ask Jev');
   });
   f.deps.judge = judge;
-  assert.equal((await runPlan(plan(), f.deps)).code, 'INTERRUPTION_AMBIGUOUS');
+  const result = await runPlan(plan(), f.deps);
+  assert.equal(result.code, 'INTERRUPTION_AMBIGUOUS');
+  assert.equal(result.steps.at(-1)?.interruption?.outcome, 'ambiguous');
   assert.equal(judge.requests.length, 0);
   assert.deepEqual(f.actions, []);
 });

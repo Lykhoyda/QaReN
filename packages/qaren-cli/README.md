@@ -3423,10 +3423,12 @@ with `Close`. When the current target is absent and the screen's only control,
 counted in any enabled, hittable or ready state, carries a decline label, a later
 same-block tap or fill target is exempt too: nothing else on that screen can take
 the action, so its match is a coincidence with the copy or a text element's test ID.
+This exemption requires a proven control count: press/fill association gaps or
+unknown capabilities on a non-structural, on-screen element keep the presence guard.
 A later wait or check matching that screen, other than an exempt decline label, still
 vetoes. The current target is never exempt. ID-only targets are checked by
 test ID, text-only targets by contained label or value text (including composed
-input text), and unqualified targets by either. Any on-screen, uncovered match
+input text), and unqualified targets by either. Any non-exempt on-screen, uncovered match
 vetoes dismissal, even when another matching ID is offscreen.
 Exactly one eligible control must be visible, hittable, enabled,
 non-secure and have proven press support, with one of these exact English labels:
@@ -3513,8 +3515,9 @@ step's ledger row carries an `interruption` receipt: `considered`, an `outcome`
 veto, whether a later-target veto came from `presence` or `ownership`, the target's
 plan line and step kind, whether the decline was the screen's only control, and,
 when a dispatched decline stayed, the vertical centre in points of the control
-the press aimed at; the report prints it as one line under the failure. A
-dismissal stays on the row through the step's retry. A no-candidate veto also reports
+the press aimed at; the report prints it as one line under the failure. A Jev veto
+or a guard change before dispatch records `not-dispatched`. A dismissal stays on
+the row through the step's retry. A no-candidate veto also reports
 each decline-labelled element's first failed predicate; press capability failures
 include the existing host association identity when available.
 `presence-system-modal` reports an unrecognized SpringBoard modal's
