@@ -330,24 +330,38 @@ test('abort during each awaited admission primitive rejects before any later eff
   }
 });
 
-test('handshake attempts share one deadline at low load', async () => {
-  const { CDPHandshakeTimeoutError } = await import('../../../dist/cdp/connect.js');
-  const deadlines: number[] = [];
-  const { calls, stop, steps } = harness({
-    load: () => 3,
-    remainingMs: () => 1200,
-    attach: async (deadline) => {
-      deadlines.push(deadline);
-      throw new CDPHandshakeTimeoutError('handshake timed out');
-    },
-  });
-  await assert.rejects(admit(steps, stop), /CDP attach deadline exceeded/);
-  assert.ok(deadlines.length >= 2);
-  assert.equal(new Set(deadlines).size, 1, 'retry must not extend the deadline');
-  assert.deepEqual(calls, ['close']);
-});
-
 for (const Timeout of [CDPProbeTimeoutError, CDPHandshakeTimeoutError]) {
+  test(`${Timeout.name} attempts share one deadline at low load`, async (t) => {
+    const clock = mockClock(t);
+    const deadlines: number[] = [];
+    const { calls, stop, steps } = harness({
+      load: () => 3,
+      remainingMs: () => 1200,
+      attach: async (deadline) => {
+        deadlines.push(deadline);
+        throw new Timeout('attach attempt timed out');
+      },
+    });
+    let settled = false;
+    const admitted = refusalOf(admit(steps, stop)).then((error) => {
+      settled = true;
+      return error;
+    });
+    clock.cleanup(stop, admitted);
+    await nextTurn();
+    await clock.advance(500);
+    await clock.advance(500);
+    assert.equal(settled, false, 'transient failures can retry within the budget');
+    assert.deepEqual(deadlines, [1200, 1200, 1200], 'retry must not extend the deadline');
+    await clock.advance(200);
+    const error = await admitted;
+    assert.equal(error.code, 'CDP_NOT_CONNECTED');
+    assert.equal(error.meta?.elapsedMs, 1200);
+    assert.equal(error.meta?.remainingMs, 0);
+    assert.deepEqual(deadlines, [1200, 1200, 1200], 'no attach after budget exhaustion');
+    assert.deepEqual(calls, ['close']);
+  });
+
   test(`a live no-target wait preserves subsequent ${Timeout.name} recovery`, async (t) => {
     let now = 10_000;
     t.mock.timers.enable({ apis: ['setTimeout'] });
