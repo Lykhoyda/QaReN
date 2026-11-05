@@ -6,7 +6,11 @@ import {
   recover,
   surfaceGone,
 } from '../../../dist/qa/recover.js';
-import type { RecoverDeps } from '../../../dist/qa/recover.js';
+import type {
+  InterruptionDiagnostic,
+  RecoverDeps,
+  RecoveryTarget,
+} from '../../../dist/qa/recover.js';
 import {
   ancestorsOf,
   hostAssociationIdentity,
@@ -827,3 +831,182 @@ for (const [kind, quoted] of [
     assert.match(retry.reason ?? '', /recovered: dismissed an app screen with Close/);
   });
 }
+
+// A full-screen promo: one Close control over promotional copy, while the step waits for "Home".
+function fullScreenPromo(...extra: NativeNode[]): Screen {
+  const rect = { x: 0, y: 0, width: 402, height: 874 };
+  const nodes: NativeNode[] = [
+    { ref: '@app', type: 'Application', rect },
+    { ref: '@window', type: 'Window', parentIndex: 0, rect },
+    {
+      ref: '@close',
+      type: 'Button',
+      parentIndex: 1,
+      identifier: 'promo-close',
+      label: 'Close',
+      hittable: true,
+      rect: { x: 340, y: 70, width: 40, height: 30 },
+    },
+    {
+      ref: '@title',
+      type: 'StaticText',
+      parentIndex: 1,
+      identifier: 'promo-title',
+      label: 'Save 50% on Premium today',
+      rect: { x: 20, y: 300, width: 360, height: 40 },
+    },
+    {
+      ref: '@body',
+      type: 'StaticText',
+      parentIndex: 1,
+      label: 'Offer ends soon',
+      rect: { x: 20, y: 360, width: 360, height: 30 },
+    },
+    ...extra.map((node, index) => ({
+      parentIndex: 1,
+      rect: { x: 20, y: 420 + index * 50, width: 360, height: 40 },
+      ...node,
+    })),
+  ];
+  return join(nodes, [], 'app', { native: 'complete', react: 'complete' }, undefined, {
+    source: 'xcui-live',
+    nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+  });
+}
+const waitHome: RecoveryTarget = { phrase: 'Home', quoted: 'Home', kind: 'wait', line: 7 };
+const later = (
+  quoted: string,
+  kind: NonNullable<RecoveryTarget['kind']>,
+  extra: Partial<RecoveryTarget> = {},
+): RecoveryTarget => ({ phrase: quoted, quoted, kind, line: 9, ...extra });
+const decide = (snapshot: Screen, targets: RecoveryTarget[]) => {
+  const records: InterruptionDiagnostic[] = [];
+  return {
+    result: dismissCandidate(snapshot, targets, (record) => records.push(record)),
+    records,
+  };
+};
+
+test('a later press or fill matching promo copy does not keep a sole-Close promo up', () => {
+  for (const kind of ['press', 'fill'] as const) {
+    const { result, records } = decide(fullScreenPromo(), [waitHome, later('Premium', kind)]);
+    assert.deepEqual(result, { label: 'Close' }, kind);
+    assert.deepEqual(records, [], kind);
+  }
+});
+
+test('a later wait or check on promo copy still vetoes by presence', () => {
+  for (const kind of ['wait', 'check'] as const) {
+    const { result, records } = decide(fullScreenPromo(), [waitHome, later('Premium', kind)]);
+    assert.equal(result, undefined, kind);
+    assert.deepEqual(
+      records.map(({ veto, targetIndex, provenance, soleDecline }) => ({
+        veto,
+        targetIndex,
+        provenance,
+        soleDecline,
+      })),
+      [{ veto: 'later-target', targetIndex: 1, provenance: 'presence', soleDecline: true }],
+      kind,
+    );
+  }
+});
+
+test('a later same-block press on the container of the sole Close still keeps it', () => {
+  const nodes: NativeNode[] = [
+    { ref: '@app', type: 'Application' },
+    { ref: '@window', type: 'Window', parentIndex: 0 },
+    { ref: '@sheet', type: 'Other', parentIndex: 1, identifier: 'promo-sheet' },
+    { ref: '@close', type: 'Button', parentIndex: 2, label: 'Close', hittable: true },
+  ];
+  const snapshot = join(nodes, [], 'app', { native: 'complete', react: 'complete' }, undefined, {
+    source: 'xcui-live',
+    nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+  });
+  const { result, records } = decide(snapshot, [
+    waitHome,
+    later('promo-sheet', 'press', { exact: 'id' }),
+  ]);
+  assert.equal(result, undefined);
+  assert.deepEqual(
+    records.map(({ veto, soleDecline, elements }) => ({ veto, soleDecline, elements })),
+    [
+      {
+        veto: 'no-candidate',
+        soleDecline: true,
+        elements: [{ index: 3, failed: 'target-ancestor' }],
+      },
+    ],
+  );
+});
+
+test('a later press by the testID of promo text is a coincidence, not ownership', () => {
+  const { result } = decide(fullScreenPromo(), [
+    waitHome,
+    later('promo-title', 'press', { exact: 'id' }),
+  ]);
+  assert.deepEqual(result, { label: 'Close' });
+});
+
+test('a later step naming Close by label or id keeps it, with ownership provenance', () => {
+  for (const target of [
+    later('Close', 'press'),
+    later('close', 'check'),
+    later('promo-close', 'press', { exact: 'id' }),
+    later('promo-close', 'wait', { exact: 'id', laterBlock: true }),
+  ]) {
+    const { result, records } = decide(fullScreenPromo(), [waitHome, target]);
+    assert.equal(result, undefined, target.quoted);
+    assert.equal(records.length, 1, target.quoted);
+    assert.equal(records[0].veto, 'later-target');
+    assert.equal(records[0].provenance, 'ownership');
+    assert.equal(records[0].targetIndex, 1);
+  }
+});
+
+test('a second control of any state defeats the sole-decline exemption', () => {
+  const input: NativeNode = { ref: '@email', type: 'TextField', label: 'Email', hittable: true };
+  const button: NativeNode = { ref: '@go', type: 'Button', label: 'Continue', hittable: true };
+  for (const [extra, target] of [
+    [input, later('Email', 'fill')],
+    [{ ...button, enabled: false }, later('Continue', 'press')],
+    [button, later('Continue', 'press')],
+  ] as const) {
+    const { result, records } = decide(fullScreenPromo(extra), [waitHome, target]);
+    assert.equal(result, undefined, target.quoted);
+    assert.equal(records[0].provenance, 'presence', target.quoted);
+    assert.equal(records[0].soleDecline, false, target.quoted);
+  }
+});
+
+test('six decline carriers around one actionable Close still protect a later-block Close step', () => {
+  const carriers = Array.from(
+    { length: 5 },
+    (_, index): NativeNode => ({ ref: `@label${index}`, type: 'StaticText', label: 'Close' }),
+  );
+  const { result, records } = decide(fullScreenPromo(...carriers), [
+    waitHome,
+    later('Close', 'press', { laterBlock: true }),
+  ]);
+  assert.equal(result, undefined);
+  assert.equal(records[0].exactDeclineCount, 6);
+  assert.equal(records[0].provenance, 'ownership');
+});
+
+test('uncertain current-target evidence on a sole-Close promo still vetoes', () => {
+  const { result, records } = decide({ ...fullScreenPromo(), unresolvedText: ['Home'] }, [
+    waitHome,
+    later('Premium', 'press'),
+  ]);
+  assert.equal(result, undefined);
+  assert.equal(records[0].veto, 'current-target');
+});
+
+test('a press that opened the promo still withholds the decline', () => {
+  const { result, records } = decide(fullScreenPromo(), [
+    { ...waitHome, afterPlannedPress: true },
+    later('Premium', 'press'),
+  ]);
+  assert.equal(result, undefined);
+  assert.equal(records[0].veto, 'previous-plan-press');
+});

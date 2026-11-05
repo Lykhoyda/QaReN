@@ -3419,7 +3419,12 @@ only keep their own planned control and controls inside them. A later target
 declared as a decline label from the list below
 (case-insensitive, unless explicitly targeted by ID) is exempt from this absence
 guard, so non-control text such as `Maybe later` does not prevent closing a sheet
-with `Close`. The current target is never exempt. ID-only targets are checked by
+with `Close`. When the current target is absent and the screen's only control,
+counted in any enabled, hittable or ready state, carries a decline label, a later
+same-block tap or fill target is exempt too: nothing else on that screen can take
+the action, so its match is a coincidence with the copy or a text element's test ID.
+A later wait or check matching that screen, other than an exempt decline label, still
+vetoes. The current target is never exempt. ID-only targets are checked by
 test ID, text-only targets by contained label or value text (including composed
 input text), and unqualified targets by either. Any on-screen, uncovered match
 vetoes dismissal, even when another matching ID is offscreen.
@@ -3430,6 +3435,8 @@ non-secure and have proven press support, with one of these exact English labels
 Zero candidates leave the original failure in place; several refuse
 `INTERRUPTION_AMBIGUOUS` without tapping. A candidate matching a later target's
 effective selector is left for that step; decline-label matching is case-insensitive.
+That step's line is then named in the failure's suggested plan edit: move it before
+the failing line if the interruption is optional, or remove it.
 Within a replayed block, recovery retains the declared target for the exemption
 and uses its stored selector to protect the planned control. Targets in later
 blocks use their declared identities until those blocks are prepared for replay.
@@ -3496,9 +3503,18 @@ including when its read-back refuses incomplete capture.
 
 `logs/core.log` includes value-free diagnostics for failed interruption admission:
 `interruption-rejected` reports a front, coverage, indexed target,
-previous-plan-press or no-candidate veto and the exact-decline-label element count; the same veto kind, step line,
+previous-plan-press or no-candidate veto, a later-target veto's `presence` or
+`ownership` provenance, whether the decline is the screen's only control
+(`soleDecline`) and the exact-decline-label element count; the same veto kind, step line,
 target index and count are also retained as an `interruption-rejected` event in
-`core-diagnostics.jsonl` for runs with inputs. A no-candidate veto also reports
+`core-diagnostics.jsonl`, which the event opens even in a run without inputs. The
+step's ledger row carries an `interruption` receipt: `considered`, an `outcome`
+(`vetoed`, `dismissed`, `not-dispatched`, `ambiguous` or `did-not-disappear`), the
+veto, whether a later-target veto came from `presence` or `ownership`, the target's
+plan line and step kind, whether the decline was the screen's only control, and,
+when a dispatched decline stayed, the vertical centre in points of the control
+the press aimed at; the report prints it as one line under the failure. A
+dismissal stays on the row through the step's retry. A no-candidate veto also reports
 each decline-labelled element's first failed predicate; press capability failures
 include the existing host association identity when available.
 `presence-system-modal` reports an unrecognized SpringBoard modal's

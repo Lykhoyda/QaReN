@@ -1,4 +1,4 @@
-import type { Target } from './plan.js';
+import type { Item, Target } from './plan.js';
 import { ancestorsOf, hostAssociationIdentity, type Element, type Screen } from './screen.js';
 import { hostPath, MODAL_HOST_TYPES, type HostAssociationDiagnostic } from './host-association.js';
 import { targetOnScreen } from './resolve.js';
@@ -12,6 +12,9 @@ export interface LoginMarker {
 
 export interface RecoveryTarget extends Target {
   declared?: Target;
+  // The plan step this target comes from; a placeholder current target has neither.
+  line?: number;
+  kind?: Item['kind'];
   // A target from a later block keeps its own control but never vetoes recovery by mere presence.
   laterBlock?: boolean;
   // The current target follows a passed planned press, so the screen in front is the plan's own.
@@ -98,6 +101,9 @@ export const INTERRUPTION_VETOES = [
 export interface InterruptionDiagnostic {
   veto: (typeof INTERRUPTION_VETOES)[number];
   targetIndex?: number;
+  // Which later-target check vetoed: the target is on screen, or it names the decline control itself.
+  provenance?: 'presence' | 'ownership';
+  soleDecline: boolean;
   exactDeclineCount: number;
   elements: Array<{
     index: number;
@@ -118,15 +124,19 @@ export function dismissCandidate(
   planTargets: readonly RecoveryTarget[],
   diagnostic?: (record: InterruptionDiagnostic) => void,
 ): { label: string } | { refuse: { code: string; message: string } } | undefined {
+  const sole = soleDecline(screen);
   const rejected = (
     veto: InterruptionDiagnostic['veto'],
     targetIndex?: number,
     elements: InterruptionDiagnostic['elements'] = [],
+    provenance?: InterruptionDiagnostic['provenance'],
   ) => {
     try {
       diagnostic?.({
         veto,
         ...(targetIndex === undefined ? {} : { targetIndex }),
+        ...(provenance ? { provenance } : {}),
+        soleDecline: sole,
         exactDeclineCount: screen.elements.filter(
           (e) => e.label !== undefined && DECLINE_LABELS.has(e.label),
         ).length,
@@ -148,10 +158,15 @@ export function dismissCandidate(
         (target.declared ?? target).exact !== 'id' &&
         DECLINE_LOWER.has((target.declared ?? target).quoted?.toLowerCase() ?? '')
       ) &&
+      // findIndex reaches a later target only once the current one is absent; with nothing but
+      // the decline to act on, a later press or fill matching this screen is a coincidence.
+      !(index > 0 && sole && (target.kind === 'press' || target.kind === 'fill')) &&
       targetOnScreen(screen, target),
   );
   if (targetIndex !== -1)
-    return rejected(targetIndex === 0 ? 'current-target' : 'later-target', targetIndex);
+    return targetIndex === 0
+      ? rejected('current-target', 0)
+      : rejected('later-target', targetIndex, [], 'presence');
   const failedPredicate = (
     e: Element,
   ): InterruptionDiagnostic['elements'][number]['failed'] | undefined => {
@@ -192,7 +207,7 @@ export function dismissCandidate(
         (matchesTarget(candidates[0], target) ||
           (target.exact !== 'id' && target.quoted?.toLowerCase() === label)),
     );
-    if (plannedIndex !== -1) return rejected('later-target', plannedIndex);
+    if (plannedIndex !== -1) return rejected('later-target', plannedIndex, [], 'ownership');
     return { label: candidates[0].label! };
   }
   return rejected(
@@ -204,6 +219,25 @@ export function dismissCandidate(
       const association = failed === 'press-not-supported' ? hostAssociationIdentity(e) : undefined;
       return [{ index, failed, ...(association ? { association } : {}) }];
     }),
+  );
+}
+
+const CONTROL_KINDS = new Set<Element['kind']>(['button', 'input', 'switch', 'link', 'cell']);
+
+// Exactly one on-screen control, in any state, and it carries a decline label.
+export function soleDecline(screen: Screen): boolean {
+  const controls = screen.elements.filter(
+    (e) =>
+      !e.offscreen &&
+      !e.semantic?.nativePresence?.structural &&
+      (CONTROL_KINDS.has(e.kind) ||
+        e.semantic?.press === 'supported' ||
+        e.semantic?.fill === 'supported'),
+  );
+  return (
+    controls.length === 1 &&
+    controls[0].label !== undefined &&
+    DECLINE_LABELS.has(controls[0].label)
   );
 }
 

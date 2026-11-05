@@ -110,6 +110,10 @@ test('a missing wait after a passed planned press leaves the opened screen and f
       name,
     );
     assert.ok(f.vetoes.includes('previous-plan-press'), name);
+    const failedRow = result.steps.find((row) => row.line === 2 && row.outcome === 'fail');
+    assert.equal(failedRow?.interruption?.outcome, 'vetoed', name);
+    assert.equal(failedRow?.interruption?.veto, 'previous-plan-press', name);
+    assert.equal(failedRow?.interruption?.targetLine, 2, name);
   }
 });
 

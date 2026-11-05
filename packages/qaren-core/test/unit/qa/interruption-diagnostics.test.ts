@@ -34,6 +34,7 @@ test('ineligible decline emits one value-free record with the first failed predi
   assert.deepEqual(logs, [
     {
       veto: 'no-candidate',
+      soleDecline: true,
       exactDeclineCount: 1,
       elements: [{ index: 0, failed: 'not-hittable' }],
     },
@@ -50,7 +51,14 @@ test('a later target veto reports only its index and successful selection emits 
     undefined,
   );
   assert.deepEqual(logs, [
-    { veto: 'later-target', targetIndex: 1, exactDeclineCount: 1, elements: [] },
+    {
+      veto: 'later-target',
+      targetIndex: 1,
+      provenance: 'presence',
+      soleDecline: false,
+      exactDeclineCount: 1,
+      elements: [],
+    },
   ]);
   logs.length = 0;
   assert.deepEqual(
@@ -123,6 +131,7 @@ test('press rejection exposes existing host identity without exporting host cont
   assert.deepEqual(logs, [
     {
       veto: 'no-candidate',
+      soleDecline: false,
       exactDeclineCount: 1,
       elements: [{ index: 2, failed: 'press-not-supported', association: 'evidence-unavailable' }],
     },

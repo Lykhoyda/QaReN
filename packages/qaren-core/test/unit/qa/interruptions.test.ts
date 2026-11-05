@@ -156,6 +156,9 @@ test('a target appearing before dispatch prevents the interruption tap', async (
   const result = await runPlan(plan(), f.deps);
   assert.notEqual(result.verdict, 'PASS');
   assert.deepEqual(f.actions, []);
+  const receipt = result.steps.at(-1)?.interruption;
+  assert.equal(receipt?.outcome, 'not-dispatched');
+  assert.equal(receipt?.veto, 'current-target');
 });
 
 test('the current target on an unchanged screen prevents dismissal', async () => {
@@ -797,6 +800,8 @@ test('the same app pop-up after its own decline fails the step without a second 
     result.steps.find((row) => row.outcome === 'retry')?.reason ?? '',
     /recovered: dismissed an app screen with Close/,
   );
+  // The proven dismissal stays the step's receipt; the same pop-up's return is not a second decision.
+  assert.equal(result.steps.at(-1)?.interruption?.outcome, 'dismissed');
 });
 
 test('a step recovers at most two different pop-ups', async () => {
@@ -1033,4 +1038,100 @@ test('interruption rejections keep only the veto kind, line, target index and de
       }),
       undefined,
     );
+});
+
+// A full-screen promo at launch: only Close, over copy that mentions a later tap's text.
+function fullScreenPromo(): Screen {
+  const nodes = [
+    { ref: '@close', type: 'Button', label: 'Close', hittable: true },
+    { ref: '@copy', type: 'StaticText', label: 'Save on Premium today' },
+  ];
+  return joinScreen(nodes, [], 'app', { native: 'complete', react: 'complete' }, undefined, {
+    source: 'xcui-live',
+    nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+  });
+}
+
+test('a later tap whose text is in the promo copy no longer keeps a sole-Close promo up', async () => {
+  const f = app(fullScreenPromo());
+  const streamed = ticking(f);
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    f.show(
+      ref === '@close'
+        ? screen([element('@settings', 'Settings'), element('@premium', 'Premium')])
+        : screen([element('@done', 'Done')]),
+    );
+    return { ok: true, proven: false, executed: true };
+  };
+  const result = await runPlan(waitPlan('2. Tap "Premium"'), f.deps);
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['press @close', 'press @premium']);
+  assert.equal(result.recoveries, 1);
+  const retry = result.steps.find((row) => row.line === 1 && row.outcome === 'retry');
+  assert.equal(retry?.interruption?.outcome, 'dismissed');
+  assert.equal(retry?.interruption?.soleDecline, true);
+  // The value-free stream carries the receipt on the originating step, not on the nested tap.
+  const receipts = streamed.filter((row) => row.interruption);
+  assert.ok(receipts.length >= 1);
+  for (const row of receipts) {
+    assert.equal(row.line, 1);
+    assert.equal(row.text, '');
+    assert.equal(row.reason, undefined);
+    assert.deepEqual(row.interruption, {
+      considered: true,
+      outcome: 'dismissed',
+      soleDecline: true,
+    });
+  }
+});
+
+test('a later step naming the sole Close keeps the promo and suggests moving that step', async () => {
+  const f = app(promo());
+  ticking(f);
+  const result = await runPlan(waitPlan('2. Tap "Close"'), f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, []);
+  assert.equal(
+    result.failure?.suggestion,
+    'line 2 targets this control; if the interruption is optional, move that step before line 1 or remove it',
+  );
+  assert.deepEqual(result.steps.at(-1)?.interruption, {
+    considered: true,
+    outcome: 'vetoed',
+    veto: 'later-target',
+    provenance: 'ownership',
+    targetLine: 2,
+    targetKind: 'press',
+    soleDecline: true,
+  });
+});
+
+test('a Close that stays after its one press records the aimed centre and is not retried', async () => {
+  const nodes = [
+    {
+      ref: '@close',
+      type: 'Button',
+      label: 'Close',
+      hittable: true,
+      rect: { x: 340, y: 10, width: 40, height: 30 },
+    },
+  ];
+  const framed = () =>
+    joinScreen(nodes, [], 'app', { native: 'complete', react: 'complete' }, undefined, {
+      source: 'xcui-live',
+      nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+    });
+  const f = app(framed());
+  ticking(f);
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    return { ok: true, proven: false, executed: true };
+  };
+  const result = await runPlan(waitPlan(), f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, ['press @close']);
+  const receipt = result.steps.at(-1)?.interruption;
+  assert.equal(receipt?.outcome, 'did-not-disappear');
+  assert.equal(receipt?.pressCentreY, 25);
 });
