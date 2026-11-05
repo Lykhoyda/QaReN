@@ -929,6 +929,23 @@ mod tests {
             stayed.summary(),
             "interruption recovery: did-not-disappear (press centre y 25 pt)"
         );
+        for class in ["permission-opt-in", "presented-layer"] {
+            let classed = serde_json::json!({ "considered": true, "outcome": "dismissed", "screenClass": class });
+            let parsed: crate::core::InterruptionReceipt =
+                serde_json::from_value(classed.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&parsed).unwrap(), classed);
+            assert_eq!(
+                parsed.summary(),
+                format!("interruption recovery: dismissed ({class})")
+            );
+        }
+        row["interruption"] = receipt.clone();
+        row["interruption"]["screenClass"] = serde_json::json!("Skip");
+        let parsed: crate::core::Row = serde_json::from_value(row).unwrap();
+        assert!(serde_json::to_value(parsed)
+            .unwrap()
+            .get("interruption")
+            .is_none());
     }
 
     #[test]

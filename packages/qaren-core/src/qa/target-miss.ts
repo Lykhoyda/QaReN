@@ -2,6 +2,7 @@ import type { Step, Target } from './plan.js';
 import { semanticDisabled, type Element, type Kind, type Screen } from './screen.js';
 import { ObservedPrivacy, MASK } from './privacy.js';
 import { scrollUntilBand } from './resolve.js';
+import { FIXED_CONTROL_WORDS } from './recover.js';
 import { isRecord } from './questions.js';
 import { named } from './identity.js';
 
@@ -183,6 +184,14 @@ const shown = (text: string): string =>
 const names = (target: Target, element: Element, kind: Step['kind']): boolean =>
   target.quoted !== undefined && named(element, target.quoted, kind, target.exact);
 
+// Under withheld text only QaReN's own control words leave, and never from a possible input or private value.
+const fixedWord = (element: Element, privacy: ObservedPrivacy): string =>
+  element.label !== undefined &&
+  FIXED_CONTROL_WORDS.has(element.label) &&
+  privacy.redactElementLabel(element) === element.label
+    ? element.label
+    : MASK;
+
 export function screenNow(
   screen: Screen,
   target: Target,
@@ -241,7 +250,9 @@ export function screenNow(
         : {}),
       ...(element.label
         ? {
-            label: withheld ? MASK : shown(privacy.redactElementLabel(element)),
+            label: withheld
+              ? fixedWord(element, privacy)
+              : shown(privacy.redactElementLabel(element)),
           }
         : {}),
       enabled: !semanticDisabled(element),

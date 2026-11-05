@@ -16,6 +16,7 @@ import {
   ancestorsOf,
   hostAssociationIdentity,
   join,
+  type Element,
   type NativeNode,
   type ReactHostEvidence,
   type Screen,
@@ -23,7 +24,7 @@ import {
 import { centreCovered, targetEvidence } from '../../../dist/qa/resolve.js';
 import { parsePlan, type Target } from '../../../dist/qa/plan.js';
 import { runPlan } from '../../../dist/qa/walker.js';
-import { scriptedJudge, walker } from './judgment-fixtures.ts';
+import { element, screen as fixtureScreen, scriptedJudge, walker } from './judgment-fixtures.ts';
 
 function screen(front: Screen['front'], extra: Partial<Screen> = {}): Screen {
   return { elements: [], visibleText: ['Home'], front, ...extra };
@@ -1135,4 +1136,194 @@ test('a press that opened the promo still withholds the decline', () => {
   ]);
   assert.equal(result, undefined);
   assert.equal(records[0].veto, 'previous-plan-press');
+});
+
+// A mid-walk opt-in: copy, one soft decline and one accepting control.
+const optIn = (decline = 'Skip', accept = 'Yes, notify me', ...extra: Element[]): Screen =>
+  fixtureScreen([
+    element('@title', 'Never miss an update', { kind: 'text', testID: 'optin-title' }),
+    element('@decline', decline),
+    element('@accept', accept),
+    ...extra,
+  ]);
+const afterPress: RecoveryTarget = { ...waitHome, afterPlannedPress: true };
+
+test('a permission opt-in after a planned press is dismissed with its soft decline', () => {
+  for (const [decline, accept] of [
+    ['Skip', 'Yes, notify me'],
+    ['Not now', 'Allow notifications'],
+    ["Don't allow", 'Allow'],
+    ['Don’t allow', 'Enable'],
+    ['Maybe later', 'Turn on'],
+  ]) {
+    const { result, records } = decide(optIn(decline, accept), [afterPress]);
+    assert.deepEqual(result, { label: decline, screenClass: 'permission-opt-in' }, decline);
+    assert.deepEqual(records, [], decline);
+  }
+});
+
+test('Close, consent accepts, a lone Skip or a third control are not a permission opt-in', () => {
+  for (const snapshot of [
+    optIn('Close'),
+    optIn('Skip', 'Agree'),
+    optIn('Skip', 'Continue'),
+    optIn('Skip', 'Accept'),
+    optIn('Skip', 'Notification settings'),
+    optIn('Not now', 'Yes, turn off notifications'),
+    optIn('Not now', 'Yes, do not notify me'),
+    // An accept whose visibility is not proven.
+    fixtureScreen([
+      element('@decline', 'Skip'),
+      element('@accept', 'Allow', {
+        semantic: { press: 'supported', fill: 'unsupported', visibility: 'offscreen' },
+      }),
+    ]),
+    fixtureScreen([element('@heading', 'Onboarding', { kind: 'text' }), element('@skip', 'Skip')]),
+    optIn('Skip', 'Yes, notify me', element('@more', 'Learn more')),
+    optIn('Skip', 'Yes, notify me', element('@email', 'Email', { kind: 'input' })),
+    optIn(
+      'Skip',
+      'Yes, notify me',
+      element('@hint', 'Hint', {
+        kind: 'text',
+        semantic: { press: 'unknown', fill: 'unsupported', visibility: 'visible' },
+      }),
+    ),
+    { ...optIn(), pressGapCount: 1 },
+    { ...optIn(), semanticUnassociatedReact: 1 },
+  ]) {
+    const { result, records } = decide(snapshot, [afterPress]);
+    assert.equal(result, undefined);
+    assert.equal(records[0].veto, 'previous-plan-press');
+  }
+});
+
+test('any plan target that could be on the opt-in keeps it the plan’s own', () => {
+  for (const [targets, veto] of [
+    [[{ ...afterPress, unquotedLater: true }], 'previous-plan-press'],
+    [
+      [afterPress, later('optin-title', 'wait', { laterBlock: true, exact: 'id' })],
+      'previous-plan-press',
+    ],
+    // A later step naming the decline owns it.
+    [[afterPress, later('Skip', 'press')], 'later-target'],
+  ] as Array<[RecoveryTarget[], string]>) {
+    const { result, records } = decide(optIn(), targets);
+    assert.equal(result, undefined, JSON.stringify(targets.at(-1)));
+    assert.equal(records[0]?.veto, veto, JSON.stringify(targets.at(-1)));
+  }
+  // Without a planned press, the opt-in still records its class.
+  assert.deepEqual(decide(optIn(), [waitHome]).result, {
+    label: 'Skip',
+    screenClass: 'permission-opt-in',
+  });
+});
+
+// A sheet whose modal container `sheet` holds the Close control `sheet-close`.
+function presented(
+  options: {
+    modalId?: string;
+    closeId?: string;
+    closeInside?: boolean;
+    extraModal?: string;
+  } = {},
+): Screen {
+  const { modalId = 'sheet', closeId = 'sheet-close', closeInside = true, extraModal } = options;
+  const node = (hostIndex: number, parentHostIndex: number | null, hostType: string) => ({
+    hostIndex,
+    parentHostIndex,
+    rootIndex: 0,
+    hostType,
+    text: { kind: 'none' as const },
+  });
+  const host = (testID?: string) => ({
+    ...(testID ? { testID } : {}),
+    role: null,
+    roleSource: 'none' as const,
+    capabilities: {},
+  });
+  return {
+    ...fixtureScreen([
+      element('@title', 'What is new', { kind: 'text', testID: 'sheet-title' }),
+      element('@close', 'Close', closeId ? { testID: closeId } : {}),
+    ]),
+    reactHostEvidence: {
+      complete: true,
+      hosts: [host(modalId), host(closeId), ...(extraModal ? [host(extraModal)] : [])],
+      typography: {
+        version: 1,
+        complete: true,
+        durationMs: 0,
+        coordinateSpace: 'window-points',
+        nodes: [
+          node(0, null, 'RCTModalHostView'),
+          node(1, closeInside ? 0 : null, 'View'),
+          ...(extraModal ? [node(2, null, 'RCTModalHostView')] : []),
+        ],
+      },
+    },
+  };
+}
+const key = (id: string) => JSON.stringify(['RCTModalHostView', id]);
+
+test('a new identified sheet over the planned screen is dismissed with its own Close', () => {
+  const { result, records } = decide(presented(), [{ ...afterPress, pressBaseline: [] }]);
+  assert.deepEqual(result, { label: 'Close', screenClass: 'presented-layer' });
+  assert.deepEqual(records, []);
+  // The press's own modal stays beneath the new sheet.
+  assert.deepEqual(
+    decide(presented({ extraModal: 'home' }), [{ ...afterPress, pressBaseline: [key('home')] }])
+      .result,
+    { label: 'Close', screenClass: 'presented-layer' },
+  );
+});
+
+test('incomplete, anonymous, duplicate or unrelated sheet evidence keeps the press protection', () => {
+  const cases: Array<[string, Screen, RecoveryTarget]> = [
+    ['no baseline', presented(), afterPress],
+    ['present at the press', presented(), { ...afterPress, pressBaseline: [key('sheet')] }],
+    ['anonymous baseline', presented(), { ...afterPress, pressBaseline: [undefined] }],
+    ['anonymous sheet', presented({ modalId: '' }), { ...afterPress, pressBaseline: [] }],
+    ['duplicate sheet', presented({ extraModal: 'sheet' }), { ...afterPress, pressBaseline: [] }],
+    ['Close without an id', presented({ closeId: '' }), { ...afterPress, pressBaseline: [] }],
+    ['Close outside', presented({ closeInside: false }), { ...afterPress, pressBaseline: [] }],
+    ['extra window', presented({ extraModal: 'other' }), { ...afterPress, pressBaseline: [] }],
+    ['replaced modal', presented(), { ...afterPress, pressBaseline: [key('home')] }],
+    [
+      'duplicate baseline',
+      presented({ extraModal: 'home' }),
+      { ...afterPress, pressBaseline: [key('home'), key('home')] },
+    ],
+    ['press gap', { ...presented(), pressGapCount: 1 }, { ...afterPress, pressBaseline: [] }],
+    [
+      'unassociated React',
+      { ...presented(), semanticUnassociatedReact: 1 },
+      { ...afterPress, pressBaseline: [] },
+    ],
+    ['unquoted later', presented(), { ...afterPress, pressBaseline: [], unquotedLater: true }],
+  ];
+  for (const [name, snapshot, target] of cases) {
+    const { result, records } = decide(snapshot, [target]);
+    assert.equal(result, undefined, name);
+    assert.equal(records[0]?.veto, 'previous-plan-press', name);
+  }
+  const incomplete = presented();
+  incomplete.reactHostEvidence!.typography!.complete = false;
+  assert.equal(decide(incomplete, [{ ...afterPress, pressBaseline: [] }]).result, undefined);
+  const laterOnSheet = decide(presented(), [
+    { ...afterPress, pressBaseline: [] },
+    later('sheet-title', 'wait', { laterBlock: true, exact: 'id' }),
+  ]);
+  assert.equal(laterOnSheet.result, undefined);
+  assert.equal(laterOnSheet.records[0]?.veto, 'previous-plan-press');
+});
+
+test('the press baseline is every modal container in a complete capture that passed it', () => {
+  assert.deepEqual(plannedSurface(presented()).baseline, [key('sheet')]);
+  assert.equal(
+    plannedSurface({ ...presented(), coverage: { native: 'incomplete', react: 'complete' } })
+      .baseline,
+    undefined,
+  );
+  assert.deepEqual(plannedSurface(presented({ modalId: '' })).baseline, [undefined]);
 });

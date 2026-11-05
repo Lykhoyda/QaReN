@@ -19,7 +19,14 @@ export interface RecoveryTarget extends Target {
   laterBlock?: boolean;
   // The current target follows a passed planned press, so the screen in front is the plan's own.
   afterPlannedPress?: boolean;
+  // Modal containers in the capture that passed that press; absent when it was incomplete.
+  pressBaseline?: ReadonlyArray<string | undefined>;
+  // A remaining step's target has no quoted text, so its presence on screen cannot be ruled out.
+  unquotedLater?: boolean;
 }
+
+// Why a screen after a planned press is independent of it, so its decline may be taken.
+export type InterruptionScreenClass = 'permission-opt-in' | 'presented-layer';
 
 export type LoginReplay =
   | 'pass'
@@ -36,7 +43,11 @@ export interface RecoverDeps {
 }
 
 export type Recovery =
-  | { handled: 'dialog' | 'dev-menu' | 'dev-fab' | 'login' | 'interruption'; label?: string }
+  | {
+      handled: 'dialog' | 'dev-menu' | 'dev-fab' | 'login' | 'interruption';
+      label?: string;
+      screenClass?: InterruptionScreenClass;
+    }
   | { fail: Reason }
   | { refuse: { code: string; message: string } };
 
@@ -66,7 +77,12 @@ export async function recover(
     if (candidate && 'refuse' in candidate) return candidate;
     if (candidate) {
       const dismissed = await deps.dismiss(candidate.label);
-      if (dismissed === 'pass') return { handled: 'interruption', label: candidate.label };
+      if (dismissed === 'pass')
+        return {
+          handled: 'interruption',
+          label: candidate.label,
+          ...(candidate.screenClass ? { screenClass: candidate.screenClass } : {}),
+        };
       return dismissed === 'fail' ? { fail: 'the app interruption did not disappear' } : dismissed;
     }
   }
@@ -86,8 +102,27 @@ const DECLINE_LABELS = new Set([
   'No thanks',
   'Dismiss',
   'Cancel',
+  "Don't allow",
+  'Don’t allow',
+  "Don't Allow",
+  'Don’t Allow',
 ]);
 const DECLINE_LOWER = new Set([...DECLINE_LABELS].map((label) => label.toLowerCase()));
+// Declines that leave a permission or opt-in unanswered rather than closing a screen.
+const SOFT_DECLINES = new Set(
+  [...DECLINE_LABELS].filter((label) => !['Close', 'Dismiss', 'Cancel'].includes(label)),
+);
+// QaReN's own permission-accept vocabulary, extended by evidence; affirmative only, so a
+// destination such as notification settings is never an accept.
+const PERMISSION_ACCEPT = /^(?:(?:allow|enable|turn on)\b|yes\b.*\bnotif|notify me\b)/iu;
+const NEGATION = /\b(?:not|no|off|stop|never|don['’]t|disable)\b/iu;
+// Control labels that are QaReN's fixed words, so naming one discloses nothing from the app.
+export const FIXED_CONTROL_WORDS: ReadonlySet<string> = new Set([
+  ...DECLINE_LABELS,
+  'Allow',
+  'Enable',
+  'Turn on',
+]);
 
 export const INTERRUPTION_VETOES = [
   'front',
@@ -123,7 +158,10 @@ export function dismissCandidate(
   screen: Screen,
   planTargets: readonly RecoveryTarget[],
   diagnostic?: (record: InterruptionDiagnostic) => void,
-): { label: string } | { refuse: { code: string; message: string } } | undefined {
+):
+  | { label: string; screenClass?: InterruptionScreenClass }
+  | { refuse: { code: string; message: string } }
+  | undefined {
   const sole = soleDecline(screen);
   const rejected = (
     veto: InterruptionDiagnostic['veto'],
@@ -199,8 +237,18 @@ export function dismissCandidate(
   const candidates = screen.elements.filter(
     (e) => e.label !== undefined && DECLINE_LABELS.has(e.label) && failedPredicate(e) === undefined,
   );
+  const only = candidates.length === 1 ? candidates[0] : undefined;
+  const screenClass: InterruptionScreenClass | undefined =
+    !only || !planTargetsAbsent(screen, planTargets)
+      ? undefined
+      : optInShaped(screen) === only
+        ? 'permission-opt-in'
+        : planTargets[0].afterPlannedPress &&
+            presentedLayer(screen, planTargets[0].pressBaseline, only)
+          ? 'presented-layer'
+          : undefined;
   // Only a dismissal that would otherwise happen is withheld, so an ordinary miss keeps its own cause.
-  if (candidates.length && planTargets[0].afterPlannedPress)
+  if (candidates.length && planTargets[0].afterPlannedPress && !screenClass)
     return rejected('previous-plan-press', 0);
   if (candidates.length > 1)
     return {
@@ -218,7 +266,7 @@ export function dismissCandidate(
           (target.exact !== 'id' && target.quoted?.toLowerCase() === label)),
     );
     if (plannedIndex !== -1) return rejected('later-target', plannedIndex, [], 'ownership');
-    return { label: candidates[0].label! };
+    return { label: candidates[0].label!, ...(screenClass ? { screenClass } : {}) };
   }
   return rejected(
     'no-candidate',
@@ -234,8 +282,8 @@ export function dismissCandidate(
 
 const CONTROL_KINDS = new Set<Element['kind']>(['button', 'input', 'switch', 'link', 'cell']);
 
-// Exactly one on-screen control, in any state, and it carries a decline label.
-export function soleDecline(screen: Screen): boolean {
+// On-screen controls in any state; undefined when press or fill evidence cannot prove the count.
+function provenControls(screen: Screen): Element[] | undefined {
   if (
     screen.pressEvidenceGap !== undefined ||
     (screen.pressGapCount ?? 0) > 0 ||
@@ -247,8 +295,8 @@ export function soleDecline(screen: Screen): boolean {
         (e.semantic?.press === 'unknown' || e.semantic?.fill === 'unknown'),
     )
   )
-    return false;
-  const controls = screen.elements.filter(
+    return undefined;
+  return screen.elements.filter(
     (e) =>
       !e.offscreen &&
       !e.semantic?.nativePresence?.structural &&
@@ -256,10 +304,78 @@ export function soleDecline(screen: Screen): boolean {
         e.semantic?.press === 'supported' ||
         e.semantic?.fill === 'supported'),
   );
+}
+
+// Exactly one on-screen control, in any state, and it carries a decline label.
+export function soleDecline(screen: Screen): boolean {
+  const controls = provenControls(screen);
   return (
-    controls.length === 1 &&
+    controls?.length === 1 &&
     controls[0].label !== undefined &&
     DECLINE_LABELS.has(controls[0].label)
+  );
+}
+
+// Exactly two proven controls and no input: a soft decline, returned, and a permission accept.
+export function optInShaped(screen: Screen): Element | undefined {
+  const controls = provenControls(screen);
+  if (controls?.length !== 2) return undefined;
+  const decline = controls.find((e) => e.label !== undefined && SOFT_DECLINES.has(e.label));
+  const accept = controls.find((e) => e !== decline);
+  return decline &&
+    accept &&
+    controls.every((e) => e.kind !== 'input' && e.semantic?.fill !== 'supported') &&
+    // The accept is evidence only when it is proven visible and pressable.
+    accept.semantic?.press === 'supported' &&
+    accept.semantic.visibility === 'visible' &&
+    PERMISSION_ACCEPT.test(accept.label ?? '') &&
+    !NEGATION.test(accept.label ?? '')
+    ? decline
+    : undefined;
+}
+
+// A classified screen is independent of the plan only if no plan target could be on it.
+function planTargetsAbsent(screen: Screen, planTargets: readonly RecoveryTarget[]): boolean {
+  return (
+    // Unresolved control evidence could hide a planned control.
+    provenControls(screen) !== undefined &&
+    !screen.semanticUnassociatedReact &&
+    !planTargets[0]?.unquotedLater &&
+    // Unlike the absence guard, no target is exempt: a later-block or decline-named one counts too.
+    !planTargets.some((target) =>
+      [target, target.declared].some((t) => t !== undefined && targetOnScreen(screen, t)),
+    )
+  );
+}
+
+// A new, identified modal container presented on top of the press's screen, holding the candidate.
+function presentedLayer(
+  screen: Screen,
+  baseline: ReadonlyArray<string | undefined> | undefined,
+  candidate: Element,
+): boolean {
+  const evidence = screen.reactHostEvidence;
+  const typography = evidence?.typography;
+  const hosts = modalHosts(screen);
+  if (!baseline || !hosts || !evidence || !typography || !candidate.testID) return false;
+  const ids = hosts.map((host) => host.key);
+  // Anonymous or duplicate identities never prove absence.
+  if (
+    [...baseline, ...ids].includes(undefined) ||
+    new Set(ids).size < ids.length ||
+    new Set(baseline).size < baseline.length
+  )
+    return false;
+  // A replaced modal may be the plan's next screen, so every press-time container must remain.
+  if (!baseline.every((key) => ids.includes(key))) return false;
+  const fresh = hosts.filter((host) => !baseline.includes(host.key));
+  const owners = evidence.hosts.flatMap((host, index) =>
+    host.testID === candidate.testID ? [index] : [],
+  );
+  return (
+    fresh.length === 1 &&
+    owners.length === 1 &&
+    (hostPath(typography, owners[0])?.slice(1).includes(fresh[0].index) ?? false)
   );
 }
 
@@ -269,9 +385,11 @@ const completeCapture = (screen: Screen): boolean =>
 
 export interface PlannedSurface {
   container?: string;
+  // Every modal container in the capture that passed the press, for later novelty checks.
+  baseline?: Array<string | undefined>;
 }
 
-function modalContainers(screen: Screen): Array<string | undefined> | undefined {
+function modalHosts(screen: Screen): Array<{ key?: string; index: number }> | undefined {
   const evidence = screen.reactHostEvidence;
   const typography = evidence?.typography;
   if (!evidence?.complete || !typography?.complete) return undefined;
@@ -279,24 +397,22 @@ function modalContainers(screen: Screen): Array<string | undefined> | undefined 
     if (!MODAL_HOST_TYPES.has(node.hostType ?? '')) return [];
     const host = evidence.hosts[index];
     const id = host?.testID || host?.nativeID;
-    return [id ? JSON.stringify([node.hostType, id]) : undefined];
+    return [{ ...(id ? { key: JSON.stringify([node.hostType, id]) } : {}), index }];
   });
 }
 
+const modalContainers = (screen: Screen): Array<string | undefined> | undefined =>
+  modalHosts(screen)?.map((host) => host.key);
+
 export function plannedSurface(after: Screen, before?: Screen): PlannedSurface {
-  if (
-    !before ||
-    before.front !== 'app' ||
-    after.front !== 'app' ||
-    !completeCapture(before) ||
-    !completeCapture(after)
-  )
-    return {};
-  const containers = modalContainers(after);
+  const baseline =
+    after.front === 'app' && completeCapture(after) ? modalContainers(after) : undefined;
+  const surface: PlannedSurface = baseline ? { baseline } : {};
+  if (!before || before.front !== 'app' || !completeCapture(before) || !baseline) return surface;
   const previous = modalContainers(before);
-  if (previous && containers?.length === 1 && containers[0] && !previous.includes(containers[0]))
-    return { container: containers[0] };
-  return {};
+  if (previous && baseline.length === 1 && baseline[0] && !previous.includes(baseline[0]))
+    return { ...surface, container: baseline[0] };
+  return surface;
 }
 
 export function surfaceGone(screen: Screen, surface: PlannedSurface): boolean {

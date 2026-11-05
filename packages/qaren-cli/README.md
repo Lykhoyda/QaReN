@@ -2109,8 +2109,10 @@ evidence and app-derived identities in failure reasons, including moved-target
 identities, become `[screen text withheld: the run holds secret runtime inputs]`.
 A run whose inputs are all TEST-PII keeps that text, redacted by the declared values only.
 Existing secure-screen replacements take precedence. Target-miss diagnostic
-candidate labels become `•••`; possible-input labels are also withheld without
-runtime inputs. These failure-text replacements reach all outputs described in
+candidate labels become `•••`, except a label that is exactly one of QaReN's own
+decline words or `Allow`, `Enable` or `Turn on`, is not on a possible input and
+matches no private value, so the blocking control is still named; possible-input
+labels are also withheld without runtime inputs. These failure-text replacements reach all outputs described in
 [App-derived failure text](#app-derived-failure-text). The step, its plan target,
 failure reason and geometry remain, subject to known-value masking. Runs without
 SECRET runtime inputs keep their screen-text context under the other masking rules below
@@ -3433,7 +3435,7 @@ vetoes dismissal, even when another matching ID is offscreen.
 Exactly one eligible control must be visible, hittable, enabled,
 non-secure and have proven press support, with one of these exact English labels:
 `Close`, `Not now`, `Not Now`, `Maybe later`, `Later`, `Skip`, `No thanks`,
-`Dismiss`, `Cancel`.
+`Dismiss`, `Cancel`, `Don't allow`, `Don't Allow` (either apostrophe).
 Zero candidates leave the original failure in place; several refuse
 `INTERRUPTION_AMBIGUOUS` without tapping. A candidate matching a later target's
 effective selector is left for that step; decline-label matching is case-insensitive.
@@ -3466,12 +3468,29 @@ scrolls and keyboard-only Back never establish departure. Only a complete native
 and React capture with complete host structure proving the identified container
 absent can expire protection. A planned Accept re-arms protection for its own
 destination, even when it closes an identified modal. If that destination has no
-identifiable container, protection remains on, including against later sheets.
+identifiable container, protection remains on, including against later sheets,
+except for the two independent screens below.
 When an identified destination is proven gone, later unsolicited sheets can be
 dismissed. Recovery's decline presses and login presses never arm it.
+While protected, a decline is still taken on a screen that is independent of the
+press, and only when no plan target could be on it: no remaining step in this or
+a later block has a target without quoted text, and no target of any step, in any
+block, is on screen, decline labels included, and press, fill and React association
+evidence is complete. A permission opt-in is one: exactly
+two controls with proven press and fill evidence and no input, one a decline
+other than `Close`, `Dismiss` or `Cancel`, the other an accept that starts with
+`Allow`, `Enable`, `Turn on` or `Notify me`, or starts with `Yes` and mentions
+notifications. A presented sheet is the other: complete React host evidence at
+the press and now, every identified modal container from the press still present,
+exactly one new identified one, no anonymous or duplicate container identity, and
+a decline whose test ID belongs to exactly one host inside that new container.
+The step's receipt then records `screenClass` (`permission-opt-in` or
+`presented-layer`) and the retry row names it. A sheet already up when the press
+read back is part of the press's screen and stays protected.
 Login replay also clears the withheld-dismissal diagnostic for the retried item.
 While protected, recovery still answers system
-prompts and dev menus and still replays login, but withholds every app decline,
+prompts and dev menus and still replays login, but withholds every other app decline
+than those on the independent screens above,
 including the recheck before dispatch, and an ambiguous decline set does not
 refuse. If login replay has not cleared the veto, a failing target-class step reports
 subreason `previous-plan-press`, and `failure.seen` includes
@@ -3479,8 +3498,12 @@ subreason `previous-plan-press`, and `failure.seen` includes
 was not found; automatic app dismissal was withheld`, and the walk's
 `next_action` is `inspect_last_observed_screen`, also on a repeat, with a
 `failure.recovery` of reason `previous_plan_press` whose five rungs are all
-inapplicable. A failed check after such a veto carries the same `failure.seen`
-note without a subreason. A sheet that appears while the planned surface is still on
+inapplicable. When the last screen's only control is a decline, or it has a
+permission opt-in's shape, the failure's suggested plan edit is to add a step
+that taps the decline, or an optional step for a screen that only sometimes
+appears, which plans do not support yet. A failed check after such a veto
+carries the same `failure.seen` note without a subreason. Apart from a presented
+sheet as defined above, a sheet that appears while the planned surface is still on
 screen, including one that opens together with it, is therefore not dismissed
 either; insert the plan's own step for it.
 
@@ -3513,7 +3536,9 @@ target index and count are also retained as an `interruption-rejected` event in
 step's ledger row carries an `interruption` receipt: `considered`, an `outcome`
 (`vetoed`, `dismissed`, `not-dispatched`, `ambiguous` or `did-not-disappear`), the
 veto, whether a later-target veto came from `presence` or `ownership`, the target's
-plan line and step kind, whether the decline was the screen's only control, and,
+plan line and step kind, whether the decline was the screen's only control, the
+`screenClass` a dismissed screen was recognised as (`permission-opt-in` or
+`presented-layer`), and,
 when a dispatched decline stayed, the vertical centre in points of the control
 the press aimed at; the report prints it as one line under the failure. A Jev veto
 or a guard change before dispatch records `not-dispatched`. A dismissal stays on

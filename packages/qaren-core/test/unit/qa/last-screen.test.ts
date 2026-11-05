@@ -250,6 +250,32 @@ test('a secret input value never appears in the screen, suggestion or ledger', a
   assert.ok(!JSON.stringify(ledger).includes(value));
 });
 
+test('withheld text names fixed control words, never from an input or a protected value', () => {
+  const observed = screen([
+    control('@skip', 'Skip'),
+    control('@accept', 'Yes, notify me'),
+    control('@allow', 'Allow'),
+    control('@field', 'Skip', { kind: 'input' }),
+  ]);
+  const labels = (protectedValue: string) => {
+    const privacy = new ObservedPrivacy();
+    privacy.classifyInputs([protectedValue]);
+    assert.ok(privacy.textWithheld(observed));
+    const now = screenNow(
+      observed,
+      { phrase: 'Ready', quoted: 'Ready' },
+      0,
+      false,
+      privacy,
+      'wait',
+    );
+    assert.equal(now.counts.controls, 4);
+    return now.controls.map((c) => c.label);
+  };
+  assert.deepEqual(labels('zq-s3cret-7781'), ['Skip', MASK, 'Allow', MASK]);
+  assert.deepEqual(labels('Skip'), [MASK, MASK, 'Allow', MASK]);
+});
+
 test('structurally protected code labels are masked in both failure projections', () => {
   const privacy = new ObservedPrivacy();
   privacy.didFill('ABCD');

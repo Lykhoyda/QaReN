@@ -3,7 +3,7 @@ import type { OverlayHitReceipt } from './live-hit.js';
 import type { PressEvidence } from './selection-press.js';
 import type { MediaLatch, WithholdCause } from './privacy.js';
 import type { Item } from './plan.js';
-import type { InterruptionDiagnostic } from './recover.js';
+import type { InterruptionDiagnostic, InterruptionScreenClass } from './recover.js';
 export type RowOutcome = 'pass' | 'fail' | 'retry';
 
 export interface Selector {
@@ -82,6 +82,8 @@ export interface InterruptionReceipt {
   targetLine?: number;
   targetKind?: Item['kind'];
   soleDecline?: boolean;
+  // The fixed class a dismissed screen was recognised as, when one applied.
+  screenClass?: InterruptionScreenClass;
   // Vertical centre, in points, of the decline control a dispatched press aimed at.
   pressCentreY?: number;
 }

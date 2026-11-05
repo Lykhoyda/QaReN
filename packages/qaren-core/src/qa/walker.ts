@@ -103,10 +103,12 @@ import {
 } from './questions.js';
 import {
   type InterruptionDiagnostic,
+  type InterruptionScreenClass,
   type LoginMarker,
   type PlannedSurface,
   type RecoveryTarget,
   dismissCandidate,
+  optInShaped,
   plannedSurface,
   recover,
   soleDecline,
@@ -473,7 +475,16 @@ export interface WalkOptions {
   login?: boolean;
   singleAttempt?: boolean;
   laterTargets?: readonly RecoveryTarget[];
+  // A later block has a step whose target has no quoted text.
+  laterUnquoted?: boolean;
 }
+
+// A target without quoted text cannot be proven absent from any screen.
+const unquotedTarget = (item: Item): boolean => {
+  if (item.kind === 'check') return !item.literal;
+  const target = stepTarget(item);
+  return target !== undefined && target.quoted === undefined;
+};
 
 const recoveryTarget = (item: Item): RecoveryTarget | undefined => {
   if (item.kind === 'check')
@@ -587,6 +598,12 @@ function movedGeometry(error: string | undefined) {
 
 const PREVIOUS_PLAN_PRESS =
   '; the previous planned press succeeded; the next target was not found; automatic app dismissal was withheld';
+
+const SCREEN_CLASS_NAMES: Record<InterruptionScreenClass | 'app', string> = {
+  app: 'an app screen',
+  'permission-opt-in': 'a permission opt-in',
+  'presented-layer': 'a sheet presented over the previous screen',
+};
 
 // Capture and process refusals, ambiguity and the replay-miss path are never recovered.
 const UNRECOVERABLE = new Set([
@@ -1561,6 +1578,11 @@ async function walkBlockScoped(
           subreason: 'previous-plan-press',
         };
       reason = [...segments(reason), PREVIOUS_PLAN_PRESS];
+      if (soleDecline(last) || optInShaped(last))
+        lastScreen = {
+          ...lastScreen,
+          suggestion: `a screen with a decline control followed the previous planned press; if it always appears, add a step before line ${item.line} that taps its decline; if it appears only sometimes, it needs an optional step, which plans do not support yet`,
+        };
     }
     const owned = interruptions.get(item.line);
     if (owned?.provenance === 'ownership' && owned.targetLine !== undefined)
@@ -2465,12 +2487,23 @@ async function walkBlockScoped(
     }
     const surface = sequence.plannedPress;
     if (surface && surfaceGone(fresh.screen, surface)) sequence.plannedPress = undefined;
+    const remainingItems = block.items.slice(block.items.indexOf(item) + 1);
     const planTargets = [
       {
         ...(recoveryTarget(item) ?? { phrase: '' }),
-        ...(sequence.plannedPress ? { afterPlannedPress: true } : {}),
+        ...(sequence.plannedPress
+          ? {
+              afterPlannedPress: true,
+              ...(sequence.plannedPress.baseline
+                ? { pressBaseline: sequence.plannedPress.baseline }
+                : {}),
+            }
+          : {}),
+        ...(opts.laterUnquoted || remainingItems.some(unquotedTarget)
+          ? { unquotedLater: true }
+          : {}),
       },
-      ...block.items.slice(block.items.indexOf(item) + 1).flatMap((remaining) => {
+      ...remainingItems.flatMap((remaining) => {
         const target = recoveryTarget(remaining);
         return target?.quoted !== undefined ? [target] : [];
       }),
@@ -2673,6 +2706,9 @@ async function walkBlockScoped(
         // A pre-dispatch recheck's veto, target line and screen facts explain why nothing was sent.
         ...(declined === 'not-dispatched' ? interruptions.get(item.line) : {}),
         outcome: declined,
+        ...(result && 'handled' in result && result.screenClass
+          ? { screenClass: result.screenClass }
+          : {}),
         ...(declined === 'did-not-disappear' && declineCentreY !== undefined
           ? { pressCentreY: declineCentreY }
           : {}),
@@ -2707,7 +2743,7 @@ async function walkBlockScoped(
         ...(interruptionShot ? { screenshot: interruptionShot } : {}),
         ...(proof ? { dialog: proof } : {}),
         reason: redact(
-          `${reason}; recovered: ${result.label ? `dismissed an app screen with ${result.label}` : result.handled}; retrying the step once`,
+          `${reason}; recovered: ${result.label ? `dismissed ${SCREEN_CLASS_NAMES[result.screenClass ?? 'app']} with ${result.label}` : result.handled}; retrying the step once`,
         ),
       });
       const budget = stepBudgets.get(operationFor(item.line))!;
@@ -4923,6 +4959,9 @@ export async function runPlan(
     };
     recordMediaLatch(privacy, sequence, deps, 0);
     const walk = async (block: Block, opts?: WalkOptions, operations?: Map<number, number>) => {
+      const laterBlocks = blocks.slice(
+        blocks.findIndex((planned) => planned.slug === block.slug) + 1,
+      );
       const outcome = await walkBlock(
         block,
         walking,
@@ -4932,14 +4971,13 @@ export async function runPlan(
         sequence,
         {
           ...opts,
-          laterTargets: blocks
-            .slice(blocks.findIndex((planned) => planned.slug === block.slug) + 1)
-            .flatMap((later) =>
-              later.items.flatMap((item) => {
-                const target = recoveryTarget(item);
-                return target?.quoted !== undefined ? [{ ...target, laterBlock: true }] : [];
-              }),
-            ),
+          laterTargets: laterBlocks.flatMap((later) =>
+            later.items.flatMap((item) => {
+              const target = recoveryTarget(item);
+              return target?.quoted !== undefined ? [{ ...target, laterBlock: true }] : [];
+            }),
+          ),
+          laterUnquoted: laterBlocks.some((later) => later.items.some(unquotedTarget)),
         },
         operations,
       );
