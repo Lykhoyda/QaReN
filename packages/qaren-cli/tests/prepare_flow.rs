@@ -7863,10 +7863,27 @@ fn ios_metro_preserves_effective_pnpm_options_or_inherited_fallback() {
             "--trace-warnings",
             false,
         ),
-        // Only a warning, or a raw value that is not a clean JSON string: no configured options.
-        (CmdOutput::success(WARNING), "--trace-warnings", true),
+        // pnpm 9+ with --json prints only the warning when unset.
+        (CmdOutput::success(WARNING), "--trace-warnings", false),
+        // pnpm 8 ignores --json and prints the raw value, with or without a warning first.
         (
             CmdOutput::success("--max-old-space-size=4096\n"),
+            "--max-old-space-size=4096",
+            false,
+        ),
+        (
+            CmdOutput::success(&format!("{WARNING}--max-old-space-size=4096\n")),
+            "--max-old-space-size=4096",
+            false,
+        ),
+        // Anything but one value left after pnpm's notices: no configured options, logged.
+        (
+            CmdOutput::success("unexpected output\n--max-old-space-size=4096\n"),
+            "--trace-warnings",
+            true,
+        ),
+        (
+            CmdOutput::success("\"--max-old-space-size=4096\n"),
             "--trace-warnings",
             true,
         ),

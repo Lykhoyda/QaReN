@@ -58,21 +58,38 @@ pub fn dev_server_node_options(base: Option<&str>, preload: Option<&Path>) -> St
     options.join(" ")
 }
 
-// Reads `pnpm config get node-options --json`: a JSON string, or nothing (`undefined`/`null` from older output)
-// when unset. pnpm prints any warning before the value, so only the last line counts, and a line that is not a
-// clean JSON string is unreadable (None) rather than ever becoming Node options.
+// Reads `pnpm config get node-options --json`. pnpm 9+ prints a JSON string (nothing when unset), after any
+// warning; pnpm 8 ignores --json and prints the raw value (`undefined` when unset). pnpm's warning and notice
+// lines never become Node options; anything left other than one value is unreadable (None).
 pub fn parse_pnpm_node_options(stdout: &str) -> Option<Option<String>> {
-    match stdout
+    let lines: Vec<&str> = stdout
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .last()
-    {
-        None | Some("undefined" | "null") => Some(None),
-        Some(line) => serde_json::from_str::<String>(line)
-            .ok()
-            .map(|value| Some(value).filter(|value| !value.trim().is_empty())),
+        .collect();
+    let clean = |value: String| Some(value).filter(|value| !value.trim().is_empty());
+    if let Some(json) = lines.last().filter(|line| line.starts_with('"')) {
+        return serde_json::from_str::<String>(json).ok().map(clean);
     }
+    let values: Vec<&str> = lines
+        .into_iter()
+        .filter(|line| !pnpm_notice(line))
+        .collect();
+    match values.as_slice() {
+        [] | ["undefined" | "null"] => Some(None),
+        [raw] => Some(clean(raw.to_string())),
+        _ => None,
+    }
+}
+
+// shortcut: recognises pnpm/npm WARN, notice and ERR_PNPM lines and the boxed update notice; another message
+// printed alone on stdout would be read as the raw pnpm 8 value, so extend this if one is seen.
+fn pnpm_notice(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    ["warn", "notice", "npm warn", "npm notice", "err_pnpm"]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+        || line.starts_with(['│', '╭', '╰', '─'])
 }
 
 // Expo serves `/` and `/status` itself; only Metro's own handler logs this path, arming the drained count before launch.
