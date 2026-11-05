@@ -1443,6 +1443,34 @@ mod tests {
     }
 
     #[test]
+    fn target_facts_survive_large_captures() {
+        for count in [65, 1000] {
+            let collapsed: Vec<_> = (0..count)
+                .map(|i| {
+                    serde_json::json!({
+                        "ref": format!("@e{}", i + 2), "kind": "button", "into": "@e1"
+                    })
+                })
+                .collect();
+            let exclusions: Vec<_> = (0..count).map(|i| serde_json::json!({
+                "ref": format!("@e{}", i + 2), "kind": "button", "reason": "clipped-by-viewport"
+            })).collect();
+            let row = serde_json::json!({
+                "block": "b", "line": 1, "attempt": 1, "kind": "step", "resolvedBy": "exact", "t": 0, "outcome": "pass",
+                "collapsed": collapsed, "candidateExclusions": exclusions
+            });
+            let parsed: crate::core::Row = serde_json::from_value(row.clone()).unwrap();
+            let saved = serde_json::to_value(&parsed).unwrap();
+            for key in ["collapsed", "candidateExclusions"] {
+                assert_eq!(saved[key], row[key], "{key}: {count} entries");
+            }
+            let line = row_line(&parsed);
+            assert_eq!(line.matches("; counted wrapper ").count(), count);
+            assert_eq!(line.matches("; set aside ").count(), count);
+        }
+    }
+
+    #[test]
     fn target_facts_survive_the_ledger_render_and_drop_untyped_data() {
         let frame = serde_json::json!({ "x": 0.0, "y": 116.0, "width": 402.0, "height": 758.0 });
         let mut row = serde_json::json!({

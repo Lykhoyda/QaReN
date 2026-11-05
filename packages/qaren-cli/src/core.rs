@@ -495,13 +495,13 @@ pub struct Row {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "bounded"
+        deserialize_with = "passive"
     )]
     pub collapsed: Option<Vec<CollapsedCandidate>>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "bounded"
+        deserialize_with = "passive"
     )]
     pub candidate_exclusions: Option<Vec<CandidateExclusion>>,
     #[serde(
@@ -689,14 +689,6 @@ fn decline_label<'de, D: serde::Deserializer<'de>>(
     // Any other word drops only the label, so the cover fact survives a vocabulary change in the core.
     let value = String::deserialize(deserializer)?;
     Ok(DECLINE_LABELS.contains(&value.as_str()).then_some(value))
-}
-
-fn bounded<'de, D, T>(deserializer: D) -> Result<Option<Vec<T>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::de::DeserializeOwned,
-{
-    Ok(passive(deserializer)?.filter(|items: &Vec<T>| !items.is_empty() && items.len() <= 64))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

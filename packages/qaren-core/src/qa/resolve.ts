@@ -99,7 +99,13 @@ export type Resolution =
       collapsed?: CollapsedCandidate[];
       candidateExclusions?: CandidateExclusion[];
     }
-  | { scroll: 'down' | 'up'; element?: Element; origin?: 'named-offscreen' }
+  | {
+      scroll: 'down' | 'up';
+      element?: Element;
+      origin?: 'named-offscreen';
+      collapsed?: CollapsedCandidate[];
+      candidateExclusions?: CandidateExclusion[];
+    }
   | {
       refuse: string;
       reason: string;
@@ -208,6 +214,12 @@ function wraps(
 
 const EXCLUDING = new Set<string>(['offscreen-by-frame', 'clipped-by-viewport', 'under-keyboard']);
 
+export function nestedCandidate(element: Element, candidates: readonly Element[]): boolean {
+  return candidates.some(
+    (other) => ancestorsOf(element).includes(other) || ancestorsOf(other).includes(element),
+  );
+}
+
 export function excludedCandidate(
   element: Element,
   reason: CandidateExclusion['reason'],
@@ -253,8 +265,12 @@ export function contend(
   const result = prepareTarget(step, { ...screen, elements: [...left] });
   // A quoted target never asks the model; a phrase step never reaches here.
   if ('question' in result)
-    return { refuse: 'NO_TARGET', reason: 'only a quoted target can be narrowed to one candidate' };
-  return 'scroll' in result ? result : { ...result, ...recorded };
+    return {
+      refuse: 'NO_TARGET',
+      reason: 'only a quoted target can be narrowed to one candidate',
+      ...recorded,
+    };
+  return { ...result, ...recorded };
 }
 
 // Press only: collapses wrappers from the innermost outward; never resolves to a wrapper.
@@ -349,9 +365,9 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
         ? identities.flatMap(({ element }) => {
             const reach = reachOf(element);
             return EXCLUDING.has(reach) &&
-              !identities.some(
-                ({ element: other }) =>
-                  ancestorsOf(element).includes(other) || ancestorsOf(other).includes(element),
+              !nestedCandidate(
+                element,
+                identities.map(({ element }) => element),
               )
               ? [excludedCandidate(element, reach as CandidateExclusion['reason'])]
               : [];
@@ -361,6 +377,10 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
       identities = identities.filter(
         ({ element }) => !exclusions.some((x) => x.ref === element.ref),
       );
+    const recorded = {
+      ...(collapsed.length ? { collapsed } : {}),
+      ...(exclusions.length ? { candidateExclusions: exclusions } : {}),
+    };
     if (acting && (identities.length > 1 || !identities.length) && named.length > 1)
       return contend(
         step,
@@ -373,6 +393,7 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
       return {
         refuse: 'TARGET_AMBIGUOUS',
         reason: `multiple elements labelled or identified "${target.quoted}" match the target; candidates: ${describeCandidates(identities.map(({ element }) => element))}`,
+        ...recorded,
       };
     const only = identities.length === 1 ? identities[0].element : undefined;
     // A strict fill acts only on a native input; React-only inputs still count toward ambiguity.
@@ -380,6 +401,7 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
       return {
         refuse: 'TARGET_NOT_FOUND',
         reason: `no eligible element labelled or identified "${target.quoted}" is on screen`,
+        ...recorded,
       };
     const eligible =
       only &&
@@ -392,21 +414,16 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
         return {
           refuse: 'REPLAY_SELECTOR',
           reason: `${count} eligible elements match the stored ${target.exact === 'id' ? 'testID' : 'label'} "${target.quoted}"`,
+          ...recorded,
         };
       return {
         refuse: 'TARGET_NOT_FOUND',
         reason: `no eligible element labelled or identified "${target.quoted}" is on screen`,
         ...(only ? {} : { missing: true as const }),
+        ...recorded,
       };
     }
-    return only.offscreen
-      ? scrollTo(only)
-      : {
-          ref: only.ref,
-          element: only,
-          ...(collapsed.length ? { collapsed } : {}),
-          ...(exclusions.length ? { candidateExclusions: exclusions } : {}),
-        };
+    return { ...(only.offscreen ? scrollTo(only) : { ref: only.ref, element: only }), ...recorded };
   }
   const candidates = projected.elements;
   if (!candidates.length)

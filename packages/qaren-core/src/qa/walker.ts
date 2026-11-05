@@ -83,6 +83,7 @@ import {
   visibleSelector,
   contend,
   excludedCandidate,
+  nestedCandidate,
   probeIdentifiable,
   MAX_HIT_PROBES,
   type CandidateExclusion,
@@ -1782,6 +1783,7 @@ async function walkBlockScoped(
     for (const element of contenders.slice(0, MAX_HIT_PROBES)) {
       // A read that would outlive the observation never runs.
       if (deps.now() >= observationDeadline(observation.timing)) break;
+      if (nestedCandidate(element, contenders)) continue;
       if ((await readHit(item, observation, element)) === 'not-hittable')
         exclusions.push(excludedCandidate(element, 'not-hittable'));
     }

@@ -378,3 +378,36 @@ test('the walk presses only the inner control and records the collapse on the st
   assert.deepEqual(row?.collapsed, [{ ref: '@e2', kind: 'button', frame: OUTER, into: '@e3' }]);
   assert.deepEqual(w.rows.at(-1)?.collapsed, row?.collapsed, 'the streamed row carries it too');
 });
+
+for (const rejected of ['@e2', '@e3']) {
+  test(`a live rejection of nested candidate ${rejected} cannot select its counterpart`, async () => {
+    const screen = await capture([
+      { ...recorded()[0], rect: { x: 217, y: 700, width: 185, height: 180 } },
+      { ...recorded()[1], rect: { x: 341, y: 820, width: 40, height: 40 } },
+      {
+        type: 'Button',
+        label: 'Close',
+        id: 'footer-close',
+        rect: { x: 20, y: 500, width: 100, height: 40 },
+        host: { press: true },
+      },
+    ]);
+    screen.nativeGeneration = 7;
+    const w = walker(
+      [],
+      scriptedJudge(() => assert.fail('exact targets are model-free')),
+    );
+    w.deps.captureScreen = async () => screen;
+    w.deps.platform = 'ios';
+    w.deps.hitProbe = async (ref) =>
+      ref === rejected || ref === '@e4' ? 'not-hittable' : 'hittable';
+    const result = await runPlan(parsePlan('1. Tap "Close"').blocks!, w.deps);
+    assert.deepEqual(w.actions, []);
+    const row = ('steps' in result ? result.steps : []).find((r) => r.line === 1);
+    assert.match(String(row?.reason), /TARGET_AMBIGUOUS/);
+    assert.deepEqual(
+      row?.candidateExclusions?.map(({ ref }) => ref),
+      ['@e4'],
+    );
+  });
+}

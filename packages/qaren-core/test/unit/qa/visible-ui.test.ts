@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { join, reachOf } from '../../../dist/qa/screen.js';
 import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
-import { prepareTarget } from '../../../dist/qa/resolve.js';
+import { contend, prepareTarget } from '../../../dist/qa/resolve.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import type { HitProbeResult } from '../../../dist/qa/live-hit.js';
-import { scriptedJudge, walker } from './judgment-fixtures.ts';
+import { element, scriptedJudge, walker } from './judgment-fixtures.ts';
 
 type Rect = { x: number; y: number; width: number; height: number };
 const SCREEN: Rect = { x: 0, y: 0, width: 402, height: 874 };
@@ -257,4 +257,52 @@ test('a probe that would outlive the observation does not run', async () => {
   assert.deepEqual(f.probes, ['@e3'], JSON.stringify(row));
   assert.deepEqual(f.actions, []);
   assert.equal(row.candidateExclusions, undefined);
+});
+
+for (const scenario of ['disabled', 'stored-label', 'wrong-kind', 'react-only'] as const) {
+  test(`frame exclusion facts survive a ${scenario} survivor refusal`, () => {
+    const s = screen([
+      { rect: VISIBLE, identifier: 'Close' },
+      { rect: { ...VISIBLE, y: 760 }, identifier: 'Close' },
+    ]);
+    const survivor = s.elements[3];
+    if (scenario === 'disabled' || scenario === 'stored-label') survivor.disabled = true;
+    if (scenario === 'react-only') {
+      survivor.ref = 'react:input';
+      survivor.kind = 'input';
+    }
+    const step =
+      scenario === 'wrong-kind' || scenario === 'react-only'
+        ? { kind: 'fill' as const, target: tap.target, text: 'x' }
+        : scenario === 'stored-label'
+          ? { ...tap, target: { ...tap.target, exact: 'text' as const } }
+          : tap;
+    const result = prepareTarget(step, s);
+    assert.ok('refuse' in result, JSON.stringify(result));
+    assert.equal(
+      result.refuse,
+      scenario === 'stored-label' ? 'REPLAY_SELECTOR' : 'TARGET_NOT_FOUND',
+    );
+    assert.deepEqual(result.candidateExclusions, [
+      { ref: '@e4', kind: 'button', frame: { ...VISIBLE, y: 760 }, reason: 'clipped-by-viewport' },
+    ]);
+  });
+}
+
+test('scroll resolutions retain frame and live exclusion facts', () => {
+  const s = screen([{ rect: { ...VISIBLE, y: 760 } }]);
+  const survivor = element('@e4', 'Close', { offscreen: true, hittable: false });
+  s.elements.push(survivor);
+  const result = prepareTarget(tap, s);
+  assert.ok('scroll' in result, JSON.stringify(result));
+  assert.equal(result.element, survivor);
+  assert.deepEqual(result.candidateExclusions, [
+    { ref: '@e3', kind: 'button', frame: { ...VISIBLE, y: 760 }, reason: 'clipped-by-viewport' },
+  ]);
+  const facts = [{ ref: '@e3', kind: 'button' as const, reason: 'not-hittable' as const }];
+  const collapsed = [{ ref: '@e5', kind: 'button' as const, into: '@e4' }];
+  const live = contend(tap, s, [survivor], facts, collapsed);
+  assert.ok('scroll' in live, JSON.stringify(live));
+  assert.deepEqual(live.candidateExclusions, facts);
+  assert.deepEqual(live.collapsed, collapsed);
 });
