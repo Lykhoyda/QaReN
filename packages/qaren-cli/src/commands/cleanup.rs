@@ -2514,6 +2514,7 @@ pub(crate) fn cleanup_borrowed_ios(
     ) {
         ios::SelectedSimShutdown::ShutDown => Outcome::Removed,
         ios::SelectedSimShutdown::AlreadyShutdown => Outcome::Absent,
+        ios::SelectedSimShutdown::InventoryUnavailable(unavailable) => Outcome::Unresolved(unavailable.detail()),
         ios::SelectedSimShutdown::InventoryInvalid => Outcome::Unresolved(
             "simulator inventory did not prove the exact selected simulator before shutdown; simulator retained"
                 .into(),

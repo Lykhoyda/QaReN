@@ -958,7 +958,8 @@ fn selected_ios_simulator_requires_unique_canonical_available_stable_metadata() 
 #[test]
 fn shutdown_selected_sim_proves_target_inventory_and_exact_shutdown_readback() {
     use ios::SelectedSimShutdown::{
-        AlreadyShutdown, InventoryInvalid, ReadbackInvalid, ShutDown, ShutdownFailed,
+        AlreadyShutdown, InventoryInvalid, InventoryUnavailable, ReadbackInvalid, ShutDown,
+        ShutdownFailed,
     };
     let udid = "1DC408C4-51DA-4C4F-ACA1-39881C916FDD";
     let other = "76709EFC-0104-4A66-8908-F4F85A76F025";
@@ -993,10 +994,10 @@ fn shutdown_selected_sim_proves_target_inventory_and_exact_shutdown_readback() {
         "simctl list devices -j",
         CmdOutput::success(&inventory("Shutdown")),
     );
-    assert_eq!(
+    assert!(matches!(
         ios::shutdown_selected_sim(&mut already, udid, device_type, runtime),
         AlreadyShutdown
-    );
+    ));
     assert_eq!(already.calls.len(), 1);
     assert_eq!(already.remaining(), 0);
 
@@ -1010,32 +1011,45 @@ fn shutdown_selected_sim_proves_target_inventory_and_exact_shutdown_readback() {
         "simctl list devices -j",
         CmdOutput::success(&inventory("Shutdown")),
     );
-    assert_eq!(
+    assert!(matches!(
         ios::shutdown_selected_sim(&mut stopped, udid, device_type, runtime),
         ShutDown
-    );
+    ));
     assert_eq!(stopped.calls[1].args, ["simctl", "shutdown", udid]);
     assert_eq!(stopped.remaining(), 0);
 
-    for bad_pre in [
-        CmdOutput::failed(1, "simctl unavailable"),
-        CmdOutput {
-            stderr: "warning".into(),
-            ..CmdOutput::success(&inventory("Booted"))
-        },
-        CmdOutput::success("{}"),
-        CmdOutput::success(&inventory("Booted").replace("iPhone-17", "iPhone-16")),
-        CmdOutput::success(&inventory("Booted").replace("iOS-26-5", "iOS-26-4")),
-        CmdOutput::success(&inventory("Booting")),
-        CmdOutput::success(&inventory("Shutting Down")),
+    for (bad_pre, attempts) in [
+        (CmdOutput::failed(1, "simctl unavailable"), 3),
+        (
+            CmdOutput {
+                stderr: "warning".into(),
+                ..CmdOutput::success(&inventory("Booted"))
+            },
+            3,
+        ),
+        (CmdOutput::success("{}"), 3),
+        (
+            CmdOutput::success(&inventory("Booted").replace("iPhone-17", "iPhone-16")),
+            1,
+        ),
+        (
+            CmdOutput::success(&inventory("Booted").replace("iOS-26-5", "iOS-26-4")),
+            1,
+        ),
+        (CmdOutput::success(&inventory("Booting")), 1),
+        (CmdOutput::success(&inventory("Shutting Down")), 1),
     ] {
         let mut mock = qaren::exec::MockRunner::new();
-        mock.expect_run("simctl list devices -j", bad_pre);
-        assert_eq!(
-            ios::shutdown_selected_sim(&mut mock, udid, device_type, runtime),
-            InventoryInvalid
-        );
-        assert_eq!(mock.calls.len(), 1);
+        for _ in 0..attempts {
+            mock.expect_run("simctl list devices -j", bad_pre.clone());
+        }
+        let outcome = ios::shutdown_selected_sim(&mut mock, udid, device_type, runtime);
+        if attempts == 1 {
+            assert!(matches!(outcome, InventoryInvalid));
+        } else {
+            assert!(matches!(outcome, InventoryUnavailable(_)));
+        }
+        assert_eq!(mock.calls.len(), attempts);
         assert_eq!(mock.remaining(), 0);
     }
 
@@ -1052,23 +1066,32 @@ fn shutdown_selected_sim_proves_target_inventory_and_exact_shutdown_readback() {
             CmdOutput::success(&inventory("Booted")),
         );
         mock.expect_run(&format!("simctl shutdown {udid}"), bad_shutdown);
-        assert_eq!(
+        assert!(matches!(
             ios::shutdown_selected_sim(&mut mock, udid, device_type, runtime),
             ShutdownFailed
-        );
+        ));
         assert_eq!(mock.calls.len(), 2);
         assert_eq!(mock.remaining(), 0);
     }
 
-    for bad_after in [
-        CmdOutput::failed(1, "readback failed"),
-        CmdOutput {
-            stderr: "incomplete".into(),
-            ..CmdOutput::success(&inventory("Shutdown"))
-        },
-        CmdOutput::success(&inventory("Booted")),
-        CmdOutput::success(&inventory("Shutdown").replace("iPhone-17", "iPhone-16")),
-        CmdOutput::success(&inventory("Shutdown").replace("iOS-26-5", "iOS-26-4")),
+    for (bad_after, attempts) in [
+        (CmdOutput::failed(1, "readback failed"), 3),
+        (
+            CmdOutput {
+                stderr: "incomplete".into(),
+                ..CmdOutput::success(&inventory("Shutdown"))
+            },
+            3,
+        ),
+        (CmdOutput::success(&inventory("Booted")), 1),
+        (
+            CmdOutput::success(&inventory("Shutdown").replace("iPhone-17", "iPhone-16")),
+            1,
+        ),
+        (
+            CmdOutput::success(&inventory("Shutdown").replace("iOS-26-5", "iOS-26-4")),
+            1,
+        ),
     ] {
         let mut mock = qaren::exec::MockRunner::new();
         mock.expect_run(
@@ -1076,12 +1099,14 @@ fn shutdown_selected_sim_proves_target_inventory_and_exact_shutdown_readback() {
             CmdOutput::success(&inventory("Booted")),
         );
         mock.expect_run(&format!("simctl shutdown {udid}"), CmdOutput::success(""));
-        mock.expect_run("simctl list devices -j", bad_after);
-        assert_eq!(
+        for _ in 0..attempts {
+            mock.expect_run("simctl list devices -j", bad_after.clone());
+        }
+        assert!(matches!(
             ios::shutdown_selected_sim(&mut mock, udid, device_type, runtime),
             ReadbackInvalid
-        );
-        assert_eq!(mock.calls.len(), 3);
+        ));
+        assert_eq!(mock.calls.len(), 2 + attempts);
         assert_eq!(mock.remaining(), 0);
     }
 }

@@ -6258,7 +6258,7 @@ fn boot_device_readback_must_prove_exact_booted_target_and_unchanged_runtime_and
     let ready = available_inventory("Booted");
     for fresh in [false, true] {
         for initial in ["Shutdown", "Booted"] {
-            for output in [
+            for (index, output) in [
                 CmdOutput::failed(1, "inventory failed"),
                 CmdOutput::success("not json"),
                 CmdOutput::success(&available_inventory("Shutdown")),
@@ -6276,9 +6276,13 @@ fn boot_device_readback_must_prove_exact_booted_target_and_unchanged_runtime_and
                     stderr: "incomplete".into(),
                     ..CmdOutput::success(&ready)
                 },
-            ] {
+            ]
+            .into_iter()
+            .enumerate()
+            {
                 let (repo, app) = app_repo();
                 let mut mock = MockRunner::new();
+                mock.advance_on = Some(("simctl list devices -j".into(), 1200));
                 script_preflight_inventory(
                     &mut mock,
                     &repo,
@@ -6294,7 +6298,14 @@ fn boot_device_readback_must_prove_exact_booted_target_and_unchanged_runtime_and
                         CmdOutput::success(""),
                     );
                 }
-                mock.expect_run("simctl list devices -j", output);
+                let attempts = if matches!(index, 0 | 1 | 9 | 10) {
+                    3
+                } else {
+                    1
+                };
+                for _ in 0..attempts {
+                    mock.expect_run("simctl list devices -j", output.clone());
+                }
                 let mut runner = LeaseObservedRunner {
                     mock,
                     repo: repo.clone(),
@@ -6308,11 +6319,19 @@ fn boot_device_readback_must_prove_exact_booted_target_and_unchanged_runtime_and
                 req.fresh_install = fresh;
                 let receipt = run(&mut runner, &req);
                 assert_eq!(receipt.result, ReceiptResult::Failed);
-                assert_eq!(
-                    receipt.failure.unwrap().code,
-                    FailureCode::SimulatorBootFailed
-                );
-                let expected = if initial == "Shutdown" {
+                let failure = receipt.failure.as_ref().unwrap();
+                assert_eq!(failure.code, FailureCode::SimulatorBootFailed);
+                if attempts == 3 {
+                    assert!(failure.detail.contains("3 attempts"));
+                }
+                if index == 2 {
+                    assert!(failure
+                        .detail
+                        .contains("state seen: Shutdown; read latency 1.2 s"));
+                }
+                assert!(!failure.detail.contains("inventory failed"));
+                assert!(!failure.detail.contains("incomplete"));
+                let mut expected = if initial == "Shutdown" {
                     vec![
                         "fresh-install-admission",
                         "pnpm-install",
@@ -6330,6 +6349,7 @@ fn boot_device_readback_must_prove_exact_booted_target_and_unchanged_runtime_and
                         "simctl-list",
                     ]
                 };
+                expected.extend(std::iter::repeat_n("simctl-list", attempts - 1));
                 assert_eq!(runner.observed, expected);
                 assert_eq!(runner.mock.remaining(), 0);
                 assert_eq!(receipt.cleanup["device_lease"], "removed");
@@ -6537,6 +6557,13 @@ fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease()
             }
             mock.expect_run(
                 "simctl list devices -j",
+                CmdOutput {
+                    timed_out: true,
+                    ..Default::default()
+                },
+            );
+            mock.expect_run(
+                "simctl list devices -j",
                 CmdOutput::success(&available_inventory("Booted")),
             );
             if fresh {
@@ -6571,6 +6598,7 @@ fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease()
                 "{initial} fresh={fresh}: {:?}",
                 receipt.failure
             );
+            assert_eq!(receipt.outcomes["inventory_attempts"], "2");
             assert_eq!(runner.mock.remaining(), 0);
             let lane = receipt.lane.as_ref().expect("an owned lane is pinned");
             assert_eq!(lane.device_id, UDID);
@@ -6597,7 +6625,7 @@ fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease()
             if initial == "Shutdown" {
                 phases.push("simctl-bootstatus");
             }
-            phases.push("simctl-list");
+            phases.extend(["simctl-list", "simctl-list"]);
             if fresh {
                 phases.extend(["simctl-listapps", "simctl-uninstall", "simctl-listapps"]);
             }
@@ -6617,7 +6645,7 @@ fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease()
                     );
                 }
                 if spec.label == "simctl-list" {
-                    assert_eq!(spec.timeout_seconds, 30);
+                    assert!([10, 30].contains(&spec.timeout_seconds));
                 }
                 if spec.label == "expo-run-ios" {
                     assert!(spec
@@ -6903,6 +6931,7 @@ fn restart_device_shutdown_or_readback_failure_stops_before_boot_install_or_walk
         "pre_list_failed",
         "shutdown_failed",
         "shutdown_timeout",
+        "readback_timeouts",
         "readback_still_booted",
         "readback_changed_runtime",
     ] {
@@ -6919,7 +6948,15 @@ fn restart_device_shutdown_or_readback_failure_stops_before_boot_install_or_walk
         script_admission(&mut mock);
         match fault {
             "pre_list_failed" => {
-                mock.expect_run("simctl list devices -j", CmdOutput::failed(1, "list error"));
+                for _ in 0..3 {
+                    mock.expect_run(
+                        "simctl list devices -j",
+                        CmdOutput {
+                            timed_out: true,
+                            ..Default::default()
+                        },
+                    );
+                }
             }
             "shutdown_failed" => {
                 mock.expect_run(
@@ -6943,6 +6980,22 @@ fn restart_device_shutdown_or_readback_failure_stops_before_boot_install_or_walk
                         ..CmdOutput::success("")
                     },
                 );
+            }
+            "readback_timeouts" => {
+                mock.expect_run(
+                    "simctl list devices -j",
+                    CmdOutput::success(&available_inventory("Booted")),
+                );
+                mock.expect_run(&format!("simctl shutdown {UDID}"), CmdOutput::success(""));
+                for _ in 0..3 {
+                    mock.expect_run(
+                        "simctl list devices -j",
+                        CmdOutput {
+                            timed_out: true,
+                            ..Default::default()
+                        },
+                    );
+                }
             }
             "readback_still_booted" => {
                 mock.expect_run(
@@ -6981,10 +7034,22 @@ fn restart_device_shutdown_or_readback_failure_stops_before_boot_install_or_walk
         req.device = Some(UDID.into());
         req.restart_device = true;
         let receipt = run(&mut runner, &req);
-        assert_eq!(receipt.result, ReceiptResult::Failed, "{fault}");
+        assert_eq!(
+            receipt.result,
+            if fault == "pre_list_failed" {
+                ReceiptResult::Refused
+            } else {
+                ReceiptResult::Failed
+            },
+            "{fault}"
+        );
         assert_eq!(
             receipt.failure.unwrap().code,
-            FailureCode::SimulatorBootFailed,
+            if fault == "pre_list_failed" {
+                FailureCode::SimulatorInventoryUnavailable
+            } else {
+                FailureCode::SimulatorBootFailed
+            },
             "{fault}"
         );
         assert!(!runner.observed.iter().any(|l| matches!(

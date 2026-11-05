@@ -5624,7 +5624,12 @@ fn borrowed_booted_simulator_with_boot_permission_only_reproves_it_booted() {
 #[test]
 fn borrowed_selection_refuses_any_target_it_cannot_prove_exactly() {
     let booted = borrowed_inventory("Booted");
-    for output in [
+    let mut duplicate: serde_json::Value = serde_json::from_str(&booted).unwrap();
+    let devices = duplicate["devices"]["com.apple.CoreSimulator.SimRuntime.iOS-26-4"]
+        .as_array_mut()
+        .unwrap();
+    devices.push(devices[0].clone());
+    for (index, output) in [
         CmdOutput::failed(1, "unavailable"),
         CmdOutput::success("not json"),
         CmdOutput::success("{}"),
@@ -5634,20 +5639,24 @@ fn borrowed_selection_refuses_any_target_it_cannot_prove_exactly() {
         CmdOutput::success(&booted.replace("iOS-26-4", "iOS-26-5")),
         CmdOutput::success(&booted.replace("iPhone-17-Pro", "iPhone-17")),
         CmdOutput::success(&booted.replace("\"isAvailable\":true", "\"isAvailable\":false")),
-        CmdOutput::success(
-            &booted.replace("]}}", &format!(",{}]}}}}", &booted[52..booted.len() - 3])),
-        ),
+        CmdOutput::success(&duplicate.to_string()),
         CmdOutput {
             stderr: "incomplete".into(),
             ..CmdOutput::success(&booted)
         },
         CmdOutput::success(&format!("{booted}{}", " ".repeat(1024 * 1024))),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let repo = common::temp_repo();
         let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
         let mut mock = MockRunner::new();
         script_validation(&mut mock, &repo, IOS_TOOLS);
-        mock.expect_run("simctl list devices -j", output.clone());
+        let unavailable = index < 3 || index >= 10;
+        for _ in 0..if unavailable { 3 } else { 1 } {
+            mock.expect_run("simctl list devices -j", output.clone());
+        }
 
         let receipt = prepare(&mut mock, &borrowed_args(&scenario_path, true));
 
@@ -5659,7 +5668,11 @@ fn borrowed_selection_refuses_any_target_it_cannot_prove_exactly() {
         );
         assert_eq!(
             receipt.failure.unwrap().code,
-            FailureCode::DeviceUnavailable
+            if unavailable {
+                FailureCode::SimulatorInventoryUnavailable
+            } else {
+                FailureCode::DeviceUnavailable
+            }
         );
         assert_eq!(mock.remaining(), 0);
         assert_no_borrowed_effects(&mock, &repo);

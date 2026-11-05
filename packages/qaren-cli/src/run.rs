@@ -2152,17 +2152,34 @@ fn boot_selected_device(
             "selected simulator lacks recorded runtime and device type",
         ));
     };
+    let deadline = ctx.runner.monotonic_ms().saturating_add(
+        ctx.record
+            .scenario
+            .deadlines
+            .device_boot_seconds
+            .saturating_mul(1000),
+    );
     let mut needs_boot = device.needs_boot;
     if restart && !device.needs_boot {
-        let shutdown = ios::shutdown_selected_sim(ctx.runner, &device.id, device_type, runtime);
+        let shutdown = ios::shutdown_selected_sim_until(
+            ctx.runner,
+            &device.id,
+            device_type,
+            runtime,
+            deadline,
+            &mut |runner| ensure_running(runner, "boot_device"),
+        );
         *restart_shutdown_unresolved = matches!(
-            shutdown,
+            &shutdown,
             ios::SelectedSimShutdown::ShutdownFailed | ios::SelectedSimShutdown::ReadbackInvalid
         );
         ensure_running(ctx.runner, "boot_device")?;
         match shutdown {
             ios::SelectedSimShutdown::ShutDown | ios::SelectedSimShutdown::AlreadyShutdown => {
                 needs_boot = true;
+            }
+            ios::SelectedSimShutdown::InventoryUnavailable(unavailable) => {
+                return Err(unavailable.into_failure("boot_device", FailureCode::SimulatorInventoryUnavailable));
             }
             ios::SelectedSimShutdown::InventoryInvalid => {
                 return Err(failed(
@@ -2181,7 +2198,7 @@ fn boot_selected_device(
             }
         }
     }
-    prepare::boot_borrowed_ios(ctx, needs_boot)
+    prepare::boot_borrowed_ios_until(ctx, needs_boot, deadline)
 }
 
 // A driver is recorded only as the leader of its own group, running the runner test for this simulator.

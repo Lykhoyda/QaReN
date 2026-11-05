@@ -48,32 +48,53 @@ fn simulator_service(
     runner: &mut dyn Runner,
     processes: &CmdOutput,
 ) -> (Check, Option<Vec<String>>) {
-    let mut spec = ios::list_devices_spec();
-    spec.timeout_seconds = 5;
-    spec.cwd = Some(Path::new("/").to_path_buf());
-    spec = spec.env("LC_ALL", "C");
-    let output = runner.run(&spec);
-    if output.ok() {
-        if let Some(devices) = simulator_devices(&output.stdout) {
-            return (
-                Check::pass(
-                    "simulator-service",
-                    "simctl list devices responded within 5s",
-                ),
-                Some(devices),
-            );
+    let inventory = ios::read_inventory(
+        runner,
+        ios::InventoryRead {
+            attempts: 1,
+            per_read_timeout: Duration::from_secs(5),
+            pause: Duration::ZERO,
+            deadline_ms: None,
+            cwd: Some(Path::new("/").to_path_buf()),
+            env: vec![("LC_ALL".into(), "C".into())],
+            between: &mut |_| Ok(()),
+        },
+    );
+    let unavailable = match inventory {
+        Ok(inventory) => {
+            if let Some(devices) = simulator_devices(&inventory.value) {
+                return (
+                    Check::pass(
+                        "simulator-service",
+                        format!(
+                            "simctl list devices responded within 5s; latency {} ms",
+                            inventory.latency_ms
+                        ),
+                    ),
+                    Some(devices),
+                );
+            }
+            None
         }
-    }
-    if !output.timed_out && !output.ok() {
+        Err(unavailable) => Some(unavailable),
+    };
+    if let Some(ios::InventoryUnavailable {
+        last: ios::InventoryReadLast::Failed(summary),
+        ..
+    }) = &unavailable
+    {
         return (
             Check::fail(
                 "simulator-service",
-                format!("simctl list devices failed ({})", output.summary()),
+                format!("simctl list devices failed ({summary}); inventory unavailable"),
                 SIMCTL_FIX,
             ),
             None,
         );
     }
+    let timed_out = unavailable.as_ref().is_some_and(|unavailable| {
+        matches!(unavailable.last, ios::InventoryReadLast::TimedOut { .. })
+    });
     let stuck = if processes.ok() {
         stuck_simulators(&processes.stdout)
     } else {
@@ -87,29 +108,24 @@ fn simulator_service(
             stuck.join(", ")
         )
     };
-    let detail = if output.timed_out {
+    let detail = if timed_out {
         format!("simctl list devices did not respond within 5s; {evidence}")
     } else {
         format!("simctl list devices returned an unreadable inventory; {evidence}")
     };
-    let status = if output.timed_out && !stuck.is_empty() {
+    let status = if timed_out && !stuck.is_empty() {
         Status::Fail
     } else {
         Status::Warn
     };
-    let fix = if output.timed_out || !stuck.is_empty() {
-        SERVICE_FIX
-    } else {
-        SIMCTL_FIX
-    };
+    let fix = if timed_out { SERVICE_FIX } else { SIMCTL_FIX };
     (
         Check::problem("simulator-service", status, detail, fix),
         None,
     )
 }
 
-fn simulator_devices(text: &str) -> Option<Vec<String>> {
-    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+fn simulator_devices(value: &serde_json::Value) -> Option<Vec<String>> {
     let mut devices = Vec::new();
     for list in value.get("devices")?.as_object()?.values() {
         for device in list.as_array()? {
@@ -425,6 +441,44 @@ mod tests {
     }
 
     #[test]
+    fn inventory_read_has_doctors_budget_context_and_measured_latency() {
+        let mut runner = MockRunner::new();
+        runner.advance_on = Some(("simctl list".into(), 1200));
+        runner.expect_run("simctl list", inventory());
+        let (service, devices) = simulator_service(&mut runner, &CmdOutput::success(""));
+        assert_eq!(service.status, Status::Pass);
+        assert!(service.detail.contains("latency 1200 ms"));
+        assert_eq!(devices.unwrap(), vec![format!("iPhone ({UDID})")]);
+        assert_eq!(runner.calls.len(), 1);
+        assert_eq!(runner.calls[0].timeout_seconds, 5);
+        assert_eq!(runner.calls[0].cwd.as_deref(), Some(Path::new("/")));
+        assert_eq!(runner.calls[0].env, vec![("LC_ALL".into(), "C".into())]);
+    }
+
+    #[test]
+    fn unreadable_inventory_including_stderr_and_size_uses_the_xcode_fix() {
+        for output in [
+            CmdOutput::success("{}"),
+            CmdOutput::success("{\"devices\":[]}"),
+            CmdOutput::success(&" ".repeat(1024 * 1024)),
+            CmdOutput {
+                stderr: "warning-canary".into(),
+                ..inventory()
+            },
+        ] {
+            let mut runner = MockRunner::new();
+            runner.expect_run("simctl list", output);
+            let (service, devices) = simulator_service(&mut runner, &CmdOutput::success(""));
+            assert_eq!(service.status, Status::Warn);
+            assert!(service.detail.contains("unreadable inventory"));
+            assert!(!service.detail.contains("warning-canary"));
+            assert_eq!(service.fix.as_deref(), Some(SIMCTL_FIX));
+            assert!(devices.is_none());
+            assert_eq!(runner.calls.len(), 1);
+        }
+    }
+
+    #[test]
     fn mac_reports_both_platforms_and_uses_the_second_idle_sample() {
         let mut runner = MockRunner::new();
         script_mac(&mut runner, "S qemu-system-aar /sdk/qemu-system-aarch64 -avd Pixel\nS emulator /sdk/emulator -avd Pixel\nS qemu-system-x86 /usr/bin/qemu-system-x86_64 -drive server.img\n", inventory(), VM, SYS, "CPU usage: 90% user, 5% sys, 5% idle\nCPU usage: 2% user, 3% sys, 95% idle\n");
@@ -549,7 +603,7 @@ mod tests {
             let rows = checks(&mut runner, "macos");
             let service = row(&rows, "simulator-service");
             assert_eq!(service.status, Status::Fail);
-            assert!(service.detail.contains("CoreSimulator is out of date"));
+            assert!(service.detail.contains("exit=1"));
             assert_eq!(service.fix.as_deref(), Some(SIMCTL_FIX));
             assert_eq!(row(&rows, "host-devices").status, Status::Warn);
         }
