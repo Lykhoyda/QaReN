@@ -893,18 +893,18 @@ async function walkBlockScoped(
       }
     }
   };
-  const capture = async (
+  const enrichLabelProvenance = async (
+    observation: Observation,
     step?: Exclude<Item, { kind: 'check' }>,
-    assertion = false,
-    recovery = false,
+    until = Infinity,
   ): Promise<Observation> => {
-    const observation = await captureOnce(step, assertion, recovery);
     if (!step || step.kind !== 'press' || !targetNeedsPresence(step, observation.screen))
       return observation;
     const refs = exactIdentities(observation.screen, step.target, 'press')
       .map(({ element }) => element.ref)
       .filter((ref) => !ref.startsWith('react:'));
-    const deadline = observationDeadline(observation.timing);
+    const deadline = observationDeadline(observation.timing, until);
+    if (deps.now() >= deadline) throw new CaptureDeadline();
     metadataOnly = true;
     let provenance: LabelProvenance[] | undefined;
     let provenanceDiagnostic = {
@@ -973,6 +973,12 @@ async function walkBlockScoped(
       });
     return observation;
   };
+  const capture = async (
+    step?: Exclude<Item, { kind: 'check' }>,
+    assertion = false,
+    recovery = false,
+  ): Promise<Observation> =>
+    enrichLabelProvenance(await captureOnce(step, assertion, recovery), step);
   const diagnostic = (
     item: Item,
     observation: Observation,
@@ -2351,7 +2357,7 @@ async function walkBlockScoped(
               (item.target.exact !== 'id' && element.label === item.target.quoted),
           )
         )
-          return observation;
+          return await enrichLabelProvenance(observation, item, deadline);
         const left = deadline - deps.now();
         if (left <= 0) return undefined;
         await pause(Math.min(WAIT_POLL_MS, left));

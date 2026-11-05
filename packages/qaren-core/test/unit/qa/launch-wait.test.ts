@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import type { Block } from '../../../dist/qa/plan.js';
 import type { Element, Screen } from '../../../dist/qa/screen.js';
+import { join as joinScreen } from '../../../dist/qa/screen.js';
 import type { Ledger, LedgerRow } from '../../../dist/qa/ledger.js';
 import type { TimingEvent } from '../../../dist/qa/timing.js';
 import {
@@ -128,6 +129,66 @@ test('the first press after launch waits for a target that renders late, then pa
   // The streamed value-free row carries the number too.
   assert.equal(device.rows.find((row) => row.line === 2)?.implicitWaitMs, press.implicitWaitMs);
 });
+
+for (const at of [5_000, 12_000]) {
+  for (const available of [true, false]) {
+    test(`a target appearing at ${at} ms ${available ? 'uses' : 'requires'} label provenance before dispatch`, async () => {
+      const lateScreen = () =>
+        joinScreen(
+          [
+            {
+              ref: '@container',
+              type: 'Other',
+              label: 'Profile',
+              hittable: true,
+              rect: { x: 0, y: 0, width: 400, height: 800 },
+            },
+            {
+              ref: '@late-profile',
+              parentIndex: 0,
+              type: 'Button',
+              label: 'Profile',
+              hittable: true,
+              rect: { x: 20, y: 100, width: 100, height: 50 },
+            },
+          ],
+          [],
+          'app',
+          { native: 'complete', react: 'complete' },
+        );
+      const device = app((t) => (t >= at ? lateScreen() : view([home])));
+      let readAtCapture = 0;
+      device.deps.readLabelProvenance = async (refs, deadline) => {
+        assert.deepEqual(refs, ['@container', '@late-profile']);
+        assert.ok(deadline > device.clock());
+        assert.ok(deadline <= WAIT_BUDGET_MS - 1_500);
+        readAtCapture = device.captures();
+        return available
+          ? refs.map((ref) => ({
+              ref,
+              labelSource: ref === '@container' ? ('descendant' as const) : ('direct' as const),
+            }))
+          : undefined;
+      };
+      device.deps.press = async (ref) => {
+        assert.equal(device.captures(), readAtCapture);
+        device.actions.push(`press ${ref}`);
+        return { ok: true, proven: true };
+      };
+      const ledger = await ledgerOf('1. Tap "Profile"\n', device.deps);
+      assert.ok(readAtCapture > 1);
+      if (available) {
+        assert.equal(ledger.verdict, 'PASS', JSON.stringify(ledger.failure));
+        assert.deepEqual(device.actions, ['press @late-profile']);
+      } else {
+        assert.equal(ledger.verdict, 'FAIL');
+        assert.match(ledger.failure!.seen, /^TARGET_AMBIGUOUS: /);
+        assert.deepEqual(device.actions, []);
+      }
+      assert.ok(failingRow(ledger).implicitWaitMs! > 0);
+    });
+  }
+}
 
 test('the launch poll never accepts a segment of a merged label', async () => {
   const merged = element('@merged', 'Profile, Notifications');
