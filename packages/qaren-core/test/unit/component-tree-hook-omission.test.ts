@@ -81,12 +81,5 @@ for (const filter of [undefined, 'carousel']) {
         },
       ],
     });
-
-    const state = JSON.parse(sandbox.__QAREN.getComponentState('synthetic-carousel'));
-    assert.equal(state.hooks[0], token, 'explicit component state remains available');
-    assert.deepEqual(state.hooks[1], {
-      session: { token },
-      user: { name: person, address },
-    });
   });
 }

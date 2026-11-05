@@ -6,8 +6,9 @@ import { INJECTED_HELPERS } from '../../dist/injected-helpers.js';
 // GH #72: findNavRef() must discover React Navigation's internal ref from the
 // useNavigationContainerRef() hook chain when the host app renders
 // <NavigationContainer> without a ref prop. Apps using Expo Router or
-// minimalist setups commonly omit the ref. Without this, cdp_navigate fails
-// with "Navigation ref not found" even though navigation is fully working.
+// minimalist setups commonly omit the ref. getNavState() falls back to the
+// ref's getRootState() when no hook holds the state itself, and the frontmost
+// check reads navigation through getNavState().
 
 function makeNavRefShape(extra = {}) {
   // The 3-method match required by the strict guard.
@@ -57,10 +58,9 @@ function createSandbox(opts = {}) {
   return sandbox;
 }
 
-// Helper: invoke __QAREN.navigateTo and parse the JSON response.
-function navigate(sandbox, screen, params) {
-  const result = sandbox.globalThis.__QAREN.navigateTo(screen, params);
-  return JSON.parse(result);
+// Helper: invoke __QAREN.getNavState and parse the JSON response.
+function navState(sandbox) {
+  return JSON.parse(sandbox.globalThis.__QAREN.getNavState());
 }
 
 // ── Hooks-chain discovery (GH #72 core fix) ──
@@ -80,10 +80,9 @@ test('findNavRef: discovers ref from hooks chain when fiber.ref is absent (GH #7
     child: null,
     sibling: null,
   };
-  const sandbox = createSandbox({ fiberRoot: fiber });
-  const result = navigate(sandbox, 'Home');
-  assert.equal(result.navigated, true, 'should successfully navigate via hooks-chain ref');
-  assert.equal(result.__agent_error, undefined, 'no error should surface when ref is found');
+  const result = navState(createSandbox({ fiberRoot: fiber }));
+  assert.equal(result.routeName, 'Home', 'should read state through the hooks-chain ref');
+  assert.equal(result.error, undefined, 'no error should surface when ref is found');
 });
 
 test('findNavRef: walks past unrelated hooks to find the nav ref', () => {
@@ -105,15 +104,19 @@ test('findNavRef: walks past unrelated hooks to find the nav ref', () => {
     child: null,
     sibling: null,
   };
-  const sandbox = createSandbox({ fiberRoot: fiber });
-  const result = navigate(sandbox, 'Home');
-  assert.equal(result.navigated, true);
+  const result = navState(createSandbox({ fiberRoot: fiber }));
+  assert.equal(result.routeName, 'Home');
 });
 
 test('findNavRef: rejects hook with .current.navigate but missing dispatch (strict match)', () => {
   // Strict match avoids picking up unrelated refs in apps with multiple
   // navigation libraries (e.g. react-navigation + react-native-navigation).
-  const partial = { current: { navigate: () => {} } }; // missing dispatch + getRootState
+  const partial = {
+    current: {
+      navigate: () => {},
+      getRootState: () => ({ routes: [{ name: 'Wrong' }], index: 0 }),
+    },
+  }; // missing dispatch
   const fiber = {
     type: { displayName: 'NavigationContainer' },
     ref: null,
@@ -122,10 +125,9 @@ test('findNavRef: rejects hook with .current.navigate but missing dispatch (stri
     child: null,
     sibling: null,
   };
-  const sandbox = createSandbox({ fiberRoot: fiber });
-  const result = navigate(sandbox, 'Home');
-  assert.equal(result.navigated, undefined);
-  assert.match(result.__agent_error || '', /Navigation ref not found/);
+  const result = navState(createSandbox({ fiberRoot: fiber }));
+  assert.equal(result.routeName, undefined);
+  assert.match(result.error || '', /^Navigation state not found\./);
 });
 
 test('findNavRef: existing fiber.ref path still works (no regression)', () => {
@@ -138,9 +140,8 @@ test('findNavRef: existing fiber.ref path still works (no regression)', () => {
     child: null,
     sibling: null,
   };
-  const sandbox = createSandbox({ fiberRoot: fiber });
-  const result = navigate(sandbox, 'Home');
-  assert.equal(result.navigated, true);
+  const result = navState(createSandbox({ fiberRoot: fiber }));
+  assert.equal(result.routeName, 'Home');
 });
 
 test('findNavRef: globals path still wins over fiber walk (no regression)', () => {
@@ -158,28 +159,11 @@ test('findNavRef: globals path still wins over fiber walk (no regression)', () =
     child: null,
     sibling: null,
   };
-  let navigatedTo = null;
-  globalRef.navigate = (s) => {
-    navigatedTo = `global:${s}`;
-  };
-  fiberRef.navigate = (s) => {
-    navigatedTo = `fiber:${s}`;
-  };
   const sandbox = createSandbox({
     fiberRoot: fiber,
     globals: { __NAV_REF__: globalRef },
   });
-  navigate(sandbox, 'GLOBAL');
-  assert.equal(navigatedTo, 'global:GLOBAL', '__NAV_REF__ must beat fiber walk');
-});
-
-test('findNavRef: error message lists all discovery paths (GH #72 step 3)', () => {
-  // No fiber, no globals — error message should be informative.
-  const sandbox = createSandbox({ fiberRoot: null });
-  const result = navigate(sandbox, 'Home');
-  assert.match(result.__agent_error || '', /Navigation ref not found/);
-  assert.match(result.__agent_error || '', /__NAV_REF__/);
-  assert.match(result.__agent_error || '', /useNavigationContainerRef|hooks/i);
+  assert.equal(navState(sandbox).routeName, 'GLOBAL', '__NAV_REF__ must beat fiber walk');
 });
 
 test('findNavRef: hopGuard prevents infinite loop on circular hooks chain', () => {
@@ -195,8 +179,8 @@ test('findNavRef: hopGuard prevents infinite loop on circular hooks chain', () =
   };
   const sandbox = createSandbox({ fiberRoot: fiber });
   const start = Date.now();
-  const result = navigate(sandbox, 'Home');
+  const result = navState(sandbox);
   const elapsed = Date.now() - start;
   assert.ok(elapsed < 1000, `must terminate quickly, took ${elapsed}ms`);
-  assert.match(result.__agent_error || '', /Navigation ref not found/);
+  assert.match(result.error || '', /^Navigation state not found\./);
 });

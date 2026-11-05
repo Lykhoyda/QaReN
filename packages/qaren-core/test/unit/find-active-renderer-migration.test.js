@@ -87,57 +87,7 @@ test('B145: findNavRef walks all renderers for NavigationContainer ref', () => {
   );
 });
 
-test('B145: getComponentState walks all renderers for the testID', () => {
-  const src = INJECTED_HELPERS;
-  const idx = src.indexOf('function getComponentState');
-  assert.ok(idx >= 0, 'getComponentState definition missing');
-  const slice = src.slice(idx, idx + 2000);
-  assert.match(
-    slice,
-    /forEachRootFiber\(function\(rootFiber\)\s*\{[\s\S]*?findByTestID\(rootFiber\);[\s\S]*?return targetFiber;/,
-    'getComponentState did not migrate to forEachRootFiber',
-  );
-});
-
-test('B145: getNavGraph fiber-walk fallback iterates all roots for containers', () => {
-  // Pattern: `var allRoots = findAllRootFibers(); for (var ar = 0; ar < allRoots.length; ar++) { (function findContainers(...){...})(allRoots[ar].fiber, 0); }`
-  // The container walker is an IIFE invoked once per renderer root.
-  const src = INJECTED_HELPERS;
-  const idx = src.indexOf('function getNavGraph');
-  assert.ok(idx >= 0, 'getNavGraph definition missing');
-  const slice = src.slice(idx, idx + 18000);
-  assert.match(
-    slice,
-    /var allRoots = findAllRootFibers\(\)/,
-    'getNavGraph did not migrate to findAllRootFibers',
-  );
-  assert.match(
-    slice,
-    /for \(var ar = 0; ar < allRoots\.length; ar\+\+\)/,
-    'getNavGraph did not loop over allRoots',
-  );
-  assert.match(
-    slice,
-    /\}\)\(allRoots\[ar\]\.fiber, 0\);/,
-    'container IIFE did not pass allRoots[ar].fiber as root',
-  );
-});
-
-test('B145: isReady uses findAllRootFibers().length > 0 (not findActiveRenderer short-circuit)', () => {
-  // Before: return !!findActiveRenderer();
-  // After:  return findAllRootFibers().length > 0;
-  const src = INJECTED_HELPERS;
-  const idx = src.indexOf('isReady:');
-  assert.ok(idx >= 0, 'isReady method missing');
-  const slice = src.slice(idx, idx + 500);
-  assert.match(
-    slice,
-    /findAllRootFibers\(\)\.length > 0/,
-    'isReady did not migrate to findAllRootFibers',
-  );
-});
-
-test('B145: findActiveRenderer still exists (kept for getTree unfiltered path + semantic "is any renderer ready")', () => {
+test('B145: findActiveRenderer still exists (kept for the getTree unfiltered path)', () => {
   // Intentional: B143 left the unfiltered path on findActiveRenderer because
   // the 50KB output cap would be blown by multi-renderer union. Keep the
   // helper around so the unfiltered branch still works.
