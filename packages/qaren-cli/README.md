@@ -808,11 +808,21 @@ its responder behavior, or a selected-state contract. iOS omits false selected
 state, so an invisible successful toggle and a swallowed tap look alike. QaReN
 sends no held press or second tap. The refusal does not prove that the app callback
 failed. The fixed next action is
-`rerun_then_ask_app_team_expose_selection_in_row_list`. The refusal includes this
-guidance, with N post-tap observations and M milliseconds from tap dispatch to
-the final readback:
+`rerun_then_ask_app_team_expose_selection_in_row_list`. The refusal names what
+was observed, with N post-tap observations and M milliseconds from tap dispatch
+to the final readback. When the tapped control was re-identified:
 
-> The tap did not change the control's selected state (N observations over M ms); the control sits in a row-shaped scrolling list, which can swallow synthetic taps. Next: re-run once; if it repeats on the same control, ask the app team to make the selection reachable for automated taps (for example by disabling the list's own scrolling for this set) or to expose the selected state another way.
+> The tapped control reported no selected state after the tap (N observations over M ms); one tap was sent.
+
+When it was not (`target_identity_unavailable`):
+
+> The tapped control could not be re-identified after the tap (N observations over M ms), so its selected state was not read; one tap was sent.
+
+After a tap the runner reports as dispatched without error, the control is
+re-identified by its testID when exactly one native element carries it, even
+under a new element reference; React-only entries with the same testID are not
+counted. Any other tap keeps the stricter rule: exactly one match under the
+same element reference.
 
 On iOS, before tapping a candidate matching the row-choice heuristic above, QaReN
 attempts to dismiss a visible keyboard through the keyboard guard's dismissal chain
