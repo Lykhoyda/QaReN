@@ -3209,15 +3209,22 @@ Selection-proof refusals bypass step recovery; follow the
 
 The first top-level Tap or Fill of a run gets one bounded wait for a quoted
 target that is absent while the screen is still loading; a passing login replay
-re-arms it for the step it retries, or for the next Tap or Fill. Recovery runs first; when it has nothing to do, QaReN polls
+re-arms it for the step it retries, or for the next Tap or Fill. The first Tap or
+Fill consumes the allowance even when its target is already present. Ordinary
+retries, later blocks and replay falling back to a walk do not re-arm it;
+app-process changes remain terminal. Recovery runs first; when it has nothing to
+do and the step has not dispatched, QaReN polls
 captures every 500 ms for up to 15 s from the step's start and acts from that fresh
 capture. Tap requires a full label or testID match (never a segment of a merged
 label); Fill keeps its ordinary exact identities, including input placeholders.
-Disabled, ambiguous, off-screen, stored-selector and described targets keep their immediate failure. The row
-records `implicitWaitMs`. A target that never appears fails
+Disabled, ambiguous, off-screen, stored-selector and described targets keep their
+existing resolution and recovery behavior without this wait. Polling is never
+repeated by an ordinary retry, and recovery does not renew its deadline.
+A target that never appears fails
 `TARGET_NOT_FOUND_AFTER_LAUNCH`, with the screen-change count from the presence
 read when it saw any, and a suggestion to insert a `Wait for` the target before
-that line. Any other step or block keeps the immediate failure.
+that line, or move an earlier wait to an element that renders with it. See
+[row timing](#row-timing) for the measured wait duration.
 
 Development error overlay recognition covers iOS RedBox and LogBox and Android
 native RedBox. Android native RedBox recognition has automated test coverage only,
@@ -3559,6 +3566,8 @@ target dispatch; sink failures leave the outcome unchanged. It stays out of the
 public result and ledger, as covered by the
 [occlusion regressions](../qaren-core/test/unit/qa/occlusion-walker.test.ts).
 
+<a id="row-timing"></a>
+
 `ledger.json` adds a `timing` object to each walked attempt row; duration fields
 are in milliseconds.
 `captureMs`, `resolveMs` (decision), `actMs`, `postCaptureMs` and `otherMs`
@@ -3569,6 +3578,13 @@ decision, including HTTP retries and their backoff. These breakdowns overlap
 the partition and must not be added to `total`. Post-action captures start
 after an authorized dispatch; captures after a dispatch refused before
 authorization remain in `captureMs`.
+
+The optional row-level `implicitWaitMs` records elapsed polling time for the
+[first-target launch wait](#step-recovery), including provenance enrichment of
+the accepted capture. It is omitted when no polling occurred and retains a
+measured zero. It is separate from `timing`, can remain on subsequent attempt
+rows for the same step, and must not be added to the timing partition or summed
+across those rows. The CLI preserves valid values and drops malformed ones.
 
 Optional `settleMethod` and `settleMs` record measured client settle within the
 row window. Milliseconds sum across dispatched actions; the method is
