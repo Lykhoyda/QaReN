@@ -2268,28 +2268,46 @@ Expo's dev-client manifest handler resolves the runtime version on every
 request; under the expo-updates `fingerprint` policy that recomputes the
 project fingerprint each time, which can take longer than the client's
 10-second limit. Before install, iOS preparation reads the runtime version the
-selected `.app` embeds (`Expo.plist` `EXUpdatesRuntimeVersion`, or for
-`file:fingerprint` the app's `EXUpdates.bundle/fingerprint` resource) and
-writes it to `runtime-version-pin.json` in the run directory. QaReN's own dev
-server loads a run-local preload (`--require` in both `NODE_OPTIONS` and
-`npm_config_node_options`)
-that answers the resolver with that value and appends
-`runtime-version-pin.resolved` when it does. Nothing in the candidate is edited.
-The receipt's `runtime_version` records `embedded_policy` (`literal`,
-`fingerprint`, `unconfigured` or `unsupported`), `source: artifact`, an 8-character
-`value_sha256_prefix` (never the value) and `pin`: `resolved` when the dev
-server served it, `written` when it never reached the resolver, `none` or
-`unsupported`. Android records `unsupported`. When warm-up refuses for an app
-whose embedded policy is `fingerprint` and the pin was not served, the refusal
-names that cause first and suggests a fixed development `runtimeVersion`, or
-your own dev server from a scratch copy with the resolved string. Before starting iOS Metro, QaReN asks pnpm for its effective `node-options`,
-including workspace, user and global configuration and pnpm's interpolation and
-escaping. It composes that value (or inherited `NODE_OPTIONS` when unset) with
-IPv4-first DNS and the preload, then passes the result through both variables
-and pnpm's `--config.node-options` override so workspace settings cannot remove it.
+selected `.app` embeds: `Expo.plist` `EXUpdatesRuntimeVersion` for a literal,
+or the `EXUpdates.bundle/fingerprint` resource for `file:fingerprint`. The
+resource may be at the app root or inside `Frameworks/EXUpdates.framework`;
+if both exist, QaReN cannot identify the app's resource and does not pin it.
+A non-empty value of at most 256 characters without control characters is
+written to `runtime-version-pin.json` in the run directory. An absent runtime
+version key is `unconfigured` and leaves nothing to pin.
+
+QaReN's own dev server loads a run-local preload that reads the pin at resolver
+call time. An absent or malformed pin, another platform or an incompatible
+Expo resolver leaves the original resolution behavior in place. When the
+resolver returns the pinned value, it attempts to append
+`runtime-version-pin.resolved`; failure to write this marker does not break
+resolution. Nothing in the candidate is edited, and QaReN does not run a
+runtime-version resolver to obtain the pin.
+
+The run record and receipt's `runtime_version` record `embedded_policy`
+(`literal`, `fingerprint`, `unconfigured` or `unsupported`), `source: artifact`,
+an 8-character `value_sha256_prefix` when a valid value was read (never the
+value), and `pin`: `resolved` when the marker exists after warm-up, `written`
+when the pin file was written but no marker was observed, `none` when
+unconfigured, or `unsupported` when the artifact cannot supply a valid value
+or the pin cannot be written. The marker proves the resolver returned the
+pin, not that a manifest was served. Android records `unsupported`.
+
+When warm-up has probed the manifest and refuses with `MANIFEST_NOT_WARM`,
+the embedded policy is `fingerprint` and no pin marker exists, the refusal
+names possible per-request fingerprint recomputation first and suggests a
+fixed development `runtimeVersion`, or your own dev server from a scratch
+copy with the resolved string. Early watcher refusals keep their own cause.
+
+Before starting iOS Metro, QaReN asks pnpm for its effective `node-options`,
+including workspace, user and global configuration and pnpm's interpolation
+and escaping. It composes that value (or inherited `NODE_OPTIONS` when unset)
+with IPv4-first DNS and a quoted `--require` of the preload, then passes the
+result through both `NODE_OPTIONS` and `npm_config_node_options` and pnpm's
+`--config.node-options` override so workspace settings cannot remove it.
 If the query fails, times out or is cancelled, it uses inherited `NODE_OPTIONS`
-and records a value-free fallback note; cancellation still prevents startup. A native-side configuration override is
-not visible in the artifact.
+and records a value-free fallback note; cancellation still prevents startup.
+A native-side configuration override is not visible in the artifact.
 
 A request-handler timeout after `/status` responds names startup or a
 stalled watcher as possible causes; steady answers near 30 seconds also name a
