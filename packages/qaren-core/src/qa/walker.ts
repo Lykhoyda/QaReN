@@ -2344,7 +2344,14 @@ async function walkBlockScoped(
       for (let polls = 0; polls <= WAIT_BUDGET_MS / WAIT_POLL_MS; polls += 1) {
         // captureOnce refuses to start at or after the deadline.
         const observation = await captureOnce(item, false, false, 'resolve', deadline);
-        if (exactIdentities(observation.screen, item.target, item.kind).length) return observation;
+        if (
+          exactIdentities(observation.screen, item.target, item.kind).some(
+            ({ element }) =>
+              (item.target.exact !== 'text' && element.testID === item.target.quoted) ||
+              (item.target.exact !== 'id' && element.label === item.target.quoted),
+          )
+        )
+          return observation;
         const left = deadline - deps.now();
         if (left <= 0) return undefined;
         await pause(Math.min(WAIT_POLL_MS, left));

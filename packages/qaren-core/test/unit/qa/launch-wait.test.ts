@@ -129,6 +129,16 @@ test('the first press after launch waits for a target that renders late, then pa
   assert.equal(device.rows.find((row) => row.line === 2)?.implicitWaitMs, press.implicitWaitMs);
 });
 
+test('the launch poll never accepts a segment of a merged label', async () => {
+  const merged = element('@merged', 'Profile, Notifications');
+  const device = app((t) => view(t >= 5_000 ? [home, merged] : [home]));
+  const ledger = await ledgerOf('1. Tap "Profile"\n', device.deps);
+  assert.equal(ledger.verdict, 'FAIL');
+  assert.match(ledger.failure!.seen, /^TARGET_NOT_FOUND_AFTER_LAUNCH: /);
+  assert.deepEqual(device.actions, []);
+  assert.ok(failingRow(ledger).implicitWaitMs! > 0);
+});
+
 test('a first target already present passes without polling', async () => {
   const device = app(lateProfile(0));
   const ledger = await ledgerOf('1. Tap "Profile"\n', device.deps);
