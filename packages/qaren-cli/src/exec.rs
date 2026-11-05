@@ -787,7 +787,9 @@ fn run_captured(
     } else {
         (None, Stdio::null())
     };
-    let withhold = input.is_none() && spec.withholds_registry_output();
+    let withhold = spec.withholds_registry_output()
+        && (input.is_none()
+            || !matches!(spec.label.as_str(), "deps-cache-pnpm" | "deps-cache-config"));
     let input = input.unwrap_or_default();
     let mut written = 0;
     let (mut stdout, out) = UnixStream::pair()?;
