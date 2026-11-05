@@ -239,6 +239,197 @@ fn authenticated_probes_match_install_credentials_without_persisting_config_secr
     }
 }
 
+fn assert_operation(
+    receipt: &crate::receipt::Receipt,
+    name: &str,
+    outcome: &str,
+    duration: Option<u64>,
+) {
+    let key = format!("deps_cache_{name}");
+    assert_eq!(
+        receipt.outcomes.get(&key).map(String::as_str),
+        Some(outcome)
+    );
+    assert_eq!(receipt.timings_ms.get(&key).copied(), duration);
+}
+
+#[test]
+fn receipts_report_restore_early_returns_and_preserve_skip_reasons() {
+    for (case, reason) in [
+        ("disabled", "disabled"),
+        ("missing-root-manifest", "missing-input"),
+        ("missing-project-manifest", "missing-input"),
+        ("invalid-manifest", "missing-input"),
+        ("missing-lockfile", "missing-input"),
+        ("outside-repo", "unsupported-layout"),
+        ("probe-version", "probe-failed"),
+        ("probe-node", "probe-failed"),
+        ("probe-config", "probe-failed"),
+        ("layout-config", "unsupported-layout"),
+        ("layout-workspace", "unsupported-layout"),
+        ("layout-modules", "unsupported-layout"),
+    ] {
+        let f = Fixture::new();
+        let mut runner = CloneRunner::new();
+        match case {
+            "missing-root-manifest" => std::fs::remove_file(f.0.join("repo/package.json")).unwrap(),
+            "missing-project-manifest" => {
+                std::fs::remove_file(f.0.join("repo/app/package.json")).unwrap()
+            }
+            "invalid-manifest" => {
+                std::fs::write(f.0.join("repo/app/package.json"), "invalid").unwrap()
+            }
+            "layout-workspace" => std::fs::write(
+                f.0.join("repo/pnpm-workspace.yaml"),
+                "packages: ['packages/*']\n",
+            )
+            .unwrap(),
+            "layout-modules" => {
+                std::fs::create_dir_all(f.0.join("repo/other/node_modules")).unwrap()
+            }
+            _ => {}
+        }
+        if ![
+            "disabled",
+            "missing-root-manifest",
+            "missing-lockfile",
+            "outside-repo",
+        ]
+        .contains(&case)
+        {
+            runner.mock.expect_run(
+                "pnpm --version",
+                if case == "probe-version" {
+                    CmdOutput::failed(1, "version unavailable")
+                } else {
+                    CmdOutput::success("10.0.0")
+                },
+            );
+            if case != "probe-version" {
+                runner.mock.expect_run(
+                    "JSON.stringify",
+                    CmdOutput::success(if case == "probe-node" {
+                        "invalid"
+                    } else {
+                        r#"{"version":"v24.0.0","arch":"arm64","platform":"darwin"}"#
+                    }),
+                );
+                if case != "probe-node" {
+                    runner.mock.expect_run(
+                        "config list --json",
+                        CmdOutput::success(match case {
+                            "probe-config" => "invalid",
+                            "layout-config" => r#"{"node-linker":"isolated"}"#,
+                            _ => r#"{"node-linker":"hoisted"}"#,
+                        }),
+                    );
+                }
+            }
+        }
+        runner
+            .mock
+            .expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+        runner.mock.advance_on = Some(("pnpm install".into(), 37));
+        let mut ctx = f.context(&mut runner, case);
+        if case == "missing-lockfile" {
+            std::fs::remove_file(f.0.join("repo/app/pnpm-lock.yaml")).unwrap();
+        }
+        if case == "outside-repo" {
+            ctx.record.candidate.project_root = f.0.join("outside");
+        }
+        restore(&mut ctx, &f.0.join("repo"), case != "disabled").unwrap();
+        crate::commands::prepare::install_deps(&mut ctx).unwrap();
+        stage(&mut ctx).unwrap();
+        publish(&mut ctx).unwrap();
+        let receipt = crate::commands::prepare::finish_receipt(
+            ctx,
+            crate::receipt::ReceiptResult::Ready,
+            None,
+        );
+        for operation in ["restore", "stage", "publish"] {
+            assert_operation(&receipt, operation, &format!("skipped:{reason}"), None);
+        }
+        assert_operation(&receipt, "install", "attempted", Some(37));
+        assert_eq!(runner.mock.remaining(), 0, "{case}");
+    }
+}
+
+#[test]
+fn receipts_report_stage_failures_and_skip_publication() {
+    for (case, reason) in [
+        ("empty-tree", "unsupported-layout"),
+        ("space", "disabled"),
+        ("clone", "clone-unsupported"),
+    ] {
+        let f = Fixture::new();
+        let mut runner = CloneRunner::new();
+        probes(&mut runner.mock);
+        if case != "empty-tree" {
+            f.modules();
+            disk(
+                &mut runner.mock,
+                if case == "space" { 1 } else { 999999999 },
+            );
+        }
+        if case == "clone" {
+            runner.fail_clone = Some(1);
+        }
+        let mut ctx = f.context(&mut runner, case);
+        restore(&mut ctx, &f.0.join("repo"), true).unwrap();
+        stage(&mut ctx).unwrap();
+        publish(&mut ctx).unwrap();
+        release(&mut ctx);
+        let receipt = crate::commands::prepare::finish_receipt(
+            ctx,
+            crate::receipt::ReceiptResult::Ready,
+            None,
+        );
+        assert_operation(&receipt, "restore", "attempted", Some(0));
+        assert_operation(&receipt, "stage", "attempted", Some(0));
+        assert_operation(&receipt, "publish", &format!("skipped:{reason}"), None);
+        assert_eq!(runner.mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn receipts_measure_failed_installs_and_report_unreached_operations() {
+    let f = Fixture::new();
+    let mut runner = CloneRunner::new();
+    runner.mock.advance_on = Some(("pnpm install".into(), 53));
+    runner
+        .mock
+        .expect_run("pnpm install", CmdOutput::failed(1, "install failed"));
+    let mut ctx = f.context(&mut runner, "failed-install");
+    let failure = crate::commands::prepare::install_deps(&mut ctx).unwrap_err();
+    let receipt = crate::commands::prepare::finish_receipt(
+        ctx,
+        crate::receipt::ReceiptResult::Failed,
+        Some(failure),
+    );
+    assert_operation(&receipt, "install", "attempted", Some(53));
+    for operation in ["restore", "stage", "publish"] {
+        assert_operation(&receipt, operation, "skipped:not-reached", None);
+    }
+    let receipt = crate::receipt::Receipt::new(
+        "pr",
+        "none",
+        crate::receipt::ReceiptResult::Refused,
+        "validate",
+        "now".into(),
+    );
+    for operation in ["restore", "install", "stage", "publish"] {
+        assert_operation(&receipt, operation, "skipped:not-reached", None);
+    }
+    let receipt = crate::receipt::Receipt::new(
+        "check",
+        "none",
+        crate::receipt::ReceiptResult::Refused,
+        "validate",
+        "now".into(),
+    );
+    assert!(receipt.outcomes.is_empty());
+}
+
 #[test]
 fn miss_then_hit_still_installs_and_stages_before_build_mutation() {
     let f = Fixture::new();
@@ -262,12 +453,17 @@ fn miss_then_hit_still_installs_and_stages_before_build_mutation() {
         .join("tree/node_modules/root-package/build-mutated")
         .exists());
     release(&mut ctx);
-    drop(ctx);
+    let receipt =
+        crate::commands::prepare::finish_receipt(ctx, crate::receipt::ReceiptResult::Ready, None);
+    for operation in ["restore", "stage", "publish"] {
+        assert_operation(&receipt, operation, "attempted", Some(0));
+    }
     for rel in ["node_modules", "app/node_modules"] {
         std::fs::remove_dir_all(f.0.join("repo").join(rel)).unwrap();
     }
     probes(&mut runner.mock);
     disk(&mut runner.mock, u64::MAX / 1024);
+    runner.mock.advance_on = Some(("pnpm".into(), 37));
     runner
         .mock
         .expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
@@ -282,6 +478,7 @@ fn miss_then_hit_still_installs_and_stages_before_build_mutation() {
     stage(&mut ctx).unwrap();
     assert_eq!(ctx.runner.commands_executed(), before);
     assert!(!ctx.record.resources.deps_cache.as_ref().unwrap().staging);
+    publish(&mut ctx).unwrap();
     assert!(!staging_dir(entry.parent().unwrap(), "second")
         .unwrap()
         .exists());
@@ -296,7 +493,12 @@ fn miss_then_hit_still_installs_and_stages_before_build_mutation() {
     );
     release(&mut ctx);
     assert!(!entry.join(".readers/second").exists());
-    drop(ctx);
+    let receipt =
+        crate::commands::prepare::finish_receipt(ctx, crate::receipt::ReceiptResult::Ready, None);
+    assert_operation(&receipt, "restore", "attempted", Some(74));
+    assert_operation(&receipt, "install", "attempted", Some(37));
+    assert_operation(&receipt, "stage", "skipped:cache-hit", None);
+    assert_operation(&receipt, "publish", "skipped:cache-hit", None);
     assert_eq!(runner.mock.remaining(), 0);
     for cmd in runner
         .mock

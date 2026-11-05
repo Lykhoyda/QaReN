@@ -323,10 +323,20 @@ fn note(ctx: &mut Ctx, value: &str) {
     ctx.notes.push(("deps_cache".into(), value.into()));
     events::stage("deps_cache", StageState::Passed, Some(value), None);
 }
-fn timed(ctx: &mut Ctx, name: &'static str, started: u64) {
+fn skipped(ctx: &mut Ctx, names: &[&str], reason: &str) {
+    for name in names {
+        let label = format!("deps_cache_{name}");
+        if !ctx.notes.iter().any(|(key, _)| key == &label) {
+            ctx.notes.push((label, format!("skipped:{reason}")));
+        }
+    }
+}
+
+pub(crate) fn timed(ctx: &mut Ctx, name: &'static str, started: u64) {
     let stage = match name {
         "restore" => "deps_cache_restore",
         "stage" => "deps_cache_stage",
+        "install" => "deps_cache_install",
         _ => "deps_cache_publish",
     };
     events::stage(
@@ -335,6 +345,8 @@ fn timed(ctx: &mut Ctx, name: &'static str, started: u64) {
         None,
         Some(ctx.runner.now_epoch_ms().saturating_sub(started)),
     );
+    ctx.notes
+        .push((format!("deps_cache_{name}"), "attempted".into()));
     ctx.timings.push((
         format!("deps_cache_{name}"),
         ctx.runner.now_epoch_ms().saturating_sub(started),
@@ -342,119 +354,135 @@ fn timed(ctx: &mut Ctx, name: &'static str, started: u64) {
 }
 
 pub(crate) fn restore(ctx: &mut Ctx, repository: &Path, enabled: bool) -> Result<(), Failure> {
-    if !enabled {
-        note(ctx, "disabled");
-        return Ok(());
-    }
     let started = ctx.runner.now_epoch_ms();
-    let candidate = &ctx.record.candidate;
-    let repo = candidate.repo_root.clone();
-    let project = candidate.project_root.clone();
-    let Ok(app_rel) = project.strip_prefix(&repo) else {
-        note(ctx, "layout-unsupported");
-        return Ok(());
-    };
-    // Missing inputs disable reuse without changing the existing install path.
-    if !repo.join("package.json").is_file() || !project.join("pnpm-lock.yaml").is_file() {
-        note(ctx, "disabled");
-        return Ok(());
-    }
-    let (installer, effective) = match probe(
-        ctx.runner,
-        &project,
-        &ctx.record.scenario.deps.registry_auth_env,
-    ) {
-        Ok(v) => v,
-        Err(reason) => {
-            note(ctx, &reason);
-            return Ok(());
-        }
-    };
-    ctx.record.resources.deps_installer = Some(installer.clone());
-    ctx.save()?;
-    if let Err(reason) = layout(&effective, &repo, app_rel) {
-        note(ctx, &reason);
-        return Ok(());
-    }
-    if supported_modules(&repo, app_rel).is_err() {
-        note(ctx, "layout-unsupported");
-        return Ok(());
-    }
-    let repo_id = sha256_hex(repository.as_os_str().as_encoded_bytes());
-    let key = match key(&repo, app_rel, &repo_id, &installer, &effective) {
-        Ok(key) => key,
-        Err(_) => {
+    let result = (|| {
+        if !enabled {
             note(ctx, "disabled");
+            skipped(ctx, &["restore", "stage", "publish"], "disabled");
             return Ok(());
         }
-    };
-    let resource = CacheResource {
-        repo_id,
-        key,
-        reader: true,
-        staging: false,
-        enabled: true,
-    };
-    let dir = repo_dir(&ctx.runs_root, &resource).unwrap();
-    let entry_path = dir.join(&resource.key);
-    ctx.record.resources.deps_cache = Some(resource);
-    ctx.save()?;
-    events::stage("deps_cache_restore", StageState::Running, None, None);
-    let admitted = (|| -> Result<Option<Entry>, String> {
-        let _guard = lock(
+        let candidate = &ctx.record.candidate;
+        let repo = candidate.repo_root.clone();
+        let project = candidate.project_root.clone();
+        let Ok(app_rel) = project.strip_prefix(&repo) else {
+            note(ctx, "layout-unsupported");
+            skipped(ctx, &["restore", "stage", "publish"], "unsupported-layout");
+            return Ok(());
+        };
+        // Missing inputs disable reuse without changing the existing install path.
+        if !repo.join("package.json").is_file() || !project.join("pnpm-lock.yaml").is_file() {
+            note(ctx, "disabled");
+            skipped(ctx, &["restore", "stage", "publish"], "missing-input");
+            return Ok(());
+        }
+        let (installer, effective) = match probe(
             ctx.runner,
-            &ctx.runs_root,
-            &ctx.record.run_id,
-            ctx.record.prepare.as_ref(),
-        )?;
-        directory(&dir, true)?;
-        if !directory(&entry_path, false)? {
-            return Ok(None);
+            &project,
+            &ctx.record.scenario.deps.registry_auth_env,
+        ) {
+            Ok(v) => v,
+            Err(reason) => {
+                note(ctx, &reason);
+                skipped(ctx, &["restore", "stage", "publish"], "probe-failed");
+                return Ok(());
+            }
+        };
+        ctx.record.resources.deps_installer = Some(installer.clone());
+        ctx.save()?;
+        if let Err(reason) = layout(&effective, &repo, app_rel) {
+            note(ctx, &reason);
+            skipped(ctx, &["restore", "stage", "publish"], "unsupported-layout");
+            return Ok(());
         }
-        let entry = read_entry(
-            &entry_path,
-            ctx.record.resources.deps_cache.as_ref().unwrap(),
-            app_rel,
-        )?;
-        directory(&entry_path.join(".readers"), true)?;
-        buildplan::save_json(
-            &entry_path.join(".readers").join(&ctx.record.run_id),
-            &ctx.record.prepare,
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(Some(entry))
-    })();
-    match admitted {
-        Ok(None) => note(ctx, "miss"),
-        Err(_) => {
-            ctx.record.resources.deps_cache = None;
-            ctx.save()?;
-            note(ctx, "disabled");
+        if supported_modules(&repo, app_rel).is_err() {
+            note(ctx, "layout-unsupported");
+            skipped(ctx, &["restore", "stage", "publish"], "unsupported-layout");
+            return Ok(());
         }
-        Ok(Some(entry)) => {
-            let result = (|| {
-                space(ctx.runner, &[&ctx.runs_root, &repo], entry.bytes)?;
-                restore_modules(ctx.runner, &entry_path.join("tree"), &repo, &entry.modules)
-            })();
-            match result {
-                Ok(()) => note(ctx, "hit"),
-                Err(reason) => {
-                    note(ctx, &reason);
-                    ctx.record.resources.deps_cache.as_mut().unwrap().enabled = false;
-                    if reason == "restore-cleanup-failed" {
-                        return Err(Failure::new(
-                            "deps",
-                            crate::failure::FailureCode::DepsInstallFailed,
-                            "partial dependency restore could not be removed",
-                            "run qaren cleanup for this run before retrying",
-                        ));
+        let repo_id = sha256_hex(repository.as_os_str().as_encoded_bytes());
+        let key = match key(&repo, app_rel, &repo_id, &installer, &effective) {
+            Ok(key) => key,
+            Err(_) => {
+                note(ctx, "disabled");
+                skipped(ctx, &["restore", "stage", "publish"], "missing-input");
+                return Ok(());
+            }
+        };
+        let resource = CacheResource {
+            repo_id,
+            key,
+            reader: true,
+            staging: false,
+            enabled: true,
+        };
+        let dir = repo_dir(&ctx.runs_root, &resource).unwrap();
+        let entry_path = dir.join(&resource.key);
+        ctx.record.resources.deps_cache = Some(resource);
+        ctx.save()?;
+        events::stage("deps_cache_restore", StageState::Running, None, None);
+        let admitted = (|| -> Result<Option<Entry>, String> {
+            let _guard = lock(
+                ctx.runner,
+                &ctx.runs_root,
+                &ctx.record.run_id,
+                ctx.record.prepare.as_ref(),
+            )?;
+            directory(&dir, true)?;
+            if !directory(&entry_path, false)? {
+                return Ok(None);
+            }
+            let entry = read_entry(
+                &entry_path,
+                ctx.record.resources.deps_cache.as_ref().unwrap(),
+                app_rel,
+            )?;
+            directory(&entry_path.join(".readers"), true)?;
+            buildplan::save_json(
+                &entry_path.join(".readers").join(&ctx.record.run_id),
+                &ctx.record.prepare,
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(Some(entry))
+        })();
+        match admitted {
+            Ok(None) => note(ctx, "miss"),
+            Err(_) => {
+                ctx.record.resources.deps_cache = None;
+                ctx.save()?;
+                note(ctx, "disabled");
+            }
+            Ok(Some(entry)) => {
+                let result = (|| {
+                    space(ctx.runner, &[&ctx.runs_root, &repo], entry.bytes)?;
+                    restore_modules(ctx.runner, &entry_path.join("tree"), &repo, &entry.modules)
+                })();
+                match result {
+                    Ok(()) => note(ctx, "hit"),
+                    Err(reason) => {
+                        note(ctx, &reason);
+                        ctx.record.resources.deps_cache.as_mut().unwrap().enabled = false;
+                        if reason == "restore-cleanup-failed" {
+                            return Err(Failure::new(
+                                "deps",
+                                crate::failure::FailureCode::DepsInstallFailed,
+                                "partial dependency restore could not be removed",
+                                "run qaren cleanup for this run before retrying",
+                            ));
+                        }
                     }
                 }
             }
         }
+        Ok(())
+    })();
+    if !ctx
+        .notes
+        .iter()
+        .any(|(key, value)| key == "deps_cache_restore" && value.starts_with("skipped:"))
+    {
+        timed(ctx, "restore", started);
     }
-    timed(ctx, "restore", started);
-    Ok(())
+    result
 }
 
 fn space(runner: &mut dyn Runner, paths: &[&Path], bytes: u64) -> Result<(), String> {
@@ -630,9 +658,9 @@ pub(crate) fn stage(ctx: &mut Ctx) -> Result<(), Failure> {
         .clone()
         .filter(|r| r.enabled)
     else {
+        skipped(ctx, &["stage", "publish"], "disabled");
         return Ok(());
     };
-    let started = ctx.runner.now_epoch_ms();
     let repo = ctx.record.candidate.repo_root.clone();
     let app_rel = ctx
         .record
@@ -644,70 +672,84 @@ pub(crate) fn stage(ctx: &mut Ctx) -> Result<(), Failure> {
     let dir = repo_dir(&ctx.runs_root, &resource).unwrap();
     // Publish keeps an existing entry, so a second copy of a hit would only be deleted.
     if directory(&dir.join(&resource.key), false).unwrap_or(false) {
+        skipped(ctx, &["stage", "publish"], "cache-hit");
         return Ok(());
     }
-    let staged = staging_dir(&dir, &ctx.record.run_id).unwrap();
-    resource.staging = true;
-    ctx.record.resources.deps_cache = Some(resource.clone());
-    ctx.save()?;
-    events::stage("deps_cache_stage", StageState::Running, None, None);
-    let result = (|| -> Result<(), String> {
-        let modules = supported_modules(&repo, &app_rel)?;
-        if modules.is_empty() {
-            return Err("layout-unsupported".into());
-        }
-        let bytes = modules.iter().try_fold(0u64, |n, rel| {
-            tree_bytes(&repo.join(rel), &repo.join(rel)).map(|s| n.saturating_add(s))
-        })?;
-        space(ctx.runner, &[&ctx.runs_root, &repo], bytes)?;
-        {
-            let _guard = lock(
-                ctx.runner,
-                &ctx.runs_root,
-                &ctx.record.run_id,
-                ctx.record.prepare.as_ref(),
-            )?;
-            directory(&dir, true)?;
-            directory(&dir.join(".staging"), true)?;
-            if directory(&staged, false)? {
-                return Err("disabled".into());
+    let started = ctx.runner.now_epoch_ms();
+    let result = (|| {
+        let staged = staging_dir(&dir, &ctx.record.run_id).unwrap();
+        resource.staging = true;
+        ctx.record.resources.deps_cache = Some(resource.clone());
+        ctx.save()?;
+        events::stage("deps_cache_stage", StageState::Running, None, None);
+        let result = (|| -> Result<(), String> {
+            let modules = supported_modules(&repo, &app_rel)?;
+            if modules.is_empty() {
+                return Err("layout-unsupported".into());
             }
-            directory(&staged, true)?;
-            buildplan::save_json(&staged.join("owner.json"), &ctx.record.prepare)
-                .map_err(|e| e.to_string())?;
+            let bytes = modules.iter().try_fold(0u64, |n, rel| {
+                tree_bytes(&repo.join(rel), &repo.join(rel)).map(|s| n.saturating_add(s))
+            })?;
+            space(ctx.runner, &[&ctx.runs_root, &repo], bytes)?;
+            {
+                let _guard = lock(
+                    ctx.runner,
+                    &ctx.runs_root,
+                    &ctx.record.run_id,
+                    ctx.record.prepare.as_ref(),
+                )?;
+                directory(&dir, true)?;
+                directory(&dir.join(".staging"), true)?;
+                if directory(&staged, false)? {
+                    return Err("disabled".into());
+                }
+                directory(&staged, true)?;
+                buildplan::save_json(&staged.join("owner.json"), &ctx.record.prepare)
+                    .map_err(|e| e.to_string())?;
+            }
+            for rel in &modules {
+                clone_modules(ctx.runner, &repo.join(rel), &staged.join("tree").join(rel))?;
+            }
+            buildplan::save_json(
+                &staged.join("entry.json"),
+                &Entry {
+                    schema: SCHEMA.into(),
+                    key: resource.key,
+                    created_ms: ctx.runner.now_epoch_ms(),
+                    modules,
+                    bytes,
+                },
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })();
+        if let Err(reason) = result {
+            skipped(
+                ctx,
+                &["publish"],
+                match reason.as_str() {
+                    "layout-unsupported" => "unsupported-layout",
+                    "clone-unsupported" => "clone-unsupported",
+                    _ => "disabled",
+                },
+            );
+            ctx.record.resources.deps_cache.as_mut().unwrap().enabled = false;
+            if directory(&staged, false).unwrap_or(false) {
+                let _ = std::fs::remove_dir_all(&staged);
+            }
+            note(
+                ctx,
+                if reason == "clone-unsupported" || reason == "layout-unsupported" {
+                    &reason
+                } else {
+                    "disabled"
+                },
+            );
         }
-        for rel in &modules {
-            clone_modules(ctx.runner, &repo.join(rel), &staged.join("tree").join(rel))?;
-        }
-        buildplan::save_json(
-            &staged.join("entry.json"),
-            &Entry {
-                schema: SCHEMA.into(),
-                key: resource.key,
-                created_ms: ctx.runner.now_epoch_ms(),
-                modules,
-                bytes,
-            },
-        )
-        .map_err(|e| e.to_string())?;
         Ok(())
     })();
-    if let Err(reason) = result {
-        ctx.record.resources.deps_cache.as_mut().unwrap().enabled = false;
-        if directory(&staged, false).unwrap_or(false) {
-            let _ = std::fs::remove_dir_all(&staged);
-        }
-        note(
-            ctx,
-            if reason == "clone-unsupported" || reason == "layout-unsupported" {
-                &reason
-            } else {
-                "disabled"
-            },
-        );
-    }
     timed(ctx, "stage", started);
-    Ok(())
+    result
 }
 
 pub(crate) fn publish(ctx: &mut Ctx) -> Result<(), Failure> {
@@ -717,8 +759,9 @@ pub(crate) fn publish(ctx: &mut Ctx) -> Result<(), Failure> {
         .resources
         .deps_cache
         .clone()
-        .filter(|r| r.staging)
+        .filter(|r| r.enabled && r.staging)
     else {
+        skipped(ctx, &["publish"], "disabled");
         return Ok(());
     };
     let started = ctx.runner.now_epoch_ms();

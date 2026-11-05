@@ -3964,10 +3964,14 @@ markers. Only clone copies are admitted; unsupported cloning or insufficient
 space disables caching for that run, with no full-copy fallback. Restore and
 staging each require 1 GiB plus the tree's apparent size in free space.
 
-Receipts report `deps_cache=hit|miss|disabled|clone-unsupported|layout-unsupported`
-and `deps_cache_restore`, `deps_cache_install`, `deps_cache_stage` and
-`deps_cache_publish` timings in milliseconds. The dependency stage stream also
-reports cache decisions. Retention keeps the two newest entries per repository
+Receipts report `deps_cache=hit|miss|disabled|clone-unsupported|layout-unsupported`.
+Every PR receipt includes `deps_cache_restore`, `deps_cache_install`,
+`deps_cache_stage` and `deps_cache_publish` in `outcomes`: `attempted` operations
+have measured durations in `timings_ms`; skipped operations have no duration and
+report `skipped:<reason>`. Reasons include `cache-hit`, `disabled`, `missing-input`,
+`probe-failed`, `unsupported-layout`, `clone-unsupported` and `not-reached` when
+the run stopped before the operation. The dependency stage stream also reports
+cache decisions. Retention keeps the two newest entries per repository
 and retains any older entry with a live or unproven reader, regardless of age.
 `qaren doctor` reports entry count, staging count and apparent bytes.
 `qaren cleanup <run-id>` removes that run's markers and staging;

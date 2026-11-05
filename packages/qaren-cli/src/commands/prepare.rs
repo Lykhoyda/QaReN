@@ -1009,6 +1009,7 @@ pub(crate) fn install_deps(ctx: &mut Ctx) -> Result<(), Failure> {
         // hard-guarantees no network and therefore no credential prompt.
         deps_args.push("--offline");
     }
+    let started = ctx.runner.now_epoch_ms();
     let deps = ctx.runner.run(
         &CmdSpec::new(
             "pnpm-install",
@@ -1019,6 +1020,9 @@ pub(crate) fn install_deps(ctx: &mut Ctx) -> Result<(), Failure> {
         .cwd(&ctx.record.candidate.project_root.clone())
         .registry_auth_env(&ctx.record.scenario.deps.registry_auth_env),
     );
+    if ctx.verb == "pr" {
+        crate::deps_cache::timed(ctx, "install", started);
+    }
     ensure_running(ctx.runner, "deps")?;
     if !deps.ok() {
         return Err(Failure::new(

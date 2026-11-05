@@ -2336,15 +2336,7 @@ fn install_run_deps(
     if let Some(pr) = pr {
         crate::deps_cache::restore(ctx, &pr.repo_root, config.deps_cache != Some(false))?;
     }
-    let started = ctx.runner.now_epoch_ms();
-    let result = prepare::install_deps(ctx);
-    if pr.is_some() {
-        ctx.timings.push((
-            "deps_cache_install".into(),
-            ctx.runner.now_epoch_ms().saturating_sub(started),
-        ));
-    }
-    result?;
+    prepare::install_deps(ctx)?;
     if pr.is_some() {
         crate::deps_cache::stage(ctx)?;
     }
