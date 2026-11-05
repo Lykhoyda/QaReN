@@ -109,6 +109,7 @@ import {
   dismissCandidate,
   plannedSurface,
   recover,
+  soleDecline,
   surfaceGone,
 } from './recover.js';
 import type {
@@ -179,6 +180,7 @@ import {
   buildLedger,
   screenshotName,
 } from './ledger.js';
+import type { InterruptionReceipt } from './ledger.js';
 
 export interface ActResult {
   settle?: Pick<TimingEvent, 'method' | 'ms'>;
@@ -475,12 +477,16 @@ export interface WalkOptions {
 
 const recoveryTarget = (item: Item): RecoveryTarget | undefined => {
   if (item.kind === 'check')
-    return item.literal ? { quoted: item.text, phrase: item.text } : undefined;
+    return item.literal
+      ? { quoted: item.text, phrase: item.text, kind: 'check', line: item.line }
+      : undefined;
   const target = stepTarget(item);
   if (!target) return undefined;
   const declared = parseStep(planLineBody(item.raw));
   return {
     ...target,
+    kind: item.kind,
+    line: item.line,
     ...(declared && !('refuse' in declared) ? { declared: stepTarget(declared) } : {}),
   };
 };
@@ -1369,9 +1375,15 @@ async function walkBlockScoped(
     scrollUntilBand(target, screen, (receipt) => scrollBands.set(item.line, receipt));
   const overlayRows = new Map<number, { observation: number; checks: OverlayHitReceipt[] }>();
   const withheldRows = new Map<number, NonNullable<LedgerRow['screenshotWithheld']>>();
+  // Per line, what interruption recovery last decided; a dismissal stays on this line's later rows.
+  const interruptions = new Map<number, InterruptionReceipt>();
   const emit = (row: WalkRow): void => {
     const scrollBand = scrollBands.get(row.line);
     if (scrollBand) row = { ...row, scrollBand };
+    const interruption = interruptions.get(row.line);
+    // A veto on an earlier attempt says nothing about a pass; a dismissal explains it.
+    if (interruption && (row.outcome !== 'pass' || interruption.outcome === 'dismissed'))
+      row = { ...row, interruption };
     const overlayChecks = overlayRows.get(row.line)?.checks;
     if (overlayChecks?.length) row = { ...row, overlayChecks };
     if (fillHandlerRefused)
@@ -1550,6 +1562,12 @@ async function walkBlockScoped(
         };
       reason = [...segments(reason), PREVIOUS_PLAN_PRESS];
     }
+    const owned = interruptions.get(item.line);
+    if (owned?.provenance === 'ownership' && owned.targetLine !== undefined)
+      lastScreen = {
+        ...lastScreen,
+        suggestion: `line ${owned.targetLine} targets this control; if the interruption is optional, move that step before line ${item.line} or remove it`,
+      };
     const withheld = privacy.textWithheld(last);
     emit({
       ...row,
@@ -2458,8 +2476,19 @@ async function walkBlockScoped(
       }),
       ...(opts.laterTargets ?? []),
     ];
+    if (interruptions.get(item.line)?.outcome !== 'dismissed') interruptions.delete(item.line);
     const interruptionRejected = (record: InterruptionDiagnostic, observation?: number) => {
       if (record.veto === 'previous-plan-press') pressVetoed = item;
+      const behind = record.targetIndex === undefined ? undefined : planTargets[record.targetIndex];
+      interruptions.set(item.line, {
+        considered: true,
+        outcome: 'vetoed',
+        veto: record.veto,
+        ...(record.provenance ? { provenance: record.provenance } : {}),
+        ...(behind?.line !== undefined ? { targetLine: behind.line } : {}),
+        ...(behind?.kind ? { targetKind: behind.kind } : {}),
+        soleDecline: record.soleDecline,
+      });
       try {
         deps.note?.(
           `interruption-rejected=${JSON.stringify({ line: item.line, ...(observation === undefined ? {} : { observation }), ...record })}`,
@@ -2478,6 +2507,9 @@ async function walkBlockScoped(
     let interruptionShot: string | undefined;
     let dialogAct: ActResult | undefined;
     let declineAttempted = false;
+    let dismissStarted = false;
+    let declineDispatched = false;
+    let declineCentreY: number | undefined;
     const result = await recover(
       fresh.screen,
       {
@@ -2518,6 +2550,7 @@ async function walkBlockScoped(
                 },
               };
           }
+          dismissStarted = true;
           interruptionShot = await shoot(item);
           declineAttempted = true;
           recoveries += 1;
@@ -2537,6 +2570,7 @@ async function walkBlockScoped(
           };
           let taken = 0;
           let dispatched = false;
+          let observed: Screen | undefined;
           const nested = await walkBlock(
             support,
             {
@@ -2544,6 +2578,7 @@ async function walkBlockScoped(
               captureScreen: async (options) => {
                 const screen = await captureScreen({ ...options, platformPresence: true });
                 if (!dispatched) {
+                  observed = screen;
                   const candidate = dismissCandidate(screen, planTargets, (record) =>
                     interruptionRejected(record),
                   );
@@ -2563,7 +2598,14 @@ async function walkBlockScoped(
                     reason: 'the decline control was already attempted; it was not retried',
                   });
                 dispatched = true;
+                const control = observed?.elements.find((e) => e.ref === ref);
+                const frame = control && elementFrame(control);
+                // Android frames are pixels; the receipt is in points like iOS.
+                declineCentreY = frame
+                  ? (frame.y + frame.height / 2) / (observed?.pointScale ?? 1)
+                  : undefined;
                 const result = await deps.press(ref, context);
+                declineDispatched = result.ok && result.executed !== false;
                 if (!result.ok || result.executed === false) {
                   observeRowSettle(result);
                   throw new ResolutionError({
@@ -2606,6 +2648,35 @@ async function walkBlockScoped(
       }
       throw error;
     });
+    // The dismissal reached its dispatch phase, or Jev vetoed it just before.
+    const dismissing =
+      dismissStarted ||
+      (result && 'refuse' in result && result.refuse.code === 'INTERRUPTION_VETOED');
+    const declined: InterruptionReceipt['outcome'] | undefined = !result
+      ? undefined
+      : 'handled' in result
+        ? result.handled === 'interruption'
+          ? 'dismissed'
+          : undefined
+        : 'refuse' in result && result.refuse.code === 'INTERRUPTION_AMBIGUOUS'
+          ? 'ambiguous'
+          : dismissing
+            ? // A dispatched decline whose effect or disappearance was not proven, or none was sent.
+              declineDispatched
+              ? 'did-not-disappear'
+              : 'not-dispatched'
+            : undefined;
+    if (declined)
+      interruptions.set(item.line, {
+        considered: true,
+        soleDecline: soleDecline(fresh.screen),
+        // A pre-dispatch recheck's veto, target line and screen facts explain why nothing was sent.
+        ...(declined === 'not-dispatched' ? interruptions.get(item.line) : {}),
+        outcome: declined,
+        ...(declined === 'did-not-disappear' && declineCentreY !== undefined
+          ? { pressCentreY: declineCentreY }
+          : {}),
+      });
     if (!result) return undefined;
     if ('handled' in result && !declineAttempted) recoveries += 1;
     if ('handled' in result) {
@@ -4669,6 +4740,7 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     ...(row.retryCause ? { retryCause: row.retryCause } : {}),
     ...(row.scrollDetail ? { scrollDetail: row.scrollDetail } : {}),
     ...(row.scrollBand ? { scrollBand: row.scrollBand } : {}),
+    ...(row.interruption ? { interruption: row.interruption } : {}),
     ...(row.overlayChecks ? { overlayChecks: row.overlayChecks } : {}),
     ...(row.entryMismatch ? { entryMismatch: row.entryMismatch } : {}),
     ...(row.screenshotWithheld ? { screenshotWithheld: row.screenshotWithheld } : {}),

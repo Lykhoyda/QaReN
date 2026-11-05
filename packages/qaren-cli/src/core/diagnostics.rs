@@ -667,7 +667,9 @@ impl Sink {
         if self.file.is_none()
             && (matches!(
                 event["kind"].as_str(),
-                Some("target-miss" | "media-withheld" | "label-provenance")
+                Some(
+                    "target-miss" | "media-withheld" | "label-provenance" | "interruption-rejected"
+                )
             ) || (event["kind"] == "metric"
                 && matches!(
                     event["stage"].as_str(),
