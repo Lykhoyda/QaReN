@@ -2605,7 +2605,7 @@ async function walkBlockScoped(
                   ? (frame.y + frame.height / 2) / (observed?.pointScale ?? 1)
                   : undefined;
                 const result = await deps.press(ref, context);
-                declineDispatched = result.ok && result.executed !== false;
+                declineDispatched = result.executed !== false && result.mutation !== 'none';
                 if (!result.ok || result.executed === false) {
                   observeRowSettle(result);
                   throw new ResolutionError({

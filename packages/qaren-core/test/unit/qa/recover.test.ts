@@ -987,6 +987,26 @@ test('later ID targets own the decline for every step kind with one or multiple 
   }
 });
 
+test('a later wait or check on decline-labelled static text vetoes by presence', () => {
+  const copy: NativeNode = {
+    ref: '@copy',
+    type: 'StaticText',
+    identifier: 'promo-copy',
+    label: 'Close',
+  };
+  for (const kind of ['wait', 'check'] as const) {
+    const { result, records } = decide(fullScreenPromo(copy), [
+      waitHome,
+      later('promo-copy', kind, { exact: 'id' }),
+    ]);
+    assert.equal(result, undefined);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].veto, 'later-target');
+    assert.equal(records[0].targetIndex, 1);
+    assert.equal(records[0].provenance, 'presence');
+  }
+});
+
 test('a second control of any state defeats the sole-decline exemption', () => {
   const input: NativeNode = { ref: '@email', type: 'TextField', label: 'Email', hittable: true };
   const button: NativeNode = { ref: '@go', type: 'Button', label: 'Continue', hittable: true };
