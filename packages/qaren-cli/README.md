@@ -635,10 +635,25 @@ Plans contain a `## QA` section, named `###` blocks, numbered actions and
 [literal](../qaren-core/test/fixtures/plans/literal.md) and
 [phrase](../qaren-core/test/fixtures/plans/phrases.md) fixtures and the
 [parser](../qaren-core/src/qa/plan.ts) for accepted grammar. Quoted press and fill
-targets resolve observed labels or test IDs locally. Distinct matches are
-counted before kind, disabled, hittability, offscreen or React-only filters, so two
-or more refuse with `TARGET_AMBIGUOUS`, without a Jev tie-break, even if the
-target adds positional words such as `Tap "Save" at the bottom`. Outside fills,
+targets resolve observed labels or test IDs locally. A Fill also accepts an input's
+React placeholder. For an unnamed positional input on iOS, dispatch uses one additional
+bounded React confirmation read to re-confirm that placeholder against the live tree
+and the sole native input of a complete snapshot. Its positional ref, native type
+and frame must still match the captured input. An empty native input without an ID
+or label receives that name only with complete native acquisition and React coverage
+and attested host evidence proving a sole native input and a sole React input host,
+including ordinary captures without platform presence.
+Separately emitted React layers count as one input only when they attest to the
+same single input host. A non-wrapper layer must supply the placeholder; other
+layers may omit it, but any placeholders they expose must agree.
+A second native input anywhere in the capture, including off screen or hidden,
+keeps the placeholder withheld; no competitor exclusion is performed.
+When React coverage is unknown or incomplete, a missed Fill with one unnamed
+on-screen input reports `evidence-incomplete`, names that coverage class, and
+suggests targeting the field by test id. Distinct matches are counted before kind,
+disabled, hittability, offscreen or React-only filters, so two or more refuse with
+`TARGET_AMBIGUOUS`, without a Jev tie-break, even if the target adds positional words
+such as `Tap "Save" at the bottom`. Outside fills,
 a React-only element whose testID equals the quoted value is not counted while a
 native element carries that testID, so a quoted press, wait or scroll reaches
 the native element; two native elements sharing it still refuse. A fill counts
@@ -771,8 +786,8 @@ live frame equals that owner's frame; the tap goes to the unchanged point. A lat
 screen change cannot turn a proven no-mutation refusal into a passing action.
 For an iOS native-backed button outside an alert, not reported selected, inside
 a scroll container no taller than three times the target's height and with a visible enabled button
-beside it on the same row, QaReN requires exactly one match for the target's
-identity, retaining its original reference and reporting selected after the press,
+beside it on the same row, QaReN requires the target to be re-identified as
+described below and report selected after the press,
 while that identity remains on screen. Identity is kind plus testID when present,
 otherwise kind plus label on an element without a testID. If no element
 with that identity remains after the tap, the existing screen-change contract
@@ -793,11 +808,23 @@ its responder behavior, or a selected-state contract. iOS omits false selected
 state, so an invisible successful toggle and a swallowed tap look alike. QaReN
 sends no held press or second tap. The refusal does not prove that the app callback
 failed. The fixed next action is
-`rerun_then_ask_app_team_expose_selection_in_row_list`. The refusal includes this
-guidance, with N post-tap observations and M milliseconds from tap dispatch to
-the final readback:
+`rerun_then_ask_app_team_expose_selection_in_row_list`. The refusal names what
+was observed, with N post-tap observations and M milliseconds from tap dispatch
+to the final readback. When the tapped control was re-identified:
 
-> The tap did not change the control's selected state (N observations over M ms); the control sits in a row-shaped scrolling list, which can swallow synthetic taps. Next: re-run once; if it repeats on the same control, ask the app team to make the selection reachable for automated taps (for example by disabling the list's own scrolling for this set) or to expose the selected state another way.
+> The tapped control reported no selected state after the tap (N observations over M ms); one tap was sent.
+
+When it was not (`target_identity_unavailable`):
+
+> The tapped control could not be re-identified after the tap (N observations over M ms), so its selected state was not read; one tap was sent.
+
+After a tap the runner reports as dispatched successfully without error,
+React-only entries are excluded from identity matches. Exactly one remaining
+match re-identifies the control, even under a new element reference when the
+target has a testID; a target without a testID must retain its original reference.
+Multiple native matches, or only a React-only entry remaining, leave the control
+unbound. A tap not reported as dispatched successfully without error keeps the
+stricter rule: exactly one identity match under the same element reference.
 
 On iOS, before tapping a candidate matching the row-choice heuristic above, QaReN
 attempts to dismiss a visible keyboard through the keyboard guard's dismissal chain
@@ -885,7 +912,7 @@ Resolution, frame comparison and hit testing share one 300 ms deadline.
 Missing retained identity, a generation mismatch, zero or ambiguous live
 matches, and failed or over-budget checks leave the check unavailable and
 permit ordinary dispatch as before; the [strict overlay path](#covered-target-recovery)
-instead requires a proven live hit. Stable taps check `XCUIElement.isHittable`; exact
+instead requires a proven live hit. Stable taps check `XCUIElement.isHittable`; ordinary exact
 fills use the frame guard without an extra hittability read, then keep the
 existing focus-point check when a focus tap is needed. An input's hit test
 applies only when the focus point lies inside its frame; a wrapper-centre focus
@@ -1002,19 +1029,51 @@ A false read, a moved target, or an unavailable read (expired snapshot, no ident
 read that threw or ran out of time) refuses `LIVE_HIT_UNPROVEN` with no tap, and the step fails
 with “stayed off screen after one scroll” and the inferred band cutter described
 under [clearance diagnostics](#clearance-diagnostics). The scroll
-that ran before the refusal remains a performed action. Fills, scroll-until, waits
-and Android keep the inferred overlay rule. For press and fill clearance failures
-caused by an inferred overlay, the step names the cutter and says why no live hit read was asked when
-the strict path is ineligible. A runner without `STRICT_LIVE_HIT_V1` refuses `RN_FAST_RUNNER_STALE` before anything
-is sent; reopen the device session to rebuild it.
+that ran before the refusal remains a performed action. Press behavior is unchanged.
+
+On iOS, quoted waits and scroll-until completion can override that inferred cover
+with a read-only `hitProbe`. It runs only for a unique captured native carrier,
+inside its clip, with the keyboard proven hidden and the app in front. A fresh
+positive platform hit read proves that a hit point exists for that carrier; it
+does not prove its centre or full frame is exposed. Replay uniqueness and literal
+text evidence remain required. A negative read retains the inferred refusal and
+adds “the live hit read found no hit point”; an unavailable, moved or late read,
+an anonymous or ambiguous identity, or an older runner retains the refusal with
+“no live hit read was available”. Each poll probes a carrier at most once and
+reuses the result only within that observation and native snapshot generation.
+The row's `overlayChecks` records `liveHit` and the value-free cutter facts.
+
+An iOS Fill under the same inferred cover also requires a positive read-only
+probe to skip inferred-overlay clearance. A negative or unavailable probe ends
+the Fill without a clearance scroll, focus or typing; this read-only refusal
+also applies to older runners. Its native focus then independently
+requires a fresh positive live hit read and activates the bound input itself,
+with no coordinate fallback. A wrapper fallback taps through the strict press
+path before keyboard typing. A missing or negative strict focus read refuses
+`LIVE_HIT_UNPROVEN` before focus or typing; it cannot enter a less strict Fill
+rung. Ordinary keyboard and viewport clearance, front surfaces, and Android
+keep their existing rules.
+
+| Optional iOS capability | Required for |
+| --- | --- |
+| `STRICT_LIVE_HIT_V1` | Strict overlay presses and Fill focus |
+| `LIVE_HIT_PROBE_V1` | Read-only overlay probes and the runner generation supporting strict Fill focus |
+
+A missing required capability refuses before dispatch; reopen the device session
+to rebuild the runner. A target hit point never authorizes a drag corridor:
+scroll-until drags retain every static overlay cut, including cuts caused by
+transparent containers. A zero or undersized band still refuses
+`SCROLL_BAND_TOO_SMALL`. The row's `scrollBand.status` distinguishes
+`no-geometry`, `overlay-cut` and `clear`; a plain `Scroll down` remains a
+plan-level option when no keyboard is up.
 The walker passes that band to the shared scroll handler so the drag starts
 inside it, narrowing the existing keyboard-safe band. A caller band is also kept
 clear of the system gesture edges: 48 dp from the top and bottom window edges on
 Android, using the snapshot's display density, and 20 pt from the top and 34 pt
 from the bottom on iOS. Callers passing no band
-use the existing keyboard-safe band. On both iOS and Android, a target whose centre
-is covered by the observed keyboard or a sticky overlay gets a scroll sized to move that centre
-toward the middle of that band. Precise vertical drags normally keep a 10% dead zone at
+use the existing keyboard-safe band. When keyboard or overlay clearance requires
+a scroll, it is sized to move the target's centre toward the middle of that band.
+Precise vertical drags normally keep a 10% dead zone at
 touch-down and stop at least one pixel inside the far band edge; short bands shrink the
 start inset to allow at least 48 px of travel. A clearance scroll without
 a band keeps the cap of 60% of the screen area above the keyboard, without a
@@ -1072,8 +1131,9 @@ typing under the [already-set rules](#fill-ladder). Otherwise a strict fill repl
 the field's content: the bound input is cleared before typing, and verification
 expects exactly the plan text. For keyboard fallback's replacement request and
 read-back policy, see below.
-Rebinding an input without a testID requires its original label and native type;
-the same frame alone cannot substitute a different input.
+Rebinding an input without a testID requires its original label and native type,
+except for the guarded [unnamed placeholder pairing](#check-a-plan).
+The same frame alone cannot substitute a different input.
 For strict fills, only a stable exact read-back
 verifies a fill. A masked secure read-back or an unreadable one records a
 passing row with reason `UNVERIFIED_FILL`, never a verified pass; an empty or
@@ -1590,7 +1650,8 @@ screen bottom, because its chrome paints below the frame XCUI reports. The
 keyboard's own keys and the chrome in its window stay visible. Literal checks
 do not treat other overlays as occlusion evidence. Quoted waits additionally
 reject text when every matching literal contributor has its centre covered by
-the detected overlay clearance band; matching unresolved text keeps the verdict
+the detected overlay clearance band, unless the scoped iOS live probe above
+proves that carrier has a hit point; matching unresolved text keeps the verdict
 unsure. An uncovered occurrence still satisfies the wait, and missing geometry
 alone does not prove coverage. An eligible unmet wait can enter
 [step recovery](#step-recovery) to dismiss an interruption. Scroll-until uses the
@@ -1613,11 +1674,11 @@ remaining vertical span supplies the drag band; an exhausted span refuses
 display density when available. Without a scroll container, the centred window
 drag is retained.
 Quoted scroll-until uses the current ordinary capture for target visibility and
-geometry, with no additional platform-presence confirmation. A target whose tap
-point is covered by a front overlay requires another safe drag within the original
-six-drag and time budgets. An edge can remain under a floating control when the
-tap point is clear; drag bands still exclude the overlay frame. Phrase capture
-policy is unchanged.
+geometry, with the [iOS inferred-overlay probe](#covered-target-recovery) governing
+completion under an inferred cover. Otherwise, a target whose tap point is covered
+by a front overlay requires another safe drag within the original six-drag and
+time budgets. An edge can remain under a floating control when the tap point is
+clear; drag bands still exclude the overlay frame. Phrase capture policy is unchanged.
 Selected-tab changes or disappearance/replacement of the dragged list refuse
 `SCROLL_NAVIGATED` before searching a different screen. An identified list matches
 by type and testID through keyboard/header resizing; unidentified lists retain the
@@ -3490,7 +3551,7 @@ The cutter is inferred, not the proven cover. Unread or unavailable facts
 remain `null`; target text, identifiers and target coordinates are excluded. The
 [walker](../qaren-core/src/qa/walker.ts) owns the event layout; the
 [centre predicate](../qaren-core/src/qa/resolve.ts) owns its coverage facts.
-On the [strict iOS overlay path](#covered-target-recovery), this event follows
+On the [strict iOS overlay press path](#covered-target-recovery), this event follows
 a live-hit refusal with mutation `none`, rather than the inference alone.
 The event preserves the failed step and grants no further scroll or
 target dispatch; sink failures leave the outcome unchanged. It stays out of the

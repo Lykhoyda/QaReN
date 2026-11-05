@@ -1,3 +1,9 @@
+import {
+  nativeCaptureCoverage,
+  reactCaptureCoverage,
+  reactCoverage,
+} from './acquisition-coverage.js';
+export { nativeCaptureCoverage } from './acquisition-coverage.js';
 import { AppProcessGoneError } from '../domain/app-process.js';
 export { AppProcessGoneError } from '../domain/app-process.js';
 import type { DevOverlayObservation } from '../domain/dev-overlay.js';
@@ -17,7 +23,7 @@ import {
   joinedSnapshotDiagnostics,
   validateReactHostEvidence,
 } from './screen.js';
-import type { DigestEntry, NativeNode, ReactHostEvidence, Screen } from './screen.js';
+import type { DigestEntry, NativeNode, Screen } from './screen.js';
 import {
   clippingViewport,
   outsideViewport,
@@ -486,22 +492,6 @@ function presenceCauses(
   ];
 }
 
-export function nativeCaptureCoverage(observation: NativeObservation): Coverage['native'] {
-  const verdict = isRecord(observation.snapshotVerdict) ? observation.snapshotVerdict : undefined;
-  if (nativeIncompleteCauses(observation).length > 0) return 'incomplete';
-  return Array.isArray(observation.nodes) &&
-    observation.nodes.length > 0 &&
-    observation.truncated === false &&
-    observation.normalizationDroppedNodes === 0 &&
-    verdict?.state === 'ok' &&
-    verdict.nodeCount === observation.nodes.length &&
-    verdict.refMapUpdated === true &&
-    Array.isArray(verdict.reasons) &&
-    verdict.reasons.length === 0
-    ? 'complete'
-    : 'unknown';
-}
-
 export function nativeDevOverlayObservation(observation: NativeObservation): DevOverlayObservation {
   const coverage = nativeCaptureCoverage(observation);
   if (coverage !== 'complete')
@@ -513,40 +503,6 @@ export function nativeDevOverlayObservation(observation: NativeObservation): Dev
   if (front === 'dev-fab' || front === 'dev-menu' || front === 'dev-redbox')
     return { state: 'shown', front };
   return { state: 'clear', front };
-}
-
-function reactCaptureCoverage(observation: ReactObservation): Coverage['react'] {
-  const verdict = isRecord(observation.verdict) ? observation.verdict : undefined;
-  if (
-    observation.truncated === true ||
-    verdict?.state === 'failed' ||
-    verdict?.state === 'degraded' ||
-    verdict?.complete === false ||
-    (typeof verdict?.path === 'string' && verdict.path !== 'interactive') ||
-    (Array.isArray(verdict?.reasons) && verdict.reasons.length > 0)
-  )
-    return 'incomplete';
-  return Array.isArray(observation.interactive) &&
-    (observation.truncated === undefined || observation.truncated === false) &&
-    verdict?.state === 'ok' &&
-    verdict.path === 'interactive' &&
-    verdict.complete === true
-    ? 'complete'
-    : 'unknown';
-}
-
-function reactCoverage(
-  observation: ReactObservation,
-  acquired: Coverage['react'],
-  hostEvidence: ReactHostEvidence | undefined,
-): Coverage['react'] {
-  if (
-    acquired === 'incomplete' ||
-    (observation.hostEvidence !== undefined && !hostEvidence) ||
-    hostEvidence?.complete === false
-  )
-    return 'incomplete';
-  return acquired === 'complete' && hostEvidence?.complete === true ? 'complete' : 'unknown';
 }
 
 export async function captureScreen(deps: CaptureDeps): Promise<Screen> {
@@ -739,6 +695,7 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
           },
           hostEvidence,
           nativePresence ?? (native.presenceCapture !== undefined ? 'unknown' : undefined),
+          captureCoverage.native,
         ),
         ...(typeof native.pointScale === 'number' &&
         Number.isFinite(native.pointScale) &&
@@ -780,6 +737,12 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
       (native.appProcessIdentifier as number) > 0
     )
       screen.appProcessIdentifier = native.appProcessIdentifier as number;
+    if (
+      typeof native.snapshotGeneration === 'number' &&
+      Number.isSafeInteger(native.snapshotGeneration) &&
+      native.snapshotGeneration >= 0
+    )
+      screen.nativeGeneration = native.snapshotGeneration;
     if (typeof native.keyboardVisible === 'boolean')
       screen.keyboardVisible = native.keyboardVisible;
     if (deps.warn) {

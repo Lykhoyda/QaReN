@@ -37,6 +37,39 @@ const words = (text: string): string[] =>
     .toLocaleLowerCase('en-US')
     .match(/[\p{L}\p{N}]+/gu) ?? [];
 
+export function placeholderPairingGap(
+  target: Target,
+  screen: Screen,
+  kind: Step['kind'],
+): 'unknown' | 'incomplete' | undefined {
+  const observed = [screen.captureCoverage?.react, screen.coverage?.react];
+  const coverage = observed.includes('incomplete')
+    ? 'incomplete'
+    : observed.includes('unknown') || observed.every((side) => side === undefined)
+      ? 'unknown'
+      : 'complete';
+  if (
+    kind !== 'fill' ||
+    target.quoted === undefined ||
+    target.exact === 'id' ||
+    coverage === 'complete' ||
+    screen.elements.some((element) => names(target, element, kind))
+  )
+    return;
+  const unnamed = screen.elements.filter(
+    (element) =>
+      element.kind === 'input' &&
+      !element.ref.startsWith('react:') &&
+      !element.offscreen &&
+      element.visibilityEvidence !== 'unresolved' &&
+      !element.testID &&
+      !element.label &&
+      element.value === undefined &&
+      !element.placeholder,
+  );
+  return unnamed.length === 1 ? coverage : undefined;
+}
+
 export function targetMissDiagnostic(
   target: Target,
   screen: Screen,
@@ -102,7 +135,8 @@ export function targetMissDiagnostic(
   const incomplete =
     (screen.captureCoverage?.native ?? screen.coverage?.native) !== 'complete' ||
     scanIncomplete ||
-    unresolved;
+    unresolved ||
+    placeholderPairingGap(target, screen, kind) !== undefined;
   return {
     kind: 'target-miss',
     line,
@@ -260,8 +294,12 @@ export function missSuggestion(
       return `the target of ${step} is only part of a larger label; quote the container's testID instead`;
     case 'not-scrollable':
       return `no scrollable area that could reveal the target of ${step} was observed; consider scrolling a named container or inserting the step that reveals the target`;
-    case 'evidence-incomplete':
+    case 'evidence-incomplete': {
+      const gap = placeholderPairingGap(target, screen, kind);
+      if (gap)
+        return `placeholder pairing was unavailable because React coverage on this screen is ${gap}; target the field by test id`;
       return 'the last capture was incomplete; one re-run is reasonable, then report';
+    }
   }
 }
 

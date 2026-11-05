@@ -46,7 +46,14 @@ import { reopenSessionForRecovery } from './device-session.js';
 import type { FlatNode } from '../fast-runner-ref-map.js';
 import type { CDPClient } from '../cdp-client.js';
 import { exactIdentities } from '../qa/identity.js';
-import { join, type NativeNode } from '../qa/screen.js';
+import { join, validateReactHostEvidence, type NativeNode } from '../qa/screen.js';
+import { captureQaReact } from '../qa/react-capture.js';
+import {
+  nativeCaptureCoverage,
+  reactCaptureCoverage,
+  reactCoverage,
+} from '../qa/acquisition-coverage.js';
+import type { NativeObservation } from '../qa/capture.js';
 import {
   getCachedSignature,
   getKeyboardTop,
@@ -82,6 +89,7 @@ export interface SnapshotNode {
   ref: string;
   label?: string;
   identifier?: string;
+  value?: string;
   type?: string;
   packageName?: string;
   checked?: boolean;
@@ -193,11 +201,26 @@ function parseSnapshotEnvelope(result: ToolResult): SnapshotNode[] | null {
   }
 }
 
+function snapshotAcquisition(result: ToolResult): NativeObservation {
+  try {
+    const envelope = JSON.parse(result.content[0].text);
+    return {
+      nodes: envelope.data?.nodes,
+      truncated: envelope.data?.truncated,
+      normalizationDroppedNodes: envelope.data?.normalizationDroppedNodes,
+      snapshotVerdict: envelope.meta?.snapshotVerdict,
+    };
+  } catch {
+    return {};
+  }
+}
+
 export type SnapshotFetchResult =
   | {
       ok: true;
       nodes: SnapshotNode[];
       provenance: SnapshotProvenance;
+      acquisition?: NativeObservation;
       recoveredTier?: RecoveryTier;
     }
   | { ok: false; reason: 'fetch-failed' }
@@ -268,6 +291,7 @@ async function fetchSnapshotNodesWithPolicy(
     return {
       ok: true,
       nodes: initialNodes,
+      acquisition: snapshotAcquisition(first),
       provenance: { source: 'fresh', originAuthority: 'not-proven' },
     };
   }
@@ -315,6 +339,7 @@ async function fetchSnapshotNodesWithPolicy(
   return {
     ok: true,
     nodes: recoveredNodes,
+    acquisition: snapshotAcquisition(recovery.result),
     provenance: { source: 'fresh', originAuthority: 'not-proven' },
     recoveredTier: recovery.tier,
   };
@@ -713,13 +738,12 @@ function nodesWithTestID(nodes: SnapshotNode[], id: string): SnapshotNode[] {
   ).flatMap(({ element }) => nodes.filter((n) => n.ref === element.ref));
 }
 
-// A positional @eN may only bind when its identity still matches the
-// signature captured BEFORE this binding snapshot; a shifted generation
-// rebinds by unique identity or rejects — never by recycled position.
+// Positional refs require prior identity or a live-confirmed placeholder pairing.
 export function bindExactFillTarget(
   nodes: SnapshotNode[],
   rawRef: string,
   priorSignature?: RefSignature | null,
+  options?: { placeholderCandidate: true },
 ): ExactBindOutcome {
   const clean = rawRef.replace(/^@/, '');
   const positional = /^e\d+$/.test(clean);
@@ -731,6 +755,31 @@ export function bindExactFillTarget(
       ((priorSignature.identifier?.trim().length ?? 0) > 0 ||
         (priorSignature.label?.trim().length ?? 0) > 0);
     if (!hasRobustIdentity) {
+      const inputs = nodes.filter((candidate) => isRecognizedInputType(candidate.type));
+      const candidate = inputs[0];
+      if (
+        options?.placeholderCandidate &&
+        priorSignature &&
+        inputs.length === 1 &&
+        cleanNodeRef(candidate) === clean &&
+        !candidate.identifier?.trim() &&
+        !candidate.label?.trim() &&
+        candidate.type === priorSignature.type &&
+        candidate.rect &&
+        priorSignature.rect &&
+        rectsMatch(candidate.rect, priorSignature.rect)
+      )
+        return {
+          ok: true,
+          binding: {
+            inputRef: `@${clean}`,
+            inputTestId: null,
+            inputSignature: signatureForNode(candidate),
+            focusRef: `@${clean}`,
+            wrapper: false,
+            secure: isSecureInputNode(candidate),
+          },
+        };
       return {
         ok: false,
         detail: `ref @${clean} has no robust pre-refresh identity for unique rebinding`,
@@ -1048,6 +1097,7 @@ export function createDeviceLongPressHandler(
 // --- Fill (exact target + final verification — GH #581) ---
 
 export interface FillArgs {
+  requireLiveHit?: boolean;
   qaTiming?: TimingContext;
   qaContext?: QaDispatchContext;
   ref: string;
@@ -1056,6 +1106,7 @@ export interface FillArgs {
   waitForKeyboardMs?: number;
   /** Explicit native testID; it must equal the exact bound input's current identifier. */
   testID?: string;
+  placeholderIdentity?: string;
   /** Type into the field that already has keyboard focus instead of binding an input. */
   focused?: boolean;
   /** With focused: refuse before typing when the React read of the intended input reports it unfocused. */
@@ -1277,7 +1328,9 @@ function fillFailure(
     | 'NO_TEXT_INPUT_TARGET'
     | 'FOCUS_TARGET_OCCLUDED'
     | 'TEXT_ENTRY_UNVERIFIED'
-    | 'TARGET_AMBIGUOUS',
+    | 'TARGET_AMBIGUOUS'
+    | 'LIVE_HIT_UNPROVEN'
+    | 'RN_FAST_RUNNER_STALE',
   message: string,
   opts: FillFailureOpts,
 ): ToolResult {
@@ -1350,8 +1403,7 @@ export async function performExactFill(
   const pathsTried: string[] = [];
   let mutationSeen: FillMutationDisposition = 'none';
 
-  // Capture the positional ref's identity BEFORE the binding snapshot so a
-  // refreshed generation can only rebind by identity, never by recycled id.
+  // Preserve identity before the binding snapshot replaces positional refs.
   const cleanRefForSignature = args.ref.replace(/^@/, '');
   const cachedSignature = /^e\d+$/.test(cleanRefForSignature)
     ? getCachedSignature(cleanRefForSignature)
@@ -1379,7 +1431,48 @@ export async function performExactFill(
       { mutation: 'none', pathsTried },
     );
   }
-  const bind = bindExactFillTarget(snap.nodes, args.ref, priorSignature);
+  let bind = bindExactFillTarget(snap.nodes, args.ref, priorSignature);
+  if (
+    !bind.ok &&
+    args.placeholderIdentity !== undefined &&
+    client &&
+    getActiveSession()?.platform === 'ios' &&
+    args.qaContext &&
+    /^e\d+$/.test(cleanRefForSignature) &&
+    priorSignature &&
+    !priorSignature.identifier?.trim() &&
+    !priorSignature.label?.trim()
+  ) {
+    const nativeAcquisition = nativeCaptureCoverage(snap.acquisition ?? {});
+    const candidate = bindExactFillTarget(snap.nodes, args.ref, priorSignature, {
+      placeholderCandidate: true,
+    });
+    if (nativeAcquisition === 'complete' && candidate.ok) {
+      try {
+        const react = await captureQaReact(client);
+        const hostEvidence = validateReactHostEvidence(react.hostEvidence);
+        const screen = join(
+          snap.nodes as NativeNode[],
+          react.interactive ?? [],
+          'app',
+          {
+            native: 'unknown',
+            react: reactCoverage(react, reactCaptureCoverage(react), hostEvidence),
+          },
+          hostEvidence,
+          undefined,
+          nativeAcquisition,
+        );
+        if (
+          screen.elements.find((element) => element.ref.replace(/^@/, '') === cleanRefForSignature)
+            ?.placeholder === args.placeholderIdentity
+        )
+          bind = candidate;
+      } catch {
+        // A failed private read retains the value-free binding refusal.
+      }
+    }
+  }
   if (!bind.ok) {
     if (bind.ambiguous)
       return failResult(
@@ -1451,7 +1544,13 @@ export async function performExactFill(
   const operationToken = randomUUID();
   const primary = await runNative(
     // A fill replaces the field's content; verification expects exactly args.text.
-    ['fill', binding.inputRef, args.text, '--clear-first'],
+    [
+      'fill',
+      binding.inputRef,
+      args.text,
+      '--clear-first',
+      ...(args.requireLiveHit ? [REQUIRE_LIVE_HIT_FLAG] : []),
+    ],
     {
       ...settleOpts(args),
       exactTarget: { ...exactTarget, operationToken },
@@ -1503,7 +1602,10 @@ export async function performExactFill(
     if (mutation === 'none') {
       const code = extractErrorCode(primary);
       return fillFailure(
-        code === 'FOCUS_TARGET_OCCLUDED' || code === 'TARGET_AMBIGUOUS'
+        code === 'FOCUS_TARGET_OCCLUDED' ||
+          code === 'TARGET_AMBIGUOUS' ||
+          code === 'LIVE_HIT_UNPROVEN' ||
+          code === 'RN_FAST_RUNNER_STALE'
           ? code
           : 'NO_TEXT_INPUT_TARGET',
         `device_fill's native attempt was refused before mutation: ${extractErrorText(primary)}`,

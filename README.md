@@ -1,12 +1,13 @@
 # QaReN
 
-**A QA engineer for your coding agent.** Claude Code, Codex or Cursor writes the React
+**QaReN (QA for React Native) is a QA engineer for your coding agent.** Claude Code, Codex or Cursor writes the React
 Native change; QaReN tries it in your app on an iOS simulator and comes back with PASS or FAIL,
 and the evidence behind it.
 
 [![CI](https://github.com/Lykhoyda/QaReN/actions/workflows/ci.yml/badge.svg)](https://github.com/Lykhoyda/QaReN/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-lykhoyda.github.io%2FQaReN-blue)](https://lykhoyda.github.io/QaReN/)
+[![Docs](https://img.shields.io/badge/docs-qaren--agent.vercel.app-blue)](https://qaren-agent.vercel.app/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![X](https://img.shields.io/badge/X-%40qaren__agent-black?logo=x)](https://x.com/qaren_agent)
 
 A coding agent checks its work with types, lint and unit tests. It does not tap through
 the app, so a screen that never appears or a flow that breaks halfway reaches review, or
@@ -23,8 +24,8 @@ it writes a short plan of what to check, and QaReN runs that plan in the real ap
 - **Faster on every run.** Eligible passing blocks are saved and replayed next time by
   the exact elements they used.
 
-Read the [docs](https://lykhoyda.github.io/QaReN/), or [set it up](#set-up-qaren) in your
-agent.
+Read the [docs](https://qaren-agent.vercel.app/), or [set it up](#set-up-qaren) in your
+agent. Follow updates on [X](https://x.com/qaren_agent).
 
 ## How it works
 
@@ -219,10 +220,9 @@ The 1.x source stays on the
 
 ## Development
 
-See the [CLI build instructions](packages/qaren-cli/README.md#build) and the
-[repository guide](AGENTS.md) for package ownership, validation commands and changesets.
-Report bugs in [GitHub Issues](https://github.com/Lykhoyda/QaReN/issues) or with
-`/qaren:feedback`; see [SECURITY.md](SECURITY.md) for vulnerabilities.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for reporting issues, setting up a checkout,
+checking changes and opening a pull request. The [repository guide](AGENTS.md) covers
+package ownership; see [SECURITY.md](SECURITY.md) for vulnerabilities.
 
 QaReN is released under the [MIT License](LICENSE).
 

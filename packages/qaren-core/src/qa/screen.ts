@@ -81,6 +81,7 @@ export interface DevErrorOverlay {
 }
 
 export interface Screen {
+  nativeGeneration?: number;
   pointScale?: number;
   renderError?: boolean;
   elements: Element[];
@@ -153,6 +154,7 @@ const literalTextContributors = new WeakSet<Element>();
 const scrollContainers = new WeakMap<Element, string>();
 const windows = new WeakSet<Element>();
 const alerts = new WeakSet<Element>();
+const sheets = new WeakSet<Element>();
 const keyboards = new WeakSet<Element>();
 const applications = new WeakSet<Element>();
 // Press/fill from the element's own React evidence, without the screen-wide capability gaps.
@@ -171,6 +173,10 @@ export function contributesLiteralText(element: Element): boolean {
 
 export function isScrollContainer(element: Element): boolean {
   return scrollContainers.has(element);
+}
+
+export function hasNativeSheet(screen: Screen): boolean {
+  return screen.elements.some((element) => sheets.has(element) && !element.offscreen);
 }
 
 export function isWindow(element: Element): boolean {
@@ -629,6 +635,7 @@ export function join(
   coverage?: Screen['coverage'],
   reactHostEvidence?: ReactHostEvidence,
   nativePresence?: NativePresence | 'unknown',
+  nativeAcquisition?: NonNullable<Screen['coverage']>['native'],
 ): Screen {
   const presenceMode =
     nativePresence !== undefined || nodes.some((node) => Object.hasOwn(node, 'presence'));
@@ -811,6 +818,7 @@ export function join(
     height = Math.max(height, n.rect.y + n.rect.height);
   }
   const used = new Set<number>();
+  const unnamedInputs: Element[] = [];
   // Unnamed role-only entries and custom wrappers do not count as independent controls.
   let semanticUnassociatedReact = digest.filter(
     (d) => !d.hidden && !((d.handlerless || d.compositeWrapper) && !d.testID),
@@ -982,6 +990,8 @@ export function join(
     if (value !== undefined) element.value = value;
     const placeholder = nonEmpty(match?.placeholder);
     if (placeholder) element.placeholder = placeholder;
+    if (nativeKind === 'input' && !testID && !label && (n.value === undefined || n.value === ''))
+      unnamedInputs.push(element);
     if (n.rect) {
       element.where = thirds(n.rect.y + n.rect.height / 2, height, [
         'top',
@@ -1014,6 +1024,45 @@ export function join(
     localCapabilities.set(element, local);
     return element;
   });
+  const nativeInputs = elements.filter((e) => e.kind === 'input');
+  const digestInputs = digest.flatMap((d, i) =>
+    inputRole(d.role) || d.capabilities?.fill === true ? [i] : [],
+  );
+  const activeHosts = reactHostEvidence?.hosts.filter((host) => host.capabilities.fill === true);
+  const unnamed = unnamedInputs.filter((element) => nativeInputs.includes(element));
+  if (
+    (nativeAcquisition ?? coverage?.native) === 'complete' &&
+    coverage?.react === 'complete' &&
+    reactHostEvidence?.complete === true &&
+    nativeInputs.length === 1 &&
+    unnamed.length === 1 &&
+    activeHosts?.length === 1
+  ) {
+    const candidate = digestInputs
+      .map((index) => digest[index])
+      .find((entry) => !entry.compositeWrapper && nonEmpty(entry.placeholder));
+    const placeholder = nonEmpty(candidate?.placeholder);
+    const hostIndex = candidate?.inputHostIndices?.[0];
+    if (
+      placeholder &&
+      hostIndex !== undefined &&
+      reactHostEvidence.hosts[hostIndex] === activeHosts[0] &&
+      !activeHosts[0].hidden &&
+      !activeHosts[0].testID &&
+      digestInputs.every((index) => {
+        const entry = digest[index];
+        return (
+          !used.has(index) &&
+          !entry.testID &&
+          !entry.hidden &&
+          entry.inputHostIndices?.length === 1 &&
+          entry.inputHostIndices[0] === hostIndex &&
+          (entry.placeholder === undefined || nonEmpty(entry.placeholder) === placeholder)
+        );
+      })
+    )
+      unnamed[0].placeholder = placeholder;
+  }
   for (const [index, label] of androidDescendantLabels(
     nodes,
     elements,
@@ -1229,6 +1278,7 @@ export function join(
     if (n.type === 'Window') windows.add(elements[i]);
     if (n.type === 'Application') applications.add(elements[i]);
     if (isAppAlertType(n.type)) alerts.add(elements[i]);
+    if (n.type === 'Sheet') sheets.add(elements[i]);
     if (n.type === 'Keyboard' || (ownWindow && windowOf(i) === keyboardWindow))
       keyboards.add(elements[i]);
     if (duplicates.has(i) || elements[i].kind !== 'text') return;

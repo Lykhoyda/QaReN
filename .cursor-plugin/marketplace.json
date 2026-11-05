@@ -4,13 +4,13 @@
     "name": "Anton Lykhoyda"
   },
   "metadata": {
-    "description": "QaReN: QA companion for React Native harnesses"
+    "description": "A QA engineer for your coding agent. It tests each React Native change on a simulator and tells you PASS or FAIL, with video proof."
   },
   "plugins": [
     {
       "name": "qaren",
       "source": "./packages/qaren-plugin",
-      "description": "QaReN: a QA companion for React Native harnesses — walks a plan on the simulator or emulator, records the run, and reports PASS/FAIL with video.",
+      "description": "A QA engineer for your coding agent. It tests each React Native change on a simulator and tells you PASS or FAIL, with video proof.",
       "version": "2.1.0",
       "homepage": "https://github.com/Lykhoyda/QaReN"
     }

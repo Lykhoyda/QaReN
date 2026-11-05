@@ -164,7 +164,7 @@ extension QarenIosRunnerTests {
   }
 
   private func qaReadOnlyTarget(command: Command) -> XCUIApplication? {
-    guard [.snapshot, .verifyInput, .isScreenStatic, .interactionFrame, .findText, .readText, .screenshot, .uptime, .status].contains(command.command),
+    guard [.snapshot, .hitProbe, .verifyInput, .isScreenStatic, .interactionFrame, .findText, .readText, .screenshot, .uptime, .status].contains(command.command),
           let bundleId = command.appBundleId?.trimmingCharacters(in: .whitespacesAndNewlines),
           !bundleId.isEmpty, currentBundleId == bundleId,
           let target = currentApp, target.state == .runningForeground, target.exists else { return nil }
@@ -265,7 +265,17 @@ extension QarenIosRunnerTests {
     }
   }
 
+  private func executeHitProbe(command: Command) -> Response {
+    guard command.qaReadOnly == true, let target = qaReadOnlyTarget(command: command) else {
+      return qaReadOnlyRefusal()
+    }
+    var payload = DataPayload(snapshotGeneration: currentSnapshotGeneration)
+    payload.hitProbe = readHitProbe(app: target, command: command)
+    return Response(ok: true, data: payload)
+  }
+
   private func executeOnMain(command: Command) throws -> Response {
+    if command.command == .hitProbe { return executeHitProbe(command: command) }
     var readOnlyApp: XCUIApplication?
     if command.qaReadOnly == true {
       guard let target = qaReadOnlyTarget(command: command) else {
@@ -369,10 +379,7 @@ extension QarenIosRunnerTests {
       }
     }
 
-    // GH #581: the recorded type target is only valid while nothing else can
-    // change the screen — any verb outside the type/verify pair drops it, and
-    // every new type attempt starts with a clean record so a failed attempt
-    // can never leave an earlier field's record for verifyInput to prefer.
+    // Preserve the typed target across reads; other commands invalidate the binding.
     switch command.command {
     case .verifyInput, .snapshot, .status, .uptime, .isScreenStatic, .screenshot:
       break
@@ -381,6 +388,8 @@ extension QarenIosRunnerTests {
     }
 
     switch command.command {
+    case .hitProbe:
+      return executeHitProbe(command: command)
     case .shutdown:
       return Response(ok: true, data: DataPayload(message: "shutdown"))
     case .uptime:
@@ -807,16 +816,18 @@ extension QarenIosRunnerTests {
       }
       let delaySeconds = Double(max(command.delayMs ?? 0, 0)) / 1000.0
       if command.focused == true {
+        if command.requireLiveHit == true {
+          return Response(ok: false, error: ErrorPayload(
+            code: "LIVE_HIT_UNPROVEN", message: "LIVE_HIT_UNPROVEN: focused-mode; no focus or typing was performed.", mutation: "none"
+          ))
+        }
         return executeFocusedType(
           app: activeApp, text: text, replace: command.clearFirst == true,
           prepareReplacement: command.prepareReplacement == true,
           deleteCount: command.replacementDeleteCount ?? 0
         )
       }
-      // GH #581: one exact operation — bind the declared input (never an
-      // ambient-focused substitute), skip the focus tap only when THAT input
-      // is proven focused, otherwise tap the declared focus target and prove
-      // the same input gained focus before any keystroke.
+      // Focus and type only into the rebound declared input.
       let hitTestDeadline = ProcessInfo.processInfo.systemUptime + 0.3
       var resolved: TypeTargetOutcome = .failure(
         Response(ok: false, error: ErrorPayload(code: "NO_TEXT_INPUT_TARGET", message: "NO_TEXT_INPUT_TARGET: target resolution did not run", mutation: "none"))
@@ -835,6 +846,14 @@ extension QarenIosRunnerTests {
       case .bound(let element, _, let resolution):
         target = element
         inputResolution = resolution
+      }
+      if command.requireLiveHit == true {
+        let check = liveTargetCheck(app: activeApp, command: command, deadline: ProcessInfo.processInfo.systemUptime + 0.3)
+        if let reason = DispatchGuard.strictRefusal(check, unavailableReason: lastLiveCheckUnavailable) {
+          return Response(ok: false, error: ErrorPayload(
+            code: "LIVE_HIT_UNPROVEN", message: "LIVE_HIT_UNPROVEN: \(reason); no focus or typing was performed.", mutation: "none"
+          ))
+        }
       }
       var focusTap = "skipped-exact-focused"
       var alreadyFocused = false
@@ -856,8 +875,30 @@ extension QarenIosRunnerTests {
             error: ErrorPayload(code: "FOCUS_TARGET_OCCLUDED", message: Self.occludedDispatchMessage, mutation: "none")
           )
         }
-        withTemporaryScrollIdleTimeoutIfSupported(activeApp) {
-          _ = tapAt(app: activeApp, x: focusPoint.x, y: focusPoint.y)
+        if command.requireLiveHit == true {
+          var activated = false
+          withTemporaryScrollIdleTimeoutIfSupported(activeApp) {
+            activated = DispatchGuard.dispatchTap(
+              requireLiveHit: true, liveTarget: lastLiveTarget,
+              activate: { element in
+#if os(tvOS)
+                return false
+#else
+                self.gesture { element.tap() }
+                return true
+#endif
+              }, coordinate: {}
+            )
+          }
+          if !activated {
+            return Response(ok: false, error: ErrorPayload(
+              code: "LIVE_HIT_UNPROVEN", message: "LIVE_HIT_UNPROVEN: unavailable; no focus or typing was performed.", mutation: "none"
+            ))
+          }
+        } else {
+          withTemporaryScrollIdleTimeoutIfSupported(activeApp) {
+            _ = tapAt(app: activeApp, x: focusPoint.x, y: focusPoint.y)
+          }
         }
         var focusProven = false
         withTemporaryScrollIdleTimeoutIfSupported(activeApp) {
