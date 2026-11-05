@@ -2,10 +2,27 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { dismissCandidate } from '../../../dist/qa/recover.js';
 import { join } from '../../../dist/qa/screen.js';
+import { createWriter } from '../../../dist/qa/wire.js';
 import type { InterruptionDiagnostic } from '../../../dist/qa/recover.js';
 import { element, screen } from './judgment-fixtures.ts';
 
 const targets = [{ phrase: '"Private target"', quoted: 'Private target' }];
+
+test('an interruption rejection crosses the wire in a run without inputs, value-free', () => {
+  const event = {
+    kind: 'interruption-rejected',
+    line: 7,
+    veto: 'later-target',
+    targetIndex: 1,
+    exactDeclineCount: 2,
+  };
+  const lines: string[] = [];
+  const writer = createWriter((line) => lines.push(line), 'interruption-test');
+  writer.diagnostic({ ...event, label: 'Close' });
+  assert.equal(lines.length, 1);
+  assert.deepEqual(JSON.parse(lines[0]).payload, event);
+  assert.doesNotMatch(lines[0], /Close/);
+});
 
 function observed(labels: string[]) {
   return join(
