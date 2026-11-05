@@ -1043,7 +1043,7 @@ test('interruption rejections keep only the veto kind, line, target index and de
 // A full-screen promo at launch: only Close, over copy that mentions a later tap's text.
 function fullScreenPromo(): Screen {
   const nodes = [
-    { ref: '@close', type: 'Button', label: 'Close', hittable: true },
+    { ref: '@close', type: 'Button', identifier: 'promo-close', label: 'Close', hittable: true },
     { ref: '@copy', type: 'StaticText', label: 'Save on Premium today' },
   ];
   return joinScreen(nodes, [], 'app', { native: 'complete', react: 'complete' }, undefined, {
@@ -1105,6 +1105,31 @@ test('a later step naming the sole Close keeps the promo and suggests moving tha
     targetKind: 'press',
     soleDecline: true,
   });
+});
+
+test('a later wait on the sole Close ID keeps it and suggests the owning line', async () => {
+  const f = app(fullScreenPromo());
+  const streamed = ticking(f);
+  const result = await runPlan(waitPlan('2. Wait for "promo-close" to appear'), f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, []);
+  assert.equal(
+    result.failure?.suggestion,
+    'line 2 targets this control; if the interruption is optional, move that step before line 1 or remove it',
+  );
+  const receipt = {
+    considered: true,
+    outcome: 'vetoed',
+    veto: 'later-target',
+    provenance: 'ownership',
+    targetLine: 2,
+    targetKind: 'wait',
+    soleDecline: true,
+  };
+  assert.deepEqual(result.steps.at(-1)?.interruption, receipt);
+  assert.ok(streamed.some((row) => row.line === 1 && row.interruption));
+  for (const row of streamed.filter((row) => row.line === 1 && row.interruption))
+    assert.deepEqual(row.interruption, receipt);
 });
 
 test('a Close that stays after its one press records the aimed centre and is not retried', async () => {
