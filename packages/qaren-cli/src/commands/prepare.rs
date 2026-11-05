@@ -1846,7 +1846,7 @@ fn reprove_borrowed_ios(
 
 // A long build is no continuing authority: never install, launch or report Ready on a borrowed target that changed.
 fn reprove_borrowed_prepare(ctx: &mut Ctx, deadline_ms: Option<u64>) -> Result<(), Failure> {
-    if ctx.verb == "prepare" && ctx.record.resources.device_borrowed {
+    if ctx.record.scenario.platform == Platform::Ios && ctx.record.resources.device_borrowed {
         reprove_borrowed_ios(ctx, false, deadline_ms).map_err(|f| match f.code {
             FailureCode::ReadyDeadlineExceeded => launch_deadline_spent(&ctx.record.run_id),
             _ => f,

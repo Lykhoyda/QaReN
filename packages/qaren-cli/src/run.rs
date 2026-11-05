@@ -465,6 +465,7 @@ fn run_inner(
         req.boot_device || req.restart_device,
         req.shutdown_device_on_exit,
         req.android_home.as_deref(),
+        config.deadlines.device_boot_seconds,
     )?;
     let android_env = device.android.as_ref().map(|emulator| core::AndroidEnv {
         serial: emulator.serial.clone(),
@@ -760,6 +761,7 @@ fn run_inner(
                 req.boot_device || req.restart_device,
                 req.shutdown_device_on_exit,
                 req.android_home.as_deref(),
+                ctx.record.scenario.deadlines.device_boot_seconds,
             ) {
                 Ok(refreshed) => refreshed,
                 Err(f) => return finish_failed(ctx, f),
@@ -2572,6 +2574,48 @@ pub(crate) fn tightest_volume<'a>(
         })
 }
 
+#[cfg(test)]
+mod device_tests {
+    use super::*;
+    use crate::exec::{CmdOutput, MockRunner};
+
+    #[test]
+    fn borrowed_ios_selection_recovers_after_an_unusable_inventory() {
+        let udid = "1DC408C4-51DA-4C4F-ACA1-39881C916FDD";
+        let ready = serde_json::json!({"devices": {"com.apple.CoreSimulator.SimRuntime.iOS-26-5": [
+            {"udid":udid,"name":"selected","state":"Booted","isAvailable":true,"deviceTypeIdentifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-17"}
+        ]}}).to_string();
+        for strict in [false, true] {
+            for first in [
+                CmdOutput {
+                    timed_out: true,
+                    ..Default::default()
+                },
+                CmdOutput::success(r#"{"devices":{"runtime":null}}"#),
+            ] {
+                let mut runner = MockRunner::new();
+                runner.expect_run("simctl list devices -j", first);
+                runner.expect_run("simctl list devices -j", CmdOutput::success(&ready));
+                let device = resolve_device(
+                    &mut runner,
+                    Platform::Ios,
+                    Some(udid),
+                    strict,
+                    false,
+                    None,
+                    40,
+                )
+                .unwrap();
+                assert_eq!(device.id, udid);
+                assert!(!device.needs_boot);
+                assert_eq!(runner.calls.len(), 2);
+                assert!(runner.calls.iter().all(|spec| spec.timeout_seconds == 10));
+                assert_eq!(runner.remaining(), 0);
+            }
+        }
+    }
+}
+
 fn resolve_device(
     runner: &mut dyn Runner,
     platform: Platform,
@@ -2579,24 +2623,24 @@ fn resolve_device(
     select_from_inventory: bool,
     shutdown_device_on_exit: bool,
     android_home: Option<&str>,
+    device_boot_seconds: u64,
 ) -> Result<Device, Failure> {
     match platform {
         Platform::Android => borrow_emulator(runner, device, android_home),
         Platform::Ios => {
             let strict_inventory = select_from_inventory || shutdown_device_on_exit;
-            let output = runner.run(&if strict_inventory {
-                ios::list_devices_spec()
-            } else {
-                ios::list_booted_spec()
-            });
-            if !output.ok() || (strict_inventory && !output.stderr.is_empty()) {
-                return Err(Failure::new(
-                    "device",
-                    FailureCode::DeviceUnavailable,
-                    format!("simctl list failed: {}", output.summary()),
-                    "check Xcode and CoreSimulator, then re-run",
-                ));
-            }
+            let deadline = runner
+                .monotonic_ms()
+                .saturating_add(device_boot_seconds.saturating_mul(1000));
+            let inventory = ios::read_inventory(
+                runner,
+                ios::InventoryRead::device(deadline, &mut |runner| {
+                    ensure_running(runner, "device")
+                }),
+            )
+            .map_err(|unavailable| {
+                unavailable.into_failure("device", FailureCode::SimulatorInventoryUnavailable)
+            })?;
             let borrow = |sim: &ios::Simulator| Device {
                 id: sim.udid.clone(),
                 name: sim.name.clone(),
@@ -2606,7 +2650,7 @@ fn resolve_device(
             };
             if strict_inventory {
                 return device
-                    .and_then(|udid| ios::parse_selected_sim(&output.stdout, udid))
+                    .and_then(|udid| ios::parse_selected_sim_value(&inventory.value, udid))
                     .filter(|sim| select_from_inventory || sim.state == ios::SimState::Booted)
                     .map(|sim| borrow(&sim))
                     .ok_or_else(|| Failure::new(
@@ -2616,7 +2660,7 @@ fn resolve_device(
                         "check the exact --device UUID and simulator inventory, then re-run",
                     ));
             }
-            let Some(sims) = ios::parse_booted_sims(&output.stdout) else {
+            let Some(sims) = ios::parse_booted_sims(&inventory.value) else {
                 return Err(Failure::new(
                     "device",
                     FailureCode::DeviceUnavailable,

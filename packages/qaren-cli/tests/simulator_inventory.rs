@@ -27,7 +27,11 @@ fn timeout() -> CmdOutput {
 
 #[test]
 fn slow_or_partial_inventory_retries_and_proves_the_same_booted_target() {
-    for first in [timeout(), CmdOutput::success("{\"devices\":")] {
+    for first in [
+        timeout(),
+        CmdOutput::success("{\"devices\":"),
+        CmdOutput::success(r#"{"devices":{"runtime":null}}"#),
+    ] {
         let mut runner = MockRunner::new();
         runner.advance_on = Some(("simctl list".into(), 1200));
         runner.expect_run("simctl list", first);
@@ -83,6 +87,8 @@ fn inventory_shape_stderr_and_size_are_transport_validity_not_target_state() {
         (CmdOutput::success("{}"), false),
         (CmdOutput::success("[]"), false),
         (CmdOutput::success("{\"devices\":[]}"), false),
+        (CmdOutput::success(r#"{"devices":{"runtime":null}}"#), false),
+        (CmdOutput::success(r#"{"devices":{"runtime":{}}}"#), false),
         (CmdOutput::success("{\"devices\":"), false),
         (
             CmdOutput {

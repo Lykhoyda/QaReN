@@ -587,7 +587,7 @@ fn fixture_inventory_metadata_and_preflight_must_agree_before_device_selection()
         }
         if valid {
             runner.expect_run(
-                "simctl list devices booted",
+                "simctl list devices -j",
                 CmdOutput::success(r#"{"devices":{}}"#),
             );
         }
@@ -623,7 +623,7 @@ fn fixture_inventory_metadata_and_preflight_must_agree_before_device_selection()
             runner.calls.iter().any(|call| call
                 .args
                 .windows(3)
-                .any(|args| args == ["list", "devices", "booted"])),
+                .any(|args| args == ["list", "devices", "-j"])),
             valid
         );
         assert!(!req.lock_root.exists());

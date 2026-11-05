@@ -194,15 +194,6 @@ pub fn bootstatus_spec(udid: &str, deadline_seconds: u64) -> CmdSpec {
     )
 }
 
-pub fn list_booted_spec() -> CmdSpec {
-    CmdSpec::new(
-        "simctl-list-booted",
-        "xcrun",
-        &["simctl", "list", "devices", "booted", "-j"],
-        30,
-    )
-}
-
 pub fn canonical_udid(udid: &str) -> Option<String> {
     (udid.len() == 36
         && udid.bytes().enumerate().all(|(i, b)| match i {
@@ -247,8 +238,7 @@ fn parse_sim(runtime: &str, device: &serde_json::Value) -> Option<Simulator> {
 }
 
 // Booted iOS simulators only; paired watchOS/tvOS runtimes are not walk targets.
-pub fn parse_booted_sims(list_json: &str) -> Option<Vec<Simulator>> {
-    let parsed: serde_json::Value = serde_json::from_str(list_json).ok()?;
+pub fn parse_booted_sims(parsed: &serde_json::Value) -> Option<Vec<Simulator>> {
     let devices = parsed.get("devices")?.as_object()?;
     let mut out = Vec::new();
     for (runtime, list) in devices {
@@ -462,10 +452,12 @@ pub fn read_inventory(
         } else {
             match serde_json::from_str::<serde_json::Value>(&output.stdout) {
                 Ok(value)
-                    if value.is_object()
-                        && value
-                            .get("devices")
-                            .is_some_and(serde_json::Value::is_object) =>
+                    if value
+                        .get("devices")
+                        .and_then(serde_json::Value::as_object)
+                        .is_some_and(|devices| {
+                            devices.values().all(serde_json::Value::is_array)
+                        }) =>
                 {
                     return Ok(Inventory {
                         value,

@@ -60,6 +60,10 @@ fn simulator_service(
             between: &mut |_| Ok(()),
         },
     );
+    let latency_ms = match &inventory {
+        Ok(inventory) => inventory.latency_ms,
+        Err(unavailable) => unavailable.latency_ms,
+    };
     let unavailable = match inventory {
         Ok(inventory) => {
             if let Some(devices) = simulator_devices(&inventory.value) {
@@ -86,7 +90,7 @@ fn simulator_service(
         return (
             Check::fail(
                 "simulator-service",
-                format!("simctl list devices failed ({summary}); inventory unavailable"),
+                format!("simctl list devices failed ({summary}); inventory unavailable; latency {latency_ms} ms"),
                 SIMCTL_FIX,
             ),
             None,
@@ -109,9 +113,11 @@ fn simulator_service(
         )
     };
     let detail = if timed_out {
-        format!("simctl list devices did not respond within 5s; {evidence}")
+        format!(
+            "simctl list devices did not respond within 5s; latency {latency_ms} ms; {evidence}"
+        )
     } else {
-        format!("simctl list devices returned an unreadable inventory; {evidence}")
+        format!("simctl list devices returned an unreadable inventory; latency {latency_ms} ms; {evidence}")
     };
     let status = if timed_out && !stuck.is_empty() {
         Status::Fail
@@ -457,6 +463,56 @@ mod tests {
         assert_eq!(runner.calls[0].timeout_seconds, 5);
         assert_eq!(runner.calls[0].cwd.as_deref(), Some(Path::new("/")));
         assert_eq!(runner.calls[0].env, vec![("LC_ALL".into(), "C".into())]);
+    }
+
+    #[test]
+    fn failed_inventory_diagnoses_keep_measured_latency() {
+        for (output, status, fix, diagnosis) in [
+            (
+                CmdOutput::failed(1, "CoreSimulator is out of date"),
+                Status::Fail,
+                SIMCTL_FIX,
+                "failed",
+            ),
+            (
+                CmdOutput {
+                    timed_out: true,
+                    ..Default::default()
+                },
+                Status::Warn,
+                SERVICE_FIX,
+                "did not respond",
+            ),
+            (
+                CmdOutput::success("{}"),
+                Status::Warn,
+                SIMCTL_FIX,
+                "unreadable inventory",
+            ),
+            (
+                CmdOutput::success(r#"{"devices":{"runtime":null}}"#),
+                Status::Warn,
+                SIMCTL_FIX,
+                "unreadable inventory",
+            ),
+            (
+                CmdOutput::success(r#"{"devices":{"runtime":[{}]}}"#),
+                Status::Warn,
+                SIMCTL_FIX,
+                "unreadable inventory",
+            ),
+        ] {
+            let mut runner = MockRunner::new();
+            runner.advance_on = Some(("simctl list".into(), 4321));
+            runner.expect_run("simctl list", output);
+            let (service, devices) = simulator_service(&mut runner, &CmdOutput::success(""));
+            assert_eq!(service.status, status);
+            assert_eq!(service.fix.as_deref(), Some(fix));
+            assert!(service.detail.contains(diagnosis));
+            assert!(service.detail.contains("latency 4321 ms"));
+            assert!(devices.is_none());
+            assert_eq!(runner.calls.len(), 1);
+        }
     }
 
     #[test]
