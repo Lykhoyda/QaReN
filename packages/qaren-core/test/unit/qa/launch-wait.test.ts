@@ -367,6 +367,41 @@ test('a dialog on the first step is recovered before any polling', async () => {
   assert.ok(ledger.steps.some((row) => row.outcome === 'pass' && row.implicitWaitMs !== undefined));
 });
 
+test('dialog recovery after a step dispatch never restores launch polling', async () => {
+  let postPressCaptures = 0;
+  let dismissed = false;
+  const device = app((_t, actions) => {
+    if (dismissed) return view([home]);
+    if (!actions.includes('press @profile')) return view([home, profile]);
+    postPressCaptures += 1;
+    return postPressCaptures === 1
+      ? view([home, profile])
+      : view([element('@allow', 'Allow')], 'dialog');
+  });
+  const capture = device.deps.captureScreen;
+  device.deps.captureScreen = async (options) => {
+    assert.equal(options?.budgetMs, undefined, 'a dispatched step must never launch-poll');
+    return capture(options);
+  };
+  device.deps.press = async (ref, context) => {
+    context!.authorize();
+    device.actions.push(`press ${ref}`);
+    return { ok: true, proven: false, executed: true };
+  };
+  device.deps.dialog = async (action, context) => {
+    context!.authorize();
+    device.actions.push(`dialog ${action}`);
+    dismissed = true;
+    return { ok: true, proven: true, executed: true };
+  };
+  const ledger = await ledgerOf('1. Tap "Profile"\n', device.deps);
+  assert.equal(dismissed, true);
+  assert.equal(ledger.verdict, 'FAIL');
+  assert.match(ledger.failure!.seen, /^TARGET_NOT_FOUND: /);
+  assert.deepEqual(device.actions, ['press @profile', 'dialog dismiss']);
+  assert.ok(ledger.steps.every((row) => row.implicitWaitMs === undefined));
+});
+
 for (const variant of ['redbox', 'logbox'] as const) {
   test(`${variant} dismissal preserves the launch allowance and its original deadline`, async () => {
     let dismissedAt: number | undefined;

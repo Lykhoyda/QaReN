@@ -695,10 +695,9 @@ async function walkBlockScoped(
   let fillHandlerRefused = false;
   let itemStartedAt = 0;
   let itemDeadline: number | undefined;
-  // Authorized device mutations, so the launch allowance can prove none followed its arming.
-  let mutations = 0;
+  let stepDispatched = false;
   // The current item's launch allowance, from when it was spent; its measured poll; preparation resets its captures saw.
-  let launchWait: { startedAt: number; mutations: number } | undefined;
+  let launchWait: { startedAt: number } | undefined;
   let implicitWaitMs: number | undefined;
   let preparationResets: number | undefined;
   // A quoted wait's one layout read and one scroll, which a recovery retry does not refund.
@@ -1282,6 +1281,7 @@ async function walkBlockScoped(
     observation: Observation,
     send: (context: QaDispatchContext) => Promise<ActResult>,
     deadline = Infinity,
+    owner: 'step' | 'recovery' = 'step',
   ): Promise<ActResult> => {
     const preparedAt = deps.timing ? deps.now() : 0;
     dispatchStarted = deps.timing ? preparedAt : undefined;
@@ -1291,7 +1291,7 @@ async function walkBlockScoped(
       override authorize(): void {
         super.authorize();
         mutationStarted = true;
-        mutations += 1;
+        if (owner === 'step') stepDispatched = true;
         diagnostic(item, observation, 'dispatch', 'ACCEPTED', this.authorizations);
         if (deps.timing)
           metric('authorization', observation, {
@@ -2337,6 +2337,7 @@ async function walkBlockScoped(
     }
     // The app's next screen is loading again, as after launch.
     sequence.launchWait = true;
+    stepDispatched = false;
     return 'pass' as const;
   };
   // The first Tap or Fill after launch may outrun the first screen: poll for its exact target, before any dispatch.
@@ -2485,8 +2486,12 @@ async function walkBlockScoped(
         dialog: async () => {
           declineAttempted = true;
           recoveries += 1;
-          return (dialogAct = await mutate(item, fresh, (context) =>
-            deps.dialog(item.kind === 'dialog' ? item.action : 'dismiss', context),
+          return (dialogAct = await mutate(
+            item,
+            fresh,
+            (context) => deps.dialog(item.kind === 'dialog' ? item.action : 'dismiss', context),
+            Infinity,
+            'recovery',
           ));
         },
         ...(deps.login && first === undefined ? { replayLogin } : {}),
@@ -2619,9 +2624,6 @@ async function walkBlockScoped(
         );
       // The recovery acted on the device, so a later selector miss is not a pre-mutation re-walk.
       mutationStarted = true;
-      mutations += 1;
-      // Recovery's own actions are not the step's dispatch, so they leave its launch allowance usable.
-      if (launchWait) launchWait.mutations = mutations;
       dispatchedOn = fresh.id;
       const proof = result.handled === 'dialog' ? dialogAct?.dialog : undefined;
       if (proof)
@@ -2717,7 +2719,13 @@ async function walkBlockScoped(
       const dispatched = dispatchedOn;
       let acted: ActResult;
       try {
-        acted = await mutate(item, observation, (context) => deps.press(ref, context), until);
+        acted = await mutate(
+          item,
+          observation,
+          (context) => deps.press(ref, context),
+          until,
+          'recovery',
+        );
       } catch (error) {
         if (isAbort(error)) throw error;
         acted = {
@@ -2734,7 +2742,6 @@ async function walkBlockScoped(
         // The overlay's own Dismiss is not the step's action, so the step stays unmutated.
         mutationStarted = false;
         dispatchedOn = dispatched;
-        if (launchWait) launchWait.mutations = mutations;
       }
       if (!acted.ok || acted.executed === false) {
         const code = refusalCode(acted.error);
@@ -2786,6 +2793,7 @@ async function walkBlockScoped(
     pressVetoed = undefined;
     pressBase = undefined;
     mutationStarted = false;
+    stepDispatched = false;
     fillMethod = undefined;
     fillMismatch = undefined;
     keyboardCleared = undefined;
@@ -2830,7 +2838,7 @@ async function walkBlockScoped(
         (item.kind === 'press' || item.kind === 'fill')
       ) {
         sequence.launchWait = false;
-        launchWait = { startedAt: deps.now(), mutations };
+        launchWait = { startedAt: deps.now() };
       }
       deps.start?.({
         operationId: operationFor(item.line),
@@ -4470,7 +4478,7 @@ async function walkBlockScoped(
         const allowance = launchWait;
         if (
           allowance &&
-          allowance.mutations === mutations &&
+          !stepDispatched &&
           (item.kind === 'press' || item.kind === 'fill') &&
           item.target.quoted !== undefined &&
           error instanceof ResolutionError &&
