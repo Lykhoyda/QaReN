@@ -2734,6 +2734,7 @@ async function walkBlockScoped(
         // The overlay's own Dismiss is not the step's action, so the step stays unmutated.
         mutationStarted = false;
         dispatchedOn = dispatched;
+        if (launchWait) launchWait.mutations = mutations;
       }
       if (!acted.ok || acted.executed === false) {
         const code = refusalCode(acted.error);

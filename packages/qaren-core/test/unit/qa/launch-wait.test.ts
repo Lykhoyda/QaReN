@@ -367,6 +367,52 @@ test('a dialog on the first step is recovered before any polling', async () => {
   assert.ok(ledger.steps.some((row) => row.outcome === 'pass' && row.implicitWaitMs !== undefined));
 });
 
+for (const variant of ['redbox', 'logbox'] as const) {
+  test(`${variant} dismissal preserves the launch allowance and its original deadline`, async () => {
+    let dismissedAt: number | undefined;
+    let pollCapture = 0;
+    const device = app((t) => {
+      if (dismissedAt === undefined)
+        return {
+          ...view([element('@dismiss', 'Dismiss')], 'dev-redbox'),
+          devError: { variant, dismissRef: '@dismiss' },
+        };
+      return view(t >= dismissedAt + 3_000 ? [home, profile] : [home]);
+    });
+    const capture = device.deps.captureScreen;
+    device.deps.captureScreen = async (options) => {
+      if (options?.budgetMs !== undefined) {
+        assert.ok(device.clock() + options.budgetMs <= WAIT_BUDGET_MS);
+      }
+      const screen = await capture(options);
+      if (options?.budgetMs !== undefined && screen.elements.includes(profile))
+        pollCapture = device.captures();
+      return screen;
+    };
+    device.deps.press = async (ref, context) => {
+      context!.authorize();
+      device.actions.push(`press ${ref}`);
+      if (ref === '@dismiss') {
+        await device.deps.sleep(1_000);
+        dismissedAt = device.clock();
+      } else {
+        assert.equal(ref, '@profile');
+        assert.ok(pollCapture > 0);
+        assert.equal(device.captures(), pollCapture);
+        assert.ok(device.clock() >= dismissedAt! + 3_000);
+      }
+      return { ok: true, proven: true, executed: true };
+    };
+    const ledger = await ledgerOf('1. Tap "Profile"\n', device.deps);
+    assert.equal(ledger.verdict, 'PASS', JSON.stringify(ledger.failure));
+    assert.deepEqual(device.actions, ['press @dismiss', 'press @profile']);
+    const retry = ledger.steps.find((row) => row.retryCause === 'DEV_REDBOX');
+    assert.deepEqual(retry?.devError, { variant, dismissal: 1 });
+    const press = ledger.steps.find((row) => row.outcome === 'pass');
+    assert.ok(press?.implicitWaitMs! >= 2_000);
+  });
+}
+
 test('a login replay re-arms the allowance for the step it retries, after the first press spent it', async () => {
   const wall = view([element('@signin', 'Sign in', { testID: 'login-screen' })]);
   let signedInAt: number | undefined;
