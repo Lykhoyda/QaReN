@@ -656,7 +656,18 @@ on-screen input reports `evidence-incomplete`, names that coverage class, and
 suggests targeting the field by test id. Distinct matches are counted before kind,
 disabled, hittability, offscreen or React-only filters, so two or more refuse with
 `TARGET_AMBIGUOUS`, without a Jev tie-break, even if the target adds positional words
-such as `Tap "Save" at the bottom`. Outside fills,
+such as `Tap "Save" at the bottom`. A press or fill narrows that count only on proof
+of what a user can reach. A press counts a same-label wrapper as the control it
+wraps when native ancestry, a React host anchored by the wrapper's own unique testID
+with no press handler, no other content and strict frame containment all hold; an
+inner control that is offscreen, disabled or not hittable never collapses, and the
+wrapper is never chosen. A match whose whole frame is off screen, outside its list's
+clip or under the keyboard is set aside unless it is nested with another match; a
+later window or an inferred overlay sets nothing aside. On iOS, when every remaining
+match is uniquely identifiable, up to four get a read-only live hit read inside the
+observation's expiry, and only `not-hittable` sets one aside. The refusal marks a
+candidate "nested inside candidate N" and lists each one set aside with its reason;
+the row records `collapsed` and `candidateExclusions`. Outside fills,
 a React-only element whose testID equals the quoted value is not counted while a
 native element carries that testID, so a quoted press, wait or scroll reaches
 the native element; two native elements sharing it still refuse. A fill counts
@@ -3722,7 +3733,9 @@ observation ordinal and `clearanceDiagnostic`. It records the viewport, keyboard
 overlay predicate branch, boolean coverage facts, the scroll's origin and requested
 direction, and whether the target centre changed. For an overlay branch, the
 predicate also records the inferred band cutter's capture-local ref, kind, frame,
-and band edges before and after the cut; the failed step names that cutter too.
+and band edges before and after the cut; the failed step names that cutter too, as
+"covered by <kind> at <frame>", and the step row's `coveredBy` records its ref, kind
+and frame, with a label only from QaReN's own dismiss words.
 The cutter is inferred, not the proven cover. Unread or unavailable facts
 remain `null`; target text, identifiers and target coordinates are excluded. The
 [walker](../qaren-core/src/qa/walker.ts) owns the event layout; the

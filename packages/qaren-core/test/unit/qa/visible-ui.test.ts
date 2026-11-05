@@ -187,6 +187,18 @@ function probing(
 const ids = (...names: string[]) =>
   names.map((identifier, i) => ({ identifier, rect: { ...VISIBLE, y: 200 + i * 60 } }));
 
+test('a refused step keeps the exclusions the live read made', async () => {
+  const [a, b] = ids('a', 'b');
+  const f = probing(screen([{ ...a, enabled: false }, b]), { '@e4': 'not-hittable' });
+  const row = await f.run();
+  assert.deepEqual(f.actions, []);
+  assert.match(String(row.reason), /TARGET_NOT_FOUND/);
+  assert.deepEqual(
+    row.candidateExclusions?.map(({ ref, reason }) => [ref, reason]),
+    [['@e4', 'not-hittable']],
+  );
+});
+
 test('a duplicate the live hit read proves untouchable is excluded and the other is pressed', async () => {
   const f = probing(screen(ids('a', 'b')), { '@e3': 'hittable', '@e4': 'not-hittable' });
   const row = await f.run();

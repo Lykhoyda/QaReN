@@ -254,7 +254,7 @@ export function contend(
   // A quoted target never asks the model; a phrase step never reaches here.
   if ('question' in result)
     return { refuse: 'NO_TARGET', reason: 'only a quoted target can be narrowed to one candidate' };
-  return 'ref' in result ? { ...result, ...recorded } : result;
+  return 'scroll' in result ? result : { ...result, ...recorded };
 }
 
 // Press only: collapses wrappers from the innermost outward; never resolves to a wrapper.
