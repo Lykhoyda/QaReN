@@ -1124,6 +1124,27 @@ test('a later tap whose text is in the promo copy no longer keeps a sole-Close p
   }
 });
 
+test('a later admission rejection preserves a proven dismissal on failed retry rows', async () => {
+  const f = app(promo());
+  const streamed = ticking(f);
+  const rejections: string[] = [];
+  f.deps.interruptionRejected = (event) => rejections.push(event.veto);
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    f.show(screen([element('@other', 'Other')]));
+    return { ok: true, proven: false, executed: true };
+  };
+  const result = await runPlan(waitPlan(), f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, ['press @close']);
+  assert.equal(result.recoveries, 1);
+  assert.ok(rejections.includes('no-candidate'));
+  const receipt = { considered: true, outcome: 'dismissed', soleDecline: true };
+  assert.deepEqual(result.steps.at(-1)?.interruption, receipt);
+  for (const row of streamed.filter((row) => row.line === 1 && row.interruption))
+    assert.deepEqual(row.interruption, receipt);
+});
+
 test('a later step naming the sole Close keeps the promo and records ownership', async () => {
   const f = app(promo());
   ticking(f);

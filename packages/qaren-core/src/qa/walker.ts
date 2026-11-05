@@ -2502,15 +2502,16 @@ async function walkBlockScoped(
     const interruptionRejected = (record: InterruptionDiagnostic, observation?: number) => {
       if (record.veto === 'previous-plan-press') pressVetoed = item;
       const behind = record.targetIndex === undefined ? undefined : planTargets[record.targetIndex];
-      interruptions.set(item.line, {
-        considered: true,
-        outcome: 'vetoed',
-        veto: record.veto,
-        ...(record.provenance ? { provenance: record.provenance } : {}),
-        ...(behind?.line !== undefined ? { targetLine: behind.line } : {}),
-        ...(behind?.kind ? { targetKind: behind.kind } : {}),
-        soleDecline: record.soleDecline,
-      });
+      if (interruptions.get(item.line)?.outcome !== 'dismissed')
+        interruptions.set(item.line, {
+          considered: true,
+          outcome: 'vetoed',
+          veto: record.veto,
+          ...(record.provenance ? { provenance: record.provenance } : {}),
+          ...(behind?.line !== undefined ? { targetLine: behind.line } : {}),
+          ...(behind?.kind ? { targetKind: behind.kind } : {}),
+          soleDecline: record.soleDecline,
+        });
       try {
         deps.note?.(
           `interruption-rejected=${JSON.stringify({ line: item.line, ...(observation === undefined ? {} : { observation }), ...record })}`,
