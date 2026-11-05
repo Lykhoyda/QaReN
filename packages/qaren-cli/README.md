@@ -1083,9 +1083,9 @@ A missing required capability refuses before dispatch; reopen the device session
 to rebuild the runner. A target hit point never authorizes a drag corridor:
 scroll-until drags retain every static overlay cut, including cuts caused by
 transparent containers. A zero or undersized band still refuses
-`SCROLL_BAND_TOO_SMALL`. The row's `scrollBand.status` distinguishes
-`no-geometry`, `overlay-cut` and `clear`; a plain `Scroll down` remains a
-plan-level option when no keyboard is up.
+`SCROLL_BAND_TOO_SMALL`. For scroll-until, the row's `scrollBand.status`
+distinguishes `no-geometry`, `overlay-cut` and `clear`. For plain-scroll band
+selection and refusals, see [the plain-scroll contract](#occluded-taps-and-focus).
 The walker passes that band to the shared scroll handler so the drag starts
 inside it, narrowing the existing keyboard-safe band. A caller band is also kept
 clear of the system gesture edges: 48 dp from the top and bottom window edges on
