@@ -24,15 +24,21 @@ test('root collection reaches every fixture root across registered renderers', (
   const first = {};
   const second = {};
   const third = {};
-  const helpers = inject((id) =>
-    new Set((id === 1 ? [first, second] : id === 21 ? [third] : []).map((current) => ({ current }))),
+  const helpers = inject(
+    (id) =>
+      new Set(
+        (id === 1 ? [first, second] : id === 21 ? [third] : []).map((current) => ({ current })),
+      ),
   );
   const roots = helpers.__findAllRootFibers();
   assert.equal(roots.length, 3);
   assert.equal(roots[0]!.fiber, first);
   assert.equal(roots[1]!.fiber, second);
   assert.equal(roots[2]!.fiber, third);
-  assert.deepEqual(Array.from(roots, (root) => root.rendererId), [1, 1, 21]);
+  assert.deepEqual(
+    Array.from(roots, (root) => root.rendererId),
+    [1, 1, 21],
+  );
 });
 
 test('root callbacks continue on falsy results and stop on the first truthy result', () => {
@@ -71,7 +77,10 @@ test('root iteration isolates renderer lookup and callback failures', () => {
     'found',
   );
   assert.deepEqual(visited, [broken, live]);
-  assert.deepEqual(Array.from(helpers.__findAllRootFibers(), (root) => root.fiber), [broken, live]);
+  assert.deepEqual(
+    Array.from(helpers.__findAllRootFibers(), (root) => root.fiber),
+    [broken, live],
+  );
 });
 
 test('root iteration returns null when no callback finds a match', () => {

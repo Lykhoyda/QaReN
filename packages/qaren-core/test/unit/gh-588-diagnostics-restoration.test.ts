@@ -22,7 +22,10 @@ test('GH-588 Slice E: oversize navigation state emits a narrowing hint', () => {
   const result = JSON.parse(context.__QAREN.getNavState());
   assert.equal(result.__agent_truncated, true);
   assert.ok(result.originalLength > 50_000);
-  assert.match(result.hint, /State exceeds the payload budget; target a smaller component via testID/);
+  assert.match(
+    result.hint,
+    /State exceeds the payload budget; target a smaller component via testID/,
+  );
   assert.equal(result.payload, undefined);
 });
 

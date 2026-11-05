@@ -1,7 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
-import { HELPERS_VERSION, INJECTED_HELPERS, REACT_READY_PROBE_JS } from '../../dist/injected-helpers.js';
+import {
+  HELPERS_VERSION,
+  INJECTED_HELPERS,
+  REACT_READY_PROBE_JS,
+} from '../../dist/injected-helpers.js';
 
 /**
  * Create a VM sandbox with mock React DevTools globals.
