@@ -265,6 +265,7 @@ fn receipts_report_restore_early_returns_and_preserve_skip_reasons() {
         ("probe-node", "probe-failed"),
         ("probe-config", "probe-failed"),
         ("layout-config", "unsupported-layout"),
+        ("relative-store", "unsupported-layout"),
         ("layout-workspace", "unsupported-layout"),
         ("layout-modules", "unsupported-layout"),
     ] {
@@ -318,6 +319,7 @@ fn receipts_report_restore_early_returns_and_preserve_skip_reasons() {
                         CmdOutput::success(match case {
                             "probe-config" => "invalid",
                             "layout-config" => r#"{"node-linker":"pnp"}"#,
+                            "relative-store" => r#"{"store-dir":".pnpm-store"}"#,
                             _ => r#"{"node-linker":"hoisted"}"#,
                         }),
                     );
@@ -604,6 +606,31 @@ fn every_key_input_and_path_node_identity_invalidates_reuse() {
         .unwrap()
     };
     let baseline = get(&installer);
+    for name in ["storeDir", "store-dir"] {
+        let mut effective = config.clone();
+        effective[name] = serde_json::json!("/shared/pnpm-store-a");
+        let first = key(
+            &f.0.join("repo"),
+            Path::new("app"),
+            "repository",
+            &installer,
+            &effective,
+        )
+        .unwrap();
+        assert_ne!(baseline, first);
+        effective[name] = serde_json::json!("/shared/pnpm-store-b");
+        assert_ne!(
+            first,
+            key(
+                &f.0.join("repo"),
+                Path::new("app"),
+                "repository",
+                &installer,
+                &effective,
+            )
+            .unwrap()
+        );
+    }
     for (file, bytes) in [
         ("app/pnpm-lock.yaml", "changed"),
         ("package.json", r#"{"scripts":{"postinstall":"echo ok"}}"#),
@@ -916,6 +943,33 @@ fn external_modules_virtual_store_and_nonrelocatable_links_disable_layout() {
         &f.0.join("repo/node_modules")
     )
     .is_err());
+}
+
+#[test]
+fn stores_must_be_absolute_and_outside_the_checkout() {
+    let f = Fixture::new();
+    let repo = f.0.join("repo");
+    for app in ["", "app"] {
+        for linker in ["isolated", "hoisted"] {
+            for name in ["storeDir", "store-dir"] {
+                for store in [
+                    serde_json::json!(".pnpm-store"),
+                    serde_json::json!("../store"),
+                    serde_json::json!(""),
+                    serde_json::json!(false),
+                    serde_json::json!(repo.join(".pnpm-store")),
+                    serde_json::json!(repo.join("app/.pnpm-store")),
+                ] {
+                    let mut config = serde_json::json!({"node-linker":linker});
+                    config[name] = store;
+                    assert!(layout(&config, &repo, Path::new(app)).is_err());
+                }
+                let mut config = serde_json::json!({"node-linker":linker});
+                config[name] = serde_json::json!(f.0.join("shared-store"));
+                assert!(layout(&config, &repo, Path::new(app)).is_ok());
+            }
+        }
+    }
 }
 
 #[test]

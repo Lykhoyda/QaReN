@@ -143,6 +143,14 @@ fn config_value<'a>(config: &'a Value, camel: &str, kebab: &str) -> Option<&'a V
 }
 
 fn layout(config: &Value, repo: &Path, app_rel: &Path) -> Result<(), String> {
+    if let Some(value) = config_value(config, "storeDir", "store-dir") {
+        let Some(path) = value.as_str().map(Path::new) else {
+            return Err("layout-unsupported".into());
+        };
+        if !path.is_absolute() || path.starts_with(repo) {
+            return Err("layout-unsupported".into());
+        }
+    }
     // Absent means pnpm's default isolated linker; pnp keeps no node_modules to clone.
     if !matches!(
         config_value(config, "nodeLinker", "node-linker").map(Value::as_str),
@@ -305,6 +313,8 @@ fn key(
                 "modules-dir",
                 "virtualStoreDir",
                 "virtual-store-dir",
+                "storeDir",
+                "store-dir",
                 "enableGlobalVirtualStore",
                 "enable-global-virtual-store",
                 "ignoreScripts",
