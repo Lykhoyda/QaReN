@@ -1,5 +1,20 @@
 # qaren
 
+## 2.1.1
+
+### Patch Changes
+
+- cc77d10: Use strict live hit evidence for iOS waits, scroll completion and Fill focus under inferred overlays while preserving static drag safety cuts.
+- d73019f: Give the first Tap or Fill after launch, and after a login replay, up to 15 seconds for an absent quoted target to render before failing; a target that never appears fails `TARGET_NOT_FOUND_AFTER_LAUNCH` with a Wait suggestion, and the row records `implicitWaitMs`.
+- 2118fd6: Recover an app whose advertised page never proves development mode with one bounded relaunch when eligible, then refuse as `dev_runtime_unproven` with port-wide Metro bundle observations and value-free advertised-device counts.
+- e8ca8d0: Serve the runtime version the installed iOS app embeds to QaReN's own dev server, so apps using the expo-updates `fingerprint` runtimeVersion policy no longer recompute the project fingerprint on every manifest request; the receipt records the embedded policy and pin state, and a manifest warm-up refusal names that policy when the pin was not served.
+- 753885d: Allow Fill to target an unnamed empty input by its React placeholder when complete native acquisition and React evidence prove a sole native input and a sole React input host, re-confirm unnamed positional inputs on iOS at dispatch, and explain when incomplete React coverage prevents pairing.
+- 3714687: Pass a cleanly tapped choice chip that shows itself selected under a new element reference or beside a React-only entry with the same testID, and say plainly when a tapped control could not be re-identified instead of blaming its list.
+- 5a2e4bb: Remove the unused navigation-graph, navigate, store, component-state, dispatch, console, error, readiness and app-info injected helpers, stop installing console, error-handler and promise-rejection tracking, and empty and disable recording into legacy buffers while leaving previously installed wrappers and hooks in place in a running app.
+- e24930d: Rebuild injected helper calls from validated methods and code-safe JSON arguments.
+- 92d498a: Retry bounded simulator inventory reads and distinguish unavailable inventory from failed boot proofs while sharing reply validation with doctor.
+- 651d7ae: Note suspected video recorder stalls from kept plan screenshots while excluding withheld spans and line numbers, and record detector completion in the receipt.
+
 ## 2.1.0
 
 ### Minor Changes
