@@ -689,6 +689,7 @@ class CommandDispatcher(
             clickable = node.isClickable,
             handle = handle,
             focused = node.isFocused,
+            scrollable = node.isScrollable,
         )
     }
 
@@ -742,6 +743,7 @@ class CommandDispatcher(
             .put("enabled", node.enabled)
             .put("selected", node.selected)
             .put("visibleToUser", node.visibleToUser)
+            .put("scrollable", node.scrollable)
         if (node.secure) json.put("secure", true)
         if (node.heading) json.put("heading", true)
         if (node.focused) json.put("focused", true)
@@ -763,6 +765,7 @@ class CommandDispatcher(
             .put("rect", JSONObject().put("x", bounds.left).put("y", bounds.top).put("width", bounds.width()).put("height", bounds.height()))
             .put("hittable", HittableSemantics.fromSnapshotNode(enabled, visible))
             .put("enabled", enabled)
+            .put("scrollable", node.isScrollable)
         if (node.isPassword) json.put("secure", true)
         if (node.isFocused) json.put("focused", true)
         return json

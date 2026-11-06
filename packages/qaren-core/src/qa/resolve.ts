@@ -25,6 +25,7 @@ import {
   elementViewport,
   forwardedInputOf,
   isScrollContainer,
+  reportsNotScrollable,
   isWindow,
   insideAlert,
   hasNativeSheet,
@@ -1086,6 +1087,27 @@ export function plainScrollBand(
   direction: 'up' | 'down',
   platform?: 'ios' | 'android',
 ): PlainScrollBand {
+  // Today's selection stands unless it would drag a container that reports it cannot scroll (an
+  // Android navigation wrapper); only then does the selection without such containers decide.
+  const all = selectPlainScrollBand(screen, direction, platform, () => true);
+  if (!all.container || all.status === 'unreachable' || !reportsNotScrollable(all.container))
+    return all;
+  const real = selectPlainScrollBand(
+    screen,
+    direction,
+    platform,
+    (container) => !reportsNotScrollable(container),
+  );
+  // A list to drag, or the refusal that its cover is in the way; never a bare fallback.
+  return real.container ? real : all;
+}
+
+function selectPlainScrollBand(
+  screen: Screen,
+  direction: 'up' | 'down',
+  platform: 'ios' | 'android' | undefined,
+  eligible: (container: Element) => boolean,
+): PlainScrollBand {
   if ((screen.captureCoverage?.native ?? screen.coverage?.native) !== 'complete')
     return { status: 'no-geometry' };
   const root =
@@ -1099,6 +1121,7 @@ export function plainScrollBand(
   const unproven: typeof candidates = [];
   let tooSmall: ScrollBandReceipt | undefined;
   for (const container of screen.elements) {
+    if (!eligible(container)) continue;
     if (!isScrollContainer(container) || horizontalOnlyContainer(scrollContainerType(container)))
       continue;
     const frame = elementFrame(container);

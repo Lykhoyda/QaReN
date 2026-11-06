@@ -19,6 +19,7 @@ object KeyboardGuard {
                 visibleToUser = false,
                 source = null,
                 focused = false,
+                scrollable = false,
             )
         }
 

@@ -279,6 +279,7 @@ test('runAndroid QA snapshot keeps a reported heading and adds none where the ru
             label: 'Section title',
             visibleToUser: true,
             heading: true,
+            scrollable: true,
             rect,
           },
           {
@@ -288,6 +289,7 @@ test('runAndroid QA snapshot keeps a reported heading and adds none where the ru
             type: 'android.widget.TextView',
             label: 'Body',
             visibleToUser: true,
+            scrollable: false,
             rect,
           },
         ],
@@ -306,9 +308,14 @@ test('runAndroid QA snapshot keeps a reported heading and adds none where the ru
       qaReadOnly: true,
     }),
   );
-  const nodes = (envelope.data as { nodes: { label?: string; heading?: boolean }[] }).nodes;
+  const nodes = (
+    envelope.data as { nodes: { label?: string; heading?: boolean; scrollable?: boolean }[] }
+  ).nodes;
   assert.equal(nodes.find((n) => n.label === 'Section title')?.heading, true);
   assert.equal(Object.hasOwn(nodes.find((n) => n.label === 'Body')!, 'heading'), false);
+  // Both values of the runner's scrollable report are kept; a false one is what the core acts on.
+  assert.equal(nodes.find((n) => n.label === 'Section title')?.scrollable, true);
+  assert.equal(nodes.find((n) => n.label === 'Body')?.scrollable, false);
 });
 
 test('QA snapshots retain emitted, normalized and dropped kinds without publishing producer diagnostics', async (t) => {

@@ -120,6 +120,7 @@ class DeviceSnapshotParityInstrumentedTest {
                         )
                         .put("hittable", HittableSemantics.fromSnapshotNode(enabled, visible))
                         .put("enabled", enabled)
+                        .put("scrollable", parser.getAttributeValue(null, "scrollable") == "true")
                     if (parser.getAttributeValue(null, "password") == "true") node.put("secure", true)
                     nodes.put(node)
                     index += 1

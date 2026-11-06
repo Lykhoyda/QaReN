@@ -55,6 +55,8 @@ export const REQUIRED_ANDROID_FEATURES = [
   'A11Y_PRESENCE_V2',
   // A runner without it reports no focus, so a focused hidden input would be refused as unfocused.
   'FOCUSED_HIDDEN_INPUT_V1',
+  // Without each node's own scrollable report, a navigation wrapper that cannot scroll is still dragged.
+  'SCROLLABLE_FACT_V1',
 ] as const;
 
 export const REQUIRED_ANDROID_COMMANDS = [

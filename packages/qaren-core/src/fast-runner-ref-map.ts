@@ -44,6 +44,8 @@ export interface FlatNode {
   heading?: boolean;
   /** Android QA reads: input focus, present only when true. */
   focused?: boolean;
+  /** Android QA reads: the node's own isScrollable report. */
+  scrollable?: boolean;
   /** GH #581: Android password fields; never cached beyond the snapshot nodes. */
   secure?: boolean;
 }

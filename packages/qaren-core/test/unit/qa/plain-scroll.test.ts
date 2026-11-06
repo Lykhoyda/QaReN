@@ -1,9 +1,20 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { parsePlan, parseStep } from '../../../dist/qa/plan.js';
-import { plainScrollBand, scrollUntilBand } from '../../../dist/qa/resolve.js';
+import {
+  plainScrollBand,
+  scrollUntilBand,
+  type PlainScrollBand,
+} from '../../../dist/qa/resolve.js';
 import { scrollMotion } from '../../../dist/qa/scroll-motion.js';
-import { join, screenSignature, type NativeNode, type Screen } from '../../../dist/qa/screen.js';
+import {
+  isScrollContainer,
+  join,
+  screenSignature,
+  type NativeNode,
+  type Screen,
+} from '../../../dist/qa/screen.js';
 import { captureScreen } from '../../../dist/qa/capture.js';
 import { walkBlock, type ActResult } from '../../../dist/qa/walker.js';
 import { buildDirectionalScrollCliArgs } from '../../../dist/handlers/device-interact.js';
@@ -21,6 +32,8 @@ type ScreenOptions = {
   extra?: NativeNode[];
   includeList?: boolean;
   type?: string;
+  // The runner's own `scrollable` report, by ref, set on the raw node before join().
+  scrollable?: Record<string, boolean>;
 };
 
 function screen(options: ScreenOptions = {}): Screen {
@@ -115,8 +128,9 @@ function nodesOf({
   extra = [],
   includeList = true,
   type = 'ScrollView',
+  scrollable = {},
 }: ScreenOptions = {}): NativeNode[] {
-  return [
+  const nodes: NativeNode[] = [
     { index: 0, ref: '@app', type: 'Application', rect: WINDOW },
     { index: 1, parentIndex: 0, ref: '@window', type: 'Window', rect: WINDOW },
     ...(includeList
@@ -135,6 +149,9 @@ function nodesOf({
       : []),
     ...extra,
   ];
+  return nodes.map((node) =>
+    node.ref in scrollable ? { ...node, scrollable: scrollable[node.ref] } : node,
+  );
 }
 
 function overlay(rect: Rect): NativeNode {
@@ -734,4 +751,376 @@ test('complete unproven recaptures retain opaque cuts, freshness and the motion 
       for (const y of [start, end]) assert.ok(y < cover.y || y >= cover.y + cover.height);
     }
   }
+});
+
+// The PR 1412 Android device capture (Test App plain-scroll fixture, API 37 emulator): join() inputs
+// exactly as captured before each failing drag, and after it for the Scroll-up and frozen rows. On
+// these native-stack screens Android reports the navigation wrapper as a full-screen ScrollView.
+type CapturedInputs = {
+  nodes: NativeNode[];
+  digest: unknown;
+  front: unknown;
+  coverage: { native: string; react: string };
+  reactHostEvidence: unknown;
+  nativePresence: unknown;
+  nativeAcquisition: string;
+};
+type CapturedRow = { direction: 'up' | 'down'; before: CapturedInputs; after?: CapturedInputs };
+const capturedRows: { pointScale: number; scrollable: string; rows: Record<string, CapturedRow> } =
+  JSON.parse(
+    readFileSync(
+      new URL('../../fixtures/android-presence/plain-scroll-captures.json', import.meta.url),
+      'utf8',
+    ),
+  );
+const WRAPPER_BAND = { x: 0, y: 0, width: 1080, height: 2424 };
+type Marked = NativeNode & { scrollable?: boolean };
+const unmarked = ({ scrollable: _, ...node }: Marked): NativeNode => node;
+
+// The screen capture.ts builds from these inputs; `edit` changes copies of the raw nodes first.
+function captured(inputs: CapturedInputs, edit: (node: Marked) => Marked = (node) => node): Screen {
+  return {
+    ...join(
+      inputs.nodes.map((node) => edit({ ...node })),
+      inputs.digest as never,
+      inputs.front as never,
+      inputs.coverage as never,
+      inputs.reactHostEvidence as never,
+      inputs.nativePresence as never,
+      inputs.nativeAcquisition as never,
+    ),
+    pointScale: capturedRows.pointScale,
+    captureCoverage: { native: inputs.nativeAcquisition, react: inputs.coverage.react },
+  } as Screen;
+}
+
+const outcome = (band: PlainScrollBand) => ({
+  status: band.status,
+  band: band.band,
+  container: band.container?.ref,
+  unproven: band.unproven,
+});
+
+test('Android plain scroll drags the app list, not the navigation wrapper that cannot scroll', () => {
+  for (const [row, { direction, before }] of Object.entries(capturedRows.rows)) {
+    // The frozen list reports it cannot scroll too; its row is the next test's.
+    if (row === 'R3-frozen-list') continue;
+    const band = plainScrollBand(captured(before), direction, 'android');
+    assert.equal(band.container?.testID, 'qa-ps-list', row);
+    assert.notDeepEqual(band.band, WRAPPER_BAND, row);
+  }
+  const hidden = plainScrollBand(
+    captured(capturedRows.rows['R1-hidden-container'].before),
+    'down',
+    'android',
+  );
+  assert.equal(hidden.status, 'clear');
+  assert.deepEqual(hidden.band, { x: 0, y: 703, width: 1080, height: 577 });
+  // The covered list reaches the cover decision instead of a drag below it.
+  const covered = plainScrollBand(
+    captured(capturedRows.rows['R2-covered-list'].before),
+    'down',
+    'android',
+  );
+  assert.ok(
+    covered.status === 'unreachable' ||
+      (covered.status === 'overlay-cut' && covered.unproven === true),
+    JSON.stringify(outcome(covered)),
+  );
+});
+
+test('a frozen Android list keeps its content-remains evidence once judged on its own frame', () => {
+  const { before, after } = capturedRows.rows['R3-frozen-list'];
+  const list = before.nodes.find((node) => node.identifier === 'qa-ps-list') as Marked;
+  const [previous, current] = [captured(before), captured(after!)];
+  const band = plainScrollBand(previous, 'down', 'android');
+  if (list.scrollable === true) {
+    assert.equal(band.container?.testID, 'qa-ps-list');
+    assert.equal(scrollMotion(band.container!, previous, current, 'down'), 'still-overflow');
+  } else {
+    // A frozen list that reports it cannot scroll keeps today's wrapper drag and unknown motion.
+    assert.deepEqual(band.band, WRAPPER_BAND);
+    assert.equal(scrollMotion(band.container!, previous, current, 'down'), 'unknown');
+  }
+});
+
+test('captures without the scrollable fact keep the wrapper selection', () => {
+  for (const [row, { direction, before, after }] of Object.entries(capturedRows.rows)) {
+    const previous = captured(before, unmarked);
+    const band = plainScrollBand(previous, direction, 'android');
+    assert.equal(band.status, 'clear', row);
+    assert.deepEqual(band.band, WRAPPER_BAND, row);
+    if (after)
+      assert.equal(
+        scrollMotion(band.container!, previous, captured(after, unmarked), direction),
+        'unknown',
+        row,
+      );
+  }
+});
+
+test('a wrapper that cannot scroll never turns a proven cover refusal into a drag', async () => {
+  const wrapper: Marked = {
+    index: 2,
+    parentIndex: 1,
+    ref: '@wrapper',
+    type: 'ScrollView',
+    label: 'Wrapper',
+    rect: WINDOW,
+  };
+  const inner: Marked = {
+    index: 3,
+    parentIndex: 2,
+    ref: '@inner',
+    type: 'ScrollView',
+    label: 'Inner',
+    rect: { x: 20, y: 750, width: 360, height: 40 },
+  };
+  // A sibling of the wrapper, so it cuts the wrapper's band; its React host proves it opaque.
+  const cover = overlay({ x: 0, y: 0, width: 400, height: 740 });
+  for (const extra of [
+    [wrapper, inner, cover],
+    [wrapper, { ...cover, index: 3 }],
+  ]) {
+    const results = [];
+    for (const scrollable of [{ '@wrapper': false }, {}])
+      results.push(
+        outcome(
+          plainScrollBand(
+            await presenceScreen({ includeList: false, extra, scrollable }, { fixed: 'auto' }),
+            'down',
+            'android',
+          ),
+        ),
+      );
+    assert.equal(results[0].status, 'unreachable');
+    assert.deepEqual(results[0], results[1]);
+  }
+});
+
+// The trees of the tests above, for the property that a not-scrollable mark never removes a refusal.
+const LIST_NODE_SMALL: NativeNode = {
+  index: 5,
+  parentIndex: 1,
+  ref: '@small',
+  type: 'ScrollView',
+  label: 'Small',
+  rect: { x: 0, y: 50, width: 100, height: 100 },
+};
+const PROPERTY_CASES: {
+  options: ScreenOptions;
+  presence?: Record<string, 'auto' | 'none' | 'box-none' | undefined>;
+  hidden?: 'host' | 'ancestor';
+}[] = [
+  { options: { extra: [overlay({ x: 0, y: 540, width: 400, height: 100 }), LIST_NODE_SMALL] } },
+  { options: { list: { x: 20, y: 650, width: 360, height: 500 }, childY: 700 } },
+  { options: { extra: [overlay(WINDOW)] }, presence: { fixed: 'auto' } },
+  { options: { extra: [overlay({ x: 20, y: 0, width: 40, height: 800 })] } },
+  {
+    options: { extra: [overlay({ x: 0, y: 0, width: 400, height: 570 })] },
+    presence: { fixed: undefined },
+  },
+  {
+    options: {
+      extra: [
+        overlay(WINDOW),
+        LIST_NODE_SMALL,
+        {
+          index: 6,
+          parentIndex: 1,
+          ref: '@rail',
+          type: 'Button',
+          label: 'Rail',
+          hittable: true,
+          rect: { x: 0, y: 50, width: 48, height: 100 },
+        },
+      ],
+    },
+    presence: { fixed: 'auto' },
+  },
+  {
+    options: {
+      extra: [
+        overlay({ x: 0, y: 200, width: 400, height: 180 }),
+        { ...overlay({ x: 0, y: 420, width: 400, height: 180 }), index: 5, ref: '@footer' },
+      ],
+    },
+  },
+  { options: { list: WINDOW } },
+  { options: { list: { ...LIST, height: 100 } } },
+  { options: { includeList: false } },
+  { options: { type: 'CollectionView', list: { ...LIST, height: 0 } } },
+  { options: { list: { ...LIST, height: 40 } } },
+  { options: { list: { ...LIST, y: 0, height: 50 } } },
+  { options: { list: { ...LIST, y: 200.8, height: 50 } } },
+  { options: { list: { ...LIST, width: 1 } } },
+  { options: { childY: 620 } },
+  { options: { childY: 150 } },
+  { options: { list: { ...LIST, height: 1000 }, childY: 900 } },
+  {
+    options: {
+      childY: 620,
+      extra: [
+        { index: 4, parentIndex: 1, ref: '@twin', type: 'ScrollView', label: 'Twin', rect: LIST },
+      ],
+    },
+  },
+  { options: { extra: [overlay({ x: 0, y: 0, width: 400, height: 500 })] } },
+  { options: { extra: [overlay(WINDOW)] }, presence: { fixed: 'none' } },
+  { options: { extra: [overlay(WINDOW)] }, presence: { fixed: 'box-none' } },
+  { options: { extra: [overlay(WINDOW)] }, presence: { fixed: 'auto' }, hidden: 'host' },
+  {
+    options: {
+      extra: [
+        {
+          index: 4,
+          parentIndex: 1,
+          ref: '@ancestor',
+          identifier: 'ancestor',
+          type: 'Other',
+          rect: WINDOW,
+        },
+        { ...overlay(WINDOW), index: 5, parentIndex: 4 },
+      ],
+    },
+    presence: { fixed: 'auto' },
+    hidden: 'ancestor',
+  },
+  { options: { extra: [overlay(WINDOW)] }, presence: {} },
+  {
+    options: {
+      list: { x: 0, y: 300, width: 400, height: 200 },
+      childY: 350,
+      extra: [
+        {
+          index: 4,
+          parentIndex: 1,
+          ref: '@hidden',
+          type: 'ScrollView',
+          label: 'Hidden',
+          visibleToUser: false,
+          rect: WINDOW,
+        },
+      ],
+    },
+  },
+  {
+    options: {
+      extra: [
+        overlay({ x: 0, y: 0, width: 400, height: 570 }),
+        { ...LIST_NODE_SMALL, rect: { x: 300, y: 610, width: 50, height: 180 } },
+      ],
+    },
+  },
+  {
+    options: {
+      extra: [
+        overlay(WINDOW),
+        {
+          index: 5,
+          parentIndex: 1,
+          ref: '@footer',
+          type: 'Button',
+          identifier: 'footer',
+          hittable: true,
+          label: 'Footer',
+          rect: { x: 0, y: 520, width: 400, height: 80 },
+        },
+      ],
+    },
+    presence: { footer: 'auto' },
+  },
+  {
+    options: {
+      extra: [
+        overlay(WINDOW),
+        {
+          ...overlay({ x: 0, y: 520, width: 400, height: 80 }),
+          index: 5,
+          ref: '@edge',
+          identifier: 'edge',
+        },
+      ],
+    },
+    presence: { edge: 'auto' },
+  },
+];
+
+test('marking any scroll container not scrollable never turns a refusal or fallback into a drag', async () => {
+  const refusals = new Set(['unreachable', 'too-small', 'no-geometry']);
+  const builders: ((scrollable: Record<string, boolean>) => Promise<Screen> | Screen)[] = [
+    ...PROPERTY_CASES.map(
+      ({ options, presence, hidden }) =>
+        (scrollable: Record<string, boolean>) =>
+          presence
+            ? presenceScreen({ ...options, scrollable }, presence, hidden)
+            : screen({ ...options, scrollable }),
+    ),
+    ...Object.values(capturedRows.rows).map(
+      ({ before }) =>
+        (scrollable: Record<string, boolean>) =>
+          captured(before, (node) =>
+            node.ref in scrollable ? { ...node, scrollable: scrollable[node.ref] } : node,
+          ),
+    ),
+  ];
+  let refusing = 0;
+  for (const build of builders) {
+    const refs = (await build({})).elements.filter(isScrollContainer).map((e) => e.ref!);
+    const marks = [
+      ...refs.map((ref) => ({ [ref]: false })),
+      Object.fromEntries(refs.map((ref) => [ref, false])),
+    ];
+    for (const platform of ['ios', 'android'] as const)
+      for (const direction of ['up', 'down'] as const) {
+        const base = plainScrollBand(await build({}), direction, platform);
+        if (!refusals.has(base.status)) continue;
+        refusing++;
+        for (const scrollable of marks)
+          assert.deepEqual(
+            outcome(plainScrollBand(await build(scrollable), direction, platform)),
+            outcome(base),
+            JSON.stringify({ scrollable, direction, platform }),
+          );
+      }
+  }
+  assert.ok(refusing > 0);
+});
+
+test('a nested iOS list without the scrollable fact keeps the outer list selected', () => {
+  const inner: NativeNode = {
+    index: 4,
+    parentIndex: 2,
+    ref: '@inner',
+    type: 'ScrollView',
+    label: 'Inner',
+    rect: { x: 40, y: 400, width: 300, height: 150 },
+  };
+  const band = plainScrollBand(screen({ extra: [inner] }), 'down', 'ios');
+  assert.equal(band.status, 'clear');
+  assert.equal(band.container?.ref, '@list');
+  assert.deepEqual(band.band, LIST);
+});
+
+test('a same-frame twin that cannot scroll no longer hides the selected list movement', () => {
+  const twin: NativeNode = {
+    index: 4,
+    parentIndex: 1,
+    ref: '@twin',
+    type: 'ScrollView',
+    label: 'Twin',
+    rect: LIST,
+  };
+  const motion = (scrollable: Record<string, boolean>, extra: NativeNode[] = [twin]) => {
+    const before = screen({ extra, scrollable });
+    const after = screen({ childY: 290, extra, scrollable });
+    const list = before.elements.find((e) => e.ref === '@list')!;
+    return scrollMotion(list, before, after, 'down');
+  };
+  assert.equal(motion({ '@twin': false }), 'moved');
+  assert.equal(motion({}), 'unknown');
+  // The selected container's own mark changes nothing: alone it is still judged, with a twin still unknown.
+  assert.equal(motion({ '@list': false }, []), 'moved');
+  assert.equal(motion({ '@list': false }), 'unknown');
+  assert.equal(motion({ '@list': false, '@twin': false }), 'unknown');
 });

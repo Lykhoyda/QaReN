@@ -236,6 +236,7 @@ interface RunnerSnapshotNode {
   selected?: boolean;
   visibleToUser?: boolean;
   heading?: boolean;
+  scrollable?: boolean;
   secure?: boolean;
   focused?: boolean;
 }
@@ -2089,6 +2090,7 @@ function mapRunnerNodesToFlat(nodes: RunnerSnapshotNode[], qa = false): FlatNode
     if (qa && typeof n.visibleToUser === 'boolean') flat.visibleToUser = n.visibleToUser;
     if (qa && n.heading === true) flat.heading = true;
     if (qa && n.focused === true) flat.focused = true;
+    if (qa && typeof n.scrollable === 'boolean') flat.scrollable = n.scrollable;
     if (n.label !== undefined) flat.label = n.label;
     if (n.identifier !== undefined) flat.identifier = n.identifier;
     if (n.packageName !== undefined) flat.packageName = n.packageName;
