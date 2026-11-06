@@ -30,13 +30,13 @@ on:
     - cron: '20 12 * * 4'
 
 jobs:
-  # Does the slow macOS Swift analysis need to run?
+  # Fast (ubuntu, ~30s) pre-flight: does the slow macOS Swift analysis need to run?
   # PR → only when Swift/Xcode files (or this workflow) changed; push/schedule → always.
   changes:
     name: Detect changed languages
     # Skip the Version Packages PR (and with it `analyze`); its merge push to main runs the full scan.
     if: github.head_ref != 'changeset-release/main' || github.base_ref != 'main' || github.event.pull_request.user.login != 'github-actions[bot]' || github.event.pull_request.head.repo.full_name != github.repository
-    runs-on: self-linux
+    runs-on: ubuntu-slim
     permissions:
       contents: read
     outputs:
@@ -81,14 +81,14 @@ jobs:
       matrix:
         include:
           - language: javascript-typescript
-            os: self-linux
+            os: ubuntu-latest
             build-mode: none
             config-file: .github/codeql/codeql-config.yml
           - language: actions
-            os: self-linux
+            os: ubuntu-latest
             build-mode: none
           - language: java-kotlin
-            os: self-linux
+            os: ubuntu-latest
             build-mode: manual
           - language: swift
             os: macos-15
@@ -99,7 +99,8 @@ jobs:
         uses: actions/checkout@v4
 
       # Swift unchanged on this PR → report green fast (the "Analyze (swift)" check
-      # still posts) without the ~17 min macOS build. Other languages always analyze.
+      # still posts) without the ~17 min macOS build. Non-swift languages are fast
+      # (build-mode:none on ubuntu) and always analyze.
       - name: Skip notice (Swift unchanged)
         if: ${{ matrix.language == 'swift' && needs.changes.outputs.swift != 'true' }}
         run: echo "No Swift/Xcode changes in this PR — skipping the macOS build + CodeQL analysis. The previous analysis on main still applies; push-to-main and the weekly scheduled scan re-check."
@@ -110,14 +111,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-
-      - name: Install Android SDK prerequisites
-        if: ${{ matrix.language == 'java-kotlin' }}
-        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends unzip
-
-      - name: Set up Android SDK
-        if: ${{ matrix.language == 'java-kotlin' }}
-        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd  # v4.0.4
 
       - name: Initialize CodeQL
         if: ${{ matrix.language != 'swift' || needs.changes.outputs.swift == 'true' }}
