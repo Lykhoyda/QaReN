@@ -255,6 +255,7 @@ fn seed_handoff_record_for_project(repo: &Path, run_id: &str, project_rel: &Path
         name: format!("qaren-{run_id}"),
         device_type: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro".to_string(),
         runtime: "com.apple.CoreSimulator.SimRuntime.iOS-26-4".to_string(),
+        ..Default::default()
     });
     let expected = ExpectedReceipt {
         platform: "ios".to_string(),

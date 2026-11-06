@@ -879,6 +879,60 @@ fn unreadable_preinstall_inventory_after_build_refuses_without_installing() {
 }
 
 #[test]
+fn a_simulator_shut_down_during_the_build_refuses_device_not_booted_before_install() {
+    let (repo, app) = app_repo();
+    let req = request(&repo, &app, 30);
+    let mut mock = MockRunner::new();
+    let selected_at = qaren::timefmt::iso8601_utc(mock.now_epoch_ms());
+    script_preflight(&mut mock, &repo);
+    common::script_ios_deps(&mut mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_clean_build_plan(&mut mock);
+    common::script_finite_ios_build_only(&mut mock, "expo run:ios");
+    script_candidate_recheck(&mut mock);
+    script_fingerprint_recheck(&mut mock, "");
+    common::script_ios_app_verification(&mut mock);
+    common::script_ios_metro_spawn(&mut mock);
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&available_inventory("Shutdown")),
+    );
+    common::script_ios_metro_cleanup(&mut mock);
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    let failure = receipt.failure.unwrap();
+    assert_eq!(failure.code, FailureCode::DeviceNotBooted);
+    assert_eq!(failure.phase, "install");
+    assert!(
+        failure.detail.starts_with(&format!(
+            "the simulator was observed Booted at {selected_at} and Shutdown at "
+        )),
+        "{failure:?}"
+    );
+    assert!(failure.detail.ends_with(
+        "before install; booting it was not authorised for this run; boot it and re-run, or pass --boot-device"
+    ));
+    assert!(receipt
+        .next_action
+        .ends_with("boot it and re-run, or pass --boot-device"));
+    assert!(!mock.calls.iter().any(|spec| matches!(
+        spec.label.as_str(),
+        "simctl-bootstatus" | "simctl-install" | "simctl-launch" | "core-walk"
+    )));
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    let sim = RunRecord::load(&req.runs_root, &run_id())
+        .unwrap()
+        .resources
+        .ios_simulator
+        .unwrap();
+    assert!(!sim.boot_authorized && !sim.owned_by_run);
+    assert_eq!(sim.booted_proven_at.as_deref(), Some(selected_at.as_str()));
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
 fn metro_exit_after_install_prevents_launch_and_cleans_up_both_stages() {
     let (repo, app) = app_repo();
     let req = request(&repo, &app, 30);
@@ -2781,6 +2835,7 @@ fn reclaiming_a_run_that_reached_the_walk_requires_scoped_host_absence() {
             name: "qaren-check".into(),
             device_type: "iPhone 17".into(),
             runtime: "iOS 26.5".into(),
+            ..Default::default()
         });
         r.resources.core_cleanup = Some(qaren::runrecord::CoreCleanupEvidence {
             run_id: "check-earlier".into(),
@@ -6468,6 +6523,7 @@ fn boot_device_refreshes_the_selected_state_after_reclaim_shuts_down_the_simulat
             name: "qa-company-app".into(),
             device_type: "com.apple.CoreSimulator.SimDeviceType.iPhone-17".into(),
             runtime: "com.apple.CoreSimulator.SimRuntime.iOS-26-5".into(),
+            ..Default::default()
         });
         record.resources.arm_borrowed_ios_stop().unwrap();
     });

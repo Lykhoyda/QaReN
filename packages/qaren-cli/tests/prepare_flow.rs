@@ -973,6 +973,10 @@ fn ios_install_over_120_seconds_completes_within_the_preparation_budget() {
     let mut mock = MockRunner::new();
     script_ios_prepare_install(&mut mock, &repo, CmdOutput::success(""), |m| {
         m.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&common::sim_inventory(common::CREATED_UDID, "Booted")),
+        );
+        m.expect_run(
             "simctl install",
             CmdOutput {
                 duration_ms: 130_000,
@@ -1006,7 +1010,9 @@ fn ios_install_timeout_proven_by_the_installed_bundle_is_not_reissued() {
     let repo = common::temp_repo();
     let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
     let mut mock = MockRunner::new();
-    script_ios_prepare_install(&mut mock, &repo, CmdOutput::success(""), |_| {});
+    script_ios_prepare_install(&mut mock, &repo, CmdOutput::success(""), |m| {
+        common::script_install_proof(m)
+    });
     mock.timeouts = [("simctl-install".into(), 120_000)].into();
     mock.container_is_installed_app = true;
 
@@ -1038,9 +1044,14 @@ fn ios_install_timeout_without_an_installed_bundle_reinstalls_within_the_budget(
     let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
     let mut mock = MockRunner::new();
     script_ios_prepare_install(&mut mock, &repo, CmdOutput::success(""), |m| {
+        common::script_install_proof(m);
         m.expect_run(
             "simctl get_app_container",
             CmdOutput::failed(2, "No such file or directory"),
+        );
+        m.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&common::sim_inventory(common::CREATED_UDID, "Booted")),
         );
         m.expect_run("simctl install", CmdOutput::success(""));
     });
@@ -1079,6 +1090,7 @@ fn ios_install_timeouts_fail_once_the_shared_budget_is_spent() {
     );
     let mut mock = MockRunner::new();
     script_ios_prepare_before_install(&mut mock, &repo);
+    common::script_install_proof(&mut mock);
     mock.expect_run(
         "simctl get_app_container",
         CmdOutput::failed(2, "No such file or directory"),
@@ -1114,7 +1126,15 @@ fn ios_install_coordination_refusal_is_retried_within_the_budget() {
     let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
     let mut mock = MockRunner::new();
     script_ios_prepare_install(&mut mock, &repo, CmdOutput::success(""), |m| {
+        m.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&common::sim_inventory(common::CREATED_UDID, "Booted")),
+        );
         m.expect_run("simctl install", CmdOutput::failed(2, IX_REFUSAL));
+        m.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&common::sim_inventory(common::CREATED_UDID, "Booted")),
+        );
         m.expect_run("simctl install", CmdOutput::success(""));
     });
 
@@ -1146,6 +1166,10 @@ fn ios_install_coordination_refusals_fail_once_the_shared_budget_is_spent() {
     let mut mock = MockRunner::new();
     script_ios_prepare_before_install(&mut mock, &repo);
     for _ in 0..4 {
+        mock.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&common::sim_inventory(common::CREATED_UDID, "Booted")),
+        );
         mock.expect_run("simctl install", CmdOutput::failed(2, IX_REFUSAL));
     }
     common::script_ios_metro_cleanup(&mut mock);
@@ -1239,6 +1263,10 @@ fn ios_install_error_fails_after_one_attempt() {
     let mut mock = MockRunner::new();
     script_ios_prepare_before_install(&mut mock, &repo);
     mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&common::sim_inventory(common::CREATED_UDID, "Booted")),
+    );
+    mock.expect_run(
         "simctl install",
         CmdOutput::failed(1, "An error was encountered processing the command"),
     );
@@ -1265,6 +1293,10 @@ fn ios_install_refusal_on_stdout_is_terminal() {
     let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
     let mut mock = MockRunner::new();
     script_ios_prepare_before_install(&mut mock, &repo);
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&common::sim_inventory(common::CREATED_UDID, "Booted")),
+    );
     mock.expect_run(
         "simctl install",
         CmdOutput {
@@ -1305,6 +1337,10 @@ fn script_ios_prepare_before_request_probe_reading(
     read_artifact: impl FnOnce(&mut MockRunner),
 ) {
     script_ios_prepare_reading_artifact(mock, repo, read_artifact);
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&common::sim_inventory(common::CREATED_UDID, "Booted")),
+    );
     mock.expect_run("simctl install", CmdOutput::success(""));
     mock.expect_run("ps", CmdOutput::success(LSTART));
     mock.expect_run("ps", CmdOutput::success("S"));
@@ -2288,6 +2324,10 @@ fn ios_prepare_continues_with_a_note_when_dev_menu_defaults_fail() {
 
 fn script_ios_prepare(mock: &mut MockRunner, repo: &std::path::Path, defaults: CmdOutput) {
     script_ios_prepare_install(mock, repo, defaults, |m| {
+        m.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&common::sim_inventory(common::CREATED_UDID, "Booted")),
+        );
         m.expect_run("simctl install", CmdOutput::success(""))
     });
 }
@@ -2330,7 +2370,7 @@ fn script_ios_prepare_launch(
         empty,
         empty,
         empty,
-        |m| m.expect_run("simctl install", CmdOutput::success("")),
+        |m| common::script_proven_install(m, CmdOutput::success("")),
         launch,
     );
 }
@@ -2408,7 +2448,7 @@ fn expo_hash_drift_between_plan_and_readiness_fails_as_candidate_drift() {
         fingerprint("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
         fingerprint("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
         fingerprint("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
-        |m| m.expect_run("simctl install", CmdOutput::success("")),
+        |m| common::script_proven_install(m, CmdOutput::success("")),
         common::script_ios_launch,
     );
     common::script_ios_metro_cleanup(&mut mock);
@@ -3729,7 +3769,7 @@ fn script_prepare_to_recheck(
     common::script_ios_after_publish(
         mock,
         CmdOutput::success(""),
-        |m| m.expect_run("simctl install", CmdOutput::success("")),
+        |m| common::script_proven_install(m, CmdOutput::success("")),
         common::script_ios_launch,
     );
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
@@ -4493,7 +4533,7 @@ fn recording_a_build_retires_run_output_and_publishes_to_the_machine_store_witho
     common::script_ios_after_publish(
         &mut mock,
         CmdOutput::success(""),
-        |m| m.expect_run("simctl install", CmdOutput::success("")),
+        |m| common::script_proven_install(m, CmdOutput::success("")),
         common::script_ios_launch,
     );
     script_ios_readiness(&mut mock);
@@ -5915,6 +5955,7 @@ fn plant_borrowed_holder(repo: &std::path::Path) -> qaren::lease::Lease {
         name: "qa-lane".to_string(),
         device_type: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro".to_string(),
         runtime: "com.apple.CoreSimulator.SimRuntime.iOS-26-4".to_string(),
+        ..Default::default()
     });
     record.save(repo).unwrap();
     held
@@ -6426,6 +6467,7 @@ fn plant_pool_holder(repo: &std::path::Path, udid: &str, phase: Phase) -> qaren:
         name: POOL_NAME.to_string(),
         device_type: IOS_TYPE.to_string(),
         runtime: IOS_RUNTIME.to_string(),
+        ..Default::default()
     });
     record.save(repo).unwrap();
     held
@@ -7459,7 +7501,7 @@ fn a_contended_ios_build_waits_for_the_holder_then_builds_and_releases_before_in
     common::script_ios_after_publish(
         &mut mock,
         CmdOutput::success(""),
-        |m| m.expect_run("simctl install", CmdOutput::success("")),
+        |m| common::script_proven_install(m, CmdOutput::success("")),
         common::script_ios_launch,
     );
     script_ios_readiness(&mut mock);
@@ -7984,6 +8026,10 @@ fn ios_metro_preserves_effective_pnpm_options_or_inherited_fallback() {
         mock.environment
             .insert("NODE_OPTIONS".into(), "--trace-warnings".into());
         script_ios_prepare_reading_artifact_with_options(&mut mock, &repo, |_| {}, output);
+        mock.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&common::sim_inventory(common::CREATED_UDID, "Booted")),
+        );
         mock.expect_run("simctl install", CmdOutput::success(""));
         common::script_ios_metro_wait_and_launch(&mut mock, CmdOutput::success(""));
         script_ios_readiness(&mut mock);

@@ -249,6 +249,7 @@ fn dead_holder_reclaim_completes_pending_borrowed_ios_stop_before_releasing_leas
         name: "selected".into(),
         device_type: device_type.into(),
         runtime: runtime.into(),
+        ..Default::default()
     });
     record.resources.lease = Some(lease.clone());
     record.resources.arm_borrowed_ios_stop().unwrap();

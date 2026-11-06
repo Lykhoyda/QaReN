@@ -148,12 +148,21 @@ pub struct LaneEvidence {
     pub first_screen: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IosSimResource {
     pub udid: String,
     pub name: String,
     pub device_type: String,
     pub runtime: String,
+    // This run may boot the simulator: a created or pool simulator, or --boot-device/--restart-device.
+    #[serde(default)]
+    pub boot_authorized: bool,
+    // The run created this simulator, so it is in custody without a device lease.
+    #[serde(default)]
+    pub owned_by_run: bool,
+    // When this run last observed the simulator Booted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub booted_proven_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

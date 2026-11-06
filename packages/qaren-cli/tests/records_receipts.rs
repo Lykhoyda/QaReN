@@ -107,6 +107,7 @@ fn run_record_round_trips() {
         name: "qaren-roundtrip1".to_string(),
         device_type: "dt".to_string(),
         runtime: "rt".to_string(),
+        ..Default::default()
     });
     record.resources.metro = Some(qaren::runrecord::MetroResource {
         port: 8791,
@@ -271,6 +272,7 @@ fn borrowed_ios_stop_transitions_and_load_validation_require_canonical_borrowed_
         name: "selected".into(),
         device_type: "com.apple.CoreSimulator.SimDeviceType.iPhone-17".into(),
         runtime: "com.apple.CoreSimulator.SimRuntime.iOS-26-5".into(),
+        ..Default::default()
     };
     let mut resources = Resources::default();
     assert_eq!(resources.borrowed_ios_stop(), BorrowedIosStop::NotArmed);
