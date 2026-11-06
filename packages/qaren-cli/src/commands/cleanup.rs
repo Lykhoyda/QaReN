@@ -2266,6 +2266,20 @@ fn step_failure(output: &CmdOutput, ladder: &Ladder) -> String {
         "timed out after {n} attempt{} ({tries})",
         if n == 1 { "" } else { "s" }
     );
+    let answers = ladder
+        .liveness
+        .iter()
+        .filter_map(|l| match l {
+            Liveness::Answered(ms) => Some(format!("{ms} ms")),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if !answers.is_empty() {
+        text.push_str(&format!(
+            "; the device answered adb shell true in {} between attempts",
+            answers.join(" and ")
+        ));
+    }
     match ladder.liveness.last() {
         Some(Liveness::TimedOut(ms)) => text.push_str(&format!(
             "; adb shell true timed out after {ms} ms, so the device is unresponsive"
@@ -2277,19 +2291,8 @@ fn step_failure(output: &CmdOutput, ladder: &Ladder) -> String {
             "; adb shell true failed ({summary}) after {duration_ms} ms, so the device is unresponsive"
         )),
         _ => {
-            let answers = ladder
-                .liveness
-                .iter()
-                .filter_map(|l| match l {
-                    Liveness::Answered(ms) => Some(format!("{ms} ms")),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
             if !answers.is_empty() {
-                text.push_str(&format!(
-                    "; the device answered adb shell true in {} between attempts, so it is slow, not gone",
-                    answers.join(" and ")
-                ));
+                text.push_str(", so it is slow, not gone");
             }
             if n < SLOW_DEVICE_ATTEMPTS {
                 text.push_str(&format!(
