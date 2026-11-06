@@ -614,6 +614,20 @@ test('an incomplete presence recapture never adds a refusal and falls through to
   assert.deepEqual(f.bands, [LIST, LIST]);
 });
 
+test('a system dialog appearing during presence recapture blocks either scroll direction', async () => {
+  const options = { extra: [overlay(WINDOW)] };
+  const dialog: Screen = { ...screen(options), front: 'dialog' };
+  for (const direction of ['up', 'down'] as const) {
+    const f = await run([screen(options), dialog], { presence: dialog, direction });
+    assert.equal(f.presenceCaptures, 1);
+    assert.deepEqual(f.bands, []);
+    assert.deepEqual(f.actions, []);
+    assert.equal(f.result.block.outcome, 'fail');
+    assert.match(renderReason(f.result.failure?.seen ?? '', (text) => text), /system dialog/);
+    assert.ok(f.rows.every((row) => row.scrollDetail === undefined));
+  }
+});
+
 test('an explicitly hidden container cannot outrank the visible list', () => {
   const visible = { x: 0, y: 300, width: 400, height: 200 };
   const band = plainScrollBand(

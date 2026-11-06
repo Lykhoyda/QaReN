@@ -3905,12 +3905,12 @@ async function walkBlockScoped(
               }
               if (item.kind === 'scroll') {
                 plainBand = plainScrollBand(before.screen, item.direction, deps.platform);
-                // Only a presence capture matches covers to React hosts; one try, never a new refusal.
                 if (plainBand.unproven) {
                   try {
                     const proven = await captureOnce(item, false, false, 'provenance');
                     plainBand = plainScrollBand(proven.screen, item.direction, deps.platform);
                     before = proven;
+                    if (before.screen.front === 'dialog') throw dialogInFront();
                   } catch (error) {
                     if (
                       !(error instanceof ResolutionError) ||
