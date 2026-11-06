@@ -1174,7 +1174,6 @@ test('uncertain current-target evidence on a sole-Close promo still vetoes', () 
 test('a press that opened the promo still withholds the decline', () => {
   const { result, records } = decide(fullScreenPromo(), [
     { ...waitHome, afterPlannedPress: true },
-    later('Premium', 'press'),
   ]);
   assert.equal(result, undefined);
   assert.equal(records[0].veto, 'previous-plan-press');
