@@ -643,6 +643,17 @@ pub fn runner_processes_spec(adb: &Path, server_port: u16, serial: &str) -> CmdS
     )
 }
 
+// The cheapest round trip to the device's shell: an answer means slow, not gone.
+pub fn shell_true_spec(adb: &Path, server_port: u16, serial: &str) -> CmdSpec {
+    adb_client(
+        "adb-shell-true",
+        adb,
+        server_port,
+        &["-s", serial, "shell", "true"],
+        20,
+    )
+}
+
 const PROCESSES_HEADER: &str = "ACTIVITY MANAGER RUNNING PROCESSES (dumpsys activity processes)";
 
 // Some(listed) only for a recognised processes dump: the instrumentation runs in the runner
