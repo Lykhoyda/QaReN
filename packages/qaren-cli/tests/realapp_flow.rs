@@ -915,6 +915,49 @@ fn prewarm_still_fails_on_drift_outside_qaren_state() {
 }
 
 #[test]
+fn prewarm_refuses_as_unavailable_when_the_candidate_cannot_be_read_after_install() {
+    let repo = common::temp_repo();
+    let scenario_path = write_scenario(&repo, &ios_reuse_scenario_yaml(8791));
+
+    let mut mock = MockRunner::new();
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
+    mock.expect_run("git", CmdOutput::success(""));
+    mock.expect_run("pnpm fetch", CmdOutput::success(""));
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("git", CmdOutput::failed(128, "fatal: not a git repository"));
+
+    let receipt = prewarm(&mut mock, &PrewarmArgs { scenario_path });
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Refused,
+        "{:?}",
+        receipt.failure
+    );
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::CandidateUnavailable);
+    assert_eq!(failure.phase, "deps");
+    assert_eq!(mock.remaining(), 0);
+    assert!(!buildplan::prewarm_path(&repo).exists());
+}
+
+#[test]
+fn the_lockfile_hash_separates_a_deleted_lockfile_from_an_unreadable_one() {
+    let repo = common::temp_repo();
+    let app = repo.join("test-app");
+    assert_eq!(
+        qaren::candidate::lockfile_sha256(&app),
+        Ok(Some(qaren::candidate::sha256_hex(b"lockfileVersion: 9\n")))
+    );
+    std::fs::remove_file(app.join("pnpm-lock.yaml")).unwrap();
+    assert_eq!(qaren::candidate::lockfile_sha256(&app), Ok(None));
+    std::fs::create_dir(app.join("pnpm-lock.yaml")).unwrap();
+    assert!(qaren::candidate::lockfile_sha256(&app)
+        .unwrap_err()
+        .contains("cannot read pnpm-lock.yaml"));
+}
+
+#[test]
 fn prewarm_accepts_an_existing_handoff_integration_baseline() {
     let repo = common::temp_repo();
     let scenario_path = write_scenario(

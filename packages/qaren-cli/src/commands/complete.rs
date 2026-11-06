@@ -433,8 +433,9 @@ fn read_evidence(path: &Path) -> Result<(String, String), Failure> {
 // recorded at prepare/handoff time, looking through the session's declared
 // integration surface (the applied integration is expected to be live here).
 fn recheck_candidate(runner: &mut dyn Runner, record: &RunRecord) -> Result<(), Failure> {
-    candidate::verify_unchanged_with(runner, &record.candidate, true).map_err(|detail| {
-        Failure::new(
+    candidate::verify_unchanged_with(runner, &record.candidate, true).map_err(|check| match check {
+        candidate::CandidateCheck::Unreadable(_) => Failure::candidate_unavailable("complete"),
+        candidate::CandidateCheck::Drifted(detail) => Failure::new(
             "complete",
             FailureCode::CandidateDrifted,
             format!("{detail} since the handoff"),
@@ -442,6 +443,6 @@ fn recheck_candidate(runner: &mut dyn Runner, record: &RunRecord) -> Result<(), 
                 "the handoff no longer describes this worktree; qaren cleanup {} --json, then re-run prepare on a stable checkout",
                 record.run_id
             ),
-        )
+        ),
     })
 }

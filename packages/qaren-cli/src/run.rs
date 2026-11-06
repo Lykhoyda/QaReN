@@ -968,14 +968,20 @@ fn run_inner(
         }
 
         if pr_state.is_some() {
-            if let Err(detail) = candidate::verify_unchanged(ctx.runner, &ctx.record.candidate) {
-                let f = Failure::new(
-                    "pr",
-                    FailureCode::CandidateDrifted,
-                    format!("the pull request worktree changed before the walk: {detail}"),
-                    "re-run qaren pr; nothing may modify the run's worktree",
-                );
-                return finish_failed(ctx, f);
+            match candidate::verify_unchanged(ctx.runner, &ctx.record.candidate) {
+                Ok(()) => {}
+                Err(candidate::CandidateCheck::Unreadable(_)) => {
+                    return finish_failed(ctx, Failure::candidate_unavailable("pr"));
+                }
+                Err(candidate::CandidateCheck::Drifted(detail)) => {
+                    let f = Failure::new(
+                        "pr",
+                        FailureCode::CandidateDrifted,
+                        format!("the pull request worktree changed before the walk: {detail}"),
+                        "re-run qaren pr; nothing may modify the run's worktree",
+                    );
+                    return finish_failed(ctx, f);
+                }
             }
         }
         if pr_state.is_some() {
@@ -1208,21 +1214,37 @@ fn run_inner(
         let final_verification = FinalVerification {
             tested: ctx.record.candidate.git_sha.clone(),
             matched: verified.is_ok(),
-            detail: verified.clone().err(),
+            detail: verified
+                .as_ref()
+                .err()
+                .map(|check| check.detail().to_string()),
+            classification: verified.as_ref().err().map(|check| check.classification()),
         };
+        let cancelled_walk = outcome
+            .failure
+            .as_ref()
+            .is_some_and(|failure| failure.code == FailureCode::RunCancelled)
+            || matches!(&outcome.verdict, Verdict::Refused { code, .. } if code == "RUN_CANCELLED");
         match verified {
             Ok(()) => ctx
                 .notes
                 .push(("candidate_drift".to_string(), "none".to_string())),
-            Err(detail)
-                if outcome
-                    .failure
-                    .as_ref()
-                    .is_some_and(|failure| failure.code == FailureCode::RunCancelled) =>
-            {
-                ctx.notes.push(("candidate_drift".to_string(), detail));
+            Err(check) if cancelled_walk => {
+                ctx.notes
+                    .push(("candidate_drift".to_string(), check.detail().to_string()));
             }
-            Err(detail) => {
+            Err(candidate::CandidateCheck::Unreadable(detail)) => {
+                let unavailable = Failure::candidate_unavailable("verify");
+                outcome.verdict = Verdict::Refused {
+                    code: "CANDIDATE_UNAVAILABLE".to_string(),
+                    message: unavailable.detail.to_string(),
+                };
+                outcome.ledger.verdict = "REFUSED".to_string();
+                outcome.failure = Some(unavailable);
+                ctx.notes
+                    .push(("candidate_unavailable".to_string(), detail));
+            }
+            Err(candidate::CandidateCheck::Drifted(detail)) => {
                 outcome.verdict = Verdict::Fail;
                 outcome.ledger.verdict = "FAIL".to_string();
                 outcome.failure = Some(Failure::new(
@@ -1397,7 +1419,10 @@ fn run_inner(
             ),
         };
         if let (Some(failure), Verdict::Refused { code, .. }) = (&mut failure, &outcome.verdict) {
-            let cause = if code == "RUN_CANCELLED"
+            // Only an admission-caused refusal takes the admission overlay; a CLI-owned verification refusal keeps its own phase and next step.
+            let cause = if failure.code == FailureCode::CandidateUnavailable {
+                None
+            } else if code == "RUN_CANCELLED"
                 && !outcome.admitted
                 && outcome.ledger.press_evidence.is_none()
             {

@@ -127,7 +127,9 @@ The [run storage contract](https://github.com/Lykhoyda/QaReN/blob/develop/packag
 
 `check` records the commit, the lockfile hash and a fingerprint of the working tree before
 the walk and checks them again after it. A change in between fails the run with
-`CANDIDATE_DRIFTED`, which can never be a pass. See the
+`CANDIDATE_DRIFTED`, which can never be a pass. If the candidate cannot be read at all, for
+example because its volume dropped out, the run refuses `CANDIDATE_UNAVAILABLE` (exit 4)
+instead: nothing is known to have changed. See the
 [candidate provenance contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#candidate-provenance)
 for excluded paths and untracked Watchman cookies.
 

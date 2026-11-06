@@ -7784,6 +7784,47 @@ fn an_unresolved_build_lock_release_stops_before_install_and_keeps_the_lock() {
 }
 
 #[test]
+fn an_unreadable_candidate_at_the_post_build_recheck_refuses_as_unavailable() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_validation(&mut mock, &repo, IOS_TOOLS);
+    mock.expect_run("lsof", free_port());
+    mock.expect_run("ps", CmdOutput::success(LSTART));
+    mock.expect_run("ps", CmdOutput::success("qaren prepare"));
+    common::script_ios_deps(&mut mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
+    mock.expect_run("simctl create", CmdOutput::success(UDID));
+    mock.expect_run("simctl bootstatus", CmdOutput::success("finished"));
+    common::script_finite_ios_build_only(&mut mock, "expo run:ios");
+    mock.expect_run(
+        "git",
+        CmdOutput::failed(
+            128,
+            "fatal: not a git repository (or any of the parent directories): .git",
+        ),
+    );
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    let failure = receipt.failure.unwrap();
+    assert_eq!(failure.code, FailureCode::CandidateUnavailable);
+    assert_eq!(failure.phase, "verify");
+    assert!(failure.recovery.is_none());
+    assert_eq!(
+        failure.next_action.as_str(),
+        format!(
+            "qaren cleanup {} --json; then check that the candidate's volume or path is available again, then re-run; QaReN does not recreate or move the candidate",
+            receipt.run_id
+        )
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert!(!mock.calls.iter().any(|spec| spec.label == "simctl-install"));
+}
+
+#[test]
 fn build_probe_timeouts_prioritize_expiry_over_candidate_drift() {
     use qaren::failure::RecoveryReason;
     for elapsed_ms in [1000, 30_000] {
@@ -7826,11 +7867,11 @@ fn build_probe_timeouts_prioritize_expiry_over_candidate_drift() {
                 RecoveryReason::BuildBudgetExhausted
             );
         } else {
-            assert_eq!(failure.code, FailureCode::CandidateDrifted);
-            assert_eq!(
-                failure.build_recovery().unwrap().reason,
-                RecoveryReason::CandidateDrifted
-            );
+            // A timed-out git status proves no change: the candidate was unreadable, not drifted.
+            assert_eq!(failure.code, FailureCode::CandidateUnavailable);
+            assert_eq!(failure.phase, "verify");
+            assert!(failure.recovery.is_none());
+            assert_eq!(receipt.result, ReceiptResult::Refused);
         }
         assert_eq!(mock.remaining(), 0);
         assert!(!repo.join(".locks/native-build-ios").exists());

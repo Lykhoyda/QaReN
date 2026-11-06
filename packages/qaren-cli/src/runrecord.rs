@@ -631,6 +631,9 @@ pub struct FinalVerification {
     pub matched: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    // Absent on records written before verification was classified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classification: Option<crate::candidate::VerificationClass>,
 }
 
 impl TerminalResult {
@@ -649,6 +652,12 @@ impl TerminalResult {
                 "the run was cancelled before its result was final",
                 "re-run qaren pr; a cancelled run is never published",
             );
+        }
+        if !self.final_verification.matched
+            && self.final_verification.classification
+                == Some(crate::candidate::VerificationClass::Unreadable)
+        {
+            return Some(Failure::candidate_unavailable("publish"));
         }
         if !self.final_verification.matched {
             return refuse(

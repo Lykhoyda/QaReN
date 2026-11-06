@@ -625,6 +625,25 @@ fn complete_refuses_stale_candidate() {
 }
 
 #[test]
+fn complete_refuses_an_unreadable_candidate_as_unavailable() {
+    let repo = common::temp_repo();
+    seed_handoff_record(&repo, "coop-5u");
+    let evidence = write_evidence(&repo, "build.log", &receipt_line(&receipt_payload(&repo)));
+
+    let mut mock = MockRunner::new();
+    script_allocation_probe(&mut mock, "coop-5u");
+    mock.expect_run("git", CmdOutput::failed(128, "fatal: not a git repository"));
+    let receipt = complete(&mut mock, &repo, "coop-5u", &evidence);
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::CandidateUnavailable);
+    assert_eq!(failure.phase, "complete");
+    assert_eq!(mock.remaining(), 0);
+    let record = RunRecord::load(&repo, "coop-5u").unwrap();
+    assert!(record.handoff.as_ref().unwrap().completed_at.is_none());
+}
+
+#[test]
 fn status_of_handed_off_run_probes_allocation_and_handoff_document() {
     let repo = common::temp_repo();
     let record = seed_handoff_record(&repo, "coop-6");
