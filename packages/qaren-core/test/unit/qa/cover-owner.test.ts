@@ -229,7 +229,10 @@ test('scroll clipping withholds a named owner outside every viewport edge', asyn
       { id: 'clipped-row', type: 'Button', rect: frame, parent: 1 },
     ]);
     assert.equal(touchOwnerAt(screen, x, y), 'unresolved', `${x},${y}`);
-    assert.equal(coverOwner(screen.elements.find((e) => e.testID === 'target')!, screen), undefined);
+    assert.equal(
+      coverOwner(screen.elements.find((e) => e.testID === 'target')!, screen),
+      undefined,
+    );
   }
 });
 
@@ -244,9 +247,17 @@ test('partially clipped owners use the touch point within all nested viewports',
       parent: 1,
     },
   ]);
-  for (const [x, y] of [[99, 300], [250, 300], [150, 249], [150, 700]])
+  for (const [x, y] of [
+    [99, 300],
+    [250, 300],
+    [150, 249],
+    [150, 700],
+  ])
     assert.equal(touchOwnerAt(screen, x, y), 'unresolved', `${x},${y}`);
-  for (const [x, y] of [[100, 250], [249, 699]]) {
+  for (const [x, y] of [
+    [100, 250],
+    [249, 699],
+  ]) {
     const owner = touchOwnerAt(screen, x, y);
     assert.equal(typeof owner === 'object' ? owner.testID : owner, 'partial-row', `${x},${y}`);
   }
