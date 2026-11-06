@@ -1,8 +1,4 @@
-# Story 06 Phase A (#387): execute the native runner unit suites.
-# Shape copied from codeql.yml: a fast ubuntu `changes` pre-flight, then
-# per-platform jobs that either run the tests or post a green skip notice —
-# checks ALWAYS post, so the maintainer's "CI green" merge rule stays sound
-# without required-status-check config.
+# Unchanged platform lanes post green skip notices so every check reports a result.
 name: Native tests
 
 on:
