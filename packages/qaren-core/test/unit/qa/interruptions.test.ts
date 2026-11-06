@@ -1228,6 +1228,7 @@ function promoOverHome(
   f: ReturnType<typeof app>,
   options: Parameters<typeof modalOverHome>[0] = {},
 ) {
+  f.deps.platform = 'ios';
   let promoUp = true;
   const capture = f.deps.captureScreen;
   f.deps.captureScreen = async (request) =>
@@ -1249,9 +1250,6 @@ function promoOverHome(
 // Device run R1: the press decides on an ordinary capture, which cannot prove the modal cover.
 test(
   'a tap on a target behind a sole-Close promo closes the promo without scrolling it',
-  {
-    todo: 'needs the shared bounded presence recapture before the scroll decision',
-  },
   async () => {
     const f = app(home());
     promoOverHome(f);
@@ -1294,14 +1292,16 @@ test('a first check dismisses the full-screen promo despite mounted Home control
 });
 
 test('a first fill behind the modal dismisses Close once without scrolling', async () => {
-  const f = app(modalOverHome({ input: true }));
+  const f = app(home());
+  promoOverHome(f, { input: true });
   ticking(f);
-  f.deps.press = async (ref) => {
-    f.actions.push(`press ${ref}`);
+  const press = f.deps.press;
+  f.deps.press = async (ref, context) => {
+    const result = await press(ref, context);
     f.show(
       screen([element('@field', 'Target', { kind: 'input', testID: 'qa-promo-home-target' })]),
     );
-    return { ok: true, executed: true };
+    return result;
   };
   f.deps.fill = async (ref, value) => {
     f.actions.push(`fill ${ref}`);

@@ -3553,6 +3553,7 @@ async function walkBlockScoped(
           let within: NativeNode['rect'];
           let scrollNeedsReadback = false;
           let scrollError: string | undefined;
+          let scrollPresenceRead = false;
           // The target that settled after this attempt's keyboard dismissal; the tap goes to it or nowhere.
           let keyboardBound: { target: Element; frame: string; scrolled: number } | undefined;
           let act: ActResult;
@@ -3654,9 +3655,23 @@ async function walkBlockScoped(
                   resolution = result;
                 } else resolution = decided;
                 if ('scroll' in resolution) {
+                  if (
+                    deps.platform === 'ios' &&
+                    !scrollPresenceRead &&
+                    !before.platformPresence &&
+                    reactOnlyTarget(item.target, before.screen)
+                  ) {
+                    scrollPresenceRead = true;
+                    before = await captureOnce(
+                      item,
+                      false,
+                      false,
+                      'provenance',
+                      Math.min(itemDeadline ?? Infinity, deps.now() + NATIVE_PRESENCE_BUDGET_MS),
+                    );
+                    continue;
+                  }
                   // Scrolling would move the interruption, not the target behind it.
-                  // shortcut: an ordinary capture carries no host association, so this proof holds only
-                  // on a presence capture; call the shared presence recapture helper here once it lands.
                   if (
                     (item.kind === 'press' || item.kind === 'fill') &&
                     targetBehindInterruption(before.screen, item.target)
