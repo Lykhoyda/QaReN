@@ -3475,9 +3475,9 @@ and [freshness regressions](../qaren-core/test/unit/qa/temporal-walker.test.ts).
 App interruptions need no app-specific configuration. Recovery requires complete
 native capture and React coverage. One shared target-presence predicate checks the
 current target and every remaining target, quoted or described, in every block:
-dismissal is allowed only when none could match an element on the interruption.
-Tap, fill, wait, scroll and check targets use the same rule, with no exemptions
-for later blocks or decline labels. Unknown absence, including an unresolved
+dismissal normally requires that none could match an element on the interruption,
+with the sole-control exemption below. Targets in later blocks and targets naming
+the decline control remain protected. Unknown absence, including an unresolved
 description, counts as a possible match. A target whose centre is covered by a
 detected sheet or scrim does not prevent recovery merely because it remains in the
 capture. The one exemption: when the current target is absent and the screen's only
