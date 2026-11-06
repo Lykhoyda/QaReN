@@ -59,6 +59,8 @@ export interface Element {
   offscreen: boolean;
   // Literal-text evidence from the node's own frame; `offscreen` stays the targeting flag.
   visibilityEvidence?: VisibilityEvidence;
+  // Android only: not visible to the user although its frame is real, inside the viewport and clear of the keyboard.
+  hiddenInView?: 'focused' | 'unfocused';
   where?: 'top' | 'middle' | 'bottom';
   side?: 'left' | 'center' | 'right';
   semantic?: {
@@ -335,6 +337,8 @@ export interface NativeNode {
   visibleToUser?: boolean;
   // Android only: the accessibility heading fact; header-role text is exposed as android.view.View.
   heading?: boolean;
+  // Android only: the node holds input focus.
+  focused?: boolean;
   secure?: boolean;
   value?: string;
   rect?: { x: number; y: number; width: number; height: number };
@@ -783,6 +787,15 @@ export function join(
     n.rect.width > 0 &&
     n.rect.height > 0 &&
     underKeyboard(n, i);
+  // Not visible although its real frame is in view and clear of the keyboard (e.g. opacity 0); never scrolled out.
+  const hiddenInView = (n: NativeNode, i: number): boolean =>
+    n.visibleToUser === false &&
+    !!n.rect &&
+    n.rect.width > 0 &&
+    n.rect.height > 0 &&
+    !viewport.has(i) &&
+    !offscreen.has(i) &&
+    !underKeyboard(n, i);
   const contradicted = frameContradictions(nodes);
   const chrome = scrollChromeNodes(nodes, presence);
   const associationDiagnostics = new Map<number, HostAssociationDiagnostic>();
@@ -1004,6 +1017,9 @@ export function join(
             : viewport.has(nodeIndex)
               ? 'offscreen'
               : 'visible',
+      ...(hiddenInView(n, nodeIndex)
+        ? { hiddenInView: n.focused === true ? ('focused' as const) : ('unfocused' as const) }
+        : {}),
       semantic: {
         ...capabilities,
         ...(headings.has(nodeIndex) ? { heading: headings.get(nodeIndex)! } : {}),

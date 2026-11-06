@@ -776,6 +776,52 @@ test('gh-581: android parity — EditText fixtures, same arbiter, same success r
   assert.ok(calls.some((c) => c.cliArgs[0] === 'verify-input'));
 });
 
+// AI-489: an input the app keeps fully transparent is not visible to the user and not hittable,
+// yet holds focus; the runner binds it by identifier and focus, and the handler's gates still run.
+test('AI-489: android fill of a focused hidden input verifies through the same gates', async () => {
+  const hiddenNodes = [
+    {
+      ref: '@e2',
+      identifier: 'otp-input-hidden',
+      type: 'android.widget.EditText',
+      rect: { x: 55, y: 566, width: 970, height: 158 },
+      visibleToUser: false,
+      hittable: false,
+      enabled: true,
+      focused: true,
+    },
+  ];
+  const { result, calls } = await withFillSeam(
+    {
+      platform: 'android',
+      nodes: hiddenNodes as never,
+      fill: () =>
+        okResult({
+          typed: true,
+          method: 'setText',
+          setTextOutcome: 'accepted',
+          focusTap: 'skipped-exact-focused',
+          inputResolution: 'identifier-focused-hidden',
+        }),
+    },
+    () => performExactFill({ alwaysRetype: true, ref: '@e2', text: '7391' }, null, NATIVE_ONLY),
+  );
+  assert.ok(!(result as { isError?: boolean }).isError, envelope(result as never).error);
+  assert.equal(envelope(result as never).meta.verify, 'exact');
+  const fills = calls.filter((c) => c.cliArgs[0] === 'fill');
+  assert.equal(fills.length, 1);
+  assert.equal(fills[0].cliArgs[1], '@e2');
+  const verify = calls.find((c) => c.cliArgs[0] === 'verify-input')!;
+  const fillToken = (fills[0].opts.exactTarget as { operationToken: string }).operationToken;
+  assert.ok(typeof fillToken === 'string' && fillToken.length > 0);
+  assert.equal(
+    (verify.opts.exactTarget as { operationToken?: string } | undefined)?.operationToken,
+    fillToken,
+    'verification reads the input the fill bound',
+  );
+  assert.doesNotMatch(JSON.stringify(result), /7391/);
+});
+
 test('gh-581: bare "EditText" snapshot type never binds on Android', async () => {
   const bareNodes = [
     {

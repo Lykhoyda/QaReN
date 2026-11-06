@@ -42,6 +42,8 @@ export interface FlatNode {
   visibleToUser?: boolean;
   /** Android QA reads: the accessibility heading fact, present only when true. */
   heading?: boolean;
+  /** Android QA reads: input focus, present only when true. */
+  focused?: boolean;
   /** GH #581: Android password fields; never cached beyond the snapshot nodes. */
   secure?: boolean;
 }

@@ -53,6 +53,8 @@ export const REQUIRED_ANDROID_FEATURES = [
   // V2 counts only enabled, visible, clickable views as same-window covers; the core's React hit test
   // supplies the rest, so a V1 runner (any visible view covers) cannot pair with this core.
   'A11Y_PRESENCE_V2',
+  // A runner without it reports no focus, so a focused hidden input would be refused as unfocused.
+  'FOCUSED_HIDDEN_INPUT_V1',
 ] as const;
 
 export const REQUIRED_ANDROID_COMMANDS = [
