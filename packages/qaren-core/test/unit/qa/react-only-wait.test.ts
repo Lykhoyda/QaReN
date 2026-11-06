@@ -6,6 +6,7 @@ import type { DigestEntry, Front, NativeNode, ReactHostEvidence } from '../../..
 import { reactOnlyMiss } from '../../../dist/qa/resolve.js';
 import { runPlan, WAIT_BUDGET_MS, WAIT_POLL_MS } from '../../../dist/qa/walker.js';
 import { CaptureDeadline } from '../../../dist/qa/capture.js';
+import { CAPTURE_BUDGET_MS } from '../../../dist/qa/timing.js';
 import type { ActResult } from '../../../dist/qa/walker.js';
 import { element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
 
@@ -419,7 +420,9 @@ test('an ordinary poll cut off at the deadline names the stage it was in', async
   assert.equal(f.deps.now(), WAIT_BUDGET_MS);
 });
 
-test("recovery after a React-only refusal captures inside the wait's deadline", async () => {
+// A React-only target can sit behind an interruption, so recovery gets its own bounded capture
+// instead of whatever is left of the wait.
+test('recovery after a React-only refusal gets its own bounded capture', async () => {
   const f = walker(
     [],
     scriptedJudge(() => assert.fail('model-free')),
@@ -437,11 +440,8 @@ test("recovery after a React-only refusal captures inside the wait's deadline", 
   };
   const r = await runPlan(parsePlan('1. Wait for "name-field" to appear').blocks!, f.deps);
   assert.match(r.failure?.seen ?? '', /^TARGET_REACT_ONLY: "name-field" is mounted in React /);
-  assert.deepEqual(presence, [
-    WAIT_BUDGET_MS - 2 * WAIT_POLL_MS,
-    WAIT_BUDGET_MS - 2 * WAIT_POLL_MS,
-  ]);
-  assert.equal(f.deps.now(), WAIT_BUDGET_MS);
+  assert.deepEqual(presence, [WAIT_BUDGET_MS - 2 * WAIT_POLL_MS, CAPTURE_BUDGET_MS]);
+  assert.equal(f.deps.now(), 2 * WAIT_POLL_MS + CAPTURE_BUDGET_MS);
   assert.deepEqual(f.actions, []);
 });
 

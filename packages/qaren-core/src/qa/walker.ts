@@ -111,6 +111,7 @@ import {
   recover,
   soleDecline,
   surfaceGone,
+  targetBehindInterruption,
 } from './recover.js';
 import type {
   BlockOutcome,
@@ -155,6 +156,7 @@ import {
 } from '../domain/qa-dispatch.js';
 import {
   admitObservation,
+  CAPTURE_BUDGET_MS,
   observationDeadline,
   observationUsable,
   NATIVE_PRESENCE_BUDGET_MS,
@@ -3075,7 +3077,8 @@ async function walkBlockScoped(
             const view = proven ? reactOnlyViewport(lone) : undefined;
             if (view?.where === 'inside' && reactOnlyFactsOf(lone!)?.accessibleAncestor) {
               const reason = reactOnlyMiss(item.target, observation.screen, absent, waitAttempt)!;
-              const recovering = await recovery(item, 1, reason, deadline);
+              // A React-only target may sit behind an interruption; recovery gets its own bounded capture.
+              const recovering = await recovery(item, 1, reason, deps.now() + CAPTURE_BUDGET_MS);
               if (recovering === 'retry') continue attempts;
               if (recovering) return recovering;
               return judged(
@@ -3263,8 +3266,13 @@ async function walkBlockScoped(
               (unchanged
                 ? `"${item.target.quoted}" did not appear within ${budget / 1000}s; the screen did not change across ${absent} observations`
                 : ITEM_DEADLINE_EXCEEDED);
-            // A classified React-only miss already spent its layout read; recovery gets no fresh time for another.
-            const recovering = await recovery(item, 1, reason, reactOnly ? deadline : undefined);
+            // The wait's deadline has passed; a React-only miss still gets one bounded recovery capture.
+            const recovering = await recovery(
+              item,
+              1,
+              reason,
+              reactOnly ? deps.now() + CAPTURE_BUDGET_MS : undefined,
+            );
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
             if (unchanged) {
@@ -3634,6 +3642,29 @@ async function walkBlockScoped(
                   resolution = result;
                 } else resolution = decided;
                 if ('scroll' in resolution) {
+                  // Scrolling would move the interruption, not the target behind it.
+                  if (
+                    (item.kind === 'press' || item.kind === 'fill') &&
+                    targetBehindInterruption(before.screen, item.target)
+                  ) {
+                    const covered = `"${item.target.phrase}" is mounted behind a presented modal; it was not scrolled`;
+                    const recovering = await recovery(item, attempt, covered);
+                    if (recovering === 'retry') again = true;
+                    else
+                      outcome =
+                        recovering ??
+                        failed(
+                          item,
+                          attempt,
+                          covered,
+                          before.screen,
+                          await shoot(item),
+                          undefined,
+                          false,
+                          'TARGET_NOT_FOUND',
+                        );
+                    break;
+                  }
                   if (
                     scrolled &&
                     (resolution.origin !== 'named-offscreen' ||
@@ -4166,7 +4197,7 @@ async function walkBlockScoped(
               initial = undefined;
             }
           }
-          if (outcome || typedUnverified) break;
+          if (outcome || typedUnverified || again) break;
           const readback = () =>
             captureOnce(item, false, false, before.platformPresence ? 'provenance' : 'resolve');
           let after: Observation;

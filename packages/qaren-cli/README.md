@@ -1741,9 +1741,10 @@ detail labels the layout `react layout before scroll`. A later
 visible native match passes normally. Missing or partially
 clipped layout preserves polling until the deadline; stored-ID replay and block
 start preconditions do not use this early failure or automatic scroll.
-After a classified React-only miss, [step recovery](#step-recovery) may capture
-only within the wait's remaining time. If that capture reaches the deadline, or
-no time remains, the React-only failure reason stands. Other eligible unmet quoted
+After a classified React-only miss, [step recovery](#step-recovery) takes one
+capture with its own capture budget, even when the wait's time has run out, since
+the match may sit behind an interruption. If that capture reaches its budget, the
+React-only failure reason stands. Other eligible unmet quoted
 waits retain ordinary recovery. When recovery clears a blocking screen or system
 dialog, the wait runs once more with its full budget.
 Scroll-until-text uses the same visibility verdict
@@ -3427,6 +3428,10 @@ This exemption requires a proven control count: press/fill association gaps or
 unknown capabilities on a non-structural, on-screen element keep the presence guard.
 React hosts outside the one mounted `Modal` are not gaps while every associated host
 sits inside it, so a full-screen promo over a mounted screen still counts as one control.
+A tap or fill whose ID target is mounted only in React behind that `Modal` is not
+scrolled: it goes to recovery, which closes the interruption under the same guards
+and retries the step once, or fails `TARGET_NOT_FOUND` with the step's row receipt.
+A target that is simply absent, or behind any other cover, never triggers this.
 A later wait or check matching that screen, other than an exempt decline label, still
 vetoes. The current target is never exempt. ID-only targets are checked by
 test ID, text-only targets by contained label or value text (including composed

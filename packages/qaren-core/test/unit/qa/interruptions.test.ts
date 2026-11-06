@@ -13,6 +13,7 @@ import { NativeSnapshotIncomplete } from '../../../dist/qa/private-input.js';
 import { join as joinScreen, type Screen } from '../../../dist/qa/screen.js';
 import type { WalkerDeps } from '../../../dist/qa/walker.js';
 import { choice, element, screen, scriptedJudge } from './judgment-fixtures.ts';
+import { homeAfterPromo, modalOverHome } from './modal-fixtures.ts';
 
 function observedButtons(elements: Screen['elements']) {
   return joinScreen(
@@ -1220,3 +1221,66 @@ for (const [disposition, pressResult, dispatched] of [
     assert.equal(receipt?.pressCentreY, dispatched ? 25 : undefined);
   });
 }
+
+// Device runs over a full-screen promo Modal whose only control is Close, above a mounted Home.
+function promoOverHome(f: ReturnType<typeof app>) {
+  f.show(modalOverHome());
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    f.show(ref === '@close' ? homeAfterPromo() : screen([element('@done', 'Done')]));
+    return { ok: true, proven: false, executed: true };
+  };
+  f.deps.scroll = async () => {
+    f.actions.push('scroll');
+    return { ok: true, proven: false, executed: true };
+  };
+}
+
+test('a tap on a target behind a sole-Close promo closes the promo without scrolling it', async () => {
+  const f = app(home());
+  promoOverHome(f);
+  ticking(f);
+  const result = await runPlan(
+    parsePlan('1. Tap "qa-promo-home-target"\n✓ "Done"').blocks!,
+    f.deps,
+  );
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['press @close', 'press @home-target']);
+  assert.equal(result.recoveries, 1);
+  assert.equal(
+    result.steps.find((row) => row.line === 1 && row.outcome === 'retry')?.interruption?.outcome,
+    'dismissed',
+  );
+});
+
+test('a wait on a React-only target behind a sole-Close promo closes it and passes', async () => {
+  const f = app(home());
+  promoOverHome(f);
+  ticking(f);
+  const result = await runPlan(
+    parsePlan('1. Wait for "qa-promo-home-target" to appear').blocks!,
+    f.deps,
+  );
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['press @close']);
+  assert.equal(result.recoveries, 1);
+});
+
+test('a tap whose target is simply missing never presses the form Cancel', async () => {
+  const form = () => observedButtons([element('@cancel', 'Cancel'), element('@name', 'Name')]);
+  const f = app(form());
+  const rows = ticking(f);
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    return { ok: true, proven: false, executed: true };
+  };
+  f.deps.scroll = async () => {
+    f.actions.push('scroll');
+    return { ok: true, proven: false, executed: true };
+  };
+  const result = await runPlan(parsePlan('1. Tap "qa-submit"').blocks!, f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, []);
+  assert.ok(!result.recoveries);
+  assert.ok(rows.every((row) => row.interruption?.outcome !== 'dismissed'));
+});

@@ -24,6 +24,7 @@ import { centreCovered, targetEvidence } from '../../../dist/qa/resolve.js';
 import { parsePlan, type Target } from '../../../dist/qa/plan.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import { scriptedJudge, walker } from './judgment-fixtures.ts';
+import { modalOverHome } from './modal-fixtures.ts';
 
 function screen(front: Screen['front'], extra: Partial<Screen> = {}): Screen {
   return { elements: [], visibleText: ['Home'], front, ...extra };
@@ -1136,136 +1137,6 @@ test('a press that opened the promo still withholds the decline', () => {
   assert.equal(result, undefined);
   assert.equal(records[0].veto, 'previous-plan-press');
 });
-
-// The iOS device shape: a full-screen React Native Modal over a mounted Home whose Pressables
-// stay in React but have no native nodes while the modal is presented.
-function modalOverHome(
-  options: { modalType?: string; homeNative?: boolean; secondControl?: boolean } = {},
-): Screen {
-  const window = { x: 0, y: 0, width: 402, height: 874 };
-  const closeRect = { x: 20, y: 780, width: 362, height: 50 };
-  const continueRect = { x: 20, y: 700, width: 362, height: 50 };
-  const targetRect = { x: 20, y: 200, width: 362, height: 50 };
-  const nodes: NativeNode[] = [
-    { ref: '@app', type: 'Application', rect: window },
-    { ref: '@window', type: 'Window', parentIndex: 0, rect: window },
-    { ref: '@promo', type: 'Other', parentIndex: 1, identifier: 'qa-promo', rect: window },
-    {
-      ref: '@heading',
-      type: 'StaticText',
-      parentIndex: 2,
-      label: 'Limited-time Pro offer',
-      rect: { x: 20, y: 120, width: 362, height: 40 },
-    },
-    {
-      ref: '@copy',
-      type: 'StaticText',
-      parentIndex: 2,
-      label: 'Upgrade today. See Pro offers on Home any time.',
-      rect: { x: 20, y: 180, width: 362, height: 40 },
-    },
-    {
-      ref: '@close',
-      type: 'Button',
-      parentIndex: 2,
-      identifier: 'qa-promo-close',
-      label: 'Close',
-      hittable: true,
-      rect: closeRect,
-    },
-    ...(options.secondControl
-      ? [
-          {
-            ref: '@continue',
-            type: 'Button',
-            parentIndex: 2,
-            identifier: 'qa-promo-continue',
-            label: 'Continue',
-            hittable: true,
-            rect: continueRect,
-          },
-        ]
-      : []),
-  ];
-  if (options.homeNative)
-    nodes.push(
-      { ref: '@home', type: 'Other', parentIndex: 1, identifier: 'qa-home', rect: window },
-      {
-        ref: '@home-target',
-        type: 'Button',
-        parentIndex: nodes.length,
-        identifier: 'qa-promo-home-target',
-        label: 'Target',
-        hittable: true,
-        rect: targetRect,
-      },
-    );
-  const pressable = (testID: string) => ({
-    testID,
-    role: 'button',
-    roleSource: 'role' as const,
-    capabilities: { press: true as const },
-  });
-  const plain = (testID?: string) => ({
-    ...(testID ? { testID } : {}),
-    role: null,
-    roleSource: 'none' as const,
-    capabilities: {},
-  });
-  // Breadth-first: root; Home and the modal; Home's controls and the promo; the promo's content.
-  const tree: Array<[ReactHostEvidence['hosts'][number], number | null, string, typeof window]> = [
-    [plain(), null, 'RCTRootView', window],
-    [plain('qa-home'), 0, 'RCTView', window],
-    [plain(), 0, options.modalType ?? 'RCTModalHostView', window],
-    [pressable('qa-promo-home-target'), 1, 'RCTView', targetRect],
-    [pressable('qa-promo-offers'), 1, 'RCTView', { x: 20, y: 260, width: 362, height: 50 }],
-    [plain('qa-promo'), 2, 'RCTView', window],
-    [pressable('qa-promo-close'), 5, 'RCTView', closeRect],
-    ...(options.secondControl
-      ? [
-          [pressable('qa-promo-continue'), 5, 'RCTView', continueRect] as [
-            ReactHostEvidence['hosts'][number],
-            number,
-            string,
-            typeof window,
-          ],
-        ]
-      : []),
-  ];
-  const hostEvidence: ReactHostEvidence = {
-    complete: true,
-    hosts: tree.map(([host]) => host),
-    typography: {
-      version: 1,
-      complete: true,
-      durationMs: 1,
-      coordinateSpace: 'window-points',
-      nodes: tree.map(([, parentHostIndex, hostType, rect], hostIndex) => ({
-        hostIndex,
-        parentHostIndex,
-        rootIndex: 0,
-        hostType,
-        rect,
-        text: { kind: 'none' },
-      })),
-    },
-  };
-  return join(
-    nodes,
-    [
-      { testID: 'qa-promo-home-target', role: 'button', label: 'Target' },
-      { testID: 'qa-promo-offers', role: 'button', label: 'See Pro offers' },
-      { testID: 'qa-promo-close', role: 'button', label: 'Close' },
-    ],
-    'app',
-    { native: 'complete', react: 'complete' },
-    hostEvidence,
-    {
-      source: 'xcui-live',
-      nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
-    },
-  );
-}
 
 test('Home Pressables behind a presented sole-Close modal do not defeat the sole decline', () => {
   const snapshot = modalOverHome();

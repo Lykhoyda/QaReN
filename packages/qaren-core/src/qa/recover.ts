@@ -1,7 +1,13 @@
 import type { Item, Target } from './plan.js';
-import { ancestorsOf, hostAssociationIdentity, type Element, type Screen } from './screen.js';
+import {
+  ancestorsOf,
+  behindPresentedModal,
+  hostAssociationIdentity,
+  type Element,
+  type Screen,
+} from './screen.js';
 import { hostPath, MODAL_HOST_TYPES, type HostAssociationDiagnostic } from './host-association.js';
-import { targetOnScreen } from './resolve.js';
+import { reactOnlyTarget, targetOnScreen } from './resolve.js';
 import type { Reason } from './untrusted.js';
 import type { ActResult } from './walker.js';
 
@@ -261,6 +267,13 @@ export function soleDecline(screen: Screen): boolean {
     controls[0].label !== undefined &&
     DECLINE_LABELS.has(controls[0].label)
   );
+}
+
+// A covered step may seek recovery only when its target is proven behind the presented modal,
+// never when it is merely absent, so a screen's own Cancel is not pressed for a missing target.
+export function targetBehindInterruption(screen: Screen, target: Target): boolean {
+  const element = reactOnlyTarget(target, screen);
+  return element !== undefined && behindPresentedModal(screen, element);
 }
 
 const completeCapture = (screen: Screen): boolean =>

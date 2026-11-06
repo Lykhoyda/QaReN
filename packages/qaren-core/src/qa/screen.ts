@@ -580,6 +580,17 @@ export function joinedSnapshotDiagnostics(screen: Screen) {
   return projectionCounts.get(screen.elements) ?? null;
 }
 
+const modalCoveredHosts = new WeakMap<Screen['elements'], ReadonlySet<number>>();
+
+// Every React host carrying the element's test ID sits behind the one presented modal.
+export function behindPresentedModal(screen: Screen, element: Element): boolean {
+  const covered = modalCoveredHosts.get(screen.elements);
+  const hosts = screen.reactHostEvidence?.hosts;
+  if (!covered?.size || !hosts || !element.testID) return false;
+  const matching = hosts.flatMap((host, index) => (host.testID === element.testID ? [index] : []));
+  return matching.length > 0 && matching.every((index) => covered.has(index));
+}
+
 function androidDescendantLabels(
   nodes: NativeNode[],
   elements: Element[],
@@ -1353,6 +1364,7 @@ export function join(
     if (diagnosticRect(diagnosticField(node, 'rect'))) counts.rectKnownCount++;
   });
   projectionCounts.set(screen.elements, counts);
+  if (behindModal.size) modalCoveredHosts.set(screen.elements, behindModal);
   return screen;
 }
 
