@@ -17,11 +17,23 @@ import { choice, element, screen, scriptedJudge } from './judgment-fixtures.ts';
 import { formWithCancel, homeAfterPromo, modalOverHome } from './modal-fixtures.ts';
 
 function observedButtons(elements: Screen['elements']) {
+  const nodes = elements.map((e) => ({
+    ref: e.ref,
+    type: e.kind === 'text' ? 'StaticText' : 'Button',
+    label: e.label,
+    identifier: e.testID,
+    hittable: true,
+  }));
   return joinScreen(
-    elements.map((e) => ({ ref: e.ref, type: 'Button', label: e.label, hittable: true })),
+    nodes,
     [],
     'app',
     { native: 'complete', react: 'complete' },
+    { hosts: [], complete: true },
+    {
+      source: 'xcui-live',
+      nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+    },
   );
 }
 
@@ -80,6 +92,33 @@ test('a present optional pop-up is declined once before retrying the missing tar
   );
   assert.equal(row?.outcome, 'retry');
   assert.ok(row?.screenshot);
+});
+
+test('a campaign with Skip and navigation and no proven modal is not dismissed for a missing target', async () => {
+  for (const label of ['View all offers', 'See all', 'Show all', 'Accept all offers']) {
+    const f = app(screen([element('@close', 'Skip'), element('@offers', label)]));
+    ticking(f);
+    const result = await runPlan(plan(), f.deps);
+    // Two controls and no presented modal: a missing tap target proves no separate surface.
+    assert.equal(result.verdict, 'FAIL', label);
+    assert.deepEqual(f.actions, [], label);
+    assert.ok(!result.recoveries, label);
+    assert.match(result.failure?.seen ?? '', /^TARGET_NOT_FOUND/, label);
+  }
+});
+
+test('a closed-list accept-all consent screen never has any decline taken', async () => {
+  for (const accept of ['Allow all', 'aCcEpT aLl', 'Agree to all', 'ENABLE ALL']) {
+    for (const decline of ['Skip', 'Close', 'Not now', 'Later', "Don't allow", 'Don’t allow']) {
+      const f = app(screen([element('@close', decline), element('@accept', accept)]));
+      ticking(f);
+      const result = await runPlan(plan(), f.deps);
+      assert.equal(result.verdict, 'FAIL', `${decline}: ${accept}`);
+      assert.deepEqual(f.actions, []);
+      assert.equal(result.recoveries, 0);
+      assert.equal(result.steps.at(-1)?.interruption?.veto, 'no-candidate');
+    }
+  }
 });
 
 test('a recovery revalidation that rejects the screen still records its React coverage gap', async () => {
@@ -195,29 +234,11 @@ test('a later target in the same block prevents dismissal and reports a value-fr
   );
 });
 
-test('a later block target visible on the sheet does not stop an earlier block from closing it', async () => {
-  const f = app(
-    screen([element('@close', 'Close'), element('@continue', 'Continue', { kind: 'text' })]),
-  );
-  const lines: number[] = [];
-  f.deps.interruptionRejected = (event) => lines.push(event.line);
-  const result = await runPlan(
-    parsePlan('### Sign in\n1. Tap "Settings"\n### Coverage\n2. Tap "Continue"').blocks!,
-    f.deps,
-  );
-  assert.deepEqual(f.actions.slice(0, 2), ['press @close', 'press @settings']);
-  assert.equal(result.recoveries, 1);
-  assert.ok(!lines.includes(2));
-});
-
 test('a missing target on a multi-control sheet with no proven modal presses nothing', async () => {
   const f = app(screen([element('@close', 'Close'), element('@continue', 'Continue')]));
   const vetoes: unknown[] = [];
   f.deps.interruptionRejected = (event) => vetoes.push(event.veto);
-  const result = await runPlan(
-    parsePlan('### Sign in\n1. Tap "Settings"\n### Coverage\n2. Tap "Continue"').blocks!,
-    f.deps,
-  );
+  const result = await runPlan(parsePlan('1. Tap "Settings"').blocks!, f.deps);
   assert.equal(result.verdict, 'FAIL');
   assert.deepEqual(f.actions, []);
   assert.ok(!result.recoveries);
@@ -225,27 +246,53 @@ test('a missing target on a multi-control sheet with no proven modal presses not
   assert.ok(vetoes.includes('uncovered-target'));
 });
 
-test('a later step naming a decline label does not stop an earlier step from closing the sheet', async () => {
-  for (const text of [
-    '1. Tap "Settings"\n✓ "Done"',
-    '1. Tap "Settings"\n✓ "Done"\n### Offer\n2. Tap "Maybe later"',
-    '1. Tap "Settings"\n✓ "Done"\n2. Tap "maybe later"',
+test('a later block target visible on the sheet prevents dismissal', async () => {
+  for (const later of [
+    element('@continue', 'Continue'),
+    element('@continue', 'Continue', { kind: 'text' }),
   ]) {
+    const f = app(observedButtons([element('@close', 'Close'), later]));
+    const lines: number[] = [];
+    f.deps.interruptionRejected = (event) => lines.push(event.line);
+    const result = await runPlan(
+      parsePlan('### Sign in\n1. Tap "Settings"\n### Coverage\n2. Tap "Continue"').blocks!,
+      f.deps,
+    );
+    assert.deepEqual(f.actions, []);
+    assert.equal(result.recoveries, 0);
+    assert.ok(lines.includes(2));
+    assert.equal(result.steps.at(-1)?.interruption?.targetLine, 4);
+  }
+});
+
+test('a later decline-labelled text target prevents dismissal when its resolver matches', async () => {
+  for (const [text, vetoed] of [
+    ['1. Tap "Settings"\n✓ "Done"', false],
+    ['1. Tap "Settings"\n✓ "Done"\n### Offer\n2. Tap "Maybe later"', true],
+    ['1. Tap "Settings"\n✓ "Done"\n2. Tap "maybe later"', false],
+  ] as const) {
     const f = app(
-      screen([element('@close', 'Close'), element('@later', 'Maybe later', { kind: 'text' })]),
+      observedButtons([
+        element('@close', 'Close'),
+        element('@later', 'Maybe later', { kind: 'text' }),
+      ]),
     );
     const result = await runPlan(parsePlan(text).blocks!, f.deps);
-    assert.deepEqual(f.actions.slice(0, 2), ['press @close', 'press @settings'], text);
-    assert.equal(result.recoveries, 1, text);
+    assert.deepEqual(
+      f.actions.slice(0, 2),
+      vetoed ? [] : ['press @close', 'press @settings'],
+      text,
+    );
+    assert.equal(result.recoveries, vetoed ? 0 : 1, text);
   }
 });
 
 test('a later step that taps the same decline control keeps it for that step', async () => {
   for (const text of [
     '1. Tap "Settings"\n2. Tap "Close"',
-    '1. Tap "Settings"\n### Offer\n2. Tap "close"',
+    '1. Tap "Settings"\n### Offer\n2. Tap "Close"',
   ]) {
-    const f = app(promo());
+    const f = app(observedButtons([element('@close', 'Close')]));
     assert.equal((await runPlan(parsePlan(text).blocks!, f.deps)).verdict, 'FAIL', text);
     assert.deepEqual(f.actions, [], text);
   }
@@ -273,7 +320,7 @@ test('replayed decline intent survives stored selectors during recovery and reva
           return replay(block, stored);
         });
         const f = app(
-          screen([
+          observedButtons([
             element('@close', 'Close'),
             element('@later', 'Maybe later', { kind: 'text', testID: 'offer-decline' }),
           ]),
@@ -291,9 +338,18 @@ test('replayed decline intent survives stored selectors during recovery and reva
           return result;
         };
         const result = await runPlan(replayed, f.deps);
-        assert.equal(result.verdict, 'PASS');
-        assert.equal(result.recoveries, 1);
-        assert.deepEqual(f.actions, ['press @close', 'press @later']);
+        if (separate) {
+          // A later block's target always vetoes by presence.
+          assert.equal(result.verdict, 'FAIL');
+          assert.equal(result.recoveries, 0);
+          assert.deepEqual(f.actions, []);
+          assert.equal(result.steps.at(-1)?.interruption?.veto, 'later-target');
+        } else {
+          // Close is the only control, so a same-block tap on the decline text is a coincidence.
+          assert.equal(result.verdict, 'PASS', result.failure?.seen);
+          assert.equal(result.recoveries, 1);
+          assert.deepEqual(f.actions, ['press @close', 'press @later']);
+        }
       }
     }
   }
@@ -1113,8 +1169,29 @@ test('a later tap whose text is in the promo copy no longer keeps a sole-Close p
   }
 });
 
-test('a later step naming the sole Close keeps the promo and suggests moving that step', async () => {
+test('a later admission rejection preserves a proven dismissal on failed retry rows', async () => {
   const f = app(promo());
+  const streamed = ticking(f);
+  const rejections: string[] = [];
+  f.deps.interruptionRejected = (event) => rejections.push(event.veto);
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    f.show(screen([element('@other', 'Other')]));
+    return { ok: true, proven: false, executed: true };
+  };
+  const result = await runPlan(waitPlan(), f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, ['press @close']);
+  assert.equal(result.recoveries, 1);
+  assert.ok(rejections.includes('no-candidate'));
+  const receipt = { considered: true, outcome: 'dismissed', soleDecline: true };
+  assert.deepEqual(result.steps.at(-1)?.interruption, receipt);
+  for (const row of streamed.filter((row) => row.line === 1 && row.interruption))
+    assert.deepEqual(row.interruption, receipt);
+});
+
+test('a later step naming the sole Close keeps the promo and suggests moving that step', async () => {
+  const f = app(observedButtons([element('@close', 'Close')]));
   ticking(f);
   const result = await runPlan(waitPlan('2. Tap "Close"'), f.deps);
   assert.equal(result.verdict, 'FAIL');
@@ -1234,6 +1311,7 @@ for (const [disposition, pressResult, dispatched] of [
     assert.deepEqual(f.actions, ['press @close']);
     const receipt = result.steps.at(-1)?.interruption;
     assert.equal(receipt?.outcome, dispatched ? 'did-not-disappear' : 'not-dispatched');
+    // The aimed centre of the decline that stayed, in points.
     assert.equal(receipt?.pressCentreY, dispatched ? 25 : undefined);
   });
 }

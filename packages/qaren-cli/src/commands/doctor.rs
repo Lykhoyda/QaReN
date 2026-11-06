@@ -237,6 +237,10 @@ pub fn doctor(
             "`brew install cocoapods`; expo run:ios installs pods on the first iOS build",
         ),
         disk(runner, cwd, home),
+        match crate::deps_cache::inventory(&qaren_home.join("runs")) {
+            Ok(detail) => Check::pass("deps-cache", detail),
+            Err(_) => Check::warn("deps-cache", "dependency cache inventory unreadable", "inspect QAREN_HOME/runs/deps-cache permissions"),
+        },
     ];
     checks.push(pnpm_source(runner, &app_root));
     checks.extend(android_checks(
@@ -3106,7 +3110,7 @@ mod tests {
                 "pass"
             }
         );
-        assert_eq!(parsed["checks"].as_array().unwrap().len(), 33);
+        assert_eq!(parsed["checks"].as_array().unwrap().len(), 34);
     }
 
     #[test]

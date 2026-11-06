@@ -38,6 +38,8 @@ pub struct CheckConfig {
     pub save_plans: Option<bool>,
     #[serde(default)]
     pub proof_in_description: Option<bool>,
+    #[serde(default)]
+    pub deps_cache: Option<bool>,
     // Nested keys stay snake_case; this block does not inherit camelCase.
     #[serde(default)]
     pub deadlines: Deadlines,
@@ -124,7 +126,7 @@ impl CheckConfig {
                 "config",
                 FailureCode::ScenarioInvalid,
                 format!("{} does not parse as check configuration", path.display()),
-                "fix .qaren/config.yaml (video must be strict or non-strict; keys: video, appId, packageManager, metroPort, ios, android, nodePath, devClientScheme, loginBlock, loginMarker, savePlans, proofInDescription, registryAuthEnv, deadlines)",
+                "fix .qaren/config.yaml (video must be strict or non-strict; keys: video, appId, packageManager, metroPort, ios, android, nodePath, devClientScheme, loginBlock, loginMarker, savePlans, proofInDescription, depsCache, registryAuthEnv, deadlines)",
             )
         })?;
         config.validate(path)?;

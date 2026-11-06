@@ -180,7 +180,14 @@ impl Receipt {
             device: None,
             metro: None,
             build: None,
-            outcomes: BTreeMap::new(),
+            outcomes: if verb == "pr" {
+                ["restore", "install", "stage", "publish"]
+                    .into_iter()
+                    .map(|name| (format!("deps_cache_{name}"), "skipped:not-reached".into()))
+                    .collect()
+            } else {
+                BTreeMap::new()
+            },
             timings_ms: BTreeMap::new(),
             commands_executed: 0,
             artifacts: BTreeMap::new(),

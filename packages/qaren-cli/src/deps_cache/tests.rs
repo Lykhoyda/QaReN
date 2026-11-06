@@ -1,0 +1,1512 @@
+use super::*;
+use crate::exec::{CmdOutput, MockRunner, PipedChild, RealRunner, Spawned};
+use crate::runrecord::{Phase, RunRecord};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+fn key(
+    repo: &Path,
+    app_rel: &Path,
+    repo_id: &str,
+    installer: &Installer,
+    effective: &Value,
+) -> Result<String, String> {
+    inputs(repo, app_rel, repo_id, installer, effective).map(|i| key_of(&i))
+}
+
+struct Fixture(PathBuf);
+impl Fixture {
+    fn new() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "qaren-deps-{}-{}-{}",
+            std::process::id(),
+            crate::timefmt::epoch_ms(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(root.join("repo/app")).unwrap();
+        std::fs::create_dir(root.join("runs")).unwrap();
+        std::fs::write(root.join("repo/package.json"), "{}").unwrap();
+        std::fs::write(root.join("repo/app/package.json"), "{}").unwrap();
+        std::fs::write(
+            root.join("repo/app/pnpm-lock.yaml"),
+            "lockfileVersion: '9.0'\n",
+        )
+        .unwrap();
+        Self(root)
+    }
+    fn context<'a>(&self, runner: &'a mut dyn Runner, run_id: &str) -> Ctx<'a> {
+        let record: RunRecord = serde_json::from_value(serde_json::json!({
+            "schema":"qaren-run/1", "run_id":run_id,"created_at":"2026-11-05T00:00:00Z",
+            "scenario":{"schema":"qaren/1","name":"deps","platform":"ios","candidate":{"project_root":"app","app_id":"test","revision":"HEAD"}},
+            "scenario_path":self.0.join("config.yaml"),"scenario_sha256":"0".repeat(64),
+            "candidate":{"repo_root":self.0.join("repo"),"project_root":self.0.join("repo/app"),"app_id":"test","git_sha":"a".repeat(40),"git_dirty":false,"lockfile_sha256":sha256_hex(&std::fs::read(self.0.join("repo/app/pnpm-lock.yaml")).unwrap())},
+            "phase":"created", "prepare":{"pid":999,"started_at":"start","command":"qaren"}
+        })).unwrap();
+        Ctx {
+            runner,
+            runs_root: self.0.join("runs"),
+            native_cache_root: self.0.join("native"),
+            native_store_entry: None,
+            ios_observation: None,
+            linkage_before_build: None,
+            ios_generated_native: false,
+            record,
+            started_ms: 0,
+            timings: vec![],
+            notes: vec![],
+            verb: "pr",
+            bundle_requests_at_launch: None,
+            manifest_warm: None,
+            lane_owned: false,
+            build_deadline_ms: None,
+        }
+    }
+    fn modules(&self) {
+        for rel in ["node_modules/root-package", "app/node_modules/app-package"] {
+            std::fs::create_dir_all(self.0.join("repo").join(rel)).unwrap();
+            std::fs::write(
+                self.0.join("repo").join(rel).join("index.js"),
+                "module.exports = 42;",
+            )
+            .unwrap();
+        }
+    }
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn copy_tree(src: &Path, dst: &Path) {
+    if src.symlink_metadata().unwrap().file_type().is_symlink() {
+        std::os::unix::fs::symlink(std::fs::read_link(src).unwrap(), dst).unwrap();
+    } else if src.is_dir() {
+        std::fs::create_dir_all(dst).unwrap();
+        for item in std::fs::read_dir(src).unwrap() {
+            let item = item.unwrap();
+            copy_tree(&item.path(), &dst.join(item.file_name()));
+        }
+    } else {
+        std::fs::copy(src, dst).unwrap();
+    }
+}
+
+struct CloneRunner {
+    mock: MockRunner,
+    clones: usize,
+    fail_clone: Option<usize>,
+    authenticated_probes: bool,
+}
+impl CloneRunner {
+    fn new() -> Self {
+        Self {
+            mock: MockRunner::new(),
+            clones: 0,
+            fail_clone: None,
+            authenticated_probes: false,
+        }
+    }
+}
+impl Runner for CloneRunner {
+    fn execute(&mut self, spec: &CmdSpec, interruptible: bool) -> CmdOutput {
+        if spec.label == "deps-cache-clone" {
+            self.mock.calls.push(spec.clone());
+            self.clones += 1;
+            let src = Path::new(&spec.args[spec.args.len() - 2]);
+            let dest = Path::new(spec.args.last().unwrap());
+            if self.fail_clone == Some(self.clones) {
+                std::fs::create_dir_all(dest).unwrap();
+                std::fs::write(dest.join("partial"), "partial").unwrap();
+                return CmdOutput::failed(1, "clone unsupported");
+            }
+            copy_tree(src, dest);
+            return CmdOutput::success("");
+        }
+        self.mock.execute(spec, interruptible)
+    }
+    fn execute_private(
+        &mut self,
+        spec: &CmdSpec,
+        input: &[u8],
+        interruptible: bool,
+    ) -> crate::exec::PrivateOutput {
+        if self.authenticated_probes {
+            self.mock.calls.push(spec.clone());
+            let mut child = spec.clone();
+            child.program = "/bin/sh".into();
+            let script = if spec.program == "pnpm" {
+                r#"test "$NPM_TOKEN" = synthetic-registry && test "$PRIVATE_REGISTRY_TOKEN" = synthetic-custom && test -z "$TYPESAFE_API_KEY" && test -z "$QAREN_INPUT_SLOT" || exit 1
+if [ "$1" = --version ]; then
+    echo 10.0.0
+else
+    echo '{"node-linker":"hoisted","//registry.example/:_authToken":"synthetic-registry"}'
+fi"#
+            } else {
+                r#"test -z "$NPM_TOKEN" && test -z "$PRIVATE_REGISTRY_TOKEN" || exit 1
+echo '{"version":"v24.0.0","arch":"arm64","platform":"darwin"}'"#
+            };
+            child.args = [
+                vec!["-c".into(), script.into(), "probe".into()],
+                spec.args.clone(),
+            ]
+            .concat();
+            child = child
+                .env("NPM_TOKEN", "synthetic-registry")
+                .env("PRIVATE_REGISTRY_TOKEN", "synthetic-custom")
+                .env("TYPESAFE_API_KEY", "synthetic-model")
+                .env("QAREN_INPUT_SLOT", "synthetic-input");
+            let output = RealRunner::new().execute_private(&child, input, interruptible);
+            assert!(output.clean(), "{}: {:?}", spec.label, output);
+            return output;
+        }
+        self.mock.execute_private(spec, input, interruptible)
+    }
+    fn spawn_group_unchecked(&mut self, _: &CmdSpec, _: &Path) -> std::io::Result<Spawned> {
+        unreachable!()
+    }
+    fn spawn_piped_unchecked(&mut self, _: &CmdSpec, _: &Path) -> std::io::Result<PipedChild> {
+        unreachable!()
+    }
+    fn sleep(&mut self, d: std::time::Duration) {
+        self.mock.sleep(d);
+    }
+    fn now_epoch_ms(&self) -> u64 {
+        self.mock.now_epoch_ms()
+    }
+    fn commands_executed(&self) -> u64 {
+        self.mock.commands_executed()
+    }
+    fn cancellation(&self) -> Option<String> {
+        self.mock.cancellation()
+    }
+}
+fn probes(mock: &mut MockRunner) {
+    mock.expect_run("pnpm --version", CmdOutput::success("10.0.0"));
+    mock.expect_run(
+        "JSON.stringify",
+        CmdOutput::success(r#"{"version":"v24.0.0","arch":"arm64","platform":"darwin"}"#),
+    );
+    mock.expect_run(
+        "config list --json",
+        CmdOutput::success(r#"{"node-linker":"hoisted"}"#),
+    );
+}
+fn disk(mock: &mut MockRunner, kb: u64) {
+    mock.expect_run("df", CmdOutput::success(&format!("Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/test 999999999 1 {kb} 1% /\n/dev/test 999999999 1 {kb} 1% /\n")));
+}
+fn stage_ok(ctx: &mut Ctx) {
+    stage(ctx).unwrap();
+    assert!(ctx.record.resources.deps_cache.as_ref().unwrap().staging);
+}
+fn release(ctx: &mut Ctx) {
+    let mut resource = ctx.record.resources.deps_cache.clone().unwrap();
+    cleanup_run(
+        ctx.runner,
+        &ctx.runs_root,
+        &ctx.record.run_id,
+        ctx.record.prepare.as_ref(),
+        &mut resource,
+    )
+    .unwrap();
+    ctx.record.resources.deps_cache = Some(resource);
+}
+fn entry_path(ctx: &Ctx) -> PathBuf {
+    let r = ctx.record.resources.deps_cache.as_ref().unwrap();
+    repo_dir(&ctx.runs_root, r).unwrap().join(&r.key)
+}
+
+#[test]
+fn authenticated_probes_match_install_credentials_without_persisting_config_secrets() {
+    let f = Fixture::new();
+    std::fs::write(
+        f.0.join("repo/app/.npmrc"),
+        "node-linker=hoisted\n//registry.example/:_authToken=${NPM_TOKEN}\n",
+    )
+    .unwrap();
+    let mut runner = CloneRunner::new();
+    runner.authenticated_probes = true;
+    disk(&mut runner.mock, u64::MAX / 1024);
+    let mut ctx = f.context(&mut runner, "authenticated");
+    ctx.record.scenario.deps.registry_auth_env = vec!["PRIVATE_REGISTRY_TOKEN".into()];
+    restore(&mut ctx, &f.0.join("repo"), true).unwrap();
+    assert!(
+        ctx.notes
+            .contains(&("deps_cache".into(), "miss:cold".into())),
+        "{:?}",
+        ctx.notes
+    );
+    assert!(ctx.record.resources.deps_cache.is_some());
+    let record = serde_json::to_string(&ctx.record).unwrap();
+    let notes = format!("{:?}", ctx.notes);
+    for secret in [
+        "synthetic-registry",
+        "synthetic-custom",
+        "synthetic-model",
+        "synthetic-input",
+    ] {
+        assert!(!record.contains(secret));
+        assert!(!notes.contains(secret));
+    }
+}
+
+fn assert_operation(
+    receipt: &crate::receipt::Receipt,
+    name: &str,
+    outcome: &str,
+    duration: Option<u64>,
+) {
+    let key = format!("deps_cache_{name}");
+    assert_eq!(
+        receipt.outcomes.get(&key).map(String::as_str),
+        Some(outcome)
+    );
+    assert_eq!(receipt.timings_ms.get(&key).copied(), duration);
+}
+
+#[test]
+fn receipts_report_restore_early_returns_and_preserve_skip_reasons() {
+    for (case, reason) in [
+        ("disabled", "disabled"),
+        ("missing-project-manifest", "missing-input"),
+        ("invalid-manifest", "missing-input"),
+        ("missing-lockfile", "missing-input"),
+        ("outside-repo", "unsupported-layout"),
+        ("probe-version", "probe-failed"),
+        ("probe-node", "probe-failed"),
+        ("probe-config", "probe-failed"),
+        ("layout-config", "unsupported-layout"),
+        ("relative-store", "unsupported-layout"),
+        ("layout-workspace", "unsupported-layout"),
+        ("layout-modules", "unsupported-layout"),
+    ] {
+        let f = Fixture::new();
+        let mut runner = CloneRunner::new();
+        match case {
+            "missing-project-manifest" => {
+                std::fs::remove_file(f.0.join("repo/app/package.json")).unwrap()
+            }
+            "invalid-manifest" => {
+                std::fs::write(f.0.join("repo/app/package.json"), "invalid").unwrap()
+            }
+            "layout-workspace" => std::fs::write(
+                f.0.join("repo/pnpm-workspace.yaml"),
+                "packages: ['packages/*']\n",
+            )
+            .unwrap(),
+            "layout-modules" => {
+                std::fs::create_dir_all(f.0.join("repo/other/node_modules")).unwrap()
+            }
+            _ => {}
+        }
+        if ![
+            "disabled",
+            "missing-project-manifest",
+            "missing-lockfile",
+            "outside-repo",
+        ]
+        .contains(&case)
+        {
+            runner.mock.expect_run(
+                "pnpm --version",
+                if case == "probe-version" {
+                    CmdOutput::failed(1, "version unavailable")
+                } else {
+                    CmdOutput::success("10.0.0")
+                },
+            );
+            if case != "probe-version" {
+                runner.mock.expect_run(
+                    "JSON.stringify",
+                    CmdOutput::success(if case == "probe-node" {
+                        "invalid"
+                    } else {
+                        r#"{"version":"v24.0.0","arch":"arm64","platform":"darwin"}"#
+                    }),
+                );
+                if case != "probe-node" {
+                    runner.mock.expect_run(
+                        "config list --json",
+                        CmdOutput::success(match case {
+                            "probe-config" => "invalid",
+                            "layout-config" => r#"{"node-linker":"pnp"}"#,
+                            "relative-store" => r#"{"store-dir":".pnpm-store"}"#,
+                            _ => r#"{"node-linker":"hoisted"}"#,
+                        }),
+                    );
+                }
+            }
+        }
+        runner
+            .mock
+            .expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+        runner.mock.advance_on = Some(("pnpm install".into(), 37));
+        let mut ctx = f.context(&mut runner, case);
+        if case == "missing-lockfile" {
+            std::fs::remove_file(f.0.join("repo/app/pnpm-lock.yaml")).unwrap();
+        }
+        if case == "outside-repo" {
+            ctx.record.candidate.project_root = f.0.join("outside");
+        }
+        restore(&mut ctx, &f.0.join("repo"), case != "disabled").unwrap();
+        crate::commands::prepare::install_deps(&mut ctx).unwrap();
+        stage(&mut ctx).unwrap();
+        publish(&mut ctx).unwrap();
+        let receipt = crate::commands::prepare::finish_receipt(
+            ctx,
+            crate::receipt::ReceiptResult::Ready,
+            None,
+        );
+        for operation in ["restore", "stage", "publish"] {
+            assert_operation(&receipt, operation, &format!("skipped:{reason}"), None);
+        }
+        assert_operation(&receipt, "install", "attempted", Some(37));
+        assert_eq!(runner.mock.remaining(), 0, "{case}");
+    }
+}
+
+#[test]
+fn receipts_report_stage_failures_and_skip_publication() {
+    for (case, reason) in [
+        ("empty-tree", "unsupported-layout"),
+        ("space", "disabled"),
+        ("clone", "clone-unsupported"),
+    ] {
+        let f = Fixture::new();
+        let mut runner = CloneRunner::new();
+        probes(&mut runner.mock);
+        if case != "empty-tree" {
+            f.modules();
+            disk(
+                &mut runner.mock,
+                if case == "space" { 1 } else { 999999999 },
+            );
+        }
+        if case == "clone" {
+            runner.fail_clone = Some(1);
+        }
+        let mut ctx = f.context(&mut runner, case);
+        restore(&mut ctx, &f.0.join("repo"), true).unwrap();
+        stage(&mut ctx).unwrap();
+        publish(&mut ctx).unwrap();
+        release(&mut ctx);
+        let receipt = crate::commands::prepare::finish_receipt(
+            ctx,
+            crate::receipt::ReceiptResult::Ready,
+            None,
+        );
+        assert_operation(&receipt, "restore", "attempted", Some(0));
+        assert_operation(&receipt, "stage", "attempted", Some(0));
+        assert_operation(&receipt, "publish", &format!("skipped:{reason}"), None);
+        assert_eq!(runner.mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn receipts_measure_failed_installs_and_report_unreached_operations() {
+    let f = Fixture::new();
+    let mut runner = CloneRunner::new();
+    runner.mock.advance_on = Some(("pnpm install".into(), 53));
+    runner
+        .mock
+        .expect_run("pnpm install", CmdOutput::failed(1, "install failed"));
+    let mut ctx = f.context(&mut runner, "failed-install");
+    let failure = crate::commands::prepare::install_deps(&mut ctx).unwrap_err();
+    let receipt = crate::commands::prepare::finish_receipt(
+        ctx,
+        crate::receipt::ReceiptResult::Failed,
+        Some(failure),
+    );
+    assert_operation(&receipt, "install", "attempted", Some(53));
+    for operation in ["restore", "stage", "publish"] {
+        assert_operation(&receipt, operation, "skipped:not-reached", None);
+    }
+    let receipt = crate::receipt::Receipt::new(
+        "pr",
+        "none",
+        crate::receipt::ReceiptResult::Refused,
+        "validate",
+        "now".into(),
+    );
+    for operation in ["restore", "install", "stage", "publish"] {
+        assert_operation(&receipt, operation, "skipped:not-reached", None);
+    }
+    let receipt = crate::receipt::Receipt::new(
+        "check",
+        "none",
+        crate::receipt::ReceiptResult::Refused,
+        "validate",
+        "now".into(),
+    );
+    assert!(receipt.outcomes.is_empty());
+}
+
+#[test]
+fn miss_then_hit_still_installs_and_stages_before_build_mutation() {
+    let f = Fixture::new();
+    let mut runner = CloneRunner::new();
+    probes(&mut runner.mock);
+    disk(&mut runner.mock, u64::MAX / 1024);
+    let mut ctx = f.context(&mut runner, "first");
+    restore(&mut ctx, &f.0.join("repo"), true).unwrap();
+    assert!(ctx
+        .notes
+        .contains(&("deps_cache".into(), "miss:cold".into())));
+    f.modules();
+    stage_ok(&mut ctx);
+    std::fs::write(
+        f.0.join("repo/node_modules/root-package/build-mutated"),
+        "native output",
+    )
+    .unwrap();
+    publish(&mut ctx).unwrap();
+    let entry = entry_path(&ctx);
+    assert!(entry.is_dir());
+    assert!(!entry
+        .join("tree/node_modules/root-package/build-mutated")
+        .exists());
+    release(&mut ctx);
+    let receipt =
+        crate::commands::prepare::finish_receipt(ctx, crate::receipt::ReceiptResult::Ready, None);
+    for operation in ["restore", "stage", "publish"] {
+        assert_operation(&receipt, operation, "attempted", Some(0));
+    }
+    for rel in ["node_modules", "app/node_modules"] {
+        std::fs::remove_dir_all(f.0.join("repo").join(rel)).unwrap();
+    }
+    probes(&mut runner.mock);
+    disk(&mut runner.mock, u64::MAX / 1024);
+    runner.mock.advance_on = Some(("pnpm".into(), 37));
+    runner
+        .mock
+        .expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    let mut ctx = f.context(&mut runner, "second");
+    restore(&mut ctx, &f.0.join("repo"), true).unwrap();
+    assert!(entry.join(".readers/second").is_file());
+    assert!(ctx.notes.contains(&("deps_cache".into(), "hit".into())));
+    crate::commands::prepare::install_deps(&mut ctx).unwrap();
+    assert_eq!(ctx.record.phase, Phase::DepsInstalled);
+    // A hit already has its entry, so staging runs no command at all.
+    let before = ctx.runner.commands_executed();
+    stage(&mut ctx).unwrap();
+    assert_eq!(ctx.runner.commands_executed(), before);
+    assert!(!ctx.record.resources.deps_cache.as_ref().unwrap().staging);
+    publish(&mut ctx).unwrap();
+    assert!(!staging_dir(entry.parent().unwrap(), "second")
+        .unwrap()
+        .exists());
+    std::fs::write(
+        f.0.join("repo/node_modules/root-package/index.js"),
+        "changed",
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(entry.join("tree/node_modules/root-package/index.js")).unwrap(),
+        "module.exports = 42;"
+    );
+    release(&mut ctx);
+    assert!(!entry.join(".readers/second").exists());
+    let receipt =
+        crate::commands::prepare::finish_receipt(ctx, crate::receipt::ReceiptResult::Ready, None);
+    assert_operation(&receipt, "restore", "attempted", Some(74));
+    assert_operation(&receipt, "install", "attempted", Some(37));
+    assert_operation(&receipt, "stage", "skipped:cache-hit", None);
+    assert_operation(&receipt, "publish", "skipped:cache-hit", None);
+    assert_eq!(runner.mock.remaining(), 0);
+    for cmd in runner
+        .mock
+        .calls
+        .iter()
+        .filter(|s| s.label == "deps-cache-clone")
+    {
+        assert!(cmd.args.contains(
+            &if cfg!(target_os = "macos") {
+                "-c"
+            } else {
+                "--reflink=always"
+            }
+            .into()
+        ));
+    }
+}
+
+#[test]
+fn subdirectory_app_without_root_manifest_reuses_its_isolated_tree() {
+    let f = Fixture::new();
+    std::fs::remove_file(f.0.join("repo/package.json")).unwrap();
+    std::fs::write(
+        f.0.join("repo/app/pnpm-workspace.yaml"),
+        "allowBuilds: {}\n",
+    )
+    .unwrap();
+    let isolated = |mock: &mut MockRunner| {
+        mock.expect_run("pnpm --version", CmdOutput::success("11.5.2"));
+        mock.expect_run(
+            "JSON.stringify",
+            CmdOutput::success(r#"{"version":"v24.13.0","arch":"arm64","platform":"darwin"}"#),
+        );
+        // pnpm lists no nodeLinker when the default isolated linker applies.
+        mock.expect_run("config list --json", CmdOutput::success("{}"));
+        disk(mock, u64::MAX / 1024);
+    };
+    let mut runner = CloneRunner::new();
+    isolated(&mut runner.mock);
+    let mut ctx = f.context(&mut runner, "first");
+    restore(&mut ctx, &f.0.join("repo"), true).unwrap();
+    assert!(ctx
+        .notes
+        .contains(&("deps_cache".into(), "miss:cold".into())));
+    let modules = f.0.join("repo/app/node_modules");
+    let store = modules.join(".pnpm");
+    for pkg in ["pkg@1.0.0/node_modules/pkg", "dep@1.0.0/node_modules/dep"] {
+        std::fs::create_dir_all(store.join(pkg)).unwrap();
+        std::fs::write(store.join(pkg).join("index.js"), pkg).unwrap();
+    }
+    std::fs::write(store.join("lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
+    std::fs::write(modules.join(".modules.yaml"), "nodeLinker: isolated\n").unwrap();
+    std::os::unix::fs::symlink(
+        "../../dep@1.0.0/node_modules/dep",
+        store.join("pkg@1.0.0/node_modules/dep"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(".pnpm/pkg@1.0.0/node_modules/pkg", modules.join("pkg")).unwrap();
+    stage_ok(&mut ctx);
+    publish(&mut ctx).unwrap();
+    let entry = entry_path(&ctx);
+    let recorded: Entry =
+        serde_json::from_slice(&std::fs::read(entry.join("entry.json")).unwrap()).unwrap();
+    assert_eq!(recorded.modules, vec![PathBuf::from("app/node_modules")]);
+    release(&mut ctx);
+    std::fs::remove_dir_all(&modules).unwrap();
+
+    isolated(&mut runner.mock);
+    let mut ctx = f.context(&mut runner, "second");
+    // A new head with only a source change keeps identical install inputs.
+    ctx.record.candidate.git_sha = "b".repeat(40);
+    std::fs::write(f.0.join("repo/app/source.ts"), "export const value = 2;").unwrap();
+    restore(&mut ctx, &f.0.join("repo"), true).unwrap();
+    assert!(ctx.notes.contains(&("deps_cache".into(), "hit".into())));
+    assert_eq!(
+        std::fs::read_link(modules.join("pkg")).unwrap(),
+        Path::new(".pnpm/pkg@1.0.0/node_modules/pkg")
+    );
+    assert_eq!(
+        std::fs::read_to_string(modules.join("pkg/index.js")).unwrap(),
+        "pkg@1.0.0/node_modules/pkg"
+    );
+    assert_eq!(
+        std::fs::read_to_string(store.join("pkg@1.0.0/node_modules/dep/index.js")).unwrap(),
+        "dep@1.0.0/node_modules/dep"
+    );
+    assert!(!f.0.join("repo/node_modules").exists());
+    release(&mut ctx);
+    assert_eq!(runner.mock.remaining(), 0);
+}
+
+fn published(f: &Fixture, runner: &mut CloneRunner) -> PathBuf {
+    probes(&mut runner.mock);
+    disk(&mut runner.mock, u64::MAX / 1024);
+    let mut ctx = f.context(runner, "first");
+    restore(&mut ctx, &f.0.join("repo"), true).unwrap();
+    f.modules();
+    stage_ok(&mut ctx);
+    publish(&mut ctx).unwrap();
+    let entry = entry_path(&ctx);
+    release(&mut ctx);
+    for rel in ["node_modules", "app/node_modules"] {
+        std::fs::remove_dir_all(f.0.join("repo").join(rel)).unwrap();
+    }
+    entry
+}
+
+#[test]
+fn changed_install_inputs_miss_with_the_input_class_named_in_the_receipt() {
+    let f = Fixture::new();
+    let mut runner = CloneRunner::new();
+    published(&f, &mut runner);
+    std::fs::write(
+        f.0.join("repo/app/package.json"),
+        r#"{"scripts":{"postinstall":"node setup.js"}}"#,
+    )
+    .unwrap();
+    probes(&mut runner.mock);
+    let mut ctx = f.context(&mut runner, "next-head");
+    ctx.record.candidate.git_sha = "b".repeat(40);
+    restore(&mut ctx, &f.0.join("repo"), true).unwrap();
+    assert!(!f.0.join("repo/app/node_modules").exists());
+    release(&mut ctx);
+    let receipt =
+        crate::commands::prepare::finish_receipt(ctx, crate::receipt::ReceiptResult::Ready, None);
+    assert_eq!(
+        receipt.outcomes.get("deps_cache").map(String::as_str),
+        Some("miss:inputs-changed:manifest")
+    );
+
+    std::fs::write(
+        f.0.join("repo/app/pnpm-lock.yaml"),
+        "lockfileVersion: '9.1'\n",
+    )
+    .unwrap();
+    probes(&mut runner.mock);
+    let mut ctx = f.context(&mut runner, "lockfile");
+    restore(&mut ctx, &f.0.join("repo"), true).unwrap();
+    assert!(ctx.notes.contains(&(
+        "deps_cache".into(),
+        "miss:inputs-changed:lockfile,manifest".into()
+    )));
+    release(&mut ctx);
+    assert_eq!(runner.mock.remaining(), 0);
+}
+
+#[test]
+fn an_entry_written_before_input_digests_still_restores() {
+    let f = Fixture::new();
+    let mut runner = CloneRunner::new();
+    let entry = published(&f, &mut runner);
+    let path = entry.join("entry.json");
+    let mut old: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(old.as_object_mut().unwrap().remove("inputs").is_some());
+    std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+    probes(&mut runner.mock);
+    disk(&mut runner.mock, u64::MAX / 1024);
+    let mut ctx = f.context(&mut runner, "second");
+    restore(&mut ctx, &f.0.join("repo"), true).unwrap();
+    assert!(ctx.notes.contains(&("deps_cache".into(), "hit".into())));
+    release(&mut ctx);
+    assert_eq!(runner.mock.remaining(), 0);
+}
+
+#[test]
+fn every_key_input_and_path_node_identity_invalidates_reuse() {
+    let f = Fixture::new();
+    let installer = Installer {
+        pnpm: "10".into(),
+        node: "v24".into(),
+        arch: "arm64".into(),
+        platform: "darwin".into(),
+    };
+    let config = serde_json::json!({"node-linker":"hoisted"});
+    let get = |i: &Installer| {
+        key(
+            &f.0.join("repo"),
+            Path::new("app"),
+            "repository",
+            i,
+            &config,
+        )
+        .unwrap()
+    };
+    let baseline = get(&installer);
+    for name in ["storeDir", "store-dir"] {
+        let mut effective = config.clone();
+        effective[name] = serde_json::json!("/shared/pnpm-store-a");
+        let first = key(
+            &f.0.join("repo"),
+            Path::new("app"),
+            "repository",
+            &installer,
+            &effective,
+        )
+        .unwrap();
+        assert_ne!(baseline, first);
+        effective[name] = serde_json::json!("/shared/pnpm-store-b");
+        assert_ne!(
+            first,
+            key(
+                &f.0.join("repo"),
+                Path::new("app"),
+                "repository",
+                &installer,
+                &effective,
+            )
+            .unwrap()
+        );
+    }
+    for (file, bytes) in [
+        ("app/pnpm-lock.yaml", "changed"),
+        ("package.json", r#"{"scripts":{"postinstall":"echo ok"}}"#),
+        ("package.json", r#"{"pnpm":{"overrides":{"pkg":"2"}}}"#),
+        (
+            "package.json",
+            r#"{"version":"2.0.0","custom":"install-input"}"#,
+        ),
+        (
+            "app/package.json",
+            r#"{"dependencies":{"pkg":"2"},"custom":"install-input"}"#,
+        ),
+        (".npmrc", "node-linker=hoisted\n"),
+        ("pnpm-workspace.yaml", "nodeLinker: hoisted\n"),
+        ("app/.npmrc", "ignore-scripts=true\n"),
+        ("app/pnpm-workspace.yaml", "nodeLinker: hoisted\n"),
+    ] {
+        let p = f.0.join("repo").join(file);
+        let old = std::fs::read(&p).ok();
+        std::fs::write(&p, bytes).unwrap();
+        assert_ne!(baseline, get(&installer), "{file}");
+        if let Some(old) = old {
+            std::fs::write(p, old).unwrap();
+        } else {
+            std::fs::remove_file(p).unwrap();
+        }
+    }
+    for field in ["pnpm", "node", "arch", "platform"] {
+        let mut changed = installer.clone();
+        match field {
+            "pnpm" => changed.pnpm.push('1'),
+            "node" => changed.node.push('1'),
+            "arch" => changed.arch.push('1'),
+            _ => changed.platform.push('1'),
+        };
+        assert_ne!(baseline, get(&changed));
+    }
+    assert_ne!(
+        baseline,
+        key(
+            &f.0.join("repo"),
+            Path::new("app"),
+            "other-repository",
+            &installer,
+            &config
+        )
+        .unwrap()
+    );
+    copy_tree(&f.0.join("repo/app"), &f.0.join("repo/other"));
+    assert_ne!(
+        baseline,
+        key(
+            &f.0.join("repo"),
+            Path::new("other"),
+            "repository",
+            &installer,
+            &config
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn workspace_manifests_and_patch_contents_invalidate_the_key_but_source_does_not() {
+    let f = Fixture::new();
+    let repo = f.0.join("repo");
+    std::fs::create_dir_all(repo.join("packages/lib/patches/nested")).unwrap();
+    std::fs::create_dir_all(repo.join("app/patches")).unwrap();
+    std::fs::create_dir_all(repo.join("patches")).unwrap();
+    for (path, contents) in [
+        (
+            "app/pnpm-lock.yaml",
+            "lockfileVersion: '9.0'\nimporters:\n  .: {}\n  ../packages/lib: {}\n",
+        ),
+        (
+            "package.json",
+            r#"{"pnpm":{"patchedDependencies":{"root-pkg@1":"root.patch"}}}"#,
+        ),
+        (
+            "app/package.json",
+            r#"{"pnpm":{"patchedDependencies":{"app-pkg@1":"app.patch"}}}"#,
+        ),
+        (
+            "packages/lib/package.json",
+            r#"{"name":"lib","custom":"first","pnpm":{"patchedDependencies":{"lib-pkg@1":"lib.patch"}}}"#,
+        ),
+        (
+            "pnpm-workspace.yaml",
+            "patchedDependencies:\n  root-yaml@1: root-yaml.patch\n",
+        ),
+        (
+            "app/pnpm-workspace.yaml",
+            "patchedDependencies:\n  app-yaml@1: app-yaml.patch\n",
+        ),
+        ("root.patch", "root patch"),
+        ("app/app.patch", "app patch"),
+        ("packages/lib/lib.patch", "lib patch"),
+        ("root-yaml.patch", "root yaml patch"),
+        ("app/app-yaml.patch", "app yaml patch"),
+        ("patches/pkg.patch", "root patch-package"),
+        ("app/patches/pkg.patch", "app patch-package"),
+        ("packages/lib/patches/nested/pkg.patch", "lib patch-package"),
+    ] {
+        std::fs::write(repo.join(path), contents).unwrap();
+    }
+    let installer = Installer {
+        pnpm: "10".into(),
+        node: "v24".into(),
+        arch: "arm64".into(),
+        platform: "darwin".into(),
+    };
+    let get = || {
+        key(
+            &repo,
+            Path::new("app"),
+            "repository",
+            &installer,
+            &serde_json::json!({}),
+        )
+    };
+    let baseline = get().unwrap();
+    std::fs::write(repo.join("app/source.ts"), "source-only change").unwrap();
+    assert_eq!(baseline, get().unwrap());
+    for path in [
+        "packages/lib/package.json",
+        "root.patch",
+        "app/app.patch",
+        "packages/lib/lib.patch",
+        "root-yaml.patch",
+        "app/app-yaml.patch",
+        "patches/pkg.patch",
+        "app/patches/pkg.patch",
+        "packages/lib/patches/nested/pkg.patch",
+    ] {
+        let file = repo.join(path);
+        let original = std::fs::read(&file).unwrap();
+        let changed = if path.ends_with("package.json") {
+            br#"{"name":"lib","custom":"second","pnpm":{"patchedDependencies":{"lib-pkg@1":"lib.patch"}}}"#.to_vec()
+        } else {
+            b"changed patch contents".to_vec()
+        };
+        std::fs::write(&file, changed).unwrap();
+        assert_ne!(baseline, get().unwrap(), "{path}");
+        std::fs::write(&file, original).unwrap();
+        assert_eq!(baseline, get().unwrap(), "{path}");
+    }
+    let patch = repo.join("app/patches/pkg.patch");
+    std::fs::rename(&patch, repo.join("app/patches/renamed.patch")).unwrap();
+    assert_ne!(baseline, get().unwrap());
+    std::fs::rename(repo.join("app/patches/renamed.patch"), patch).unwrap();
+    std::fs::remove_file(repo.join("root.patch")).unwrap();
+    assert!(get().is_err());
+}
+
+#[test]
+fn partial_restore_removes_every_copied_directory() {
+    let f = Fixture::new();
+    f.modules();
+    let target = f.0.join("target");
+    std::fs::create_dir(&target).unwrap();
+    let mut runner = CloneRunner::new();
+    runner.fail_clone = Some(2);
+    let result = restore_modules(
+        &mut runner,
+        &f.0.join("repo"),
+        &target,
+        &modules_paths(Path::new("app")),
+    );
+    assert_eq!(result.unwrap_err(), "clone-unsupported");
+    assert!(!target.join("node_modules").exists());
+    assert!(!target.join("app/node_modules").exists());
+    runner
+        .mock
+        .expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    let mut ctx = f.context(&mut runner, "cold");
+    crate::commands::prepare::install_deps(&mut ctx).unwrap();
+}
+
+#[test]
+fn failed_install_disabled_cache_unsupported_layout_and_disk_do_not_publish() {
+    for case in ["disabled", "layout", "space", "clone", "install"] {
+        let f = Fixture::new();
+        let mut runner = CloneRunner::new();
+        if case != "disabled" {
+            probes(&mut runner.mock);
+        }
+        if case == "layout" {
+            std::fs::write(
+                f.0.join("repo/pnpm-workspace.yaml"),
+                "packages: ['packages/*']\n",
+            )
+            .unwrap();
+        }
+        if ["space", "clone"].contains(&case) {
+            disk(
+                &mut runner.mock,
+                if case == "space" { 1 } else { 999999999 },
+            );
+        }
+        if case == "clone" {
+            runner.fail_clone = Some(1);
+        }
+        if case == "install" {
+            runner
+                .mock
+                .expect_run("pnpm install", CmdOutput::failed(1, "install failed"));
+        }
+        let mut ctx = f.context(&mut runner, "failed");
+        restore(&mut ctx, &f.0.join("repo"), case != "disabled").unwrap();
+        if case == "install" {
+            assert!(crate::commands::prepare::install_deps(&mut ctx).is_err());
+        } else {
+            f.modules();
+            stage(&mut ctx).unwrap();
+            publish(&mut ctx).unwrap();
+        }
+        if ctx.record.resources.deps_cache.is_some() {
+            assert!(!entry_path(&ctx).exists());
+            release(&mut ctx);
+        }
+        assert!(
+            ctx.notes.iter().any(|(_, n)| n
+                == match case {
+                    "layout" => "layout-unsupported",
+                    "clone" => "clone-unsupported",
+                    _ => "disabled",
+                })
+                || case == "install"
+        );
+        drop(ctx);
+        assert_eq!(runner.mock.remaining(), 0, "{case}");
+    }
+}
+
+fn seed_entry(f: &Fixture, key: &str, created_ms: u64) -> (PathBuf, CacheResource) {
+    let resource = CacheResource {
+        repo_id: "a".repeat(64),
+        key: key.into(),
+        reader: false,
+        staging: false,
+        enabled: true,
+        inputs: BTreeMap::new(),
+    };
+    let repo = repo_dir(&f.0.join("runs"), &resource).unwrap();
+    std::fs::create_dir_all(repo.join(key).join("tree/node_modules")).unwrap();
+    buildplan::save_json(
+        &repo.join(key).join("entry.json"),
+        &Entry {
+            schema: SCHEMA.into(),
+            key: key.into(),
+            created_ms,
+            modules: vec!["node_modules".into()],
+            bytes: 0,
+            inputs: BTreeMap::new(),
+        },
+    )
+    .unwrap();
+    (repo, resource)
+}
+fn marker(path: &Path, owner: Option<PidIdentity>) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    buildplan::save_json(path, &owner).unwrap();
+}
+fn owner() -> PidIdentity {
+    PidIdentity {
+        pid: 999,
+        started_at: "start".into(),
+        command: crate::redact::OutputText::from_output("qaren"),
+    }
+}
+
+#[test]
+fn pruning_and_explicit_cleanup_retain_live_and_unknown_readers_regardless_of_age() {
+    for state in ["live", "unknown", "dead", "foreign"] {
+        let f = Fixture::new();
+        let (old, _) = seed_entry(&f, &"1".repeat(64), 1);
+        seed_entry(&f, &"2".repeat(64), 2);
+        seed_entry(&f, &"3".repeat(64), 3);
+        let entry = old.join("1".repeat(64));
+        marker(&entry.join(".readers/ancient"), Some(owner()));
+        let mut runner = MockRunner::new();
+        match state {
+            "live" => {
+                runner.expect_run("lstart=", CmdOutput::success("start"));
+                runner.expect_run("stat=", CmdOutput::success("S"));
+            }
+            "unknown" => runner.expect_run("lstart=", CmdOutput::failed(1, "unreadable")),
+            "foreign" => runner.expect_run("lstart=", CmdOutput::success("different")),
+            _ => runner.expect_run("lstart=", CmdOutput::failed(1, "")),
+        };
+        prune(&mut runner, &old, false).unwrap();
+        assert_eq!(entry.exists(), ["live", "unknown"].contains(&state));
+        assert_eq!(runner.remaining(), 0);
+    }
+    let f = Fixture::new();
+    let (repo, _) = seed_entry(&f, &"1".repeat(64), 1);
+    let entry = repo.join("1".repeat(64));
+    marker(&entry.join(".readers/unproven"), None);
+    let mut runner = MockRunner::new();
+    prune(&mut runner, &repo, true).unwrap();
+    assert!(entry.exists());
+    std::fs::remove_file(entry.join(".readers/unproven")).unwrap();
+    prune(&mut runner, &repo, true).unwrap();
+    assert!(!entry.exists());
+}
+
+#[test]
+fn reader_admission_and_pruning_cannot_interleave_under_the_cache_lock() {
+    let f = Fixture::new();
+    let mut first = MockRunner::new();
+    let mut second = MockRunner::new();
+    let guard = lock(&mut first, &f.0.join("runs"), "reader", Some(&owner())).unwrap();
+    second.expect_run("lstart=", CmdOutput::success("start"));
+    second.expect_run("stat=", CmdOutput::success("S"));
+    assert!(lock(&mut second, &f.0.join("runs"), "pruner", Some(&owner())).is_err());
+    drop(guard);
+    assert!(lock(&mut second, &f.0.join("runs"), "pruner", Some(&owner())).is_ok());
+    assert_eq!(second.remaining(), 0);
+}
+
+#[test]
+fn concurrent_publishers_keep_one_entry_and_remove_the_losing_stage() {
+    let f = Fixture::new();
+    f.modules();
+    let mut runner = CloneRunner::new();
+    probes(&mut runner.mock);
+    disk(&mut runner.mock, 999999999);
+    let mut first = f.context(&mut runner, "first");
+    restore(&mut first, &f.0.join("repo"), true).unwrap();
+    stage_ok(&mut first);
+    let resource = first.record.resources.deps_cache.clone().unwrap();
+    drop(first);
+    let mut runner2 = CloneRunner::new();
+    probes(&mut runner2.mock);
+    disk(&mut runner2.mock, 999999999);
+    // The other publisher remains alive while this one publishes.
+    runner2
+        .mock
+        .expect_run("lstart=", CmdOutput::success("start"));
+    runner2.mock.expect_run("stat=", CmdOutput::success("S"));
+    let mut second = f.context(&mut runner2, "second");
+    restore(&mut second, &f.0.join("repo"), true).unwrap();
+    stage_ok(&mut second);
+    publish(&mut second).unwrap();
+    let entry = entry_path(&second);
+    assert!(entry.is_dir());
+    release(&mut second);
+    drop(second);
+    let mut first = f.context(&mut runner, "first");
+    first.record.resources.deps_cache = Some(resource);
+    publish(&mut first).unwrap();
+    assert!(entry.is_dir());
+    assert!(!staging_dir(&entry.parent().unwrap(), "first")
+        .unwrap()
+        .exists());
+    release(&mut first);
+}
+
+#[test]
+fn abandoned_staging_is_reclaimed_only_for_proven_dead_owners() {
+    let f = Fixture::new();
+    let (repo, _) = seed_entry(&f, &"1".repeat(64), 1);
+    for run in ["dead", "live", "unknown"] {
+        let stage = staging_dir(&repo, run).unwrap();
+        std::fs::create_dir_all(&stage).unwrap();
+        marker(
+            &stage.join("owner.json"),
+            if run == "unknown" {
+                None
+            } else {
+                Some(owner())
+            },
+        );
+    }
+    let mut runner = MockRunner::new();
+    // Both known owners are dead; unknown evidence still retains its staging.
+    runner.expect_run("lstart=", CmdOutput::failed(1, ""));
+    runner.expect_run("lstart=", CmdOutput::failed(1, ""));
+    reclaim_staging(&mut runner, &repo, None).unwrap();
+    assert!(!staging_dir(&repo, "dead").unwrap().exists());
+    assert!(staging_dir(&repo, "unknown").unwrap().exists());
+}
+
+#[test]
+fn external_modules_virtual_store_and_nonrelocatable_links_disable_layout() {
+    let f = Fixture::new();
+    for config in [
+        serde_json::json!({"node-linker":"pnp"}),
+        serde_json::json!({"node-linker":"hoisted","virtual-store-dir":"/outside"}),
+        serde_json::json!({"node-linker":"hoisted","enable-global-virtual-store":true}),
+        serde_json::json!({"node-linker":"hoisted","modules-dir":"elsewhere"}),
+    ] {
+        assert!(layout(&config, &f.0.join("repo"), Path::new("app")).is_err());
+    }
+    for config in [
+        serde_json::json!({}),
+        serde_json::json!({"node-linker":"isolated"}),
+        serde_json::json!({"nodeLinker":"hoisted"}),
+    ] {
+        assert!(layout(&config, &f.0.join("repo"), Path::new("app")).is_ok());
+    }
+    std::fs::create_dir_all(f.0.join("repo/extra/node_modules")).unwrap();
+    assert!(supported_modules(&f.0.join("repo"), Path::new("app")).is_err());
+    f.modules();
+    std::os::unix::fs::symlink(
+        &f.0.join("repo/app/package.json"),
+        f.0.join("repo/node_modules/absolute"),
+    )
+    .unwrap();
+    assert!(tree_bytes(
+        &f.0.join("repo/node_modules"),
+        &f.0.join("repo/node_modules")
+    )
+    .is_err());
+}
+
+#[test]
+fn stores_must_be_absolute_and_outside_the_checkout() {
+    let f = Fixture::new();
+    let repo = f.0.join("repo");
+    for app in ["", "app"] {
+        for linker in ["isolated", "hoisted"] {
+            for name in ["storeDir", "store-dir"] {
+                for store in [
+                    serde_json::json!(".pnpm-store"),
+                    serde_json::json!("../store"),
+                    serde_json::json!(""),
+                    serde_json::json!(false),
+                    serde_json::json!(repo.join(".pnpm-store")),
+                    serde_json::json!(repo.join("app/.pnpm-store")),
+                ] {
+                    let mut config = serde_json::json!({"node-linker":linker});
+                    config[name] = store;
+                    assert!(layout(&config, &repo, Path::new(app)).is_err());
+                }
+                let mut config = serde_json::json!({"node-linker":linker});
+                config[name] = serde_json::json!(f.0.join("shared-store"));
+                assert!(layout(&config, &repo, Path::new(app)).is_ok());
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires installed pnpm and a clone-capable filesystem"]
+fn real_pnpm_tree_relocates_after_origin_is_deleted_and_remains_isolated() {
+    for linker in ["hoisted", "isolated"] {
+        relocates(linker);
+    }
+}
+
+fn relocates(linker: &str) {
+    let f = Fixture::new();
+    let source = f.0.join("repo");
+    std::fs::create_dir(source.join("fixture-pkg")).unwrap();
+    std::fs::write(source.join("package.json"),r#"{"name":"relocation-test","private":true,"dependencies":{"relocation-package":"file:./fixture-pkg"}}"#).unwrap();
+    std::fs::write(
+        source.join(".npmrc"),
+        format!(
+            "node-linker={linker}\nstore-dir={}\n",
+            f.0.join("store").display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(source.join("fixture-pkg/package.json"),r#"{"name":"relocation-package","version":"1.0.0","main":"index.js","bin":{"relocation-hello":"hello.js"}}"#).unwrap();
+    std::fs::write(
+        source.join("fixture-pkg/index.js"),
+        "module.exports = 42;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        source.join("fixture-pkg/hello.js"),
+        "#!/usr/bin/env node\nconsole.log('relocation-ok');\n",
+    )
+    .unwrap();
+    std::fs::write(
+        source.join("pnpm-workspace.yaml"),
+        format!("nodeLinker: {linker}\n"),
+    )
+    .unwrap();
+    std::fs::remove_file(source.join("app/pnpm-lock.yaml")).unwrap();
+    let task_home = f.0.join("home");
+    std::fs::create_dir_all(task_home.join(".local/bin")).unwrap();
+    let store = f.0.join("store");
+    let mut runner = RealRunner::new();
+    let install = runner.run_private(
+        &CmdSpec::new(
+            "test-install",
+            "pnpm",
+            &[
+                "install",
+                "--offline",
+                "--store-dir",
+                store.to_str().unwrap(),
+                "--ignore-scripts",
+                &format!("--config.node-linker={linker}"),
+                "--config.userconfig=/dev/null",
+            ],
+            60,
+        )
+        .cwd(&source)
+        .env("HOME", task_home.to_str().unwrap()),
+        b"",
+    );
+    assert_eq!(install.exit_code(), Some(0), "{}", install.summary());
+    assert!(!install.timed_out());
+    let (_, effective) = probe(&mut runner, &source, &[]).unwrap();
+    assert!(layout(&effective, &source, Path::new("")).is_ok());
+    let entry = f.0.join("entry");
+    std::fs::create_dir(&entry).unwrap();
+    tree_bytes(&source.join("node_modules"), &source.join("node_modules")).unwrap();
+    clone_modules(
+        &mut runner,
+        &source.join("node_modules"),
+        &entry.join("node_modules"),
+    )
+    .unwrap();
+    std::fs::remove_dir_all(&source).unwrap();
+    let dest = f.0.join("restored");
+    std::fs::create_dir(&dest).unwrap();
+    restore_modules(&mut runner, &entry, &dest, &["node_modules".into()]).unwrap();
+    let resolved = runner.run(
+        &CmdSpec::new(
+            "resolve",
+            "node",
+            &["-p", "require('relocation-package')"],
+            10,
+        )
+        .cwd(&dest),
+    );
+    assert!(resolved.ok());
+    assert_eq!(resolved.stdout.trim(), "42");
+    let bin = runner.run(
+        &CmdSpec::new(
+            "shim",
+            dest.join("node_modules/.bin/relocation-hello")
+                .to_str()
+                .unwrap(),
+            &[],
+            10,
+        )
+        .cwd(&dest),
+    );
+    assert!(bin.ok(), "{}", bin.summary());
+    assert_eq!(bin.stdout.trim(), "relocation-ok");
+    std::fs::write(
+        dest.join("node_modules/relocation-package/index.js"),
+        "changed",
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(entry.join("node_modules/relocation-package/index.js")).unwrap(),
+        "module.exports = 42;\n"
+    );
+}
+
+#[test]
+fn candidate_head_tracked_file_and_lockfile_changes_withhold_staged_publication() {
+    for change in ["head", "tracked", "lockfile"] {
+        let f = Fixture::new();
+        f.modules();
+        let mut runner = CloneRunner::new();
+        probes(&mut runner.mock);
+        disk(&mut runner.mock, 999999999);
+        runner.mock.expect_run(
+            "rev-parse HEAD",
+            CmdOutput::success(&if change == "head" {
+                "b".repeat(40)
+            } else {
+                "a".repeat(40)
+            }),
+        );
+        if change != "head" {
+            runner.mock.expect_run(
+                "status --porcelain",
+                CmdOutput::success(if change == "tracked" {
+                    " M app/package.json\0"
+                } else {
+                    ""
+                }),
+            );
+        }
+        let mut ctx = f.context(&mut runner, "drift");
+        restore(&mut ctx, &f.0.join("repo"), true).unwrap();
+        stage_ok(&mut ctx);
+        if change == "lockfile" {
+            std::fs::write(f.0.join("repo/app/pnpm-lock.yaml"), "changed").unwrap();
+        }
+        assert!(crate::candidate::verify_unchanged(ctx.runner, &ctx.record.candidate).is_err());
+        assert!(!entry_path(&ctx).exists());
+        release(&mut ctx);
+    }
+}
+
+#[test]
+fn explicit_cache_cleanup_reclaims_dead_staging_and_retains_unknown_readers() {
+    let f = Fixture::new();
+    let (repo, _) = seed_entry(&f, &"1".repeat(64), 1);
+    let entry = repo.join("1".repeat(64));
+    marker(&entry.join(".readers/unknown"), None);
+    let stage = staging_dir(&repo, "cancelled").unwrap();
+    marker(&stage.join("owner.json"), Some(owner()));
+    let mut runner = MockRunner::new();
+    runner.expect_run("lstart=", CmdOutput::success("cleanup-start"));
+    runner.expect_run("command=", CmdOutput::success("qaren cleanup"));
+    runner.expect_run("lstart=", CmdOutput::failed(1, ""));
+    cleanup_cache(&mut runner, &f.0.join("runs")).unwrap();
+    assert!(entry.exists());
+    assert!(!stage.exists());
+    assert!(inventory(&f.0.join("runs"))
+        .unwrap()
+        .starts_with("1 entries, 0 staging,"));
+    assert_eq!(runner.remaining(), 0);
+}
+
+#[test]
+fn run_cleanup_drops_only_its_markers_and_stage_and_refuses_live_or_unknown_owners() {
+    for state in ["dead", "live", "unknown"] {
+        let live = state != "dead";
+        let f = Fixture::new();
+        let (repo, mut resource) = seed_entry(&f, &"1".repeat(64), 1);
+        resource.reader = true;
+        resource.staging = true;
+        let entry = repo.join(&resource.key);
+        marker(&entry.join(".readers/owned"), Some(owner()));
+        marker(&entry.join(".readers/other"), None);
+        let stage = staging_dir(&repo, "owned").unwrap();
+        marker(&stage.join("owner.json"), Some(owner()));
+        let mut runner = MockRunner::new();
+        let mut ctx = f.context(&mut runner, "owned");
+        ctx.record.resources.deps_cache = Some(resource);
+        ctx.record.resources.lease = Some(crate::lease::Lease {
+            run_id: "owned".into(),
+            token: "t".into(),
+            lock_dir: f.0.join("locks/absent"),
+            holder: "owned".into(),
+            released_orphan: None,
+        });
+        ctx.save().unwrap();
+        drop(ctx);
+        if state == "live" {
+            runner.expect_run("lstart=", CmdOutput::success("start"));
+            runner.expect_run("stat=", CmdOutput::success("S"));
+        } else if state == "unknown" {
+            runner.expect_run("lstart=", CmdOutput::failed(1, "unreadable"));
+        } else {
+            runner.expect_run("lstart=", CmdOutput::failed(1, ""));
+            runner.expect_run("lstart=", CmdOutput::success("cleanup-start"));
+            runner.expect_run("command=", CmdOutput::success("qaren cleanup"));
+        }
+        let receipt = crate::commands::cleanup::cleanup(&mut runner, &f.0.join("runs"), "owned");
+        assert_eq!(entry.join(".readers/owned").exists(), live);
+        assert_eq!(stage.exists(), live);
+        assert!(entry.join(".readers/other").exists());
+        // An unknown owner no longer stops the legs that never needed it proven gone.
+        assert_eq!(
+            receipt.cleanup.contains_key("device_lease"),
+            state != "live"
+        );
+        // A live owner refuses the whole run; an unknown one refuses only this leg.
+        assert_eq!(
+            receipt.cleanup[if state == "live" {
+                "core"
+            } else {
+                "deps_cache"
+            }],
+            if live {
+                "refused: the run's qaren process is alive or unproven gone"
+            } else {
+                "removed"
+            }
+        );
+        assert_eq!(runner.remaining(), 0);
+    }
+}
+
+#[test]
+fn cancellation_after_staging_never_publishes_and_leaves_owned_recovery() {
+    let f = Fixture::new();
+    f.modules();
+    let mut runner = CloneRunner::new();
+    probes(&mut runner.mock);
+    disk(&mut runner.mock, 999999999);
+    let mut ctx = f.context(&mut runner, "cancelled");
+    restore(&mut ctx, &f.0.join("repo"), true).unwrap();
+    stage_ok(&mut ctx);
+    let resource = ctx.record.resources.deps_cache.clone().unwrap();
+    drop(ctx);
+    runner.mock.cancel_at_ms = Some((0, "cancelled".into()));
+    let mut ctx = f.context(&mut runner, "cancelled");
+    ctx.record.resources.deps_cache = Some(resource);
+    assert!(publish(&mut ctx).is_err());
+    assert!(!entry_path(&ctx).exists());
+    assert!(
+        staging_dir(&entry_path(&ctx).parent().unwrap(), "cancelled")
+            .unwrap()
+            .is_dir()
+    );
+}
+
+#[test]
+fn operation_events_report_success_and_handled_failures() {
+    for failure in ["none", "install", "restore", "stage", "publish"] {
+        let f = Fixture::new();
+        let mut runner = CloneRunner::new();
+        if failure == "restore" {
+            f.modules();
+            published(&f, &mut runner);
+            runner.fail_clone = Some(runner.clones + 1);
+        }
+        probes(&mut runner.mock);
+        if failure == "restore" {
+            disk(&mut runner.mock, 999999999);
+        }
+        runner.mock.expect_run(
+            "pnpm install",
+            if failure == "install" {
+                CmdOutput::failed(1, "install failed")
+            } else {
+                CmdOutput::success("")
+            },
+        );
+        if !matches!(failure, "install" | "restore") {
+            disk(&mut runner.mock, 999999999);
+        }
+        if failure == "stage" {
+            runner.fail_clone = Some(1);
+        }
+        let path = f.0.join("events.jsonl");
+        events::init();
+        events::attach(&path);
+        let mut ctx = f.context(&mut runner, "events");
+        restore(&mut ctx, &f.0.join("repo"), true).unwrap();
+        let installed = crate::commands::prepare::install_deps(&mut ctx);
+        assert_eq!(installed.is_err(), failure == "install");
+        if installed.is_ok() {
+            f.modules();
+            stage(&mut ctx).unwrap();
+            if failure == "publish" {
+                let resource = ctx.record.resources.deps_cache.as_ref().unwrap();
+                let repo = repo_dir(&ctx.runs_root, resource).unwrap();
+                let staged = staging_dir(&repo, &ctx.record.run_id).unwrap();
+                std::fs::write(staged.join("entry.json"), "invalid entry").unwrap();
+            }
+            publish(&mut ctx).unwrap();
+        }
+        events::finish();
+        let emitted: Vec<Value> = std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        for operation in ["restore", "install", "stage", "publish"] {
+            let name = format!("deps_cache_{operation}");
+            let completed: Vec<_> = emitted
+                .iter()
+                .filter(|event| {
+                    event["event"] == "stage"
+                        && event["payload"]["name"] == name
+                        && event["payload"]["ms"].is_number()
+                })
+                .collect();
+            let attempted = match operation {
+                "stage" => !matches!(failure, "install" | "restore"),
+                "publish" => !matches!(failure, "install" | "restore" | "stage"),
+                _ => true,
+            };
+            assert_eq!(
+                completed.len(),
+                usize::from(attempted),
+                "{failure}: {operation}"
+            );
+            if attempted {
+                assert_eq!(
+                    completed[0]["payload"]["state"],
+                    if failure == operation {
+                        "failed"
+                    } else {
+                        "passed"
+                    },
+                    "{failure}: {operation}"
+                );
+            }
+        }
+        release(&mut ctx);
+        assert_eq!(runner.mock.remaining(), 0);
+    }
+}

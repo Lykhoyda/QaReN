@@ -2,4 +2,4 @@
 "qaren": patch
 ---
 
-Recover check-first, wait-first and tap/fill-first plans behind a presented full-screen promo whose only control is a decline label, with interruption receipts, ownership plan-edit suggestions and diagnostics even without inputs.
+Dismiss full-screen interruptions only when no remaining planned target could match the screen, and record the recovery decision and any matching later line on the step's row.

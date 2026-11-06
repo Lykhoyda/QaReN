@@ -494,7 +494,7 @@ pub struct Row {
     pub interruption: Option<InterruptionReceipt>,
 }
 
-// What interruption recovery decided for a step, from enums, a line number and one coordinate only.
+// Value-free interruption decision for a step.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InterruptionReceipt {
@@ -512,6 +512,14 @@ pub struct InterruptionReceipt {
     pub sole_decline: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub press_centre_y: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_class: Option<InterruptionScreenClass>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum InterruptionScreenClass {
+    PermissionOptIn,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -577,6 +585,7 @@ impl InterruptionReceipt {
             self.press_centre_y
                 .filter(|y| y.is_finite())
                 .map(|y| format!("press centre y {y:.0} pt")),
+            self.screen_class.map(word),
         ]
         .into_iter()
         .flatten()

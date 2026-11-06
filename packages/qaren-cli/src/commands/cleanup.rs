@@ -57,6 +57,35 @@ impl Outcome {
     }
 }
 
+pub fn cleanup_deps_cache(runner: &mut dyn Runner, runs_root: &Path) -> Receipt {
+    let mut receipt = Receipt::new(
+        "cleanup",
+        "deps-cache",
+        ReceiptResult::Cleaned,
+        "cleanup",
+        timefmt::iso8601_utc(runner.now_epoch_ms()),
+    );
+    match crate::deps_cache::cleanup_cache(runner, runs_root) {
+        Ok(()) => {
+            receipt.cleanup.insert(
+                "deps_cache".into(),
+                "removed entries without live or unknown readers; retained unproven owners".into(),
+            );
+        }
+        Err(_) => {
+            receipt.result = ReceiptResult::Unknown;
+            receipt.failure = Some(Failure::new(
+                "cleanup",
+                FailureCode::CleanupIncomplete,
+                "dependency cache cleanup is incomplete",
+                "retry qaren cleanup --deps-cache when cache owners are idle",
+            ));
+        }
+    }
+    receipt.commands_executed = runner.commands_executed();
+    receipt
+}
+
 pub fn cleanup(runner: &mut dyn Runner, runs_root: &Path, run_id: &str) -> Receipt {
     cleanup_with(runner, runs_root, run_id, None)
 }
@@ -324,7 +353,15 @@ pub fn cleanup_with_policy(
         || (record.resources.device_borrowed
             && record.resources.ios_simulator.is_some()
             && record.resources.lease.is_some());
-    let owner = match (producers || guarded_simulator, &record.prepare) {
+    let cache_owned = record
+        .resources
+        .deps_cache
+        .as_ref()
+        .is_some_and(|r| r.reader || r.staging);
+    let owner = match (
+        producers || guarded_simulator || cache_owned,
+        &record.prepare,
+    ) {
         (true, Some(prepare)) => Some(probe_pid_identity(runner, prepare)),
         _ => None,
     };
@@ -693,6 +730,36 @@ pub fn cleanup_with_policy(
         outcomes.push(("device_lease".to_string(), outcome));
     }
 
+    if let Some(mut cache) = record
+        .resources
+        .deps_cache
+        .clone()
+        .filter(|r| r.reader || r.staging)
+    {
+        // Only this leg needs the owner proven gone; an unknown owner keeps its markers.
+        let outcome = if owner_alive
+            || !matches!(owner, Some(PidLiveness::Dead | PidLiveness::AliveForeign))
+        {
+            owner_refusal()
+        } else {
+            let cleanup_identity =
+                crate::runrecord::capture_pid_identity(runner, std::process::id() as i32);
+            match crate::deps_cache::cleanup_run(
+                runner,
+                runs_root,
+                run_id,
+                cleanup_identity.as_ref(),
+                &mut cache,
+            ) {
+                Ok(()) => {
+                    record.resources.deps_cache = Some(cache);
+                    Outcome::Removed
+                }
+                Err(reason) => Outcome::Unresolved(reason),
+            }
+        };
+        outcomes.push(("deps_cache".into(), outcome));
+    }
     if let Some(wt) = record.resources.pr_worktree.clone() {
         let expected = crate::worktree::pr_worktree_path(&RunRecord::run_dir(runs_root, run_id));
         let outcome = if owner_alive {

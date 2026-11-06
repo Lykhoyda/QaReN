@@ -7,6 +7,30 @@ import type { InterruptionDiagnostic } from '../../../dist/qa/recover.js';
 import { element, screen } from './judgment-fixtures.ts';
 
 const targets = [{ phrase: '"Private target"', quoted: 'Private target' }];
+// Control-count evidence with no gaps; each record overrides what its screen lacks.
+const provenCount = {
+  evidenceGap: false,
+  pressGaps: 0,
+  fillGaps: 0,
+  unknownPress: 0,
+  unknownFill: 0,
+};
+
+test('an interruption rejection crosses the wire in a run without inputs, value-free', () => {
+  const event = {
+    kind: 'interruption-rejected',
+    line: 7,
+    veto: 'later-target',
+    targetIndex: 1,
+    exactDeclineCount: 2,
+  };
+  const lines: string[] = [];
+  const writer = createWriter((line) => lines.push(line), 'interruption-test');
+  writer.diagnostic({ ...event, label: 'Close' });
+  assert.equal(lines.length, 1);
+  assert.deepEqual(JSON.parse(lines[0]).payload, event);
+  assert.doesNotMatch(lines[0], /Close/);
+});
 
 function observed(labels: string[]) {
   return join(
@@ -61,6 +85,7 @@ test('ineligible decline emits one value-free record with the first failed predi
       veto: 'no-candidate',
       soleDecline: true,
       exactDeclineCount: 1,
+      controls: { ...provenCount, controls: 1 },
       elements: [{ index: 0, failed: 'not-hittable' }],
     },
   ]);
@@ -82,6 +107,8 @@ test('a later target veto reports only its index and successful selection emits 
       provenance: 'presence',
       soleDecline: false,
       exactDeclineCount: 1,
+      // join() without React host evidence leaves the control count unproven.
+      controls: { ...provenCount, evidenceGap: true },
       elements: [],
     },
   ]);
@@ -158,6 +185,7 @@ test('press rejection exposes existing host identity without exporting host cont
       veto: 'no-candidate',
       soleDecline: false,
       exactDeclineCount: 1,
+      controls: { ...provenCount, evidenceGap: true, pressGaps: 1, unknownPress: 1 },
       elements: [{ index: 2, failed: 'press-not-supported', association: 'evidence-unavailable' }],
     },
   ]);
