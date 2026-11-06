@@ -213,3 +213,41 @@ test('a hit on a host with no native node of its own names nothing', async () =>
   assert.equal(touched(screen), 'unresolved');
   assert.equal(coverOwner(row(screen), screen), undefined);
 });
+
+test('scroll clipping withholds a named owner outside every viewport edge', async () => {
+  const viewport = { x: 100, y: 200, width: 200, height: 500 };
+  for (const [x, y] of [
+    [201, 100],
+    [201, 700],
+    [99, 300],
+    [300, 300],
+  ]) {
+    const frame = { x: x - 10, y: y - 10, width: 20, height: 20 };
+    const screen = await capture([
+      { id: 'target', type: 'Button', rect: frame },
+      { id: '', type: 'ScrollView', rect: viewport },
+      { id: 'clipped-row', type: 'Button', rect: frame, parent: 1 },
+    ]);
+    assert.equal(touchOwnerAt(screen, x, y), 'unresolved', `${x},${y}`);
+    assert.equal(coverOwner(screen.elements.find((e) => e.testID === 'target')!, screen), undefined);
+  }
+});
+
+test('partially clipped owners use the touch point within all nested viewports', async () => {
+  const screen = await capture([
+    { id: '', type: 'ScrollView', rect: { x: 100, y: 200, width: 200, height: 500 } },
+    { id: '', type: 'ScrollView', rect: { x: 50, y: 250, width: 200, height: 500 }, parent: 0 },
+    {
+      id: 'partial-row',
+      type: 'Button',
+      rect: { x: 50, y: 200, width: 250, height: 550 },
+      parent: 1,
+    },
+  ]);
+  for (const [x, y] of [[99, 300], [250, 300], [150, 249], [150, 700]])
+    assert.equal(touchOwnerAt(screen, x, y), 'unresolved', `${x},${y}`);
+  for (const [x, y] of [[100, 250], [249, 699]]) {
+    const owner = touchOwnerAt(screen, x, y);
+    assert.equal(typeof owner === 'object' ? owner.testID : owner, 'partial-row', `${x},${y}`);
+  }
+});

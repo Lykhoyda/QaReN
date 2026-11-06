@@ -349,11 +349,23 @@ export function touchOwner(
     x: rect.x + window.x,
     y: rect.y + window.y,
   }));
+  const viewport = outsideViewport(nodes);
   return (x, y) => {
     const host = hit(x, y);
     if (typeof host !== 'number') return host;
     // Only the hit host's own native node is proven; an ancestor would only contain the touch.
-    return associations.get(host)?.nativeIndex ?? 'unresolved';
+    const index = associations.get(host)?.nativeIndex;
+    if (index === undefined) return 'unresolved';
+    const bounds = clippingViewport(viewport, index);
+    if (
+      bounds &&
+      (x < bounds.x ||
+        x >= bounds.x + bounds.width ||
+        y < bounds.y ||
+        y >= bounds.y + bounds.height)
+    )
+      return 'unresolved';
+    return index;
   };
 }
 
