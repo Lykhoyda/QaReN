@@ -584,6 +584,10 @@ fn assert_ios_prepare_reuses_cached_client(workspace: bool) {
     );
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
     mock.expect_run("ps", CmdOutput::success("node expo start\n"));
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&common::sim_inventory(common::CREATED_UDID, "Booted")),
+    );
     mock.expect_run("simctl install", CmdOutput::success(""));
     // wait_metro_responding
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
