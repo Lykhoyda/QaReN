@@ -83,6 +83,7 @@ import {
   visibleSelector,
   contend,
   coverOwner,
+  type CoverGap,
   excludedCandidate,
   nestedCandidate,
   probeIdentifiable,
@@ -352,6 +353,8 @@ export interface WalkerTimingDiagnostic {
     scrollOrigin: 'offscreen-resolution' | 'centre-covered' | 'native-occlusion' | null;
     requestedDirection: 'up' | 'down' | null;
     targetCentreChanged: boolean | null;
+    // Why the observation named no cover; null when it named one or never looked.
+    coverGap?: CoverGap | null;
   };
 }
 
@@ -1399,12 +1402,15 @@ async function walkBlockScoped(
     number,
     Pick<LedgerRow, 'collapsed' | 'candidateExclusions' | 'coveredBy'>
   >();
-  // The proven cover for a refusal, as kind and frame; nothing when no touch owner was proven.
+  // Why the latest observation of a line named no cover.
+  const coverGaps = new Map<number, CoverGap>();
+  // The proven cover for a refusal, as kind and frame, or the evidence gap that withheld it.
   const coverText = (line: number): string => {
     const cover = targetRows.get(line)?.coveredBy;
-    return cover
-      ? `; covered by ${cover.kind} at ${[cover.frame.x, cover.frame.y, cover.frame.width, cover.frame.height].join(',')}`
-      : '';
+    if (cover)
+      return `; covered by ${cover.kind} at ${[cover.frame.x, cover.frame.y, cover.frame.width, cover.frame.height].join(',')}`;
+    const gap = coverGaps.get(line);
+    return gap ? `; no cover named (${gap})` : '';
   };
   const withheldRows = new Map<number, NonNullable<LedgerRow['screenshotWithheld']>>();
   // Per line, what interruption recovery last decided; a dismissal stays on this line's later rows.
@@ -3844,7 +3850,7 @@ async function walkBlockScoped(
                     outcome = failed(
                       item,
                       attempt,
-                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}${cutterText(clearing)}${unaskedLiveHit(item.kind, deps.platform, clearing)}`,
+                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}${clearing ? coverText(item.line) : ''}${cutterText(clearing)}${unaskedLiveHit(item.kind, deps.platform, clearing)}`,
                       before.screen,
                       await shoot(item),
                       undefined,
@@ -3865,6 +3871,8 @@ async function walkBlockScoped(
                           scrollOrigin,
                           requestedDirection: scrollDirection,
                           targetCentreChanged: null,
+                          // The unchanged screen keeps the pre-scroll observation's cover fact.
+                          coverGap: coverGaps.get(item.line) ?? null,
                         },
                       );
                     break;
@@ -4003,18 +4011,19 @@ async function walkBlockScoped(
                 (item.kind === 'press' || item.kind === 'fill') && element
                   ? coverOwner(element, before.screen)
                   : undefined;
-              const coverFrame = cover && elementFrame(cover);
-              // Each observation states its own cover, or none.
+              // Each observation states its own cover, or why none is named.
               const { coveredBy: _previous, ...facts } = targetRows.get(item.line) ?? {};
+              coverGaps.delete(item.line);
+              if (cover && 'gap' in cover) coverGaps.set(item.line, cover.gap);
               targetRows.set(item.line, {
                 ...facts,
-                ...(cover && coverFrame
+                ...(cover && 'owner' in cover
                   ? {
                       coveredBy: {
-                        ref: cover.ref,
-                        kind: cover.kind,
-                        frame: coverFrame,
-                        ...(isDeclineLabel(cover.label) ? { label: cover.label } : {}),
+                        ref: cover.owner.ref,
+                        kind: cover.owner.kind,
+                        frame: cover.frame,
+                        ...(isDeclineLabel(cover.owner.label) ? { label: cover.owner.label } : {}),
                       },
                     }
                   : {}),
@@ -4067,6 +4076,7 @@ async function walkBlockScoped(
                       scrollOrigin,
                       requestedDirection: scrollDirection,
                       targetCentreChanged: centreChanged(element),
+                      coverGap: coverGaps.get(item.line) ?? null,
                     },
                   );
                   break;
@@ -4247,6 +4257,7 @@ async function walkBlockScoped(
                     scrollOrigin,
                     requestedDirection: scrollDirection,
                     targetCentreChanged: centreChanged(element),
+                    coverGap: coverGaps.get(item.line) ?? null,
                   },
                 );
                 break;

@@ -53,9 +53,15 @@ const sticky = (cover: PointerEvents = 'auto'): View[] => [
 
 async function capture(
   views: View[],
-  options: { hosts?: boolean; order?: boolean } = {},
+  // presence: false is an ordinary capture, which carries no native presence and no React typography.
+  options: { hosts?: boolean; order?: boolean; presence?: boolean; secondRoot?: boolean } = {},
 ): Promise<Screen> {
-  const { hosts = true, order = true } = options;
+  const {
+    hosts = true,
+    order = true,
+    presence: platformPresence = true,
+    secondRoot = false,
+  } = options;
   const base = nativeCapture();
   const presence = (index: number) => ({ ...base.nodes[1].presence, nodeIndex: index });
   const nodes: Record<string, unknown>[] = [
@@ -89,6 +95,7 @@ async function capture(
       presence: presence(i + 2),
     });
   });
+  if (!platformPresence) for (const node of nodes) delete node.presence;
   base.nodes = nodes as typeof base.nodes;
   base.snapshotVerdict.nodeCount = nodes.length;
   // Host 0 is the screen root; view i is host i + 1, ranked among its siblings in fiber order.
@@ -134,9 +141,22 @@ async function capture(
       text: { kind: 'none' },
     });
   });
+  // A second React root (an overlay surface, say) has no paint order against the screen's.
+  if (secondRoot) {
+    evidence.hosts.push({ role: null, roleSource: 'none', capabilities: {} });
+    evidence.typography!.nodes.push({
+      hostIndex: evidence.hosts.length - 1,
+      parentHostIndex: null,
+      rootIndex: 1,
+      hostType: 'RCTView',
+      rect: { x: 0, y: 0, width: 1, height: 1 },
+      text: { kind: 'none' },
+    });
+  }
+  if (!platformPresence) delete evidence.typography;
   return captureScreen({
     appId: 'com.test',
-    native: async () => base,
+    native: async () => (platformPresence ? base : { ...base, presenceCapture: undefined }),
     react: async () => ({
       interactive: [],
       ...(hosts ? { hostEvidence: evidence } : {}),
@@ -146,7 +166,7 @@ async function capture(
 }
 
 const row = (screen: Screen) => screen.elements.find((e) => e.testID === 'qa-hi-row-1')!;
-// Who takes a touch at row 1's centre (201, 283): a testID, 'none', 'unresolved' or no evidence.
+// Who takes a touch at row 1's centre (201, 283): a testID, 'none' or the evidence gap.
 const touched = (screen: Screen) => {
   const hit = touchOwnerAt(screen, 201, 283);
   return typeof hit === 'object' ? hit.testID : hit;
@@ -154,38 +174,47 @@ const touched = (screen: Screen) => {
 
 test('the sticky cover is named, not the pointer-transparent inset view drawn after it', async () => {
   const screen = await capture(sticky());
-  assert.equal(coverOwner(row(screen), screen)?.testID, 'qa-hi-cover');
+  const cover = coverOwner(row(screen), screen);
+  assert.equal('owner' in cover && cover.owner.testID, 'qa-hi-cover', JSON.stringify(cover));
 });
 
 test('a pointer-transparent cover is no cover: the touch reaches the row', async () => {
   const screen = await capture(sticky('none'));
   // The hit test ran and gave the row its own touch, so nothing covers it.
   assert.equal(touched(screen), 'qa-hi-row-1');
-  assert.equal(coverOwner(row(screen), screen), undefined);
+  assert.deepEqual(coverOwner(row(screen), screen), { gap: 'reaches-target' });
 });
 
-test('without proof of who takes the touch, nothing is named', async () => {
+test('without proof of who takes the touch, nothing is named and the gap says why', async () => {
   for (const [options, expected] of [
-    [{ hosts: false }, undefined],
-    [{ order: false }, 'unresolved'],
+    [{ presence: false }, 'no-native-presence'],
+    [{ hosts: false }, 'react-evidence-incomplete'],
+    [{ order: false }, 'unordered-siblings'],
+    [{ secondRoot: true }, 'separate-roots'],
   ] as const) {
     const screen = await capture(sticky(), options);
     assert.equal(touched(screen), expected, JSON.stringify(options));
-    assert.equal(coverOwner(row(screen), screen), undefined, JSON.stringify(options));
+    assert.deepEqual(coverOwner(row(screen), screen), { gap: expected }, JSON.stringify(options));
   }
 });
 
-test('the walked tap records the sticky cover on its row and never names the inset view', async () => {
+// Device C1: a quoted tap takes an ordinary capture, which cannot associate React hosts with native
+// nodes, so the refusal names no cover and says which evidence was missing.
+test('a quoted tap on an ordinary capture names no cover and records the missing evidence', async () => {
   const w = walker(
     [],
     scriptedJudge(() => assert.fail('exact targets are model-free')),
   );
   w.deps.platform = 'ios';
-  w.deps.captureScreen = async () => {
-    const screen = await capture(sticky());
+  const modes: boolean[] = [];
+  w.deps.captureScreen = async (options) => {
+    modes.push(options?.platformPresence === true);
+    const screen = await capture(sticky(), { presence: options?.platformPresence === true });
     screen.nativeGeneration = 7;
     return screen;
   };
+  const diagnostics: Record<string, unknown>[] = [];
+  w.deps.diagnostic = (event) => diagnostics.push(event as unknown as Record<string, unknown>);
   w.deps.hitProbe = async () => 'not-hittable';
   w.deps.press = async () => ({
     ok: false,
@@ -195,23 +224,25 @@ test('the walked tap records the sticky cover on its row and never names the ins
   });
   const result = await runPlan(parsePlan('1. Tap "qa-hi-row-1"').blocks!, w.deps);
   const row = ('steps' in result ? result.steps : []).filter((r) => r.line === 1).at(-1);
-  assert.deepEqual(
-    row?.coveredBy,
-    { ref: '@e5', kind: 'button', frame: COVER },
-    JSON.stringify(row),
-  );
-  assert.deepEqual(w.rows.at(-1)?.coveredBy, row?.coveredBy, 'the streamed row carries it too');
+  assert.ok(modes.length && !modes.includes(true), 'every capture of a quoted tap is ordinary');
   assert.equal(row?.outcome, 'fail', JSON.stringify(row));
-  assert.match(String(row?.reason), /covered by button at 0,110,402,201/);
-  assert.doesNotMatch(String(row?.reason), /covered by \w+ at 0,116,402,758/);
+  assert.equal(row?.coveredBy, undefined, JSON.stringify(row));
+  assert.match(String(row?.reason), /no cover named \(no-native-presence\)/);
+  assert.doesNotMatch(String(row?.reason), /covered by \w+ at/);
+  const covered = diagnostics.filter((event) => event.code === 'CENTRE_COVERED');
+  assert.deepEqual(
+    covered.map((event) => (event.clearanceDiagnostic as { coverGap?: unknown }).coverGap),
+    covered.map(() => 'no-native-presence'),
+  );
+  assert.ok(covered.length, JSON.stringify(diagnostics.map((event) => event.code)));
 });
 
 test('a hit on a host with no native node of its own names nothing', async () => {
   // The cover's own testID is gone, so its host cannot be tied to a native node.
   const views = sticky().map((view) => (view.id === 'qa-hi-cover' ? { ...view, id: '' } : view));
   const screen = await capture(views);
-  assert.equal(touched(screen), 'unresolved');
-  assert.equal(coverOwner(row(screen), screen), undefined);
+  assert.equal(touched(screen), 'unassociated-host');
+  assert.deepEqual(coverOwner(row(screen), screen), { gap: 'unassociated-host' });
 });
 
 test('scroll clipping withholds a named owner outside every viewport edge', async () => {
@@ -228,11 +259,10 @@ test('scroll clipping withholds a named owner outside every viewport edge', asyn
       { id: '', type: 'ScrollView', rect: viewport },
       { id: 'clipped-row', type: 'Button', rect: frame, parent: 1 },
     ]);
-    assert.equal(touchOwnerAt(screen, x, y), 'unresolved', `${x},${y}`);
-    assert.equal(
-      coverOwner(screen.elements.find((e) => e.testID === 'target')!, screen),
-      undefined,
-    );
+    assert.equal(touchOwnerAt(screen, x, y), 'clipped', `${x},${y}`);
+    assert.deepEqual(coverOwner(screen.elements.find((e) => e.testID === 'target')!, screen), {
+      gap: 'clipped',
+    });
   }
 });
 
@@ -253,7 +283,7 @@ test('partially clipped owners use the touch point within all nested viewports',
     [150, 249],
     [150, 700],
   ])
-    assert.equal(touchOwnerAt(screen, x, y), 'unresolved', `${x},${y}`);
+    assert.equal(touchOwnerAt(screen, x, y), 'clipped', `${x},${y}`);
   for (const [x, y] of [
     [100, 250],
     [249, 699],

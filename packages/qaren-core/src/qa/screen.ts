@@ -33,6 +33,8 @@ import {
   hostPath,
   nativeWindowIndex,
   touchOwner,
+  type TouchOwnerGap,
+  type TouchPointGap,
   type HostAssociationDiagnostic,
 } from './host-association.js';
 
@@ -221,19 +223,18 @@ function frameReach(
   return 'reachable';
 }
 
-// The element whose React host takes a touch at a screen point; undefined when the capture cannot say.
+export type TouchGap = TouchOwnerGap | TouchPointGap | 'not-joined' | 'owner-not-projected';
+
+// The element whose React host takes a touch at a screen point, 'none', or the evidence gap that withholds it.
 // Keyed by the elements array, which a capture's spread copy of the joined screen keeps.
 const touchOwners = new WeakMap<
   Screen['elements'],
-  (x: number, y: number) => Element | 'none' | 'unresolved'
+  ((x: number, y: number) => Element | 'none' | TouchGap) | TouchOwnerGap
 >();
 
-export function touchOwnerAt(
-  screen: Screen,
-  x: number,
-  y: number,
-): Element | 'none' | 'unresolved' | undefined {
-  return touchOwners.get(screen.elements)?.(x, y);
+export function touchOwnerAt(screen: Screen, x: number, y: number): Element | 'none' | TouchGap {
+  const owner = touchOwners.get(screen.elements) ?? 'not-joined';
+  return typeof owner === 'string' ? owner : owner(x, y);
 }
 
 // The matched React host's own press handler; a native button kind says nothing about it.
@@ -1461,12 +1462,18 @@ export function join(
   });
   projectionCounts.set(screen.elements, counts);
   const owner = touchOwner(nodes, reactHostEvidence, presence, associations);
-  if (owner)
-    touchOwners.set(screen.elements, (x, y) => {
-      const index = owner(x, y);
-      if (typeof index !== 'number') return index;
-      return screen.elements.includes(elements[index]) ? elements[index] : 'unresolved';
-    });
+  touchOwners.set(
+    screen.elements,
+    typeof owner === 'string'
+      ? owner
+      : (x, y) => {
+          const index = owner(x, y);
+          if (typeof index !== 'number') return index;
+          return screen.elements.includes(elements[index])
+            ? elements[index]
+            : 'owner-not-projected';
+        },
+  );
   return screen;
 }
 

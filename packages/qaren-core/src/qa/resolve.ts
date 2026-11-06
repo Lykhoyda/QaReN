@@ -31,6 +31,7 @@ import {
   matchedHostPress,
   reachOf,
   touchOwnerAt,
+  type TouchGap,
   reactOnlyFactsOf,
   scrollContainerType,
   semanticActionView,
@@ -724,19 +725,32 @@ export function overlayProbeCoverage(
   return facts && probeIdentifiable(element, screen) ? facts : undefined;
 }
 
+// Why no cover is named: the touch reaches the target's own lineage or no host, or a named evidence gap.
+export type CoverGap =
+  | TouchGap
+  | 'none'
+  | 'reaches-target'
+  | 'no-target-frame'
+  | 'owner-without-frame';
+
 // The element that takes a touch at the target's centre instead of the target, by React Native's own
-// hit test; undefined when the touch reaches the target's lineage or nothing proves who takes it.
-export function coverOwner(element: Element, screen: Screen): Element | undefined {
+// hit test, or why none is named.
+export function coverOwner(
+  element: Element,
+  screen: Screen,
+): { owner: Element; frame: NonNullable<ReturnType<typeof elementFrame>> } | { gap: CoverGap } {
   const frame = elementFrame(element);
-  if (!frame) return undefined;
+  if (!frame) return { gap: 'no-target-frame' };
   const owner = touchOwnerAt(screen, frame.x + frame.width / 2, frame.y + frame.height / 2);
-  return typeof owner === 'object' &&
-    owner !== element &&
-    !ancestorsOf(owner).includes(element) &&
-    !ancestorsOf(element).includes(owner) &&
-    elementFrame(owner)
-    ? owner
-    : undefined;
+  if (typeof owner === 'string') return { gap: owner };
+  if (
+    owner === element ||
+    ancestorsOf(owner).includes(element) ||
+    ancestorsOf(element).includes(owner)
+  )
+    return { gap: 'reaches-target' };
+  const ownerFrame = elementFrame(owner);
+  return ownerFrame ? { owner, frame: ownerFrame } : { gap: 'owner-without-frame' };
 }
 
 // The runner's live hit read finds a node by its unique testID, or else by its unique label and kind.

@@ -3746,7 +3746,10 @@ views are skipped and box-none views pass the touch to their children. The step
 row's `coveredBy` then records that view's ref, kind and frame, with a label only from
 QaReN's own dismiss words, and a refusal adds "covered by <kind> at <frame>". With no
 complete host evidence, an unresolved paint order, or a touch that reaches the
-target's own lineage, no cover is named. In `clearanceDiagnostic`, unread or unavailable facts
+target's own lineage, no cover is named; the refusal adds "no cover named (<gap>)" and
+`clearanceDiagnostic.coverGap` records the same gap. `no-native-presence` means the
+capture carried no native presence, so no React host could be tied to a native node:
+quoted targets take ordinary captures, which never carry it. In `clearanceDiagnostic`, unread or unavailable facts
 remain `null`; target text, identifiers and target coordinates are excluded. The
 [walker](../qaren-core/src/qa/walker.ts) owns the event layout; the
 [centre predicate](../qaren-core/src/qa/resolve.ts) owns its coverage facts.

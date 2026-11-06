@@ -819,6 +819,7 @@ test('offscreen rows and keyboard clearance preserve refusal without exposing pr
           scrollOrigin: 'centre-covered',
           requestedDirection: 'down',
           targetCentreChanged: true,
+          coverGap: 'no-native-presence',
         });
       }
       assert.ok(!JSON.stringify(events).includes('PRIVATE-'));
@@ -2682,7 +2683,10 @@ for (const [name, result, shown] of [
       scrollOrigin: 'centre-covered',
       requestedDirection: 'down',
       targetCentreChanged: false,
+      // These captures carry no native presence, so React hosts cannot be tied to native nodes.
+      coverGap: 'no-native-presence',
     });
+    assert.ok(seen.includes('; no cover named (no-native-presence); inferred band cutter'), seen);
     const published = JSON.stringify({ outcome, events: f.events });
     assert.ok(!published.includes('PRIVATE-'));
     assert.ok(!JSON.stringify(f.events).includes('@target'));
@@ -2796,13 +2800,15 @@ for (const [name, platform, screen, step, why] of [
     const seen = renderReason(outcome.failure?.seen ?? '', (text) => text);
     assert.ok(
       seen.includes(
-        `stayed off screen after one scroll; inferred band cutter @cover (${LIVE_HIT_CUTTER.kind}) at 0,116,402,758 moved the band bottom from 782 to 116; no live hit read was asked: ${why}`,
+        `stayed off screen after one scroll; no cover named (no-native-presence); inferred band cutter @cover (${LIVE_HIT_CUTTER.kind}) at 0,116,402,758 moved the band bottom from 782 to 116; no live hit read was asked: ${why}`,
       ),
       seen,
     );
     const terminal = f.events.filter((event) => event.code === 'CENTRE_COVERED');
     assert.equal(terminal.length, 1);
     assert.deepEqual(terminal[0].clearanceDiagnostic?.predicate?.cutter, SIX_POINT_CUTTER);
+    // The refused clearance scroll left the screen unchanged, so the pre-scroll cover fact stands.
+    assert.equal(terminal[0].clearanceDiagnostic?.coverGap, 'no-native-presence');
   });
 }
 
