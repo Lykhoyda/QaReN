@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parsePlan } from '../../../dist/qa/plan.js';
+import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
 import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import { join, type NativeNode, type Screen } from '../../../dist/qa/screen.js';
@@ -446,9 +447,11 @@ test('an input declaration cannot lapse protection using the previous press load
     if (row.line === 2 && row.outcome === 'pass')
       f.show(screen([element('@skip', 'Skip'), element('@allow', 'Allow')]));
   };
-  const result = await run(
-    '1. Tap "Open"\n2. Expect input EMAIL on screen\n3. Wait for "Ready" to appear',
-    f,
+  const result = await withInputs(new RunInputs({ EMAIL: 'fixture@example.test' }, ['EMAIL']), () =>
+    run(
+      '1. Tap "Open"\n2. Expect input EMAIL on screen\n3. Wait for "Ready" to appear\n4. Fill "Email" with input EMAIL',
+      f,
+    ),
   );
   assert.ok(result.steps.some((row) => row.line === 2 && row.outcome === 'pass'));
   assert.equal(result.verdict, 'FAIL');
@@ -487,16 +490,26 @@ test('after protection lapses, every remaining target uses the same conservative
         f.deps.row = (row) => {
           if (row.line === 3 && row.outcome === 'pass')
             f.show(
-              screen([
-                element('@heading', 'zq-s3cret-7781', { kind: 'text' }),
-                element('@skip', 'Skip'),
-                element('@allow', 'Allow'),
-              ]),
+              join(
+                [
+                  { ref: '@heading', type: 'StaticText', label: 'zq-s3cret-7781' },
+                  { ref: '@skip', type: 'Button', label: 'Skip', hittable: true },
+                  { ref: '@allow', type: 'Button', label: 'Allow', hittable: true },
+                ],
+                [],
+                'app',
+                { native: 'complete', react: 'complete' },
+                { hosts: [], complete: true },
+                {
+                  source: 'xcui-live',
+                  nodes: [0, 1, 2].map(() => ({ status: 'observed', labelSource: 'direct' })),
+                },
+              ),
             );
         };
         const result = await run(
-          '# First\n1. Tap "Open"\n2. Wait for "Loading" to appear\n3. Wait for "Ready" to appear\n' +
-            (laterBlock ? '\n# Later\n' : '') +
+          '### First\n1. Tap "Open"\n2. Wait for "Loading" to appear\n3. Wait for "Ready" to appear\n' +
+            (laterBlock ? '\n### Later\n' : '') +
             laterItem,
           f,
         );

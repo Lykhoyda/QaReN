@@ -3536,8 +3536,9 @@ previous-plan-press or no-candidate veto, a later-target veto's `presence` or
 fill evidence behind the control count used by the sole-decline and opt-in classes
 (`evidenceGap`, `pressGaps`, `fillGaps`, `unknownPress`, `unknownFill`, and the
 proven `controls` count when no gap refused it). A control in a window behind the
-front one that repeats a visible front control's kind, label and frame is not counted
-again. The same veto kind, step line,
+front one that repeats a visible front control's kind, label, frame and disabled state
+is not counted again if its test ID is absent or matches the front control's.
+The same veto kind, step line,
 target index and count are also retained as an `interruption-rejected` event in
 `core-diagnostics.jsonl`, which the event opens even in a run without inputs. The
 step's ledger row carries an `interruption` receipt: `considered`, an `outcome`

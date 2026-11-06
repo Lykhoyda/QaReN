@@ -15,11 +15,23 @@ import type { WalkerDeps } from '../../../dist/qa/walker.js';
 import { choice, element, screen, scriptedJudge } from './judgment-fixtures.ts';
 
 function observedButtons(elements: Screen['elements']) {
+  const nodes = elements.map((e) => ({
+    ref: e.ref,
+    type: e.kind === 'text' ? 'StaticText' : 'Button',
+    label: e.label,
+    identifier: e.testID,
+    hittable: true,
+  }));
   return joinScreen(
-    elements.map((e) => ({ ref: e.ref, type: 'Button', label: e.label, hittable: true })),
+    nodes,
     [],
     'app',
     { native: 'complete', react: 'complete' },
+    { hosts: [], complete: true },
+    {
+      source: 'xcui-live',
+      nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+    },
   );
 }
 
@@ -226,7 +238,7 @@ test('a later block target visible on the sheet prevents dismissal', async () =>
     element('@continue', 'Continue'),
     element('@continue', 'Continue', { kind: 'text' }),
   ]) {
-    const f = app(screen([element('@close', 'Close'), later]));
+    const f = app(observedButtons([element('@close', 'Close'), later]));
     const lines: number[] = [];
     f.deps.interruptionRejected = (event) => lines.push(event.line);
     const result = await runPlan(
@@ -247,7 +259,7 @@ test('a later decline-labelled text target prevents dismissal when its resolver 
     ['1. Tap "Settings"\n✓ "Done"\n2. Tap "maybe later"', false],
   ] as const) {
     const f = app(
-      screen([element('@close', 'Close'), element('@later', 'Maybe later', { kind: 'text' })]),
+      observedButtons([element('@close', 'Close'), element('@later', 'Maybe later', { kind: 'text' })]),
     );
     const result = await runPlan(parsePlan(text).blocks!, f.deps);
     assert.deepEqual(f.actions.slice(0, 2), vetoed ? [] : ['press @close', 'press @settings'], text);
@@ -260,7 +272,7 @@ test('a later step that taps the same decline control keeps it for that step', a
     '1. Tap "Settings"\n2. Tap "Close"',
     '1. Tap "Settings"\n### Offer\n2. Tap "Close"',
   ]) {
-    const f = app(promo());
+    const f = app(observedButtons([element('@close', 'Close')]));
     assert.equal((await runPlan(parsePlan(text).blocks!, f.deps)).verdict, 'FAIL', text);
     assert.deepEqual(f.actions, [], text);
   }
@@ -288,7 +300,7 @@ test('replayed decline intent survives stored selectors during recovery and reva
           return replay(block, stored);
         });
         const f = app(
-          screen([
+          observedButtons([
             element('@close', 'Close'),
             element('@later', 'Maybe later', { kind: 'text', testID: 'offer-decline' }),
           ]),
@@ -1131,7 +1143,7 @@ test('a later admission rejection preserves a proven dismissal on failed retry r
 });
 
 test('a later step naming the sole Close keeps the promo and records ownership', async () => {
-  const f = app(promo());
+  const f = app(observedButtons([element('@close', 'Close')]));
   ticking(f);
   const result = await runPlan(waitPlan('2. Tap "Close"'), f.deps);
   assert.equal(result.verdict, 'FAIL');
