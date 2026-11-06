@@ -670,7 +670,9 @@ later window or an inferred overlay sets nothing aside. On iOS, when every remai
 match is uniquely identifiable, the first four are considered for a read-only live
 hit read inside the observation's expiry, skipping nested candidates; only
 `not-hittable` sets one aside. Partial exposure or missing geometry alone never
-excludes a candidate, nor does an unavailable or late read. If all candidates are
+excludes a candidate, nor does an unavailable or late read. A frame contradicted by
+its own on-screen descendant proves no reach and cannot set a candidate aside
+without live evidence. If all candidates are
 set aside, the step refuses `TARGET_NOT_FOUND`. The refusal marks a candidate
 "nested inside candidate N" and lists each one set aside with its reason;
 the row records `collapsed` and `candidateExclusions`. These selection facts survive
