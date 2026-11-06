@@ -264,7 +264,10 @@ mod tests {
             keyboard_cleared: None,
             retry_cause: None,
             scroll_detail: None,
+            overlay_checks: None,
+            scroll_band: None,
             dev_error: None,
+            implicit_wait_ms: None,
         }
     }
 

@@ -571,6 +571,10 @@ fn assert_ios_prepare_reuses_cached_client(workspace: bool) {
         CmdOutput::success("Boot status: finished\n"),
     );
     common::script_ios_app_verification(&mut mock);
+    mock.expect_run(
+        "pnpm config get node-options",
+        CmdOutput::success("undefined\n"),
+    );
     mock.expect_spawn(
         "expo start",
         Spawned {

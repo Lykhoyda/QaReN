@@ -248,12 +248,24 @@ test('the target may carry the value-free Metro bundle-request signal', () => {
     });
   const signal = { path: '/tmp/qaren/runs/check-1/logs/metro.bundle-requests', atLaunch: 0 };
   assert.deepEqual(parseRequest(line(signal)).target.metroBundleRequests, signal);
+  const outcomes = {
+    ...signal,
+    outcomesPath: '/tmp/qaren/runs/check-1/logs/metro.bundle-outcomes',
+    completedAtLaunch: 2,
+    failedAtLaunch: 0,
+  };
+  assert.deepEqual(parseRequest(line(outcomes)).target.metroBundleRequests, outcomes);
   for (const bad of [
     null,
     { path: 'relative', atLaunch: 0 },
     { path: signal.path, atLaunch: -1 },
     { path: signal.path, atLaunch: 1.5 },
     { atLaunch: 0 },
+    { ...outcomes, outcomesPath: 'relative' },
+    { ...outcomes, completedAtLaunch: -1 },
+    { ...outcomes, failedAtLaunch: 0.5 },
+    { ...signal, completedAtLaunch: 0, failedAtLaunch: 0 },
+    { ...outcomes, failedAtLaunch: undefined },
   ])
     assert.throws(() => parseRequest(line(bad)), /missing required fields/);
 });

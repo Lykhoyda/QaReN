@@ -1,3 +1,4 @@
+import type { HitProbeIdentity } from './live-hit.js';
 import type { PressEvidence } from './selection-press.js';
 import { devOverlayDeadline } from '../domain/dev-overlay.js';
 import { QaDispatchError } from '../domain/qa-dispatch.js';
@@ -9,6 +10,7 @@ import {
   cancellationSignal,
   interruptible,
   withCancellation,
+  withDeadline,
   sleep,
 } from '../domain/cancellation.js';
 import { readFileSync, realpathSync } from 'node:fs';
@@ -17,7 +19,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { CDPClient } from '../cdp-client.js';
-import { waitForExactPortTargets } from '../cdp/discovery.js';
+import { waitForExactPortTargets, type AdvertisedPages } from '../cdp/discovery.js';
 import { REACT_READY_POLL_MS, REACT_READY_TIMEOUT_MS } from '../cdp/setup.js';
 import {
   clearDevOverlays,
@@ -53,6 +55,7 @@ import { foreignFlowGate } from '../lifecycle/foreign-flow-gate.js';
 import { androidForeignDriverMessage } from '../runners/external-runner-detect.js';
 import {
   readIOSLabelProvenance,
+  readIOSHitProbe,
   observeAppProcess,
   observeRunnerDrivers,
   observeRunnerRelaunches,
@@ -535,6 +538,7 @@ async function openSession(
     target.metroBundleRequests && launchBundleRequests(target.metroBundleRequests);
   const walkDeadline = performance.now() + remainingMs();
   let attachStage: 'wait_targets' | 'connect_exact' | undefined;
+  let pages: AdvertisedPages = {};
   const logRefusal = (error: unknown): never => {
     logAdmissionRefusal(error, attachStage, log);
     throw error;
@@ -562,8 +566,12 @@ async function openSession(
             devicePin,
             appId,
             (targets) => cdp.noteDevelopmentTargetCandidates(targets),
+            (observed) => {
+              pages = observed;
+            },
           );
         },
+        pages: () => pages,
         attach: async (deadline) => {
           attachStage = 'connect_exact';
           await cdp.connectExact(
@@ -573,6 +581,9 @@ async function openSession(
             1,
             undefined,
             deadline,
+            (observed) => {
+              pages = observed;
+            },
           );
         },
         developmentTargets: () => cdp.developmentTargets,
@@ -592,9 +603,15 @@ async function openSession(
                 );
                 return manifest;
               },
-              relaunch: async () => {
-                bundleRequests?.relaunching();
-                await relaunchIosDevClient(appId, target.deviceId, devClientLaunchUrl(target));
+              relaunch: async (deadline) => {
+                await withDeadline(
+                  deadline,
+                  new Error('Dev-client relaunch deadline exceeded'),
+                  async () => {
+                    bundleRequests?.relaunching();
+                    await relaunchIosDevClient(appId, target.deviceId, devClientLaunchUrl(target));
+                  },
+                );
               },
               appAlive: async () => {
                 const alive = await isAppRunning('ios', appId, undefined, target.deviceId);
@@ -616,6 +633,12 @@ async function openSession(
                 );
                 return requested;
               },
+              ...(bundleRequests
+                ? {
+                    bundleRequestCount: () => bundleRequests.count(),
+                    bundleBuilt: () => bundleRequests.built(),
+                  }
+                : {}),
             }
           : {}),
         // The lease coordinates qaren processes only; a foreign Maestro, XCUITest or UIAutomator driver is a probe.
@@ -793,12 +816,22 @@ async function openSession(
           }),
         ),
       ),
+    ...(platform === 'ios'
+      ? {
+          hitProbe: (
+            ref: string,
+            context: QaDispatchContext,
+            generation: number,
+            identity: HitProbeIdentity,
+          ) => stop.track(() => readIOSHitProbe(ref, appId, generation, context, identity)),
+        }
+      : {}),
     press: (ref, qaContext, options) =>
       act(() => press({ ref, qaContext, ...options, qaTiming: { now, observe: timing } }), false, {
         now,
         observe: timing,
       }),
-    fill: (ref, text, qaContext, privateValue, onPrivateInput, alwaysRetype) =>
+    fill: (ref, text, qaContext, privateValue, onPrivateInput, alwaysRetype, options) =>
       act(
         () =>
           fill({
@@ -808,6 +841,8 @@ async function openSession(
             privateValue,
             onPrivateInput,
             alwaysRetype,
+            requireLiveHit: options?.requireLiveHit,
+            placeholderIdentity: options?.placeholder,
             qaTiming: { now, observe: timing },
           }),
         true,

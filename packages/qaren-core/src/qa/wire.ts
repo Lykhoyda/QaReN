@@ -40,8 +40,14 @@ export interface WireTarget {
   metroPort: number;
   metroUrlForDevice: string;
   worktree: string;
-  // The CLI's Metro drain count of bundle requests, and its value when the app launched.
-  metroBundleRequests?: { path: string; atLaunch: number };
+  // The CLI's Metro drain counts of bundle requests and outcomes, and their values when the app launched.
+  metroBundleRequests?: {
+    path: string;
+    atLaunch: number;
+    outcomesPath?: string;
+    completedAtLaunch?: number;
+    failedAtLaunch?: number;
+  };
   // The CLI's last dev client manifest warm-up before launch.
   manifestWarm?: { ms: number; attempts: number };
   // The CLI pinned this lane; the first screen must be observed before row 1.
@@ -151,6 +157,20 @@ const TYPES: ReadonlySet<string> = new Set([
   'cancel',
 ]);
 
+// The outcome signal is all-or-nothing: a path with both launch baselines, or none of them.
+function outcomesSignalValid(signal: NonNullable<WireTarget['metroBundleRequests']>): boolean {
+  const { outcomesPath, completedAtLaunch, failedAtLaunch } = signal;
+  if (outcomesPath === undefined && completedAtLaunch === undefined && failedAtLaunch === undefined)
+    return true;
+  return (
+    typeof outcomesPath === 'string' &&
+    isAbsolute(outcomesPath) &&
+    [completedAtLaunch, failedAtLaunch].every(
+      (count) => Number.isSafeInteger(count) && (count as number) >= 0,
+    )
+  );
+}
+
 function validCall(value: unknown): boolean {
   return (
     isRecord(value) &&
@@ -233,7 +253,8 @@ export function parsePublicRequest(line: string): WireRequest {
       (typeof target.metroBundleRequests?.path !== 'string' ||
         !isAbsolute(target.metroBundleRequests.path) ||
         !Number.isSafeInteger(target.metroBundleRequests.atLaunch) ||
-        target.metroBundleRequests.atLaunch < 0)) ||
+        target.metroBundleRequests.atLaunch < 0 ||
+        !outcomesSignalValid(target.metroBundleRequests))) ||
     (target.manifestWarm !== undefined &&
       (!Number.isSafeInteger(target.manifestWarm?.ms) ||
         target.manifestWarm.ms < 0 ||

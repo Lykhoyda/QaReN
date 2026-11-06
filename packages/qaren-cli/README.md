@@ -157,8 +157,11 @@ fifteen-minute load is reported without independently triggering a warning.
 Host commands have three-second budgets, except `top` and the simulator inventory
 which have five seconds each; subprocess termination can add up to five seconds
 per timeout. Missing, malformed or timed-out host statistics warn with a manual
-next step. A simulator inventory timeout alone warns: it does not identify a
-wedged device. Any other `simctl` failure shows its error and points to
+next step. Doctor makes one simulator inventory read and reports measured latency
+for every simulator-service diagnosis, using the shared
+[inventory validity rule](#ios-simulator-lifecycle). An unreadable response warns;
+a simulator inventory timeout alone also warns: it does not identify a
+wedged device. A `simctl` command failure shows its error and points to
 `sudo xcodebuild -runFirstLaunch` or an Xcode update; the corresponding
 `ios-runtime` or `simulator-service` row fails. `ios-runtime` warns on a timeout.
 A device inventory timeout together with an uninterruptible `launchd_sim` whose argv
@@ -635,10 +638,25 @@ Plans contain a `## QA` section, named `###` blocks, numbered actions and
 [literal](../qaren-core/test/fixtures/plans/literal.md) and
 [phrase](../qaren-core/test/fixtures/plans/phrases.md) fixtures and the
 [parser](../qaren-core/src/qa/plan.ts) for accepted grammar. Quoted press and fill
-targets resolve observed labels or test IDs locally. Distinct matches are
-counted before kind, disabled, hittability, offscreen or React-only filters, so two
-or more refuse with `TARGET_AMBIGUOUS`, without a Jev tie-break, even if the
-target adds positional words such as `Tap "Save" at the bottom`. Outside fills,
+targets resolve observed labels or test IDs locally. A Fill also accepts an input's
+React placeholder. For an unnamed positional input on iOS, dispatch uses one additional
+bounded React confirmation read to re-confirm that placeholder against the live tree
+and the sole native input of a complete snapshot. Its positional ref, native type
+and frame must still match the captured input. An empty native input without an ID
+or label receives that name only with complete native acquisition and React coverage
+and attested host evidence proving a sole native input and a sole React input host,
+including ordinary captures without platform presence.
+Separately emitted React layers count as one input only when they attest to the
+same single input host. A non-wrapper layer must supply the placeholder; other
+layers may omit it, but any placeholders they expose must agree.
+A second native input anywhere in the capture, including off screen or hidden,
+keeps the placeholder withheld; no competitor exclusion is performed.
+When React coverage is unknown or incomplete, a missed Fill with one unnamed
+on-screen input reports `evidence-incomplete`, names that coverage class, and
+suggests targeting the field by test id. Distinct matches are counted before kind,
+disabled, hittability, offscreen or React-only filters, so two or more refuse with
+`TARGET_AMBIGUOUS`, without a Jev tie-break, even if the target adds positional words
+such as `Tap "Save" at the bottom`. Outside fills,
 a React-only element whose testID equals the quoted value is not counted while a
 native element carries that testID, so a quoted press, wait or scroll reaches
 the native element; two native elements sharing it still refuse. A fill counts
@@ -771,8 +789,8 @@ live frame equals that owner's frame; the tap goes to the unchanged point. A lat
 screen change cannot turn a proven no-mutation refusal into a passing action.
 For an iOS native-backed button outside an alert, not reported selected, inside
 a scroll container no taller than three times the target's height and with a visible enabled button
-beside it on the same row, QaReN requires exactly one match for the target's
-identity, retaining its original reference and reporting selected after the press,
+beside it on the same row, QaReN requires the target to be re-identified as
+described below and report selected after the press,
 while that identity remains on screen. Identity is kind plus testID when present,
 otherwise kind plus label on an element without a testID. If no element
 with that identity remains after the tap, the existing screen-change contract
@@ -793,11 +811,23 @@ its responder behavior, or a selected-state contract. iOS omits false selected
 state, so an invisible successful toggle and a swallowed tap look alike. QaReN
 sends no held press or second tap. The refusal does not prove that the app callback
 failed. The fixed next action is
-`rerun_then_ask_app_team_expose_selection_in_row_list`. The refusal includes this
-guidance, with N post-tap observations and M milliseconds from tap dispatch to
-the final readback:
+`rerun_then_ask_app_team_expose_selection_in_row_list`. The refusal names what
+was observed, with N post-tap observations and M milliseconds from tap dispatch
+to the final readback. When the tapped control was re-identified:
 
-> The tap did not change the control's selected state (N observations over M ms); the control sits in a row-shaped scrolling list, which can swallow synthetic taps. Next: re-run once; if it repeats on the same control, ask the app team to make the selection reachable for automated taps (for example by disabling the list's own scrolling for this set) or to expose the selected state another way.
+> The tapped control reported no selected state after the tap (N observations over M ms); one tap was sent.
+
+When it was not (`target_identity_unavailable`):
+
+> The tapped control could not be re-identified after the tap (N observations over M ms), so its selected state was not read; one tap was sent.
+
+After a tap the runner reports as dispatched successfully without error,
+React-only entries are excluded from identity matches. Exactly one remaining
+match re-identifies the control, even under a new element reference when the
+target has a testID; a target without a testID must retain its original reference.
+Multiple native matches, or only a React-only entry remaining, leave the control
+unbound. A tap not reported as dispatched successfully without error keeps the
+stricter rule: exactly one identity match under the same element reference.
 
 On iOS, before tapping a candidate matching the row-choice heuristic above, QaReN
 attempts to dismiss a visible keyboard through the keyboard guard's dismissal chain
@@ -885,7 +915,7 @@ Resolution, frame comparison and hit testing share one 300 ms deadline.
 Missing retained identity, a generation mismatch, zero or ambiguous live
 matches, and failed or over-budget checks leave the check unavailable and
 permit ordinary dispatch as before; the [strict overlay path](#covered-target-recovery)
-instead requires a proven live hit. Stable taps check `XCUIElement.isHittable`; exact
+instead requires a proven live hit. Stable taps check `XCUIElement.isHittable`; ordinary exact
 fills use the frame guard without an extra hittability read, then keep the
 existing focus-point check when a focus tap is needed. An input's hit test
 applies only when the focus point lies inside its frame; a wrapper-centre focus
@@ -1002,19 +1032,51 @@ A false read, a moved target, or an unavailable read (expired snapshot, no ident
 read that threw or ran out of time) refuses `LIVE_HIT_UNPROVEN` with no tap, and the step fails
 with “stayed off screen after one scroll” and the inferred band cutter described
 under [clearance diagnostics](#clearance-diagnostics). The scroll
-that ran before the refusal remains a performed action. Fills, scroll-until, waits
-and Android keep the inferred overlay rule. For press and fill clearance failures
-caused by an inferred overlay, the step names the cutter and says why no live hit read was asked when
-the strict path is ineligible. A runner without `STRICT_LIVE_HIT_V1` refuses `RN_FAST_RUNNER_STALE` before anything
-is sent; reopen the device session to rebuild it.
+that ran before the refusal remains a performed action. Press behavior is unchanged.
+
+On iOS, quoted waits and scroll-until completion can override that inferred cover
+with a read-only `hitProbe`. It runs only for a unique captured native carrier,
+inside its clip, with the keyboard proven hidden and the app in front. A fresh
+positive platform hit read proves that a hit point exists for that carrier; it
+does not prove its centre or full frame is exposed. Replay uniqueness and literal
+text evidence remain required. A negative read retains the inferred refusal and
+adds “the live hit read found no hit point”; an unavailable, moved or late read,
+an anonymous or ambiguous identity, or an older runner retains the refusal with
+“no live hit read was available”. Each poll probes a carrier at most once and
+reuses the result only within that observation and native snapshot generation.
+The row's `overlayChecks` records `liveHit` and the value-free cutter facts.
+
+An iOS Fill under the same inferred cover also requires a positive read-only
+probe to skip inferred-overlay clearance. A negative or unavailable probe ends
+the Fill without a clearance scroll, focus or typing; this read-only refusal
+also applies to older runners. Its native focus then independently
+requires a fresh positive live hit read and activates the bound input itself,
+with no coordinate fallback. A wrapper fallback taps through the strict press
+path before keyboard typing. A missing or negative strict focus read refuses
+`LIVE_HIT_UNPROVEN` before focus or typing; it cannot enter a less strict Fill
+rung. Ordinary keyboard and viewport clearance, front surfaces, and Android
+keep their existing rules.
+
+| Optional iOS capability | Required for |
+| --- | --- |
+| `STRICT_LIVE_HIT_V1` | Strict overlay presses and Fill focus |
+| `LIVE_HIT_PROBE_V1` | Read-only overlay probes and the runner generation supporting strict Fill focus |
+
+A missing required capability refuses before dispatch; reopen the device session
+to rebuild the runner. A target hit point never authorizes a drag corridor:
+scroll-until drags retain every static overlay cut, including cuts caused by
+transparent containers. A zero or undersized band still refuses
+`SCROLL_BAND_TOO_SMALL`. The row's `scrollBand.status` distinguishes
+`no-geometry`, `overlay-cut` and `clear`; a plain `Scroll down` remains a
+plan-level option when no keyboard is up.
 The walker passes that band to the shared scroll handler so the drag starts
 inside it, narrowing the existing keyboard-safe band. A caller band is also kept
 clear of the system gesture edges: 48 dp from the top and bottom window edges on
 Android, using the snapshot's display density, and 20 pt from the top and 34 pt
 from the bottom on iOS. Callers passing no band
-use the existing keyboard-safe band. On both iOS and Android, a target whose centre
-is covered by the observed keyboard or a sticky overlay gets a scroll sized to move that centre
-toward the middle of that band. Precise vertical drags normally keep a 10% dead zone at
+use the existing keyboard-safe band. When keyboard or overlay clearance requires
+a scroll, it is sized to move the target's centre toward the middle of that band.
+Precise vertical drags normally keep a 10% dead zone at
 touch-down and stop at least one pixel inside the far band edge; short bands shrink the
 start inset to allow at least 48 px of travel. A clearance scroll without
 a band keeps the cap of 60% of the screen area above the keyboard, without a
@@ -1072,8 +1134,9 @@ typing under the [already-set rules](#fill-ladder). Otherwise a strict fill repl
 the field's content: the bound input is cleared before typing, and verification
 expects exactly the plan text. For keyboard fallback's replacement request and
 read-back policy, see below.
-Rebinding an input without a testID requires its original label and native type;
-the same frame alone cannot substitute a different input.
+Rebinding an input without a testID requires its original label and native type,
+except for the guarded [unnamed placeholder pairing](#check-a-plan).
+The same frame alone cannot substitute a different input.
 For strict fills, only a stable exact read-back
 verifies a fill. A masked secure read-back or an unreadable one records a
 passing row with reason `UNVERIFIED_FILL`, never a verified pass; an empty or
@@ -1265,7 +1328,8 @@ an unverified result proof. Android has no rung 3 yet.
 
 ### Plan checks and screen evidence
 
-When a step fails on its own target (`TARGET_NOT_FOUND`, `REPLAY_SELECTOR`,
+When a step fails on its own target (`TARGET_NOT_FOUND`,
+`TARGET_NOT_FOUND_AFTER_LAUNCH`, `REPLAY_SELECTOR`,
 `TARGET_AMBIGUOUS`, an unmet quoted wait including `TARGET_REACT_ONLY`, or a
 scroll that stayed off screen),
 the receipt's `failure` carries `screen`, `suggestion` and `subreason`.
@@ -1590,7 +1654,8 @@ screen bottom, because its chrome paints below the frame XCUI reports. The
 keyboard's own keys and the chrome in its window stay visible. Literal checks
 do not treat other overlays as occlusion evidence. Quoted waits additionally
 reject text when every matching literal contributor has its centre covered by
-the detected overlay clearance band; matching unresolved text keeps the verdict
+the detected overlay clearance band, unless the scoped iOS live probe above
+proves that carrier has a hit point; matching unresolved text keeps the verdict
 unsure. An uncovered occurrence still satisfies the wait, and missing geometry
 alone does not prove coverage. An eligible unmet wait can enter
 [step recovery](#step-recovery) to dismiss an interruption. Scroll-until uses the
@@ -1613,11 +1678,11 @@ remaining vertical span supplies the drag band; an exhausted span refuses
 display density when available. Without a scroll container, the centred window
 drag is retained.
 Quoted scroll-until uses the current ordinary capture for target visibility and
-geometry, with no additional platform-presence confirmation. A target whose tap
-point is covered by a front overlay requires another safe drag within the original
-six-drag and time budgets. An edge can remain under a floating control when the
-tap point is clear; drag bands still exclude the overlay frame. Phrase capture
-policy is unchanged.
+geometry, with the [iOS inferred-overlay probe](#covered-target-recovery) governing
+completion under an inferred cover. Otherwise, a target whose tap point is covered
+by a front overlay requires another safe drag within the original six-drag and
+time budgets. An edge can remain under a floating control when the tap point is
+clear; drag bands still exclude the overlay frame. Phrase capture policy is unchanged.
 Selected-tab changes or disappearance/replacement of the dragged list refuse
 `SCROLL_NAVIGATED` before searching a different screen. An identified list matches
 by type and testID through keyboard/header resizing; unidentified lists retain the
@@ -2182,6 +2247,26 @@ unknown, transitional, absent or ambiguous inventory is refused without an alter
 device. `--shutdown-device-on-exit` alone requires a `Booted` target; combine it with
 `--boot-device` or `--restart-device` to accept a `Shutdown` target.
 
+Simulator inventory reads for `check` selection, borrowed-target observation,
+restart admission, post-boot proof, shutdown readback and pre-install or pre-launch
+proof share one transport and validity rule. An unusable read is retried up to
+three times, with ten-second read limits and two-second pauses, bounded by the
+caller's remaining deadline and checked for cancellation before and after reads.
+Post-boot and post-shutdown proofs have their own bounded read budget so a slow
+mutation does not consume their proof time. Command failures, timeouts, nonempty
+stderr, stdout at or above one MiB, invalid JSON, a non-object `devices` field or
+non-array runtime lists are unusable. A usable response still has to satisfy the
+caller's exact selected-device identity and power-state checks.
+
+Before mutation, exhausted inventory reads refuse with
+`SIMULATOR_INVENTORY_UNAVAILABLE` (exit 4), with safe attempt count, elapsed latency,
+last-result facts and recovery advice: wait for host load to drop, retry and use
+`qaren doctor` to inspect the service. If a preparation deadline expires during
+pre-install or pre-launch proof, the caller retains its preparation timeout.
+Post-boot proof keeps `SIMULATOR_BOOT_FAILED`, with unavailable-read facts or the
+observed state and read latency; bootstatus failures are unchanged. Unresolved
+post-shutdown readback retains the lease for cleanup recovery.
+
 Default cleanup leaves the borrowed simulator running and keeps the installed app.
 `--shutdown-device-on-exit --device <simulator-UUID>` opts into shutdown
 during teardown, including post-arm cancellation and dead-owner recovery, subject to the
@@ -2213,7 +2298,59 @@ budget. The receipt's `manifest_warmup` outcome records attempt and timeout
 counts, successful-answer minimum, median and maximum, the client's 10-second
 limit, and whether the 15-second request-handler probe timed out; elapsed time
 is at `timings_ms.manifest_warmup_elapsed`. These statistics contain no raw probe
-output. A request-handler timeout after `/status` responds names startup or a
+output.
+
+Expo's dev-client manifest handler resolves the runtime version on every
+request; under the expo-updates `fingerprint` policy that recomputes the
+project fingerprint each time, which can take longer than the client's
+10-second limit. Before install, iOS preparation reads the runtime version the
+selected `.app` embeds: `Expo.plist` `EXUpdatesRuntimeVersion` for a literal,
+or the `EXUpdates.bundle/fingerprint` resource for `file:fingerprint`. The
+resource may be at the app root or inside `Frameworks/EXUpdates.framework`;
+if both exist, QaReN cannot identify the app's resource and does not pin it.
+A non-empty value of at most 256 characters without control characters is
+written to `runtime-version-pin.json` in the run directory. An absent runtime
+version key is `unconfigured` and leaves nothing to pin.
+
+QaReN's own dev server loads a run-local preload that reads the pin at resolver
+call time. An absent or malformed pin, another platform or an incompatible
+Expo resolver leaves the original resolution behavior in place. When the
+resolver returns the pinned value, it attempts to append
+`runtime-version-pin.resolved`; failure to write this marker does not break
+resolution. Nothing in the candidate is edited, and QaReN does not run a
+runtime-version resolver to obtain the pin.
+
+The run record and receipt's `runtime_version` record `embedded_policy`
+(`literal`, `fingerprint`, `unconfigured` or `unsupported`), `source: artifact`,
+an 8-character `value_sha256_prefix` when a valid value was read (never the
+value), and `pin`: `resolved` when the marker exists after warm-up, `written`
+when the pin file was written but no marker was observed, `none` when
+unconfigured, or `unsupported` when the artifact cannot supply a valid value
+or the pin cannot be written. The marker proves the resolver returned the
+pin, not that a manifest was served. Android records `unsupported`.
+
+When warm-up has probed the manifest and refuses with `MANIFEST_NOT_WARM`,
+the embedded policy is `fingerprint` and no pin marker exists, the refusal
+names possible per-request fingerprint recomputation first and suggests a
+fixed development `runtimeVersion`, or your own dev server from a scratch
+copy with the resolved string. Early watcher refusals keep their own cause.
+
+Before starting iOS Metro, QaReN asks pnpm for its effective `node-options`,
+including workspace, user and global configuration and pnpm's interpolation
+and escaping. It composes that value (or inherited `NODE_OPTIONS` when unset)
+with IPv4-first DNS and a quoted `--require` of the preload, then passes the
+result through both `NODE_OPTIONS` and `npm_config_node_options` and pnpm's
+`--config.node-options` override so workspace settings cannot remove it.
+The query uses `--json`: pnpm 9 and later print a JSON string after any warning,
+while pnpm 8 prints the raw value, so pnpm's warning and notice lines are dropped
+(colour codes included) and one remaining raw line of Node flags is the value.
+If the query fails, times out or is cancelled, or anything other than one value
+is left, it uses inherited
+`NODE_OPTIONS` and records a value-free fallback note; cancellation still
+prevents startup.
+A native-side configuration override is not visible in the artifact.
+
+A request-handler timeout after `/status` responds names startup or a
 stalled watcher as possible causes; steady answers near 30 seconds also name a
 possible external-service wait when the online override described below is
 active. Check the volume and doctor before coordinating
@@ -2563,6 +2700,8 @@ secret despite artifact redaction.
   relaunch count, whether the relaunch failed, app liveness (`probe_failed` when the iOS
   app-job probe errors or times out), the bundle-request observation when probed
   (`received`, `not_received`, `unknown` or `probe_failed`) and elapsed, remaining and budget milliseconds.
+  Optional bundle outcomes and advertised-device counts follow the
+  [admission contract](#development-target-admission).
   The failure class describes the current retry or refusal; cancellation retains the most recent
   retry's class, or `none` before any retry. Cancellation emits synchronously on abort before
   the terminal result closes the diagnostic stream, subject to the event caps below.
@@ -2893,10 +3032,10 @@ use normal teardown. For eligible failed iOS checks, precedence is:
 | `QAREN_HOLD_ON_FAIL=1` or unset | Hold |
 
 A held Metro keeps its port; another run using that port refuses `METRO_PORT_OCCUPIED`.
-iOS runs start Metro with `--localhost` and append `--dns-result-order=ipv4first` to its
-`NODE_OPTIONS`, so a held Metro listens only on `127.0.0.1`, where the readiness probes and the
-simulator reach it (Node otherwise resolves `localhost` to `::1` first); Android runs keep their
-`adb reverse` path.
+iOS runs start Metro with `--localhost` and the Node options described in the
+[launch readiness contract](#ios-simulator-lifecycle), so a held Metro listens only on
+`127.0.0.1`, where the readiness probes and simulator reach it; Android runs keep
+their `adb reverse` path.
 
 The iOS runner's XCTest result bundles under `Logs/Test` in both its local
 DerivedData and current-version prebuilt cache are removed after successful
@@ -3156,6 +3295,25 @@ nested in its repository they do not make the next run's candidate dirty.
 
 Selection-proof refusals bypass step recovery; follow the
 [press evidence contract](#occluded-taps-and-focus) before retrying.
+
+The first top-level Tap or Fill of a run gets one bounded wait for a quoted
+target that is absent while the screen is still loading; a passing login replay
+re-arms it for the step it retries, or for the next Tap or Fill. The first Tap or
+Fill consumes the allowance even when its target is already present. Ordinary
+retries, later blocks and replay falling back to a walk do not re-arm it;
+app-process changes remain terminal. Recovery runs first; when it has nothing to
+do and the step has not dispatched, QaReN polls
+captures every 500 ms for up to 15 s from the step's start and acts from that fresh
+capture. Tap requires a full label or testID match (never a segment of a merged
+label); Fill keeps its ordinary exact identities, including input placeholders.
+Disabled, ambiguous, off-screen, stored-selector and described targets keep their
+existing resolution and recovery behavior without this wait. Polling is never
+repeated by an ordinary retry, and recovery does not renew its deadline.
+A target that never appears fails
+`TARGET_NOT_FOUND_AFTER_LAUNCH`, with the screen-change count from the presence
+read when it saw any, and a suggestion to insert a `Wait for` the target before
+that line, or move an earlier wait to an element that renders with it. See
+[row timing](#row-timing) for the measured wait duration.
 
 Development error overlay recognition covers iOS RedBox and LogBox and Android
 native RedBox. Android native RedBox recognition has automated test coverage only,
@@ -3490,12 +3648,14 @@ The cutter is inferred, not the proven cover. Unread or unavailable facts
 remain `null`; target text, identifiers and target coordinates are excluded. The
 [walker](../qaren-core/src/qa/walker.ts) owns the event layout; the
 [centre predicate](../qaren-core/src/qa/resolve.ts) owns its coverage facts.
-On the [strict iOS overlay path](#covered-target-recovery), this event follows
+On the [strict iOS overlay press path](#covered-target-recovery), this event follows
 a live-hit refusal with mutation `none`, rather than the inference alone.
 The event preserves the failed step and grants no further scroll or
 target dispatch; sink failures leave the outcome unchanged. It stays out of the
 public result and ledger, as covered by the
 [occlusion regressions](../qaren-core/test/unit/qa/occlusion-walker.test.ts).
+
+<a id="row-timing"></a>
 
 `ledger.json` adds a `timing` object to each walked attempt row; duration fields
 are in milliseconds.
@@ -3507,6 +3667,13 @@ decision, including HTTP retries and their backoff. These breakdowns overlap
 the partition and must not be added to `total`. Post-action captures start
 after an authorized dispatch; captures after a dispatch refused before
 authorization remain in `captureMs`.
+
+The optional row-level `implicitWaitMs` records elapsed polling time for the
+[first-target launch wait](#step-recovery), including provenance enrichment of
+the accepted capture. It is omitted when no polling occurred and retains a
+measured zero. It is separate from `timing`, can remain on subsequent attempt
+rows for the same step, and must not be added to the timing partition or summed
+across those rows. The CLI preserves valid values and drops malformed ones.
 
 Optional `settleMethod` and `settleMs` record measured client settle within the
 row window. Milliseconds sum across dispatched actions; the method is
@@ -3540,6 +3707,8 @@ The [row timing implementation](../qaren-core/src/qa/row-timing.ts) owns
 aggregation; [CLI decoding](src/core.rs) and [report rendering](src/report.rs)
 own consumption.
 
+<a id="development-target-admission"></a>
+
 Launch admission requires a development JS bundle with `__DEV__ === true`.
 Registered-target connection, setup, React readiness and origin proof share
 `min(remaining walk budget, deadlines.attach_seconds)` (120 seconds by default).
@@ -3569,11 +3738,46 @@ An empty scan, undefined or unknown development state, or a failed or pending
 scan without retained all-false evidence cannot establish production mode.
 After a registered candidate failed to prove development mode, those cases
 refuse with receipt
-`CORE_REFUSED`, inner `CDP_NOT_CONNECTED/no_dev_target_unknown` and
+`CORE_REFUSED`, inner `CDP_NOT_CONNECTED/no_dev_target_unknown` (or
+`dev_runtime_unproven` when every page still answers undefined, below) and
 `inspect_development_target`. A proven dev bundle that does not start React
 refuses with inner `CDP_NOT_CONNECTED/react_readiness_timeout` and
 `inspect_bundle_readiness`. A late dev target may admit only if setup, readiness
 and proof all finish before the same deadline. Cancellation wins over admission.
+
+A complete connect scan in which every page on the pinned device answers
+`__DEV__` undefined puts admission in an idle state; an incomplete, unknown or
+mixed scan, or a changed candidate set, restarts it.
+After max(readiness window, 60 s) of continuous idle, admission re-reads
+liveness and Metro's bundle counters. A bundle completion since the latest
+launch, or a bundle request inside that window, extends the wait once by the
+same window. Otherwise iOS relaunches the app once, through the same manifest
+warm-up as patient recovery and under its relaunch cap, clipped to the attach
+deadline and the walk budget; an empty list after that relaunch still qualifies
+for patient recovery. A second full idle window after the relaunch, or the
+attach deadline while still idle, refuses `CORE_REFUSED` with inner
+`CDP_NOT_CONNECTED/dev_runtime_unproven` and `inspect_development_target`.
+Without a possible relaunch (Android, an already-opened session, the shared
+relaunch cap reached, or too little budget) an idle page refuses only at the
+attach deadline. Nothing attaches to a page whose development mode is
+unproven. The facts add `bundleBuilt` (`completed`, `failed`, `none` or
+`unknown`) beside `bundleRequest`. The Metro drain counts the Expo CLI's
+`Bundled` and `Bundling failed` lines after stripping ANSI codes and matching
+the trailing module count; HTTP status is not used because bundle responses
+are multipart. Counting continues while log text is withheld. Request and
+outcome counts are baselined before launch and rebased on relaunch.
+`completed` takes precedence if both outcomes were observed since that launch;
+`none` means readable counts showed neither, and `unknown` means the outcome
+signal or launch baseline is unavailable or invalid. Both observations cover
+every device on that Metro port, so neither proves this app's bundle outcome.
+The facts also add `foreignPages`, the number of distinct other device names with pages
+on the port, and `sameNameDevices`, the number of Metro device connections
+advertising the app under the run's simulator name; each is absent when unknown
+(no simulator pin, or the latest target-list read failed). Several same-name
+devices still refuse as ambiguous at selection. A positive `foreignPages` adds
+"give each lane its own `metroPort` and its own simulator name" to the refusal;
+zero does not prove the port private, because a device whose inspector socket
+has no page is invisible to the target list.
 
 `failure.recovery` carries the typed cause, instruction, stage/count/budget facts
 and five ordered rungs with applicability, state-loss and approval fields.
@@ -3948,6 +4152,28 @@ withholds the copy. The receipt's `video_window` outcome records `start=<ms>; en
 both measured from admission, for a successfully prepared copy when both offsets
 can be calculated without overflow or underflow.
 
+After preparing an eligible published iOS copy, QaReN checks for frozen video intervals
+of at least two seconds. If an interval contains two or more eligible plan rows whose saved
+screenshots differ beyond the same pixel-noise tolerance as the video, the receipt adds
+`video_continuity: suspected-stall <ms> over lines a–b` and the publication comment
+notes that those screenshots carry the evidence. Frozen times are mapped through
+the publication trim offset to the rows' wall times, excluding the recorder-start
+uncertainty at interval edges. Screenshot pixels are compared at the published
+video's size and pixel format; only passing or failing rows from the plan's recorded
+blocks are compared. Each row must have timing that bounds screenshot acquisition
+entirely inside the interval, from row completion minus total row duration through
+row completion. Rows without that proof and recovery retry rows with reused
+screenshots are omitted.
+This is a suspected recorder discontinuity, not proof of its cause; the video is
+kept and publication and privacy rules still apply. Withheld rows are skipped;
+an interval touching a withheld row's time span or containing its line number is
+not evaluated. A failed or gated detector produces no note. The receipt-only
+`video_continuity: examined` marker records successful detector completion without
+proving continuity, including when every interval was skipped; absence of a note
+does not prove continuity. The detector reads only the prepared publication copy
+and kept screenshots, writes no media and uploads nothing new. Strict run-wide
+screenshot withholding can leave no kept plan screenshots to compare after login.
+
 A successful saved login replay before any plan step passes moves the uploaded
 copy's start to the end of that replay if later than the first step's start.
 Its fills alone do not withhold the video.
@@ -4142,7 +4368,9 @@ name one available simulator whose device type and runtime equal the
 scenario's `ios.device_type` and `ios.runtime`. Names, `booted` and partial
 UUIDs are usage errors (exit `2`, no receipt); unavailable, ambiguous or
 mismatched targets refuse with `DEVICE_UNAVAILABLE` before anything is
-claimed. A Booted target is used as is. A Shutdown target refuses unless
+claimed. Inventory retries and proof failures follow the
+[iOS simulator lifecycle contract](#ios-simulator-lifecycle).
+A Booted target is used as is. A Shutdown target refuses unless
 `--boot-device` authorizes booting it, with the same meaning as on `check`
 (see [iOS simulator lifecycle](#ios-simulator-lifecycle)). `--boot-device`
 without `--device`, or either `--restart-device` or `--shutdown-device-on-exit`

@@ -147,6 +147,11 @@ export async function fetchTargets(
   port: number,
   timeout: number,
   signal?: AbortSignal,
+  observation?: {
+    deviceName?: string;
+    bundleId?: string;
+    onPagesObserved?: (pages: AdvertisedPages) => void;
+  },
 ): Promise<HermesTarget[]> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeout);
@@ -157,9 +162,16 @@ export async function fetchTargets(
       const resp = await fetch(`http://127.0.0.1:${port}/json/list`, {
         signal: cancel ? AbortSignal.any([ctrl.signal, cancel]) : ctrl.signal,
       });
-      return (await resp.json()) as HermesTarget[];
+      const raw = await resp.json();
+      if (!Array.isArray(raw))
+        throw new Error(`Invalid CDP target list on port ${port}: expected an array`);
+      observation?.onPagesObserved?.(
+        advertisedPages(raw, observation.deviceName?.trim(), observation.bundleId),
+      );
+      return raw as HermesTarget[];
     }, cancel);
   } catch (err) {
+    observation?.onPagesObserved?.({});
     cancellationSignal(signal);
     const message = `Failed to list CDP targets on port ${port}: ${err instanceof Error ? err.message : err}`;
     if (ctrl.signal.aborted) throw new TargetListAttemptTimeoutError(message);
@@ -167,6 +179,36 @@ export async function fetchTargets(
   } finally {
     clearTimeout(timer);
   }
+}
+
+// Value-free counts from one target-list read; a field is absent when unknown (no pin, or the read failed).
+export interface AdvertisedPages {
+  // Distinct non-blank device names other than the pin among advertised pages.
+  foreignPages?: number;
+  // Distinct Metro device connections advertising the run's app under the pinned name.
+  sameNameDevices?: number;
+}
+
+export function advertisedPages(
+  raw: readonly HermesTarget[],
+  pinnedDevice: string | undefined,
+  bundleId?: string,
+): AdvertisedPages {
+  if (pinnedDevice === undefined) return {};
+  const foreign = new Set<string>();
+  const sameName = new Set<string>();
+  for (const target of raw) {
+    const name = typeof target?.deviceName === 'string' ? target.deviceName.trim() : '';
+    if (name === '') continue;
+    if (name !== pinnedDevice) foreign.add(name);
+    else if (bundleId === undefined || targetMatchesBundleId(target, bundleId)) {
+      // Metro ids are `<device>-<page>`; an id without a device part names no device.
+      const id = typeof target.id === 'string' ? target.id : '';
+      const cut = id.lastIndexOf('-');
+      if (cut > 0) sameName.add(id.slice(0, cut));
+    }
+  }
+  return { foreignPages: foreign.size, sameNameDevices: sameName.size };
 }
 
 // Readiness only: exact discovery still owns target selection and authority.
@@ -179,6 +221,7 @@ export async function waitForExactPortTargets(
   deviceName?: string,
   bundleId?: string,
   onTargetsObserved?: (targets: HermesTarget[]) => void,
+  onPagesObserved?: (pages: AdvertisedPages) => void,
 ): Promise<void> {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new RangeError('port must be an integer between 1 and 65535');
@@ -204,16 +247,18 @@ export async function waitForExactPortTargets(
     let fetched = false;
     try {
       raw = await interruptible(
-        () => fetchTargets(port, Math.min(DISCOVERY_TIMEOUT_MS * 2, remaining), signal),
+        () =>
+          fetchTargets(port, Math.min(DISCOVERY_TIMEOUT_MS * 2, remaining), signal, {
+            deviceName: pinnedDevice,
+            bundleId,
+            onPagesObserved,
+          }),
         signal,
       );
       fetched = true;
     } catch (error) {
       signal?.throwIfAborted();
       if (!(error instanceof TargetListAttemptTimeoutError)) throw error;
-    }
-    if (!Array.isArray(raw)) {
-      throw new Error(`Invalid CDP target list on port ${port}: expected an array`);
     }
     const onDevice =
       pinnedDevice === undefined
@@ -1174,12 +1219,17 @@ export interface DiscoveryResult {
 export async function discoverExactPort(
   currentPort: number,
   platformFilterOrFilters?: string | SelectTargetFilters,
+  onPagesObserved?: (pages: AdvertisedPages) => void,
 ): Promise<DiscoveryResult> {
   const filters: SelectTargetFilters =
     typeof platformFilterOrFilters === 'string'
       ? { platform: platformFilterOrFilters }
       : (platformFilterOrFilters ?? {});
-  const raw = await fetchTargets(currentPort, DISCOVERY_TIMEOUT_MS * 2);
+  const raw = await fetchTargets(currentPort, DISCOVERY_TIMEOUT_MS * 2, undefined, {
+    deviceName: filters.deviceName,
+    bundleId: filters.bundleId,
+    onPagesObserved,
+  });
   const validTargets = filterValidTargets(raw).filter((target) => {
     try {
       const { hostname, port } = new URL(target.webSocketDebuggerUrl);

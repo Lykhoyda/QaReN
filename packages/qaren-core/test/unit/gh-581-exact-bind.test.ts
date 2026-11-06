@@ -367,5 +367,42 @@ for (const identifier of [undefined, '']) {
     assert.equal(bindExactFillTarget(nodes, '@e1', prior).ok, false);
     assert.equal(bindExactFillTarget([{ ...nodes[0], label: 'Search' }], '@e1', prior).ok, true);
     assert.equal(bindExactFillTarget(nodes, '@e1', { ...prior, label: undefined }).ok, false);
+    assert.equal(
+      bindExactFillTarget(
+        nodes,
+        '@e1',
+        { ...prior, label: undefined },
+        { placeholderCandidate: true },
+      ).ok,
+      false,
+    );
   });
 }
+
+const unnamedRect = { x: 20, y: 100, width: 300, height: 44 };
+const unnamed = { ref: '@e1', type: 'TextField', rect: unnamedRect };
+const unnamedPrior = { type: 'TextField', rect: unnamedRect };
+const confirmed = { placeholderCandidate: true } as const;
+
+test('live-confirmed placeholder binds only the sole unchanged unnamed native input', () => {
+  const result = bindExactFillTarget([unnamed], '@e1', unnamedPrior, confirmed);
+  assert.ok(result.ok);
+  assert.equal(result.binding.inputTestId, null);
+  assert.equal(result.binding.inputRef, '@e1');
+  assert.equal(result.binding.wrapper, false);
+  assert.deepEqual(bindExactFillTarget([unnamed], '@e1', unnamedPrior), {
+    ok: false,
+    detail: 'ref @e1 has no robust pre-refresh identity for unique rebinding',
+  });
+  for (const nodes of [
+    [{ ...unnamed, identifier: 'other' }],
+    [{ ...unnamed, label: 'Chat' }],
+    [unnamed, { ...unnamed, ref: '@e2', type: 'SearchField', rect: { ...unnamedRect, y: -500 } }],
+    [{ ...unnamed, rect: undefined }],
+    [{ ...unnamed, rect: { ...unnamedRect, x: 100 } }],
+    [{ ...unnamed, type: 'TextView' }],
+    [{ ...unnamed, ref: '@e2' }],
+  ])
+    assert.equal(bindExactFillTarget(nodes, '@e1', unnamedPrior, confirmed).ok, false);
+  assert.equal(bindExactFillTarget([unnamed], '@e1', { type: 'TextField' }, confirmed).ok, false);
+});

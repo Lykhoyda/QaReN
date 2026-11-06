@@ -4,9 +4,11 @@ import { renderReason } from '../../../dist/qa/untrusted.js';
 // A control whose only visible change is its selected state proves its press by that change alone.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import vm from 'node:vm';
+import { createSandbox } from '../helpers/inject-harness.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { join, screenSignature } from '../../../dist/qa/screen.js';
-import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
+import type { DigestEntry, NativeNode, Screen } from '../../../dist/qa/screen.js';
 import { NativeCaptureError } from '../../../dist/qa/capture.js';
 import { QaDispatchError } from '../../../dist/domain/qa-dispatch.js';
 import { withCancellation, RunCancelledError } from '../../../dist/domain/cancellation.js';
@@ -160,7 +162,12 @@ test('a press on a control never reported selected fails with the reason it had 
   );
 });
 
-function rowChips(selected = false, outside = false): Screen {
+function rowChips(
+  selected = false,
+  outside = false,
+  digest: DigestEntry[] = [],
+  chipRef: string | null = '@chip',
+): Screen {
   return {
     ...join(
       [
@@ -177,17 +184,21 @@ function rowChips(selected = false, outside = false): Screen {
           type: 'ScrollView',
           rect: { x: 0, y: 200, width: 400, height: 100 },
         },
-        {
-          index: 2,
-          parentIndex: 1,
-          ref: '@chip',
-          type: 'Button',
-          identifier: 'chip',
-          label: 'Choice',
-          hittable: true,
-          rect: { x: 20, y: 220, width: 100, height: 44 },
-          ...(selected ? { selected: true } : {}),
-        },
+        ...(chipRef === null
+          ? []
+          : [
+              {
+                index: 2,
+                parentIndex: 1,
+                ref: chipRef,
+                type: 'Button',
+                identifier: 'chip',
+                label: 'Choice',
+                hittable: true,
+                rect: { x: 20, y: 220, width: 100, height: 44 },
+                ...(selected ? { selected: true } : {}),
+              },
+            ]),
         {
           index: 3,
           parentIndex: 1,
@@ -206,7 +217,7 @@ function rowChips(selected = false, outside = false): Screen {
           rect: { x: 20, y: 400, width: 200, height: 44 },
         },
       ],
-      [],
+      digest,
     ),
     coverage: { native: 'complete', react: 'complete' },
   };
@@ -249,9 +260,10 @@ test('selection refusal gives the exact recovery guidance with observed count an
   assert.equal(outcome.refusal?.code, 'PRESS_NOT_REGISTERED');
   assert.ok(
     outcome.refusal.message.endsWith(
-      "The tap did not change the control's selected state (2 observations over 50 ms); the control sits in a row-shaped scrolling list, which can swallow synthetic taps. Next: re-run once; if it repeats on the same control, ask the app team to make the selection reachable for automated taps (for example by disabling the list's own scrolling for this set) or to expose the selected state another way.",
+      'The tapped control reported no selected state after the tap (2 observations over 50 ms); one tap was sent.',
     ),
   );
+  assert.doesNotMatch(outcome.refusal.message, /app team|row-shaped/);
   assert.equal(presses(f), 1);
 });
 
@@ -312,19 +324,155 @@ for (const effect of ['navigation', 'validation']) {
   });
 }
 
-for (const change of ['new-ref', 'ambiguous']) {
-  test(`${change} cannot stand in for the bound target`, async () => {
+const moved = (selected = true) => {
+  const screen = rowChips(selected, true);
+  screen.elements.find((e) => e.ref === '@chip')!.ref = '@new';
+  return screen;
+};
+
+test('a cleanly tapped testID control found selected under a new ref passes with one tap', async () => {
+  const f = rowFake([rowChips(), moved()]);
+  const outcome = await walkBlock(rowTap, f.deps);
+  assert.equal(outcome.block.outcome, 'pass', outcome.failure?.seen);
+  assert.equal(outcome.pressEvidence, undefined);
+  assert.equal(presses(f), 1);
+});
+
+const unidentified =
+  /could not be re-identified after the tap \(\d observations over \d+ ms\), so its selected state was not read; one tap was sent\.$/;
+
+for (const change of ['ambiguous', 'ambiguous-old-ref-selected']) {
+  test(`${change} native matches cannot stand in for the bound target`, async () => {
     const after = rowChips(true, true);
     const target = after.elements.find((e) => e.ref === '@chip')!;
-    if (change === 'new-ref') target.ref = '@new';
-    if (change === 'ambiguous') after.elements.push({ ...target, ref: '@duplicate' });
+    // A reorder can hand an already selected duplicate the old ref.
+    after.elements.push(
+      change === 'ambiguous'
+        ? { ...target, ref: '@duplicate' }
+        : { ...target, ref: '@duplicate', selected: undefined },
+    );
     const f = rowFake([rowChips(), after]);
+    const outcome = await walkBlock(rowTap, f.deps);
+    assert.equal(outcome.refusal?.code, 'PRESS_NOT_REGISTERED');
+    assert.equal(outcome.pressEvidence?.subreason, 'target_identity_unavailable');
+    assert.match(outcome.refusal.message, unidentified);
+    assert.doesNotMatch(outcome.refusal.message, /reported no selected state|app team/);
+    assert.equal(presses(f), 1);
+  });
+}
+
+test('a label-identified target under a new ref stays unbound', async () => {
+  const anonymous = (screen: Screen) => {
+    delete screen.elements.find((e) => e.label === 'Choice')!.testID;
+    return screen;
+  };
+  const f = rowFake([anonymous(rowChips()), anonymous(moved())]);
+  const outcome = await walkBlock(block('1. Tap "Choice"\n'), f.deps);
+  assert.equal(outcome.refusal?.code, 'PRESS_NOT_REGISTERED', JSON.stringify(outcome.rows));
+  assert.equal(outcome.pressEvidence?.subreason, 'target_identity_unavailable');
+  assert.equal(presses(f), 1);
+});
+
+for (const result of [
+  { ok: true, proven: false, error: 'RUNNER_TIMEOUT' },
+  { ok: false, proven: false, mutation: 'possible' as const, error: 'RUNNER_TIMEOUT' },
+]) {
+  test(`an unclean press (ok ${result.ok}) keeps the strict same-ref binding`, async () => {
+    const f = rowFake([rowChips(), moved()], [result]);
     const outcome = await walkBlock(rowTap, f.deps);
     assert.equal(outcome.refusal?.code, 'PRESS_NOT_REGISTERED');
     assert.equal(outcome.pressEvidence?.subreason, 'target_identity_unavailable');
     assert.equal(presses(f), 1);
   });
 }
+
+test('a proven dispatch keeps its pass when the target is ambiguous afterwards', async () => {
+  const after = rowChips(false, true);
+  after.elements.push({ ...after.elements.find((e) => e.ref === '@chip')!, ref: '@duplicate' });
+  const f = rowFake([rowChips(), after], [{ ok: true, proven: true }]);
+  const outcome = await walkBlock(rowTap, f.deps);
+  assert.equal(outcome.block.outcome, 'pass', outcome.failure?.seen);
+  assert.equal(outcome.pressEvidence, undefined);
+  assert.equal(presses(f), 1);
+});
+
+// The chip's own shape: a wrapper with the testID forwards through an inner handler without one to the
+// pressable host, so the real digest keeps a same-kind React-only `react:chip` twin beside the native chip.
+function twinDigest(): DigestEntry[] {
+  const press = { testID: 'chip', onClick() {} };
+  const node = (name: string, tag: number, props: object, child?: object) => ({
+    tag,
+    type: tag === 5 ? name : { displayName: name },
+    memoizedProps: props,
+    ...(child ? { child } : {}),
+  });
+  const chip = node(
+    'Chip',
+    0,
+    press,
+    node(
+      'ChipInner',
+      0,
+      { onClick() {} },
+      node('RCTView', 5, press, { tag: 6, type: null, memoizedProps: 'Choice' }),
+    ),
+  );
+  const sandbox = createSandbox({ fiberRoot: node('Screen', 0, {}, chip) });
+  return JSON.parse(vm.runInContext('__QAREN.getTree({ interactiveOnly: true })', sandbox))
+    .interactive;
+}
+const withTwin = (selected = false, chipRef: string | null = '@chip') =>
+  rowChips(selected, selected, twinDigest(), chipRef);
+
+test('the real digest leaves a react:chip twin of the same kind', () => {
+  const twins = withTwin().elements.filter((e) => e.testID === 'chip');
+  assert.deepEqual(
+    twins.map((e) => [e.ref, e.kind]),
+    [
+      ['@chip', 'button'],
+      ['react:chip', 'button'],
+    ],
+  );
+});
+
+test('a React-only twin does not stop a cleanly tapped chip from binding', async () => {
+  for (const after of [withTwin(true), withTwin(true, '@new')]) {
+    const f = rowFake([withTwin(), after]);
+    const outcome = await walkBlock(rowTap, f.deps);
+    assert.equal(outcome.block.outcome, 'pass', outcome.failure?.seen);
+    assert.equal(presses(f), 1);
+  }
+});
+
+test('the record shape: an unclean tap with a React twin still refuses with two captures', async () => {
+  const f = rowFake(
+    [withTwin(), withTwin(true)],
+    [{ ok: true, proven: false, error: 'RUNNER_TIMEOUT' }],
+  );
+  const ledger = await runPlan([rowTap], f.deps);
+  assert.equal(ledger.verdict, 'REFUSED');
+  assert.equal(ledger.code, 'PRESS_NOT_REGISTERED');
+  // The evidence sits on the ledger; the failing row carries none of it.
+  const row = ledger.steps.at(-1)!;
+  assert.equal(row.outcome, 'fail');
+  assert.equal('pressEvidence' in row, false);
+  assert.deepEqual(ledger.pressEvidence, {
+    subreason: 'target_identity_unavailable',
+    heldPress: 'not_tried_unsafe',
+    outsideTargetChange: false,
+    captures: 2,
+  });
+  assert.equal(presses(f), 1);
+});
+
+test('a native chip gone with only its React twin left still refuses as unidentified', async () => {
+  const f = rowFake([withTwin(), withTwin(false, null)]);
+  const outcome = await walkBlock(rowTap, f.deps);
+  assert.equal(outcome.refusal?.code, 'PRESS_NOT_REGISTERED');
+  assert.equal(outcome.pressEvidence?.subreason, 'target_identity_unavailable');
+  assert.match(outcome.refusal.message, unidentified);
+  assert.equal(presses(f), 1);
+});
 
 test('style-only selection stays on after an honest refusal, including saved-block replay', async () => {
   for (const mode of ['walk', 'replay'] as const) {

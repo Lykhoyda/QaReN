@@ -248,3 +248,37 @@ fn malformed_settle_and_preparation_facts_cannot_reject_a_row() {
         assert!(parsed.timing.is_none());
     }
 }
+
+#[test]
+fn launch_wait_round_trips_and_a_malformed_value_cannot_reject_a_row() {
+    let row = |extra: serde_json::Value| {
+        let mut raw = json!({"block":"qa","line":2,"attempt":1,"kind":"step",
+            "resolvedBy":"exact","t":120,"outcome":"pass"});
+        if let Some(fields) = extra.as_object() {
+            for (key, value) in fields {
+                raw[key] = value.clone();
+            }
+        }
+        raw
+    };
+    let raw = row(json!({"implicitWaitMs":4900}));
+    let parsed: Row = serde_json::from_value(raw.clone()).unwrap();
+    assert_eq!(parsed.implicit_wait_ms, Some(4900));
+    assert_eq!(serde_json::to_value(parsed).unwrap(), raw);
+
+    let zero: Row = serde_json::from_value(row(json!({"implicitWaitMs":0}))).unwrap();
+    assert_eq!(zero.implicit_wait_ms, Some(0));
+
+    let legacy: Row = serde_json::from_value(row(json!({}))).unwrap();
+    assert!(legacy.implicit_wait_ms.is_none());
+    assert!(serde_json::to_value(legacy)
+        .unwrap()
+        .get("implicitWaitMs")
+        .is_none());
+
+    for value in [json!(-1), json!(1.5), json!("PRIVATE-ms")] {
+        let parsed: Row = serde_json::from_value(row(json!({"implicitWaitMs":value}))).unwrap();
+        assert_eq!(parsed.outcome, "pass");
+        assert!(parsed.implicit_wait_ms.is_none());
+    }
+}

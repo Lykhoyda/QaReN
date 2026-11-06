@@ -958,7 +958,8 @@ fn selected_ios_simulator_requires_unique_canonical_available_stable_metadata() 
 #[test]
 fn shutdown_selected_sim_proves_target_inventory_and_exact_shutdown_readback() {
     use ios::SelectedSimShutdown::{
-        AlreadyShutdown, InventoryInvalid, ReadbackInvalid, ShutDown, ShutdownFailed,
+        AlreadyShutdown, InventoryInvalid, InventoryUnavailable, ReadbackInvalid, ShutDown,
+        ShutdownFailed,
     };
     let udid = "1DC408C4-51DA-4C4F-ACA1-39881C916FDD";
     let other = "76709EFC-0104-4A66-8908-F4F85A76F025";
@@ -993,10 +994,10 @@ fn shutdown_selected_sim_proves_target_inventory_and_exact_shutdown_readback() {
         "simctl list devices -j",
         CmdOutput::success(&inventory("Shutdown")),
     );
-    assert_eq!(
+    assert!(matches!(
         ios::shutdown_selected_sim(&mut already, udid, device_type, runtime),
         AlreadyShutdown
-    );
+    ));
     assert_eq!(already.calls.len(), 1);
     assert_eq!(already.remaining(), 0);
 
@@ -1010,32 +1011,45 @@ fn shutdown_selected_sim_proves_target_inventory_and_exact_shutdown_readback() {
         "simctl list devices -j",
         CmdOutput::success(&inventory("Shutdown")),
     );
-    assert_eq!(
+    assert!(matches!(
         ios::shutdown_selected_sim(&mut stopped, udid, device_type, runtime),
         ShutDown
-    );
+    ));
     assert_eq!(stopped.calls[1].args, ["simctl", "shutdown", udid]);
     assert_eq!(stopped.remaining(), 0);
 
-    for bad_pre in [
-        CmdOutput::failed(1, "simctl unavailable"),
-        CmdOutput {
-            stderr: "warning".into(),
-            ..CmdOutput::success(&inventory("Booted"))
-        },
-        CmdOutput::success("{}"),
-        CmdOutput::success(&inventory("Booted").replace("iPhone-17", "iPhone-16")),
-        CmdOutput::success(&inventory("Booted").replace("iOS-26-5", "iOS-26-4")),
-        CmdOutput::success(&inventory("Booting")),
-        CmdOutput::success(&inventory("Shutting Down")),
+    for (bad_pre, attempts) in [
+        (CmdOutput::failed(1, "simctl unavailable"), 3),
+        (
+            CmdOutput {
+                stderr: "warning".into(),
+                ..CmdOutput::success(&inventory("Booted"))
+            },
+            3,
+        ),
+        (CmdOutput::success("{}"), 3),
+        (
+            CmdOutput::success(&inventory("Booted").replace("iPhone-17", "iPhone-16")),
+            1,
+        ),
+        (
+            CmdOutput::success(&inventory("Booted").replace("iOS-26-5", "iOS-26-4")),
+            1,
+        ),
+        (CmdOutput::success(&inventory("Booting")), 1),
+        (CmdOutput::success(&inventory("Shutting Down")), 1),
     ] {
         let mut mock = qaren::exec::MockRunner::new();
-        mock.expect_run("simctl list devices -j", bad_pre);
-        assert_eq!(
-            ios::shutdown_selected_sim(&mut mock, udid, device_type, runtime),
-            InventoryInvalid
-        );
-        assert_eq!(mock.calls.len(), 1);
+        for _ in 0..attempts {
+            mock.expect_run("simctl list devices -j", bad_pre.clone());
+        }
+        let outcome = ios::shutdown_selected_sim(&mut mock, udid, device_type, runtime);
+        if attempts == 1 {
+            assert!(matches!(outcome, InventoryInvalid));
+        } else {
+            assert!(matches!(outcome, InventoryUnavailable(_)));
+        }
+        assert_eq!(mock.calls.len(), attempts);
         assert_eq!(mock.remaining(), 0);
     }
 
@@ -1052,23 +1066,32 @@ fn shutdown_selected_sim_proves_target_inventory_and_exact_shutdown_readback() {
             CmdOutput::success(&inventory("Booted")),
         );
         mock.expect_run(&format!("simctl shutdown {udid}"), bad_shutdown);
-        assert_eq!(
+        assert!(matches!(
             ios::shutdown_selected_sim(&mut mock, udid, device_type, runtime),
             ShutdownFailed
-        );
+        ));
         assert_eq!(mock.calls.len(), 2);
         assert_eq!(mock.remaining(), 0);
     }
 
-    for bad_after in [
-        CmdOutput::failed(1, "readback failed"),
-        CmdOutput {
-            stderr: "incomplete".into(),
-            ..CmdOutput::success(&inventory("Shutdown"))
-        },
-        CmdOutput::success(&inventory("Booted")),
-        CmdOutput::success(&inventory("Shutdown").replace("iPhone-17", "iPhone-16")),
-        CmdOutput::success(&inventory("Shutdown").replace("iOS-26-5", "iOS-26-4")),
+    for (bad_after, attempts) in [
+        (CmdOutput::failed(1, "readback failed"), 3),
+        (
+            CmdOutput {
+                stderr: "incomplete".into(),
+                ..CmdOutput::success(&inventory("Shutdown"))
+            },
+            3,
+        ),
+        (CmdOutput::success(&inventory("Booted")), 1),
+        (
+            CmdOutput::success(&inventory("Shutdown").replace("iPhone-17", "iPhone-16")),
+            1,
+        ),
+        (
+            CmdOutput::success(&inventory("Shutdown").replace("iOS-26-5", "iOS-26-4")),
+            1,
+        ),
     ] {
         let mut mock = qaren::exec::MockRunner::new();
         mock.expect_run(
@@ -1076,12 +1099,14 @@ fn shutdown_selected_sim_proves_target_inventory_and_exact_shutdown_readback() {
             CmdOutput::success(&inventory("Booted")),
         );
         mock.expect_run(&format!("simctl shutdown {udid}"), CmdOutput::success(""));
-        mock.expect_run("simctl list devices -j", bad_after);
-        assert_eq!(
+        for _ in 0..attempts {
+            mock.expect_run("simctl list devices -j", bad_after.clone());
+        }
+        assert!(matches!(
             ios::shutdown_selected_sim(&mut mock, udid, device_type, runtime),
             ReadbackInvalid
-        );
-        assert_eq!(mock.calls.len(), 3);
+        ));
+        assert_eq!(mock.calls.len(), 2 + attempts);
         assert_eq!(mock.remaining(), 0);
     }
 }
@@ -1601,18 +1626,26 @@ fn app_removal_parsers_are_strict() {
 
 #[test]
 fn metro_never_passes_ci_into_app_config_evaluation() {
-    let spec = metro::start_spec(Path::new("/repo/app"), 8791, true, false);
+    let spec = metro::start_spec(Path::new("/repo/app"), 8791, true, false, None, None);
     assert_eq!(spec.unset, ["CI"]);
     assert!(!spec.env.iter().any(|(k, _)| k == "CI"));
 }
 
 #[test]
 fn ios_metro_binds_to_loopback_and_android_metro_keeps_its_reverse_path() {
-    let ios = metro::start_spec(Path::new("/repo/app"), 8791, true, false);
-    let android = metro::start_spec(Path::new("/repo/app"), 8791, false, false);
+    let ios = metro::start_spec(Path::new("/repo/app"), 8791, true, false, None, None);
+    let android = metro::start_spec(Path::new("/repo/app"), 8791, false, false, None, None);
     assert_eq!(
         ios.args,
-        ["exec", "expo", "start", "--port", "8791", "--localhost"]
+        [
+            "--config.node-options=--dns-result-order=ipv4first",
+            "exec",
+            "expo",
+            "start",
+            "--port",
+            "8791",
+            "--localhost"
+        ]
     );
     assert_eq!(android.args, ["exec", "expo", "start", "--port", "8791"]);
     // The probes and the app's initialUrl use 127.0.0.1, so iOS Metro must resolve localhost to IPv4 first.
@@ -1629,24 +1662,56 @@ fn ios_metro_binds_to_loopback_and_android_metro_keeps_its_reverse_path() {
 }
 
 #[test]
-fn ipv4_first_is_appended_to_the_callers_node_options() {
+fn ipv4_first_and_the_preload_are_appended_to_the_callers_node_options() {
     assert_eq!(
-        metro::ipv4_first_node_options(None),
+        metro::dev_server_node_options(None, None),
         "--dns-result-order=ipv4first"
     );
     assert_eq!(
-        metro::ipv4_first_node_options(Some("  ")),
+        metro::dev_server_node_options(Some("  "), None),
         "--dns-result-order=ipv4first"
     );
     assert_eq!(
-        metro::ipv4_first_node_options(Some("--max-old-space-size=4096")),
+        metro::dev_server_node_options(Some("--max-old-space-size=4096"), None),
         "--max-old-space-size=4096 --dns-result-order=ipv4first"
+    );
+    assert_eq!(
+        metro::dev_server_node_options(
+            Some("--max-old-space-size=4096"),
+            Some(Path::new("/runs/a b/\"q\\/runtime-version-pin.cjs"))
+        ),
+        r#"--max-old-space-size=4096 --dns-result-order=ipv4first --require "/runs/a b/\"q\\/runtime-version-pin.cjs""#
     );
 }
 
 #[test]
+fn a_configured_pnpm_node_options_is_composed_and_passed_both_ways() {
+    let root = Path::new("/repo/app");
+    let preload = Path::new("/runs/a b/runtime-version-pin.cjs");
+    for base in [
+        None,
+        Some("--max-old-space-size=4096"),
+        Some(r#"--require "./setup.cjs""#),
+    ] {
+        let spec = metro::start_spec(root, 8791, true, false, Some(preload), base);
+        let expected = match base {
+            None => "--dns-result-order=ipv4first --require \"/runs/a b/runtime-version-pin.cjs\"".to_string(),
+            Some(base) => format!("{base} --dns-result-order=ipv4first --require \"/runs/a b/runtime-version-pin.cjs\""),
+        };
+        for key in ["NODE_OPTIONS", "npm_config_node_options"] {
+            assert!(spec.env.contains(&(key.into(), expected.clone())));
+        }
+    }
+    let android = metro::start_spec(root, 8791, false, false, None, None);
+    assert!(!android
+        .env
+        .iter()
+        .any(|(key, _)| key == "npm_config_node_options" || key == "NODE_OPTIONS"));
+}
+
+#[test]
 fn metro_logs_each_request_on_receipt_to_the_drained_stderr() {
-    let spec = metro::start_spec(Path::new("/repo/app"), 8791, true, false);
+    let spec = metro::start_spec(Path::new("/repo/app"), 8791, true, false, None, None);
     assert!(spec.env.contains(&(
         "DEBUG".to_string(),
         qaren::exec::log::METRO_REQUEST_LOG.to_string()
@@ -2012,7 +2077,8 @@ fn expo_is_offline_by_default_and_online_requires_an_explicit_override() {
         runner.environment.insert(name.into(), value.into());
         assert_eq!(metro::expo_online(&runner), online);
         for localhost in [false, true] {
-            let spec = metro::start_spec(Path::new("/repo/app"), 8791, localhost, online);
+            let spec =
+                metro::start_spec(Path::new("/repo/app"), 8791, localhost, online, None, None);
             assert!(spec
                 .env
                 .contains(&("EXPO_OFFLINE".into(), if online { "0" } else { "1" }.into())));

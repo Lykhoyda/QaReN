@@ -69,8 +69,8 @@ pub(crate) struct Ctx<'a> {
     pub(crate) timings: Vec<(String, u64)>,
     pub(crate) notes: Vec<(String, String)>,
     pub(crate) verb: &'static str,
-    // Metro's drained bundle-request count when the CLI launched the app.
-    pub(crate) bundle_requests_at_launch: Option<u64>,
+    // Metro's drained bundle-request count and (completed, failed) outcomes when the CLI launched the app.
+    pub(crate) bundle_requests_at_launch: Option<(u64, (u64, u64))>,
     // The dev client manifest warm-up that cleared the launch.
     pub(crate) manifest_warm: Option<crate::core::ManifestWarm>,
     // The run owns this exact iOS simulator and pins its locale and keyboard before launch.
@@ -259,6 +259,7 @@ pub(crate) fn finish_receipt(ctx: Ctx, result: ReceiptResult, failure: Option<Fa
     receipt.fresh_install = ctx.record.resources.fresh_install.clone();
     receipt.lane = ctx.record.resources.lane.clone();
     receipt.build_lock = ctx.record.build_lock.clone();
+    receipt.runtime_version = ctx.record.runtime_version.clone();
     for (name, value) in &ctx.notes {
         receipt.outcomes.insert(name.clone(), value.clone());
     }
@@ -388,7 +389,7 @@ fn prepare_validated(
     // An observation only: custody comes from the lease, and the target is re-proven under it.
     let selected = match borrowed.as_deref() {
         Some(udid) => {
-            let sim = observe_borrowed_ios(runner, &scenario, udid)?;
+            let sim = observe_borrowed_ios(runner, &scenario, udid, None)?;
             require_borrowed_power(&sim, args.boot_device)?;
             Some(sim)
         }
@@ -624,6 +625,7 @@ fn prepare_validated(
         terminal: None,
         held: None,
         build_lock: None,
+        runtime_version: None,
     };
     if let Err(f) = record.save(&args.runs_root) {
         return Err(match &record.resources.lease {
@@ -701,7 +703,7 @@ fn prepare_validated(
     let may_boot = args.boot_device || pool_claimed;
     if selected.is_some() || pool_claimed {
         // Recovery may have changed the target; the pre-lease observation is not authority.
-        if let Err(f) = reprove_borrowed_ios(&mut ctx, may_boot)
+        if let Err(f) = reprove_borrowed_ios(&mut ctx, may_boot, None)
             .and_then(|_| borrowed_admission(&mut ctx, "admission_before_deps"))
         {
             return Ok(ctx.fail(f));
@@ -730,7 +732,7 @@ fn prepare_validated(
             }
         }
         if may_boot {
-            if let Err(f) = reprove_borrowed_ios(&mut ctx, true)
+            if let Err(f) = reprove_borrowed_ios(&mut ctx, true, None)
                 .and_then(|needs_boot| boot_borrowed_ios(&mut ctx, needs_boot))
             {
                 return Ok(ctx.fail(f));
@@ -832,7 +834,7 @@ fn prepare_validated(
     }
     ctx.mark("cache_record", t);
 
-    if let Err(f) = reprove_borrowed_prepare(&mut ctx) {
+    if let Err(f) = reprove_borrowed_prepare(&mut ctx, None) {
         return Ok(ctx.fail(f));
     }
     ctx.record.phase = Phase::Ready;
@@ -1728,21 +1730,36 @@ fn borrowed_udid(scenario: &Scenario, args: &PrepareArgs) -> Result<Option<Strin
         .ok_or_else(|| borrowed_failure("--device must be an exact iOS simulator UUID"))
 }
 
-// Strict read-only proof of the exact simulator, matching the scenario's device type and runtime.
 fn observe_borrowed_ios(
     runner: &mut dyn Runner,
     scenario: &Scenario,
     udid: &str,
+    deadline_ms: Option<u64>,
 ) -> Result<ios::Simulator, Failure> {
-    let output = runner.run(&ios::list_devices_spec());
-    if !output.ok() || !output.stderr.is_empty() || output.stdout.len() >= 1024 * 1024 {
-        return Err(borrowed_failure(format!(
-            "simctl list failed: {}",
-            output.summary()
-        )));
-    }
+    let deadline = deadline_ms.unwrap_or_else(|| {
+        runner
+            .monotonic_ms()
+            .saturating_add(scenario.deadlines.device_boot_seconds.saturating_mul(1000))
+    });
+    let inventory = ios::read_inventory(
+        runner,
+        ios::InventoryRead::device(deadline, &mut |runner| ensure_running(runner, "device")),
+    )
+    .map_err(|unavailable| match unavailable.last {
+        // The caller's own preparation budget ran out, not the simulator service.
+        ios::InventoryReadLast::DeadlineSpent if deadline_ms.is_some() => Failure::new(
+            "build",
+            FailureCode::ReadyDeadlineExceeded,
+            format!(
+                "preparation deadline spent while re-proving the selected simulator; {}",
+                unavailable.detail()
+            ),
+            "re-run prepare",
+        ),
+        _ => unavailable.into_failure("device", FailureCode::SimulatorInventoryUnavailable),
+    })?;
     let spec = scenario.ios.as_ref().expect("validated ios scenario");
-    ios::parse_selected_sim(&output.stdout, udid)
+    ios::parse_selected_sim_value(&inventory.value, udid)
         .filter(|sim| sim.device_type == spec.device_type && sim.runtime == spec.runtime)
         .ok_or_else(|| {
             borrowed_failure("selected UUID is not one available iOS simulator with the scenario's device type and runtime")
@@ -1802,7 +1819,11 @@ fn claim_borrowed_lease(
 }
 
 // Before each device effect: the lease is still this run's and the recorded target is unchanged.
-fn reprove_borrowed_ios(ctx: &mut Ctx, boot_device: bool) -> Result<bool, Failure> {
+fn reprove_borrowed_ios(
+    ctx: &mut Ctx,
+    boot_device: bool,
+    deadline_ms: Option<u64>,
+) -> Result<bool, Failure> {
     ensure_running(ctx.runner, "device")?;
     if !ctx.record.holds_device_lease() {
         return Err(borrowed_failure(
@@ -1815,15 +1836,23 @@ fn reprove_borrowed_ios(ctx: &mut Ctx, boot_device: bool) -> Result<bool, Failur
         .ios_simulator
         .clone()
         .expect("borrowed simulator recorded");
-    let sim = observe_borrowed_ios(ctx.runner, &ctx.record.scenario, &recorded.udid)?;
+    let sim = observe_borrowed_ios(
+        ctx.runner,
+        &ctx.record.scenario,
+        &recorded.udid,
+        deadline_ms,
+    )?;
     ensure_running(ctx.runner, "device")?;
     require_borrowed_power(&sim, boot_device)
 }
 
 // A long build is no continuing authority: never install, launch or report Ready on a borrowed target that changed.
-fn reprove_borrowed_prepare(ctx: &mut Ctx) -> Result<(), Failure> {
-    if ctx.verb == "prepare" && ctx.record.resources.device_borrowed {
-        reprove_borrowed_ios(ctx, false)?;
+fn reprove_borrowed_prepare(ctx: &mut Ctx, deadline_ms: Option<u64>) -> Result<(), Failure> {
+    if ctx.record.scenario.platform == Platform::Ios && ctx.record.resources.device_borrowed {
+        reprove_borrowed_ios(ctx, false, deadline_ms).map_err(|f| match f.code {
+            FailureCode::ReadyDeadlineExceeded => launch_deadline_spent(&ctx.record.run_id),
+            _ => f,
+        })?;
     }
     Ok(())
 }
@@ -1855,19 +1884,32 @@ pub(crate) fn boot_borrowed_ios(ctx: &mut Ctx, needs_boot: bool) -> Result<(), F
             ));
         }
     }
-    let output = ctx.runner.run(&ios::list_devices_spec());
-    ensure_running(ctx.runner, "boot_device")?;
-    if output.ok() && output.stderr.is_empty() && output.stdout.len() < 1024 * 1024 {
-        if let Some(observed) = ios::parse_selected_sim(&output.stdout, &sim.udid) {
-            if observed.state == ios::SimState::Booted
-                && observed.device_type == sim.device_type
-                && observed.runtime == sim.runtime
-            {
-                return Ok(());
-            }
-        }
+    let inventory = ios::read_inventory(
+        ctx.runner,
+        ios::InventoryRead::after_effect(&mut |runner| ensure_running(runner, "boot_device")),
+    )
+    .map_err(|unavailable| {
+        unavailable.into_failure("boot_device", FailureCode::SimulatorBootFailed)
+    })?;
+    let observed = ios::parse_selected_sim_value(&inventory.value, &sim.udid);
+    if observed.as_ref().is_some_and(|observed| {
+        observed.state == ios::SimState::Booted
+            && observed.device_type == sim.device_type
+            && observed.runtime == sim.runtime
+    }) {
+        ctx.notes
+            .push(("inventory_attempts".into(), inventory.attempts.to_string()));
+        ctx.notes.push((
+            "inventory_latency_ms".into(),
+            inventory.latency_ms.to_string(),
+        ));
+        return Ok(());
     }
-    Err(failed("inventory did not prove the exact selected simulator Booted with unchanged runtime and device type"))
+    let state = observed.map_or("unknown", |observed| match observed.state {
+        ios::SimState::Booted => "Booted",
+        ios::SimState::Shutdown => "Shutdown",
+    });
+    Err(failed(&format!("inventory did not prove the exact selected simulator Booted with unchanged runtime and device type; state seen: {state}; read latency {:.1} s", inventory.latency_ms as f64 / 1000.0)))
 }
 
 fn allocate_android(ctx: &mut Ctx, android_home: Option<&str>) -> Result<(), Failure> {
@@ -2134,6 +2176,9 @@ fn allocate_android(ctx: &mut Ctx, android_home: Option<&str>) -> Result<(), Fai
 }
 
 pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
+    if ctx.record.scenario.platform == Platform::Android {
+        ctx.record.runtime_version = Some(crate::expo_updates::RuntimeVersion::android());
+    }
     let platform = platform_dir(ctx.record.scenario.platform);
     let repo_root = ctx.record.candidate.repo_root.clone();
     let project_root = ctx.record.candidate.project_root.clone();
@@ -2926,15 +2971,50 @@ pub(crate) fn run_clean_preparation(ctx: &mut Ctx, plan: &BuildPlan) -> Result<(
 fn spawn_metro_only(ctx: &mut Ctx) -> Result<(), Failure> {
     let port = qaren_metro_port(&ctx.record.scenario);
     let project_root = ctx.record.candidate.project_root.clone();
+    let run_dir = RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id);
+    let ios = ctx.record.scenario.platform == Platform::Ios;
+    let preload = if ios {
+        crate::expo_updates::write_preload(&run_dir, &project_root)
+    } else {
+        None
+    };
+    let inherited = ctx.runner.env_var("NODE_OPTIONS");
+    let configured = if ios {
+        let output = ctx.runner.run_private(
+            &crate::exec::CmdSpec::new(
+                "pnpm-node-options",
+                "pnpm",
+                &["config", "get", "node-options", "--json"],
+                15,
+            )
+            .cwd(&project_root),
+            &[],
+        );
+        let read = (output.exit_code() == Some(0)
+            && !output.timed_out()
+            && ctx.runner.cancellation().is_none())
+        .then(|| metro::parse_pnpm_node_options(output.stdout()))
+        .flatten();
+        if read.is_none() {
+            ctx.notes.push((
+                "pnpm_node_options".into(),
+                "effective configuration unavailable or unreadable; inherited NODE_OPTIONS used"
+                    .into(),
+            ));
+        }
+        read.flatten()
+    } else {
+        None
+    };
     let spec = metro::start_spec(
         &project_root,
         port,
-        ctx.record.scenario.platform == Platform::Ios,
+        ios,
         metro::expo_online(ctx.runner),
+        preload.as_deref(),
+        configured.as_deref().or(inherited.as_deref()),
     );
-    let metro_log = RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id)
-        .join("logs")
-        .join("metro.log");
+    let metro_log = run_dir.join("logs").join("metro.log");
     ensure_running(ctx.runner, "build")?;
     let spawned = ctx.runner.spawn_group(&spec, &metro_log).map_err(|e| {
         Failure::new(
@@ -3104,6 +3184,13 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                     ArtifactInstallFailure::ArtifactInvalid,
                 ));
             }
+            // The installed artifact is what the app compares the manifest against, never a fresh resolve.
+            let embedded = crate::expo_updates::read_ios(ctx.runner, &artifact.path);
+            ctx.record.runtime_version = Some(crate::expo_updates::pin(
+                &RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id),
+                platform_dir(Platform::Ios),
+                &embedded,
+            ));
             if ctx.record.resources.metro.is_none() {
                 spawn_metro_only(ctx)?;
             }
@@ -3223,7 +3310,7 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     warm_dev_client_manifest(ctx, metro_port, deadline)?;
     let launch = match ctx.record.scenario.platform {
         Platform::Ios => {
-            reprove_borrowed_prepare(ctx)?;
+            reprove_borrowed_prepare(ctx, Some(deadline))?;
             let sim = ctx
                 .record
                 .resources
@@ -3302,12 +3389,12 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     };
     enter_substage(ctx, Some("app_launch"));
     if matches!(ctx.record.scenario.platform, Platform::Ios) {
-        ctx.bundle_requests_at_launch = ctx
-            .record
-            .resources
-            .metro
-            .as_ref()
-            .map(|metro| crate::exec::log::read_bundle_requests(&metro.log).unwrap_or(0));
+        ctx.bundle_requests_at_launch = ctx.record.resources.metro.as_ref().map(|metro| {
+            (
+                crate::exec::log::read_bundle_requests(&metro.log).unwrap_or(0),
+                crate::exec::log::read_bundle_outcomes(&metro.log).unwrap_or((0, 0)),
+            )
+        });
     }
     let launched = run_launch_command(ctx, &launch, deadline, &mut attempts, &mut |ctx| {
         proven = ios_udid
@@ -3480,7 +3567,11 @@ fn install_cached_ios_app(
     let mut attempts = 0;
     let mut last = None;
     loop {
-        reprove_borrowed_prepare(ctx)?;
+        match reprove_borrowed_prepare(ctx, Some(deadline)) {
+            // The install budget ran out during the re-proof: report the install timeout below.
+            Err(f) if f.code == FailureCode::ReadyDeadlineExceeded => break,
+            result => result?,
+        }
         let Some(installed) = run_budgeted_attempt(ctx, &spec, deadline, &mut attempts)? else {
             break;
         };
@@ -5073,6 +5164,8 @@ fn dry_run_receipt(
                 port,
                 true,
                 metro::expo_online(runner),
+                None,
+                None,
             ));
             planned.push(ios::build_spec(
                 &cand.project_root,
@@ -5228,6 +5321,8 @@ fn dry_run_receipt(
                     port,
                     true,
                     metro::expo_online(runner),
+                    None,
+                    None,
                 ));
                 planned.push(ios::install_app_spec(udid, &artifact_path));
                 planned.push(metro::request_probe_spec(port));
@@ -5263,6 +5358,8 @@ fn dry_run_receipt(
                     port,
                     false,
                     metro::expo_online(runner),
+                    None,
+                    None,
                 ));
                 planned.push(metro::manifest_spec(port, "android"));
                 planned.push(android::am_start_deeplink_spec(
@@ -5415,6 +5512,7 @@ fn warm_dev_client_manifest(ctx: &mut Ctx, port: u16, deadline: u64) -> Result<(
         ctx.record.scenario.platform == Platform::Ios,
     );
     let mut volume_checked = false;
+    let run_dir = RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id);
     warm.expo_online = metro::expo_online(ctx.runner);
     let result = (|| {
         if ctx.record.scenario.platform == Platform::Ios {
@@ -5524,8 +5622,26 @@ fn warm_dev_client_manifest(ctx: &mut Ctx, port: u16, deadline: u64) -> Result<(
                 ));
             }
         }
+        warm.fingerprint_pin = ctx
+            .record
+            .runtime_version
+            .as_ref()
+            .filter(|rv| {
+                warm.attempts > 0
+                    && rv.embedded_policy == crate::expo_updates::EmbeddedPolicy::Fingerprint
+                    && !crate::expo_updates::resolved(&run_dir)
+            })
+            .map(|rv| rv.pin.as_str());
         Err(warm.refusal())
     })();
+    // The marker proves the dev server's resolver returned the pin, not that a manifest was served.
+    if let Some(rv) = ctx.record.runtime_version.as_mut() {
+        if rv.pin == crate::expo_updates::PinState::Written
+            && crate::expo_updates::resolved(&run_dir)
+        {
+            rv.pin = crate::expo_updates::PinState::Resolved;
+        }
+    }
     ctx.timings.push((
         "manifest_warmup_elapsed".into(),
         warm.elapsed_ms(ctx.runner.monotonic_ms()),
@@ -5581,6 +5697,47 @@ fn launch_failure(
 mod launch_tests {
     use super::*;
     use crate::exec::CmdOutput;
+
+    #[test]
+    fn borrowed_inventory_spending_the_callers_budget_reports_that_budget() {
+        let scenario: Scenario = serde_json::from_value(serde_json::json!({
+            "schema": "qaren/1", "name": "inventory-budget", "platform": "ios",
+            "candidate": { "project_root": "/app", "app_id": "com.example.app", "revision": "HEAD" },
+            "ios": { "device_type": "com.apple.CoreSimulator.SimDeviceType.iPhone-17", "runtime": "com.apple.CoreSimulator.SimRuntime.iOS-26-5" }
+        })).unwrap();
+        for (budget, read_ms, attempts, unspent_ms, timeout_s) in [
+            (3000, 1000, 1, 2000, 3),
+            (31_000, 9000, 3, 0, 9),
+            (34_000, 10_000, 3, 0, 10),
+        ] {
+            let mut runner = crate::exec::MockRunner::new();
+            runner.advance_on = Some(("simctl list".into(), read_ms));
+            for _ in 0..attempts {
+                runner.expect_run(
+                    "simctl list",
+                    CmdOutput {
+                        timed_out: true,
+                        ..Default::default()
+                    },
+                );
+            }
+            let deadline = runner.monotonic_ms() + budget;
+            let failure = observe_borrowed_ios(
+                &mut runner,
+                &scenario,
+                "1DC408C4-51DA-4C4F-ACA1-39881C916FDD",
+                Some(deadline),
+            )
+            .unwrap_err();
+            assert_eq!(failure.code, FailureCode::ReadyDeadlineExceeded);
+            assert!(!failure.code.is_refusal());
+            assert!(failure.detail.contains("last: deadline spent"));
+            assert_eq!(runner.monotonic_ms(), deadline - unspent_ms);
+            assert_eq!(runner.calls.len(), attempts);
+            assert_eq!(runner.calls.last().unwrap().timeout_seconds, timeout_s);
+            assert_eq!(runner.remaining(), 0);
+        }
+    }
 
     #[test]
     fn a_step_failure_with_a_suggestion_or_a_repeat_leads_the_receipt_next_action() {
@@ -5661,6 +5818,7 @@ mod launch_tests {
                 terminal: None,
                 held: None,
                 build_lock: None,
+                runtime_version: None,
             };
             let run_dir = RunRecord::run_dir(&root, &record.run_id);
             let output = run_dir.join("ios-build");

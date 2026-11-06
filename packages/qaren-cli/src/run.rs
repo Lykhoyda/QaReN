@@ -465,6 +465,7 @@ fn run_inner(
         req.boot_device || req.restart_device,
         req.shutdown_device_on_exit,
         req.android_home.as_deref(),
+        config.deadlines.device_boot_seconds,
     )?;
     let android_env = device.android.as_ref().map(|emulator| core::AndroidEnv {
         serial: emulator.serial.clone(),
@@ -686,6 +687,7 @@ fn run_inner(
         terminal: None,
         held: None,
         build_lock: None,
+        runtime_version: None,
     };
     if let Err(f) = record.save(&req.runs_root) {
         return Err(lease::release_or_annotate(&lease, f));
@@ -760,6 +762,7 @@ fn run_inner(
                 req.boot_device || req.restart_device,
                 req.shutdown_device_on_exit,
                 req.android_home.as_deref(),
+                ctx.record.scenario.deadlines.device_boot_seconds,
             ) {
                 Ok(refreshed) => refreshed,
                 Err(f) => return finish_failed(ctx, f),
@@ -1033,6 +1036,7 @@ fn run_inner(
         } else {
             events::stage("recording", StageState::Skipped, None, None);
         }
+        let recording_ready = ctx.runner.now_epoch_ms();
         if req.platform == Platform::Ios && resolved_inputs.has_inputs() {
             ctx.notes.push((
                 "platform_log".to_string(),
@@ -1076,10 +1080,15 @@ fn run_inner(
                 metro_bundle_requests: ctx
                     .bundle_requests_at_launch
                     .zip(ctx.record.resources.metro.as_ref())
-                    .map(|(at_launch, metro)| core::MetroBundleRequests {
-                        path: crate::exec::log::bundle_requests_path(&metro.log),
-                        at_launch,
-                    }),
+                    .map(
+                        |((at_launch, (completed, failed)), metro)| core::MetroBundleRequests {
+                            path: crate::exec::log::bundle_requests_path(&metro.log),
+                            at_launch,
+                            outcomes_path: crate::exec::log::bundle_outcomes_path(&metro.log),
+                            completed_at_launch: completed,
+                            failed_at_launch: failed,
+                        },
+                    ),
                 manifest_warm: ctx.manifest_warm.clone(),
                 warm_lane: ctx.record.resources.lane.is_some(),
             },
@@ -1421,6 +1430,7 @@ fn run_inner(
         }
         let mut tested_older_commit = None;
         let mut published_video = None;
+        let mut video_continuity = Vec::new();
         if let Some(pr) = &pr_state {
             let raw = record::raw_capture(&run_dir.join("media"));
             let video = video.unwrap_or_else(|| record::finalize(ctx.runner, &run_dir));
@@ -1455,6 +1465,31 @@ fn run_inner(
                     outcome.ledger.publication_interrupted,
                 );
                 if video == VideoStatus::Available {
+                    if let Some(offset) = offset.filter(|_| req.platform == Platform::Ios) {
+                        if let Some(stalls) = record::detect_continuity(
+                            ctx.runner,
+                            &run_dir,
+                            &outcome.ledger,
+                            recording_from,
+                            recording_ready,
+                            offset,
+                            core_request.t0,
+                        ) {
+                            video_continuity = stalls;
+                            ctx.notes.push((
+                                "video_continuity".into(),
+                                if video_continuity.is_empty() {
+                                    "examined".into()
+                                } else {
+                                    video_continuity
+                                        .iter()
+                                        .map(record::VideoStall::receipt)
+                                        .collect::<Vec<_>>()
+                                        .join("; ")
+                                },
+                            ));
+                        }
+                    }
                     if let Some((start, end)) = offset.zip(end).and_then(|(start, end)| {
                         let admitted = outcome.ledger.admitted_at_ms?;
                         Some((
@@ -1559,6 +1594,7 @@ fn run_inner(
                 device: device.name.clone(),
                 plan_sha256: sha256_hex(plan.as_bytes()),
                 video,
+                video_continuity,
                 video_withholding_reason: video_publication
                     .withholding_reason()
                     .map(str::to_string),
@@ -2154,15 +2190,33 @@ fn boot_selected_device(
     };
     let mut needs_boot = device.needs_boot;
     if restart && !device.needs_boot {
-        let shutdown = ios::shutdown_selected_sim(ctx.runner, &device.id, device_type, runtime);
+        // The pre-shutdown proof shares the boot budget; the readback gets its own.
+        let deadline = ctx.runner.monotonic_ms().saturating_add(
+            ctx.record
+                .scenario
+                .deadlines
+                .device_boot_seconds
+                .saturating_mul(1000),
+        );
+        let shutdown = ios::shutdown_selected_sim_until(
+            ctx.runner,
+            &device.id,
+            device_type,
+            runtime,
+            deadline,
+            &mut |runner| ensure_running(runner, "boot_device"),
+        );
         *restart_shutdown_unresolved = matches!(
-            shutdown,
+            &shutdown,
             ios::SelectedSimShutdown::ShutdownFailed | ios::SelectedSimShutdown::ReadbackInvalid
         );
         ensure_running(ctx.runner, "boot_device")?;
         match shutdown {
             ios::SelectedSimShutdown::ShutDown | ios::SelectedSimShutdown::AlreadyShutdown => {
                 needs_boot = true;
+            }
+            ios::SelectedSimShutdown::InventoryUnavailable(unavailable) => {
+                return Err(unavailable.into_failure("boot_device", FailureCode::SimulatorInventoryUnavailable));
             }
             ios::SelectedSimShutdown::InventoryInvalid => {
                 return Err(failed(
@@ -2554,6 +2608,48 @@ pub(crate) fn tightest_volume<'a>(
         })
 }
 
+#[cfg(test)]
+mod device_tests {
+    use super::*;
+    use crate::exec::{CmdOutput, MockRunner};
+
+    #[test]
+    fn borrowed_ios_selection_recovers_after_an_unusable_inventory() {
+        let udid = "1DC408C4-51DA-4C4F-ACA1-39881C916FDD";
+        let ready = serde_json::json!({"devices": {"com.apple.CoreSimulator.SimRuntime.iOS-26-5": [
+            {"udid":udid,"name":"selected","state":"Booted","isAvailable":true,"deviceTypeIdentifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-17"}
+        ]}}).to_string();
+        for strict in [false, true] {
+            for first in [
+                CmdOutput {
+                    timed_out: true,
+                    ..Default::default()
+                },
+                CmdOutput::success(r#"{"devices":{"runtime":null}}"#),
+            ] {
+                let mut runner = MockRunner::new();
+                runner.expect_run("simctl list devices -j", first);
+                runner.expect_run("simctl list devices -j", CmdOutput::success(&ready));
+                let device = resolve_device(
+                    &mut runner,
+                    Platform::Ios,
+                    Some(udid),
+                    strict,
+                    false,
+                    None,
+                    40,
+                )
+                .unwrap();
+                assert_eq!(device.id, udid);
+                assert!(!device.needs_boot);
+                assert_eq!(runner.calls.len(), 2);
+                assert!(runner.calls.iter().all(|spec| spec.timeout_seconds == 10));
+                assert_eq!(runner.remaining(), 0);
+            }
+        }
+    }
+}
+
 fn resolve_device(
     runner: &mut dyn Runner,
     platform: Platform,
@@ -2561,24 +2657,24 @@ fn resolve_device(
     select_from_inventory: bool,
     shutdown_device_on_exit: bool,
     android_home: Option<&str>,
+    device_boot_seconds: u64,
 ) -> Result<Device, Failure> {
     match platform {
         Platform::Android => borrow_emulator(runner, device, android_home),
         Platform::Ios => {
             let strict_inventory = select_from_inventory || shutdown_device_on_exit;
-            let output = runner.run(&if strict_inventory {
-                ios::list_devices_spec()
-            } else {
-                ios::list_booted_spec()
-            });
-            if !output.ok() || (strict_inventory && !output.stderr.is_empty()) {
-                return Err(Failure::new(
-                    "device",
-                    FailureCode::DeviceUnavailable,
-                    format!("simctl list failed: {}", output.summary()),
-                    "check Xcode and CoreSimulator, then re-run",
-                ));
-            }
+            let deadline = runner
+                .monotonic_ms()
+                .saturating_add(device_boot_seconds.saturating_mul(1000));
+            let inventory = ios::read_inventory(
+                runner,
+                ios::InventoryRead::device(deadline, &mut |runner| {
+                    ensure_running(runner, "device")
+                }),
+            )
+            .map_err(|unavailable| {
+                unavailable.into_failure("device", FailureCode::SimulatorInventoryUnavailable)
+            })?;
             let borrow = |sim: &ios::Simulator| Device {
                 id: sim.udid.clone(),
                 name: sim.name.clone(),
@@ -2588,7 +2684,7 @@ fn resolve_device(
             };
             if strict_inventory {
                 return device
-                    .and_then(|udid| ios::parse_selected_sim(&output.stdout, udid))
+                    .and_then(|udid| ios::parse_selected_sim_value(&inventory.value, udid))
                     .filter(|sim| select_from_inventory || sim.state == ios::SimState::Booted)
                     .map(|sim| borrow(&sim))
                     .ok_or_else(|| Failure::new(
@@ -2598,7 +2694,7 @@ fn resolve_device(
                         "check the exact --device UUID and simulator inventory, then re-run",
                     ));
             }
-            let Some(sims) = ios::parse_booted_sims(&output.stdout) else {
+            let Some(sims) = ios::parse_booted_sims(&inventory.value) else {
                 return Err(Failure::new(
                     "device",
                     FailureCode::DeviceUnavailable,

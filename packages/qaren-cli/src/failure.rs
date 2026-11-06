@@ -27,6 +27,7 @@ pub enum FailureCode {
     RunRecordUpdateFailed,
     SimulatorCreateFailed,
     SimulatorBootFailed,
+    SimulatorInventoryUnavailable,
     FarmUnreachable,
     FarmSlotLeased,
     FarmStartFailed,
@@ -88,7 +89,8 @@ impl FailureCode {
     pub fn is_refusal(&self) -> bool {
         matches!(
             self,
-            FailureCode::DepsNotPrewarmed
+            FailureCode::SimulatorInventoryUnavailable
+                | FailureCode::DepsNotPrewarmed
                 | FailureCode::ManifestNotWarm
                 | FailureCode::WatchmanVolumeStalled
                 | FailureCode::PnpmProcessGroupUnsupported

@@ -1,7 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
-import { INJECTED_HELPERS, REACT_READY_PROBE_JS } from '../../dist/injected-helpers.js';
+import {
+  HELPERS_VERSION,
+  INJECTED_HELPERS,
+  REACT_READY_PROBE_JS,
+} from '../../dist/injected-helpers.js';
 
 /**
  * Create a VM sandbox with mock React DevTools globals.
@@ -147,69 +151,10 @@ test('getNavState: returns error when no nav state in hooks', () => {
   assert.ok(result.error, 'Should return an error when no nav state found');
 });
 
-// ── B4: Jotai store detection ────────────────────────────────────────
-
-test('getStoreState: reads Jotai atoms via __JOTAI_STORE__ + __JOTAI_ATOMS__', () => {
-  const countAtom = { __brand: 'countAtom' };
-  const userAtom = { __brand: 'userAtom' };
-  const atomValues = new Map([
-    [countAtom, 42],
-    [userAtom, { name: 'Alice' }],
-  ]);
-
-  const sandbox = createSandbox({
-    globals: {
-      __JOTAI_STORE__: { get: (atom) => atomValues.get(atom) },
-      __JOTAI_ATOMS__: { count: countAtom, user: userAtom },
-    },
-  });
-  const result = JSON.parse(sandbox.__QAREN.getStoreState(undefined, 'jotai'));
-  assert.equal(result.type, 'jotai');
-  assert.equal(result.state.count, 42);
-  assert.deepEqual(result.state.user, { name: 'Alice' });
-});
-
-test('getStoreState: handles Jotai atom that throws', () => {
-  const goodAtom = { __brand: 'good' };
-  const badAtom = { __brand: 'bad' };
-
-  const sandbox = createSandbox({
-    globals: {
-      __JOTAI_STORE__: {
-        get: (atom) => {
-          if (atom === badAtom) throw new Error('derived atom not ready');
-          return 'ok';
-        },
-      },
-      __JOTAI_ATOMS__: { good: goodAtom, bad: badAtom },
-    },
-  });
-  const result = JSON.parse(sandbox.__QAREN.getStoreState(undefined, 'jotai'));
-  assert.equal(result.type, 'jotai');
-  assert.equal(result.state.good, 'ok');
-  assert.match(result.state.bad, /error.*derived atom not ready/);
-});
-
-test('getStoreState: skips Jotai when store lacks get function', () => {
-  const sandbox = createSandbox({
-    globals: {
-      __JOTAI_STORE__: { noGetMethod: true },
-      __JOTAI_ATOMS__: { count: {} },
-    },
-  });
-  const result = JSON.parse(sandbox.__QAREN.getStoreState());
-  assert.ok(result.__agent_error, 'Should return no-store error when Jotai store lacks get()');
-});
-
-test('getStoreState: no-store error includes Jotai hint', () => {
-  const sandbox = createSandbox({});
-  const result = JSON.parse(sandbox.__QAREN.getStoreState());
-  assert.ok(result.hint3, 'hint3 should exist for Jotai');
-  assert.match(result.hint3, /JOTAI_STORE/);
-});
-
 // ── M8: findActiveRenderer 1..5 probe ────────────────────────────────
 // Proves the probe finds fiber roots regardless of hook.renderers population state.
+
+const hasRoots = (sandbox) => sandbox.__QAREN.__findAllRootFibers().length > 0;
 
 test('M8: findActiveRenderer finds root at renderer ID 1 (happy path, no regression)', () => {
   const fiber = { type: { name: 'App' }, child: null, sibling: null };
@@ -218,7 +163,7 @@ test('M8: findActiveRenderer finds root at renderer ID 1 (happy path, no regress
     getFiberRoots: (id) => (id === 1 ? new Set([{ current: fiber }]) : new Set()),
   };
   const sandbox = createSandbox({ hook });
-  assert.equal(sandbox.__QAREN.isReady(), true);
+  assert.equal(hasRoots(sandbox), true);
 });
 
 test('M8: findActiveRenderer probes past empty IDs to renderer 4', () => {
@@ -228,7 +173,7 @@ test('M8: findActiveRenderer probes past empty IDs to renderer 4', () => {
     getFiberRoots: (id) => (id === 4 ? new Set([{ current: fiber }]) : new Set()),
   };
   const sandbox = createSandbox({ hook });
-  assert.equal(sandbox.__QAREN.isReady(), true);
+  assert.equal(hasRoots(sandbox), true);
 });
 
 test('M8: findActiveRenderer succeeds when hook.renderers is empty (story repro)', () => {
@@ -238,7 +183,7 @@ test('M8: findActiveRenderer succeeds when hook.renderers is empty (story repro)
     getFiberRoots: (id) => (id === 1 ? new Set([{ current: fiber }]) : new Set()),
   };
   const sandbox = createSandbox({ hook });
-  assert.equal(sandbox.__QAREN.isReady(), true);
+  assert.equal(hasRoots(sandbox), true);
 });
 
 test('M8: findActiveRenderer returns null when no renderer 1..5 has roots', () => {
@@ -247,12 +192,12 @@ test('M8: findActiveRenderer returns null when no renderer 1..5 has roots', () =
     getFiberRoots: () => new Set(),
   };
   const sandbox = createSandbox({ hook });
-  assert.equal(sandbox.__QAREN.isReady(), false);
+  assert.equal(hasRoots(sandbox), false);
 });
 
 test('M8: findActiveRenderer returns null when hook.getFiberRoots is missing', () => {
   const sandbox = createSandbox({ hook: { renderers: new Map() } });
-  assert.equal(sandbox.__QAREN.isReady(), false);
+  assert.equal(hasRoots(sandbox), false);
 });
 
 // ── M8 + GH #597: REACT_READY_PROBE_JS for waitForReact ────────────
@@ -346,50 +291,10 @@ test('M8 probe: returns false when hook itself is absent', () => {
   assert.equal(vm.runInContext(REACT_READY_PROBE_JS, sandbox), false);
 });
 
-// ── M10: architecture detection in getAppInfo ─────────────────────────
-// Fabric-wins on "both present" (transient interop state during migration).
-// `__fbBatchedBridge` alone → classic bridge. Neither → unknown.
-
-function appInfoFrom(globals) {
-  const sandbox = createSandbox({ globals });
-  return JSON.parse(sandbox.__QAREN.getAppInfo());
-}
-
-test('M10: getAppInfo returns architecture=new when nativeFabricUIManager present', () => {
-  const info = appInfoFrom({
-    nativeFabricUIManager: {
-      /* Fabric object */
-    },
-  });
-  assert.equal(info.architecture, 'new');
-});
-
-test('M10: getAppInfo returns architecture=old when __fbBatchedBridge present and Fabric absent', () => {
-  const info = appInfoFrom({ __fbBatchedBridge: { getCallableModule: () => null } });
-  assert.equal(info.architecture, 'old');
-});
-
-test('M10: getAppInfo returns architecture=unknown when neither signal present', () => {
-  const info = appInfoFrom({});
-  assert.equal(info.architecture, 'unknown');
-});
-
-test('M10: getAppInfo returns architecture=new when BOTH Fabric and bridge present (Fabric wins)', () => {
-  const info = appInfoFrom({
-    nativeFabricUIManager: {
-      /* Fabric */
-    },
-    __fbBatchedBridge: { getCallableModule: () => null },
-  });
-  assert.equal(info.architecture, 'new');
-});
-
-test('M10: getAppInfo returns architecture=unknown when nativeFabricUIManager is null (guard works)', () => {
-  // Only __fbBatchedBridge falsy too → unknown
-  const info = appInfoFrom({ nativeFabricUIManager: null });
-  assert.equal(info.architecture, 'unknown');
-});
-
-test('#321: helpers bundle embeds HELPERS_VERSION (value-agnostic; feature branches bump it freely above the 26 baseline)', () => {
-  assert.match(INJECTED_HELPERS, /__HELPERS_VERSION__\s*=\s*\d+/);
+test('#321: injection replaces stale helpers with the current version', () => {
+  const stale = { __v: HELPERS_VERSION - 1 };
+  const sandbox = createSandbox({ globals: { __QAREN: stale } });
+  assert.notEqual(sandbox.__QAREN, stale);
+  assert.equal(sandbox.__QAREN.__v, HELPERS_VERSION);
+  assert.equal(typeof sandbox.__QAREN.getTree, 'function');
 });

@@ -6,7 +6,14 @@ pub fn expo_online(runner: &dyn Runner) -> bool {
 }
 
 // The iOS simulator reaches Metro on 127.0.0.1, so iOS binds to loopback; Android keeps its adb-reverse path.
-pub fn start_spec(project_root: &Path, port: u16, localhost: bool, online: bool) -> CmdSpec {
+pub fn start_spec(
+    project_root: &Path,
+    port: u16,
+    localhost: bool,
+    online: bool,
+    preload: Option<&Path>,
+    node_options: Option<&str>,
+) -> CmdSpec {
     let port = port.to_string();
     let mut args = vec!["exec", "expo", "start", "--port", &port];
     if localhost {
@@ -23,22 +30,82 @@ pub fn start_spec(project_root: &Path, port: u16, localhost: bool, online: bool)
         return spec;
     }
     // Node resolves `localhost` to ::1 first, so --localhost alone listens on IPv6 while every probe and the app use 127.0.0.1.
-    let inherited = std::env::var("NODE_OPTIONS").ok();
-    spec.env(
-        "NODE_OPTIONS",
-        &ipv4_first_node_options(inherited.as_deref()),
-    )
+    let options = dev_server_node_options(node_options, preload);
+    let mut spec = spec
+        .env("NODE_OPTIONS", &options)
+        .env("npm_config_node_options", &options);
+    // pnpm workspace nodeOptions overrides the environment unless supplied on its command line.
+    spec.args.insert(0, format!("--config.node-options={options}"));
+    spec
 }
 
-// Appends to the caller's NODE_OPTIONS instead of replacing it.
-pub fn ipv4_first_node_options(inherited: Option<&str>) -> String {
-    match inherited
+// Appends to the base options instead of replacing them; the preload path is quoted for Node's parser.
+pub fn dev_server_node_options(base: Option<&str>, preload: Option<&Path>) -> String {
+    let mut options: Vec<String> = base
         .map(str::trim)
         .filter(|options| !options.is_empty())
-    {
-        Some(options) => format!("{options} --dns-result-order=ipv4first"),
-        None => "--dns-result-order=ipv4first".to_string(),
+        .map(str::to_string)
+        .into_iter()
+        .collect();
+    options.push("--dns-result-order=ipv4first".into());
+    if let Some(preload) = preload {
+        let escaped = preload
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        options.push(format!("--require \"{escaped}\""));
     }
+    options.join(" ")
+}
+
+// Reads `pnpm config get node-options --json`. pnpm 9+ prints a JSON string (nothing when unset), after any
+// warning; pnpm 8 ignores --json and prints the raw value (`undefined` when unset). pnpm's warning and notice
+// lines never become Node options; a raw value must be Node flags (start with `-`), and anything else left
+// is unreadable (None).
+pub fn parse_pnpm_node_options(stdout: &str) -> Option<Option<String>> {
+    let lines: Vec<String> = stdout
+        .lines()
+        .map(|line| without_terminal_codes(line).trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect();
+    let clean = |value: String| Some(value).filter(|value| !value.trim().is_empty());
+    if let Some(json) = lines.last().filter(|line| line.starts_with('"')) {
+        return serde_json::from_str::<String>(json).ok().map(clean);
+    }
+    let values: Vec<&str> = lines
+        .iter()
+        .map(String::as_str)
+        .filter(|line| !pnpm_notice(line))
+        .collect();
+    match values.as_slice() {
+        [] | ["undefined" | "null"] => Some(None),
+        [raw] if raw.starts_with('-') => Some(Some(raw.to_string())),
+        _ => None,
+    }
+}
+
+// Colour codes (ESC `[` ... final letter) would hide a warning's prefix.
+fn without_terminal_codes(line: &str) -> String {
+    let mut plain = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            plain.push(c);
+        } else if chars.next() == Some('[') {
+            chars.by_ref().find(char::is_ascii_alphabetic);
+        }
+    }
+    plain
+}
+
+// shortcut: recognises pnpm/npm WARN, notice and ERR_PNPM lines and the boxed update notice; another message
+// beside a pnpm 8 raw value makes the read unreadable (inherited options used), so extend this if one is seen.
+fn pnpm_notice(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    ["warn", "notice", "npm warn", "npm notice", "err_pnpm"]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+        || line.starts_with(['│', '╭', '╰', '─'])
 }
 
 // Expo serves `/` and `/status` itself; only Metro's own handler logs this path, arming the drained count before launch.

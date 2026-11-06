@@ -90,8 +90,8 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
 ## Where To Make Changes
 
 - Core screen layer: edit `packages/qaren-core/src/`, then
-  `corepack yarn build:core`. Unit tests import `dist/`, so rebuild before
-  running them or the suite silently tests the old build.
+  `corepack yarn build:core`. Unit tests import `dist/`; the package's test
+  scripts rebuild it automatically before running them.
 - CLI: edit `packages/qaren-cli/src/`, then
   `cargo test --manifest-path packages/qaren-cli/Cargo.toml --locked`.
 - Host surface: edit `packages/qaren-plugin/` in place. There is no mirror,

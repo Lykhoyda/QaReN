@@ -809,11 +809,14 @@ test('a step recovers at most two different pop-ups', async () => {
     f.show(sheets[next++] ?? screen([element('@c', 'Not now')]));
     return { ok: true, proven: false, executed: true };
   };
+  ticking(f);
   const result = await runPlan(plan(), f.deps);
   assert.equal(result.verdict, 'FAIL');
   assert.deepEqual(f.actions, ['press @a', 'press @b']);
   assert.equal(result.recoveries, 2);
-  assert.match(result.failure?.seen ?? '', /Settings/);
+  // With recovery spent, the first step's launch wait runs out before the step fails.
+  assert.match(result.failure?.seen ?? '', /^TARGET_NOT_FOUND_AFTER_LAUNCH: /);
+  assert.match(result.failure?.suggestion ?? '', /Wait for "Settings"/);
 });
 
 test('a system prompt the app asks again after recovery declined it is left to the plan author', async () => {

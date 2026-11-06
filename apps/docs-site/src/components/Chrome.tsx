@@ -1,5 +1,5 @@
 // Header, logo and footer from the "QaReN docs redesign" boards (Home and Docs page).
-import { BASE_PATH, GITHUB_URL, pagePath } from '../site.ts';
+import { BASE_PATH, GITHUB_URL, X_URL, pagePath } from '../site.ts';
 import { Search } from './Search.tsx';
 import { ThemeSwitch } from './ThemeSwitch.tsx';
 
@@ -41,6 +41,9 @@ export function DocsHeader() {
         <a href={GITHUB_URL} className="plain docs-header__link">
           GitHub
         </a>
+        <a href={X_URL} className="plain docs-header__link" aria-label="QaReN on X">
+          X
+        </a>
       </nav>
     </header>
   );
@@ -70,6 +73,9 @@ export function HomeHeader() {
         <a href={GITHUB_URL} className="plain docs-header__link">
           GitHub
         </a>
+        <a href={X_URL} className="plain docs-header__link" aria-label="QaReN on X">
+          X
+        </a>
       </nav>
     </header>
   );
@@ -84,6 +90,9 @@ export function SiteFooter({ wide = false }: { wide?: boolean }) {
         <span className="docs-header__spacer" />
         <a href={GITHUB_URL} className="plain">
           GitHub
+        </a>
+        <a href={X_URL} className="plain" aria-label="QaReN on X">
+          X
         </a>
         {wide ? (
           <a href={`${BASE_PATH}${pagePath('changelog')}`} className="plain">

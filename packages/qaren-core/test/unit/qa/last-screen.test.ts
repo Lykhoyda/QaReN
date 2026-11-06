@@ -4,7 +4,7 @@ import { parsePlan } from '../../../dist/qa/plan.js';
 import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
 import { MASK, ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { screenNow, targetMissDiagnostic } from '../../../dist/qa/target-miss.js';
-import { runPlan } from '../../../dist/qa/walker.js';
+import { runPlan, walkBlock } from '../../../dist/qa/walker.js';
 import { join } from '../../../dist/qa/screen.js';
 import type { WalkerDeps } from '../../../dist/qa/walker.js';
 import type { Element, Screen } from '../../../dist/qa/screen.js';
@@ -290,10 +290,11 @@ test('semantic press and fill controls appear in the receipt and enabled advice'
         },
       }),
     ]);
-    const ledger = await runPlan(plan('1. Tap "Submit"\n'), deps([observed]));
-    assert.equal(ledger.failure?.screen?.controls[0].label, 'Continue');
-    assert.deepEqual(ledger.failure?.screen?.counts, { controls: 1, enabled: 1, hidden: 0 });
-    assert.match(ledger.failure!.suggestion!, /lists 1 enabled controls/);
+    // A block walked on its own has no launch wait, so the miss keeps its enabled advice.
+    const outcome = await walkBlock(plan('1. Tap "Submit"\n')[0], deps([observed]));
+    assert.equal(outcome.failure?.screen?.controls[0].label, 'Continue');
+    assert.deepEqual(outcome.failure?.screen?.counts, { controls: 1, enabled: 1, hidden: 0 });
+    assert.match(outcome.failure!.suggestion!, /lists 1 enabled controls/);
   }
 });
 

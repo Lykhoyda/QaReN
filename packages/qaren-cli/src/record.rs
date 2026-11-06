@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+mod continuity;
+pub use continuity::{detect_continuity, VideoStall};
+
 const START_WAIT_MS: u64 = 10_000;
 const STOP_WAIT_MS: u64 = 30_000;
 const POLL_MS: u64 = 250;
@@ -720,7 +723,7 @@ mod tests {
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 
-    fn temp_run_dir() -> PathBuf {
+    pub(super) fn temp_run_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "qaren-record-{}-{}",
             std::process::id(),

@@ -27,6 +27,8 @@ const NUMBERS = [
   'devFalse',
   'devUndefined',
   'devUnknown',
+  'foreignPages',
+  'sameNameDevices',
 ] as const;
 const COUNTS = ['targetsTotal', 'devTrue', 'devFalse', 'devUndefined', 'devUnknown'] as const;
 
@@ -49,7 +51,7 @@ export function cleanAdmissionFacts(value: unknown): AdmissionFacts | undefined 
         clean.devTrue! + clean.devFalse! + clean.devUndefined! + clean.devUnknown!)
   )
     return undefined;
-  const keys = [...REQUIRED, ...NUMBERS, 'bundleRequest'];
+  const keys = [...REQUIRED, ...NUMBERS, 'bundleRequest', 'bundleBuilt'];
   return Object.fromEntries(
     keys
       .filter((key) => clean[key as keyof typeof clean] !== undefined)

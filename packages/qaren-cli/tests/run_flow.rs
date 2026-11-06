@@ -381,14 +381,14 @@ fn workspace_cache_persistence_reuses_only_the_same_workspace_and_scheme() {
         if reuse {
             mock.expect_run("ls-files", CmdOutput::success(common::IOS_NATIVE_FILES));
             common::script_xcode(&mut mock);
-            common::script_ios_install_and_launch(&mut mock);
+            script_check_install_and_launch(&mut mock);
             script_ready_recheck(&mut mock, common::IOS_NATIVE_FILES);
         } else if index == 0 {
             script_provision_build(&mut mock, "xcodebuild", common::IOS_NATIVE_FILES);
         } else {
             mock.expect_run("ls-files", CmdOutput::success(common::IOS_NATIVE_FILES));
             common::script_xcode(&mut mock);
-            common::script_finite_ios_build_with(&mut mock, "xcodebuild", |m| {
+            script_check_build_with(&mut mock, "xcodebuild", |m| {
                 script_candidate_recheck(m);
                 script_fingerprint_recheck(m, common::IOS_NATIVE_FILES)
             });
@@ -472,7 +472,7 @@ fn a_fresh_clone_reuses_another_clones_build_and_never_overwrites_the_store() {
         if reuse {
             mock.expect_run("ls-files", CmdOutput::success(common::IOS_NATIVE_FILES));
             common::script_xcode(&mut mock);
-            common::script_ios_install_and_launch(&mut mock);
+            script_check_install_and_launch(&mut mock);
             script_ready_recheck(&mut mock, common::IOS_NATIVE_FILES);
         } else {
             script_provision_build(&mut mock, "xcodebuild", common::IOS_NATIVE_FILES);
@@ -806,6 +806,10 @@ fn unproven_metro_after_the_build_refuses_install_and_retains_its_lease() {
         script_candidate_recheck(&mut mock);
         script_fingerprint_recheck(&mut mock, native_files);
         common::script_ios_app_verification(&mut mock);
+        mock.expect_run(
+            "pnpm config get node-options",
+            CmdOutput::success("undefined\n"),
+        );
         mock.expect_spawn(
             "expo start",
             Spawned {
@@ -838,6 +842,43 @@ fn unproven_metro_after_the_build_refuses_install_and_retains_its_lease() {
 }
 
 #[test]
+fn unreadable_preinstall_inventory_after_build_refuses_without_installing() {
+    let (repo, app) = app_repo();
+    let req = request(&repo, &app, 30);
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    common::script_ios_deps(&mut mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_clean_build_plan(&mut mock);
+    common::script_finite_ios_build_only(&mut mock, "expo run:ios");
+    script_candidate_recheck(&mut mock);
+    script_fingerprint_recheck(&mut mock, "");
+    common::script_ios_app_verification(&mut mock);
+    common::script_ios_metro_spawn(&mut mock);
+    for _ in 0..3 {
+        mock.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(r#"{"devices":{"runtime":null}}"#),
+        );
+    }
+    common::script_ios_metro_cleanup(&mut mock);
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(
+        receipt.failure.unwrap().code,
+        FailureCode::SimulatorInventoryUnavailable
+    );
+    assert!(!mock.calls.iter().any(|spec| matches!(
+        spec.label.as_str(),
+        "simctl-install" | "simctl-launch" | "core-walk"
+    )));
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
 fn metro_exit_after_install_prevents_launch_and_cleans_up_both_stages() {
     let (repo, app) = app_repo();
     let req = request(&repo, &app, 30);
@@ -851,6 +892,7 @@ fn metro_exit_after_install_prevents_launch_and_cleans_up_both_stages() {
     script_fingerprint_recheck(&mut mock, "");
     common::script_ios_app_verification(&mut mock);
     common::script_ios_metro_spawn(&mut mock);
+    script_check_inventory(&mut mock);
     mock.expect_run("simctl install", CmdOutput::success(""));
     mock.expect_run("ps", CmdOutput::failed(1, ""));
     mock.expect_run("ps", CmdOutput::failed(1, ""));
@@ -1233,7 +1275,7 @@ const IOS_TOOLS: &[&str] = &["git", "pnpm", "node", "lsof", "curl", "ps", "xcrun
 
 // Everything up to and including the lease: preflight, device, candidate, prereqs, port, disk, self identity.
 fn script_preflight(mock: &mut MockRunner, repo: &Path) {
-    script_preflight_inventory(mock, repo, "simctl list devices booted", &booted_json());
+    script_preflight_inventory(mock, repo, "simctl list devices -j", &booted_json());
 }
 
 fn script_preflight_inventory(mock: &mut MockRunner, repo: &Path, command: &str, inventory: &str) {
@@ -1242,12 +1284,7 @@ fn script_preflight_inventory(mock: &mut MockRunner, repo: &Path, command: &str,
 }
 
 fn script_preflight_until_lease(mock: &mut MockRunner, repo: &Path) {
-    script_preflight_inventory_until_lease(
-        mock,
-        repo,
-        "simctl list devices booted",
-        &booted_json(),
-    );
+    script_preflight_inventory_until_lease(mock, repo, "simctl list devices -j", &booted_json());
 }
 
 // Everything up to the lease claim; the Metro port is checked only after the lease is held.
@@ -1311,7 +1348,7 @@ fn incompatible_pnpm_refuses_before_claim_install_or_metro_launch() {
         script_preflight_to_pnpm(
             &mut mock,
             &repo,
-            "simctl list devices booted",
+            "simctl list devices -j",
             &booted_json(),
             UNTRACKED_PLAN,
             output,
@@ -1345,7 +1382,7 @@ fn busy_host_probe_timeout_refuses_with_its_own_code() {
     script_preflight_to_pnpm(
         &mut mock,
         &repo,
-        "simctl list devices booted",
+        "simctl list devices -j",
         &booted_json(),
         UNTRACKED_PLAN,
         probe_timed_out(),
@@ -1382,7 +1419,7 @@ fn probe_timeout_once_then_proved_continues_and_records_the_retry() {
     script_preflight_to_pnpm(
         &mut mock,
         &repo,
-        "simctl list devices booted",
+        "simctl list devices -j",
         &booted_json(),
         UNTRACKED_PLAN,
         probe_timed_out(),
@@ -1431,7 +1468,7 @@ fn probe_budget_exhaustion_stops_before_the_last_attempt() {
     script_preflight_to_pnpm(
         &mut mock,
         &repo,
-        "simctl list devices booted",
+        "simctl list devices -j",
         &booted_json(),
         UNTRACKED_PLAN,
         probe_timed_out(),
@@ -1558,6 +1595,41 @@ fn missing_ios_build_capability_after_install_refuses_before_reset_or_boot() {
 }
 
 // deps → build plan → build → readiness → provenance recheck, then the core child spawn identity.
+fn script_check_inventory(mock: &mut qaren::exec::MockRunner) {
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&available_inventory("Booted")),
+    );
+}
+
+fn script_check_install_and_launch(mock: &mut qaren::exec::MockRunner) {
+    common::script_ios_app_verification(mock);
+    common::script_ios_metro_spawn(mock);
+    script_check_inventory(mock);
+    mock.expect_run("simctl install", CmdOutput::success(""));
+    mock.expect_run("ps", CmdOutput::success(LSTART));
+    mock.expect_run("ps", CmdOutput::success("S"));
+    mock.expect_run("lsof", CmdOutput::success("6001"));
+    mock.expect_run("ps", CmdOutput::success("6000"));
+    mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    mock.expect_run("qaren-request-probe", CmdOutput::success(""));
+    mock.expect_run("expo-platform", CmdOutput::success(""));
+    mock.expect_run("expo-platform", CmdOutput::success(""));
+    script_check_inventory(mock);
+    common::script_devmenu_defaults(mock, CmdOutput::success(""));
+    common::script_ios_launch(mock);
+}
+
+fn script_check_build_with(
+    mock: &mut qaren::exec::MockRunner,
+    command: &str,
+    prepublish: impl FnOnce(&mut qaren::exec::MockRunner),
+) {
+    common::script_finite_ios_build_only(mock, command);
+    prepublish(mock);
+    script_check_install_and_launch(mock);
+}
+
 fn script_provision(mock: &mut MockRunner) {
     common::script_ios_deps(mock);
     script_provision_after_deps(mock);
@@ -1580,7 +1652,7 @@ fn script_provision_candidate(
 ) {
     mock.expect_run("ls-files", CmdOutput::success(native_files));
     script_clean_build_plan(mock);
-    common::script_finite_ios_build_with(mock, command, |m| {
+    script_check_build_with(mock, command, |m| {
         m.expect_run("rev-parse HEAD", CmdOutput::success(head));
         m.expect_run("--porcelain", CmdOutput::success(status));
         script_fingerprint_recheck(m, native_files)
@@ -1851,7 +1923,7 @@ fn script_recipe_walk_on_default_branch(
     ledger: &str,
     exit: i32,
 ) {
-    script_preflight_with_status(mock, repo, "simctl list devices booted", &booted_json(), "");
+    script_preflight_with_status(mock, repo, "simctl list devices -j", &booted_json(), "");
     mock.expect_run("lsof", free_port());
     script_recipe_walk_after_preflight(mock, ledger, exit, "");
     mock.expect_run(
@@ -2180,7 +2252,7 @@ fn simultaneous_checks_on_distinct_devices_do_not_collide_at_the_same_millisecon
         script_preflight_inventory(
             &mut mock,
             &repo,
-            "simctl list devices booted",
+            "simctl list devices -j",
             &booted_json().replace(UDID, &udid),
         );
         mock.expect_run(
@@ -2300,7 +2372,7 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
         &[
             "node-version",
             "plan-preflight",
-            "simctl-list-booted",
+            "simctl-list",
             "git-toplevel",
             "which",
             "df",
@@ -2390,6 +2462,12 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
         .as_str()
         .unwrap()
         .ends_with("/logs/metro.bundle-requests"));
+    assert!(bundle_requests["outcomesPath"]
+        .as_str()
+        .unwrap()
+        .ends_with("/logs/metro.bundle-outcomes"));
+    assert_eq!(bundle_requests["completedAtLaunch"], 0, "{bundle_requests}");
+    assert_eq!(bundle_requests["failedAtLaunch"], 0, "{bundle_requests}");
     assert_eq!(
         request_line["payload"]["target"]["manifestWarm"],
         serde_json::json!({ "ms": 0, "attempts": 2 })
@@ -2717,10 +2795,7 @@ fn reclaiming_a_run_that_reached_the_walk_requires_scoped_host_absence() {
     mock.expect_run("ps -p 4242 -o lstart=", CmdOutput::success(""));
     script_host_probe(&mut mock, UDID, hosts_absent());
     mock.expect_run("lsof", free_port());
-    mock.expect_run(
-        "simctl list devices booted",
-        CmdOutput::success(&booted_json()),
-    );
+    mock.expect_run("simctl list devices -j", CmdOutput::success(&booted_json()));
     script_unknown_admission(&mut mock);
     let mut req = request(&repo, &app, 30);
     req.fresh_install = true;
@@ -2905,10 +2980,7 @@ fn a_dead_holders_run_is_cleaned_up_and_its_lease_reclaimed_without_a_manual_ste
         script_preflight_until_lease(&mut mock, &repo);
         mock.expect_run("ps", CmdOutput::success(holder_ps));
         mock.expect_run("lsof", free_port());
-        mock.expect_run(
-            "simctl list devices booted",
-            CmdOutput::success(&booted_json()),
-        );
+        mock.expect_run("simctl list devices -j", CmdOutput::success(&booted_json()));
         script_unknown_admission(&mut mock);
         let mut req = request(&repo, &app, 30);
         req.fresh_install = true;
@@ -3709,10 +3781,7 @@ fn an_unreadable_disk_budget_fails_closed_before_any_claim() {
     let mut mock = MockRunner::new();
     mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
     script_plan(&mut mock, &repo);
-    mock.expect_run(
-        "simctl list devices booted",
-        CmdOutput::success(&booted_json()),
-    );
+    mock.expect_run("simctl list devices -j", CmdOutput::success(&booted_json()));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
@@ -3814,7 +3883,7 @@ fn booted_json_two() -> String {
 fn script_preflight_booted(mock: &mut MockRunner, repo: &Path, booted: &str) {
     mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
     script_plan(mock, repo);
-    mock.expect_run("simctl list devices booted", CmdOutput::success(booted));
+    mock.expect_run("simctl list devices -j", CmdOutput::success(booted));
 }
 
 #[test]
@@ -5219,7 +5288,7 @@ fn missing_or_rejected_key_refuses_before_device_or_lease() {
         assert!(!repo.join("runs").exists());
         assert_eq!(mock.remaining(), 0);
         assert!(!receipt.to_json().contains(TEST_KEY));
-        assert!(!labels(&mock).iter().any(|l| l == "simctl-list-booted"));
+        assert!(!labels(&mock).iter().any(|l| l == "simctl-list"));
     }
 }
 
@@ -5330,11 +5399,11 @@ fn literal_plan_without_key_proceeds_past_preflight() {
     );
     // No booted simulator ends the run at device selection, just past preflight.
     mock.expect_run(
-        "simctl list devices booted",
+        "simctl list devices -j",
         CmdOutput::success(r#"{"devices":{}}"#),
     );
     let receipt = run(&mut mock, &request(&repo, &app, 30));
-    assert!(labels(&mock).iter().any(|l| l == "simctl-list-booted"));
+    assert!(labels(&mock).iter().any(|l| l == "simctl-list"));
     assert_eq!(mock.remaining(), 0);
     assert_eq!(receipt.preflight_jev.as_ref().unwrap().calls, 0);
     assert_ne!(
@@ -5762,6 +5831,10 @@ fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_l
         mock.expect_run("ls-files", CmdOutput::success(""));
         common::script_xcode(&mut mock);
         common::script_ios_app_verification(&mut mock);
+        mock.expect_run(
+            "pnpm config get node-options",
+            CmdOutput::success("undefined\n"),
+        );
         mock.expect_spawn(
             "expo start",
             Spawned {
@@ -5771,6 +5844,7 @@ fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_l
         );
         mock.expect_run("ps", CmdOutput::success(LSTART));
         mock.expect_run("ps", CmdOutput::success("node expo start"));
+        script_check_inventory(&mut mock);
         mock.expect_run(&format!("simctl install {UDID}"), CmdOutput::success(""));
         for launch in [true, false] {
             mock.expect_run("ps", CmdOutput::success(LSTART));
@@ -5782,6 +5856,7 @@ fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_l
                 mock.expect_run("qaren-request-probe", CmdOutput::success(""));
                 mock.expect_run("expo-platform", CmdOutput::success(""));
                 mock.expect_run("expo-platform", CmdOutput::success(""));
+                script_check_inventory(&mut mock);
                 common::script_devmenu_defaults(&mut mock, CmdOutput::success(""));
                 mock.expect_run(
                     &format!("simctl launch --terminate-running-process {UDID}"),
@@ -6130,7 +6205,7 @@ fn available_inventory(state: &str) -> String {
 fn boot_device_selection_refuses_unknown_inventory_without_claiming_or_falling_back() {
     let available = available_inventory("Shutdown");
     for restart in [false, true] {
-        for output in [
+        for (case, output) in [
             CmdOutput::failed(1, "unavailable"),
             CmdOutput::success("not json"),
             CmdOutput::success("{}"),
@@ -6148,7 +6223,10 @@ fn boot_device_selection_refuses_unknown_inventory_without_claiming_or_falling_b
                 timed_out: true,
                 ..CmdOutput::success(&available)
             },
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let (repo, app) = app_repo();
             let mut req = request(&repo, &app, 30);
             req.device = Some(UDID.into());
@@ -6157,11 +6235,18 @@ fn boot_device_selection_refuses_unknown_inventory_without_claiming_or_falling_b
             let mut mock = MockRunner::new();
             mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
             script_plan(&mut mock, &repo);
-            mock.expect_run("simctl list devices -j", output);
+            let unusable = matches!(case, 0 | 1 | 2 | 9 | 10);
+            for _ in 0..if unusable { 3 } else { 1 } {
+                mock.expect_run("simctl list devices -j", output.clone());
+            }
             let receipt = run(&mut mock, &req);
             assert_eq!(
                 receipt.failure.unwrap().code,
-                FailureCode::DeviceUnavailable,
+                if unusable {
+                    FailureCode::SimulatorInventoryUnavailable
+                } else {
+                    FailureCode::DeviceUnavailable
+                },
                 "restart={restart}"
             );
             assert_eq!(mock.remaining(), 0);
@@ -6258,7 +6343,7 @@ fn boot_device_readback_must_prove_exact_booted_target_and_unchanged_runtime_and
     let ready = available_inventory("Booted");
     for fresh in [false, true] {
         for initial in ["Shutdown", "Booted"] {
-            for output in [
+            for (index, output) in [
                 CmdOutput::failed(1, "inventory failed"),
                 CmdOutput::success("not json"),
                 CmdOutput::success(&available_inventory("Shutdown")),
@@ -6276,9 +6361,13 @@ fn boot_device_readback_must_prove_exact_booted_target_and_unchanged_runtime_and
                     stderr: "incomplete".into(),
                     ..CmdOutput::success(&ready)
                 },
-            ] {
+            ]
+            .into_iter()
+            .enumerate()
+            {
                 let (repo, app) = app_repo();
                 let mut mock = MockRunner::new();
+                mock.advance_on = Some(("simctl list devices -j".into(), 1200));
                 script_preflight_inventory(
                     &mut mock,
                     &repo,
@@ -6294,7 +6383,14 @@ fn boot_device_readback_must_prove_exact_booted_target_and_unchanged_runtime_and
                         CmdOutput::success(""),
                     );
                 }
-                mock.expect_run("simctl list devices -j", output);
+                let attempts = if matches!(index, 0 | 1 | 9 | 10) {
+                    3
+                } else {
+                    1
+                };
+                for _ in 0..attempts {
+                    mock.expect_run("simctl list devices -j", output.clone());
+                }
                 let mut runner = LeaseObservedRunner {
                     mock,
                     repo: repo.clone(),
@@ -6308,11 +6404,19 @@ fn boot_device_readback_must_prove_exact_booted_target_and_unchanged_runtime_and
                 req.fresh_install = fresh;
                 let receipt = run(&mut runner, &req);
                 assert_eq!(receipt.result, ReceiptResult::Failed);
-                assert_eq!(
-                    receipt.failure.unwrap().code,
-                    FailureCode::SimulatorBootFailed
-                );
-                let expected = if initial == "Shutdown" {
+                let failure = receipt.failure.as_ref().unwrap();
+                assert_eq!(failure.code, FailureCode::SimulatorBootFailed);
+                if attempts == 3 {
+                    assert!(failure.detail.contains("3 attempts"));
+                }
+                if index == 2 {
+                    assert!(failure
+                        .detail
+                        .contains("state seen: Shutdown; read latency 1.2 s"));
+                }
+                assert!(!failure.detail.contains("inventory failed"));
+                assert!(!failure.detail.contains("incomplete"));
+                let mut expected = if initial == "Shutdown" {
                     vec![
                         "fresh-install-admission",
                         "pnpm-install",
@@ -6330,6 +6434,7 @@ fn boot_device_readback_must_prove_exact_booted_target_and_unchanged_runtime_and
                         "simctl-list",
                     ]
                 };
+                expected.extend(std::iter::repeat_n("simctl-list", attempts - 1));
                 assert_eq!(runner.observed, expected);
                 assert_eq!(runner.mock.remaining(), 0);
                 assert_eq!(receipt.cleanup["device_lease"], "removed");
@@ -6530,11 +6635,23 @@ fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease()
             common::script_ios_deps(&mut mock);
             script_admission(&mut mock);
             if initial == "Shutdown" {
+                // A slow but successful boot spends the whole boot budget; the proof still reads.
+                mock.advance_on = Some((
+                    format!("simctl bootstatus {UDID}"),
+                    qaren::scenario::Deadlines::default().device_boot_seconds * 1000,
+                ));
                 mock.expect_run(
                     &format!("simctl bootstatus {UDID} -b"),
                     CmdOutput::success(""),
                 );
             }
+            mock.expect_run(
+                "simctl list devices -j",
+                CmdOutput {
+                    timed_out: true,
+                    ..Default::default()
+                },
+            );
             mock.expect_run(
                 "simctl list devices -j",
                 CmdOutput::success(&available_inventory("Booted")),
@@ -6571,6 +6688,7 @@ fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease()
                 "{initial} fresh={fresh}: {:?}",
                 receipt.failure
             );
+            assert_eq!(receipt.outcomes["inventory_attempts"], "2");
             assert_eq!(runner.mock.remaining(), 0);
             let lane = receipt.lane.as_ref().expect("an owned lane is pinned");
             assert_eq!(lane.device_id, UDID);
@@ -6597,7 +6715,7 @@ fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease()
             if initial == "Shutdown" {
                 phases.push("simctl-bootstatus");
             }
-            phases.push("simctl-list");
+            phases.extend(["simctl-list", "simctl-list"]);
             if fresh {
                 phases.extend(["simctl-listapps", "simctl-uninstall", "simctl-listapps"]);
             }
@@ -6617,7 +6735,7 @@ fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease()
                     );
                 }
                 if spec.label == "simctl-list" {
-                    assert_eq!(spec.timeout_seconds, 30);
+                    assert!([10, 30].contains(&spec.timeout_seconds));
                 }
                 if spec.label == "expo-run-ios" {
                     assert!(spec
@@ -6903,6 +7021,7 @@ fn restart_device_shutdown_or_readback_failure_stops_before_boot_install_or_walk
         "pre_list_failed",
         "shutdown_failed",
         "shutdown_timeout",
+        "readback_timeouts",
         "readback_still_booted",
         "readback_changed_runtime",
     ] {
@@ -6919,7 +7038,15 @@ fn restart_device_shutdown_or_readback_failure_stops_before_boot_install_or_walk
         script_admission(&mut mock);
         match fault {
             "pre_list_failed" => {
-                mock.expect_run("simctl list devices -j", CmdOutput::failed(1, "list error"));
+                for _ in 0..3 {
+                    mock.expect_run(
+                        "simctl list devices -j",
+                        CmdOutput {
+                            timed_out: true,
+                            ..Default::default()
+                        },
+                    );
+                }
             }
             "shutdown_failed" => {
                 mock.expect_run(
@@ -6943,6 +7070,22 @@ fn restart_device_shutdown_or_readback_failure_stops_before_boot_install_or_walk
                         ..CmdOutput::success("")
                     },
                 );
+            }
+            "readback_timeouts" => {
+                mock.expect_run(
+                    "simctl list devices -j",
+                    CmdOutput::success(&available_inventory("Booted")),
+                );
+                mock.expect_run(&format!("simctl shutdown {UDID}"), CmdOutput::success(""));
+                for _ in 0..3 {
+                    mock.expect_run(
+                        "simctl list devices -j",
+                        CmdOutput {
+                            timed_out: true,
+                            ..Default::default()
+                        },
+                    );
+                }
             }
             "readback_still_booted" => {
                 mock.expect_run(
@@ -6981,10 +7124,22 @@ fn restart_device_shutdown_or_readback_failure_stops_before_boot_install_or_walk
         req.device = Some(UDID.into());
         req.restart_device = true;
         let receipt = run(&mut runner, &req);
-        assert_eq!(receipt.result, ReceiptResult::Failed, "{fault}");
+        assert_eq!(
+            receipt.result,
+            if fault == "pre_list_failed" {
+                ReceiptResult::Refused
+            } else {
+                ReceiptResult::Failed
+            },
+            "{fault}"
+        );
         assert_eq!(
             receipt.failure.unwrap().code,
-            FailureCode::SimulatorBootFailed,
+            if fault == "pre_list_failed" {
+                FailureCode::SimulatorInventoryUnavailable
+            } else {
+                FailureCode::SimulatorBootFailed
+            },
             "{fault}"
         );
         assert!(!runner.observed.iter().any(|l| matches!(
@@ -7718,10 +7873,7 @@ fn script_pr_preflight_requiring(
     );
     mock.expect_run("update-ref -d", CmdOutput::success(""));
     script_plan_requiring(mock, repo, required, non_secret);
-    mock.expect_run(
-        "simctl list devices booted",
-        CmdOutput::success(&booted_json()),
-    );
+    mock.expect_run("simctl list devices -j", CmdOutput::success(&booted_json()));
     mock.expect_run("worktree add --detach", CmdOutput::success(""));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", wt.display()))); // toplevel of the worktree
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", wt.display()))); // explicit worktree
@@ -8607,7 +8759,7 @@ fn a_fetched_head_that_is_not_the_viewed_head_refuses_and_leaves_no_worktree() {
     assert!(!receipt.cleanup.contains_key("pr_worktree"));
     assert_eq!(mock.remaining(), 0);
     assert!(!labels(&mock).contains(&"git-worktree-add".to_string()));
-    assert!(!labels(&mock).iter().any(|l| l == "simctl-list-booted"));
+    assert!(!labels(&mock).iter().any(|l| l == "simctl-list"));
 }
 
 #[test]
@@ -8956,10 +9108,7 @@ fn a_cancel_during_the_git_probes_claims_nothing_and_runs_nothing_after_it() {
     let mut mock = MockRunner::new();
     mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
     script_plan(&mut mock, &repo);
-    mock.expect_run(
-        "simctl list devices booted",
-        CmdOutput::success(&booted_json()),
-    );
+    mock.expect_run("simctl list devices -j", CmdOutput::success(&booted_json()));
     mock.expect_run(
         "rev-parse --show-toplevel",
         CmdOutput::failed(1, "interrupted"),
@@ -8987,9 +9136,12 @@ fn a_cancel_during_the_git_probes_claims_nothing_and_runs_nothing_after_it() {
 }
 
 // Writes the recorder's raw capture and each encode's output, as the real tools would.
-struct Encoding(PrRunner, Option<u64>, u64);
+struct Encoding(PrRunner, Option<u64>, u64, bool);
 
 impl Runner for Encoding {
+    fn adb_server_version(&self, port: u16) -> Result<u32, String> {
+        self.0.adb_server_version(port)
+    }
     fn env_var(&self, name: &str) -> Option<String> {
         self.0.env_var(name)
     }
@@ -9003,7 +9155,20 @@ impl Runner for Encoding {
     }
     fn execute(&mut self, spec: &CmdSpec, interruptible: bool) -> CmdOutput {
         if spec.label == "ffmpeg-encode" {
-            std::fs::write(spec.args.last().unwrap(), vec![0u8; 64]).unwrap();
+            let output = Path::new(spec.args.last().unwrap());
+            std::fs::write(output, vec![0u8; 64]).unwrap();
+            if self.3 {
+                let shots = output
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join("screenshots");
+                std::fs::create_dir_all(&shots).unwrap();
+                for name in ["a", "b"] {
+                    std::fs::write(shots.join(format!("{name}.png")), "fixture").unwrap();
+                }
+            }
         }
         self.0.execute(spec, interruptible)
     }
@@ -9012,6 +9177,13 @@ impl Runner for Encoding {
             self.1 = Some(self.now_epoch_ms());
             let raw = PathBuf::from(spec.args.last().unwrap());
             std::fs::write(&raw, vec![0u8; 4096]).unwrap();
+            if self.3 {
+                let shots = raw.parent().unwrap().parent().unwrap().join("screenshots");
+                std::fs::create_dir_all(&shots).unwrap();
+                for name in ["a", "b"] {
+                    std::fs::write(shots.join(format!("{name}.png")), "fixture").unwrap();
+                }
+            }
             let other = raw
                 .ancestors()
                 .nth(3)
@@ -9043,18 +9215,35 @@ impl Runner for Encoding {
 // R8: only this run's own raw capture is reclaimed, and only once a playable encode replaces it.
 #[test]
 fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
-    for (encodes, first_start, login_offset, expected_offset, recorder_delay) in [
-        (true, None, None, 2_850, 559),
-        (false, None, None, 2_850, 559),
-        (true, Some(0), None, 2_850, 559),
-        (true, Some(12_000), None, 12_000, 559),
-        (true, Some(12_000), Some(20_000), 22_850, 559),
-        (true, Some(12_000), Some(5_000), 12_000, 559),
-        (true, None, Some(20_000), 22_850, 559),
-        (true, Some(33_000), None, 33_000, 559),
-        (true, Some(10_000), None, 10_000, 8_000),
+    for (encodes, first_start, login_offset, expected_offset, recorder_delay, diagnostic) in [
+        (true, None, None, 2_850, 559, "off"),
+        (true, None, None, 2_850, 559, "stall"),
+        (false, None, None, 2_850, 559, "off"),
+        (true, Some(0), None, 2_850, 559, "off"),
+        (true, Some(12_000), None, 12_000, 559, "off"),
+        (true, Some(12_000), Some(20_000), 22_850, 559, "off"),
+        (true, Some(12_000), Some(5_000), 12_000, 559, "off"),
+        (true, None, Some(20_000), 22_850, 559, "off"),
+        (true, Some(33_000), None, 33_000, 559, "off"),
+        (true, Some(10_000), None, 10_000, 8_000, "off"),
+        (true, None, None, 2_850, 559, "no-freeze"),
+        (true, None, None, 2_850, 559, "identical"),
+        (true, None, None, 2_850, 559, "withheld"),
+        (true, None, None, 2_850, 559, "duration-failed"),
+        (true, None, None, 2_850, 559, "dimensions-failed"),
+        (true, None, None, 2_850, 559, "pixels-failed"),
+        (true, None, None, 2_850, 559, "malformed"),
+        (true, None, None, 2_850, 559, "missing"),
+        (true, None, None, 2_850, 559, "late-failed"),
     ] {
+        let stall = diagnostic != "off";
+
         let (repo, app) = app_repo();
+        if stall && diagnostic != "withheld" {
+            let config = app.join(".qaren/config.yaml");
+            let contents = std::fs::read_to_string(&config).unwrap();
+            std::fs::write(config, format!("{contents}video: non-strict\n")).unwrap();
+        }
         let wt = repo.join("runs").join(run_id()).join("wt");
         let mut runner = Encoding(
             PrRunner {
@@ -9068,6 +9257,7 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
             },
             None,
             recorder_delay,
+            stall,
         );
         let mock = &mut runner.0.inner;
         let admitted = mock.now_epoch_ms() + 4_100;
@@ -9088,6 +9278,51 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
+        if stall {
+            let mut extra = messages[1].clone();
+            extra["payload"]["line"] = 7.into();
+            extra["payload"]["t"] = 10_000.into();
+            extra["payload"]["timing"] = serde_json::json!({
+                "captureMs":0,"nativeMs":0,"reactMs":0,"resolveMs":0,"jevMs":0,
+                "actMs":0,"postCaptureMs":0,"otherMs":1000,"total":1000
+            });
+            extra["payload"]["screenshot"] = "screenshots/a.png".into();
+            let first = extra["payload"].clone();
+            messages.insert(2, extra.clone());
+            messages[2]["payload"]["line"] = 8.into();
+            messages[2]["payload"]["t"] = 20_000.into();
+            messages[2]["payload"]["screenshot"] = "screenshots/b.png".into();
+            let second = messages[2]["payload"].clone();
+            messages[1]["payload"] = first.clone();
+            let result = messages.last_mut().unwrap();
+            result["payload"]["videoPublication"] = "eligible".into();
+            let rows = result["payload"]["steps"].as_array_mut().unwrap();
+            rows[0] = first;
+            rows.insert(1, second);
+            let mut withheld = rows[0].clone();
+            withheld["block"] = "login".into();
+            withheld["line"] = 3.into();
+            withheld["t"] = if diagnostic == "withheld" { 15_000 } else { 0 }.into();
+            withheld["screenshotWithheld"] = "runtime-input".into();
+            withheld.as_object_mut().unwrap().remove("screenshot");
+            rows.push(withheld);
+            if diagnostic == "missing" {
+                rows[1]["screenshot"] = "missing.png".into();
+            }
+            if diagnostic == "late-failed" {
+                rows[1]["t"] = 12_000.into();
+                for (index, t) in [(0, 22_000), (1, 24_000)] {
+                    let mut later = rows[index].clone();
+                    later["line"] = (9 + index).into();
+                    later["t"] = t.into();
+                    rows.push(later);
+                }
+            }
+            if diagnostic != "withheld" {
+                result["payload"]["videoPolicy"] = "non-strict".into();
+                result["payload"]["nonStrictPublication"] = "eligible".into();
+            }
+        }
         if let Some(login) = login {
             messages.last_mut().unwrap()["payload"]["publishFromMs"] = login.into();
         }
@@ -9126,6 +9361,55 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
             mock.expect_run("ffprobe", CmdOutput::success("3.5\n"));
             mock.expect_run("ffmpeg", CmdOutput::success(""));
             mock.expect_run("ffprobe", CmdOutput::success("0.1\n"));
+            if stall {
+                mock.expect_run(
+                    "ffprobe",
+                    if diagnostic == "duration-failed" {
+                        CmdOutput::failed(1, "duration failed")
+                    } else {
+                        CmdOutput::success("30.676")
+                    },
+                );
+                if diagnostic != "duration-failed" {
+                    let log = match diagnostic {
+                        "no-freeze" => "",
+                        "malformed" => "lavfi.freezedetect.freeze_start: NaN\n",
+                        "late-failed" => "lavfi.freezedetect.freeze_start: 0\nlavfi.freezedetect.freeze_end: 15\nlavfi.freezedetect.freeze_start: 16\n",
+                        _ => "lavfi.freezedetect.freeze_start: 0\n",
+                    };
+                    mock.expect_run(
+                        "freezedetect",
+                        CmdOutput {
+                            stderr: log.into(),
+                            ..CmdOutput::success("")
+                        },
+                    );
+                    if !matches!(diagnostic, "no-freeze" | "malformed" | "withheld") {
+                        mock.expect_run(
+                            "ffprobe",
+                            if diagnostic == "dimensions-failed" {
+                                CmdOutput::failed(1, "dimensions failed")
+                            } else {
+                                CmdOutput::success("16x16")
+                            },
+                        );
+                        if !matches!(diagnostic, "dimensions-failed" | "missing") {
+                            mock.expect_run("filter_complex", if diagnostic == "pixels-failed" {
+                                CmdOutput::failed(1, "pixels failed")
+                            } else { CmdOutput {
+                                stderr: if diagnostic == "identical" { "lavfi.freezedetect.freeze_start: 0\n" } else { "lavfi.freezedetect.freeze_start: 0\nlavfi.freezedetect.freeze_end: 1\n" }.into(),
+                                ..CmdOutput::success("frame=2\nprogress=end\n")
+                            }});
+                            if diagnostic == "late-failed" {
+                                mock.expect_run(
+                                    "filter_complex",
+                                    CmdOutput::failed(1, "later pixels failed"),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         } else {
             mock.expect_run("ffmpeg", CmdOutput::failed(1, "encode failed"));
         }
@@ -9139,6 +9423,50 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
 
         assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
         assert_eq!(runner.0.inner.remaining(), 0);
+        let pr: qaren::publish::PrRunRecord = serde_json::from_slice(
+            &std::fs::read(repo.join("runs").join(run_id()).join("pr.json")).unwrap(),
+        )
+        .unwrap();
+        if stall {
+            let ledger: qaren::core::Ledger = serde_json::from_slice(
+                &std::fs::read(repo.join("runs").join(run_id()).join("ledger.json")).unwrap(),
+            )
+            .unwrap();
+            let login = ledger
+                .steps
+                .iter()
+                .find(|row| row.block == "login")
+                .unwrap();
+            assert_eq!(
+                login.screenshot_withheld,
+                Some(qaren::core::WithholdCause::RuntimeInput)
+            );
+            assert!(login.screenshot.is_none());
+            assert!(ledger.media_withheld.is_none());
+            if diagnostic != "withheld" {
+                assert_eq!(ledger.video_policy, qaren::record::VideoPolicy::NonStrict);
+            }
+        }
+        if diagnostic == "stall" {
+            assert_eq!(
+                receipt.outcomes["video_continuity"],
+                "suspected-stall 30676 over lines 7–8"
+            );
+            assert_eq!(
+                pr.video_continuity,
+                vec![qaren::record::VideoStall {
+                    duration_ms: 30_676,
+                    first_line: 7,
+                    last_line: 8,
+                }]
+            );
+        } else if matches!(diagnostic, "no-freeze" | "identical" | "withheld") {
+            assert_eq!(receipt.outcomes["video_continuity"], "examined");
+            assert!(pr.video_continuity.is_empty());
+        } else {
+            assert!(!receipt.outcomes.contains_key("video_continuity"));
+            assert!(pr.video_continuity.is_empty());
+        }
         let media = repo.join("runs").join(run_id()).join("media");
         assert_eq!(
             !media.join("raw.mov").exists(),
@@ -9548,6 +9876,7 @@ fn a_cancel_during_a_cached_ios_install_names_the_substage() {
         common::script_xcode(&mut mock);
         common::script_ios_app_verification(&mut mock);
         common::script_ios_metro_spawn(&mut mock);
+        script_check_inventory(&mut mock);
         mock.expect_run("simctl install", CmdOutput::success(""));
         if index > 0 {
             mock.expect_run("ps", CmdOutput::success(LSTART));
@@ -9562,9 +9891,11 @@ fn a_cancel_during_a_cached_ios_install_names_the_substage() {
             mock.expect_run("expo-platform", CmdOutput::success(""));
         }
         if index == 2 {
+            script_check_inventory(&mut mock);
             mock.expect_run("defaults write", CmdOutput::success(""));
         }
         if index == 3 {
+            script_check_inventory(&mut mock);
             common::script_devmenu_defaults(&mut mock, CmdOutput::success(""));
             common::script_ios_launch(&mut mock);
         }
@@ -9633,6 +9964,7 @@ fn check_fails_fast_when_the_launched_ios_app_exits_and_names_the_missing_framew
     common::script_xcode(&mut mock);
     common::script_ios_app_verification(&mut mock);
     common::script_ios_metro_spawn(&mut mock);
+    script_check_inventory(&mut mock);
     mock.expect_run("simctl install", CmdOutput::success(""));
     mock.expect_run("ps", CmdOutput::success(LSTART));
     mock.expect_run("ps", CmdOutput::success("S"));
@@ -9642,6 +9974,7 @@ fn check_fails_fast_when_the_launched_ios_app_exits_and_names_the_missing_framew
     mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
+    script_check_inventory(&mut mock);
     common::script_devmenu_defaults(&mut mock, CmdOutput::success(""));
     common::script_ios_launch(&mut mock);
     for _ in 0..2 {
@@ -9687,6 +10020,10 @@ fn check_fails_fast_when_the_launched_ios_app_exits_and_names_the_missing_framew
 // Metro answers on the second poll, so the scripted clock advances inside reuse readiness.
 fn script_warm_launch_after_one_metro_retry(mock: &mut MockRunner) {
     common::script_ios_app_verification(mock);
+    mock.expect_run(
+        "pnpm config get node-options",
+        CmdOutput::success("undefined\n"),
+    );
     mock.expect_spawn(
         "expo start",
         qaren::exec::Spawned {
@@ -9696,6 +10033,7 @@ fn script_warm_launch_after_one_metro_retry(mock: &mut MockRunner) {
     );
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:01:00 2026"));
     mock.expect_run("ps", CmdOutput::success("node expo start"));
+    script_check_inventory(mock);
     mock.expect_run("simctl install", CmdOutput::success(""));
     for responding in [false, true] {
         mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:01:00 2026"));
@@ -9713,6 +10051,7 @@ fn script_warm_launch_after_one_metro_retry(mock: &mut MockRunner) {
     mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
+    script_check_inventory(mock);
     common::script_devmenu_defaults(mock, CmdOutput::success(""));
     mock.expect_run(
         "simctl launch --terminate-running-process",
@@ -10021,29 +10360,39 @@ fn script_android_pr_ready(mock: &mut MockRunner) {
 
 #[test]
 fn android_pr_on_api_37_starts_the_recorder() {
-    android_pr_video_flow(37);
+    android_pr_video_flow(37, false);
 }
 
 #[test]
 fn android_pr_on_api_33_keeps_the_walk_with_an_explicit_video_unavailable_reason() {
-    android_pr_video_flow(33);
+    android_pr_video_flow(33, false);
 }
 
-fn android_pr_video_flow(api: u16) {
+#[test]
+fn an_eligible_android_publication_does_not_run_the_ios_continuity_detector() {
+    android_pr_video_flow(37, true);
+}
+
+fn android_pr_video_flow(api: u16, encodes: bool) {
     let (repo, app) = app_repo();
     let mut req = android_request(&repo, &app);
     req.pr = pr_request(&repo, &app).pr;
     let wt = req.runs_root.join(run_id()).join("wt");
-    let mut runner = PrRunner {
-        inner: android_mock(),
-        app: app.clone(),
-        recorder_persisted_before_spawn: None,
-        fail_core_spawn: false,
-        planted_worktree_config: None,
-        worktree_config_planted: false,
-        fail_host_checkpoint: false,
-    };
-    let mock = &mut runner.inner;
+    let mut runner = Encoding(
+        PrRunner {
+            inner: android_mock(),
+            app: app.clone(),
+            recorder_persisted_before_spawn: None,
+            fail_core_spawn: false,
+            planted_worktree_config: None,
+            worktree_config_planted: false,
+            fail_host_checkpoint: false,
+        },
+        None,
+        0,
+        encodes,
+    );
+    let mock = &mut runner.0.inner;
     script_android_pr_preflight(mock, &repo, &wt, api);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
     mock.expect_run("ls-files", CmdOutput::success(""));
@@ -10064,7 +10413,29 @@ fn android_pr_video_flow(api: u16) {
         mock.expect_run("ps", CmdOutput::success("adb shell screenrecord"));
         mock.expect_run("shell pgrep -f", CmdOutput::success("42\n"));
     }
-    mock.expect_spawn_piped("walk.js", 9000, &pr_pass_stdout(), Some(0));
+    let stdout = if encodes {
+        pr_pass_stdout()
+            .lines()
+            .map(|line| {
+                let mut message: serde_json::Value = serde_json::from_str(line).unwrap();
+                if message["type"] == "result" {
+                    let ledger = &mut message["payload"];
+                    ledger["admittedAtMs"] = 1.into();
+                    ledger["videoPublication"] = "eligible".into();
+                    let rows = ledger["steps"].as_array_mut().unwrap();
+                    rows[0]["screenshot"] = "screenshots/a.png".into();
+                    let mut second = rows[0].clone();
+                    second["line"] = 8.into();
+                    second["screenshot"] = "screenshots/b.png".into();
+                    rows.push(second);
+                }
+                format!("{message}\n")
+            })
+            .collect::<String>()
+    } else {
+        pr_pass_stdout()
+    };
+    mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
     script_core_identity(mock);
     script_drift_status(mock);
     script_pr_provenance_recheck(mock);
@@ -10085,7 +10456,15 @@ fn android_pr_video_flow(api: u16) {
     mock.expect_run("du -sk", CmdOutput::success("4\n"));
     mock.expect_run("worktree remove --force", CmdOutput::success(""));
     if api >= 34 {
-        mock.expect_run("which ffmpeg", CmdOutput::failed(1, ""));
+        if encodes {
+            mock.expect_run("which ffmpeg", CmdOutput::success("/opt/ffmpeg\n"));
+            mock.expect_run("ffmpeg", CmdOutput::success(""));
+            mock.expect_run("ffprobe", CmdOutput::success("1.0\n"));
+            mock.expect_run("ffmpeg", CmdOutput::success(""));
+            mock.expect_run("ffprobe", CmdOutput::success("0.1\n"));
+        } else {
+            mock.expect_run("which ffmpeg", CmdOutput::failed(1, ""));
+        }
     }
     mock.expect_run(
         "gh pr view https://github.com/o/r/pull/12",
@@ -10095,9 +10474,9 @@ fn android_pr_video_flow(api: u16) {
     let receipt = run(&mut runner, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     if api >= 34 {
-        assert_eq!(runner.recorder_persisted_before_spawn, Some(true));
+        assert_eq!(runner.0.recorder_persisted_before_spawn, Some(true));
         assert_subsequence(
-            &labels(&runner.inner),
+            &labels(&runner.0.inner),
             &[
                 "adb-screenrecord",
                 "core-walk",
@@ -10109,11 +10488,11 @@ fn android_pr_video_flow(api: u16) {
         );
         assert_eq!(receipt.cleanup["recorder"], "removed");
     } else {
-        assert_eq!(runner.recorder_persisted_before_spawn, None);
-        assert!(labels(&runner.inner)
+        assert_eq!(runner.0.recorder_persisted_before_spawn, None);
+        assert!(labels(&runner.0.inner)
             .iter()
             .any(|label| label == "core-walk"));
-        assert!(!labels(&runner.inner)
+        assert!(!labels(&runner.0.inner)
             .iter()
             .any(|label| label == "adb-screenrecord"));
         assert_eq!(
@@ -10122,8 +10501,28 @@ fn android_pr_video_flow(api: u16) {
         );
     }
     assert_eq!(receipt.cleanup["device_lease"], "removed");
-    assert_eq!(runner.inner.remaining(), 0);
-    no_ios_or_expo_android_build(&runner.inner);
+    assert_eq!(runner.0.inner.remaining(), 0);
+    no_ios_or_expo_android_build(&runner.0.inner);
+    if encodes {
+        let pr: qaren::publish::PrRunRecord = serde_json::from_slice(
+            &std::fs::read(req.runs_root.join(run_id()).join("pr.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(pr.video, qaren::record::VideoStatus::Available);
+        assert!(req
+            .runs_root
+            .join(run_id())
+            .join("media/video-published.mp4")
+            .is_file());
+        assert!(!receipt.outcomes.contains_key("video_continuity"));
+        assert!(pr.video_continuity.is_empty());
+        assert!(!runner
+            .0
+            .inner
+            .calls
+            .iter()
+            .any(|c| c.label == "ffmpeg-video-continuity"));
+    }
 }
 
 struct DeadlineCase {
@@ -10562,6 +10961,7 @@ fn video_declaration_reaches_the_child_and_durable_run_outputs() {
                     tested_sha: PR_HEAD,
                     tested_older_commit: false,
                     video: &qaren::record::VideoStatus::Available,
+                    video_continuity: &[],
                     screenshot: None,
                     plan_sha256: "0",
                     video_publication: &qaren::record::VideoPublication::WithheldPrivacy,
@@ -10814,6 +11214,12 @@ fn admission_refusal_codes_recovery_and_private_facts_reach_the_receipt_and_end_
                 "inspect_development_target",
             ),
             (
+                "dev_runtime_unproven",
+                "CDP_NOT_CONNECTED",
+                FailureCode::CoreRefused,
+                "inspect_development_target",
+            ),
+            (
                 "react_readiness_timeout",
                 "CDP_NOT_CONNECTED",
                 FailureCode::CoreRefused,
@@ -10826,7 +11232,7 @@ fn admission_refusal_codes_recovery_and_private_facts_reach_the_receipt_and_end_
             script_provision(&mut mock);
             script_drift_status(&mut mock);
             script_host_probe(&mut mock, UDID, hosts_absent());
-            let facts = serde_json::json!({
+            let mut facts = serde_json::json!({
                 "attempt":2,"lastStarted":"attach","lastCompleted":"retry_wait","inner":inner,
                 "relaunches":0,"relaunchFailed":false,"liveness":"not_probed",
                 "elapsedMs":120000,"remainingMs":1080000,"budgetMs":1200000,
@@ -10834,6 +11240,15 @@ fn admission_refusal_codes_recovery_and_private_facts_reach_the_receipt_and_end_
                 "targetsTotal":1,"devTrue":0,"devFalse": if inner == "non_dev_bundle" {1} else {0},
                 "devUndefined":0,"devUnknown": if inner == "non_dev_bundle" {0} else {1}
             });
+            if inner == "dev_runtime_unproven" {
+                facts["relaunches"] = 1.into();
+                facts["bundleRequest"] = "received".into();
+                facts["bundleBuilt"] = "none".into();
+                facts["foreignPages"] = 1.into();
+                facts["sameNameDevices"] = 1.into();
+                facts["devUndefined"] = 1.into();
+                facts["devUnknown"] = 0.into();
+            }
             let refusal = serde_json::json!({"verdict":"REFUSED","code":code,"message":"admission refused","admission":facts});
             mock.expect_spawn_piped(
                 "walk.js",

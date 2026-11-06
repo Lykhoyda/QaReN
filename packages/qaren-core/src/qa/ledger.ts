@@ -1,3 +1,5 @@
+import type { ScrollBandReceipt } from './resolve.js';
+import type { OverlayHitReceipt } from './live-hit.js';
 import type { PressEvidence } from './selection-press.js';
 import type { MediaLatch, WithholdCause } from './privacy.js';
 export type RowOutcome = 'pass' | 'fail' | 'retry';
@@ -26,6 +28,8 @@ export interface EntryMismatch {
 }
 
 export interface LedgerRow {
+  overlayChecks?: OverlayHitReceipt[];
+  scrollBand?: ScrollBandReceipt;
   block: string;
   operationId?: number;
   line: number;
@@ -61,6 +65,8 @@ export interface LedgerRow {
   devError?: { variant: 'redbox' | 'logbox'; dismissal: number };
   // A plain scroll that passed although two dispatched attempts left the screen unchanged.
   scrollDetail?: { status: 'no_visible_change'; attempts: 2 };
+  // How long the first Tap or Fill after launch polled for its absent target.
+  implicitWaitMs?: number;
 }
 
 // The value-free announcement that a plan line begins; its row later carries the same operationId.

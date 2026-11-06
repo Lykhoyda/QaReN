@@ -1,34 +1,42 @@
-// CodeQL js/bad-code-sanitization (alerts #23 #24):
-// `call` is interpolated into a JavaScript expression that the MCP server
-// sends to Hermes via Runtime.evaluate. All production call sites use hardcoded
-// method names + JSON.stringify'd arguments (e.g. `getStoreState(${pathArg}, ${typeArg})`,
-// `getConsole(${JSON.stringify(opts)})`), so injection is not reachable in
-// practice. validateCall adds defense in depth: it requires `call` to be
-// `identifier(<args>)` where <args> is empty or a comma-separated list of pure
-// JSON DATA values. JSON data cannot carry executable code (no calls, no
-// statements), so an object/array-literal argument — getConsole({...}),
-// dispatchAction({...}) — is accepted, while a nested call such as
-// `getConsole(stealSecrets())` or any `;`-statement injection is rejected.
-// (The previous `[^;{}]*` regex was both too strict — it banned legitimate JSON
-// object args, breaking cdp_console_log — and too loose — it let nested calls
-// through.)
-const CALL_RE = /^[A-Za-z_$][A-Za-z0-9_$]*\(([\s\S]*)\)$/;
+const CALL_RE = /^([A-Za-z_$][A-Za-z0-9_$]*)\(([\s\S]*)\)$/;
 
-function validateCall(call: string): void {
+function serializeArgs(args: string): string {
+  if (args.trim() === '') return '';
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (const match of args.matchAll(/"(?:[^"\\]|\\.)*"|[[\]{},]/g)) {
+    const token = match[0];
+    if (token === '[' || token === '{') depth++;
+    else if (token === ']' || token === '}') depth--;
+    else if (token === ',' && depth === 0) {
+      parts.push(args.slice(start, match.index));
+      start = match.index + 1;
+    }
+  }
+  parts.push(args.slice(start));
+  return parts
+    .map((part) => {
+      // An absent argument arrives as JSON.stringify(undefined).
+      if (part.trim() === 'undefined') return 'undefined';
+      return JSON.stringify(JSON.parse(part));
+    })
+    .join(', ');
+}
+
+/** A helper call proven to be `identifier(<JSON data args>)`, safe to evaluate in the app. */
+export type HelperCall = string & { readonly __brand: 'HelperCall' };
+
+export function helperCall(call: string): HelperCall {
   const match = CALL_RE.exec(call);
   if (match) {
-    const args = match[1].trim();
-    if (args === '') return;
-    // `undefined` is the one non-JSON token a call site may emit (store-state's
-    // absent path/type, e.g. `getStoreState(undefined, undefined)`). Normalize
-    // it to `null` FOR VALIDATION ONLY — both are inert literals; the original
-    // (unmodified) `call` is what actually gets interpolated.
-    const forJson = args.replace(/\bundefined\b/g, 'null');
     try {
-      JSON.parse(`[${forJson}]`);
-      return;
+      return `${match[1]}(${serializeArgs(match[2])})`.replace(
+        /[<>/\u2028\u2029]/g,
+        (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`,
+      ) as HelperCall;
     } catch {
-      /* not pure JSON data — fall through to reject */
+      // Reject arguments that are neither JSON data nor bare undefined.
     }
   }
   throw new Error(
@@ -37,13 +45,8 @@ function validateCall(call: string): void {
   );
 }
 
-export function helperExpr(call: string, bridgeDetected: boolean): string {
-  validateCall(call);
-  return bridgeDetected ? `__RN_DEV_BRIDGE__.${call}` : `__QAREN.${call}`;
-}
-
-export function bridgeWithFallback(call: string, bridgeDetected: boolean): string {
-  validateCall(call);
+// A legacy app-side __RN_DEV_BRIDGE__ answers first; an error reply or a throw falls back to __QAREN.
+export function bridgeWithFallback(call: HelperCall, bridgeDetected: boolean): string {
   return bridgeDetected
     ? `(function() { var fb = false; try { var r = __RN_DEV_BRIDGE__.${call}; var p = JSON.parse(r); if (p && (p.__agent_error || p.error)) fb = true; else return r; } catch(e) { fb = true; } if (fb) return __QAREN.${call}; })()`
     : `__QAREN.${call}`;

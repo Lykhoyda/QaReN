@@ -91,6 +91,7 @@ fn run_dir(cross_repository: bool) -> (PathBuf, PathBuf) {
         device: "qaren-check".into(),
         plan_sha256: "e".repeat(64),
         video: VideoStatus::Available,
+        video_continuity: Vec::new(),
         video_publication: VideoPublication::Eligible,
         video_withholding_reason: None,
         tested_older_commit: false,

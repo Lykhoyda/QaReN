@@ -51,6 +51,7 @@ fn render(
             tested_sha: &"a1b2c3d".repeat(6)[..40],
             tested_older_commit: older,
             video,
+            video_continuity: &[],
             screenshot: qaren::report::failing_screenshot(ledger).as_deref(),
             plan_sha256: &"e".repeat(64),
             video_publication,
@@ -152,6 +153,7 @@ fn the_verdict_is_structured() {
             tested_sha: &"a".repeat(40),
             tested_older_commit: false,
             video: &VideoStatus::TooLarge,
+            video_continuity: &[],
             screenshot: None,
             plan_sha256: "0",
             video_publication: &VideoPublication::Eligible,
@@ -278,4 +280,57 @@ fn selected_config_wording_keeps_secret_and_machine_redaction() {
             assert!(body.contains("declare video: non-strict"), "{body}");
         }
     });
+}
+
+#[test]
+fn a_suspected_video_stall_is_noted_only_beside_an_available_eligible_video() {
+    let ledger = failing_ledger();
+    let input = ReportInput {
+        run_id: "check-continuity",
+        platform: "ios",
+        app_id: "com.test",
+        device: "test",
+        ledger: &ledger,
+    };
+    let stalls = [qaren::record::VideoStall {
+        duration_ms: 47_900,
+        first_line: 7,
+        last_line: 14,
+    }];
+    for (video, eligibility, expected) in [
+        (VideoStatus::Available, VideoPublication::Eligible, true),
+        (
+            VideoStatus::Unavailable("detector irrelevant".into()),
+            VideoPublication::Eligible,
+            false,
+        ),
+        (
+            VideoStatus::Available,
+            VideoPublication::WithheldPrivacy,
+            false,
+        ),
+    ] {
+        let pr = PrRun {
+            tested_sha: "a1b2c3d",
+            tested_older_commit: false,
+            video: &video,
+            video_continuity: &stalls,
+            screenshot: None,
+            plan_sha256: "0",
+            video_publication: &eligibility,
+        };
+        let body = render_pr_comment(&input, None, &pr, &machine());
+        assert_eq!(body.contains(&stalls[0].sentence()), expected, "{body}");
+        if expected {
+            let description = qaren::report::render_pr_description(
+                &input,
+                None,
+                &pr,
+                &machine(),
+                "https://github.com/o/r/pull/12#issuecomment-1",
+                Some("https://github.com/user-attachments/assets/video"),
+            );
+            assert!(description.contains(&stalls[0].sentence()), "{description}");
+        }
+    }
 }

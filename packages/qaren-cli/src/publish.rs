@@ -28,6 +28,8 @@ pub struct PrRunRecord {
     pub device: String,
     pub plan_sha256: String,
     pub video: VideoStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub video_continuity: Vec<record::VideoStall>,
     #[serde(default, deserialize_with = "video_publication")]
     pub video_publication: VideoPublication,
     #[serde(default)]
@@ -870,6 +872,7 @@ fn describe(
             tested_sha: &pr.head_ref_oid,
             tested_older_commit: pr.tested_older_commit,
             video: &video,
+            video_continuity: &pr.video_continuity,
             screenshot: None,
             plan_sha256: &pr.plan_sha256,
             video_publication: &pr.video_publication,
@@ -988,6 +991,7 @@ fn publish_inner(
                         tested_sha: &pr.head_ref_oid,
                         tested_older_commit: pr.tested_older_commit,
                         video: &video,
+                        video_continuity: &pr.video_continuity,
                         screenshot: screenshot.as_deref(),
                         plan_sha256: &pr.plan_sha256,
                         video_publication: &pr.video_publication,

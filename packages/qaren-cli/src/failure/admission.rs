@@ -27,10 +27,12 @@ pub(crate) const INNER: &[&str] = &[
     "cdp_request_timeout",
     "non_dev_bundle",
     "no_dev_target_unknown",
+    "dev_runtime_unproven",
     "react_readiness_timeout",
     "untyped",
     "none",
 ];
+pub(crate) const BUNDLE_BUILT: &[&str] = &["completed", "failed", "none", "unknown"];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -44,6 +46,8 @@ pub struct AdmissionFacts {
     pub liveness: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bundle_request: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_built: Option<String>,
     pub elapsed_ms: u64,
     pub remaining_ms: u64,
     pub budget_ms: u64,
@@ -61,6 +65,11 @@ pub struct AdmissionFacts {
     pub dev_undefined: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dev_unknown: Option<u64>,
+    // Absent means unknown: no device pin, or the latest target-list read failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreign_pages: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub same_name_devices: Option<u64>,
 }
 
 impl AdmissionFacts {
@@ -79,6 +88,10 @@ impl AdmissionFacts {
             && self.bundle_request.as_ref().is_none_or(|value| {
                 ["received", "not_received", "unknown", "probe_failed"].contains(&value.as_str())
             })
+            && self
+                .bundle_built
+                .as_ref()
+                .is_none_or(|value| BUNDLE_BUILT.contains(&value.as_str()))
             && [
                 Some(self.attempt),
                 Some(self.relaunches),
@@ -87,6 +100,8 @@ impl AdmissionFacts {
                 Some(self.budget_ms),
                 self.attach_budget_ms,
                 self.walk_budget_ms,
+                self.foreign_pages,
+                self.same_name_devices,
             ]
             .into_iter()
             .chain(counts)
@@ -123,6 +138,7 @@ impl AdmissionFacts {
 pub enum AdmissionCause {
     NonDevBundle,
     NoDevTargetUnknown,
+    DevRuntimeUnproven,
     ReactReadinessTimeout,
     AdmissionBudget,
     RunCancelled,
@@ -143,6 +159,7 @@ impl AdmissionCause {
         match inner {
             "non_dev_bundle" => Some(Self::NonDevBundle),
             "no_dev_target_unknown" => Some(Self::NoDevTargetUnknown),
+            "dev_runtime_unproven" => Some(Self::DevRuntimeUnproven),
             "react_readiness_timeout" => Some(Self::ReactReadinessTimeout),
             _ => None,
         }
@@ -153,6 +170,8 @@ impl AdmissionCause {
         match self {
             Self::NonDevBundle => (UseDevelopmentBundle, "use_development_bundle", "The app's JS bundle was built without development mode; a dev-client build with __DEV__ true is required; check the launch URL and the build variant."),
             Self::NoDevTargetUnknown => (InspectDevelopmentTarget, "inspect_development_target", "Check the launch URL, target readiness and build variant; development mode could not be established."),
+            // Same next action: the page was advertised but never ran a bundle that proved development mode.
+            Self::DevRuntimeUnproven => (InspectDevelopmentTarget, "inspect_development_target", "The app's page never proved development mode; bundleRequest and bundleBuilt are port-wide Metro context (any device on the port), not proof of this app's bundle; check Metro's output and the build variant, then retry once."),
             Self::ReactReadinessTimeout => (InspectBundleReadiness, "inspect_bundle_readiness", "Inspect the recorded readiness stage and budgets; check that the selected development bundle starts React before retrying once."),
             Self::AdmissionBudget => (InspectAdmissionBudget, "inspect_admission_budget", "Inspect the last recorded admission stage, effective budgets and runtime identity before starting a changed run."),
             Self::RunCancelled => (StopAfterCancellation, "stop_after_cancellation", "Preserve cancellation and complete owned cleanup; do not resume the plan automatically."),

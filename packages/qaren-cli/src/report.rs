@@ -525,6 +525,7 @@ pub struct PrRun<'a> {
     pub tested_sha: &'a str,
     pub tested_older_commit: bool,
     pub video: &'a VideoStatus,
+    pub video_continuity: &'a [crate::record::VideoStall],
     pub screenshot: Option<&'a str>,
     pub plan_sha256: &'a str,
     pub video_publication: &'a VideoPublication,
@@ -584,7 +585,10 @@ fn video_lines(input: &ReportInput<'_>, pr: &PrRun<'_>, clean: &dyn Fn(&str) -> 
         }
     } else {
         match pr.video {
-            VideoStatus::Available => out.push_str(VIDEO_ATTACHED),
+            VideoStatus::Available => {
+                out.push_str(VIDEO_ATTACHED);
+                out.push_str(&continuity_lines(pr));
+            }
             VideoStatus::TooLarge => {
                 out.push_str("Video: the recording was too large to attach.\n\n")
             }
@@ -594,6 +598,13 @@ fn video_lines(input: &ReportInput<'_>, pr: &PrRun<'_>, clean: &dyn Fn(&str) -> 
         }
     }
     out
+}
+
+fn continuity_lines(pr: &PrRun<'_>) -> String {
+    pr.video_continuity
+        .iter()
+        .map(|stall| format!("{}\n\n", stall.sentence()))
+        .collect()
 }
 
 const VIDEO_ATTACHED: &str = "Video of the walk is attached below.\n\n";
@@ -612,7 +623,9 @@ pub fn render_pr_description(
     let clean = |raw: &str| prose(&public(&redact_machine(raw, machine)));
     let short: String = pr.tested_sha.chars().take(7).collect();
     let video = match video_url {
-        Some(url) => url.to_string(),
+        Some(url) => format!("{url}\n\n{}", continuity_lines(pr))
+            .trim_end()
+            .to_string(),
         None => video_lines(input, pr, &clean)
             .replace(VIDEO_ATTACHED, "Video: attached to the QaReN comment.\n\n")
             .trim_end()
@@ -786,6 +799,7 @@ mod tests {
                     tested_sha: "abcdef1234567",
                     tested_older_commit: false,
                     video: &VideoStatus::Available,
+                    video_continuity: &[],
                     screenshot: None,
                     plan_sha256: "plan-hash",
                     video_publication: &VideoPublication::Eligible,
@@ -867,6 +881,7 @@ mod tests {
                     tested_sha: "abcdef1234567",
                     tested_older_commit: false,
                     video: &VideoStatus::Available,
+                    video_continuity: &[],
                     screenshot: None,
                     plan_sha256: "plan-hash",
                     video_publication: &VideoPublication::Eligible,
@@ -1081,6 +1096,7 @@ mod tests {
                 tested_sha: "abcdef1234567",
                 tested_older_commit: false,
                 video: &VideoStatus::Available,
+                video_continuity: &[],
                 screenshot: None,
                 plan_sha256: "plan-hash",
                 video_publication: &VideoPublication::Eligible,
@@ -1246,6 +1262,56 @@ mod tests {
     }
 
     #[test]
+    fn overlay_receipts_survive_the_ledger_and_discard_untyped_data() {
+        let check = serde_json::json!({
+            "observation": 7, "liveHit": "hittable", "predicate": {
+                "framePresent": true, "viewportPresent": true, "viewportOutside": false,
+                "keyboardVisible": false, "keyboardFramePresent": null, "keyboardCoverage": null,
+                "centreInsideKeyboard": null, "branch": "overlay", "cutter": {
+                    "ref": "@e8", "kind": "other", "frame": { "x": 0.0, "y": 116.0, "width": 402.0, "height": 758.0 },
+                    "edge": "bottom", "before": { "top": 20.0, "bottom": 782.0 }, "after": { "top": 20.0, "bottom": 116.0 }
+                }
+            }
+        });
+        let mut row = serde_json::json!({
+            "block": "b", "line": 1, "attempt": 1, "kind": "step", "resolvedBy": "exact", "t": 0, "outcome": "pass",
+            "overlayChecks": [check], "scrollBand": { "status": "overlay-cut", "band": { "x": 0.0, "y": 20.0, "width": 402.0, "height": 0.0 } }
+        });
+        let parsed: crate::core::Row = serde_json::from_value(row.clone()).unwrap();
+        let saved = serde_json::to_value(parsed).unwrap();
+        assert_eq!(saved["overlayChecks"], row["overlayChecks"]);
+        assert_eq!(saved["scrollBand"], row["scrollBand"]);
+        for verdict in ["not-hittable", "moved", "unavailable"] {
+            row["overlayChecks"][0]["liveHit"] = verdict.into();
+            let parsed: crate::core::Row = serde_json::from_value(row.clone()).unwrap();
+            assert_eq!(
+                serde_json::to_value(parsed).unwrap()["overlayChecks"][0]["liveHit"],
+                verdict
+            );
+        }
+        for status in ["no-geometry", "clear"] {
+            row["scrollBand"] = serde_json::json!({ "status": status });
+            let parsed: crate::core::Row = serde_json::from_value(row.clone()).unwrap();
+            assert_eq!(
+                serde_json::to_value(parsed).unwrap()["scrollBand"]["status"],
+                status
+            );
+        }
+        row["overlayChecks"][0]["predicate"]["cutter"]["ref"] = "private-value".into();
+        row["scrollBand"]["status"] = "private-value".into();
+        let parsed: crate::core::Row = serde_json::from_value(row.clone()).unwrap();
+        let saved = serde_json::to_value(parsed).unwrap();
+        assert!(saved.get("overlayChecks").is_none());
+        assert!(saved.get("scrollBand").is_none());
+        row["overlayChecks"] = serde_json::to_value(vec![check; 65]).unwrap();
+        let parsed: crate::core::Row = serde_json::from_value(row).unwrap();
+        assert!(serde_json::to_value(parsed)
+            .unwrap()
+            .get("overlayChecks")
+            .is_none());
+    }
+
+    #[test]
     fn still_scroll_rows_keep_their_typed_detail_and_drop_unknown_ones() {
         let ledger: Ledger = serde_json::from_value(serde_json::json!({
             "verdict": "PASS", "path": "walk", "blocks": [],
@@ -1385,6 +1451,7 @@ mod tests {
                     tested_sha: "abcdef1234567",
                     tested_older_commit: false,
                     video,
+                    video_continuity: &[],
                     screenshot: None,
                     plan_sha256: "plan-hash",
                     video_publication: publication,
