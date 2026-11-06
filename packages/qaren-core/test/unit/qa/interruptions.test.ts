@@ -1266,6 +1266,17 @@ test('a wait on a React-only target behind a sole-Close promo closes it and pass
   assert.equal(result.recoveries, 1);
 });
 
+test('a React-only tap target without a presented modal is never sent to dismiss Close', async () => {
+  const f = app(home());
+  promoOverHome(f);
+  f.show(modalOverHome({ modalType: 'RCTView' }));
+  ticking(f);
+  const result = await runPlan(parsePlan('1. Tap "qa-promo-home-target"').blocks!, f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, ['scroll']);
+  assert.match(result.failure?.seen ?? '', /stayed off screen after one scroll/);
+});
+
 test('a tap whose target is simply missing never presses the form Cancel', async () => {
   const form = () => observedButtons([element('@cancel', 'Cancel'), element('@name', 'Name')]);
   const f = app(form());
