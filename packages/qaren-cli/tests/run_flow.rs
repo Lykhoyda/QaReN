@@ -381,14 +381,14 @@ fn workspace_cache_persistence_reuses_only_the_same_workspace_and_scheme() {
         if reuse {
             mock.expect_run("ls-files", CmdOutput::success(common::IOS_NATIVE_FILES));
             common::script_xcode(&mut mock);
-            common::script_ios_install_and_launch(&mut mock);
+            script_check_install_and_launch(&mut mock);
             script_ready_recheck(&mut mock, common::IOS_NATIVE_FILES);
         } else if index == 0 {
             script_provision_build(&mut mock, "xcodebuild", common::IOS_NATIVE_FILES);
         } else {
             mock.expect_run("ls-files", CmdOutput::success(common::IOS_NATIVE_FILES));
             common::script_xcode(&mut mock);
-            common::script_finite_ios_build_with(&mut mock, "xcodebuild", |m| {
+            script_check_build_with(&mut mock, "xcodebuild", |m| {
                 script_candidate_recheck(m);
                 script_fingerprint_recheck(m, common::IOS_NATIVE_FILES)
             });
@@ -472,7 +472,7 @@ fn a_fresh_clone_reuses_another_clones_build_and_never_overwrites_the_store() {
         if reuse {
             mock.expect_run("ls-files", CmdOutput::success(common::IOS_NATIVE_FILES));
             common::script_xcode(&mut mock);
-            common::script_ios_install_and_launch(&mut mock);
+            script_check_install_and_launch(&mut mock);
             script_ready_recheck(&mut mock, common::IOS_NATIVE_FILES);
         } else {
             script_provision_build(&mut mock, "xcodebuild", common::IOS_NATIVE_FILES);
@@ -842,6 +842,43 @@ fn unproven_metro_after_the_build_refuses_install_and_retains_its_lease() {
 }
 
 #[test]
+fn unreadable_preinstall_inventory_after_build_refuses_without_installing() {
+    let (repo, app) = app_repo();
+    let req = request(&repo, &app, 30);
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    common::script_ios_deps(&mut mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_clean_build_plan(&mut mock);
+    common::script_finite_ios_build_only(&mut mock, "expo run:ios");
+    script_candidate_recheck(&mut mock);
+    script_fingerprint_recheck(&mut mock, "");
+    common::script_ios_app_verification(&mut mock);
+    common::script_ios_metro_spawn(&mut mock);
+    for _ in 0..3 {
+        mock.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(r#"{"devices":{"runtime":null}}"#),
+        );
+    }
+    common::script_ios_metro_cleanup(&mut mock);
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(
+        receipt.failure.unwrap().code,
+        FailureCode::SimulatorInventoryUnavailable
+    );
+    assert!(!mock.calls.iter().any(|spec| matches!(
+        spec.label.as_str(),
+        "simctl-install" | "simctl-launch" | "core-walk"
+    )));
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
 fn metro_exit_after_install_prevents_launch_and_cleans_up_both_stages() {
     let (repo, app) = app_repo();
     let req = request(&repo, &app, 30);
@@ -855,6 +892,7 @@ fn metro_exit_after_install_prevents_launch_and_cleans_up_both_stages() {
     script_fingerprint_recheck(&mut mock, "");
     common::script_ios_app_verification(&mut mock);
     common::script_ios_metro_spawn(&mut mock);
+    script_check_inventory(&mut mock);
     mock.expect_run("simctl install", CmdOutput::success(""));
     mock.expect_run("ps", CmdOutput::failed(1, ""));
     mock.expect_run("ps", CmdOutput::failed(1, ""));
@@ -1237,7 +1275,7 @@ const IOS_TOOLS: &[&str] = &["git", "pnpm", "node", "lsof", "curl", "ps", "xcrun
 
 // Everything up to and including the lease: preflight, device, candidate, prereqs, port, disk, self identity.
 fn script_preflight(mock: &mut MockRunner, repo: &Path) {
-    script_preflight_inventory(mock, repo, "simctl list devices booted", &booted_json());
+    script_preflight_inventory(mock, repo, "simctl list devices -j", &booted_json());
 }
 
 fn script_preflight_inventory(mock: &mut MockRunner, repo: &Path, command: &str, inventory: &str) {
@@ -1246,12 +1284,7 @@ fn script_preflight_inventory(mock: &mut MockRunner, repo: &Path, command: &str,
 }
 
 fn script_preflight_until_lease(mock: &mut MockRunner, repo: &Path) {
-    script_preflight_inventory_until_lease(
-        mock,
-        repo,
-        "simctl list devices booted",
-        &booted_json(),
-    );
+    script_preflight_inventory_until_lease(mock, repo, "simctl list devices -j", &booted_json());
 }
 
 // Everything up to the lease claim; the Metro port is checked only after the lease is held.
@@ -1315,7 +1348,7 @@ fn incompatible_pnpm_refuses_before_claim_install_or_metro_launch() {
         script_preflight_to_pnpm(
             &mut mock,
             &repo,
-            "simctl list devices booted",
+            "simctl list devices -j",
             &booted_json(),
             UNTRACKED_PLAN,
             output,
@@ -1349,7 +1382,7 @@ fn busy_host_probe_timeout_refuses_with_its_own_code() {
     script_preflight_to_pnpm(
         &mut mock,
         &repo,
-        "simctl list devices booted",
+        "simctl list devices -j",
         &booted_json(),
         UNTRACKED_PLAN,
         probe_timed_out(),
@@ -1386,7 +1419,7 @@ fn probe_timeout_once_then_proved_continues_and_records_the_retry() {
     script_preflight_to_pnpm(
         &mut mock,
         &repo,
-        "simctl list devices booted",
+        "simctl list devices -j",
         &booted_json(),
         UNTRACKED_PLAN,
         probe_timed_out(),
@@ -1435,7 +1468,7 @@ fn probe_budget_exhaustion_stops_before_the_last_attempt() {
     script_preflight_to_pnpm(
         &mut mock,
         &repo,
-        "simctl list devices booted",
+        "simctl list devices -j",
         &booted_json(),
         UNTRACKED_PLAN,
         probe_timed_out(),
@@ -1562,6 +1595,41 @@ fn missing_ios_build_capability_after_install_refuses_before_reset_or_boot() {
 }
 
 // deps → build plan → build → readiness → provenance recheck, then the core child spawn identity.
+fn script_check_inventory(mock: &mut qaren::exec::MockRunner) {
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&available_inventory("Booted")),
+    );
+}
+
+fn script_check_install_and_launch(mock: &mut qaren::exec::MockRunner) {
+    common::script_ios_app_verification(mock);
+    common::script_ios_metro_spawn(mock);
+    script_check_inventory(mock);
+    mock.expect_run("simctl install", CmdOutput::success(""));
+    mock.expect_run("ps", CmdOutput::success(LSTART));
+    mock.expect_run("ps", CmdOutput::success("S"));
+    mock.expect_run("lsof", CmdOutput::success("6001"));
+    mock.expect_run("ps", CmdOutput::success("6000"));
+    mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    mock.expect_run("qaren-request-probe", CmdOutput::success(""));
+    mock.expect_run("expo-platform", CmdOutput::success(""));
+    mock.expect_run("expo-platform", CmdOutput::success(""));
+    script_check_inventory(mock);
+    common::script_devmenu_defaults(mock, CmdOutput::success(""));
+    common::script_ios_launch(mock);
+}
+
+fn script_check_build_with(
+    mock: &mut qaren::exec::MockRunner,
+    command: &str,
+    prepublish: impl FnOnce(&mut qaren::exec::MockRunner),
+) {
+    common::script_finite_ios_build_only(mock, command);
+    prepublish(mock);
+    script_check_install_and_launch(mock);
+}
+
 fn script_provision(mock: &mut MockRunner) {
     common::script_ios_deps(mock);
     script_provision_after_deps(mock);
@@ -1584,7 +1652,7 @@ fn script_provision_candidate(
 ) {
     mock.expect_run("ls-files", CmdOutput::success(native_files));
     script_clean_build_plan(mock);
-    common::script_finite_ios_build_with(mock, command, |m| {
+    script_check_build_with(mock, command, |m| {
         m.expect_run("rev-parse HEAD", CmdOutput::success(head));
         m.expect_run("--porcelain", CmdOutput::success(status));
         script_fingerprint_recheck(m, native_files)
@@ -1855,7 +1923,7 @@ fn script_recipe_walk_on_default_branch(
     ledger: &str,
     exit: i32,
 ) {
-    script_preflight_with_status(mock, repo, "simctl list devices booted", &booted_json(), "");
+    script_preflight_with_status(mock, repo, "simctl list devices -j", &booted_json(), "");
     mock.expect_run("lsof", free_port());
     script_recipe_walk_after_preflight(mock, ledger, exit, "");
     mock.expect_run(
@@ -2184,7 +2252,7 @@ fn simultaneous_checks_on_distinct_devices_do_not_collide_at_the_same_millisecon
         script_preflight_inventory(
             &mut mock,
             &repo,
-            "simctl list devices booted",
+            "simctl list devices -j",
             &booted_json().replace(UDID, &udid),
         );
         mock.expect_run(
@@ -2304,7 +2372,7 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
         &[
             "node-version",
             "plan-preflight",
-            "simctl-list-booted",
+            "simctl-list",
             "git-toplevel",
             "which",
             "df",
@@ -2721,10 +2789,7 @@ fn reclaiming_a_run_that_reached_the_walk_requires_scoped_host_absence() {
     mock.expect_run("ps -p 4242 -o lstart=", CmdOutput::success(""));
     script_host_probe(&mut mock, UDID, hosts_absent());
     mock.expect_run("lsof", free_port());
-    mock.expect_run(
-        "simctl list devices booted",
-        CmdOutput::success(&booted_json()),
-    );
+    mock.expect_run("simctl list devices -j", CmdOutput::success(&booted_json()));
     script_unknown_admission(&mut mock);
     let mut req = request(&repo, &app, 30);
     req.fresh_install = true;
@@ -2909,10 +2974,7 @@ fn a_dead_holders_run_is_cleaned_up_and_its_lease_reclaimed_without_a_manual_ste
         script_preflight_until_lease(&mut mock, &repo);
         mock.expect_run("ps", CmdOutput::success(holder_ps));
         mock.expect_run("lsof", free_port());
-        mock.expect_run(
-            "simctl list devices booted",
-            CmdOutput::success(&booted_json()),
-        );
+        mock.expect_run("simctl list devices -j", CmdOutput::success(&booted_json()));
         script_unknown_admission(&mut mock);
         let mut req = request(&repo, &app, 30);
         req.fresh_install = true;
@@ -3713,10 +3775,7 @@ fn an_unreadable_disk_budget_fails_closed_before_any_claim() {
     let mut mock = MockRunner::new();
     mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
     script_plan(&mut mock, &repo);
-    mock.expect_run(
-        "simctl list devices booted",
-        CmdOutput::success(&booted_json()),
-    );
+    mock.expect_run("simctl list devices -j", CmdOutput::success(&booted_json()));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
@@ -3818,7 +3877,7 @@ fn booted_json_two() -> String {
 fn script_preflight_booted(mock: &mut MockRunner, repo: &Path, booted: &str) {
     mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
     script_plan(mock, repo);
-    mock.expect_run("simctl list devices booted", CmdOutput::success(booted));
+    mock.expect_run("simctl list devices -j", CmdOutput::success(booted));
 }
 
 #[test]
@@ -5223,7 +5282,7 @@ fn missing_or_rejected_key_refuses_before_device_or_lease() {
         assert!(!repo.join("runs").exists());
         assert_eq!(mock.remaining(), 0);
         assert!(!receipt.to_json().contains(TEST_KEY));
-        assert!(!labels(&mock).iter().any(|l| l == "simctl-list-booted"));
+        assert!(!labels(&mock).iter().any(|l| l == "simctl-list"));
     }
 }
 
@@ -5334,11 +5393,11 @@ fn literal_plan_without_key_proceeds_past_preflight() {
     );
     // No booted simulator ends the run at device selection, just past preflight.
     mock.expect_run(
-        "simctl list devices booted",
+        "simctl list devices -j",
         CmdOutput::success(r#"{"devices":{}}"#),
     );
     let receipt = run(&mut mock, &request(&repo, &app, 30));
-    assert!(labels(&mock).iter().any(|l| l == "simctl-list-booted"));
+    assert!(labels(&mock).iter().any(|l| l == "simctl-list"));
     assert_eq!(mock.remaining(), 0);
     assert_eq!(receipt.preflight_jev.as_ref().unwrap().calls, 0);
     assert_ne!(
@@ -5779,6 +5838,7 @@ fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_l
         );
         mock.expect_run("ps", CmdOutput::success(LSTART));
         mock.expect_run("ps", CmdOutput::success("node expo start"));
+        script_check_inventory(&mut mock);
         mock.expect_run(&format!("simctl install {UDID}"), CmdOutput::success(""));
         for launch in [true, false] {
             mock.expect_run("ps", CmdOutput::success(LSTART));
@@ -5790,6 +5850,7 @@ fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_l
                 mock.expect_run("qaren-request-probe", CmdOutput::success(""));
                 mock.expect_run("expo-platform", CmdOutput::success(""));
                 mock.expect_run("expo-platform", CmdOutput::success(""));
+                script_check_inventory(&mut mock);
                 common::script_devmenu_defaults(&mut mock, CmdOutput::success(""));
                 mock.expect_run(
                     &format!("simctl launch --terminate-running-process {UDID}"),
@@ -6138,7 +6199,7 @@ fn available_inventory(state: &str) -> String {
 fn boot_device_selection_refuses_unknown_inventory_without_claiming_or_falling_back() {
     let available = available_inventory("Shutdown");
     for restart in [false, true] {
-        for output in [
+        for (case, output) in [
             CmdOutput::failed(1, "unavailable"),
             CmdOutput::success("not json"),
             CmdOutput::success("{}"),
@@ -6156,7 +6217,10 @@ fn boot_device_selection_refuses_unknown_inventory_without_claiming_or_falling_b
                 timed_out: true,
                 ..CmdOutput::success(&available)
             },
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let (repo, app) = app_repo();
             let mut req = request(&repo, &app, 30);
             req.device = Some(UDID.into());
@@ -6165,11 +6229,18 @@ fn boot_device_selection_refuses_unknown_inventory_without_claiming_or_falling_b
             let mut mock = MockRunner::new();
             mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
             script_plan(&mut mock, &repo);
-            mock.expect_run("simctl list devices -j", output);
+            let unusable = matches!(case, 0 | 1 | 2 | 9 | 10);
+            for _ in 0..if unusable { 3 } else { 1 } {
+                mock.expect_run("simctl list devices -j", output.clone());
+            }
             let receipt = run(&mut mock, &req);
             assert_eq!(
                 receipt.failure.unwrap().code,
-                FailureCode::DeviceUnavailable,
+                if unusable {
+                    FailureCode::SimulatorInventoryUnavailable
+                } else {
+                    FailureCode::DeviceUnavailable
+                },
                 "restart={restart}"
             );
             assert_eq!(mock.remaining(), 0);
@@ -6266,7 +6337,7 @@ fn boot_device_readback_must_prove_exact_booted_target_and_unchanged_runtime_and
     let ready = available_inventory("Booted");
     for fresh in [false, true] {
         for initial in ["Shutdown", "Booted"] {
-            for output in [
+            for (index, output) in [
                 CmdOutput::failed(1, "inventory failed"),
                 CmdOutput::success("not json"),
                 CmdOutput::success(&available_inventory("Shutdown")),
@@ -6284,9 +6355,13 @@ fn boot_device_readback_must_prove_exact_booted_target_and_unchanged_runtime_and
                     stderr: "incomplete".into(),
                     ..CmdOutput::success(&ready)
                 },
-            ] {
+            ]
+            .into_iter()
+            .enumerate()
+            {
                 let (repo, app) = app_repo();
                 let mut mock = MockRunner::new();
+                mock.advance_on = Some(("simctl list devices -j".into(), 1200));
                 script_preflight_inventory(
                     &mut mock,
                     &repo,
@@ -6302,7 +6377,14 @@ fn boot_device_readback_must_prove_exact_booted_target_and_unchanged_runtime_and
                         CmdOutput::success(""),
                     );
                 }
-                mock.expect_run("simctl list devices -j", output);
+                let attempts = if matches!(index, 0 | 1 | 9 | 10) {
+                    3
+                } else {
+                    1
+                };
+                for _ in 0..attempts {
+                    mock.expect_run("simctl list devices -j", output.clone());
+                }
                 let mut runner = LeaseObservedRunner {
                     mock,
                     repo: repo.clone(),
@@ -6316,11 +6398,19 @@ fn boot_device_readback_must_prove_exact_booted_target_and_unchanged_runtime_and
                 req.fresh_install = fresh;
                 let receipt = run(&mut runner, &req);
                 assert_eq!(receipt.result, ReceiptResult::Failed);
-                assert_eq!(
-                    receipt.failure.unwrap().code,
-                    FailureCode::SimulatorBootFailed
-                );
-                let expected = if initial == "Shutdown" {
+                let failure = receipt.failure.as_ref().unwrap();
+                assert_eq!(failure.code, FailureCode::SimulatorBootFailed);
+                if attempts == 3 {
+                    assert!(failure.detail.contains("3 attempts"));
+                }
+                if index == 2 {
+                    assert!(failure
+                        .detail
+                        .contains("state seen: Shutdown; read latency 1.2 s"));
+                }
+                assert!(!failure.detail.contains("inventory failed"));
+                assert!(!failure.detail.contains("incomplete"));
+                let mut expected = if initial == "Shutdown" {
                     vec![
                         "fresh-install-admission",
                         "pnpm-install",
@@ -6338,6 +6428,7 @@ fn boot_device_readback_must_prove_exact_booted_target_and_unchanged_runtime_and
                         "simctl-list",
                     ]
                 };
+                expected.extend(std::iter::repeat_n("simctl-list", attempts - 1));
                 assert_eq!(runner.observed, expected);
                 assert_eq!(runner.mock.remaining(), 0);
                 assert_eq!(receipt.cleanup["device_lease"], "removed");
@@ -6538,11 +6629,23 @@ fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease()
             common::script_ios_deps(&mut mock);
             script_admission(&mut mock);
             if initial == "Shutdown" {
+                // A slow but successful boot spends the whole boot budget; the proof still reads.
+                mock.advance_on = Some((
+                    format!("simctl bootstatus {UDID}"),
+                    qaren::scenario::Deadlines::default().device_boot_seconds * 1000,
+                ));
                 mock.expect_run(
                     &format!("simctl bootstatus {UDID} -b"),
                     CmdOutput::success(""),
                 );
             }
+            mock.expect_run(
+                "simctl list devices -j",
+                CmdOutput {
+                    timed_out: true,
+                    ..Default::default()
+                },
+            );
             mock.expect_run(
                 "simctl list devices -j",
                 CmdOutput::success(&available_inventory("Booted")),
@@ -6579,6 +6682,7 @@ fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease()
                 "{initial} fresh={fresh}: {:?}",
                 receipt.failure
             );
+            assert_eq!(receipt.outcomes["inventory_attempts"], "2");
             assert_eq!(runner.mock.remaining(), 0);
             let lane = receipt.lane.as_ref().expect("an owned lane is pinned");
             assert_eq!(lane.device_id, UDID);
@@ -6605,7 +6709,7 @@ fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease()
             if initial == "Shutdown" {
                 phases.push("simctl-bootstatus");
             }
-            phases.push("simctl-list");
+            phases.extend(["simctl-list", "simctl-list"]);
             if fresh {
                 phases.extend(["simctl-listapps", "simctl-uninstall", "simctl-listapps"]);
             }
@@ -6625,7 +6729,7 @@ fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease()
                     );
                 }
                 if spec.label == "simctl-list" {
-                    assert_eq!(spec.timeout_seconds, 30);
+                    assert!([10, 30].contains(&spec.timeout_seconds));
                 }
                 if spec.label == "expo-run-ios" {
                     assert!(spec
@@ -6911,6 +7015,7 @@ fn restart_device_shutdown_or_readback_failure_stops_before_boot_install_or_walk
         "pre_list_failed",
         "shutdown_failed",
         "shutdown_timeout",
+        "readback_timeouts",
         "readback_still_booted",
         "readback_changed_runtime",
     ] {
@@ -6927,7 +7032,15 @@ fn restart_device_shutdown_or_readback_failure_stops_before_boot_install_or_walk
         script_admission(&mut mock);
         match fault {
             "pre_list_failed" => {
-                mock.expect_run("simctl list devices -j", CmdOutput::failed(1, "list error"));
+                for _ in 0..3 {
+                    mock.expect_run(
+                        "simctl list devices -j",
+                        CmdOutput {
+                            timed_out: true,
+                            ..Default::default()
+                        },
+                    );
+                }
             }
             "shutdown_failed" => {
                 mock.expect_run(
@@ -6951,6 +7064,22 @@ fn restart_device_shutdown_or_readback_failure_stops_before_boot_install_or_walk
                         ..CmdOutput::success("")
                     },
                 );
+            }
+            "readback_timeouts" => {
+                mock.expect_run(
+                    "simctl list devices -j",
+                    CmdOutput::success(&available_inventory("Booted")),
+                );
+                mock.expect_run(&format!("simctl shutdown {UDID}"), CmdOutput::success(""));
+                for _ in 0..3 {
+                    mock.expect_run(
+                        "simctl list devices -j",
+                        CmdOutput {
+                            timed_out: true,
+                            ..Default::default()
+                        },
+                    );
+                }
             }
             "readback_still_booted" => {
                 mock.expect_run(
@@ -6989,10 +7118,22 @@ fn restart_device_shutdown_or_readback_failure_stops_before_boot_install_or_walk
         req.device = Some(UDID.into());
         req.restart_device = true;
         let receipt = run(&mut runner, &req);
-        assert_eq!(receipt.result, ReceiptResult::Failed, "{fault}");
+        assert_eq!(
+            receipt.result,
+            if fault == "pre_list_failed" {
+                ReceiptResult::Refused
+            } else {
+                ReceiptResult::Failed
+            },
+            "{fault}"
+        );
         assert_eq!(
             receipt.failure.unwrap().code,
-            FailureCode::SimulatorBootFailed,
+            if fault == "pre_list_failed" {
+                FailureCode::SimulatorInventoryUnavailable
+            } else {
+                FailureCode::SimulatorBootFailed
+            },
             "{fault}"
         );
         assert!(!runner.observed.iter().any(|l| matches!(
@@ -7726,10 +7867,7 @@ fn script_pr_preflight_requiring(
     );
     mock.expect_run("update-ref -d", CmdOutput::success(""));
     script_plan_requiring(mock, repo, required, non_secret);
-    mock.expect_run(
-        "simctl list devices booted",
-        CmdOutput::success(&booted_json()),
-    );
+    mock.expect_run("simctl list devices -j", CmdOutput::success(&booted_json()));
     mock.expect_run("worktree add --detach", CmdOutput::success(""));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", wt.display()))); // toplevel of the worktree
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", wt.display()))); // explicit worktree
@@ -8615,7 +8753,7 @@ fn a_fetched_head_that_is_not_the_viewed_head_refuses_and_leaves_no_worktree() {
     assert!(!receipt.cleanup.contains_key("pr_worktree"));
     assert_eq!(mock.remaining(), 0);
     assert!(!labels(&mock).contains(&"git-worktree-add".to_string()));
-    assert!(!labels(&mock).iter().any(|l| l == "simctl-list-booted"));
+    assert!(!labels(&mock).iter().any(|l| l == "simctl-list"));
 }
 
 #[test]
@@ -8964,10 +9102,7 @@ fn a_cancel_during_the_git_probes_claims_nothing_and_runs_nothing_after_it() {
     let mut mock = MockRunner::new();
     mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
     script_plan(&mut mock, &repo);
-    mock.expect_run(
-        "simctl list devices booted",
-        CmdOutput::success(&booted_json()),
-    );
+    mock.expect_run("simctl list devices -j", CmdOutput::success(&booted_json()));
     mock.expect_run(
         "rev-parse --show-toplevel",
         CmdOutput::failed(1, "interrupted"),
@@ -9556,6 +9691,7 @@ fn a_cancel_during_a_cached_ios_install_names_the_substage() {
         common::script_xcode(&mut mock);
         common::script_ios_app_verification(&mut mock);
         common::script_ios_metro_spawn(&mut mock);
+        script_check_inventory(&mut mock);
         mock.expect_run("simctl install", CmdOutput::success(""));
         if index > 0 {
             mock.expect_run("ps", CmdOutput::success(LSTART));
@@ -9570,9 +9706,11 @@ fn a_cancel_during_a_cached_ios_install_names_the_substage() {
             mock.expect_run("expo-platform", CmdOutput::success(""));
         }
         if index == 2 {
+            script_check_inventory(&mut mock);
             mock.expect_run("defaults write", CmdOutput::success(""));
         }
         if index == 3 {
+            script_check_inventory(&mut mock);
             common::script_devmenu_defaults(&mut mock, CmdOutput::success(""));
             common::script_ios_launch(&mut mock);
         }
@@ -9641,6 +9779,7 @@ fn check_fails_fast_when_the_launched_ios_app_exits_and_names_the_missing_framew
     common::script_xcode(&mut mock);
     common::script_ios_app_verification(&mut mock);
     common::script_ios_metro_spawn(&mut mock);
+    script_check_inventory(&mut mock);
     mock.expect_run("simctl install", CmdOutput::success(""));
     mock.expect_run("ps", CmdOutput::success(LSTART));
     mock.expect_run("ps", CmdOutput::success("S"));
@@ -9650,6 +9789,7 @@ fn check_fails_fast_when_the_launched_ios_app_exits_and_names_the_missing_framew
     mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
+    script_check_inventory(&mut mock);
     common::script_devmenu_defaults(&mut mock, CmdOutput::success(""));
     common::script_ios_launch(&mut mock);
     for _ in 0..2 {
@@ -9708,6 +9848,7 @@ fn script_warm_launch_after_one_metro_retry(mock: &mut MockRunner) {
     );
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:01:00 2026"));
     mock.expect_run("ps", CmdOutput::success("node expo start"));
+    script_check_inventory(mock);
     mock.expect_run("simctl install", CmdOutput::success(""));
     for responding in [false, true] {
         mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:01:00 2026"));
@@ -9725,6 +9866,7 @@ fn script_warm_launch_after_one_metro_retry(mock: &mut MockRunner) {
     mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
+    script_check_inventory(mock);
     common::script_devmenu_defaults(mock, CmdOutput::success(""));
     mock.expect_run(
         "simctl launch --terminate-running-process",

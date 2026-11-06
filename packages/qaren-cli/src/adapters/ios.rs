@@ -2,6 +2,7 @@ use crate::exec::{CmdSpec, Runner};
 use crate::failure::{Failure, FailureCode};
 use crate::scenario::IosWorkspaceBuild;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub fn require_build(
     runner: &mut dyn Runner,
@@ -193,15 +194,6 @@ pub fn bootstatus_spec(udid: &str, deadline_seconds: u64) -> CmdSpec {
     )
 }
 
-pub fn list_booted_spec() -> CmdSpec {
-    CmdSpec::new(
-        "simctl-list-booted",
-        "xcrun",
-        &["simctl", "list", "devices", "booted", "-j"],
-        30,
-    )
-}
-
 pub fn canonical_udid(udid: &str) -> Option<String> {
     (udid.len() == 36
         && udid.bytes().enumerate().all(|(i, b)| match i {
@@ -246,8 +238,7 @@ fn parse_sim(runtime: &str, device: &serde_json::Value) -> Option<Simulator> {
 }
 
 // Booted iOS simulators only; paired watchOS/tvOS runtimes are not walk targets.
-pub fn parse_booted_sims(list_json: &str) -> Option<Vec<Simulator>> {
-    let parsed: serde_json::Value = serde_json::from_str(list_json).ok()?;
+pub fn parse_booted_sims(parsed: &serde_json::Value) -> Option<Vec<Simulator>> {
     let devices = parsed.get("devices")?.as_object()?;
     let mut out = Vec::new();
     for (runtime, list) in devices {
@@ -265,8 +256,12 @@ pub fn parse_booted_sims(list_json: &str) -> Option<Vec<Simulator>> {
 }
 
 pub fn parse_selected_sim(list_json: &str, udid: &str) -> Option<Simulator> {
-    let udid = canonical_udid(udid)?;
     let parsed: serde_json::Value = serde_json::from_str(list_json).ok()?;
+    parse_selected_sim_value(&parsed, udid)
+}
+
+pub fn parse_selected_sim_value(parsed: &serde_json::Value, udid: &str) -> Option<Simulator> {
+    let udid = canonical_udid(udid)?;
     let devices = parsed.get("devices")?.as_object()?;
     let mut selected = None;
     for (runtime, list) in devices {
@@ -301,6 +296,193 @@ pub fn list_devices_spec() -> CmdSpec {
         &["simctl", "list", "devices", "-j"],
         30,
     )
+}
+
+pub struct InventoryRead<'a> {
+    pub attempts: u32,
+    pub per_read_timeout: Duration,
+    pub pause: Duration,
+    pub deadline_ms: Option<u64>,
+    pub cwd: Option<PathBuf>,
+    pub env: Vec<(String, String)>,
+    pub between: &'a mut dyn FnMut(&dyn Runner) -> Result<(), Failure>,
+}
+
+impl<'a> InventoryRead<'a> {
+    pub fn device(
+        deadline_ms: u64,
+        between: &'a mut dyn FnMut(&dyn Runner) -> Result<(), Failure>,
+    ) -> Self {
+        Self {
+            attempts: 3,
+            per_read_timeout: Duration::from_secs(10),
+            pause: Duration::from_secs(2),
+            deadline_ms: Some(deadline_ms),
+            cwd: None,
+            env: Vec::new(),
+            between,
+        }
+    }
+
+    // Proof after a boot or shutdown: its own fixed budget (3 × 10 s reads, 2 × 2 s pauses),
+    // so a slow but successful device change never leaves the proof without a read.
+    pub fn after_effect(between: &'a mut dyn FnMut(&dyn Runner) -> Result<(), Failure>) -> Self {
+        Self {
+            deadline_ms: None,
+            ..Self::device(0, between)
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Inventory {
+    pub value: serde_json::Value,
+    pub attempts: u32,
+    pub latency_ms: u64,
+}
+
+#[derive(Debug)]
+pub enum InventoryReadLast {
+    TimedOut { timeout_ms: u64 },
+    // Receipts show only the exit; doctor shows the redacted summary.
+    Failed { exit: String, summary: String },
+    Unparseable,
+    TooLarge,
+    DeadlineSpent,
+    Interrupted(Box<Failure>),
+}
+
+#[derive(Debug)]
+pub struct InventoryUnavailable {
+    pub attempts: u32,
+    pub latency_ms: u64,
+    pub last: InventoryReadLast,
+}
+
+impl InventoryUnavailable {
+    pub fn detail(&self) -> String {
+        let last = match &self.last {
+            InventoryReadLast::TimedOut { timeout_ms } => {
+                format!("timed out after {:.1} s", *timeout_ms as f64 / 1000.0)
+            }
+            InventoryReadLast::Failed { exit, .. } => format!("command failed: exit={exit}"),
+            InventoryReadLast::Unparseable => "unreadable inventory".into(),
+            InventoryReadLast::TooLarge => "inventory reached the 1 MiB limit".into(),
+            InventoryReadLast::DeadlineSpent => "deadline spent".into(),
+            InventoryReadLast::Interrupted(_) => "run cancelled".into(),
+        };
+        format!(
+            "simctl list did not answer usably in {} attempts over {:.1} s (last: {last})",
+            self.attempts,
+            self.latency_ms as f64 / 1000.0
+        )
+    }
+
+    pub fn into_failure(self, stage: &str, code: FailureCode) -> Failure {
+        let detail = self.detail();
+        if let InventoryReadLast::Interrupted(failure) = self.last {
+            return *failure;
+        }
+        Failure::new(stage, code, detail, "the simulator service is overloaded or wedged; wait for the Mac's load to drop, then re-run; `qaren doctor` shows the service row")
+    }
+}
+
+pub fn read_inventory(
+    runner: &mut dyn Runner,
+    opts: InventoryRead<'_>,
+) -> Result<Inventory, InventoryUnavailable> {
+    let start = runner.monotonic_ms();
+    let mut attempts = 0;
+    let mut last = InventoryReadLast::DeadlineSpent;
+    let unavailable = |runner: &dyn Runner, attempts, last| InventoryUnavailable {
+        attempts,
+        latency_ms: runner.monotonic_ms().saturating_sub(start),
+        last,
+    };
+    loop {
+        if let Err(failure) = (opts.between)(runner) {
+            return Err(unavailable(
+                runner,
+                attempts,
+                InventoryReadLast::Interrupted(Box::new(failure)),
+            ));
+        }
+        let remaining = opts.deadline_ms.map_or(u64::MAX, |deadline| {
+            deadline.saturating_sub(runner.monotonic_ms())
+        });
+        let timeout_ms = (opts.per_read_timeout.as_millis() as u64).min(remaining);
+        if timeout_ms < 1000 {
+            return Err(unavailable(
+                runner,
+                attempts,
+                InventoryReadLast::DeadlineSpent,
+            ));
+        }
+        if attempts >= opts.attempts {
+            return Err(unavailable(runner, attempts, last));
+        }
+        let mut spec = list_devices_spec();
+        spec.timeout_seconds = timeout_ms / 1000;
+        spec.cwd = opts.cwd.clone();
+        spec.env = opts.env.clone();
+        let output = runner.run(&spec);
+        attempts += 1;
+        if let Err(failure) = (opts.between)(runner) {
+            return Err(unavailable(
+                runner,
+                attempts,
+                InventoryReadLast::Interrupted(Box::new(failure)),
+            ));
+        }
+        last = if output.timed_out {
+            InventoryReadLast::TimedOut {
+                timeout_ms: spec.timeout_seconds * 1000,
+            }
+        } else if !output.ok() {
+            InventoryReadLast::Failed {
+                exit: output
+                    .exit_code
+                    .map_or("signal".into(), |code| code.to_string()),
+                summary: output.summary(),
+            }
+        } else if output.stdout.len() >= 1024 * 1024 {
+            InventoryReadLast::TooLarge
+        } else if !output.stderr.is_empty() {
+            InventoryReadLast::Unparseable
+        } else {
+            match serde_json::from_str::<serde_json::Value>(&output.stdout) {
+                Ok(value)
+                    if value
+                        .get("devices")
+                        .and_then(serde_json::Value::as_object)
+                        .is_some_and(|devices| {
+                            devices.values().all(serde_json::Value::is_array)
+                        }) =>
+                {
+                    return Ok(Inventory {
+                        value,
+                        attempts,
+                        latency_ms: runner.monotonic_ms().saturating_sub(start),
+                    });
+                }
+                _ => InventoryReadLast::Unparseable,
+            }
+        };
+        if attempts < opts.attempts {
+            let remaining = opts.deadline_ms.map_or(u64::MAX, |deadline| {
+                deadline.saturating_sub(runner.monotonic_ms())
+            });
+            // No read can start after this pause: stop now instead of sleeping for nothing.
+            if remaining < (opts.pause.as_millis() as u64).saturating_add(1000) {
+                return Err(unavailable(
+                    runner,
+                    attempts,
+                    InventoryReadLast::DeadlineSpent,
+                ));
+            }
+            runner.sleep(opts.pause.min(Duration::from_millis(remaining)));
+        }
+    }
 }
 
 pub fn app_container_spec(udid: &str, app_id: &str) -> CmdSpec {
@@ -761,11 +943,12 @@ pub fn shutdown_spec(udid: &str) -> CmdSpec {
     )
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum SelectedSimShutdown {
     AlreadyShutdown,
     ShutDown,
     InventoryInvalid,
+    InventoryUnavailable(InventoryUnavailable),
     ShutdownFailed,
     ReadbackInvalid,
 }
@@ -776,6 +959,25 @@ pub fn shutdown_selected_sim(
     device_type: &str,
     runtime: &str,
 ) -> SelectedSimShutdown {
+    let deadline = runner.monotonic_ms().saturating_add(120_000);
+    shutdown_selected_sim_until(
+        runner,
+        udid,
+        device_type,
+        runtime,
+        deadline,
+        &mut |_| Ok(()),
+    )
+}
+
+pub fn shutdown_selected_sim_until(
+    runner: &mut dyn Runner,
+    udid: &str,
+    device_type: &str,
+    runtime: &str,
+    deadline_ms: u64,
+    between: &mut dyn FnMut(&dyn Runner) -> Result<(), Failure>,
+) -> SelectedSimShutdown {
     if canonical_udid(udid).as_deref() != Some(udid)
         || device_type.trim().is_empty()
         || runtime
@@ -784,11 +986,11 @@ pub fn shutdown_selected_sim(
     {
         return SelectedSimShutdown::InventoryInvalid;
     }
-    let before = runner.run(&list_devices_spec());
-    if !before.ok() || !before.stderr.is_empty() || before.stdout.len() >= 1024 * 1024 {
-        return SelectedSimShutdown::InventoryInvalid;
-    }
-    let Some(sim) = parse_selected_sim(&before.stdout, udid)
+    let before = match read_inventory(runner, InventoryRead::device(deadline_ms, between)) {
+        Ok(inventory) => inventory,
+        Err(unavailable) => return SelectedSimShutdown::InventoryUnavailable(unavailable),
+    };
+    let Some(sim) = parse_selected_sim_value(&before.value, udid)
         .filter(|sim| sim.device_type == device_type && sim.runtime == runtime)
     else {
         return SelectedSimShutdown::InventoryInvalid;
@@ -799,11 +1001,11 @@ pub fn shutdown_selected_sim(
     if !runner.run(&shutdown_spec(udid)).ok() {
         return SelectedSimShutdown::ShutdownFailed;
     }
-    let after = runner.run(&list_devices_spec());
-    if !after.ok() || !after.stderr.is_empty() || after.stdout.len() >= 1024 * 1024 {
-        return SelectedSimShutdown::ReadbackInvalid;
-    }
-    match parse_selected_sim(&after.stdout, udid) {
+    let after = match read_inventory(runner, InventoryRead::after_effect(between)) {
+        Ok(inventory) => inventory,
+        Err(_) => return SelectedSimShutdown::ReadbackInvalid,
+    };
+    match parse_selected_sim_value(&after.value, udid) {
         Some(sim)
             if sim.state == SimState::Shutdown
                 && sim.device_type == device_type
