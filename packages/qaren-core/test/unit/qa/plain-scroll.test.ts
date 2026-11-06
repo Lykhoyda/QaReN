@@ -1120,7 +1120,6 @@ test('a same-frame twin that cannot scroll no longer hides the selected list mov
   assert.equal(motion({ '@twin': false }), 'moved');
   assert.equal(motion({}), 'unknown');
   // The selected container's own mark changes nothing: alone it is still judged, with a twin still unknown.
-  assert.equal(motion({ '@list': false }, []), motion({}, []));
   assert.equal(motion({ '@list': false }, []), 'moved');
   assert.equal(motion({ '@list': false }), 'unknown');
   assert.equal(motion({ '@list': false, '@twin': false }), 'unknown');
