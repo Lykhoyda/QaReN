@@ -978,8 +978,11 @@ capture to match the cover to its React host. A cover proven to take touches
 refuses before dispatch with `SCROLL_CONTAINER_UNREACHABLE`, cause
 `scroll_container_unreachable`, and `scrollBand.status: "unreachable"`,
 suggesting a scroll-until target or removing the step. A cover that stays
-unproven, including when that capture is incomplete, never refuses: the drag
-crosses the container's clip and the result decides the step. A side rail that
+unproven, including when that capture is incomplete, never refuses on that
+cover's account: the drag uses the container's clip with proven touch-taking
+covers excluded, and the result decides the step. A complete presence capture
+replaces the pre-scroll observation and recalculates the band, even if a cover
+stays unproven; a system dialog in that capture blocks dispatch. A side rail that
 leaves the centre clear still permits a drag.
 Incomplete native captures, a missing application/window frame, no captured
 container, or an empty container frame keep the viewport gesture with
