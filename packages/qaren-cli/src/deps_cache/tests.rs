@@ -566,6 +566,8 @@ fn subdirectory_app_without_root_manifest_reuses_its_isolated_tree() {
 
     isolated(&mut runner.mock);
     let mut ctx = f.context(&mut runner, "second");
+    ctx.record.candidate.git_sha = "b".repeat(40);
+    std::fs::write(f.0.join("repo/app/source.ts"), "export const value = 2;").unwrap();
     restore(&mut ctx, &f.0.join("repo"), true).unwrap();
     assert!(ctx.notes.contains(&("deps_cache".into(), "hit".into())));
     assert_eq!(
@@ -635,6 +637,14 @@ fn every_key_input_and_path_node_identity_invalidates_reuse() {
         ("app/pnpm-lock.yaml", "changed"),
         ("package.json", r#"{"scripts":{"postinstall":"echo ok"}}"#),
         ("package.json", r#"{"pnpm":{"overrides":{"pkg":"2"}}}"#),
+        (
+            "package.json",
+            r#"{"version":"2.0.0","custom":"install-input"}"#,
+        ),
+        (
+            "app/package.json",
+            r#"{"dependencies":{"pkg":"2"},"custom":"install-input"}"#,
+        ),
         (".npmrc", "node-linker=hoisted\n"),
         ("pnpm-workspace.yaml", "nodeLinker: hoisted\n"),
         ("app/.npmrc", "ignore-scripts=true\n"),
@@ -683,6 +693,98 @@ fn every_key_input_and_path_node_identity_invalidates_reuse() {
         )
         .unwrap()
     );
+}
+
+#[test]
+fn workspace_manifests_and_patch_contents_invalidate_the_key_but_source_does_not() {
+    let f = Fixture::new();
+    let repo = f.0.join("repo");
+    std::fs::create_dir_all(repo.join("packages/lib/patches/nested")).unwrap();
+    std::fs::create_dir_all(repo.join("app/patches")).unwrap();
+    std::fs::create_dir_all(repo.join("patches")).unwrap();
+    for (path, contents) in [
+        (
+            "app/pnpm-lock.yaml",
+            "lockfileVersion: '9.0'\nimporters:\n  .: {}\n  ../packages/lib: {}\n",
+        ),
+        (
+            "package.json",
+            r#"{"pnpm":{"patchedDependencies":{"root-pkg@1":"root.patch"}}}"#,
+        ),
+        (
+            "app/package.json",
+            r#"{"pnpm":{"patchedDependencies":{"app-pkg@1":"app.patch"}}}"#,
+        ),
+        (
+            "packages/lib/package.json",
+            r#"{"name":"lib","custom":"first","pnpm":{"patchedDependencies":{"lib-pkg@1":"lib.patch"}}}"#,
+        ),
+        (
+            "pnpm-workspace.yaml",
+            "patchedDependencies:\n  root-yaml@1: root-yaml.patch\n",
+        ),
+        (
+            "app/pnpm-workspace.yaml",
+            "patchedDependencies:\n  app-yaml@1: app-yaml.patch\n",
+        ),
+        ("root.patch", "root patch"),
+        ("app/app.patch", "app patch"),
+        ("packages/lib/lib.patch", "lib patch"),
+        ("root-yaml.patch", "root yaml patch"),
+        ("app/app-yaml.patch", "app yaml patch"),
+        ("patches/pkg.patch", "root patch-package"),
+        ("app/patches/pkg.patch", "app patch-package"),
+        ("packages/lib/patches/nested/pkg.patch", "lib patch-package"),
+    ] {
+        std::fs::write(repo.join(path), contents).unwrap();
+    }
+    let installer = Installer {
+        pnpm: "10".into(),
+        node: "v24".into(),
+        arch: "arm64".into(),
+        platform: "darwin".into(),
+    };
+    let get = || {
+        key(
+            &repo,
+            Path::new("app"),
+            "repository",
+            &installer,
+            &serde_json::json!({}),
+        )
+    };
+    let baseline = get().unwrap();
+    std::fs::write(repo.join("app/source.ts"), "source-only change").unwrap();
+    assert_eq!(baseline, get().unwrap());
+    for path in [
+        "packages/lib/package.json",
+        "root.patch",
+        "app/app.patch",
+        "packages/lib/lib.patch",
+        "root-yaml.patch",
+        "app/app-yaml.patch",
+        "patches/pkg.patch",
+        "app/patches/pkg.patch",
+        "packages/lib/patches/nested/pkg.patch",
+    ] {
+        let file = repo.join(path);
+        let original = std::fs::read(&file).unwrap();
+        let changed = if path.ends_with("package.json") {
+            br#"{"name":"lib","custom":"second","pnpm":{"patchedDependencies":{"lib-pkg@1":"lib.patch"}}}"#.to_vec()
+        } else {
+            b"changed patch contents".to_vec()
+        };
+        std::fs::write(&file, changed).unwrap();
+        assert_ne!(baseline, get().unwrap(), "{path}");
+        std::fs::write(&file, original).unwrap();
+        assert_eq!(baseline, get().unwrap(), "{path}");
+    }
+    let patch = repo.join("app/patches/pkg.patch");
+    std::fs::rename(&patch, repo.join("app/patches/renamed.patch")).unwrap();
+    assert_ne!(baseline, get().unwrap());
+    std::fs::rename(repo.join("app/patches/renamed.patch"), patch).unwrap();
+    std::fs::remove_file(repo.join("root.patch")).unwrap();
+    assert!(get().is_err());
 }
 
 #[test]

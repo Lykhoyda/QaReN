@@ -3959,13 +3959,15 @@ See [pnpm's layout settings](https://pnpm.io/settings#nodeLinker).
 The preflight pnpm process-group probe runs with `verifyDepsBeforeRun` off, so
 it never installs dependencies before restore.
 
-The cache key binds the lockfile bytes, repository and app path, root and app
-package scripts and pnpm settings, whether a root `package.json` exists,
-`.npmrc`, `pnpm-workspace.yaml`, and the
+The cache key binds the lockfile bytes, repository and app path, full root, app,
+and lockfile workspace package manifests, whether a root `package.json` exists,
+`.npmrc`, `pnpm-workspace.yaml`, effective pnpm install settings, package `patches/`
+contents, files referenced by pnpm `patchedDependencies`, and the
 PATH-resolved pnpm and Node versions, architecture and platform. The installer
-identity is kept in `run.json`. Dependency lifecycle scripts that read project
-source during their first installation may retain old output across heads with
-the same key. Set `depsCache: false` in `.qaren/config.yaml` for a cold run;
+identity is kept in `run.json`. A dependency lifecycle script that reads other
+project source outside these keyed inputs during its first installation can
+carry stale output to later heads with the same key.
+Set `depsCache: false` in `.qaren/config.yaml` for a cold run;
 `qaren check` and `qaren prepare` do not use this cache or change prewarm policy.
 
 Installed modules are staged before native preparation can modify them and

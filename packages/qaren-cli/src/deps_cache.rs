@@ -262,6 +262,58 @@ fn probe(
     Ok((installer, config))
 }
 
+fn patch_input(repo: &Path, path: &Path, parts: &mut Vec<Vec<u8>>) -> Result<(), String> {
+    if !path
+        .canonicalize()
+        .map_err(|e| e.to_string())?
+        .starts_with(repo.canonicalize().map_err(|e| e.to_string())?)
+    {
+        return Err("patch input outside checkout".into());
+    }
+    let meta = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if meta.is_dir() {
+        let mut children = std::fs::read_dir(path)
+            .map_err(|e| e.to_string())?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        children.sort();
+        for child in children {
+            patch_input(repo, &child, parts)?;
+        }
+    } else if meta.is_file() {
+        parts.push(
+            path.strip_prefix(repo)
+                .map_err(|e| e.to_string())?
+                .as_os_str()
+                .as_encoded_bytes()
+                .to_vec(),
+        );
+        parts.push(std::fs::read(path).map_err(|e| e.to_string())?);
+    } else {
+        return Err("patch input is not a plain file or directory".into());
+    }
+    Ok(())
+}
+
+fn patched_inputs(
+    repo: &Path,
+    root: &Path,
+    patches: Option<&Value>,
+    parts: &mut Vec<Vec<u8>>,
+) -> Result<(), String> {
+    if let Some(patches) = patches {
+        let patches = patches.as_object().ok_or("invalid patchedDependencies")?;
+        let mut names: Vec<_> = patches.keys().collect();
+        names.sort();
+        for name in names {
+            let path = patches[name].as_str().ok_or("invalid patch path")?;
+            patch_input(repo, &root.join(path), parts)?;
+        }
+    }
+    Ok(())
+}
+
 fn key(
     repo: &Path,
     app_rel: &Path,
@@ -275,22 +327,61 @@ fn key(
         app_rel.as_os_str().as_encoded_bytes().to_vec(),
         serde_json::to_vec(installer).map_err(|e| e.to_string())?,
     ];
-    for (root, required) in [(repo.to_path_buf(), false), (repo.join(app_rel), true)] {
-        // An app in a subdirectory may have no repository-root manifest; its absence is keyed.
+    let lockfile =
+        std::fs::read(repo.join(app_rel).join("pnpm-lock.yaml")).map_err(|e| e.to_string())?;
+    let lock: Value = serde_yaml::from_slice(&lockfile).map_err(|e| e.to_string())?;
+    let mut roots = vec![(repo.to_path_buf(), false), (repo.join(app_rel), true)];
+    if let Some(importers) = lock.get("importers").and_then(Value::as_object) {
+        let mut paths: Vec<_> = importers
+            .keys()
+            .filter(|path| path.as_str() != ".")
+            .collect();
+        paths.sort();
+        for path in paths {
+            let root = repo.join(app_rel).join(path);
+            if !root
+                .canonicalize()
+                .map_err(|e| e.to_string())?
+                .starts_with(repo.canonicalize().map_err(|e| e.to_string())?)
+            {
+                return Err("workspace outside checkout".into());
+            }
+            roots.push((root, true));
+        }
+    }
+    for (root, required) in roots {
         let manifest: Value = match std::fs::read(root.join("package.json")) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| e.to_string())?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && !required => Value::Null,
             Err(e) => return Err(e.to_string()),
         };
-        parts.push(
-            serde_json::to_vec(
-                &serde_json::json!({"present":!manifest.is_null(),"scripts":manifest.get("scripts"),"pnpm":manifest.get("pnpm")}),
-            )
-            .unwrap(),
-        );
+        parts.push(serde_json::to_vec(&manifest).map_err(|e| e.to_string())?);
+        patched_inputs(
+            repo,
+            &root,
+            manifest
+                .get("pnpm")
+                .and_then(|pnpm| pnpm.get("patchedDependencies")),
+            &mut parts,
+        )?;
+        match std::fs::symlink_metadata(root.join("patches")) {
+            Ok(_) => patch_input(repo, &root.join("patches"), &mut parts)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.to_string()),
+        }
         for name in [".npmrc", "pnpm-workspace.yaml"] {
             match std::fs::read(root.join(name)) {
                 Ok(bytes) => {
+                    if name == "pnpm-workspace.yaml" {
+                        let workspace: Value =
+                            serde_yaml::from_slice(&bytes).map_err(|e| e.to_string())?;
+                        patched_inputs(
+                            repo,
+                            &root,
+                            workspace.get("patchedDependencies"),
+                            &mut parts,
+                        )?;
+                    }
                     parts.push(vec![1]);
                     parts.push(bytes);
                 }
@@ -299,8 +390,7 @@ fn key(
             }
         }
     }
-    parts
-        .push(std::fs::read(repo.join(app_rel).join("pnpm-lock.yaml")).map_err(|e| e.to_string())?);
+    parts.push(lockfile);
     let selected: std::collections::BTreeMap<_, _> = effective
         .as_object()
         .unwrap()
