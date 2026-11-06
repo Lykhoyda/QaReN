@@ -1,5 +1,21 @@
 # qaren
 
+## 2.1.0
+
+### Minor Changes
+
+- fbf949c: Skip iOS Fill steps whose fields already hold the exact stable value, with an `(always retype)` plan label to preserve retyping when needed.
+
+### Patch Changes
+
+- 146862c: Refuse unavailable development targets within the attach budget and report a precise recovery action.
+- d02d71f: Recover iOS Fill on an already-focused field with a hidden keyboard by blurring and re-finding it before one bounded re-tap.
+- d9d415c: Patch tinypool, js-yaml, Vite, PostCSS, Browserslist, baseline-browser-mapping, and source-map-js security vulnerabilities.
+- a10e640: Refuse stalled Watchman cookie syncs before manifest retries with a specific cause and recovery steps.
+- 973b3c1: Include measured client settle timing and native preparation counts in step ledger rows.
+- aa68a0f: Start published videos at the first plan step while preserving admission and login boundaries, withhold copies without a positive window, and record the window in the receipt.
+- cde5e8a: Exclude untracked watchman sync cookie files from candidate provenance and worktree drift diagnostics.
+
 ## 2.0.8
 
 ### Patch Changes

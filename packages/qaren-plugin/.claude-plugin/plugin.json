@@ -1,6 +1,6 @@
 {
   "name": "qaren",
-  "version": "2.0.8",
+  "version": "2.1.0",
   "description": "A QA engineer for your coding agent. It tests each React Native change on a simulator and tells you PASS or FAIL, with video proof.",
   "author": {
     "name": "Anton Lykhoyda",
