@@ -1266,6 +1266,43 @@ test('a wait on a React-only target behind a sole-Close promo closes it and pass
   assert.equal(result.recoveries, 1);
 });
 
+test('a first check dismisses the full-screen promo despite mounted Home controls', async () => {
+  const f = app(home());
+  promoOverHome(f);
+  ticking(f);
+  const result = await runPlan(parsePlan('✓ "Target"').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['press @close']);
+  assert.equal(result.recoveries, 1);
+});
+
+test('a first fill behind the modal dismisses Close once without scrolling', async () => {
+  const f = app(modalOverHome({ input: true }));
+  ticking(f);
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    f.show(screen([element('@field', 'Target', { kind: 'input', testID: 'qa-promo-home-target' })]));
+    return { ok: true, executed: true };
+  };
+  f.deps.fill = async (ref, value) => {
+    f.actions.push(`fill ${ref}`);
+    f.show(
+      screen([
+        element('@field', 'Target', { kind: 'input', testID: 'qa-promo-home-target', value }),
+        element('@done', 'Done'),
+      ]),
+    );
+    return { ok: true, executed: true, proven: true };
+  };
+  const result = await runPlan(
+    parsePlan('1. Fill "qa-promo-home-target" with "synthetic"\n✓ "Done"').blocks!,
+    f.deps,
+  );
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['press @close', 'fill @field']);
+  assert.equal(result.recoveries, 1);
+});
+
 test('a React-only tap target without a presented modal is never sent to dismiss Close', async () => {
   const f = app(home());
   promoOverHome(f);

@@ -22,7 +22,12 @@ const presence = (nodes: NativeNode[]) => ({
 // The iOS device shape: a full-screen React Native Modal over a mounted Home whose Pressables
 // stay in React but have no native nodes while the modal is presented.
 export function modalOverHome(
-  options: { modalType?: string; homeNative?: boolean; secondControl?: boolean } = {},
+  options: {
+    modalType?: string;
+    homeNative?: boolean;
+    secondControl?: boolean;
+    input?: boolean;
+  } = {},
 ): Screen {
   const nodes: NativeNode[] = [
     { ref: '@app', type: 'Application', rect: window },
@@ -92,7 +97,19 @@ export function modalOverHome(
     [plain(), null, 'RCTRootView', window],
     [plain('qa-home'), 0, 'RCTView', window],
     [plain(), 0, options.modalType ?? 'RCTModalHostView', window],
-    [pressable('qa-promo-home-target'), 1, 'RCTView', targetRect],
+    [
+      options.input
+        ? {
+            testID: 'qa-promo-home-target',
+            role: 'textbox',
+            roleSource: 'role' as const,
+            capabilities: { fill: true as const },
+          }
+        : pressable('qa-promo-home-target'),
+      1,
+      options.input ? 'RCTTextInput' : 'RCTView',
+      targetRect,
+    ],
     [pressable('qa-promo-offers'), 1, 'RCTView', offersRect],
     [plain('qa-promo'), 2, 'RCTView', window],
     [pressable('qa-promo-close'), 5, 'RCTView', closeRect],
@@ -120,7 +137,7 @@ export function modalOverHome(
   return join(
     nodes,
     [
-      { testID: 'qa-promo-home-target', role: 'button', label: 'Target' },
+      { testID: 'qa-promo-home-target', role: options.input ? 'textbox' : 'button', label: 'Target' },
       { testID: 'qa-promo-offers', role: 'button', label: 'See Pro offers' },
       { testID: 'qa-promo-close', role: 'button', label: 'Close' },
     ],

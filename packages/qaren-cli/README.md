@@ -3432,6 +3432,10 @@ A tap or fill whose ID target is mounted only in React behind that `Modal` is no
 scrolled: it goes to recovery, which closes the interruption under the same guards
 and retries the step once, or fails `TARGET_NOT_FOUND` with the step's row receipt.
 A target that is simply absent, or behind any other cover, never triggers this.
+React-only wait recovery also requires proof that its target is behind that
+presented `Modal`. Both paths recheck this proof in recovery's fresh capture and
+before dispatch; without it, app dismissal is vetoed as `uncovered-target`, so a
+missing target on an ordinary form cannot cause its own `Cancel` to be pressed.
 A later wait or check matching that screen, other than an exempt decline label, still
 vetoes. The current target is never exempt. ID-only targets are checked by
 test ID, text-only targets by contained label or value text (including composed
@@ -3511,7 +3515,7 @@ and cannot authorize a retry; an attempted decline still counts in `recoveries`,
 including when its read-back refuses incomplete capture.
 
 `logs/core.log` includes value-free diagnostics for failed interruption admission:
-`interruption-rejected` reports a front, coverage, indexed target,
+`interruption-rejected` reports a front, coverage, indexed target, `uncovered-target`,
 previous-plan-press or no-candidate veto, a later-target veto's `presence` or
 `ownership` provenance, whether the decline is the screen's only control
 (`soleDecline`) and the exact-decline-label element count; the same veto kind, step line,
