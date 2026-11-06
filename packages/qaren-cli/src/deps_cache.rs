@@ -506,7 +506,7 @@ pub(crate) fn restore(ctx: &mut Ctx, repository: &Path, enabled: bool) -> Result
         }
         let repo_id = sha256_hex(repository.as_os_str().as_encoded_bytes());
         let key = match key(&repo, app_rel, &repo_id, &installer, &effective) {
-            Ok(key) => key,
+            Ok(key) => sha256_hex(format!("{}:{key}", ctx.record.candidate.git_sha).as_bytes()),
             Err(_) => {
                 note(ctx, "disabled");
                 skipped(ctx, &["restore", "stage", "publish"], "missing-input");

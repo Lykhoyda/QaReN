@@ -3952,21 +3952,22 @@ a subdirectory of a repository without one is reused too. It restores
 filesystem clones into the new checkout, then still runs
 `pnpm install --frozen-lockfile` to validate the lockfile and manifests.
 Other layouts use the normal cold install: `pnp`, a global virtual store,
-workspace packages other than the app, and modules linked from outside
-`node_modules`. pnpm 11 reads `nodeLinker` from `pnpm-workspace.yaml`, not
-`.npmrc`.
+workspace packages other than the app, an explicitly configured `storeDir` that
+is relative or inside the checkout, and modules linked from outside
+`node_modules`. For reuse, a configured store must use an absolute path outside
+the checkout so restored modules keep the same store identity. pnpm 11 reads
+`nodeLinker` from `pnpm-workspace.yaml`, not `.npmrc`.
 See [pnpm's layout settings](https://pnpm.io/settings#nodeLinker).
 The preflight pnpm process-group probe runs with `verifyDepsBeforeRun` off, so
 it never installs dependencies before restore.
 
-The cache key binds the lockfile bytes, repository and app path, full root, app,
-and lockfile workspace package manifests, whether a root `package.json` exists,
-`.npmrc`, `pnpm-workspace.yaml`, effective pnpm install settings, package `patches/`
-contents, files referenced by pnpm `patchedDependencies`, and the
+The cache key binds the candidate commit, lockfile bytes, repository and app path,
+full root, app, and lockfile workspace package manifests, whether a root `package.json` exists,
+`.npmrc`, `pnpm-workspace.yaml`, effective pnpm install settings (including
+`storeDir`), package `patches/` contents, files referenced by pnpm
+`patchedDependencies`, and the
 PATH-resolved pnpm and Node versions, architecture and platform. The installer
-identity is kept in `run.json`. A dependency lifecycle script that reads other
-project source outside these keyed inputs during its first installation can
-carry stale output to later heads with the same key.
+identity is kept in `run.json`. Different candidate commits use separate entries.
 Set `depsCache: false` in `.qaren/config.yaml` for a cold run;
 `qaren check` and `qaren prepare` do not use this cache or change prewarm policy.
 

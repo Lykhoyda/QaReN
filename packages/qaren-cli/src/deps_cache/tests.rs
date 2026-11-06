@@ -566,8 +566,6 @@ fn subdirectory_app_without_root_manifest_reuses_its_isolated_tree() {
 
     isolated(&mut runner.mock);
     let mut ctx = f.context(&mut runner, "second");
-    ctx.record.candidate.git_sha = "b".repeat(40);
-    std::fs::write(f.0.join("repo/app/source.ts"), "export const value = 2;").unwrap();
     restore(&mut ctx, &f.0.join("repo"), true).unwrap();
     assert!(ctx.notes.contains(&("deps_cache".into(), "hit".into())));
     assert_eq!(
@@ -583,6 +581,32 @@ fn subdirectory_app_without_root_manifest_reuses_its_isolated_tree() {
         "dep@1.0.0/node_modules/dep"
     );
     assert!(!f.0.join("repo/node_modules").exists());
+    release(&mut ctx);
+    assert_eq!(runner.mock.remaining(), 0);
+}
+
+#[test]
+fn a_different_candidate_head_does_not_restore_installed_output() {
+    let f = Fixture::new();
+    let mut runner = CloneRunner::new();
+    probes(&mut runner.mock);
+    disk(&mut runner.mock, u64::MAX / 1024);
+    let mut ctx = f.context(&mut runner, "first");
+    restore(&mut ctx, &f.0.join("repo"), true).unwrap();
+    f.modules();
+    stage_ok(&mut ctx);
+    publish(&mut ctx).unwrap();
+    release(&mut ctx);
+    for rel in ["node_modules", "app/node_modules"] {
+        std::fs::remove_dir_all(f.0.join("repo").join(rel)).unwrap();
+    }
+
+    probes(&mut runner.mock);
+    let mut ctx = f.context(&mut runner, "other-head");
+    ctx.record.candidate.git_sha = "b".repeat(40);
+    restore(&mut ctx, &f.0.join("repo"), true).unwrap();
+    assert!(ctx.notes.contains(&("deps_cache".into(), "miss".into())));
+    assert!(!f.0.join("repo/app/node_modules").exists());
     release(&mut ctx);
     assert_eq!(runner.mock.remaining(), 0);
 }
