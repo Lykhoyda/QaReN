@@ -3434,7 +3434,9 @@ Check-first, wait-first and tap/fill-first plans behind a presented full-screen 
 recover under these guards and retry the step once. On iOS, before scrolling for a
 React-only tap or fill target, an ordinary capture gets one bounded presence
 recapture within the step's remaining budget. When it proves the target is behind
-the presented `Modal`, recovery runs instead of scrolling the promo.
+the presented `Modal`, recovery runs instead of scrolling the promo. A recapture that
+runs out of time or returns incomplete evidence leaves the cover unproven, and the
+step continues as it would have without it; it never adds a refusal of its own.
 React-only wait recovery and this pre-scroll recovery require proof that the target
 is behind the presented `Modal`, and recheck this proof in recovery's fresh capture
 and before dispatch; without it, app dismissal is vetoed as `uncovered-target`, so a

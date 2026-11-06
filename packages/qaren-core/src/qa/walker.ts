@@ -3662,14 +3662,26 @@ async function walkBlockScoped(
                     reactOnlyTarget(item.target, before.screen)
                   ) {
                     scrollPresenceRead = true;
-                    before = await captureOnce(
-                      item,
-                      false,
-                      false,
-                      'provenance',
-                      Math.min(itemDeadline ?? Infinity, deps.now() + NATIVE_PRESENCE_BUDGET_MS),
-                    );
-                    continue;
+                    try {
+                      before = await captureOnce(
+                        item,
+                        false,
+                        false,
+                        'provenance',
+                        Math.min(itemDeadline ?? Infinity, deps.now() + NATIVE_PRESENCE_BUDGET_MS),
+                      );
+                      continue;
+                    } catch (error) {
+                      // A late or incomplete presence read leaves the cover unproven; the step goes on as before.
+                      if (
+                        !(error instanceof CaptureDeadline) &&
+                        !(
+                          error instanceof ResolutionError &&
+                          error.code === 'SCREEN_EVIDENCE_INCOMPLETE'
+                        )
+                      )
+                        throw error;
+                    }
                   }
                   // Scrolling would move the interruption, not the target behind it.
                   if (

@@ -10,6 +10,7 @@ import { cleanDiagnostic } from '../../../dist/qa/diagnostics.js';
 import type { StoredBlock } from '../../../dist/qa/blocks.js';
 import type { Block } from '../../../dist/qa/plan.js';
 import { NativeSnapshotIncomplete } from '../../../dist/qa/private-input.js';
+import { CaptureDeadline } from '../../../dist/qa/capture.js';
 import { join as joinScreen, type Screen } from '../../../dist/qa/screen.js';
 import type { WalkerDeps } from '../../../dist/qa/walker.js';
 import { choice, element, screen, scriptedJudge } from './judgment-fixtures.ts';
@@ -1318,6 +1319,35 @@ test('a first fill behind the modal dismisses Close once without scrolling', asy
   assert.deepEqual(f.actions, ['press @close', 'fill @field']);
   assert.equal(result.recoveries, 1);
 });
+
+for (const [name, presenceRead] of [
+  [
+    'late',
+    async () => {
+      throw new CaptureDeadline();
+    },
+  ],
+  [
+    'incomplete',
+    async () => ({
+      ...modalOverHome(),
+      coverage: { native: 'incomplete', react: 'complete' },
+    }),
+  ],
+] as const) {
+  test(`a ${name} pre-scroll presence read leaves the cover unproven instead of refusing`, async () => {
+    const f = app(home());
+    promoOverHome(f);
+    const ordinary = f.deps.captureScreen;
+    f.deps.captureScreen = async (request) =>
+      request?.platformPresence ? presenceRead() : ordinary(request);
+    ticking(f);
+    const result = await runPlan(parsePlan('1. Tap "qa-promo-home-target"').blocks!, f.deps);
+    assert.equal(result.verdict, 'FAIL');
+    assert.deepEqual(f.actions, ['scroll']);
+    assert.match(result.failure?.seen ?? '', /stayed off screen after one scroll/);
+  });
+}
 
 test('a React-only tap target without a presented modal is never sent to dismiss Close', async () => {
   const f = app(home());
