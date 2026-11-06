@@ -663,7 +663,8 @@ A press counts a same-label wrapper as the control it wraps when native ancestry
 a React host anchored by the wrapper's own unique testID
 with no press handler, no other content and strict frame containment all hold; an
 inner control that is offscreen, disabled or not hittable never collapses, and the
-wrapper is never chosen. A match whose whole frame is off screen, outside its list's
+wrapper is never chosen. When a quoted press or fill still has multiple matches,
+a match whose whole frame is off screen, outside its list's
 clip or under the keyboard is set aside unless it is nested with another match; a
 later window or an inferred overlay sets nothing aside. On iOS, when every remaining
 match is uniquely identifiable, the first four are considered for a read-only live
@@ -3745,14 +3746,14 @@ views are skipped and box-none views pass the touch to their children. The step
 row's `coveredBy` then records that view's ref, kind and frame, with a label only from
 QaReN's own dismiss words, and a refusal adds "covered by <kind> at <frame>". With no
 complete host evidence, an unresolved paint order, or a touch that reaches the
-target's own lineage, no cover is named. Unread or unavailable facts
+target's own lineage, no cover is named. In `clearanceDiagnostic`, unread or unavailable facts
 remain `null`; target text, identifiers and target coordinates are excluded. The
 [walker](../qaren-core/src/qa/walker.ts) owns the event layout; the
 [centre predicate](../qaren-core/src/qa/resolve.ts) owns its coverage facts.
 On the [strict iOS overlay press path](#covered-target-recovery), this event follows
 a live-hit refusal with mutation `none`, rather than the inference alone.
 The event preserves the failed step and grants no further scroll or
-target dispatch; sink failures leave the outcome unchanged. It stays out of the
+target dispatch; sink failures leave the outcome unchanged. The timing event stays out of the
 public result and ledger, as covered by the
 [occlusion regressions](../qaren-core/test/unit/qa/occlusion-walker.test.ts).
 
