@@ -2672,7 +2672,10 @@ fn admission_facts_reach_private_diagnostics_only_as_allowlisted_admission_point
         retry.as_object_mut().unwrap().remove("attachStage");
         let mut refused = cancelled.clone();
         refused["admission"] = json!("refused");
-        refused["inner"] = json!("none");
+        refused["inner"] = json!("dev_runtime_unproven");
+        refused["bundleBuilt"] = json!("failed");
+        refused["foreignPages"] = json!(2);
+        refused["sameNameDevices"] = json!(1);
         let expected = vec![retry, cancelled.clone(), refused];
         let mut payloads = expected.clone();
         for (key, value) in [
@@ -2683,6 +2686,9 @@ fn admission_facts_reach_private_diagnostics_only_as_allowlisted_admission_point
             ("inner", json!(secret)),
             ("liveness", json!(secret)),
             ("bundleRequest", json!(secret)),
+            ("bundleBuilt", json!(secret)),
+            ("foreignPages", json!(1.5)),
+            ("sameNameDevices", json!(-1)),
             ("relaunchFailed", json!(secret)),
             ("relaunchFailed", json!(1)),
             ("attempt", json!(secret)),

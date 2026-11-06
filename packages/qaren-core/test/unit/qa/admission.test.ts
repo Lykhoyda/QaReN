@@ -2458,7 +2458,12 @@ for (const mode of [
         mode === 'failed_scan' ||
         mode === 'incomplete_scan';
       assert.equal(result.code, nonDev ? 'DEV_TARGET_MISSING' : 'CDP_NOT_CONNECTED');
-      assert.equal(result.meta?.inner, nonDev ? 'non_dev_bundle' : 'no_dev_target_unknown');
+      // A deadline reached while every page still answers undefined is an unproven runtime.
+      const idle = mode === 'undefined' || mode === 'late_undefined';
+      assert.equal(
+        result.meta?.inner,
+        nonDev ? 'non_dev_bundle' : idle ? 'dev_runtime_unproven' : 'no_dev_target_unknown',
+      );
       assert.ok(!calls.includes('open'));
       assert.ok(!calls.includes('prove'));
       if (nonDev) assert.equal(result.meta?.devFalse, 1);

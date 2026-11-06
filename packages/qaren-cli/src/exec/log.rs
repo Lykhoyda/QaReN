@@ -208,16 +208,88 @@ pub fn read_bundle_requests(log: &Path) -> Option<u64> {
         .ok()
 }
 
-// A value-free count, present only once Metro logged a request, so an absent file means unknown.
+pub fn bundle_outcomes_path(log: &Path) -> PathBuf {
+    log.with_extension("bundle-outcomes")
+}
+
+// "<completed> <failed>"; absent until Metro logged a request or an outcome.
+pub fn read_bundle_outcomes(log: &Path) -> Option<(u64, u64)> {
+    let text = std::fs::read_to_string(bundle_outcomes_path(log)).ok()?;
+    let (completed, failed) = text.trim().split_once(' ')?;
+    Some((completed.parse().ok()?, failed.parse().ok()?))
+}
+
+// The Expo CLI's own outcome line, `<platform> Bundled 150ms index.ts (10 modules)` or
+// `Bundling failed`; a multipart HTTP 200 carries no outcome, so status codes are never read.
+fn bundle_outcome(line: &str) -> Option<usize> {
+    let mut plain = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            if chars.next() == Some('[') {
+                for c in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        plain.push(c);
+    }
+    let plain = plain.trim();
+    if !(plain.ends_with(" module)") || plain.ends_with(" modules)")) {
+        return None;
+    }
+    let word = |word: &str| plain.starts_with(word) || plain.contains(&format!(" {word}"));
+    if word("Bundled ") {
+        Some(0)
+    } else if word("Bundling failed ") {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+// Value-free counts, present only once Metro logged a request, so an absent file means unknown.
 struct BundleRequests {
     path: PathBuf,
     count: Option<u64>,
+    outcomes: Option<[u64; 2]>,
 }
 
 impl BundleRequests {
+    fn write(path: &Path, text: String) -> io::Result<()> {
+        let mut partial = path.as_os_str().to_owned();
+        partial.push(".partial");
+        std::fs::write(&partial, text)?;
+        std::fs::rename(&partial, path)
+    }
+
+    fn outcomes_path(&self) -> PathBuf {
+        self.path.with_extension("bundle-outcomes")
+    }
+
     fn observe(&mut self, line: &[u8]) -> io::Result<()> {
         let line = String::from_utf8_lossy(line);
-        let Some((_, request)) = line.split_once(REQUEST_RECEIVED) else {
+        let request = line
+            .split_once(REQUEST_RECEIVED)
+            .map(|(_, request)| request);
+        let outcome = bundle_outcome(&line);
+        if request.is_some() || outcome.is_some() {
+            let mut outcomes = self.outcomes.unwrap_or([0, 0]);
+            if let Some(index) = outcome {
+                outcomes[index] += 1;
+            }
+            if self.outcomes != Some(outcomes) {
+                Self::write(
+                    &self.outcomes_path(),
+                    format!("{} {}\n", outcomes[0], outcomes[1]),
+                )?;
+                self.outcomes = Some(outcomes);
+            }
+        }
+        let Some(request) = request else {
             return Ok(());
         };
         let bundle = request.split_whitespace().next().is_some_and(|url| {
@@ -229,9 +301,7 @@ impl BundleRequests {
         if self.count == Some(count) {
             return Ok(());
         }
-        let partial = self.path.with_extension("bundle-requests.partial");
-        std::fs::write(&partial, format!("{count}\n"))?;
-        std::fs::rename(&partial, &self.path)?;
+        Self::write(&self.path, format!("{count}\n"))?;
         self.count = Some(count);
         Ok(())
     }
@@ -259,6 +329,7 @@ impl Sink {
             // A count that may lag reads as no request, so a failed write retires the signal instead.
             if bundles.observe(bytes).is_err() {
                 let _ = std::fs::remove_file(&bundles.path);
+                let _ = std::fs::remove_file(bundles.outcomes_path());
                 self.bundles = None;
             }
         }
@@ -366,6 +437,7 @@ fn drain(paired: bool, mut control: UnixStream, key: Option<String>) -> io::Resu
         .map(|path| BundleRequests {
             path: PathBuf::from(path),
             count: None,
+            outcomes: None,
         });
     let mut log = Sink {
         start: file.metadata()?.len(),

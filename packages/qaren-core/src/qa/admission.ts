@@ -20,6 +20,7 @@ import {
   TargetListAttemptTimeoutError,
   TargetSelectionError,
   clearFailedPackageProbes,
+  type AdvertisedPages,
   type PlatformInferenceSummary,
 } from '../cdp/discovery.js';
 import {
@@ -39,6 +40,7 @@ import {
   ADMISSION_INNER_CLASSES,
   ADMISSION_LIVENESS,
   ADMISSION_BUNDLE_REQUESTS,
+  ADMISSION_BUNDLE_BUILT,
   type TimingEvent,
   observeTiming,
 } from './timing.js';
@@ -66,6 +68,11 @@ export interface AdmissionSteps {
   appAlive?(): Promise<boolean>;
   // No request permits relaunch; a received request does not prove that a bundle finished loading.
   bundleRequested?(): Promise<boolean | undefined>;
+  // Port-wide, read synchronously: the raw request count now, and bundle outcomes since the latest launch.
+  bundleRequestCount?(): number | undefined;
+  bundleBuilt?(): BundleBuilt;
+  // Value-free counts from the latest target-list read.
+  pages?(): AdvertisedPages;
   foreignDriver(): Promise<string | undefined>;
   open(): Promise<void>;
   prove(): Promise<ProveOutcome>;
@@ -89,6 +96,7 @@ export type AdmissionBoundary = (typeof ADMISSION_BOUNDARIES)[number];
 export type AdmissionInnerClass = (typeof ADMISSION_INNER_CLASSES)[number];
 export type AdmissionLiveness = (typeof ADMISSION_LIVENESS)[number];
 export type AdmissionDecision = (typeof ADMISSION_DECISIONS)[number];
+export type BundleBuilt = (typeof ADMISSION_BUNDLE_BUILT)[number];
 
 export type AdmissionRefusalFacts = {
   attempt: number;
@@ -99,6 +107,7 @@ export type AdmissionRefusalFacts = {
   relaunchFailed: boolean;
   liveness: AdmissionLiveness;
   bundleRequest?: (typeof ADMISSION_BUNDLE_REQUESTS)[number];
+  bundleBuilt?: BundleBuilt;
   elapsedMs: number;
   remainingMs: number;
   budgetMs: number;
@@ -109,6 +118,8 @@ export type AdmissionRefusalFacts = {
   devFalse?: number;
   devUndefined?: number;
   devUnknown?: number;
+  foreignPages?: number;
+  sameNameDevices?: number;
   inference?: PlatformInferenceSummary;
   warmMs?: number;
   warmAttempts?: number;
@@ -192,6 +203,9 @@ export function formatAdmissionRefusal(
     ...(facts.bundleRequest === undefined
       ? {}
       : { bundleRequest: member(facts.bundleRequest, ADMISSION_BUNDLE_REQUESTS) }),
+    ...(facts.bundleBuilt === undefined
+      ? {}
+      : { bundleBuilt: member(facts.bundleBuilt, ADMISSION_BUNDLE_BUILT) }),
     elapsedMs: count(facts.elapsedMs),
     remainingMs: count(facts.remainingMs),
     budgetMs: count(facts.budgetMs),
@@ -204,6 +218,8 @@ export function formatAdmissionRefusal(
         'devFalse',
         'devUndefined',
         'devUnknown',
+        'foreignPages',
+        'sameNameDevices',
       ]
         .filter((key) => facts[key] !== undefined)
         .map((key) => [key, count(facts[key])]),
@@ -466,6 +482,39 @@ async function probeBundleRequest(steps: AdmissionSteps): Promise<BundleRequest>
   }
 }
 
+function readBundleBuilt(steps: AdmissionSteps): BundleBuilt {
+  try {
+    return steps.bundleBuilt?.() ?? 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function readRequestCount(steps: AdmissionSteps): number | undefined {
+  try {
+    return steps.bundleRequestCount?.();
+  } catch {
+    return undefined;
+  }
+}
+
+function readPages(steps: AdmissionSteps): AdvertisedPages {
+  try {
+    const { foreignPages, sameNameDevices } = steps.pages?.() ?? {};
+    return {
+      ...(foreignPages === undefined ? {} : { foreignPages }),
+      ...(sameNameDevices === undefined ? {} : { sameNameDevices }),
+    };
+  } catch {
+    return {};
+  }
+}
+
+const foreignPagesNote = (pages: AdvertisedPages): string =>
+  pages.foreignPages
+    ? `; pages from ${pages.foreignPages} other device(s) are advertised on this Metro port; give each lane its own metroPort and its own simulator name`
+    : '';
+
 type ReadCount = (path: string) => string;
 const readCountFile: ReadCount = (path) => readFileSync(path, 'utf8');
 
@@ -490,19 +539,72 @@ export function bundleRequestedSinceLaunch(
   return count > signal.atLaunch;
 }
 
-// Request evidence belongs to the latest launch; an unreadable count at relaunch leaves it unknown.
+function bundleOutcomeCounts(
+  path: string,
+  read: ReadCount,
+): { completed: number; failed: number } | undefined {
+  let text: string;
+  try {
+    text = read(path).trim();
+  } catch {
+    return undefined;
+  }
+  const match = /^(\d+) (\d+)$/.exec(text);
+  if (!match) return undefined;
+  const [completed, failed] = [Number(match[1]), Number(match[2])];
+  return Number.isSafeInteger(completed) && Number.isSafeInteger(failed)
+    ? { completed, failed }
+    : undefined;
+}
+
+// Request and outcome evidence belong to the latest launch; an unreadable count at relaunch leaves it unknown.
 export function launchBundleRequests(
-  signal: { path: string; atLaunch: number },
+  signal: {
+    path: string;
+    atLaunch: number;
+    outcomesPath?: string;
+    completedAtLaunch?: number;
+    failedAtLaunch?: number;
+  },
   read: ReadCount = readCountFile,
-): { requested(): boolean | undefined; relaunching(): void } {
+): {
+  requested(): boolean | undefined;
+  count(): number | undefined;
+  built(): BundleBuilt;
+  relaunching(): void;
+} {
   let atLaunch: number | undefined = signal.atLaunch;
+  const { outcomesPath } = signal;
+  let outcomesAtLaunch =
+    outcomesPath !== undefined &&
+    signal.completedAtLaunch !== undefined &&
+    signal.failedAtLaunch !== undefined
+      ? { completed: signal.completedAtLaunch, failed: signal.failedAtLaunch }
+      : undefined;
   return {
     requested: () =>
       atLaunch === undefined
         ? undefined
         : bundleRequestedSinceLaunch({ path: signal.path, atLaunch }, read),
+    count: () => bundleRequestCount(signal.path, read),
+    built: () => {
+      if (outcomesPath === undefined || outcomesAtLaunch === undefined) return 'unknown';
+      const now = bundleOutcomeCounts(outcomesPath, read);
+      if (
+        !now ||
+        now.completed < outcomesAtLaunch.completed ||
+        now.failed < outcomesAtLaunch.failed
+      )
+        return 'unknown';
+      return now.completed > outcomesAtLaunch.completed
+        ? 'completed'
+        : now.failed > outcomesAtLaunch.failed
+          ? 'failed'
+          : 'none';
+    },
     relaunching: () => {
       atLaunch = bundleRequestCount(signal.path, read);
+      if (outcomesPath !== undefined) outcomesAtLaunch = bundleOutcomeCounts(outcomesPath, read);
     },
   };
 }
@@ -518,6 +620,8 @@ export const DEV_CLIENT_MANIFEST_MARGIN_MS = DEV_CLIENT_REQUEST_TIMEOUT_MS / 2;
 export const DEV_CLIENT_MANIFEST_ANSWERS = 2;
 const PATIENT_MANIFEST_MS = 90_000;
 const MAX_PATIENT_RELAUNCHES = 3;
+// An advertised page that answers `__DEV__` undefined this long has not run its bundle.
+const IDLE_WINDOW_MIN_MS = 60_000;
 
 // Like the CLI's launch: (re)launch only once Metro answers the dev client's own manifest request with margin, twice in a row.
 export async function awaitDevClientManifest(
@@ -590,6 +694,12 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
   let stallSeenAt: number | undefined;
   let liveness: AdmissionLiveness = 'not_probed';
   let bundleRequest: BundleRequest = 'not_probed';
+  let bundleBuilt: BundleBuilt | undefined;
+  // A complete scan whose every page answered `__DEV__` undefined, held continuously since `since`.
+  let idle: { since: number; candidates: string; requests: number | undefined } | undefined;
+  let idleExtended = false;
+  let idleRelaunches = 0;
+  const idleWindowMs = Math.max(steps.readinessMs, IDLE_WINDOW_MIN_MS);
   let opened = false;
   let attaching = true;
   let relaunchFailure: string | undefined;
@@ -620,9 +730,11 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
       relaunchFailed: relaunchFailure !== undefined,
       liveness,
       ...(bundleRequest === 'not_probed' ? {} : { bundleRequest }),
+      ...(bundleBuilt === undefined ? {} : { bundleBuilt }),
       elapsedMs: Math.round(now - started),
       remainingMs: Math.max(0, Math.round(deadline - now)),
       budgetMs: Math.round(deadline - started),
+      ...readPages(steps),
     };
   };
   const observe = (decision: AdmissionDecision, recorded: AdmissionRefusalFacts): void => {
@@ -631,6 +743,118 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
     } catch {
       // Diagnostics cannot change the admission.
     }
+  };
+  const observeProbe = (probe: ManifestProbe): void => {
+    probeTimings.push(probe.ms);
+    observeTiming(steps.timing, {
+      stage: 'manifest-probe',
+      edge: 'end',
+      outcome: probe.outcome === 'ok' ? 'ok' : 'failed',
+      at: performance.now() - started,
+      ms: probe.ms,
+      count: probeTimings.length,
+      method: probe.outcome === 'timeout' ? 'timeout' : 'unknown',
+    });
+  };
+  const timedRelaunch = async (
+    relaunch: NonNullable<AdmissionSteps['relaunch']>,
+    launchDeadline: number,
+  ): Promise<void> => {
+    const launchStarted = performance.now();
+    let outcome: TimingEvent['outcome'] = 'failed';
+    try {
+      const launched = await withDeadline(launchDeadline, attachTimeout, () =>
+        relaunch(launchDeadline),
+      );
+      if (launched) warm = launched;
+      outcome = 'ok';
+    } finally {
+      const ms = Math.round(performance.now() - launchStarted);
+      relaunchTimings.push(ms);
+      observeTiming(steps.timing, {
+        stage: 'dev-client-relaunch',
+        edge: 'end',
+        outcome,
+        at: performance.now() - started,
+        ms,
+        count: relaunchTimings.length,
+        relaunch: outcome === 'ok' ? 'ready' : 'failed',
+      });
+    }
+  };
+  // One extension for visible bundle progress, then one relaunch; a later full window refuses.
+  const idleWindowExpired = async (error: unknown): Promise<void> => {
+    if (!idle) return;
+    if (idleRelaunches > 0) throw error;
+    liveness = await probeLiveness(steps);
+    bundleRequest = await probeBundleRequest(steps);
+    bundleBuilt = readBundleBuilt(steps);
+    const requests = readRequestCount(steps);
+    const progressed =
+      bundleBuilt === 'completed' ||
+      (idle.requests !== undefined && requests !== undefined && requests > idle.requests);
+    if (progressed && !idleExtended) {
+      idleExtended = true;
+      idle = { ...idle, since: performance.now(), requests };
+      return;
+    }
+    const bound = Math.min(activeDeadline, performance.now() + steps.remainingMs());
+    const relaunch = steps.relaunch;
+    if (
+      !relaunch ||
+      opened ||
+      relaunches >= MAX_PATIENT_RELAUNCHES ||
+      bound - performance.now() < steps.readinessMs
+    ) {
+      // Without a relaunch the attach deadline refuses; re-probe once per window meanwhile.
+      idle = { ...idle, since: performance.now(), requests };
+      return;
+    }
+    lastStarted = 'foreign_driver';
+    await refuseForeignDriver(steps);
+    lastCompleted = 'foreign_driver';
+    lastStarted = 'relaunch';
+    try {
+      if (steps.manifest) {
+        let warmFailure: { error: unknown } | undefined;
+        try {
+          const warmed = await steps.manifest(bound, {
+            observe: (probe) => {
+              observeProbe(probe);
+              return { deadline: bound, backoffMs: 0 };
+            },
+          });
+          if (warmed) warm = warmed;
+        } catch (warmError) {
+          if (isAbort(warmError)) throw warmError;
+          warmFailure = { error: warmError };
+        }
+        if (warmFailure) {
+          relaunches++;
+          idleRelaunches++;
+          throw warmFailure.error;
+        }
+      }
+      relaunches++;
+      idleRelaunches++;
+      await timedRelaunch(relaunch, bound);
+    } catch (relaunchError) {
+      if (
+        isAbort(relaunchError) ||
+        (relaunchError instanceof HandlerError && relaunchError.code === 'BUSY_FOREIGN_FLOW')
+      )
+        throw relaunchError;
+      relaunchFailure = describeError(relaunchError).message;
+      throw error;
+    }
+    lastCompleted = 'relaunch';
+    liveness = 'not_probed';
+    bundleRequest = 'not_probed';
+    bundleBuilt = undefined;
+    // Launch-scoped evidence: an empty list after this relaunch still qualifies for the patient path.
+    devTargetSeen = false;
+    devObservation = undefined;
+    idle = undefined;
   };
   let cancellationObserved = false;
   const observeCancellation = (): void => {
@@ -679,6 +903,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
             () => steps.attach(activeDeadline),
           );
           devObservation = undefined;
+          idle = undefined;
           if (performance.now() >= activeDeadline) throw registeredTimeout;
           devTargetSeen = false;
           waitingForTargets = false;
@@ -726,6 +951,21 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
             devTargetSeen = true;
             if (error.complete) devObservation = error.counts;
           }
+          // Only fresh qualifying evidence keeps the idle clock; anything else restarts it.
+          const idleScan =
+            error instanceof DevTargetUnavailableError &&
+            error.complete &&
+            error.counts.targetsTotal > 0 &&
+            error.counts.devUndefined === error.counts.targetsTotal
+              ? error
+              : undefined;
+          if (!idleScan) idle = undefined;
+          else if (idle?.candidates !== idleScan.candidates)
+            idle = {
+              since: performance.now(),
+              candidates: idleScan.candidates,
+              requests: readRequestCount(steps),
+            };
           const remaining = Math.min(deadline - performance.now(), steps.remainingMs());
           const unproven = unprovenPlatformSelection(error);
           if (
@@ -758,7 +998,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
           if (
             !devTargetSeen &&
             !opened &&
-            (relaunches === 0 ||
+            (relaunches === idleRelaunches ||
               (patientUntil !== undefined &&
                 relaunches < MAX_PATIENT_RELAUNCHES &&
                 noTarget &&
@@ -780,7 +1020,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
             }
             if (
               (!noTarget || liveness !== 'alive' || bundleRequest === 'not_received') &&
-              ((relaunches === 0 && patientUntil === undefined) ||
+              ((relaunches === idleRelaunches && patientUntil === undefined) ||
                 (liveness === 'alive' && bundleRequest === 'not_received'))
             ) {
               try {
@@ -810,16 +1050,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
                     (await steps.manifest(warmDeadline, {
                       ...(eligible ? { requestTimeoutMs: DEV_CLIENT_REQUEST_TIMEOUT_MS } : {}),
                       observe: (probe) => {
-                        probeTimings.push(probe.ms);
-                        observeTiming(steps.timing, {
-                          stage: 'manifest-probe',
-                          edge: 'end',
-                          outcome: probe.outcome === 'ok' ? 'ok' : 'failed',
-                          at: performance.now() - started,
-                          ms: probe.ms,
-                          count: probeTimings.length,
-                          method: probe.outcome === 'timeout' ? 'timeout' : 'unknown',
-                        });
+                        observeProbe(probe);
                         if (
                           eligible &&
                           patientUntil === undefined &&
@@ -870,25 +1101,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
                           Math.max(refuseStalledAt, performance.now() + steps.readinessMs),
                         );
                   relaunches++;
-                  const launchStarted = performance.now();
-                  let outcome: TimingEvent['outcome'] = 'failed';
-                  try {
-                    const launched = await interruptible(() => relaunch(launchDeadline));
-                    if (launched) warm = launched;
-                    outcome = 'ok';
-                  } finally {
-                    const ms = Math.round(performance.now() - launchStarted);
-                    relaunchTimings.push(ms);
-                    observeTiming(steps.timing, {
-                      stage: 'dev-client-relaunch',
-                      edge: 'end',
-                      outcome,
-                      at: performance.now() - started,
-                      ms,
-                      count: relaunchTimings.length,
-                      relaunch: outcome === 'ok' ? 'ready' : 'failed',
-                    });
-                  }
+                  await timedRelaunch(relaunch, launchDeadline);
                   lastCompleted = 'relaunch';
                   liveness = 'not_probed';
                   bundleRequest = 'not_probed';
@@ -938,6 +1151,12 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
             )
               throw error;
           }
+          if (idle && performance.now() - idle.since >= idleWindowMs)
+            await withDeadline(
+              Math.min(activeDeadline, performance.now() + steps.remainingMs()),
+              registeredTimeout,
+              () => idleWindowExpired(error),
+            );
           observe('retry', facts(admissionInnerClass(error)));
           lastStarted = 'retry_wait';
           if (unproven) clearFailedPackageProbes();
@@ -973,15 +1192,24 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
         ? 'react_readiness_timeout'
         : devMissing
           ? 'non_dev_bundle'
-          : devTargetSeen || (attaching && error === registeredTimeout && retried === undefined)
-            ? 'no_dev_target_unknown'
-            : admissionInnerClass(cause);
+          : idle !== undefined
+            ? 'dev_runtime_unproven'
+            : devTargetSeen || (attaching && error === registeredTimeout && retried === undefined)
+              ? 'no_dev_target_unknown'
+              : admissionInnerClass(cause);
     // A refusal says whether the app ran and asked Metro for its bundle, whatever stopped the attach.
+    if (inner === 'dev_runtime_unproven') {
+      bundleRequest = await probeBundleRequest(steps);
+      bundleBuilt = readBundleBuilt(steps);
+    }
     if (
       attaching &&
       !['non_dev_bundle', 'no_dev_target_unknown', 'react_readiness_timeout'].includes(inner)
     ) {
-      const probeDeadline = Math.min(deadline, performance.now() + steps.remainingMs());
+      const probeDeadline = Math.min(
+        inner === 'dev_runtime_unproven' ? activeDeadline : deadline,
+        performance.now() + steps.remainingMs(),
+      );
       if (liveness === 'not_probed' && probeDeadline > performance.now()) {
         try {
           liveness = await withDeadline(probeDeadline, attachTimeout, () => probeLiveness(steps));
@@ -996,7 +1224,12 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
     try {
       refusal = {
         ...facts(inner),
-        ...(['non_dev_bundle', 'no_dev_target_unknown', 'react_readiness_timeout'].includes(inner)
+        ...([
+          'non_dev_bundle',
+          'no_dev_target_unknown',
+          'dev_runtime_unproven',
+          'react_readiness_timeout',
+        ].includes(inner)
           ? {
               attachBudgetMs: Math.round(activeDeadline - started),
               walkBudgetMs: Math.round(deadline - started),
@@ -1026,11 +1259,14 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
           ? 'Development mode could not be established before the attach deadline'
           : inner === 'react_readiness_timeout'
             ? 'React did not become ready before the attach deadline'
-            : undefined;
+            : inner === 'dev_runtime_unproven'
+              ? `the app's page on port ${steps.metroPort} never proved development mode before the attach deadline; bundle request on the port: ${bundleRequest === 'received' ? 'received' : bundleRequest === 'not_received' ? 'not received' : 'unknown'}; bundle completion on the port: ${bundleBuilt ?? 'unknown'}${relaunchFailure === undefined ? '' : `; relaunch failed: ${relaunchFailure}`}`
+              : undefined;
     throw new HandlerError(
       devMissing ? 'DEV_TARGET_MISSING' : 'CDP_NOT_CONNECTED',
-      typedMessage ??
-        `cannot attach to the dev client through Metro ${steps.metroPort}: ${describeError(error).message} (observed ${refusal?.lastStarted ?? lastStarted}: ${inner}; app ${liveness}; bundle request ${bundleRequest}${warm ? `; last manifest warm-up ${warm.ms} ms after ${warm.attempts} attempts` : ''}${manifestCause}; host 1-minute load ${load.toFixed(1)}${relaunchFailure === undefined ? '' : `; relaunch failed: ${relaunchFailure}`})`,
+      (typedMessage ??
+        `cannot attach to the dev client through Metro ${steps.metroPort}: ${describeError(error).message} (observed ${refusal?.lastStarted ?? lastStarted}: ${inner}; app ${liveness}; bundle request ${bundleRequest}${warm ? `; last manifest warm-up ${warm.ms} ms after ${warm.attempts} attempts` : ''}${manifestCause}; host 1-minute load ${load.toFixed(1)}${relaunchFailure === undefined ? '' : `; relaunch failed: ${relaunchFailure}`})`) +
+        foreignPagesNote(readPages(steps)),
       refusal,
     );
   } finally {

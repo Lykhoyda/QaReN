@@ -100,6 +100,7 @@ export const ADMISSION_INNER_CLASSES = [
   'bundle_readiness_timeout',
   'non_dev_bundle',
   'no_dev_target_unknown',
+  'dev_runtime_unproven',
   'react_readiness_timeout',
   'cdp_probe_timeout',
   'cdp_handshake_timeout',
@@ -115,6 +116,8 @@ export const ADMISSION_BUNDLE_REQUESTS = [
   'unknown',
   'probe_failed',
 ] as const;
+// Port-wide Metro bundle outcomes since the latest launch.
+export const ADMISSION_BUNDLE_BUILT = ['completed', 'failed', 'none', 'unknown'] as const;
 const ADMISSION_WORDS = {
   admission: ADMISSION_DECISIONS,
   lastStarted: ADMISSION_BOUNDARIES,
@@ -123,6 +126,7 @@ const ADMISSION_WORDS = {
   inner: ADMISSION_INNER_CLASSES,
   liveness: ADMISSION_LIVENESS,
   bundleRequest: ADMISSION_BUNDLE_REQUESTS,
+  bundleBuilt: ADMISSION_BUNDLE_BUILT,
 } as const;
 const ADMISSION_NUMBERS = [
   'attempt',
@@ -136,6 +140,8 @@ const ADMISSION_NUMBERS = [
   'devFalse',
   'devUndefined',
   'devUnknown',
+  'foreignPages',
+  'sameNameDevices',
 ] as const;
 const HEALTH_DETAILS = [
   'refused',
@@ -230,6 +236,7 @@ export interface TimingEvent {
   relaunchFailed?: boolean;
   liveness?: (typeof ADMISSION_LIVENESS)[number];
   bundleRequest?: (typeof ADMISSION_BUNDLE_REQUESTS)[number];
+  bundleBuilt?: (typeof ADMISSION_BUNDLE_BUILT)[number];
   elapsedMs?: number;
   remainingMs?: number;
   attachBudgetMs?: number;
@@ -239,6 +246,8 @@ export interface TimingEvent {
   devFalse?: number;
   devUndefined?: number;
   devUnknown?: number;
+  foreignPages?: number;
+  sameNameDevices?: number;
   healthDetail?: HealthDetail;
   hostChild?: 'alive' | 'exited' | 'unknown';
   exitCode?: number;

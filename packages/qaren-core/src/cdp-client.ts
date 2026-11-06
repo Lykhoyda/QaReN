@@ -29,6 +29,7 @@ import {
   listTargetsOnExactPort,
   TargetReadinessTimeoutError,
   type DiscoveryResult,
+  type AdvertisedPages,
 } from './cdp/discovery.js';
 import { bridgeWithFallback as bridgeWithFallbackFn, helperCall } from './cdp/helper-expr.js';
 import {
@@ -723,8 +724,9 @@ export class CDPClient {
     targetRetries = 5,
     awaitWithinBoundary?: AwaitWithinBoundary,
     deadline?: number,
+    onPagesObserved?: (pages: AdvertisedPages) => void,
   ): Promise<string> {
-    this._reconnectDiscover = discoverExactPort;
+    this._reconnectDiscover = (port, filters) => discoverExactPort(port, filters, onPagesObserved);
     this._exactDiscoveryPort = port;
     if (intent === 'qa') this._exactConnectIntent = 'qa';
     const connect = () =>
@@ -878,7 +880,12 @@ export class CDPClient {
         typeof filtersOrPlatform === 'string'
           ? { platform: filtersOrPlatform }
           : (filtersOrPlatform ?? {});
-      return discoverAuthoritativeTarget(policy, filters, discoverExactPort, awaitWithinBoundary);
+      return discoverAuthoritativeTarget(
+        policy,
+        filters,
+        this._reconnectDiscover ?? discoverExactPort,
+        awaitWithinBoundary,
+      );
     };
   }
 
