@@ -7,6 +7,7 @@ use crate::failure::Failure;
 use crate::runrecord::{probe_pid_identity, PidIdentity, PidLiveness};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Component, Path, PathBuf};
 
@@ -29,6 +30,8 @@ pub struct CacheResource {
     pub reader: bool,
     pub staging: bool,
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub inputs: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -38,6 +41,8 @@ struct Entry {
     created_ms: u64,
     modules: Vec<PathBuf>,
     bytes: u64,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    inputs: BTreeMap<String, String>,
 }
 
 struct CacheLock {
@@ -314,22 +319,30 @@ fn patched_inputs(
     Ok(())
 }
 
-fn key(
+fn digest(parts: Vec<Vec<u8>>) -> String {
+    let bytes: Vec<u8> = parts
+        .into_iter()
+        .flat_map(|part| (part.len() as u64).to_be_bytes().into_iter().chain(part))
+        .collect();
+    sha256_hex(&bytes)
+}
+
+// One digest per input class, so a miss can name what changed; the classes cover every key byte.
+fn inputs(
     repo: &Path,
     app_rel: &Path,
     repo_id: &str,
     installer: &Installer,
     effective: &Value,
-) -> Result<String, String> {
-    let mut parts = vec![
-        SCHEMA.as_bytes().to_vec(),
+) -> Result<BTreeMap<String, String>, String> {
+    let app = vec![
         repo_id.as_bytes().to_vec(),
         app_rel.as_os_str().as_encoded_bytes().to_vec(),
-        serde_json::to_vec(installer).map_err(|e| e.to_string())?,
     ];
     let lockfile =
         std::fs::read(repo.join(app_rel).join("pnpm-lock.yaml")).map_err(|e| e.to_string())?;
     let lock: Value = serde_yaml::from_slice(&lockfile).map_err(|e| e.to_string())?;
+    let (mut manifests, mut patches, mut config) = (vec![], vec![], vec![]);
     let mut roots = vec![(repo.to_path_buf(), false), (repo.join(app_rel), true)];
     if let Some(importers) = lock.get("importers").and_then(Value::as_object) {
         let mut paths: Vec<_> = importers
@@ -355,17 +368,17 @@ fn key(
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && !required => Value::Null,
             Err(e) => return Err(e.to_string()),
         };
-        parts.push(serde_json::to_vec(&manifest).map_err(|e| e.to_string())?);
+        manifests.push(serde_json::to_vec(&manifest).map_err(|e| e.to_string())?);
         patched_inputs(
             repo,
             &root,
             manifest
                 .get("pnpm")
                 .and_then(|pnpm| pnpm.get("patchedDependencies")),
-            &mut parts,
+            &mut patches,
         )?;
         match std::fs::symlink_metadata(root.join("patches")) {
-            Ok(_) => patch_input(repo, &root.join("patches"), &mut parts)?,
+            Ok(_) => patch_input(repo, &root.join("patches"), &mut patches)?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.to_string()),
         }
@@ -379,19 +392,18 @@ fn key(
                             repo,
                             &root,
                             workspace.get("patchedDependencies"),
-                            &mut parts,
+                            &mut patches,
                         )?;
                     }
-                    parts.push(vec![1]);
-                    parts.push(bytes);
+                    config.push(vec![1]);
+                    config.push(bytes);
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => parts.push(vec![0]),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => config.push(vec![0]),
                 Err(e) => return Err(e.to_string()),
             }
         }
     }
-    parts.push(lockfile);
-    let selected: std::collections::BTreeMap<_, _> = effective
+    let (store, settings): (BTreeMap<_, _>, BTreeMap<_, _>) = effective
         .as_object()
         .unwrap()
         .iter()
@@ -415,13 +427,56 @@ fn key(
             ]
             .contains(&k.as_str())
         })
-        .collect();
-    parts.push(serde_json::to_vec(&selected).unwrap());
-    let bytes: Vec<u8> = parts
+        .partition(|(k, _)| matches!(k.as_str(), "storeDir" | "store-dir"));
+    config.push(serde_json::to_vec(&settings).unwrap());
+    Ok(BTreeMap::from([
+        ("app".into(), digest(app)),
+        ("config".into(), digest(config)),
+        (
+            "installer".into(),
+            digest(vec![
+                serde_json::to_vec(installer).map_err(|e| e.to_string())?
+            ]),
+        ),
+        ("lockfile".into(), digest(vec![lockfile])),
+        ("manifest".into(), digest(manifests)),
+        ("patches".into(), digest(patches)),
+        (
+            "storeDir".into(),
+            digest(vec![serde_json::to_vec(&store).unwrap()]),
+        ),
+    ]))
+}
+
+fn key_of(inputs: &BTreeMap<String, String>) -> String {
+    sha256_hex(&serde_json::to_vec(&(SCHEMA, inputs)).unwrap())
+}
+
+// Names the input classes that differ from the newest digest-carrying entry of this repository.
+fn miss_reason(dir: &Path, inputs: &BTreeMap<String, String>) -> String {
+    let newest = std::fs::read_dir(dir)
         .into_iter()
-        .flat_map(|part| (part.len() as u64).to_be_bytes().into_iter().chain(part))
-        .collect();
-    Ok(sha256_hex(&bytes))
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            serde_json::from_slice::<Entry>(&std::fs::read(e.path().join("entry.json")).ok()?).ok()
+        })
+        .filter(|e| e.schema == SCHEMA && !e.inputs.is_empty())
+        .max_by_key(|e| e.created_ms);
+    let changed: Vec<&str> = newest
+        .map(|e| {
+            inputs
+                .iter()
+                .filter(|(class, value)| e.inputs.get(*class) != Some(value))
+                .map(|(class, _)| class.as_str())
+                .collect()
+        })
+        .unwrap_or_default();
+    if changed.is_empty() {
+        "miss:cold".into()
+    } else {
+        format!("miss:inputs-changed:{}", changed.join(","))
+    }
 }
 
 fn note(ctx: &mut Ctx, value: &str) {
@@ -505,8 +560,8 @@ pub(crate) fn restore(ctx: &mut Ctx, repository: &Path, enabled: bool) -> Result
             return Ok(());
         }
         let repo_id = sha256_hex(repository.as_os_str().as_encoded_bytes());
-        let key = match key(&repo, app_rel, &repo_id, &installer, &effective) {
-            Ok(key) => sha256_hex(format!("{}:{key}", ctx.record.candidate.git_sha).as_bytes()),
+        let inputs = match inputs(&repo, app_rel, &repo_id, &installer, &effective) {
+            Ok(inputs) => inputs,
             Err(_) => {
                 note(ctx, "disabled");
                 skipped(ctx, &["restore", "stage", "publish"], "missing-input");
@@ -515,17 +570,18 @@ pub(crate) fn restore(ctx: &mut Ctx, repository: &Path, enabled: bool) -> Result
         };
         let resource = CacheResource {
             repo_id,
-            key,
+            key: key_of(&inputs),
             reader: true,
             staging: false,
             enabled: true,
+            inputs,
         };
         let dir = repo_dir(&ctx.runs_root, &resource).unwrap();
         let entry_path = dir.join(&resource.key);
         ctx.record.resources.deps_cache = Some(resource);
         ctx.save()?;
         events::stage("deps_cache_restore", StageState::Running, None, None);
-        let admitted = (|| -> Result<Option<Entry>, String> {
+        let admitted = (|| -> Result<Result<Entry, String>, String> {
             let _guard = lock(
                 ctx.runner,
                 &ctx.runs_root,
@@ -534,7 +590,8 @@ pub(crate) fn restore(ctx: &mut Ctx, repository: &Path, enabled: bool) -> Result
             )?;
             directory(&dir, true)?;
             if !directory(&entry_path, false)? {
-                return Ok(None);
+                let inputs = &ctx.record.resources.deps_cache.as_ref().unwrap().inputs;
+                return Ok(Err(miss_reason(&dir, inputs)));
             }
             let entry = read_entry(
                 &entry_path,
@@ -547,16 +604,16 @@ pub(crate) fn restore(ctx: &mut Ctx, repository: &Path, enabled: bool) -> Result
                 &ctx.record.prepare,
             )
             .map_err(|e| e.to_string())?;
-            Ok(Some(entry))
+            Ok(Ok(entry))
         })();
         match admitted {
-            Ok(None) => note(ctx, "miss"),
+            Ok(Err(miss)) => note(ctx, &miss),
             Err(_) => {
                 ctx.record.resources.deps_cache = None;
                 ctx.save()?;
                 note(ctx, "disabled");
             }
-            Ok(Some(entry)) => {
+            Ok(Ok(entry)) => {
                 let result = (|| {
                     space(ctx.runner, &[&ctx.runs_root, &repo], entry.bytes)?;
                     restore_modules(ctx.runner, &entry_path.join("tree"), &repo, &entry.modules)
@@ -816,6 +873,7 @@ pub(crate) fn stage(ctx: &mut Ctx) -> Result<(), Failure> {
                     created_ms: ctx.runner.now_epoch_ms(),
                     modules,
                     bytes,
+                    inputs: resource.inputs,
                 },
             )
             .map_err(|e| e.to_string())?;

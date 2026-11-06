@@ -3961,13 +3961,16 @@ See [pnpm's layout settings](https://pnpm.io/settings#nodeLinker).
 The preflight pnpm process-group probe runs with `verifyDepsBeforeRun` off, so
 it never installs dependencies before restore.
 
-The cache key binds the candidate commit, lockfile bytes, repository and app path,
+The cache key binds the lockfile bytes, repository and app path,
 full root, app, and lockfile workspace package manifests, whether a root `package.json` exists,
 `.npmrc`, `pnpm-workspace.yaml`, effective pnpm install settings (including
 `storeDir`), package `patches/` contents, files referenced by pnpm
 `patchedDependencies`, and the
 PATH-resolved pnpm and Node versions, architecture and platform. The installer
-identity is kept in `run.json`. Different candidate commits use separate entries.
+identity is kept in `run.json`. The candidate commit is not part of the key, so
+a new head with the same keyed inputs reuses the entry. A dependency lifecycle
+script that reads other project source outside these keyed inputs during its
+first installation can carry stale output to later heads with the same key.
 Set `depsCache: false` in `.qaren/config.yaml` for a cold run;
 `qaren check` and `qaren prepare` do not use this cache or change prewarm policy.
 
@@ -3978,7 +3981,11 @@ markers. Only clone copies are admitted; unsupported cloning or insufficient
 space disables caching for that run, with no full-copy fallback. Restore and
 staging each require 1 GiB plus the tree's apparent size in free space.
 
-Receipts report `deps_cache=hit|miss|disabled|clone-unsupported|layout-unsupported`.
+Receipts report `deps_cache=hit|miss:cold|miss:inputs-changed:<classes>|disabled|clone-unsupported|layout-unsupported`.
+`miss:inputs-changed` names, comma-separated, each input class whose digest
+differs from the newest entry for the same repository: `app`, `config`,
+`installer`, `lockfile`, `manifest`, `patches` or `storeDir`. `miss:cold` means
+no such entry exists, including entries written before these digests.
 Every PR receipt includes `deps_cache_restore`, `deps_cache_install`,
 `deps_cache_stage` and `deps_cache_publish` in `outcomes`: `attempted` operations
 have measured durations in `timings_ms`; skipped operations have no duration and

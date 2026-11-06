@@ -3,6 +3,16 @@ use crate::exec::{CmdOutput, MockRunner, PipedChild, RealRunner, Spawned};
 use crate::runrecord::{Phase, RunRecord};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+fn key(
+    repo: &Path,
+    app_rel: &Path,
+    repo_id: &str,
+    installer: &Installer,
+    effective: &Value,
+) -> Result<String, String> {
+    inputs(repo, app_rel, repo_id, installer, effective).map(|i| key_of(&i))
+}
+
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
@@ -221,7 +231,8 @@ fn authenticated_probes_match_install_credentials_without_persisting_config_secr
     ctx.record.scenario.deps.registry_auth_env = vec!["PRIVATE_REGISTRY_TOKEN".into()];
     restore(&mut ctx, &f.0.join("repo"), true).unwrap();
     assert!(
-        ctx.notes.contains(&("deps_cache".into(), "miss".into())),
+        ctx.notes
+            .contains(&("deps_cache".into(), "miss:cold".into())),
         "{:?}",
         ctx.notes
     );
@@ -438,7 +449,9 @@ fn miss_then_hit_still_installs_and_stages_before_build_mutation() {
     disk(&mut runner.mock, u64::MAX / 1024);
     let mut ctx = f.context(&mut runner, "first");
     restore(&mut ctx, &f.0.join("repo"), true).unwrap();
-    assert!(ctx.notes.contains(&("deps_cache".into(), "miss".into())));
+    assert!(ctx
+        .notes
+        .contains(&("deps_cache".into(), "miss:cold".into())));
     f.modules();
     stage_ok(&mut ctx);
     std::fs::write(
@@ -540,7 +553,9 @@ fn subdirectory_app_without_root_manifest_reuses_its_isolated_tree() {
     isolated(&mut runner.mock);
     let mut ctx = f.context(&mut runner, "first");
     restore(&mut ctx, &f.0.join("repo"), true).unwrap();
-    assert!(ctx.notes.contains(&("deps_cache".into(), "miss".into())));
+    assert!(ctx
+        .notes
+        .contains(&("deps_cache".into(), "miss:cold".into())));
     let modules = f.0.join("repo/app/node_modules");
     let store = modules.join(".pnpm");
     for pkg in ["pkg@1.0.0/node_modules/pkg", "dep@1.0.0/node_modules/dep"] {
@@ -566,6 +581,9 @@ fn subdirectory_app_without_root_manifest_reuses_its_isolated_tree() {
 
     isolated(&mut runner.mock);
     let mut ctx = f.context(&mut runner, "second");
+    // A new head with only a source change keeps identical install inputs.
+    ctx.record.candidate.git_sha = "b".repeat(40);
+    std::fs::write(f.0.join("repo/app/source.ts"), "export const value = 2;").unwrap();
     restore(&mut ctx, &f.0.join("repo"), true).unwrap();
     assert!(ctx.notes.contains(&("deps_cache".into(), "hit".into())));
     assert_eq!(
@@ -585,28 +603,75 @@ fn subdirectory_app_without_root_manifest_reuses_its_isolated_tree() {
     assert_eq!(runner.mock.remaining(), 0);
 }
 
-#[test]
-fn a_different_candidate_head_does_not_restore_installed_output() {
-    let f = Fixture::new();
-    let mut runner = CloneRunner::new();
+fn published(f: &Fixture, runner: &mut CloneRunner) -> PathBuf {
     probes(&mut runner.mock);
     disk(&mut runner.mock, u64::MAX / 1024);
-    let mut ctx = f.context(&mut runner, "first");
+    let mut ctx = f.context(runner, "first");
     restore(&mut ctx, &f.0.join("repo"), true).unwrap();
     f.modules();
     stage_ok(&mut ctx);
     publish(&mut ctx).unwrap();
+    let entry = entry_path(&ctx);
     release(&mut ctx);
     for rel in ["node_modules", "app/node_modules"] {
         std::fs::remove_dir_all(f.0.join("repo").join(rel)).unwrap();
     }
+    entry
+}
 
+#[test]
+fn changed_install_inputs_miss_with_the_input_class_named_in_the_receipt() {
+    let f = Fixture::new();
+    let mut runner = CloneRunner::new();
+    published(&f, &mut runner);
+    std::fs::write(
+        f.0.join("repo/app/package.json"),
+        r#"{"scripts":{"postinstall":"node setup.js"}}"#,
+    )
+    .unwrap();
     probes(&mut runner.mock);
-    let mut ctx = f.context(&mut runner, "other-head");
+    let mut ctx = f.context(&mut runner, "next-head");
     ctx.record.candidate.git_sha = "b".repeat(40);
     restore(&mut ctx, &f.0.join("repo"), true).unwrap();
-    assert!(ctx.notes.contains(&("deps_cache".into(), "miss".into())));
     assert!(!f.0.join("repo/app/node_modules").exists());
+    release(&mut ctx);
+    let receipt =
+        crate::commands::prepare::finish_receipt(ctx, crate::receipt::ReceiptResult::Ready, None);
+    assert_eq!(
+        receipt.outcomes.get("deps_cache").map(String::as_str),
+        Some("miss:inputs-changed:manifest")
+    );
+
+    std::fs::write(
+        f.0.join("repo/app/pnpm-lock.yaml"),
+        "lockfileVersion: '9.1'\n",
+    )
+    .unwrap();
+    probes(&mut runner.mock);
+    let mut ctx = f.context(&mut runner, "lockfile");
+    restore(&mut ctx, &f.0.join("repo"), true).unwrap();
+    assert!(ctx.notes.contains(&(
+        "deps_cache".into(),
+        "miss:inputs-changed:lockfile,manifest".into()
+    )));
+    release(&mut ctx);
+    assert_eq!(runner.mock.remaining(), 0);
+}
+
+#[test]
+fn an_entry_written_before_input_digests_still_restores() {
+    let f = Fixture::new();
+    let mut runner = CloneRunner::new();
+    let entry = published(&f, &mut runner);
+    let path = entry.join("entry.json");
+    let mut old: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(old.as_object_mut().unwrap().remove("inputs").is_some());
+    std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+    probes(&mut runner.mock);
+    disk(&mut runner.mock, u64::MAX / 1024);
+    let mut ctx = f.context(&mut runner, "second");
+    restore(&mut ctx, &f.0.join("repo"), true).unwrap();
+    assert!(ctx.notes.contains(&("deps_cache".into(), "hit".into())));
     release(&mut ctx);
     assert_eq!(runner.mock.remaining(), 0);
 }
@@ -898,6 +963,7 @@ fn seed_entry(f: &Fixture, key: &str, created_ms: u64) -> (PathBuf, CacheResourc
         reader: false,
         staging: false,
         enabled: true,
+        inputs: BTreeMap::new(),
     };
     let repo = repo_dir(&f.0.join("runs"), &resource).unwrap();
     std::fs::create_dir_all(repo.join(key).join("tree/node_modules")).unwrap();
@@ -909,6 +975,7 @@ fn seed_entry(f: &Fixture, key: &str, created_ms: u64) -> (PathBuf, CacheResourc
             created_ms,
             modules: vec!["node_modules".into()],
             bytes: 0,
+            inputs: BTreeMap::new(),
         },
     )
     .unwrap();
