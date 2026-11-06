@@ -224,8 +224,7 @@ async function walkCoveredTap(
     if (identity === 'label') delete target.testID;
     if (presence && recapturedMatches === 0)
       screen.elements = screen.elements.filter((element) => element !== target);
-    if (presence && recapturedMatches === 2)
-      screen.elements.push({ ...target, ref: '@duplicate' });
+    if (presence && recapturedMatches === 2) screen.elements.push({ ...target, ref: '@duplicate' });
     screen.nativeGeneration = 7;
     if (presence && presenceRead === 'incomplete') {
       screen.coverage = { ...screen.coverage!, native: 'incomplete' };
