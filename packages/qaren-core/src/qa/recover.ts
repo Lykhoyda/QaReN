@@ -54,7 +54,7 @@ export async function recover(
   deps: RecoverDeps,
   marker?: LoginMarker,
   planTargets: readonly RecoveryTarget[] = [],
-  requireCoveredTarget = false,
+  proof?: InterruptionProof,
 ): Promise<Recovery | undefined> {
   if (screen.front === 'dialog') {
     const acted = await deps.dialog();
@@ -71,12 +71,7 @@ export async function recover(
       : { fail: `the dev menu in front could not be hidden: ${hidden.error ?? 'not dispatched'}` };
   }
   if (screen.front === 'app' && deps.dismiss) {
-    const candidate = dismissCandidate(
-      screen,
-      planTargets,
-      deps.interruptionDiagnostic,
-      requireCoveredTarget,
-    );
+    const candidate = dismissCandidate(screen, planTargets, deps.interruptionDiagnostic, proof);
     if (candidate && 'refuse' in candidate) return candidate;
     if (candidate) {
       const dismissed = await deps.dismiss(candidate.label);
@@ -102,6 +97,11 @@ const DECLINE_LABELS = new Set([
   'Cancel',
 ]);
 const DECLINE_LOWER = new Set([...DECLINE_LABELS].map((label) => label.toLowerCase()));
+
+// What a recovery must prove before it may dismiss: that its target sits behind the presented
+// modal, or, for a missing target, that a separate surface interrupts (a proven presented-modal
+// cover, or a decline that is the screen's only control) rather than a screen's own Cancel.
+export type InterruptionProof = 'covered-target' | 'surface';
 
 export const INTERRUPTION_VETOES = [
   'front',
@@ -140,7 +140,7 @@ export function dismissCandidate(
   screen: Screen,
   planTargets: readonly RecoveryTarget[],
   diagnostic?: (record: InterruptionDiagnostic) => void,
-  requireCoveredTarget = false,
+  proof?: InterruptionProof,
 ): { label: string } | { refuse: { code: string; message: string } } | undefined {
   const sole = soleDecline(screen);
   const rejected = (
@@ -170,7 +170,7 @@ export function dismissCandidate(
   if (screen.front !== 'app') return rejected('front');
   if (!completeCapture(screen)) return rejected('coverage');
   if (!planTargets.length) return rejected('current-target', 0);
-  if (requireCoveredTarget && !targetBehindInterruption(screen, planTargets[0]))
+  if (proof === 'covered-target' && !targetBehindInterruption(screen, planTargets[0]))
     return rejected('uncovered-target', 0);
   const targetIndex = planTargets.findIndex(
     (target, index) =>
@@ -240,6 +240,10 @@ export function dismissCandidate(
           (target.exact !== 'id' && target.quoted?.toLowerCase() === label)),
     );
     if (plannedIndex !== -1) return rejected('later-target', plannedIndex, [], 'ownership');
+    // A missing target dismisses only a proven separate surface, never a screen's own Cancel:
+    // a presented modal, or a decline that is the screen's only control.
+    if (proof === 'surface' && !sole && !modalCoverProven(screen))
+      return rejected('uncovered-target', 0);
     return { label: candidates[0].label! };
   }
   return rejected(
@@ -284,6 +288,12 @@ export function soleDecline(screen: Screen): boolean {
     DECLINE_LABELS.has(controls[0].label)
   );
 }
+
+// The capture proves one presented modal covering everything native does not show.
+const modalCoverProven = (screen: Screen): boolean => {
+  const cover = modalCoverDiagnostic(screen);
+  return cover !== undefined && cover.refused === undefined;
+};
 
 // A covered step may seek recovery only when its target is proven behind the presented modal,
 // never when it is merely absent, so a screen's own Cancel is not pressed for a missing target.

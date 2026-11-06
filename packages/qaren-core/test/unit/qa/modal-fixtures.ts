@@ -155,6 +155,96 @@ export function modalOverHome(
   );
 }
 
+// An ordinary form with its own Cancel and no interruption, with full React and presence evidence,
+// so Cancel is a visible, press-supported decline control.
+export function formWithCancel(): Screen {
+  const formRect: Rect = { x: 0, y: 100, width: 402, height: 300 };
+  const nameRect: Rect = { x: 20, y: 120, width: 362, height: 44 };
+  const cancelRect: Rect = { x: 20, y: 330, width: 362, height: 50 };
+  const nodes: NativeNode[] = [
+    { ref: '@app', type: 'Application', rect: window },
+    { ref: '@window', type: 'Window', parentIndex: 0, rect: window },
+    { ref: '@form', type: 'Other', parentIndex: 1, identifier: 'qa-promo-form', rect: formRect },
+    {
+      ref: '@name',
+      type: 'TextField',
+      parentIndex: 2,
+      identifier: 'qa-promo-form-name',
+      label: 'Display name',
+      hittable: true,
+      rect: nameRect,
+    },
+    {
+      ref: '@cancel',
+      type: 'Button',
+      parentIndex: 2,
+      identifier: 'qa-promo-form-cancel',
+      label: 'Cancel',
+      hittable: true,
+      rect: cancelRect,
+    },
+  ];
+  const tree: HostRow[] = [
+    [{ role: null, roleSource: 'none', capabilities: {} }, null, 'RCTRootView', window],
+    [
+      { testID: 'qa-promo-form', role: null, roleSource: 'none', capabilities: {} },
+      0,
+      'RCTView',
+      formRect,
+    ],
+    [
+      {
+        testID: 'qa-promo-form-name',
+        role: 'textbox',
+        roleSource: 'role',
+        capabilities: { fill: true },
+      },
+      1,
+      'RCTSinglelineTextInputView',
+      nameRect,
+    ],
+    [
+      {
+        testID: 'qa-promo-form-cancel',
+        role: 'button',
+        roleSource: 'role',
+        capabilities: { press: true },
+      },
+      1,
+      'RCTView',
+      cancelRect,
+    ],
+  ];
+  return join(
+    nodes,
+    [
+      { testID: 'qa-promo-form-name', role: 'textbox', label: 'Display name' },
+      { testID: 'qa-promo-form-cancel', role: 'button', label: 'Cancel' },
+    ],
+    'app',
+    { native: 'complete', react: 'complete' },
+    {
+      complete: true,
+      hosts: tree.map(([host]) => host),
+      typography: {
+        version: 1,
+        complete: true,
+        durationMs: 1,
+        coordinateSpace: 'window-points',
+        nodes: tree.map(([, parentHostIndex, hostType, rect], hostIndex) => ({
+          hostIndex,
+          parentHostIndex,
+          rootIndex: 0,
+          hostType,
+          rect,
+          text: { kind: 'none' },
+        })),
+      },
+    },
+    presence(nodes),
+  );
+}
+
 // Home once the promo is closed: its controls are native again.
 export function homeAfterPromo(): Screen {
   const nodes: NativeNode[] = [

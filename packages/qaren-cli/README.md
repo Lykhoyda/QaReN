@@ -3469,8 +3469,12 @@ runs out of time or returns incomplete evidence leaves the cover unproven, and t
 step continues as it would have without it; it never adds a refusal of its own.
 React-only wait recovery and this pre-scroll recovery require proof that the target
 is behind the presented `Modal`, and recheck this proof in recovery's fresh capture
-and before dispatch; without it, app dismissal is vetoed as `uncovered-target`, so a
-missing target on an ordinary form cannot cause its own `Cancel` to be pressed.
+and before dispatch; without it, app dismissal is vetoed as `uncovered-target`.
+A tap or fill whose target is not on screen at all may dismiss only a proven separate
+surface: a presented `Modal` cover, or a decline that is the screen's only control
+(inputs count as controls). Otherwise it vetoes as `uncovered-target`, presses
+nothing and keeps the step's `TARGET_NOT_FOUND`, so an ordinary form's own `Cancel`
+is not pressed. A screen whose only control is a decline can still be dismissed.
 A later wait or check matching that screen, other than an exempt decline label, still
 vetoes. The current target is never exempt. ID-only targets are checked by
 test ID, text-only targets by contained label or value text (including composed

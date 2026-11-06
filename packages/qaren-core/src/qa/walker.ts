@@ -106,6 +106,7 @@ import {
 } from './questions.js';
 import {
   type InterruptionDiagnostic,
+  type InterruptionProof,
   type LoginMarker,
   type PlannedSurface,
   type RecoveryTarget,
@@ -2418,7 +2419,7 @@ async function walkBlockScoped(
     attempt: number,
     reason: string,
     until?: number,
-    requireCoveredTarget = false,
+    proof?: InterruptionProof,
   ): Promise<'retry' | WalkOutcome | undefined> => {
     const first = recovered.get(item);
     if (opts.recover === false || !deps.hideDevMenu) return undefined;
@@ -2608,7 +2609,7 @@ async function walkBlockScoped(
                     screen,
                     planTargets,
                     (record) => interruptionRejected(record),
-                    requireCoveredTarget,
+                    proof,
                   );
                   if (!candidate || 'refuse' in candidate || candidate.label !== label)
                     throw new ResolutionError({
@@ -2670,7 +2671,7 @@ async function walkBlockScoped(
       },
       deps.login?.marker,
       planTargets,
-      requireCoveredTarget,
+      proof,
     ).catch((error: unknown) => {
       if (error instanceof AppProcessGoneError) {
         sequence.publicationInterrupted = true;
@@ -3111,7 +3112,7 @@ async function walkBlockScoped(
                 1,
                 reason,
                 deps.now() + CAPTURE_BUDGET_MS,
-                true,
+                'covered-target',
               );
               if (recovering === 'retry') continue attempts;
               if (recovering) return recovering;
@@ -3306,7 +3307,7 @@ async function walkBlockScoped(
               1,
               reason,
               reactOnly ? deps.now() + CAPTURE_BUDGET_MS : undefined,
-              Boolean(reactOnly),
+              reactOnly ? 'covered-target' : undefined,
             );
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
@@ -3702,7 +3703,13 @@ async function walkBlockScoped(
                     targetBehindInterruption(before.screen, item.target)
                   ) {
                     const covered = `"${item.target.phrase}" is mounted behind a presented modal; it was not scrolled`;
-                    const recovering = await recovery(item, attempt, covered, undefined, true);
+                    const recovering = await recovery(
+                      item,
+                      attempt,
+                      covered,
+                      undefined,
+                      'covered-target',
+                    );
                     if (recovering === 'retry') again = true;
                     else
                       outcome =
@@ -4686,7 +4693,14 @@ async function walkBlockScoped(
           !deps.cancelled?.()
         ) {
           try {
-            const recovering = await recovery(item, currentAttempt, error.message);
+            // A missing target dismisses only a proven separate surface, never a screen's own Cancel.
+            const recovering = await recovery(
+              item,
+              currentAttempt,
+              error.message,
+              undefined,
+              error.code === 'TARGET_NOT_FOUND' ? 'surface' : undefined,
+            );
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
           } catch (recoveryError) {

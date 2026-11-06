@@ -6,7 +6,11 @@ import {
   soleDecline,
   targetBehindInterruption,
 } from '../../../dist/qa/recover.js';
-import type { InterruptionDiagnostic, RecoveryTarget } from '../../../dist/qa/recover.js';
+import type {
+  InterruptionDiagnostic,
+  InterruptionProof,
+  RecoveryTarget,
+} from '../../../dist/qa/recover.js';
 import { hostAssociationIdentity, join, type Screen } from '../../../dist/qa/screen.js';
 
 // Real iOS 26.5 captures of a full-screen React Native Modal promo (heading, copy, one Close)
@@ -33,15 +37,10 @@ const target = (
   extra: Partial<RecoveryTarget> = {},
 ): RecoveryTarget => ({ phrase: quoted, quoted, kind, line, ...extra });
 
-const decide = (screen: Screen, targets: RecoveryTarget[], requireCoveredTarget = false) => {
+const decide = (screen: Screen, targets: RecoveryTarget[], proof?: InterruptionProof) => {
   const records: InterruptionDiagnostic[] = [];
   return {
-    result: dismissCandidate(
-      screen,
-      targets,
-      (record) => records.push(record),
-      requireCoveredTarget,
-    ),
+    result: dismissCandidate(screen, targets, (record) => records.push(record), proof),
     records,
   };
 };
@@ -61,9 +60,18 @@ test('device wait-first: a React-only target behind the promo is proven covered 
   const screen = capture('wait-first-presence');
   const wait = target('qa-promo-home-target', 'wait', 12, { exact: 'id' });
   assert.equal(targetBehindInterruption(screen, wait), true);
-  const { result, records } = decide(screen, [wait], true);
+  const { result, records } = decide(screen, [wait], 'covered-target');
   assert.deepEqual(result, { label: 'Close' });
   assert.deepEqual(records, []);
+});
+
+test('device promo: a missing target behind the presented modal may still close it', () => {
+  const { result } = decide(
+    capture('wait-first-presence'),
+    [target('qa-not-mounted', 'press', 12, { exact: 'id' })],
+    'surface',
+  );
+  assert.deepEqual(result, { label: 'Close' });
 });
 
 test('device check-first: a later tap matching the promo copy no longer keeps the sole Close up', () => {
@@ -81,7 +89,7 @@ test('device wait-first: a target that is not mounted is never treated as covere
   const { result, records } = decide(
     screen,
     [target('qa-promo-form-submit', 'wait', 19, { exact: 'id' })],
-    true,
+    'covered-target',
   );
   assert.equal(result, undefined);
   assert.equal(records[0].veto, 'uncovered-target');

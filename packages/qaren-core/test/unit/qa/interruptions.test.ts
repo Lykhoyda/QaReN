@@ -14,7 +14,7 @@ import { CaptureDeadline } from '../../../dist/qa/capture.js';
 import { join as joinScreen, type Screen } from '../../../dist/qa/screen.js';
 import type { WalkerDeps } from '../../../dist/qa/walker.js';
 import { choice, element, screen, scriptedJudge } from './judgment-fixtures.ts';
-import { homeAfterPromo, modalOverHome } from './modal-fixtures.ts';
+import { formWithCancel, homeAfterPromo, modalOverHome } from './modal-fixtures.ts';
 
 function observedButtons(elements: Screen['elements']) {
   return joinScreen(
@@ -196,21 +196,33 @@ test('a later target in the same block prevents dismissal and reports a value-fr
 });
 
 test('a later block target visible on the sheet does not stop an earlier block from closing it', async () => {
-  for (const later of [
-    element('@continue', 'Continue'),
-    element('@continue', 'Continue', { kind: 'text' }),
-  ]) {
-    const f = app(screen([element('@close', 'Close'), later]));
-    const lines: number[] = [];
-    f.deps.interruptionRejected = (event) => lines.push(event.line);
-    const result = await runPlan(
-      parsePlan('### Sign in\n1. Tap "Settings"\n### Coverage\n2. Tap "Continue"').blocks!,
-      f.deps,
-    );
-    assert.deepEqual(f.actions.slice(0, 2), ['press @close', 'press @settings']);
-    assert.equal(result.recoveries, 1);
-    assert.ok(!lines.includes(2));
-  }
+  const f = app(
+    screen([element('@close', 'Close'), element('@continue', 'Continue', { kind: 'text' })]),
+  );
+  const lines: number[] = [];
+  f.deps.interruptionRejected = (event) => lines.push(event.line);
+  const result = await runPlan(
+    parsePlan('### Sign in\n1. Tap "Settings"\n### Coverage\n2. Tap "Continue"').blocks!,
+    f.deps,
+  );
+  assert.deepEqual(f.actions.slice(0, 2), ['press @close', 'press @settings']);
+  assert.equal(result.recoveries, 1);
+  assert.ok(!lines.includes(2));
+});
+
+test('a missing target on a multi-control sheet with no proven modal presses nothing', async () => {
+  const f = app(screen([element('@close', 'Close'), element('@continue', 'Continue')]));
+  const vetoes: unknown[] = [];
+  f.deps.interruptionRejected = (event) => vetoes.push(event.veto);
+  const result = await runPlan(
+    parsePlan('### Sign in\n1. Tap "Settings"\n### Coverage\n2. Tap "Continue"').blocks!,
+    f.deps,
+  );
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, []);
+  assert.ok(!result.recoveries);
+  assert.match(result.failure?.seen ?? '', /^TARGET_NOT_FOUND/);
+  assert.ok(vetoes.includes('uncovered-target'));
 });
 
 test('a later step naming a decline label does not stop an earlier step from closing the sheet', async () => {
@@ -486,8 +498,9 @@ test('the veto sees masked input evidence and recovery screenshots respect priva
   });
   f.deps.judge = judge;
   f.deps.interruptionVeto = true;
-  const result = await runPlan(plan(), f.deps);
-  assert.equal(result.verdict, 'PASS');
+  // A failed check, not a missing tap target, so recovery needs no separate-surface proof here.
+  const result = await runPlan(parsePlan('✓ "Settings"').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
   assert.equal(judge.requests.length, 1);
   assert.ok(!JSON.stringify(result).includes(secret));
   const recovery = result.steps.find((row) => row.reason?.includes('dismissed an app screen'));
@@ -1362,8 +1375,12 @@ test('a React-only tap target without a presented modal is never sent to dismiss
 });
 
 test('a tap whose target is simply missing never presses the form Cancel', async () => {
-  const form = () => observedButtons([element('@cancel', 'Cancel'), element('@name', 'Name')]);
-  const f = app(form());
+  const f = app(formWithCancel());
+  const cancel = formWithCancel().elements.find((e) => e.label === 'Cancel')!;
+  // Cancel must be a visible, press-supported decline, so only the missing-target rule withholds it.
+  assert.equal(cancel.semantic?.press, 'supported');
+  assert.notEqual(cancel.semantic?.visibility, 'unknown');
+  assert.equal(cancel.hittable, true);
   const rows = ticking(f);
   f.deps.press = async (ref) => {
     f.actions.push(`press ${ref}`);
