@@ -200,7 +200,9 @@ test('without proof of who takes the touch, nothing is named and the gap says wh
 
 // Device C1: a quoted tap takes an ordinary capture, which cannot associate React hosts with native
 // nodes, so the refusal names no cover and says which evidence was missing.
-test('a quoted tap on an ordinary capture names no cover and records the missing evidence', async () => {
+// Device C1: a quoted tap takes an ordinary capture, which cannot tie React hosts to native nodes, so its
+// refusal takes the one presence recapture to prove the cover.
+async function walkCoveredTap(presenceRead: 'complete' | 'incomplete') {
   const w = walker(
     [],
     scriptedJudge(() => assert.fail('exact targets are model-free')),
@@ -208,33 +210,71 @@ test('a quoted tap on an ordinary capture names no cover and records the missing
   w.deps.platform = 'ios';
   const modes: boolean[] = [];
   w.deps.captureScreen = async (options) => {
-    modes.push(options?.platformPresence === true);
-    const screen = await capture(sticky(), { presence: options?.platformPresence === true });
+    const presence = options?.platformPresence === true;
+    modes.push(presence);
+    const screen = await capture(sticky(), { presence });
     screen.nativeGeneration = 7;
+    if (presence && presenceRead === 'incomplete') {
+      screen.coverage = { ...screen.coverage!, native: 'incomplete' };
+      screen.captureCoverage = {
+        ...(screen.captureCoverage ?? screen.coverage),
+        native: 'incomplete',
+      };
+    }
     return screen;
   };
   const diagnostics: Record<string, unknown>[] = [];
   w.deps.diagnostic = (event) => diagnostics.push(event as unknown as Record<string, unknown>);
   w.deps.hitProbe = async () => 'not-hittable';
-  w.deps.press = async () => ({
-    ok: false,
-    proven: false,
-    mutation: 'none',
-    error: 'LIVE_HIT_UNPROVEN: LIVE_HIT_UNPROVEN: not-hittable; no tap was performed.',
-  });
+  let presses = 0;
+  w.deps.press = async () => {
+    presses += 1;
+    return {
+      ok: false,
+      proven: false,
+      mutation: 'none',
+      error: 'LIVE_HIT_UNPROVEN: LIVE_HIT_UNPROVEN: not-hittable; no tap was performed.',
+    };
+  };
   const result = await runPlan(parsePlan('1. Tap "qa-hi-row-1"').blocks!, w.deps);
   const row = ('steps' in result ? result.steps : []).filter((r) => r.line === 1).at(-1);
-  assert.ok(modes.length && !modes.includes(true), 'every capture of a quoted tap is ordinary');
+  const gaps = diagnostics
+    .filter((event) => event.code === 'CENTRE_COVERED')
+    .map((event) => (event.clearanceDiagnostic as { coverGap?: unknown }).coverGap);
+  return { row, modes, gaps, presses, streamed: w.rows };
+}
+
+test('a covered quoted tap names the sticky cover from one presence recapture', async () => {
+  const { row, modes, gaps, presses, streamed } = await walkCoveredTap('complete');
+  // Every decision capture stays ordinary; only the refusal takes the one presence recapture.
+  assert.equal(modes.filter(Boolean).length, 1, JSON.stringify(modes));
+  assert.equal(modes.at(-1), true);
+  assert.equal(presses, 1, 'the recapture grants no further press');
+  assert.equal(row?.outcome, 'fail', JSON.stringify(row));
+  assert.deepEqual(
+    row?.coveredBy,
+    { ref: '@e5', kind: 'button', frame: COVER },
+    JSON.stringify(row),
+  );
+  assert.deepEqual(streamed.at(-1)?.coveredBy, row?.coveredBy, 'the streamed row carries it too');
+  assert.match(String(row?.reason), /covered by button at 0,110,402,201/);
+  assert.doesNotMatch(String(row?.reason), /covered by \w+ at 0,116,402,758|no cover named/);
+  assert.deepEqual(gaps, [null]);
+});
+
+test('an incomplete presence recapture leaves the cover unproven and adds no refusal', async () => {
+  const complete = await walkCoveredTap('complete');
+  const { row, modes, gaps, presses } = await walkCoveredTap('incomplete');
+  assert.equal(modes.filter(Boolean).length, 1, JSON.stringify(modes));
+  assert.equal(presses, 1);
   assert.equal(row?.outcome, 'fail', JSON.stringify(row));
   assert.equal(row?.coveredBy, undefined, JSON.stringify(row));
-  assert.match(String(row?.reason), /no cover named \(no-native-presence\)/);
-  assert.doesNotMatch(String(row?.reason), /covered by \w+ at/);
-  const covered = diagnostics.filter((event) => event.code === 'CENTRE_COVERED');
-  assert.deepEqual(
-    covered.map((event) => (event.clearanceDiagnostic as { coverGap?: unknown }).coverGap),
-    covered.map(() => 'no-native-presence'),
-  );
-  assert.ok(covered.length, JSON.stringify(diagnostics.map((event) => event.code)));
+  // The same refusal, with only the cover explanation differing.
+  const stem = (reason: unknown) =>
+    String(reason).replace(/; (covered by|no cover named)[^;]*/, '');
+  assert.equal(stem(row?.reason), stem(complete.row?.reason));
+  assert.match(String(row?.reason), /no cover named \(presence-recapture-incomplete\)/);
+  assert.deepEqual(gaps, ['presence-recapture-incomplete']);
 });
 
 test('an unchanged readback after a refused clearance scroll retains the proven cover', async () => {

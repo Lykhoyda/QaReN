@@ -3755,7 +3755,13 @@ diagnostic is emitted; it is `null` when a cover was named or no cover lookup ra
 The [cover result types](../qaren-core/src/qa/resolve.ts) own the fixed gap values.
 `no-native-presence` means the capture carried no native presence, so no React host
 could be tied to a native node. Quoted presses use ordinary captures without native
-presence or React typography; cover lookup does not request a presence recapture.
+presence or React typography, so on iOS a covered refusal with that gap takes the
+walker's one bounded platform-presence recapture, the same one a plain scroll uses for
+an unproven cover, and looks up the cover again on it. Only refusals pay for that read
+(a presence capture can take tens of seconds on device); it never adds a refusal or
+grants a dispatch. An incomplete read leaves the cover unproven
+(`presence-recapture-incomplete`), and a target the recapture cannot find again leaves
+`target-not-recaptured`.
 In `clearanceDiagnostic`, unread or unavailable facts
 remain `null`; target text, identifiers and target coordinates are excluded. The
 [walker](../qaren-core/src/qa/walker.ts) owns the event layout; the
