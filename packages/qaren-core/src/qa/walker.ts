@@ -3706,10 +3706,8 @@ async function walkBlockScoped(
                             }
                         : decision.target!;
                 const decided = await probeDuplicates(item, before, prepared);
-                const { coveredBy: _previousCover, ...selectionFacts } =
-                  targetRows.get(item.line) ?? {};
                 targetRows.set(item.line, {
-                  ...selectionFacts,
+                  ...targetRows.get(item.line),
                   ...('collapsed' in decided && decided.collapsed
                     ? { collapsed: decided.collapsed }
                     : {}),

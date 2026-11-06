@@ -9,7 +9,7 @@ import type { ReactHostEvidence, Screen } from '../../../dist/qa/screen.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import { nativeCapture } from './platform-presence-fixtures.ts';
-import { scriptedJudge, walker } from './judgment-fixtures.ts';
+import { choice, scriptedJudge, walker } from './judgment-fixtures.ts';
 
 type Rect = { x: number; y: number; width: number; height: number };
 type PointerEvents = 'auto' | 'none' | 'box-none' | 'box-only';
@@ -235,6 +235,34 @@ test('a quoted tap on an ordinary capture names no cover and records the missing
     covered.map(() => 'no-native-presence'),
   );
   assert.ok(covered.length, JSON.stringify(diagnostics.map((event) => event.code)));
+});
+
+test('an unchanged readback after a refused clearance scroll retains the proven cover', async () => {
+  const screen = await capture(sticky());
+  const w = walker(
+    [screen],
+    scriptedJudge((questions) =>
+      Object.fromEntries(Object.entries(questions).map(([id, question]) => [id, choice(question)])),
+    ),
+  );
+  w.deps.platform = 'ios';
+  w.deps.press = async () => assert.fail('clearance must refuse before dispatch');
+  w.deps.scroll = async (direction) => {
+    w.actions.push(`scroll ${direction}`);
+    return { ok: false, proven: false, mutation: 'possible', error: 'scroll was not proven' };
+  };
+  const diagnostics: Record<string, unknown>[] = [];
+  w.deps.diagnostic = (event) => diagnostics.push(event as unknown as Record<string, unknown>);
+  const result = await runPlan(parsePlan('1. Tap the first row').blocks!, w.deps);
+  const terminal = ('steps' in result ? result.steps : []).filter((r) => r.line === 1).at(-1);
+  assert.equal(w.actions.length, 1);
+  assert.match(w.actions[0], /^scroll /);
+  assert.equal(terminal?.outcome, 'fail');
+  assert.deepEqual(terminal?.coveredBy, { ref: '@e5', kind: 'button', frame: COVER });
+  assert.match(String(terminal?.reason), /covered by button at 0,110,402,201/);
+  const event = diagnostics.find((event) => event.code === 'CENTRE_COVERED');
+  assert.ok(event);
+  assert.equal((event.clearanceDiagnostic as { coverGap: unknown }).coverGap, null);
 });
 
 test('a hit on a host with no native node of its own names nothing', async () => {
