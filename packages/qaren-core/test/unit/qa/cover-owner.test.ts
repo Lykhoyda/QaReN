@@ -28,10 +28,11 @@ const COVER: Rect = { x: 0, y: 110, width: 402, height: 201 };
 const INSET: Rect = { x: 0, y: 116, width: 402, height: 758 };
 const FULL: Rect = { x: 0, y: 0, width: 402, height: 874 };
 
-// The header-inset sticky case: rows, then a box-none layout holding the sticky cover, then the
-// pointer-transparent full-screen and inset views drawn last.
+// The header-inset sticky case: a row in its scroll list, then a box-none layout holding the sticky
+// cover, then the pointer-transparent full-screen and inset views drawn last.
 const sticky = (cover: PointerEvents = 'auto'): View[] => [
-  { id: 'qa-hi-row-1', type: 'Button', rect: ROW, label: 'Row 1' },
+  { id: '', type: 'ScrollView', rect: { x: 0, y: 206, width: 402, height: 668 } },
+  { id: 'qa-hi-row-1', type: 'Button', rect: ROW, parent: 0, label: 'Row 1' },
   {
     id: 'qa-hi-layout',
     type: 'Other',
@@ -42,7 +43,7 @@ const sticky = (cover: PointerEvents = 'auto'): View[] => [
     id: 'qa-hi-cover',
     type: 'Button',
     rect: COVER,
-    parent: 1,
+    parent: 2,
     pointerEvents: cover,
     label: 'Cover control',
   },
@@ -71,13 +72,14 @@ async function capture(
       presence: presence(1),
     },
   ];
-  // Native accessibility lists every view flat under the window, in capture order.
-  views.forEach((view, i) =>
+  // Native nodes follow the React nesting, in capture order.
+  views.forEach((view, i) => {
+    const parentIndex = view.parent === undefined ? 1 : view.parent + 2;
     nodes.push({
       ref: `@e${i + 2}`,
       index: i + 2,
-      depth: 2,
-      parentIndex: 1,
+      depth: (nodes[parentIndex].depth as number) + 1,
+      parentIndex,
       type: view.type,
       identifier: view.id,
       ...(view.label ? { label: view.label } : {}),
@@ -85,8 +87,8 @@ async function capture(
       hittable: true,
       rect: view.rect,
       presence: presence(i + 2),
-    }),
-  );
+    });
+  });
   base.nodes = nodes as typeof base.nodes;
   base.snapshotVerdict.nodeCount = nodes.length;
   // Host 0 is the screen root; view i is host i + 1, ranked among its siblings in fiber order.
@@ -192,13 +194,15 @@ test('the walked tap records the sticky cover on its row and never names the ins
     error: 'LIVE_HIT_UNPROVEN: LIVE_HIT_UNPROVEN: not-hittable; no tap was performed.',
   });
   const result = await runPlan(parsePlan('1. Tap "qa-hi-row-1"').blocks!, w.deps);
-  const row = ('steps' in result ? result.steps : []).find((r) => r.line === 1);
+  const row = ('steps' in result ? result.steps : []).filter((r) => r.line === 1).at(-1);
   assert.deepEqual(
     row?.coveredBy,
-    { ref: '@e4', kind: 'button', frame: COVER },
+    { ref: '@e5', kind: 'button', frame: COVER },
     JSON.stringify(row),
   );
   assert.deepEqual(w.rows.at(-1)?.coveredBy, row?.coveredBy, 'the streamed row carries it too');
+  assert.equal(row?.outcome, 'fail', JSON.stringify(row));
+  assert.match(String(row?.reason), /covered by button at 0,110,402,201/);
   assert.doesNotMatch(String(row?.reason), /covered by \w+ at 0,116,402,758/);
 });
 

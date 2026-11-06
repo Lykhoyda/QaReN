@@ -3737,8 +3737,8 @@ observation ordinal and `clearanceDiagnostic`. It records the viewport, keyboard
 overlay predicate branch, boolean coverage facts, the scroll's origin and requested
 direction, and whether the target centre changed. For an overlay branch, the
 predicate also records the inferred band cutter's capture-local ref, kind, frame,
-and band edges before and after the cut; the failed step names that cutter too.
-The cutter is inferred, not the proven cover. On iOS the cover is named only when
+and band edges before and after the cut; the failed step cites it as the "inferred band
+cutter". The cutter is inferred, not the proven cover. On iOS the cover is named only when
 React Native's own hit test at the target's centre, over the capture's React hosts,
 gives the touch to another view with its own native node: `pointerEvents` none
 views are skipped and box-none views pass the touch to their children. The step

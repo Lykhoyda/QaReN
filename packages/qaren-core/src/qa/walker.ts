@@ -1401,9 +1401,9 @@ async function walkBlockScoped(
   >();
   // The proven cover for a refusal, as kind and frame; nothing when no touch owner was proven.
   const coverText = (line: number): string => {
-    const frame = targetRows.get(line)?.coveredBy;
-    return frame
-      ? `; covered by ${frame.kind} at ${[frame.frame.x, frame.frame.y, frame.frame.width, frame.frame.height].join(',')}`
+    const cover = targetRows.get(line)?.coveredBy;
+    return cover
+      ? `; covered by ${cover.kind} at ${[cover.frame.x, cover.frame.y, cover.frame.width, cover.frame.height].join(',')}`
       : '';
   };
   const withheldRows = new Map<number, NonNullable<LedgerRow['screenshotWithheld']>>();
