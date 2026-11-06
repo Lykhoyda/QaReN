@@ -309,6 +309,8 @@ test('O1: a target in the upper half scrolls up', async () => {
 
 test('O2: occluded twice fails after one scroll, never as an uncertain outcome', async () => {
   const f = fake([at(700), at(650)], { press: [OCCLUDED, OCCLUDED] });
+  const events: WalkerTimingDiagnostic[] = [];
+  f.deps.diagnostic = (event) => events.push(event);
   const outcome = await walkBlock(block('1. Tap "go"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 2);
@@ -318,6 +320,15 @@ test('O2: occluded twice fails after one scroll, never as an uncertain outcome',
     /^FOCUS_TARGET_OCCLUDED: .*"go" stayed off screen after one scroll; no cover named \(no-native-presence\)/,
   );
   assert.doesNotMatch(JSON.stringify(outcome), /ACTION_OUTCOME_UNCERTAIN/);
+  // The decision diagnostic carries the same gap as the refusal text.
+  const covered = events.filter((event) => event.code === 'CENTRE_COVERED');
+  assert.deepEqual(
+    covered.map((event) => [
+      event.clearanceDiagnostic?.scrollOrigin,
+      event.clearanceDiagnostic?.coverGap,
+    ]),
+    [['native-occlusion', 'no-native-presence']],
+  );
 });
 
 test('a repeated occlusion reports the last controls and a suggested plan edit', async () => {

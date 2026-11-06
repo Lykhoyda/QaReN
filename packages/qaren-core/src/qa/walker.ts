@@ -1467,6 +1467,19 @@ async function walkBlockScoped(
       again ? coverOwner(again, proven.screen) : { gap: 'target-not-recaptured' },
     );
   };
+  // A covered refusal that emits no other decision diagnostic still says why its cover was or was not
+  // named; a line whose cover was never looked up emits nothing.
+  const coverDecision = (
+    item: Item,
+    observation: Observation,
+    facts: Omit<NonNullable<WalkerTimingDiagnostic['clearanceDiagnostic']>, 'coverGap'>,
+  ): void => {
+    if (!coverGaps.has(item.line) && !targetRows.get(item.line)?.coveredBy) return;
+    diagnostic(item, observation, 'decision', 'CENTRE_COVERED', undefined, undefined, undefined, {
+      ...facts,
+      coverGap: coverGaps.get(item.line) ?? null,
+    });
+  };
   // The proven cover for a refusal, as kind and frame, or the evidence gap that withheld it.
   const coverText = async (item: Exclude<Item, { kind: 'check' }>): Promise<string> => {
     await proveCover(item);
@@ -3863,6 +3876,12 @@ async function walkBlockScoped(
                       false,
                       'TARGET_NOT_FOUND',
                     );
+                    coverDecision(item, before, {
+                      predicate: null,
+                      scrollOrigin,
+                      requestedDirection: scrollDirection,
+                      targetCentreChanged: null,
+                    });
                     break;
                   }
                   const distance =
@@ -3944,6 +3963,13 @@ async function walkBlockScoped(
                           coverGap: coverGaps.get(item.line) ?? null,
                         },
                       );
+                    else
+                      coverDecision(item, before, {
+                        predicate: null,
+                        scrollOrigin,
+                        requestedDirection: scrollDirection,
+                        targetCentreChanged: null,
+                      });
                     break;
                   }
                   scrollNeedsReadback = false;
@@ -4101,6 +4127,12 @@ async function walkBlockScoped(
                     false,
                     'TARGET_NOT_FOUND',
                   );
+                  coverDecision(item, before, {
+                    predicate: centreDiagnostic,
+                    scrollOrigin,
+                    requestedDirection: scrollDirection,
+                    targetCentreChanged: centreChanged(element),
+                  });
                   break;
                 }
                 strictFillFocus = true;
@@ -4279,6 +4311,12 @@ async function walkBlockScoped(
                   false,
                   'TARGET_NOT_FOUND',
                 );
+                coverDecision(item, before, {
+                  predicate: centreDiagnostic,
+                  scrollOrigin,
+                  requestedDirection: scrollDirection,
+                  targetCentreChanged: centreChanged(element),
+                });
                 break;
               }
               // Not hittable, unavailable, ambiguous, expired or moved: the inferred overlay refuses.
@@ -4357,6 +4395,12 @@ async function walkBlockScoped(
                     false,
                     'TARGET_NOT_FOUND',
                   );
+                  coverDecision(item, before, {
+                    predicate: null,
+                    scrollOrigin,
+                    requestedDirection: scrollDirection,
+                    targetCentreChanged: centreChanged(element),
+                  });
                   break;
                 }
                 refusedIdentity = element;
