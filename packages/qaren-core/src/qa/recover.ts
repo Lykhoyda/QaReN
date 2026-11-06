@@ -52,6 +52,7 @@ export async function recover(
   deps: RecoverDeps,
   marker?: LoginMarker,
   planTargets: readonly RecoveryTarget[] = [],
+  requireCoveredTarget = false,
 ): Promise<Recovery | undefined> {
   if (screen.front === 'dialog') {
     const acted = await deps.dialog();
@@ -68,7 +69,12 @@ export async function recover(
       : { fail: `the dev menu in front could not be hidden: ${hidden.error ?? 'not dispatched'}` };
   }
   if (screen.front === 'app' && deps.dismiss) {
-    const candidate = dismissCandidate(screen, planTargets, deps.interruptionDiagnostic);
+    const candidate = dismissCandidate(
+      screen,
+      planTargets,
+      deps.interruptionDiagnostic,
+      requireCoveredTarget,
+    );
     if (candidate && 'refuse' in candidate) return candidate;
     if (candidate) {
       const dismissed = await deps.dismiss(candidate.label);
@@ -99,6 +105,7 @@ export const INTERRUPTION_VETOES = [
   'front',
   'coverage',
   'current-target',
+  'uncovered-target',
   'later-target',
   'previous-plan-press',
   'no-candidate',
@@ -129,6 +136,7 @@ export function dismissCandidate(
   screen: Screen,
   planTargets: readonly RecoveryTarget[],
   diagnostic?: (record: InterruptionDiagnostic) => void,
+  requireCoveredTarget = false,
 ): { label: string } | { refuse: { code: string; message: string } } | undefined {
   const sole = soleDecline(screen);
   const rejected = (
@@ -156,6 +164,8 @@ export function dismissCandidate(
   if (screen.front !== 'app') return rejected('front');
   if (!completeCapture(screen)) return rejected('coverage');
   if (!planTargets.length) return rejected('current-target', 0);
+  if (requireCoveredTarget && !targetBehindInterruption(screen, planTargets[0]))
+    return rejected('uncovered-target', 0);
   const targetIndex = planTargets.findIndex(
     (target, index) =>
       !(index > 0 && target.laterBlock) &&

@@ -505,3 +505,33 @@ test('a wait whose first capture never completes reports the capture deadline', 
   );
   assert.deepEqual(f.actions, []);
 });
+
+for (const accessible of [false, true]) {
+  test(`a React-only wait on a form with Cancel never dismisses it (accessible wrapper: ${accessible})`, async () => {
+    const f = walker(
+      [],
+      scriptedJudge(() => assert.fail('a quoted wait is model-free')),
+    );
+    f.deps.hideDevMenu = async () => ({ ok: true, proven: true });
+    f.deps.captureScreen = async (options) => {
+      const snapshot = form(options?.platformPresence === true, {
+        accessible,
+        fieldY: accessible ? 404 : 700,
+        otherScroll: !accessible,
+      });
+      return {
+        ...snapshot,
+        elements: [...snapshot.elements, element('@cancel', 'Cancel')],
+        visibleText: [...snapshot.visibleText, 'Cancel'],
+      };
+    };
+    const result = await runPlan(parsePlan('1. Wait for "name-field" to appear').blocks!, f.deps);
+    assert.equal(result.verdict, 'FAIL');
+    assert.match(result.failure?.seen ?? '', /^TARGET_REACT_ONLY: /);
+    assert.deepEqual(f.actions, []);
+    assert.equal(f.deps.now(), accessible ? 2 * WAIT_POLL_MS : WAIT_BUDGET_MS);
+    assert.ok(!result.recoveries);
+    assert.equal(result.steps.at(-1)?.interruption?.outcome, 'vetoed');
+    assert.equal(result.steps.at(-1)?.interruption?.veto, 'uncovered-target');
+  });
+}

@@ -2398,6 +2398,7 @@ async function walkBlockScoped(
     attempt: number,
     reason: string,
     until?: number,
+    requireCoveredTarget = false,
   ): Promise<'retry' | WalkOutcome | undefined> => {
     const first = recovered.get(item);
     if (opts.recover === false || !deps.hideDevMenu) return undefined;
@@ -2581,8 +2582,11 @@ async function walkBlockScoped(
                 const screen = await captureScreen({ ...options, platformPresence: true });
                 if (!dispatched) {
                   observed = screen;
-                  const candidate = dismissCandidate(screen, planTargets, (record) =>
-                    interruptionRejected(record),
+                  const candidate = dismissCandidate(
+                    screen,
+                    planTargets,
+                    (record) => interruptionRejected(record),
+                    requireCoveredTarget,
                   );
                   if (!candidate || 'refuse' in candidate || candidate.label !== label)
                     throw new ResolutionError({
@@ -2643,6 +2647,7 @@ async function walkBlockScoped(
       },
       deps.login?.marker,
       planTargets,
+      requireCoveredTarget,
     ).catch((error: unknown) => {
       if (error instanceof AppProcessGoneError) {
         sequence.publicationInterrupted = true;
@@ -3078,7 +3083,13 @@ async function walkBlockScoped(
             if (view?.where === 'inside' && reactOnlyFactsOf(lone!)?.accessibleAncestor) {
               const reason = reactOnlyMiss(item.target, observation.screen, absent, waitAttempt)!;
               // A React-only target may sit behind an interruption; recovery gets its own bounded capture.
-              const recovering = await recovery(item, 1, reason, deps.now() + CAPTURE_BUDGET_MS);
+              const recovering = await recovery(
+                item,
+                1,
+                reason,
+                deps.now() + CAPTURE_BUDGET_MS,
+                true,
+              );
               if (recovering === 'retry') continue attempts;
               if (recovering) return recovering;
               return judged(
@@ -3272,6 +3283,7 @@ async function walkBlockScoped(
               1,
               reason,
               reactOnly ? deps.now() + CAPTURE_BUDGET_MS : undefined,
+              Boolean(reactOnly),
             );
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
@@ -3648,7 +3660,7 @@ async function walkBlockScoped(
                     targetBehindInterruption(before.screen, item.target)
                   ) {
                     const covered = `"${item.target.phrase}" is mounted behind a presented modal; it was not scrolled`;
-                    const recovering = await recovery(item, attempt, covered);
+                    const recovering = await recovery(item, attempt, covered, undefined, true);
                     if (recovering === 'retry') again = true;
                     else
                       outcome =
