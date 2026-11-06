@@ -3909,11 +3909,8 @@ async function walkBlockScoped(
                 if (plainBand.unproven) {
                   try {
                     const proven = await captureOnce(item, false, false, 'provenance');
-                    const band = plainScrollBand(proven.screen, item.direction, deps.platform);
-                    if (!band.unproven) {
-                      before = proven;
-                      plainBand = band;
-                    }
+                    plainBand = plainScrollBand(proven.screen, item.direction, deps.platform);
+                    before = proven;
                   } catch (error) {
                     if (
                       !(error instanceof ResolutionError) ||

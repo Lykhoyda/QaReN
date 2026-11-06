@@ -157,12 +157,14 @@ async function run(
     singleAttempt,
     direction = 'down',
     presence,
+    presenceDelayMs = 0,
   }: {
     act?: ActResult;
     singleAttempt?: boolean;
     direction?: 'up' | 'down';
     // What a platform-presence capture returns; ordinary captures keep the scripted screens.
-    presence?: Screen;
+    presence?: Screen | (() => Promise<Screen>);
+    presenceDelayMs?: number;
   } = {},
 ) {
   const f = walker(
@@ -177,13 +179,15 @@ async function run(
   f.deps.captureScreen = async (options) => {
     if (!options?.platformPresence) return ordinary(options);
     presenceCaptures.push(1);
-    return presence ?? ordinary(options);
+    if (presenceDelayMs) await f.deps.sleep(presenceDelayMs);
+    return typeof presence === 'function' ? presence() : (presence ?? ordinary(options));
   };
   const bands: (Rect | undefined)[] = [];
   const distances: (number | undefined)[] = [];
   f.deps.platform = 'ios';
   const dispatch = f.deps.scroll;
   f.deps.scroll = async (dir, context, clearance, band) => {
+    context!.authorize();
     bands.push(band);
     distances.push(clearance);
     return dispatch(dir, context, clearance, band);
@@ -683,4 +687,34 @@ test('a drag across an unproven cover stops short of a proven opaque cover', asy
   assert.equal(band.unproven, true);
   assert.equal(band.container?.ref, '@list');
   assert.deepEqual(band.band, { x: 20, y: 200, width: 360, height: 316 });
+});
+
+test('complete unproven recaptures retain opaque cuts, freshness and the motion baseline', async () => {
+  for (const direction of ['up', 'down'] as const) {
+    const cover =
+      direction === 'down'
+        ? { x: 0, y: 520, width: 400, height: 80 }
+        : { x: 0, y: 200, width: 400, height: 80 };
+    const extra = [
+      overlay(WINDOW),
+      { ...overlay(cover), index: 5, ref: '@edge', identifier: 'edge' },
+    ];
+    for (const presenceDelayMs of [0, 12_000]) {
+      let captures = 0;
+      const f = await run([screen({ extra })], {
+        direction,
+        presenceDelayMs,
+        presence: () =>
+          presenceScreen({ extra, childY: captures++ === 0 ? 310 : 300 }, { edge: 'auto' }),
+      });
+      const expected = { ...LIST, y: direction === 'down' ? 200 : 284, height: 316 };
+      assert.equal(f.result.block.outcome, 'pass');
+      assert.equal(f.result.failure, undefined);
+      assert.deepEqual(f.bands, [expected]);
+      assert.equal(f.presenceCaptures, 2);
+      assert.deepEqual(f.rows.at(-1)?.scrollBand?.band, expected);
+      const [, , start, , end] = coordinates(f.bands[0], direction, f.distances[0]).map(Number);
+      for (const y of [start, end]) assert.ok(y < cover.y || y >= cover.y + cover.height);
+    }
+  }
 });
