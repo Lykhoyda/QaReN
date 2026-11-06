@@ -3430,13 +3430,14 @@ This exemption requires a proven control count: press/fill association gaps or
 unknown capabilities on a non-structural, on-screen element keep the presence guard.
 React hosts outside the one mounted `Modal` are not gaps while every associated host
 sits inside it, so a full-screen promo over a mounted screen still counts as one control.
-Check-first and wait-first plans behind a presented full-screen promo recover under
-these guards and retry the step once. Tap/fill-first recovery follows once the shared
-bounded presence recapture is wired to the covered-press guard; ordinary first
-tap/fill captures do not yet provide the evidence that guard requires.
-React-only wait recovery requires proof that its target is behind the presented
-`Modal`, and rechecks this proof in recovery's fresh capture and
-before dispatch; without it, app dismissal is vetoed as `uncovered-target`, so a
+Check-first, wait-first and tap/fill-first plans behind a presented full-screen promo
+recover under these guards and retry the step once. On iOS, before scrolling for a
+React-only tap or fill target, an ordinary capture gets one bounded presence
+recapture within the step's remaining budget. When it proves the target is behind
+the presented `Modal`, recovery runs instead of scrolling the promo.
+React-only wait recovery and this pre-scroll recovery require proof that the target
+is behind the presented `Modal`, and recheck this proof in recovery's fresh capture
+and before dispatch; without it, app dismissal is vetoed as `uncovered-target`, so a
 missing target on an ordinary form cannot cause its own `Cancel` to be pressed.
 A later wait or check matching that screen, other than an exempt decline label, still
 vetoes. The current target is never exempt. ID-only targets are checked by
