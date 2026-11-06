@@ -784,11 +784,8 @@ fn run_inner(
                 );
             }
             device.needs_boot = refreshed.needs_boot;
-            if let (Some(at), Some(sim)) = (
-                refreshed.booted_at_ms,
-                ctx.record.resources.ios_simulator.as_mut(),
-            ) {
-                sim.booted_proven_at = Some(timefmt::iso8601_utc(at));
+            if let Some(sim) = ctx.record.resources.ios_simulator.as_mut() {
+                sim.booted_proven_at = refreshed.booted_at_ms.map(timefmt::iso8601_utc);
             }
         }
 

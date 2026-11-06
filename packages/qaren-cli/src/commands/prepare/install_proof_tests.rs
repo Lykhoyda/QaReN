@@ -527,6 +527,29 @@ fn a_spent_budget_reports_the_install_timeout_without_touching_the_device() {
         drop(ctx);
         assert!(fx.labels().is_empty());
     }
+    // A budget spent inside the proof's inventory read is the same install timeout.
+    let mut fx = fixture(
+        "spent-proof",
+        Custody::Borrowed { authorised: true },
+        Some(1),
+    );
+    fx.expect("simctl list", CmdOutput::failed(1, "CoreSimulator is busy"));
+    fx.runner.inner.advance_on = Some(("simctl list".into(), 1000));
+    let (result, ctx) = install(&mut fx, "check", 2500);
+    let failure = result.unwrap_err();
+    assert_eq!(failure.code, FailureCode::ArtifactInstallFailed);
+    assert!(
+        failure
+            .detail
+            .contains("(install-timeout): preparation budget spent before install"),
+        "{failure:?}"
+    );
+    assert!(ctx
+        .notes
+        .iter()
+        .any(|(key, value)| key == "launch_ready_budget" && value == "spent"));
+    drop(ctx);
+    assert_eq!(fx.labels(), ["simctl-list"]);
     // A retry that leaves under a second dispatches nothing further.
     let mut fx = fixture("spent-retry", Custody::Temporary, Some(1));
     fx.expect("simctl list", inventory("Booted"));
