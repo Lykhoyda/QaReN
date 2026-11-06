@@ -803,6 +803,8 @@ const outcome = (band: PlainScrollBand) => ({
 
 test('Android plain scroll drags the app list, not the navigation wrapper that cannot scroll', () => {
   for (const [row, { direction, before }] of Object.entries(capturedRows.rows)) {
+    // The frozen list reports it cannot scroll too; its row is the next test's.
+    if (row === 'R3-frozen-list') continue;
     const band = plainScrollBand(captured(before), direction, 'android');
     assert.equal(band.container?.testID, 'qa-ps-list', row);
     assert.notDeepEqual(band.band, WRAPPER_BAND, row);
