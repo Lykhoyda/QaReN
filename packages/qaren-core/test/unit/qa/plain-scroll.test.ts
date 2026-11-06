@@ -623,7 +623,10 @@ test('a system dialog appearing during presence recapture blocks either scroll d
     assert.deepEqual(f.bands, []);
     assert.deepEqual(f.actions, []);
     assert.equal(f.result.block.outcome, 'fail');
-    assert.match(renderReason(f.result.failure?.seen ?? '', (text) => text), /system dialog/);
+    assert.match(
+      renderReason(f.result.failure?.seen ?? '', (text) => text),
+      /system dialog/,
+    );
     assert.ok(f.rows.every((row) => row.scrollDetail === undefined));
   }
 });

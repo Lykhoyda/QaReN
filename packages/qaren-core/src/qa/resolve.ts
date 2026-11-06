@@ -785,7 +785,12 @@ function centreCorridor(
   }
   if (radius <= 0) return { ...band, width: 0 };
   return (
-    clearOfFrontOverlays(container, { ...band, x: x - radius, width: radius * 2 }, screen, true) ?? {
+    clearOfFrontOverlays(
+      container,
+      { ...band, x: x - radius, width: radius * 2 },
+      screen,
+      true,
+    ) ?? {
       ...band,
       height: 0,
     }
