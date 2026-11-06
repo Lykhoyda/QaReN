@@ -38,6 +38,11 @@ test('the slot diagnostic wire projects only fixed vocabulary and measured numbe
           nativeMutation: 'possible',
           message: secret,
         },
+        clearanceDiagnostic: {
+          coverGap: 'no-native-presence',
+          targetFrame: { x: 101, y: 202, width: 303, height: 404 },
+          label: secret,
+        },
         ref: secret,
       });
       writer.diagnostic({ kind: 'block-outcome', line: 2, outcome: 'pass', title: secret });

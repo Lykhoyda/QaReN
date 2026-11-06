@@ -274,6 +274,9 @@ mod tests {
             interruption: None,
             dev_error: None,
             implicit_wait_ms: None,
+            collapsed: None,
+            candidate_exclusions: None,
+            covered_by: None,
         }
     }
 
