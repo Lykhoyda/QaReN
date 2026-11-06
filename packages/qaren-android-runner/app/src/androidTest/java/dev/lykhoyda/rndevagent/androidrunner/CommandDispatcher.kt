@@ -1416,14 +1416,7 @@ class CommandDispatcher(
             .put("inputResolution", resolved.resolution)
     }
 
-    // AI-489: an app can keep its real input at opacity 0 behind drawn boxes.
-    // Android then reports it not visible to the user, and UiAutomator's search
-    // (so the exact binding above) never sees it. Bind it from the accessibility
-    // tree instead: the one node carrying the identifier, and only when it is the
-    // app's enabled, editable input with a real frame that already holds input
-    // focus (GH #581: never "whatever is focused"). ACTION_SET_TEXT only: the
-    // keyevent fallback checks focus once before its character loop. Null keeps
-    // the exact binding's own refusal.
+    // UiAutomator omits hidden inputs; bind by exact accessibility identity and never fall back to focus-only keyevents.
     private fun typeFocusedHidden(cmd: JSONObject, text: String): JSONObject? {
         val identifier = cmd.optString("snapshotIdentifier").ifBlank { null } ?: return null
         val matches = mutableListOf<AccessibilityNodeInfo>()
