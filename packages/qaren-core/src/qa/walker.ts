@@ -1483,7 +1483,8 @@ async function walkBlockScoped(
     const target = item.kind === 'check' ? undefined : stepTarget(item);
     if (target?.quoted !== undefined) emitQuotedTargetDiagnostic(screen, target.quoted, item.line);
     const row = base(item, attempt);
-    const last = targetCode ? (newest ?? screen) : screen;
+    const rejectedCheck = item.kind === 'check' && interruptions.has(item.line);
+    const last = targetCode || rejectedCheck ? (newest ?? screen) : screen;
     const waitOrScroll = item.kind === 'wait' || item.kind === 'scroll';
     let lastScreen: Pick<LedgerFailure, 'screen' | 'suggestion' | 'subreason'> = {};
     if (item.kind !== 'check' && target && (waitOrScroll || targetCode)) {
@@ -1559,6 +1560,20 @@ async function walkBlockScoped(
       } catch {
         // Diagnostics cannot change the failed step's outcome.
       }
+    }
+    if (rejectedCheck) {
+      try {
+        const seen = captured.get(last);
+        if (seen)
+          lastScreen.screen = screenNow(
+            last,
+            recoveryTarget(item) ?? { phrase: '' },
+            row.t - seen.at,
+            dispatchedOn === seen.id,
+            privacy,
+            'wait',
+          );
+      } catch {}
     }
     if (pressVetoed === item && ((target && targetCode) || item.kind === 'check')) {
       // A check has no target diagnostics, so it keeps the note but no subreason.
