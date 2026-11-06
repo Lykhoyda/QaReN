@@ -253,6 +253,25 @@ class QaHierarchyTest {
         assertFalse(out.nodes[0].heading)
     }
 
+    // AI-489: the core reads input focus to type into an input the app keeps transparent.
+    @Test fun aFocusedNodeKeepsItsFocusFactAndOtherNodesDoNot() {
+        val tree = node(
+            "android.widget.FrameLayout",
+            children = listOf(
+                node("android.widget.EditText", visibleToUser = false, focused = true),
+                node("android.widget.EditText"),
+            ),
+        )
+        val out = QaHierarchy.assemble(listOf(appWindow(tree)), app, display)
+        val (frame, focusedInput, other) = out.nodes.drop(2)
+
+        assertTrue(focusedInput.focused)
+        assertFalse(focusedInput.visibleToUser)
+        assertFalse(other.focused)
+        assertFalse(frame.focused)
+        assertFalse(out.nodes[0].focused)
+    }
+
     private val permissions = "com.google.android.permissioncontroller"
 
     private fun permissionDialog(vararg buttons: RawNode, id: Int = 5, owner: String = permissions) = RawWindow(
@@ -398,6 +417,7 @@ class QaHierarchyTest {
         password: Boolean = false,
         enabled: Boolean = true,
         heading: Boolean = false,
+        focused: Boolean = false,
     ) = RawNode(
         className = className,
         text = text,
@@ -412,5 +432,6 @@ class QaHierarchyTest {
         password = password,
         heading = heading,
         children = children,
+        focused = focused,
     )
 }

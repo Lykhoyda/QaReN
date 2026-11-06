@@ -425,6 +425,15 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
         ...recorded,
       };
     }
+    // A scroll cannot reveal an input hidden in place; a Fill types into it only while it holds focus.
+    if (step.kind === 'fill' && only.hiddenInView === 'focused')
+      return { ref: only.ref, element: only, ...recorded };
+    if (step.kind === 'fill' && only.hiddenInView === 'unfocused')
+      return {
+        refuse: 'TARGET_NOT_FOUND',
+        reason: `"${target.quoted}" is on screen but not visible to the user (hidden in place, typically opacity 0 on it or a parent) and it does not hold input focus; nothing was typed and no scroll was tried. Next step: add a step before this Fill that taps the visible control which focuses this field, or fill the visible field instead.`,
+        ...recorded,
+      };
     return { ...(only.offscreen ? scrollTo(only) : { ref: only.ref, element: only }), ...recorded };
   }
   const candidates = projected.elements;

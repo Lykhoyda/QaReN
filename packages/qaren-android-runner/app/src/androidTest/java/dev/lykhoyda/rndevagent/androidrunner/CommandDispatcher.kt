@@ -688,6 +688,7 @@ class CommandDispatcher(
             drawingOrder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) node.drawingOrder else null,
             clickable = node.isClickable,
             handle = handle,
+            focused = node.isFocused,
         )
     }
 
@@ -743,6 +744,7 @@ class CommandDispatcher(
             .put("visibleToUser", node.visibleToUser)
         if (node.secure) json.put("secure", true)
         if (node.heading) json.put("heading", true)
+        if (node.focused) json.put("focused", true)
         return json
     }
 
@@ -762,6 +764,7 @@ class CommandDispatcher(
             .put("hittable", HittableSemantics.fromSnapshotNode(enabled, visible))
             .put("enabled", enabled)
         if (node.isPassword) json.put("secure", true)
+        if (node.isFocused) json.put("focused", true)
         return json
     }
 
@@ -1286,7 +1289,11 @@ class CommandDispatcher(
         // whatever is focused". One operation resolves the target, skips the
         // focus tap only when THAT input is focused, otherwise taps the
         // declared focus point and proves the same input gained focus.
-        val resolved = resolveExactTypeTarget(cmd)
+        val resolved = try {
+            resolveExactTypeTarget(cmd)
+        } catch (e: NoTextInputTargetException) {
+            return typeFocusedHidden(cmd, text) ?: throw e
+        }
         val target = resolved.obj
         var focusTap = "skipped-exact-focused"
         if (!isFocusedSafely(target)) {
@@ -1409,10 +1416,101 @@ class CommandDispatcher(
             .put("inputResolution", resolved.resolution)
     }
 
+    // AI-489: an app can keep its real input at opacity 0 behind drawn boxes.
+    // Android then reports it not visible to the user, and UiAutomator's search
+    // (so the exact binding above) never sees it. Bind it from the accessibility
+    // tree instead: the one node carrying the identifier, and only when it is the
+    // app's enabled, editable input with a real frame that already holds input
+    // focus (GH #581: never "whatever is focused"). ACTION_SET_TEXT only: the
+    // keyevent fallback checks focus once before its character loop. Null keeps
+    // the exact binding's own refusal.
+    private fun typeFocusedHidden(cmd: JSONObject, text: String): JSONObject? {
+        val identifier = cmd.optString("snapshotIdentifier").ifBlank { null } ?: return null
+        val matches = mutableListOf<AccessibilityNodeInfo>()
+        val stack = ArrayDeque<AccessibilityNodeInfo>()
+        windowRoots().forEach { stack.addLast(it) }
+        var visited = 0
+        while (stack.isNotEmpty() && visited++ < 20_000) {
+            val node = stack.removeLast()
+            for (index in 0 until node.childCount) {
+                node.getChild(index)?.let { stack.addLast(it) }
+            }
+            val nodeIdentifier = normalizeIdentifier(node.viewIdResourceName.orEmpty())
+                .ifBlank { node.contentDescription?.toString().orEmpty() }
+            if (nodeIdentifier == identifier) matches.add(node) else node.recycle()
+        }
+        val complete = ExactPressSafety.traversalComplete(stack.size)
+        while (stack.isNotEmpty()) stack.removeLast().recycle()
+        val node = matches.singleOrNull()
+        if (!complete || node == null) {
+            matches.forEach { it.recycle() }
+            return null
+        }
+        val className = node.className?.toString().orEmpty()
+        val bounds = Rect().also { node.getBoundsInScreen(it) }
+        val expectedClass = cmd.optString("snapshotElementType").ifBlank { null }
+        val appPackage = cmd.optString("appBundleId").ifBlank { null }
+        val described = describedBounds(cmd)
+        val eligibleOnceFocused = FocusedHiddenInput.eligible(
+            isInputClass = INPUT_CLASS_PATTERN.matcher(className).matches(),
+            classMatches = expectedClass == null || className == expectedClass,
+            editable = node.isEditable,
+            enabled = node.isEnabled,
+            focused = true,
+            visibleToUser = node.isVisibleToUser,
+            boundsEmpty = bounds.isEmpty,
+            packageMatches = appPackage == null || node.packageName?.toString() == appPackage,
+            frameMatches = described == null || boundsMatch(bounds, described),
+        )
+        if (!eligibleOnceFocused) {
+            node.recycle()
+            return null
+        }
+        if (!node.isFocused) {
+            node.recycle()
+            throw NoTextInputTargetException(
+                "NO_TEXT_INPUT_TARGET: input \"$identifier\" is not visible to the user and is not focused; no typing was performed"
+            )
+        }
+        val before = readInput(node).text
+        node.performAction(
+            AccessibilityNodeInfo.ACTION_SET_TEXT,
+            Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+            },
+        )
+        val outcome = TextInputRecipe.classifySetText(text, before, readInput(node).text)
+        if (outcome == TextInputRecipe.SetTextOutcome.REJECTED) {
+            node.recycle()
+            throw SetTextRejectedException(
+                "The input is not visible to the user and ignored ACTION_SET_TEXT; the keyevent fallback is not used for such an input.",
+                mutation = MutationDisposition.NONE,
+            )
+        }
+        recordedTypeTarget = RecordedTypeTarget(
+            target = null,
+            node = node,
+            operationToken = optionalString(cmd, "operationToken"),
+            className = className,
+            identifier = identifier,
+            bounds = bounds,
+            snapshotGeneration = optionalInt(cmd, "snapshotGeneration"),
+            snapshotNodeIndex = optionalInt(cmd, "snapshotNodeIndex"),
+        )
+        // GH #581: requested text is never echoed back (secret safety).
+        return JSONObject()
+            .put("typed", true)
+            .put("method", "setText")
+            .put("setTextOutcome", outcome.name.lowercase())
+            .put("focusTap", "skipped-exact-focused")
+            .put("inputResolution", "identifier-focused-hidden")
+    }
+
     private data class ResolvedInput(val obj: UiObject2, val resolution: String)
 
+    // A null target is an input bound from the accessibility tree alone (AI-489).
     private data class RecordedTypeTarget(
-        val target: UiObject2,
+        val target: UiObject2?,
         val node: AccessibilityNodeInfo,
         val operationToken: String?,
         val className: String,
@@ -1603,7 +1701,10 @@ class CommandDispatcher(
                 optionalString(cmd, "snapshotIdentifier"),
             )
             if (recorded != null && descriptorAgrees) {
-                if (recorded.identifier != null) {
+                if (recorded.target == null) {
+                    // UiAutomator cannot re-find a not-visible input; read the node the write used.
+                    recordedNode = recorded.node
+                } else if (recorded.identifier != null) {
                     when (
                         val resolution = TextInputRecipe.resolveIdentifier(
                             targetIdentities(candidates),
@@ -1629,7 +1730,7 @@ class CommandDispatcher(
                     }
                 }
             }
-            if (target == null && lostVerdict != "ambiguous") {
+            if (target == null && recordedNode == null && lostVerdict != "ambiguous") {
                 val identifier = cmd.optString("snapshotIdentifier").ifBlank { null }
                 val expectedClass = cmd.optString("snapshotElementType").ifBlank { null }
                 val described = describedBounds(cmd)
@@ -1662,9 +1763,12 @@ class CommandDispatcher(
                 }
             }
         }
-        val resolved = target
-            ?: return JSONObject().put("verifyVerdict", lostVerdict).put("verifyStable", false)
-        val bound = recordedNode ?: when (val binding = bindInputNode(resolved, requireFocused = false)) {
+        val bound = recordedNode ?: when (
+            val binding = bindInputNode(
+                target ?: return JSONObject().put("verifyVerdict", lostVerdict).put("verifyStable", false),
+                requireFocused = false,
+            )
+        ) {
             is InputBinding.Bound -> binding.node
             InputBinding.Ambiguous ->
                 return JSONObject().put("verifyVerdict", "ambiguous").put("verifyStable", false)
