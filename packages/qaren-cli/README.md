@@ -582,8 +582,10 @@ before device probes and reporting them as inconclusive if that check fails.
 
 ### Record a check
 
-`qaren check` records no video by default; its receipt and stderr summary say
-`video: not recorded; pass --record to qaren check to record this walk`.
+`qaren check` records no video by default. Once a check reaches the walk, its
+receipt and stderr summary say
+`video: not recorded; pass --record to qaren check to record this walk`; a check
+refused earlier (preflight, build) carries no video line.
 `qaren check --record` records the walk through the same recorder, start rules,
 encode and trimmed copy as `qaren pr`, including the runtime-input rule and the
 Android API 34 requirement. `--record` on `qaren pr` changes nothing, because `pr`
@@ -617,8 +619,9 @@ The receipt's `outcomes` gains these keys:
 
 The stderr summary prints the `video:` and `video file:` lines. Recording adds a
 recorder process and an encode and trim after the walk (each ffmpeg step is
-limited to 900 seconds); each encoded file is limited to 100 MB, and the full and
-trimmed files coexist. Recording is
+limited to 900 seconds). An encoded file over 100 MB is reported as `too-large`;
+the full and trimmed files coexist, and an oversized `media/video.mp4` can remain
+when its size reduction fails. Recording is
 best effort: a recorder, ffmpeg or trim problem never changes the verdict or the
 exit code.
 
