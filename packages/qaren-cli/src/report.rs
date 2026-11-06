@@ -861,6 +861,40 @@ mod tests {
     }
 
     #[test]
+    fn an_uncovered_target_interruption_receipt_survives_and_renders() {
+        let receipt = serde_json::json!({
+            "considered": true, "outcome": "vetoed", "veto": "uncovered-target",
+            "targetLine": 7, "targetKind": "wait", "soleDecline": false
+        });
+        let ledger: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "FAIL", "path": "walk", "blocks": [],
+            "steps": [{ "block": "b", "line": 7, "attempt": 1, "kind": "step",
+                "resolvedBy": "exact", "t": 0, "outcome": "fail", "interruption": receipt }],
+            "jev": { "calls": 0, "medianMs": 0 },
+            "llmTurns": 0, "escapes": 0, "recoveries": 0,
+            "failure": { "step": 7, "seen": "TARGET_REACT_ONLY" }
+        }))
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&ledger).unwrap()["steps"][0]["interruption"],
+            receipt
+        );
+        let report = render(&ReportInput {
+            run_id: "check-test",
+            platform: "ios",
+            app_id: "com.example",
+            device: "test-device",
+            ledger: &ledger,
+        });
+        assert_eq!(
+            report
+                .matches("interruption recovery: vetoed (uncovered-target; line 7 (wait))")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn an_interruption_receipt_round_trips_drops_malformed_data_and_renders_one_line() {
         let receipt = serde_json::json!({
             "considered": true, "outcome": "vetoed", "veto": "later-target",

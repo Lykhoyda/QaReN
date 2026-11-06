@@ -530,6 +530,7 @@ pub enum InterruptionVeto {
     Front,
     Coverage,
     CurrentTarget,
+    UncoveredTarget,
     LaterTarget,
     PreviousPlanPress,
     NoCandidate,
