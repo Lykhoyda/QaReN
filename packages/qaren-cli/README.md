@@ -3568,9 +3568,11 @@ each decline-labelled element's first failed predicate; press capability failure
 include the existing host association identity when available.
 `presence-system-modal` reports an unrecognized SpringBoard modal's
 app state, alert/sheet counts and structural geometry and descendant counts.
-`system-dialog-stage` reports local dialog context failures. These records
+`system-dialog-stage` reports local dialog context failures. The structured events
 contain only counts, indices, booleans and fixed enums, omit labels, identifiers,
-refs and app text, and never authorize a tap or change capture admission.
+refs and app text. Private core-log interruption diagnostics also include modal-cover
+evidence with bounded React host type names. Diagnostics never authorize a tap or
+change capture admission.
 Successful selection, recognized modals and proven dialog taps emit none of
 these failure records.
 
