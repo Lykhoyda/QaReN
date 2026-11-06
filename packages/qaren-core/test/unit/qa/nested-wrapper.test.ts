@@ -312,6 +312,59 @@ test('a collapsed pair beside a third same-label control stays ambiguous and kee
   );
 });
 
+for (const terminal of ['pass', 'refuse', 'retry'] as const) {
+  test(`collapse and exclusion receipts survive clearance and identity binding (${terminal})`, async () => {
+    const screen = await capture([
+      ...recorded(),
+      {
+        type: 'Button',
+        label: 'Close',
+        id: 'footer-close',
+        rect: { x: 20, y: 700, width: 100, height: 40 },
+        host: { press: true },
+      },
+    ]);
+    screen.nativeGeneration = 7;
+    const w = walker(
+      [screen],
+      scriptedJudge(() => assert.fail('exact targets are model-free')),
+    );
+    w.deps.platform = 'ios';
+    w.deps.hitProbe = async (ref) => (ref === '@e4' ? 'not-hittable' : 'hittable');
+    let presses = 0;
+    w.deps.press = async (ref) => {
+      w.actions.push(`press ${ref}`);
+      presses += 1;
+      if (presses === 1 || terminal === 'refuse')
+        return {
+          ok: false,
+          proven: false,
+          mutation: 'none',
+          error: 'FOCUS_TARGET_OCCLUDED: the tap point is covered',
+        };
+      if (terminal === 'retry' && presses === 2)
+        return { ok: false, proven: false, mutation: 'none', error: 'press was not dispatched' };
+      return { ok: true, proven: true };
+    };
+    const run = await runPlan(parsePlan('1. Tap "Close"').blocks!, w.deps);
+    assert.equal(run.verdict, terminal === 'refuse' ? 'FAIL' : 'PASS');
+    assert.equal(presses, terminal === 'retry' ? 3 : 2);
+    assert.equal(w.actions.filter((action) => action.startsWith('scroll ')).length, 1);
+    const rows = ('steps' in run ? run.steps : []).filter((row) => row.line === 1);
+    assert.ok(rows.length > 0);
+    if (terminal === 'retry') assert.ok(rows.some((row) => row.outcome === 'retry'));
+    for (const row of rows) {
+      assert.deepEqual(row.collapsed, [
+        { ref: '@e2', kind: 'button', frame: OUTER, into: '@e3' },
+      ]);
+      assert.deepEqual(
+        row.candidateExclusions?.map(({ ref, reason }) => [ref, reason]),
+        [['@e4', 'not-hittable']],
+      );
+    }
+  });
+}
+
 test('two same-label inner branches stay ambiguous', async () => {
   ambiguous(
     prepareTarget(

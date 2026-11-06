@@ -3605,7 +3605,9 @@ async function walkBlockScoped(
           overlayRows.delete(item.line);
           scrollBands.delete(item.line);
           let plainBand: PlainScrollBand | undefined;
-          targetRows.delete(item.line);
+          const { coveredBy: _previousCover, ...selectionFacts } = targetRows.get(item.line) ?? {};
+          targetRows.set(item.line, selectionFacts);
+          coverGaps.delete(item.line);
           let selectionTarget: Element | undefined;
           let selectionDeadline = Infinity;
           let selectionStartedAt = 0;
@@ -3704,7 +3706,10 @@ async function walkBlockScoped(
                             }
                         : decision.target!;
                 const decided = await probeDuplicates(item, before, prepared);
+                const { coveredBy: _previousCover, ...selectionFacts } =
+                  targetRows.get(item.line) ?? {};
                 targetRows.set(item.line, {
+                  ...selectionFacts,
                   ...('collapsed' in decided && decided.collapsed
                     ? { collapsed: decided.collapsed }
                     : {}),
