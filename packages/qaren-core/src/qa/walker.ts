@@ -111,6 +111,7 @@ import {
   plannedSurface,
   optInShaped,
   recover,
+  protectionLapses,
   soleDecline,
   surfaceGone,
 } from './recover.js';
@@ -509,7 +510,8 @@ export interface WalkSequence {
   window?: { fromMs: number; typed: number };
   // System prompts recovery declined in this run; a repeat ask is the plan author's to answer.
   declinedPrompts?: Set<string>;
-  plannedPress?: PlannedSurface & { line: number };
+  // passedSince: a later planned item passed while a decline control stayed on screen.
+  plannedPress?: PlannedSurface & { line: number; passedSince?: boolean };
   // Armed at launch and after a login replay; the next top-level Tap or Fill spends it.
   launchWait?: boolean;
 }
@@ -1426,6 +1428,11 @@ async function walkBlockScoped(
     const timed = timing ? { ...row, timing } : row;
     if (row.outcome === 'pass' && !opts.login) {
       sequence.planPassed = true;
+      const press = sequence.plannedPress;
+      if (opts.recover !== false && press && press.line !== row.line) {
+        if (protectionLapses(latest)) sequence.plannedPress = undefined;
+        else press.passedSince = true;
+      }
       if (
         opts.recover !== false &&
         block.items.some((item) => item.line === row.line && item.kind === 'press')
@@ -1582,7 +1589,13 @@ async function walkBlockScoped(
           ...(lastScreen.screen ? { screen: lastScreen.screen } : {}),
           subreason: 'previous-plan-press',
         };
-      reason = [...segments(reason), PREVIOUS_PLAN_PRESS];
+      const press = sequence.plannedPress;
+      reason = [
+        ...segments(reason),
+        press?.passedSince
+          ? `; the planned press at line ${press.line} succeeded and later steps passed while a decline control stayed on screen; the next target was not found; automatic app dismissal was withheld`
+          : PREVIOUS_PLAN_PRESS,
+      ];
       const optIn = optInShaped(last);
       const decline =
         optIn ??
@@ -1600,7 +1613,7 @@ async function walkBlockScoped(
           : 'an app screen with only a decline control';
         reason = [
           ...segments(reason),
-          `; ${shape} is in front; the previous planned tap may have opened it, so it was not dismissed`,
+          `; ${shape} is in front; ${sequence.plannedPress.passedSince ? `the planned tap at line ${sequence.plannedPress.line}` : 'the previous planned tap'} may have opened it, so it was not dismissed`,
         ];
         const label = privacy.redactElementLabel(decline);
         lastScreen.suggestion =

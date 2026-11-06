@@ -3465,22 +3465,30 @@ after the press, identified by its modal type and test ID or native ID and absen
 before dispatch, protection tracks that container. Novelty requires complete
 captures and complete React host evidence before and after the press. Otherwise
 its identity is unknown and protection stays on until a later
-accepted planned press replaces it or login replay clears it. A press accepted
+accepted planned press replaces it, login replay clears it, or it lapses as below.
+A press accepted
 behind a system dialog also keeps this conservative protection. These identities
 stay in memory and are never written to the ledger or logs.
 Protection crosses block and replay boundaries and retries. Waits, checks, fills,
 scrolls and keyboard-only Back never establish departure. Only a complete native
 and React capture with complete host structure proving the identified container
-absent can expire protection. A planned Accept re-arms protection for its own
+absent can expire protection that way. Protection also lapses once a later planned
+item passes on a complete capture with no decline control on screen; an interruption
+appearing after that point is eligible for bounded recovery. Until a later item
+passes, protection holds, so a screen the tap opens late stays protected, and a
+later item passing while a decline control is still on screen keeps it. After the
+lapse, a later step targeting the interruption still keeps it through the later-target
+veto, which is checked before planned-press protection. A planned Accept re-arms protection for its own
 destination, even when it closes an identified modal. If that destination has no
-identifiable container, protection remains on, including against later sheets.
-When an identified destination is proven gone, later unsolicited sheets can be
-dismissed. Recovery's decline presses and login presses never arm it.
+identifiable container, protection remains on, including against later sheets,
+until it lapses. When an identified destination is proven gone, later unsolicited
+sheets can be dismissed. Recovery's decline presses and login presses never arm it.
 While protected, recovery dismisses no app screen: neither an opt-in shape,
 a screen absent at press readback, nor a newly identified modal proves independence
-from the planned tap. A push opt-in arriving after a planned tap must be answered
-explicitly by the plan. Opt-ins and intro sheets at launch, after login replay,
-or after an identified destination departs remain eligible for bounded recovery.
+from the planned tap. A push opt-in arriving right after a planned tap, before a
+later item passes, must be answered explicitly by the plan. Opt-ins and intro sheets
+at launch, after login replay, after an identified destination departs, or after
+protection lapses remain eligible for bounded recovery.
 Outside protection, a permission opt-in shape labels an otherwise permitted
 one-decline dismissal as `screenClass: permission-opt-in`; it grants no extra dismissal.
 The shape has exactly two proven controls and no input: a soft decline and a visible,
@@ -3496,7 +3504,9 @@ including the recheck before dispatch, and an ambiguous decline set does not
 refuse. If login replay has not cleared the veto, a failing target-class step reports
 subreason `previous-plan-press`, and `failure.seen` includes
 `the previous planned press succeeded; the next target
-was not found; automatic app dismissal was withheld`, and the walk's
+was not found; automatic app dismissal was withheld` (or, when later items passed
+while a decline control stayed on screen, `the planned press at line N succeeded and
+later steps passed while a decline control stayed on screen; ...`), and the walk's
 `next_action` is `inspect_last_observed_screen`, also on a repeat, with a
 `failure.recovery` of reason `previous_plan_press` whose five rungs are all
 inapplicable. A failed check after such a veto
@@ -3531,7 +3541,12 @@ including when its read-back refuses incomplete capture.
 `interruption-rejected` reports a front, coverage, indexed target,
 previous-plan-press or no-candidate veto, a later-target veto's `presence` or
 `ownership` provenance, whether the decline is the screen's only control
-(`soleDecline`) and the exact-decline-label element count; the same veto kind, step line,
+(`soleDecline`), the exact-decline-label element count, and `controls`: the press and
+fill evidence behind the control count used by the sole-decline and opt-in classes
+(`evidenceGap`, `pressGaps`, `fillGaps`, `unknownPress`, `unknownFill`, and the
+proven `controls` count when no gap refused it). A control in a window behind the
+front one that repeats a visible front control's kind, label and frame is not counted
+again. The same veto kind, step line,
 target index and count are also retained as an `interruption-rejected` event in
 `core-diagnostics.jsonl`, which the event opens even in a run without inputs. The
 step's ledger row carries an `interruption` receipt: `considered`, an `outcome`

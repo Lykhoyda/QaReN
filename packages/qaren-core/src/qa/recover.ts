@@ -1,5 +1,12 @@
 import type { Item, Target } from './plan.js';
-import { ancestorsOf, hostAssociationIdentity, type Element, type Screen } from './screen.js';
+import {
+  ancestorsOf,
+  elementFrame,
+  hostAssociationIdentity,
+  isWindow,
+  type Element,
+  type Screen,
+} from './screen.js';
 import { hostPath, MODAL_HOST_TYPES, type HostAssociationDiagnostic } from './host-association.js';
 import { targetOnScreen } from './resolve.js';
 import type { Reason } from './untrusted.js';
@@ -134,6 +141,8 @@ export interface InterruptionDiagnostic {
   provenance?: 'presence' | 'ownership';
   soleDecline: boolean;
   exactDeclineCount: number;
+  // Why the control count was or was not proven, for the sole-decline and opt-in classes.
+  controls: ControlEvidence;
   elements: Array<{
     index: number;
     failed:
@@ -172,6 +181,7 @@ export function dismissCandidate(
         exactDeclineCount: screen.elements.filter(
           (e) => e.label !== undefined && DECLINE_LABELS.has(e.label),
         ).length,
+        controls: controlEvidence(screen).evidence,
         elements,
       });
     } catch {
@@ -274,29 +284,79 @@ export function dismissCandidate(
 
 const CONTROL_KINDS = new Set<Element['kind']>(['button', 'input', 'switch', 'link', 'cell']);
 
-// On-screen controls in any state; undefined when press or fill evidence cannot prove the count.
-function provenControls(screen: Screen): Element[] | undefined {
-  if (
-    screen.pressEvidenceGap !== undefined ||
-    (screen.pressGapCount ?? 0) > 0 ||
-    (screen.fillGapCount ?? 0) > 0 ||
-    screen.elements.some(
-      (e) =>
-        !e.offscreen &&
-        !e.semantic?.nativePresence?.structural &&
-        (e.semantic?.press === 'unknown' || e.semantic?.fill === 'unknown'),
-    )
-  )
-    return undefined;
-  return screen.elements.filter(
-    (e) =>
-      !e.offscreen &&
-      !e.semantic?.nativePresence?.structural &&
-      (CONTROL_KINDS.has(e.kind) ||
-        e.semantic?.press === 'supported' ||
-        e.semantic?.fill === 'supported'),
-  );
+// Value-free facts behind the control count, so a refused classification names its cause.
+export interface ControlEvidence {
+  evidenceGap: boolean;
+  pressGaps: number;
+  fillGaps: number;
+  unknownPress: number;
+  unknownFill: number;
+  // Present only when the count is proven.
+  controls?: number;
 }
+
+const windowOf = (e: Element): Element | undefined => ancestorsOf(e).find(isWindow);
+const disabledState = (e: Element): boolean => Boolean(e.disabled) || e.semantic?.disabled === true;
+
+// A window behind the front one can repeat the front window's controls in the same place.
+const backCopy = (e: Element, controls: readonly Element[]): boolean => {
+  if (e.semantic?.visibility === 'visible' || e.label === undefined) return false;
+  const frame = elementFrame(e);
+  return controls.some((twin) => {
+    const twinFrame = elementFrame(twin);
+    return (
+      twin !== e &&
+      twin.semantic?.visibility === 'visible' &&
+      twin.kind === e.kind &&
+      twin.label === e.label &&
+      // A different test ID or enabled state is a different control, never a copy.
+      (e.testID === undefined || e.testID === twin.testID) &&
+      disabledState(e) === disabledState(twin) &&
+      windowOf(twin) !== windowOf(e) &&
+      frame !== undefined &&
+      twinFrame !== undefined &&
+      frame.x === twinFrame.x &&
+      frame.y === twinFrame.y &&
+      frame.width === twinFrame.width &&
+      frame.height === twinFrame.height
+    );
+  });
+};
+
+export function controlEvidence(screen: Screen): {
+  controls?: Element[];
+  evidence: ControlEvidence;
+} {
+  const live = screen.elements.filter(
+    (e) => !e.offscreen && !e.semantic?.nativePresence?.structural,
+  );
+  const evidence: ControlEvidence = {
+    evidenceGap: screen.pressEvidenceGap !== undefined,
+    pressGaps: screen.pressGapCount ?? 0,
+    fillGaps: screen.fillGapCount ?? 0,
+    unknownPress: live.filter((e) => e.semantic?.press === 'unknown').length,
+    unknownFill: live.filter((e) => e.semantic?.fill === 'unknown').length,
+  };
+  if (
+    evidence.evidenceGap ||
+    evidence.pressGaps > 0 ||
+    evidence.fillGaps > 0 ||
+    evidence.unknownPress > 0 ||
+    evidence.unknownFill > 0
+  )
+    return { evidence };
+  const all = live.filter(
+    (e) =>
+      CONTROL_KINDS.has(e.kind) ||
+      e.semantic?.press === 'supported' ||
+      e.semantic?.fill === 'supported',
+  );
+  const controls = all.filter((e) => !backCopy(e, all));
+  return { controls, evidence: { ...evidence, controls: controls.length } };
+}
+
+// On-screen controls in any state; undefined when press or fill evidence cannot prove the count.
+const provenControls = (screen: Screen): Element[] | undefined => controlEvidence(screen).controls;
 
 // Exactly one on-screen control, in any state, and it carries a decline label.
 export function soleDecline(screen: Screen): boolean {
@@ -361,6 +421,19 @@ export function plannedSurface(after: Screen, before?: Screen): PlannedSurface {
   if (previous && containers?.length === 1 && containers[0] && !previous.includes(containers[0]))
     return { container: containers[0] };
   return {};
+}
+
+// Planned-press protection lapses once a later planned item passes on a complete capture with no
+// decline control on screen; until then it holds. A later step targeting the interruption still
+// keeps it through the later-target veto, which dismissCandidate applies before this protection.
+export function protectionLapses(passed: Screen): boolean {
+  return (
+    passed.front === 'app' &&
+    completeCapture(passed) &&
+    !passed.elements.some(
+      (e) => !e.offscreen && e.label !== undefined && DECLINE_LABELS.has(e.label),
+    )
+  );
 }
 
 export function surfaceGone(screen: Screen, surface: PlannedSurface): boolean {

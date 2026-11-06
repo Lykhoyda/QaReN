@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { runPlan } from '../../../dist/qa/walker.js';
-import type { Screen } from '../../../dist/qa/screen.js';
+import { join, type NativeNode, type Screen } from '../../../dist/qa/screen.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
 import { element, screen } from './judgment-fixtures.ts';
 
@@ -301,6 +301,137 @@ test('an opt-in a later unquoted step could target stays the planned press’s o
   assert.equal(result.verdict, 'FAIL');
   assert.deepEqual(f.actions, ['press @open']);
   assert.equal(result.failure?.subreason, 'previous-plan-press');
+  assert.equal(result.failure?.suggestion, 'Add a step after line 1: Tap "Skip".');
+});
+
+test('an unprompted sheet after later items passed on a decline-free screen is dismissed once', async () => {
+  const optIn = () =>
+    screen([
+      element('@title', 'Get reminders?', { kind: 'text' }),
+      element('@notnow', 'Not now'),
+      element('@turnon', 'Turn on notifications'),
+    ]);
+  const home = (...extra: ReturnType<typeof element>[]) =>
+    screen([
+      element('@ready', 'Home ready', { kind: 'text' }),
+      element('@count', 'Reminder declines: 1', { kind: 'text' }),
+      ...extra,
+    ]);
+  const sheet = () =>
+    screen([
+      element('@new', 'New: shared lists', { kind: 'text' }),
+      element('@try', 'Try shared lists'),
+      element('@later', 'Maybe later'),
+    ]);
+  const f = app(optIn(), {
+    '@notnow': () => home(),
+    '@later': () => home(element('@lists', 'Lists ready', { kind: 'text' })),
+  });
+  f.deps.row = (row) => {
+    if (row.line === 3 && row.outcome === 'pass') f.show(sheet());
+  };
+  const result = await run(
+    '1. Tap "Not now"\n2. Wait for "Home ready" to appear\n✓ "Reminder declines: 1"\n4. Wait for "Lists ready" to appear',
+    f,
+  );
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['press @notnow', 'press @later']);
+  assert.equal(result.recoveries, 1);
+  assert.ok(!f.vetoes.includes('previous-plan-press'));
+  const retry = result.steps.find((row) => row.line === 4 && row.outcome === 'retry');
+  assert.match(
+    retry?.reason ?? '',
+    /recovered: dismissed an app screen with Maybe later; retrying the step once/,
+  );
+  assert.equal(retry?.interruption?.outcome, 'dismissed');
+});
+
+test('after a decline-free pass, a delayed opt-in a later step targets is still not dismissed', async () => {
+  const loading = () => screen([element('@loading', 'Loading', { kind: 'text' })]);
+  // A joined native capture, so text targets resolve as they do on a device.
+  const optIn = () => {
+    const rect = { x: 0, y: 0, width: 400, height: 800 };
+    const nodes: NativeNode[] = [
+      { ref: '@app', type: 'Application', rect },
+      { ref: '@window', type: 'Window', parentIndex: 0, rect },
+      {
+        ref: '@title',
+        type: 'StaticText',
+        parentIndex: 1,
+        label: 'Get reminders?',
+        rect: { x: 20, y: 200, width: 360, height: 40 },
+      },
+      {
+        ref: '@skip',
+        type: 'Button',
+        parentIndex: 1,
+        label: 'Skip',
+        hittable: true,
+        rect: { x: 20, y: 600, width: 160, height: 44 },
+      },
+      {
+        ref: '@allow',
+        type: 'Button',
+        parentIndex: 1,
+        label: 'Allow',
+        hittable: true,
+        rect: { x: 200, y: 600, width: 180, height: 44 },
+      },
+    ];
+    return join(
+      nodes,
+      [],
+      'app',
+      { native: 'complete', react: 'complete' },
+      { complete: true, hosts: [] },
+      {
+        source: 'xcui-live',
+        nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+      },
+    );
+  };
+  const f = app(opener(), { '@open': loading });
+  f.deps.row = (row) => {
+    if (row.line === 2 && row.outcome === 'pass') f.show(optIn());
+  };
+  const result = await run(
+    '1. Tap "Open"\n2. Wait for "Loading" to appear\n3. Wait for "Ready" to appear\n4. Tap "Allow"',
+    f,
+  );
+  assert.equal(result.verdict, 'FAIL');
+  assert.equal(result.failure?.step, 3);
+  assert.deepEqual(f.actions, ['press @open']);
+  assert.equal(result.recoveries, 0);
+  assert.ok(f.vetoes.includes('later-target'));
+  assert.ok(!f.vetoes.includes('previous-plan-press'));
+});
+
+test('a later item passing with a decline still on screen keeps protection and names the press line', async () => {
+  const destination = () =>
+    screen([
+      element('@title', 'Details', { kind: 'text' }),
+      close('Skip'),
+      element('@go', 'Allow'),
+    ]);
+  const f = app(opener(), { '@open': destination, '@close': ready });
+  const result = await run(
+    '1. Tap "Open"\n2. Wait for "Details" to appear\n3. Wait for "Ready" to appear',
+    f,
+  );
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, ['press @open']);
+  assert.equal(result.failure?.step, 3);
+  assert.equal(result.failure?.subreason, 'previous-plan-press');
+  assert.match(
+    result.failure?.seen ?? '',
+    /the planned press at line 1 succeeded and later steps passed while a decline control stayed on screen; the next target was not found; automatic app dismissal was withheld/,
+  );
+  assert.doesNotMatch(result.failure?.seen ?? '', /the previous planned press succeeded/);
+  // F3: the opt-in shape is named and the exact plan edit is suggested.
+  assert.match(
+    result.failure?.seen ?? '',
+    /a permission opt-in with a decline and an accept control is in front; the planned tap at line 1 may have opened it, so it was not dismissed/,
+  );
   assert.equal(result.failure?.suggestion, 'Add a step after line 1: Tap "Skip".');
 });
 
