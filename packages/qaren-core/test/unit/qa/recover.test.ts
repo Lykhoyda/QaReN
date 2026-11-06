@@ -1297,6 +1297,24 @@ test('the closed accept-all list keeps every decline outside protection too', ()
   }
 });
 
+test('a recognised opt-in is a separate surface for a missing tap target', () => {
+  const missing: RecoveryTarget = {
+    phrase: 'Settings',
+    quoted: 'Settings',
+    kind: 'press',
+    line: 7,
+  };
+  assert.deepEqual(dismissCandidate(optIn(), [missing], undefined, 'surface'), {
+    label: 'Skip',
+    screenClass: 'permission-opt-in',
+  });
+  // Two controls without the opt-in shape still prove no surface.
+  assert.equal(
+    dismissCandidate(optIn('Skip', 'View all offers'), [missing], undefined, 'surface'),
+    undefined,
+  );
+});
+
 test('non-permission shapes gain no receipt class', () => {
   for (const accept of [
     'Agree',
