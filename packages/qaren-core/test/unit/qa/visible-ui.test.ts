@@ -84,6 +84,62 @@ test('a partly exposed duplicate stays in contention', () => {
   assert.deepEqual(result.contenders, ['@e3', '@e4']);
 });
 
+for (const type of ['ScrollView', 'android.widget.ScrollView']) {
+  for (const axis of ['x', 'y'] as const) {
+    test(`${type} excludes a duplicate in an empty nested ${axis} viewport`, () => {
+      const frame = { x: 100, y: 100, width: 50, height: 50, [axis]: 280 };
+      const s = join(
+        [
+          { ref: '@e0', index: 0, type: 'Application', rect: SCREEN },
+          { ref: '@e1', index: 1, parentIndex: 0, type: 'Window', rect: SCREEN },
+          {
+            ref: '@e2',
+            index: 2,
+            parentIndex: 1,
+            type,
+            rect: { x: 100, y: 100, width: 100, height: 100 },
+          },
+          {
+            ref: '@e3',
+            index: 3,
+            parentIndex: 2,
+            type,
+            rect: { x: 100, y: 100, width: 100, height: 100, [axis]: 300 },
+          },
+          {
+            ref: '@e4',
+            index: 4,
+            parentIndex: 3,
+            type: 'Button',
+            label: 'Close',
+            hittable: true,
+            rect: frame,
+          },
+          {
+            ref: '@e5',
+            index: 5,
+            parentIndex: 1,
+            type: 'Button',
+            label: 'Close',
+            hittable: true,
+            rect: VISIBLE,
+          },
+        ],
+        [],
+        'app',
+        { native: 'complete', react: 'complete' },
+      );
+      assert.equal(reachOf(s.elements[4]), 'clipped-by-viewport');
+      const result = prepareTarget(tap, s);
+      assert.ok('ref' in result, JSON.stringify(result));
+      assert.equal(result.ref, '@e5');
+      assert.deepEqual(result.candidateExclusions, [
+        { ref: '@e4', kind: 'button', frame, reason: 'clipped-by-viewport' },
+      ]);
+    });
+  }
+}
+
 test('a duplicate under the keyboard is excluded only when its whole frame is covered', () => {
   const keyboard: NativeNode = {
     ref: '',

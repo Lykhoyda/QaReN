@@ -202,6 +202,8 @@ function frameReach(
   )
     return undefined;
   const overlaps = (r: NonNullable<NativeNode['rect']>) =>
+    r.width > 0 &&
+    r.height > 0 &&
     rect.x < r.x + r.width &&
     r.x < rect.x + rect.width &&
     rect.y < r.y + r.height &&
