@@ -94,14 +94,27 @@ class KeyboardGuardTest {
         assertTrue(error.backAttempted)
     }
 
-    private fun node(label: String, rect: QaHierarchy.Bounds, visible: Boolean, type: String = "android.widget.Button") =
+    private fun node(
+        label: String,
+        rect: QaHierarchy.Bounds,
+        visible: Boolean,
+        type: String = "android.widget.Button",
+        focused: Boolean = false,
+    ) =
         QaHierarchy.node(
             QaHierarchy.RawNode(
                 className = type, text = label, contentDescription = null, viewIdResourceName = null, packageName = "app",
                 bounds = rect, enabled = true, visibleToUser = visible, selected = false, checked = false,
-                password = false, heading = false, children = emptyList(),
+                password = false, heading = false, children = emptyList(), focused = focused,
             ),
         )!!
+
+    // AI-489: dismissing the keyboard can clear an input's focus without changing the screen.
+    @Test fun keyboardDismissalThatClearsFocusKeepsScreenContent() {
+        val typing = listOf(node("Code", QaHierarchy.Bounds(0, 900, 100, 1000), visible = true, focused = true))
+        val dismissed = listOf(node("Code", QaHierarchy.Bounds(0, 900, 100, 1000), visible = true))
+        assertEquals(KeyboardGuard.screenContent(typing), KeyboardGuard.screenContent(dismissed))
+    }
 
     @Test fun keyboardResizeKeepsScreenContent() {
         val covered = listOf(
