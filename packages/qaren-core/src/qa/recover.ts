@@ -1,14 +1,17 @@
 import type { Item, Target } from './plan.js';
 import {
   ancestorsOf,
+  behindPresentedModal,
   elementFrame,
   hostAssociationIdentity,
   isWindow,
+  modalCoverDiagnostic,
+  type ModalCoverDiagnostic,
   type Element,
   type Screen,
 } from './screen.js';
 import { hostPath, MODAL_HOST_TYPES, type HostAssociationDiagnostic } from './host-association.js';
-import { targetOnScreen } from './resolve.js';
+import { reactOnlyTarget, targetOnScreen } from './resolve.js';
 import type { Reason } from './untrusted.js';
 import type { ActResult } from './walker.js';
 
@@ -21,6 +24,8 @@ export interface RecoveryTarget extends Target {
   // The plan step this target comes from; a placeholder current target has neither.
   line?: number;
   kind?: Item['kind'];
+  // From a later block: it always vetoes by presence, even on a sole-decline screen.
+  laterBlock?: boolean;
   // The current target follows a passed planned press, so the screen in front is the plan's own.
   afterPlannedPress?: boolean;
 }
@@ -56,6 +61,7 @@ export async function recover(
   deps: RecoverDeps,
   marker?: LoginMarker,
   planTargets: readonly RecoveryTarget[] = [],
+  proof?: InterruptionProof,
 ): Promise<Recovery | undefined> {
   if (screen.front === 'dialog') {
     const acted = await deps.dialog();
@@ -72,7 +78,7 @@ export async function recover(
       : { fail: `the dev menu in front could not be hidden: ${hidden.error ?? 'not dispatched'}` };
   }
   if (screen.front === 'app' && deps.dismiss) {
-    const candidate = dismissCandidate(screen, planTargets, deps.interruptionDiagnostic);
+    const candidate = dismissCandidate(screen, planTargets, deps.interruptionDiagnostic, proof);
     if (candidate && 'refuse' in candidate) return candidate;
     if (candidate) {
       const dismissed = await deps.dismiss(candidate.label);
@@ -125,10 +131,16 @@ export function isDeclineLabel(label: string | undefined): label is string {
   return label !== undefined && DECLINE_LABELS.has(label);
 }
 
+// What a recovery must prove before it may dismiss: that its target sits behind the presented
+// modal, or, for a missing target, that a separate surface interrupts (a proven presented-modal
+// cover, or a decline that is the screen's only control) rather than a screen's own Cancel.
+export type InterruptionProof = 'covered-target' | 'surface';
+
 export const INTERRUPTION_VETOES = [
   'front',
   'coverage',
   'current-target',
+  'uncovered-target',
   'later-target',
   'previous-plan-press',
   'no-candidate',
@@ -155,12 +167,15 @@ export interface InterruptionDiagnostic {
       | 'target-ancestor';
     association?: HostAssociationDiagnostic['identity'];
   }>;
+  // Why the capture did or did not prove a presented modal over the target, with counts.
+  cover?: ModalCoverDiagnostic;
 }
 
 export function dismissCandidate(
   screen: Screen,
   planTargets: readonly RecoveryTarget[],
   diagnostic?: (record: InterruptionDiagnostic) => void,
+  proof?: InterruptionProof,
 ):
   | { label: string; screenClass?: InterruptionScreenClass }
   | { refuse: { code: string; message: string } }
@@ -173,6 +188,7 @@ export function dismissCandidate(
     provenance?: InterruptionDiagnostic['provenance'],
   ) => {
     try {
+      const cover = modalCoverDiagnostic(screen);
       diagnostic?.({
         veto,
         ...(targetIndex === undefined ? {} : { targetIndex }),
@@ -183,6 +199,7 @@ export function dismissCandidate(
         ).length,
         controls: controlEvidence(screen).evidence,
         elements,
+        ...(cover ? { cover } : {}),
       });
     } catch {
       /* Diagnostics cannot change recovery. */
@@ -192,7 +209,20 @@ export function dismissCandidate(
   if (screen.front !== 'app') return rejected('front');
   if (!completeCapture(screen)) return rejected('coverage');
   if (!planTargets.length) return rejected('current-target', 0);
-  const targetIndex = planTargets.findIndex((target) => targetOnScreen(screen, target));
+  if (proof === 'covered-target' && !targetBehindInterruption(screen, planTargets[0]))
+    return rejected('uncovered-target', 0);
+  const targetIndex = planTargets.findIndex(
+    (target, index) =>
+      // findIndex reaches a later target only once the current one is absent; with nothing but
+      // the decline to act on, a later same-block press or fill matching this screen is a coincidence.
+      !(
+        index > 0 &&
+        sole &&
+        !target.laterBlock &&
+        target.quoted !== undefined &&
+        (target.kind === 'press' || target.kind === 'fill')
+      ) && targetOnScreen(screen, target),
+  );
   if (targetIndex !== -1) {
     if (targetIndex === 0) return rejected('current-target', 0);
     const target = planTargets[targetIndex];
@@ -247,8 +277,22 @@ export function dismissCandidate(
         message: 'several decline controls are visible; nothing was tapped',
       },
     };
-  if (candidates.length === 1)
+  if (candidates.length === 1) {
+    const label = candidates[0].label!.toLowerCase();
+    // A later step naming the decline keeps it for that step, even when presence was exempt.
+    const plannedIndex = planTargets.findIndex(
+      (target, index) =>
+        index > 0 &&
+        (matchesTarget(candidates[0], target) ||
+          (target.exact !== 'id' && target.quoted?.toLowerCase() === label)),
+    );
+    if (plannedIndex !== -1) return rejected('later-target', plannedIndex, [], 'ownership');
+    // A missing target dismisses only a proven separate surface, never a screen's own Cancel:
+    // a presented modal, a decline that is the screen's only control, or a recognised opt-in.
+    if (proof === 'surface' && !sole && !screenClass && !modalCoverProven(screen))
+      return rejected('uncovered-target', 0);
     return { label: candidates[0].label!, ...(screenClass ? { screenClass } : {}) };
+  }
   return rejected(
     'no-candidate',
     undefined,
@@ -345,6 +389,19 @@ export function soleDecline(screen: Screen): boolean {
     controls[0].label !== undefined &&
     DECLINE_LABELS.has(controls[0].label)
   );
+}
+
+// The capture proves one presented modal covering everything native does not show.
+const modalCoverProven = (screen: Screen): boolean => {
+  const cover = modalCoverDiagnostic(screen);
+  return cover !== undefined && cover.refused === undefined;
+};
+
+// A covered step may seek recovery only when its target is proven behind the presented modal,
+// never when it is merely absent, so a screen's own Cancel is not pressed for a missing target.
+export function targetBehindInterruption(screen: Screen, target: Target): boolean {
+  const element = reactOnlyTarget(target, screen);
+  return element !== undefined && behindPresentedModal(screen, element);
 }
 
 // Exactly two proven controls and no input: a soft decline, returned, and a permission accept.

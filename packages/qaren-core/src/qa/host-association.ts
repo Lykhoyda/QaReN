@@ -74,6 +74,59 @@ export function hostPath(snapshot: HostTypography, start: number): number[] | un
   return path;
 }
 
+export interface ModalCoverFacts {
+  // Absent when the cover is proven.
+  refused?: 'evidence-incomplete' | 'no-association' | 'modal-count' | 'associated-outside';
+  modalCount: number;
+  associatedCount: number;
+  associatedOutside: number;
+  // Host types naming a modal, recognized or not; React component names, never app text.
+  modalTypes: string[];
+}
+
+// Hosts outside the one presented modal, proven only while every associated host sits inside it.
+export function modalCover(
+  evidence: ReactHostEvidence | undefined,
+  associated: ReadonlySet<number>,
+): { hosts: ReadonlySet<number>; facts: ModalCoverFacts } {
+  const snapshot = evidence?.typography;
+  const facts: ModalCoverFacts = {
+    modalCount: 0,
+    associatedCount: associated.size,
+    associatedOutside: 0,
+    modalTypes: [
+      ...new Set(
+        (snapshot?.nodes ?? []).flatMap((host) =>
+          host.hostType && /modal/i.test(host.hostType) ? [host.hostType.slice(0, 64)] : [],
+        ),
+      ),
+    ].slice(0, 4),
+  };
+  const refuse = (refused: NonNullable<ModalCoverFacts['refused']>) => ({
+    hosts: new Set<number>(),
+    facts: { ...facts, refused },
+  });
+  if (!evidence?.complete || !snapshot?.complete) return refuse('evidence-incomplete');
+  const modals = snapshot.nodes.filter(
+    (host) =>
+      MODAL_HOST_TYPES.has(host.hostType ?? '') &&
+      snapshot.nodes.some((child) => child.parentHostIndex === host.hostIndex),
+  );
+  facts.modalCount = modals.length;
+  if (modals.length !== 1) return refuse('modal-count');
+  if (!associated.size) return refuse('no-association');
+  const modal = modals[0].hostIndex;
+  const paths = snapshot.nodes.map((_, index) => hostPath(snapshot, index));
+  facts.associatedOutside = [...associated].filter(
+    (index) => !paths[index]?.includes(modal),
+  ).length;
+  if (facts.associatedOutside) return refuse('associated-outside');
+  return {
+    hosts: new Set(paths.flatMap((path, index) => (path && !path.includes(modal) ? [index] : []))),
+    facts,
+  };
+}
+
 function nativePath(nodes: NativeNode[], start: number): number[] {
   const path: number[] = [];
   let current: number | undefined = start;
@@ -584,7 +637,13 @@ export function associateHosts(
     );
   };
   const anchoredPath = (i: number): boolean => {
-    const named = paths[i].filter((p) => !inline(p) && !!evidence.hosts[p].testID);
+    // A presented modal is its own native surface: React ancestors above it are not native ancestors.
+    const modalAt = paths[i].findIndex(
+      (p) => p !== i && MODAL_HOST_TYPES.has(snapshot.nodes[p].hostType ?? ''),
+    );
+    const named = (modalAt === -1 ? paths[i] : paths[i].slice(0, modalAt)).filter(
+      (p) => !inline(p) && !!evidence.hosts[p].testID,
+    );
     let reason: HostAssociationDiagnostic['ancestorPath'] = 'valid';
     const valid = named.every((p, n) => {
       const nativeIndex = (p === i ? anchors : structural).get(p);
