@@ -4152,6 +4152,28 @@ withholds the copy. The receipt's `video_window` outcome records `start=<ms>; en
 both measured from admission, for a successfully prepared copy when both offsets
 can be calculated without overflow or underflow.
 
+After preparing an eligible published iOS copy, QaReN checks for frozen video intervals
+of at least two seconds. If an interval contains two or more eligible plan rows whose saved
+screenshots differ beyond the same pixel-noise tolerance as the video, the receipt adds
+`video_continuity: suspected-stall <ms> over lines a–b` and the publication comment
+notes that those screenshots carry the evidence. Frozen times are mapped through
+the publication trim offset to the rows' wall times, excluding the recorder-start
+uncertainty at interval edges. Screenshot pixels are compared at the published
+video's size and pixel format; only passing or failing rows from the plan's recorded
+blocks are compared. Each row must have timing that bounds screenshot acquisition
+entirely inside the interval, from row completion minus total row duration through
+row completion. Rows without that proof and recovery retry rows with reused
+screenshots are omitted.
+This is a suspected recorder discontinuity, not proof of its cause; the video is
+kept and publication and privacy rules still apply. Withheld rows are skipped;
+an interval touching a withheld row's time span or containing its line number is
+not evaluated. A failed or gated detector produces no note. The receipt-only
+`video_continuity: examined` marker records successful detector completion without
+proving continuity, including when every interval was skipped; absence of a note
+does not prove continuity. The detector reads only the prepared publication copy
+and kept screenshots, writes no media and uploads nothing new. Strict run-wide
+screenshot withholding can leave no kept plan screenshots to compare after login.
+
 A successful saved login replay before any plan step passes moves the uploaded
 copy's start to the end of that replay if later than the first step's start.
 Its fills alone do not withhold the video.

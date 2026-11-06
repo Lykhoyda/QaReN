@@ -9136,9 +9136,12 @@ fn a_cancel_during_the_git_probes_claims_nothing_and_runs_nothing_after_it() {
 }
 
 // Writes the recorder's raw capture and each encode's output, as the real tools would.
-struct Encoding(PrRunner, Option<u64>, u64);
+struct Encoding(PrRunner, Option<u64>, u64, bool);
 
 impl Runner for Encoding {
+    fn adb_server_version(&self, port: u16) -> Result<u32, String> {
+        self.0.adb_server_version(port)
+    }
     fn env_var(&self, name: &str) -> Option<String> {
         self.0.env_var(name)
     }
@@ -9152,7 +9155,20 @@ impl Runner for Encoding {
     }
     fn execute(&mut self, spec: &CmdSpec, interruptible: bool) -> CmdOutput {
         if spec.label == "ffmpeg-encode" {
-            std::fs::write(spec.args.last().unwrap(), vec![0u8; 64]).unwrap();
+            let output = Path::new(spec.args.last().unwrap());
+            std::fs::write(output, vec![0u8; 64]).unwrap();
+            if self.3 {
+                let shots = output
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join("screenshots");
+                std::fs::create_dir_all(&shots).unwrap();
+                for name in ["a", "b"] {
+                    std::fs::write(shots.join(format!("{name}.png")), "fixture").unwrap();
+                }
+            }
         }
         self.0.execute(spec, interruptible)
     }
@@ -9161,6 +9177,13 @@ impl Runner for Encoding {
             self.1 = Some(self.now_epoch_ms());
             let raw = PathBuf::from(spec.args.last().unwrap());
             std::fs::write(&raw, vec![0u8; 4096]).unwrap();
+            if self.3 {
+                let shots = raw.parent().unwrap().parent().unwrap().join("screenshots");
+                std::fs::create_dir_all(&shots).unwrap();
+                for name in ["a", "b"] {
+                    std::fs::write(shots.join(format!("{name}.png")), "fixture").unwrap();
+                }
+            }
             let other = raw
                 .ancestors()
                 .nth(3)
@@ -9192,18 +9215,35 @@ impl Runner for Encoding {
 // R8: only this run's own raw capture is reclaimed, and only once a playable encode replaces it.
 #[test]
 fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
-    for (encodes, first_start, login_offset, expected_offset, recorder_delay) in [
-        (true, None, None, 2_850, 559),
-        (false, None, None, 2_850, 559),
-        (true, Some(0), None, 2_850, 559),
-        (true, Some(12_000), None, 12_000, 559),
-        (true, Some(12_000), Some(20_000), 22_850, 559),
-        (true, Some(12_000), Some(5_000), 12_000, 559),
-        (true, None, Some(20_000), 22_850, 559),
-        (true, Some(33_000), None, 33_000, 559),
-        (true, Some(10_000), None, 10_000, 8_000),
+    for (encodes, first_start, login_offset, expected_offset, recorder_delay, diagnostic) in [
+        (true, None, None, 2_850, 559, "off"),
+        (true, None, None, 2_850, 559, "stall"),
+        (false, None, None, 2_850, 559, "off"),
+        (true, Some(0), None, 2_850, 559, "off"),
+        (true, Some(12_000), None, 12_000, 559, "off"),
+        (true, Some(12_000), Some(20_000), 22_850, 559, "off"),
+        (true, Some(12_000), Some(5_000), 12_000, 559, "off"),
+        (true, None, Some(20_000), 22_850, 559, "off"),
+        (true, Some(33_000), None, 33_000, 559, "off"),
+        (true, Some(10_000), None, 10_000, 8_000, "off"),
+        (true, None, None, 2_850, 559, "no-freeze"),
+        (true, None, None, 2_850, 559, "identical"),
+        (true, None, None, 2_850, 559, "withheld"),
+        (true, None, None, 2_850, 559, "duration-failed"),
+        (true, None, None, 2_850, 559, "dimensions-failed"),
+        (true, None, None, 2_850, 559, "pixels-failed"),
+        (true, None, None, 2_850, 559, "malformed"),
+        (true, None, None, 2_850, 559, "missing"),
+        (true, None, None, 2_850, 559, "late-failed"),
     ] {
+        let stall = diagnostic != "off";
+
         let (repo, app) = app_repo();
+        if stall && diagnostic != "withheld" {
+            let config = app.join(".qaren/config.yaml");
+            let contents = std::fs::read_to_string(&config).unwrap();
+            std::fs::write(config, format!("{contents}video: non-strict\n")).unwrap();
+        }
         let wt = repo.join("runs").join(run_id()).join("wt");
         let mut runner = Encoding(
             PrRunner {
@@ -9217,6 +9257,7 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
             },
             None,
             recorder_delay,
+            stall,
         );
         let mock = &mut runner.0.inner;
         let admitted = mock.now_epoch_ms() + 4_100;
@@ -9237,6 +9278,51 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
+        if stall {
+            let mut extra = messages[1].clone();
+            extra["payload"]["line"] = 7.into();
+            extra["payload"]["t"] = 10_000.into();
+            extra["payload"]["timing"] = serde_json::json!({
+                "captureMs":0,"nativeMs":0,"reactMs":0,"resolveMs":0,"jevMs":0,
+                "actMs":0,"postCaptureMs":0,"otherMs":1000,"total":1000
+            });
+            extra["payload"]["screenshot"] = "screenshots/a.png".into();
+            let first = extra["payload"].clone();
+            messages.insert(2, extra.clone());
+            messages[2]["payload"]["line"] = 8.into();
+            messages[2]["payload"]["t"] = 20_000.into();
+            messages[2]["payload"]["screenshot"] = "screenshots/b.png".into();
+            let second = messages[2]["payload"].clone();
+            messages[1]["payload"] = first.clone();
+            let result = messages.last_mut().unwrap();
+            result["payload"]["videoPublication"] = "eligible".into();
+            let rows = result["payload"]["steps"].as_array_mut().unwrap();
+            rows[0] = first;
+            rows.insert(1, second);
+            let mut withheld = rows[0].clone();
+            withheld["block"] = "login".into();
+            withheld["line"] = 3.into();
+            withheld["t"] = if diagnostic == "withheld" { 15_000 } else { 0 }.into();
+            withheld["screenshotWithheld"] = "runtime-input".into();
+            withheld.as_object_mut().unwrap().remove("screenshot");
+            rows.push(withheld);
+            if diagnostic == "missing" {
+                rows[1]["screenshot"] = "missing.png".into();
+            }
+            if diagnostic == "late-failed" {
+                rows[1]["t"] = 12_000.into();
+                for (index, t) in [(0, 22_000), (1, 24_000)] {
+                    let mut later = rows[index].clone();
+                    later["line"] = (9 + index).into();
+                    later["t"] = t.into();
+                    rows.push(later);
+                }
+            }
+            if diagnostic != "withheld" {
+                result["payload"]["videoPolicy"] = "non-strict".into();
+                result["payload"]["nonStrictPublication"] = "eligible".into();
+            }
+        }
         if let Some(login) = login {
             messages.last_mut().unwrap()["payload"]["publishFromMs"] = login.into();
         }
@@ -9275,6 +9361,55 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
             mock.expect_run("ffprobe", CmdOutput::success("3.5\n"));
             mock.expect_run("ffmpeg", CmdOutput::success(""));
             mock.expect_run("ffprobe", CmdOutput::success("0.1\n"));
+            if stall {
+                mock.expect_run(
+                    "ffprobe",
+                    if diagnostic == "duration-failed" {
+                        CmdOutput::failed(1, "duration failed")
+                    } else {
+                        CmdOutput::success("30.676")
+                    },
+                );
+                if diagnostic != "duration-failed" {
+                    let log = match diagnostic {
+                        "no-freeze" => "",
+                        "malformed" => "lavfi.freezedetect.freeze_start: NaN\n",
+                        "late-failed" => "lavfi.freezedetect.freeze_start: 0\nlavfi.freezedetect.freeze_end: 15\nlavfi.freezedetect.freeze_start: 16\n",
+                        _ => "lavfi.freezedetect.freeze_start: 0\n",
+                    };
+                    mock.expect_run(
+                        "freezedetect",
+                        CmdOutput {
+                            stderr: log.into(),
+                            ..CmdOutput::success("")
+                        },
+                    );
+                    if !matches!(diagnostic, "no-freeze" | "malformed" | "withheld") {
+                        mock.expect_run(
+                            "ffprobe",
+                            if diagnostic == "dimensions-failed" {
+                                CmdOutput::failed(1, "dimensions failed")
+                            } else {
+                                CmdOutput::success("16x16")
+                            },
+                        );
+                        if !matches!(diagnostic, "dimensions-failed" | "missing") {
+                            mock.expect_run("filter_complex", if diagnostic == "pixels-failed" {
+                                CmdOutput::failed(1, "pixels failed")
+                            } else { CmdOutput {
+                                stderr: if diagnostic == "identical" { "lavfi.freezedetect.freeze_start: 0\n" } else { "lavfi.freezedetect.freeze_start: 0\nlavfi.freezedetect.freeze_end: 1\n" }.into(),
+                                ..CmdOutput::success("frame=2\nprogress=end\n")
+                            }});
+                            if diagnostic == "late-failed" {
+                                mock.expect_run(
+                                    "filter_complex",
+                                    CmdOutput::failed(1, "later pixels failed"),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         } else {
             mock.expect_run("ffmpeg", CmdOutput::failed(1, "encode failed"));
         }
@@ -9288,6 +9423,50 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
 
         assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
         assert_eq!(runner.0.inner.remaining(), 0);
+        let pr: qaren::publish::PrRunRecord = serde_json::from_slice(
+            &std::fs::read(repo.join("runs").join(run_id()).join("pr.json")).unwrap(),
+        )
+        .unwrap();
+        if stall {
+            let ledger: qaren::core::Ledger = serde_json::from_slice(
+                &std::fs::read(repo.join("runs").join(run_id()).join("ledger.json")).unwrap(),
+            )
+            .unwrap();
+            let login = ledger
+                .steps
+                .iter()
+                .find(|row| row.block == "login")
+                .unwrap();
+            assert_eq!(
+                login.screenshot_withheld,
+                Some(qaren::core::WithholdCause::RuntimeInput)
+            );
+            assert!(login.screenshot.is_none());
+            assert!(ledger.media_withheld.is_none());
+            if diagnostic != "withheld" {
+                assert_eq!(ledger.video_policy, qaren::record::VideoPolicy::NonStrict);
+            }
+        }
+        if diagnostic == "stall" {
+            assert_eq!(
+                receipt.outcomes["video_continuity"],
+                "suspected-stall 30676 over lines 7–8"
+            );
+            assert_eq!(
+                pr.video_continuity,
+                vec![qaren::record::VideoStall {
+                    duration_ms: 30_676,
+                    first_line: 7,
+                    last_line: 8,
+                }]
+            );
+        } else if matches!(diagnostic, "no-freeze" | "identical" | "withheld") {
+            assert_eq!(receipt.outcomes["video_continuity"], "examined");
+            assert!(pr.video_continuity.is_empty());
+        } else {
+            assert!(!receipt.outcomes.contains_key("video_continuity"));
+            assert!(pr.video_continuity.is_empty());
+        }
         let media = repo.join("runs").join(run_id()).join("media");
         assert_eq!(
             !media.join("raw.mov").exists(),
@@ -10181,29 +10360,39 @@ fn script_android_pr_ready(mock: &mut MockRunner) {
 
 #[test]
 fn android_pr_on_api_37_starts_the_recorder() {
-    android_pr_video_flow(37);
+    android_pr_video_flow(37, false);
 }
 
 #[test]
 fn android_pr_on_api_33_keeps_the_walk_with_an_explicit_video_unavailable_reason() {
-    android_pr_video_flow(33);
+    android_pr_video_flow(33, false);
 }
 
-fn android_pr_video_flow(api: u16) {
+#[test]
+fn an_eligible_android_publication_does_not_run_the_ios_continuity_detector() {
+    android_pr_video_flow(37, true);
+}
+
+fn android_pr_video_flow(api: u16, encodes: bool) {
     let (repo, app) = app_repo();
     let mut req = android_request(&repo, &app);
     req.pr = pr_request(&repo, &app).pr;
     let wt = req.runs_root.join(run_id()).join("wt");
-    let mut runner = PrRunner {
-        inner: android_mock(),
-        app: app.clone(),
-        recorder_persisted_before_spawn: None,
-        fail_core_spawn: false,
-        planted_worktree_config: None,
-        worktree_config_planted: false,
-        fail_host_checkpoint: false,
-    };
-    let mock = &mut runner.inner;
+    let mut runner = Encoding(
+        PrRunner {
+            inner: android_mock(),
+            app: app.clone(),
+            recorder_persisted_before_spawn: None,
+            fail_core_spawn: false,
+            planted_worktree_config: None,
+            worktree_config_planted: false,
+            fail_host_checkpoint: false,
+        },
+        None,
+        0,
+        encodes,
+    );
+    let mock = &mut runner.0.inner;
     script_android_pr_preflight(mock, &repo, &wt, api);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
     mock.expect_run("ls-files", CmdOutput::success(""));
@@ -10224,7 +10413,29 @@ fn android_pr_video_flow(api: u16) {
         mock.expect_run("ps", CmdOutput::success("adb shell screenrecord"));
         mock.expect_run("shell pgrep -f", CmdOutput::success("42\n"));
     }
-    mock.expect_spawn_piped("walk.js", 9000, &pr_pass_stdout(), Some(0));
+    let stdout = if encodes {
+        pr_pass_stdout()
+            .lines()
+            .map(|line| {
+                let mut message: serde_json::Value = serde_json::from_str(line).unwrap();
+                if message["type"] == "result" {
+                    let ledger = &mut message["payload"];
+                    ledger["admittedAtMs"] = 1.into();
+                    ledger["videoPublication"] = "eligible".into();
+                    let rows = ledger["steps"].as_array_mut().unwrap();
+                    rows[0]["screenshot"] = "screenshots/a.png".into();
+                    let mut second = rows[0].clone();
+                    second["line"] = 8.into();
+                    second["screenshot"] = "screenshots/b.png".into();
+                    rows.push(second);
+                }
+                format!("{message}\n")
+            })
+            .collect::<String>()
+    } else {
+        pr_pass_stdout()
+    };
+    mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
     script_core_identity(mock);
     script_drift_status(mock);
     script_pr_provenance_recheck(mock);
@@ -10245,7 +10456,15 @@ fn android_pr_video_flow(api: u16) {
     mock.expect_run("du -sk", CmdOutput::success("4\n"));
     mock.expect_run("worktree remove --force", CmdOutput::success(""));
     if api >= 34 {
-        mock.expect_run("which ffmpeg", CmdOutput::failed(1, ""));
+        if encodes {
+            mock.expect_run("which ffmpeg", CmdOutput::success("/opt/ffmpeg\n"));
+            mock.expect_run("ffmpeg", CmdOutput::success(""));
+            mock.expect_run("ffprobe", CmdOutput::success("1.0\n"));
+            mock.expect_run("ffmpeg", CmdOutput::success(""));
+            mock.expect_run("ffprobe", CmdOutput::success("0.1\n"));
+        } else {
+            mock.expect_run("which ffmpeg", CmdOutput::failed(1, ""));
+        }
     }
     mock.expect_run(
         "gh pr view https://github.com/o/r/pull/12",
@@ -10255,9 +10474,9 @@ fn android_pr_video_flow(api: u16) {
     let receipt = run(&mut runner, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     if api >= 34 {
-        assert_eq!(runner.recorder_persisted_before_spawn, Some(true));
+        assert_eq!(runner.0.recorder_persisted_before_spawn, Some(true));
         assert_subsequence(
-            &labels(&runner.inner),
+            &labels(&runner.0.inner),
             &[
                 "adb-screenrecord",
                 "core-walk",
@@ -10269,11 +10488,11 @@ fn android_pr_video_flow(api: u16) {
         );
         assert_eq!(receipt.cleanup["recorder"], "removed");
     } else {
-        assert_eq!(runner.recorder_persisted_before_spawn, None);
-        assert!(labels(&runner.inner)
+        assert_eq!(runner.0.recorder_persisted_before_spawn, None);
+        assert!(labels(&runner.0.inner)
             .iter()
             .any(|label| label == "core-walk"));
-        assert!(!labels(&runner.inner)
+        assert!(!labels(&runner.0.inner)
             .iter()
             .any(|label| label == "adb-screenrecord"));
         assert_eq!(
@@ -10282,8 +10501,28 @@ fn android_pr_video_flow(api: u16) {
         );
     }
     assert_eq!(receipt.cleanup["device_lease"], "removed");
-    assert_eq!(runner.inner.remaining(), 0);
-    no_ios_or_expo_android_build(&runner.inner);
+    assert_eq!(runner.0.inner.remaining(), 0);
+    no_ios_or_expo_android_build(&runner.0.inner);
+    if encodes {
+        let pr: qaren::publish::PrRunRecord = serde_json::from_slice(
+            &std::fs::read(req.runs_root.join(run_id()).join("pr.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(pr.video, qaren::record::VideoStatus::Available);
+        assert!(req
+            .runs_root
+            .join(run_id())
+            .join("media/video-published.mp4")
+            .is_file());
+        assert!(!receipt.outcomes.contains_key("video_continuity"));
+        assert!(pr.video_continuity.is_empty());
+        assert!(!runner
+            .0
+            .inner
+            .calls
+            .iter()
+            .any(|c| c.label == "ffmpeg-video-continuity"));
+    }
 }
 
 struct DeadlineCase {
@@ -10722,6 +10961,7 @@ fn video_declaration_reaches_the_child_and_durable_run_outputs() {
                     tested_sha: PR_HEAD,
                     tested_older_commit: false,
                     video: &qaren::record::VideoStatus::Available,
+                    video_continuity: &[],
                     screenshot: None,
                     plan_sha256: "0",
                     video_publication: &qaren::record::VideoPublication::WithheldPrivacy,

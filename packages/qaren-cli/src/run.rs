@@ -1036,6 +1036,7 @@ fn run_inner(
         } else {
             events::stage("recording", StageState::Skipped, None, None);
         }
+        let recording_ready = ctx.runner.now_epoch_ms();
         if req.platform == Platform::Ios && resolved_inputs.has_inputs() {
             ctx.notes.push((
                 "platform_log".to_string(),
@@ -1429,6 +1430,7 @@ fn run_inner(
         }
         let mut tested_older_commit = None;
         let mut published_video = None;
+        let mut video_continuity = Vec::new();
         if let Some(pr) = &pr_state {
             let raw = record::raw_capture(&run_dir.join("media"));
             let video = video.unwrap_or_else(|| record::finalize(ctx.runner, &run_dir));
@@ -1463,6 +1465,31 @@ fn run_inner(
                     outcome.ledger.publication_interrupted,
                 );
                 if video == VideoStatus::Available {
+                    if let Some(offset) = offset.filter(|_| req.platform == Platform::Ios) {
+                        if let Some(stalls) = record::detect_continuity(
+                            ctx.runner,
+                            &run_dir,
+                            &outcome.ledger,
+                            recording_from,
+                            recording_ready,
+                            offset,
+                            core_request.t0,
+                        ) {
+                            video_continuity = stalls;
+                            ctx.notes.push((
+                                "video_continuity".into(),
+                                if video_continuity.is_empty() {
+                                    "examined".into()
+                                } else {
+                                    video_continuity
+                                        .iter()
+                                        .map(record::VideoStall::receipt)
+                                        .collect::<Vec<_>>()
+                                        .join("; ")
+                                },
+                            ));
+                        }
+                    }
                     if let Some((start, end)) = offset.zip(end).and_then(|(start, end)| {
                         let admitted = outcome.ledger.admitted_at_ms?;
                         Some((
@@ -1567,6 +1594,7 @@ fn run_inner(
                 device: device.name.clone(),
                 plan_sha256: sha256_hex(plan.as_bytes()),
                 video,
+                video_continuity,
                 video_withholding_reason: video_publication
                     .withholding_reason()
                     .map(str::to_string),
