@@ -1352,12 +1352,16 @@ semantic disabled state, including React disabled or read-only evidence, as do
 the enabled count and disabled-target advice. The screen includes the capture's
 age (`ageMs`) and whether a device action ran after it (`afterDispatch`);
 `counts` covers all controls in the first 2,000 captured elements, before the
-20-control cap. Non-target causes, including render errors and failed scroll
-dispatches, carry none of these three failure fields. Labels follow the
+20-control cap. Failed checks after interruption recovery was considered also
+carry `failure.screen` from the newest admitted observation, without target-miss
+`subreason` or `suggestion`; a previous-planned-press veto may supply the
+[recovery suggestion](#step-recovery). Other non-target causes, including render
+errors and failed scroll dispatches, carry none of these three failure fields. Labels follow the
 [input value masking contract](#input-value-masking), including its fixed-control-word
 exception when screen text is withheld; testIDs remain unless they hold a
 protected value, in which case they are masked whole. `suggestion` is one plan edit
-for the miss reason; it carries no app text and points to `failure.screen`, and supplies
+for the miss reason; target-miss suggestions carry no app text and point to
+`failure.screen`. The suggestion supplies
 the walk's `next_action`, subject to the [cleanup precedence](#ios-admission-and-cleanup).
 It describes what was observed and never
 proposes a Wait for an enabled state, because a quoted Wait passes on a disabled control.
@@ -2115,7 +2119,8 @@ SECRET runtime inputs keep their screen-text context under the other masking rul
 and the secure-field rule above.
 
 When either rule withholds screen text, target-miss diagnostic candidate labels
-become `•••`, except an exact label from the [recovery decline list](#step-recovery)
+become `•••`. In `failure.screen`, control labels become `•••`, except an exact
+label from the [recovery decline list](#step-recovery)
 or `Allow`, `Enable` or `Turn on` that is not on a possible input and matches no
 private value, so the blocking control is still named. Possible-input labels are
 also withheld without runtime inputs.
