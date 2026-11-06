@@ -31,6 +31,7 @@ import type { HeadingEvidence, HostTypography } from './host-typography.js';
 import {
   associateHosts,
   hostPath,
+  hostsBehindModal,
   nativeWindowIndex,
   type HostAssociationDiagnostic,
 } from './host-association.js';
@@ -723,10 +724,14 @@ export function join(
   const interactiveRole = (role: string | null | undefined) =>
     !!role && ['button', 'input', 'switch', 'link'].includes(kindOfRole(role));
   const inputRole = (role: string | null | undefined) => !!role && kindOfRole(role) === 'input';
-  // Native type may rule out an operation only while every React host offering it is accounted for.
+  // Native type may rule out an operation only while every React host offering it is accounted for;
+  // a host the presented modal covers is accounted for, since it cannot be any node native shows.
+  const behindModal = hostsBehindModal(reactHostEvidence, new Set(associations.keys()));
   const unassociated = (offers: (host: ReactHostObservation) => boolean) =>
     reactHostEvidence?.hosts.flatMap((host, hostIndex) =>
-      !host.hidden && offers(host) && !associations.has(hostIndex) ? [hostIndex] : [],
+      !host.hidden && offers(host) && !associations.has(hostIndex) && !behindModal.has(hostIndex)
+        ? [hostIndex]
+        : [],
     ) ?? [];
   const evidenceGap = (count: number) =>
     reactHostEvidence === undefined

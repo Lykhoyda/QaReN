@@ -74,6 +74,25 @@ export function hostPath(snapshot: HostTypography, start: number): number[] | un
   return path;
 }
 
+// Hosts outside the one presented modal, proven only while every associated host sits inside it.
+export function hostsBehindModal(
+  evidence: ReactHostEvidence | undefined,
+  associated: ReadonlySet<number>,
+): ReadonlySet<number> {
+  const snapshot = evidence?.typography;
+  if (!evidence?.complete || !snapshot?.complete || !associated.size) return new Set();
+  const modals = snapshot.nodes.filter(
+    (host) =>
+      MODAL_HOST_TYPES.has(host.hostType ?? '') &&
+      snapshot.nodes.some((child) => child.parentHostIndex === host.hostIndex),
+  );
+  if (modals.length !== 1) return new Set();
+  const modal = modals[0].hostIndex;
+  const paths = snapshot.nodes.map((_, index) => hostPath(snapshot, index));
+  if (![...associated].every((index) => paths[index]?.includes(modal))) return new Set();
+  return new Set(paths.flatMap((path, index) => (path && !path.includes(modal) ? [index] : [])));
+}
+
 function nativePath(nodes: NativeNode[], start: number): number[] {
   const path: number[] = [];
   let current: number | undefined = start;

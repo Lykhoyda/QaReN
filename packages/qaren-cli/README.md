@@ -3425,6 +3425,8 @@ same-block tap or fill target is exempt too: nothing else on that screen can tak
 the action, so its match is a coincidence with the copy or a text element's test ID.
 This exemption requires a proven control count: press/fill association gaps or
 unknown capabilities on a non-structural, on-screen element keep the presence guard.
+React hosts outside the one mounted `Modal` are not gaps while every associated host
+sits inside it, so a full-screen promo over a mounted screen still counts as one control.
 A later wait or check matching that screen, other than an exempt decline label, still
 vetoes. The current target is never exempt. ID-only targets are checked by
 test ID, text-only targets by contained label or value text (including composed

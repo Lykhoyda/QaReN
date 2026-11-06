@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { dismissCandidate } from '../../../dist/qa/recover.js';
 import { join } from '../../../dist/qa/screen.js';
+import { createWriter } from '../../../dist/qa/wire.js';
 import type { InterruptionDiagnostic } from '../../../dist/qa/recover.js';
 import { element, screen } from './judgment-fixtures.ts';
 
@@ -20,6 +21,30 @@ function observed(labels: string[]) {
     { native: 'complete', react: 'complete' },
   );
 }
+
+test('a rejected interruption crosses the wire on a run with no inputs', () => {
+  const lines: string[] = [];
+  const writer = createWriter((line) => lines.push(line), 'interruption-run');
+  writer.diagnostic({
+    kind: 'interruption-rejected',
+    line: 11,
+    veto: 'later-target',
+    targetIndex: 2,
+    exactDeclineCount: 1,
+  });
+  assert.deepEqual(
+    lines.map((line) => JSON.parse(line).payload),
+    [
+      {
+        kind: 'interruption-rejected',
+        line: 11,
+        veto: 'later-target',
+        targetIndex: 2,
+        exactDeclineCount: 1,
+      },
+    ],
+  );
+});
 
 test('ineligible decline emits one value-free record with the first failed predicate', () => {
   const logs: unknown[] = [];
