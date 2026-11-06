@@ -298,6 +298,9 @@ pub fn list_devices_spec() -> CmdSpec {
     )
 }
 
+// One bounded `simctl list` read of a device-budget inventory proof.
+pub const INVENTORY_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
 pub struct InventoryRead<'a> {
     pub attempts: u32,
     pub per_read_timeout: Duration,
@@ -315,7 +318,7 @@ impl<'a> InventoryRead<'a> {
     ) -> Self {
         Self {
             attempts: 3,
-            per_read_timeout: Duration::from_secs(10),
+            per_read_timeout: INVENTORY_READ_TIMEOUT,
             pause: Duration::from_secs(2),
             deadline_ms: Some(deadline_ms),
             cwd: None,

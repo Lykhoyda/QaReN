@@ -41,6 +41,7 @@ pub enum FailureCode {
     BuildContended,
     DeviceClaimContended,
     DeviceUnavailable,
+    DeviceNotBooted,
     LaneNotWarm,
     DevClientSchemeRequired,
     IosBuildCapabilityUnavailable,
@@ -99,6 +100,7 @@ impl FailureCode {
                 | FailureCode::PnpmProbeTimedOut
                 | FailureCode::DeviceClaimContended
                 | FailureCode::DeviceUnavailable
+                | FailureCode::DeviceNotBooted
                 | FailureCode::LaneNotWarm
                 | FailureCode::BuildContended
                 | FailureCode::OwnershipUnproven

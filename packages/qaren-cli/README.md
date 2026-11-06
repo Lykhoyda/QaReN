@@ -2367,6 +2367,22 @@ Post-boot proof keeps `SIMULATOR_BOOT_FAILED`, with unavailable-read facts or th
 observed state and read latency; bootstatus failures are unchanged. Unresolved
 post-shutdown readback retains the lease for cleanup recovery.
 
+Every iOS install attempt of `check`, `pr` and `prepare` first proves the
+simulator is still in the run's custody and `Booted`: a leased target must still
+hold this run's lease, rechecked after the inventory read, before and after any
+re-boot and immediately before `simctl install`; a temporary simulator the run
+created needs no lease. Under one second of install budget left, the attempt ends
+with the install timeout without reading or touching the device. A `Shutdown`
+target is re-booted under the run's custody when this run may boot it
+(`--boot-device`, `--restart-device`, a pool member or a created simulator) and the
+remaining budget covers `deadlines.device_boot_seconds` plus one inventory read;
+the run history and the `device_reboot` note name when it was last observed
+`Booted` and when `Shutdown`. Otherwise it refuses with `DEVICE_NOT_BOOTED`
+(exit 4, phase `install`) naming both times, or the missing budget, and the
+remedy; `prepare` on a `--device` target without `--boot-device` keeps its
+`DEVICE_UNAVAILABLE` refusal. Launch and `ready` re-proofs never re-boot. An
+install failure on a `Booted` target stays `ARTIFACT_INSTALL_FAILED`.
+
 Default cleanup leaves the borrowed simulator running and keeps the installed app.
 `--shutdown-device-on-exit --device <simulator-UUID>` opts into shutdown
 during teardown, including post-arm cancellation and dead-owner recovery, subject to the
@@ -4624,7 +4640,9 @@ through that run's own cleanup, and records the borrowed simulator before
 dependencies, strict foreign-driver admission, boot, build, install or launch.
 It re-proves the lease and the exact target under custody before booting,
 before each install attempt, before launch and before publishing `ready`, and
-refuses rather than reboots a target that changed.
+refuses rather than reboots a target that changed. Only a target found
+`Shutdown` before an install attempt is re-booted, and only with
+`--boot-device` (see [iOS simulator lifecycle](#ios-simulator-lifecycle)).
 Builds stay generic; only install, the [warm lane](#warm-lane) settings, launch
 and probes address the UUID.
 `ready` keeps the lease, Metro and app for attached agents, and `status`

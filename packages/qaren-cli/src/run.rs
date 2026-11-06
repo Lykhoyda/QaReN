@@ -156,6 +156,8 @@ struct Device {
     ios: Option<(String, String)>,
     android: Option<BorrowedEmulatorResource>,
     needs_boot: bool,
+    // Wall-clock time the inventory showed the simulator Booted.
+    booted_at_ms: Option<u64>,
 }
 
 fn platform_str(platform: Platform) -> &'static str {
@@ -650,6 +652,9 @@ fn run_inner(
             name: device.name.clone(),
             device_type: device_type.clone(),
             runtime: runtime.clone(),
+            boot_authorized: req.boot_device || req.restart_device,
+            owned_by_run: false,
+            booted_proven_at: device.booted_at_ms.map(timefmt::iso8601_utc),
         });
     if let Some(emulator) = &device.android {
         let home = req
@@ -779,6 +784,12 @@ fn run_inner(
                 );
             }
             device.needs_boot = refreshed.needs_boot;
+            if let (Some(at), Some(sim)) = (
+                refreshed.booted_at_ms,
+                ctx.record.resources.ios_simulator.as_mut(),
+            ) {
+                sim.booted_proven_at = Some(timefmt::iso8601_utc(at));
+            }
         }
 
         let ios_lifecycle = req.boot_device || req.restart_device || req.shutdown_device_on_exit;
@@ -2754,12 +2765,14 @@ fn resolve_device(
             .map_err(|unavailable| {
                 unavailable.into_failure("device", FailureCode::SimulatorInventoryUnavailable)
             })?;
+            let observed_ms = runner.now_epoch_ms();
             let borrow = |sim: &ios::Simulator| Device {
                 id: sim.udid.clone(),
                 name: sim.name.clone(),
                 ios: Some((sim.device_type.clone(), sim.runtime.clone())),
                 android: None,
                 needs_boot: sim.state == ios::SimState::Shutdown,
+                booted_at_ms: (sim.state == ios::SimState::Booted).then_some(observed_ms),
             };
             if strict_inventory {
                 return device
@@ -3027,6 +3040,7 @@ fn borrow_emulator(
             abi,
         }),
         needs_boot: false,
+        booted_at_ms: None,
     })
 }
 
