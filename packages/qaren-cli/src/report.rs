@@ -254,8 +254,9 @@ fn row_line_with(row: &Row, prose: &dyn Fn(&str) -> String) -> String {
         String::new()
     };
     let reason = row
-        .reason
-        .as_deref()
+        .scroll_detail
+        .and_then(|detail| detail.status.warning())
+        .or(row.reason.as_deref())
         .map(|r| format!(" — {}", prose(r)))
         .unwrap_or_default();
     let kept = row
@@ -767,6 +768,23 @@ mod tests {
             "llmTurns": 0, "escapes": 0, "recoveries": 0,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn scroll_warning_and_band_statuses_round_trip_and_render() {
+        for status in ["unreachable", "too-small"] {
+            let wire = serde_json::json!({
+                "block": "b", "line": 2, "attempt": 2, "kind": "step",
+                "resolvedBy": "exact", "t": 0, "outcome": "pass",
+                "scrollBand": { "status": status },
+                "scrollDetail": { "status": "no_visible_change_content_remains", "attempts": 2 }
+            });
+            let row: Row = serde_json::from_value(wire.clone()).unwrap();
+            let encoded = serde_json::to_value(&row).unwrap();
+            assert_eq!(encoded["scrollBand"], wire["scrollBand"]);
+            assert_eq!(encoded["scrollDetail"], wire["scrollDetail"]);
+            assert!(row_line(&row).contains("nothing moved although content extends beyond it"));
+        }
     }
 
     #[test]

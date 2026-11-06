@@ -107,9 +107,14 @@ impl Progress {
         } else {
             String::new()
         };
+        let warning = row
+            .scroll_detail
+            .and_then(|detail| detail.status.warning())
+            .map(|message| format!(" — warning: {message}"))
+            .unwrap_or_default();
         // Streamed rows are value-free; plan text stays out of live progress.
         self.commit(&format!(
-            "  {glyph} {:>3}  ({}{retry})",
+            "  {glyph} {:>3}  ({}{retry}){warning}",
             row.line, row.resolved_by
         ));
         self.redraw(now);
@@ -270,6 +275,18 @@ mod tests {
             dev_error: None,
             implicit_wait_ms: None,
         }
+    }
+
+    #[test]
+    fn content_remains_warning_is_visible_without_reason_text() {
+        let mut warning = row(3, "pass", "");
+        warning.scroll_detail = Some(crate::core::ScrollDetail {
+            status: crate::core::ScrollStatus::NoVisibleChangeContentRemains,
+            attempts: 2,
+        });
+        let output = plain(|p, now| p.row(&warning, now));
+        assert!(output.contains("warning: two scrolls were dispatched inside the scroll view"));
+        assert!(output.contains("nothing moved although content extends beyond it"));
     }
 
     #[test]

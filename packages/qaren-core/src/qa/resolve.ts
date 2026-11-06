@@ -1,3 +1,8 @@
+import {
+  trimScrollBand,
+  scrollBandTooSmall,
+  computeScrollFromDirection,
+} from '../domain/scroll-gesture.js';
 import type { OverlayHits } from './live-hit.js';
 import { fillText } from './inputs.js';
 import type { Check, Step, Target } from './plan.js';
@@ -10,6 +15,7 @@ import {
   type AssertionEvidence,
   type VisibilityBlockerDiagnostic,
   actionView,
+  applicationFrame,
   isNativeInput,
   ancestorsOf,
   keyboardCoversElement,
@@ -26,6 +32,7 @@ import {
   scrollContainerType,
   semanticActionView,
   semanticDisabled,
+  touchPolicy,
   visibilityView,
 } from './screen.js';
 import {
@@ -580,14 +587,16 @@ export function clearanceBand(
   return bottom > top ? { ...viewport, y: top, height: bottom - top } : undefined;
 }
 
+// A drag (`touch`) passes through overlays whose React host is proven pointer-transparent.
 function frontOverlayFrames(
   container: Element,
   band: NonNullable<NativeNode['rect']>,
   screen: Screen,
-): NonNullable<NativeNode['rect']>[] {
+  touch = false,
+): { element: Element; rect: NonNullable<NativeNode['rect']> }[] {
   const behind = screen.elements.indexOf(container);
   const lineage = ancestorsOf(container);
-  const frames: NonNullable<NativeNode['rect']>[] = [];
+  const frames: { element: Element; rect: NonNullable<NativeNode['rect']> }[] = [];
   const padding = 4 * (screen.pointScale ?? 1);
   for (const [i, other] of screen.elements.entries()) {
     if (
@@ -595,7 +604,8 @@ function frontOverlayFrames(
       isWindow(other) ||
       other.kind === 'text' ||
       other.offscreen ||
-      !other.hittable
+      !other.hittable ||
+      (touch && touchPolicy(other) === 'transparent')
     )
       continue;
     const ancestors = ancestorsOf(other);
@@ -609,7 +619,7 @@ function frontOverlayFrames(
       rect.x + rect.width + padding <= band.x
     )
       continue;
-    frames.push(rect);
+    frames.push({ element: other, rect });
   }
   return frames;
 }
@@ -618,10 +628,13 @@ function clearOfFrontOverlays(
   container: Element,
   band: NonNullable<NativeNode['rect']>,
   screen: Screen,
+  touch = false,
+  opaqueOnly = false,
 ): NativeNode['rect'] {
   let spans = [{ top: band.y, bottom: band.y + band.height }];
   const padding = 4 * (screen.pointScale ?? 1);
-  for (const rect of frontOverlayFrames(container, band, screen)) {
+  for (const { element, rect } of frontOverlayFrames(container, band, screen, touch)) {
+    if (opaqueOnly && touchPolicy(element) !== 'opaque') continue;
     const top = rect.y - padding;
     const bottom = rect.y + rect.height + padding;
     spans = spans.flatMap((span) =>
@@ -647,7 +660,7 @@ export function scrollTargetCovered(element: Element, screen: Screen, hits?: Ove
   const x = Math.round(frame.x + frame.width / 2);
   const y = Math.round(frame.y + frame.height / 2);
   return frontOverlayFrames(container, frame, screen).some(
-    (overlay) =>
+    ({ rect: overlay }) =>
       x >= overlay.x &&
       x < overlay.x + overlay.width &&
       y >= overlay.y &&
@@ -731,8 +744,170 @@ export function scrollUntilContainer(target: Target, screen: Screen): Element | 
 }
 
 export interface ScrollBandReceipt {
-  status: 'no-geometry' | 'overlay-cut' | 'clear';
+  status: 'no-geometry' | 'overlay-cut' | 'clear' | 'unreachable' | 'too-small';
   band?: NonNullable<NativeNode['rect']>;
+}
+
+export function containerBand(
+  container: Element,
+  screen: Screen,
+  within?: NativeNode['rect'],
+  touch = false,
+): ScrollBandReceipt {
+  const frame = elementFrame(container);
+  const band = within ?? (frame && aboveKeyboard(clip(frame, elementViewport(container)), screen));
+  if (!band) return { status: 'no-geometry' };
+  const clear = clearOfFrontOverlays(container, band, screen, touch);
+  const result = clear ?? { ...band, height: 0 };
+  return { status: sameRect(band, result) ? 'clear' : 'overlay-cut', band: result };
+}
+
+function centreCorridor(
+  container: Element,
+  band: NonNullable<NativeNode['rect']>,
+  screen: Screen,
+): NativeNode['rect'] | 'unproven' {
+  const x = band.x + band.width / 2;
+  const y = band.y + band.height / 2;
+  const covers = frontOverlayFrames(container, band, screen, true);
+  const centre = covers.filter(
+    ({ rect: r }) => x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height,
+  );
+  // Only a cover whose own React host takes touches proves the drag blocked; otherwise dispatch and judge.
+  if (centre.length)
+    return centre.some(({ element }) => touchPolicy(element) === 'opaque') ? undefined : 'unproven';
+  const overlays = covers.map(({ rect }) => rect);
+  const padding = 4 * (screen.pointScale ?? 1);
+  let radius = band.width / 2;
+  for (const r of overlays) {
+    if (r.x + r.width <= x) radius = Math.min(radius, x - r.x - r.width - padding);
+    else if (r.x > x) radius = Math.min(radius, r.x - x - padding);
+  }
+  if (radius <= 0) return { ...band, width: 0 };
+  return (
+    clearOfFrontOverlays(
+      container,
+      { ...band, x: x - radius, width: radius * 2 },
+      screen,
+      true,
+    ) ?? {
+      ...band,
+      height: 0,
+    }
+  );
+}
+
+export interface PlainScrollBand extends ScrollBandReceipt {
+  container?: Element;
+  distance?: number;
+  // The drag crosses a cover no matched React host proves either way; never part of the receipt.
+  unproven?: true;
+}
+
+export function plainScrollBand(
+  screen: Screen,
+  direction: 'up' | 'down',
+  platform?: 'ios' | 'android',
+): PlainScrollBand {
+  if ((screen.captureCoverage?.native ?? screen.coverage?.native) !== 'complete')
+    return { status: 'no-geometry' };
+  const root =
+    applicationFrame(screen) ?? screen.elements.filter(isWindow).map(elementFrame).find(Boolean);
+  if (!root) return { status: 'no-geometry' };
+  const candidates: (PlainScrollBand & {
+    container: Element;
+    clipped: NonNullable<NativeNode['rect']>;
+  })[] = [];
+  let unreachable: PlainScrollBand | undefined;
+  const unproven: typeof candidates = [];
+  let tooSmall: ScrollBandReceipt | undefined;
+  for (const container of screen.elements) {
+    if (!isScrollContainer(container) || horizontalOnlyContainer(scrollContainerType(container)))
+      continue;
+    const frame = elementFrame(container);
+    if (!frame || frame.width <= 0 || frame.height <= 0) continue;
+    const visible = clip(clip(frame, elementViewport(container)), root);
+    const clipped = aboveKeyboard(visible, screen);
+    if (!clipped) continue;
+    // Offscreen with its centre inside the visible clip is reported invisibility, not geometry.
+    const cx = frame.x + frame.width / 2;
+    const cy = frame.y + frame.height / 2;
+    if (
+      container.offscreen &&
+      cx >= clipped.x &&
+      cx < clipped.x + clipped.width &&
+      cy >= clipped.y &&
+      cy < clipped.y + clipped.height
+    )
+      continue;
+    const receipt = containerBand(container, screen, clipped, true);
+    let band = receipt.band;
+    if (band && band.height <= 0) {
+      const corridor = centreCorridor(container, clipped, screen);
+      if (!corridor) {
+        unreachable = { status: 'unreachable', band: clipped, container };
+        continue;
+      }
+      // An unproven cover keeps its container only as a last resort, dragged across its whole clip.
+      if (corridor === 'unproven') {
+        const across = clearOfFrontOverlays(container, clipped, screen, true, true);
+        if (across) unproven.push({ ...receipt, band: across, container, clipped });
+        continue;
+      }
+      band = corridor;
+    }
+    if (band && band.width > 0 && band.height > 0)
+      candidates.push({ ...receipt, band, container, clipped });
+    else if (band) tooSmall ??= { status: 'too-small', band };
+  }
+  const byArea = (a: (typeof candidates)[number], b: (typeof candidates)[number]) =>
+    b.band!.width * b.band!.height - a.band!.width * a.band!.height;
+  if (!candidates.length && !unproven.length)
+    return unreachable ?? tooSmall ?? { status: 'no-geometry' };
+  const keyboardTop = screen.keyboardVisible !== false ? (screen.keyboardFrame?.y ?? null) : null;
+  const viewportGesture = computeScrollFromDirection(
+    direction,
+    0.6,
+    trimScrollBand(undefined, root, keyboardTop),
+  )!;
+  const distance = Math.abs(viewportGesture.y2 - viewportGesture.y1);
+  const fits = (band: NativeNode['rect']) => {
+    const gesture = trimScrollBand(
+      band,
+      root,
+      keyboardTop,
+      platform === 'android' ? 48 * (screen.pointScale ?? 1) : undefined,
+    );
+    return (
+      !scrollBandTooSmall(gesture) &&
+      !!computeScrollFromDirection(direction, 0.6, gesture, distance)
+    );
+  };
+  // Every clear band by area first; a drag across an unproven cover only once none of them fits.
+  let verdict: PlainScrollBand | undefined;
+  const through: PlainScrollBand[] = [];
+  for (const candidate of candidates.sort(byArea)) {
+    const { clipped, ...selection } = candidate;
+    if (fits(candidate.band)) return { ...selection, distance };
+    const corridor =
+      candidate.status === 'overlay-cut'
+        ? centreCorridor(candidate.container, clipped, screen)
+        : candidate.band;
+    // The drag may cross unproven covers, never a proven one.
+    const across =
+      corridor === 'unproven'
+        ? clearOfFrontOverlays(candidate.container, clipped, screen, true, true)
+        : undefined;
+    if (across && fits(across))
+      through.push({ ...selection, band: across, distance, unproven: true });
+    // The largest band's verdict stands when no band can host the drag.
+    verdict ??= corridor
+      ? { status: 'too-small', band: candidate.band }
+      : { status: 'unreachable', band: clipped, container: candidate.container };
+  }
+  for (const { clipped: _clipped, ...selection } of unproven.sort(byArea))
+    if (fits(selection.band)) through.push({ ...selection, distance, unproven: true });
+  return through[0] ?? verdict ?? unreachable ?? { status: 'too-small', band: unproven[0].band };
 }
 
 export function scrollUntilBand(
@@ -757,20 +932,17 @@ export function scrollUntilBand(
       : aboveKeyboard(elementViewport(element), screen);
   }
   if (!band && (!element || element.offscreen)) {
-    const frame = elementFrame(container);
-    if (frame) band = aboveKeyboard(clip(frame, elementViewport(container)), screen);
+    const receipt = containerBand(container, screen);
+    observe?.(receipt);
+    return receipt.band;
   }
   if (!band) {
     observe?.({ status: inferredCut ? 'overlay-cut' : 'no-geometry' });
     return undefined;
   }
-  const clear = clearOfFrontOverlays(container, band, screen);
-  const result = clear ?? { ...band, height: 0 };
-  observe?.({
-    status: inferredCut || !sameRect(band, result) ? 'overlay-cut' : 'clear',
-    band: result,
-  });
-  return result;
+  const receipt = containerBand(container, screen, band);
+  observe?.({ ...receipt, status: inferredCut ? 'overlay-cut' : receipt.status });
+  return receipt.band;
 }
 
 const GENERIC_TARGET_WORDS = new Set(

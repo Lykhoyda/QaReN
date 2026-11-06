@@ -678,6 +678,8 @@ pub enum ScrollBandStatus {
     NoGeometry,
     OverlayCut,
     Clear,
+    Unreachable,
+    TooSmall,
 }
 
 fn native_capture_ref<'de, D: serde::Deserializer<'de>>(
@@ -713,6 +715,16 @@ pub struct ScrollDetail {
 #[serde(rename_all = "snake_case")]
 pub enum ScrollStatus {
     NoVisibleChange,
+    NoVisibleChangeContentRemains,
+}
+
+impl ScrollStatus {
+    pub fn warning(self) -> Option<&'static str> {
+        match self {
+            Self::NoVisibleChange => None,
+            Self::NoVisibleChangeContentRemains => Some("two scrolls were dispatched inside the scroll view and nothing moved although content extends beyond it"),
+        }
+    }
 }
 
 // The development error overlay variant and dismissal attempt number, including failed attempts.
@@ -1018,6 +1030,7 @@ pub enum StepCause {
     ScrollDispatchFailed,
     ScrollContextChanged,
     ScrollTargetAbsent,
+    ScrollContainerUnreachable,
 }
 
 // Only a plan step's own judgment is a step failure; anything else, or an older core, has no kind.
