@@ -572,6 +572,20 @@ entry in `dumpsys activity processes`; output that is not a recognised processes
 dump leaves the leg unresolved. The runner port and packages are defined in
 [`src/adapters/android.rs`](src/adapters/android.rs) and checked against the core by
 the [runner sync test](../qaren-core/test/unit/qaren-cli-android-runner-sync.test.ts).
+
+Both automatic teardown and explicit cleanup retry timed-out reverse removal,
+reverse listing, forward listing and runner-process reads up to three attempts,
+using the original, twice and three times the original command budget. Before
+each retry, the selected emulator must answer `adb shell true` within 20 seconds;
+a failed or timed-out probe stops retries for that command. Non-timeout command
+failures are not retried. Probes and retries share a 240-second extra allowance
+across the release sequence; a retry starts only if that allowance covers both
+the probe and retry budgets. Initial attempts do not consume this allowance.
+Unresolved timeout diagnostics report attempt budgets and durations, liveness
+answers and whether the device was slow, unresponsive or the allowance could
+not cover another retry. Forward removal and force-stop keep their original
+budgets; successful absence verification is still required to release the lease.
+
 A walk that never started a runner reads as `absent`; a run that never reached
 the walk needs no runner release. An unproven leg keeps the lease, so a later
 `qaren cleanup <run-id>` can finish. Cleanup preserves the adb server, installed

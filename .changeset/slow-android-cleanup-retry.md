@@ -2,4 +2,4 @@
 "qaren": patch
 ---
 
-Android cleanup now retries a slow device's adb reads with a larger budget while the device still answers, so a busy emulator no longer leaves the run's lease retained; a refusal names every attempt and whether the device was slow or unresponsive.
+Borrowed Android emulator cleanup now retries timed-out reverse removal and absence reads with bounded larger budgets while the device answers, retaining the lease if cleanup remains unproven and reporting timeout attempts and device responsiveness.
