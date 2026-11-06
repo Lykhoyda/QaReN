@@ -3228,6 +3228,7 @@ pub(crate) fn cleanup_first(cleanup: &str, failure: &Failure) -> String {
     if failure.suggestion.is_some()
         || failure.repeat.is_some()
         || failure.subreason.as_deref() == Some(PREVIOUS_PLAN_PRESS)
+        || failure.code == FailureCode::CandidateUnavailable
     {
         format!("{cleanup}; then {}", failure.next_action.as_str())
     } else {
@@ -3995,6 +3996,11 @@ mod last_screen_tests {
             "fix the plan",
         );
         assert_eq!(cleanup_first(cleanup, &plain), cleanup);
+        let unavailable = Failure::candidate_unavailable("verify");
+        assert_eq!(
+            cleanup_first(cleanup, &unavailable),
+            format!("{cleanup}; then {}", unavailable.next_action.as_str())
+        );
     }
 
     #[test]

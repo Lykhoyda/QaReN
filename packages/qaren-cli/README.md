@@ -4002,9 +4002,9 @@ Preparation rechecks provenance before emitting `ready`; `check` and `pr`
 recheck it before and after the walk. Detected drift fails with
 `CANDIDATE_DRIFTED` and cannot return PASS. A candidate that cannot be read at
 all (its repository or project root is missing, a Git read fails or times out,
-or a file the comparison needs cannot be read) refuses `CANDIDATE_UNAVAILABLE`
-(exit 4) instead: nothing is known to have changed, so check that its volume or
-path is available again and re-run. After the walk this refusal replaces the
+or an integration-tolerant comparison or the lockfile cannot be read) refuses
+`CANDIDATE_UNAVAILABLE` (exit 4) instead: nothing is known to have changed, so
+check that its volume or path is available again and re-run. After the walk this refusal replaces the
 walk's verdict, keeps the ledger rows and records the final verification's
 `classification` (`drifted` or `unreadable`). An already-cancelled walk retains
 `RUN_CANCELLED`. Passing blocks already saved remain available. See the
