@@ -221,7 +221,7 @@ test('a later target in the same block prevents dismissal and reports a value-fr
   );
 });
 
-test('a later block target visible on the sheet does not stop an earlier block from closing it', async () => {
+test('a later block target visible on the sheet prevents dismissal', async () => {
   for (const later of [
     element('@continue', 'Continue'),
     element('@continue', 'Continue', { kind: 'text' }),
@@ -233,31 +233,32 @@ test('a later block target visible on the sheet does not stop an earlier block f
       parsePlan('### Sign in\n1. Tap "Settings"\n### Coverage\n2. Tap "Continue"').blocks!,
       f.deps,
     );
-    assert.deepEqual(f.actions.slice(0, 2), ['press @close', 'press @settings']);
-    assert.equal(result.recoveries, 1);
-    assert.ok(!lines.includes(2));
+    assert.deepEqual(f.actions, []);
+    assert.equal(result.recoveries, 0);
+    assert.ok(lines.includes(2));
+    assert.equal(result.steps.at(-1)?.interruption?.targetLine, 4);
   }
 });
 
-test('a later step naming a decline label does not stop an earlier step from closing the sheet', async () => {
-  for (const text of [
-    '1. Tap "Settings"\n✓ "Done"',
-    '1. Tap "Settings"\n✓ "Done"\n### Offer\n2. Tap "Maybe later"',
-    '1. Tap "Settings"\n✓ "Done"\n2. Tap "maybe later"',
-  ]) {
+test('a later decline-labelled text target prevents dismissal when its resolver matches', async () => {
+  for (const [text, vetoed] of [
+    ['1. Tap "Settings"\n✓ "Done"', false],
+    ['1. Tap "Settings"\n✓ "Done"\n### Offer\n2. Tap "Maybe later"', true],
+    ['1. Tap "Settings"\n✓ "Done"\n2. Tap "maybe later"', false],
+  ] as const) {
     const f = app(
       screen([element('@close', 'Close'), element('@later', 'Maybe later', { kind: 'text' })]),
     );
     const result = await runPlan(parsePlan(text).blocks!, f.deps);
-    assert.deepEqual(f.actions.slice(0, 2), ['press @close', 'press @settings'], text);
-    assert.equal(result.recoveries, 1, text);
+    assert.deepEqual(f.actions.slice(0, 2), vetoed ? [] : ['press @close', 'press @settings'], text);
+    assert.equal(result.recoveries, vetoed ? 0 : 1, text);
   }
 });
 
 test('a later step that taps the same decline control keeps it for that step', async () => {
   for (const text of [
     '1. Tap "Settings"\n2. Tap "Close"',
-    '1. Tap "Settings"\n### Offer\n2. Tap "close"',
+    '1. Tap "Settings"\n### Offer\n2. Tap "Close"',
   ]) {
     const f = app(promo());
     assert.equal((await runPlan(parsePlan(text).blocks!, f.deps)).verdict, 'FAIL', text);
@@ -305,9 +306,10 @@ test('replayed decline intent survives stored selectors during recovery and reva
           return result;
         };
         const result = await runPlan(replayed, f.deps);
-        assert.equal(result.verdict, 'PASS');
-        assert.equal(result.recoveries, 1);
-        assert.deepEqual(f.actions, ['press @close', 'press @later']);
+        assert.equal(result.verdict, 'FAIL');
+        assert.equal(result.recoveries, 0);
+        assert.deepEqual(f.actions, []);
+        assert.equal(result.steps.at(-1)?.interruption?.veto, 'later-target');
       }
     }
   }
@@ -1090,37 +1092,20 @@ function fullScreenPromo(): Screen {
   );
 }
 
-test('a later tap whose text is in the promo copy no longer keeps a sole-Close promo up', async () => {
+test('a later tap whose text is in the promo copy keeps a sole-Close promo up', async () => {
   const f = app(fullScreenPromo());
   const streamed = ticking(f);
-  f.deps.press = async (ref) => {
-    f.actions.push(`press ${ref}`);
-    f.show(
-      ref === '@close'
-        ? screen([element('@settings', 'Settings'), element('@premium', 'Premium')])
-        : screen([element('@done', 'Done')]),
-    );
-    return { ok: true, proven: false, executed: true };
-  };
   const result = await runPlan(waitPlan('2. Tap "Premium"'), f.deps);
-  assert.equal(result.verdict, 'PASS', result.failure?.seen);
-  assert.deepEqual(f.actions, ['press @close', 'press @premium']);
-  assert.equal(result.recoveries, 1);
-  const retry = result.steps.find((row) => row.line === 1 && row.outcome === 'retry');
-  assert.equal(retry?.interruption?.outcome, 'dismissed');
-  assert.equal(retry?.interruption?.soleDecline, true);
-  // The value-free stream carries the receipt on the originating step, not on the nested tap.
-  const receipts = streamed.filter((row) => row.interruption);
-  assert.ok(receipts.length >= 1);
-  for (const row of receipts) {
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, []);
+  assert.equal(result.recoveries, 0);
+  assert.equal(result.steps.at(-1)?.interruption?.veto, 'later-target');
+  assert.equal(result.steps.at(-1)?.interruption?.targetLine, 2);
+  for (const row of streamed.filter((row) => row.interruption)) {
     assert.equal(row.line, 1);
     assert.equal(row.text, '');
     assert.equal(row.reason, undefined);
-    assert.deepEqual(row.interruption, {
-      considered: true,
-      outcome: 'dismissed',
-      soleDecline: true,
-    });
+    assert.equal(row.interruption?.veto, 'later-target');
   }
 });
 

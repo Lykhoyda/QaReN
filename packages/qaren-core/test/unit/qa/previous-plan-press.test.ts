@@ -458,13 +458,27 @@ test('an input declaration cannot lapse protection using the previous press load
   assert.equal(result.recoveries, 0);
 });
 
-test('after protection lapses, described later items keep their interruption across block boundaries', async () => {
+test('after protection lapses, every remaining target uses the same conservative veto in every block', async () => {
+  const cases = [
+    ['4. Tap "Allow"', true],
+    ['4. Wait for "Allow" to appear', true],
+    ['✓ "Allow"', true],
+    ['4. Fill "Allow" with "fixture"', true],
+    ['4. Tap the allow button', true],
+    ['4. Wait for the allow button to appear', true],
+    ['✓ the allow button is visible', true],
+    ['4. Tap an unrelated button', true],
+    ['4. Tap "Unrelated"', false],
+    ['4. Wait for "Unrelated" to appear', false],
+    ['✓ "Unrelated"', false],
+  ] as const;
   for (const laterBlock of [false, true]) {
-    for (const laterItem of ['4. Tap the allow button', '✓ the allow button is visible']) {
+    for (const [laterItem, couldMatch] of cases) {
       for (const withheld of [false, true]) {
         const f = app(opener(), {
           '@open': () => screen([element('@loading', 'Loading', { kind: 'text' })]),
-          '@skip': ready,
+          '@skip': () => screen([element('@ready', 'Ready'), element('@future', 'Unrelated')]),
+          '@future': ready,
         });
         if (withheld) {
           f.deps.privacy = new ObservedPrivacy();
@@ -487,6 +501,17 @@ test('after protection lapses, described later items keep their interruption acr
           f,
         );
         const laterLine = laterBlock ? 7 : 5;
+        if (!couldMatch) {
+          assert.equal(result.verdict, 'PASS', result.failure?.seen);
+          assert.equal(result.recoveries, 1);
+          assert.deepEqual(
+            f.actions,
+            laterItem.startsWith('4. Tap')
+              ? ['press @open', 'press @skip', 'press @future']
+              : ['press @open', 'press @skip'],
+          );
+          continue;
+        }
         assert.equal(result.verdict, 'FAIL');
         assert.equal(result.failure?.step, 4);
         assert.deepEqual(f.actions, ['press @open']);

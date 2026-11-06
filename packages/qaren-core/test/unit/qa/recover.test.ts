@@ -48,25 +48,23 @@ test('protection lapse distinguishes static decline text from possible decline c
   }
 });
 
-test('described remaining targets conservatively veto even sole declines in later blocks', () => {
+test('described remaining targets conservatively veto even sole declines', () => {
   const snapshot = fixtureScreen([element('@close', 'Close')]);
-  for (const laterBlock of [false, true]) {
-    for (const kind of ['press', 'fill', 'wait', 'scroll', 'check'] as const) {
-      const records: InterruptionDiagnostic[] = [];
-      assert.equal(
-        dismissCandidate(
-          snapshot,
-          [
-            { quoted: 'Ready', phrase: 'Ready', line: 1, kind: 'wait' },
-            { phrase: 'the allow button', line: 2, kind, laterBlock },
-          ],
-          (record) => records.push(record),
-        ),
-        undefined,
-      );
-      assert.equal(records[0]?.veto, 'later-target');
-      assert.equal(records[0]?.targetIndex, 1);
-    }
+  for (const kind of ['press', 'fill', 'wait', 'scroll', 'check'] as const) {
+    const records: InterruptionDiagnostic[] = [];
+    assert.equal(
+      dismissCandidate(
+        snapshot,
+        [
+          { quoted: 'Ready', phrase: 'Ready', line: 1, kind: 'wait' },
+          { phrase: 'the allow button', line: 2, kind },
+        ],
+        (record) => records.push(record),
+      ),
+      undefined,
+    );
+    assert.equal(records[0]?.veto, 'later-target');
+    assert.equal(records[0]?.targetIndex, 1);
   }
 });
 
@@ -367,12 +365,12 @@ for (const exact of [undefined, 'text', 'id'] as const) {
     assert.equal(
       dismissCandidate(
         snapshot,
-        [absent, { phrase: 'Offer', quoted: 'Offer', exact, laterBlock: true }],
+        [absent, { phrase: 'Offer', quoted: 'Offer', exact }],
         (record) => records.push(...record.elements.map((e) => e.failed)),
       ),
       undefined,
     );
-    assert.deepEqual(records, ['target-ancestor']);
+    assert.deepEqual(records, exact === 'id' ? [] : ['target-ancestor']);
   });
 }
 
@@ -475,7 +473,7 @@ for (const exact of [undefined, 'id', 'text'] as const) {
     assert.equal(
       await recover(snapshot, d.deps, undefined, [
         { phrase: 'Item 1', quoted: 'Item 1' },
-        { phrase: quoted, quoted, exact, laterBlock: true },
+        { phrase: quoted, quoted, exact },
       ]),
       undefined,
     );
@@ -495,7 +493,7 @@ test('missing measurements do not erase the planned React container ancestry', a
   assert.equal(
     await recover(snapshot, d.deps, undefined, [
       { phrase: 'Item 1', quoted: 'Item 1' },
-      { phrase: 'qa-sheet', quoted: 'qa-sheet', laterBlock: true },
+      { phrase: 'qa-sheet', quoted: 'qa-sheet' },
     ]),
     undefined,
   );
@@ -509,7 +507,7 @@ for (const type of ['Modal', 'RCTModalHostView']) {
     assert.deepEqual(
       dismissCandidate(snapshot, [
         { phrase: 'Item 1', quoted: 'Item 1' },
-        { phrase: 'qa-sheet-home', quoted: 'qa-sheet-home', exact: 'id', laterBlock: true },
+        { phrase: 'qa-sheet-home', quoted: 'qa-sheet-home', exact: 'id' },
       ]),
       { label: 'Close' },
     );
@@ -940,11 +938,11 @@ const decide = (snapshot: Screen, targets: RecoveryTarget[]) => {
   };
 };
 
-test('a later press or fill matching promo copy does not keep a sole-Close promo up', () => {
+test('a later press or fill matching promo copy keeps a sole-Close promo up', () => {
   for (const kind of ['press', 'fill'] as const) {
     const { result, records } = decide(fullScreenPromo(), [waitHome, later('Premium', kind)]);
-    assert.deepEqual(result, { label: 'Close' }, kind);
-    assert.deepEqual(records, [], kind);
+    assert.equal(result, undefined, kind);
+    assert.equal(records[0]?.veto, 'later-target', kind);
   }
 });
 
@@ -992,28 +990,28 @@ test('a later same-block press on the container of the sole Close still keeps it
     records.map(({ veto, soleDecline, elements }) => ({ veto, soleDecline, elements })),
     [
       {
-        veto: 'no-candidate',
+        veto: 'later-target',
         soleDecline: true,
-        elements: [{ index: 3, failed: 'target-ancestor' }],
+        elements: [],
       },
     ],
   );
 });
 
-test('a later press by the testID of promo text is a coincidence, not ownership', () => {
+test('a later press by the testID of promo text protects the interruption', () => {
   const { result } = decide(fullScreenPromo(), [
     waitHome,
     later('promo-title', 'press', { exact: 'id' }),
   ]);
-  assert.deepEqual(result, { label: 'Close' });
+  assert.equal(result, undefined);
 });
 
 test('a later step naming Close by label or id keeps it, with ownership provenance', () => {
   for (const target of [
     later('Close', 'press'),
-    later('close', 'check'),
+    later('Close', 'check'),
     later('promo-close', 'press', { exact: 'id' }),
-    later('promo-close', 'wait', { exact: 'id', laterBlock: true }),
+    later('promo-close', 'wait', { exact: 'id' }),
   ]) {
     const { result, records } = decide(fullScreenPromo(), [waitHome, target]);
     assert.equal(result, undefined, target.quoted);
@@ -1135,7 +1133,7 @@ test('association gaps and unknown on-screen capabilities cannot prove a sole de
   }
 });
 
-test('a second control of any state defeats the sole-decline exemption', () => {
+test('a second control in any state remains protected by its later target', () => {
   const input: NativeNode = { ref: '@email', type: 'TextField', label: 'Email', hittable: true };
   const button: NativeNode = { ref: '@go', type: 'Button', label: 'Continue', hittable: true };
   for (const [extra, target] of [
@@ -1157,7 +1155,7 @@ test('six decline carriers around one actionable Close still protect a later-blo
   );
   const { result, records } = decide(fullScreenPromo(...carriers), [
     waitHome,
-    later('Close', 'press', { laterBlock: true }),
+    later('Close', 'press'),
   ]);
   assert.equal(result, undefined);
   assert.equal(records[0].exactDeclineCount, 6);

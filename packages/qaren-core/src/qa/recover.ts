@@ -18,11 +18,9 @@ export interface LoginMarker {
 }
 
 export interface RecoveryTarget extends Target {
-  declared?: Target;
   // The plan step this target comes from; a placeholder current target has neither.
   line?: number;
   kind?: Item['kind'];
-  laterBlock?: boolean;
   // The current target follows a passed planned press, so the screen in front is the plan's own.
   afterPlannedPress?: boolean;
 }
@@ -108,7 +106,6 @@ const DECLINE_LABELS = new Set([
   "Don't Allow",
   'Don’t Allow',
 ]);
-const DECLINE_LOWER = new Set([...DECLINE_LABELS].map((label) => label.toLowerCase()));
 // Declines that leave a permission or opt-in unanswered rather than closing a screen.
 const SOFT_DECLINES = new Set(
   [...DECLINE_LABELS].filter((label) => !['Close', 'Dismiss', 'Cancel'].includes(label)),
@@ -191,18 +188,7 @@ export function dismissCandidate(
   if (screen.front !== 'app') return rejected('front');
   if (!completeCapture(screen)) return rejected('coverage');
   if (!planTargets.length) return rejected('current-target', 0);
-  const targetIndex = planTargets.findIndex(
-    (target, index) =>
-      (target.quoted === undefined ||
-        (!(index > 0 && target.laterBlock) &&
-          !(
-            index > 0 &&
-            (target.declared ?? target).exact !== 'id' &&
-            DECLINE_LOWER.has((target.declared ?? target).quoted?.toLowerCase() ?? '')
-          ) &&
-          !(index > 0 && sole && (target.kind === 'press' || target.kind === 'fill')))) &&
-      targetOnScreen(screen, target),
-  );
+  const targetIndex = planTargets.findIndex((target) => targetOnScreen(screen, target));
   if (targetIndex !== -1) {
     if (targetIndex === 0) return rejected('current-target', 0);
     const target = planTargets[targetIndex];
@@ -257,17 +243,8 @@ export function dismissCandidate(
         message: 'several decline controls are visible; nothing was tapped',
       },
     };
-  if (candidates.length === 1) {
-    const label = candidates[0].label!.toLowerCase();
-    const plannedIndex = planTargets.findIndex(
-      (target, index) =>
-        index > 0 &&
-        (matchesTarget(candidates[0], target) ||
-          (target.exact !== 'id' && target.quoted?.toLowerCase() === label)),
-    );
-    if (plannedIndex !== -1) return rejected('later-target', plannedIndex, [], 'ownership');
+  if (candidates.length === 1)
     return { label: candidates[0].label!, ...(screenClass ? { screenClass } : {}) };
-  }
   return rejected(
     'no-candidate',
     undefined,

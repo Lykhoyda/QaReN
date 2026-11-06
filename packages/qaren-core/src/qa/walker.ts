@@ -31,7 +31,7 @@ import {
   withEchoScope,
 } from './inputs.js';
 import { isAbort, cancellationSignal, withDeadline } from '../domain/cancellation.js';
-import { fillLabels, parseStep, type Block, type Item, type Target } from './plan.js';
+import { fillLabels, type Block, type Item, type Target } from './plan.js';
 import {
   type Element,
   type Screen,
@@ -140,7 +140,6 @@ import {
   ObservedPrivacy,
   matchPrivate,
   projectPlanLine,
-  planLineBody,
 } from './privacy.js';
 import { renderReason, segments, type Reason } from './untrusted.js';
 import { NativeSnapshotIncomplete, PrivateInputCaptureError } from './private-input.js';
@@ -488,12 +487,10 @@ const recoveryTarget = (item: Item): RecoveryTarget | undefined => {
     };
   const target = stepTarget(item);
   if (!target) return undefined;
-  const declared = parseStep(planLineBody(item.raw));
   return {
     ...target,
     kind: item.kind,
     line: item.line,
-    ...(declared && !('refuse' in declared) ? { declared: stepTarget(declared) } : {}),
   };
 };
 
@@ -5001,7 +4998,7 @@ export async function runPlan(
           laterTargets: laterBlocks.flatMap((later) =>
             later.items.flatMap((item) => {
               const target = recoveryTarget(item);
-              return target ? [{ ...target, laterBlock: true }] : [];
+              return target ? [target] : [];
             }),
           ),
         },

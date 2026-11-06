@@ -2,4 +2,4 @@
 "qaren": patch
 ---
 
-Dismiss a full-screen interruption whose only control is a decline label when a later tap or fill merely matches its text, and record on the step's row what interruption recovery decided, including ownership when a later step targets the decline control.
+Dismiss full-screen interruptions only when no remaining planned target could match the screen, and record the recovery decision and any matching later line on the step's row.
