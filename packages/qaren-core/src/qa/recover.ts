@@ -423,15 +423,19 @@ export function plannedSurface(after: Screen, before?: Screen): PlannedSurface {
   return {};
 }
 
-// Planned-press protection lapses once a later planned item passes on a complete capture with no
-// decline control on screen; until then it holds. A later step targeting the interruption still
-// keeps it through the later-target veto, which dismissCandidate applies before this protection.
 export function protectionLapses(passed: Screen): boolean {
   return (
     passed.front === 'app' &&
     completeCapture(passed) &&
     !passed.elements.some(
-      (e) => !e.offscreen && e.label !== undefined && DECLINE_LABELS.has(e.label),
+      (e) =>
+        !e.offscreen &&
+        !e.semantic?.nativePresence?.structural &&
+        e.label !== undefined &&
+        DECLINE_LABELS.has(e.label) &&
+        (e.semantic?.press === 'supported' ||
+          e.semantic?.press === 'unknown' ||
+          ['button', 'link', 'cell', 'switch'].includes(e.kind)),
     )
   );
 }

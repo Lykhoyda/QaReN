@@ -3473,12 +3473,16 @@ Protection crosses block and replay boundaries and retries. Waits, checks, fills
 scrolls and keyboard-only Back never establish departure. Only a complete native
 and React capture with complete host structure proving the identified container
 absent can expire protection that way. Protection also lapses once a later planned
-item passes on a complete capture with no decline control on screen; an interruption
+item passes on its own complete capture with no decline control on screen; an interruption
 appearing after that point is eligible for bounded recovery. Until a later item
 passes, protection holds, so a screen the tap opens late stays protected, and a
 later item passing while a decline control is still on screen keeps it. After the
 lapse, a later step targeting the interruption still keeps it through the later-target
-veto, which is checked before planned-press protection. A planned Accept re-arms protection for its own
+veto, which is checked before planned-press protection. Static decline text does not
+keep protection; an on-screen, non-structural decline with supported or unknown press
+capability, or a button, link, cell or switch kind, does. Declaration-only passes such
+as Expect input never lapse protection using a previous item's capture.
+A planned Accept re-arms protection for its own
 destination, even when it closes an identified modal. If that destination has no
 identifiable container, protection remains on, including against later sheets,
 until it lapses. When an identified destination is proven gone, later unsolicited

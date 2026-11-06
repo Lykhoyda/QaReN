@@ -719,6 +719,7 @@ async function walkBlockScoped(
   let enrichment: { at: number; budget: number; waited?: number } | undefined;
   let waitAttempt: 'scroll' | 'none' = 'none';
   let latestObservation = 0;
+  let itemObservationStart = 0;
   // When each screen was captured, and the observation the last device action was dispatched on.
   const captured = new WeakMap<Screen, { at: number; id: number }>();
   // The newest observation that passed admission, recovery's captures included.
@@ -1429,7 +1430,12 @@ async function walkBlockScoped(
     if (row.outcome === 'pass' && !opts.login) {
       sequence.planPassed = true;
       const press = sequence.plannedPress;
-      if (opts.recover !== false && press && press.line !== row.line) {
+      if (
+        opts.recover !== false &&
+        press &&
+        press.line !== row.line &&
+        (captured.get(latest)?.id ?? 0) > itemObservationStart
+      ) {
         if (protectionLapses(latest)) sequence.plannedPress = undefined;
         else press.passedSince = true;
       }
@@ -2908,6 +2914,7 @@ async function walkBlockScoped(
       if (item.kind === 'echo') declareEcho(item.input);
       continue;
     }
+    itemObservationStart = sequence.observation;
     pressVetoed = undefined;
     pressBase = undefined;
     mutationStarted = false;

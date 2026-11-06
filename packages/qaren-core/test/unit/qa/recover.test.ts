@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   dismissCandidate,
   plannedSurface,
+  protectionLapses,
   recover,
   soleDecline,
   surfaceGone,
@@ -25,6 +26,27 @@ import { centreCovered, targetEvidence } from '../../../dist/qa/resolve.js';
 import { parsePlan, type Target } from '../../../dist/qa/plan.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import { element, screen as fixtureScreen, scriptedJudge, walker } from './judgment-fixtures.ts';
+
+test('protection lapse distinguishes static decline text from possible decline controls', () => {
+  const cases = [
+    ['text', 'unsupported', true],
+    ['input', 'unsupported', true],
+    ['text', 'supported', false],
+    ['text', 'unknown', false],
+    ['button', 'unsupported', false],
+    ['link', 'unsupported', false],
+    ['cell', 'unsupported', false],
+    ['switch', 'unsupported', false],
+  ] as const;
+  for (const [kind, press, lapses] of cases) {
+    const later = element('@later', 'Later', {
+      kind,
+      semantic: { press, fill: 'unsupported', visibility: 'visible' },
+    });
+    assert.equal(protectionLapses(fixtureScreen([later])), lapses, `${kind}: ${press}`);
+    assert.equal(protectionLapses(fixtureScreen([{ ...later, offscreen: true }])), true);
+  }
+});
 
 function screen(front: Screen['front'], extra: Partial<Screen> = {}): Screen {
   return { elements: [], visibleText: ['Home'], front, ...extra };

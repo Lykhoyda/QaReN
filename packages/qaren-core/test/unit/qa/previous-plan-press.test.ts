@@ -406,6 +406,57 @@ test('after a decline-free pass, a delayed opt-in a later step targets is still 
   assert.ok(!f.vetoes.includes('previous-plan-press'));
 });
 
+test('a later pass with static Later text permits recovery, but uncertain press evidence protects it', async () => {
+  for (const press of ['unsupported', 'unknown'] as const) {
+    const f = app(opener(), {
+      '@open': () =>
+        screen([
+          element('@details', 'Details', { kind: 'text' }),
+          element('@later', 'Later', {
+            kind: 'text',
+            semantic: { press, fill: 'unsupported', visibility: 'visible' },
+          }),
+        ]),
+      '@close': ready,
+    });
+    f.deps.row = (row) => {
+      if (row.line === 2 && row.outcome === 'pass') f.show(screen([close()]));
+    };
+    const result = await run(
+      '1. Tap "Open"\n2. Wait for "Details" to appear\n3. Wait for "Ready" to appear',
+      f,
+    );
+    assert.equal(result.verdict, press === 'unsupported' ? 'PASS' : 'FAIL');
+    assert.deepEqual(
+      f.actions,
+      press === 'unsupported' ? ['press @open', 'press @close'] : ['press @open'],
+    );
+    assert.equal(result.recoveries, press === 'unsupported' ? 1 : 0);
+    if (press === 'unknown') assert.equal(result.failure?.subreason, 'previous-plan-press');
+  }
+});
+
+test('an input declaration cannot lapse protection using the previous press loading capture', async () => {
+  const f = app(opener(), {
+    '@open': () => screen([element('@loading', 'Loading', { kind: 'text' })]),
+    '@skip': ready,
+  });
+  f.deps.row = (row) => {
+    if (row.line === 2 && row.outcome === 'pass')
+      f.show(screen([element('@skip', 'Skip'), element('@allow', 'Allow')]));
+  };
+  const result = await run(
+    '1. Tap "Open"\n2. Expect input EMAIL on screen\n3. Wait for "Ready" to appear',
+    f,
+  );
+  assert.ok(result.steps.some((row) => row.line === 2 && row.outcome === 'pass'));
+  assert.equal(result.verdict, 'FAIL');
+  assert.equal(result.failure?.step, 3);
+  assert.equal(result.failure?.subreason, 'previous-plan-press');
+  assert.deepEqual(f.actions, ['press @open']);
+  assert.equal(result.recoveries, 0);
+});
+
 test('a later item passing with a decline still on screen keeps protection and names the press line', async () => {
   const destination = () =>
     screen([
