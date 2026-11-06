@@ -1421,3 +1421,92 @@ fn cancellation_after_staging_never_publishes_and_leaves_owned_recovery() {
             .is_dir()
     );
 }
+
+#[test]
+fn operation_events_report_success_and_handled_failures() {
+    for failure in ["none", "install", "restore", "stage", "publish"] {
+        let f = Fixture::new();
+        let mut runner = CloneRunner::new();
+        if failure == "restore" {
+            f.modules();
+            published(&f, &mut runner);
+            runner.fail_clone = Some(runner.clones + 1);
+        }
+        probes(&mut runner.mock);
+        if failure == "restore" {
+            disk(&mut runner.mock, 999999999);
+        }
+        runner.mock.expect_run(
+            "pnpm install",
+            if failure == "install" {
+                CmdOutput::failed(1, "install failed")
+            } else {
+                CmdOutput::success("")
+            },
+        );
+        if !matches!(failure, "install" | "restore") {
+            disk(&mut runner.mock, 999999999);
+        }
+        if failure == "stage" {
+            runner.fail_clone = Some(1);
+        }
+        let path = f.0.join("events.jsonl");
+        events::init();
+        events::attach(&path);
+        let mut ctx = f.context(&mut runner, "events");
+        restore(&mut ctx, &f.0.join("repo"), true).unwrap();
+        let installed = crate::commands::prepare::install_deps(&mut ctx);
+        assert_eq!(installed.is_err(), failure == "install");
+        if installed.is_ok() {
+            f.modules();
+            stage(&mut ctx).unwrap();
+            if failure == "publish" {
+                let resource = ctx.record.resources.deps_cache.as_ref().unwrap();
+                let repo = repo_dir(&ctx.runs_root, resource).unwrap();
+                let staged = staging_dir(&repo, &ctx.record.run_id).unwrap();
+                std::fs::write(staged.join("entry.json"), "invalid entry").unwrap();
+            }
+            publish(&mut ctx).unwrap();
+        }
+        events::finish();
+        let emitted: Vec<Value> = std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        for operation in ["restore", "install", "stage", "publish"] {
+            let name = format!("deps_cache_{operation}");
+            let completed: Vec<_> = emitted
+                .iter()
+                .filter(|event| {
+                    event["event"] == "stage"
+                        && event["payload"]["name"] == name
+                        && event["payload"]["ms"].is_number()
+                })
+                .collect();
+            let attempted = match operation {
+                "stage" => !matches!(failure, "install" | "restore"),
+                "publish" => !matches!(failure, "install" | "restore" | "stage"),
+                _ => true,
+            };
+            assert_eq!(
+                completed.len(),
+                usize::from(attempted),
+                "{failure}: {operation}"
+            );
+            if attempted {
+                assert_eq!(
+                    completed[0]["payload"]["state"],
+                    if failure == operation {
+                        "failed"
+                    } else {
+                        "passed"
+                    },
+                    "{failure}: {operation}"
+                );
+            }
+        }
+        release(&mut ctx);
+        assert_eq!(runner.mock.remaining(), 0);
+    }
+}

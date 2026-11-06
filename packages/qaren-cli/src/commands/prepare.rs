@@ -1021,7 +1021,7 @@ pub(crate) fn install_deps(ctx: &mut Ctx) -> Result<(), Failure> {
         .registry_auth_env(&ctx.record.scenario.deps.registry_auth_env),
     );
     if ctx.verb == "pr" {
-        crate::deps_cache::timed(ctx, "install", started);
+        crate::deps_cache::timed(ctx, "install", started, deps.ok());
     }
     ensure_running(ctx.runner, "deps")?;
     if !deps.ok() {

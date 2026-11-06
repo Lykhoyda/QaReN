@@ -492,7 +492,7 @@ fn skipped(ctx: &mut Ctx, names: &[&str], reason: &str) {
     }
 }
 
-pub(crate) fn timed(ctx: &mut Ctx, name: &'static str, started: u64) {
+pub(crate) fn timed(ctx: &mut Ctx, name: &'static str, started: u64, succeeded: bool) {
     let stage = match name {
         "restore" => "deps_cache_restore",
         "stage" => "deps_cache_stage",
@@ -501,7 +501,11 @@ pub(crate) fn timed(ctx: &mut Ctx, name: &'static str, started: u64) {
     };
     events::stage(
         stage,
-        StageState::Passed,
+        if succeeded {
+            StageState::Passed
+        } else {
+            StageState::Failed
+        },
         None,
         Some(ctx.runner.now_epoch_ms().saturating_sub(started)),
     );
@@ -515,6 +519,7 @@ pub(crate) fn timed(ctx: &mut Ctx, name: &'static str, started: u64) {
 
 pub(crate) fn restore(ctx: &mut Ctx, repository: &Path, enabled: bool) -> Result<(), Failure> {
     let started = ctx.runner.now_epoch_ms();
+    let mut succeeded = true;
     let result = (|| {
         if !enabled {
             note(ctx, "disabled");
@@ -609,6 +614,7 @@ pub(crate) fn restore(ctx: &mut Ctx, repository: &Path, enabled: bool) -> Result
         match admitted {
             Ok(Err(miss)) => note(ctx, &miss),
             Err(_) => {
+                succeeded = false;
                 ctx.record.resources.deps_cache = None;
                 ctx.save()?;
                 note(ctx, "disabled");
@@ -621,6 +627,7 @@ pub(crate) fn restore(ctx: &mut Ctx, repository: &Path, enabled: bool) -> Result
                 match result {
                     Ok(()) => note(ctx, "hit"),
                     Err(reason) => {
+                        succeeded = false;
                         note(ctx, &reason);
                         ctx.record.resources.deps_cache.as_mut().unwrap().enabled = false;
                         if reason == "restore-cleanup-failed" {
@@ -642,7 +649,7 @@ pub(crate) fn restore(ctx: &mut Ctx, repository: &Path, enabled: bool) -> Result
         .iter()
         .any(|(key, value)| key == "deps_cache_restore" && value.starts_with("skipped:"))
     {
-        timed(ctx, "restore", started);
+        timed(ctx, "restore", started, succeeded && result.is_ok());
     }
     result
 }
@@ -831,6 +838,7 @@ pub(crate) fn stage(ctx: &mut Ctx) -> Result<(), Failure> {
         return Ok(());
     }
     let started = ctx.runner.now_epoch_ms();
+    let mut succeeded = true;
     let result = (|| {
         let staged = staging_dir(&dir, &ctx.record.run_id).unwrap();
         resource.staging = true;
@@ -880,6 +888,7 @@ pub(crate) fn stage(ctx: &mut Ctx) -> Result<(), Failure> {
             Ok(())
         })();
         if let Err(reason) = result {
+            succeeded = false;
             skipped(
                 ctx,
                 &["publish"],
@@ -904,7 +913,7 @@ pub(crate) fn stage(ctx: &mut Ctx) -> Result<(), Failure> {
         }
         Ok(())
     })();
-    timed(ctx, "stage", started);
+    timed(ctx, "stage", started, succeeded && result.is_ok());
     result
 }
 
@@ -956,7 +965,7 @@ pub(crate) fn publish(ctx: &mut Ctx) -> Result<(), Failure> {
     if result.is_err() {
         note(ctx, "disabled");
     }
-    timed(ctx, "publish", started);
+    timed(ctx, "publish", started, result.is_ok());
     Ok(())
 }
 
