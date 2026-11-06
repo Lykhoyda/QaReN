@@ -518,3 +518,64 @@ fn a_deleted_lockfile_is_drift_but_an_unreadable_lockfile_is_unreadable() {
     );
     std::fs::remove_dir_all(repo).unwrap();
 }
+
+#[test]
+fn a_real_checkout_whose_path_or_repository_vanishes_is_unreadable_but_a_new_commit_is_drift() {
+    let repo = common::temp_repo();
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["add", "."]);
+    let commit = |message: &str| {
+        git(
+            &repo,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                message,
+            ],
+        )
+    };
+    commit("baseline");
+    let scenario = common::scenario_from(
+        "schema: qaren/1\nname: vanish\nplatform: ios\ncandidate:\n  project_root: test-app\n  app_id: com.rndevagent.testapp\n  revision: HEAD\nbuild:\n  owner: qaren\nios:\n  device_type: iPhone\n  runtime: iOS\n",
+    );
+    let mut runner = RealRunner::new();
+    let baseline = resolve(&mut runner, &scenario, &repo).unwrap();
+    assert!(verify_unchanged_with(&mut runner, &baseline, true).is_ok());
+
+    let unmounted = repo.with_extension("unmounted");
+    std::fs::rename(&repo, &unmounted).unwrap();
+    let result = verify_unchanged_with(&mut runner, &baseline, true);
+    std::fs::rename(&unmounted, &repo).unwrap();
+    println!("path vanished: {result:?}");
+    assert!(
+        matches!(&result, Err(CandidateCheck::Unreadable(d)) if d.contains("repository root")),
+        "{result:?}"
+    );
+
+    std::fs::rename(repo.join(".git"), repo.join(".git-gone")).unwrap();
+    let result = verify_unchanged_with(&mut runner, &baseline, true);
+    std::fs::rename(repo.join(".git-gone"), repo.join(".git")).unwrap();
+    println!("repository vanished: {result:?}");
+    assert!(
+        matches!(&result, Err(CandidateCheck::Unreadable(d)) if d.contains("git rev-parse HEAD failed")),
+        "{result:?}"
+    );
+
+    assert!(verify_unchanged_with(&mut runner, &baseline, true).is_ok());
+    commit("moved");
+    let result = verify_unchanged_with(&mut runner, &baseline, true);
+    println!("new commit: {result:?}");
+    assert!(
+        matches!(&result, Err(CandidateCheck::Drifted(d)) if d.contains("HEAD moved")),
+        "{result:?}"
+    );
+    std::fs::remove_dir_all(&repo).unwrap();
+}
