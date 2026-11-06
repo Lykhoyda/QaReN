@@ -968,10 +968,9 @@ export function join(
       // Association requires complete typography, so the host's ancestry is always known here.
       const path = hostPath(reactHostEvidence!.typography!, hosts.indexOf(host));
       const transparent =
-        host.hidden === true ||
         host.pointerEvents === 'none' ||
         host.pointerEvents === 'box-none' ||
-        !!path?.some((i) => hosts[i]?.pointerEvents === 'none' || hosts[i]?.hidden === true);
+        !!path?.some((i) => hosts[i]?.pointerEvents === 'none');
       touchPolicies.set(element, transparent ? 'transparent' : 'opaque');
     }
     const privateNativeLabel = presenceMode && observed?.labelSource !== 'direct';

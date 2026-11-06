@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parsePlan } from '../../../dist/qa/plan.js';
-import { plainScrollBand } from '../../../dist/qa/resolve.js';
+import { parsePlan, parseStep } from '../../../dist/qa/plan.js';
+import { plainScrollBand, scrollUntilBand } from '../../../dist/qa/resolve.js';
 import { scrollMotion } from '../../../dist/qa/scroll-motion.js';
 import { join, screenSignature, type NativeNode, type Screen } from '../../../dist/qa/screen.js';
 import { captureScreen } from '../../../dist/qa/capture.js';
@@ -31,6 +31,7 @@ function screen(options: ScreenOptions = {}): Screen {
 function presenceScreen(
   options: ScreenOptions,
   pointerEvents: Record<string, 'auto' | 'none' | 'box-none' | undefined>,
+  hidden?: 'host' | 'ancestor',
 ): Promise<Screen> {
   const base = nodesOf(options);
   const depth = (node: NativeNode): number => {
@@ -50,7 +51,7 @@ function presenceScreen(
       ...(node.type === 'Application' ? {} : { observedUptimeMs: 150 }),
     },
   }));
-  const ids = Object.keys(pointerEvents);
+  const ids = [...(hidden === 'ancestor' ? ['ancestor'] : []), ...Object.keys(pointerEvents)];
   const hostEvidence = {
     complete: true,
     hosts: ids.map((testID) => ({
@@ -58,6 +59,9 @@ function presenceScreen(
       role: null,
       roleSource: 'none',
       capabilities: {},
+      ...((hidden === 'host' && testID === 'fixed') || testID === 'ancestor'
+        ? { hidden: true }
+        : {}),
       ...(pointerEvents[testID] ? { pointerEvents: pointerEvents[testID] } : {}),
     })),
     typography: {
@@ -67,8 +71,8 @@ function presenceScreen(
       coordinateSpace: 'window-points',
       nodes: ids.map((testID, hostIndex) => ({
         hostIndex,
-        parentHostIndex: null,
-        rootIndex: hostIndex,
+        parentHostIndex: hidden === 'ancestor' && testID === 'fixed' ? 0 : null,
+        rootIndex: hidden === 'ancestor' && testID === 'fixed' ? 0 : hostIndex,
         hostType: 'RCTView',
         rect: nodes.find((node) => node.identifier === testID)!.rect,
         text: { kind: 'none' },
@@ -532,6 +536,53 @@ test('a pointer-transparent cover proven by the presence recapture lets the drag
     assert.equal(f.result.failure?.cause, undefined, pointerEvents);
     assert.deepEqual(f.bands[0], LIST, pointerEvents);
     assert.equal(f.rows.at(-1)?.scrollBand?.status, 'clear', pointerEvents);
+  }
+});
+
+test('accessibility-hidden hosts and ancestors still block plain scroll touches', async () => {
+  for (const hidden of ['host', 'ancestor'] as const) {
+    const options = {
+      extra:
+        hidden === 'ancestor'
+          ? [
+              {
+                index: 4,
+                parentIndex: 1,
+                ref: '@ancestor',
+                identifier: 'ancestor',
+                type: 'Other',
+                rect: WINDOW,
+              },
+              { ...overlay(WINDOW), index: 5, parentIndex: 4 },
+            ]
+          : [overlay(WINDOW)],
+    };
+    const presence = await presenceScreen(options, { fixed: 'auto' }, hidden);
+    for (const direction of ['up', 'down'] as const) {
+      const f = await run([screen(options)], { presence, direction });
+      assert.equal(f.presenceCaptures, 1);
+      assert.deepEqual(f.bands, []);
+      assert.equal(f.result.failure?.cause, 'scroll_container_unreachable');
+      assert.equal(f.rows.at(-1)?.scrollBand?.status, 'unreachable');
+    }
+  }
+});
+
+test('scroll-until keeps overlay cuts that plain scroll can pass through', async () => {
+  for (const pointerEvents of ['none', 'box-none'] as const) {
+    const s = await presenceScreen(
+      { childY: 900, extra: [overlay({ x: 0, y: 500, width: 400, height: 300 })] },
+      { fixed: pointerEvents },
+    );
+    assert.deepEqual(plainScrollBand(s, 'down').band, LIST);
+    assert.equal(s.elements.find((element) => element.testID === 'row')?.offscreen, true);
+    for (const direction of ['up', 'down']) {
+      for (const target of ['absent', 'row']) {
+        const step = parseStep(`Scroll ${direction} until "${target}"`);
+        assert.ok(step && !('refuse' in step) && step.kind === 'scroll' && step.until);
+        assert.deepEqual(scrollUntilBand(step.until, s), { ...LIST, height: 296 });
+      }
+    }
   }
 });
 

@@ -628,11 +628,12 @@ function clearOfFrontOverlays(
   container: Element,
   band: NonNullable<NativeNode['rect']>,
   screen: Screen,
+  touch = false,
   opaqueOnly = false,
 ): NativeNode['rect'] {
   let spans = [{ top: band.y, bottom: band.y + band.height }];
   const padding = 4 * (screen.pointScale ?? 1);
-  for (const { element, rect } of frontOverlayFrames(container, band, screen, true)) {
+  for (const { element, rect } of frontOverlayFrames(container, band, screen, touch)) {
     if (opaqueOnly && touchPolicy(element) !== 'opaque') continue;
     const top = rect.y - padding;
     const bottom = rect.y + rect.height + padding;
@@ -751,11 +752,12 @@ export function containerBand(
   container: Element,
   screen: Screen,
   within?: NativeNode['rect'],
+  touch = false,
 ): ScrollBandReceipt {
   const frame = elementFrame(container);
   const band = within ?? (frame && aboveKeyboard(clip(frame, elementViewport(container)), screen));
   if (!band) return { status: 'no-geometry' };
-  const clear = clearOfFrontOverlays(container, band, screen);
+  const clear = clearOfFrontOverlays(container, band, screen, touch);
   const result = clear ?? { ...band, height: 0 };
   return { status: sameRect(band, result) ? 'clear' : 'overlay-cut', band: result };
 }
@@ -783,7 +785,7 @@ function centreCorridor(
   }
   if (radius <= 0) return { ...band, width: 0 };
   return (
-    clearOfFrontOverlays(container, { ...band, x: x - radius, width: radius * 2 }, screen) ?? {
+    clearOfFrontOverlays(container, { ...band, x: x - radius, width: radius * 2 }, screen, true) ?? {
       ...band,
       height: 0,
     }
@@ -833,7 +835,7 @@ export function plainScrollBand(
       cy < clipped.y + clipped.height
     )
       continue;
-    const receipt = containerBand(container, screen, clipped);
+    const receipt = containerBand(container, screen, clipped, true);
     let band = receipt.band;
     if (band && band.height <= 0) {
       const corridor = centreCorridor(container, clipped, screen);
@@ -843,7 +845,7 @@ export function plainScrollBand(
       }
       // An unproven cover keeps its container only as a last resort, dragged across its whole clip.
       if (corridor === 'unproven') {
-        const across = clearOfFrontOverlays(container, clipped, screen, true);
+        const across = clearOfFrontOverlays(container, clipped, screen, true, true);
         if (across) unproven.push({ ...receipt, band: across, container, clipped });
         continue;
       }
@@ -889,7 +891,7 @@ export function plainScrollBand(
     // The drag may cross unproven covers, never a proven one.
     const across =
       corridor === 'unproven'
-        ? clearOfFrontOverlays(candidate.container, clipped, screen, true)
+        ? clearOfFrontOverlays(candidate.container, clipped, screen, true, true)
         : undefined;
     if (across && fits(across))
       through.push({ ...selection, band: across, distance, unproven: true });
