@@ -4384,6 +4384,12 @@ fn script_android_app_tick(mock: &mut MockRunner, pidof: CmdOutput) {
 }
 
 fn script_android_walk_release(mock: &mut MockRunner, runner_running: bool) {
+    script_android_walk(mock);
+    script_borrowed_release(mock, runner_running);
+}
+
+// The walk, then teardown up to the borrowed-emulator release.
+fn script_android_walk(mock: &mut MockRunner) {
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_drift_status(mock);
     mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
@@ -4396,7 +4402,6 @@ fn script_android_walk_release(mock: &mut MockRunner, runner_running: bool) {
     );
     mock.expect_run("ps -A", CmdOutput::success("1 1 S\n6000 6000 S\n"));
     script_metro_teardown(mock, EMULATOR, None);
-    script_borrowed_release(mock, runner_running);
 }
 
 // `dumpsys activity processes <runner>` on an API 37 emulator, runner instrumenting and stopped.
@@ -10411,6 +10416,60 @@ fn android_teardown_releases_before_the_lease() {
         .any(|c| c.contains("uninstall") || c.contains("kill-server")));
     let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
     assert!(record.resources.lease.is_none());
+}
+
+// A starved emulator: the absence read times out, the device still answers, and the check's
+// own teardown proves the runner gone on the retry and releases the lease in the same run.
+#[test]
+fn android_teardown_retries_a_slow_runner_read_and_releases_the_lease() {
+    let (repo, app) = app_repo();
+    seed_cached_apk(&repo, &app);
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_android_launch(&mut mock, 0);
+    script_android_app_tick(&mut mock, CmdOutput::success("4242\n"));
+    script_android_walk(&mut mock);
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+    mock.expect_run("reverse --remove tcp:8791", CmdOutput::success(""));
+    mock.expect_run("reverse --list", CmdOutput::success(""));
+    mock.expect_run("forward --list", CmdOutput::success("\n"));
+    mock.expect_run(
+        "dumpsys activity processes",
+        CmdOutput {
+            timed_out: true,
+            duration_ms: 20_051,
+            ..Default::default()
+        },
+    );
+    mock.expect_run(
+        "shell true",
+        CmdOutput {
+            duration_ms: 11_482,
+            ..CmdOutput::success("")
+        },
+    );
+    mock.expect_run(
+        "dumpsys activity processes",
+        CmdOutput::success(NO_RUNNER_PROCESS),
+    );
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(receipt.cleanup["android_runner"], "absent");
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert_eq!(mock.remaining(), 0);
+    let retry = mock.calls.last().unwrap();
+    assert_eq!(
+        (retry.label.as_str(), retry.timeout_seconds),
+        ("adb-dumpsys-runner-processes", 40)
+    );
+    let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+    assert!(record.resources.lease.is_none());
+    assert_ne!(record.phase, Phase::Walking);
 }
 
 #[test]
