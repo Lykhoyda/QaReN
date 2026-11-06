@@ -354,9 +354,7 @@ for (const terminal of ['pass', 'refuse', 'retry'] as const) {
     assert.ok(rows.length > 0);
     if (terminal === 'retry') assert.ok(rows.some((row) => row.outcome === 'retry'));
     for (const row of rows) {
-      assert.deepEqual(row.collapsed, [
-        { ref: '@e2', kind: 'button', frame: OUTER, into: '@e3' },
-      ]);
+      assert.deepEqual(row.collapsed, [{ ref: '@e2', kind: 'button', frame: OUTER, into: '@e3' }]);
       assert.deepEqual(
         row.candidateExclusions?.map(({ ref, reason }) => [ref, reason]),
         [['@e4', 'not-hittable']],
