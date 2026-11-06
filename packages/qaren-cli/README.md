@@ -1009,6 +1009,18 @@ Incomplete native captures, a missing application/window frame, no captured
 container, or an empty container frame keep the viewport gesture with
 `scrollBand.status: "no-geometry"`; a band too small for the handler's actual
 rounded drag does the same with `"too-small"`.
+On Android, if that selection would drag a container whose own accessibility
+report says it cannot scroll, QaReN repeats the selection without such
+containers. It uses the new selection only when it finds a list to drag or
+refuses because that list is covered. This avoids dragging a navigation
+library's full-screen wrapper on native-header screens. Existing refusals and
+viewport fallbacks stay unchanged, as do iOS and captures without the report.
+A list with scrolling disabled also reports that it cannot scroll; when
+excluding it finds no replacement list or covered-list refusal, the original
+selection remains. Scroll-until and container clipping rules are unchanged.
+For descendant-motion evidence on a selected list that does not report itself
+unable to scroll, a same-frame container that reports it cannot scroll is
+ignored rather than making the list's movement ambiguous.
 When the first scroll leaves the screen unchanged, QaReN scrolls once more under the same operation
 id; if both scrolls dispatched cleanly with complete native app captures
 before and after each attempt and neither changed the screen,
@@ -1534,6 +1546,14 @@ A node the traversal cannot read is counted as dropped,
 and more than 600 nodes truncate the read; either leaves the capture
 incomplete. Literal steps can read an RN `Modal`'s content; its effect on React
 host association is described below.
+
+Every Android snapshot node carries `scrollable`, the platform's own
+`AccessibilityNodeInfo.isScrollable` report. The required `SCROLLABLE_FACT_V1`
+capability makes an older runner stale and triggers the existing automatic
+rebuild path without changing the protocol version. The report is independent
+of presence evidence and does not affect screen-change or snapshot-stability
+comparisons. Its plain-scroll use is defined in the
+[plain-scroll contract](#occluded-taps-and-focus).
 
 Android QA snapshots can also request native presence through the runner's
 `A11Y_PRESENCE_V2` capability; the core treats a runner without it, including
