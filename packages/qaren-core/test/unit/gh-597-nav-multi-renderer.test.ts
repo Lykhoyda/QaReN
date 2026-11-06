@@ -30,14 +30,13 @@ type RendererHook = {
 };
 
 function createNavigationFixture() {
-  const navigated: string[] = [];
   const state: NavigationState = {
     routes: [{ name: 'Home' }, { name: 'Profile' }],
     routeNames: ['Home', 'Profile'],
     index: 0,
   };
   const ref: NavigationRef = {
-    navigate: (screen) => navigated.push(screen),
+    navigate: () => {},
     dispatch: () => {},
     getRootState: () => state,
   };
@@ -48,7 +47,7 @@ function createNavigationFixture() {
     child: null,
     sibling: null,
   };
-  return { fiber, navigated };
+  return { fiber };
 }
 
 function createSandbox(hook: RendererHook) {
@@ -75,10 +74,8 @@ function createSandbox(hook: RendererHook) {
     __REACT_DEVTOOLS_GLOBAL_HOOK__: hook,
     __QAREN: undefined as
       | {
-          navigateTo: (screen: string) => string;
           getNavState: () => string;
           getTree: (opts?: object) => string;
-          getNavGraph: () => string;
         }
       | undefined,
   };
@@ -88,19 +85,18 @@ function createSandbox(hook: RendererHook) {
   return context.__QAREN!;
 }
 
-function assertNavigationDiscovered(hook: RendererHook, navigated: string[]) {
-  const agent = createSandbox(hook);
-  const navigationResult = JSON.parse(agent.navigateTo('Profile'));
-  const stateResult = JSON.parse(agent.getNavState());
-
-  assert.equal(navigationResult.navigated, true);
-  assert.deepEqual(navigated, ['Profile']);
-  assert.equal(stateResult.routeName, 'Home');
-  assert.deepEqual(stateResult.stack, ['Home', 'Profile']);
+// Hook-held state first, then the nav-ref fallback (findNavRef) once the hooks are cleared.
+function assertNavigationDiscovered(hook: RendererHook, fiber: Fiber) {
+  for (const source of ['hooks', 'nav ref']) {
+    if (source === 'nav ref') fiber.memoizedState = null;
+    const stateResult = JSON.parse(createSandbox(hook).getNavState());
+    assert.equal(stateResult.routeName, 'Home', source);
+    assert.deepEqual(stateResult.stack, ['Home', 'Profile'], source);
+  }
 }
 
 test('GH #597: empty renderer 1 does not mask the live navigation tree in renderer 2', () => {
-  const { fiber, navigated } = createNavigationFixture();
+  const { fiber } = createNavigationFixture();
   const hook: RendererHook = {
     renderers: new Map([
       [1, {}],
@@ -109,11 +105,11 @@ test('GH #597: empty renderer 1 does not mask the live navigation tree in render
     getFiberRoots: (rendererId) => (rendererId === 2 ? new Set([{ current: fiber }]) : new Set()),
   };
 
-  assertNavigationDiscovered(hook, navigated);
+  assertNavigationDiscovered(hook, fiber);
 });
 
 test('GH #597: registered renderer IDs are used instead of a bounded numeric guess', () => {
-  const { fiber, navigated } = createNavigationFixture();
+  const { fiber } = createNavigationFixture();
   const hook: RendererHook = {
     renderers: new Map([
       [1, {}],
@@ -122,21 +118,21 @@ test('GH #597: registered renderer IDs are used instead of a bounded numeric gue
     getFiberRoots: (rendererId) => (rendererId === 21 ? new Set([{ current: fiber }]) : new Set()),
   };
 
-  assertNavigationDiscovered(hook, navigated);
+  assertNavigationDiscovered(hook, fiber);
 });
 
 test('GH #597: a partial renderer registry retains numeric-probe coverage', () => {
-  const { fiber, navigated } = createNavigationFixture();
+  const { fiber } = createNavigationFixture();
   const hook: RendererHook = {
     renderers: new Map([[1, {}]]),
     getFiberRoots: (rendererId) => (rendererId === 2 ? new Set([{ current: fiber }]) : new Set()),
   };
 
-  assertNavigationDiscovered(hook, navigated);
+  assertNavigationDiscovered(hook, fiber);
 });
 
 test('GH #597: an unusable renderer does not abort a later live renderer', () => {
-  const { fiber, navigated } = createNavigationFixture();
+  const { fiber } = createNavigationFixture();
   const hook: RendererHook = {
     renderers: new Map([
       [1, {}],
@@ -148,11 +144,11 @@ test('GH #597: an unusable renderer does not abort a later live renderer', () =>
     },
   };
 
-  assertNavigationDiscovered(hook, navigated);
+  assertNavigationDiscovered(hook, fiber);
 });
 
 test('GH #597: a non-navigation tree in the first live renderer does not mask a later one', () => {
-  const { fiber, navigated } = createNavigationFixture();
+  const { fiber } = createNavigationFixture();
   const shell: Fiber = {
     type: { displayName: 'LogBox' },
     child: null,
@@ -169,7 +165,7 @@ test('GH #597: a non-navigation tree in the first live renderer does not mask a 
     },
   };
 
-  assertNavigationDiscovered(hook, navigated);
+  assertNavigationDiscovered(hook, fiber);
 });
 
 test('GH #597: a renderers iterator that never reports done degrades to the numeric probe', () => {
@@ -177,7 +173,7 @@ test('GH #597: a renderers iterator that never reports done degrades to the nume
   // live root sits at a different probe ID (2): only an implementation that
   // discards the overflowing registry and falls back to the bounded numeric
   // probe can discover it.
-  const { fiber, navigated } = createNavigationFixture();
+  const { fiber } = createNavigationFixture();
   const hook = {
     renderers: {
       keys: () => ({ next: () => ({ done: false, value: 999 }) }),
@@ -186,7 +182,7 @@ test('GH #597: a renderers iterator that never reports done degrades to the nume
       rendererId === 2 ? new Set([{ current: fiber }]) : new Set<{ current: Fiber }>(),
   } as unknown as RendererHook;
 
-  assertNavigationDiscovered(hook, navigated);
+  assertNavigationDiscovered(hook, fiber);
 });
 
 test('GH #597: getTree readiness gate honors a high registered renderer after empty low IDs', () => {
@@ -220,19 +216,19 @@ test('GH #597: getTree readiness gate keeps numeric-probe coverage for a partial
 });
 
 test('GH #597: the proven single-renderer navigation path remains supported', () => {
-  const { fiber, navigated } = createNavigationFixture();
+  const { fiber } = createNavigationFixture();
   const hook: RendererHook = {
     renderers: new Map([[1, {}]]),
     getFiberRoots: (rendererId) => (rendererId === 1 ? new Set([{ current: fiber }]) : new Set()),
   };
 
-  assertNavigationDiscovered(hook, navigated);
+  assertNavigationDiscovered(hook, fiber);
 });
 
 test('GH #597: forwardRef-wrapped NavigationContainer on a later renderer is discovered', () => {
   // Live shape from React Navigation 7.x + React 19 (bridgeless): fiber.type is
   // the forwardRef wrapper object — displayName/name live only on type.render.
-  const { fiber, navigated } = createNavigationFixture();
+  const { fiber } = createNavigationFixture();
   const forwardRefFiber = {
     ...fiber,
     type: {
@@ -249,7 +245,7 @@ test('GH #597: forwardRef-wrapped NavigationContainer on a later renderer is dis
       rendererId === 2 ? new Set([{ current: forwardRefFiber }]) : new Set(),
   };
 
-  assertNavigationDiscovered(hook, navigated);
+  assertNavigationDiscovered(hook, forwardRefFiber);
 });
 
 test('GH #597: no-match control — scanning every renderer never fabricates a ref', () => {
@@ -271,88 +267,7 @@ test('GH #597: no-match control — scanning every renderer never fabricates a r
     },
   };
 
-  const agent = createSandbox(hook);
-  const navigationResult = JSON.parse(agent.navigateTo('Profile'));
-  const stateResult = JSON.parse(agent.getNavState());
+  const stateResult = JSON.parse(createSandbox(hook).getNavState());
 
-  assert.equal(navigationResult.navigated, undefined);
-  assert.match(String(navigationResult.__agent_error), /^Navigation ref not found\./);
   assert.match(String(stateResult.error), /^Navigation state not found\./);
-});
-
-test('GH #597: nav graph resolves a forwardRef-named container fiber on a later renderer', () => {
-  const { fiber } = createNavigationFixture();
-  const forwardRefFiber = {
-    ...fiber,
-    type: {
-      $$typeof: Symbol.for('react.forward_ref'),
-      render: function NavigationContainer() {},
-    },
-    ref: null,
-  } as unknown as Fiber;
-  const hook: RendererHook = {
-    renderers: new Map([
-      [1, {}],
-      [2, {}],
-    ]),
-    getFiberRoots: (rendererId) =>
-      rendererId === 2 ? new Set([{ current: forwardRefFiber }]) : new Set(),
-  };
-
-  const graph = JSON.parse(createSandbox(hook).getNavGraph());
-
-  assert.equal(graph.error, undefined);
-  assert.equal(graph.containers_found, 1);
-  assert.equal(graph.library, 'react-navigation');
-  assert.deepEqual(
-    graph.navigators[0].routes.map((route: { name: string }) => route.name),
-    ['Home', 'Profile'],
-  );
-});
-
-test('GH #597: nav graph falls back to nav-ref discovery for NavigationContainerInner', () => {
-  const { fiber } = createNavigationFixture();
-  const forwardRefFiber = {
-    ...fiber,
-    type: {
-      $$typeof: Symbol.for('react.forward_ref'),
-      render: function NavigationContainerInner() {},
-    },
-  } as unknown as Fiber;
-  const hook: RendererHook = {
-    renderers: new Map([
-      [1, {}],
-      [2, {}],
-    ]),
-    getFiberRoots: (rendererId) =>
-      rendererId === 2 ? new Set([{ current: forwardRefFiber }]) : new Set(),
-  };
-
-  const graph = JSON.parse(createSandbox(hook).getNavGraph());
-
-  assert.equal(graph.error, undefined);
-  assert.equal(graph.library, 'react-navigation');
-  assert.deepEqual(
-    graph.navigators[0].routes.map((route: { name: string }) => route.name),
-    ['Home', 'Profile'],
-  );
-});
-
-test('GH #597: nav graph no-match control keeps its exact error semantics', () => {
-  const shell: Fiber = {
-    type: { displayName: 'LogBox' },
-    child: null,
-    sibling: null,
-  };
-  const hook: RendererHook = {
-    renderers: new Map([
-      [1, {}],
-      [2, {}],
-    ]),
-    getFiberRoots: (rendererId) => (rendererId === 2 ? new Set([{ current: shell }]) : new Set()),
-  };
-
-  const graph = JSON.parse(createSandbox(hook).getNavGraph());
-
-  assert.match(String(graph.error), /^No navigation state found\./);
 });

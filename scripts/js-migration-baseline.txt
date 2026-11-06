@@ -43,7 +43,6 @@ packages/qaren-core/test/unit/domain/action-state-store.test.js
 packages/qaren-core/test/unit/domain/action-store-mirror.test.js
 packages/qaren-core/test/unit/fast-runner-liveness.test.js
 packages/qaren-core/test/unit/fast-runner-ready-parser.test.js
-packages/qaren-core/test/unit/find-active-renderer-migration.test.js
 packages/qaren-core/test/unit/find-project-root.test.js
 packages/qaren-core/test/unit/flatten-android-accessibility-tree.test.js
 packages/qaren-core/test/unit/flatten-xcui-tree.test.js
@@ -125,7 +124,6 @@ packages/qaren-core/test/unit/gh-task3-role.test.js
 packages/qaren-core/test/unit/gh-task6-interact-truncation.test.js
 packages/qaren-core/test/unit/graceful-shutdown.test.js
 packages/qaren-core/test/unit/harness-smoke.test.js
-packages/qaren-core/test/unit/helper-expr.test.js
 packages/qaren-core/test/unit/helpers/inject-harness.js
 packages/qaren-core/test/unit/injected-helpers.test.js
 packages/qaren-core/test/unit/injected-typetext-verify.test.js
