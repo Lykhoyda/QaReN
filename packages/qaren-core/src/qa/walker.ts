@@ -480,9 +480,12 @@ export interface WalkOptions {
 
 const recoveryTarget = (item: Item): RecoveryTarget | undefined => {
   if (item.kind === 'check')
-    return item.literal
-      ? { quoted: item.text, phrase: item.text, kind: 'check', line: item.line }
-      : undefined;
+    return {
+      ...(item.literal ? { quoted: item.text } : {}),
+      phrase: item.text,
+      kind: 'check',
+      line: item.line,
+    };
   const target = stepTarget(item);
   if (!target) return undefined;
   const declared = parseStep(planLineBody(item.raw));
@@ -1628,6 +1631,12 @@ async function walkBlockScoped(
             : `Add a step after line ${sequence.plannedPress.line} that taps the decline control.`;
       }
     }
+    const interruption = interruptions.get(item.line);
+    if (interruption?.veto === 'later-target' && interruption.targetLine !== undefined)
+      reason = [
+        ...segments(reason),
+        `; an app screen is in front; automatic app dismissal was withheld because the later planned item at line ${interruption.targetLine} may target it`,
+      ];
     const withheld = privacy.textWithheld(last);
     emit({
       ...row,
@@ -2533,7 +2542,7 @@ async function walkBlockScoped(
       },
       ...remainingItems.flatMap((remaining) => {
         const target = recoveryTarget(remaining);
-        return target?.quoted !== undefined ? [target] : [];
+        return target ? [target] : [];
       }),
       ...(opts.laterTargets ?? []),
     ];
@@ -4992,7 +5001,7 @@ export async function runPlan(
           laterTargets: laterBlocks.flatMap((later) =>
             later.items.flatMap((item) => {
               const target = recoveryTarget(item);
-              return target?.quoted !== undefined ? [{ ...target, laterBlock: true }] : [];
+              return target ? [{ ...target, laterBlock: true }] : [];
             }),
           ),
         },

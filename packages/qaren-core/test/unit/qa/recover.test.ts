@@ -48,6 +48,28 @@ test('protection lapse distinguishes static decline text from possible decline c
   }
 });
 
+test('described remaining targets conservatively veto even sole declines in later blocks', () => {
+  const snapshot = fixtureScreen([element('@close', 'Close')]);
+  for (const laterBlock of [false, true]) {
+    for (const kind of ['press', 'fill', 'wait', 'scroll', 'check'] as const) {
+      const records: InterruptionDiagnostic[] = [];
+      assert.equal(
+        dismissCandidate(
+          snapshot,
+          [
+            { quoted: 'Ready', phrase: 'Ready', line: 1, kind: 'wait' },
+            { phrase: 'the allow button', line: 2, kind, laterBlock },
+          ],
+          (record) => records.push(record),
+        ),
+        undefined,
+      );
+      assert.equal(records[0]?.veto, 'later-target');
+      assert.equal(records[0]?.targetIndex, 1);
+    }
+  }
+});
+
 function screen(front: Screen['front'], extra: Partial<Screen> = {}): Screen {
   return { elements: [], visibleText: ['Home'], front, ...extra };
 }

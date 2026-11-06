@@ -22,7 +22,6 @@ export interface RecoveryTarget extends Target {
   // The plan step this target comes from; a placeholder current target has neither.
   line?: number;
   kind?: Item['kind'];
-  // A target from a later block keeps its own control but never vetoes recovery by mere presence.
   laterBlock?: boolean;
   // The current target follows a passed planned press, so the screen in front is the plan's own.
   afterPlannedPress?: boolean;
@@ -194,15 +193,14 @@ export function dismissCandidate(
   if (!planTargets.length) return rejected('current-target', 0);
   const targetIndex = planTargets.findIndex(
     (target, index) =>
-      !(index > 0 && target.laterBlock) &&
-      !(
-        index > 0 &&
-        (target.declared ?? target).exact !== 'id' &&
-        DECLINE_LOWER.has((target.declared ?? target).quoted?.toLowerCase() ?? '')
-      ) &&
-      // findIndex reaches a later target only once the current one is absent; with nothing but
-      // the decline to act on, a later press or fill matching this screen is a coincidence.
-      !(index > 0 && sole && (target.kind === 'press' || target.kind === 'fill')) &&
+      (target.quoted === undefined ||
+        (!(index > 0 && target.laterBlock) &&
+          !(
+            index > 0 &&
+            (target.declared ?? target).exact !== 'id' &&
+            DECLINE_LOWER.has((target.declared ?? target).quoted?.toLowerCase() ?? '')
+          ) &&
+          !(index > 0 && sole && (target.kind === 'press' || target.kind === 'fill')))) &&
       targetOnScreen(screen, target),
   );
   if (targetIndex !== -1) {

@@ -291,7 +291,7 @@ test('a consent modal arriving after an empty press baseline stays protected', a
   assert.equal(result.recoveries, 0);
 });
 
-test('an opt-in a later unquoted step could target stays the planned press’s own', async () => {
+test('an opt-in stays protected by a later described target before protection lapses', async () => {
   const optIn = () => screen([element('@skip', 'Skip'), element('@accept', 'Allow')]);
   const f = app(opener(), { '@open': optIn, '@skip': ready });
   const result = await run(
@@ -300,8 +300,9 @@ test('an opt-in a later unquoted step could target stays the planned press’s o
   );
   assert.equal(result.verdict, 'FAIL');
   assert.deepEqual(f.actions, ['press @open']);
-  assert.equal(result.failure?.subreason, 'previous-plan-press');
-  assert.equal(result.failure?.suggestion, 'Add a step after line 1: Tap "Skip".');
+  assert.ok(f.vetoes.includes('later-target'));
+  assert.equal(result.steps.find((row) => row.outcome === 'fail')?.interruption?.targetLine, 3);
+  assert.match(result.failure?.seen ?? '', /later planned item at line 3/);
 });
 
 test('an unprompted sheet after later items passed on a decline-free screen is dismissed once', async () => {
@@ -455,6 +456,58 @@ test('an input declaration cannot lapse protection using the previous press load
   assert.equal(result.failure?.subreason, 'previous-plan-press');
   assert.deepEqual(f.actions, ['press @open']);
   assert.equal(result.recoveries, 0);
+});
+
+test('after protection lapses, described later items keep their interruption across block boundaries', async () => {
+  for (const laterBlock of [false, true]) {
+    for (const laterItem of ['4. Tap the allow button', '✓ the allow button is visible']) {
+      for (const withheld of [false, true]) {
+        const f = app(opener(), {
+          '@open': () => screen([element('@loading', 'Loading', { kind: 'text' })]),
+          '@skip': ready,
+        });
+        if (withheld) {
+          f.deps.privacy = new ObservedPrivacy();
+          f.deps.privacy.classifyInputs(['zq-s3cret-7781']);
+        }
+        f.deps.row = (row) => {
+          if (row.line === 3 && row.outcome === 'pass')
+            f.show(
+              screen([
+                element('@heading', 'zq-s3cret-7781', { kind: 'text' }),
+                element('@skip', 'Skip'),
+                element('@allow', 'Allow'),
+              ]),
+            );
+        };
+        const result = await run(
+          '# First\n1. Tap "Open"\n2. Wait for "Loading" to appear\n3. Wait for "Ready" to appear\n' +
+            (laterBlock ? '\n# Later\n' : '') +
+            laterItem,
+          f,
+        );
+        const laterLine = laterBlock ? 7 : 5;
+        assert.equal(result.verdict, 'FAIL');
+        assert.equal(result.failure?.step, 4);
+        assert.deepEqual(f.actions, ['press @open']);
+        assert.equal(result.recoveries, 0);
+        assert.ok(f.vetoes.includes('later-target'));
+        assert.ok(!f.vetoes.includes('previous-plan-press'));
+        const failed = result.steps.find((row) => row.line === 4 && row.outcome === 'fail');
+        assert.equal(failed?.interruption?.targetLine, laterLine);
+        assert.match(
+          result.failure?.seen ?? '',
+          new RegExp(`later planned item at line ${laterLine}`),
+        );
+        assert.equal(result.failure?.screen?.front, 'app');
+        assert.deepEqual(result.failure?.screen?.controls.map((control) => control.label), [
+          'Skip',
+          'Allow',
+        ]);
+        if (withheld) assert.ok(!JSON.stringify(result).includes('zq-s3cret-7781'));
+      }
+    }
+  }
 });
 
 test('a later item passing with a decline still on screen keeps protection and names the press line', async () => {

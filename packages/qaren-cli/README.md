@@ -3453,6 +3453,11 @@ A non-exempt on-screen, uncovered target in the current block, uncertain absence
 for a target subject to the absence guard, or a control inside any plan target prevents
 dismissal. Phrase-only current targets cannot establish this
 deterministic absence guard.
+Described targets from all remaining items, including later blocks and checks,
+also keep the interruption: the target-presence resolver cannot rule out a match
+without resolving the description, so recovery treats it as a possible match.
+The failure names the blocking app screen, its controls and the later item's line,
+with the same privacy masks as other interruption failures.
 Planned-container protection follows native ancestry and proven React host
 ancestry. The React ancestry guard stops at a modal host, so the presenting
 screen does not protect the modal's controls.
