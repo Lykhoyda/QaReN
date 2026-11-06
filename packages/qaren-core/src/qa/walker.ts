@@ -1461,10 +1461,12 @@ async function walkBlockScoped(
       coverGaps.set(item.line, 'presence-recapture-incomplete');
       return;
     }
-    const again = proven.screen.elements.find((e) => sameIdentity(e, target));
+    const matches = proven.screen.elements.filter((e) => sameIdentity(e, target));
     recordCover(
       item.line,
-      again ? coverOwner(again, proven.screen) : { gap: 'target-not-recaptured' },
+      matches.length === 1
+        ? coverOwner(matches[0], proven.screen)
+        : { gap: 'target-not-recaptured' },
     );
   };
   // A covered refusal that emits no other decision diagnostic still says why its cover was or was not

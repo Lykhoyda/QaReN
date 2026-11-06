@@ -202,7 +202,12 @@ test('without proof of who takes the touch, nothing is named and the gap says wh
 // nodes, so the refusal names no cover and says which evidence was missing.
 // Device C1: a quoted tap takes an ordinary capture, which cannot tie React hosts to native nodes, so its
 // refusal takes the one presence recapture to prove the cover.
-async function walkCoveredTap(presenceRead: 'complete' | 'incomplete') {
+async function walkCoveredTap(
+  presenceRead: 'complete' | 'incomplete',
+  identity: 'testID' | 'label' = 'testID',
+  recapturedMatches: 0 | 1 | 2 = 1,
+  kind: 'press' | 'fill' = 'press',
+) {
   const w = walker(
     [],
     scriptedJudge(() => assert.fail('exact targets are model-free')),
@@ -212,7 +217,15 @@ async function walkCoveredTap(presenceRead: 'complete' | 'incomplete') {
   w.deps.captureScreen = async (options) => {
     const presence = options?.platformPresence === true;
     modes.push(presence);
-    const screen = await capture(sticky(), { presence });
+    const views = sticky();
+    if (kind === 'fill') views[1].type = 'TextField';
+    const screen = await capture(views, { presence });
+    const target = screen.elements.find((element) => element.testID === 'qa-hi-row-1')!;
+    if (identity === 'label') delete target.testID;
+    if (presence && recapturedMatches === 0)
+      screen.elements = screen.elements.filter((element) => element !== target);
+    if (presence && recapturedMatches === 2)
+      screen.elements.push({ ...target, ref: '@duplicate' });
     screen.nativeGeneration = 7;
     if (presence && presenceRead === 'incomplete') {
       screen.coverage = { ...screen.coverage!, native: 'incomplete' };
@@ -236,7 +249,9 @@ async function walkCoveredTap(presenceRead: 'complete' | 'incomplete') {
       error: 'LIVE_HIT_UNPROVEN: LIVE_HIT_UNPROVEN: not-hittable; no tap was performed.',
     };
   };
-  const result = await runPlan(parsePlan('1. Tap "qa-hi-row-1"').blocks!, w.deps);
+  const phrase = identity === 'testID' ? 'qa-hi-row-1' : 'Row 1';
+  const step = kind === 'fill' ? `Fill "${phrase}" with "x"` : `Tap "${phrase}"`;
+  const result = await runPlan(parsePlan(`1. ${step}`).blocks!, w.deps);
   const row = ('steps' in result ? result.steps : []).filter((r) => r.line === 1).at(-1);
   const gaps = diagnostics
     .filter((event) => event.code === 'CENTRE_COVERED')
@@ -276,6 +291,26 @@ test('an incomplete presence recapture leaves the cover unproven and adds no ref
   assert.match(String(row?.reason), /no cover named \(presence-recapture-incomplete\)/);
   assert.deepEqual(gaps, ['presence-recapture-incomplete']);
 });
+
+for (const identity of ['testID', 'label'] as const) {
+  for (const matches of [0, 2] as const) {
+    test(`a cover recapture with ${matches} ${identity} matches leaves attribution unproven`, async () => {
+      const { row, modes, gaps, presses, streamed } = await walkCoveredTap(
+        'complete',
+        identity,
+        matches,
+        'fill',
+      );
+      assert.equal(modes.filter(Boolean).length, 1);
+      assert.equal(presses, 0);
+      assert.equal(row?.outcome, 'fail');
+      assert.equal(row?.coveredBy, undefined);
+      assert.equal(streamed.at(-1)?.coveredBy, undefined);
+      assert.match(String(row?.reason), /no cover named \(target-not-recaptured\)/);
+      assert.deepEqual(gaps, ['target-not-recaptured']);
+    });
+  }
+}
 
 test('an unchanged readback after a refused clearance scroll retains the proven cover', async () => {
   const screen = await capture(sticky());
