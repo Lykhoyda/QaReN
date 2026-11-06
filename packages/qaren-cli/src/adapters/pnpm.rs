@@ -43,6 +43,8 @@ printf "qaren-pnpm-group-ok\n"'"#;
     CmdSpec::new("pnpm-group-probe", "/bin/sh", &["-c", SCRIPT], 30)
         .cwd(project_root)
         .env("COREPACK_ENABLE_DOWNLOAD_PROMPT", "0")
+        // pnpm 11+ installs before `exec`; the probe must leave node_modules to the deps stage.
+        .env("pnpm_config_verify_deps_before_run", "false")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

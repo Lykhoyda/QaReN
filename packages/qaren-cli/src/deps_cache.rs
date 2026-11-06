@@ -143,8 +143,11 @@ fn config_value<'a>(config: &'a Value, camel: &str, kebab: &str) -> Option<&'a V
 }
 
 fn layout(config: &Value, repo: &Path, app_rel: &Path) -> Result<(), String> {
-    if config_value(config, "nodeLinker", "node-linker").and_then(Value::as_str) != Some("hoisted")
-    {
+    // Absent means pnpm's default isolated linker; pnp keeps no node_modules to clone.
+    if !matches!(
+        config_value(config, "nodeLinker", "node-linker").map(Value::as_str),
+        None | Some(Some("isolated" | "hoisted"))
+    ) {
         return Err("layout-unsupported".into());
     }
     for (camel, kebab, expected) in [
@@ -264,14 +267,16 @@ fn key(
         app_rel.as_os_str().as_encoded_bytes().to_vec(),
         serde_json::to_vec(installer).map_err(|e| e.to_string())?,
     ];
-    for root in [repo.to_path_buf(), repo.join(app_rel)] {
-        let manifest: Value = serde_json::from_slice(
-            &std::fs::read(root.join("package.json")).map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string())?;
+    for (root, required) in [(repo.to_path_buf(), false), (repo.join(app_rel), true)] {
+        // An app in a subdirectory may have no repository-root manifest; its absence is keyed.
+        let manifest: Value = match std::fs::read(root.join("package.json")) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| e.to_string())?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && !required => Value::Null,
+            Err(e) => return Err(e.to_string()),
+        };
         parts.push(
             serde_json::to_vec(
-                &serde_json::json!({"scripts":manifest.get("scripts"),"pnpm":manifest.get("pnpm")}),
+                &serde_json::json!({"present":!manifest.is_null(),"scripts":manifest.get("scripts"),"pnpm":manifest.get("pnpm")}),
             )
             .unwrap(),
         );
@@ -370,7 +375,7 @@ pub(crate) fn restore(ctx: &mut Ctx, repository: &Path, enabled: bool) -> Result
             return Ok(());
         };
         // Missing inputs disable reuse without changing the existing install path.
-        if !repo.join("package.json").is_file() || !project.join("pnpm-lock.yaml").is_file() {
+        if !project.join("package.json").is_file() || !project.join("pnpm-lock.yaml").is_file() {
             note(ctx, "disabled");
             skipped(ctx, &["restore", "stage", "publish"], "missing-input");
             return Ok(());
@@ -571,13 +576,6 @@ fn tree_size(path: &Path, containment: &Path) -> Result<u64, String> {
     let mut bytes = 0u64;
     for child in std::fs::read_dir(path).map_err(|e| e.to_string())? {
         let child = child.map_err(|e| e.to_string())?;
-        if child.file_name() == ".pnpm" && child.path().is_dir() {
-            for item in std::fs::read_dir(child.path()).map_err(|e| e.to_string())? {
-                if item.map_err(|e| e.to_string())?.file_name() != "lock.yaml" {
-                    return Err("layout-unsupported".into());
-                }
-            }
-        }
         bytes = bytes.saturating_add(tree_size(&child.path(), containment)?);
     }
     Ok(bytes)

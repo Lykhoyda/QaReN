@@ -63,6 +63,26 @@ exec "$@"
 }
 
 #[test]
+fn exec_probe_leaves_dependency_installation_to_the_deps_stage() {
+    let root = common::temp_repo();
+    let bin = root.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let pnpm = bin.join("pnpm");
+    // Like pnpm 11+, `exec` first installs missing dependencies unless verifyDepsBeforeRun is false.
+    std::fs::write(
+        &pnpm,
+        "#!/bin/sh\n[ \"${pnpm_config_verify_deps_before_run:-install}\" = false ] || /bin/mkdir node_modules || exit 1\nshift; shift; exec \"$@\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&pnpm, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = RealRunner::new().run(&group_probe_spec(&root).env("PATH", bin.to_str().unwrap()));
+    assert!(output.ok(), "{output:?}");
+    assert_eq!(output.stdout, GROUP_OK);
+    assert!(!root.join("node_modules").exists());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn exec_probe_accepts_preserved_groups_and_refuses_bootstrap_group_changes() {
     for body in [
         "shift; exec \"$@\"",

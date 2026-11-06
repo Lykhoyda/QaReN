@@ -2,4 +2,4 @@
 "qaren": patch
 ---
 
-Reuse clone-backed pnpm hoisted dependencies across pull request runs while retaining frozen-lockfile validation and ownership-safe cleanup.
+Reuse clone-backed pnpm dependencies (isolated or hoisted, including apps in a subdirectory without a root manifest) across pull request runs while retaining frozen-lockfile validation and ownership-safe cleanup; the pnpm process-group probe no longer installs dependencies.

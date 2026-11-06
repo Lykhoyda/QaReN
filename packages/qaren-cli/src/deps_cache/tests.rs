@@ -257,7 +257,6 @@ fn assert_operation(
 fn receipts_report_restore_early_returns_and_preserve_skip_reasons() {
     for (case, reason) in [
         ("disabled", "disabled"),
-        ("missing-root-manifest", "missing-input"),
         ("missing-project-manifest", "missing-input"),
         ("invalid-manifest", "missing-input"),
         ("missing-lockfile", "missing-input"),
@@ -272,7 +271,6 @@ fn receipts_report_restore_early_returns_and_preserve_skip_reasons() {
         let f = Fixture::new();
         let mut runner = CloneRunner::new();
         match case {
-            "missing-root-manifest" => std::fs::remove_file(f.0.join("repo/package.json")).unwrap(),
             "missing-project-manifest" => {
                 std::fs::remove_file(f.0.join("repo/app/package.json")).unwrap()
             }
@@ -291,7 +289,7 @@ fn receipts_report_restore_early_returns_and_preserve_skip_reasons() {
         }
         if ![
             "disabled",
-            "missing-root-manifest",
+            "missing-project-manifest",
             "missing-lockfile",
             "outside-repo",
         ]
@@ -319,7 +317,7 @@ fn receipts_report_restore_early_returns_and_preserve_skip_reasons() {
                         "config list --json",
                         CmdOutput::success(match case {
                             "probe-config" => "invalid",
-                            "layout-config" => r#"{"node-linker":"isolated"}"#,
+                            "layout-config" => r#"{"node-linker":"pnp"}"#,
                             _ => r#"{"node-linker":"hoisted"}"#,
                         }),
                     );
@@ -515,6 +513,74 @@ fn miss_then_hit_still_installs_and_stages_before_build_mutation() {
             .into()
         ));
     }
+}
+
+#[test]
+fn subdirectory_app_without_root_manifest_reuses_its_isolated_tree() {
+    let f = Fixture::new();
+    std::fs::remove_file(f.0.join("repo/package.json")).unwrap();
+    std::fs::write(
+        f.0.join("repo/app/pnpm-workspace.yaml"),
+        "allowBuilds: {}\n",
+    )
+    .unwrap();
+    let isolated = |mock: &mut MockRunner| {
+        mock.expect_run("pnpm --version", CmdOutput::success("11.5.2"));
+        mock.expect_run(
+            "JSON.stringify",
+            CmdOutput::success(r#"{"version":"v24.13.0","arch":"arm64","platform":"darwin"}"#),
+        );
+        // pnpm lists no nodeLinker when the default isolated linker applies.
+        mock.expect_run("config list --json", CmdOutput::success("{}"));
+        disk(mock, u64::MAX / 1024);
+    };
+    let mut runner = CloneRunner::new();
+    isolated(&mut runner.mock);
+    let mut ctx = f.context(&mut runner, "first");
+    restore(&mut ctx, &f.0.join("repo"), true).unwrap();
+    assert!(ctx.notes.contains(&("deps_cache".into(), "miss".into())));
+    let modules = f.0.join("repo/app/node_modules");
+    let store = modules.join(".pnpm");
+    for pkg in ["pkg@1.0.0/node_modules/pkg", "dep@1.0.0/node_modules/dep"] {
+        std::fs::create_dir_all(store.join(pkg)).unwrap();
+        std::fs::write(store.join(pkg).join("index.js"), pkg).unwrap();
+    }
+    std::fs::write(store.join("lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
+    std::fs::write(modules.join(".modules.yaml"), "nodeLinker: isolated\n").unwrap();
+    std::os::unix::fs::symlink(
+        "../../dep@1.0.0/node_modules/dep",
+        store.join("pkg@1.0.0/node_modules/dep"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(".pnpm/pkg@1.0.0/node_modules/pkg", modules.join("pkg")).unwrap();
+    stage_ok(&mut ctx);
+    publish(&mut ctx).unwrap();
+    let entry = entry_path(&ctx);
+    let recorded: Entry =
+        serde_json::from_slice(&std::fs::read(entry.join("entry.json")).unwrap()).unwrap();
+    assert_eq!(recorded.modules, vec![PathBuf::from("app/node_modules")]);
+    release(&mut ctx);
+    std::fs::remove_dir_all(&modules).unwrap();
+
+    isolated(&mut runner.mock);
+    let mut ctx = f.context(&mut runner, "second");
+    restore(&mut ctx, &f.0.join("repo"), true).unwrap();
+    assert!(ctx.notes.contains(&("deps_cache".into(), "hit".into())));
+    assert_eq!(
+        std::fs::read_link(modules.join("pkg")).unwrap(),
+        Path::new(".pnpm/pkg@1.0.0/node_modules/pkg")
+    );
+    assert_eq!(
+        std::fs::read_to_string(modules.join("pkg/index.js")).unwrap(),
+        "pkg@1.0.0/node_modules/pkg"
+    );
+    assert_eq!(
+        std::fs::read_to_string(store.join("pkg@1.0.0/node_modules/dep/index.js")).unwrap(),
+        "dep@1.0.0/node_modules/dep"
+    );
+    assert!(!f.0.join("repo/node_modules").exists());
+    release(&mut ctx);
+    assert_eq!(runner.mock.remaining(), 0);
 }
 
 #[test]
@@ -823,12 +889,19 @@ fn abandoned_staging_is_reclaimed_only_for_proven_dead_owners() {
 fn external_modules_virtual_store_and_nonrelocatable_links_disable_layout() {
     let f = Fixture::new();
     for config in [
-        serde_json::json!({"node-linker":"isolated"}),
+        serde_json::json!({"node-linker":"pnp"}),
         serde_json::json!({"node-linker":"hoisted","virtual-store-dir":"/outside"}),
         serde_json::json!({"node-linker":"hoisted","enable-global-virtual-store":true}),
         serde_json::json!({"node-linker":"hoisted","modules-dir":"elsewhere"}),
     ] {
         assert!(layout(&config, &f.0.join("repo"), Path::new("app")).is_err());
+    }
+    for config in [
+        serde_json::json!({}),
+        serde_json::json!({"node-linker":"isolated"}),
+        serde_json::json!({"nodeLinker":"hoisted"}),
+    ] {
+        assert!(layout(&config, &f.0.join("repo"), Path::new("app")).is_ok());
     }
     std::fs::create_dir_all(f.0.join("repo/extra/node_modules")).unwrap();
     assert!(supported_modules(&f.0.join("repo"), Path::new("app")).is_err());
@@ -848,6 +921,12 @@ fn external_modules_virtual_store_and_nonrelocatable_links_disable_layout() {
 #[test]
 #[ignore = "requires installed pnpm and a clone-capable filesystem"]
 fn real_pnpm_tree_relocates_after_origin_is_deleted_and_remains_isolated() {
+    for linker in ["hoisted", "isolated"] {
+        relocates(linker);
+    }
+}
+
+fn relocates(linker: &str) {
     let f = Fixture::new();
     let source = f.0.join("repo");
     std::fs::create_dir(source.join("fixture-pkg")).unwrap();
@@ -855,7 +934,7 @@ fn real_pnpm_tree_relocates_after_origin_is_deleted_and_remains_isolated() {
     std::fs::write(
         source.join(".npmrc"),
         format!(
-            "node-linker=hoisted\nstore-dir={}\n",
+            "node-linker={linker}\nstore-dir={}\n",
             f.0.join("store").display()
         ),
     )
@@ -871,7 +950,11 @@ fn real_pnpm_tree_relocates_after_origin_is_deleted_and_remains_isolated() {
         "#!/usr/bin/env node\nconsole.log('relocation-ok');\n",
     )
     .unwrap();
-    std::fs::write(source.join("pnpm-workspace.yaml"), "nodeLinker: hoisted\n").unwrap();
+    std::fs::write(
+        source.join("pnpm-workspace.yaml"),
+        format!("nodeLinker: {linker}\n"),
+    )
+    .unwrap();
     std::fs::remove_file(source.join("app/pnpm-lock.yaml")).unwrap();
     let task_home = f.0.join("home");
     std::fs::create_dir_all(task_home.join(".local/bin")).unwrap();
@@ -887,7 +970,7 @@ fn real_pnpm_tree_relocates_after_origin_is_deleted_and_remains_isolated() {
                 "--store-dir",
                 store.to_str().unwrap(),
                 "--ignore-scripts",
-                "--config.node-linker=hoisted",
+                &format!("--config.node-linker={linker}"),
                 "--config.userconfig=/dev/null",
             ],
             60,

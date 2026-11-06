@@ -3944,15 +3944,24 @@ checking pull request access and write permissions. See the
 [child environment contract](#plan-checks-and-screen-evidence) for token scope,
 dependency registry exceptions and redaction.
 
-`qaren pr` reuses installed dependencies by default when pnpm's effective
-`nodeLinker` is `hoisted` and all installed modules live at the repository root
-or the app root. It restores filesystem clones into the new checkout, then still
-runs `pnpm install --frozen-lockfile` to validate the lockfile and manifests.
-Other layouts use the normal cold install.
+`qaren pr` reuses installed dependencies by default when the app root holds
+`package.json` and `pnpm-lock.yaml`, pnpm's effective `nodeLinker` is `isolated`
+(the default) or `hoisted`, and all installed modules live at the repository
+root or the app root. A repository-root `package.json` is optional, so an app in
+a subdirectory of a repository without one is reused too. It restores
+filesystem clones into the new checkout, then still runs
+`pnpm install --frozen-lockfile` to validate the lockfile and manifests.
+Other layouts use the normal cold install: `pnp`, a global virtual store,
+workspace packages other than the app, and modules linked from outside
+`node_modules`. pnpm 11 reads `nodeLinker` from `pnpm-workspace.yaml`, not
+`.npmrc`.
 See [pnpm's layout settings](https://pnpm.io/settings#nodeLinker).
+The preflight pnpm process-group probe runs with `verifyDepsBeforeRun` off, so
+it never installs dependencies before restore.
 
 The cache key binds the lockfile bytes, repository and app path, root and app
-package scripts and pnpm settings, `.npmrc`, `pnpm-workspace.yaml`, and the
+package scripts and pnpm settings, whether a root `package.json` exists,
+`.npmrc`, `pnpm-workspace.yaml`, and the
 PATH-resolved pnpm and Node versions, architecture and platform. The installer
 identity is kept in `run.json`. Dependency lifecycle scripts that read project
 source during their first installation may retain old output across heads with

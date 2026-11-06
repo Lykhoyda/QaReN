@@ -7978,6 +7978,11 @@ fn pr_pass_stdout() -> String {
 
 fn pr_request(repo: &Path, app: &Path) -> RunRequest {
     let mut req = request(repo, app, 30);
+    // Only the cache test exercises reuse; the rest keep the cold install their scripts expect.
+    let config = std::fs::read_to_string(&req.config_path).unwrap();
+    if !app.join("cache-fixture").is_file() && !config.contains("depsCache:") {
+        std::fs::write(&req.config_path, config + "depsCache: false\n").unwrap();
+    }
     req.pr = Some(qaren::run::PrTarget {
         target: "12".into(),
     });
@@ -10693,7 +10698,9 @@ fn pr_uses_the_operator_config_deadlines_not_the_worktree_config() {
     let conflicting = "appId: com.other.app\ndevClientScheme: other\ndeadlines:\n  install_deps_seconds: 30\n  build_seconds: 31\n  device_boot_seconds: 32\n";
     for case in deadline_cases() {
         let (repo, app) = app_repo();
-        let raw = write_operator_config(&app, case.block);
+        write_operator_config(&app, case.block);
+        let req = pr_request(&repo, &app);
+        let raw = std::fs::read_to_string(&req.config_path).unwrap();
         let wt = repo.join("runs").join(run_id()).join("wt");
         let mut runner = PrRunner {
             inner: MockRunner::new(),
@@ -10705,7 +10712,7 @@ fn pr_uses_the_operator_config_deadlines_not_the_worktree_config() {
             fail_host_checkpoint: false,
         };
         script_pr_pass(&mut runner.inner, &repo, &wt);
-        let receipt = run(&mut runner, &pr_request(&repo, &app));
+        let receipt = run(&mut runner, &req);
         assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
         assert_eq!(runner.inner.remaining(), 0);
         assert!(runner.worktree_config_planted);
