@@ -16,7 +16,7 @@ macro_rules! eprintln {
     ($($args:tt)*) => { std::eprintln!("{}", qaren::redact::redact_inputs(&format!($($args)*))) };
 }
 
-const USAGE: &str = "usage: qaren check --plan-file <plan.md> [--platform ios|android] [--device <udid>] [--config .qaren/config.yaml] [--fresh-install] [--boot-device | --restart-device] [--shutdown-device-on-exit] [--hold | --no-hold] [--json]\n       qaren pr <number|url> --plan-file <plan.md> [--platform ios|android] [--device <udid>] [--config .qaren/config.yaml] [--fresh-install] [--boot-device | --restart-device] [--shutdown-device-on-exit] [--json]\n       qaren publish <run-id> [--json]\n       qaren prepare <scenario.yaml> [--new | --device <udid> [--boot-device]] [--json] [--dry-run]\n       qaren prewarm <scenario.yaml> [--json]\n       qaren watch [<run-id> | --latest] [--plain] [--json]\n       qaren status  <run-id> [--json]\n       qaren complete <run-id> <build-log> [--json]\n       qaren cleanup <run-id> [--json] [--remove-app --confirm-remove-app <run-id>/<remote-serial>/<app-id>]\n       qaren actions list [--json]\n       qaren actions show <slug>\n       qaren plans [--json]\n       qaren update\n       qaren doctor [--json] [--config .qaren/config.yaml] [--device <udid>]\n       qaren --version\n\ncheck walks the plan on the booted simulator against the working tree; runs land in ~/.qaren/runs/<run-id>/ (or $QAREN_HOME/runs).\npr walks the plan on a detached worktree at the pull request head, recording the screen; publish posts the reviewer comment and saves discovered blocks to the PR branch.\nupdate, run from the QaReN checkout root, fast-forwards it, rebuilds and reinstalls qaren, and says whether the build changed.\ndoctor checks this host, the installed build and the app config, and lists rn-dev-agent 1.x leftovers; it may establish a Watchman watch on the candidate directory. --device adds the ios-lane row for that simulator.\nplans lists the saved plans in the current app's .qaren/plans with their blocks and the platforms they are flagged broken on.\n--fresh-install opts into removing the selected app and its data under the check device lease before installation.\n--boot-device opts into booting an exact iOS simulator UUID selected by --device under the check lease; cleanup leaves it running.\nprepare reuses a free QaReN-created iOS simulator from this home's pool (capped by ios.max_devices), creating one below the cap; cleanup shuts it down and keeps it.\nprepare --new creates a fresh temporary simulator outside the pool and deletes it at cleanup.\nprepare --device borrows that exact existing iOS simulator under the same lease instead of creating one; cleanup keeps it.\nprepare on iOS, and check or pr with --fresh-install (on the selected simulator) or with --device and --boot-device or --restart-device, pin that simulator's locale and keyboard before launch and refuse with LANE_NOT_WARM if it is not ready.\n--restart-device opts into restarting (or booting if Shutdown) an exact iOS simulator UUID selected by --device under the check lease.\n--shutdown-device-on-exit opts into shutting down the exact iOS simulator UUID selected by --device during teardown while this run holds its lease.\n--hold and --no-hold apply only to check: --hold keeps Metro, the simulator and the device lease after a failed iOS check until qaren cleanup <run-id> or the next run on that device; check holds by default unless CI is set, the plan has a ## Cleanup section or --shutdown-device-on-exit is given; QAREN_HOLD_ON_FAIL=0|1 sets the default; --no-hold keeps the normal teardown.\n--remove-app also uninstalls the app (and its data) this run installed on its leased Android emulator;\nthe confirmation must name exactly this run, its recorded emulator serial and its app id.";
+const USAGE: &str = "usage: qaren check --plan-file <plan.md> [--platform ios|android] [--device <udid>] [--config .qaren/config.yaml] [--fresh-install] [--boot-device | --restart-device] [--shutdown-device-on-exit] [--hold | --no-hold] [--json]\n       qaren pr <number|url> --plan-file <plan.md> [--platform ios|android] [--device <udid>] [--config .qaren/config.yaml] [--fresh-install] [--boot-device | --restart-device] [--shutdown-device-on-exit] [--json]\n       qaren publish <run-id> [--json]\n       qaren prepare <scenario.yaml> [--new | --device <udid> [--boot-device]] [--json] [--dry-run]\n       qaren prewarm <scenario.yaml> [--json]\n       qaren watch [<run-id> | --latest] [--plain] [--json]\n       qaren status  <run-id> [--json]\n       qaren complete <run-id> <build-log> [--json]\n       qaren cleanup <run-id> [--json] [--remove-app --confirm-remove-app <run-id>/<remote-serial>/<app-id>]\n       qaren cleanup --deps-cache [--json]\n       qaren actions list [--json]\n       qaren actions show <slug>\n       qaren plans [--json]\n       qaren update\n       qaren doctor [--json] [--config .qaren/config.yaml] [--device <udid>]\n       qaren --version\n\ncheck walks the plan on the booted simulator against the working tree; runs land in ~/.qaren/runs/<run-id>/ (or $QAREN_HOME/runs).\npr walks the plan on a detached worktree at the pull request head, recording the screen; publish posts the reviewer comment and saves discovered blocks to the PR branch.\nupdate, run from the QaReN checkout root, fast-forwards it, rebuilds and reinstalls qaren, and says whether the build changed.\ndoctor checks this host, the installed build and the app config, and lists rn-dev-agent 1.x leftovers; it may establish a Watchman watch on the candidate directory. --device adds the ios-lane row for that simulator.\nplans lists the saved plans in the current app's .qaren/plans with their blocks and the platforms they are flagged broken on.\n--fresh-install opts into removing the selected app and its data under the check device lease before installation.\n--boot-device opts into booting an exact iOS simulator UUID selected by --device under the check lease; cleanup leaves it running.\nprepare reuses a free QaReN-created iOS simulator from this home's pool (capped by ios.max_devices), creating one below the cap; cleanup shuts it down and keeps it.\nprepare --new creates a fresh temporary simulator outside the pool and deletes it at cleanup.\nprepare --device borrows that exact existing iOS simulator under the same lease instead of creating one; cleanup keeps it.\nprepare on iOS, and check or pr with --fresh-install (on the selected simulator) or with --device and --boot-device or --restart-device, pin that simulator's locale and keyboard before launch and refuse with LANE_NOT_WARM if it is not ready.\n--restart-device opts into restarting (or booting if Shutdown) an exact iOS simulator UUID selected by --device under the check lease.\n--shutdown-device-on-exit opts into shutting down the exact iOS simulator UUID selected by --device during teardown while this run holds its lease.\n--hold and --no-hold apply only to check: --hold keeps Metro, the simulator and the device lease after a failed iOS check until qaren cleanup <run-id> or the next run on that device; check holds by default unless CI is set, the plan has a ## Cleanup section or --shutdown-device-on-exit is given; QAREN_HOLD_ON_FAIL=0|1 sets the default; --no-hold keeps the normal teardown.\n--remove-app also uninstalls the app (and its data) this run installed on its leased Android emulator;\nthe confirmation must name exactly this run, its recorded emulator serial and its app id.";
 
 fn user_home() -> Result<PathBuf, String> {
     match std::env::var_os("HOME") {
@@ -220,6 +220,7 @@ fn main_inner(args: Vec<String>) -> ExitCode {
     }
     let mut positional = Vec::new();
     let mut dry_run = false;
+    let mut deps_cache = false;
     let mut fresh_install = false;
     let mut boot_device = false;
     let mut new_device = false;
@@ -268,6 +269,7 @@ fn main_inner(args: Vec<String>) -> ExitCode {
                 Some(v) => platform = Some(v),
                 None => return ExitCode::from(2),
             },
+            "--deps-cache" => deps_cache = true,
             "--config" => match value_for("--config", &mut iter) {
                 Some(v) => config = Some(v),
                 None => return ExitCode::from(2),
@@ -292,6 +294,7 @@ fn main_inner(args: Vec<String>) -> ExitCode {
         return ExitCode::from(2);
     };
     let expected_positionals = match verb.as_str() {
+        "cleanup" if deps_cache => 1,
         "check" | "update" | "doctor" | "plans" => 1,
         "pr" | "publish" => 2,
         "complete" => 3,
@@ -300,6 +303,12 @@ fn main_inner(args: Vec<String>) -> ExitCode {
     };
     if positional.len() != expected_positionals {
         eprintln!("wrong number of arguments for {verb}\n{USAGE}");
+        return ExitCode::from(2);
+    }
+    if deps_cache && (verb != "cleanup" || remove_app || confirm_remove_app.is_some()) {
+        eprintln!(
+            "--deps-cache is only valid for cleanup without a run target or app removal\n{USAGE}"
+        );
         return ExitCode::from(2);
     }
     if remove_app != confirm_remove_app.is_some() {
@@ -532,10 +541,15 @@ fn main_inner(args: Vec<String>) -> ExitCode {
             prewarm::prewarm(&mut runner, &prewarm_args)
         }
         "status" | "cleanup" | "complete" => {
-            let target = positional[1].as_str();
+            let target = if deps_cache {
+                "deps-cache"
+            } else {
+                positional[1].as_str()
+            };
             match runs_root() {
                 Ok(runs_root) => match verb.as_str() {
                     "status" => status::status(&mut runner, &runs_root, target),
+                    "cleanup" if deps_cache => cleanup::cleanup_deps_cache(&mut runner, &runs_root),
                     "cleanup" => cleanup::cleanup_with_orphan_locks_policy(
                         &mut runner,
                         &runs_root,

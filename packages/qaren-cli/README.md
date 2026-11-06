@@ -519,13 +519,14 @@ prefixes are reserved case-insensitively. Missing variables stay missing and
 empty values stay empty. Invalid lists refuse as `SCENARIO_INVALID` without
 echoing entries.
 
-Treat this list as authorization to disclose those inherited variables to
-`pnpm-install`, `expo-prebuild`, and their descendants, including installer
+Treat this list as authorization to disclose those inherited variables to the
+children listed in the [child environment contract](#plan-checks-and-screen-evidence)
+and their descendants, including installer
 lifecycle scripts and Expo config plugins. Use trusted, reviewed configuration;
 `--config` can select an operator-controlled file outside the candidate. QaReN
 uses that selected list rather than reloading candidate configuration. The
-package manager keeps its own configuration: QaReN does not discover, parse or
-rewrite npmrc or validate credentials. Output withholding does not contain what
+package manager keeps its own configuration: QaReN does not rewrite it or
+validate credentials. Output withholding does not contain what
 those processes can write themselves or send over the network.
 
 `--platform android` borrows one booted emulator on the host's already running
@@ -1440,13 +1441,15 @@ native builds and the walker do not. GitHub token values are masked in durable
 text and JSON, including errors and publication comments. Log helpers receive
 redaction values over the private control socket rather than their environment;
 a token containing a carriage return or newline withholds subprocess logs.
-The existing `pnpm-install` and `expo-prebuild` exceptions retain
+The `pnpm-install`, `expo-prebuild`, `deps-cache-pnpm` and `deps-cache-config` exceptions retain
 `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `YARN_NPM_AUTH_TOKEN`, `COREPACK_NPM_TOKEN`,
 `GITHUB_TOKEN` and `GH_TOKEN` for dependency preparation. The optional
 [`registryAuthEnv`](#check-a-plan) list adds exact-name exemptions only for those
-two labels. A nonempty list withholds both streams before returning captured
-output or persisting command logs, even when the listed variables are absent or
-already conventionally allowed; exit status and deadlines remain unchanged.
+four labels. The cache probes capture output privately in memory without logging
+it. For install and prebuild, a nonempty list withholds both streams before
+returning captured output or persisting command logs, even when the listed
+variables are absent or already conventionally allowed; exit status and
+deadlines remain unchanged.
 Omitting the list or setting it to `[]` preserves existing output behavior.
 Names that the scrub already passes retain their ordinary inheritance elsewhere.
 `qaren prewarm` carries the list to its install step, but its preceding
@@ -4020,6 +4023,62 @@ succeeds but the lookup fails, `PR_UNAVAILABLE` names the failure and advises
 checking pull request access and write permissions. See the
 [child environment contract](#plan-checks-and-screen-evidence) for token scope,
 dependency registry exceptions and redaction.
+
+`qaren pr` reuses installed dependencies by default when the app root holds
+`package.json` and `pnpm-lock.yaml`, pnpm's effective `nodeLinker` is `isolated`
+(the default) or `hoisted`, and all installed modules live at the repository
+root or the app root. A repository-root `package.json` is optional, so an app in
+a subdirectory of a repository without one is reused too. It restores
+filesystem clones into the new checkout, then still runs
+`pnpm install --frozen-lockfile` to validate the lockfile and manifests.
+Other layouts use the normal cold install: `pnp`, a global virtual store,
+workspace packages other than the app, an explicitly configured `storeDir` that
+is relative or inside the checkout, and modules linked from outside
+`node_modules`. For reuse, a configured store must use an absolute path outside
+the checkout so restored modules keep the same store identity. pnpm 11 reads
+`nodeLinker` from `pnpm-workspace.yaml`, not `.npmrc`.
+See [pnpm's layout settings](https://pnpm.io/settings#nodeLinker).
+The preflight pnpm process-group probe runs with `verifyDepsBeforeRun` off, so
+it never installs dependencies before restore.
+
+The cache key binds the lockfile bytes, repository and app path,
+full root, app, and lockfile workspace package manifests, whether a root `package.json` exists,
+`.npmrc`, `pnpm-workspace.yaml`, effective pnpm install settings (including
+`storeDir`), package `patches/` contents, files referenced by pnpm
+`patchedDependencies`, and the
+PATH-resolved pnpm and Node versions, architecture and platform. The installer
+identity is kept in `run.json`. The candidate commit is not part of the key, so
+a new head with the same keyed inputs reuses the entry. A dependency lifecycle
+script that reads other project source outside these keyed inputs during its
+first installation can carry stale output to later heads with the same key.
+Set `depsCache: false` in `.qaren/config.yaml` for a cold run;
+`qaren check` and `qaren prepare` do not use this cache or change prewarm policy.
+
+Installed modules are staged before native preparation can modify them and
+published only after the pre-walk candidate verification passes. Entries under
+`$QAREN_HOME/runs/deps-cache/<repository>/<key>/` are immutable apart from reader
+markers. Only clone copies are admitted; unsupported cloning or insufficient
+space disables caching for that run, with no full-copy fallback. Restore and
+staging each require 1 GiB plus the tree's apparent size in free space.
+
+Receipts report `deps_cache=hit|miss:cold|miss:inputs-changed:<classes>|disabled|clone-unsupported|layout-unsupported`.
+`miss:inputs-changed` names, comma-separated, each input class whose digest
+differs from the newest entry for the same repository: `app`, `config`,
+`installer`, `lockfile`, `manifest`, `patches` or `storeDir`. `miss:cold` means
+no such entry exists, including entries written before these digests.
+Every PR receipt includes `deps_cache_restore`, `deps_cache_install`,
+`deps_cache_stage` and `deps_cache_publish` in `outcomes`: `attempted` operations
+have measured durations in `timings_ms`; skipped operations have no duration and
+report `skipped:<reason>`. Reasons include `cache-hit`, `disabled`, `missing-input`,
+`probe-failed`, `unsupported-layout`, `clone-unsupported` and `not-reached` when
+the run stopped before the operation. The dependency stage stream also reports
+cache decisions. Retention keeps the two newest entries per repository
+and retains any older entry with a live or unproven reader, regardless of age.
+`qaren doctor` reports entry count, staging count and apparent bytes.
+`qaren cleanup <run-id>` removes that run's markers and staging;
+`qaren cleanup --deps-cache` removes entries without live or unproven readers
+and staging whose recorded owner is proven dead. A new publication also reclaims
+abandoned staging. Reader admission, publication and pruning share one lock.
 
 Company plans, reports and recordings must remain private and must never be
 published to public product surfaces. Publication's value and machine-identity

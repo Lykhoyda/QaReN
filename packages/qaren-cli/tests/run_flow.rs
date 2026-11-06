@@ -7752,6 +7752,10 @@ impl PrRunner {
         for file in ["package.json", "pnpm-lock.yaml", "node_modules/.bin/expo"] {
             std::fs::copy(self.app.join(file), app.join(file)).unwrap();
         }
+        if self.app.join("cache-fixture").is_file() {
+            std::fs::write(wt.join("package.json"), "{}").unwrap();
+            std::fs::remove_dir_all(app.join("node_modules")).unwrap();
+        }
         if self.app.join("App.tsx").is_file() {
             std::fs::copy(self.app.join("App.tsx"), app.join("App.tsx")).unwrap();
         }
@@ -7772,7 +7776,24 @@ impl Runner for PrRunner {
         self.inner.env_var(name)
     }
     fn execute(&mut self, spec: &CmdSpec, interruptible: bool) -> CmdOutput {
+        if self.app.join("cache-fixture").is_file() && spec.label == "deps-cache-clone" {
+            self.inner.calls.push(spec.clone());
+            let src = Path::new(&spec.args[spec.args.len() - 2]);
+            let dest = Path::new(spec.args.last().unwrap());
+            std::fs::create_dir_all(dest.join(".bin")).unwrap();
+            std::fs::copy(src.join(".bin/expo"), dest.join(".bin/expo")).unwrap();
+            return CmdOutput::success("");
+        }
         let output = self.inner.execute(spec, interruptible);
+        if self.app.join("cache-fixture").is_file() && spec.label == "pnpm-install" && output.ok() {
+            let modules = spec.cwd.as_ref().unwrap().join("node_modules/.bin");
+            std::fs::create_dir_all(&modules).unwrap();
+            std::fs::copy(
+                self.app.join("node_modules/.bin/expo"),
+                modules.join("expo"),
+            )
+            .unwrap();
+        }
         match spec.label.as_str() {
             "adb-pull" if output.ok() => {
                 std::fs::write(spec.args.last().unwrap(), "complete recording").unwrap()
@@ -7926,6 +7947,10 @@ fn script_recorder_stop(mock: &mut MockRunner) {
 // The check teardown after its drift report: core group, Metro group, hosts.
 fn script_pr_teardown_after_drift(mock: &mut MockRunner) {
     mock.expect_run("ps -A", CmdOutput::success("1 1 S\n6000 6000 S\n"));
+    script_pr_teardown_resources(mock, true);
+}
+
+fn script_pr_teardown_resources(mock: &mut MockRunner, host: bool) {
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
     mock.expect_run("ps", CmdOutput::success("S\n"));
     mock.expect_run("lsof", CmdOutput::success("6001\n"));
@@ -7939,7 +7964,9 @@ fn script_pr_teardown_after_drift(mock: &mut MockRunner) {
     mock.expect_run("ps", CmdOutput::failed(1, ""));
     mock.expect_run("lsof", free_port());
     mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
-    script_host_probe(mock, UDID, hosts_absent());
+    if host {
+        script_host_probe(mock, UDID, hosts_absent());
+    }
 }
 
 fn pr_pass_stdout() -> String {
@@ -7951,6 +7978,11 @@ fn pr_pass_stdout() -> String {
 
 fn pr_request(repo: &Path, app: &Path) -> RunRequest {
     let mut req = request(repo, app, 30);
+    // Only the cache test exercises reuse; the rest keep the cold install their scripts expect.
+    let config = std::fs::read_to_string(&req.config_path).unwrap();
+    if !app.join("cache-fixture").is_file() && !config.contains("depsCache:") {
+        std::fs::write(&req.config_path, config + "depsCache: false\n").unwrap();
+    }
     req.pr = Some(qaren::run::PrTarget {
         target: "12".into(),
     });
@@ -10666,7 +10698,9 @@ fn pr_uses_the_operator_config_deadlines_not_the_worktree_config() {
     let conflicting = "appId: com.other.app\ndevClientScheme: other\ndeadlines:\n  install_deps_seconds: 30\n  build_seconds: 31\n  device_boot_seconds: 32\n";
     for case in deadline_cases() {
         let (repo, app) = app_repo();
-        let raw = write_operator_config(&app, case.block);
+        write_operator_config(&app, case.block);
+        let req = pr_request(&repo, &app);
+        let raw = std::fs::read_to_string(&req.config_path).unwrap();
         let wt = repo.join("runs").join(run_id()).join("wt");
         let mut runner = PrRunner {
             inner: MockRunner::new(),
@@ -10678,7 +10712,7 @@ fn pr_uses_the_operator_config_deadlines_not_the_worktree_config() {
             fail_host_checkpoint: false,
         };
         script_pr_pass(&mut runner.inner, &repo, &wt);
-        let receipt = run(&mut runner, &pr_request(&repo, &app));
+        let receipt = run(&mut runner, &req);
         assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
         assert_eq!(runner.inner.remaining(), 0);
         assert!(runner.worktree_config_planted);
@@ -11306,5 +11340,106 @@ fn admission_refusal_codes_recovery_and_private_facts_reach_the_receipt_and_end_
             assert_eq!(receipt.cleanup["device_lease"], "removed");
             assert_eq!(mock.remaining(), 0);
         }
+    }
+}
+
+#[test]
+fn pr_dependency_cache_publishes_only_after_pre_walk_candidate_verification() {
+    for drift in [false, true] {
+        let (repo, app) = app_repo();
+        std::fs::write(app.join("cache-fixture"), "").unwrap();
+        let wt = repo.join("runs").join(run_id()).join("wt");
+        let mut runner = PrRunner {
+            inner: MockRunner::new(),
+            app: app.clone(),
+            recorder_persisted_before_spawn: None,
+            fail_core_spawn: false,
+            planted_worktree_config: None,
+            worktree_config_planted: false,
+            fail_host_checkpoint: false,
+        };
+        let mock = &mut runner.inner;
+        script_pr_preflight(mock, &repo, &wt);
+        mock.expect_run("pnpm --version", CmdOutput::success("10.0.0"));
+        mock.expect_run(
+            "JSON.stringify",
+            CmdOutput::success(r#"{"version":"v24.0.0","arch":"arm64","platform":"darwin"}"#),
+        );
+        mock.expect_run(
+            "config list --json",
+            CmdOutput::success(r#"{"node-linker":"hoisted"}"#),
+        );
+        mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+        mock.expect_run("df", df_ok());
+        mock.expect_run(
+            "expo run:ios --help",
+            CmdOutput::success(common::IOS_BUILD_HELP),
+        );
+        script_provision_candidate(mock, "expo run:ios", "", PR_HEAD, "");
+        mock.expect_run(
+            "rev-parse HEAD",
+            CmdOutput::success(if drift { PR_MOVED } else { PR_HEAD }),
+        );
+        if !drift {
+            mock.expect_run("--porcelain", CmdOutput::success(""));
+            script_drift_status(mock);
+            script_recorder_start(mock);
+            script_host_probe(mock, UDID, hosts_absent());
+            mock.expect_spawn_piped("walk.js", 9000, &pr_pass_stdout(), Some(0));
+            script_core_identity(mock);
+            script_drift_status(mock);
+            script_pr_provenance_recheck(mock);
+            script_recorder_stop(mock);
+        }
+        if drift {
+            script_pr_teardown_resources(mock, false);
+        } else {
+            script_pr_teardown_after_drift(mock);
+        }
+        mock.expect_run("du -sk", CmdOutput::success("4\n"));
+        mock.expect_run("worktree remove --force", CmdOutput::success(""));
+        if !drift {
+            mock.expect_run("which ffmpeg", CmdOutput::failed(1, ""));
+            mock.expect_run(
+                "gh pr view https://github.com/o/r/pull/12",
+                pr_view_json(PR_HEAD),
+            );
+        }
+        let receipt = run(&mut runner, &pr_request(&repo, &app));
+        assert_eq!(
+            receipt.result,
+            if drift {
+                ReceiptResult::Failed
+            } else {
+                ReceiptResult::Pass
+            },
+            "{:?}",
+            receipt.failure
+        );
+        if drift {
+            assert_eq!(receipt.failure.unwrap().code, FailureCode::CandidateDrifted);
+        }
+        let record = RunRecord::load(&repo.join("runs"), &run_id()).unwrap();
+        let cache = record.resources.deps_cache.unwrap();
+        assert!(!cache.reader && !cache.staging);
+        let entry = repo
+            .join("runs/deps-cache")
+            .join(cache.repo_id)
+            .join(cache.key);
+        assert_eq!(entry.is_dir(), !drift);
+        assert_eq!(runner.inner.remaining(), 0);
+        let calls = labels(&runner.inner);
+        assert!(
+            calls.iter().position(|l| l == "pnpm-install").unwrap()
+                < calls.iter().position(|l| l == "deps-cache-clone").unwrap()
+        );
+        assert!(
+            calls.iter().position(|l| l == "deps-cache-clone").unwrap()
+                < calls
+                    .iter()
+                    .position(|l| l == "expo-ios-build-help")
+                    .unwrap()
+        );
+        std::fs::remove_dir_all(repo).unwrap();
     }
 }

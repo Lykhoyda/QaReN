@@ -1161,7 +1161,10 @@ pub fn valid_registry_auth_env_names(names: &[String]) -> bool {
 }
 
 pub(crate) fn is_registry_child(label: &str) -> bool {
-    matches!(label, "pnpm-install" | "expo-prebuild")
+    matches!(
+        label,
+        "pnpm-install" | "expo-prebuild" | "deps-cache-pnpm" | "deps-cache-config"
+    )
 }
 
 pub fn scrub_secret_env(
