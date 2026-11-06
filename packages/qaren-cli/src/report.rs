@@ -411,6 +411,16 @@ pub fn render(input: &ReportInput<'_>) -> String {
             failure.step,
             prose(&failure.seen)
         ));
+        if let Some(receipt) = input
+            .ledger
+            .steps
+            .iter()
+            .rev()
+            .filter(|row| row.line == failure.step)
+            .find_map(|row| row.interruption.as_ref())
+        {
+            out.push_str(&format!("\n{}\n", receipt.summary()));
+        }
         if let Some(screen) = &failure.screen {
             out.push_str(&last_screen_table(screen));
         }
@@ -866,6 +876,90 @@ mod tests {
             "Suggested plan edit: consider adding, before line 2, the step that enables it"
         ));
         assert!(report.contains("Text inside app-text tags came from the app under test"));
+    }
+
+    #[test]
+    fn an_interruption_receipt_round_trips_drops_malformed_data_and_renders_one_line() {
+        let receipt = serde_json::json!({
+            "considered": true, "outcome": "vetoed", "veto": "later-target",
+            "provenance": "ownership", "targetLine": 9, "targetKind": "press", "soleDecline": true
+        });
+        let mut row = serde_json::json!({
+            "block": "b", "line": 7, "attempt": 1, "kind": "step", "resolvedBy": "exact", "t": 0,
+            "outcome": "fail", "interruption": receipt
+        });
+        let parsed: crate::core::Row = serde_json::from_value(row.clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(parsed).unwrap()["interruption"],
+            receipt
+        );
+        for (key, value) in [
+            ("outcome", serde_json::json!("Close")),
+            ("veto", serde_json::json!("private-value")),
+            ("targetLine", serde_json::json!(-1)),
+            ("label", serde_json::json!("Close")),
+        ] {
+            row["interruption"] = receipt.clone();
+            row["interruption"][key] = value;
+            let parsed: crate::core::Row = serde_json::from_value(row.clone()).unwrap();
+            assert!(
+                serde_json::to_value(parsed)
+                    .unwrap()
+                    .get("interruption")
+                    .is_none(),
+                "{key}"
+            );
+        }
+        let ledger: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "FAIL", "path": "walk", "blocks": [],
+            "steps": [
+                { "block": "b", "line": 7, "attempt": 1, "kind": "step", "resolvedBy": "exact",
+                  "t": 0, "outcome": "fail", "interruption": receipt },
+                { "block": "b", "line": 8, "attempt": 1, "kind": "step", "resolvedBy": "exact",
+                  "t": 0, "outcome": "fail", "interruption": { "considered": true,
+                  "outcome": "did-not-disappear" } }
+            ],
+            "jev": { "calls": 0, "medianMs": 0 },
+            "llmTurns": 0, "escapes": 0, "recoveries": 0,
+            "failure": { "step": 7, "seen": "the target did not appear" },
+        }))
+        .unwrap();
+        let report = render(&ReportInput {
+            run_id: "check-test",
+            platform: "ios",
+            app_id: "com.example",
+            device: "test-device",
+            ledger: &ledger,
+        });
+        assert!(report.contains(
+            "interruption recovery: vetoed (later-target; ownership; line 9 (press); only control is the decline)"
+        ));
+        assert!(!report.contains("did-not-disappear"));
+        assert!(!report.contains("Suggested plan edit:"));
+        let stayed: crate::core::InterruptionReceipt = serde_json::from_value(
+            serde_json::json!({ "considered": true, "outcome": "did-not-disappear" }),
+        )
+        .unwrap();
+        assert_eq!(stayed.summary(), "interruption recovery: did-not-disappear");
+        let classed = serde_json::json!({ "considered": true, "outcome": "dismissed", "screenClass": "permission-opt-in" });
+        let parsed: crate::core::InterruptionReceipt =
+            serde_json::from_value(classed.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), classed);
+        assert_eq!(
+            parsed.summary(),
+            "interruption recovery: dismissed (permission-opt-in)"
+        );
+        assert!(serde_json::from_value::<crate::core::InterruptionReceipt>(
+            serde_json::json!({ "considered": true, "outcome": "dismissed", "screenClass": "presented-layer" })
+        )
+        .is_err());
+        row["interruption"] = receipt.clone();
+        row["interruption"]["screenClass"] = serde_json::json!("Skip");
+        let parsed: crate::core::Row = serde_json::from_value(row).unwrap();
+        assert!(serde_json::to_value(parsed)
+            .unwrap()
+            .get("interruption")
+            .is_none());
     }
 
     #[test]

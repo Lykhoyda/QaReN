@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parsePlan } from '../../../dist/qa/plan.js';
+import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
+import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { runPlan } from '../../../dist/qa/walker.js';
-import type { Screen } from '../../../dist/qa/screen.js';
+import { join, type NativeNode, type Screen } from '../../../dist/qa/screen.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
 import { element, screen } from './judgment-fixtures.ts';
 
@@ -102,7 +104,13 @@ test('a missing wait after a passed planned press leaves the opened screen and f
     assert.equal(result.recoveries, 0, name);
     assert.equal(result.failure?.step, 2, name);
     assert.equal(result.failure?.subreason, 'previous-plan-press', name);
-    assert.equal(result.failure?.suggestion, undefined, name);
+    if (name === 'opener gone' || name === 'decline named Skip')
+      assert.match(
+        result.failure?.suggestion ?? '',
+        /Add a step after line 1: Tap "(?:Close|Skip)"\./,
+        name,
+      );
+    else assert.equal(result.failure?.suggestion, undefined, name);
     assert.ok(result.failure?.screen, name);
     assert.match(
       result.failure?.seen ?? '',
@@ -110,7 +118,463 @@ test('a missing wait after a passed planned press leaves the opened screen and f
       name,
     );
     assert.ok(f.vetoes.includes('previous-plan-press'), name);
+    const failedRow = result.steps.find((row) => row.line === 2 && row.outcome === 'fail');
+    assert.equal(failedRow?.interruption?.outcome, 'vetoed', name);
+    assert.equal(failedRow?.interruption?.veto, 'previous-plan-press', name);
+    assert.equal(failedRow?.interruption?.targetLine, 2, name);
   }
+});
+
+test('a planned press passing on loading never dismisses its delayed opt-in destination', async () => {
+  for (const decline of ['Skip', 'Not now', "Don't allow"]) {
+    for (const withheld of [false, true]) {
+      for (const next of ['2. Wait for "Ready" to appear', '✓ "Ready"']) {
+        const f = app(opener(), {
+          '@open': () => withModal(screen([element('@heading', 'Loading', { kind: 'text' })])),
+          '@decline': ready,
+        });
+        if (withheld) {
+          f.deps.privacy = new ObservedPrivacy();
+          f.deps.privacy.classifyInputs(['zq-s3cret-7781']);
+        }
+        f.deps.row = (row) => {
+          if (row.line === 1 && row.outcome === 'pass')
+            f.show(
+              screen([
+                element('@title', 'zq-s3cret-7781', { kind: 'text' }),
+                element('@decline', decline),
+                element('@accept', 'Allow'),
+              ]),
+            );
+        };
+        const result = await run(`1. Tap "Open"\n${next}`, f);
+        assert.equal(result.verdict, 'FAIL');
+        assert.deepEqual(f.actions, ['press @open']);
+        assert.equal(result.recoveries, 0);
+        assert.match(
+          result.failure?.seen ?? '',
+          /a permission opt-in with a decline and an accept control is in front; the previous planned tap may have opened it, so it was not dismissed/,
+        );
+        assert.equal(result.failure?.suggestion, `Add a step after line 1: Tap "${decline}".`);
+        if (withheld) assert.ok(!JSON.stringify(result).includes('zq-s3cret-7781'));
+      }
+    }
+  }
+});
+
+test('a press inside modal A never dismisses delayed modal B while A remains mounted', async () => {
+  for (const withheld of [false, true]) {
+    const modalA = withModal(opener(), 'modal-a');
+    const modalB = withModal(screen([close()]), 'modal-b');
+    modalB.elements[0].testID = 'close-b';
+    modalB.reactHostEvidence!.hosts.push(
+      { testID: 'close-b', role: null, roleSource: 'none', capabilities: {} },
+      modalA.reactHostEvidence!.hosts[0],
+    );
+    modalB.reactHostEvidence!.typography!.nodes.push(
+      { hostIndex: 1, parentHostIndex: 0, rootIndex: 0, hostType: 'View', text: { kind: 'none' } },
+      {
+        hostIndex: 2,
+        parentHostIndex: null,
+        rootIndex: 0,
+        hostType: 'RCTModalHostView',
+        text: { kind: 'none' },
+      },
+    );
+    const f = app(modalA, {
+      '@open': () =>
+        withModal(screen([element('@loading', 'Loading', { kind: 'text' })]), 'modal-a'),
+      '@close': ready,
+    });
+    if (withheld) {
+      f.deps.privacy = new ObservedPrivacy();
+      f.deps.privacy.classifyInputs(['zq-s3cret-7781']);
+      modalB.elements.push(element('@copy', 'zq-s3cret-7781', { kind: 'text' }));
+      modalB.visibleText.push('zq-s3cret-7781');
+    }
+    f.deps.row = (row) => {
+      if (row.line === 1 && row.outcome === 'pass') f.show(modalB);
+    };
+    const result = await run('1. Tap "Open"\n2. Wait for "Ready" to appear', f);
+    assert.equal(result.verdict, 'FAIL');
+    assert.deepEqual(f.actions, ['press @open']);
+    assert.equal(result.recoveries, 0);
+    assert.equal(result.failure?.subreason, 'previous-plan-press');
+    assert.match(
+      result.failure?.seen ?? '',
+      /an app (?:screen|•••) with only a decline control is in front; the previous planned tap may have opened it, so it was not dismissed/,
+    );
+    assert.equal(result.failure?.suggestion, 'Add a step after line 1: Tap "Close".');
+    if (withheld) assert.ok(!JSON.stringify(result).includes('zq-s3cret-7781'));
+  }
+});
+
+test('an opt-in before a planned press or after its identified destination departs is declined once', async () => {
+  const optIn = () => screen([close('Skip'), element('@allow', 'Allow')]);
+  for (const departed of [false, true]) {
+    const f = app(departed ? withModal(opener()) : optIn(), {
+      '@open': () => withModal(screen([element('@home', 'Home', { kind: 'text' })]), 'home'),
+      '@close': ready,
+    });
+    f.deps.back = async () => {
+      f.show(withModal(optIn()));
+      return { ok: true, proven: true, executed: true };
+    };
+    const result = await run(
+      `${departed ? '1. Tap "Open"\n2. Go back\n' : ''}3. Wait for "Ready" to appear`,
+      f,
+    );
+    assert.equal(result.verdict, 'PASS', result.failure?.seen);
+    assert.deepEqual(f.actions, departed ? ['press @open', 'press @close'] : ['press @close']);
+    assert.equal(result.recoveries, 1);
+    const retry = result.steps.find((row) => row.outcome === 'retry');
+    assert.equal(retry?.interruption?.screenClass, 'permission-opt-in');
+    assert.match(retry?.reason ?? '', /dismissed a permission opt-in with Skip/);
+  }
+});
+
+test('a protected decline label matching a private value stays masked in the plan suggestion', async () => {
+  const f = app(opener(), { '@open': () => screen([close('Skip'), element('@accept', 'Allow')]) });
+  f.deps.privacy = new ObservedPrivacy();
+  f.deps.privacy.classifyInputs(['Skip']);
+  const result = await run('1. Tap "Open"\n2. Wait for "Ready" to appear', f);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, ['press @open']);
+  assert.equal(
+    result.failure?.suggestion,
+    'Add a step after line 1 that taps the decline control.',
+  );
+  assert.ok(!JSON.stringify(result.failure).includes('Skip'));
+});
+
+test('a consent or opt-in already present at planned press readback stays protected', async () => {
+  for (const accept of ['Allow all', 'Accept all', 'Enable all notifications', 'Allow']) {
+    const consent = () => screen([close('Skip'), element('@accept', accept)]);
+    const f = app(screen([element('@open', 'Open consent')]), {
+      '@open': consent,
+      '@close': () => screen([element('@continue', 'Continue')]),
+    });
+    const result = await run('1. Tap "Open consent"\n2. Wait for "Continue" to appear', f);
+    assert.equal(result.verdict, 'FAIL', accept);
+    assert.equal(result.failure?.subreason, 'previous-plan-press', accept);
+    assert.deepEqual(f.actions, ['press @open'], accept);
+    assert.equal(result.recoveries, 0, accept);
+  }
+});
+
+test('a consent modal arriving after an empty press baseline stays protected', async () => {
+  const consent = withModal(screen([close('Skip')]), 'consent');
+  consent.elements[0].testID = 'skip';
+  consent.reactHostEvidence!.hosts.push({
+    testID: 'skip',
+    role: null,
+    roleSource: 'none',
+    capabilities: {},
+  });
+  consent.reactHostEvidence!.typography!.nodes.push({
+    hostIndex: 1,
+    parentHostIndex: 0,
+    rootIndex: 0,
+    hostType: 'View',
+    text: { kind: 'none' },
+  });
+  const f = app(opener(), {
+    '@open': () => withModal(screen([element('@heading', 'Loading', { kind: 'text' })])),
+    '@close': ready,
+  });
+  f.deps.row = (row) => {
+    if (row.line === 1 && row.outcome === 'pass') f.show(consent);
+  };
+  const result = await run('1. Tap "Open"\n2. Wait for "Ready" to appear', f);
+  assert.equal(result.verdict, 'FAIL');
+  assert.equal(result.failure?.subreason, 'previous-plan-press');
+  assert.deepEqual(f.actions, ['press @open']);
+  assert.equal(result.recoveries, 0);
+});
+
+test('an opt-in stays protected by a later described target before protection lapses', async () => {
+  const optIn = () => screen([element('@skip', 'Skip'), element('@accept', 'Allow')]);
+  const f = app(opener(), { '@open': optIn, '@skip': ready });
+  const result = await run(
+    '1. Tap "Open"\n2. Wait for "Ready" to appear\n3. Tap the allow button',
+    f,
+  );
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, ['press @open']);
+  assert.ok(f.vetoes.includes('later-target'));
+  assert.equal(result.steps.find((row) => row.outcome === 'fail')?.interruption?.targetLine, 3);
+  assert.match(result.failure?.seen ?? '', /later planned item at line 3/);
+});
+
+test('an unprompted sheet after later items passed on a decline-free screen is dismissed once', async () => {
+  const optIn = () =>
+    screen([
+      element('@title', 'Get reminders?', { kind: 'text' }),
+      element('@notnow', 'Not now'),
+      element('@turnon', 'Turn on notifications'),
+    ]);
+  const home = (...extra: ReturnType<typeof element>[]) =>
+    screen([
+      element('@ready', 'Home ready', { kind: 'text' }),
+      element('@count', 'Reminder declines: 1', { kind: 'text' }),
+      ...extra,
+    ]);
+  const sheet = () =>
+    screen([
+      element('@new', 'New: shared lists', { kind: 'text' }),
+      element('@try', 'Try shared lists'),
+      element('@later', 'Maybe later'),
+    ]);
+  const f = app(optIn(), {
+    '@notnow': () => home(),
+    '@later': () => home(element('@lists', 'Lists ready', { kind: 'text' })),
+  });
+  f.deps.row = (row) => {
+    if (row.line === 3 && row.outcome === 'pass') f.show(sheet());
+  };
+  const result = await run(
+    '1. Tap "Not now"\n2. Wait for "Home ready" to appear\n✓ "Reminder declines: 1"\n4. Wait for "Lists ready" to appear',
+    f,
+  );
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['press @notnow', 'press @later']);
+  assert.equal(result.recoveries, 1);
+  assert.ok(!f.vetoes.includes('previous-plan-press'));
+  const retry = result.steps.find((row) => row.line === 4 && row.outcome === 'retry');
+  assert.match(
+    retry?.reason ?? '',
+    /recovered: dismissed an app screen with Maybe later; retrying the step once/,
+  );
+  assert.equal(retry?.interruption?.outcome, 'dismissed');
+});
+
+test('after a decline-free pass, a delayed opt-in a later step targets is still not dismissed', async () => {
+  const loading = () => screen([element('@loading', 'Loading', { kind: 'text' })]);
+  // A joined native capture, so text targets resolve as they do on a device.
+  const optIn = () => {
+    const rect = { x: 0, y: 0, width: 400, height: 800 };
+    const nodes: NativeNode[] = [
+      { ref: '@app', type: 'Application', rect },
+      { ref: '@window', type: 'Window', parentIndex: 0, rect },
+      {
+        ref: '@title',
+        type: 'StaticText',
+        parentIndex: 1,
+        label: 'Get reminders?',
+        rect: { x: 20, y: 200, width: 360, height: 40 },
+      },
+      {
+        ref: '@skip',
+        type: 'Button',
+        parentIndex: 1,
+        label: 'Skip',
+        hittable: true,
+        rect: { x: 20, y: 600, width: 160, height: 44 },
+      },
+      {
+        ref: '@allow',
+        type: 'Button',
+        parentIndex: 1,
+        label: 'Allow',
+        hittable: true,
+        rect: { x: 200, y: 600, width: 180, height: 44 },
+      },
+    ];
+    return join(
+      nodes,
+      [],
+      'app',
+      { native: 'complete', react: 'complete' },
+      { complete: true, hosts: [] },
+      {
+        source: 'xcui-live',
+        nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+      },
+    );
+  };
+  const f = app(opener(), { '@open': loading });
+  f.deps.row = (row) => {
+    if (row.line === 2 && row.outcome === 'pass') f.show(optIn());
+  };
+  const result = await run(
+    '1. Tap "Open"\n2. Wait for "Loading" to appear\n3. Wait for "Ready" to appear\n4. Tap "Allow"',
+    f,
+  );
+  assert.equal(result.verdict, 'FAIL');
+  assert.equal(result.failure?.step, 3);
+  assert.deepEqual(f.actions, ['press @open']);
+  assert.equal(result.recoveries, 0);
+  assert.ok(f.vetoes.includes('later-target'));
+  assert.ok(!f.vetoes.includes('previous-plan-press'));
+});
+
+test('a later pass with static Later text permits recovery, but uncertain press evidence protects it', async () => {
+  for (const press of ['unsupported', 'unknown'] as const) {
+    const f = app(opener(), {
+      '@open': () =>
+        screen([
+          element('@details', 'Details', { kind: 'text' }),
+          element('@later', 'Later', {
+            kind: 'text',
+            semantic: { press, fill: 'unsupported', visibility: 'visible' },
+          }),
+        ]),
+      '@close': ready,
+    });
+    f.deps.row = (row) => {
+      if (row.line === 2 && row.outcome === 'pass') f.show(screen([close()]));
+    };
+    const result = await run(
+      '1. Tap "Open"\n2. Wait for "Details" to appear\n3. Wait for "Ready" to appear',
+      f,
+    );
+    assert.equal(result.verdict, press === 'unsupported' ? 'PASS' : 'FAIL');
+    assert.deepEqual(
+      f.actions,
+      press === 'unsupported' ? ['press @open', 'press @close'] : ['press @open'],
+    );
+    assert.equal(result.recoveries, press === 'unsupported' ? 1 : 0);
+    if (press === 'unknown') assert.equal(result.failure?.subreason, 'previous-plan-press');
+  }
+});
+
+test('an input declaration cannot lapse protection using the previous press loading capture', async () => {
+  const f = app(opener(), {
+    '@open': () => screen([element('@loading', 'Loading', { kind: 'text' })]),
+    '@skip': ready,
+  });
+  f.deps.row = (row) => {
+    if (row.line === 2 && row.outcome === 'pass')
+      f.show(screen([element('@skip', 'Skip'), element('@allow', 'Allow')]));
+  };
+  const result = await withInputs(new RunInputs({ EMAIL: 'fixture@example.test' }, ['EMAIL']), () =>
+    run(
+      '1. Tap "Open"\n2. Expect input EMAIL on screen\n3. Wait for "Ready" to appear\n4. Fill "Email" with input EMAIL',
+      f,
+    ),
+  );
+  assert.ok(result.steps.some((row) => row.line === 2 && row.outcome === 'pass'));
+  assert.equal(result.verdict, 'FAIL');
+  assert.equal(result.failure?.step, 3);
+  assert.equal(result.failure?.subreason, 'previous-plan-press');
+  assert.deepEqual(f.actions, ['press @open']);
+  assert.equal(result.recoveries, 0);
+});
+
+test('after protection lapses, every remaining target uses the same conservative veto in every block', async () => {
+  const cases = [
+    ['4. Tap "Allow"', true],
+    ['4. Wait for "Allow" to appear', true],
+    ['✓ "Allow"', true],
+    ['4. Fill "Allow" with "fixture"', true],
+    ['4. Tap the allow button', true],
+    ['4. Wait for the allow button to appear', true],
+    ['✓ the allow button is visible', true],
+    ['4. Tap an unrelated button', true],
+    ['4. Tap "Unrelated"', false],
+    ['4. Wait for "Unrelated" to appear', false],
+    ['✓ "Unrelated"', false],
+  ] as const;
+  for (const laterBlock of [false, true]) {
+    for (const [laterItem, couldMatch] of cases) {
+      for (const withheld of [false, true]) {
+        const f = app(opener(), {
+          '@open': () => screen([element('@loading', 'Loading', { kind: 'text' })]),
+          '@skip': () => screen([element('@ready', 'Ready'), element('@future', 'Unrelated')]),
+          '@future': ready,
+        });
+        if (withheld) {
+          f.deps.privacy = new ObservedPrivacy();
+          f.deps.privacy.classifyInputs(['zq-s3cret-7781']);
+        }
+        f.deps.row = (row) => {
+          if (row.line === 3 && row.outcome === 'pass')
+            f.show(
+              join(
+                [
+                  { ref: '@heading', type: 'StaticText', label: 'zq-s3cret-7781' },
+                  { ref: '@skip', type: 'Button', label: 'Skip', hittable: true },
+                  { ref: '@allow', type: 'Button', label: 'Allow', hittable: true },
+                ],
+                [],
+                'app',
+                { native: 'complete', react: 'complete' },
+                { hosts: [], complete: true },
+                {
+                  source: 'xcui-live',
+                  nodes: [0, 1, 2].map(() => ({ status: 'observed', labelSource: 'direct' })),
+                },
+              ),
+            );
+        };
+        const result = await run(
+          '### First\n1. Tap "Open"\n2. Wait for "Loading" to appear\n3. Wait for "Ready" to appear\n' +
+            (laterBlock ? '\n### Later\n' : '') +
+            laterItem,
+          f,
+        );
+        const laterLine = laterBlock ? 7 : 5;
+        if (!couldMatch) {
+          assert.equal(result.verdict, 'PASS', result.failure?.seen);
+          assert.equal(result.recoveries, 1);
+          assert.deepEqual(
+            f.actions,
+            laterItem.startsWith('4. Tap')
+              ? ['press @open', 'press @skip', 'press @future']
+              : ['press @open', 'press @skip'],
+          );
+          continue;
+        }
+        assert.equal(result.verdict, 'FAIL');
+        assert.equal(result.failure?.step, 4);
+        assert.deepEqual(f.actions, ['press @open']);
+        assert.equal(result.recoveries, 0);
+        assert.ok(f.vetoes.includes('later-target'));
+        assert.ok(!f.vetoes.includes('previous-plan-press'));
+        const failed = result.steps.find((row) => row.line === 4 && row.outcome === 'fail');
+        assert.equal(failed?.interruption?.targetLine, laterLine);
+        assert.match(
+          result.failure?.seen ?? '',
+          new RegExp(`later planned item at line ${laterLine}`),
+        );
+        assert.equal(result.failure?.screen?.front, 'app');
+        assert.deepEqual(
+          result.failure?.screen?.controls.map((control) => control.label),
+          ['Skip', 'Allow'],
+        );
+        if (withheld) assert.ok(!JSON.stringify(result).includes('zq-s3cret-7781'));
+      }
+    }
+  }
+});
+
+test('a later item passing with a decline still on screen keeps protection and names the press line', async () => {
+  const destination = () =>
+    screen([
+      element('@title', 'Details', { kind: 'text' }),
+      close('Skip'),
+      element('@go', 'Allow'),
+    ]);
+  const f = app(opener(), { '@open': destination, '@close': ready });
+  const result = await run(
+    '1. Tap "Open"\n2. Wait for "Details" to appear\n3. Wait for "Ready" to appear',
+    f,
+  );
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, ['press @open']);
+  assert.equal(result.failure?.step, 3);
+  assert.equal(result.failure?.subreason, 'previous-plan-press');
+  assert.match(
+    result.failure?.seen ?? '',
+    /the planned press at line 1 succeeded and later steps passed while a decline control stayed on screen; the next target was not found; automatic app dismissal was withheld/,
+  );
+  assert.doesNotMatch(result.failure?.seen ?? '', /the previous planned press succeeded/);
+  // F3: the opt-in shape is named and the exact plan edit is suggested.
+  assert.match(
+    result.failure?.seen ?? '',
+    /a permission opt-in with a decline and an accept control is in front; the planned tap at line 1 may have opened it, so it was not dismissed/,
+  );
+  assert.equal(result.failure?.suggestion, 'Add a step after line 1: Tap "Skip".');
 });
 
 test('ANT-848: a planned press accepted despite a handler error protects its consent screen', async () => {

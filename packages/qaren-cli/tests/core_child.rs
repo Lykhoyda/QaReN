@@ -676,6 +676,34 @@ fn candidate_provenance_diagnostics_are_value_free_and_private_without_inputs() 
 }
 
 #[test]
+fn an_interruption_rejection_is_persisted_without_runtime_inputs_or_a_later_miss() {
+    let repo = common::temp_repo();
+    let event = serde_json::json!({
+        "kind": "interruption-rejected", "line": 7, "veto": "later-target",
+        "targetIndex": 1, "exactDeclineCount": 6
+    });
+    let mut malformed = event.clone();
+    malformed["label"] = "Close".into();
+    let stdout = format!(
+        "{}\n{}\n{}\n",
+        envelope(2, "diagnostic", &event.to_string()),
+        envelope(3, "diagnostic", &malformed.to_string()),
+        envelope(4, "result", &pass_ledger(&[]))
+    );
+    let mut mock = MockRunner::new();
+    mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+    let result = run_child(&mut mock, &repo.join("core.log"));
+    assert_eq!(result.verdict, Verdict::Pass);
+    let stored = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
+    assert_eq!(stored.lines().count(), 1);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(stored.trim()).unwrap(),
+        event
+    );
+    assert!(!stored.contains("Close"));
+}
+
+#[test]
 fn containment_provenance_resolution_stays_private_and_value_free() {
     for (outcome, resolved_by, requested) in [
         ("deadline-clean", "containment", true),

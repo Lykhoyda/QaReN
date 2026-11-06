@@ -1382,12 +1382,16 @@ semantic disabled state, including React disabled or read-only evidence, as do
 the enabled count and disabled-target advice. The screen includes the capture's
 age (`ageMs`) and whether a device action ran after it (`afterDispatch`);
 `counts` covers all controls in the first 2,000 captured elements, before the
-20-control cap. Non-target causes, including render errors and failed scroll
-dispatches, carry none of these three failure fields. Labels follow the
-[input value masking contract](#input-value-masking), and are masked whole beside a
-secure field or a secret input, where testIDs remain; a testID holding a
-protected value is masked whole. `suggestion` is one plan edit for the miss
-reason; it carries no app text and points to `failure.screen`, and supplies
+20-control cap. Failed checks after interruption recovery was considered also
+carry `failure.screen` from the newest admitted observation, without target-miss
+`subreason` or `suggestion`; a previous-planned-press veto may supply the
+[recovery suggestion](#step-recovery). Other non-target causes, including render
+errors and failed scroll dispatches, carry none of these three failure fields. Labels follow the
+[input value masking contract](#input-value-masking), including its fixed-control-word
+exception when screen text is withheld; testIDs remain unless they hold a
+protected value, in which case they are masked whole. `suggestion` is one plan edit
+for the miss reason; target-miss suggestions carry no app text and point to
+`failure.screen`. The suggestion supplies
 the walk's `next_action`, subject to the [cleanup precedence](#ios-admission-and-cleanup).
 It describes what was observed and never
 proposes a Wait for an enabled state, because a quoted Wait passes on a disabled control.
@@ -2119,8 +2123,7 @@ private-value masking described below.
 
 ### Input value masking
 
-**Screens with a secure field.** Target-miss diagnostic candidate labels are
-withheld as `•••`. Failure screen-text evidence becomes
+**Screens with a secure field.** Failure screen-text evidence becomes
 `[screen text withheld: a secure field is on screen]`, and moved-target identity
 labels become `•••`, whenever the capture contains any secure field, including
 empty or offscreen fields. The failure reason remains available, but its appended
@@ -2138,13 +2141,19 @@ input cannot be masked by value, so while the run holds a SECRET input, failure 
 evidence and app-derived identities in failure reasons, including moved-target
 identities, become `[screen text withheld: the run holds secret runtime inputs]`.
 A run whose inputs are all TEST-PII keeps that text, redacted by the declared values only.
-Existing secure-screen replacements take precedence. Target-miss diagnostic
-candidate labels become `•••`; possible-input labels are also withheld without
-runtime inputs. These failure-text replacements reach all outputs described in
+Existing secure-screen replacements take precedence. These failure-text
+replacements reach all outputs described in
 [App-derived failure text](#app-derived-failure-text). The step, its plan target,
 failure reason and geometry remain, subject to known-value masking. Runs without
 SECRET runtime inputs keep their screen-text context under the other masking rules below
 and the secure-field rule above.
+
+When either rule withholds screen text, target-miss diagnostic candidate labels
+become `•••`. In `failure.screen`, control labels become `•••`, except an exact
+label from the [recovery decline list](#step-recovery)
+or `Allow`, `Enable` or `Turn on` that is not on a possible input and matches no
+private value, so the blocking control is still named. Possible-input labels are
+also withheld without runtime inputs.
 
 The Android runner keeps exact-fill values and reconstructable fallback
 keycodes out of device logs. Its device-tool snapshots also avoid logging
@@ -3440,33 +3449,27 @@ See the [recovery regressions](../qaren-core/test/unit/qa/walker-recover.test.ts
 and [freshness regressions](../qaren-core/test/unit/qa/temporal-walker.test.ts).
 
 App interruptions need no app-specific configuration. Recovery requires complete
-native capture and React coverage, with no on-screen, uncovered match for the
-current quoted target (or literal check) or the later quoted targets of the
-current block in a fresh capture. A target whose centre is covered by a detected
-sheet or scrim does not prevent recovery merely because it remains in the capture.
-Targets in later blocks never block recovery by being visible; they
-only keep their own planned control and controls inside them. A later target
-declared as a decline label from the list below
-(case-insensitive, unless explicitly targeted by ID) is exempt from this absence
-guard, so non-control text such as `Maybe later` does not prevent closing a sheet
-with `Close`. The current target is never exempt. ID-only targets are checked by
-test ID, text-only targets by contained label or value text (including composed
-input text), and unqualified targets by either. Any on-screen, uncovered match
-vetoes dismissal, even when another matching ID is offscreen.
+native capture and React coverage. One shared target-presence predicate checks the
+current target and every remaining target, quoted or described, in every block:
+dismissal is allowed only when none could match an element on the interruption.
+Tap, fill, wait, scroll and check targets use the same rule, with no exemptions
+for later blocks, decline labels or screens with only a decline control.
+Unknown absence, including an unresolved description, counts as a possible match.
+A target whose centre is covered by a detected sheet or scrim does not prevent
+recovery merely because it remains in the capture. ID-only targets are checked
+by test ID, text-only targets by contained label or value text (including composed
+input text), and unqualified targets by either. An on-screen, uncovered match
+vetoes dismissal even when another matching ID is offscreen.
 Exactly one eligible control must be visible, hittable, enabled,
 non-secure and have proven press support, with one of these exact English labels:
 `Close`, `Not now`, `Not Now`, `Maybe later`, `Later`, `Skip`, `No thanks`,
-`Dismiss`, `Cancel`.
+`Dismiss`, `Cancel`, `Don't allow`, `Don't Allow` (either apostrophe).
 Zero candidates leave the original failure in place; several refuse
-`INTERRUPTION_AMBIGUOUS` without tapping. A candidate matching a later target's
-effective selector is left for that step; decline-label matching is case-insensitive.
-Within a replayed block, recovery retains the declared target for the exemption
-and uses its stored selector to protect the planned control. Targets in later
-blocks use their declared identities until those blocks are prepared for replay.
-A non-exempt on-screen, uncovered target in the current block, uncertain absence
-for a target subject to the absence guard, or a control inside any plan target prevents
-dismissal. Phrase-only current targets cannot establish this
-deterministic absence guard.
+`INTERRUPTION_AMBIGUOUS` without tapping.
+Within a replayed block, recovery uses the stored selector that will run the item;
+later blocks use their declared targets until prepared for replay.
+The failure names the blocking app screen, its controls and the matching later
+item's line, with the same privacy masks as other interruption failures.
 Planned-container protection follows native ancestry and proven React host
 ancestry. The React ancestry guard stops at a modal host, so the presenting
 screen does not protect the modal's controls.
@@ -3479,17 +3482,42 @@ after the press, identified by its modal type and test ID or native ID and absen
 before dispatch, protection tracks that container. Novelty requires complete
 captures and complete React host evidence before and after the press. Otherwise
 its identity is unknown and protection stays on until a later
-accepted planned press replaces it or login replay clears it. A press accepted
+accepted planned press replaces it, login replay clears it, or it lapses as below.
+A press accepted
 behind a system dialog also keeps this conservative protection. These identities
 stay in memory and are never written to the ledger or logs.
 Protection crosses block and replay boundaries and retries. Waits, checks, fills,
 scrolls and keyboard-only Back never establish departure. Only a complete native
 and React capture with complete host structure proving the identified container
-absent can expire protection. A planned Accept re-arms protection for its own
+absent can expire protection that way. Protection also lapses once a later planned
+item passes on its own complete capture with no decline control on screen; an interruption
+appearing after that point is eligible for bounded recovery. Until a later item
+passes, protection holds, so a screen the tap opens late stays protected, and a
+later item passing while a decline control is still on screen keeps it. After the
+lapse, a later step targeting the interruption still keeps it through the later-target
+veto, which is checked before planned-press protection. Static decline text does not
+keep protection; an on-screen, non-structural decline with supported or unknown press
+capability, or a button, link, cell or switch kind, does. Declaration-only passes such
+as Expect input never lapse protection using a previous item's capture.
+A planned Accept re-arms protection for its own
 destination, even when it closes an identified modal. If that destination has no
-identifiable container, protection remains on, including against later sheets.
-When an identified destination is proven gone, later unsolicited sheets can be
-dismissed. Recovery's decline presses and login presses never arm it.
+identifiable container, protection remains on, including against later sheets,
+until it lapses. When an identified destination is proven gone, later unsolicited
+sheets can be dismissed. Recovery's decline presses and login presses never arm it.
+While protected, recovery dismisses no app screen: neither an opt-in shape,
+a screen absent at press readback, nor a newly identified modal proves independence
+from the planned tap. A push opt-in arriving right after a planned tap, before a
+later item passes, must be answered explicitly by the plan. Opt-ins and intro sheets
+at launch, after login replay, after an identified destination departs, or after
+protection lapses remain eligible for bounded recovery.
+Outside protection, a permission opt-in shape labels an otherwise permitted
+one-decline dismissal as `screenClass: permission-opt-in`; it grants no extra dismissal.
+The shape has exactly two proven controls and no input: a soft decline and a visible,
+pressable accept starting with `Allow`, `Enable`, `Turn on` or `Notify me`, or
+starting with `Yes` and mentioning notifications, without negation.
+A whole-label, case-insensitive match for `Allow all`, `Accept all`, `Agree to all`
+or `Enable all` identifies base consent; none of its declines is taken.
+Navigation labels such as `View all offers`, `See all` or `Show all` do not identify consent.
 Login replay also clears the withheld-dismissal diagnostic for the retried item.
 While protected, recovery still answers system
 prompts and dev menus and still replays login, but withholds every app decline,
@@ -3497,21 +3525,27 @@ including the recheck before dispatch, and an ambiguous decline set does not
 refuse. If login replay has not cleared the veto, a failing target-class step reports
 subreason `previous-plan-press`, and `failure.seen` includes
 `the previous planned press succeeded; the next target
-was not found; automatic app dismissal was withheld`, and the walk's
+was not found; automatic app dismissal was withheld` (or, when later items passed
+while a decline control stayed on screen, `the planned press at line N succeeded and
+later steps passed while a decline control stayed on screen; ...`), and the walk's
 `next_action` is `inspect_last_observed_screen`, also on a repeat, with a
 `failure.recovery` of reason `previous_plan_press` whose five rungs are all
-inapplicable. A failed check after such a veto carries the same `failure.seen`
-note without a subreason. A sheet that appears while the planned surface is still on
-screen, including one that opens together with it, is therefore not dismissed
-either; insert the plan's own step for it.
+inapplicable. A failed check after such a veto
+carries the same `failure.seen` note without a subreason. A sheet that appears while the planned surface
+is still on screen, including one that opens together with it, is therefore not
+dismissed either. When the protected screen is opt-in shaped or has only a decline
+control, the failure names its class even with text withheld and suggests adding
+a step after the planned press that taps the named decline, with privacy masks intact.
 
 With `TYPESAFE_API_KEY`, Jev may veto a selected control when the screen may be
 related to the step or its purpose is uncertain. It never chooses a control,
 breaks a tie, or authorizes a tap. Without the key, recovery uses only the
 deterministic guards. Recovery rechecks those guards before one exact press,
 proves the label gone in a fresh capture, and retries the original step once.
-The ledger records `recovered: dismissed an app screen with <label>` and a
-privacy-eligible screenshot; this support action is not added to the saved block.
+The retry row names the declined control and screen class as described above,
+or uses `recovered: dismissed an app screen with <label>` for an unclassified screen,
+and includes a privacy-eligible screenshot; this support action is not added to
+the saved block.
 
 Recovery requires admitted screen evidence. iOS phrase steps behind a recognized
 system or permission alert reach dialog recovery when the raw native capture is
@@ -3526,9 +3560,24 @@ including when its read-back refuses incomplete capture.
 
 `logs/core.log` includes value-free diagnostics for failed interruption admission:
 `interruption-rejected` reports a front, coverage, indexed target,
-previous-plan-press or no-candidate veto and the exact-decline-label element count; the same veto kind, step line,
+previous-plan-press or no-candidate veto, a later-target veto's `presence` or
+`ownership` provenance, whether the decline is the screen's only control
+(`soleDecline`), the exact-decline-label element count, and `controls`: the press and
+fill evidence behind the control count used by the sole-decline and opt-in classes
+(`evidenceGap`, `pressGaps`, `fillGaps`, `unknownPress`, `unknownFill`, and the
+proven `controls` count when no gap refused it). A control in a window behind the
+front one that repeats a visible front control's kind, label, frame and disabled state
+is not counted again if its test ID is absent or matches the front control's.
+The same veto kind, step line,
 target index and count are also retained as an `interruption-rejected` event in
-`core-diagnostics.jsonl` for runs with inputs. A no-candidate veto also reports
+`core-diagnostics.jsonl`, which the event opens even in a run without inputs. The
+step's ledger row carries an `interruption` receipt: `considered`, an `outcome`
+(`vetoed`, `dismissed`, `not-dispatched`, `ambiguous` or `did-not-disappear`), the
+veto, whether a later-target veto came from `presence` or `ownership`, the target's
+plan line and step kind, whether the decline was the screen's only control, the
+`screenClass` a dismissed screen was recognised as (`permission-opt-in`); the report prints it as one line under the failure. A Jev veto
+or a guard change before dispatch records `not-dispatched`. A dismissal stays on
+the row through the step's retry. A no-candidate veto also reports
 each decline-labelled element's first failed predicate; press capability failures
 include the existing host association identity when available.
 `presence-system-modal` reports an unrecognized SpringBoard modal's

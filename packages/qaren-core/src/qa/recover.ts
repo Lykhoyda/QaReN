@@ -1,5 +1,12 @@
-import type { Target } from './plan.js';
-import { ancestorsOf, hostAssociationIdentity, type Element, type Screen } from './screen.js';
+import type { Item, Target } from './plan.js';
+import {
+  ancestorsOf,
+  elementFrame,
+  hostAssociationIdentity,
+  isWindow,
+  type Element,
+  type Screen,
+} from './screen.js';
 import { hostPath, MODAL_HOST_TYPES, type HostAssociationDiagnostic } from './host-association.js';
 import { targetOnScreen } from './resolve.js';
 import type { Reason } from './untrusted.js';
@@ -11,12 +18,14 @@ export interface LoginMarker {
 }
 
 export interface RecoveryTarget extends Target {
-  declared?: Target;
-  // A target from a later block keeps its own control but never vetoes recovery by mere presence.
-  laterBlock?: boolean;
+  // The plan step this target comes from; a placeholder current target has neither.
+  line?: number;
+  kind?: Item['kind'];
   // The current target follows a passed planned press, so the screen in front is the plan's own.
   afterPlannedPress?: boolean;
 }
+
+export type InterruptionScreenClass = 'permission-opt-in';
 
 export type LoginReplay =
   | 'pass'
@@ -33,7 +42,11 @@ export interface RecoverDeps {
 }
 
 export type Recovery =
-  | { handled: 'dialog' | 'dev-menu' | 'dev-fab' | 'login' | 'interruption'; label?: string }
+  | {
+      handled: 'dialog' | 'dev-menu' | 'dev-fab' | 'login' | 'interruption';
+      label?: string;
+      screenClass?: InterruptionScreenClass;
+    }
   | { fail: Reason }
   | { refuse: { code: string; message: string } };
 
@@ -63,7 +76,12 @@ export async function recover(
     if (candidate && 'refuse' in candidate) return candidate;
     if (candidate) {
       const dismissed = await deps.dismiss(candidate.label);
-      if (dismissed === 'pass') return { handled: 'interruption', label: candidate.label };
+      if (dismissed === 'pass')
+        return {
+          handled: 'interruption',
+          label: candidate.label,
+          ...(candidate.screenClass ? { screenClass: candidate.screenClass } : {}),
+        };
       return dismissed === 'fail' ? { fail: 'the app interruption did not disappear' } : dismissed;
     }
   }
@@ -83,8 +101,25 @@ const DECLINE_LABELS = new Set([
   'No thanks',
   'Dismiss',
   'Cancel',
+  "Don't allow",
+  'Don’t allow',
+  "Don't Allow",
+  'Don’t Allow',
 ]);
-const DECLINE_LOWER = new Set([...DECLINE_LABELS].map((label) => label.toLowerCase()));
+// Declines that leave a permission or opt-in unanswered rather than closing a screen.
+const SOFT_DECLINES = new Set(
+  [...DECLINE_LABELS].filter((label) => !['Close', 'Dismiss', 'Cancel'].includes(label)),
+);
+const PERMISSION_ACCEPT = /^(?:(?:allow|enable|turn on)\b|yes\b.*\bnotif|notify me\b)/iu;
+const ACCEPT_ALL = new Set(['allow all', 'accept all', 'agree to all', 'enable all']);
+const NEGATION = /\b(?:not|no|off|stop|never|don['’]t|disable)\b/iu;
+// Control labels that are QaReN's fixed words, so naming one discloses nothing from the app.
+export const FIXED_CONTROL_WORDS: ReadonlySet<string> = new Set([
+  ...DECLINE_LABELS,
+  'Allow',
+  'Enable',
+  'Turn on',
+]);
 
 export const INTERRUPTION_VETOES = [
   'front',
@@ -98,7 +133,12 @@ export const INTERRUPTION_VETOES = [
 export interface InterruptionDiagnostic {
   veto: (typeof INTERRUPTION_VETOES)[number];
   targetIndex?: number;
+  // Which later-target check vetoed: the target is on screen, or it names the decline control itself.
+  provenance?: 'presence' | 'ownership';
+  soleDecline: boolean;
   exactDeclineCount: number;
+  // Why the control count was or was not proven, for the sole-decline and opt-in classes.
+  controls: ControlEvidence;
   elements: Array<{
     index: number;
     failed:
@@ -117,19 +157,27 @@ export function dismissCandidate(
   screen: Screen,
   planTargets: readonly RecoveryTarget[],
   diagnostic?: (record: InterruptionDiagnostic) => void,
-): { label: string } | { refuse: { code: string; message: string } } | undefined {
+):
+  | { label: string; screenClass?: InterruptionScreenClass }
+  | { refuse: { code: string; message: string } }
+  | undefined {
+  const sole = soleDecline(screen);
   const rejected = (
     veto: InterruptionDiagnostic['veto'],
     targetIndex?: number,
     elements: InterruptionDiagnostic['elements'] = [],
+    provenance?: InterruptionDiagnostic['provenance'],
   ) => {
     try {
       diagnostic?.({
         veto,
         ...(targetIndex === undefined ? {} : { targetIndex }),
+        ...(provenance ? { provenance } : {}),
+        soleDecline: sole,
         exactDeclineCount: screen.elements.filter(
           (e) => e.label !== undefined && DECLINE_LABELS.has(e.label),
         ).length,
+        controls: controlEvidence(screen).evidence,
         elements,
       });
     } catch {
@@ -140,18 +188,21 @@ export function dismissCandidate(
   if (screen.front !== 'app') return rejected('front');
   if (!completeCapture(screen)) return rejected('coverage');
   if (!planTargets.length) return rejected('current-target', 0);
-  const targetIndex = planTargets.findIndex(
-    (target, index) =>
-      !(index > 0 && target.laterBlock) &&
-      !(
-        index > 0 &&
-        (target.declared ?? target).exact !== 'id' &&
-        DECLINE_LOWER.has((target.declared ?? target).quoted?.toLowerCase() ?? '')
-      ) &&
-      targetOnScreen(screen, target),
-  );
-  if (targetIndex !== -1)
-    return rejected(targetIndex === 0 ? 'current-target' : 'later-target', targetIndex);
+  const targetIndex = planTargets.findIndex((target) => targetOnScreen(screen, target));
+  if (targetIndex !== -1) {
+    if (targetIndex === 0) return rejected('current-target', 0);
+    const target = planTargets[targetIndex];
+    const ownsDecline = screen.elements.some(
+      (e) =>
+        !e.offscreen &&
+        e.semantic?.press === 'supported' &&
+        e.label !== undefined &&
+        DECLINE_LABELS.has(e.label) &&
+        (matchesTarget(e, target) ||
+          (target.exact !== 'id' && target.quoted?.toLowerCase() === e.label.toLowerCase())),
+    );
+    return rejected('later-target', targetIndex, [], ownsDecline ? 'ownership' : 'presence');
+  }
   const failedPredicate = (
     e: Element,
   ): InterruptionDiagnostic['elements'][number]['failed'] | undefined => {
@@ -171,12 +222,20 @@ export function dismissCandidate(
       return 'target-ancestor';
     return undefined;
   };
+  const acceptAll = screen.elements.some(
+    (e) =>
+      !e.offscreen &&
+      e.semantic?.press === 'supported' &&
+      ACCEPT_ALL.has(e.label?.toLowerCase() ?? ''),
+  );
   const candidates = screen.elements.filter(
     (e) => e.label !== undefined && DECLINE_LABELS.has(e.label) && failedPredicate(e) === undefined,
   );
-  // Only a dismissal that would otherwise happen is withheld, so an ordinary miss keeps its own cause.
+  const only = candidates.length === 1 ? candidates[0] : undefined;
   if (candidates.length && planTargets[0].afterPlannedPress)
     return rejected('previous-plan-press', 0);
+  const screenClass = only && optInShaped(screen) === only ? 'permission-opt-in' : undefined;
+  if (acceptAll) return rejected('no-candidate');
   if (candidates.length > 1)
     return {
       refuse: {
@@ -184,17 +243,8 @@ export function dismissCandidate(
         message: 'several decline controls are visible; nothing was tapped',
       },
     };
-  if (candidates.length === 1) {
-    const label = candidates[0].label!.toLowerCase();
-    const plannedIndex = planTargets.findIndex(
-      (target, index) =>
-        index > 0 &&
-        (matchesTarget(candidates[0], target) ||
-          (target.exact !== 'id' && target.quoted?.toLowerCase() === label)),
-    );
-    if (plannedIndex !== -1) return rejected('later-target', plannedIndex);
-    return { label: candidates[0].label! };
-  }
+  if (candidates.length === 1)
+    return { label: candidates[0].label!, ...(screenClass ? { screenClass } : {}) };
   return rejected(
     'no-candidate',
     undefined,
@@ -205,6 +255,111 @@ export function dismissCandidate(
       return [{ index, failed, ...(association ? { association } : {}) }];
     }),
   );
+}
+
+const CONTROL_KINDS = new Set<Element['kind']>(['button', 'input', 'switch', 'link', 'cell']);
+
+// Value-free facts behind the control count, so a refused classification names its cause.
+export interface ControlEvidence {
+  evidenceGap: boolean;
+  pressGaps: number;
+  fillGaps: number;
+  unknownPress: number;
+  unknownFill: number;
+  // Present only when the count is proven.
+  controls?: number;
+}
+
+const windowOf = (e: Element): Element | undefined => ancestorsOf(e).find(isWindow);
+const disabledState = (e: Element): boolean => Boolean(e.disabled) || e.semantic?.disabled === true;
+
+// A window behind the front one can repeat the front window's controls in the same place.
+const backCopy = (e: Element, controls: readonly Element[]): boolean => {
+  if (e.semantic?.visibility === 'visible' || e.label === undefined) return false;
+  const frame = elementFrame(e);
+  return controls.some((twin) => {
+    const twinFrame = elementFrame(twin);
+    return (
+      twin !== e &&
+      twin.semantic?.visibility === 'visible' &&
+      twin.kind === e.kind &&
+      twin.label === e.label &&
+      // A different test ID or enabled state is a different control, never a copy.
+      (e.testID === undefined || e.testID === twin.testID) &&
+      disabledState(e) === disabledState(twin) &&
+      windowOf(twin) !== windowOf(e) &&
+      frame !== undefined &&
+      twinFrame !== undefined &&
+      frame.x === twinFrame.x &&
+      frame.y === twinFrame.y &&
+      frame.width === twinFrame.width &&
+      frame.height === twinFrame.height
+    );
+  });
+};
+
+export function controlEvidence(screen: Screen): {
+  controls?: Element[];
+  evidence: ControlEvidence;
+} {
+  const live = screen.elements.filter(
+    (e) => !e.offscreen && !e.semantic?.nativePresence?.structural,
+  );
+  const evidence: ControlEvidence = {
+    evidenceGap: screen.pressEvidenceGap !== undefined,
+    pressGaps: screen.pressGapCount ?? 0,
+    fillGaps: screen.fillGapCount ?? 0,
+    unknownPress: live.filter((e) => e.semantic?.press === 'unknown').length,
+    unknownFill: live.filter((e) => e.semantic?.fill === 'unknown').length,
+  };
+  if (
+    evidence.evidenceGap ||
+    evidence.pressGaps > 0 ||
+    evidence.fillGaps > 0 ||
+    evidence.unknownPress > 0 ||
+    evidence.unknownFill > 0
+  )
+    return { evidence };
+  const all = live.filter(
+    (e) =>
+      CONTROL_KINDS.has(e.kind) ||
+      e.semantic?.press === 'supported' ||
+      e.semantic?.fill === 'supported',
+  );
+  const controls = all.filter((e) => !backCopy(e, all));
+  return { controls, evidence: { ...evidence, controls: controls.length } };
+}
+
+// On-screen controls in any state; undefined when press or fill evidence cannot prove the count.
+const provenControls = (screen: Screen): Element[] | undefined => controlEvidence(screen).controls;
+
+// Exactly one on-screen control, in any state, and it carries a decline label.
+export function soleDecline(screen: Screen): boolean {
+  const controls = provenControls(screen);
+  return (
+    controls?.length === 1 &&
+    controls[0].label !== undefined &&
+    DECLINE_LABELS.has(controls[0].label)
+  );
+}
+
+// Exactly two proven controls and no input: a soft decline, returned, and a permission accept.
+export function optInShaped(screen: Screen): Element | undefined {
+  const controls = provenControls(screen);
+  if (controls?.length !== 2) return undefined;
+  const decline = controls.find((e) => e.label !== undefined && SOFT_DECLINES.has(e.label));
+  const accept = controls.find((e) => e !== decline);
+  return decline &&
+    accept &&
+    controls.every((e) => e.kind !== 'input' && e.semantic?.fill !== 'supported') &&
+    // The accept is evidence only when it is proven visible and pressable.
+    accept.semantic?.press === 'supported' &&
+    accept.semantic.visibility === 'visible' &&
+    PERMISSION_ACCEPT.test(accept.label ?? '') &&
+    !NEGATION.test(accept.label ?? '') &&
+    !ACCEPT_ALL.has(accept.label?.toLowerCase() ?? '')
+    ? decline
+    : undefined;
 }
 
 const completeCapture = (screen: Screen): boolean =>
@@ -241,6 +396,23 @@ export function plannedSurface(after: Screen, before?: Screen): PlannedSurface {
   if (previous && containers?.length === 1 && containers[0] && !previous.includes(containers[0]))
     return { container: containers[0] };
   return {};
+}
+
+export function protectionLapses(passed: Screen): boolean {
+  return (
+    passed.front === 'app' &&
+    completeCapture(passed) &&
+    !passed.elements.some(
+      (e) =>
+        !e.offscreen &&
+        !e.semantic?.nativePresence?.structural &&
+        e.label !== undefined &&
+        DECLINE_LABELS.has(e.label) &&
+        (e.semantic?.press === 'supported' ||
+          e.semantic?.press === 'unknown' ||
+          ['button', 'link', 'cell', 'switch'].includes(e.kind)),
+    )
+  );
 }
 
 export function surfaceGone(screen: Screen, surface: PlannedSurface): boolean {

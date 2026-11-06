@@ -2,6 +2,8 @@ import type { ScrollBandReceipt } from './resolve.js';
 import type { OverlayHitReceipt } from './live-hit.js';
 import type { PressEvidence } from './selection-press.js';
 import type { MediaLatch, WithholdCause } from './privacy.js';
+import type { Item } from './plan.js';
+import type { InterruptionDiagnostic, InterruptionScreenClass } from './recover.js';
 export type RowOutcome = 'pass' | 'fail' | 'retry';
 
 export interface Selector {
@@ -67,6 +69,21 @@ export interface LedgerRow {
   scrollDetail?: { status: 'no_visible_change' | 'no_visible_change_content_remains'; attempts: 2 };
   // How long the first Tap or Fill after launch polled for its absent target.
   implicitWaitMs?: number;
+  // What interruption recovery decided for this step; value-free.
+  interruption?: InterruptionReceipt;
+}
+
+export interface InterruptionReceipt {
+  considered: true;
+  outcome: 'vetoed' | 'dismissed' | 'not-dispatched' | 'ambiguous' | 'did-not-disappear';
+  veto?: InterruptionDiagnostic['veto'];
+  provenance?: InterruptionDiagnostic['provenance'];
+  // The plan line and step kind of the target behind a target veto.
+  targetLine?: number;
+  targetKind?: Item['kind'];
+  soleDecline?: boolean;
+  // The fixed class a dismissed screen was recognised as, when one applied.
+  screenClass?: InterruptionScreenClass;
 }
 
 // The value-free announcement that a plan line begins; its row later carries the same operationId.

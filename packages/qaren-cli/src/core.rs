@@ -486,6 +486,109 @@ pub struct Row {
         deserialize_with = "passive"
     )]
     pub implicit_wait_ms: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub interruption: Option<InterruptionReceipt>,
+}
+
+// Value-free interruption decision for a step.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InterruptionReceipt {
+    pub considered: bool,
+    pub outcome: InterruptionOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub veto: Option<InterruptionVeto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<InterruptionProvenance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_kind: Option<InterruptionTargetKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sole_decline: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_class: Option<InterruptionScreenClass>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum InterruptionScreenClass {
+    PermissionOptIn,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum InterruptionOutcome {
+    Vetoed,
+    Dismissed,
+    NotDispatched,
+    Ambiguous,
+    DidNotDisappear,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum InterruptionVeto {
+    Front,
+    Coverage,
+    CurrentTarget,
+    LaterTarget,
+    PreviousPlanPress,
+    NoCandidate,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum InterruptionProvenance {
+    Presence,
+    Ownership,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum InterruptionTargetKind {
+    Press,
+    Fill,
+    Wait,
+    Check,
+    Scroll,
+}
+
+impl InterruptionReceipt {
+    // One report line; the target is named by its plan line, never by its text.
+    pub fn summary(&self) -> String {
+        // Every field enum is a unit enum, so it always serializes to its kebab-case name.
+        fn word(value: impl Serialize) -> String {
+            serde_json::to_value(value)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_string))
+                .unwrap_or_default()
+        }
+        let mut text = format!("interruption recovery: {}", word(self.outcome));
+        let detail: Vec<String> = [
+            self.veto.map(word),
+            self.provenance.map(word),
+            self.target_line.map(|line| match self.target_kind {
+                Some(kind) => format!("line {line} ({})", word(kind)),
+                None => format!("line {line}"),
+            }),
+            self.sole_decline
+                .filter(|sole| *sole)
+                .map(|_| "only control is the decline".to_string()),
+            self.screen_class.map(word),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !detail.is_empty() {
+            text.push_str(&format!(" ({})", detail.join("; ")));
+        }
+        text
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
