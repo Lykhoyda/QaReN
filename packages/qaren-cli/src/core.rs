@@ -477,6 +477,12 @@ pub struct Row {
         deserialize_with = "passive"
     )]
     pub scroll_band: Option<ScrollBandReceipt>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub implicit_wait_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

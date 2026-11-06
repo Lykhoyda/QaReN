@@ -119,6 +119,7 @@ import type {
   FillPrivacyDiagnostic,
 } from './diagnostics.js';
 import {
+  launchMissSuggestion,
   missSuggestion,
   screenNow,
   targetMissDiagnostic,
@@ -430,8 +431,10 @@ const dialogInFront = (phrase?: string) =>
   });
 
 // Refusals about the step's own target; their failure carries the last observed screen.
+export const LAUNCH_MISS = 'TARGET_NOT_FOUND_AFTER_LAUNCH';
 const TARGET_CODES: ReadonlySet<string> = new Set([
   'TARGET_NOT_FOUND',
+  LAUNCH_MISS,
   'REPLAY_SELECTOR',
   'TARGET_AMBIGUOUS',
 ]);
@@ -499,6 +502,8 @@ export interface WalkSequence {
   // System prompts recovery declined in this run; a repeat ask is the plan author's to answer.
   declinedPrompts?: Set<string>;
   plannedPress?: PlannedSurface;
+  // Armed at launch and after a login replay; the next top-level Tap or Fill spends it.
+  launchWait?: boolean;
 }
 
 function recordMediaLatch(
@@ -677,7 +682,7 @@ async function walkBlockScoped(
     if (item.kind === 'fill' && !typed.includes(fillText(item))) typed.push(fillText(item));
   const judge = deps.judge ?? unavailableJudge;
   let resolvedBy: LedgerRow['resolvedBy'] = 'exact';
-  let cached: { item: Item; observation: Observation; decision: ScreenDecision } | undefined;
+  let cached: { item: Item; observation: Observation; decision?: ScreenDecision } | undefined;
   let latest: Screen = { elements: [], visibleText: [], front: 'app' };
   let pressBase: Screen | undefined;
   let line = 0;
@@ -690,6 +695,11 @@ async function walkBlockScoped(
   let fillHandlerRefused = false;
   let itemStartedAt = 0;
   let itemDeadline: number | undefined;
+  let stepDispatched = false;
+  // The current item's launch allowance, from when it was spent; its measured poll; preparation resets its captures saw.
+  let launchWait: { startedAt: number } | undefined;
+  let implicitWaitMs: number | undefined;
+  let preparationResets: number | undefined;
   // A quoted wait's one layout read and one scroll, which a recovery retry does not refund.
   let enrichment: { at: number; budget: number; waited?: number } | undefined;
   let waitAttempt: 'scroll' | 'none' = 'none';
@@ -769,6 +779,12 @@ async function walkBlockScoped(
     const timingObserver: TimingObserver | undefined = deps.timing
       ? (event) => {
           if (event.edge === 'start') captureStage = event.stage;
+          if (
+            event.stage === 'native-preparation' &&
+            event.edge === 'point' &&
+            event.resets !== undefined
+          )
+            preparationResets = (preparationResets ?? 0) + event.resets;
           observeTiming(deps.timing, { ...event, line: captureLine, observation: id });
         }
       : undefined;
@@ -876,18 +892,18 @@ async function walkBlockScoped(
       }
     }
   };
-  const capture = async (
+  const enrichLabelProvenance = async (
+    observation: Observation,
     step?: Exclude<Item, { kind: 'check' }>,
-    assertion = false,
-    recovery = false,
+    until = Infinity,
   ): Promise<Observation> => {
-    const observation = await captureOnce(step, assertion, recovery);
     if (!step || step.kind !== 'press' || !targetNeedsPresence(step, observation.screen))
       return observation;
     const refs = exactIdentities(observation.screen, step.target, 'press')
       .map(({ element }) => element.ref)
       .filter((ref) => !ref.startsWith('react:'));
-    const deadline = observationDeadline(observation.timing);
+    const deadline = observationDeadline(observation.timing, until);
+    if (deps.now() >= deadline) throw new CaptureDeadline();
     metadataOnly = true;
     let provenance: LabelProvenance[] | undefined;
     let provenanceDiagnostic = {
@@ -956,6 +972,12 @@ async function walkBlockScoped(
       });
     return observation;
   };
+  const capture = async (
+    step?: Exclude<Item, { kind: 'check' }>,
+    assertion = false,
+    recovery = false,
+  ): Promise<Observation> =>
+    enrichLabelProvenance(await captureOnce(step, assertion, recovery), step);
   const diagnostic = (
     item: Item,
     observation: Observation,
@@ -1259,6 +1281,7 @@ async function walkBlockScoped(
     observation: Observation,
     send: (context: QaDispatchContext) => Promise<ActResult>,
     deadline = Infinity,
+    owner: 'step' | 'recovery' = 'step',
   ): Promise<ActResult> => {
     const preparedAt = deps.timing ? deps.now() : 0;
     dispatchStarted = deps.timing ? preparedAt : undefined;
@@ -1268,6 +1291,7 @@ async function walkBlockScoped(
       override authorize(): void {
         super.authorize();
         mutationStarted = true;
+        if (owner === 'step') stepDispatched = true;
         diagnostic(item, observation, 'dispatch', 'ACCEPTED', this.authorizations);
         if (deps.timing)
           metric('authorization', observation, {
@@ -1366,6 +1390,7 @@ async function walkBlockScoped(
       ...row,
       ...(fillMethod ? { method: fillMethod } : {}),
       ...(keyboardCleared ? { keyboardCleared } : {}),
+      ...(implicitWaitMs !== undefined ? { implicitWaitMs } : {}),
       ...(fillMismatch && row.outcome !== 'pass' ? { entryMismatch: fillMismatch } : {}),
       operationId: operationFor(row.line),
       ...(reactCoverage ? { reactCoverage } : {}),
@@ -1497,7 +1522,18 @@ async function walkBlockScoped(
           const subreason = ambiguous ? 'ambiguous' : lastReason;
           lastScreen = {
             screen: now,
-            suggestion: missSuggestion(subreason, target, last, now, item.line, item.kind),
+            suggestion:
+              // A more specific diagnosis, such as a placeholder coverage gap, keeps its own advice.
+              targetCode === LAUNCH_MISS && subreason === 'absent' && target.quoted !== undefined
+                ? launchMissSuggestion(
+                    privacy.redact(target.quoted),
+                    item.line,
+                    block.items
+                      .slice(0, block.items.indexOf(item))
+                      .reverse()
+                      .find((earlier) => earlier.kind === 'wait')?.line,
+                  )
+                : missSuggestion(subreason, target, last, now, item.line, item.kind),
             subreason,
           };
         }
@@ -2299,7 +2335,42 @@ async function walkBlockScoped(
       }
       sequence.window = { fromMs: deps.now(), typed: typed.length };
     }
+    // The app's next screen is loading again, as after launch.
+    sequence.launchWait = true;
+    stepDispatched = false;
     return 'pass' as const;
+  };
+  // The first Tap or Fill after launch may outrun the first screen: poll for its exact target, before any dispatch.
+  const launchTarget = async (
+    item: Item & { kind: 'press' | 'fill' },
+    deadline: number,
+  ): Promise<Observation | undefined> => {
+    const startedAt = deps.now();
+    try {
+      // The poll count bounds the wait too, so a clock that does not advance cannot hold it open.
+      for (let polls = 0; polls <= WAIT_BUDGET_MS / WAIT_POLL_MS; polls += 1) {
+        // captureOnce refuses to start at or after the deadline.
+        const observation = await captureOnce(item, false, false, 'resolve', deadline);
+        if (
+          exactIdentities(observation.screen, item.target, item.kind).some(
+            ({ element }) =>
+              item.kind === 'fill' ||
+              (item.target.exact !== 'text' && element.testID === item.target.quoted) ||
+              (item.target.exact !== 'id' && element.label === item.target.quoted),
+          )
+        )
+          return await enrichLabelProvenance(observation, item, deadline);
+        const left = deadline - deps.now();
+        if (left <= 0) return undefined;
+        await pause(Math.min(WAIT_POLL_MS, left));
+      }
+      return undefined;
+    } catch (error) {
+      if (error instanceof CaptureDeadline) return undefined;
+      throw error;
+    } finally {
+      implicitWaitMs = deps.now() - startedAt;
+    }
   };
   // At most two interruption recoveries per item, for distinct interruptions; overlay dismissals have a separate bound.
   const recovery = async (
@@ -2415,8 +2486,12 @@ async function walkBlockScoped(
         dialog: async () => {
           declineAttempted = true;
           recoveries += 1;
-          return (dialogAct = await mutate(item, fresh, (context) =>
-            deps.dialog(item.kind === 'dialog' ? item.action : 'dismiss', context),
+          return (dialogAct = await mutate(
+            item,
+            fresh,
+            (context) => deps.dialog(item.kind === 'dialog' ? item.action : 'dismiss', context),
+            Infinity,
+            'recovery',
           ));
         },
         ...(deps.login && first === undefined ? { replayLogin } : {}),
@@ -2644,7 +2719,13 @@ async function walkBlockScoped(
       const dispatched = dispatchedOn;
       let acted: ActResult;
       try {
-        acted = await mutate(item, observation, (context) => deps.press(ref, context), until);
+        acted = await mutate(
+          item,
+          observation,
+          (context) => deps.press(ref, context),
+          until,
+          'recovery',
+        );
       } catch (error) {
         if (isAbort(error)) throw error;
         acted = {
@@ -2712,6 +2793,7 @@ async function walkBlockScoped(
     pressVetoed = undefined;
     pressBase = undefined;
     mutationStarted = false;
+    stepDispatched = false;
     fillMethod = undefined;
     fillMismatch = undefined;
     keyboardCleared = undefined;
@@ -2719,6 +2801,9 @@ async function walkBlockScoped(
     fillHandlerRefused = false;
     enrichment = undefined;
     waitAttempt = 'none';
+    launchWait = undefined;
+    implicitWaitMs = undefined;
+    preparationResets = undefined;
     const operationId = operationFor(item.line);
     let budget = stepBudgets.get(operationId);
     if (!budget || budget.devErrorDismissals === 0) {
@@ -2746,6 +2831,15 @@ async function walkBlockScoped(
       overlayRows.delete(item.line);
       scrollBands.delete(item.line);
       line = item.line;
+      // Support blocks walk without recovery and never spend it; a login replay re-arms it for this retry.
+      if (
+        sequence.launchWait &&
+        opts.recover !== false &&
+        (item.kind === 'press' || item.kind === 'fill')
+      ) {
+        sequence.launchWait = false;
+        launchWait = { startedAt: deps.now() };
+      }
       deps.start?.({
         operationId: operationFor(item.line),
         line: item.line,
@@ -4373,6 +4467,8 @@ async function walkBlockScoped(
       } catch (caught) {
         if (isAbort(caught)) throw caught;
         let error = caught instanceof CaptureDeadline ? new EvidenceExpired(true) : caught;
+        // A recovery probe that acts on nothing must not cost a polled step its retry budget.
+        const priorRecovery = recovered.has(item) ? { state: recovered.get(item)! } : undefined;
         if (
           error instanceof ResolutionError &&
           !UNRECOVERABLE.has(error.code) &&
@@ -4385,6 +4481,38 @@ async function walkBlockScoped(
           } catch (recoveryError) {
             if (isAbort(recoveryError)) throw recoveryError;
             error = recoveryError;
+          }
+        }
+        // Only an absent quoted target qualifies; disabled, ambiguous, stored and offscreen misses keep their class.
+        const allowance = launchWait;
+        if (
+          allowance &&
+          !stepDispatched &&
+          (item.kind === 'press' || item.kind === 'fill') &&
+          item.target.quoted !== undefined &&
+          error instanceof ResolutionError &&
+          error.code === 'TARGET_NOT_FOUND' &&
+          error.missing &&
+          !deps.cancelled?.()
+        ) {
+          launchWait = undefined;
+          try {
+            const observation = await launchTarget(item, allowance.startedAt + WAIT_BUDGET_MS);
+            if (observation) {
+              // Recovery returned without acting to reach this poll, so restore its state from before the probe.
+              if (priorRecovery) recovered.set(item, priorRecovery.state);
+              else recovered.delete(item);
+              cached = { item, observation };
+              continue attempts;
+            }
+            error = new ResolutionError({
+              refuse: LAUNCH_MISS,
+              reason: `the first step after launch found its target absent for ${WAIT_BUDGET_MS / 1000} s${preparationResets ? `, the screen changed ${preparationResets} times during the presence read` : ''}`,
+              missing: true,
+            });
+          } catch (pollError) {
+            if (isAbort(pollError)) throw pollError;
+            error = pollError;
           }
         }
         if (error instanceof RenderError)
@@ -4537,6 +4665,7 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     ...(row.unverifiedPress ? { unverifiedPress: true } : {}),
     ...(row.method ? { method: row.method } : {}),
     ...(row.keyboardCleared ? { keyboardCleared: row.keyboardCleared } : {}),
+    ...(row.implicitWaitMs !== undefined ? { implicitWaitMs: row.implicitWaitMs } : {}),
     ...(row.retryCause ? { retryCause: row.retryCause } : {}),
     ...(row.scrollDetail ? { scrollDetail: row.scrollDetail } : {}),
     ...(row.scrollBand ? { scrollBand: row.scrollBand } : {}),
@@ -4718,6 +4847,7 @@ export async function runPlan(
       observation: 0,
       publicationInterrupted: false,
       planPassed: false,
+      launchWait: true,
     };
     recordMediaLatch(privacy, sequence, deps, 0);
     const walk = async (block: Block, opts?: WalkOptions, operations?: Map<number, number>) => {
@@ -4915,6 +5045,8 @@ export async function runPlan(
         }
         const k = replayed.miss;
         patchedAt ??= k;
+        // A re-walk after a replay miss is not a launch.
+        sequence.launchWait = false;
         const rewalked = await walk(block, { fromLine: k }, operations);
         steps.push(...rewalked.rows);
         if (rewalked.failure) {
