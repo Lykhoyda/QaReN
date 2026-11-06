@@ -989,6 +989,23 @@ async function walkBlockScoped(
     recovery = false,
   ): Promise<Observation> =>
     enrichLabelProvenance(await captureOnce(step, assertion, recovery), step);
+  // One bounded presence read for evidence an ordinary capture cannot carry. A late or incomplete
+  // read leaves that evidence unproven (undefined) and never refuses the step on its own.
+  const presenceRecapture = async (
+    step: Exclude<Item, { kind: 'check' }>,
+    until?: number,
+  ): Promise<Observation | undefined> => {
+    try {
+      return await captureOnce(step, false, false, 'provenance', until);
+    } catch (error) {
+      if (
+        error instanceof CaptureDeadline ||
+        (error instanceof ResolutionError && error.code === 'SCREEN_EVIDENCE_INCOMPLETE')
+      )
+        return undefined;
+      throw error;
+    }
+  };
   const diagnostic = (
     item: Item,
     observation: Observation,
@@ -3667,25 +3684,13 @@ async function walkBlockScoped(
                     reactOnlyTarget(item.target, before.screen)
                   ) {
                     scrollPresenceRead = true;
-                    try {
-                      before = await captureOnce(
-                        item,
-                        false,
-                        false,
-                        'provenance',
-                        Math.min(itemDeadline ?? Infinity, deps.now() + NATIVE_PRESENCE_BUDGET_MS),
-                      );
+                    const proven = await presenceRecapture(
+                      item,
+                      Math.min(itemDeadline ?? Infinity, deps.now() + NATIVE_PRESENCE_BUDGET_MS),
+                    );
+                    if (proven) {
+                      before = proven;
                       continue;
-                    } catch (error) {
-                      // A late or incomplete presence read leaves the cover unproven; the step goes on as before.
-                      if (
-                        !(error instanceof CaptureDeadline) &&
-                        !(
-                          error instanceof ResolutionError &&
-                          error.code === 'SCREEN_EVIDENCE_INCOMPLETE'
-                        )
-                      )
-                        throw error;
                     }
                   }
                   // Scrolling would move the interruption, not the target behind it.
@@ -4049,17 +4054,11 @@ async function walkBlockScoped(
               if (item.kind === 'scroll') {
                 plainBand = plainScrollBand(before.screen, item.direction, deps.platform);
                 if (plainBand.unproven) {
-                  try {
-                    const proven = await captureOnce(item, false, false, 'provenance');
+                  const proven = await presenceRecapture(item);
+                  if (proven) {
                     plainBand = plainScrollBand(proven.screen, item.direction, deps.platform);
                     before = proven;
                     if (before.screen.front === 'dialog') throw dialogInFront();
-                  } catch (error) {
-                    if (
-                      !(error instanceof ResolutionError) ||
-                      error.code !== 'SCREEN_EVIDENCE_INCOMPLETE'
-                    )
-                      throw error;
                   }
                 }
                 const {
