@@ -4,6 +4,7 @@ import { parsePlan } from '../../../dist/qa/plan.js';
 import { plainScrollBand } from '../../../dist/qa/resolve.js';
 import { scrollMotion } from '../../../dist/qa/scroll-motion.js';
 import { join, screenSignature, type NativeNode, type Screen } from '../../../dist/qa/screen.js';
+import { captureScreen } from '../../../dist/qa/capture.js';
 import { walkBlock, type ActResult } from '../../../dist/qa/walker.js';
 import { buildDirectionalScrollCliArgs } from '../../../dist/handlers/device-interact.js';
 import { clearRefMap, updateRefMapFromFlat } from '../../../dist/fast-runner-ref-map.js';
@@ -14,20 +15,104 @@ const WINDOW = { x: 0, y: 0, width: 400, height: 800 };
 const LIST = { x: 20, y: 200, width: 360, height: 400 };
 type Rect = NonNullable<NativeNode['rect']>;
 
-function screen({
-  list = LIST,
-  childY = 300,
-  extra = [],
-  includeList = true,
-  type = 'ScrollView',
-}: {
+type ScreenOptions = {
   list?: Rect;
   childY?: number;
   extra?: NativeNode[];
   includeList?: boolean;
   type?: string;
-} = {}): Screen {
-  const nodes: NativeNode[] = [
+};
+
+function screen(options: ScreenOptions = {}): Screen {
+  return { ...join(nodesOf(options), []), coverage: { native: 'complete', react: 'complete' } };
+}
+
+// The same nodes as a platform-presence capture whose React hosts are matched by testID.
+function presenceScreen(
+  options: ScreenOptions,
+  pointerEvents: Record<string, 'auto' | 'none' | 'box-none' | undefined>,
+): Promise<Screen> {
+  const base = nodesOf(options);
+  const depth = (node: NativeNode): number => {
+    const parent = base.find((other) => other.index === node.parentIndex);
+    return parent ? depth(parent) + 1 : 0;
+  };
+  const nodes = base.map((node) => ({
+    ...node,
+    depth: depth(node),
+    enabled: true,
+    presence: {
+      captureId: 'c',
+      generation: 7,
+      nodeIndex: node.index,
+      status: node.type === 'Application' ? 'unknown' : 'observed',
+      labelSource: 'direct',
+      ...(node.type === 'Application' ? {} : { observedUptimeMs: 150 }),
+    },
+  }));
+  const ids = Object.keys(pointerEvents);
+  const hostEvidence = {
+    complete: true,
+    hosts: ids.map((testID) => ({
+      testID,
+      role: null,
+      roleSource: 'none',
+      capabilities: {},
+      ...(pointerEvents[testID] ? { pointerEvents: pointerEvents[testID] } : {}),
+    })),
+    typography: {
+      version: 1,
+      complete: true,
+      durationMs: 10,
+      coordinateSpace: 'window-points',
+      nodes: ids.map((testID, hostIndex) => ({
+        hostIndex,
+        parentHostIndex: null,
+        rootIndex: hostIndex,
+        hostType: 'RCTView',
+        rect: nodes.find((node) => node.identifier === testID)!.rect,
+        text: { kind: 'none' },
+      })),
+    },
+  };
+  return captureScreen({
+    appId: 'com.test',
+    native: async () => ({
+      keyboardVisible: false,
+      presenceCapture: {
+        version: 2,
+        appliedBudgetMs: 20_000,
+        source: 'xcui-live',
+        captureId: 'c',
+        appId: 'com.test',
+        generation: 7,
+        startedUptimeMs: 100,
+        endedUptimeMs: 200,
+        enumeration: 'raw-unfiltered',
+        complete: true,
+      },
+      nodes,
+      snapshotGeneration: 7,
+      truncated: false,
+      normalizationDroppedNodes: 0,
+      snapshotVerdict: { state: 'ok', nodeCount: nodes.length, refMapUpdated: true, reasons: [] },
+    }),
+    react: async () => ({
+      interactive: [],
+      hostEvidence,
+      verdict: { state: 'ok', path: 'interactive', complete: true },
+    }),
+  } as never);
+}
+
+function nodesOf({
+  list = LIST,
+  childY = 300,
+  extra = [],
+  includeList = true,
+  type = 'ScrollView',
+}: ScreenOptions = {}): NativeNode[] {
+  return [
     { index: 0, ref: '@app', type: 'Application', rect: WINDOW },
     { index: 1, parentIndex: 0, ref: '@window', type: 'Window', rect: WINDOW },
     ...(includeList
@@ -46,7 +131,6 @@ function screen({
       : []),
     ...extra,
   ];
-  return { ...join(nodes, []), coverage: { native: 'complete', react: 'complete' } };
 }
 
 function overlay(rect: Rect): NativeNode {
@@ -55,6 +139,7 @@ function overlay(rect: Rect): NativeNode {
     parentIndex: 1,
     ref: '@fixed',
     type: 'Button',
+    identifier: 'fixed',
     hittable: true,
     label: 'Fixed',
     rect,
@@ -67,7 +152,14 @@ async function run(
     act,
     singleAttempt,
     direction = 'down',
-  }: { act?: ActResult; singleAttempt?: boolean; direction?: 'up' | 'down' } = {},
+    presence,
+  }: {
+    act?: ActResult;
+    singleAttempt?: boolean;
+    direction?: 'up' | 'down';
+    // What a platform-presence capture returns; ordinary captures keep the scripted screens.
+    presence?: Screen;
+  } = {},
 ) {
   const f = walker(
     screens,
@@ -76,6 +168,13 @@ async function run(
     }),
     act,
   );
+  const ordinary = f.deps.captureScreen;
+  const presenceCaptures: number[] = [];
+  f.deps.captureScreen = async (options) => {
+    if (!options?.platformPresence) return ordinary(options);
+    presenceCaptures.push(1);
+    return presence ?? ordinary(options);
+  };
   const bands: (Rect | undefined)[] = [];
   const distances: (number | undefined)[] = [];
   f.deps.platform = 'ios';
@@ -96,7 +195,7 @@ async function run(
     undefined,
     { singleAttempt },
   );
-  return { ...f, bands, distances, result };
+  return { ...f, bands, distances, result, presenceCaptures: presenceCaptures.length };
 }
 
 // The executable coordinate builder is the oracle for whether a selected band really hosts a drag.
@@ -145,7 +244,11 @@ test('a scroll container whose centre is off-window still offers its usable top 
 });
 
 test('a fixed header covering the clip centre refuses without dispatch and supplies a plan edit', async () => {
-  const f = await run([screen({ extra: [overlay(WINDOW)] })]);
+  const options = { extra: [overlay(WINDOW)] };
+  const f = await run([screen(options)], {
+    presence: await presenceScreen(options, { fixed: 'auto' }),
+  });
+  assert.equal(f.presenceCaptures, 1);
   assert.deepEqual(f.bands, []);
   assert.equal(f.result.failure?.cause, 'scroll_container_unreachable');
   assert.match(
@@ -166,7 +269,11 @@ test('a full-height side rail keeps the centre drag clear instead of falsely ref
 });
 
 test('a header leaving only a 26pt strip refuses instead of dragging the covered viewport centre', async () => {
-  const f = await run([screen({ extra: [overlay({ x: 0, y: 0, width: 400, height: 570 })] })]);
+  const options = { extra: [overlay({ x: 0, y: 0, width: 400, height: 570 })] };
+  const f = await run([screen(options)], {
+    presence: await presenceScreen(options, { fixed: undefined }),
+  });
+  assert.equal(f.presenceCaptures, 1);
   assert.deepEqual(f.bands, []);
   assert.equal(f.result.failure?.cause, 'scroll_container_unreachable');
   assert.equal(f.rows.at(-1)?.scrollBand?.status, 'unreachable');
@@ -174,30 +281,31 @@ test('a header leaving only a 26pt strip refuses instead of dragging the covered
 });
 
 test('a zero-area corridor cannot hide a covered container when no positive band remains', async () => {
-  const f = await run([
-    screen({
-      extra: [
-        overlay(WINDOW),
-        {
-          index: 5,
-          parentIndex: 1,
-          ref: '@small',
-          type: 'ScrollView',
-          label: 'Small',
-          rect: { x: 0, y: 50, width: 100, height: 100 },
-        },
-        {
-          index: 6,
-          parentIndex: 1,
-          ref: '@rail',
-          type: 'Button',
-          label: 'Rail',
-          hittable: true,
-          rect: { x: 0, y: 50, width: 48, height: 100 },
-        },
-      ],
-    }),
-  ]);
+  const options = {
+    extra: [
+      overlay(WINDOW),
+      {
+        index: 5,
+        parentIndex: 1,
+        ref: '@small',
+        type: 'ScrollView',
+        label: 'Small',
+        rect: { x: 0, y: 50, width: 100, height: 100 },
+      },
+      {
+        index: 6,
+        parentIndex: 1,
+        ref: '@rail',
+        type: 'Button',
+        label: 'Rail',
+        hittable: true,
+        rect: { x: 0, y: 50, width: 48, height: 100 },
+      },
+    ],
+  };
+  const f = await run([screen(options)], {
+    presence: await presenceScreen(options, { fixed: 'auto' }),
+  });
   assert.deepEqual(f.bands, []);
   assert.equal(f.result.failure?.cause, 'scroll_container_unreachable');
   assert.equal(f.rows.at(-1)?.scrollBand?.status, 'unreachable');
@@ -412,4 +520,116 @@ test('a remaining usable strip under a tall fixed header can move the list', asy
   assert.equal(f.result.block.outcome, 'pass');
   assert.deepEqual(f.bands, [{ x: 20, y: 504, width: 360, height: 96 }]);
   assert.doesNotThrow(() => coordinates(f.bands[0]));
+});
+
+test('a pointer-transparent cover proven by the presence recapture lets the drag through', async () => {
+  for (const pointerEvents of ['none', 'box-none'] as const) {
+    const options = { extra: [overlay(WINDOW)] };
+    const f = await run([screen(options)], {
+      presence: await presenceScreen(options, { fixed: pointerEvents }),
+    });
+    assert.ok(f.presenceCaptures >= 1, pointerEvents);
+    assert.equal(f.result.failure?.cause, undefined, pointerEvents);
+    assert.deepEqual(f.bands[0], LIST, pointerEvents);
+    assert.equal(f.rows.at(-1)?.scrollBand?.status, 'clear', pointerEvents);
+  }
+});
+
+test('a cover still unproven after the presence recapture dispatches and is judged by the result', async () => {
+  const options = { extra: [overlay(WINDOW)] };
+  const f = await run([screen(options)], { presence: await presenceScreen(options, {}) });
+  assert.ok(f.presenceCaptures >= 1);
+  assert.equal(f.result.block.outcome, 'pass');
+  assert.equal(f.result.failure, undefined);
+  assert.deepEqual(f.bands, [LIST, LIST]);
+  assert.equal(f.rows.at(-1)?.scrollBand?.status, 'overlay-cut');
+  assert.equal(f.rows.at(-1)?.scrollBand && 'unproven' in f.rows.at(-1)!.scrollBand!, false);
+});
+
+test('an incomplete presence recapture never adds a refusal and falls through to dispatch', async () => {
+  const options = { extra: [overlay(WINDOW)] };
+  const incomplete: Screen = {
+    ...screen(options),
+    coverage: { native: 'incomplete', react: 'complete' },
+  };
+  const f = await run([screen(options)], { presence: incomplete });
+  assert.ok(f.presenceCaptures >= 1);
+  assert.equal(f.result.block.outcome, 'pass');
+  assert.doesNotMatch(f.result.failure?.seen ?? '', /SCREEN_EVIDENCE_INCOMPLETE/);
+  assert.deepEqual(f.bands, [LIST, LIST]);
+});
+
+test('an explicitly hidden container cannot outrank the visible list', () => {
+  const visible = { x: 0, y: 300, width: 400, height: 200 };
+  const band = plainScrollBand(
+    screen({
+      list: visible,
+      childY: 350,
+      extra: [
+        {
+          index: 4,
+          parentIndex: 1,
+          ref: '@hidden',
+          type: 'ScrollView',
+          label: 'Hidden',
+          visibleToUser: false,
+          rect: WINDOW,
+        },
+      ],
+    }),
+    'down',
+    'android',
+  );
+  assert.equal(band.container?.ref, '@list');
+  assert.deepEqual(band.band, visible);
+});
+
+test('a smaller clear list wins when the largest band is a thin strip under an unproven cover', async () => {
+  const small = { x: 300, y: 610, width: 50, height: 180 };
+  const f = await run([
+    screen({
+      extra: [
+        overlay({ x: 0, y: 0, width: 400, height: 570 }),
+        {
+          index: 5,
+          parentIndex: 1,
+          ref: '@small',
+          type: 'ScrollView',
+          label: 'Small',
+          rect: small,
+        },
+      ],
+    }),
+  ]);
+  assert.equal(f.presenceCaptures, 0);
+  assert.deepEqual(f.bands[0], small);
+  assert.equal(f.result.failure, undefined);
+});
+
+test('a drag across an unproven cover stops short of a proven opaque cover', async () => {
+  const band = plainScrollBand(
+    await presenceScreen(
+      {
+        extra: [
+          overlay(WINDOW),
+          {
+            index: 5,
+            parentIndex: 1,
+            ref: '@footer',
+            type: 'Button',
+            identifier: 'footer',
+            hittable: true,
+            label: 'Footer',
+            rect: { x: 0, y: 520, width: 400, height: 80 },
+          },
+        ],
+      },
+      { footer: 'auto' },
+    ),
+    'down',
+    'ios',
+  );
+  assert.equal(band.unproven, true);
+  assert.equal(band.container?.ref, '@list');
+  assert.deepEqual(band.band, { x: 20, y: 200, width: 360, height: 316 });
 });

@@ -3905,7 +3905,29 @@ async function walkBlockScoped(
               }
               if (item.kind === 'scroll') {
                 plainBand = plainScrollBand(before.screen, item.direction, deps.platform);
-                const { container: _container, distance: _distance, ...receipt } = plainBand;
+                // Only a presence capture matches covers to React hosts; one try, never a new refusal.
+                if (plainBand.unproven) {
+                  try {
+                    const proven = await captureOnce(item, false, false, 'provenance');
+                    const band = plainScrollBand(proven.screen, item.direction, deps.platform);
+                    if (!band.unproven) {
+                      before = proven;
+                      plainBand = band;
+                    }
+                  } catch (error) {
+                    if (
+                      !(error instanceof ResolutionError) ||
+                      error.code !== 'SCREEN_EVIDENCE_INCOMPLETE'
+                    )
+                      throw error;
+                  }
+                }
+                const {
+                  container: _container,
+                  distance: _distance,
+                  unproven: _unproven,
+                  ...receipt
+                } = plainBand;
                 scrollBands.set(item.line, receipt);
                 if (plainBand.status === 'unreachable') {
                   outcome = withCause(

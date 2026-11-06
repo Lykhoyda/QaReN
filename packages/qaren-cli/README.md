@@ -967,12 +967,20 @@ when a cleanly dispatched scroll changes the app screen, including descendant
 frame movement too small to change the screen signature. With complete native
 geometry, it chooses the largest scroll-container band clear of front overlays
 and the keyboard; `scrollBand` records the choice. The gesture preserves its
-viewport travel distance, clamped to fit inside the selected band. When no
-positive band remains, or the selected band cannot host a drag, a container
-covered at its clip centre refuses before dispatch with
-`SCROLL_CONTAINER_UNREACHABLE`, cause `scroll_container_unreachable`, and
-`scrollBand.status: "unreachable"`, suggesting a scroll-until target or removing
-the step. A side rail that leaves the centre clear still permits a drag.
+viewport travel distance, clamped to fit inside the selected band. A container
+marked hidden although its centre lies inside its visible clip is never chosen.
+An overlay whose React host, matched by its own testID, has `pointerEvents`
+`none` or `box-none` (or sits under a `none` host) is not a cover; the drag
+passes through it. A `box-none` host's own children are still judged as covers
+in their own right. When no positive band remains, or the selected band cannot
+host a drag, and the clip centre is covered, QaReN takes one platform-presence
+capture to match the cover to its React host. A cover proven to take touches
+refuses before dispatch with `SCROLL_CONTAINER_UNREACHABLE`, cause
+`scroll_container_unreachable`, and `scrollBand.status: "unreachable"`,
+suggesting a scroll-until target or removing the step. A cover that stays
+unproven, including when that capture is incomplete, never refuses: the drag
+crosses the container's clip and the result decides the step. A side rail that
+leaves the centre clear still permits a drag.
 Incomplete native captures, a missing application/window frame, no captured
 container, or an empty container frame keep the viewport gesture with
 `scrollBand.status: "no-geometry"`; a band too small for the handler's actual
