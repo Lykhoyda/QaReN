@@ -374,6 +374,68 @@ function possibleTextOwner(host: HostTypography['nodes'][number], content: strin
   }
 }
 
+// Why a capture cannot name who takes a touch: a capture-wide evidence gap, or a fact about the point.
+export type TouchOwnerGap =
+  | 'no-native-presence'
+  | 'android'
+  | 'react-evidence-incomplete'
+  | 'typography-incomplete'
+  | 'no-associations'
+  | 'multiple-windows'
+  | 'separate-roots';
+export type TouchPointGap = 'unordered-siblings' | 'unassociated-host' | 'clipped';
+
+// iOS: the native node whose React host takes a touch at a screen point, by React Native's own hit test.
+// 'none' when no host takes it; a gap names the evidence condition that withholds the owner.
+export function touchOwner(
+  nodes: NativeNode[],
+  evidence: ReactHostEvidence | undefined,
+  presence: NativePresence | undefined,
+  associations: ReadonlyMap<number, HostAssociation>,
+): ((x: number, y: number) => number | 'none' | TouchPointGap) | TouchOwnerGap {
+  // Association needs native presence, which only a platform-presence capture carries.
+  if (!presence) return 'no-native-presence';
+  if (presence.source === 'android-a11y-live') return 'android';
+  if (!evidence?.complete) return 'react-evidence-incomplete';
+  const typography = evidence.typography;
+  if (!typography?.complete) return 'typography-incomplete';
+  if (!associations.size) return 'no-associations';
+  // Host frames are in their one window's points.
+  const windows = new Set(
+    [...associations.values()].map(({ nativeIndex }) => nativeWindowIndex(nodes, nativeIndex)),
+  );
+  const [only] = windows;
+  const window = windows.size === 1 && only !== undefined ? nodes[only].rect : undefined;
+  if (!window) return 'multiple-windows';
+  // Separate roots carry no paint order between them, so the hit test cannot rank them.
+  if (typography.nodes.filter((node) => node.parentHostIndex === null).length !== 1)
+    return 'separate-roots';
+  const hit = reactHitTest(evidence, (rect) => ({
+    ...rect,
+    x: rect.x + window.x,
+    y: rect.y + window.y,
+  }));
+  const viewport = outsideViewport(nodes);
+  return (x, y) => {
+    const host = hit(x, y);
+    if (host === 'unresolved') return 'unordered-siblings';
+    if (host === 'none') return host;
+    // Only the hit host's own native node is proven; an ancestor would only contain the touch.
+    const index = associations.get(host)?.nativeIndex;
+    if (index === undefined) return 'unassociated-host';
+    const bounds = clippingViewport(viewport, index);
+    if (
+      bounds &&
+      (x < bounds.x ||
+        x >= bounds.x + bounds.width ||
+        y < bounds.y ||
+        y >= bounds.y + bounds.height)
+    )
+      return 'clipped';
+    return index;
+  };
+}
+
 // Android: an observed anchor's touch must also reach its host in React Native's own hit test at the
 // node's centre; [reactCovered] collects the native nodes where a React view above takes it. They stay
 // anchored, as the native observation still proves identity, but are not observed at this capture.

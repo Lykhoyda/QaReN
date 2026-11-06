@@ -81,6 +81,14 @@ import {
   reactOnlyTimeout,
   reactOnlyViewport,
   visibleSelector,
+  contend,
+  coverOwner,
+  type CoverGap,
+  excludedCandidate,
+  nestedCandidate,
+  probeIdentifiable,
+  MAX_HIT_PROBES,
+  type CandidateExclusion,
 } from './resolve.js';
 import { literalEvidence, type LiteralNearMiss } from './evidence.js';
 import { scrollMotion } from './scroll-motion.js';
@@ -112,6 +120,7 @@ import {
   type PlannedSurface,
   type RecoveryTarget,
   dismissCandidate,
+  isDeclineLabel,
   plannedSurface,
   optInShaped,
   recover,
@@ -347,8 +356,13 @@ export interface WalkerTimingDiagnostic {
     scrollOrigin: 'offscreen-resolution' | 'centre-covered' | 'native-occlusion' | null;
     requestedDirection: 'up' | 'down' | null;
     targetCentreChanged: boolean | null;
+    // Why the observation named no cover; null when it named one or never looked.
+    coverGap?: WalkerCoverGap | null;
   };
 }
+
+// A cover gap, or why the one presence recapture could not settle a no-native-presence gap.
+export type WalkerCoverGap = CoverGap | 'presence-recapture-incomplete' | 'target-not-recaptured';
 
 interface Observation {
   overlayHits?: OverlayHits;
@@ -914,6 +928,23 @@ async function walkBlockScoped(
       }
     }
   };
+  // The one bounded platform-presence recapture for cover evidence an ordinary capture cannot carry;
+  // a late or incomplete read returns nothing, so the cover stays unproven rather than refusing.
+  const presenceRecapture = async (
+    item: Exclude<Item, { kind: 'check' }>,
+    until?: number,
+  ): Promise<Observation | undefined> => {
+    try {
+      return await captureOnce(item, false, false, 'provenance', until);
+    } catch (error) {
+      if (
+        error instanceof CaptureDeadline ||
+        (error instanceof ResolutionError && error.code === 'SCREEN_EVIDENCE_INCOMPLETE')
+      )
+        return undefined;
+      throw error;
+    }
+  };
   const enrichLabelProvenance = async (
     observation: Observation,
     step?: Exclude<Item, { kind: 'check' }>,
@@ -1000,23 +1031,6 @@ async function walkBlockScoped(
     recovery = false,
   ): Promise<Observation> =>
     enrichLabelProvenance(await captureOnce(step, assertion, recovery), step);
-  // One bounded presence read for evidence an ordinary capture cannot carry. A late or incomplete
-  // read leaves that evidence unproven (undefined) and never refuses the step on its own.
-  const presenceRecapture = async (
-    step: Exclude<Item, { kind: 'check' }>,
-    until?: number,
-  ): Promise<Observation | undefined> => {
-    try {
-      return await captureOnce(step, false, false, 'provenance', until);
-    } catch (error) {
-      if (
-        error instanceof CaptureDeadline ||
-        (error instanceof ResolutionError && error.code === 'SCREEN_EVIDENCE_INCOMPLETE')
-      )
-        return undefined;
-      throw error;
-    }
-  };
   const diagnostic = (
     item: Item,
     observation: Observation,
@@ -1407,6 +1421,84 @@ async function walkBlockScoped(
   const bandFor = (item: Item, target: Target, screen: Screen) =>
     scrollUntilBand(target, screen, (receipt) => scrollBands.set(item.line, receipt));
   const overlayRows = new Map<number, { observation: number; checks: OverlayHitReceipt[] }>();
+  const targetRows = new Map<
+    number,
+    Pick<LedgerRow, 'collapsed' | 'candidateExclusions' | 'coveredBy'>
+  >();
+  // Why the latest observation of a line named no cover.
+  const coverGaps = new Map<number, WalkerCoverGap>();
+  // The target whose cover the ordinary capture could not prove; one presence recapture may prove it.
+  const coverTargets = new Map<number, Element>();
+  const recordCover = (
+    line: number,
+    cover: ReturnType<typeof coverOwner> | { gap: WalkerCoverGap } | undefined,
+  ): void => {
+    // Each observation states its own cover, or why none is named.
+    const { coveredBy: _previous, ...facts } = targetRows.get(line) ?? {};
+    coverGaps.delete(line);
+    if (cover && 'gap' in cover) coverGaps.set(line, cover.gap);
+    targetRows.set(line, {
+      ...facts,
+      ...(cover && 'owner' in cover
+        ? {
+            coveredBy: {
+              ref: cover.owner.ref,
+              kind: cover.owner.kind,
+              frame: cover.frame,
+              ...(isDeclineLabel(cover.owner.label) ? { label: cover.owner.label } : {}),
+            },
+          }
+        : {}),
+    });
+  };
+  // A covered iOS refusal whose ordinary capture could not tie React hosts to native nodes takes the
+  // one presence recapture; whatever it fails to prove stays unproven and never adds a refusal.
+  const proveCover = async (item: Exclude<Item, { kind: 'check' }>): Promise<void> => {
+    const target = coverTargets.get(item.line);
+    coverTargets.delete(item.line);
+    if (deps.platform !== 'ios' || !target || coverGaps.get(item.line) !== 'no-native-presence')
+      return;
+    let proven: Observation | undefined;
+    try {
+      proven = await presenceRecapture(item);
+    } catch (error) {
+      if (isAbort(error)) throw error;
+    }
+    if (!proven) {
+      coverGaps.set(item.line, 'presence-recapture-incomplete');
+      return;
+    }
+    const matches = proven.screen.elements.filter((e) => sameIdentity(e, target));
+    recordCover(
+      item.line,
+      matches.length === 1
+        ? coverOwner(matches[0], proven.screen)
+        : { gap: 'target-not-recaptured' },
+    );
+  };
+  // A covered refusal that emits no other decision diagnostic still says why its cover was or was not
+  // named; a line whose cover was never looked up emits nothing.
+  const coverDecision = (
+    item: Item,
+    observation: Observation,
+    facts: Omit<NonNullable<WalkerTimingDiagnostic['clearanceDiagnostic']>, 'coverGap'>,
+  ): void => {
+    if (!coverGaps.has(item.line) && !targetRows.get(item.line)?.coveredBy) return;
+    diagnostic(item, observation, 'decision', 'CENTRE_COVERED', undefined, undefined, undefined, {
+      ...facts,
+      coverGap: coverGaps.get(item.line) ?? null,
+    });
+  };
+  // The proven cover for a refusal, as kind and frame, or the evidence gap that withheld it.
+  const coverText = async (item: Exclude<Item, { kind: 'check' }>): Promise<string> => {
+    await proveCover(item);
+    const line = item.line;
+    const cover = targetRows.get(line)?.coveredBy;
+    if (cover)
+      return `; covered by ${cover.kind} at ${[cover.frame.x, cover.frame.y, cover.frame.width, cover.frame.height].join(',')}`;
+    const gap = coverGaps.get(line);
+    return gap ? `; no cover named (${gap})` : '';
+  };
   const withheldRows = new Map<number, NonNullable<LedgerRow['screenshotWithheld']>>();
   // Per line, what interruption recovery last decided; a dismissal stays on this line's later rows.
   const interruptions = new Map<number, InterruptionReceipt>();
@@ -1417,6 +1509,7 @@ async function walkBlockScoped(
     // A veto on an earlier attempt says nothing about a pass; a dismissal explains it.
     if (interruption && (row.outcome !== 'pass' || interruption.outcome === 'dismissed'))
       row = { ...row, interruption };
+    row = { ...row, ...targetRows.get(row.line) };
     const overlayChecks = overlayRows.get(row.line)?.checks;
     if (overlayChecks?.length) row = { ...row, overlayChecks };
     if (fillHandlerRefused)
@@ -1739,6 +1832,77 @@ async function walkBlockScoped(
     assertActive();
     return shot;
   };
+  // One read-only iOS live hit read inside the observation's expiry; a late or failed read is 'unavailable'.
+  const readHit = async (
+    item: Item,
+    observation: Observation,
+    element: Element,
+    deadline = Infinity,
+  ): Promise<HitProbeResult> => {
+    const generation = observation.screen.nativeGeneration;
+    const rect = elementFrame(element);
+    if (deps.platform !== 'ios' || !deps.hitProbe || generation === undefined || !rect)
+      return 'unavailable';
+    const context = new QaDispatchContext(
+      observationDeadline(observation.timing, deadline),
+      deps.now,
+      () => cancellationSignal()?.aborted === true,
+      item.line,
+    );
+    const timedOut = new Error('hit-probe-deadline');
+    try {
+      const read = await withDeadline(
+        performance.now() + Math.max(0, context.deadline - deps.now()),
+        timedOut,
+        () =>
+          deps.hitProbe!(element.ref, context, generation, {
+            identifier: element.testID,
+            label: element.label,
+            rect,
+          }),
+      );
+      if (!context.expired) return read;
+    } catch (error) {
+      if (isAbort(error) || (error instanceof QaDispatchError && error.code === 'RUN_CANCELLED'))
+        throw error;
+    }
+    return 'unavailable';
+  };
+  // Same-label duplicates left after proof: up to four the runner can identify get a live hit read.
+  const probeDuplicates = async (
+    item: Item & { kind: 'press' | 'fill' },
+    observation: Observation,
+    decided: Resolution,
+  ): Promise<Resolution> => {
+    if (!('refuse' in decided) || !decided.contenders) return decided;
+    const screen = observation.screen;
+    if (deps.platform !== 'ios' || !deps.hitProbe || screen.nativeGeneration === undefined)
+      return decided;
+    const contenders = decided.contenders.flatMap((ref) =>
+      screen.elements.filter((element) => element.ref === ref),
+    );
+    if (contenders.some((element) => !probeIdentifiable(element, screen) || !elementFrame(element)))
+      return {
+        ...decided,
+        reason: `${decided.reason}; cannot probe: the runner cannot identify each candidate uniquely`,
+      };
+    const exclusions: CandidateExclusion[] = [...(decided.candidateExclusions ?? [])];
+    for (const element of contenders.slice(0, MAX_HIT_PROBES)) {
+      // A read that would outlive the observation never runs.
+      if (deps.now() >= observationDeadline(observation.timing)) break;
+      if (nestedCandidate(element, contenders)) continue;
+      if ((await readHit(item, observation, element)) === 'not-hittable')
+        exclusions.push(excludedCandidate(element, 'not-hittable'));
+    }
+    if (exclusions.length === (decided.candidateExclusions?.length ?? 0)) return decided;
+    return contend(
+      item,
+      screen,
+      contenders.filter((element) => !exclusions.some((x) => x.ref === element.ref)),
+      exclusions,
+      decided.collapsed,
+    );
+  };
   const probeOverlay = async (
     item: Item,
     observation: Observation,
@@ -1750,38 +1914,9 @@ async function walkBlockScoped(
     const hits = (observation.overlayHits ??= new OverlayHits(observation.screen));
     const cached = hits.get(element, observation.screen);
     if (cached) return cached;
-    let result: HitProbeResult = 'unavailable';
-    const generation = observation.screen.nativeGeneration;
-    if (
-      deps.platform === 'ios' &&
-      deps.hitProbe &&
-      generation !== undefined &&
-      overlayProbeCoverage(element, observation.screen)
-    ) {
-      const context = new QaDispatchContext(
-        observationDeadline(observation.timing, deadline),
-        deps.now,
-        () => cancellationSignal()?.aborted === true,
-        item.line,
-      );
-      const timedOut = new Error('hit-probe-deadline');
-      try {
-        const read = await withDeadline(
-          performance.now() + Math.max(0, context.deadline - deps.now()),
-          timedOut,
-          () =>
-            deps.hitProbe!(element.ref, context, generation, {
-              identifier: element.testID,
-              label: element.label,
-              rect: elementFrame(element)!,
-            }),
-        );
-        if (!context.expired) result = read;
-      } catch (error) {
-        if (isAbort(error) || (error instanceof QaDispatchError && error.code === 'RUN_CANCELLED'))
-          throw error;
-      }
-    }
+    const result = overlayProbeCoverage(element, observation.screen)
+      ? await readHit(item, observation, element, deadline)
+      : 'unavailable';
     hits.set(element, result);
     let row = overlayRows.get(item.line);
     if (row?.observation !== observation.id) {
@@ -3010,6 +3145,7 @@ async function walkBlockScoped(
     attempts: for (;;) {
       overlayRows.delete(item.line);
       scrollBands.delete(item.line);
+      targetRows.delete(item.line);
       line = item.line;
       // Support blocks walk without recovery and never spend it; a login replay re-arms it for this retry.
       if (
@@ -3595,6 +3731,10 @@ async function walkBlockScoped(
           overlayRows.delete(item.line);
           scrollBands.delete(item.line);
           let plainBand: PlainScrollBand | undefined;
+          const { coveredBy: _previousCover, ...selectionFacts } = targetRows.get(item.line) ?? {};
+          targetRows.set(item.line, selectionFacts);
+          coverGaps.delete(item.line);
+          coverTargets.delete(item.line);
           let selectionTarget: Element | undefined;
           let selectionDeadline = Infinity;
           let selectionStartedAt = 0;
@@ -3680,7 +3820,7 @@ async function walkBlockScoped(
                   refusedIdentity === undefined
                     ? bindFillIdentity(item, before.screen, fillIdentity)
                     : undefined;
-                const decided =
+                const prepared: Resolution =
                   occluded !== undefined
                     ? { scroll: occluded }
                     : refusedIdentity !== undefined
@@ -3693,6 +3833,16 @@ async function walkBlockScoped(
                               reason: 'the original input identity no longer resolves uniquely',
                             }
                         : decision.target!;
+                const decided = await probeDuplicates(item, before, prepared);
+                targetRows.set(item.line, {
+                  ...targetRows.get(item.line),
+                  ...('collapsed' in decided && decided.collapsed
+                    ? { collapsed: decided.collapsed }
+                    : {}),
+                  ...('candidateExclusions' in decided && decided.candidateExclusions
+                    ? { candidateExclusions: decided.candidateExclusions }
+                    : {}),
+                });
                 occluded = undefined;
                 let resolution: Exclude<Resolution, { refuse: string }>;
                 if ('refuse' in decided) {
@@ -3813,13 +3963,19 @@ async function walkBlockScoped(
                     outcome = failed(
                       item,
                       attempt,
-                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}`,
+                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}${await coverText(item)}`,
                       before.screen,
                       await shoot(item),
                       undefined,
                       false,
                       'TARGET_NOT_FOUND',
                     );
+                    coverDecision(item, before, {
+                      predicate: null,
+                      scrollOrigin,
+                      requestedDirection: scrollDirection,
+                      targetCentreChanged: null,
+                    });
                     break;
                   }
                   const distance =
@@ -3876,7 +4032,7 @@ async function walkBlockScoped(
                     outcome = failed(
                       item,
                       attempt,
-                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}${cutterText(clearing)}${unaskedLiveHit(item.kind, deps.platform, clearing)}`,
+                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}${await coverText(item)}${cutterText(clearing)}${unaskedLiveHit(item.kind, deps.platform, clearing)}`,
                       before.screen,
                       await shoot(item),
                       undefined,
@@ -3897,8 +4053,17 @@ async function walkBlockScoped(
                           scrollOrigin,
                           requestedDirection: scrollDirection,
                           targetCentreChanged: null,
+                          // The unchanged screen keeps the pre-scroll observation's cover fact.
+                          coverGap: coverGaps.get(item.line) ?? null,
                         },
                       );
+                    else
+                      coverDecision(item, before, {
+                        predicate: null,
+                        scrollOrigin,
+                        requestedDirection: scrollDirection,
+                        targetCentreChanged: null,
+                      });
                     break;
                   }
                   scrollNeedsReadback = false;
@@ -4030,6 +4195,14 @@ async function walkBlockScoped(
                   centreDiagnostic = facts;
                 });
               const overlay = centreIsCovered ? inferredOverlay(centreDiagnostic) : undefined;
+              // Name the view that takes the target's touch before any tap; never the inferred band cutter.
+              const cover =
+                (item.kind === 'press' || item.kind === 'fill') && element
+                  ? coverOwner(element, before.screen)
+                  : undefined;
+              recordCover(item.line, cover);
+              if (cover && element) coverTargets.set(item.line, element);
+              else coverTargets.delete(item.line);
               // List order is not paint order: an inferred overlay alone never refuses an iOS press.
               if (
                 item.kind === 'fill' &&
@@ -4041,13 +4214,19 @@ async function walkBlockScoped(
                   outcome = failed(
                     item,
                     attempt,
-                    `"${item.target.phrase}" ${INFERRED_FILL_UNAVAILABLE}${cutterText(centreDiagnostic)}`,
+                    `"${item.target.phrase}" ${INFERRED_FILL_UNAVAILABLE}${await coverText(item)}${cutterText(centreDiagnostic)}`,
                     before.screen,
                     await shoot(item),
                     ref,
                     false,
                     'TARGET_NOT_FOUND',
                   );
+                  coverDecision(item, before, {
+                    predicate: centreDiagnostic,
+                    scrollOrigin,
+                    requestedDirection: scrollDirection,
+                    targetCentreChanged: centreChanged(element),
+                  });
                   break;
                 }
                 strictFillFocus = true;
@@ -4058,7 +4237,7 @@ async function walkBlockScoped(
                   outcome = failed(
                     item,
                     attempt,
-                    `"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${cutterText(centreDiagnostic)}${unaskedLiveHit(item.kind, deps.platform, centreDiagnostic)}`,
+                    `"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${await coverText(item)}${cutterText(centreDiagnostic)}${unaskedLiveHit(item.kind, deps.platform, centreDiagnostic)}`,
                     before.screen,
                     await shoot(item),
                     ref,
@@ -4078,6 +4257,7 @@ async function walkBlockScoped(
                       scrollOrigin,
                       requestedDirection: scrollDirection,
                       targetCentreChanged: centreChanged(element),
+                      coverGap: coverGaps.get(item.line) ?? null,
                     },
                   );
                   break;
@@ -4218,13 +4398,19 @@ async function walkBlockScoped(
                 outcome = failed(
                   item,
                   attempt,
-                  `${act.error ?? 'LIVE_HIT_UNPROVEN'}${cutterText(centreDiagnostic)}; no focus or typing was performed`,
+                  `${act.error ?? 'LIVE_HIT_UNPROVEN'}${await coverText(item)}${cutterText(centreDiagnostic)}; no focus or typing was performed`,
                   before.screen,
                   await shoot(item),
                   ref,
                   false,
                   'TARGET_NOT_FOUND',
                 );
+                coverDecision(item, before, {
+                  predicate: centreDiagnostic,
+                  scrollOrigin,
+                  requestedDirection: scrollDirection,
+                  targetCentreChanged: centreChanged(element),
+                });
                 break;
               }
               // Not hittable, unavailable, ambiguous, expired or moved: the inferred overlay refuses.
@@ -4232,7 +4418,7 @@ async function walkBlockScoped(
                 outcome = failed(
                   item,
                   attempt,
-                  `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${cutterText(liveHit)}; the live hit read refused the press (${liveHitRefusal(act.error)}); no tap was performed`,
+                  `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${await coverText(item)}${cutterText(liveHit)}; the live hit read refused the press (${liveHitRefusal(act.error)}); no tap was performed`,
                   before.screen,
                   await shoot(item),
                   ref,
@@ -4252,6 +4438,7 @@ async function walkBlockScoped(
                     scrollOrigin,
                     requestedDirection: scrollDirection,
                     targetCentreChanged: centreChanged(element),
+                    coverGap: coverGaps.get(item.line) ?? null,
                   },
                 );
                 break;
@@ -4295,13 +4482,19 @@ async function walkBlockScoped(
                   outcome = failed(
                     item,
                     attempt,
-                    `${act.error}; "${item.target.phrase}" stayed off screen after one scroll`,
+                    `${act.error}; "${item.target.phrase}" stayed off screen after one scroll${await coverText(item)}`,
                     before.screen,
                     await shoot(item),
                     ref,
                     false,
                     'TARGET_NOT_FOUND',
                   );
+                  coverDecision(item, before, {
+                    predicate: null,
+                    scrollOrigin,
+                    requestedDirection: scrollDirection,
+                    targetCentreChanged: centreChanged(element),
+                  });
                   break;
                 }
                 refusedIdentity = element;
@@ -4974,6 +5167,9 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     ...(row.scrollBand ? { scrollBand: row.scrollBand } : {}),
     ...(row.interruption ? { interruption: row.interruption } : {}),
     ...(row.overlayChecks ? { overlayChecks: row.overlayChecks } : {}),
+    ...(row.collapsed ? { collapsed: row.collapsed } : {}),
+    ...(row.candidateExclusions ? { candidateExclusions: row.candidateExclusions } : {}),
+    ...(row.coveredBy ? { coveredBy: row.coveredBy } : {}),
     ...(row.entryMismatch ? { entryMismatch: row.entryMismatch } : {}),
     ...(row.screenshotWithheld ? { screenshotWithheld: row.screenshotWithheld } : {}),
     ...(screenshot ? { screenshot } : {}),

@@ -165,8 +165,14 @@ for (const type of ['StaticText', 'Button']) {
       /TARGET_AMBIGUOUS/,
     );
     if (type === 'Button') {
+      // The duplicate's whole frame is under the keyboard: set aside on proof, and recorded.
       const action = prepareTarget({ kind: 'press', target }, observed(true));
-      assert.equal('refuse' in action && action.refuse, 'TARGET_AMBIGUOUS');
+      assert.ok('ref' in action, JSON.stringify(action));
+      assert.equal(action.ref, '@a');
+      assert.deepEqual(
+        action.candidateExclusions?.map(({ ref, reason }) => [ref, reason]),
+        [['@b', 'under-keyboard']],
+      );
     }
   });
 }

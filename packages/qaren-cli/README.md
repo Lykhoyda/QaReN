@@ -654,14 +654,34 @@ A second native input anywhere in the capture, including off screen or hidden,
 keeps the placeholder withheld; no competitor exclusion is performed.
 When React coverage is unknown or incomplete, a missed Fill with one unnamed
 on-screen input reports `evidence-incomplete`, names that coverage class, and
-suggests targeting the field by test id. Distinct matches are counted before kind,
-disabled, hittability, offscreen or React-only filters, so two or more refuse with
+suggests targeting the field by test id. Quoted targets count distinct identities
+before kind, disabled, hittability or offscreen eligibility checks, subject to the
+identity and reach proofs below. Two or more remaining matches refuse with
 `TARGET_AMBIGUOUS`, without a Jev tie-break, even if the target adds positional words
-such as `Tap "Save" at the bottom`. Outside fills,
+such as `Tap "Save" at the bottom`. For a press, wrapper collapse runs first; a
+press or fill then narrows the count only on proof of what a user can reach.
+A press counts a same-label wrapper as the control it wraps when native ancestry,
+a React host anchored by the wrapper's own unique testID
+with no press handler, no other content and strict frame containment all hold; an
+inner control that is offscreen, disabled or not hittable never collapses, and the
+wrapper is never chosen. When a quoted press or fill still has multiple matches,
+a match whose whole frame is off screen, outside its list's
+clip or under the keyboard is set aside unless it is nested with another match; a
+later window or an inferred overlay sets nothing aside. On iOS, when every remaining
+match is uniquely identifiable, the first four are considered for a read-only live
+hit read inside the observation's expiry, skipping nested candidates; only
+`not-hittable` sets one aside. Partial exposure or missing geometry alone never
+excludes a candidate, nor does an unavailable or late read. A frame contradicted by
+its own on-screen descendant proves no reach and cannot set a candidate aside
+without live evidence. If all candidates are
+set aside, the step refuses `TARGET_NOT_FOUND`. The refusal marks a candidate
+"nested inside candidate N" and lists each one set aside with its reason;
+the row records `collapsed` and `candidateExclusions`. These selection facts survive
+clearance scrolling and retry attempts. Outside fills,
 a React-only element whose testID equals the quoted value is not counted while a
 native element carries that testID, so a quoted press, wait or scroll reaches
-the native element; two native elements sharing it still refuse. A fill counts
-text-entry candidates plus every element carrying its testID, so a form label
+the native element; remaining native duplicates follow the counting rules above.
+A fill counts text-entry candidates plus every element carrying its testID, so a form label
 naming an input is not a twin, while a button sharing the input's testID is. A
 React-only projection collapses into the one native input only when complete
 React host evidence and digest ancestry prove it represents the same input host:
@@ -1199,9 +1219,8 @@ and no hint showing counts as empty, so clearing a plain field verifies as
 `exact`. A clear that reads back the placeholder remains `ambiguous`. Stale
 reads, and null text with unknown hint state, remain `unreadable`.
 
-Separate React-only input projections still count when matching a quoted strict fill,
-so a native input and a React-only input sharing its testID refuse as
-`TARGET_AMBIGUOUS` before any tap. A strict fill never acts on a React-only
+For quoted strict fills, React-only identity merging and duplicate counting follow
+the [targeting rules](#check-a-plan). A strict fill never acts on a React-only
 input: when one is the only match, an accessibility-hidden input represented
 only in React evidence returns `TARGET_NOT_FOUND`, allowing the guarded
 native-wrapper fallback without scrolling. A genuine offscreen native input still requests scrolling; an onscreen
@@ -3181,8 +3200,7 @@ text match. An ambiguous text target without a unique testID
 can satisfy discovery but leaves the block unsaved; replay follows the
 ambiguity refusal above. A stored testID on a replayed press, wait or scroll resolves
 to its one native element even when a React-only element shares that testID, and
-still refuses when two native elements share it; a stored-testID fill keeps
-counting React-only inputs.
+duplicate counting and stored-testID fills follow the [targeting rules](#check-a-plan).
 
 Replay requires the canonical block format emitted by
 [`serializeBlock`](../qaren-core/src/qa/blocks.ts); edited or incompatible files
@@ -3758,15 +3776,41 @@ observation ordinal and `clearanceDiagnostic`. It records the viewport, keyboard
 overlay predicate branch, boolean coverage facts, the scroll's origin and requested
 direction, and whether the target centre changed. For an overlay branch, the
 predicate also records the inferred band cutter's capture-local ref, kind, frame,
-and band edges before and after the cut; the failed step names that cutter too.
-The cutter is inferred, not the proven cover. Unread or unavailable facts
+and band edges before and after the cut; the failed step cites it as the "inferred band
+cutter". The cutter is inferred, not the proven cover. On iOS the cover is named only when
+React Native's own hit test at the target's centre, over the capture's React hosts,
+gives the touch to another view with its own native node: `pointerEvents` none
+views are skipped and box-none views pass the touch to their children. The step
+row's `coveredBy` then records that view's ref, kind and frame, with a label only from
+QaReN's own dismiss words, and a refusal adds "covered by <kind> at <frame>".
+The cover remains through clearance until a new target observation replaces it.
+When the evidence cannot prove a cover, or the touch reaches the target's own
+lineage, covered-target refusals add "no cover named (<gap>)", including native
+occlusion refusals. `clearanceDiagnostic.coverGap` records the same gap when that
+diagnostic is emitted; it is `null` when a cover was named or no cover lookup ran.
+Covered-target refusal exits also emit this decision diagnostic when a cover lookup
+ran: a bound target still off screen, a refused clearance scroll after native
+occlusion, a refused Fill overlay probe or strict focus, and repeated native
+occlusion. Runtime-input suppression follows the contract above.
+The [walker cover result type](../qaren-core/src/qa/walker.ts) owns the fixed gap values.
+`no-native-presence` means the capture carried no native presence, so no React host
+could be tied to a native node. Quoted presses use ordinary captures without native
+presence or React typography. On iOS a covered press or Fill refusal with that gap takes the
+walker's one bounded platform-presence recapture, the same one a plain scroll uses for
+an unproven cover, and looks up the cover again on it, at most once per cover lookup.
+For covered targets, only refusals pay for that read (a presence capture can take
+tens of seconds on device); it never adds a refusal or
+grants a dispatch. An incomplete read leaves the cover unproven
+(`presence-recapture-incomplete`), and a target the recapture cannot find again leaves
+`target-not-recaptured`.
+In `clearanceDiagnostic`, unread or unavailable facts
 remain `null`; target text, identifiers and target coordinates are excluded. The
 [walker](../qaren-core/src/qa/walker.ts) owns the event layout; the
 [centre predicate](../qaren-core/src/qa/resolve.ts) owns its coverage facts.
 On the [strict iOS overlay press path](#covered-target-recovery), this event follows
 a live-hit refusal with mutation `none`, rather than the inference alone.
 The event preserves the failed step and grants no further scroll or
-target dispatch; sink failures leave the outcome unchanged. It stays out of the
+target dispatch; sink failures leave the outcome unchanged. The timing event stays out of the
 public result and ledger, as covered by the
 [occlusion regressions](../qaren-core/test/unit/qa/occlusion-walker.test.ts).
 

@@ -127,6 +127,10 @@ export const FIXED_CONTROL_WORDS: ReadonlySet<string> = new Set([
   'Turn on',
 ]);
 
+export function isDeclineLabel(label: string | undefined): label is string {
+  return label !== undefined && DECLINE_LABELS.has(label);
+}
+
 // What a recovery must prove before it may dismiss: that its target sits behind the presented
 // modal, or, for a missing target, that a separate surface interrupts (a proven presented-modal
 // cover, or a decline that is the screen's only control) rather than a screen's own Cancel.
