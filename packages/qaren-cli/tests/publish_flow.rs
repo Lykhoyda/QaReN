@@ -127,6 +127,7 @@ fn final_terminal() -> TerminalResult {
             tested: TESTED.into(),
             matched: true,
             detail: None,
+            classification: None,
         },
         ownership_proven: true,
     }
@@ -2682,6 +2683,22 @@ fn only_a_final_uncancelled_verified_owned_terminal_result_admits_publication() 
         },
         ..final_terminal()
     };
+    let unreadable = TerminalResult {
+        final_verification: FinalVerification {
+            matched: false,
+            detail: Some("git rev-parse HEAD failed: not a git repository".into()),
+            classification: Some(qaren::candidate::VerificationClass::Unreadable),
+            ..final_terminal().final_verification
+        },
+        ..final_terminal()
+    };
+    let drifted = TerminalResult {
+        final_verification: FinalVerification {
+            classification: Some(qaren::candidate::VerificationClass::Drifted),
+            ..unverified.final_verification.clone()
+        },
+        ..final_terminal()
+    };
     let unowned = TerminalResult {
         ownership_proven: false,
         ..final_terminal()
@@ -2694,6 +2711,8 @@ fn only_a_final_uncancelled_verified_owned_terminal_result_admits_publication() 
         (None, FailureCode::RunRecordInvalid),
         (Some(cancelled_and_changed), FailureCode::RunCancelled),
         (Some(unverified), FailureCode::CandidateDrifted),
+        (Some(drifted), FailureCode::CandidateDrifted),
+        (Some(unreadable), FailureCode::CandidateUnavailable),
         (Some(unowned), FailureCode::OwnershipUnproven),
     ] {
         let (runs, dir) = run_dir(false);

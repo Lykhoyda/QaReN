@@ -148,7 +148,9 @@ impl<'a> Ctx<'a> {
             let cleanup = format!("qaren cleanup {} --json", self.record.run_id);
             let next = if matches!(
                 failure.code,
-                FailureCode::ManifestNotWarm | FailureCode::WatchmanVolumeStalled
+                FailureCode::ManifestNotWarm
+                    | FailureCode::WatchmanVolumeStalled
+                    | FailureCode::CandidateUnavailable
             ) {
                 format!("{cleanup}; then {}", failure.next_action)
             } else {
@@ -4079,8 +4081,14 @@ fn recheck_candidate(ctx: &mut Ctx) -> Result<(), Failure> {
     // Handoff baselines are recorded through the integration filter, so the
     // recheck must look through the same filter to compare like with like.
     let tolerate = ctx.record.scenario.build.owner == BuildOwner::Qaren;
-    candidate::verify_unchanged_with(ctx.runner, &ctx.record.candidate, tolerate)
-        .map_err(|detail| candidate_drift(&ctx.record.run_id, format!("{detail} during the run")))
+    candidate::verify_unchanged_with(ctx.runner, &ctx.record.candidate, tolerate).map_err(|check| {
+        match check {
+            candidate::CandidateCheck::Unreadable(_) => Failure::candidate_unavailable("verify"),
+            candidate::CandidateCheck::Drifted(detail) => {
+                candidate_drift(&ctx.record.run_id, format!("{detail} during the run"))
+            }
+        }
+    })
 }
 
 fn candidate_drift(run_id: &str, detail: String) -> Failure {

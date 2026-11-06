@@ -49,6 +49,7 @@ comment, label change or block write-back when:
 | The run has no persisted terminal result     | `RUN_RECORD_INVALID`          |
 | The run was cancelled                        | `RUN_CANCELLED` (exit 4)      |
 | The tested candidate did not verify unchanged | `CANDIDATE_DRIFTED` (exit 1) |
+| The tested candidate could not be read        | `CANDIDATE_UNAVAILABLE` (exit 4) |
 | Teardown did not prove ownership             | `OWNERSHIP_UNPROVEN` (exit 4) |
 
 A plain QA fail can still be published as a report. A later recovery does not upgrade the
