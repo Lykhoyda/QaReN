@@ -30,6 +30,7 @@ import {
   hasNativeSheet,
   matchedHostPress,
   reachOf,
+  touchOwnerAt,
   reactOnlyFactsOf,
   scrollContainerType,
   semanticActionView,
@@ -721,6 +722,21 @@ export function overlayProbeCoverage(
 ): Readonly<CentreCoverageDiagnostic> | undefined {
   const facts = inferredOverlayCoverage(element, screen);
   return facts && probeIdentifiable(element, screen) ? facts : undefined;
+}
+
+// The element that takes a touch at the target's centre instead of the target, by React Native's own
+// hit test; undefined when the touch reaches the target's lineage or nothing proves who takes it.
+export function coverOwner(element: Element, screen: Screen): Element | undefined {
+  const frame = elementFrame(element);
+  if (!frame) return undefined;
+  const owner = touchOwnerAt(screen, frame.x + frame.width / 2, frame.y + frame.height / 2);
+  return typeof owner === 'object' &&
+    owner !== element &&
+    !ancestorsOf(owner).includes(element) &&
+    !ancestorsOf(element).includes(owner) &&
+    elementFrame(owner)
+    ? owner
+    : undefined;
 }
 
 // The runner's live hit read finds a node by its unique testID, or else by its unique label and kind.

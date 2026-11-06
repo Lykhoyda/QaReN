@@ -3737,10 +3737,15 @@ observation ordinal and `clearanceDiagnostic`. It records the viewport, keyboard
 overlay predicate branch, boolean coverage facts, the scroll's origin and requested
 direction, and whether the target centre changed. For an overlay branch, the
 predicate also records the inferred band cutter's capture-local ref, kind, frame,
-and band edges before and after the cut; the failed step names that cutter too, as
-"covered by <kind> at <frame>", and the step row's `coveredBy` records its ref, kind
-and frame, with a label only from QaReN's own dismiss words.
-The cutter is inferred, not the proven cover. Unread or unavailable facts
+and band edges before and after the cut; the failed step names that cutter too.
+The cutter is inferred, not the proven cover. On iOS the cover is named only when
+React Native's own hit test at the target's centre, over the capture's React hosts,
+gives the touch to another view with its own native node: `pointerEvents` none
+views are skipped and box-none views pass the touch to their children. The step
+row's `coveredBy` then records that view's ref, kind and frame, with a label only from
+QaReN's own dismiss words, and a refusal adds "covered by <kind> at <frame>". With no
+complete host evidence, an unresolved paint order, or a touch that reaches the
+target's own lineage, no cover is named. Unread or unavailable facts
 remain `null`; target text, identifiers and target coordinates are excluded. The
 [walker](../qaren-core/src/qa/walker.ts) owns the event layout; the
 [centre predicate](../qaren-core/src/qa/resolve.ts) owns its coverage facts.

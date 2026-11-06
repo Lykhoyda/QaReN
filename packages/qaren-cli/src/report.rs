@@ -296,6 +296,13 @@ fn row_line_with(row: &Row, prose: &dyn Fn(&str) -> String) -> String {
         row.covered_by
             .as_ref()
             .map(|c| format!("; covered by {} at {}", kind(&c.kind), rect(&c.frame)))
+            // A refusal's reason already names the cover.
+            .filter(|cover| {
+                !row.reason
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains(&cover[2..])
+            })
             .unwrap_or_default(),
     ]
     .concat();
@@ -1490,6 +1497,16 @@ mod tests {
             line.ends_with(
                 "; counted wrapper @e2 as @e3; set aside @e4 (clipped-by-viewport); covered by other at 0,116,402,758\n"
             ),
+            "{line}"
+        );
+        // A refusal whose reason already names the cover prints it once.
+        let mut refused = row.clone();
+        refused["outcome"] = "fail".into();
+        refused["reason"] = "TARGET_NOT_FOUND: covered by other at 0,116,402,758; no tap".into();
+        let line = row_line(&serde_json::from_value(refused).unwrap());
+        assert_eq!(
+            line.matches("covered by other at 0,116,402,758").count(),
+            1,
             "{line}"
         );
         for reason in ["offscreen-by-frame", "under-keyboard", "not-hittable"] {

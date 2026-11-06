@@ -82,6 +82,7 @@ import {
   reactOnlyViewport,
   visibleSelector,
   contend,
+  coverOwner,
   excludedCandidate,
   nestedCandidate,
   probeIdentifiable,
@@ -419,7 +420,7 @@ const cutterText = (facts: Readonly<CentreCoverageDiagnostic> | null): string =>
   const cut = facts?.cutter;
   if (!cut) return '';
   const { x, y, width, height } = cut.frame;
-  return `; covered by ${cut.kind} at ${x},${y},${width},${height} (inferred band cutter ${cut.ref} moved the band ${cut.edge} from ${cut.before[cut.edge]} to ${cut.after[cut.edge]})`;
+  return `; inferred band cutter ${cut.ref} (${cut.kind}) at ${x},${y},${width},${height} moved the band ${cut.edge} from ${cut.before[cut.edge]} to ${cut.after[cut.edge]}`;
 };
 
 class EvidenceExpired extends Error {
@@ -1398,6 +1399,13 @@ async function walkBlockScoped(
     number,
     Pick<LedgerRow, 'collapsed' | 'candidateExclusions' | 'coveredBy'>
   >();
+  // The proven cover for a refusal, as kind and frame; nothing when no touch owner was proven.
+  const coverText = (line: number): string => {
+    const frame = targetRows.get(line)?.coveredBy;
+    return frame
+      ? `; covered by ${frame.kind} at ${[frame.frame.x, frame.frame.y, frame.frame.width, frame.frame.height].join(',')}`
+      : '';
+  };
   const withheldRows = new Map<number, NonNullable<LedgerRow['screenshotWithheld']>>();
   // Per line, what interruption recovery last decided; a dismissal stays on this line's later rows.
   const interruptions = new Map<number, InterruptionReceipt>();
@@ -3990,20 +3998,27 @@ async function walkBlockScoped(
                   centreDiagnostic = facts;
                 });
               const overlay = centreIsCovered ? inferredOverlay(centreDiagnostic) : undefined;
-              // Name what covers the target before any tap; a label only from QaReN's dismiss vocabulary.
-              const cut = (centreDiagnostic as Readonly<CentreCoverageDiagnostic> | null)?.cutter;
-              if (cut) {
-                const label = before.screen.elements.find((e) => e.ref === cut.ref)?.label;
-                targetRows.set(item.line, {
-                  ...targetRows.get(item.line),
-                  coveredBy: {
-                    ref: cut.ref,
-                    kind: cut.kind,
-                    frame: cut.frame,
-                    ...(isDeclineLabel(label) ? { label } : {}),
-                  },
-                });
-              }
+              // Name the view that takes the target's touch before any tap; never the inferred band cutter.
+              const cover =
+                (item.kind === 'press' || item.kind === 'fill') && element
+                  ? coverOwner(element, before.screen)
+                  : undefined;
+              const coverFrame = cover && elementFrame(cover);
+              // Each observation states its own cover, or none.
+              const { coveredBy: _previous, ...facts } = targetRows.get(item.line) ?? {};
+              targetRows.set(item.line, {
+                ...facts,
+                ...(cover && coverFrame
+                  ? {
+                      coveredBy: {
+                        ref: cover.ref,
+                        kind: cover.kind,
+                        frame: coverFrame,
+                        ...(isDeclineLabel(cover.label) ? { label: cover.label } : {}),
+                      },
+                    }
+                  : {}),
+              });
               // List order is not paint order: an inferred overlay alone never refuses an iOS press.
               if (
                 item.kind === 'fill' &&
@@ -4015,7 +4030,7 @@ async function walkBlockScoped(
                   outcome = failed(
                     item,
                     attempt,
-                    `"${item.target.phrase}" ${INFERRED_FILL_UNAVAILABLE}${cutterText(centreDiagnostic)}`,
+                    `"${item.target.phrase}" ${INFERRED_FILL_UNAVAILABLE}${coverText(item.line)}${cutterText(centreDiagnostic)}`,
                     before.screen,
                     await shoot(item),
                     ref,
@@ -4032,7 +4047,7 @@ async function walkBlockScoped(
                   outcome = failed(
                     item,
                     attempt,
-                    `"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${cutterText(centreDiagnostic)}${unaskedLiveHit(item.kind, deps.platform, centreDiagnostic)}`,
+                    `"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${coverText(item.line)}${cutterText(centreDiagnostic)}${unaskedLiveHit(item.kind, deps.platform, centreDiagnostic)}`,
                     before.screen,
                     await shoot(item),
                     ref,
@@ -4198,7 +4213,7 @@ async function walkBlockScoped(
                 outcome = failed(
                   item,
                   attempt,
-                  `${act.error ?? 'LIVE_HIT_UNPROVEN'}${cutterText(centreDiagnostic)}; no focus or typing was performed`,
+                  `${act.error ?? 'LIVE_HIT_UNPROVEN'}${coverText(item.line)}${cutterText(centreDiagnostic)}; no focus or typing was performed`,
                   before.screen,
                   await shoot(item),
                   ref,
@@ -4212,7 +4227,7 @@ async function walkBlockScoped(
                 outcome = failed(
                   item,
                   attempt,
-                  `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${cutterText(liveHit)}; the live hit read refused the press (${liveHitRefusal(act.error)}); no tap was performed`,
+                  `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${coverText(item.line)}${cutterText(liveHit)}; the live hit read refused the press (${liveHitRefusal(act.error)}); no tap was performed`,
                   before.screen,
                   await shoot(item),
                   ref,

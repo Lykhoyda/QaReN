@@ -321,6 +321,42 @@ function possibleTextOwner(host: HostTypography['nodes'][number], content: strin
   }
 }
 
+// iOS: the native node whose React host takes a touch at a screen point, by React Native's own hit test.
+// 'none' when no host takes it; 'unresolved' when paint order or the owner's native node is unknown.
+export function touchOwner(
+  nodes: NativeNode[],
+  evidence: ReactHostEvidence | undefined,
+  presence: NativePresence | undefined,
+  associations: ReadonlyMap<number, HostAssociation>,
+): ((x: number, y: number) => number | 'none' | 'unresolved') | undefined {
+  const typography = evidence?.typography;
+  if (
+    !evidence?.complete ||
+    !typography?.complete ||
+    presence?.source === 'android-a11y-live' ||
+    !associations.size
+  )
+    return undefined;
+  // Host frames are in their one window's points.
+  const windows = new Set(
+    [...associations.values()].map(({ nativeIndex }) => nativeWindowIndex(nodes, nativeIndex)),
+  );
+  const [only] = windows;
+  const window = windows.size === 1 && only !== undefined ? nodes[only].rect : undefined;
+  if (!window) return undefined;
+  const hit = reactHitTest(evidence, (rect) => ({
+    ...rect,
+    x: rect.x + window.x,
+    y: rect.y + window.y,
+  }));
+  return (x, y) => {
+    const host = hit(x, y);
+    if (typeof host !== 'number') return host;
+    // Only the hit host's own native node is proven; an ancestor would only contain the touch.
+    return associations.get(host)?.nativeIndex ?? 'unresolved';
+  };
+}
+
 // Android: an observed anchor's touch must also reach its host in React Native's own hit test at the
 // node's centre; [reactCovered] collects the native nodes where a React view above takes it. They stay
 // anchored, as the native observation still proves identity, but are not observed at this capture.
