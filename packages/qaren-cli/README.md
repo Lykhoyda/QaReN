@@ -519,13 +519,14 @@ prefixes are reserved case-insensitively. Missing variables stay missing and
 empty values stay empty. Invalid lists refuse as `SCENARIO_INVALID` without
 echoing entries.
 
-Treat this list as authorization to disclose those inherited variables to
-`pnpm-install`, `expo-prebuild`, and their descendants, including installer
+Treat this list as authorization to disclose those inherited variables to the
+children listed in the [child environment contract](#plan-checks-and-screen-evidence)
+and their descendants, including installer
 lifecycle scripts and Expo config plugins. Use trusted, reviewed configuration;
 `--config` can select an operator-controlled file outside the candidate. QaReN
 uses that selected list rather than reloading candidate configuration. The
-package manager keeps its own configuration: QaReN does not discover, parse or
-rewrite npmrc or validate credentials. Output withholding does not contain what
+package manager keeps its own configuration: QaReN does not rewrite it or
+validate credentials. Output withholding does not contain what
 those processes can write themselves or send over the network.
 
 `--platform android` borrows one booted emulator on the host's already running
