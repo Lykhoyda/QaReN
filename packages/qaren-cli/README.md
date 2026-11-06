@@ -3752,13 +3752,18 @@ When the evidence cannot prove a cover, or the touch reaches the target's own
 lineage, covered-target refusals add "no cover named (<gap>)", including native
 occlusion refusals. `clearanceDiagnostic.coverGap` records the same gap when that
 diagnostic is emitted; it is `null` when a cover was named or no cover lookup ran.
-The [cover result types](../qaren-core/src/qa/resolve.ts) own the fixed gap values.
+Covered-target refusal exits also emit this decision diagnostic when a cover lookup
+ran: a bound target still off screen, a refused clearance scroll after native
+occlusion, a refused Fill overlay probe or strict focus, and repeated native
+occlusion. Runtime-input suppression follows the contract above.
+The [walker cover result type](../qaren-core/src/qa/walker.ts) owns the fixed gap values.
 `no-native-presence` means the capture carried no native presence, so no React host
 could be tied to a native node. Quoted presses use ordinary captures without native
-presence or React typography, so on iOS a covered refusal with that gap takes the
+presence or React typography. On iOS a covered press or Fill refusal with that gap takes the
 walker's one bounded platform-presence recapture, the same one a plain scroll uses for
-an unproven cover, and looks up the cover again on it. Only refusals pay for that read
-(a presence capture can take tens of seconds on device); it never adds a refusal or
+an unproven cover, and looks up the cover again on it, at most once per cover lookup.
+For covered targets, only refusals pay for that read (a presence capture can take
+tens of seconds on device); it never adds a refusal or
 grants a dispatch. An incomplete read leaves the cover unproven
 (`presence-recapture-incomplete`), and a target the recapture cannot find again leaves
 `target-not-recaptured`.
