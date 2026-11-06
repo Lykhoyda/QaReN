@@ -3725,6 +3725,8 @@ fn install_cached_ios_app(
             break;
         }
         if let InstallTarget::BudgetSpent = prove_sim_booted_before_install(ctx, deadline)? {
+            ctx.notes
+                .push(("launch_ready_budget".into(), "spent".into()));
             break;
         }
         require_sim_custody(ctx)?;
