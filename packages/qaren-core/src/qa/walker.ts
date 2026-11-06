@@ -66,6 +66,8 @@ import {
   bindDispatchIdentity,
   stepTarget,
   scrollUntilBand,
+  plainScrollBand,
+  type PlainScrollBand,
   scrollUntilEvidence,
   scrollTargetCovered,
   scrollUntilContainer,
@@ -81,6 +83,7 @@ import {
   visibleSelector,
 } from './resolve.js';
 import { literalEvidence, type LiteralNearMiss } from './evidence.js';
+import { scrollMotion } from './scroll-motion.js';
 import { scrollNavigationChange } from './scroll-navigation.js';
 import { applyContainmentFallback, exactIdentities, focusIdentityOf } from './identity.js';
 import {
@@ -3371,6 +3374,7 @@ async function walkBlockScoped(
         let moved: { target: Element; error: string } | undefined;
         // Plain-scroll attempts that dispatched cleanly onto complete, unchanged app captures.
         let stillScrolls = 0;
+        let overflowScrolls = 0;
         let scrollRefused = false;
         let settledFrame: string | undefined;
         let keyboardAttempted = false;
@@ -3400,6 +3404,7 @@ async function walkBlockScoped(
           currentAttempt = attempt;
           overlayRows.delete(item.line);
           scrollBands.delete(item.line);
+          let plainBand: PlainScrollBand | undefined;
           let selectionTarget: Element | undefined;
           let selectionDeadline = Infinity;
           let selectionStartedAt = 0;
@@ -3898,6 +3903,46 @@ async function walkBlockScoped(
                 selectionDeadline = observationDeadline(before.timing);
                 selectionStartedAt = deps.now();
               }
+              if (item.kind === 'scroll') {
+                plainBand = plainScrollBand(before.screen, item.direction, deps.platform);
+                if (plainBand.unproven) {
+                  try {
+                    const proven = await captureOnce(item, false, false, 'provenance');
+                    plainBand = plainScrollBand(proven.screen, item.direction, deps.platform);
+                    before = proven;
+                    if (before.screen.front === 'dialog') throw dialogInFront();
+                  } catch (error) {
+                    if (
+                      !(error instanceof ResolutionError) ||
+                      error.code !== 'SCREEN_EVIDENCE_INCOMPLETE'
+                    )
+                      throw error;
+                  }
+                }
+                const {
+                  container: _container,
+                  distance: _distance,
+                  unproven: _unproven,
+                  ...receipt
+                } = plainBand;
+                scrollBands.set(item.line, receipt);
+                if (plainBand.status === 'unreachable') {
+                  outcome = withCause(
+                    failed(
+                      item,
+                      attempt,
+                      'SCROLL_CONTAINER_UNREACHABLE: the scroll view on screen is covered by a fixed element, so a drag cannot reach it',
+                      before.screen,
+                      await shoot(item),
+                    ),
+                    'scroll_container_unreachable',
+                  );
+                  if (outcome.failure)
+                    outcome.failure.suggestion =
+                      'the scroll view is hidden behind a fixed element at this text size or state; use `Scroll down until <target>` so the walk reports the covering element, or remove the step';
+                  break;
+                }
+              }
               act = await mutate(item, before, async (context) => {
                 if (item.kind === 'press') {
                   pressBase = before.screen;
@@ -3921,7 +3966,12 @@ async function walkBlockScoped(
                       ),
                     )
                   : item.kind === 'scroll'
-                    ? deps.scroll(item.direction, context)
+                    ? deps.scroll(
+                        item.direction,
+                        context,
+                        plainBand?.distance,
+                        plainBand?.container ? plainBand.band : undefined,
+                      )
                     : item.kind === 'back'
                       ? deps.back(context)
                       : deps.dialog(item.action, context);
@@ -4312,8 +4362,16 @@ async function walkBlockScoped(
               screen.front === 'app' &&
               (screen.captureCoverage?.native ?? screen.coverage?.native) === 'complete';
             if (!scrollDispatched) scrollRefused = true;
-            else if (!changed && complete(before.screen) && complete(after.screen))
-              stillScrolls += 1;
+            else if (complete(before.screen) && complete(after.screen)) {
+              const motion = plainBand?.container
+                ? scrollMotion(plainBand.container, before.screen, after.screen, item.direction)
+                : 'unknown';
+              if (motion === 'moved') changed = true;
+              if (!changed) {
+                stillScrolls += 1;
+                if (motion === 'still-overflow') overflowScrolls += 1;
+              }
+            }
           }
           if (
             !noMutationRefusal &&
@@ -4421,8 +4479,16 @@ async function walkBlockScoped(
               ...base(item, attempt),
               ...(shot ? { screenshot: shot } : {}),
               outcome: 'pass',
-              reason: redact(SCROLL_NO_VISIBLE_CHANGE),
-              scrollDetail: { status: 'no_visible_change', attempts: 2 },
+              reason: redact(
+                overflowScrolls === 2
+                  ? 'two scrolls were dispatched inside the scroll view and nothing moved although content extends beyond it'
+                  : SCROLL_NO_VISIBLE_CHANGE,
+              ),
+              scrollDetail: {
+                status:
+                  overflowScrolls === 2 ? 'no_visible_change_content_remains' : 'no_visible_change',
+                attempts: 2,
+              },
             });
             break;
           }

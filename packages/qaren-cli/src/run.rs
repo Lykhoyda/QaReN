@@ -3639,6 +3639,7 @@ mod last_screen_tests {
             "scroll_dispatch_failed",
             "scroll_context_changed",
             "scroll_target_absent",
+            "scroll_container_unreachable",
         ] {
             let wire = json!({ "step": 3, "seen": "scroll failed", "cause": cause });
             let failure: core::LedgerFailure = serde_json::from_value(wire.clone()).unwrap();
@@ -3652,6 +3653,18 @@ mod last_screen_tests {
             serde_json::to_value(&unknown).unwrap(),
             json!({ "step": 3, "seen": "x" })
         );
+    }
+
+    #[test]
+    fn unreachable_scroll_keeps_the_walkers_suggestion() {
+        let failure: core::LedgerFailure = serde_json::from_value(json!({
+            "step": 3,
+            "seen": "SCROLL_CONTAINER_UNREACHABLE: the scroll view on screen is covered by a fixed element, so a drag cannot reach it",
+            "cause": "scroll_container_unreachable",
+            "suggestion": "the scroll view is hidden behind a fixed element at this text size or state; use `Scroll down until <target>` so the walk reports the covering element, or remove the step"
+        })).unwrap();
+        let forwarded = step_failure(&failure);
+        assert_eq!(forwarded.suggestion, failure.suggestion);
     }
 
     #[test]

@@ -145,6 +145,7 @@ export function reactOnlyFactsOf(element: Element): ReactOnlyFacts | undefined {
 
 const labelAncestors = new WeakMap<Element, Element[]>();
 const soleLabelTexts = new WeakMap<Element, Element>();
+const nativeTypes = new WeakMap<Element, string>();
 const elementFrames = new WeakMap<Element, NonNullable<NativeNode['rect']>>();
 const nativeAncestors = new WeakMap<Element, Element[]>();
 const elementViewports = new WeakMap<Element, NonNullable<NativeNode['rect']>>();
@@ -162,6 +163,14 @@ const localCapabilities = new WeakMap<
   Element,
   Pick<NonNullable<Element['semantic']>, 'press' | 'fill'>
 >();
+
+// Touch routing of the React host anchored by the element's own testID, absent when no such host is
+// matched. A box-only ancestor still takes the touch itself, so it never makes a cover transparent.
+const touchPolicies = new WeakMap<Element, 'transparent' | 'opaque'>();
+
+export function touchPolicy(element: Element): 'transparent' | 'opaque' | undefined {
+  return touchPolicies.get(element);
+}
 
 export function keyboardCoversElement(element: Element): boolean {
   return keyboardCoveredElements.has(element);
@@ -198,6 +207,10 @@ export function soleLabelTextOf(element: Element): Element | undefined {
 // Native tree ancestors, nearest first.
 export function ancestorsOf(element: Element): readonly Element[] {
   return nativeAncestors.get(element) ?? [];
+}
+
+export function nativeTypeOf(element: Element): string | undefined {
+  return nativeTypes.get(element);
 }
 
 export function elementFrame(element: Element): NativeNode['rect'] {
@@ -950,6 +963,16 @@ export function join(
     };
     if (label) element.label = label;
     if (testID) element.testID = testID;
+    if (host && testID !== undefined && host.testID === testID) {
+      const hosts = reactHostEvidence!.hosts;
+      // Association requires complete typography, so the host's ancestry is always known here.
+      const path = hostPath(reactHostEvidence!.typography!, hosts.indexOf(host));
+      const transparent =
+        host.pointerEvents === 'none' ||
+        host.pointerEvents === 'box-none' ||
+        !!path?.some((i) => hosts[i]?.pointerEvents === 'none');
+      touchPolicies.set(element, transparent ? 'transparent' : 'opaque');
+    }
     const privateNativeLabel = presenceMode && observed?.labelSource !== 'direct';
     // Privacy may over-associate input observations without granting semantic capabilities.
     const possibleDigestInput = reactCandidates.some(
@@ -1266,6 +1289,7 @@ export function join(
   }
   const textDescendants = new Map<number, number[]>();
   nodes.forEach((n, i) => {
+    if (n.type) nativeTypes.set(elements[i], n.type);
     if (n.rect) elementFrames.set(elements[i], n.rect);
     if (underKeyboard(n, i)) keyboardCoveredElements.add(elements[i]);
     const ancestors: Element[] = [];

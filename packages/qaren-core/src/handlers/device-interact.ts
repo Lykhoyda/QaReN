@@ -1,5 +1,11 @@
 import { sleep as cancellableSleep } from '../domain/cancellation.js';
-import { MIN_DRAG_TRAVEL, MIN_SCROLL_BAND_HEIGHT } from '../domain/scroll-gesture.js';
+import {
+  MIN_DRAG_TRAVEL,
+  trimScrollBand,
+  scrollBandTooSmall,
+  computeScrollFromDirection,
+  type ScrollBand as Band,
+} from '../domain/scroll-gesture.js';
 import { randomUUID } from 'node:crypto';
 import { measureDispatchPhase, measureTiming, type TimingContext } from '../qa/timing.js';
 import type { EntryMismatch } from '../qa/ledger.js';
@@ -2507,8 +2513,6 @@ interface SwipeArgs {
 // Covers iPhone 17 Pro / 15 Pro / 14 Pro Max and similar Android 1080x2400 phones.
 const DEFAULT_SCREEN = { width: 402, height: 874 };
 const SWIPE_FRACTION = 0.4;
-// The middle of the band: chrome above the keyboard and the top bar sit at its edges.
-const CLEARANCE_BAND_FRACTION = 0.6;
 const DEFAULT_SWIPE_DURATION_MS = 300;
 
 function computeSwipeFromDirection(
@@ -2552,96 +2556,16 @@ export function buildDirectionalSwipeCliArgs(
   ];
 }
 
-// A drag that starts or ends on a visible keyboard types or dismisses instead of scrolling.
-function scrollBand(): { width: number; height: number } {
-  const screen = getCachedScreenRect() ?? DEFAULT_SCREEN;
-  const keyboardTop = getKeyboardTop();
-  return keyboardTop !== null && keyboardTop > 0 && keyboardTop < screen.height
-    ? { width: screen.width, height: keyboardTop }
-    : screen;
-}
-
-type Band = { x?: number; y?: number; width: number; height: number };
-
-// A caller-named band only narrows the keyboard-safe band, so the drag lands on the scrolled view.
 function dragBand(within?: Band): Band {
-  const band = scrollBand();
-  if (!within) return { width: band.width, height: band.height };
-  const bandTop = Math.max(within.y ?? 0, 0);
-  const bandBottom = Math.min((within.y ?? 0) + within.height, band.height);
-  if (bandBottom <= bandTop) return { ...within, height: 0 };
-  const screen = getCachedScreenRect() ?? DEFAULT_SCREEN;
-  const androidInset = 48 * getScreenPointScale();
-  const android = getActiveSession()?.platform === 'android';
-  const top = Math.max(bandTop, android ? androidInset : 20);
-  const bottom = Math.min(bandBottom, screen.height - (android ? androidInset : 34));
-  return { x: within.x, y: top, width: within.width, height: Math.max(0, bottom - top) };
-}
-
-// A band too short for a real drag would be dispatched as a tap on whatever lies under the finger.
-function bandTooSmall(band: Band): string | undefined {
-  return band.width < 2 || band.height < MIN_SCROLL_BAND_HEIGHT
-    ? `the ${Math.round(band.height)}px band cannot host a ${MIN_DRAG_TRAVEL}px drag`
-    : undefined;
-}
-
-// Precise drags inset touch-down only; window drags retain their centred fractions.
-function computeScrollFromDirection(
-  direction: 'up' | 'down' | 'left' | 'right',
-  amount: number,
-  screen: Band,
-  distance?: number,
-): { x1: number; y1: number; x2: number; y2: number } | undefined {
-  const cx = Math.round((screen.x ?? 0) + screen.width / 2);
-  const cy = Math.round((screen.y ?? 0) + screen.height / 2);
-  const caller = screen.x !== undefined || screen.y !== undefined;
-  const deadZone = Math.max(1, Math.min(screen.height * 0.1, screen.height - MIN_DRAG_TRAVEL - 1));
-  const span = caller
-    ? Math.floor(screen.height - deadZone - 1)
-    : screen.height * CLEARANCE_BAND_FRACTION;
-  const dy = Math.round(
-    distance !== undefined && Number.isFinite(distance) && distance > 0
-      ? caller
-        ? Math.max(Math.min(distance, span), Math.min(MIN_DRAG_TRAVEL, span))
-        : Math.min(distance, span)
-      : caller
-        ? span
-        : screen.height * SWIPE_FRACTION * amount,
+  return trimScrollBand(
+    within,
+    getCachedScreenRect() ?? DEFAULT_SCREEN,
+    getKeyboardTop(),
+    getActiveSession()?.platform === 'android' ? 48 * getScreenPointScale() : undefined,
   );
-  const dx = Math.round(screen.width * SWIPE_FRACTION * amount);
-  if (caller && (direction === 'down' || direction === 'up')) {
-    const start =
-      direction === 'down'
-        ? Math.floor((screen.y ?? 0) + screen.height - deadZone)
-        : Math.ceil((screen.y ?? 0) + deadZone);
-    const end =
-      direction === 'down'
-        ? Math.max(start - dy, Math.ceil((screen.y ?? 0) + 1))
-        : Math.min(start + dy, Math.floor((screen.y ?? 0) + screen.height - 1));
-    if (Math.abs(end - start) < MIN_DRAG_TRAVEL) return undefined;
-    return { x1: cx, y1: start, x2: cx, y2: end };
-  }
-  // Rounding the centre and the half-span up together can land an end on the band's edge row.
-  const top = Math.max(cy - Math.round(dy / 2), Math.ceil((screen.y ?? 0) + 1));
-  const bottom = Math.min(cy + Math.round(dy / 2), Math.floor((screen.y ?? 0) + screen.height - 1));
-  switch (direction) {
-    case 'down':
-      return { x1: cx, y1: bottom, x2: cx, y2: top };
-    case 'up':
-      return { x1: cx, y1: top, x2: cx, y2: bottom };
-    case 'left':
-      return { x1: cx + Math.round(dx / 2), y1: cy, x2: cx - Math.round(dx / 2), y2: cy };
-    case 'right':
-      return { x1: cx - Math.round(dx / 2), y1: cy, x2: cx + Math.round(dx / 2), y2: cy };
-  }
 }
 
-// Shared by the standalone scroll handler's daemon fallthrough and device_batch
-// so a "scroll" step always dispatches the COORDINATE form. The arg builders
-// (buildRunIOSArgs / buildRunAndroidArgs) map scroll → a 4-coordinate drag and
-// throw on the direction form — so the raw ['scroll', direction] shape that used
-// to be dispatched here crashed on Android (always) and on the iOS fast-runner
-// fallback path.
+// Native runners accept coordinate scrolls only.
 export function buildDirectionalScrollCliArgs(
   direction: 'up' | 'down' | 'left' | 'right',
   amount?: number,
@@ -2651,7 +2575,7 @@ export function buildDirectionalScrollCliArgs(
 ): string[] {
   const clamped = Math.min(Math.max(amount ?? 0.5, 0), 1);
   const band = dragBand(within);
-  const refusal = bandTooSmall(band);
+  const refusal = scrollBandTooSmall(band);
   if (refusal) throw new Error(`SCROLL_BAND_TOO_SMALL: ${refusal}`);
   const coords = computeScrollFromDirection(direction, clamped, band, distance);
   if (!coords)
@@ -2834,7 +2758,7 @@ export function createDeviceScrollHandler(): (args: ScrollArgs) => Promise<ToolR
     // The fast path bypasses XCTest quiescence on animated scroll views.
     const amount = Math.min(Math.max(args.amount ?? 0.5, 0), 1);
     const band = dragBand(args.within);
-    const refusal = bandTooSmall(band);
+    const refusal = scrollBandTooSmall(band);
     if (refusal) return failResult(refusal, 'SCROLL_BAND_TOO_SMALL', { mutation: 'none' });
     const coords = computeScrollFromDirection(args.direction, amount, band, args.distance);
     if (!coords)
