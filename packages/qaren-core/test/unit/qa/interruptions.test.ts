@@ -1281,7 +1281,9 @@ test('a first fill behind the modal dismisses Close once without scrolling', asy
   ticking(f);
   f.deps.press = async (ref) => {
     f.actions.push(`press ${ref}`);
-    f.show(screen([element('@field', 'Target', { kind: 'input', testID: 'qa-promo-home-target' })]));
+    f.show(
+      screen([element('@field', 'Target', { kind: 'input', testID: 'qa-promo-home-target' })]),
+    );
     return { ok: true, executed: true };
   };
   f.deps.fill = async (ref, value) => {

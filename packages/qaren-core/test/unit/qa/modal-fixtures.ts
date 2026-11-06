@@ -137,7 +137,11 @@ export function modalOverHome(
   return join(
     nodes,
     [
-      { testID: 'qa-promo-home-target', role: options.input ? 'textbox' : 'button', label: 'Target' },
+      {
+        testID: 'qa-promo-home-target',
+        role: options.input ? 'textbox' : 'button',
+        label: 'Target',
+      },
       { testID: 'qa-promo-offers', role: 'button', label: 'See Pro offers' },
       { testID: 'qa-promo-close', role: 'button', label: 'Close' },
     ],
