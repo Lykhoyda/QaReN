@@ -1386,7 +1386,8 @@ export function join(
         ? { ...keyboardFrame, height: keyboardBottom - keyboardFrame.y }
         : undefined,
     );
-    if (reach) reaches.set(elements[i], reach);
+    // A frame its own on-screen descendant contradicts proves no reach either way.
+    if (reach && !contradicted.has(i)) reaches.set(elements[i], reach);
     if (isScrollContainerType(n.type)) scrollContainers.set(elements[i], n.type!);
     if (n.type === 'Window') windows.add(elements[i]);
     if (n.type === 'Application') applications.add(elements[i]);

@@ -69,6 +69,23 @@ test('reach names what a user can reach, from frames alone', () => {
   ]);
 });
 
+test('a frame its own on-screen descendant contradicts proves nothing and excludes nothing', () => {
+  // The second Close reports a frame past the screen edge, yet holds a text child on screen.
+  const s = screen(
+    [{ rect: VISIBLE }],
+    [
+      { ref: '', type: 'Button', label: 'Close', hittable: true, rect: { ...VISIBLE, x: 500 } },
+      { ref: '', type: 'StaticText', label: 'x', parentIndex: 4, rect: { ...VISIBLE, y: 300 } },
+    ],
+  );
+  assert.equal(s.elements[4].visibilityEvidence, 'unresolved');
+  assert.equal(reachOf(s.elements[4]), 'unknown');
+  // Both stay in contention: no proof sets the contradicted one aside.
+  const result = prepareTarget(tap, s);
+  assert.ok('refuse' in result && result.refuse === 'TARGET_AMBIGUOUS', JSON.stringify(result));
+  assert.deepEqual(result.contenders, ['@e3', '@e4']);
+});
+
 test('a duplicate whose whole frame is clipped is excluded, and the exclusion is recorded', () => {
   const result = prepareTarget(tap, screen([{ rect: VISIBLE }, { rect: { ...VISIBLE, y: 760 } }]));
   assert.ok('ref' in result, JSON.stringify(result));
