@@ -968,11 +968,13 @@ frame movement too small to change the screen signature. With complete native
 geometry, it chooses the largest scroll-container band clear of front overlays
 and the keyboard; `scrollBand` records the choice. The gesture preserves its
 viewport travel distance, clamped to fit inside the selected band. When no
-positive band remains, or the selected band cannot host a drag, a container covered at its
-clip centre refuses before dispatch with `SCROLL_CONTAINER_UNREACHABLE` and
-cause `scroll_container_unreachable`, suggesting a scroll-until target or removing
+positive band remains, or the selected band cannot host a drag, a container
+covered at its clip centre refuses before dispatch with
+`SCROLL_CONTAINER_UNREACHABLE`, cause `scroll_container_unreachable`, and
+`scrollBand.status: "unreachable"`, suggesting a scroll-until target or removing
 the step. A side rail that leaves the centre clear still permits a drag.
-No captured container or an empty frame keeps the viewport gesture with
+Incomplete native captures, a missing application/window frame, no captured
+container, or an empty container frame keep the viewport gesture with
 `scrollBand.status: "no-geometry"`; a band too small for the handler's actual
 rounded drag does the same with `"too-small"`.
 When the first scroll leaves the screen unchanged, QaReN scrolls once more under the same operation
