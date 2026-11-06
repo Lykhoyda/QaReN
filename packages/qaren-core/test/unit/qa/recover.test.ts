@@ -363,10 +363,8 @@ for (const exact of [undefined, 'text', 'id'] as const) {
     assert.deepEqual(dismissCandidate(snapshot, [absent]), { label: 'Close' });
     const records: string[] = [];
     assert.equal(
-      dismissCandidate(
-        snapshot,
-        [absent, { phrase: 'Offer', quoted: 'Offer', exact }],
-        (record) => records.push(...record.elements.map((e) => e.failed)),
+      dismissCandidate(snapshot, [absent, { phrase: 'Offer', quoted: 'Offer', exact }], (record) =>
+        records.push(...record.elements.map((e) => e.failed)),
       ),
       undefined,
     );
@@ -1172,9 +1170,7 @@ test('uncertain current-target evidence on a sole-Close promo still vetoes', () 
 });
 
 test('a press that opened the promo still withholds the decline', () => {
-  const { result, records } = decide(fullScreenPromo(), [
-    { ...waitHome, afterPlannedPress: true },
-  ]);
+  const { result, records } = decide(fullScreenPromo(), [{ ...waitHome, afterPlannedPress: true }]);
   assert.equal(result, undefined);
   assert.equal(records[0].veto, 'previous-plan-press');
 });

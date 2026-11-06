@@ -259,10 +259,17 @@ test('a later decline-labelled text target prevents dismissal when its resolver 
     ['1. Tap "Settings"\n✓ "Done"\n2. Tap "maybe later"', false],
   ] as const) {
     const f = app(
-      observedButtons([element('@close', 'Close'), element('@later', 'Maybe later', { kind: 'text' })]),
+      observedButtons([
+        element('@close', 'Close'),
+        element('@later', 'Maybe later', { kind: 'text' }),
+      ]),
     );
     const result = await runPlan(parsePlan(text).blocks!, f.deps);
-    assert.deepEqual(f.actions.slice(0, 2), vetoed ? [] : ['press @close', 'press @settings'], text);
+    assert.deepEqual(
+      f.actions.slice(0, 2),
+      vetoed ? [] : ['press @close', 'press @settings'],
+      text,
+    );
     assert.equal(result.recoveries, vetoed ? 0 : 1, text);
   }
 });

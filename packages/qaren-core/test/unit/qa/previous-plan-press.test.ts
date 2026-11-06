@@ -538,10 +538,10 @@ test('after protection lapses, every remaining target uses the same conservative
           new RegExp(`later planned item at line ${laterLine}`),
         );
         assert.equal(result.failure?.screen?.front, 'app');
-        assert.deepEqual(result.failure?.screen?.controls.map((control) => control.label), [
-          'Skip',
-          'Allow',
-        ]);
+        assert.deepEqual(
+          result.failure?.screen?.controls.map((control) => control.label),
+          ['Skip', 'Allow'],
+        );
         if (withheld) assert.ok(!JSON.stringify(result).includes('zq-s3cret-7781'));
       }
     }
