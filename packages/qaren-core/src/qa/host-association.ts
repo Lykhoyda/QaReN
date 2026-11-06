@@ -575,7 +575,13 @@ export function associateHosts(
     );
   };
   const anchoredPath = (i: number): boolean => {
-    const named = paths[i].filter((p) => !inline(p) && !!evidence.hosts[p].testID);
+    // A presented modal is its own native surface: React ancestors above it are not native ancestors.
+    const modalAt = paths[i].findIndex(
+      (p) => p !== i && MODAL_HOST_TYPES.has(snapshot.nodes[p].hostType ?? ''),
+    );
+    const named = (modalAt === -1 ? paths[i] : paths[i].slice(0, modalAt)).filter(
+      (p) => !inline(p) && !!evidence.hosts[p].testID,
+    );
     let reason: HostAssociationDiagnostic['ancestorPath'] = 'valid';
     const valid = named.every((p, n) => {
       const nativeIndex = (p === i ? anchors : structural).get(p);

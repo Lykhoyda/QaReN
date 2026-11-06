@@ -94,11 +94,12 @@ export function modalOverHome(
     roleSource: 'none' as const,
     capabilities: {},
   });
-  // Breadth-first: root; Home and the modal; Home's controls and the promo; the promo's content.
+  // Breadth-first: root; Home; the modal and Home's controls; the promo; the promo's content.
+  // As on device, the Modal renders inside Home's identified container, which native never shows.
   const tree: HostRow[] = [
     [plain(), null, 'RCTRootView', window],
     [plain('qa-home'), 0, 'RCTView', window],
-    [plain(), 0, options.modalType ?? 'RCTModalHostView', window],
+    [plain(), 1, options.modalType ?? 'RCTModalHostView', window],
     [
       options.input
         ? {

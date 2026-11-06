@@ -1161,7 +1161,8 @@ test('Home Pressables behind a presented sole-Close modal do not defeat the sole
 });
 
 test('Home Pressables still count as gaps without a presented modal or with Home native', () => {
-  assert.equal(modalOverHome({ modalType: 'RCTView' }).pressGapCount, 2);
+  // Without a modal the promo's covered React ancestor still applies, so even Close stays unproven.
+  assert.equal(modalOverHome({ modalType: 'RCTView' }).pressGapCount, 3);
   // Native showing Home means the modal does not cover it, so the unmatched offer stays a gap.
   assert.equal(modalOverHome({ homeNative: true }).pressGapCount, 1);
   for (const options of [{ modalType: 'RCTView' }, { homeNative: true }])
@@ -1191,7 +1192,7 @@ test('a rejection names which modal-cover condition failed, with counts', () => 
   assert.deepEqual(facts(modalOverHome({ modalType: 'ModalHostView' })), {
     refused: 'modal-count',
     modalCount: 0,
-    associatedCount: 2,
+    associatedCount: 0,
     associatedOutside: 0,
     modalTypes: ['ModalHostView'],
   });

@@ -1559,7 +1559,9 @@ React host association uses the candidate's uniquely established native Window
 ancestry and that window's origin, including captures with other app or keyboard
 windows. Unique identity, type, frame, presence and ancestor proofs still apply;
 missing or ambiguous window membership refuses association. Typography compares
-title and body evidence only within the same window.
+title and body evidence only within the same window. The ancestor proof stops at a
+mounted `Modal` host: a presented modal is its own native surface, so identified
+React ancestors above it are not required to appear natively.
 
 `react-native-safe-area-context` roots (`RNCSafeAreaView` and
 `RNCSafeAreaProvider`) support association on Android as well as iOS, allowing
