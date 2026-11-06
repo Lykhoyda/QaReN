@@ -3,6 +3,8 @@ import {
   ancestorsOf,
   behindPresentedModal,
   hostAssociationIdentity,
+  modalCoverDiagnostic,
+  type ModalCoverDiagnostic,
   type Element,
   type Screen,
 } from './screen.js';
@@ -130,6 +132,8 @@ export interface InterruptionDiagnostic {
       | 'target-ancestor';
     association?: HostAssociationDiagnostic['identity'];
   }>;
+  // Why the capture did or did not prove a presented modal over the target, with counts.
+  cover?: ModalCoverDiagnostic;
 }
 
 export function dismissCandidate(
@@ -146,6 +150,7 @@ export function dismissCandidate(
     provenance?: InterruptionDiagnostic['provenance'],
   ) => {
     try {
+      const cover = modalCoverDiagnostic(screen);
       diagnostic?.({
         veto,
         ...(targetIndex === undefined ? {} : { targetIndex }),
@@ -155,6 +160,7 @@ export function dismissCandidate(
           (e) => e.label !== undefined && DECLINE_LABELS.has(e.label),
         ).length,
         elements,
+        ...(cover ? { cover } : {}),
       });
     } catch {
       /* Diagnostics cannot change recovery. */

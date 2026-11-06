@@ -3655,6 +3655,8 @@ async function walkBlockScoped(
                 } else resolution = decided;
                 if ('scroll' in resolution) {
                   // Scrolling would move the interruption, not the target behind it.
+                  // shortcut: an ordinary capture carries no host association, so this proof holds only
+                  // on a presence capture; call the shared presence recapture helper here once it lands.
                   if (
                     (item.kind === 'press' || item.kind === 'fill') &&
                     targetBehindInterruption(before.screen, item.target)

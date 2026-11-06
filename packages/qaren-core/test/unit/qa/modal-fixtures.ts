@@ -27,6 +27,8 @@ export function modalOverHome(
     homeNative?: boolean;
     secondControl?: boolean;
     input?: boolean;
+    // An ordinary press capture: no platform presence, so no host association.
+    ordinary?: boolean;
   } = {},
 ): Screen {
   const nodes: NativeNode[] = [
@@ -148,7 +150,7 @@ export function modalOverHome(
     'app',
     { native: 'complete', react: 'complete' },
     hostEvidence,
-    presence(nodes),
+    options.ordinary ? undefined : presence(nodes),
   );
 }
 

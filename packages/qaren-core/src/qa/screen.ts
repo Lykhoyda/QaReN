@@ -31,8 +31,9 @@ import type { HeadingEvidence, HostTypography } from './host-typography.js';
 import {
   associateHosts,
   hostPath,
-  hostsBehindModal,
+  modalCover,
   nativeWindowIndex,
+  type ModalCoverFacts,
   type HostAssociationDiagnostic,
 } from './host-association.js';
 
@@ -580,11 +581,23 @@ export function joinedSnapshotDiagnostics(screen: Screen) {
   return projectionCounts.get(screen.elements) ?? null;
 }
 
-const modalCoveredHosts = new WeakMap<Screen['elements'], ReadonlySet<number>>();
+export type ModalCoverDiagnostic = ModalCoverFacts & {
+  identities: Partial<Record<HostAssociationDiagnostic['identity'], number>>;
+};
+
+const modalCovers = new WeakMap<
+  Screen['elements'],
+  { hosts: ReadonlySet<number>; diagnostic: ModalCoverDiagnostic }
+>();
+
+// Why the capture did or did not prove a presented modal cover; only when typography was captured.
+export function modalCoverDiagnostic(screen: Screen): ModalCoverDiagnostic | undefined {
+  return modalCovers.get(screen.elements)?.diagnostic;
+}
 
 // Every React host carrying the element's test ID sits behind the one presented modal.
 export function behindPresentedModal(screen: Screen, element: Element): boolean {
-  const covered = modalCoveredHosts.get(screen.elements);
+  const covered = modalCovers.get(screen.elements)?.hosts;
   const hosts = screen.reactHostEvidence?.hosts;
   if (!covered?.size || !hosts || !element.testID) return false;
   const matching = hosts.flatMap((host, index) => (host.testID === element.testID ? [index] : []));
@@ -737,7 +750,8 @@ export function join(
   const inputRole = (role: string | null | undefined) => !!role && kindOfRole(role) === 'input';
   // Native type may rule out an operation only while every React host offering it is accounted for;
   // a host the presented modal covers is accounted for, since it cannot be any node native shows.
-  const behindModal = hostsBehindModal(reactHostEvidence, new Set(associations.keys()));
+  const cover = modalCover(reactHostEvidence, new Set(associations.keys()));
+  const behindModal = cover.hosts;
   const unassociated = (offers: (host: ReactHostObservation) => boolean) =>
     reactHostEvidence?.hosts.flatMap((host, hostIndex) =>
       !host.hidden && offers(host) && !associations.has(hostIndex) && !behindModal.has(hostIndex)
@@ -1364,7 +1378,15 @@ export function join(
     if (diagnosticRect(diagnosticField(node, 'rect'))) counts.rectKnownCount++;
   });
   projectionCounts.set(screen.elements, counts);
-  if (behindModal.size) modalCoveredHosts.set(screen.elements, behindModal);
+  if (reactHostEvidence?.typography) {
+    const identities: ModalCoverDiagnostic['identities'] = {};
+    for (const { identity } of associationDiagnostics.values())
+      identities[identity] = (identities[identity] ?? 0) + 1;
+    modalCovers.set(screen.elements, {
+      hosts: behindModal,
+      diagnostic: { ...cover.facts, identities },
+    });
+  }
   return screen;
 }
 

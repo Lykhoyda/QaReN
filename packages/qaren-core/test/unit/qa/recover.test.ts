@@ -16,6 +16,7 @@ import {
   ancestorsOf,
   hostAssociationIdentity,
   join,
+  modalCoverDiagnostic,
   type NativeNode,
   type ReactHostEvidence,
   type Screen,
@@ -1171,4 +1172,39 @@ test('a second control inside the presented modal still defeats the sole decline
   const snapshot = modalOverHome({ secondControl: true });
   assert.equal(snapshot.pressGapCount, 0);
   assert.equal(soleDecline(snapshot), false);
+});
+
+test('a rejection names which modal-cover condition failed, with counts', () => {
+  const facts = (screen: Screen) => {
+    const { refused, modalCount, associatedCount, associatedOutside, modalTypes } =
+      modalCoverDiagnostic(screen)!;
+    return { refused, modalCount, associatedCount, associatedOutside, modalTypes };
+  };
+  assert.deepEqual(facts(modalOverHome()), {
+    refused: undefined,
+    modalCount: 1,
+    associatedCount: 2,
+    associatedOutside: 0,
+    modalTypes: ['RCTModalHostView'],
+  });
+  assert.equal(modalCoverDiagnostic(modalOverHome())!.identities.matched, 2);
+  assert.deepEqual(facts(modalOverHome({ modalType: 'ModalHostView' })), {
+    refused: 'modal-count',
+    modalCount: 0,
+    associatedCount: 2,
+    associatedOutside: 0,
+    modalTypes: ['ModalHostView'],
+  });
+  assert.deepEqual(facts(modalOverHome({ homeNative: true })), {
+    refused: 'associated-outside',
+    modalCount: 1,
+    associatedCount: 4,
+    associatedOutside: 2,
+    modalTypes: ['RCTModalHostView'],
+  });
+  const { records } = decide(modalOverHome({ homeNative: true }), [
+    { phrase: 'qa-promo-home-target', quoted: 'qa-promo-home-target', kind: 'wait', line: 12 },
+  ]);
+  assert.equal(records[0].cover?.refused, 'associated-outside');
+  assert.doesNotMatch(JSON.stringify(records), /qa-|Close|Target|Pro offer/);
 });

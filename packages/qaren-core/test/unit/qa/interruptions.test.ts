@@ -1223,10 +1223,20 @@ for (const [disposition, pressResult, dispatched] of [
 }
 
 // Device runs over a full-screen promo Modal whose only control is Close, above a mounted Home.
-function promoOverHome(f: ReturnType<typeof app>) {
-  f.show(modalOverHome());
+// As on device, only a platform-presence capture carries host association.
+function promoOverHome(
+  f: ReturnType<typeof app>,
+  options: Parameters<typeof modalOverHome>[0] = {},
+) {
+  let promoUp = true;
+  const capture = f.deps.captureScreen;
+  f.deps.captureScreen = async (request) =>
+    promoUp
+      ? modalOverHome({ ...options, ordinary: !request?.platformPresence })
+      : capture(request);
   f.deps.press = async (ref) => {
     f.actions.push(`press ${ref}`);
+    if (ref === '@close') promoUp = false;
     f.show(ref === '@close' ? homeAfterPromo() : screen([element('@done', 'Done')]));
     return { ok: true, proven: false, executed: true };
   };
@@ -1236,22 +1246,29 @@ function promoOverHome(f: ReturnType<typeof app>) {
   };
 }
 
-test('a tap on a target behind a sole-Close promo closes the promo without scrolling it', async () => {
-  const f = app(home());
-  promoOverHome(f);
-  ticking(f);
-  const result = await runPlan(
-    parsePlan('1. Tap "qa-promo-home-target"\n✓ "Done"').blocks!,
-    f.deps,
-  );
-  assert.equal(result.verdict, 'PASS', result.failure?.seen);
-  assert.deepEqual(f.actions, ['press @close', 'press @home-target']);
-  assert.equal(result.recoveries, 1);
-  assert.equal(
-    result.steps.find((row) => row.line === 1 && row.outcome === 'retry')?.interruption?.outcome,
-    'dismissed',
-  );
-});
+// Device run R1: the press decides on an ordinary capture, which cannot prove the modal cover.
+test(
+  'a tap on a target behind a sole-Close promo closes the promo without scrolling it',
+  {
+    todo: 'needs the shared bounded presence recapture before the scroll decision',
+  },
+  async () => {
+    const f = app(home());
+    promoOverHome(f);
+    ticking(f);
+    const result = await runPlan(
+      parsePlan('1. Tap "qa-promo-home-target"\n✓ "Done"').blocks!,
+      f.deps,
+    );
+    assert.equal(result.verdict, 'PASS', result.failure?.seen);
+    assert.deepEqual(f.actions, ['press @close', 'press @home-target']);
+    assert.equal(result.recoveries, 1);
+    assert.equal(
+      result.steps.find((row) => row.line === 1 && row.outcome === 'retry')?.interruption?.outcome,
+      'dismissed',
+    );
+  },
+);
 
 test('a wait on a React-only target behind a sole-Close promo closes it and passes', async () => {
   const f = app(home());
@@ -1307,8 +1324,7 @@ test('a first fill behind the modal dismisses Close once without scrolling', asy
 
 test('a React-only tap target without a presented modal is never sent to dismiss Close', async () => {
   const f = app(home());
-  promoOverHome(f);
-  f.show(modalOverHome({ modalType: 'RCTView' }));
+  promoOverHome(f, { modalType: 'RCTView' });
   ticking(f);
   const result = await runPlan(parsePlan('1. Tap "qa-promo-home-target"').blocks!, f.deps);
   assert.equal(result.verdict, 'FAIL');

@@ -74,23 +74,57 @@ export function hostPath(snapshot: HostTypography, start: number): number[] | un
   return path;
 }
 
+export interface ModalCoverFacts {
+  // Absent when the cover is proven.
+  refused?: 'evidence-incomplete' | 'no-association' | 'modal-count' | 'associated-outside';
+  modalCount: number;
+  associatedCount: number;
+  associatedOutside: number;
+  // Host types naming a modal, recognized or not; React component names, never app text.
+  modalTypes: string[];
+}
+
 // Hosts outside the one presented modal, proven only while every associated host sits inside it.
-export function hostsBehindModal(
+export function modalCover(
   evidence: ReactHostEvidence | undefined,
   associated: ReadonlySet<number>,
-): ReadonlySet<number> {
+): { hosts: ReadonlySet<number>; facts: ModalCoverFacts } {
   const snapshot = evidence?.typography;
-  if (!evidence?.complete || !snapshot?.complete || !associated.size) return new Set();
+  const facts: ModalCoverFacts = {
+    modalCount: 0,
+    associatedCount: associated.size,
+    associatedOutside: 0,
+    modalTypes: [
+      ...new Set(
+        (snapshot?.nodes ?? []).flatMap((host) =>
+          host.hostType && /modal/i.test(host.hostType) ? [host.hostType.slice(0, 64)] : [],
+        ),
+      ),
+    ].slice(0, 4),
+  };
+  const refuse = (refused: NonNullable<ModalCoverFacts['refused']>) => ({
+    hosts: new Set<number>(),
+    facts: { ...facts, refused },
+  });
+  if (!evidence?.complete || !snapshot?.complete) return refuse('evidence-incomplete');
   const modals = snapshot.nodes.filter(
     (host) =>
       MODAL_HOST_TYPES.has(host.hostType ?? '') &&
       snapshot.nodes.some((child) => child.parentHostIndex === host.hostIndex),
   );
-  if (modals.length !== 1) return new Set();
+  facts.modalCount = modals.length;
+  if (modals.length !== 1) return refuse('modal-count');
+  if (!associated.size) return refuse('no-association');
   const modal = modals[0].hostIndex;
   const paths = snapshot.nodes.map((_, index) => hostPath(snapshot, index));
-  if (![...associated].every((index) => paths[index]?.includes(modal))) return new Set();
-  return new Set(paths.flatMap((path, index) => (path && !path.includes(modal) ? [index] : [])));
+  facts.associatedOutside = [...associated].filter(
+    (index) => !paths[index]?.includes(modal),
+  ).length;
+  if (facts.associatedOutside) return refuse('associated-outside');
+  return {
+    hosts: new Set(paths.flatMap((path, index) => (path && !path.includes(modal) ? [index] : []))),
+    facts,
+  };
 }
 
 function nativePath(nodes: NativeNode[], start: number): number[] {
