@@ -21,7 +21,7 @@ permissions:
 jobs:
   changes:
     name: Detect native changes
-    runs-on: ubuntu-latest
+    runs-on: self-linux
     outputs:
       ios: ${{ steps.detect.outputs.ios }}
       android: ${{ steps.detect.outputs.android }}
@@ -78,8 +78,9 @@ jobs:
   android-unit:
     name: Android unit (JVM)
     needs: changes
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    runs-on: self-linux
+    # The fresh self-hosted container downloads the Android SDK and Gradle each run.
+    timeout-minutes: 20
     steps:
       - name: Skip notice (Android unchanged)
         if: ${{ needs.changes.outputs.android != 'true' }}
@@ -93,6 +94,9 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - name: Set up Android SDK
+        if: ${{ needs.changes.outputs.android == 'true' }}
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd  # v4.0.4
       - name: Set up Gradle (cache)
         if: ${{ needs.changes.outputs.android == 'true' }}
         uses: gradle/actions/setup-gradle@v4
