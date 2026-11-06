@@ -315,7 +315,7 @@ test('O2: occluded twice fails after one scroll, never as an uncertain outcome',
   assert.equal(f.calls.filter((c) => c.startsWith('scroll')).length, 1);
   assert.match(
     renderReason(outcome.failure?.seen ?? '', (text) => text),
-    /^FOCUS_TARGET_OCCLUDED: .*"go" stayed off screen after one scroll/,
+    /^FOCUS_TARGET_OCCLUDED: .*"go" stayed off screen after one scroll; no cover named \(no-native-presence\)/,
   );
   assert.doesNotMatch(JSON.stringify(outcome), /ACTION_OUTCOME_UNCERTAIN/);
 });

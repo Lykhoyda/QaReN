@@ -3790,7 +3790,7 @@ async function walkBlockScoped(
                     outcome = failed(
                       item,
                       attempt,
-                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}`,
+                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}${coverText(item.line)}`,
                       before.screen,
                       await shoot(item),
                       undefined,
@@ -3853,7 +3853,7 @@ async function walkBlockScoped(
                     outcome = failed(
                       item,
                       attempt,
-                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}${clearing ? coverText(item.line) : ''}${cutterText(clearing)}${unaskedLiveHit(item.kind, deps.platform, clearing)}`,
+                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}${coverText(item.line)}${cutterText(clearing)}${unaskedLiveHit(item.kind, deps.platform, clearing)}`,
                       before.screen,
                       await shoot(item),
                       undefined,
@@ -4304,7 +4304,7 @@ async function walkBlockScoped(
                   outcome = failed(
                     item,
                     attempt,
-                    `${act.error}; "${item.target.phrase}" stayed off screen after one scroll`,
+                    `${act.error}; "${item.target.phrase}" stayed off screen after one scroll${coverText(item.line)}`,
                     before.screen,
                     await shoot(item),
                     ref,
