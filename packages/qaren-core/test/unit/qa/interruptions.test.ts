@@ -336,6 +336,8 @@ test('a decline that leaves the control visible is attempted only once and never
   assert.equal(result.verdict, 'FAIL');
   assert.deepEqual(f.actions, ['press @close']);
   assert.equal(result.recoveries, 1);
+  // The failure reports the screen after the decline press, not the one recovery acted on.
+  assert.match(result.failure?.seen ?? '', /last observed on screen: .*Changed/);
 });
 
 test('an unchanged decline control is never pressed a second time', async () => {

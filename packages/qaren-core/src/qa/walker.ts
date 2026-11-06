@@ -2532,6 +2532,8 @@ async function walkBlockScoped(
     let declineAttempted = false;
     let dismissStarted = false;
     let declineDispatched = false;
+    // The read-back after a dispatched decline: what is on screen once the press has run.
+    let afterDecline: Screen | undefined;
     let declineCentreY: number | undefined;
     const result = await recover(
       fresh.screen,
@@ -2659,6 +2661,7 @@ async function walkBlockScoped(
           if (nested.refusal) return { refuse: nested.refusal };
           if (nested.failure) return { fail: nested.failure.seen };
           const after = (await capture()).screen;
+          afterDecline = after;
           return literalEvidence(after, label, 'equals').verdict === 'fail' &&
             !after.elements.some((e) => !e.offscreen && e.label === label)
             ? 'pass'
@@ -2747,7 +2750,7 @@ async function walkBlockScoped(
       }
       return 'retry';
     }
-    const shown = loginReplayed ? (await capture()).screen : fresh.screen;
+    const shown = loginReplayed ? (await capture()).screen : (afterDecline ?? fresh.screen);
     const shot = await shoot(item);
     return 'fail' in result
       ? failed(item, attempt, result.fail, shown, shot)
