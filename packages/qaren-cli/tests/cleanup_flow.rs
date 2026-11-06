@@ -2475,6 +2475,32 @@ fn android_borrowed_cleanup_refuses_an_unresponsive_device_after_one_probe() {
     }
 }
 
+// A device that answered once and then stalled: the refusal keeps the earlier answer.
+#[test]
+fn android_borrowed_cleanup_keeps_earlier_answers_when_the_device_then_stalls() {
+    let repo = common::temp_repo();
+    let record = borrowed_record(&repo);
+    record.save(&repo).unwrap();
+    let mut mock = borrowed_mock();
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+    mock.expect_run("reverse --remove tcp:8791", CmdOutput::success(""));
+    mock.expect_run("reverse --list", CmdOutput::success(""));
+    mock.expect_run("forward --list", CmdOutput::success("\n"));
+    mock.expect_run("dumpsys activity processes", timed_out_after(20_051));
+    mock.expect_run("shell true", answered_after(9_939));
+    mock.expect_run("dumpsys activity processes", timed_out_after(40_012));
+    mock.expect_run("shell true", timed_out_after(20_004));
+
+    let receipt = cleanup(&mut mock, &repo, "borrowed-run");
+
+    assert_eq!(
+        receipt.cleanup["android_runner"],
+        "unresolved: dumpsys activity processes: timed out after 2 attempts (20 s: 20051 ms; 40 s: 40012 ms); the device answered adb shell true in 9939 ms between attempts; adb shell true timed out after 20004 ms, so the device is unresponsive"
+    );
+    assert!(receipt.cleanup["device_lease"].starts_with("unresolved: retained"));
+    assert_eq!(mock.remaining(), 0);
+}
+
 // A retried removal that answers "not found" took effect the first time: the mapping is absent.
 #[test]
 fn android_borrowed_cleanup_retried_reverse_removal_not_found_is_absent() {
