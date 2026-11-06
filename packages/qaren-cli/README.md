@@ -3192,8 +3192,7 @@ text match. An ambiguous text target without a unique testID
 can satisfy discovery but leaves the block unsaved; replay follows the
 ambiguity refusal above. A stored testID on a replayed press, wait or scroll resolves
 to its one native element even when a React-only element shares that testID, and
-still refuses when two native elements share it; a stored-testID fill keeps
-counting React-only inputs.
+duplicate counting and stored-testID fills follow the [targeting rules](#check-a-plan).
 
 Replay requires the canonical block format emitted by
 [`serializeBlock`](../qaren-core/src/qa/blocks.ts); edited or incompatible files
@@ -3752,9 +3751,10 @@ lineage, covered-target refusals add "no cover named (<gap>)", including native
 occlusion refusals. `clearanceDiagnostic.coverGap` records the same gap when that
 diagnostic is emitted; it is `null` when a cover was named or no cover lookup ran.
 The [cover result types](../qaren-core/src/qa/resolve.ts) own the fixed gap values.
-`no-native-presence` means the
-capture carried no native presence, so no React host could be tied to a native node:
-quoted targets take ordinary captures, which never carry it. In `clearanceDiagnostic`, unread or unavailable facts
+`no-native-presence` means the capture carried no native presence, so no React host
+could be tied to a native node. Quoted presses use ordinary captures without native
+presence or React typography; cover lookup does not request a presence recapture.
+In `clearanceDiagnostic`, unread or unavailable facts
 remain `null`; target text, identifiers and target coordinates are excluded. The
 [walker](../qaren-core/src/qa/walker.ts) owns the event layout; the
 [centre predicate](../qaren-core/src/qa/resolve.ts) owns its coverage facts.
