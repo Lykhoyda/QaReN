@@ -253,7 +253,7 @@ test('an unchanged readback after a refused clearance scroll retains the proven 
   };
   const diagnostics: Record<string, unknown>[] = [];
   w.deps.diagnostic = (event) => diagnostics.push(event as unknown as Record<string, unknown>);
-  const result = await runPlan(parsePlan('1. Tap the first row').blocks!, w.deps);
+  const result = await runPlan(parsePlan('1. Tap the Row 1').blocks!, w.deps);
   const terminal = ('steps' in result ? result.steps : []).filter((r) => r.line === 1).at(-1);
   assert.equal(w.actions.length, 1);
   assert.match(w.actions[0], /^scroll /);

@@ -673,7 +673,8 @@ hit read inside the observation's expiry, skipping nested candidates; only
 excludes a candidate, nor does an unavailable or late read. If all candidates are
 set aside, the step refuses `TARGET_NOT_FOUND`. The refusal marks a candidate
 "nested inside candidate N" and lists each one set aside with its reason;
-the row records `collapsed` and `candidateExclusions`. Outside fills,
+the row records `collapsed` and `candidateExclusions`. These selection facts survive
+clearance scrolling and retry attempts. Outside fills,
 a React-only element whose testID equals the quoted value is not counted while a
 native element carries that testID, so a quoted press, wait or scroll reaches
 the native element; remaining native duplicates follow the counting rules above.
@@ -3744,10 +3745,14 @@ React Native's own hit test at the target's centre, over the capture's React hos
 gives the touch to another view with its own native node: `pointerEvents` none
 views are skipped and box-none views pass the touch to their children. The step
 row's `coveredBy` then records that view's ref, kind and frame, with a label only from
-QaReN's own dismiss words, and a refusal adds "covered by <kind> at <frame>". With no
-complete host evidence, an unresolved paint order, or a touch that reaches the
-target's own lineage, no cover is named; the refusal adds "no cover named (<gap>)" and
-`clearanceDiagnostic.coverGap` records the same gap. `no-native-presence` means the
+QaReN's own dismiss words, and a refusal adds "covered by <kind> at <frame>".
+The cover remains through clearance until a new target observation replaces it.
+When the evidence cannot prove a cover, or the touch reaches the target's own
+lineage, covered-target refusals add "no cover named (<gap>)", including native
+occlusion refusals. `clearanceDiagnostic.coverGap` records the same gap when that
+diagnostic is emitted; it is `null` when a cover was named or no cover lookup ran.
+The [cover result types](../qaren-core/src/qa/resolve.ts) own the fixed gap values.
+`no-native-presence` means the
 capture carried no native presence, so no React host could be tied to a native node:
 quoted targets take ordinary captures, which never carry it. In `clearanceDiagnostic`, unread or unavailable facts
 remain `null`; target text, identifiers and target coordinates are excluded. The
