@@ -124,6 +124,8 @@ pub struct Receipt {
     pub recovery: Option<crate::failure::Recovery>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_lock: Option<crate::runrecord::BuildLockObservation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_version: Option<crate::expo_updates::RuntimeVersion>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub cleanup: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -185,6 +187,7 @@ impl Receipt {
             failure: None,
             recovery: None,
             build_lock: None,
+            runtime_version: None,
             cleanup: BTreeMap::new(),
             cleanup_details: None,
             core_cleanup: None,

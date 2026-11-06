@@ -259,6 +259,7 @@ pub(crate) fn finish_receipt(ctx: Ctx, result: ReceiptResult, failure: Option<Fa
     receipt.fresh_install = ctx.record.resources.fresh_install.clone();
     receipt.lane = ctx.record.resources.lane.clone();
     receipt.build_lock = ctx.record.build_lock.clone();
+    receipt.runtime_version = ctx.record.runtime_version.clone();
     for (name, value) in &ctx.notes {
         receipt.outcomes.insert(name.clone(), value.clone());
     }
@@ -624,6 +625,7 @@ fn prepare_validated(
         terminal: None,
         held: None,
         build_lock: None,
+        runtime_version: None,
     };
     if let Err(f) = record.save(&args.runs_root) {
         return Err(match &record.resources.lease {
@@ -2134,6 +2136,9 @@ fn allocate_android(ctx: &mut Ctx, android_home: Option<&str>) -> Result<(), Fai
 }
 
 pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
+    if ctx.record.scenario.platform == Platform::Android {
+        ctx.record.runtime_version = Some(crate::expo_updates::RuntimeVersion::android());
+    }
     let platform = platform_dir(ctx.record.scenario.platform);
     let repo_root = ctx.record.candidate.repo_root.clone();
     let project_root = ctx.record.candidate.project_root.clone();
@@ -2926,15 +2931,50 @@ pub(crate) fn run_clean_preparation(ctx: &mut Ctx, plan: &BuildPlan) -> Result<(
 fn spawn_metro_only(ctx: &mut Ctx) -> Result<(), Failure> {
     let port = qaren_metro_port(&ctx.record.scenario);
     let project_root = ctx.record.candidate.project_root.clone();
+    let run_dir = RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id);
+    let ios = ctx.record.scenario.platform == Platform::Ios;
+    let preload = if ios {
+        crate::expo_updates::write_preload(&run_dir, &project_root)
+    } else {
+        None
+    };
+    let inherited = ctx.runner.env_var("NODE_OPTIONS");
+    let configured = if ios {
+        let output = ctx.runner.run_private(
+            &crate::exec::CmdSpec::new(
+                "pnpm-node-options",
+                "pnpm",
+                &["config", "get", "node-options", "--json"],
+                15,
+            )
+            .cwd(&project_root),
+            &[],
+        );
+        let read = (output.exit_code() == Some(0)
+            && !output.timed_out()
+            && ctx.runner.cancellation().is_none())
+        .then(|| metro::parse_pnpm_node_options(output.stdout()))
+        .flatten();
+        if read.is_none() {
+            ctx.notes.push((
+                "pnpm_node_options".into(),
+                "effective configuration unavailable or unreadable; inherited NODE_OPTIONS used"
+                    .into(),
+            ));
+        }
+        read.flatten()
+    } else {
+        None
+    };
     let spec = metro::start_spec(
         &project_root,
         port,
-        ctx.record.scenario.platform == Platform::Ios,
+        ios,
         metro::expo_online(ctx.runner),
+        preload.as_deref(),
+        configured.as_deref().or(inherited.as_deref()),
     );
-    let metro_log = RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id)
-        .join("logs")
-        .join("metro.log");
+    let metro_log = run_dir.join("logs").join("metro.log");
     ensure_running(ctx.runner, "build")?;
     let spawned = ctx.runner.spawn_group(&spec, &metro_log).map_err(|e| {
         Failure::new(
@@ -3104,6 +3144,13 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                     ArtifactInstallFailure::ArtifactInvalid,
                 ));
             }
+            // The installed artifact is what the app compares the manifest against, never a fresh resolve.
+            let embedded = crate::expo_updates::read_ios(ctx.runner, &artifact.path);
+            ctx.record.runtime_version = Some(crate::expo_updates::pin(
+                &RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id),
+                platform_dir(Platform::Ios),
+                &embedded,
+            ));
             if ctx.record.resources.metro.is_none() {
                 spawn_metro_only(ctx)?;
             }
@@ -5073,6 +5120,8 @@ fn dry_run_receipt(
                 port,
                 true,
                 metro::expo_online(runner),
+                None,
+                None,
             ));
             planned.push(ios::build_spec(
                 &cand.project_root,
@@ -5228,6 +5277,8 @@ fn dry_run_receipt(
                     port,
                     true,
                     metro::expo_online(runner),
+                    None,
+                    None,
                 ));
                 planned.push(ios::install_app_spec(udid, &artifact_path));
                 planned.push(metro::request_probe_spec(port));
@@ -5263,6 +5314,8 @@ fn dry_run_receipt(
                     port,
                     false,
                     metro::expo_online(runner),
+                    None,
+                    None,
                 ));
                 planned.push(metro::manifest_spec(port, "android"));
                 planned.push(android::am_start_deeplink_spec(
@@ -5415,6 +5468,7 @@ fn warm_dev_client_manifest(ctx: &mut Ctx, port: u16, deadline: u64) -> Result<(
         ctx.record.scenario.platform == Platform::Ios,
     );
     let mut volume_checked = false;
+    let run_dir = RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id);
     warm.expo_online = metro::expo_online(ctx.runner);
     let result = (|| {
         if ctx.record.scenario.platform == Platform::Ios {
@@ -5524,8 +5578,26 @@ fn warm_dev_client_manifest(ctx: &mut Ctx, port: u16, deadline: u64) -> Result<(
                 ));
             }
         }
+        warm.fingerprint_pin = ctx
+            .record
+            .runtime_version
+            .as_ref()
+            .filter(|rv| {
+                warm.attempts > 0
+                    && rv.embedded_policy == crate::expo_updates::EmbeddedPolicy::Fingerprint
+                    && !crate::expo_updates::resolved(&run_dir)
+            })
+            .map(|rv| rv.pin.as_str());
         Err(warm.refusal())
     })();
+    // The marker proves the dev server's resolver returned the pin, not that a manifest was served.
+    if let Some(rv) = ctx.record.runtime_version.as_mut() {
+        if rv.pin == crate::expo_updates::PinState::Written
+            && crate::expo_updates::resolved(&run_dir)
+        {
+            rv.pin = crate::expo_updates::PinState::Resolved;
+        }
+    }
     ctx.timings.push((
         "manifest_warmup_elapsed".into(),
         warm.elapsed_ms(ctx.runner.monotonic_ms()),
@@ -5661,6 +5733,7 @@ mod launch_tests {
                 terminal: None,
                 held: None,
                 build_lock: None,
+                runtime_version: None,
             };
             let run_dir = RunRecord::run_dir(&root, &record.run_id);
             let output = run_dir.join("ios-build");

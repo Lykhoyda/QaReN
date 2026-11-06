@@ -2274,7 +2274,59 @@ budget. The receipt's `manifest_warmup` outcome records attempt and timeout
 counts, successful-answer minimum, median and maximum, the client's 10-second
 limit, and whether the 15-second request-handler probe timed out; elapsed time
 is at `timings_ms.manifest_warmup_elapsed`. These statistics contain no raw probe
-output. A request-handler timeout after `/status` responds names startup or a
+output.
+
+Expo's dev-client manifest handler resolves the runtime version on every
+request; under the expo-updates `fingerprint` policy that recomputes the
+project fingerprint each time, which can take longer than the client's
+10-second limit. Before install, iOS preparation reads the runtime version the
+selected `.app` embeds: `Expo.plist` `EXUpdatesRuntimeVersion` for a literal,
+or the `EXUpdates.bundle/fingerprint` resource for `file:fingerprint`. The
+resource may be at the app root or inside `Frameworks/EXUpdates.framework`;
+if both exist, QaReN cannot identify the app's resource and does not pin it.
+A non-empty value of at most 256 characters without control characters is
+written to `runtime-version-pin.json` in the run directory. An absent runtime
+version key is `unconfigured` and leaves nothing to pin.
+
+QaReN's own dev server loads a run-local preload that reads the pin at resolver
+call time. An absent or malformed pin, another platform or an incompatible
+Expo resolver leaves the original resolution behavior in place. When the
+resolver returns the pinned value, it attempts to append
+`runtime-version-pin.resolved`; failure to write this marker does not break
+resolution. Nothing in the candidate is edited, and QaReN does not run a
+runtime-version resolver to obtain the pin.
+
+The run record and receipt's `runtime_version` record `embedded_policy`
+(`literal`, `fingerprint`, `unconfigured` or `unsupported`), `source: artifact`,
+an 8-character `value_sha256_prefix` when a valid value was read (never the
+value), and `pin`: `resolved` when the marker exists after warm-up, `written`
+when the pin file was written but no marker was observed, `none` when
+unconfigured, or `unsupported` when the artifact cannot supply a valid value
+or the pin cannot be written. The marker proves the resolver returned the
+pin, not that a manifest was served. Android records `unsupported`.
+
+When warm-up has probed the manifest and refuses with `MANIFEST_NOT_WARM`,
+the embedded policy is `fingerprint` and no pin marker exists, the refusal
+names possible per-request fingerprint recomputation first and suggests a
+fixed development `runtimeVersion`, or your own dev server from a scratch
+copy with the resolved string. Early watcher refusals keep their own cause.
+
+Before starting iOS Metro, QaReN asks pnpm for its effective `node-options`,
+including workspace, user and global configuration and pnpm's interpolation
+and escaping. It composes that value (or inherited `NODE_OPTIONS` when unset)
+with IPv4-first DNS and a quoted `--require` of the preload, then passes the
+result through both `NODE_OPTIONS` and `npm_config_node_options` and pnpm's
+`--config.node-options` override so workspace settings cannot remove it.
+The query uses `--json`: pnpm 9 and later print a JSON string after any warning,
+while pnpm 8 prints the raw value, so pnpm's warning and notice lines are dropped
+(colour codes included) and one remaining raw line of Node flags is the value.
+If the query fails, times out or is cancelled, or anything other than one value
+is left, it uses inherited
+`NODE_OPTIONS` and records a value-free fallback note; cancellation still
+prevents startup.
+A native-side configuration override is not visible in the artifact.
+
+A request-handler timeout after `/status` responds names startup or a
 stalled watcher as possible causes; steady answers near 30 seconds also name a
 possible external-service wait when the online override described below is
 active. Check the volume and doctor before coordinating
@@ -2954,10 +3006,10 @@ use normal teardown. For eligible failed iOS checks, precedence is:
 | `QAREN_HOLD_ON_FAIL=1` or unset | Hold |
 
 A held Metro keeps its port; another run using that port refuses `METRO_PORT_OCCUPIED`.
-iOS runs start Metro with `--localhost` and append `--dns-result-order=ipv4first` to its
-`NODE_OPTIONS`, so a held Metro listens only on `127.0.0.1`, where the readiness probes and the
-simulator reach it (Node otherwise resolves `localhost` to `::1` first); Android runs keep their
-`adb reverse` path.
+iOS runs start Metro with `--localhost` and the Node options described in the
+[launch readiness contract](#ios-simulator-lifecycle), so a held Metro listens only on
+`127.0.0.1`, where the readiness probes and simulator reach it; Android runs keep
+their `adb reverse` path.
 
 The iOS runner's XCTest result bundles under `Logs/Test` in both its local
 DerivedData and current-version prebuilt cache are removed after successful

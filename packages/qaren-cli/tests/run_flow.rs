@@ -806,6 +806,10 @@ fn unproven_metro_after_the_build_refuses_install_and_retains_its_lease() {
         script_candidate_recheck(&mut mock);
         script_fingerprint_recheck(&mut mock, native_files);
         common::script_ios_app_verification(&mut mock);
+        mock.expect_run(
+            "pnpm config get node-options",
+            CmdOutput::success("undefined\n"),
+        );
         mock.expect_spawn(
             "expo start",
             Spawned {
@@ -5762,6 +5766,10 @@ fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_l
         mock.expect_run("ls-files", CmdOutput::success(""));
         common::script_xcode(&mut mock);
         common::script_ios_app_verification(&mut mock);
+        mock.expect_run(
+            "pnpm config get node-options",
+            CmdOutput::success("undefined\n"),
+        );
         mock.expect_spawn(
             "expo start",
             Spawned {
@@ -9687,6 +9695,10 @@ fn check_fails_fast_when_the_launched_ios_app_exits_and_names_the_missing_framew
 // Metro answers on the second poll, so the scripted clock advances inside reuse readiness.
 fn script_warm_launch_after_one_metro_retry(mock: &mut MockRunner) {
     common::script_ios_app_verification(mock);
+    mock.expect_run(
+        "pnpm config get node-options",
+        CmdOutput::success("undefined\n"),
+    );
     mock.expect_spawn(
         "expo start",
         qaren::exec::Spawned {
