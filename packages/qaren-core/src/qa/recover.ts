@@ -209,7 +209,11 @@ export function dismissCandidate(
   if (screen.front !== 'app') return rejected('front');
   if (!completeCapture(screen)) return rejected('coverage');
   if (!planTargets.length) return rejected('current-target', 0);
-  if (proof === 'covered-target' && !targetBehindInterruption(screen, planTargets[0]))
+  if (
+    proof === 'covered-target' &&
+    !coverUnformable(screen) &&
+    !targetBehindInterruption(screen, planTargets[0])
+  )
     return rejected('uncovered-target', 0);
   const targetIndex = planTargets.findIndex(
     (target, index) =>
@@ -289,7 +293,13 @@ export function dismissCandidate(
     if (plannedIndex !== -1) return rejected('later-target', plannedIndex, [], 'ownership');
     // A missing target dismisses only a proven separate surface, never a screen's own Cancel:
     // a presented modal, a decline that is the screen's only control, or a recognised opt-in.
-    if (proof === 'surface' && !sole && !screenClass && !modalCoverProven(screen))
+    if (
+      proof === 'surface' &&
+      !sole &&
+      !screenClass &&
+      !modalCoverProven(screen) &&
+      !coverUnformable(screen)
+    )
       return rejected('uncovered-target', 0);
     return { label: candidates[0].label!, ...(screenClass ? { screenClass } : {}) };
   }
@@ -392,6 +402,13 @@ export function soleDecline(screen: Screen): boolean {
 }
 
 // The capture proves one presented modal covering everything native does not show.
+// A modal is mounted but no host could be associated (on Android: several presented modals or no
+// calibrated origin), so the cover proof cannot be formed and recovery keeps its earlier behaviour.
+const coverUnformable = (screen: Screen): boolean => {
+  const cover = modalCoverDiagnostic(screen);
+  return cover !== undefined && cover.modalCount >= 1 && cover.associatedCount === 0;
+};
+
 const modalCoverProven = (screen: Screen): boolean => {
   const cover = modalCoverDiagnostic(screen);
   return cover !== undefined && cover.refused === undefined;

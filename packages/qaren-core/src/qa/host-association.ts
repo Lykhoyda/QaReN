@@ -219,11 +219,13 @@ function calibratedOrigin(
   nodes: NativeNode[],
   scale: number,
   tolerance: number,
+  scope?: ReadonlySet<number>,
 ): { x: number; y: number } | undefined {
   const finiteRect = (rect: Rect | undefined): rect is Rect =>
     !!rect && [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite);
   const candidates: Array<{ x: number; y: number }> = [];
   for (const host of snapshot.nodes) {
+    if (scope && !scope.has(host.hostIndex)) continue;
     const id = evidence.hosts[host.hostIndex].testID;
     if (!id || evidence.hosts.filter((h) => h.testID === id).length !== 1) continue;
     const matches = nodes.filter((node) => node.identifier === id);
@@ -475,20 +477,36 @@ export function associateHosts(
   const windows = nodes.flatMap((node, i) => (node.type === 'Window' ? [i] : []));
   if (!windows.length) return unavailable('window-count');
   const android = presence.source === 'android-a11y-live';
-  // Android lists only a React Native Modal's own window, so the second window shows only in React.
-  if (
-    android &&
-    snapshot.nodes.some(
+  // Android lists only a React Native Modal's own window, so hosts outside the one presented modal show
+  // only in React: association and the origin come from that modal's subtree, and several modals refuse.
+  let scope: ReadonlySet<number> | undefined;
+  if (android) {
+    const modals = snapshot.nodes.filter(
       (host) =>
         MODAL_HOST_TYPES.has(host.hostType ?? '') &&
         snapshot.nodes.some((child) => child.parentHostIndex === host.hostIndex),
-    )
-  )
-    return unavailable('window-count');
+    );
+    if (modals.length > 1) return unavailable('window-count');
+    if (modals.length === 1) {
+      const modal = modals[0].hostIndex;
+      scope = new Set(
+        snapshot.nodes.flatMap((host) =>
+          hostPath(snapshot, host.hostIndex)?.includes(modal) ? [host.hostIndex] : [],
+        ),
+      );
+    }
+  }
   let androidTransform: FrameTransform | undefined;
   if (android) {
     const scale = presence.pointScale!;
-    const origin = calibratedOrigin(snapshot, evidence, nodes, scale, ANDROID_FRAME_TOLERANCE_PX);
+    const origin = calibratedOrigin(
+      snapshot,
+      evidence,
+      nodes,
+      scale,
+      ANDROID_FRAME_TOLERANCE_PX,
+      scope,
+    );
     if (!origin) return unavailable('origin-unknown');
     androidTransform = { scale, ...origin, tolerance: ANDROID_FRAME_TOLERANCE_PX };
   }
@@ -511,6 +529,10 @@ export function associateHosts(
   const duplicates = duplicateNodes(nodes, presence);
   const structural = new Map<number, number>();
   for (const host of snapshot.nodes) {
+    if (scope && !scope.has(host.hostIndex)) {
+      note(host.hostIndex, { identity: 'window-count' });
+      continue;
+    }
     if (inline(host.hostIndex)) {
       note(host.hostIndex, { identity: 'inline' });
       continue;

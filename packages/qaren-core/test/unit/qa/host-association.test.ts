@@ -1568,9 +1568,31 @@ function withModal(children: boolean) {
 }
 
 test('a mounted React Native Modal with content is a second window Android does not list', () => {
+  // The screen behind the Modal never associates; this Modal has no identified anchors of its own.
   const modal = androidAssociation(withModal(true));
   assert.deepEqual([0, 1, 2].map(modal.native), [undefined, undefined, undefined]);
-  assert.equal(modal.identity(1), 'window-count');
+  // Two presented Modals: Android lists only one of their windows, so nothing associates.
+  const two = androidAssociation((f) => {
+    withModal(true)(f);
+    f.hostEvidence.hosts.push({ role: null, roleSource: 'none', capabilities: {} });
+    f.hostEvidence.typography.nodes.push({
+      hostIndex: 5,
+      parentHostIndex: 0,
+      rootIndex: 0,
+      hostType: 'RCTModalHostView',
+      text: { kind: 'none' },
+    } as (typeof f.hostEvidence.typography.nodes)[number]);
+    f.hostEvidence.hosts.push({ role: null, roleSource: 'none', capabilities: {} });
+    f.hostEvidence.typography.nodes.push({
+      hostIndex: 6,
+      parentHostIndex: 5,
+      rootIndex: 0,
+      hostType: 'RCTView',
+      text: { kind: 'none' },
+    } as (typeof f.hostEvidence.typography.nodes)[number]);
+  });
+  assert.deepEqual([0, 1, 2].map(two.native), [undefined, undefined, undefined]);
+  assert.equal(two.identity(1), 'window-count');
 });
 
 test('an empty Modal host does not stop Android association', () => {

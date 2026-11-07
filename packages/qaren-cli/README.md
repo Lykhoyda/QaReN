@@ -1561,8 +1561,8 @@ rule sees a native touch listener on a non-clickable view or a cover hidden from
 accessibility; assert a tap's expected result with the plan's next step.
 
 Android phrase steps resolve against these observations. A valid capture whose
-interactive React hosts cannot all be associated (a mounted `Modal`, or inputs
-the keyboard covers) keeps the `SCREEN_EVIDENCE_INCOMPLETE` presence gap, as on
+interactive React hosts cannot all be associated (inputs the keyboard covers, or
+several mounted `Modal`s) keeps the `SCREEN_EVIDENCE_INCOMPLETE` presence gap, as on
 iOS; stale or incomplete captures refuse with `NATIVE_PRESENCE_UNUSABLE`. Quoted
 targets and literal checks remain usable without requesting presence.
 
@@ -1628,7 +1628,10 @@ Android [React host association](../qaren-core/src/qa/host-association.ts) scale
 React points by the display density and calibrates the origin per capture from
 at least two uniquely identified, unclipped anchors that agree within two pixels.
 It accepts frames shortened or emptied by a vertical scroll clip. Missing or
-disagreeing anchors leave association unavailable. Android layout, scroll and
+disagreeing anchors leave association unavailable. Android lists only a presented
+React Native `Modal`'s own window, so with exactly one mounted `Modal` association and
+the origin anchors come from that modal's subtree, and the hosts behind it count as
+covered rather than as gaps; several mounted `Modal`s leave association unavailable. Android layout, scroll and
 drawing classes, including parked sliders, supply no native press or fill
 capability of their own; the [screen projection](../qaren-core/src/qa/screen.ts)
 owns their classification.
@@ -3491,15 +3494,18 @@ unknown capabilities on a non-structural, on-screen element keep the presence gu
 React hosts outside the one mounted `Modal` are not gaps while every associated host
 sits inside it, so a full-screen promo over a mounted screen still counts as one control.
 Check-first, wait-first and tap/fill-first plans behind a presented full-screen promo
-recover under these guards and retry the step once. On iOS, before scrolling for a
-React-only tap or fill target, an ordinary capture gets one bounded presence
-recapture within the step's remaining budget. When it proves the target is behind
+recover under these guards and retry the step once. Before scrolling for a
+React-only tap or fill target while a decline control is on screen, an ordinary
+capture gets one bounded presence recapture within the step's remaining budget. When it proves the target is behind
 the presented `Modal`, recovery runs instead of scrolling the promo. A recapture that
 runs out of time or returns incomplete evidence leaves the cover unproven, and the
 step continues as it would have without it; it never adds a refusal of its own.
 React-only wait recovery and this pre-scroll recovery require proof that the target
 is behind the presented `Modal`, and recheck this proof in recovery's fresh capture
 and before dispatch; without it, app dismissal is vetoed as `uncovered-target`.
+When a `Modal` is mounted but no host could be associated, the proof cannot be
+formed, and these recoveries and the missing-target rule below keep the earlier
+behaviour instead of vetoing.
 A tap or fill whose target is not on screen at all may dismiss only a proven separate
 surface: a presented `Modal` cover, a decline that is the screen's only control
 (inputs count as controls), or a recognised permission opt-in. Otherwise it vetoes as

@@ -1342,22 +1342,25 @@ function promoOverHome(
 }
 
 // Device run R1: the press decides on an ordinary capture, which cannot prove the modal cover.
-test('a tap on a target behind a sole-Close promo closes the promo without scrolling it', async () => {
-  const f = app(home());
-  promoOverHome(f);
-  ticking(f);
-  const result = await runPlan(
-    parsePlan('1. Tap "qa-promo-home-target"\n✓ "Done"').blocks!,
-    f.deps,
-  );
-  assert.equal(result.verdict, 'PASS', result.failure?.seen);
-  assert.deepEqual(f.actions, ['press @close', 'press @home-target']);
-  assert.equal(result.recoveries, 1);
-  assert.equal(
-    result.steps.find((row) => row.line === 1 && row.outcome === 'retry')?.interruption?.outcome,
-    'dismissed',
-  );
-});
+for (const platform of ['ios', 'android'] as const) {
+  test(`a tap on a target behind a sole-Close promo closes the promo without scrolling it (${platform})`, async () => {
+    const f = app(home());
+    promoOverHome(f);
+    f.deps.platform = platform;
+    ticking(f);
+    const result = await runPlan(
+      parsePlan('1. Tap "qa-promo-home-target"\n✓ "Done"').blocks!,
+      f.deps,
+    );
+    assert.equal(result.verdict, 'PASS', result.failure?.seen);
+    assert.deepEqual(f.actions, ['press @close', 'press @home-target']);
+    assert.equal(result.recoveries, 1);
+    assert.equal(
+      result.steps.find((row) => row.line === 1 && row.outcome === 'retry')?.interruption?.outcome,
+      'dismissed',
+    );
+  });
+}
 
 test('a wait on a React-only target behind a sole-Close promo closes it and passes', async () => {
   const f = app(home());

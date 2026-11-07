@@ -3909,10 +3909,11 @@ async function walkBlockScoped(
                   resolution = result;
                 } else resolution = decided;
                 if ('scroll' in resolution) {
+                  // Only a visible decline hints at an interruption worth one presence read before scrolling.
                   if (
-                    deps.platform === 'ios' &&
                     !scrollPresenceRead &&
                     !before.platformPresence &&
+                    before.screen.elements.some((e) => !e.offscreen && isDeclineLabel(e.label)) &&
                     reactOnlyTarget(item.target, before.screen)
                   ) {
                     scrollPresenceRead = true;
