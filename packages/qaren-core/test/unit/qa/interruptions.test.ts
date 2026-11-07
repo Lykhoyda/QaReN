@@ -1549,6 +1549,46 @@ for (const [name, presenceRead] of [
     assert.deepEqual(f.actions, ['scroll']);
     assert.match(result.failure?.seen ?? '', /stayed off screen after one scroll/);
   });
+
+  test(`a ${name} presence read on the second press attempt refreshes expired ordinary evidence`, async () => {
+    const f = app(homeAfterPromo());
+    f.deps.platform = 'ios';
+    let clock = 0;
+    let promoUp = false;
+    let presenceReads = 0;
+    let refreshed = false;
+    f.deps.now = () => clock;
+    f.deps.sleep = async (ms) => {
+      clock += ms;
+    };
+    f.deps.row = (row) => {
+      if (row.outcome === 'retry') promoUp = true;
+    };
+    f.deps.captureScreen = async (request) => {
+      if (request?.platformPresence) {
+        presenceReads += 1;
+        clock += 11_000;
+        return presenceRead();
+      }
+      if (presenceReads) refreshed = true;
+      return promoUp ? modalOverHome({ ordinary: true }) : homeAfterPromo();
+    };
+    f.deps.press = async (ref) => {
+      f.actions.push(`press ${ref}`);
+      return { ok: true, proven: refreshed, executed: true };
+    };
+    f.deps.scroll = async () => {
+      assert.ok(refreshed, 'scroll needs a fresh ordinary capture after the optional read');
+      f.actions.push('scroll');
+      promoUp = false;
+      return { ok: true, proven: false, executed: true };
+    };
+    const result = await runPlan(parsePlan('1. Tap "qa-promo-home-target"').blocks!, f.deps);
+    assert.equal(result.verdict, 'PASS', result.failure?.seen);
+    assert.equal(presenceReads, 1);
+    assert.deepEqual(f.actions, ['press @home-target', 'scroll', 'press @home-target']);
+    assert.equal(result.recoveries, 0);
+  });
 }
 
 test('a React-only tap target without a presented modal is never sent to dismiss Close', async () => {

@@ -3925,6 +3925,10 @@ async function walkBlockScoped(
                       before = proven;
                       continue;
                     }
+                    if (!observationUsable(before.timing, deps.now())) {
+                      before = await captureBeforeDispatch();
+                      continue;
+                    }
                   }
                   // Scrolling would move the interruption, not the target behind it.
                   if (
