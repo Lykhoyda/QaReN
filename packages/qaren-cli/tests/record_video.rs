@@ -172,7 +172,7 @@ fn ios_start_without_recording_started_is_unavailable_and_the_run_continues() {
     .unwrap_err();
 
     assert!(
-        matches!(&status, VideoStatus::Unavailable(r) if r.contains("did not start")),
+        matches!(&status, VideoStatus::Unavailable { detail: r, .. } if r.contains("did not start")),
         "{status}"
     );
     assert!(record.resources.recorder.is_none());
@@ -657,7 +657,9 @@ fn cancellation_during_recorder_readiness_stops_and_retires_the_recorder() {
         record::RecordTarget::Ios("U"),
     )
     .unwrap_err();
-    assert!(matches!(status, VideoStatus::Unavailable(reason) if reason.contains("SIGTERM")));
+    assert!(
+        matches!(status, VideoStatus::Unavailable { detail: reason, .. } if reason.contains("SIGTERM"))
+    );
     assert!(record.resources.recorder.is_none());
     assert!(RunRecord::load(&root, &record.run_id)
         .unwrap()
@@ -877,7 +879,7 @@ fn android_start_without_a_path_pgrep_hit_is_unavailable_and_stops() {
     )
     .unwrap_err();
     assert!(
-        matches!(status,VideoStatus::Unavailable(reason) if reason.contains("recorder did not start"))
+        matches!(status,VideoStatus::Unavailable { detail: reason, .. } if reason.contains("recorder did not start"))
     );
     assert_eq!(mock.calls[1].timeout_seconds, 0);
     assert_eq!(mock.remaining(), 0);

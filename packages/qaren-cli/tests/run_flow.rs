@@ -9249,6 +9249,7 @@ impl Runner for Encoding {
 fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
     for (encodes, first_start, login_offset, expected_offset, recorder_delay, diagnostic) in [
         (true, None, None, 2_850, 559, "off"),
+        (true, None, None, 2_850, 559, "trim-failed"),
         (true, None, None, 2_850, 559, "stall"),
         (false, None, None, 2_850, 559, "off"),
         (true, Some(0), None, 2_850, 559, "off"),
@@ -9268,7 +9269,7 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
         (true, None, None, 2_850, 559, "missing"),
         (true, None, None, 2_850, 559, "late-failed"),
     ] {
-        let stall = diagnostic != "off";
+        let stall = !matches!(diagnostic, "off" | "trim-failed");
 
         let (repo, app) = app_repo();
         if stall && diagnostic != "withheld" {
@@ -9310,6 +9311,9 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
+        if diagnostic == "trim-failed" {
+            messages.last_mut().unwrap()["payload"]["videoPublication"] = "eligible".into();
+        }
         if stall {
             let mut extra = messages[1].clone();
             extra["payload"]["line"] = 7.into();
@@ -9391,8 +9395,12 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
         if encodes {
             mock.expect_run("ffmpeg", CmdOutput::success(""));
             mock.expect_run("ffprobe", CmdOutput::success("3.5\n"));
-            mock.expect_run("ffmpeg", CmdOutput::success(""));
-            mock.expect_run("ffprobe", CmdOutput::success("0.1\n"));
+            if diagnostic == "trim-failed" {
+                mock.expect_run("ffmpeg", CmdOutput::failed(1, "trim failed"));
+            } else {
+                mock.expect_run("ffmpeg", CmdOutput::success(""));
+                mock.expect_run("ffprobe", CmdOutput::success("0.1\n"));
+            }
             if stall {
                 mock.expect_run(
                     "ffprobe",
@@ -9506,6 +9514,49 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
             "encodes={encodes}"
         );
         assert!(other.exists(), "another run's capture is never touched");
+        if diagnostic == "trim-failed" {
+            assert!(media.join("video.mp4").is_file());
+            assert!(!media.join("video-published.mp4").exists());
+            assert_eq!(
+                pr.video_reason,
+                Some(qaren::record::VideoReason::TrimFailed)
+            );
+            assert_eq!(receipt.outcomes["videoReason"], "trim-failed");
+            assert_eq!(receipt.outcomes["video"], pr.video.to_string());
+            let run_dir = repo.join("runs").join(run_id());
+            let local = std::fs::read_to_string(run_dir.join("report.md")).unwrap();
+            let ledger: qaren::core::Ledger =
+                serde_json::from_slice(&std::fs::read(run_dir.join("ledger.json")).unwrap())
+                    .unwrap();
+            let comment = qaren::report::render_pr_comment(
+                &qaren::report::ReportInput {
+                    video: Some(&pr.video),
+                    run_id: &run_id(),
+                    platform: &pr.platform,
+                    app_id: &pr.app_id,
+                    device: &pr.device,
+                    ledger: &ledger,
+                },
+                None,
+                &qaren::report::PrRun {
+                    tested_sha: &pr.head_ref_oid,
+                    tested_older_commit: false,
+                    video: &pr.video,
+                    video_continuity: &[],
+                    screenshot: None,
+                    plan_sha256: &pr.plan_sha256,
+                    video_publication: &pr.video_publication,
+                },
+                &qaren::redact::MachineIdentity::default(),
+            );
+            for output in [local, comment] {
+                assert!(
+                    output.contains(&receipt.outcomes["video_summary"]),
+                    "{output}"
+                );
+            }
+            continue;
+        }
         if encodes {
             assert!(media.join("video.mp4").is_file());
             assert!(media.join("video-published.mp4").is_file());
@@ -10984,6 +11035,7 @@ fn video_declaration_reaches_the_child_and_durable_run_outputs() {
             let ledger: qaren::core::Ledger = serde_json::from_value(ledger).unwrap();
             let body = qaren::report::render_pr_comment(
                 &qaren::report::ReportInput {
+                    video: None,
                     run_id: "check-policy",
                     platform: "ios",
                     app_id: "com.test",
