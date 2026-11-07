@@ -32,6 +32,9 @@ import {
   associateHosts,
   hostPath,
   nativeWindowIndex,
+  touchOwner,
+  type TouchOwnerGap,
+  type TouchPointGap,
   type HostAssociationDiagnostic,
 } from './host-association.js';
 
@@ -56,6 +59,8 @@ export interface Element {
   offscreen: boolean;
   // Literal-text evidence from the node's own frame; `offscreen` stays the targeting flag.
   visibilityEvidence?: VisibilityEvidence;
+  // Android only: not visible to the user although its frame is real, inside the viewport and clear of the keyboard.
+  hiddenInView?: 'focused' | 'unfocused';
   where?: 'top' | 'middle' | 'bottom';
   side?: 'left' | 'center' | 'right';
   semantic?: {
@@ -145,6 +150,7 @@ export function reactOnlyFactsOf(element: Element): ReactOnlyFacts | undefined {
 
 const labelAncestors = new WeakMap<Element, Element[]>();
 const soleLabelTexts = new WeakMap<Element, Element>();
+const nativeTypes = new WeakMap<Element, string>();
 const elementFrames = new WeakMap<Element, NonNullable<NativeNode['rect']>>();
 const nativeAncestors = new WeakMap<Element, Element[]>();
 const elementViewports = new WeakMap<Element, NonNullable<NativeNode['rect']>>();
@@ -162,6 +168,83 @@ const localCapabilities = new WeakMap<
   Element,
   Pick<NonNullable<Element['semantic']>, 'press' | 'fill'>
 >();
+
+// Touch routing of the React host anchored by the element's own testID, absent when no such host is
+// matched. A box-only ancestor still takes the touch itself, so it never makes a cover transparent.
+const touchPolicies = new WeakMap<Element, 'transparent' | 'opaque'>();
+
+export function touchPolicy(element: Element): 'transparent' | 'opaque' | undefined {
+  return touchPolicies.get(element);
+}
+
+// What the capture proves about whether a user can reach an element; `unknown` is unproven, never hidden.
+export type Reach =
+  | 'reachable'
+  | 'offscreen-by-frame'
+  | 'clipped-by-viewport'
+  | 'under-keyboard'
+  | 'unlocated'
+  | 'unknown';
+const reaches = new WeakMap<Element, Reach>();
+
+export function reachOf(element: Element): Reach {
+  return reaches.get(element) ?? (element.ref.startsWith('react:') ? 'unlocated' : 'unknown');
+}
+
+// Whole-frame facts only: any part left on screen, inside its clip and off the keyboard stays reachable.
+function frameReach(
+  rect: NativeNode['rect'],
+  screen: NativeNode['rect'],
+  clip: NativeNode['rect'],
+  keyboard: NativeNode['rect'],
+): Reach | undefined {
+  if (
+    !rect ||
+    ![rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) ||
+    rect.width <= 0 ||
+    rect.height <= 0
+  )
+    return undefined;
+  const overlaps = (r: NonNullable<NativeNode['rect']>) =>
+    r.width > 0 &&
+    r.height > 0 &&
+    rect.x < r.x + r.width &&
+    r.x < rect.x + rect.width &&
+    rect.y < r.y + r.height &&
+    r.y < rect.y + rect.height;
+  if (screen && !overlaps(screen)) return 'offscreen-by-frame';
+  if (clip && !overlaps(clip)) return 'clipped-by-viewport';
+  if (
+    keyboard &&
+    rect.x >= keyboard.x &&
+    rect.y >= keyboard.y &&
+    rect.x + rect.width <= keyboard.x + keyboard.width &&
+    rect.y + rect.height <= keyboard.y + keyboard.height
+  )
+    return 'under-keyboard';
+  return 'reachable';
+}
+
+export type TouchGap = TouchOwnerGap | TouchPointGap | 'not-joined' | 'owner-not-projected';
+
+// The element whose React host takes a touch at a screen point, 'none', or the evidence gap that withholds it.
+// Keyed by the elements array, which a capture's spread copy of the joined screen keeps.
+const touchOwners = new WeakMap<
+  Screen['elements'],
+  ((x: number, y: number) => Element | 'none' | TouchGap) | TouchOwnerGap
+>();
+
+export function touchOwnerAt(screen: Screen, x: number, y: number): Element | 'none' | TouchGap {
+  const owner = touchOwners.get(screen.elements) ?? 'not-joined';
+  return typeof owner === 'string' ? owner : owner(x, y);
+}
+
+// The matched React host's own press handler; a native button kind says nothing about it.
+const hostPresses = new WeakMap<Element, boolean>();
+
+export function matchedHostPress(element: Element): boolean | undefined {
+  return hostPresses.get(element);
+}
 
 export function keyboardCoversElement(element: Element): boolean {
   return keyboardCoveredElements.has(element);
@@ -198,6 +281,10 @@ export function soleLabelTextOf(element: Element): Element | undefined {
 // Native tree ancestors, nearest first.
 export function ancestorsOf(element: Element): readonly Element[] {
   return nativeAncestors.get(element) ?? [];
+}
+
+export function nativeTypeOf(element: Element): string | undefined {
+  return nativeTypes.get(element);
 }
 
 export function elementFrame(element: Element): NativeNode['rect'] {
@@ -250,6 +337,8 @@ export interface NativeNode {
   visibleToUser?: boolean;
   // Android only: the accessibility heading fact; header-role text is exposed as android.view.View.
   heading?: boolean;
+  // Android only: the node holds input focus.
+  focused?: boolean;
   secure?: boolean;
   value?: string;
   rect?: { x: number; y: number; width: number; height: number };
@@ -698,6 +787,15 @@ export function join(
     n.rect.width > 0 &&
     n.rect.height > 0 &&
     underKeyboard(n, i);
+  // Not visible although its real frame is in view and clear of the keyboard (e.g. opacity 0); never scrolled out.
+  const hiddenInView = (n: NativeNode, i: number): boolean =>
+    n.visibleToUser === false &&
+    !!n.rect &&
+    n.rect.width > 0 &&
+    n.rect.height > 0 &&
+    !viewport.has(i) &&
+    !offscreen.has(i) &&
+    !underKeyboard(n, i);
   const contradicted = frameContradictions(nodes);
   const chrome = scrollChromeNodes(nodes, presence);
   const associationDiagnostics = new Map<number, HostAssociationDiagnostic>();
@@ -919,6 +1017,9 @@ export function join(
             : viewport.has(nodeIndex)
               ? 'offscreen'
               : 'visible',
+      ...(hiddenInView(n, nodeIndex)
+        ? { hiddenInView: n.focused === true ? ('focused' as const) : ('unfocused' as const) }
+        : {}),
       semantic: {
         ...capabilities,
         ...(headings.has(nodeIndex) ? { heading: headings.get(nodeIndex)! } : {}),
@@ -950,6 +1051,24 @@ export function join(
     };
     if (label) element.label = label;
     if (testID) element.testID = testID;
+    if (host && testID !== undefined && host.testID === testID) {
+      const hosts = reactHostEvidence!.hosts;
+      // Association requires complete typography, so the host's ancestry is always known here.
+      const path = hostPath(reactHostEvidence!.typography!, hosts.indexOf(host));
+      const transparent =
+        host.pointerEvents === 'none' ||
+        host.pointerEvents === 'box-none' ||
+        !!path?.some((i) => hosts[i]?.pointerEvents === 'none');
+      touchPolicies.set(element, transparent ? 'transparent' : 'opaque');
+    }
+    // Only a host anchored by this node's own unique testID proves its handler either way; text-content associations do not.
+    const ownPress =
+      host && testID !== undefined && host.testID === testID
+        ? host.capabilities.press === true
+        : uniqueMatch && !presenceMode && reactHostEvidence?.complete && match?.capabilities
+          ? match.capabilities.press
+          : undefined;
+    if (ownPress !== undefined) hostPresses.set(element, ownPress);
     const privateNativeLabel = presenceMode && observed?.labelSource !== 'direct';
     // Privacy may over-associate input observations without granting semantic capabilities.
     const possibleDigestInput = reactCandidates.some(
@@ -1266,6 +1385,7 @@ export function join(
   }
   const textDescendants = new Map<number, number[]>();
   nodes.forEach((n, i) => {
+    if (n.type) nativeTypes.set(elements[i], n.type);
     if (n.rect) elementFrames.set(elements[i], n.rect);
     if (underKeyboard(n, i)) keyboardCoveredElements.add(elements[i]);
     const ancestors: Element[] = [];
@@ -1274,6 +1394,16 @@ export function join(
     if (ancestors.length) nativeAncestors.set(elements[i], ancestors);
     const bounds = clippingViewport(viewport, i);
     if (bounds) elementViewports.set(elements[i], bounds);
+    const reach = frameReach(
+      n.rect,
+      screenRect,
+      bounds,
+      keyboardFrame && keyboardBottom !== undefined && underKeyboard(n, i)
+        ? { ...keyboardFrame, height: keyboardBottom - keyboardFrame.y }
+        : undefined,
+    );
+    // A frame its own on-screen descendant contradicts proves no reach either way.
+    if (reach && !contradicted.has(i)) reaches.set(elements[i], reach);
     if (isScrollContainerType(n.type)) scrollContainers.set(elements[i], n.type!);
     if (n.type === 'Window') windows.add(elements[i]);
     if (n.type === 'Application') applications.add(elements[i]);
@@ -1348,6 +1478,19 @@ export function join(
     if (diagnosticRect(diagnosticField(node, 'rect'))) counts.rectKnownCount++;
   });
   projectionCounts.set(screen.elements, counts);
+  const owner = touchOwner(nodes, reactHostEvidence, presence, associations);
+  touchOwners.set(
+    screen.elements,
+    typeof owner === 'string'
+      ? owner
+      : (x, y) => {
+          const index = owner(x, y);
+          if (typeof index !== 'number') return index;
+          return screen.elements.includes(elements[index])
+            ? elements[index]
+            : 'owner-not-projected';
+        },
+  );
   return screen;
 }
 

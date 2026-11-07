@@ -1040,6 +1040,87 @@ fn require_prewarm_with_matching_record_installs_offline() {
     );
 }
 
+fn plant_dependency_cache(repo: &Path) {
+    let entry = repo
+        .join("deps-cache")
+        .join("a".repeat(64))
+        .join("b".repeat(64));
+    std::fs::create_dir_all(entry.join("tree/node_modules")).unwrap();
+    buildplan::save_json(
+        &entry.join("entry.json"),
+        &serde_json::json!({
+            "schema":"qaren-deps-cache/1", "key":"b".repeat(64), "created_ms":1,
+            "modules":["node_modules"], "bytes":0,
+        }),
+    )
+    .unwrap();
+}
+
+#[test]
+fn require_prewarm_still_refuses_with_a_populated_dependency_cache() {
+    let repo = common::temp_repo();
+    plant_dependency_cache(&repo);
+    let scenario_path = write_scenario(&repo, &require_prewarm_yaml(8791));
+
+    let mut mock = MockRunner::new();
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
+    mock.expect_run("git", CmdOutput::success(""));
+
+    let receipt = prepare(&mut mock, &args(&repo, &scenario_path, None));
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::DepsNotPrewarmed);
+    assert!(failure.next_action.contains("prewarm"));
+    assert_eq!(mock.remaining(), 0, "no install may be attempted");
+    assert!(!repo.join(".qaren").join("runs").exists());
+}
+
+#[test]
+fn require_prewarm_still_installs_offline_with_a_populated_dependency_cache() {
+    let repo = common::temp_repo();
+    plant_dependency_cache(&repo);
+    let scenario_path = write_scenario(&repo, &require_prewarm_yaml(8791));
+    let record = qaren::buildplan::DepsPrewarm {
+        schema: PREWARM_SCHEMA.to_string(),
+        worktree_root: repo.clone(),
+        project_root: repo.join("test-app"),
+        lockfile_sha256: qaren::candidate::sha256_hex(b"lockfileVersion: 9\n"),
+        at: "2026-08-13T00:00:00Z".to_string(),
+    };
+    buildplan::save_json(&buildplan::prewarm_path(&repo), &record).unwrap();
+
+    let ios_tools = &["git", "pnpm", "node", "lsof", "curl", "ps", "xcrun"];
+    let mut mock = MockRunner::new();
+    script_validation(&mut mock, &repo, ios_tools);
+    mock.expect_run("lsof", free_port());
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
+    mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
+    mock.expect_run(
+        "pnpm install --frozen-lockfile --offline",
+        CmdOutput::success(""),
+    );
+    mock.expect_run(
+        "expo run:ios --help",
+        CmdOutput::success(common::IOS_BUILD_HELP),
+    );
+    // End the walk deterministically at the fingerprint step.
+    mock.expect_run("ls-files", CmdOutput::failed(128, "boom"));
+
+    let receipt = prepare(&mut mock, &args(&repo, &scenario_path, None));
+    assert_eq!(receipt.result, ReceiptResult::Failed);
+    let install = mock
+        .calls
+        .iter()
+        .find(|c| c.label == "pnpm-install")
+        .unwrap();
+    assert!(
+        install.args.contains(&"--offline".to_string()),
+        "a prewarmed install must be offline: {:?}",
+        install.args
+    );
+}
+
 #[test]
 fn explicit_worktree_must_be_a_git_toplevel() {
     let repo = common::temp_repo();

@@ -237,6 +237,7 @@ interface RunnerSnapshotNode {
   visibleToUser?: boolean;
   heading?: boolean;
   secure?: boolean;
+  focused?: boolean;
 }
 
 let runnerProcess: ChildProcess | null = null;
@@ -2087,6 +2088,7 @@ function mapRunnerNodesToFlat(nodes: RunnerSnapshotNode[], qa = false): FlatNode
     if (qa && n.selected === true) flat.selected = true;
     if (qa && typeof n.visibleToUser === 'boolean') flat.visibleToUser = n.visibleToUser;
     if (qa && n.heading === true) flat.heading = true;
+    if (qa && n.focused === true) flat.focused = true;
     if (n.label !== undefined) flat.label = n.label;
     if (n.identifier !== undefined) flat.identifier = n.identifier;
     if (n.packageName !== undefined) flat.packageName = n.packageName;

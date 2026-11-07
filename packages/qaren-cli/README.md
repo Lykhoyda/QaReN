@@ -519,13 +519,14 @@ prefixes are reserved case-insensitively. Missing variables stay missing and
 empty values stay empty. Invalid lists refuse as `SCENARIO_INVALID` without
 echoing entries.
 
-Treat this list as authorization to disclose those inherited variables to
-`pnpm-install`, `expo-prebuild`, and their descendants, including installer
+Treat this list as authorization to disclose those inherited variables to the
+children listed in the [child environment contract](#plan-checks-and-screen-evidence)
+and their descendants, including installer
 lifecycle scripts and Expo config plugins. Use trusted, reviewed configuration;
 `--config` can select an operator-controlled file outside the candidate. QaReN
 uses that selected list rather than reloading candidate configuration. The
-package manager keeps its own configuration: QaReN does not discover, parse or
-rewrite npmrc or validate credentials. Output withholding does not contain what
+package manager keeps its own configuration: QaReN does not rewrite it or
+validate credentials. Output withholding does not contain what
 those processes can write themselves or send over the network.
 
 `--platform android` borrows one booted emulator on the host's already running
@@ -653,14 +654,34 @@ A second native input anywhere in the capture, including off screen or hidden,
 keeps the placeholder withheld; no competitor exclusion is performed.
 When React coverage is unknown or incomplete, a missed Fill with one unnamed
 on-screen input reports `evidence-incomplete`, names that coverage class, and
-suggests targeting the field by test id. Distinct matches are counted before kind,
-disabled, hittability, offscreen or React-only filters, so two or more refuse with
+suggests targeting the field by test id. Quoted targets count distinct identities
+before kind, disabled, hittability or offscreen eligibility checks, subject to the
+identity and reach proofs below. Two or more remaining matches refuse with
 `TARGET_AMBIGUOUS`, without a Jev tie-break, even if the target adds positional words
-such as `Tap "Save" at the bottom`. Outside fills,
+such as `Tap "Save" at the bottom`. For a press, wrapper collapse runs first; a
+press or fill then narrows the count only on proof of what a user can reach.
+A press counts a same-label wrapper as the control it wraps when native ancestry,
+a React host anchored by the wrapper's own unique testID
+with no press handler, no other content and strict frame containment all hold; an
+inner control that is offscreen, disabled or not hittable never collapses, and the
+wrapper is never chosen. When a quoted press or fill still has multiple matches,
+a match whose whole frame is off screen, outside its list's
+clip or under the keyboard is set aside unless it is nested with another match; a
+later window or an inferred overlay sets nothing aside. On iOS, when every remaining
+match is uniquely identifiable, the first four are considered for a read-only live
+hit read inside the observation's expiry, skipping nested candidates; only
+`not-hittable` sets one aside. Partial exposure or missing geometry alone never
+excludes a candidate, nor does an unavailable or late read. A frame contradicted by
+its own on-screen descendant proves no reach and cannot set a candidate aside
+without live evidence. If all candidates are
+set aside, the step refuses `TARGET_NOT_FOUND`. The refusal marks a candidate
+"nested inside candidate N" and lists each one set aside with its reason;
+the row records `collapsed` and `candidateExclusions`. These selection facts survive
+clearance scrolling and retry attempts. Outside fills,
 a React-only element whose testID equals the quoted value is not counted while a
 native element carries that testID, so a quoted press, wait or scroll reaches
-the native element; two native elements sharing it still refuse. A fill counts
-text-entry candidates plus every element carrying its testID, so a form label
+the native element; remaining native duplicates follow the counting rules above.
+A fill counts text-entry candidates plus every element carrying its testID, so a form label
 naming an input is not a twin, while a button sharing the input's testID is. A
 React-only projection collapses into the one native input only when complete
 React host evidence and digest ancestry prove it represents the same input host:
@@ -963,13 +984,43 @@ passing press with its line and reason, and is omitted when empty. The row's
 reason. A later plan check still decides whether the intended screen followed.
 
 A plain `Scroll down` or `Scroll up` is a gesture, not an assertion. It passes
-when a cleanly dispatched scroll changes the app screen. When the first scroll
-leaves the screen unchanged, QaReN scrolls once more under the same operation
+when a cleanly dispatched scroll changes the app screen, including descendant
+frame movement too small to change the screen signature. With complete native
+geometry, it chooses the largest scroll-container band clear of front overlays
+and the keyboard; `scrollBand` records the choice. The gesture preserves its
+viewport travel distance, clamped to fit inside the selected band. A container
+marked hidden although its centre lies inside its visible clip is never chosen.
+An overlay whose React host, matched by its own testID, has `pointerEvents`
+`none` or `box-none` (or sits under a `none` host) is not a cover; the drag
+passes through it. A `box-none` host's own children are still judged as covers
+in their own right. When no positive band remains, or the selected band cannot
+host a drag, and the clip centre is covered, QaReN takes one platform-presence
+capture to match the cover to its React host. A cover proven to take touches
+refuses before dispatch with `SCROLL_CONTAINER_UNREACHABLE`, cause
+`scroll_container_unreachable`, and `scrollBand.status: "unreachable"`,
+suggesting a scroll-until target or removing the step. A cover that stays
+unproven, including when that capture is incomplete, never refuses on that
+cover's account: the drag uses the container's clip with proven touch-taking
+covers excluded, and the result decides the step. A complete presence capture
+replaces the pre-scroll observation and recalculates the band, even if a cover
+stays unproven; a system dialog in that capture blocks dispatch. A side rail that
+leaves the centre clear still permits a drag.
+Incomplete native captures, a missing application/window frame, no captured
+container, or an empty container frame keep the viewport gesture with
+`scrollBand.status: "no-geometry"`; a band too small for the handler's actual
+rounded drag does the same with `"too-small"`.
+When the first scroll leaves the screen unchanged, QaReN scrolls once more under the same operation
 id; if both scrolls dispatched cleanly with complete native app captures
 before and after each attempt and neither changed the screen,
 the step passes with reason `SCROLL_NO_VISIBLE_CHANGE` and the row field
 `scrollDetail: {"status":"no_visible_change","attempts":2}`, and no recovery tap
-runs. An unchanged scroll with incomplete captures or only one attempt
+runs. If both attempts instead prove unchanged descendant frames with content
+extending beyond the container in the scroll direction, the row carries
+`scrollDetail.status: "no_visible_change_content_remains"`; live progress and
+the report warn that nothing moved although content extends beyond the scroll
+view. This is geometric evidence, not proof of remaining scroll range, so the
+step still passes. Missing or ambiguous geometry keeps the ordinary note.
+An unchanged scroll with incomplete captures or only one attempt
 (including after recovery) still fails without `scrollDetail`.
 A no-op result does not prove the content ended: QaReN has no end-of-list detector.
 The receipt's `ledger.no_visible_change_scrolls` lists those lines and is
@@ -1066,9 +1117,9 @@ A missing required capability refuses before dispatch; reopen the device session
 to rebuild the runner. A target hit point never authorizes a drag corridor:
 scroll-until drags retain every static overlay cut, including cuts caused by
 transparent containers. A zero or undersized band still refuses
-`SCROLL_BAND_TOO_SMALL`. The row's `scrollBand.status` distinguishes
-`no-geometry`, `overlay-cut` and `clear`; a plain `Scroll down` remains a
-plan-level option when no keyboard is up.
+`SCROLL_BAND_TOO_SMALL`. For scroll-until, the row's `scrollBand.status`
+distinguishes `no-geometry`, `overlay-cut` and `clear`. For plain-scroll band
+selection and refusals, see [the plain-scroll contract](#occluded-taps-and-focus).
 The walker passes that band to the shared scroll handler so the drag starts
 inside it, narrowing the existing keyboard-safe band. A caller band is also kept
 clear of the system gesture edges: 48 dp from the top and bottom window edges on
@@ -1168,9 +1219,22 @@ and no hint showing counts as empty, so clearing a plain field verifies as
 `exact`. A clear that reads back the placeholder remains `ambiguous`. Stale
 reads, and null text with unknown hint state, remain `unreadable`.
 
-Separate React-only input projections still count when matching a quoted strict fill,
-so a native input and a React-only input sharing its testID refuse as
-`TARGET_AMBIGUOUS` before any tap. A strict fill never acts on a React-only
+On Android, a quoted Fill can target a native input that is hidden in place
+(for example, a transparent one-time-code input) when its nonempty frame is
+inside the viewport, clear of the keyboard, and it already holds input focus.
+It does not scroll or tap to focus that input. Without focus, the Fill refuses
+`TARGET_NOT_FOUND` immediately: tap the visible control that focuses the input
+before filling it, or fill a visible field instead. At dispatch, the runner
+requires one exact identifier match in a complete accessibility traversal and
+rechecks the input's class, frame, app package, enabled/editable state and focus.
+It replaces text with `ACTION_SET_TEXT`; rejection refuses without a keyevent
+fallback. The ordinary read-back verification rules above still apply. This
+requires runner capability `FOCUSED_HIDDEN_INPUT_V1`; an older runner is stale.
+The exception does not make the input visible evidence for Tap, Wait or checks,
+and does not apply to phrase Fill targets or genuinely off-screen inputs.
+
+For quoted strict fills, React-only identity merging and duplicate counting follow
+the [targeting rules](#check-a-plan). A strict fill never acts on a React-only
 input: when one is the only match, an accessibility-hidden input represented
 only in React evidence returns `TARGET_NOT_FOUND`, allowing the guarded
 native-wrapper fallback without scrolling. A genuine offscreen native input still requests scrolling; an onscreen
@@ -1352,12 +1416,16 @@ semantic disabled state, including React disabled or read-only evidence, as do
 the enabled count and disabled-target advice. The screen includes the capture's
 age (`ageMs`) and whether a device action ran after it (`afterDispatch`);
 `counts` covers all controls in the first 2,000 captured elements, before the
-20-control cap. Non-target causes, including render errors and failed scroll
-dispatches, carry none of these three failure fields. Labels follow the
-[input value masking contract](#input-value-masking), and are masked whole beside a
-secure field or a secret input, where testIDs remain; a testID holding a
-protected value is masked whole. `suggestion` is one plan edit for the miss
-reason; it carries no app text and points to `failure.screen`, and supplies
+20-control cap. Failed checks after interruption recovery was considered also
+carry `failure.screen` from the newest admitted observation, without target-miss
+`subreason` or `suggestion`; a previous-planned-press veto may supply the
+[recovery suggestion](#step-recovery). Other non-target causes, including render
+errors and failed scroll dispatches, carry none of these three failure fields. Labels follow the
+[input value masking contract](#input-value-masking), including its fixed-control-word
+exception when screen text is withheld; testIDs remain unless they hold a
+protected value, in which case they are masked whole. `suggestion` is one plan edit
+for the miss reason; target-miss suggestions carry no app text and point to
+`failure.screen`. The suggestion supplies
 the walk's `next_action`, subject to the [cleanup precedence](#ios-admission-and-cleanup).
 It describes what was observed and never
 proposes a Wait for an enabled state, because a quoted Wait passes on a disabled control.
@@ -1406,13 +1474,15 @@ native builds and the walker do not. GitHub token values are masked in durable
 text and JSON, including errors and publication comments. Log helpers receive
 redaction values over the private control socket rather than their environment;
 a token containing a carriage return or newline withholds subprocess logs.
-The existing `pnpm-install` and `expo-prebuild` exceptions retain
+The `pnpm-install`, `expo-prebuild`, `deps-cache-pnpm` and `deps-cache-config` exceptions retain
 `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `YARN_NPM_AUTH_TOKEN`, `COREPACK_NPM_TOKEN`,
 `GITHUB_TOKEN` and `GH_TOKEN` for dependency preparation. The optional
 [`registryAuthEnv`](#check-a-plan) list adds exact-name exemptions only for those
-two labels. A nonempty list withholds both streams before returning captured
-output or persisting command logs, even when the listed variables are absent or
-already conventionally allowed; exit status and deadlines remain unchanged.
+four labels. The cache probes capture output privately in memory without logging
+it. For install and prebuild, a nonempty list withholds both streams before
+returning captured output or persisting command logs, even when the listed
+variables are absent or already conventionally allowed; exit status and
+deadlines remain unchanged.
 Omitting the list or setting it to `[]` preserves existing output behavior.
 Names that the scrub already passes retain their ordinary inheritance elsewhere.
 `qaren prewarm` carries the list to its install step, but its preceding
@@ -1458,8 +1528,9 @@ window is listed and the topmost application window belongs to the permission
 controller or `android`, as with the notification permission prompt on Android
 13 and later, that window stands in for the app's and becomes the `Alert`
 snapshot; any other topmost window leaves no read. A node not
-visible to the user counts as off screen, so a quoted step never passes on a
-scrolled-out control. A node the traversal cannot read is counted as dropped,
+visible to the user counts as off screen, with the focused-input exception
+described under [Fill verification](#fill-verification-and-keyboard-fallback).
+A node the traversal cannot read is counted as dropped,
 and more than 600 nodes truncate the read; either leaves the capture
 incomplete. Literal steps can read an RN `Modal`'s content; its effect on React
 host association is described below.
@@ -2089,8 +2160,7 @@ private-value masking described below.
 
 ### Input value masking
 
-**Screens with a secure field.** Target-miss diagnostic candidate labels are
-withheld as `•••`. Failure screen-text evidence becomes
+**Screens with a secure field.** Failure screen-text evidence becomes
 `[screen text withheld: a secure field is on screen]`, and moved-target identity
 labels become `•••`, whenever the capture contains any secure field, including
 empty or offscreen fields. The failure reason remains available, but its appended
@@ -2108,13 +2178,19 @@ input cannot be masked by value, so while the run holds a SECRET input, failure 
 evidence and app-derived identities in failure reasons, including moved-target
 identities, become `[screen text withheld: the run holds secret runtime inputs]`.
 A run whose inputs are all TEST-PII keeps that text, redacted by the declared values only.
-Existing secure-screen replacements take precedence. Target-miss diagnostic
-candidate labels become `•••`; possible-input labels are also withheld without
-runtime inputs. These failure-text replacements reach all outputs described in
+Existing secure-screen replacements take precedence. These failure-text
+replacements reach all outputs described in
 [App-derived failure text](#app-derived-failure-text). The step, its plan target,
 failure reason and geometry remain, subject to known-value masking. Runs without
 SECRET runtime inputs keep their screen-text context under the other masking rules below
 and the secure-field rule above.
+
+When either rule withholds screen text, target-miss diagnostic candidate labels
+become `•••`. In `failure.screen`, control labels become `•••`, except an exact
+label from the [recovery decline list](#step-recovery)
+or `Allow`, `Enable` or `Turn on` that is not on a possible input and matches no
+private value, so the blocking control is still named. Possible-input labels are
+also withheld without runtime inputs.
 
 The Android runner keeps exact-fill values and reconstructable fallback
 keycodes out of device logs. Its device-tool snapshots also avoid logging
@@ -3136,8 +3212,7 @@ text match. An ambiguous text target without a unique testID
 can satisfy discovery but leaves the block unsaved; replay follows the
 ambiguity refusal above. A stored testID on a replayed press, wait or scroll resolves
 to its one native element even when a React-only element shares that testID, and
-still refuses when two native elements share it; a stored-testID fill keeps
-counting React-only inputs.
+duplicate counting and stored-testID fills follow the [targeting rules](#check-a-plan).
 
 Replay requires the canonical block format emitted by
 [`serializeBlock`](../qaren-core/src/qa/blocks.ts); edited or incompatible files
@@ -3410,33 +3485,27 @@ See the [recovery regressions](../qaren-core/test/unit/qa/walker-recover.test.ts
 and [freshness regressions](../qaren-core/test/unit/qa/temporal-walker.test.ts).
 
 App interruptions need no app-specific configuration. Recovery requires complete
-native capture and React coverage, with no on-screen, uncovered match for the
-current quoted target (or literal check) or the later quoted targets of the
-current block in a fresh capture. A target whose centre is covered by a detected
-sheet or scrim does not prevent recovery merely because it remains in the capture.
-Targets in later blocks never block recovery by being visible; they
-only keep their own planned control and controls inside them. A later target
-declared as a decline label from the list below
-(case-insensitive, unless explicitly targeted by ID) is exempt from this absence
-guard, so non-control text such as `Maybe later` does not prevent closing a sheet
-with `Close`. The current target is never exempt. ID-only targets are checked by
-test ID, text-only targets by contained label or value text (including composed
-input text), and unqualified targets by either. Any on-screen, uncovered match
-vetoes dismissal, even when another matching ID is offscreen.
+native capture and React coverage. One shared target-presence predicate checks the
+current target and every remaining target, quoted or described, in every block:
+dismissal is allowed only when none could match an element on the interruption.
+Tap, fill, wait, scroll and check targets use the same rule, with no exemptions
+for later blocks, decline labels or screens with only a decline control.
+Unknown absence, including an unresolved description, counts as a possible match.
+A target whose centre is covered by a detected sheet or scrim does not prevent
+recovery merely because it remains in the capture. ID-only targets are checked
+by test ID, text-only targets by contained label or value text (including composed
+input text), and unqualified targets by either. An on-screen, uncovered match
+vetoes dismissal even when another matching ID is offscreen.
 Exactly one eligible control must be visible, hittable, enabled,
 non-secure and have proven press support, with one of these exact English labels:
 `Close`, `Not now`, `Not Now`, `Maybe later`, `Later`, `Skip`, `No thanks`,
-`Dismiss`, `Cancel`.
+`Dismiss`, `Cancel`, `Don't allow`, `Don't Allow` (either apostrophe).
 Zero candidates leave the original failure in place; several refuse
-`INTERRUPTION_AMBIGUOUS` without tapping. A candidate matching a later target's
-effective selector is left for that step; decline-label matching is case-insensitive.
-Within a replayed block, recovery retains the declared target for the exemption
-and uses its stored selector to protect the planned control. Targets in later
-blocks use their declared identities until those blocks are prepared for replay.
-A non-exempt on-screen, uncovered target in the current block, uncertain absence
-for a target subject to the absence guard, or a control inside any plan target prevents
-dismissal. Phrase-only current targets cannot establish this
-deterministic absence guard.
+`INTERRUPTION_AMBIGUOUS` without tapping.
+Within a replayed block, recovery uses the stored selector that will run the item;
+later blocks use their declared targets until prepared for replay.
+The failure names the blocking app screen, its controls and the matching later
+item's line, with the same privacy masks as other interruption failures.
 Planned-container protection follows native ancestry and proven React host
 ancestry. The React ancestry guard stops at a modal host, so the presenting
 screen does not protect the modal's controls.
@@ -3449,17 +3518,42 @@ after the press, identified by its modal type and test ID or native ID and absen
 before dispatch, protection tracks that container. Novelty requires complete
 captures and complete React host evidence before and after the press. Otherwise
 its identity is unknown and protection stays on until a later
-accepted planned press replaces it or login replay clears it. A press accepted
+accepted planned press replaces it, login replay clears it, or it lapses as below.
+A press accepted
 behind a system dialog also keeps this conservative protection. These identities
 stay in memory and are never written to the ledger or logs.
 Protection crosses block and replay boundaries and retries. Waits, checks, fills,
 scrolls and keyboard-only Back never establish departure. Only a complete native
 and React capture with complete host structure proving the identified container
-absent can expire protection. A planned Accept re-arms protection for its own
+absent can expire protection that way. Protection also lapses once a later planned
+item passes on its own complete capture with no decline control on screen; an interruption
+appearing after that point is eligible for bounded recovery. Until a later item
+passes, protection holds, so a screen the tap opens late stays protected, and a
+later item passing while a decline control is still on screen keeps it. After the
+lapse, a later step targeting the interruption still keeps it through the later-target
+veto, which is checked before planned-press protection. Static decline text does not
+keep protection; an on-screen, non-structural decline with supported or unknown press
+capability, or a button, link, cell or switch kind, does. Declaration-only passes such
+as Expect input never lapse protection using a previous item's capture.
+A planned Accept re-arms protection for its own
 destination, even when it closes an identified modal. If that destination has no
-identifiable container, protection remains on, including against later sheets.
-When an identified destination is proven gone, later unsolicited sheets can be
-dismissed. Recovery's decline presses and login presses never arm it.
+identifiable container, protection remains on, including against later sheets,
+until it lapses. When an identified destination is proven gone, later unsolicited
+sheets can be dismissed. Recovery's decline presses and login presses never arm it.
+While protected, recovery dismisses no app screen: neither an opt-in shape,
+a screen absent at press readback, nor a newly identified modal proves independence
+from the planned tap. A push opt-in arriving right after a planned tap, before a
+later item passes, must be answered explicitly by the plan. Opt-ins and intro sheets
+at launch, after login replay, after an identified destination departs, or after
+protection lapses remain eligible for bounded recovery.
+Outside protection, a permission opt-in shape labels an otherwise permitted
+one-decline dismissal as `screenClass: permission-opt-in`; it grants no extra dismissal.
+The shape has exactly two proven controls and no input: a soft decline and a visible,
+pressable accept starting with `Allow`, `Enable`, `Turn on` or `Notify me`, or
+starting with `Yes` and mentioning notifications, without negation.
+A whole-label, case-insensitive match for `Allow all`, `Accept all`, `Agree to all`
+or `Enable all` identifies base consent; none of its declines is taken.
+Navigation labels such as `View all offers`, `See all` or `Show all` do not identify consent.
 Login replay also clears the withheld-dismissal diagnostic for the retried item.
 While protected, recovery still answers system
 prompts and dev menus and still replays login, but withholds every app decline,
@@ -3467,21 +3561,27 @@ including the recheck before dispatch, and an ambiguous decline set does not
 refuse. If login replay has not cleared the veto, a failing target-class step reports
 subreason `previous-plan-press`, and `failure.seen` includes
 `the previous planned press succeeded; the next target
-was not found; automatic app dismissal was withheld`, and the walk's
+was not found; automatic app dismissal was withheld` (or, when later items passed
+while a decline control stayed on screen, `the planned press at line N succeeded and
+later steps passed while a decline control stayed on screen; ...`), and the walk's
 `next_action` is `inspect_last_observed_screen`, also on a repeat, with a
 `failure.recovery` of reason `previous_plan_press` whose five rungs are all
-inapplicable. A failed check after such a veto carries the same `failure.seen`
-note without a subreason. A sheet that appears while the planned surface is still on
-screen, including one that opens together with it, is therefore not dismissed
-either; insert the plan's own step for it.
+inapplicable. A failed check after such a veto
+carries the same `failure.seen` note without a subreason. A sheet that appears while the planned surface
+is still on screen, including one that opens together with it, is therefore not
+dismissed either. When the protected screen is opt-in shaped or has only a decline
+control, the failure names its class even with text withheld and suggests adding
+a step after the planned press that taps the named decline, with privacy masks intact.
 
 With `TYPESAFE_API_KEY`, Jev may veto a selected control when the screen may be
 related to the step or its purpose is uncertain. It never chooses a control,
 breaks a tie, or authorizes a tap. Without the key, recovery uses only the
 deterministic guards. Recovery rechecks those guards before one exact press,
 proves the label gone in a fresh capture, and retries the original step once.
-The ledger records `recovered: dismissed an app screen with <label>` and a
-privacy-eligible screenshot; this support action is not added to the saved block.
+The retry row names the declined control and screen class as described above,
+or uses `recovered: dismissed an app screen with <label>` for an unclassified screen,
+and includes a privacy-eligible screenshot; this support action is not added to
+the saved block.
 
 Recovery requires admitted screen evidence. iOS phrase steps behind a recognized
 system or permission alert reach dialog recovery when the raw native capture is
@@ -3496,9 +3596,24 @@ including when its read-back refuses incomplete capture.
 
 `logs/core.log` includes value-free diagnostics for failed interruption admission:
 `interruption-rejected` reports a front, coverage, indexed target,
-previous-plan-press or no-candidate veto and the exact-decline-label element count; the same veto kind, step line,
+previous-plan-press or no-candidate veto, a later-target veto's `presence` or
+`ownership` provenance, whether the decline is the screen's only control
+(`soleDecline`), the exact-decline-label element count, and `controls`: the press and
+fill evidence behind the control count used by the sole-decline and opt-in classes
+(`evidenceGap`, `pressGaps`, `fillGaps`, `unknownPress`, `unknownFill`, and the
+proven `controls` count when no gap refused it). A control in a window behind the
+front one that repeats a visible front control's kind, label, frame and disabled state
+is not counted again if its test ID is absent or matches the front control's.
+The same veto kind, step line,
 target index and count are also retained as an `interruption-rejected` event in
-`core-diagnostics.jsonl` for runs with inputs. A no-candidate veto also reports
+`core-diagnostics.jsonl`, which the event opens even in a run without inputs. The
+step's ledger row carries an `interruption` receipt: `considered`, an `outcome`
+(`vetoed`, `dismissed`, `not-dispatched`, `ambiguous` or `did-not-disappear`), the
+veto, whether a later-target veto came from `presence` or `ownership`, the target's
+plan line and step kind, whether the decline was the screen's only control, the
+`screenClass` a dismissed screen was recognised as (`permission-opt-in`); the report prints it as one line under the failure. A Jev veto
+or a guard change before dispatch records `not-dispatched`. A dismissal stays on
+the row through the step's retry. A no-candidate veto also reports
 each decline-labelled element's first failed predicate; press capability failures
 include the existing host association identity when available.
 `presence-system-modal` reports an unrecognized SpringBoard modal's
@@ -3643,15 +3758,41 @@ observation ordinal and `clearanceDiagnostic`. It records the viewport, keyboard
 overlay predicate branch, boolean coverage facts, the scroll's origin and requested
 direction, and whether the target centre changed. For an overlay branch, the
 predicate also records the inferred band cutter's capture-local ref, kind, frame,
-and band edges before and after the cut; the failed step names that cutter too.
-The cutter is inferred, not the proven cover. Unread or unavailable facts
+and band edges before and after the cut; the failed step cites it as the "inferred band
+cutter". The cutter is inferred, not the proven cover. On iOS the cover is named only when
+React Native's own hit test at the target's centre, over the capture's React hosts,
+gives the touch to another view with its own native node: `pointerEvents` none
+views are skipped and box-none views pass the touch to their children. The step
+row's `coveredBy` then records that view's ref, kind and frame, with a label only from
+QaReN's own dismiss words, and a refusal adds "covered by <kind> at <frame>".
+The cover remains through clearance until a new target observation replaces it.
+When the evidence cannot prove a cover, or the touch reaches the target's own
+lineage, covered-target refusals add "no cover named (<gap>)", including native
+occlusion refusals. `clearanceDiagnostic.coverGap` records the same gap when that
+diagnostic is emitted; it is `null` when a cover was named or no cover lookup ran.
+Covered-target refusal exits also emit this decision diagnostic when a cover lookup
+ran: a bound target still off screen, a refused clearance scroll after native
+occlusion, a refused Fill overlay probe or strict focus, and repeated native
+occlusion. Runtime-input suppression follows the contract above.
+The [walker cover result type](../qaren-core/src/qa/walker.ts) owns the fixed gap values.
+`no-native-presence` means the capture carried no native presence, so no React host
+could be tied to a native node. Quoted presses use ordinary captures without native
+presence or React typography. On iOS a covered press or Fill refusal with that gap takes the
+walker's one bounded platform-presence recapture, the same one a plain scroll uses for
+an unproven cover, and looks up the cover again on it, at most once per cover lookup.
+For covered targets, only refusals pay for that read (a presence capture can take
+tens of seconds on device); it never adds a refusal or
+grants a dispatch. An incomplete read leaves the cover unproven
+(`presence-recapture-incomplete`), and a target the recapture cannot find again leaves
+`target-not-recaptured`.
+In `clearanceDiagnostic`, unread or unavailable facts
 remain `null`; target text, identifiers and target coordinates are excluded. The
 [walker](../qaren-core/src/qa/walker.ts) owns the event layout; the
 [centre predicate](../qaren-core/src/qa/resolve.ts) owns its coverage facts.
 On the [strict iOS overlay press path](#covered-target-recovery), this event follows
 a live-hit refusal with mutation `none`, rather than the inference alone.
 The event preserves the failed step and grants no further scroll or
-target dispatch; sink failures leave the outcome unchanged. It stays out of the
+target dispatch; sink failures leave the outcome unchanged. The timing event stays out of the
 public result and ledger, as covered by the
 [occlusion regressions](../qaren-core/test/unit/qa/occlusion-walker.test.ts).
 
@@ -3941,6 +4082,62 @@ succeeds but the lookup fails, `PR_UNAVAILABLE` names the failure and advises
 checking pull request access and write permissions. See the
 [child environment contract](#plan-checks-and-screen-evidence) for token scope,
 dependency registry exceptions and redaction.
+
+`qaren pr` reuses installed dependencies by default when the app root holds
+`package.json` and `pnpm-lock.yaml`, pnpm's effective `nodeLinker` is `isolated`
+(the default) or `hoisted`, and all installed modules live at the repository
+root or the app root. A repository-root `package.json` is optional, so an app in
+a subdirectory of a repository without one is reused too. It restores
+filesystem clones into the new checkout, then still runs
+`pnpm install --frozen-lockfile` to validate the lockfile and manifests.
+Other layouts use the normal cold install: `pnp`, a global virtual store,
+workspace packages other than the app, an explicitly configured `storeDir` that
+is relative or inside the checkout, and modules linked from outside
+`node_modules`. For reuse, a configured store must use an absolute path outside
+the checkout so restored modules keep the same store identity. pnpm 11 reads
+`nodeLinker` from `pnpm-workspace.yaml`, not `.npmrc`.
+See [pnpm's layout settings](https://pnpm.io/settings#nodeLinker).
+The preflight pnpm process-group probe runs with `verifyDepsBeforeRun` off, so
+it never installs dependencies before restore.
+
+The cache key binds the lockfile bytes, repository and app path,
+full root, app, and lockfile workspace package manifests, whether a root `package.json` exists,
+`.npmrc`, `pnpm-workspace.yaml`, effective pnpm install settings (including
+`storeDir`), package `patches/` contents, files referenced by pnpm
+`patchedDependencies`, and the
+PATH-resolved pnpm and Node versions, architecture and platform. The installer
+identity is kept in `run.json`. The candidate commit is not part of the key, so
+a new head with the same keyed inputs reuses the entry. A dependency lifecycle
+script that reads other project source outside these keyed inputs during its
+first installation can carry stale output to later heads with the same key.
+Set `depsCache: false` in `.qaren/config.yaml` for a cold run;
+`qaren check` and `qaren prepare` do not use this cache or change prewarm policy.
+
+Installed modules are staged before native preparation can modify them and
+published only after the pre-walk candidate verification passes. Entries under
+`$QAREN_HOME/runs/deps-cache/<repository>/<key>/` are immutable apart from reader
+markers. Only clone copies are admitted; unsupported cloning or insufficient
+space disables caching for that run, with no full-copy fallback. Restore and
+staging each require 1 GiB plus the tree's apparent size in free space.
+
+Receipts report `deps_cache=hit|miss:cold|miss:inputs-changed:<classes>|disabled|clone-unsupported|layout-unsupported`.
+`miss:inputs-changed` names, comma-separated, each input class whose digest
+differs from the newest entry for the same repository: `app`, `config`,
+`installer`, `lockfile`, `manifest`, `patches` or `storeDir`. `miss:cold` means
+no such entry exists, including entries written before these digests.
+Every PR receipt includes `deps_cache_restore`, `deps_cache_install`,
+`deps_cache_stage` and `deps_cache_publish` in `outcomes`: `attempted` operations
+have measured durations in `timings_ms`; skipped operations have no duration and
+report `skipped:<reason>`. Reasons include `cache-hit`, `disabled`, `missing-input`,
+`probe-failed`, `unsupported-layout`, `clone-unsupported` and `not-reached` when
+the run stopped before the operation. The dependency stage stream also reports
+cache decisions. Retention keeps the two newest entries per repository
+and retains any older entry with a live or unproven reader, regardless of age.
+`qaren doctor` reports entry count, staging count and apparent bytes.
+`qaren cleanup <run-id>` removes that run's markers and staging;
+`qaren cleanup --deps-cache` removes entries without live or unproven readers
+and staging whose recorded owner is proven dead. A new publication also reclaims
+abandoned staging. Reader admission, publication and pruning share one lock.
 
 Company plans, reports and recordings must remain private and must never be
 published to public product surfaces. Publication's value and machine-identity

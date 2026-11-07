@@ -16,7 +16,8 @@ import {
 import { parseEnvelope } from '../../helpers/result-helpers.js';
 import { buildFiber, createSandbox } from '../helpers/inject-harness.js';
 import { choice, scriptedJudge, walker } from './judgment-fixtures.ts';
-import { nativeCapture } from './platform-presence-fixtures.ts';
+import { nativeCapture, twoWindowOptInCapture } from './platform-presence-fixtures.ts';
+import { controlEvidence, dismissCandidate, optInShaped } from '../../../dist/qa/recover.js';
 import { REQUIRED_IOS_COMMANDS, REQUIRED_IOS_FEATURES } from '../../../dist/runners/protocol.js';
 import { inputValues, redactEvidence } from '../../../dist/qa/privacy.js';
 
@@ -32,6 +33,7 @@ async function capture(
   elapsed = 0,
   hostType = 'RCTView',
   requirePrivateInputs = false,
+  fiberRoot = buildFiber({ hostType, props: { testID: 'save', onClick() {} } }),
 ) {
   _setRunnerStateForTest({
     port: 22088,
@@ -56,9 +58,7 @@ async function capture(
     assert.equal(request.interactiveOnly, undefined);
     return Response.json({ ok: true, data: source });
   });
-  const sandbox = createSandbox({
-    fiberRoot: buildFiber({ hostType, props: { testID: 'save', onClick() {} } }),
-  });
+  const sandbox = createSandbox({ fiberRoot });
   let clock = 0;
   return captureScreen({
     appId: 'com.test',
@@ -114,6 +114,38 @@ test('native wire through normalization, real React producer and capture reaches
   assert.equal(result.steps[0].resolvedBy, 'jev');
   assert.equal(judge.requests.length, 1);
   assert.deepEqual(f.actions, []);
+});
+
+test('a two-window presence capture of an opt-in counts its front buttons once and is classified', async () => {
+  const plain = buildFiber({ hostType: 'RCTView', props: {} });
+  const screen = await capture(twoWindowOptInCapture(), 0, 'RCTView', false, plain);
+  assert.equal(screen.elements.filter((e) => e.kind === 'button').length, 4);
+  assert.deepEqual(controlEvidence(screen).evidence, {
+    evidenceGap: false,
+    pressGaps: 0,
+    fillGaps: 0,
+    unknownPress: 0,
+    unknownFill: 0,
+    controls: 2,
+  });
+  const decline = optInShaped(screen);
+  assert.equal(decline?.label, 'Not now');
+  assert.equal(decline?.semantic?.visibility, 'visible');
+  assert.deepEqual(dismissCandidate(screen, [{ phrase: 'Home', quoted: 'Home' }]), {
+    label: 'Not now',
+    screenClass: 'permission-opt-in',
+  });
+  // A control behind that sits elsewhere is a real second control, not a copy.
+  const moved = twoWindowOptInCapture();
+  moved.nodes[2].rect = { x: 20, y: 300, width: 160, height: 44 };
+  const separate = await capture(moved, 0, 'RCTView', false, plain);
+  assert.equal(controlEvidence(separate).evidence.controls, 3);
+  assert.equal(optInShaped(separate), undefined);
+  // A copy behind with its own test ID is a distinct control.
+  const named = twoWindowOptInCapture();
+  Object.assign(named.nodes[2], { identifier: 'other-decline' });
+  const distinct = await capture(named, 0, 'RCTView', false, plain);
+  assert.equal(controlEvidence(distinct).evidence.controls, 3);
 });
 
 test('a recognised system alert answering a presence request is admitted as a dialog, and an empty capture still refuses', async () => {

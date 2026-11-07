@@ -1,7 +1,14 @@
-import type { ScrollBandReceipt } from './resolve.js';
+import type {
+  CandidateExclusion,
+  CollapsedCandidate,
+  CoveredBy,
+  ScrollBandReceipt,
+} from './resolve.js';
 import type { OverlayHitReceipt } from './live-hit.js';
 import type { PressEvidence } from './selection-press.js';
 import type { MediaLatch, WithholdCause } from './privacy.js';
+import type { Item } from './plan.js';
+import type { InterruptionDiagnostic, InterruptionScreenClass } from './recover.js';
 export type RowOutcome = 'pass' | 'fail' | 'retry';
 
 export interface Selector {
@@ -64,9 +71,30 @@ export interface LedgerRow {
   // The overlay variant and dismissal attempt number, including failed attempts, never its text.
   devError?: { variant: 'redbox' | 'logbox'; dismissal: number };
   // A plain scroll that passed although two dispatched attempts left the screen unchanged.
-  scrollDetail?: { status: 'no_visible_change'; attempts: 2 };
+  scrollDetail?: { status: 'no_visible_change' | 'no_visible_change_content_remains'; attempts: 2 };
   // How long the first Tap or Fill after launch polled for its absent target.
   implicitWaitMs?: number;
+  // What interruption recovery decided for this step; value-free.
+  interruption?: InterruptionReceipt;
+  // Same-label wrappers counted as the control they wrap.
+  collapsed?: CollapsedCandidate[];
+  // Same-label candidates set aside on proof before the target was chosen or refused.
+  candidateExclusions?: CandidateExclusion[];
+  // What covered the target's centre before the tap.
+  coveredBy?: CoveredBy;
+}
+
+export interface InterruptionReceipt {
+  considered: true;
+  outcome: 'vetoed' | 'dismissed' | 'not-dispatched' | 'ambiguous' | 'did-not-disappear';
+  veto?: InterruptionDiagnostic['veto'];
+  provenance?: InterruptionDiagnostic['provenance'];
+  // The plan line and step kind of the target behind a target veto.
+  targetLine?: number;
+  targetKind?: Item['kind'];
+  soleDecline?: boolean;
+  // The fixed class a dismissed screen was recognised as, when one applied.
+  screenClass?: InterruptionScreenClass;
 }
 
 // The value-free announcement that a plan line begins; its row later carries the same operationId.
@@ -88,7 +116,11 @@ export interface LedgerFailure {
   suggestion?: string;
   subreason?: TargetMissDiagnostic['reason'] | 'ambiguous' | 'previous-plan-press';
   // Why a scroll step failed; set only by the walker, never read from reason prose.
-  cause?: 'scroll_dispatch_failed' | 'scroll_context_changed' | 'scroll_target_absent';
+  cause?:
+    | 'scroll_dispatch_failed'
+    | 'scroll_context_changed'
+    | 'scroll_target_absent'
+    | 'scroll_container_unreachable';
 }
 
 export interface BlockResult {

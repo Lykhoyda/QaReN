@@ -250,6 +250,56 @@ test('a secret input value never appears in the screen, suggestion or ledger', a
   assert.ok(!JSON.stringify(ledger).includes(value));
 });
 
+test('a failed check reports rejected interruption controls with runtime-input masks intact', async () => {
+  for (const value of ['zq-s3cret-7781', 'Allow']) {
+    for (const changed of [false, true]) {
+      const privacy = new ObservedPrivacy();
+      const inputs = new RunInputs({ SECRET: value }, ['SECRET'], privacy);
+      const interruption = screen([control('@allow', 'Allow')]);
+      const fixture = deps(changed ? [screen([]), interruption] : [interruption]);
+      fixture.privacy = privacy;
+      fixture.press = async () => assert.fail('recovery must never tap the accepting control');
+      const ledger = await withInputs(inputs, () => runPlan(plan('✓ "Ready"'), fixture));
+      assert.equal(ledger.verdict, 'FAIL');
+      assert.equal(ledger.recoveries, 0);
+      assert.equal(ledger.steps.at(-1)?.interruption?.veto, 'no-candidate');
+      assert.equal(ledger.failure?.screen?.front, 'app');
+      assert.deepEqual(ledger.failure?.screen?.counts, { controls: 1, enabled: 1, hidden: 0 });
+      assert.equal(ledger.failure?.screen?.controls[0].label, value === 'Allow' ? MASK : 'Allow');
+      assert.equal(ledger.failure?.subreason, undefined);
+      assert.equal(ledger.failure?.suggestion, undefined);
+      assert.match(ledger.failure?.seen ?? '', /screen text withheld/);
+      assert.ok(!JSON.stringify(ledger).includes(value));
+    }
+  }
+});
+
+test('withheld text names fixed control words, never from an input or a protected value', () => {
+  const observed = screen([
+    control('@skip', 'Skip'),
+    control('@accept', 'Yes, notify me'),
+    control('@allow', 'Allow'),
+    control('@field', 'Skip', { kind: 'input' }),
+  ]);
+  const labels = (protectedValue: string) => {
+    const privacy = new ObservedPrivacy();
+    privacy.classifyInputs([protectedValue]);
+    assert.ok(privacy.textWithheld(observed));
+    const now = screenNow(
+      observed,
+      { phrase: 'Ready', quoted: 'Ready' },
+      0,
+      false,
+      privacy,
+      'wait',
+    );
+    assert.equal(now.counts.controls, 4);
+    return now.controls.map((c) => c.label);
+  };
+  assert.deepEqual(labels('zq-s3cret-7781'), ['Skip', MASK, 'Allow', MASK]);
+  assert.deepEqual(labels('Skip'), [MASK, MASK, 'Allow', MASK]);
+});
+
 test('structurally protected code labels are masked in both failure projections', () => {
   const privacy = new ObservedPrivacy();
   privacy.didFill('ABCD');

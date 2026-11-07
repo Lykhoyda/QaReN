@@ -1,3 +1,8 @@
+import {
+  trimScrollBand,
+  scrollBandTooSmall,
+  computeScrollFromDirection,
+} from '../domain/scroll-gesture.js';
 import type { OverlayHits } from './live-hit.js';
 import { fillText } from './inputs.js';
 import type { Check, Step, Target } from './plan.js';
@@ -10,6 +15,7 @@ import {
   type AssertionEvidence,
   type VisibilityBlockerDiagnostic,
   actionView,
+  applicationFrame,
   isNativeInput,
   ancestorsOf,
   keyboardCoversElement,
@@ -22,10 +28,15 @@ import {
   isWindow,
   insideAlert,
   hasNativeSheet,
+  matchedHostPress,
+  reachOf,
+  touchOwnerAt,
+  type TouchGap,
   reactOnlyFactsOf,
   scrollContainerType,
   semanticActionView,
   semanticDisabled,
+  touchPolicy,
   visibilityView,
 } from './screen.js';
 import {
@@ -60,15 +71,53 @@ import { clip } from './native-presence.js';
 
 export { ACT, CHECK } from './questions.js';
 export const MAX_CANDIDATES = 30;
+type Rect = NonNullable<NativeNode['rect']>;
+// A same-label wrapper counted as the control it wraps; value-free.
+export interface CollapsedCandidate {
+  ref: string;
+  kind: Element['kind'];
+  frame?: Rect;
+  into: string;
+}
+// A same-label candidate set aside on proof: its whole frame unreachable, or a live hit read found no hit point.
+export interface CandidateExclusion {
+  ref: string;
+  kind: Element['kind'];
+  frame?: Rect;
+  reason: 'offscreen-by-frame' | 'clipped-by-viewport' | 'under-keyboard' | 'not-hittable';
+}
+// What covers a present target's centre; the label only when it is QaReN's own dismiss vocabulary.
+export interface CoveredBy {
+  ref: string;
+  kind: Element['kind'];
+  frame: Rect;
+  label?: string;
+}
+export const MAX_HIT_PROBES = 4;
 export type Resolution =
-  | { ref: string; element: Element }
-  | { scroll: 'down' | 'up'; element?: Element; origin?: 'named-offscreen' }
+  | {
+      ref: string;
+      element: Element;
+      collapsed?: CollapsedCandidate[];
+      candidateExclusions?: CandidateExclusion[];
+    }
+  | {
+      scroll: 'down' | 'up';
+      element?: Element;
+      origin?: 'named-offscreen';
+      collapsed?: CollapsedCandidate[];
+      candidateExclusions?: CandidateExclusion[];
+    }
   | {
       refuse: string;
       reason: string;
       diagnostic?: VisibilityBlockerDiagnostic;
       // The resolver found no element matching the named target.
       missing?: true;
+      // Ambiguous press or fill: the refs still in contention, for the walker's live hit read.
+      contenders?: string[];
+      candidateExclusions?: CandidateExclusion[];
+      collapsed?: CollapsedCandidate[];
     };
 
 export class ResolutionError extends Error {
@@ -100,6 +149,163 @@ function describeCandidate(e: Element): string {
   return `${e.kind} ${e.testID ? `id=${e.testID}` : 'no-id'} frame=${
     frame ? [frame.x, frame.y, frame.width, frame.height].map(Math.round).join(',') : 'unknown'
   } ${e.ref.startsWith('react:') ? 'react-only' : 'native'}${forwardedInputOf(e) ? ' wraps-input' : ''}`;
+}
+
+// Each candidate, and the nearest listed candidate it is proven (by native ancestry) to sit inside.
+function describeCandidates(elements: readonly Element[]): string {
+  return elements
+    .map((e) => {
+      const outer = ancestorsOf(e).find((ancestor) => elements.includes(ancestor));
+      return `${describeCandidate(e)}${outer ? ` nested inside candidate ${elements.indexOf(outer) + 1}` : ''}`;
+    })
+    .join('; ');
+}
+
+function strictlyInside(inner: Rect | undefined, outer: Rect | undefined): boolean {
+  return (
+    !!inner &&
+    !!outer &&
+    [inner, outer].every(
+      (rect) => Object.values(rect).every(Number.isFinite) && rect.width > 0 && rect.height > 0,
+    ) &&
+    inner.x > outer.x &&
+    inner.y > outer.y &&
+    inner.x + inner.width < outer.x + outer.width &&
+    inner.y + inner.height < outer.y + outer.height
+  );
+}
+
+// The outer offers no action of its own and holds nothing but the inner (and wrappers already counted as it).
+function wraps(
+  outer: Element,
+  inner: Element,
+  absorbed: readonly Element[],
+  target: Target,
+  screen: Screen,
+): boolean {
+  const quoted = target.quoted;
+  const named = (key: 'label' | 'testID') => outer[key] === quoted && inner[key] === quoted;
+  return (
+    !outer.ref.startsWith('react:') &&
+    !inner.ref.startsWith('react:') &&
+    ancestorsOf(inner).includes(outer) &&
+    matchedHostPress(outer) === false &&
+    inner.semantic?.press === 'supported' &&
+    matchedHostPress(inner) !== false &&
+    (target.exact === 'id'
+      ? named('testID')
+      : target.exact === 'text'
+        ? named('label')
+        : named('label') || named('testID')) &&
+    inner.hittable &&
+    !inner.offscreen &&
+    !inner.disabled &&
+    inner.semantic?.disabled !== true &&
+    ancestorsOf(inner).find(isWindow) === ancestorsOf(outer).find(isWindow) &&
+    strictlyInside(elementFrame(inner), elementFrame(outer)) &&
+    screen.elements.every(
+      (e) =>
+        e === outer ||
+        e === inner ||
+        absorbed.includes(e) ||
+        !ancestorsOf(e).includes(outer) ||
+        ancestorsOf(e).includes(inner),
+    )
+  );
+}
+
+const EXCLUDING = new Set<string>(['offscreen-by-frame', 'clipped-by-viewport', 'under-keyboard']);
+
+export function nestedCandidate(element: Element, candidates: readonly Element[]): boolean {
+  return candidates.some(
+    (other) => ancestorsOf(element).includes(other) || ancestorsOf(other).includes(element),
+  );
+}
+
+export function excludedCandidate(
+  element: Element,
+  reason: CandidateExclusion['reason'],
+): CandidateExclusion {
+  const frame = elementFrame(element);
+  return { ref: element.ref, kind: element.kind, ...(frame ? { frame } : {}), reason };
+}
+
+// One candidate left resolves; several stay ambiguous; none is not found, each exclusion named.
+export function contend(
+  step: Step,
+  screen: Screen,
+  left: readonly Element[],
+  exclusions: CandidateExclusion[],
+  collapsed: CollapsedCandidate[] = [],
+): Resolution {
+  const quoted = stepTarget(step)?.quoted;
+  const excluded = exclusions.length
+    ? `excluded: ${exclusions
+        .map((x) => {
+          const element = screen.elements.find((e) => e.ref === x.ref);
+          return `${element ? describeCandidate(element) : x.ref} (${x.reason})`;
+        })
+        .join('; ')}`
+    : '';
+  const recorded = {
+    ...(exclusions.length ? { candidateExclusions: exclusions } : {}),
+    ...(collapsed.length ? { collapsed } : {}),
+  };
+  if (!left.length)
+    return {
+      refuse: 'TARGET_NOT_FOUND',
+      reason: `no element labelled or identified "${quoted}" can be reached on screen; ${excluded}`,
+      ...recorded,
+    };
+  if (left.length > 1)
+    return {
+      refuse: 'TARGET_AMBIGUOUS',
+      reason: `multiple elements labelled or identified "${quoted}" match the target; candidates: ${describeCandidates(left)}${excluded && `; ${excluded}`}`,
+      contenders: left.map((e) => e.ref),
+      ...recorded,
+    };
+  const result = prepareTarget(step, { ...screen, elements: [...left] });
+  // A quoted target never asks the model; a phrase step never reaches here.
+  if ('question' in result)
+    return {
+      refuse: 'NO_TARGET',
+      reason: 'only a quoted target can be narrowed to one candidate',
+      ...recorded,
+    };
+  return { ...result, ...recorded };
+}
+
+// Press only: collapses wrappers from the innermost outward; never resolves to a wrapper.
+function collapseWrappers(
+  identities: Identity[],
+  target: Target,
+  screen: Screen,
+): { identities: Identity[]; collapsed: CollapsedCandidate[] } {
+  const collapsed: CollapsedCandidate[] = [];
+  const absorbed = new Map<Element, Element[]>();
+  let kept = identities;
+  for (let changed = true; changed && kept.length > 1; ) {
+    changed = false;
+    for (const { element: outer } of kept) {
+      const inner = kept.find(
+        ({ element }) =>
+          element !== outer && wraps(outer, element, absorbed.get(element) ?? [], target, screen),
+      )?.element;
+      if (!inner) continue;
+      absorbed.set(inner, [...(absorbed.get(inner) ?? []), outer, ...(absorbed.get(outer) ?? [])]);
+      const frame = elementFrame(outer);
+      collapsed.push({
+        ref: outer.ref,
+        kind: outer.kind,
+        ...(frame ? { frame } : {}),
+        into: inner.ref,
+      });
+      kept = kept.filter(({ element }) => element !== outer);
+      changed = true;
+      break;
+    }
+  }
+  return { identities: kept, collapsed };
 }
 
 export function stepTarget(step: Step): Target | undefined {
@@ -147,15 +353,49 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
       : { elements: visibility ? screen.elements : actionView(screen) };
   if ('refuse' in projected) return projected;
   if (target.quoted !== undefined) {
-    const identities = replayIdentities(
-      exactIdentities(screen, target, step.kind),
-      target,
-      step.kind,
-    );
+    const named = replayIdentities(exactIdentities(screen, target, step.kind), target, step.kind);
+    const collapse =
+      step.kind === 'press' && named.length > 1
+        ? collapseWrappers(named, target, screen)
+        : { identities: named, collapsed: [] };
+    const { collapsed } = collapse;
+    let { identities } = collapse;
+    const acting = step.kind === 'press' || step.kind === 'fill';
+    // Set aside a candidate only on whole-frame proof, and never one nested with another candidate.
+    const exclusions: CandidateExclusion[] =
+      acting && identities.length > 1
+        ? identities.flatMap(({ element }) => {
+            const reach = reachOf(element);
+            return EXCLUDING.has(reach) &&
+              !nestedCandidate(
+                element,
+                identities.map(({ element }) => element),
+              )
+              ? [excludedCandidate(element, reach as CandidateExclusion['reason'])]
+              : [];
+          })
+        : [];
+    if (exclusions.length)
+      identities = identities.filter(
+        ({ element }) => !exclusions.some((x) => x.ref === element.ref),
+      );
+    const recorded = {
+      ...(collapsed.length ? { collapsed } : {}),
+      ...(exclusions.length ? { candidateExclusions: exclusions } : {}),
+    };
+    if (acting && (identities.length > 1 || !identities.length) && named.length > 1)
+      return contend(
+        step,
+        screen,
+        identities.map(({ element }) => element),
+        exclusions,
+        collapsed,
+      );
     if (identities.length > 1)
       return {
         refuse: 'TARGET_AMBIGUOUS',
-        reason: `multiple elements labelled or identified "${target.quoted}" match the target; candidates: ${identities.map(({ element }) => describeCandidate(element)).join('; ')}`,
+        reason: `multiple elements labelled or identified "${target.quoted}" match the target; candidates: ${describeCandidates(identities.map(({ element }) => element))}`,
+        ...recorded,
       };
     const only = identities.length === 1 ? identities[0].element : undefined;
     // A strict fill acts only on a native input; React-only inputs still count toward ambiguity.
@@ -163,6 +403,7 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
       return {
         refuse: 'TARGET_NOT_FOUND',
         reason: `no eligible element labelled or identified "${target.quoted}" is on screen`,
+        ...recorded,
       };
     const eligible =
       only &&
@@ -175,14 +416,25 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
         return {
           refuse: 'REPLAY_SELECTOR',
           reason: `${count} eligible elements match the stored ${target.exact === 'id' ? 'testID' : 'label'} "${target.quoted}"`,
+          ...recorded,
         };
       return {
         refuse: 'TARGET_NOT_FOUND',
         reason: `no eligible element labelled or identified "${target.quoted}" is on screen`,
         ...(only ? {} : { missing: true as const }),
+        ...recorded,
       };
     }
-    return only.offscreen ? scrollTo(only) : { ref: only.ref, element: only };
+    // A scroll cannot reveal an input hidden in place; a Fill types into it only while it holds focus.
+    if (step.kind === 'fill' && only.hiddenInView === 'focused')
+      return { ref: only.ref, element: only, ...recorded };
+    if (step.kind === 'fill' && only.hiddenInView === 'unfocused')
+      return {
+        refuse: 'TARGET_NOT_FOUND',
+        reason: `"${target.quoted}" is on screen but not visible to the user (hidden in place, typically opacity 0 on it or a parent) and it does not hold input focus; nothing was typed and no scroll was tried. Next step: add a step before this Fill that taps the visible control which focuses this field, or fill the visible field instead.`,
+        ...recorded,
+      };
+    return { ...(only.offscreen ? scrollTo(only) : { ref: only.ref, element: only }), ...recorded };
   }
   const candidates = projected.elements;
   if (!candidates.length)
@@ -479,8 +731,40 @@ export function overlayProbeCoverage(
   screen: Screen,
 ): Readonly<CentreCoverageDiagnostic> | undefined {
   const facts = inferredOverlayCoverage(element, screen);
-  if (!facts || element.ref.startsWith('react:') || (!element.testID && !element.label))
-    return undefined;
+  return facts && probeIdentifiable(element, screen) ? facts : undefined;
+}
+
+// Why no cover is named: the touch reaches the target's own lineage or no host, or a named evidence gap.
+export type CoverGap =
+  | TouchGap
+  | 'none'
+  | 'reaches-target'
+  | 'no-target-frame'
+  | 'owner-without-frame';
+
+// The element that takes a touch at the target's centre instead of the target, by React Native's own
+// hit test, or why none is named.
+export function coverOwner(
+  element: Element,
+  screen: Screen,
+): { owner: Element; frame: NonNullable<ReturnType<typeof elementFrame>> } | { gap: CoverGap } {
+  const frame = elementFrame(element);
+  if (!frame) return { gap: 'no-target-frame' };
+  const owner = touchOwnerAt(screen, frame.x + frame.width / 2, frame.y + frame.height / 2);
+  if (typeof owner === 'string') return { gap: owner };
+  if (
+    owner === element ||
+    ancestorsOf(owner).includes(element) ||
+    ancestorsOf(element).includes(owner)
+  )
+    return { gap: 'reaches-target' };
+  const ownerFrame = elementFrame(owner);
+  return ownerFrame ? { owner, frame: ownerFrame } : { gap: 'owner-without-frame' };
+}
+
+// The runner's live hit read finds a node by its unique testID, or else by its unique label and kind.
+export function probeIdentifiable(element: Element, screen: Screen): boolean {
+  if (element.ref.startsWith('react:') || (!element.testID && !element.label)) return false;
   const same = screen.elements.filter(
     (other) =>
       !other.ref.startsWith('react:') &&
@@ -488,7 +772,7 @@ export function overlayProbeCoverage(
         ? other.testID === element.testID
         : other.label === element.label && other.kind === element.kind),
   );
-  return same.length === 1 ? facts : undefined;
+  return same.length === 1;
 }
 
 function presenceCovered(element: Element, screen: Screen, hits?: OverlayHits): boolean {
@@ -580,14 +864,16 @@ export function clearanceBand(
   return bottom > top ? { ...viewport, y: top, height: bottom - top } : undefined;
 }
 
+// A drag (`touch`) passes through overlays whose React host is proven pointer-transparent.
 function frontOverlayFrames(
   container: Element,
   band: NonNullable<NativeNode['rect']>,
   screen: Screen,
-): NonNullable<NativeNode['rect']>[] {
+  touch = false,
+): { element: Element; rect: NonNullable<NativeNode['rect']> }[] {
   const behind = screen.elements.indexOf(container);
   const lineage = ancestorsOf(container);
-  const frames: NonNullable<NativeNode['rect']>[] = [];
+  const frames: { element: Element; rect: NonNullable<NativeNode['rect']> }[] = [];
   const padding = 4 * (screen.pointScale ?? 1);
   for (const [i, other] of screen.elements.entries()) {
     if (
@@ -595,7 +881,8 @@ function frontOverlayFrames(
       isWindow(other) ||
       other.kind === 'text' ||
       other.offscreen ||
-      !other.hittable
+      !other.hittable ||
+      (touch && touchPolicy(other) === 'transparent')
     )
       continue;
     const ancestors = ancestorsOf(other);
@@ -609,7 +896,7 @@ function frontOverlayFrames(
       rect.x + rect.width + padding <= band.x
     )
       continue;
-    frames.push(rect);
+    frames.push({ element: other, rect });
   }
   return frames;
 }
@@ -618,10 +905,13 @@ function clearOfFrontOverlays(
   container: Element,
   band: NonNullable<NativeNode['rect']>,
   screen: Screen,
+  touch = false,
+  opaqueOnly = false,
 ): NativeNode['rect'] {
   let spans = [{ top: band.y, bottom: band.y + band.height }];
   const padding = 4 * (screen.pointScale ?? 1);
-  for (const rect of frontOverlayFrames(container, band, screen)) {
+  for (const { element, rect } of frontOverlayFrames(container, band, screen, touch)) {
+    if (opaqueOnly && touchPolicy(element) !== 'opaque') continue;
     const top = rect.y - padding;
     const bottom = rect.y + rect.height + padding;
     spans = spans.flatMap((span) =>
@@ -647,7 +937,7 @@ export function scrollTargetCovered(element: Element, screen: Screen, hits?: Ove
   const x = Math.round(frame.x + frame.width / 2);
   const y = Math.round(frame.y + frame.height / 2);
   return frontOverlayFrames(container, frame, screen).some(
-    (overlay) =>
+    ({ rect: overlay }) =>
       x >= overlay.x &&
       x < overlay.x + overlay.width &&
       y >= overlay.y &&
@@ -731,8 +1021,170 @@ export function scrollUntilContainer(target: Target, screen: Screen): Element | 
 }
 
 export interface ScrollBandReceipt {
-  status: 'no-geometry' | 'overlay-cut' | 'clear';
+  status: 'no-geometry' | 'overlay-cut' | 'clear' | 'unreachable' | 'too-small';
   band?: NonNullable<NativeNode['rect']>;
+}
+
+export function containerBand(
+  container: Element,
+  screen: Screen,
+  within?: NativeNode['rect'],
+  touch = false,
+): ScrollBandReceipt {
+  const frame = elementFrame(container);
+  const band = within ?? (frame && aboveKeyboard(clip(frame, elementViewport(container)), screen));
+  if (!band) return { status: 'no-geometry' };
+  const clear = clearOfFrontOverlays(container, band, screen, touch);
+  const result = clear ?? { ...band, height: 0 };
+  return { status: sameRect(band, result) ? 'clear' : 'overlay-cut', band: result };
+}
+
+function centreCorridor(
+  container: Element,
+  band: NonNullable<NativeNode['rect']>,
+  screen: Screen,
+): NativeNode['rect'] | 'unproven' {
+  const x = band.x + band.width / 2;
+  const y = band.y + band.height / 2;
+  const covers = frontOverlayFrames(container, band, screen, true);
+  const centre = covers.filter(
+    ({ rect: r }) => x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height,
+  );
+  // Only a cover whose own React host takes touches proves the drag blocked; otherwise dispatch and judge.
+  if (centre.length)
+    return centre.some(({ element }) => touchPolicy(element) === 'opaque') ? undefined : 'unproven';
+  const overlays = covers.map(({ rect }) => rect);
+  const padding = 4 * (screen.pointScale ?? 1);
+  let radius = band.width / 2;
+  for (const r of overlays) {
+    if (r.x + r.width <= x) radius = Math.min(radius, x - r.x - r.width - padding);
+    else if (r.x > x) radius = Math.min(radius, r.x - x - padding);
+  }
+  if (radius <= 0) return { ...band, width: 0 };
+  return (
+    clearOfFrontOverlays(
+      container,
+      { ...band, x: x - radius, width: radius * 2 },
+      screen,
+      true,
+    ) ?? {
+      ...band,
+      height: 0,
+    }
+  );
+}
+
+export interface PlainScrollBand extends ScrollBandReceipt {
+  container?: Element;
+  distance?: number;
+  // The drag crosses a cover no matched React host proves either way; never part of the receipt.
+  unproven?: true;
+}
+
+export function plainScrollBand(
+  screen: Screen,
+  direction: 'up' | 'down',
+  platform?: 'ios' | 'android',
+): PlainScrollBand {
+  if ((screen.captureCoverage?.native ?? screen.coverage?.native) !== 'complete')
+    return { status: 'no-geometry' };
+  const root =
+    applicationFrame(screen) ?? screen.elements.filter(isWindow).map(elementFrame).find(Boolean);
+  if (!root) return { status: 'no-geometry' };
+  const candidates: (PlainScrollBand & {
+    container: Element;
+    clipped: NonNullable<NativeNode['rect']>;
+  })[] = [];
+  let unreachable: PlainScrollBand | undefined;
+  const unproven: typeof candidates = [];
+  let tooSmall: ScrollBandReceipt | undefined;
+  for (const container of screen.elements) {
+    if (!isScrollContainer(container) || horizontalOnlyContainer(scrollContainerType(container)))
+      continue;
+    const frame = elementFrame(container);
+    if (!frame || frame.width <= 0 || frame.height <= 0) continue;
+    const visible = clip(clip(frame, elementViewport(container)), root);
+    const clipped = aboveKeyboard(visible, screen);
+    if (!clipped) continue;
+    // Offscreen with its centre inside the visible clip is reported invisibility, not geometry.
+    const cx = frame.x + frame.width / 2;
+    const cy = frame.y + frame.height / 2;
+    if (
+      container.offscreen &&
+      cx >= clipped.x &&
+      cx < clipped.x + clipped.width &&
+      cy >= clipped.y &&
+      cy < clipped.y + clipped.height
+    )
+      continue;
+    const receipt = containerBand(container, screen, clipped, true);
+    let band = receipt.band;
+    if (band && band.height <= 0) {
+      const corridor = centreCorridor(container, clipped, screen);
+      if (!corridor) {
+        unreachable = { status: 'unreachable', band: clipped, container };
+        continue;
+      }
+      // An unproven cover keeps its container only as a last resort, dragged across its whole clip.
+      if (corridor === 'unproven') {
+        const across = clearOfFrontOverlays(container, clipped, screen, true, true);
+        if (across) unproven.push({ ...receipt, band: across, container, clipped });
+        continue;
+      }
+      band = corridor;
+    }
+    if (band && band.width > 0 && band.height > 0)
+      candidates.push({ ...receipt, band, container, clipped });
+    else if (band) tooSmall ??= { status: 'too-small', band };
+  }
+  const byArea = (a: (typeof candidates)[number], b: (typeof candidates)[number]) =>
+    b.band!.width * b.band!.height - a.band!.width * a.band!.height;
+  if (!candidates.length && !unproven.length)
+    return unreachable ?? tooSmall ?? { status: 'no-geometry' };
+  const keyboardTop = screen.keyboardVisible !== false ? (screen.keyboardFrame?.y ?? null) : null;
+  const viewportGesture = computeScrollFromDirection(
+    direction,
+    0.6,
+    trimScrollBand(undefined, root, keyboardTop),
+  )!;
+  const distance = Math.abs(viewportGesture.y2 - viewportGesture.y1);
+  const fits = (band: NativeNode['rect']) => {
+    const gesture = trimScrollBand(
+      band,
+      root,
+      keyboardTop,
+      platform === 'android' ? 48 * (screen.pointScale ?? 1) : undefined,
+    );
+    return (
+      !scrollBandTooSmall(gesture) &&
+      !!computeScrollFromDirection(direction, 0.6, gesture, distance)
+    );
+  };
+  // Every clear band by area first; a drag across an unproven cover only once none of them fits.
+  let verdict: PlainScrollBand | undefined;
+  const through: PlainScrollBand[] = [];
+  for (const candidate of candidates.sort(byArea)) {
+    const { clipped, ...selection } = candidate;
+    if (fits(candidate.band)) return { ...selection, distance };
+    const corridor =
+      candidate.status === 'overlay-cut'
+        ? centreCorridor(candidate.container, clipped, screen)
+        : candidate.band;
+    // The drag may cross unproven covers, never a proven one.
+    const across =
+      corridor === 'unproven'
+        ? clearOfFrontOverlays(candidate.container, clipped, screen, true, true)
+        : undefined;
+    if (across && fits(across))
+      through.push({ ...selection, band: across, distance, unproven: true });
+    // The largest band's verdict stands when no band can host the drag.
+    verdict ??= corridor
+      ? { status: 'too-small', band: candidate.band }
+      : { status: 'unreachable', band: clipped, container: candidate.container };
+  }
+  for (const { clipped: _clipped, ...selection } of unproven.sort(byArea))
+    if (fits(selection.band)) through.push({ ...selection, distance, unproven: true });
+  return through[0] ?? verdict ?? unreachable ?? { status: 'too-small', band: unproven[0].band };
 }
 
 export function scrollUntilBand(
@@ -757,20 +1209,17 @@ export function scrollUntilBand(
       : aboveKeyboard(elementViewport(element), screen);
   }
   if (!band && (!element || element.offscreen)) {
-    const frame = elementFrame(container);
-    if (frame) band = aboveKeyboard(clip(frame, elementViewport(container)), screen);
+    const receipt = containerBand(container, screen);
+    observe?.(receipt);
+    return receipt.band;
   }
   if (!band) {
     observe?.({ status: inferredCut ? 'overlay-cut' : 'no-geometry' });
     return undefined;
   }
-  const clear = clearOfFrontOverlays(container, band, screen);
-  const result = clear ?? { ...band, height: 0 };
-  observe?.({
-    status: inferredCut || !sameRect(band, result) ? 'overlay-cut' : 'clear',
-    band: result,
-  });
-  return result;
+  const receipt = containerBand(container, screen, band);
+  observe?.({ ...receipt, status: inferredCut ? 'overlay-cut' : receipt.status });
+  return receipt.band;
 }
 
 const GENERIC_TARGET_WORDS = new Set(

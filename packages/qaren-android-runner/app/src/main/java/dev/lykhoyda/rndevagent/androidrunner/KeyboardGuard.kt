@@ -13,7 +13,13 @@ object KeyboardGuard {
 
     fun screenContent(nodes: List<QaHierarchy.QaNode>): List<QaHierarchy.QaNode> =
         nodes.filter { it.type != "Keyboard" }.map {
-            it.copy(rect = QaHierarchy.Bounds(0, 0, 0, 0), hittable = false, visibleToUser = false, source = null)
+            it.copy(
+                rect = QaHierarchy.Bounds(0, 0, 0, 0),
+                hittable = false,
+                visibleToUser = false,
+                source = null,
+                focused = false,
+            )
         }
 
     fun dismiss(

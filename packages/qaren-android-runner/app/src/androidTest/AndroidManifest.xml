@@ -13,6 +13,10 @@
             </intent-filter>
         </activity>
         <activity
+            android:name="dev.lykhoyda.rndevagent.androidrunner.FocusedHiddenInputFixtureActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+        <activity
             android:name="dev.lykhoyda.rndevagent.androidrunner.QaHierarchyFixtureActivity"
             android:exported="true"
             android:theme="@android:style/Theme.Material.Light.NoActionBar" />

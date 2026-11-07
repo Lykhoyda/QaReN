@@ -368,6 +368,10 @@ pub struct Resources {
     pub runner_cleanup_cause: Option<crate::failure::RecoveryReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr_worktree: Option<PrWorktreeResource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deps_cache: Option<crate::deps_cache::CacheResource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deps_installer: Option<crate::deps_cache::Installer>,
     // A borrowed device is never deleted; iOS simulator stop requires an explicit bounded intent.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub device_borrowed: bool,
@@ -523,6 +527,10 @@ impl Resources {
             || !self.runner_drivers.is_empty()
             || self.recorder.is_some()
             || self.pr_worktree.is_some()
+            || self
+                .deps_cache
+                .as_ref()
+                .is_some_and(|cache| cache.reader || cache.staging)
     }
 }
 

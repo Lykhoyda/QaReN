@@ -309,15 +309,26 @@ test('O1: a target in the upper half scrolls up', async () => {
 
 test('O2: occluded twice fails after one scroll, never as an uncertain outcome', async () => {
   const f = fake([at(700), at(650)], { press: [OCCLUDED, OCCLUDED] });
+  const events: WalkerTimingDiagnostic[] = [];
+  f.deps.diagnostic = (event) => events.push(event);
   const outcome = await walkBlock(block('1. Tap "go"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 2);
   assert.equal(f.calls.filter((c) => c.startsWith('scroll')).length, 1);
   assert.match(
     renderReason(outcome.failure?.seen ?? '', (text) => text),
-    /^FOCUS_TARGET_OCCLUDED: .*"go" stayed off screen after one scroll/,
+    /^FOCUS_TARGET_OCCLUDED: .*"go" stayed off screen after one scroll; no cover named \(no-native-presence\)/,
   );
   assert.doesNotMatch(JSON.stringify(outcome), /ACTION_OUTCOME_UNCERTAIN/);
+  // The decision diagnostic carries the same gap as the refusal text.
+  const covered = events.filter((event) => event.code === 'CENTRE_COVERED');
+  assert.deepEqual(
+    covered.map((event) => [
+      event.clearanceDiagnostic?.scrollOrigin,
+      event.clearanceDiagnostic?.coverGap,
+    ]),
+    [['native-occlusion', 'no-native-presence']],
+  );
 });
 
 test('a repeated occlusion reports the last controls and a suggested plan edit', async () => {
@@ -819,6 +830,7 @@ test('offscreen rows and keyboard clearance preserve refusal without exposing pr
           scrollOrigin: 'centre-covered',
           requestedDirection: 'down',
           targetCentreChanged: true,
+          coverGap: 'no-native-presence',
         });
       }
       assert.ok(!JSON.stringify(events).includes('PRIVATE-'));
@@ -2643,8 +2655,13 @@ for (const [name, result, shown] of [
 ] as const) {
   test(`a live hit read ${name} refuses the press with the inferred cutter named`, async () => {
     const f = liveHitFake(result);
+    const streamed: LedgerRow[] = [];
+    f.deps.row = (row) => streamed.push(row);
     const outcome = await walkBlock(block('1. Tap "row-1"\n'), f.deps);
     assert.equal(outcome.block.outcome, 'fail');
+    // No React evidence proves who takes the touch, so the inferred cutter is never named as the cover.
+    assert.equal(streamed.at(-1)?.coveredBy, undefined);
+    assert.ok(!renderReason(outcome.failure?.seen ?? '', (text) => text).includes('covered by'));
     assert.deepEqual(
       f.calls.filter((call) => call !== 'capture'),
       ['scroll down', 'press @target'],
@@ -2677,7 +2694,10 @@ for (const [name, result, shown] of [
       scrollOrigin: 'centre-covered',
       requestedDirection: 'down',
       targetCentreChanged: false,
+      // These captures carry no native presence, so React hosts cannot be tied to native nodes.
+      coverGap: 'no-native-presence',
     });
+    assert.ok(seen.includes('; no cover named (no-native-presence); inferred band cutter'), seen);
     const published = JSON.stringify({ outcome, events: f.events });
     assert.ok(!published.includes('PRIVATE-'));
     assert.ok(!JSON.stringify(f.events).includes('@target'));
@@ -2791,13 +2811,15 @@ for (const [name, platform, screen, step, why] of [
     const seen = renderReason(outcome.failure?.seen ?? '', (text) => text);
     assert.ok(
       seen.includes(
-        `stayed off screen after one scroll; inferred band cutter @cover (${LIVE_HIT_CUTTER.kind}) at 0,116,402,758 moved the band bottom from 782 to 116; no live hit read was asked: ${why}`,
+        `stayed off screen after one scroll; no cover named (no-native-presence); inferred band cutter @cover (${LIVE_HIT_CUTTER.kind}) at 0,116,402,758 moved the band bottom from 782 to 116; no live hit read was asked: ${why}`,
       ),
       seen,
     );
     const terminal = f.events.filter((event) => event.code === 'CENTRE_COVERED');
     assert.equal(terminal.length, 1);
     assert.deepEqual(terminal[0].clearanceDiagnostic?.predicate?.cutter, SIX_POINT_CUTTER);
+    // The refused clearance scroll left the screen unchanged, so the pre-scroll cover fact stands.
+    assert.equal(terminal[0].clearanceDiagnostic?.coverGap, 'no-native-presence');
   });
 }
 

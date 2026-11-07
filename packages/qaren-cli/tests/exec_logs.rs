@@ -894,6 +894,8 @@ fn registry_output_emitter() {
             std::io::stderr().write_all(&[*byte]).unwrap();
         }
     }
+    std::io::stdout().flush().unwrap();
+    std::io::stderr().flush().unwrap();
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input).unwrap();
     let dir = std::env::var_os("QAREN_REGISTRY_OUTPUT_FIXTURE_DIR").unwrap();
@@ -926,7 +928,12 @@ fn registry_output_fixture_worker() {
         assert!(!text.contains(&encoded));
         assert!(!text.contains(&canary));
     };
-    for label in ["pnpm-install", "expo-prebuild"] {
+    for label in [
+        "pnpm-install",
+        "expo-prebuild",
+        "deps-cache-pnpm",
+        "deps-cache-config",
+    ] {
         for name in ["NPM_TOKEN", "PRIVATE_REGISTRY_TOKEN"] {
             for status in ["0", "7", "timeout"] {
                 for route in ["captured", "private", "piped", "group"] {
@@ -980,7 +987,18 @@ fn registry_output_fixture_worker() {
                                     Some(status.parse().unwrap())
                                 }
                             );
-                            assert!(output.stdout().is_empty());
+                            if matches!(label, "deps-cache-pnpm" | "deps-cache-config") {
+                                assert!(
+                                    output.stdout().contains(&canary),
+                                    "{label} {name} {status}"
+                                );
+                                assert!(
+                                    output.stdout().contains(&encoded),
+                                    "{label} {name} {status}"
+                                );
+                            } else {
+                                assert!(output.stdout().is_empty());
+                            }
                             output.summary()
                         }
                         "piped" => {

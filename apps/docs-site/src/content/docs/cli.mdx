@@ -68,14 +68,17 @@ platforms they are flagged broken on. See [Saved plans](../plans/#saved-plans).
 ```sh
 qaren cleanup <run-id> [--json]
 qaren cleanup <run-id> [--json] --remove-app --confirm-remove-app <run-id>/<remote-serial>/<app-id>
+qaren cleanup --deps-cache [--json]
 ```
 
-Releases resources retained for inspection or left behind by incomplete teardown, then
-releases its device lease. Use it when a receipt's `next_action` names it. Cleanup only
+Cleanup with a run ID releases resources retained for inspection or left behind by
+incomplete teardown, then releases its device lease. Use it when a receipt's `next_action` names it. It only
 touches resources the run recorded as its own; anything it cannot prove is listed and left
 alone.
 See the [iOS admission and cleanup contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup)
 for inspection holds and their release.
+
+For `--deps-cache`, see the [dependency cache cleanup contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#test-a-pull-request).
 
 `--remove-app` also uninstalls the app, and its data, that the run installed on its leased
 Android emulator. It needs `--confirm-remove-app` naming exactly this run, its recorded

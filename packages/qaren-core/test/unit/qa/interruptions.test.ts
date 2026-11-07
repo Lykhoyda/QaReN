@@ -15,11 +15,23 @@ import type { WalkerDeps } from '../../../dist/qa/walker.js';
 import { choice, element, screen, scriptedJudge } from './judgment-fixtures.ts';
 
 function observedButtons(elements: Screen['elements']) {
+  const nodes = elements.map((e) => ({
+    ref: e.ref,
+    type: e.kind === 'text' ? 'StaticText' : 'Button',
+    label: e.label,
+    identifier: e.testID,
+    hittable: true,
+  }));
   return joinScreen(
-    elements.map((e) => ({ ref: e.ref, type: 'Button', label: e.label, hittable: true })),
+    nodes,
     [],
     'app',
     { native: 'complete', react: 'complete' },
+    { hosts: [], complete: true },
+    {
+      source: 'xcui-live',
+      nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+    },
   );
 }
 
@@ -78,6 +90,34 @@ test('a present optional pop-up is declined once before retrying the missing tar
   );
   assert.equal(row?.outcome, 'retry');
   assert.ok(row?.screenshot);
+});
+
+test('a campaign with Skip and navigation containing all is declined and the plan continues', async () => {
+  for (const label of ['View all offers', 'See all', 'Show all', 'Accept all offers']) {
+    const f = app(screen([element('@close', 'Skip'), element('@offers', label)]));
+    ticking(f);
+    const result = await runPlan(plan(), f.deps);
+    assert.equal(result.verdict, 'PASS', label);
+    assert.deepEqual(f.actions, ['press @close', 'press @settings'], label);
+    assert.equal(result.recoveries, 1, label);
+    const retry = result.steps.find((row) => row.outcome === 'retry');
+    assert.match(retry?.reason ?? '', /dismissed an app screen with Skip/, label);
+    assert.equal(retry?.interruption?.outcome, 'dismissed', label);
+  }
+});
+
+test('a closed-list accept-all consent screen never has any decline taken', async () => {
+  for (const accept of ['Allow all', 'aCcEpT aLl', 'Agree to all', 'ENABLE ALL']) {
+    for (const decline of ['Skip', 'Close', 'Not now', 'Later', "Don't allow", 'Don’t allow']) {
+      const f = app(screen([element('@close', decline), element('@accept', accept)]));
+      ticking(f);
+      const result = await runPlan(plan(), f.deps);
+      assert.equal(result.verdict, 'FAIL', `${decline}: ${accept}`);
+      assert.deepEqual(f.actions, []);
+      assert.equal(result.recoveries, 0);
+      assert.equal(result.steps.at(-1)?.interruption?.veto, 'no-candidate');
+    }
+  }
 });
 
 test('a recovery revalidation that rejects the screen still records its React coverage gap', async () => {
@@ -156,6 +196,9 @@ test('a target appearing before dispatch prevents the interruption tap', async (
   const result = await runPlan(plan(), f.deps);
   assert.notEqual(result.verdict, 'PASS');
   assert.deepEqual(f.actions, []);
+  const receipt = result.steps.at(-1)?.interruption;
+  assert.equal(receipt?.outcome, 'not-dispatched');
+  assert.equal(receipt?.veto, 'current-target');
 });
 
 test('the current target on an unchanged screen prevents dismissal', async () => {
@@ -190,45 +233,53 @@ test('a later target in the same block prevents dismissal and reports a value-fr
   );
 });
 
-test('a later block target visible on the sheet does not stop an earlier block from closing it', async () => {
+test('a later block target visible on the sheet prevents dismissal', async () => {
   for (const later of [
     element('@continue', 'Continue'),
     element('@continue', 'Continue', { kind: 'text' }),
   ]) {
-    const f = app(screen([element('@close', 'Close'), later]));
+    const f = app(observedButtons([element('@close', 'Close'), later]));
     const lines: number[] = [];
     f.deps.interruptionRejected = (event) => lines.push(event.line);
     const result = await runPlan(
       parsePlan('### Sign in\n1. Tap "Settings"\n### Coverage\n2. Tap "Continue"').blocks!,
       f.deps,
     );
-    assert.deepEqual(f.actions.slice(0, 2), ['press @close', 'press @settings']);
-    assert.equal(result.recoveries, 1);
-    assert.ok(!lines.includes(2));
+    assert.deepEqual(f.actions, []);
+    assert.equal(result.recoveries, 0);
+    assert.ok(lines.includes(2));
+    assert.equal(result.steps.at(-1)?.interruption?.targetLine, 4);
   }
 });
 
-test('a later step naming a decline label does not stop an earlier step from closing the sheet', async () => {
-  for (const text of [
-    '1. Tap "Settings"\n✓ "Done"',
-    '1. Tap "Settings"\n✓ "Done"\n### Offer\n2. Tap "Maybe later"',
-    '1. Tap "Settings"\n✓ "Done"\n2. Tap "maybe later"',
-  ]) {
+test('a later decline-labelled text target prevents dismissal when its resolver matches', async () => {
+  for (const [text, vetoed] of [
+    ['1. Tap "Settings"\n✓ "Done"', false],
+    ['1. Tap "Settings"\n✓ "Done"\n### Offer\n2. Tap "Maybe later"', true],
+    ['1. Tap "Settings"\n✓ "Done"\n2. Tap "maybe later"', false],
+  ] as const) {
     const f = app(
-      screen([element('@close', 'Close'), element('@later', 'Maybe later', { kind: 'text' })]),
+      observedButtons([
+        element('@close', 'Close'),
+        element('@later', 'Maybe later', { kind: 'text' }),
+      ]),
     );
     const result = await runPlan(parsePlan(text).blocks!, f.deps);
-    assert.deepEqual(f.actions.slice(0, 2), ['press @close', 'press @settings'], text);
-    assert.equal(result.recoveries, 1, text);
+    assert.deepEqual(
+      f.actions.slice(0, 2),
+      vetoed ? [] : ['press @close', 'press @settings'],
+      text,
+    );
+    assert.equal(result.recoveries, vetoed ? 0 : 1, text);
   }
 });
 
 test('a later step that taps the same decline control keeps it for that step', async () => {
   for (const text of [
     '1. Tap "Settings"\n2. Tap "Close"',
-    '1. Tap "Settings"\n### Offer\n2. Tap "close"',
+    '1. Tap "Settings"\n### Offer\n2. Tap "Close"',
   ]) {
-    const f = app(promo());
+    const f = app(observedButtons([element('@close', 'Close')]));
     assert.equal((await runPlan(parsePlan(text).blocks!, f.deps)).verdict, 'FAIL', text);
     assert.deepEqual(f.actions, [], text);
   }
@@ -256,7 +307,7 @@ test('replayed decline intent survives stored selectors during recovery and reva
           return replay(block, stored);
         });
         const f = app(
-          screen([
+          observedButtons([
             element('@close', 'Close'),
             element('@later', 'Maybe later', { kind: 'text', testID: 'offer-decline' }),
           ]),
@@ -274,9 +325,10 @@ test('replayed decline intent survives stored selectors during recovery and reva
           return result;
         };
         const result = await runPlan(replayed, f.deps);
-        assert.equal(result.verdict, 'PASS');
-        assert.equal(result.recoveries, 1);
-        assert.deepEqual(f.actions, ['press @close', 'press @later']);
+        assert.equal(result.verdict, 'FAIL');
+        assert.equal(result.recoveries, 0);
+        assert.deepEqual(f.actions, []);
+        assert.equal(result.steps.at(-1)?.interruption?.veto, 'later-target');
       }
     }
   }
@@ -365,6 +417,7 @@ test('Jev can veto a uniquely selected control, but cannot break a tie or choose
     assert.equal(result.verdict, 'REFUSED');
     assert.equal(result.code, 'INTERRUPTION_VETOED');
     assert.deepEqual(f.actions, []);
+    assert.equal(result.steps.at(-1)?.interruption?.outcome, 'not-dispatched');
   }
   const f = app(screen([element('@close', 'Close'), element('@skip', 'Skip')]));
   f.deps.interruptionVeto = true;
@@ -372,7 +425,9 @@ test('Jev can veto a uniquely selected control, but cannot break a tie or choose
     throw new Error('ambiguity must not ask Jev');
   });
   f.deps.judge = judge;
-  assert.equal((await runPlan(plan(), f.deps)).code, 'INTERRUPTION_AMBIGUOUS');
+  const result = await runPlan(plan(), f.deps);
+  assert.equal(result.code, 'INTERRUPTION_AMBIGUOUS');
+  assert.equal(result.steps.at(-1)?.interruption?.outcome, 'ambiguous');
   assert.equal(judge.requests.length, 0);
   assert.deepEqual(f.actions, []);
 });
@@ -797,6 +852,8 @@ test('the same app pop-up after its own decline fails the step without a second 
     result.steps.find((row) => row.outcome === 'retry')?.reason ?? '',
     /recovered: dismissed an app screen with Close/,
   );
+  // The proven dismissal stays the step's receipt; the same pop-up's return is not a second decision.
+  assert.equal(result.steps.at(-1)?.interruption?.outcome, 'dismissed');
 });
 
 test('a step recovers at most two different pop-ups', async () => {
@@ -1034,3 +1091,155 @@ test('interruption rejections keep only the veto kind, line, target index and de
       undefined,
     );
 });
+
+// A full-screen promo at launch: only Close, over copy that mentions a later tap's text.
+function fullScreenPromo(): Screen {
+  const nodes = [
+    { ref: '@close', type: 'Button', identifier: 'promo-close', label: 'Close', hittable: true },
+    { ref: '@copy', type: 'StaticText', label: 'Save on Premium today' },
+  ];
+  return joinScreen(
+    nodes,
+    [],
+    'app',
+    { native: 'complete', react: 'complete' },
+    { hosts: [], complete: true },
+    {
+      source: 'xcui-live',
+      nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+    },
+  );
+}
+
+test('a later tap whose text is in the promo copy keeps a sole-Close promo up', async () => {
+  const f = app(fullScreenPromo());
+  const streamed = ticking(f);
+  const result = await runPlan(waitPlan('2. Tap "Premium"'), f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, []);
+  assert.equal(result.recoveries, 0);
+  assert.equal(result.steps.at(-1)?.interruption?.veto, 'later-target');
+  assert.equal(result.steps.at(-1)?.interruption?.targetLine, 2);
+  for (const row of streamed.filter((row) => row.interruption)) {
+    assert.equal(row.line, 1);
+    assert.equal(row.text, '');
+    assert.equal(row.reason, undefined);
+    assert.equal(row.interruption?.veto, 'later-target');
+  }
+});
+
+test('a later admission rejection preserves a proven dismissal on failed retry rows', async () => {
+  const f = app(promo());
+  const streamed = ticking(f);
+  const rejections: string[] = [];
+  f.deps.interruptionRejected = (event) => rejections.push(event.veto);
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    f.show(screen([element('@other', 'Other')]));
+    return { ok: true, proven: false, executed: true };
+  };
+  const result = await runPlan(waitPlan(), f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, ['press @close']);
+  assert.equal(result.recoveries, 1);
+  assert.ok(rejections.includes('no-candidate'));
+  const receipt = { considered: true, outcome: 'dismissed', soleDecline: true };
+  assert.deepEqual(result.steps.at(-1)?.interruption, receipt);
+  for (const row of streamed.filter((row) => row.line === 1 && row.interruption))
+    assert.deepEqual(row.interruption, receipt);
+});
+
+test('a later step naming the sole Close keeps the promo and records ownership', async () => {
+  const f = app(observedButtons([element('@close', 'Close')]));
+  ticking(f);
+  const result = await runPlan(waitPlan('2. Tap "Close"'), f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, []);
+  assert.deepEqual(result.steps.at(-1)?.interruption, {
+    considered: true,
+    outcome: 'vetoed',
+    veto: 'later-target',
+    provenance: 'ownership',
+    targetLine: 2,
+    targetKind: 'press',
+    soleDecline: true,
+  });
+});
+
+test('a later wait on the sole Close ID keeps it and records the owning line', async () => {
+  const f = app(fullScreenPromo());
+  const streamed = ticking(f);
+  const result = await runPlan(waitPlan('2. Wait for "promo-close" to appear'), f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, []);
+  const receipt = {
+    considered: true,
+    outcome: 'vetoed',
+    veto: 'later-target',
+    provenance: 'ownership',
+    targetLine: 2,
+    targetKind: 'wait',
+    soleDecline: true,
+  };
+  assert.deepEqual(result.steps.at(-1)?.interruption, receipt);
+  assert.ok(streamed.some((row) => row.line === 1 && row.interruption));
+  for (const row of streamed.filter((row) => row.line === 1 && row.interruption))
+    assert.deepEqual(row.interruption, receipt);
+});
+
+test('a wait on decline-labelled static text keeps presence provenance without an owning-line edit', async () => {
+  const nodes = [
+    { ref: '@close', type: 'Button', identifier: 'promo-close', label: 'Close', hittable: true },
+    { ref: '@copy', type: 'StaticText', identifier: 'promo-copy', label: 'Close' },
+  ];
+  const f = app(
+    joinScreen(
+      nodes,
+      [],
+      'app',
+      { native: 'complete', react: 'complete' },
+      { hosts: [], complete: true },
+      {
+        source: 'xcui-live',
+        nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+      },
+    ),
+  );
+  ticking(f);
+  const result = await runPlan(waitPlan('2. Wait for "promo-copy" to appear'), f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, []);
+  assert.doesNotMatch(result.failure?.suggestion ?? '', /targets this control/);
+  assert.deepEqual(result.steps.at(-1)?.interruption, {
+    considered: true,
+    outcome: 'vetoed',
+    veto: 'later-target',
+    provenance: 'presence',
+    targetLine: 2,
+    targetKind: 'wait',
+    soleDecline: true,
+  });
+});
+
+for (const [disposition, pressResult, dispatched] of [
+  ['acknowledged', { ok: true, executed: true }, true],
+  ['possible mutation', { ok: false, mutation: 'possible' }, true],
+  ['observed mutation', { ok: false, mutation: 'observed' }, true],
+  ['unknown mutation', { ok: false }, true],
+  ['no mutation', { ok: false, mutation: 'none' }, false],
+  ['not executed', { ok: true, executed: false }, false],
+] as const) {
+  test(`a ${disposition} decline retains dispatch evidence without retrying`, async () => {
+    const f = app(promo());
+    ticking(f);
+    f.deps.press = async (ref) => {
+      f.actions.push(`press ${ref}`);
+      return { ...pressResult, proven: false };
+    };
+    const result = await runPlan(waitPlan(), f.deps);
+    assert.equal(result.verdict, 'FAIL');
+    assert.deepEqual(f.actions, ['press @close']);
+    const receipt = result.steps.at(-1)?.interruption;
+    assert.equal(receipt?.outcome, dispatched ? 'did-not-disappear' : 'not-dispatched');
+  });
+}

@@ -61,6 +61,58 @@ export function nativeCapture() {
   };
 }
 
+// An iOS presence capture of a full-screen opt-in Modal: the window behind repeats the front
+// window's two buttons in the same place, without their test IDs (so the runner's descriptors
+// differ and neither copy is ambiguous), unobserved and not hittable; no viewport diagnostics.
+export function twoWindowOptInCapture() {
+  const base = nativeCapture();
+  const full = { x: 0, y: 0, width: 400, height: 800 };
+  const decline = { x: 20, y: 600, width: 160, height: 44 };
+  const accept = { x: 200, y: 600, width: 180, height: 44 };
+  const node = (
+    index: number,
+    type: string,
+    parentIndex: number | undefined,
+    rect: typeof full,
+    observed: boolean,
+    label?: string,
+  ) => ({
+    ref: `@e${index}`,
+    index,
+    depth: parentIndex === undefined ? 0 : type === 'Window' ? 1 : 2,
+    ...(parentIndex === undefined ? {} : { parentIndex }),
+    type,
+    ...(label ? { label } : {}),
+    ...(observed && label ? { identifier: `qa-optin-${index}` } : {}),
+    enabled: true,
+    hittable: observed || type === 'Application',
+    rect,
+    presence: {
+      captureId: 'capture-7',
+      generation: 7,
+      nodeIndex: index,
+      status: observed ? 'observed' : 'unknown',
+      labelSource: label ? 'direct' : 'none',
+      ...(observed ? { observedUptimeMs: 150 } : {}),
+      ...(!observed && label ? { unknownReason: 'not-hittable' } : {}),
+    },
+  });
+  const nodes = [
+    node(0, 'Application', undefined, full, false),
+    node(1, 'Window', 0, full, false),
+    node(2, 'Button', 1, decline, false, 'Not now'),
+    node(3, 'Button', 1, accept, false, 'Turn on notifications'),
+    node(4, 'Window', 0, full, false),
+    node(5, 'Button', 4, decline, true, 'Not now'),
+    node(6, 'Button', 4, accept, true, 'Turn on notifications'),
+  ];
+  return {
+    ...base,
+    nodes,
+    snapshotVerdict: { ...base.snapshotVerdict, nodeCount: nodes.length },
+  };
+}
+
 export function attested<T>(nodes: T[]) {
   return {
     nodes,

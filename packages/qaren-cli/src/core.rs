@@ -486,6 +486,209 @@ pub struct Row {
         deserialize_with = "passive"
     )]
     pub implicit_wait_ms: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub interruption: Option<InterruptionReceipt>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub collapsed: Option<Vec<CollapsedCandidate>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub candidate_exclusions: Option<Vec<CandidateExclusion>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub covered_by: Option<CoveredBy>,
+}
+
+// Value-free interruption decision for a step.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InterruptionReceipt {
+    pub considered: bool,
+    pub outcome: InterruptionOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub veto: Option<InterruptionVeto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<InterruptionProvenance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_kind: Option<InterruptionTargetKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sole_decline: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_class: Option<InterruptionScreenClass>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum InterruptionScreenClass {
+    PermissionOptIn,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum InterruptionOutcome {
+    Vetoed,
+    Dismissed,
+    NotDispatched,
+    Ambiguous,
+    DidNotDisappear,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum InterruptionVeto {
+    Front,
+    Coverage,
+    CurrentTarget,
+    LaterTarget,
+    PreviousPlanPress,
+    NoCandidate,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum InterruptionProvenance {
+    Presence,
+    Ownership,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum InterruptionTargetKind {
+    Press,
+    Fill,
+    Wait,
+    Check,
+    Scroll,
+}
+
+impl InterruptionReceipt {
+    // One report line; the target is named by its plan line, never by its text.
+    pub fn summary(&self) -> String {
+        // Every field enum is a unit enum, so it always serializes to its kebab-case name.
+        fn word(value: impl Serialize) -> String {
+            serde_json::to_value(value)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_string))
+                .unwrap_or_default()
+        }
+        let mut text = format!("interruption recovery: {}", word(self.outcome));
+        let detail: Vec<String> = [
+            self.veto.map(word),
+            self.provenance.map(word),
+            self.target_line.map(|line| match self.target_kind {
+                Some(kind) => format!("line {line} ({})", word(kind)),
+                None => format!("line {line}"),
+            }),
+            self.sole_decline
+                .filter(|sole| *sole)
+                .map(|_| "only control is the decline".to_string()),
+            self.screen_class.map(word),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !detail.is_empty() {
+            text.push_str(&format!(" ({})", detail.join("; ")));
+        }
+        text
+    }
+}
+
+
+// A same-label wrapper counted as the control it wraps.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CollapsedCandidate {
+    #[serde(rename = "ref", deserialize_with = "native_capture_ref")]
+    pub reference: String,
+    pub kind: CarrierKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<DialogRect>,
+    #[serde(deserialize_with = "native_capture_ref")]
+    pub into: String,
+}
+
+// A same-label candidate set aside on proof before the target was chosen or refused.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateExclusion {
+    #[serde(rename = "ref", deserialize_with = "native_capture_ref")]
+    pub reference: String,
+    pub kind: CarrierKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<DialogRect>,
+    pub reason: ExclusionReason,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExclusionReason {
+    OffscreenByFrame,
+    ClippedByViewport,
+    UnderKeyboard,
+    NotHittable,
+}
+
+impl ExclusionReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OffscreenByFrame => "offscreen-by-frame",
+            Self::ClippedByViewport => "clipped-by-viewport",
+            Self::UnderKeyboard => "under-keyboard",
+            Self::NotHittable => "not-hittable",
+        }
+    }
+}
+
+// What covered the target's centre before the tap; a label only from the core's fixed dismiss vocabulary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CoveredBy {
+    #[serde(rename = "ref", deserialize_with = "native_capture_ref")]
+    pub reference: String,
+    pub kind: CarrierKind,
+    pub frame: DialogRect,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "decline_label"
+    )]
+    pub label: Option<String>,
+}
+
+const DECLINE_LABELS: [&str; 9] = [
+    "Close",
+    "Not now",
+    "Not Now",
+    "Maybe later",
+    "Later",
+    "Skip",
+    "No thanks",
+    "Dismiss",
+    "Cancel",
+];
+
+fn decline_label<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    // Any other word drops only the label, so the cover fact survives a vocabulary change in the core.
+    let value = String::deserialize(deserializer)?;
+    Ok(DECLINE_LABELS.contains(&value.as_str()).then_some(value))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -578,6 +781,8 @@ pub enum ScrollBandStatus {
     NoGeometry,
     OverlayCut,
     Clear,
+    Unreachable,
+    TooSmall,
 }
 
 fn native_capture_ref<'de, D: serde::Deserializer<'de>>(
@@ -613,6 +818,16 @@ pub struct ScrollDetail {
 #[serde(rename_all = "snake_case")]
 pub enum ScrollStatus {
     NoVisibleChange,
+    NoVisibleChangeContentRemains,
+}
+
+impl ScrollStatus {
+    pub fn warning(self) -> Option<&'static str> {
+        match self {
+            Self::NoVisibleChange => None,
+            Self::NoVisibleChangeContentRemains => Some("two scrolls were dispatched inside the scroll view and nothing moved although content extends beyond it"),
+        }
+    }
 }
 
 // The development error overlay variant and dismissal attempt number, including failed attempts.
@@ -918,6 +1133,7 @@ pub enum StepCause {
     ScrollDispatchFailed,
     ScrollContextChanged,
     ScrollTargetAbsent,
+    ScrollContainerUnreachable,
 }
 
 // Only a plan step's own judgment is a step failure; anything else, or an older core, has no kind.

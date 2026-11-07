@@ -31,7 +31,7 @@ import {
   withEchoScope,
 } from './inputs.js';
 import { isAbort, cancellationSignal, withDeadline } from '../domain/cancellation.js';
-import { fillLabels, parseStep, type Block, type Item, type Target } from './plan.js';
+import { fillLabels, type Block, type Item, type Target } from './plan.js';
 import {
   type Element,
   type Screen,
@@ -66,6 +66,8 @@ import {
   bindDispatchIdentity,
   stepTarget,
   scrollUntilBand,
+  plainScrollBand,
+  type PlainScrollBand,
   scrollUntilEvidence,
   scrollTargetCovered,
   scrollUntilContainer,
@@ -79,8 +81,17 @@ import {
   reactOnlyTimeout,
   reactOnlyViewport,
   visibleSelector,
+  contend,
+  coverOwner,
+  type CoverGap,
+  excludedCandidate,
+  nestedCandidate,
+  probeIdentifiable,
+  MAX_HIT_PROBES,
+  type CandidateExclusion,
 } from './resolve.js';
 import { literalEvidence, type LiteralNearMiss } from './evidence.js';
+import { scrollMotion } from './scroll-motion.js';
 import { scrollNavigationChange } from './scroll-navigation.js';
 import { applyContainmentFallback, exactIdentities, focusIdentityOf } from './identity.js';
 import {
@@ -103,12 +114,17 @@ import {
 } from './questions.js';
 import {
   type InterruptionDiagnostic,
+  type InterruptionScreenClass,
   type LoginMarker,
   type PlannedSurface,
   type RecoveryTarget,
   dismissCandidate,
+  isDeclineLabel,
   plannedSurface,
+  optInShaped,
   recover,
+  protectionLapses,
+  soleDecline,
   surfaceGone,
 } from './recover.js';
 import type {
@@ -136,7 +152,6 @@ import {
   ObservedPrivacy,
   matchPrivate,
   projectPlanLine,
-  planLineBody,
 } from './privacy.js';
 import { renderReason, segments, type Reason } from './untrusted.js';
 import { NativeSnapshotIncomplete, PrivateInputCaptureError } from './private-input.js';
@@ -179,6 +194,7 @@ import {
   buildLedger,
   screenshotName,
 } from './ledger.js';
+import type { InterruptionReceipt } from './ledger.js';
 
 export interface ActResult {
   settle?: Pick<TimingEvent, 'method' | 'ms'>;
@@ -337,8 +353,13 @@ export interface WalkerTimingDiagnostic {
     scrollOrigin: 'offscreen-resolution' | 'centre-covered' | 'native-occlusion' | null;
     requestedDirection: 'up' | 'down' | null;
     targetCentreChanged: boolean | null;
+    // Why the observation named no cover; null when it named one or never looked.
+    coverGap?: WalkerCoverGap | null;
   };
 }
+
+// A cover gap, or why the one presence recapture could not settle a no-native-presence gap.
+export type WalkerCoverGap = CoverGap | 'presence-recapture-incomplete' | 'target-not-recaptured';
 
 interface Observation {
   overlayHits?: OverlayHits;
@@ -475,13 +496,18 @@ export interface WalkOptions {
 
 const recoveryTarget = (item: Item): RecoveryTarget | undefined => {
   if (item.kind === 'check')
-    return item.literal ? { quoted: item.text, phrase: item.text } : undefined;
+    return {
+      ...(item.literal ? { quoted: item.text } : {}),
+      phrase: item.text,
+      kind: 'check',
+      line: item.line,
+    };
   const target = stepTarget(item);
   if (!target) return undefined;
-  const declared = parseStep(planLineBody(item.raw));
   return {
     ...target,
-    ...(declared && !('refuse' in declared) ? { declared: stepTarget(declared) } : {}),
+    kind: item.kind,
+    line: item.line,
   };
 };
 
@@ -501,7 +527,8 @@ export interface WalkSequence {
   window?: { fromMs: number; typed: number };
   // System prompts recovery declined in this run; a repeat ask is the plan author's to answer.
   declinedPrompts?: Set<string>;
-  plannedPress?: PlannedSurface;
+  // passedSince: a later planned item passed while a decline control stayed on screen.
+  plannedPress?: PlannedSurface & { line: number; passedSince?: boolean };
   // Armed at launch and after a login replay; the next top-level Tap or Fill spends it.
   launchWait?: boolean;
 }
@@ -581,6 +608,11 @@ function movedGeometry(error: string | undefined) {
 
 const PREVIOUS_PLAN_PRESS =
   '; the previous planned press succeeded; the next target was not found; automatic app dismissal was withheld';
+
+const SCREEN_CLASS_NAMES: Record<InterruptionScreenClass | 'app', string> = {
+  app: 'an app screen',
+  'permission-opt-in': 'a permission opt-in',
+};
 
 // Capture and process refusals, ambiguity and the replay-miss path are never recovered.
 const UNRECOVERABLE = new Set([
@@ -704,6 +736,7 @@ async function walkBlockScoped(
   let enrichment: { at: number; budget: number; waited?: number } | undefined;
   let waitAttempt: 'scroll' | 'none' = 'none';
   let latestObservation = 0;
+  let itemObservationStart = 0;
   // When each screen was captured, and the observation the last device action was dispatched on.
   const captured = new WeakMap<Screen, { at: number; id: number }>();
   // The newest observation that passed admission, recovery's captures included.
@@ -890,6 +923,19 @@ async function walkBlockScoped(
           presence: Number(platformPresence),
         });
       }
+    }
+  };
+  // The one bounded platform-presence recapture for cover evidence an ordinary capture cannot carry;
+  // an incomplete read returns nothing, so the cover stays unproven rather than refusing.
+  const presenceRecapture = async (
+    item: Exclude<Item, { kind: 'check' }>,
+  ): Promise<Observation | undefined> => {
+    try {
+      return await captureOnce(item, false, false, 'provenance');
+    } catch (error) {
+      if (error instanceof ResolutionError && error.code === 'SCREEN_EVIDENCE_INCOMPLETE')
+        return undefined;
+      throw error;
     }
   };
   const enrichLabelProvenance = async (
@@ -1368,10 +1414,95 @@ async function walkBlockScoped(
   const bandFor = (item: Item, target: Target, screen: Screen) =>
     scrollUntilBand(target, screen, (receipt) => scrollBands.set(item.line, receipt));
   const overlayRows = new Map<number, { observation: number; checks: OverlayHitReceipt[] }>();
+  const targetRows = new Map<
+    number,
+    Pick<LedgerRow, 'collapsed' | 'candidateExclusions' | 'coveredBy'>
+  >();
+  // Why the latest observation of a line named no cover.
+  const coverGaps = new Map<number, WalkerCoverGap>();
+  // The target whose cover the ordinary capture could not prove; one presence recapture may prove it.
+  const coverTargets = new Map<number, Element>();
+  const recordCover = (
+    line: number,
+    cover: ReturnType<typeof coverOwner> | { gap: WalkerCoverGap } | undefined,
+  ): void => {
+    // Each observation states its own cover, or why none is named.
+    const { coveredBy: _previous, ...facts } = targetRows.get(line) ?? {};
+    coverGaps.delete(line);
+    if (cover && 'gap' in cover) coverGaps.set(line, cover.gap);
+    targetRows.set(line, {
+      ...facts,
+      ...(cover && 'owner' in cover
+        ? {
+            coveredBy: {
+              ref: cover.owner.ref,
+              kind: cover.owner.kind,
+              frame: cover.frame,
+              ...(isDeclineLabel(cover.owner.label) ? { label: cover.owner.label } : {}),
+            },
+          }
+        : {}),
+    });
+  };
+  // A covered iOS refusal whose ordinary capture could not tie React hosts to native nodes takes the
+  // one presence recapture; whatever it fails to prove stays unproven and never adds a refusal.
+  const proveCover = async (item: Exclude<Item, { kind: 'check' }>): Promise<void> => {
+    const target = coverTargets.get(item.line);
+    coverTargets.delete(item.line);
+    if (deps.platform !== 'ios' || !target || coverGaps.get(item.line) !== 'no-native-presence')
+      return;
+    let proven: Observation | undefined;
+    try {
+      proven = await presenceRecapture(item);
+    } catch (error) {
+      if (isAbort(error)) throw error;
+    }
+    if (!proven) {
+      coverGaps.set(item.line, 'presence-recapture-incomplete');
+      return;
+    }
+    const matches = proven.screen.elements.filter((e) => sameIdentity(e, target));
+    recordCover(
+      item.line,
+      matches.length === 1
+        ? coverOwner(matches[0], proven.screen)
+        : { gap: 'target-not-recaptured' },
+    );
+  };
+  // A covered refusal that emits no other decision diagnostic still says why its cover was or was not
+  // named; a line whose cover was never looked up emits nothing.
+  const coverDecision = (
+    item: Item,
+    observation: Observation,
+    facts: Omit<NonNullable<WalkerTimingDiagnostic['clearanceDiagnostic']>, 'coverGap'>,
+  ): void => {
+    if (!coverGaps.has(item.line) && !targetRows.get(item.line)?.coveredBy) return;
+    diagnostic(item, observation, 'decision', 'CENTRE_COVERED', undefined, undefined, undefined, {
+      ...facts,
+      coverGap: coverGaps.get(item.line) ?? null,
+    });
+  };
+  // The proven cover for a refusal, as kind and frame, or the evidence gap that withheld it.
+  const coverText = async (item: Exclude<Item, { kind: 'check' }>): Promise<string> => {
+    await proveCover(item);
+    const line = item.line;
+    const cover = targetRows.get(line)?.coveredBy;
+    if (cover)
+      return `; covered by ${cover.kind} at ${[cover.frame.x, cover.frame.y, cover.frame.width, cover.frame.height].join(',')}`;
+    const gap = coverGaps.get(line);
+    return gap ? `; no cover named (${gap})` : '';
+  };
   const withheldRows = new Map<number, NonNullable<LedgerRow['screenshotWithheld']>>();
+  // Per line, what interruption recovery last decided; a dismissal stays on this line's later rows.
+  const interruptions = new Map<number, InterruptionReceipt>();
   const emit = (row: WalkRow): void => {
     const scrollBand = scrollBands.get(row.line);
     if (scrollBand) row = { ...row, scrollBand };
+    const interruption = interruptions.get(row.line);
+    // A veto on an earlier attempt says nothing about a pass; a dismissal explains it.
+    if (interruption && (row.outcome !== 'pass' || interruption.outcome === 'dismissed'))
+      row = { ...row, interruption };
+    row = { ...row, ...targetRows.get(row.line) };
     const overlayChecks = overlayRows.get(row.line)?.checks;
     if (overlayChecks?.length) row = { ...row, overlayChecks };
     if (fillHandlerRefused)
@@ -1407,11 +1538,21 @@ async function walkBlockScoped(
     const timed = timing ? { ...row, timing } : row;
     if (row.outcome === 'pass' && !opts.login) {
       sequence.planPassed = true;
+      const press = sequence.plannedPress;
+      if (
+        opts.recover !== false &&
+        press &&
+        press.line !== row.line &&
+        (captured.get(latest)?.id ?? 0) > itemObservationStart
+      ) {
+        if (protectionLapses(latest)) sequence.plannedPress = undefined;
+        else press.passedSince = true;
+      }
       if (
         opts.recover !== false &&
         block.items.some((item) => item.line === row.line && item.kind === 'press')
       )
-        sequence.plannedPress = plannedSurface(latest, pressBase);
+        sequence.plannedPress = { ...plannedSurface(latest, pressBase), line: row.line };
     }
     rows.push(timed);
     deps.row(valueFree(timed));
@@ -1464,7 +1605,8 @@ async function walkBlockScoped(
     const target = item.kind === 'check' ? undefined : stepTarget(item);
     if (target?.quoted !== undefined) emitQuotedTargetDiagnostic(screen, target.quoted, item.line);
     const row = base(item, attempt);
-    const last = targetCode ? (newest ?? screen) : screen;
+    const rejectedCheck = item.kind === 'check' && interruptions.has(item.line);
+    const last = targetCode || rejectedCheck ? (newest ?? screen) : screen;
     const waitOrScroll = item.kind === 'wait' || item.kind === 'scroll';
     let lastScreen: Pick<LedgerFailure, 'screen' | 'suggestion' | 'subreason'> = {};
     if (item.kind !== 'check' && target && (waitOrScroll || targetCode)) {
@@ -1541,6 +1683,20 @@ async function walkBlockScoped(
         // Diagnostics cannot change the failed step's outcome.
       }
     }
+    if (rejectedCheck) {
+      try {
+        const seen = captured.get(last);
+        if (seen)
+          lastScreen.screen = screenNow(
+            last,
+            recoveryTarget(item) ?? { phrase: '' },
+            row.t - seen.at,
+            dispatchedOn === seen.id,
+            privacy,
+            'wait',
+          );
+      } catch {}
+    }
     if (pressVetoed === item && ((target && targetCode) || item.kind === 'check')) {
       // A check has no target diagnostics, so it keeps the note but no subreason.
       if (target)
@@ -1548,8 +1704,45 @@ async function walkBlockScoped(
           ...(lastScreen.screen ? { screen: lastScreen.screen } : {}),
           subreason: 'previous-plan-press',
         };
-      reason = [...segments(reason), PREVIOUS_PLAN_PRESS];
+      const press = sequence.plannedPress;
+      reason = [
+        ...segments(reason),
+        press?.passedSince
+          ? `; the planned press at line ${press.line} succeeded and later steps passed while a decline control stayed on screen; the next target was not found; automatic app dismissal was withheld`
+          : PREVIOUS_PLAN_PRESS,
+      ];
+      const optIn = optInShaped(last);
+      const decline =
+        optIn ??
+        (soleDecline(last)
+          ? last.elements.find(
+              (e) =>
+                !e.offscreen &&
+                !e.semantic?.nativePresence?.structural &&
+                e.semantic?.press === 'supported',
+            )
+          : undefined);
+      if (decline?.label && sequence.plannedPress?.line !== undefined) {
+        const shape = optIn
+          ? 'a permission opt-in with a decline and an accept control'
+          : 'an app screen with only a decline control';
+        reason = [
+          ...segments(reason),
+          `; ${shape} is in front; ${sequence.plannedPress.passedSince ? `the planned tap at line ${sequence.plannedPress.line}` : 'the previous planned tap'} may have opened it, so it was not dismissed`,
+        ];
+        const label = privacy.redactElementLabel(decline);
+        lastScreen.suggestion =
+          label === decline.label
+            ? redact(`Add a step after line ${sequence.plannedPress.line}: Tap "${label}".`)
+            : `Add a step after line ${sequence.plannedPress.line} that taps the decline control.`;
+      }
     }
+    const interruption = interruptions.get(item.line);
+    if (interruption?.veto === 'later-target' && interruption.targetLine !== undefined)
+      reason = [
+        ...segments(reason),
+        `; an app screen is in front; automatic app dismissal was withheld because the later planned item at line ${interruption.targetLine} may target it`,
+      ];
     const withheld = privacy.textWithheld(last);
     emit({
       ...row,
@@ -1626,6 +1819,77 @@ async function walkBlockScoped(
     assertActive();
     return shot;
   };
+  // One read-only iOS live hit read inside the observation's expiry; a late or failed read is 'unavailable'.
+  const readHit = async (
+    item: Item,
+    observation: Observation,
+    element: Element,
+    deadline = Infinity,
+  ): Promise<HitProbeResult> => {
+    const generation = observation.screen.nativeGeneration;
+    const rect = elementFrame(element);
+    if (deps.platform !== 'ios' || !deps.hitProbe || generation === undefined || !rect)
+      return 'unavailable';
+    const context = new QaDispatchContext(
+      observationDeadline(observation.timing, deadline),
+      deps.now,
+      () => cancellationSignal()?.aborted === true,
+      item.line,
+    );
+    const timedOut = new Error('hit-probe-deadline');
+    try {
+      const read = await withDeadline(
+        performance.now() + Math.max(0, context.deadline - deps.now()),
+        timedOut,
+        () =>
+          deps.hitProbe!(element.ref, context, generation, {
+            identifier: element.testID,
+            label: element.label,
+            rect,
+          }),
+      );
+      if (!context.expired) return read;
+    } catch (error) {
+      if (isAbort(error) || (error instanceof QaDispatchError && error.code === 'RUN_CANCELLED'))
+        throw error;
+    }
+    return 'unavailable';
+  };
+  // Same-label duplicates left after proof: up to four the runner can identify get a live hit read.
+  const probeDuplicates = async (
+    item: Item & { kind: 'press' | 'fill' },
+    observation: Observation,
+    decided: Resolution,
+  ): Promise<Resolution> => {
+    if (!('refuse' in decided) || !decided.contenders) return decided;
+    const screen = observation.screen;
+    if (deps.platform !== 'ios' || !deps.hitProbe || screen.nativeGeneration === undefined)
+      return decided;
+    const contenders = decided.contenders.flatMap((ref) =>
+      screen.elements.filter((element) => element.ref === ref),
+    );
+    if (contenders.some((element) => !probeIdentifiable(element, screen) || !elementFrame(element)))
+      return {
+        ...decided,
+        reason: `${decided.reason}; cannot probe: the runner cannot identify each candidate uniquely`,
+      };
+    const exclusions: CandidateExclusion[] = [...(decided.candidateExclusions ?? [])];
+    for (const element of contenders.slice(0, MAX_HIT_PROBES)) {
+      // A read that would outlive the observation never runs.
+      if (deps.now() >= observationDeadline(observation.timing)) break;
+      if (nestedCandidate(element, contenders)) continue;
+      if ((await readHit(item, observation, element)) === 'not-hittable')
+        exclusions.push(excludedCandidate(element, 'not-hittable'));
+    }
+    if (exclusions.length === (decided.candidateExclusions?.length ?? 0)) return decided;
+    return contend(
+      item,
+      screen,
+      contenders.filter((element) => !exclusions.some((x) => x.ref === element.ref)),
+      exclusions,
+      decided.collapsed,
+    );
+  };
   const probeOverlay = async (
     item: Item,
     observation: Observation,
@@ -1637,38 +1901,9 @@ async function walkBlockScoped(
     const hits = (observation.overlayHits ??= new OverlayHits(observation.screen));
     const cached = hits.get(element, observation.screen);
     if (cached) return cached;
-    let result: HitProbeResult = 'unavailable';
-    const generation = observation.screen.nativeGeneration;
-    if (
-      deps.platform === 'ios' &&
-      deps.hitProbe &&
-      generation !== undefined &&
-      overlayProbeCoverage(element, observation.screen)
-    ) {
-      const context = new QaDispatchContext(
-        observationDeadline(observation.timing, deadline),
-        deps.now,
-        () => cancellationSignal()?.aborted === true,
-        item.line,
-      );
-      const timedOut = new Error('hit-probe-deadline');
-      try {
-        const read = await withDeadline(
-          performance.now() + Math.max(0, context.deadline - deps.now()),
-          timedOut,
-          () =>
-            deps.hitProbe!(element.ref, context, generation, {
-              identifier: element.testID,
-              label: element.label,
-              rect: elementFrame(element)!,
-            }),
-        );
-        if (!context.expired) result = read;
-      } catch (error) {
-        if (isAbort(error) || (error instanceof QaDispatchError && error.code === 'RUN_CANCELLED'))
-          throw error;
-      }
-    }
+    const result = overlayProbeCoverage(element, observation.screen)
+      ? await readHit(item, observation, element, deadline)
+      : 'unavailable';
     hits.set(element, result);
     let row = overlayRows.get(item.line);
     if (row?.observation !== observation.id) {
@@ -2447,19 +2682,32 @@ async function walkBlockScoped(
     }
     const surface = sequence.plannedPress;
     if (surface && surfaceGone(fresh.screen, surface)) sequence.plannedPress = undefined;
+    const remainingItems = block.items.slice(block.items.indexOf(item) + 1);
     const planTargets = [
       {
         ...(recoveryTarget(item) ?? { phrase: '' }),
         ...(sequence.plannedPress ? { afterPlannedPress: true } : {}),
       },
-      ...block.items.slice(block.items.indexOf(item) + 1).flatMap((remaining) => {
+      ...remainingItems.flatMap((remaining) => {
         const target = recoveryTarget(remaining);
-        return target?.quoted !== undefined ? [target] : [];
+        return target ? [target] : [];
       }),
       ...(opts.laterTargets ?? []),
     ];
+    if (interruptions.get(item.line)?.outcome !== 'dismissed') interruptions.delete(item.line);
     const interruptionRejected = (record: InterruptionDiagnostic, observation?: number) => {
       if (record.veto === 'previous-plan-press') pressVetoed = item;
+      const behind = record.targetIndex === undefined ? undefined : planTargets[record.targetIndex];
+      if (interruptions.get(item.line)?.outcome !== 'dismissed')
+        interruptions.set(item.line, {
+          considered: true,
+          outcome: 'vetoed',
+          veto: record.veto,
+          ...(record.provenance ? { provenance: record.provenance } : {}),
+          ...(behind?.line !== undefined ? { targetLine: behind.line } : {}),
+          ...(behind?.kind ? { targetKind: behind.kind } : {}),
+          soleDecline: record.soleDecline,
+        });
       try {
         deps.note?.(
           `interruption-rejected=${JSON.stringify({ line: item.line, ...(observation === undefined ? {} : { observation }), ...record })}`,
@@ -2478,6 +2726,8 @@ async function walkBlockScoped(
     let interruptionShot: string | undefined;
     let dialogAct: ActResult | undefined;
     let declineAttempted = false;
+    let dismissStarted = false;
+    let declineDispatched = false;
     const result = await recover(
       fresh.screen,
       {
@@ -2518,6 +2768,7 @@ async function walkBlockScoped(
                 },
               };
           }
+          dismissStarted = true;
           interruptionShot = await shoot(item);
           declineAttempted = true;
           recoveries += 1;
@@ -2564,6 +2815,7 @@ async function walkBlockScoped(
                   });
                 dispatched = true;
                 const result = await deps.press(ref, context);
+                declineDispatched = result.executed !== false && result.mutation !== 'none';
                 if (!result.ok || result.executed === false) {
                   observeRowSettle(result);
                   throw new ResolutionError({
@@ -2606,6 +2858,35 @@ async function walkBlockScoped(
       }
       throw error;
     });
+    // The dismissal reached its dispatch phase, or Jev vetoed it just before.
+    const dismissing =
+      dismissStarted ||
+      (result && 'refuse' in result && result.refuse.code === 'INTERRUPTION_VETOED');
+    const declined: InterruptionReceipt['outcome'] | undefined = !result
+      ? undefined
+      : 'handled' in result
+        ? result.handled === 'interruption'
+          ? 'dismissed'
+          : undefined
+        : 'refuse' in result && result.refuse.code === 'INTERRUPTION_AMBIGUOUS'
+          ? 'ambiguous'
+          : dismissing
+            ? // A dispatched decline whose effect or disappearance was not proven, or none was sent.
+              declineDispatched
+              ? 'did-not-disappear'
+              : 'not-dispatched'
+            : undefined;
+    if (declined)
+      interruptions.set(item.line, {
+        considered: true,
+        soleDecline: soleDecline(fresh.screen),
+        // A pre-dispatch recheck's veto, target line and screen facts explain why nothing was sent.
+        ...(declined === 'not-dispatched' ? interruptions.get(item.line) : {}),
+        outcome: declined,
+        ...(result && 'handled' in result && result.screenClass
+          ? { screenClass: result.screenClass }
+          : {}),
+      });
     if (!result) return undefined;
     if ('handled' in result && !declineAttempted) recoveries += 1;
     if ('handled' in result) {
@@ -2636,7 +2917,7 @@ async function walkBlockScoped(
         ...(interruptionShot ? { screenshot: interruptionShot } : {}),
         ...(proof ? { dialog: proof } : {}),
         reason: redact(
-          `${reason}; recovered: ${result.label ? `dismissed an app screen with ${result.label}` : result.handled}; retrying the step once`,
+          `${reason}; recovered: ${result.label ? `dismissed ${SCREEN_CLASS_NAMES[result.screenClass ?? 'app']} with ${result.label}` : result.handled}; retrying the step once`,
         ),
       });
       const budget = stepBudgets.get(operationFor(item.line))!;
@@ -2790,6 +3071,7 @@ async function walkBlockScoped(
       if (item.kind === 'echo') declareEcho(item.input);
       continue;
     }
+    itemObservationStart = sequence.observation;
     pressVetoed = undefined;
     pressBase = undefined;
     mutationStarted = false;
@@ -2830,6 +3112,7 @@ async function walkBlockScoped(
     attempts: for (;;) {
       overlayRows.delete(item.line);
       scrollBands.delete(item.line);
+      targetRows.delete(item.line);
       line = item.line;
       // Support blocks walk without recovery and never spend it; a login replay re-arms it for this retry.
       if (
@@ -3371,6 +3654,7 @@ async function walkBlockScoped(
         let moved: { target: Element; error: string } | undefined;
         // Plain-scroll attempts that dispatched cleanly onto complete, unchanged app captures.
         let stillScrolls = 0;
+        let overflowScrolls = 0;
         let scrollRefused = false;
         let settledFrame: string | undefined;
         let keyboardAttempted = false;
@@ -3400,6 +3684,11 @@ async function walkBlockScoped(
           currentAttempt = attempt;
           overlayRows.delete(item.line);
           scrollBands.delete(item.line);
+          let plainBand: PlainScrollBand | undefined;
+          const { coveredBy: _previousCover, ...selectionFacts } = targetRows.get(item.line) ?? {};
+          targetRows.set(item.line, selectionFacts);
+          coverGaps.delete(item.line);
+          coverTargets.delete(item.line);
           let selectionTarget: Element | undefined;
           let selectionDeadline = Infinity;
           let selectionStartedAt = 0;
@@ -3484,7 +3773,7 @@ async function walkBlockScoped(
                   refusedIdentity === undefined
                     ? bindFillIdentity(item, before.screen, fillIdentity)
                     : undefined;
-                const decided =
+                const prepared: Resolution =
                   occluded !== undefined
                     ? { scroll: occluded }
                     : refusedIdentity !== undefined
@@ -3497,6 +3786,16 @@ async function walkBlockScoped(
                               reason: 'the original input identity no longer resolves uniquely',
                             }
                         : decision.target!;
+                const decided = await probeDuplicates(item, before, prepared);
+                targetRows.set(item.line, {
+                  ...targetRows.get(item.line),
+                  ...('collapsed' in decided && decided.collapsed
+                    ? { collapsed: decided.collapsed }
+                    : {}),
+                  ...('candidateExclusions' in decided && decided.candidateExclusions
+                    ? { candidateExclusions: decided.candidateExclusions }
+                    : {}),
+                });
                 occluded = undefined;
                 let resolution: Exclude<Resolution, { refuse: string }>;
                 if ('refuse' in decided) {
@@ -3572,13 +3871,19 @@ async function walkBlockScoped(
                     outcome = failed(
                       item,
                       attempt,
-                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}`,
+                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}${await coverText(item)}`,
                       before.screen,
                       await shoot(item),
                       undefined,
                       false,
                       'TARGET_NOT_FOUND',
                     );
+                    coverDecision(item, before, {
+                      predicate: null,
+                      scrollOrigin,
+                      requestedDirection: scrollDirection,
+                      targetCentreChanged: null,
+                    });
                     break;
                   }
                   const distance =
@@ -3635,7 +3940,7 @@ async function walkBlockScoped(
                     outcome = failed(
                       item,
                       attempt,
-                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}${cutterText(clearing)}${unaskedLiveHit(item.kind, deps.platform, clearing)}`,
+                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}${await coverText(item)}${cutterText(clearing)}${unaskedLiveHit(item.kind, deps.platform, clearing)}`,
                       before.screen,
                       await shoot(item),
                       undefined,
@@ -3656,8 +3961,17 @@ async function walkBlockScoped(
                           scrollOrigin,
                           requestedDirection: scrollDirection,
                           targetCentreChanged: null,
+                          // The unchanged screen keeps the pre-scroll observation's cover fact.
+                          coverGap: coverGaps.get(item.line) ?? null,
                         },
                       );
+                    else
+                      coverDecision(item, before, {
+                        predicate: null,
+                        scrollOrigin,
+                        requestedDirection: scrollDirection,
+                        targetCentreChanged: null,
+                      });
                     break;
                   }
                   scrollNeedsReadback = false;
@@ -3789,6 +4103,14 @@ async function walkBlockScoped(
                   centreDiagnostic = facts;
                 });
               const overlay = centreIsCovered ? inferredOverlay(centreDiagnostic) : undefined;
+              // Name the view that takes the target's touch before any tap; never the inferred band cutter.
+              const cover =
+                (item.kind === 'press' || item.kind === 'fill') && element
+                  ? coverOwner(element, before.screen)
+                  : undefined;
+              recordCover(item.line, cover);
+              if (cover && element) coverTargets.set(item.line, element);
+              else coverTargets.delete(item.line);
               // List order is not paint order: an inferred overlay alone never refuses an iOS press.
               if (
                 item.kind === 'fill' &&
@@ -3800,13 +4122,19 @@ async function walkBlockScoped(
                   outcome = failed(
                     item,
                     attempt,
-                    `"${item.target.phrase}" ${INFERRED_FILL_UNAVAILABLE}${cutterText(centreDiagnostic)}`,
+                    `"${item.target.phrase}" ${INFERRED_FILL_UNAVAILABLE}${await coverText(item)}${cutterText(centreDiagnostic)}`,
                     before.screen,
                     await shoot(item),
                     ref,
                     false,
                     'TARGET_NOT_FOUND',
                   );
+                  coverDecision(item, before, {
+                    predicate: centreDiagnostic,
+                    scrollOrigin,
+                    requestedDirection: scrollDirection,
+                    targetCentreChanged: centreChanged(element),
+                  });
                   break;
                 }
                 strictFillFocus = true;
@@ -3817,7 +4145,7 @@ async function walkBlockScoped(
                   outcome = failed(
                     item,
                     attempt,
-                    `"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${cutterText(centreDiagnostic)}${unaskedLiveHit(item.kind, deps.platform, centreDiagnostic)}`,
+                    `"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${await coverText(item)}${cutterText(centreDiagnostic)}${unaskedLiveHit(item.kind, deps.platform, centreDiagnostic)}`,
                     before.screen,
                     await shoot(item),
                     ref,
@@ -3837,6 +4165,7 @@ async function walkBlockScoped(
                       scrollOrigin,
                       requestedDirection: scrollDirection,
                       targetCentreChanged: centreChanged(element),
+                      coverGap: coverGaps.get(item.line) ?? null,
                     },
                   );
                   break;
@@ -3898,6 +4227,40 @@ async function walkBlockScoped(
                 selectionDeadline = observationDeadline(before.timing);
                 selectionStartedAt = deps.now();
               }
+              if (item.kind === 'scroll') {
+                plainBand = plainScrollBand(before.screen, item.direction, deps.platform);
+                if (plainBand.unproven) {
+                  const proven = await presenceRecapture(item);
+                  if (proven) {
+                    plainBand = plainScrollBand(proven.screen, item.direction, deps.platform);
+                    before = proven;
+                    if (before.screen.front === 'dialog') throw dialogInFront();
+                  }
+                }
+                const {
+                  container: _container,
+                  distance: _distance,
+                  unproven: _unproven,
+                  ...receipt
+                } = plainBand;
+                scrollBands.set(item.line, receipt);
+                if (plainBand.status === 'unreachable') {
+                  outcome = withCause(
+                    failed(
+                      item,
+                      attempt,
+                      'SCROLL_CONTAINER_UNREACHABLE: the scroll view on screen is covered by a fixed element, so a drag cannot reach it',
+                      before.screen,
+                      await shoot(item),
+                    ),
+                    'scroll_container_unreachable',
+                  );
+                  if (outcome.failure)
+                    outcome.failure.suggestion =
+                      'the scroll view is hidden behind a fixed element at this text size or state; use `Scroll down until <target>` so the walk reports the covering element, or remove the step';
+                  break;
+                }
+              }
               act = await mutate(item, before, async (context) => {
                 if (item.kind === 'press') {
                   pressBase = before.screen;
@@ -3921,7 +4284,12 @@ async function walkBlockScoped(
                       ),
                     )
                   : item.kind === 'scroll'
-                    ? deps.scroll(item.direction, context)
+                    ? deps.scroll(
+                        item.direction,
+                        context,
+                        plainBand?.distance,
+                        plainBand?.container ? plainBand.band : undefined,
+                      )
                     : item.kind === 'back'
                       ? deps.back(context)
                       : deps.dialog(item.action, context);
@@ -3938,13 +4306,19 @@ async function walkBlockScoped(
                 outcome = failed(
                   item,
                   attempt,
-                  `${act.error ?? 'LIVE_HIT_UNPROVEN'}${cutterText(centreDiagnostic)}; no focus or typing was performed`,
+                  `${act.error ?? 'LIVE_HIT_UNPROVEN'}${await coverText(item)}${cutterText(centreDiagnostic)}; no focus or typing was performed`,
                   before.screen,
                   await shoot(item),
                   ref,
                   false,
                   'TARGET_NOT_FOUND',
                 );
+                coverDecision(item, before, {
+                  predicate: centreDiagnostic,
+                  scrollOrigin,
+                  requestedDirection: scrollDirection,
+                  targetCentreChanged: centreChanged(element),
+                });
                 break;
               }
               // Not hittable, unavailable, ambiguous, expired or moved: the inferred overlay refuses.
@@ -3952,7 +4326,7 @@ async function walkBlockScoped(
                 outcome = failed(
                   item,
                   attempt,
-                  `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${cutterText(liveHit)}; the live hit read refused the press (${liveHitRefusal(act.error)}); no tap was performed`,
+                  `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${await coverText(item)}${cutterText(liveHit)}; the live hit read refused the press (${liveHitRefusal(act.error)}); no tap was performed`,
                   before.screen,
                   await shoot(item),
                   ref,
@@ -3972,6 +4346,7 @@ async function walkBlockScoped(
                     scrollOrigin,
                     requestedDirection: scrollDirection,
                     targetCentreChanged: centreChanged(element),
+                    coverGap: coverGaps.get(item.line) ?? null,
                   },
                 );
                 break;
@@ -4015,13 +4390,19 @@ async function walkBlockScoped(
                   outcome = failed(
                     item,
                     attempt,
-                    `${act.error}; "${item.target.phrase}" stayed off screen after one scroll`,
+                    `${act.error}; "${item.target.phrase}" stayed off screen after one scroll${await coverText(item)}`,
                     before.screen,
                     await shoot(item),
                     ref,
                     false,
                     'TARGET_NOT_FOUND',
                   );
+                  coverDecision(item, before, {
+                    predicate: null,
+                    scrollOrigin,
+                    requestedDirection: scrollDirection,
+                    targetCentreChanged: centreChanged(element),
+                  });
                   break;
                 }
                 refusedIdentity = element;
@@ -4312,8 +4693,16 @@ async function walkBlockScoped(
               screen.front === 'app' &&
               (screen.captureCoverage?.native ?? screen.coverage?.native) === 'complete';
             if (!scrollDispatched) scrollRefused = true;
-            else if (!changed && complete(before.screen) && complete(after.screen))
-              stillScrolls += 1;
+            else if (complete(before.screen) && complete(after.screen)) {
+              const motion = plainBand?.container
+                ? scrollMotion(plainBand.container, before.screen, after.screen, item.direction)
+                : 'unknown';
+              if (motion === 'moved') changed = true;
+              if (!changed) {
+                stillScrolls += 1;
+                if (motion === 'still-overflow') overflowScrolls += 1;
+              }
+            }
           }
           if (
             !noMutationRefusal &&
@@ -4421,8 +4810,16 @@ async function walkBlockScoped(
               ...base(item, attempt),
               ...(shot ? { screenshot: shot } : {}),
               outcome: 'pass',
-              reason: redact(SCROLL_NO_VISIBLE_CHANGE),
-              scrollDetail: { status: 'no_visible_change', attempts: 2 },
+              reason: redact(
+                overflowScrolls === 2
+                  ? 'two scrolls were dispatched inside the scroll view and nothing moved although content extends beyond it'
+                  : SCROLL_NO_VISIBLE_CHANGE,
+              ),
+              scrollDetail: {
+                status:
+                  overflowScrolls === 2 ? 'no_visible_change_content_remains' : 'no_visible_change',
+                attempts: 2,
+              },
             });
             break;
           }
@@ -4669,7 +5066,11 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     ...(row.retryCause ? { retryCause: row.retryCause } : {}),
     ...(row.scrollDetail ? { scrollDetail: row.scrollDetail } : {}),
     ...(row.scrollBand ? { scrollBand: row.scrollBand } : {}),
+    ...(row.interruption ? { interruption: row.interruption } : {}),
     ...(row.overlayChecks ? { overlayChecks: row.overlayChecks } : {}),
+    ...(row.collapsed ? { collapsed: row.collapsed } : {}),
+    ...(row.candidateExclusions ? { candidateExclusions: row.candidateExclusions } : {}),
+    ...(row.coveredBy ? { coveredBy: row.coveredBy } : {}),
     ...(row.entryMismatch ? { entryMismatch: row.entryMismatch } : {}),
     ...(row.screenshotWithheld ? { screenshotWithheld: row.screenshotWithheld } : {}),
     ...(screenshot ? { screenshot } : {}),
@@ -4851,6 +5252,9 @@ export async function runPlan(
     };
     recordMediaLatch(privacy, sequence, deps, 0);
     const walk = async (block: Block, opts?: WalkOptions, operations?: Map<number, number>) => {
+      const laterBlocks = blocks.slice(
+        blocks.findIndex((planned) => planned.slug === block.slug) + 1,
+      );
       const outcome = await walkBlock(
         block,
         walking,
@@ -4860,14 +5264,12 @@ export async function runPlan(
         sequence,
         {
           ...opts,
-          laterTargets: blocks
-            .slice(blocks.findIndex((planned) => planned.slug === block.slug) + 1)
-            .flatMap((later) =>
-              later.items.flatMap((item) => {
-                const target = recoveryTarget(item);
-                return target?.quoted !== undefined ? [{ ...target, laterBlock: true }] : [];
-              }),
-            ),
+          laterTargets: laterBlocks.flatMap((later) =>
+            later.items.flatMap((item) => {
+              const target = recoveryTarget(item);
+              return target ? [target] : [];
+            }),
+          ),
         },
         operations,
       );
