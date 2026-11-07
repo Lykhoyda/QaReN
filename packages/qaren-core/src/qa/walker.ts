@@ -128,6 +128,7 @@ import {
   plannedSurface,
   optInDecision,
   optInShaped,
+  normaliseLabel,
   pressRecord,
   recover,
   protectionLapses,
@@ -2801,7 +2802,15 @@ async function walkBlockScoped(
       if (fresh.screen.front !== 'dialog' && fresh.screen.front !== 'app') return undefined;
       if (
         fresh.screen.front === 'app' &&
-        fresh.screen.elements.some((e) => !e.offscreen && `app ${e.label}` === first)
+        fresh.screen.elements.some(
+          (e) =>
+            !e.offscreen &&
+            (`app ${e.label}` === first ||
+              (interruptions.get(item.line)?.afterPlannedPress === true &&
+                first.startsWith('app ') &&
+                e.label !== undefined &&
+                normaliseLabel(e.label) === normaliseLabel(first.slice(4)))),
+        )
       )
         return failed(
           item,
@@ -3013,8 +3022,18 @@ async function walkBlockScoped(
             literalEvidence(after, text, 'equals').verdict === 'fail' &&
             !after.elements.some((e) => !e.offscreen && e.label === text);
           if (!optInDecided?.afterPlannedPress) return gone(label) ? 'pass' : 'fail';
+          const normalizedText = new Set(
+            [
+              ...after.visibleText,
+              ...(after.labelText ?? []),
+              ...(after.unresolvedText ?? []),
+              ...after.elements.flatMap((e) => (!e.offscreen && e.label ? [e.label] : [])),
+            ].map(normaliseLabel),
+          );
+          const optInGone = (text: string): boolean =>
+            gone(text) && !normalizedText.has(normaliseLabel(text));
           // Both controls must be gone on a complete capture; a surviving accept is never retried.
-          return completeCapture(after) && gone(label) && gone(optInDecided.accept)
+          return completeCapture(after) && optInGone(label) && optInGone(optInDecided.accept)
             ? 'pass'
             : {
                 fail: 'the permission opt-in was still in front after its decline; it was not retried',

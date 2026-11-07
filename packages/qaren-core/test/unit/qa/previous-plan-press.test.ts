@@ -1254,6 +1254,99 @@ test('a protected value equal to the decline word is never printed by the opt-in
   assert.doesNotMatch(JSON.stringify(result.steps), /Skip/);
 });
 
+test('normalized decline and accept forms dispatch only the observed decline label', async () => {
+  for (const decline of [
+    'skip',
+    'NOT NOW',
+    ' Later ',
+    'Maybe\t later',
+    'NO  THANKS',
+    'don‘t allow',
+  ]) {
+    for (const accept of [' allow ', 'ENABLE', 'TURN\t ON', 'Notify  me', ' YES,\t NOTIFY ME ']) {
+      const f = app(opener(), { '@open': () => permission(decline, accept), '@decline': ready });
+      const result = await run('1. Tap "Open"\n2. Wait for "Ready" to appear', f);
+      assert.equal(result.verdict, 'PASS', `${decline} / ${accept}: ${result.failure?.seen}`);
+      assert.deepEqual(f.actions, ['press @open', 'press @decline']);
+      assert.deepEqual(result.declinedOptIns, [{ line: 2, afterPlannedPress: true }]);
+    }
+  }
+});
+
+test('a normalized opt-in still in front after a later pass keeps planned-press protection', async () => {
+  const snapshot = screen([
+    ...permission(' NOT  NOW ', ' allow ').elements,
+    element('@ready', 'Ready', { kind: 'text' }),
+  ]);
+  const f = app(opener(), {
+    '@open': () => snapshot,
+    '@decline': () => screen([element('@done', 'Done', { kind: 'text' })]),
+  });
+  const result = await run(
+    '1. Tap "Open"\n2. Wait for "Ready" to appear\n3. Wait for "Done" to appear',
+    f,
+  );
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['press @open', 'press @decline']);
+  assert.deepEqual(result.declinedOptIns, [{ line: 3, afterPlannedPress: true }]);
+});
+
+test('changed casing or spacing does not prove an opt-in control disappeared', async () => {
+  for (const [ref, label] of [
+    ['@decline', ' NOT\t NOW '],
+    ['@accept', ' ALLOW '],
+  ]) {
+    const f = app(opener(), {
+      '@open': () => permission(),
+      '@decline': () => screen([element(ref, label)]),
+    });
+    const result = await run('1. Tap "Open"\n2. Wait for "Ready" to appear', f);
+    assert.equal(result.verdict, 'FAIL', label);
+    assert.deepEqual(f.actions, ['press @open', 'press @decline']);
+    assert.match(result.failure?.seen ?? '', /permission opt-in was still in front/);
+  }
+});
+
+test('a second opt-in sharing a normalized decline word keeps the per-item refusal', async () => {
+  let declines = 0;
+  const f = app(opener(), {
+    '@open': () => permission(),
+    '@decline': () => (++declines === 1 ? screen([]) : ready()),
+  });
+  f.deps.row = (row) => {
+    if (row.line === 2 && row.outcome === 'retry' && row.interruption?.afterPlannedPress)
+      f.show(permission(' NOT\t NOW ', 'Allow location'));
+  };
+  const result = await run('1. Tap "Open"\n2. Wait for "Ready" to appear', f);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, ['press @open', 'press @decline']);
+  assert.match(result.failure?.seen ?? '', /app interruption did not disappear/);
+});
+
+test('normalized repeat signatures survive lapse and private decline variants stay withheld', async () => {
+  for (const decline of ['skip', ' SKIP ', 'Skip']) {
+    const f = app(opener(), {
+      '@open': () => permission(decline, ' ENABLE NOTIFICATIONS '),
+      '@decline': ready,
+    });
+    f.deps.privacy = new ObservedPrivacy();
+    f.deps.privacy.classify([decline, 'sKiP']);
+    f.deps.row = (row) => {
+      if (row.line === 3 && row.outcome === 'pass')
+        f.show(permission('sKiP', 'enable notifications'));
+    };
+    const result = await run(
+      '1. Tap "Open"\n2. Wait for "Ready" to appear\n3. Wait for "Ready" to appear\n4. Wait for "Done" to appear',
+      f,
+    );
+    assert.equal(result.verdict, 'FAIL', result.failure?.seen);
+    assert.deepEqual(f.actions, ['press @open', 'press @decline']);
+    assert.match(result.failure?.seen ?? '', /asked again after recovery declined/);
+    assert.equal(JSON.stringify(result.steps).includes(decline), false);
+    assert.ok(!result.failure?.suggestion?.includes('sKiP'));
+  }
+});
+
 test('two different opt-ins on one item are both declined; two sharing a decline word keep the per-item refusal', async () => {
   const two = app(opener(), {
     '@open': () => permission(),

@@ -293,15 +293,16 @@ export function dismissCandidate(
     (e) => e.label !== undefined && DECLINE_LABELS.has(e.label) && failedPredicate(e) === undefined,
   );
   const only = candidates.length === 1 ? candidates[0] : undefined;
-  const shape = only ? optInShape(screen) : undefined;
-  const optIn = shape?.decline === only ? shape : undefined;
+  // The strict exception has normalized vocabulary; ordinary dismissal keeps its raw-label gate.
+  const shape = optInShape(screen);
+  const optIn = shape && failedPredicate(shape.decline) === undefined ? shape : undefined;
   if (optIn && planTargets[0].declinedOptIns?.has(optIn.signature))
-    return { repeated: only!.label! };
-  if (candidates.length && planTargets[0].afterPlannedPress) {
+    return { repeated: optIn.decline.label! };
+  if ((candidates.length || optIn) && planTargets[0].afterPlannedPress) {
     if (!optIn || !optInAfterPlannedPress(screen, planTargets, optIn))
       return rejected('previous-plan-press', 0);
     return {
-      label: only!.label!,
+      label: optIn.decline.label!,
       screenClass: 'permission-opt-in',
       optIn: { signature: optIn.signature, accept: optIn.accept.label!, afterPlannedPress: true },
     };
@@ -699,6 +700,7 @@ export function protectionLapses(passed: Screen): boolean {
   return (
     passed.front === 'app' &&
     completeCapture(passed) &&
+    optInShape(passed) === undefined &&
     !passed.elements.some(
       (e) =>
         !e.offscreen &&

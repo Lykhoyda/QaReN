@@ -1587,6 +1587,69 @@ test("a qualifying opt-in after the plan's own tap is declined once with its sig
   }
 });
 
+test('strict opt-in labels normalize case, whitespace and apostrophes without widening ordinary recovery', () => {
+  const variants = (label: string) => [
+    label.toLowerCase(),
+    label.toUpperCase(),
+    ` \t${label.replaceAll(' ', ' \t ')}\n`,
+    label.replaceAll("'", '‘'),
+    label.replaceAll("'", '’'),
+  ];
+  for (const decline of ['Skip', 'Not now', 'Later', 'Maybe later', 'No thanks', "Don't allow"]) {
+    for (const accept of [
+      'Allow',
+      'Enable',
+      'Turn on',
+      'Allow access to my location',
+      'Enable notifications',
+      'Turn on push notifications',
+      'Notify me',
+      'Yes, notify me',
+      'Allow Face ID',
+      'Enable Touch ID',
+    ]) {
+      const baseline = decide(optedIn(decline, accept), [tappedOpen()]).result;
+      assert.ok(baseline && 'optIn' in baseline && baseline.optIn);
+      for (const declineLabel of variants(decline)) {
+        for (const acceptLabel of variants(accept)) {
+          const { result, records } = decide(optedIn(declineLabel, acceptLabel), [tappedOpen()]);
+          assert.ok(
+            result && 'optIn' in result && result.optIn,
+            `${declineLabel} / ${acceptLabel}`,
+          );
+          assert.equal(result.label, declineLabel);
+          assert.equal(result.optIn.accept, acceptLabel);
+          assert.equal(result.optIn.signature, baseline.optIn.signature);
+          assert.deepEqual(records, []);
+        }
+      }
+    }
+  }
+  assert.equal(decide(optedIn('not now', 'ALLOW'), [waitHome]).result, undefined);
+  for (const accept of ['ALLOW ALL NOTIFICATIONS', 'Enable cookies', 'Allow contacts upload'])
+    assert.equal(labelOf(decide(optedIn(' NOT  NOW ', accept), [tappedOpen()]).result), undefined);
+  for (const mutate of [
+    (e: Element) => ({ ...e, kind: 'link' as const }),
+    (e: Element) => ({ ...e, disabled: true }),
+    (e: Element) => ({ ...e, hittable: false }),
+  ]) {
+    const snapshot = optedIn(' NOT  NOW ', ' ALLOW ');
+    snapshot.elements[2] = mutate(snapshot.elements[2]);
+    assert.equal(labelOf(decide(snapshot, [tappedOpen()]).result), undefined);
+  }
+});
+
+test('normalized strict opt-ins keep protection and repeat refusal across spelling variants', () => {
+  const first = decide(optedIn('Not now', 'Allow'), [tappedOpen()]).result;
+  assert.ok(first && 'optIn' in first && first.optIn);
+  const snapshot = optedIn(' NOT\t NOW ', ' ALLOW ');
+  assert.equal(protectionLapses(snapshot), false);
+  assert.deepEqual(
+    decide(snapshot, [{ ...waitHome, declinedOptIns: new Set([first.optIn.signature]) }]).result,
+    { repeated: ' NOT\t NOW ' },
+  );
+});
+
 test('an opt-in outside the closed shape, vocabulary or subject keeps the planned-press veto', () => {
   const vetoed = (snapshot: Screen, targets: RecoveryTarget[] = [tappedOpen()], name = '') => {
     const { result, records } = decide(snapshot, targets);
