@@ -70,6 +70,8 @@ object QaHierarchy {
         val clickable: Boolean = false,
         // The live node the presence pass refreshes and re-reads; opaque to the pure rules.
         val handle: Any? = null,
+        // AccessibilityNodeInfo.isFocused: the node holds input focus.
+        val focused: Boolean = false,
     )
 
     data class RawWindow(
@@ -104,6 +106,7 @@ object QaHierarchy {
         val clickable: Boolean = false,
         val windowId: Int? = null,
         val source: RawNode? = null,
+        val focused: Boolean = false,
     )
 
     sealed interface Front {
@@ -307,6 +310,7 @@ object QaHierarchy {
             drawingOrder = raw.drawingOrder,
             clickable = raw.clickable,
             source = raw,
+            focused = raw.focused,
         )
     }
 }

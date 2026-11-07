@@ -1219,6 +1219,20 @@ and no hint showing counts as empty, so clearing a plain field verifies as
 `exact`. A clear that reads back the placeholder remains `ambiguous`. Stale
 reads, and null text with unknown hint state, remain `unreadable`.
 
+On Android, a quoted Fill can target a native input that is hidden in place
+(for example, a transparent one-time-code input) when its nonempty frame is
+inside the viewport, clear of the keyboard, and it already holds input focus.
+It does not scroll or tap to focus that input. Without focus, the Fill refuses
+`TARGET_NOT_FOUND` immediately: tap the visible control that focuses the input
+before filling it, or fill a visible field instead. At dispatch, the runner
+requires one exact identifier match in a complete accessibility traversal and
+rechecks the input's class, frame, app package, enabled/editable state and focus.
+It replaces text with `ACTION_SET_TEXT`; rejection refuses without a keyevent
+fallback. The ordinary read-back verification rules above still apply. This
+requires runner capability `FOCUSED_HIDDEN_INPUT_V1`; an older runner is stale.
+The exception does not make the input visible evidence for Tap, Wait or checks,
+and does not apply to phrase Fill targets or genuinely off-screen inputs.
+
 For quoted strict fills, React-only identity merging and duplicate counting follow
 the [targeting rules](#check-a-plan). A strict fill never acts on a React-only
 input: when one is the only match, an accessibility-hidden input represented
@@ -1514,8 +1528,9 @@ window is listed and the topmost application window belongs to the permission
 controller or `android`, as with the notification permission prompt on Android
 13 and later, that window stands in for the app's and becomes the `Alert`
 snapshot; any other topmost window leaves no read. A node not
-visible to the user counts as off screen, so a quoted step never passes on a
-scrolled-out control. A node the traversal cannot read is counted as dropped,
+visible to the user counts as off screen, with the focused-input exception
+described under [Fill verification](#fill-verification-and-keyboard-fallback).
+A node the traversal cannot read is counted as dropped,
 and more than 600 nodes truncate the read; either leaves the capture
 incomplete. Literal steps can read an RN `Modal`'s content; its effect on React
 host association is described below.

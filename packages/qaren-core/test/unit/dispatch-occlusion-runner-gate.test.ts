@@ -18,6 +18,7 @@ test('an Android runner without DISPATCH_OCCLUSION_GUARD_V1 classifies for rebui
       'QA_READ_ONLY_V1',
       'SYSTEM_ALERT_TAP_V1',
       'A11Y_PRESENCE_V2',
+      'FOCUSED_HIDDEN_INPUT_V1',
     ],
   };
   assert.deepEqual(classifyAndroidHealth(health), {
