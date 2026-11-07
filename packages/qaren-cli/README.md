@@ -3704,7 +3704,8 @@ absent can expire protection that way. Protection also lapses once a later plann
 item passes on its own complete capture with no decline control on screen; an interruption
 appearing after that point is eligible for bounded recovery. Until a later item
 passes, protection holds, so a screen the tap opens late stays protected, and a
-later item passing while a decline control is still on screen keeps it. After the
+later item passing while a decline control or a strict permission opt-in shape (below)
+is still on screen keeps it. After the
 lapse, a later step targeting the interruption still keeps it through the later-target
 veto, which is checked before planned-press protection. Static decline text does not
 keep protection; an on-screen, non-structural decline with supported or unknown press
@@ -3758,7 +3759,7 @@ on the fresh complete capture, and anything unknown keeps the veto:
   declined this way in the run.
 
 The Jev veto still applies. Recovery taps the decline once, never the accept, and proves
-on a complete capture that both labels are gone; otherwise the step fails with
+on a complete capture that both labels are gone in any normalised spelling; otherwise the step fails with
 `the permission opt-in was still in front after its decline; it was not retried`. It then
 retries the step once within the step's interruption recoveries. The retry row reads
 `recovered: declined a permission opt-in that followed the plan's own tap (<decline>)`,
