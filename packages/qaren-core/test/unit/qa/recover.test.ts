@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   dismissCandidate,
   plannedSurface,
+  pressRecord,
   protectionLapses,
   recover,
   soleDecline,
@@ -1494,4 +1495,397 @@ test('only departure of the identified planned destination releases protection',
   assert.equal(surfaceGone(presented({ extraModal: 'home' }), surface), false);
   assert.equal(surfaceGone(presented({ modalId: 'other' }), surface), true);
   assert.equal(surfaceGone(presented(), plannedSurface(fixtureScreen([]))), false);
+});
+
+// AI-484: a permission opt-in after the plan's own tap, declined only when every condition holds.
+const opener = (...extra: Element[]): Screen => fixtureScreen([element('@open', 'Open'), ...extra]);
+const optedIn = (decline: string, accept: string, ...extra: Element[]): Screen =>
+  fixtureScreen([
+    element('@title', 'Stay up to date', { kind: 'text' }),
+    element('@body', 'Get notifications when your order ships', { kind: 'text' }),
+    element('@decline', decline),
+    element('@accept', accept),
+    ...extra,
+  ]);
+// The same opt-in from native nodes, so quoted plan text has literal evidence on it.
+function nativeOptIn(): Screen {
+  const rect = { x: 0, y: 0, width: 402, height: 874 };
+  const nodes: NativeNode[] = [
+    { ref: '@app', type: 'Application', rect },
+    { ref: '@window', type: 'Window', parentIndex: 0, rect },
+    {
+      ref: '@title',
+      type: 'StaticText',
+      parentIndex: 1,
+      label: 'Stay up to date',
+      rect: { x: 20, y: 200, width: 360, height: 40 },
+    },
+    {
+      ref: '@body',
+      type: 'StaticText',
+      parentIndex: 1,
+      label: 'Get notifications when your order ships',
+      rect: { x: 20, y: 260, width: 360, height: 40 },
+    },
+    {
+      ref: '@decline',
+      type: 'Button',
+      parentIndex: 1,
+      identifier: 'decline-id',
+      label: 'Not now',
+      hittable: true,
+      rect: { x: 20, y: 700, width: 170, height: 44 },
+    },
+    {
+      ref: '@accept',
+      type: 'Button',
+      parentIndex: 1,
+      identifier: 'accept-id',
+      label: 'Allow',
+      hittable: true,
+      rect: { x: 210, y: 700, width: 170, height: 44 },
+    },
+  ];
+  return join(
+    nodes,
+    [],
+    'app',
+    { native: 'complete', react: 'complete' },
+    { hosts: [], complete: true },
+    {
+      source: 'xcui-live',
+      nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+    },
+  );
+}
+const labelOf = (result: ReturnType<typeof dismissCandidate>) =>
+  result && 'label' in result ? result.label : undefined;
+const tappedOpen = (before = opener()): RecoveryTarget => ({
+  ...waitHome,
+  afterPlannedPress: true,
+  pressRecord: pressRecord(before, before.elements[0]),
+});
+
+test("a qualifying opt-in after the plan's own tap is declined once with its signature", () => {
+  for (const [decline, accept] of [
+    ['Not now', 'Allow'],
+    ['Skip', 'Yes, notify me'],
+    ['Skip', 'yes,  NOTIFY me'],
+    ["Don't allow", 'Enable notifications'],
+    ['Don’t allow', 'Turn on push notifications'],
+    ['Later', 'Allow access to my location'],
+    ['Maybe later', 'Allow Face ID'],
+    ['No thanks', 'Notify me'],
+  ]) {
+    const { result, records } = decide(optedIn(decline, accept), [tappedOpen()]);
+    assert.ok(result && 'label' in result, `${decline} / ${accept}`);
+    assert.equal(result.label, decline);
+    assert.equal(result.screenClass, 'permission-opt-in');
+    assert.equal(result.optIn?.accept, accept);
+    assert.equal(typeof result.optIn?.signature, 'string');
+    assert.deepEqual(records, []);
+  }
+});
+
+test('an opt-in outside the closed shape, vocabulary or subject keeps the planned-press veto', () => {
+  const vetoed = (snapshot: Screen, targets: RecoveryTarget[] = [tappedOpen()], name = '') => {
+    const { result, records } = decide(snapshot, targets);
+    assert.equal(result, undefined, name);
+    assert.equal(records.at(-1)?.veto, 'previous-plan-press', name);
+  };
+  for (const accept of [
+    'Allow all notifications',
+    'Allow without notifications',
+    'Allow contacts upload',
+    'Yes, notification preferences',
+    'Allow booking notifications',
+    'Enable promotional messages',
+    'Enable analytics',
+    'Allow data sharing',
+    'Enable cookies',
+    'Allow notification opt-out',
+    'Allow access',
+    'Allow notifications.',
+    'Continue',
+    'OK',
+    'Accept',
+    'Agree',
+  ])
+    vetoed(optedIn('Not now', accept), undefined, accept);
+  vetoed(
+    fixtureScreen([
+      element('@title', 'Stay up to date', { kind: 'text' }),
+      element('@decline', 'Skip'),
+      element('@accept', 'Allow'),
+    ]),
+    undefined,
+    'bare accept without a subject in visible text',
+  );
+  vetoed(optedIn('Skip', 'Turn on all'), undefined, 'turn on all');
+  const screens: Record<string, Screen> = {
+    'privacy choices': fixtureScreen([
+      element('@title', 'Your privacy choices', { kind: 'text' }),
+      element('@decline', 'Skip'),
+      element('@accept', 'Allow notifications'),
+    ]),
+    'contacts shared with other companies': fixtureScreen([
+      element('@title', 'Find friends: we share contacts with other companies', { kind: 'text' }),
+      element('@decline', 'Not now'),
+      element('@accept', 'Allow contacts'),
+    ]),
+    'consent only in merged labels': {
+      ...optedIn('Not now', 'Allow'),
+      labelText: ['Read our terms'],
+    },
+    'consent only in uncertain-geometry text': {
+      ...optedIn('Not now', 'Allow'),
+      unresolvedText: ['Marketing updates'],
+    },
+    'consent only in a value': optedIn(
+      'Not now',
+      'Allow',
+      element('@note', 'Note', { kind: 'text', value: 'Shared with partners' }),
+    ),
+    'consent only off-screen': optedIn(
+      'Not now',
+      'Allow',
+      element('@footer', 'Cookie policy', { kind: 'text', offscreen: true }),
+    ),
+    'text element with neither label nor value': optedIn(
+      'Not now',
+      'Allow',
+      element('@blank', '', { kind: 'text', label: undefined }),
+    ),
+    'secure field on screen': optedIn(
+      'Not now',
+      'Allow',
+      element('@pin', 'PIN', { kind: 'other', secure: true }),
+    ),
+    'three controls': optedIn('Not now', 'Allow', element('@more', 'Learn more')),
+    'an input': optedIn('Not now', 'Allow', element('@field', 'Name', { kind: 'input' })),
+    'a pressable link labelled Allow': fixtureScreen([
+      element('@body', 'Get notifications', { kind: 'text' }),
+      element('@decline', 'Skip'),
+      element('@accept', 'Allow', { kind: 'link' }),
+    ]),
+    'a disabled accept': fixtureScreen([
+      element('@body', 'Get notifications', { kind: 'text' }),
+      element('@decline', 'Not now'),
+      element('@accept', 'Allow', { disabled: true }),
+    ]),
+    'an accept that is not hittable': fixtureScreen([
+      element('@body', 'Get notifications', { kind: 'text' }),
+      element('@decline', 'Not now'),
+      element('@accept', 'Allow', { hittable: false }),
+    ]),
+    'unknown press capability': optedIn(
+      'Not now',
+      'Allow',
+      element('@mystery', 'Thing', {
+        kind: 'other',
+        semantic: { press: 'unknown', fill: 'unsupported', visibility: 'visible' },
+      }),
+    ),
+    'an unassociated React control': {
+      ...optedIn('Not now', 'Allow'),
+      semanticUnassociatedReact: 1,
+    },
+    'a subject only in merged labels': {
+      ...fixtureScreen([
+        element('@title', 'Stay up to date', { kind: 'text' }),
+        element('@decline', 'Skip'),
+        element('@accept', 'Allow'),
+      ]),
+      labelText: ['notifications'],
+    },
+    'a subject only in uncertain-geometry text': {
+      ...fixtureScreen([
+        element('@title', 'Stay up to date', { kind: 'text' }),
+        element('@decline', 'Skip'),
+        element('@accept', 'Allow'),
+      ]),
+      unresolvedText: ['location'],
+    },
+    'a subject only in a value': fixtureScreen([
+      element('@title', 'Stay up to date', { kind: 'text', value: 'camera' }),
+      element('@decline', 'Skip'),
+      element('@accept', 'Allow'),
+    ]),
+    'a subject only off-screen': fixtureScreen([
+      element('@title', 'Stay up to date', { kind: 'text' }),
+      element('@decline', 'Skip'),
+      element('@accept', 'Allow'),
+      element('@footer', 'notifications', { kind: 'text', offscreen: true }),
+    ]),
+  };
+  for (const [name, snapshot] of Object.entries(screens)) vetoed(snapshot, undefined, name);
+  for (const decline of ['Close', 'Cancel', 'Dismiss']) {
+    const { result, records } = decide(optedIn(decline, 'Allow'), [tappedOpen()]);
+    assert.equal(result, undefined, decline);
+    assert.equal(records.at(-1)?.veto, 'previous-plan-press', decline);
+  }
+  const { result } = decide(fixtureScreen([element('@decline', 'Skip')]), [tappedOpen()]);
+  assert.equal(result, undefined, 'a sole decline');
+  const incomplete = {
+    ...optedIn('Not now', 'Allow'),
+    coverage: { native: 'complete', react: 'partial' },
+  };
+  assert.equal(decide(incomplete as Screen, [tappedOpen()]).records[0]?.veto, 'coverage');
+});
+
+test('a plan that addresses the opt-in or answered one with its last tap keeps the refusal', () => {
+  const snapshot = optedIn('Not now', 'Allow');
+  const native = nativeOptIn();
+  assert.equal(labelOf(decide(native, [tappedOpen()]).result), 'Not now');
+  const quoted = (text: string, kind: NonNullable<RecoveryTarget['kind']>) => ({
+    phrase: text,
+    quoted: text,
+    kind,
+    line: 7,
+  });
+  for (const [name, target, veto] of [
+    ['quoted current wait', quoted('Allow', 'wait'), 'current-target'],
+    ['literal current check', quoted('Stay up to date', 'check'), 'current-target'],
+    ['text-only later press', { ...quoted('Not now', 'press'), exact: 'text' }, 'later-target'],
+    ['later test id', later('decline-id', 'press', { exact: 'id' }), 'later-target'],
+    [
+      'later described check',
+      { phrase: 'the opt-in is shown', kind: 'check', line: 9 },
+      'later-target',
+    ],
+  ] as const) {
+    const targets: RecoveryTarget[] =
+      veto === 'current-target'
+        ? [{ ...target, afterPlannedPress: true, pressRecord: tappedOpen().pressRecord }]
+        : [tappedOpen(), target];
+    const { result, records } = decide(native, targets);
+    assert.equal(result, undefined, name);
+    assert.equal(records[0]?.veto, veto, name);
+  }
+  for (const [name, declared] of [
+    ['declared label', { phrase: 'Allow', quoted: 'Allow' }],
+    ['declared decline', { phrase: 'Not now', quoted: 'Not now' }],
+    ['declared test id', { phrase: 'accept-id', quoted: 'accept-id' }],
+    ['declared description', { phrase: 'the allow button' }],
+  ] as const) {
+    const replayed = later('stale-id', 'press', { exact: 'id', declared });
+    const { result, records } = decide(native, [tappedOpen(), replayed]);
+    assert.equal(result, undefined, name);
+    assert.equal(records.at(-1)?.veto, 'previous-plan-press', name);
+  }
+  const unrelated = later('stale-id', 'press', {
+    exact: 'id',
+    declared: { phrase: 'Checkout', quoted: 'Checkout' },
+  });
+  assert.equal(labelOf(decide(native, [tappedOpen(), unrelated]).result), 'Not now');
+  const answered: Record<string, Screen> = {
+    'tapped Allow': opener(),
+    'tapped Skip': opener(),
+    'tapped Not now': opener(),
+  };
+  for (const [name, before] of Object.entries(answered)) {
+    before.elements[0].label = name.slice('tapped '.length);
+    const { result, records } = decide(snapshot, [tappedOpen(before)]);
+    assert.equal(result, undefined, name);
+    assert.equal(records.at(-1)?.veto, 'previous-plan-press', name);
+  }
+  const unlabelled = opener();
+  unlabelled.elements[0] = { ...unlabelled.elements[0], label: undefined, testID: 'open-id' };
+  const withheld: Record<string, RecoveryTarget> = {
+    'tapped control without a label': tappedOpen(unlabelled),
+    'the decline was already in front': tappedOpen(opener(element('@decline', 'Not now'))),
+    'the accept was already in front': tappedOpen(opener(element('@accept', 'Allow'))),
+    'more info with unchanged identities': tappedOpen(
+      opener(element('@decline', 'Not now'), element('@accept', 'Allow')),
+    ),
+    'record unknown': { ...waitHome, afterPlannedPress: true, pressRecord: {} },
+    'record absent': { ...waitHome, afterPlannedPress: true },
+    'record evidence incomplete': tappedOpen(
+      opener(
+        element('@mystery', 'Thing', {
+          kind: 'other',
+          semantic: { press: 'unknown', fill: 'unsupported', visibility: 'visible' },
+        }),
+      ),
+    ),
+  };
+  for (const [name, target] of Object.entries(withheld)) {
+    const { result, records } = decide(snapshot, [target]);
+    assert.equal(result, undefined, name);
+    assert.equal(records.at(-1)?.veto, 'previous-plan-press', name);
+  }
+});
+
+test('relabelled opt-in controls are declined as the decision applied, not as proof of new controls', () => {
+  const before = opener(
+    element('@decline', 'Remind me', { testID: 'first' }),
+    element('@accept', 'Okay', { testID: 'second' }),
+  );
+  const relabelled = optedIn('Not now', 'Allow');
+  assert.equal(labelOf(decide(relabelled, [tappedOpen(before)]).result), 'Not now');
+  relabelled.elements[2].testID = 'first-v2';
+  relabelled.elements[3].testID = 'second-v2';
+  assert.equal(labelOf(decide(relabelled, [tappedOpen(before)]).result), 'Not now');
+  const labelBased = opener(element('@decline', 'Not now'), element('@accept', 'Allow'));
+  const idBased = optedIn('Not now', 'Allow');
+  idBased.elements[2].testID = 'decline-id';
+  idBased.elements[3].testID = 'accept-id';
+  assert.equal(labelOf(decide(idBased, [tappedOpen(labelBased)]).result), 'Not now');
+});
+
+test('a declined opt-in signature is never tapped again, with or without protection', () => {
+  const snapshot = optedIn('Not now', 'Allow');
+  const first = decide(snapshot, [tappedOpen()]).result;
+  assert.ok(first && 'optIn' in first && first.optIn);
+  const declined = new Set([first.optIn.signature]);
+  for (const target of [
+    { ...tappedOpen(), declinedOptIns: declined },
+    { ...waitHome, declinedOptIns: declined },
+  ])
+    assert.deepEqual(decide(snapshot, [target]).result, { repeated: 'Not now' });
+  const other = optedIn('Skip', 'Enable notifications');
+  assert.equal(
+    labelOf(decide(other, [{ ...tappedOpen(), declinedOptIns: declined }]).result),
+    'Skip',
+  );
+});
+
+test('a repeated opt-in fails without a tap through recover', async () => {
+  const snapshot = optedIn('Not now', 'Allow');
+  const first = decide(snapshot, [tappedOpen()]).result as { optIn: { signature: string } };
+  const taps: string[] = [];
+  const result = await recover(
+    snapshot,
+    {
+      dialog: async () => ({ ok: true, proven: true }),
+      hideDevMenu: async () => ({ ok: true }),
+      dismiss: async (label) => {
+        taps.push(label);
+        return 'pass';
+      },
+    },
+    undefined,
+    [{ ...waitHome, declinedOptIns: new Set([first.optIn.signature]) }],
+  );
+  assert.deepEqual(taps, []);
+  assert.ok(result && 'fail' in result);
+  assert.equal(result.repeatedOptIn, 'Not now');
+  assert.match(String(result.fail), /asked again after recovery declined/);
+});
+
+test('the dispatch record keeps the tapped label and proven identities, unknown when unprovable', () => {
+  const before = opener(element('@other', 'Other', { testID: 'other-id' }));
+  assert.deepEqual(pressRecord(before, before.elements[0]), {
+    label: 'open',
+    controls: [
+      JSON.stringify(['button', 'label', 'open']),
+      JSON.stringify(['button', 'id', 'other-id']),
+    ],
+  });
+  assert.deepEqual(pressRecord(undefined, before.elements[0]), { label: 'open' });
+  assert.deepEqual(pressRecord(before, undefined).label, undefined);
+  const anonymous = opener(element('@blank', '', { label: undefined }));
+  assert.equal(pressRecord(anonymous, anonymous.elements[0]).controls, undefined);
+  const partial: Screen = { ...before, coverage: { ...before.coverage!, react: 'incomplete' } };
+  assert.deepEqual(pressRecord(partial, partial.elements[0]), { label: 'open' });
 });

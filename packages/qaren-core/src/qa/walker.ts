@@ -117,12 +117,18 @@ import {
   type InterruptionProof,
   type InterruptionScreenClass,
   type LoginMarker,
+  type OptInDecision,
   type PlannedSurface,
+  type PressRecord,
   type RecoveryTarget,
+  FIXED_CONTROL_WORDS,
+  completeCapture,
   dismissCandidate,
   isDeclineLabel,
   plannedSurface,
+  optInDecision,
   optInShaped,
+  pressRecord,
   recover,
   protectionLapses,
   soleDecline,
@@ -515,6 +521,7 @@ const recoveryTarget = (item: Item): RecoveryTarget | undefined => {
     ...target,
     kind: item.kind,
     line: item.line,
+    ...(item.declared ? { declared: item.declared } : {}),
   };
 };
 
@@ -553,7 +560,11 @@ export interface WalkSequence {
   // System prompts recovery declined in this run; a repeat ask is the plan author's to answer.
   declinedPrompts?: Set<string>;
   // passedSince: a later planned item passed while a decline control stayed on screen.
-  plannedPress?: PlannedSurface & { line: number; passedSince?: boolean };
+  plannedPress?: PlannedSurface & { line: number; passedSince?: boolean; record?: PressRecord };
+  // Permission opt-ins recovery declined in this run, by signature; a repeat ask is never tapped again.
+  declinedOptIns?: Set<string>;
+  // One entry per permission opt-in dismissal in this run.
+  optInDeclines?: Array<{ line: number; afterPlannedPress: boolean }>;
   // Armed at launch and after a login replay; the next top-level Tap or Fill spends it.
   launchWait?: boolean;
 }
@@ -759,6 +770,7 @@ async function walkBlockScoped(
   let postActionShot: string | undefined;
   let postActionObservation: Observation | undefined;
   let postActionDevError: LedgerRow['devError'];
+  let pressDispatch: PressRecord | undefined;
   let line = 0;
   let mutationStarted = false;
   // The Fill ladder rung of the current item's last fill dispatch, and when the item began.
@@ -1656,7 +1668,11 @@ async function walkBlockScoped(
         opts.recover !== false &&
         block.items.some((item) => item.line === row.line && item.kind === 'press')
       )
-        sequence.plannedPress = { ...plannedSurface(latest, pressBase), line: row.line };
+        sequence.plannedPress = {
+          ...plannedSurface(latest, pressBase),
+          line: row.line,
+          ...(pressDispatch ? { record: pressDispatch } : {}),
+        };
     }
     rows.push(timed);
     deps.row(valueFree(timed));
@@ -2795,20 +2811,31 @@ async function walkBlockScoped(
           await shoot(item),
         );
     }
-    const surface = sequence.plannedPress;
-    if (surface && surfaceGone(fresh.screen, surface)) sequence.plannedPress = undefined;
     const remainingItems = block.items.slice(block.items.indexOf(item) + 1);
-    const planTargets = [
-      {
-        ...(recoveryTarget(item) ?? { phrase: '' }),
-        ...(sequence.plannedPress ? { afterPlannedPress: true } : {}),
-      },
+    const laterTargets = [
       ...remainingItems.flatMap((remaining) => {
         const target = recoveryTarget(remaining);
         return target ? [target] : [];
       }),
       ...(opts.laterTargets ?? []),
     ];
+    // Protection and the current target's metadata are re-read on every screen they are judged on.
+    const targetsFor = (screen: Screen): RecoveryTarget[] => {
+      const surface = sequence.plannedPress;
+      if (surface && surfaceGone(screen, surface)) sequence.plannedPress = undefined;
+      const press = sequence.plannedPress;
+      return [
+        {
+          ...(recoveryTarget(item) ?? { phrase: '' }),
+          ...(press
+            ? { afterPlannedPress: true, ...(press.record ? { pressRecord: press.record } : {}) }
+            : {}),
+          ...(sequence.declinedOptIns ? { declinedOptIns: sequence.declinedOptIns } : {}),
+        },
+        ...laterTargets,
+      ];
+    };
+    let planTargets = targetsFor(fresh.screen);
     if (interruptions.get(item.line)?.outcome !== 'dismissed') interruptions.delete(item.line);
     const interruptionRejected = (record: InterruptionDiagnostic, observation?: number) => {
       if (record.veto === 'previous-plan-press') pressVetoed = item;
@@ -2846,6 +2873,7 @@ async function walkBlockScoped(
     // The read-back after a dispatched decline: what is on screen once the press has run.
     let afterDecline: Screen | undefined;
     let declineCentreY: number | undefined;
+    let optInDecided: OptInDecision | undefined;
     const result = await recover(
       fresh.screen,
       {
@@ -2863,7 +2891,8 @@ async function walkBlockScoped(
           ));
         },
         ...(deps.login && first === undefined ? { replayLogin } : {}),
-        dismiss: async (label) => {
+        dismiss: async (label, optIn) => {
+          optInDecided = optIn;
           if (deps.interruptionVeto) {
             const mask = privacy.maskForModel(privacy.modelValues(), [
               item.raw,
@@ -2915,18 +2944,25 @@ async function walkBlockScoped(
                 const screen = await captureScreen({ ...options, platformPresence: true });
                 if (!dispatched) {
                   observed = screen;
+                  planTargets = targetsFor(screen);
                   const candidate = dismissCandidate(
                     screen,
                     planTargets,
                     (record) => interruptionRejected(record),
                     proof,
                   );
-                  if (!candidate || 'refuse' in candidate || candidate.label !== label)
+                  if (
+                    !candidate ||
+                    'refuse' in candidate ||
+                    'repeated' in candidate ||
+                    candidate.label !== label
+                  )
                     throw new ResolutionError({
                       refuse: 'INTERRUPTION_CHANGED',
                       reason:
                         'the interruption or plan targets changed before dispatch; nothing was tapped',
                     });
+                  optInDecided = optInDecision(screen, candidate);
                 }
                 return screen;
               },
@@ -2973,10 +3009,16 @@ async function walkBlockScoped(
           if (nested.failure) return { fail: nested.failure.seen };
           const after = (await capture()).screen;
           afterDecline = after;
-          return literalEvidence(after, label, 'equals').verdict === 'fail' &&
-            !after.elements.some((e) => !e.offscreen && e.label === label)
+          const gone = (text: string): boolean =>
+            literalEvidence(after, text, 'equals').verdict === 'fail' &&
+            !after.elements.some((e) => !e.offscreen && e.label === text);
+          if (!optInDecided?.afterPlannedPress) return gone(label) ? 'pass' : 'fail';
+          // Both controls must be gone on a complete capture; a surviving accept is never retried.
+          return completeCapture(after) && gone(label) && gone(optInDecided.accept)
             ? 'pass'
-            : 'fail';
+            : {
+                fail: 'the permission opt-in was still in front after its decline; it was not retried',
+              };
         },
       },
       deps.login?.marker,
@@ -3020,7 +3062,12 @@ async function walkBlockScoped(
         ...(result && 'handled' in result && result.screenClass
           ? { screenClass: result.screenClass }
           : {}),
+        ...(optInDecided?.afterPlannedPress
+          ? { screenClass: 'permission-opt-in', afterPlannedPress: true }
+          : {}),
       });
+    if (optInDecided && declineDispatched)
+      (sequence.declinedOptIns ??= new Set()).add(optInDecided.signature);
     if (!result) return undefined;
     if ('handled' in result && !declineAttempted) recoveries += 1;
     if ('handled' in result) {
@@ -3037,6 +3084,12 @@ async function walkBlockScoped(
             ? `dialog ${promptSignature(fresh.screen)}`
             : `app ${result.label}`,
         );
+      // Counted from the decision taken at dispatch, which the re-check refreshes.
+      if (result.handled === 'interruption' && optInDecided)
+        (sequence.optInDeclines ??= []).push({
+          line: item.line,
+          afterPlannedPress: optInDecided?.afterPlannedPress === true,
+        });
       // The recovery acted on the device, so a later selector miss is not a pre-mutation re-walk.
       mutationStarted = true;
       dispatchedOn = fresh.id;
@@ -3051,7 +3104,13 @@ async function walkBlockScoped(
         ...(interruptionShot ? { screenshot: interruptionShot } : {}),
         ...(proof ? { dialog: proof } : {}),
         reason: redact(
-          `${reason}; recovered: ${result.label ? `dismissed ${SCREEN_CLASS_NAMES[result.screenClass ?? 'app']} with ${result.label}` : result.handled}; retrying the step once`,
+          `${reason}; recovered: ${
+            optInDecided?.afterPlannedPress && result.label
+              ? `declined a permission opt-in that followed the plan's own tap (${FIXED_CONTROL_WORDS.has(result.label) ? result.label : 'the decline control'})`
+              : result.label
+                ? `dismissed ${SCREEN_CLASS_NAMES[result.screenClass ?? 'app']} with ${result.label}`
+                : result.handled
+          }; retrying the step once`,
         ),
       });
       const budget = stepBudgets.get(operationFor(item.line))!;
@@ -3066,12 +3125,22 @@ async function walkBlockScoped(
     }
     const shown = loginReplayed ? (await capture()).screen : (afterDecline ?? fresh.screen);
     const shot = await shoot(item);
-    return 'fail' in result
-      ? failed(item, attempt, result.fail, shown, shot)
-      : {
-          ...failed(item, attempt, result.refuse.message, fresh.screen, shot),
-          refusal: result.refuse,
-        };
+    if ('fail' in result) {
+      const outcome = failed(item, attempt, result.fail, shown, shot);
+      if (result.repeatedOptIn && outcome.failure) {
+        const after = sequence.plannedPress?.line;
+        outcome.failure.suggestion = redact(
+          after !== undefined
+            ? `Add a step after line ${after}: Tap "${result.repeatedOptIn}".`
+            : `Add a step before line ${item.line}: Tap "${result.repeatedOptIn}".`,
+        );
+      }
+      return outcome;
+    }
+    return {
+      ...failed(item, attempt, result.refuse.message, fresh.screen, shot),
+      refusal: result.refuse,
+    };
   };
 
   const dismissDevError = async (
@@ -3336,6 +3405,7 @@ async function walkBlockScoped(
     postActionShot = undefined;
     postActionObservation = undefined;
     postActionDevError = undefined;
+    pressDispatch = undefined;
     mutationStarted = false;
     stepDispatched = false;
     fillMethod = undefined;
@@ -4600,6 +4670,7 @@ async function walkBlockScoped(
                   pressBase = before.screen;
                   pressSelector =
                     exactSelector(item.target) ?? (element ? elementSelector(element) : undefined);
+                  pressDispatch = pressRecord(before.screen, element);
                   return liveHit
                     ? deps.press(ref!, context, { requireLiveHit: true })
                     : deps.press(ref!, context);
@@ -5501,8 +5572,9 @@ export function replayBlock(block: Block, stored: StoredBlock): Block {
       const step = stored.steps[i];
       if (item.kind === 'wait' && item.precondition) return item;
       if (item.kind === 'press' || item.kind === 'fill' || item.kind === 'wait')
-        return { ...item, target: exact(step.selector!) };
-      if (item.kind === 'scroll' && item.until) return { ...item, until: exact(step.until!) };
+        return { ...item, target: exact(step.selector!), declared: item.target };
+      if (item.kind === 'scroll' && item.until)
+        return { ...item, until: exact(step.until!), declared: item.until };
       return item;
     }),
   };
@@ -5706,6 +5778,7 @@ export async function runPlan(
           path(),
           recoveries,
         ),
+        ...(sequence.optInDeclines?.length ? { declinedOptIns: sequence.optInDeclines } : {}),
         videoPublication: videoPublication(),
         videoPolicy,
         nonStrictPublication: nonStrictPublication(),

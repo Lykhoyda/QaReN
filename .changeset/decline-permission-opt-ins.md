@@ -1,0 +1,5 @@
+---
+"qaren": patch
+---
+
+Decline an in-app permission opt-in that follows the plan's own tap when it is exactly two proven buttons with a closed-vocabulary decline and permission accept, names a permission subject, carries no consent wording anywhere in the capture, is not addressed by the plan (including a replayed step's declared wording), and was not answered by the plan's last tap; tap only the decline, prove both controls gone, retry the step once, and never tap the same opt-in twice in a run. The interruption receipt gains `afterPlannedPress`, the ledger records `declinedOptIns`, the verdict stays `PASS`, and the report and pull-request comment show the declined opt-ins beside the pass.
