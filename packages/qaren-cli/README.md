@@ -1907,7 +1907,11 @@ an earlier `runtime-input` or `echo` with source `input`, including its observat
 line. A successful pre-plan login resets the video window and, in non-strict mode,
 the screenshot cause and count; a retained cause then uses the new window's
 starting line. `videoPublication` retains the strict verdict;
-`nonStrictPublication` supplies the separate non-strict verdict.
+`nonStrictPublication` supplies the separate non-strict verdict. A walk refused
+after admission keeps both computed verdicts, except a
+`PRIVATE_INPUT_CAPTURE_UNKNOWN` refusal; that refusal and any refusal before
+admission report `videoPublication: unknown` with no `nonStrictPublication`,
+which withholds video in either mode.
 The receipt includes one `media_withheld=<code>[/<kind|source>]@line <N>` note,
 preferring the video cause in non-strict mode and the screenshot cause otherwise.
 `report.md` marks each withheld row and explains
@@ -4178,7 +4182,19 @@ API <34 stops screen recording at 180 seconds.
 Both platforms encode the capture to `media/video.mp4` (H.264, 30 fps), using
 `ffmpeg` and checking playable duration with `ffprobe`. If these tools are
 unavailable, capture cannot start, or finalization fails, the walk can still
-complete and the receipt's `video` outcome says why. The local recording stays
+complete and the receipt's `video` outcome says why, after the published copy is
+prepared, so a failed trim is reported rather than `available`. An unavailable
+video also carries a closed `videoReason` code (`not-recorded`,
+`recorder-failed`, `ffmpeg-missing`, `encode-failed`, `no-playable-duration`,
+`cancelled`, `runtime-input-withheld`, `interrupted`, `no-admitted-frame`,
+`no-window`, `trim-failed`, `android-unsupported`, `published-copy-missing`,
+`other`) in the receipt and `pr.json`, keeping the detail text unchanged; a
+too-large recording is its own outcome, and unrecognized detail text in older
+`pr.json` files loads as `other`. `qaren publish` stores the reason it published
+in `publication.json` and the receipt's `publicationVideoReason`. When no video
+is attached, the receipt's `video_summary`, `report.md` and `qaren publish`
+repeat the PR comment's video sentence: the withholding reason when the video
+is not eligible, otherwise the unavailability reason. The local recording stays
 complete; `qaren publish` uploads only
 `media/video-published.mp4`, trimmed under the [video publication contract](#video-publication).
 Blocks the walk saved are copied to `blocks/` before the
