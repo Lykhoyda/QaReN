@@ -102,7 +102,7 @@ test('Android tap-first: the ordinary press capture cannot prove the cover', () 
   );
 });
 
-test('Android with two presented modals keeps the earlier recovery instead of vetoing', () => {
+test('Android with two presented modals vetoes recovery without a proven cover', () => {
   const a = joinArgs('fill-first-presence');
   const nodes = a.reactHostEvidence.typography.nodes;
   // Turn a mounted Home container with children into a second presented modal.
@@ -120,12 +120,12 @@ test('Android with two presented modals keeps the earlier recovery instead of ve
   const cover = modalCoverDiagnostic(screen)!;
   assert.equal(cover.associatedCount, 0);
   assert.ok(cover.modalCount >= 1);
-  assert.deepEqual(decide(screen, [target('qa-promo-home-field', 'fill', 23)], 'surface').result, {
-    label: 'Close',
-  });
-  assert.deepEqual(
-    decide(screen, [target('qa-promo-home-target', 'wait', 23, { exact: 'id' })], 'covered-target')
-      .result,
-    { label: 'Close' },
-  );
+  for (const decision of [
+    decide(screen, [target('qa-promo-home-field', 'fill', 23)], 'surface'),
+    decide(screen, [target('qa-promo-home-target', 'wait', 23, { exact: 'id' })], 'covered-target'),
+  ]) {
+    assert.equal(decision.result, undefined);
+    assert.equal(decision.records.length, 1);
+    assert.equal(decision.records[0].veto, 'uncovered-target');
+  }
 });

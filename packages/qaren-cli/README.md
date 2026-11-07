@@ -3519,8 +3519,8 @@ React-only wait recovery and this pre-scroll recovery require proof that the tar
 is behind the presented `Modal`, and recheck this proof in recovery's fresh capture
 and before dispatch; without it, app dismissal is vetoed as `uncovered-target`.
 When a `Modal` is mounted but no host could be associated, the proof cannot be
-formed, and these recoveries and the missing-target rule below keep the earlier
-behaviour instead of vetoing.
+formed, and these recoveries and the missing-target rule below veto as
+`uncovered-target` and press nothing.
 A tap or fill whose target is not on screen at all may dismiss only a proven separate
 surface: a presented `Modal` cover, a decline that is the screen's only control
 (inputs count as controls), or a recognised permission opt-in. Otherwise it vetoes as

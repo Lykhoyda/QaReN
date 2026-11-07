@@ -209,11 +209,7 @@ export function dismissCandidate(
   if (screen.front !== 'app') return rejected('front');
   if (!completeCapture(screen)) return rejected('coverage');
   if (!planTargets.length) return rejected('current-target', 0);
-  if (
-    proof === 'covered-target' &&
-    !coverUnformable(screen) &&
-    !targetBehindInterruption(screen, planTargets[0])
-  )
+  if (proof === 'covered-target' && !targetBehindInterruption(screen, planTargets[0]))
     return rejected('uncovered-target', 0);
   const targetIndex = planTargets.findIndex(
     (target, index) =>
@@ -297,8 +293,7 @@ export function dismissCandidate(
       proof === 'surface' &&
       !sole &&
       !screenClass &&
-      !modalCoverProven(screen) &&
-      !coverUnformable(screen)
+      !modalCoverProven(screen)
     )
       return rejected('uncovered-target', 0);
     return { label: candidates[0].label!, ...(screenClass ? { screenClass } : {}) };
@@ -400,14 +395,6 @@ export function soleDecline(screen: Screen): boolean {
     DECLINE_LABELS.has(controls[0].label)
   );
 }
-
-// The capture proves one presented modal covering everything native does not show.
-// A modal is mounted but no host could be associated (on Android: several presented modals or no
-// calibrated origin), so the cover proof cannot be formed and recovery keeps its earlier behaviour.
-const coverUnformable = (screen: Screen): boolean => {
-  const cover = modalCoverDiagnostic(screen);
-  return cover !== undefined && cover.modalCount >= 1 && cover.associatedCount === 0;
-};
 
 const modalCoverProven = (screen: Screen): boolean => {
   const cover = modalCoverDiagnostic(screen);
