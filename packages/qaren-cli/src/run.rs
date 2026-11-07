@@ -1013,7 +1013,7 @@ fn run_inner(
                 || crate::redact::private_output_mode())
         {
             events::stage("recording", StageState::Skipped, None, None);
-            video = Some(VideoStatus::Unavailable(
+            video = Some(VideoStatus::unavailable(
                 "runtime inputs withhold recording".to_string(),
             ));
         } else if pr_state.is_some() {
@@ -1023,7 +1023,7 @@ fn run_inner(
                 .is_some_and(|emulator| emulator.api_level < 34)
             {
                 events::stage("recording", StageState::Skipped, None, None);
-                video = Some(VideoStatus::Unavailable(
+                video = Some(VideoStatus::unavailable(
                     "Android API <34 stops screen recording at 180 s".into(),
                 ));
             } else {
@@ -1316,7 +1316,7 @@ fn run_inner(
                     events::stage("recording", state, None, None);
                 }
                 if !outcome.clean() && video.is_none() {
-                    video = Some(VideoStatus::Unavailable(
+                    video = Some(VideoStatus::unavailable(
                         "the recorder did not stop cleanly".into(),
                     ));
                 }
@@ -1364,20 +1364,6 @@ fn run_inner(
             }
             ctx.mark("springboard_scan", t);
         }
-
-        let report_path = match report::write(
-            &run_dir,
-            &ReportInput {
-                run_id: &run_id,
-                platform: platform_str(req.platform),
-                app_id: &config.app_id,
-                device: &device.name,
-                ledger: &outcome.ledger,
-            },
-        ) {
-            Ok(path) => path,
-            Err(f) => return ctx.fail(f),
-        };
 
         if let Some(entry) = outcome.ledger.media_withheld.as_ref().and_then(|media| {
             if config.video == record::VideoPolicy::NonStrict {
@@ -1464,7 +1450,6 @@ fn run_inner(
         if let Some(pr) = &pr_state {
             let raw = record::raw_capture(&run_dir.join("media"));
             let video = video.unwrap_or_else(|| record::finalize(ctx.runner, &run_dir));
-            ctx.notes.push(("video".to_string(), video.to_string()));
             if video == VideoStatus::Available {
                 if let Some(bytes) = reclaim_raw_capture(&run_dir) {
                     ctx.notes.push((
@@ -1535,6 +1520,17 @@ fn run_inner(
             } else {
                 video
             };
+            ctx.notes.push(("video".to_string(), video.to_string()));
+            if let Some(code) = video.reason() {
+                ctx.notes.push(("videoReason".into(), code.as_str().into()));
+            }
+            if let Some(line) = report::video_outcome_line(
+                &outcome.ledger,
+                &outcome.ledger.video_publication.clone().unwrap_or_default(),
+                Some(&video),
+            ) {
+                ctx.notes.push(("video_summary".into(), line));
+            }
             // ⑭: a head that moved during the run means an older commit was tested.
             match github::pr_view(ctx.runner, &pr.info.url, &pr.repo_root) {
                 Ok(now) if now.head_ref_oid != pr.info.head_ref_oid => {
@@ -1547,6 +1543,21 @@ fn run_inner(
             }
             published_video = Some(video);
         }
+
+        let report_path = match report::write(
+            &run_dir,
+            &ReportInput {
+                video: published_video.as_ref(),
+                run_id: &run_id,
+                platform: platform_str(req.platform),
+                app_id: &config.app_id,
+                device: &device.name,
+                ledger: &outcome.ledger,
+            },
+        ) {
+            Ok(path) => path,
+            Err(f) => return ctx.fail(f),
+        };
 
         let cancelled = match ensure_running(ctx.runner, "finalize") {
             Err(late) => {
@@ -1623,6 +1634,7 @@ fn run_inner(
                 app_id: config.app_id.clone(),
                 device: device.name.clone(),
                 plan_sha256: sha256_hex(plan.as_bytes()),
+                video_reason: video.reason(),
                 video,
                 video_continuity,
                 video_withholding_reason: video_publication

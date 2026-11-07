@@ -1555,6 +1555,7 @@ fn react_coverage_loss_survives_the_child_receipt_and_report() {
             ])
         );
         let rendered = report::render(&ReportInput {
+            video: None,
             run_id: RUN,
             platform: "ios",
             app_id: "com.test",
@@ -1606,6 +1607,7 @@ fn same_line_loss_and_reconnect_survive_the_child_receipt_and_report() {
         serde_json::json!([{"line": 22, "coverage": "lost"}])
     );
     let report = report::render(&ReportInput {
+        video: None,
         run_id: RUN,
         platform: "ios",
         app_id: "com.test",

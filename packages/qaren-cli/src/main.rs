@@ -612,6 +612,12 @@ fn main_inner(args: Vec<String>) -> ExitCode {
             failure.detail, failure.next_action
         );
     }
+    if let Some(line) = receipt.outcomes.get("video_summary") {
+        eprintln!(
+            "{}",
+            qaren::report::term_safe(&qaren::redact::redact_secrets(line))
+        );
+    }
     if let Some(report) = receipt.artifacts.get("report") {
         eprintln!("report: {}", report.display());
     }
