@@ -72,6 +72,8 @@ object QaHierarchy {
         val handle: Any? = null,
         // AccessibilityNodeInfo.isFocused: the node holds input focus.
         val focused: Boolean = false,
+        // AccessibilityNodeInfo.isScrollable: a navigation wrapper reported as a ScrollView says false.
+        val scrollable: Boolean = false,
     )
 
     data class RawWindow(
@@ -107,6 +109,8 @@ object QaHierarchy {
         val windowId: Int? = null,
         val source: RawNode? = null,
         val focused: Boolean = false,
+        // Emitted for every node; not a presence fact and not part of any screen-change comparison.
+        val scrollable: Boolean = false,
     )
 
     sealed interface Front {
@@ -311,6 +315,7 @@ object QaHierarchy {
             clickable = raw.clickable,
             source = raw,
             focused = raw.focused,
+            scrollable = raw.scrollable,
         )
     }
 }
