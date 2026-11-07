@@ -101,7 +101,7 @@ jobs:
 
   unit-tests:
     name: Unit tests (batch ${{ matrix.batch }}/5)
-    runs-on: self-linux
+    runs-on: self-linux-x64
     strategy:
       fail-fast: false
       matrix:
