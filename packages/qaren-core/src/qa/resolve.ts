@@ -1468,9 +1468,9 @@ export function targetOnScreen(
     return true;
   return (
     (includeHidden || evidence === 'pass') &&
-    literalTextProjection(screen).elements.some(
+    (includeHidden ? screen : literalTextProjection(screen)).elements.some(
       (e) =>
-        contributesLiteralText(e) &&
+        (includeHidden || contributesLiteralText(e)) &&
         (e.label?.includes(quoted) ||
           e.value?.includes(quoted) ||
           (e.kind === 'input' &&

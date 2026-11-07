@@ -14,7 +14,9 @@ import { CaptureDeadline } from '../../../dist/qa/capture.js';
 import {
   hostAssociationIdentity,
   join as joinScreen,
+  keyboardCoversElement,
   modalCoverDiagnostic,
+  type NativeNode,
   type Screen,
 } from '../../../dist/qa/screen.js';
 import type { WalkerDeps } from '../../../dist/qa/walker.js';
@@ -290,6 +292,63 @@ for (const plan of ['✓ "Saved"', '1. Wait for "Saved" to appear']) {
     assert.equal(result.recoveries, 0);
     assert.ok(vetoes.includes('uncovered-target'));
     assert.match(result.failure?.seen ?? '', /Saved/);
+  });
+}
+
+for (const hidden of ['offscreen', 'keyboard'] as const) {
+  test(`a failed check retains recovery for captured ${hidden} text without an ID`, async () => {
+    const nodes: NativeNode[] = [
+      { ref: '@app', type: 'Application', rect: { x: 0, y: 0, width: 400, height: 800 } },
+      {
+        ref: '@saved',
+        parentIndex: 0,
+        type: 'StaticText',
+        label: 'Saved successfully',
+        rect: { x: 20, y: hidden === 'offscreen' ? 900 : 600, width: 200, height: 40 },
+      },
+      ...['Close', 'Continue'].map((label, index) => ({
+        ref: index === 0 ? '@close' : '@continue',
+        parentIndex: 0,
+        type: 'Button',
+        label,
+        hittable: true,
+        rect: { x: 20, y: 100 + index * 60, width: 200, height: 40 },
+      })),
+    ];
+    if (hidden === 'keyboard')
+      nodes.push({
+        ref: '@keyboard',
+        parentIndex: 0,
+        type: 'Keyboard',
+        rect: { x: 0, y: 500, width: 400, height: 300 },
+      });
+    const snapshot = joinScreen(
+      nodes,
+      [],
+      'app',
+      { native: 'complete', react: 'complete' },
+      { hosts: [], complete: true },
+      {
+        source: 'xcui-live',
+        nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+      },
+    );
+    const saved = snapshot.elements.find((e) => e.ref === '@saved')!;
+    assert.equal(saved.testID, undefined);
+    assert.equal(hidden === 'offscreen' ? saved.offscreen : keyboardCoversElement(saved), true);
+    const f = app(snapshot);
+    const vetoes: unknown[] = [];
+    f.deps.interruptionRejected = (event) => vetoes.push(event.veto);
+    f.deps.press = async (ref) => {
+      f.actions.push(`press ${ref}`);
+      f.show(observedButtons([element('@saved', 'Saved successfully', { kind: 'text' })]));
+      return { ok: true, proven: false, executed: true };
+    };
+    const result = await runPlan(parsePlan('✓ "Saved"').blocks!, f.deps);
+    assert.equal(result.verdict, 'PASS', result.failure?.seen);
+    assert.deepEqual(f.actions, ['press @close']);
+    assert.equal(result.recoveries, 1);
+    assert.ok(!vetoes.includes('uncovered-target'));
   });
 }
 
