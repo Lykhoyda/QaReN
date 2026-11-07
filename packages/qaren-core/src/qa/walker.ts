@@ -5365,14 +5365,17 @@ export async function runPlan(
           ? { unsavable: `line ${Math.min(...privateFills)}: fills a private input` }
           : recipeMarkdown(title, blocks, privacy.privateSet('persisted'));
       const refusal = outcome?.refusal ?? (ledger.verdict === 'REFUSED' ? ledger : undefined);
+      const { nonStrictPublication: _nonStrict, ...captureUnknown } = ledger;
       return refusal
         ? {
-            ...ledger,
+            ...(refusal.code === 'PRIVATE_INPUT_CAPTURE_UNKNOWN' ? captureUnknown : ledger),
             code: refusal.code,
             message: refusal.message,
             ...(outcome?.pressEvidence ? { pressEvidence: outcome.pressEvidence } : {}),
             verdict: 'REFUSED',
-            videoPublication: 'unknown',
+            ...(refusal.code === 'PRIVATE_INPUT_CAPTURE_UNKNOWN'
+              ? { videoPublication: 'unknown' as const }
+              : {}),
           }
         : ledger;
     };

@@ -119,6 +119,7 @@ fn malformed_timing_is_dropped_without_rejecting_the_row_or_ledger() {
 fn report_run_details_print_speed_only_when_present() {
     let input = |ledger: &Ledger| {
         render(&ReportInput {
+            video: None,
             run_id: "check-1",
             platform: "ios",
             app_id: "com.example",
@@ -182,6 +183,7 @@ fn media_withholding_round_trips_and_unknown_causes_are_passive() {
         "generic-value/other@line 3"
     );
     let report = render(&ReportInput {
+        video: None,
         run_id: "check-1",
         platform: "ios",
         app_id: "com.test",

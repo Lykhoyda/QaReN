@@ -1,6 +1,6 @@
 use crate::core::{Ledger, Row};
 use crate::failure::{Failure, FailureCode, ScreenNow};
-use crate::record::{VideoPublication, VideoStatus};
+use crate::record::{VideoPublication, VideoReason, VideoStatus};
 use crate::redact::{redact_machine, redact_secrets, MachineIdentity};
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
@@ -190,6 +190,7 @@ pub struct ReportInput<'a> {
     pub app_id: &'a str,
     pub device: &'a str,
     pub ledger: &'a Ledger,
+    pub video: Option<&'a VideoStatus>,
 }
 
 // Dynamic prose comes from the child and the app under test: redacted, one line, no Markdown syntax.
@@ -212,7 +213,7 @@ pub(crate) fn prose(raw: &str) -> String {
 }
 
 // Terminal output: C0 and C1 controls (escape sequences included) never reach the screen.
-pub(crate) fn term_safe(s: &str) -> String {
+pub fn term_safe(s: &str) -> String {
     s.chars()
         .filter(|c| !matches!(*c, '\u{0}'..='\u{1f}' | '\u{7f}'..='\u{9f}'))
         .collect()
@@ -465,6 +466,9 @@ pub fn render(input: &ReportInput<'_>) -> String {
     ) {
         out.push_str(&format!("- Video withheld: {}\n", prose(&reason)));
     }
+    if let Some(line) = input.video.and_then(video_unavailable_line) {
+        out.push_str(&format!("- {}\n", prose(&line)));
+    }
     if let Some(entry) = input
         .ledger
         .media_withheld
@@ -604,6 +608,45 @@ fn verdict_label(ledger: &Ledger, refusal: Option<&Failure>) -> String {
     out
 }
 
+// Shared across the local report, run receipt, and publication surfaces.
+pub fn video_unavailable_line(video: &VideoStatus) -> Option<String> {
+    let (detail, next) = match video {
+        VideoStatus::Available => return None,
+        VideoStatus::TooLarge => (
+            "the recording was too large to attach",
+            "the recording exceeds the size cap; a shorter plan or trimming is needed",
+        ),
+        VideoStatus::Unavailable { code, detail } => (
+            detail.as_str(),
+            match code {
+                VideoReason::RecorderFailed | VideoReason::FfmpegMissing => {
+                    "check the recorder and ffmpeg on this host"
+                }
+                VideoReason::Interrupted => "the app was relaunched after admission; re-run",
+                VideoReason::NoAdmittedFrame | VideoReason::NoWindow => {
+                    "the walk ended before any admitted frame; re-run"
+                }
+                VideoReason::PublishedCopyMissing => {
+                    "the published copy is missing; re-run `qaren pr`"
+                }
+                VideoReason::NotRecorded => "re-run qaren pr to record the walk",
+                VideoReason::EncodeFailed
+                | VideoReason::NoPlayableDuration
+                | VideoReason::TrimFailed => "check ffmpeg and re-run qaren pr",
+                VideoReason::Cancelled => "re-run qaren pr to complete the walk",
+                VideoReason::RuntimeInputWithheld => {
+                    "review the runtime input privacy policy before re-running"
+                }
+                VideoReason::AndroidUnsupported => "use an Android API 34 or newer target",
+                VideoReason::Other => "check the recording diagnostics and re-run qaren pr",
+            },
+        ),
+    };
+    Some(redact_secrets(&format!(
+        "Video not published: {detail}; {next}"
+    )))
+}
+
 // The comment's video paragraphs; the description reuses them so the two cannot disagree.
 fn video_lines(input: &ReportInput<'_>, pr: &PrRun<'_>, clean: &dyn Fn(&str) -> String) -> String {
     let mut out = String::new();
@@ -626,11 +669,10 @@ fn video_lines(input: &ReportInput<'_>, pr: &PrRun<'_>, clean: &dyn Fn(&str) -> 
                 out.push_str(VIDEO_ATTACHED);
                 out.push_str(&continuity_lines(pr));
             }
-            VideoStatus::TooLarge => {
-                out.push_str("Video: the recording was too large to attach.\n\n")
-            }
-            VideoStatus::Unavailable(reason) => {
-                out.push_str(&format!("Video: unavailable ({}).\n\n", clean(reason)))
+            VideoStatus::TooLarge | VideoStatus::Unavailable { .. } => {
+                if let Some(line) = video_unavailable_line(pr.video) {
+                    out.push_str(&format!("{}\n\n", clean(&line)));
+                }
             }
         }
     }
@@ -839,6 +881,7 @@ mod tests {
         for sources in [vec!["replayed", "patched", "discovered"], vec![]] {
             let ledger = block_ledger(&sources);
             let input = ReportInput {
+                video: None,
                 run_id: "check-test",
                 platform: "ios",
                 app_id: "com.example",
@@ -887,6 +930,7 @@ mod tests {
         }))
         .unwrap();
         let report = render(&ReportInput {
+            video: None,
             run_id: "check-test",
             platform: "ios",
             app_id: "com.example",
@@ -951,6 +995,7 @@ mod tests {
         }))
         .unwrap();
         let report = render(&ReportInput {
+            video: None,
             run_id: "check-test",
             platform: "ios",
             app_id: "com.example",
@@ -1006,6 +1051,7 @@ mod tests {
             }))
             .unwrap();
             let input = ReportInput {
+                video: None,
                 run_id: "check-test",
                 platform: "ios",
                 app_id: "com.example",
@@ -1215,6 +1261,7 @@ mod tests {
         );
         assert_eq!(summarize(&ledger).react_reconnections, vec![3]);
         let input = ReportInput {
+            video: None,
             run_id: "check-test",
             platform: "ios",
             app_id: "com.example",
@@ -1661,6 +1708,7 @@ mod tests {
                       url: Option<&str>| {
             render_pr_description(
                 &ReportInput {
+                    video: None,
                     run_id: "check-test",
                     platform,
                     app_id: "com.example",
@@ -1719,7 +1767,7 @@ mod tests {
             (
                 VideoStatus::TooLarge,
                 VideoPublication::Eligible,
-                "Video: the recording was too large to attach.",
+                "Video not published: the recording was too large to attach;",
             ),
             (
                 VideoStatus::Available,
