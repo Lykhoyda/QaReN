@@ -3521,9 +3521,9 @@ and before dispatch; without it, app dismissal is vetoed as `uncovered-target`.
 When a `Modal` is mounted but no host could be associated, the proof cannot be
 formed, and these recoveries and the missing-target rule below veto as
 `uncovered-target` and press nothing.
-A tap or fill whose target is not on screen at all may dismiss only a proven separate
-surface: a presented `Modal` cover, a decline that is the screen's only control
-(inputs count as controls), or a recognised permission opt-in. Otherwise it vetoes as
+A tap or fill whose target is not on screen at all may dismiss only a decline that is
+the screen's only control (inputs count as controls) or a recognised permission opt-in.
+A multi-control promo with a missing target vetoes as
 `uncovered-target`, presses nothing and keeps the step's `TARGET_NOT_FOUND`, so an
 ordinary form's own `Cancel` is not pressed. A screen whose only control is a decline
 can still be dismissed. The current target is never exempt. ID-only targets are checked

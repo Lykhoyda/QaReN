@@ -131,9 +131,6 @@ export function isDeclineLabel(label: string | undefined): label is string {
   return label !== undefined && DECLINE_LABELS.has(label);
 }
 
-// What a recovery must prove before it may dismiss: that its target sits behind the presented
-// modal, or, for a missing target, that a separate surface interrupts (a proven presented-modal
-// cover, or a decline that is the screen's only control) rather than a screen's own Cancel.
 export type InterruptionProof = 'covered-target' | 'surface';
 
 export const INTERRUPTION_VETOES = [
@@ -287,15 +284,7 @@ export function dismissCandidate(
           (target.exact !== 'id' && target.quoted?.toLowerCase() === label)),
     );
     if (plannedIndex !== -1) return rejected('later-target', plannedIndex, [], 'ownership');
-    // A missing target dismisses only a proven separate surface, never a screen's own Cancel:
-    // a presented modal, a decline that is the screen's only control, or a recognised opt-in.
-    if (
-      proof === 'surface' &&
-      !sole &&
-      !screenClass &&
-      !modalCoverProven(screen)
-    )
-      return rejected('uncovered-target', 0);
+    if (proof === 'surface' && !sole && !screenClass) return rejected('uncovered-target', 0);
     return { label: candidates[0].label!, ...(screenClass ? { screenClass } : {}) };
   }
   return rejected(
@@ -395,11 +384,6 @@ export function soleDecline(screen: Screen): boolean {
     DECLINE_LABELS.has(controls[0].label)
   );
 }
-
-const modalCoverProven = (screen: Screen): boolean => {
-  const cover = modalCoverDiagnostic(screen);
-  return cover !== undefined && cover.refused === undefined;
-};
 
 // A covered step may seek recovery only when its target is proven behind the presented modal,
 // never when it is merely absent, so a screen's own Cancel is not pressed for a missing target.

@@ -11,7 +11,7 @@ import type { StoredBlock } from '../../../dist/qa/blocks.js';
 import type { Block } from '../../../dist/qa/plan.js';
 import { NativeSnapshotIncomplete } from '../../../dist/qa/private-input.js';
 import { CaptureDeadline } from '../../../dist/qa/capture.js';
-import { join as joinScreen, type Screen } from '../../../dist/qa/screen.js';
+import { join as joinScreen, modalCoverDiagnostic, type Screen } from '../../../dist/qa/screen.js';
 import type { WalkerDeps } from '../../../dist/qa/walker.js';
 import { choice, element, screen, scriptedJudge } from './judgment-fixtures.ts';
 import { formWithCancel, homeAfterPromo, modalOverHome } from './modal-fixtures.ts';
@@ -245,6 +245,26 @@ test('a missing target on a multi-control sheet with no proven modal presses not
   assert.match(result.failure?.seen ?? '', /^TARGET_NOT_FOUND/);
   assert.ok(vetoes.includes('uncovered-target'));
 });
+
+for (const step of ['Tap "qa-missing"', 'Fill "qa-missing" with "synthetic"']) {
+  test(`a missing target on a proven multi-control modal presses nothing: ${step}`, async () => {
+    const modal = modalOverHome({ secondControl: true });
+    const cover = modalCoverDiagnostic(modal);
+    assert.ok(cover);
+    assert.equal(cover.refused, undefined);
+    assert.equal(modal.elements.find((e) => e.ref === '@close')?.semantic?.press, 'supported');
+    const f = app(modal);
+    ticking(f);
+    const vetoes: unknown[] = [];
+    f.deps.interruptionRejected = (event) => vetoes.push(event.veto);
+    const result = await runPlan(parsePlan(`1. ${step}`).blocks!, f.deps);
+    assert.equal(result.verdict, 'FAIL');
+    assert.deepEqual(f.actions, []);
+    assert.ok(!result.recoveries);
+    assert.match(result.failure?.seen ?? '', /^TARGET_NOT_FOUND/);
+    assert.ok(vetoes.includes('uncovered-target'));
+  });
+}
 
 test('a later block target visible on the sheet prevents dismissal', async () => {
   for (const later of [
