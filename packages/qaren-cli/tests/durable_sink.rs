@@ -385,6 +385,7 @@ fn evidence_documents_and_reports_still_withhold_opaque_output() {
         llm_turns: 0,
         escapes: 0,
         recoveries: 0,
+        declined_opt_ins: Vec::new(),
         speed: None,
         recipe: None,
         failure: Some(qaren::core::LedgerFailure {

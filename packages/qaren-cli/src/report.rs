@@ -47,6 +47,15 @@ pub struct LedgerSummary {
     // Plain scrolls that passed with no visible change; not proof the content ended.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub no_visible_change_scrolls: Vec<u64>,
+    // One entry per permission opt-in recovery declined.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declined_opt_ins: Vec<DeclinedOptInLine>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeclinedOptInLine {
+    pub line: u64,
+    pub after_planned_press: bool,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -145,6 +154,14 @@ pub fn summarize(ledger: &Ledger) -> LedgerSummary {
             })
             .count() as u64,
         failed_step: ledger.failure.as_ref().map(|f| f.step),
+        declined_opt_ins: ledger
+            .declined_opt_ins
+            .iter()
+            .map(|entry| DeclinedOptInLine {
+                line: entry.line,
+                after_planned_press: entry.after_planned_press,
+            })
+            .collect(),
         react_reconnections: ledger
             .steps
             .iter()
@@ -363,6 +380,28 @@ fn reconnect_note(summary: &LedgerSummary) -> String {
     format!(" · React reconnected at line {}", lines.join(", "))
 }
 
+// A pass that declined permission opt-ins says so beside the verdict; the verdict itself stays PASS.
+fn opt_in_note(summary: &LedgerSummary) -> String {
+    let count = summary.declined_opt_ins.len();
+    if summary.verdict != "PASS" || count == 0 {
+        return String::new();
+    }
+    let lines: Vec<String> = summary
+        .declined_opt_ins
+        .iter()
+        .map(|entry| entry.line)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect();
+    format!(
+        " · {count} opt-in{} declined (line{} {})",
+        if count == 1 { "" } else { "s" },
+        if lines.len() == 1 { "" } else { "s" },
+        lines.join(", ")
+    )
+}
+
 fn video_policy_text(ledger: &Ledger) -> String {
     let source = ledger
         .video_policy_source
@@ -420,9 +459,10 @@ pub fn render(input: &ReportInput<'_>) -> String {
     let summary = summarize(input.ledger);
     let mut out = String::new();
     out.push_str(&format!(
-        "# QaReN check: {}{}\n\n",
+        "# QaReN check: {}{}{}\n\n",
         prose(&summary.verdict_label()),
-        reconnect_note(&summary)
+        reconnect_note(&summary),
+        opt_in_note(&summary)
     ));
     out.push_str(&format!(
         "Run `{}` · {} · `{}` · device {}\n\n",
@@ -890,6 +930,7 @@ pub fn render_pr_comment(
     out.push('\n');
     out.push_str(&verdict_label(input.ledger, refusal));
     out.push_str(&reconnect_note(&summary));
+    out.push_str(&opt_in_note(&summary));
     out.push_str("\n\n");
     out.push_str(&format!(
         "Tested: commit `{}` on {}",
@@ -1253,6 +1294,124 @@ mod tests {
             .unwrap()
             .get("interruption")
             .is_none());
+    }
+
+    #[test]
+    fn a_declined_opt_in_after_the_plans_tap_marks_the_pass_without_changing_the_verdict() {
+        let receipt = serde_json::json!({
+            "considered": true, "outcome": "dismissed",
+            "screenClass": "permission-opt-in", "afterPlannedPress": true
+        });
+        let parsed: crate::core::InterruptionReceipt =
+            serde_json::from_value(receipt.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), receipt);
+        assert_eq!(
+            parsed.summary(),
+            "interruption recovery: dismissed (permission-opt-in; after the plan's own tap)"
+        );
+        let row = |line: u64, attempt: u64, outcome: &str| {
+            serde_json::json!({
+                "block": "b", "line": line, "attempt": attempt, "kind": "step",
+                "resolvedBy": "exact", "t": 0, "outcome": outcome, "interruption": receipt,
+            })
+        };
+        let ledger_with = |verdict: &str, declined: serde_json::Value| -> Ledger {
+            serde_json::from_value(serde_json::json!({
+                "verdict": verdict, "path": "walk", "blocks": [],
+                "steps": [row(3, 1, "retry"), row(3, 2, "retry"), row(3, 3, "pass"), row(5, 1, "pass")],
+                "jev": { "calls": 0, "medianMs": 0 },
+                "llmTurns": 0, "escapes": 0, "recoveries": 3,
+                "declinedOptIns": declined,
+            }))
+            .unwrap()
+        };
+        let ledger = ledger_with(
+            "PASS",
+            serde_json::json!([
+                { "line": 3, "afterPlannedPress": true },
+                { "line": 3, "afterPlannedPress": true },
+                { "line": 5, "afterPlannedPress": false },
+            ]),
+        );
+        assert_eq!(ledger.verdict, "PASS");
+        assert_eq!(
+            serde_json::to_value(&ledger).unwrap()["declinedOptIns"],
+            serde_json::json!([
+                { "line": 3, "afterPlannedPress": true },
+                { "line": 3, "afterPlannedPress": true },
+                { "line": 5, "afterPlannedPress": false },
+            ])
+        );
+        assert_eq!(
+            serde_json::to_value(summarize(&ledger)).unwrap()["declined_opt_ins"],
+            serde_json::json!([
+                { "line": 3, "after_planned_press": true },
+                { "line": 3, "after_planned_press": true },
+                { "line": 5, "after_planned_press": false },
+            ])
+        );
+        let input = ReportInput {
+            run_id: "check-test",
+            platform: "ios",
+            app_id: "com.example",
+            device: "test-device",
+            ledger: &ledger,
+        };
+        let report = render(&input);
+        assert!(
+            report.starts_with("# QaReN check: PASS · 3 opt-ins declined (lines 3, 5)\n"),
+            "{report}"
+        );
+        let pr = PrRun {
+            tested_sha: "abcdef1234567",
+            tested_older_commit: false,
+            video: &VideoStatus::Available,
+            video_continuity: &[],
+            screenshot: None,
+            plan_sha256: "plan-hash",
+            video_publication: &VideoPublication::Eligible,
+        };
+        let comment = render_pr_comment(&input, None, &pr, &MachineIdentity::default());
+        assert!(
+            comment.contains("\nPASS · 3 opt-ins declined (lines 3, 5)\n"),
+            "{comment}"
+        );
+        let one = ledger_with(
+            "PASS",
+            serde_json::json!([{ "line": 3, "afterPlannedPress": true }]),
+        );
+        let one_input = ReportInput {
+            ledger: &one,
+            ..input
+        };
+        assert!(
+            render(&one_input).starts_with("# QaReN check: PASS · 1 opt-in declined (line 3)\n")
+        );
+        let failed = ledger_with(
+            "FAIL",
+            serde_json::json!([{ "line": 3, "afterPlannedPress": true }]),
+        );
+        let failed_input = ReportInput {
+            ledger: &failed,
+            ..input
+        };
+        assert!(!render(&failed_input).contains("opt-in declined"));
+        let older: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "PASS", "path": "walk", "blocks": [], "steps": [],
+            "jev": { "calls": 0, "medianMs": 0 },
+            "llmTurns": 0, "escapes": 0, "recoveries": 0,
+        }))
+        .unwrap();
+        assert!(older.declined_opt_ins.is_empty());
+        assert!(serde_json::to_value(&older)
+            .unwrap()
+            .get("declinedOptIns")
+            .is_none());
+        let older_input = ReportInput {
+            ledger: &older,
+            ..input
+        };
+        assert!(render(&older_input).starts_with("# QaReN check: PASS\n"));
     }
 
     #[test]
