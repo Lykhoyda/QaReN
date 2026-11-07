@@ -4079,7 +4079,13 @@ changes.
 
 Preparation rechecks provenance before emitting `ready`; `check` and `pr`
 recheck it before and after the walk. Detected drift fails with
-`CANDIDATE_DRIFTED` and cannot return PASS; an already-cancelled walk retains
+`CANDIDATE_DRIFTED` and cannot return PASS. A candidate that cannot be read at
+all (its repository or project root is missing, a Git read fails or times out,
+or an integration-tolerant comparison or the lockfile cannot be read) refuses
+`CANDIDATE_UNAVAILABLE` (exit 4) instead: nothing is known to have changed, so
+check that its volume or path is available again and re-run. After the walk this refusal replaces the
+walk's verdict, keeps the ledger rows and records the final verification's
+`classification` (`drifted` or `unreadable`). An already-cancelled walk retains
 `RUN_CANCELLED`. Passing blocks already saved remain available. See the
 [publication refusal contract](#test-a-pull-request) before publishing; re-run
 against an unchanged candidate to obtain attributable evidence.
@@ -4173,7 +4179,8 @@ handoff, the CLI rechecks cancellation; a late cancel marks that terminal result
 cancelled, persists it and withholds the handoff. A missing terminal result
 refuses `RUN_RECORD_INVALID`.
 Cancellation refuses `RUN_CANCELLED` (exit 4), candidate mismatch fails
-`CANDIDATE_DRIFTED` (exit 1), and unproven ownership refuses
+`CANDIDATE_DRIFTED` (exit 1), a final verification that could not read the
+candidate refuses `CANDIDATE_UNAVAILABLE` (exit 4), and unproven ownership refuses
 `OWNERSHIP_UNPROVEN` (exit 4), before uploads, comments, label changes or block
 write-back. A plain QA FAIL can still be published as a report when these
 conditions hold. Later recovery does not upgrade the original terminal result;

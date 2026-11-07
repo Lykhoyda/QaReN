@@ -254,12 +254,13 @@ fn is_untracked_integration_entry(entry: PorcelainEntry<'_>, rn_agent_prefix: &s
 }
 
 // True when the working package.json differs from HEAD only in the two
-// integration-owned script entries.
+// integration-owned script entries. A failed git or file read is an error,
+// never a mismatch.
 fn package_json_delta_is_integration_only(
     runner: &mut dyn Runner,
     repo_root: &Path,
     rel_path: &str,
-) -> bool {
+) -> Result<bool, String> {
     let head = runner.run(&CmdSpec::new(
         "git-show-package-json",
         "git",
@@ -272,14 +273,17 @@ fn package_json_delta_is_integration_only(
         20,
     ));
     if !head.ok() {
-        return false;
+        return Err(format!(
+            "git show HEAD:{rel_path} failed: {}",
+            head.summary()
+        ));
     }
-    let working = std::fs::read_to_string(repo_root.join(rel_path)).ok();
+    let working = read_working_file(repo_root, rel_path)?;
     let (Some(mut working), Ok(mut head_json)) = (
         working.and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok()),
         serde_json::from_str::<serde_json::Value>(&head.stdout),
     ) else {
-        return false;
+        return Ok(false);
     };
     let head_has_scripts = head_json.get("scripts").is_some();
     let removed_working_scripts = working
@@ -302,7 +306,15 @@ fn package_json_delta_is_integration_only(
         scripts.remove("ios");
         scripts.remove("android");
     }
-    working == head_json
+    Ok(working == head_json)
+}
+
+// The file's text, or None when its bytes are not UTF-8 (a content mismatch,
+// not a read failure).
+fn read_working_file(repo_root: &Path, rel_path: &str) -> Result<Option<String>, String> {
+    std::fs::read(repo_root.join(rel_path))
+        .map(|bytes| String::from_utf8(bytes).ok())
+        .map_err(|e| format!("cannot read {rel_path}: {}", e.kind()))
 }
 
 const METRO_INTEGRATION_BEGIN: &str = "// qaren session integration: begin";
@@ -323,7 +335,7 @@ fn metro_config_delta_is_integration_only(
     runner: &mut dyn Runner,
     repo_root: &Path,
     rel_path: &str,
-) -> bool {
+) -> Result<bool, String> {
     let head = runner.run(&CmdSpec::new(
         "git-show-metro-config",
         "git",
@@ -336,12 +348,15 @@ fn metro_config_delta_is_integration_only(
         20,
     ));
     if !head.ok() {
-        return false;
+        return Err(format!(
+            "git show HEAD:{rel_path} failed: {}",
+            head.summary()
+        ));
     }
-    let Ok(working) = std::fs::read_to_string(repo_root.join(rel_path)) else {
-        return false;
+    let Some(working) = read_working_file(repo_root, rel_path)? else {
+        return Ok(false);
     };
-    working == metro_integration_transform(&head.stdout)
+    Ok(working == metro_integration_transform(&head.stdout))
 }
 
 fn git_object_record<'a>(stdout: &'a str, expected_path: &str) -> Option<&'a str> {
@@ -357,7 +372,7 @@ fn tracked_file_identity_is_unchanged(
     runner: &mut dyn Runner,
     repo_root: &Path,
     rel_path: &str,
-) -> bool {
+) -> Result<bool, String> {
     let repo = repo_root.to_string_lossy();
     let head = runner.run(&CmdSpec::new(
         "git-ls-tree-integration",
@@ -371,14 +386,17 @@ fn tracked_file_identity_is_unchanged(
         &["-C", &repo, "ls-files", "--stage", "-z", "--", rel_path],
         20,
     ));
-    if !head.ok() || !index.ok() {
-        return false;
+    if !head.ok() {
+        return Err(format!("git ls-tree HEAD failed: {}", head.summary()));
+    }
+    if !index.ok() {
+        return Err(format!("git ls-files --stage failed: {}", index.summary()));
     }
     let Some(head_metadata) = git_object_record(&head.stdout, rel_path) else {
-        return false;
+        return Ok(false);
     };
     let Some(index_metadata) = git_object_record(&index.stdout, rel_path) else {
-        return false;
+        return Ok(false);
     };
     let mut head_fields = head_metadata.split_whitespace();
     let (Some(head_mode), Some("blob"), Some(head_oid), None) = (
@@ -387,7 +405,7 @@ fn tracked_file_identity_is_unchanged(
         head_fields.next(),
         head_fields.next(),
     ) else {
-        return false;
+        return Ok(false);
     };
     let mut index_fields = index_metadata.split_whitespace();
     let (Some(index_mode), Some(index_oid), Some("0"), None) = (
@@ -396,40 +414,49 @@ fn tracked_file_identity_is_unchanged(
         index_fields.next(),
         index_fields.next(),
     ) else {
-        return false;
+        return Ok(false);
     };
     if !matches!(head_mode, "100644" | "100755")
         || head_mode != index_mode
         || head_oid.is_empty()
         || head_oid != index_oid
     {
-        return false;
+        return Ok(false);
     }
-    working_file_mode_matches(repo_root.join(rel_path), head_mode)
+    working_file_mode_matches(repo_root, rel_path, head_mode)
 }
 
 #[cfg(unix)]
-fn working_file_mode_matches(path: PathBuf, git_mode: &str) -> bool {
+fn working_file_mode_matches(
+    repo_root: &Path,
+    rel_path: &str,
+    git_mode: &str,
+) -> Result<bool, String> {
     use std::os::unix::fs::PermissionsExt;
 
-    std::fs::metadata(path)
-        .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
-        .is_ok_and(|executable| executable == (git_mode == "100755"))
+    std::fs::metadata(repo_root.join(rel_path))
+        .map(|metadata| (metadata.permissions().mode() & 0o111 != 0) == (git_mode == "100755"))
+        .map_err(|e| format!("cannot inspect {rel_path}: {}", e.kind()))
 }
 
 #[cfg(not(unix))]
-fn working_file_mode_matches(_path: PathBuf, _git_mode: &str) -> bool {
-    false
+fn working_file_mode_matches(
+    _repo_root: &Path,
+    _rel_path: &str,
+    _git_mode: &str,
+) -> Result<bool, String> {
+    Ok(false)
 }
 
+// Errs when a git or file read the comparison needs fails.
 pub fn filter_integration_entries(
     runner: &mut dyn Runner,
     repo_root: &Path,
     project_root: &Path,
     porcelain: &str,
-) -> String {
+) -> Result<String, String> {
     let Some(entries) = parse_porcelain_z(porcelain) else {
-        return porcelain.to_string();
+        return Ok(porcelain.to_string());
     };
     let project_rel = project_root
         .strip_prefix(repo_root)
@@ -456,8 +483,8 @@ pub fn filter_integration_entries(
         let entry_path = entry.original_path.is_none().then_some(entry.path);
         if entry.status == " M"
             && entry_path == Some(package_json_rel.as_str())
-            && package_json_delta_is_integration_only(runner, repo_root, &package_json_rel)
-            && tracked_file_identity_is_unchanged(runner, repo_root, &package_json_rel)
+            && package_json_delta_is_integration_only(runner, repo_root, &package_json_rel)?
+            && tracked_file_identity_is_unchanged(runner, repo_root, &package_json_rel)?
         {
             continue;
         }
@@ -465,19 +492,60 @@ pub fn filter_integration_entries(
             if entry.status == " M"
                 && path.starts_with(&metro_config_prefix)
                 && !path[metro_config_prefix.len()..].contains('/')
-                && metro_config_delta_is_integration_only(runner, repo_root, path)
-                && tracked_file_identity_is_unchanged(runner, repo_root, path)
+                && metro_config_delta_is_integration_only(runner, repo_root, path)?
+                && tracked_file_identity_is_unchanged(runner, repo_root, path)?
             {
                 continue;
             }
         }
         kept.push(entry);
     }
-    serialize_porcelain_z(kept)
+    Ok(serialize_porcelain_z(kept))
+}
+
+// The project's pnpm-lock.yaml hash, None when it is absent (a deletion is
+// compared as drift); any other read failure leaves the candidate unreadable.
+pub fn lockfile_sha256(project_root: &Path) -> Result<Option<String>, String> {
+    match std::fs::read(project_root.join("pnpm-lock.yaml")) {
+        Ok(bytes) => Ok(Some(sha256_hex(&bytes))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("cannot read pnpm-lock.yaml: {}", e.kind())),
+    }
+}
+
+// Why a recorded candidate did not verify. Drifted is a proven change to a
+// readable candidate; Unreadable means the candidate could not be read at all,
+// so nothing is known to have changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CandidateCheck {
+    Drifted(String),
+    Unreadable(String),
+}
+
+impl CandidateCheck {
+    pub fn detail(&self) -> &str {
+        match self {
+            CandidateCheck::Drifted(detail) | CandidateCheck::Unreadable(detail) => detail,
+        }
+    }
+
+    pub fn classification(&self) -> VerificationClass {
+        match self {
+            CandidateCheck::Drifted(_) => VerificationClass::Drifted,
+            CandidateCheck::Unreadable(_) => VerificationClass::Unreadable,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationClass {
+    Drifted,
+    Unreadable,
 }
 
 // Re-verifies the live worktree against a recorded candidate identity (sha,
-// cleanliness, worktree fingerprint, lockfile). Returns the drift detail so
+// cleanliness, worktree fingerprint, lockfile). Returns the typed outcome so
 // callers wrap it in their own phase/next-action failure. Handoff-mode
 // callers pass `tolerate_integration: true` so the session's declared
 // integration surface is not read as drift; their baseline was recorded
@@ -486,11 +554,14 @@ pub fn verify_unchanged_with(
     runner: &mut dyn Runner,
     recorded: &Candidate,
     tolerate_integration: bool,
-) -> Result<(), String> {
+) -> Result<(), CandidateCheck> {
     verify_unchanged_inner(runner, recorded, tolerate_integration)
 }
 
-pub fn verify_unchanged(runner: &mut dyn Runner, recorded: &Candidate) -> Result<(), String> {
+pub fn verify_unchanged(
+    runner: &mut dyn Runner,
+    recorded: &Candidate,
+) -> Result<(), CandidateCheck> {
     verify_unchanged_inner(runner, recorded, false)
 }
 
@@ -498,7 +569,18 @@ fn verify_unchanged_inner(
     runner: &mut dyn Runner,
     recorded: &Candidate,
     tolerate_integration: bool,
-) -> Result<(), String> {
+) -> Result<(), CandidateCheck> {
+    use CandidateCheck::{Drifted, Unreadable};
+    if !recorded.repo_root.is_dir() {
+        return Err(Unreadable(
+            "the candidate repository root is missing or not a directory".to_string(),
+        ));
+    }
+    if !recorded.project_root.is_dir() {
+        return Err(Unreadable(
+            "the candidate project root is missing or not a directory".to_string(),
+        ));
+    }
     let repo_root = recorded.repo_root.to_string_lossy().into_owned();
     let head = runner.run(&CmdSpec::new(
         "git-head",
@@ -507,14 +589,17 @@ fn verify_unchanged_inner(
         20,
     ));
     if !head.ok() {
-        return Err(format!("git rev-parse HEAD failed: {}", head.summary()));
+        return Err(Unreadable(format!(
+            "git rev-parse HEAD failed: {}",
+            head.summary()
+        )));
     }
     let sha_now = head.stdout.trim();
     if sha_now != recorded.git_sha {
-        return Err(format!(
+        return Err(Drifted(format!(
             "checkout HEAD moved: recorded {}, now {sha_now}",
             recorded.git_sha
-        ));
+        )));
     }
     let porcelain = runner.run(&CmdSpec::new(
         "git-dirty",
@@ -530,10 +615,10 @@ fn verify_unchanged_inner(
         30,
     ));
     if !porcelain.ok() {
-        return Err(format!(
+        return Err(Unreadable(format!(
             "git status --porcelain=v1 -z failed: {}",
             porcelain.summary()
-        ));
+        )));
     }
     let project_state = porcelain_without_qaren_state(
         &porcelain.stdout,
@@ -547,30 +632,29 @@ fn verify_unchanged_inner(
             &recorded.project_root,
             &project_state,
         )
+        .map_err(Unreadable)?
     } else {
         project_state
     };
     let dirty_now = !project_state.trim().is_empty();
     if dirty_now != recorded.git_dirty {
-        return Err(format!(
+        return Err(Drifted(format!(
             "worktree cleanliness changed: recorded dirty={}, now dirty={dirty_now}",
             recorded.git_dirty
-        ));
+        )));
     }
-    let fingerprint_now = worktree_fingerprint(&recorded.repo_root, &project_state)?;
+    let fingerprint_now =
+        worktree_fingerprint(&recorded.repo_root, &project_state).map_err(Drifted)?;
     if let Some(fp) = recorded.worktree_fingerprint.as_deref() {
         if fp != fingerprint_now {
-            return Err(format!(
+            return Err(Drifted(format!(
                 "worktree contents changed: recorded fingerprint {fp}, now {fingerprint_now}"
-            ));
+            )));
         }
     }
-    let lockfile = recorded.project_root.join("pnpm-lock.yaml");
-    let lockfile_now = std::fs::read(&lockfile)
-        .ok()
-        .map(|bytes| sha256_hex(&bytes));
+    let lockfile_now = lockfile_sha256(&recorded.project_root).map_err(Unreadable)?;
     if lockfile_now != recorded.lockfile_sha256 {
-        return Err("pnpm-lock.yaml changed".to_string());
+        return Err(Drifted("pnpm-lock.yaml changed".to_string()));
     }
     Ok(())
 }
@@ -709,7 +793,16 @@ pub fn resolve(
     // the same comparison holds before and after the session applies (or has
     // left applied) its declared integration surface.
     let project_state = if scenario.build.owner == crate::scenario::BuildOwner::Qaren {
-        filter_integration_entries(runner, &repo_root, &project_root, &project_state)
+        filter_integration_entries(runner, &repo_root, &project_root, &project_state).map_err(
+            |detail| {
+                Failure::new(
+                    "validate",
+                    FailureCode::CandidateGitUnavailable,
+                    detail,
+                    "ensure git can inspect the checkout",
+                )
+            },
+        )?
     } else {
         project_state
     };
