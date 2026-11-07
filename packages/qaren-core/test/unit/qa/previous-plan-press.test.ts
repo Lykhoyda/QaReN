@@ -1183,16 +1183,24 @@ test('a declined opt-in that returns is never tapped again, on a later item or a
   assert.equal(afterLapse.failure?.step, 4);
   assert.match(afterLapse.failure?.seen ?? '', /asked again after recovery declined/);
   assert.equal(afterLapse.failure?.suggestion, 'Add a step before line 4: Tap "Not now".');
+  let ordinaryDeclines = 0;
   const ordinaryFirst = app(permission(), {
-    '@decline': opener,
-    '@open': () => permission(),
+    '@decline': () => (++ordinaryDeclines === 1 ? opener() : ready()),
+    '@open': ready,
   });
-  const afterOrdinary = await run('1. Tap "Open"\n2. Wait for "Ready" to appear', ordinaryFirst);
-  assert.equal(afterOrdinary.verdict, 'FAIL');
-  assert.deepEqual(ordinaryFirst.actions, ['press @decline', 'press @open']);
-  assert.deepEqual(afterOrdinary.declinedOptIns, [{ line: 1, afterPlannedPress: false }]);
-  assert.match(afterOrdinary.failure?.seen ?? '', /asked again after recovery declined/);
-  assert.equal(afterOrdinary.failure?.suggestion, 'Add a step after line 1: Tap "Not now".');
+  ordinaryFirst.deps.row = (row) => {
+    if (row.line === 3 && row.outcome === 'pass') ordinaryFirst.show(permission());
+  };
+  const afterOrdinary = await run(
+    '1. Tap "Open"\n2. Wait for "Ready" to appear\n3. Wait for "Ready" to appear\n4. Wait for "Ready" to appear',
+    ordinaryFirst,
+  );
+  assert.equal(afterOrdinary.verdict, 'PASS');
+  assert.deepEqual(ordinaryFirst.actions, ['press @decline', 'press @open', 'press @decline']);
+  assert.deepEqual(afterOrdinary.declinedOptIns, [
+    { line: 1, afterPlannedPress: false },
+    { line: 4, afterPlannedPress: false },
+  ]);
 });
 
 test('the press record is the original dispatch capture through a delayed dialog and after its own recovery', async () => {

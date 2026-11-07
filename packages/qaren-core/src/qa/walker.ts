@@ -3066,7 +3066,7 @@ async function walkBlockScoped(
           ? { screenClass: 'permission-opt-in', afterPlannedPress: true }
           : {}),
       });
-    if (optInDecided && declineDispatched)
+    if (optInDecided?.afterPlannedPress && declineDispatched)
       (sequence.declinedOptIns ??= new Set()).add(optInDecided.signature);
     if (!result) return undefined;
     if ('handled' in result && !declineAttempted) recoveries += 1;
