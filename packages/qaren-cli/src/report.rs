@@ -460,13 +460,11 @@ pub fn render(input: &ReportInput<'_>) -> String {
     }
     out.push_str("\n## Run details\n\n");
     out.push_str(&format!("- {}\n", prose(&video_policy_text(input.ledger))));
-    if let Some(reason) = video_withholding(
+    if let Some(line) = video_outcome_line(
         input.ledger,
         &input.ledger.video_publication.clone().unwrap_or_default(),
+        input.video,
     ) {
-        out.push_str(&format!("- Video withheld: {}\n", prose(&reason)));
-    }
-    if let Some(line) = input.video.and_then(video_unavailable_line) {
         out.push_str(&format!("- {}\n", prose(&line)));
     }
     if let Some(entry) = input
@@ -645,6 +643,17 @@ pub fn video_unavailable_line(video: &VideoStatus) -> Option<String> {
     Some(redact_secrets(&format!(
         "Video not published: {detail}; {next}"
     )))
+}
+
+pub fn video_outcome_line(
+    ledger: &Ledger,
+    strict: &VideoPublication,
+    video: Option<&VideoStatus>,
+) -> Option<String> {
+    match video_withholding(ledger, strict) {
+        Some(reason) => Some(format!("Video withheld: {reason}")),
+        None => video.and_then(video_unavailable_line),
+    }
 }
 
 // The comment's video paragraphs; the description reuses them so the two cannot disagree.
@@ -912,6 +921,64 @@ mod tests {
             }
             assert!(!comment.contains("private-block"));
         }
+    }
+
+    #[test]
+    fn a_pre_admission_refusal_states_only_the_withheld_reason_the_comment_shows() {
+        for policy in ["non-strict", "strict"] {
+            let ledger: Ledger = serde_json::from_value(serde_json::json!({
+                "verdict": "REFUSED", "path": "walk", "blocks": [], "steps": [],
+                "jev": { "calls": 0, "medianMs": 0 },
+                "llmTurns": 0, "escapes": 0, "recoveries": 0,
+                "videoPublication": "unknown", "videoPolicy": policy,
+            }))
+            .unwrap();
+            let video = VideoStatus::unavailable("no admitted app frame was recorded".into());
+            let strict = ledger.video_publication.clone().unwrap_or_default();
+            let input = ReportInput {
+                video: Some(&video),
+                run_id: "check-test",
+                platform: "ios",
+                app_id: "com.example",
+                device: "test-device",
+                ledger: &ledger,
+            };
+            let summary = video_outcome_line(&ledger, &strict, Some(&video)).unwrap();
+            assert!(summary.starts_with("Video withheld: "), "{summary}");
+            let report = render(&input);
+            let comment = render_pr_comment(
+                &input,
+                None,
+                &PrRun {
+                    tested_sha: "abcdef1234567",
+                    tested_older_commit: false,
+                    video: &video,
+                    video_continuity: &[],
+                    screenshot: None,
+                    plan_sha256: "plan-hash",
+                    video_publication: &strict,
+                },
+                &MachineIdentity::default(),
+            );
+            for output in [&report, &comment] {
+                assert!(output.contains(&summary), "{output}");
+                assert!(!output.contains("Video not published"), "{output}");
+            }
+        }
+        let ledger: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "FAIL", "path": "walk", "blocks": [], "steps": [],
+            "jev": { "calls": 0, "medianMs": 0 },
+            "llmTurns": 0, "escapes": 0, "recoveries": 0,
+            "videoPublication": "eligible", "videoPolicy": "strict",
+        }))
+        .unwrap();
+        let video = VideoStatus::unavailable("no admitted app frame was recorded".into());
+        let summary =
+            video_outcome_line(&ledger, &VideoPublication::Eligible, Some(&video)).unwrap();
+        assert!(
+            summary.starts_with("Video not published: no admitted app frame was recorded;"),
+            "{summary}"
+        );
     }
 
     #[test]

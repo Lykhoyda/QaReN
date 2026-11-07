@@ -1499,7 +1499,11 @@ fn run_inner(
             if let Some(code) = video.reason() {
                 ctx.notes.push(("videoReason".into(), code.as_str().into()));
             }
-            if let Some(line) = report::video_unavailable_line(&video) {
+            if let Some(line) = report::video_outcome_line(
+                &outcome.ledger,
+                &outcome.ledger.video_publication.clone().unwrap_or_default(),
+                Some(&video),
+            ) {
                 ctx.notes.push(("video_summary".into(), line));
             }
             // ⑭: a head that moved during the run means an older commit was tested.

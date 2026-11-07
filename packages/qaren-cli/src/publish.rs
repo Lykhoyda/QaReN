@@ -791,13 +791,11 @@ pub fn publish(
     if publication.rendered && !publication.video_attached {
         let run_dir = RunRecord::run_dir(runs_root, run_id);
         if let Ok(pr) = read_json::<PrRunRecord>(&run_dir.join("pr.json")) {
-            if pr
-                .video_policy
-                .publication(&pr.video_publication, pr.non_strict_publication.as_ref())
-                == VideoPublication::Eligible
-            {
+            if let Ok(ledger) = publish_ledger(&run_dir, &pr) {
                 let video = effective_video(&pr, false);
-                if let Some(line) = report::video_unavailable_line(&video) {
+                if let Some(line) =
+                    report::video_outcome_line(&ledger, &pr.video_publication, Some(&video))
+                {
                     receipt.outcomes.insert("video_summary".into(), line);
                 }
             }
