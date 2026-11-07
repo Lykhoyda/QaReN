@@ -1651,9 +1651,6 @@ drawing classes, including parked sliders, supply no native press or fill
 capability of their own; the [screen projection](../qaren-core/src/qa/screen.ts)
 owns their classification.
 
-Known limit: a mounted Android React Native `Modal` makes association
-unavailable, even when accessibility lists only the modal's window, so phrase
-press and fill targets on such screens refuse.
 Phrase waits capture fresh screen and presence evidence on every poll, even when the
 screen appears unchanged; prior observations do not establish current presence.
 
@@ -3515,6 +3512,8 @@ capture gets one bounded presence recapture within the step's remaining budget. 
 the presented `Modal`, recovery runs instead of scrolling the promo. A recapture that
 runs out of time or returns incomplete evidence leaves the cover unproven, and the
 step continues as it would have without it; it never adds a refusal of its own.
+If the ordinary observation expired during that read, it is refreshed before
+continuing, with the modal cover still unproven.
 React-only wait recovery and this pre-scroll recovery require proof that the target
 is behind the presented `Modal`, and recheck this proof in recovery's fresh capture
 and before dispatch; without it, app dismissal is vetoed as `uncovered-target`.
@@ -3526,9 +3525,11 @@ the screen's only control (inputs count as controls) or a recognised permission 
 A multi-control promo with a missing target vetoes as
 `uncovered-target`, presses nothing and keeps the step's `TARGET_NOT_FOUND`, so an
 ordinary form's own `Cancel` is not pressed. A screen whose only control is a decline
-can still be dismissed. A failed check or unmet wait whose target is not on screen at all
-also dismisses only a sole decline or recognised opt-in; a present target under a scrim
-or sheet keeps the earlier recovery. The current target is never exempt. ID-only targets are checked
+can still be dismissed. A failed check or ordinary unmet wait whose target is absent
+from the capture also dismisses only a sole decline or recognised opt-in. Captured
+matches, including offscreen or keyboard-covered text and IDs, do not trigger this
+additional surface veto; the other guards still apply. The current target is never
+exempt. ID-only targets are checked
 by test ID, text-only targets by contained label or value text (including composed
 input text), and unqualified targets by either. An on-screen, uncovered match
 vetoes dismissal even when another matching ID is offscreen.
