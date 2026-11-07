@@ -155,9 +155,7 @@ export function modalOverHome(
   );
 }
 
-// An ordinary form with its own Cancel and no interruption, with full React and presence evidence,
-// so Cancel is a visible, press-supported decline control.
-export function formWithCancel(): Screen {
+export function formWithCancel(modal = false): Screen {
   const formRect: Rect = { x: 0, y: 100, width: 402, height: 300 };
   const nameRect: Rect = { x: 20, y: 120, width: 362, height: 44 };
   const cancelRect: Rect = { x: 20, y: 330, width: 362, height: 50 };
@@ -176,7 +174,7 @@ export function formWithCancel(): Screen {
     },
     {
       ref: '@cancel',
-      type: 'Button',
+      type: modal ? 'Other' : 'Button',
       parentIndex: 2,
       identifier: 'qa-promo-form-cancel',
       label: 'Cancel',
@@ -189,7 +187,7 @@ export function formWithCancel(): Screen {
     [
       { testID: 'qa-promo-form', role: null, roleSource: 'none', capabilities: {} },
       0,
-      'RCTView',
+      modal ? 'RCTModalHostView' : 'RCTView',
       formRect,
     ],
     [

@@ -11,7 +11,12 @@ import type { StoredBlock } from '../../../dist/qa/blocks.js';
 import type { Block } from '../../../dist/qa/plan.js';
 import { NativeSnapshotIncomplete } from '../../../dist/qa/private-input.js';
 import { CaptureDeadline } from '../../../dist/qa/capture.js';
-import { join as joinScreen, modalCoverDiagnostic, type Screen } from '../../../dist/qa/screen.js';
+import {
+  hostAssociationIdentity,
+  join as joinScreen,
+  modalCoverDiagnostic,
+  type Screen,
+} from '../../../dist/qa/screen.js';
 import type { WalkerDeps } from '../../../dist/qa/walker.js';
 import { choice, element, screen, scriptedJudge } from './judgment-fixtures.ts';
 import { formWithCancel, homeAfterPromo, modalOverHome } from './modal-fixtures.ts';
@@ -263,6 +268,28 @@ for (const step of ['Tap "qa-missing"', 'Fill "qa-missing" with "synthetic"']) {
     assert.ok(!result.recoveries);
     assert.match(result.failure?.seen ?? '', /^TARGET_NOT_FOUND/);
     assert.ok(vetoes.includes('uncovered-target'));
+  });
+}
+
+for (const plan of ['✓ "Saved"', '1. Wait for "Saved" to appear']) {
+  test(`an absent target never dismisses a modal form: ${plan}`, async () => {
+    const modal = formWithCancel(true);
+    const cover = modalCoverDiagnostic(modal);
+    assert.ok(cover);
+    assert.equal(cover.refused, undefined);
+    const cancel = modal.elements.find((e) => e.ref === '@cancel')!;
+    assert.equal(hostAssociationIdentity(cancel), 'matched');
+    assert.equal(cancel.semantic?.press, 'supported');
+    const f = app(modal);
+    ticking(f);
+    const vetoes: unknown[] = [];
+    f.deps.interruptionRejected = (event) => vetoes.push(event.veto);
+    const result = await runPlan(parsePlan(plan).blocks!, f.deps);
+    assert.equal(result.verdict, 'FAIL');
+    assert.deepEqual(f.actions, []);
+    assert.equal(result.recoveries, 0);
+    assert.ok(vetoes.includes('uncovered-target'));
+    assert.match(result.failure?.seen ?? '', /Saved/);
   });
 }
 
@@ -566,6 +593,7 @@ test('the veto sees masked input evidence and recovery screenshots respect priva
         secure: true,
         value: secret,
       }),
+      element('@settings', 'Settings', { kind: 'text', testID: 'Settings', offscreen: true }),
     ]),
   );
   const judge = scriptedJudge((_questions, _index, state) => {
@@ -574,7 +602,6 @@ test('the veto sees masked input evidence and recovery screenshots respect priva
   });
   f.deps.judge = judge;
   f.deps.interruptionVeto = true;
-  // A failed check, not a missing tap target, so recovery needs no separate-surface proof here.
   const result = await runPlan(parsePlan('✓ "Settings"').blocks!, f.deps);
   assert.equal(result.verdict, 'PASS', result.failure?.seen);
   assert.equal(judge.requests.length, 1);
@@ -665,7 +692,7 @@ function changingPopup(f: ReturnType<typeof app>, skip = element('@close', 'Skip
     return press(ref, context);
   };
   f.deps.captureScreen = async () =>
-    dismissed ? home() : screen([element('@hero', `Hero ${frame++}`), skip]);
+    dismissed ? home() : screen([element('@hero', `Hero ${frame++}`, { kind: 'text' }), skip]);
 }
 
 test('a quoted wait behind an unchanged optional pop-up declines it once and retries the wait', async () => {

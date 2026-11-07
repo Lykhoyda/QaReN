@@ -3526,7 +3526,9 @@ the screen's only control (inputs count as controls) or a recognised permission 
 A multi-control promo with a missing target vetoes as
 `uncovered-target`, presses nothing and keeps the step's `TARGET_NOT_FOUND`, so an
 ordinary form's own `Cancel` is not pressed. A screen whose only control is a decline
-can still be dismissed. The current target is never exempt. ID-only targets are checked
+can still be dismissed. A failed check or unmet wait whose target is not on screen at all
+also dismisses only a sole decline or recognised opt-in; a present target under a scrim
+or sheet keeps the earlier recovery. The current target is never exempt. ID-only targets are checked
 by test ID, text-only targets by contained label or value text (including composed
 input text), and unqualified targets by either. An on-screen, uncovered match
 vetoes dismissal even when another matching ID is offscreen.

@@ -131,7 +131,7 @@ export function isDeclineLabel(label: string | undefined): label is string {
   return label !== undefined && DECLINE_LABELS.has(label);
 }
 
-export type InterruptionProof = 'covered-target' | 'surface';
+export type InterruptionProof = 'covered-target' | 'surface' | 'absent-surface';
 
 export const INTERRUPTION_VETOES = [
   'front',
@@ -284,7 +284,13 @@ export function dismissCandidate(
           (target.exact !== 'id' && target.quoted?.toLowerCase() === label)),
     );
     if (plannedIndex !== -1) return rejected('later-target', plannedIndex, [], 'ownership');
-    if (proof === 'surface' && !sole && !screenClass) return rejected('uncovered-target', 0);
+    if (
+      !sole &&
+      !screenClass &&
+      (proof === 'surface' ||
+        (proof === 'absent-surface' && !targetOnScreen(screen, planTargets[0], undefined, true)))
+    )
+      return rejected('uncovered-target', 0);
     return { label: candidates[0].label!, ...(screenClass ? { screenClass } : {}) };
   }
   return rejected(

@@ -3220,7 +3220,7 @@ async function walkBlockScoped(
               ? 'CHECK_UNSURE: the expectation remained uncertain after a fresh-screen re-ask'
               : `"${item.text}" is not satisfied on screen${nearMiss ? NEAR_MISS[nearMiss] : ''}`;
           if (decision.check === 'unsure' || decision.check === 'fail') {
-            const recovering = await recovery(item, 1, reason);
+            const recovering = await recovery(item, 1, reason, undefined, 'absent-surface');
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
           }
@@ -3521,7 +3521,7 @@ async function walkBlockScoped(
               1,
               reason,
               reactOnly ? deps.now() + CAPTURE_BUDGET_MS : undefined,
-              reactOnly ? 'covered-target' : undefined,
+              reactOnly ? 'covered-target' : 'absent-surface',
             );
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
