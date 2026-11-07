@@ -4419,19 +4419,13 @@ fn script_borrowed_release(mock: &mut MockRunner, runner_running: bool) {
             "forward --list",
             CmdOutput::success(&format!("{EMULATOR} tcp:41234 tcp:22089\n\n")),
         );
-        mock.expect_run(
-            "dumpsys activity processes",
-            CmdOutput::success(RUNNER_PROCESSES),
-        );
+        mock.expect_run("activity processes", CmdOutput::success(RUNNER_PROCESSES));
         mock.expect_run("forward --remove tcp:41234", CmdOutput::success(""));
         mock.expect_run("am force-stop", CmdOutput::success(""));
         mock.expect_run("am force-stop", CmdOutput::success(""));
     }
     mock.expect_run("forward --list", CmdOutput::success("\n"));
-    mock.expect_run(
-        "dumpsys activity processes",
-        CmdOutput::success(NO_RUNNER_PROCESS),
-    );
+    mock.expect_run("activity processes", CmdOutput::success(NO_RUNNER_PROCESS));
 }
 
 // One finite build: the gated spawn, its group identity, then its group proven gone.
@@ -10410,7 +10404,7 @@ fn android_teardown_releases_before_the_lease() {
     }
     assert_eq!(mock.remaining(), 0);
     let adb = adb_calls(&mock);
-    assert!(adb.last().unwrap().contains("dumpsys activity processes"));
+    assert!(adb.last().unwrap().contains("activity processes"));
     assert!(!adb
         .iter()
         .any(|c| c.contains("uninstall") || c.contains("kill-server")));
@@ -10437,7 +10431,7 @@ fn android_teardown_retries_a_slow_runner_read_and_releases_the_lease() {
     mock.expect_run("reverse --list", CmdOutput::success(""));
     mock.expect_run("forward --list", CmdOutput::success("\n"));
     mock.expect_run(
-        "dumpsys activity processes",
+        "activity processes",
         CmdOutput {
             timed_out: true,
             duration_ms: 20_051,
@@ -10451,10 +10445,7 @@ fn android_teardown_retries_a_slow_runner_read_and_releases_the_lease() {
             ..CmdOutput::success("")
         },
     );
-    mock.expect_run(
-        "dumpsys activity processes",
-        CmdOutput::success(NO_RUNNER_PROCESS),
-    );
+    mock.expect_run("activity processes", CmdOutput::success(NO_RUNNER_PROCESS));
 
     let receipt = run(&mut mock, &req);
 

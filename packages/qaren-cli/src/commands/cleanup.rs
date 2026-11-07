@@ -2017,7 +2017,12 @@ fn release_reverse(
         adb,
         port,
         serial,
-        &android::adb_reverse_remove_spec(adb, port, serial, reverse_port),
+        &|scale| {
+            scaled(
+                android::adb_reverse_remove_spec(adb, port, serial, reverse_port),
+                scale,
+            )
+        },
         extra_ms,
     );
     if removed.timed_out {
@@ -2030,7 +2035,7 @@ fn release_reverse(
     } else if !removed.ok() {
         Outcome::Unresolved(format!(
             "adb reverse --remove tcp:{reverse_port}: {}",
-            removed.summary()
+            step_failure(&removed, &ladder)
         ))
     } else {
         // A reported removal counts only once the device no longer lists the mapping.
@@ -2039,7 +2044,7 @@ fn release_reverse(
             adb,
             port,
             serial,
-            &android::adb_reverse_list_spec(adb, port, serial),
+            &|scale| scaled(android::adb_reverse_list_spec(adb, port, serial), scale),
             extra_ms,
         );
         if !listed.ok() {
@@ -2091,7 +2096,12 @@ fn release_android_runner(
             "runner driver quiescence is unproven; runner left untouched".into(),
         );
     }
-    let found = match read_runner(runner, adb, port, serial, extra_ms) {
+    let api_level = record
+        .resources
+        .android_emulator
+        .as_ref()
+        .map_or(0, |emulator| emulator.api_level);
+    let found = match read_runner(runner, adb, port, serial, api_level, extra_ms) {
         Ok(state) => state,
         Err(reason) => return Outcome::Unresolved(reason),
     };
@@ -2101,13 +2111,28 @@ fn release_android_runner(
     for host_port in found.forwards {
         runner.run(&android::forward_remove_spec(adb, port, serial, host_port));
     }
+    // A slow device gets a longer force-stop too; the read-back below stays the only proof.
+    let mut stop_failures = String::new();
     for package in android::RUNNER_PACKAGES {
-        runner.run(&android::force_stop_spec(adb, port, serial, package));
+        let (stopped, ladder) = run_slow_aware(
+            runner,
+            adb,
+            port,
+            serial,
+            &|scale| scaled(android::force_stop_spec(adb, port, serial, package), scale),
+            extra_ms,
+        );
+        if !stopped.ok() {
+            stop_failures.push_str(&format!(
+                "; am force-stop {package}: {}",
+                step_failure(&stopped, &ladder)
+            ));
+        }
     }
-    match read_runner(runner, adb, port, serial, extra_ms) {
+    match read_runner(runner, adb, port, serial, api_level, extra_ms) {
         Ok(after) if after.absent() => Outcome::Removed,
         Ok(after) => Outcome::Unresolved(format!(
-            "the runner remains after force-stop (forward {}, instrumentation {})",
+            "the runner remains after force-stop (forward {}, instrumentation {}){stop_failures}",
             if after.forward_remains {
                 "listed"
             } else {
@@ -2119,7 +2144,7 @@ fn release_android_runner(
                 "gone"
             }
         )),
-        Err(reason) => Outcome::Unresolved(reason),
+        Err(reason) => Outcome::Unresolved(format!("{reason}{stop_failures}")),
     }
 }
 
@@ -2141,6 +2166,7 @@ fn read_runner(
     adb: &Path,
     port: u16,
     serial: &str,
+    api_level: u32,
     extra_ms: &mut u64,
 ) -> Result<RunnerState, String> {
     let (forwards, ladder) = run_slow_aware(
@@ -2148,7 +2174,7 @@ fn read_runner(
         adb,
         port,
         serial,
-        &android::forward_list_spec(adb, port),
+        &|scale| scaled(android::forward_list_spec(adb, port), scale),
         extra_ms,
     );
     if !forwards.ok() {
@@ -2162,7 +2188,7 @@ fn read_runner(
         adb,
         port,
         serial,
-        &android::runner_processes_spec(adb, port, serial),
+        &|scale| android::runner_processes_spec(adb, port, serial, scale, api_level),
         extra_ms,
     );
     if !processes.ok() {
@@ -2172,7 +2198,10 @@ fn read_runner(
         ));
     }
     let Some(instrumenting) = android::runner_in_processes(&processes.stdout) else {
-        return Err("dumpsys activity processes: unrecognised output".to_string());
+        return Err(format!(
+            "dumpsys activity processes: {}",
+            after_ladder("unrecognised output".to_string(), &ladder)
+        ));
     };
     Ok(RunnerState {
         forwards: android::runner_forwards(&forwards.stdout, serial),
@@ -2188,6 +2217,8 @@ const SLOW_DEVICE_ATTEMPTS: usize = 3;
 struct StepAttempt {
     budget_s: u64,
     duration_ms: u64,
+    // adb answered with only dumpsys's own timeout banner.
+    service_timeout: bool,
 }
 
 enum Liveness {
@@ -2202,27 +2233,43 @@ struct Ladder {
     liveness: Vec<Liveness>,
 }
 
-// A timed-out cleanup command is retried with twice, then three times its budget, only while
-// the device still answers `adb shell true` and the remaining extra time covers both the probe
-// and the retry. A stalled device stops at once. A non-timeout failure is never retried.
+// The spec's own budget times `scale`.
+fn scaled(mut spec: CmdSpec, scale: u64) -> CmdSpec {
+    spec.timeout_seconds *= scale;
+    spec
+}
+
+// Runs one attempt; dumpsys's timeout banner is a timeout, never a readable answer.
+fn run_attempt(runner: &mut dyn Runner, spec: &CmdSpec, ladder: &mut Ladder) -> CmdOutput {
+    let mut output = runner.run(spec);
+    let service_timeout = !output.timed_out
+        && (android::dump_timed_out(&output.stdout) || android::dump_timed_out(&output.stderr));
+    output.timed_out |= service_timeout;
+    ladder.attempts.push(StepAttempt {
+        budget_s: spec.timeout_seconds,
+        duration_ms: output.duration_ms,
+        service_timeout,
+    });
+    output
+}
+
+// A timed-out cleanup command is retried with twice, then three times its budget (`spec(2)`,
+// `spec(3)`), only while the device still answers `adb shell true` and the remaining extra time
+// covers both the probe and the retry. A stalled device stops at once. A non-timeout failure is
+// never retried.
 fn run_slow_aware(
     runner: &mut dyn Runner,
     adb: &Path,
     port: u16,
     serial: &str,
-    spec: &CmdSpec,
+    spec: &dyn Fn(u64) -> CmdSpec,
     extra_ms: &mut u64,
 ) -> (CmdOutput, Ladder) {
     let mut ladder = Ladder::default();
-    let mut output = runner.run(spec);
-    ladder.attempts.push(StepAttempt {
-        budget_s: spec.timeout_seconds,
-        duration_ms: output.duration_ms,
-    });
+    let mut output = run_attempt(runner, &spec(1), &mut ladder);
     let probe = android::shell_true_spec(adb, port, serial);
     while output.timed_out && ladder.attempts.len() < SLOW_DEVICE_ATTEMPTS {
-        let mut retry = spec.clone();
-        retry.timeout_seconds = spec.timeout_seconds * (ladder.attempts.len() as u64 + 1);
+        let retry = spec(ladder.attempts.len() as u64 + 1);
         if (probe.timeout_seconds + retry.timeout_seconds) * 1000 > *extra_ms {
             break;
         }
@@ -2240,46 +2287,66 @@ fn run_slow_aware(
             break;
         }
         ladder.liveness.push(Liveness::Answered(answer.duration_ms));
-        output = runner.run(&retry);
+        output = run_attempt(runner, &retry, &mut ladder);
         *extra_ms = extra_ms.saturating_sub(output.duration_ms);
-        ladder.attempts.push(StepAttempt {
-            budget_s: retry.timeout_seconds,
-            duration_ms: output.duration_ms,
-        });
     }
     (output, ladder)
 }
 
-// Today's failure text; a timeout names every attempt, the liveness answers and what they mean.
-fn step_failure(output: &CmdOutput, ladder: &Ladder) -> String {
-    if !output.timed_out {
-        return output.summary();
-    }
+// Every attempt's budget and time, then the liveness answers between them.
+fn ladder_history(ladder: &Ladder) -> String {
     let n = ladder.attempts.len();
     let tries = ladder
         .attempts
         .iter()
-        .map(|a| format!("{} s: {} ms", a.budget_s, a.duration_ms))
+        .map(|a| {
+            let banner = if a.service_timeout {
+                ", service dump timed out"
+            } else {
+                ""
+            };
+            format!("{} s: {} ms{banner}", a.budget_s, a.duration_ms)
+        })
         .collect::<Vec<_>>()
         .join("; ");
-    let mut text = format!(
-        "timed out after {n} attempt{} ({tries})",
-        if n == 1 { "" } else { "s" }
-    );
-    let answers = ladder
-        .liveness
-        .iter()
-        .filter_map(|l| match l {
-            Liveness::Answered(ms) => Some(format!("{ms} ms")),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+    let mut text = format!("{n} attempt{} ({tries})", if n == 1 { "" } else { "s" });
+    let answers = answered_ms(ladder);
     if !answers.is_empty() {
         text.push_str(&format!(
             "; the device answered adb shell true in {} between attempts",
             answers.join(" and ")
         ));
     }
+    text
+}
+
+fn answered_ms(ladder: &Ladder) -> Vec<String> {
+    ladder
+        .liveness
+        .iter()
+        .filter_map(|l| match l {
+            Liveness::Answered(ms) => Some(format!("{ms} ms")),
+            _ => None,
+        })
+        .collect()
+}
+
+// A reason the last attempt gave, keeping the attempts before it when the ladder ran.
+fn after_ladder(reason: String, ladder: &Ladder) -> String {
+    if ladder.attempts.len() == 1 {
+        return reason;
+    }
+    format!("{reason} on the last of {}", ladder_history(ladder))
+}
+
+// Today's failure text; a timeout names every attempt, the liveness answers and what they mean.
+fn step_failure(output: &CmdOutput, ladder: &Ladder) -> String {
+    if !output.timed_out {
+        return after_ladder(output.summary(), ladder);
+    }
+    let n = ladder.attempts.len();
+    let mut text = format!("timed out after {}", ladder_history(ladder));
+    let answers = answered_ms(ladder);
     match ladder.liveness.last() {
         Some(Liveness::TimedOut(ms)) => text.push_str(&format!(
             "; adb shell true timed out after {ms} ms, so the device is unresponsive"
