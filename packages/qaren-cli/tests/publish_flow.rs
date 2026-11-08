@@ -3002,7 +3002,7 @@ fn non_strict_interruption_names_the_signal_instead_of_screenshot_privacy() {
         let body = std::fs::read_to_string(dir.join("comment.md")).unwrap();
         if named {
             assert!(
-                body.contains("QaReN's runner restarted at 0:12 (line 7)"),
+                body.contains("QaReN's runner restarted at 0:12 after admission (line 7)"),
                 "{body}"
             );
         } else {

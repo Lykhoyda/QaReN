@@ -1077,10 +1077,35 @@ fn passive_continuity<'de, D: serde::Deserializer<'de>>(
 
 impl Ledger {
     pub fn first_counted(&self) -> Option<&ContinuityEvent> {
-        self.continuity_events
+        let first = self
+            .continuity_events
             .iter()
             .filter(|event| event.counted)
-            .min_by_key(|event| event.at_ms)
+            .min_by_key(|event| event.at_ms)?;
+        if matches!(
+            first.signal,
+            ContinuitySignal::RunnerRecovery | ContinuitySignal::RunnerLeak
+        ) && first.owner() == "qaren"
+        {
+            return self
+                .continuity_events
+                .iter()
+                .filter(|event| {
+                    event.counted
+                        && event.at_ms >= first.at_ms
+                        && matches!(
+                            event.signal,
+                            ContinuitySignal::AppNotRunning
+                                | ContinuitySignal::AppProcessChanged
+                                | ContinuitySignal::AppProcessGone
+                                | ContinuitySignal::DevClientPicker
+                                | ContinuitySignal::FirstRunTutorial
+                        )
+                })
+                .min_by_key(|event| event.at_ms)
+                .or(Some(first));
+        }
+        Some(first)
     }
 
     pub fn uncounted_runner_recoveries_after(

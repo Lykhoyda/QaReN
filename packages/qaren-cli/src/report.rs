@@ -643,14 +643,14 @@ pub fn video_unavailable_line(video: &VideoStatus, ledger: Option<&Ledger>) -> O
                     let cause = match event.signal {
                         crate::core::ContinuitySignal::RunnerRecovery | crate::core::ContinuitySignal::RunnerLeak =>
                             format!("QaReN's runner restarted at {at} and QaReN could not confirm the app's process afterwards"),
-                        crate::core::ContinuitySignal::AppProcessUnproven => format!("QaReN could not read the app's process after {at}"),
+                        crate::core::ContinuitySignal::AppProcessUnproven => format!("QaReN could not read the app's process at {at}"),
                         _ => format!("QaReN recorded an unrecognized continuity signal at {at}"),
                     };
                     (cause, "this is a QaReN gap; include the run id in feedback")
                 }
             };
             let signal = serde_json::to_value(event.signal).unwrap_or_default();
-            return Some(format!("Video not published: app continuity was interrupted after admission; {cause} (signal: {}, owner: {}); {next}", signal.as_str().unwrap_or("unknown"), event.owner()));
+            return Some(format!("Video not published: app continuity was interrupted after admission; {cause} (signal: {}, owner: {}); times mark observation completion; {next}", signal.as_str().unwrap_or("unknown"), event.owner()));
         }
     }
     let (detail, next) = match video {
@@ -712,8 +712,8 @@ fn continuity_location(ledger: &Ledger, event: &crate::core::ContinuityEvent) ->
         .map(|ms| format!("{}:{:02}", ms / 60_000, ms / 1000 % 60))
         .unwrap_or_else(|| "an unrecorded offset".into());
     match event.line {
-        Some(line) => format!("{at} (line {line})"),
-        None => at,
+        Some(line) => format!("{at} after admission (line {line})"),
+        None => format!("{at} after admission"),
     }
 }
 
@@ -722,7 +722,7 @@ fn runner_recovery_line(ledger: &Ledger) -> Option<String> {
     let event = ledger
         .uncounted_runner_recoveries_after(admitted.max(ledger.publish_from_ms.unwrap_or(admitted)))
         .next()?;
-    Some(format!("QaReN restarted its runner at {}; the app kept running (same process), so the video was kept.", continuity_location(ledger, event)))
+    Some(format!("QaReN observed its runner recovery at {}; the app kept running (same process), so the video was kept. This is when the snapshot completed, not the start of the runner frames.", continuity_location(ledger, event)))
 }
 
 // The comment's video paragraphs; the description reuses them so the two cannot disagree.

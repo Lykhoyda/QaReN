@@ -454,3 +454,120 @@ test('video reason follows a pre-plan login window while screenshots retain the 
     line: 1,
   });
 });
+
+test('finish retains an omitted pending recovery ahead of uncounted events', async () => {
+  const observations = [
+    appSnapshot(),
+    ...Array.from({ length: 16 }, () => runnerRecovery(41)),
+    runnerRecovery(),
+  ];
+  const snapshots = postAdmissionSnapshots(async () => observations.shift()!, 'com.test');
+  for (let i = 0; i < 17; i++) await snapshots.snapshot({});
+  snapshots.admit();
+  await snapshots.snapshot({});
+  assert.equal(snapshots.dropped(), 1);
+  assert.equal(
+    snapshots.events().some((event) => !event.beforeAdmission),
+    false,
+  );
+  snapshots.finish();
+  assert.equal(snapshots.events().length, 16);
+  assert.equal(snapshots.dropped(), 1);
+  assert.equal(snapshots.interrupted(), true);
+  assert.deepEqual(
+    snapshots
+      .events()
+      .filter((event) => event.counted)
+      .map((event) => ({ signal: event.signal, detail: event.detail })),
+    [{ signal: 'runner-recovery', detail: { recoveryTier: 'relaunch', unresolved: true } }],
+  );
+  snapshots.finish();
+  assert.equal(snapshots.dropped(), 1);
+});
+
+test('finish retains an unresolved missing process read when the event buffer is full', async () => {
+  const observations = [
+    appSnapshot(),
+    ...Array.from({ length: 16 }, () => runnerRecovery(41)),
+    okResult({ nodes: [] }),
+  ];
+  const snapshots = postAdmissionSnapshots(async () => observations.shift()!, 'com.test');
+  for (let i = 0; i < 17; i++) await snapshots.snapshot({});
+  snapshots.admit();
+  await snapshots.snapshot({});
+  snapshots.finish();
+  assert.equal(snapshots.events().length, 16);
+  assert.equal(snapshots.dropped(), 1);
+  assert.equal(snapshots.interrupted(), true);
+  assert.equal(snapshots.events().find((event) => event.counted)?.signal, 'app-process-unproven');
+});
+
+test('a launcher resolves pending runner recovery and keeps both observation times', async (t) => {
+  for (const surface of ['dev_client_picker', 'first_run_tutorial']) {
+    let now = 1000;
+    t.mock.method(Date, 'now', () => now);
+    const observations = [
+      appSnapshot(),
+      runnerRecovery(),
+      okResult({ nodes: [] }, { meta: { foregroundSurface: surface } }),
+    ];
+    const snapshots = postAdmissionSnapshots(async () => observations.shift()!, 'com.test');
+    await snapshots.snapshot({});
+    snapshots.admit();
+    now = 2000;
+    await snapshots.snapshot({});
+    now = 3000;
+    await snapshots.snapshot({});
+    snapshots.finish();
+    assert.equal(snapshots.interrupted(), true);
+    assert.deepEqual(
+      snapshots
+        .events()
+        .map(({ signal, atMs, counted, detail }) => ({ signal, atMs, counted, detail })),
+      [
+        {
+          signal: 'runner-recovery',
+          atMs: 2000,
+          counted: true,
+          detail: { recoveryTier: 'relaunch' },
+        },
+        {
+          signal: surface === 'dev_client_picker' ? 'dev-client-picker' : 'first-run-tutorial',
+          atMs: 3000,
+          counted: true,
+          detail: undefined,
+        },
+        { signal: 'app-process-unproven', atMs: 3000, counted: true, detail: { unresolved: true } },
+      ],
+    );
+    t.mock.restoreAll();
+  }
+});
+
+test('a runner leak followed by app stop preserves the later positive proof', async (t) => {
+  let now = 1000;
+  t.mock.method(Date, 'now', () => now);
+  const observations = [
+    appSnapshot(),
+    failResult('runner refused', { code: 'RUNNER_LEAK', recovered: true }),
+    failResult('app stopped', { reason: 'app-not-running' }),
+  ];
+  const snapshots = postAdmissionSnapshots(async () => observations.shift()!, 'com.test');
+  await snapshots.snapshot({});
+  snapshots.admit();
+  now = 2000;
+  await snapshots.snapshot({});
+  now = 3000;
+  await snapshots.snapshot({});
+  snapshots.finish();
+  assert.equal(snapshots.interrupted(), true);
+  assert.deepEqual(
+    snapshots.events().map(({ signal, atMs, counted }) => ({ signal, atMs, counted })),
+    [
+      { signal: 'runner-recovery', atMs: 2000, counted: true },
+      { signal: 'runner-leak', atMs: 2000, counted: true },
+      { signal: 'app-not-running', atMs: 3000, counted: true },
+    ],
+  );
+  assert.equal(snapshots.events()[0].detail?.unresolved, true);
+});
