@@ -1356,6 +1356,7 @@ mod tests {
             app_id: "com.example",
             device: "test-device",
             ledger: &ledger,
+            video: None,
         };
         let report = render(&input);
         assert!(
