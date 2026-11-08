@@ -274,6 +274,75 @@ for (const step of ['Tap "qa-missing"', 'Fill "qa-missing" with "synthetic"']) {
 }
 
 for (const plan of ['✓ "Saved"', '1. Wait for "Saved" to appear']) {
+  test(`an absent target never skips a two-button onboarding Modal: ${plan}`, async () => {
+    const bounds = { x: 0, y: 0, width: 402, height: 874 };
+    const controls = [
+      {
+        ref: '@continue', id: 'setup-continue', label: 'Continue',
+        rect: { x: 20, y: 600, width: 300, height: 50 },
+      },
+      {
+        ref: '@skip', id: 'setup-skip', label: 'Skip',
+        rect: { x: 20, y: 700, width: 300, height: 50 },
+      },
+    ];
+    const nodes = [
+      { ref: '@app', type: 'Application', rect: bounds },
+      { ref: '@window', type: 'Window', parentIndex: 0, rect: bounds },
+      ...controls.map((c) => ({
+        ref: c.ref, identifier: c.id, label: c.label, type: 'Other',
+        parentIndex: 1, hittable: true, rect: c.rect,
+      })),
+    ];
+    const hosts = [
+      { role: null, roleSource: 'none', capabilities: {} },
+      { testID: 'react-only-container', role: null, roleSource: 'none', capabilities: {} },
+      { role: null, roleSource: 'none', capabilities: {} },
+      ...controls.map((c) => ({
+        testID: c.id, role: 'button', roleSource: 'role', capabilities: { press: true },
+      })),
+    ];
+    const topology = [
+      { parentHostIndex: null, hostType: 'RCTRootView', rect: bounds },
+      { parentHostIndex: 0, hostType: 'RCTView', rect: bounds },
+      { parentHostIndex: 1, hostType: 'RCTModalHostView', rect: bounds },
+      ...controls.map((c) => ({ parentHostIndex: 2, hostType: 'RCTView', rect: c.rect })),
+    ];
+    const modal = joinScreen(
+      nodes,
+      controls.map((c) => ({ testID: c.id, role: 'button', label: c.label })),
+      'app',
+      { native: 'complete', react: 'complete' },
+      {
+        complete: true,
+        hosts,
+        typography: {
+          version: 1, complete: true, durationMs: 1, coordinateSpace: 'window-points',
+          nodes: topology.map((n, hostIndex) => ({
+            ...n, hostIndex, rootIndex: 0, text: { kind: 'none' },
+          })),
+        },
+      },
+      { source: 'xcui-live', nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })) },
+    );
+    const skip = modal.elements.find((e) => e.ref === '@skip')!;
+    assert.equal(hostAssociationIdentity(skip), 'matched');
+    assert.equal(skip.semantic?.press, 'supported');
+    const f = app(modal);
+    ticking(f);
+    f.deps.press = async (ref) => {
+      f.actions.push(`press ${ref}`);
+      f.show(screen([element('@saved', 'Saved', { kind: 'text' })]));
+      return { ok: true, proven: false, executed: true };
+    };
+    const result = await runPlan(parsePlan(plan).blocks!, f.deps);
+    assert.equal(result.verdict, 'FAIL');
+    assert.deepEqual(f.actions, []);
+    assert.equal(result.recoveries, 0);
+    assert.equal(result.steps.at(-1)?.interruption?.veto, 'uncovered-target');
+    assert.equal(result.steps.at(-1)?.interruption?.soleDecline, false);
+  });
+
   test(`an absent target never skips modal onboarding with an input: ${plan}`, async () => {
     const modal = formWithCancel(true, 'Skip');
     modal.elements.push(element('@title', 'Create your profile', { kind: 'text' }));
