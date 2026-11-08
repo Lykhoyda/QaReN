@@ -288,8 +288,7 @@ export function dismissCandidate(
       !sole &&
       !screenClass &&
       (proof === 'surface' ||
-        (proof === 'absent-surface' &&
-          !targetOnScreen(screen, planTargets[0], undefined, true)))
+        (proof === 'absent-surface' && !targetOnScreen(screen, planTargets[0], undefined, true)))
     )
       return rejected('uncovered-target', 0);
     return { label: candidates[0].label!, ...(screenClass ? { screenClass } : {}) };

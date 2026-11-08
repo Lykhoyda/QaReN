@@ -278,11 +278,15 @@ for (const plan of ['✓ "Saved"', '1. Wait for "Saved" to appear']) {
     const bounds = { x: 0, y: 0, width: 402, height: 874 };
     const controls = [
       {
-        ref: '@continue', id: 'setup-continue', label: 'Continue',
+        ref: '@continue',
+        id: 'setup-continue',
+        label: 'Continue',
         rect: { x: 20, y: 600, width: 300, height: 50 },
       },
       {
-        ref: '@skip', id: 'setup-skip', label: 'Skip',
+        ref: '@skip',
+        id: 'setup-skip',
+        label: 'Skip',
         rect: { x: 20, y: 700, width: 300, height: 50 },
       },
     ];
@@ -290,8 +294,13 @@ for (const plan of ['✓ "Saved"', '1. Wait for "Saved" to appear']) {
       { ref: '@app', type: 'Application', rect: bounds },
       { ref: '@window', type: 'Window', parentIndex: 0, rect: bounds },
       ...controls.map((c) => ({
-        ref: c.ref, identifier: c.id, label: c.label, type: 'Other',
-        parentIndex: 1, hittable: true, rect: c.rect,
+        ref: c.ref,
+        identifier: c.id,
+        label: c.label,
+        type: 'Other',
+        parentIndex: 1,
+        hittable: true,
+        rect: c.rect,
       })),
     ];
     const hosts = [
@@ -299,7 +308,10 @@ for (const plan of ['✓ "Saved"', '1. Wait for "Saved" to appear']) {
       { testID: 'react-only-container', role: null, roleSource: 'none', capabilities: {} },
       { role: null, roleSource: 'none', capabilities: {} },
       ...controls.map((c) => ({
-        testID: c.id, role: 'button', roleSource: 'role', capabilities: { press: true },
+        testID: c.id,
+        role: 'button',
+        roleSource: 'role',
+        capabilities: { press: true },
       })),
     ];
     const topology = [
@@ -317,13 +329,22 @@ for (const plan of ['✓ "Saved"', '1. Wait for "Saved" to appear']) {
         complete: true,
         hosts,
         typography: {
-          version: 1, complete: true, durationMs: 1, coordinateSpace: 'window-points',
+          version: 1,
+          complete: true,
+          durationMs: 1,
+          coordinateSpace: 'window-points',
           nodes: topology.map((n, hostIndex) => ({
-            ...n, hostIndex, rootIndex: 0, text: { kind: 'none' },
+            ...n,
+            hostIndex,
+            rootIndex: 0,
+            text: { kind: 'none' },
           })),
         },
       },
-      { source: 'xcui-live', nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })) },
+      {
+        source: 'xcui-live',
+        nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+      },
     );
     const skip = modal.elements.find((e) => e.ref === '@skip')!;
     assert.equal(hostAssociationIdentity(skip), 'matched');
