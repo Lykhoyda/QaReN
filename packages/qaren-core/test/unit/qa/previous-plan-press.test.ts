@@ -306,7 +306,7 @@ test('an opt-in stays protected by a later described target before protection la
   assert.match(result.failure?.seen ?? '', /later planned item at line 3/);
 });
 
-test('an unprompted sheet after later items passed on a decline-free screen is dismissed once', async () => {
+test('an unrecognised multi-control sheet stays after planned press protection lapses', async () => {
   const optIn = () =>
     screen([
       element('@title', 'Get reminders?', { kind: 'text' }),
@@ -336,16 +336,13 @@ test('an unprompted sheet after later items passed on a decline-free screen is d
     '1. Tap "Not now"\n2. Wait for "Home ready" to appear\n✓ "Reminder declines: 1"\n4. Wait for "Lists ready" to appear',
     f,
   );
-  assert.equal(result.verdict, 'PASS', result.failure?.seen);
-  assert.deepEqual(f.actions, ['press @notnow', 'press @later']);
-  assert.equal(result.recoveries, 1);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, ['press @notnow']);
+  assert.equal(result.recoveries, 0);
   assert.ok(!f.vetoes.includes('previous-plan-press'));
-  const retry = result.steps.find((row) => row.line === 4 && row.outcome === 'retry');
-  assert.match(
-    retry?.reason ?? '',
-    /recovered: dismissed an app screen with Maybe later; retrying the step once/,
-  );
-  assert.equal(retry?.interruption?.outcome, 'dismissed');
+  const failed = result.steps.find((row) => row.line === 4 && row.outcome === 'fail');
+  assert.equal(failed?.interruption?.outcome, 'vetoed');
+  assert.equal(failed?.interruption?.veto, 'uncovered-target');
 });
 
 test('after a decline-free pass, a delayed opt-in a later step targets is still not dismissed', async () => {
