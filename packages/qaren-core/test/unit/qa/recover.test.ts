@@ -1297,6 +1297,35 @@ test('the closed accept-all list keeps every decline outside protection too', ()
   }
 });
 
+test('an absent check or wait target admits a soft decline but never a Cancel', () => {
+  const absent: RecoveryTarget = {
+    phrase: 'Lists ready',
+    quoted: 'Lists ready',
+    kind: 'wait',
+    line: 4,
+  };
+  const sheet = (decline: string) =>
+    fixtureScreen([
+      element('@new', 'New: shared lists', { kind: 'text' }),
+      element('@try', 'Try shared lists'),
+      element('@decline', decline),
+    ]);
+  assert.deepEqual(dismissCandidate(sheet('Maybe later'), [absent], undefined, 'absent-surface'), {
+    label: 'Maybe later',
+  });
+  for (const decline of ['Cancel', 'Close'])
+    assert.equal(
+      dismissCandidate(sheet(decline), [absent], undefined, 'absent-surface'),
+      undefined,
+      decline,
+    );
+  // A missing tap or fill target still needs a sole decline or an opt-in.
+  assert.equal(
+    dismissCandidate(sheet('Maybe later'), [{ ...absent, kind: 'press' }], undefined, 'surface'),
+    undefined,
+  );
+});
+
 test('a recognised opt-in is a separate surface for a missing tap target', () => {
   const missing: RecoveryTarget = {
     phrase: 'Settings',

@@ -288,7 +288,10 @@ export function dismissCandidate(
       !sole &&
       !screenClass &&
       (proof === 'surface' ||
-        (proof === 'absent-surface' && !targetOnScreen(screen, planTargets[0], undefined, true)))
+        // A soft decline (Maybe later, Not now) is interruption vocabulary; Close or Cancel is not.
+        (proof === 'absent-surface' &&
+          !SOFT_DECLINES.has(candidates[0].label!) &&
+          !targetOnScreen(screen, planTargets[0], undefined, true)))
     )
       return rejected('uncovered-target', 0);
     return { label: candidates[0].label!, ...(screenClass ? { screenClass } : {}) };
