@@ -274,6 +274,28 @@ for (const step of ['Tap "qa-missing"', 'Fill "qa-missing" with "synthetic"']) {
 }
 
 for (const plan of ['✓ "Saved"', '1. Wait for "Saved" to appear']) {
+  test(`an absent target never skips modal onboarding with an input: ${plan}`, async () => {
+    const modal = formWithCancel(true, 'Skip');
+    modal.elements.push(element('@title', 'Create your profile', { kind: 'text' }));
+    modal.visibleText.push('Create your profile');
+    const cover = modalCoverDiagnostic(modal);
+    assert.ok(cover);
+    assert.equal(cover.refused, undefined);
+    const skip = modal.elements.find((e) => e.ref === '@cancel')!;
+    assert.equal(hostAssociationIdentity(skip), 'matched');
+    assert.equal(skip.semantic?.press, 'supported');
+    const f = app(modal);
+    ticking(f);
+    const vetoes: unknown[] = [];
+    f.deps.interruptionRejected = (event) => vetoes.push(event.veto);
+    const result = await runPlan(parsePlan(plan).blocks!, f.deps);
+    assert.equal(result.verdict, 'FAIL');
+    assert.deepEqual(f.actions, []);
+    assert.equal(result.recoveries, 0);
+    assert.ok(vetoes.includes('uncovered-target'));
+    assert.match(result.failure?.seen ?? '', /Saved/);
+  });
+
   test(`an absent target never dismisses a modal form: ${plan}`, async () => {
     const modal = formWithCancel(true);
     const cover = modalCoverDiagnostic(modal);

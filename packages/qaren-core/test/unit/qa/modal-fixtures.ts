@@ -155,7 +155,7 @@ export function modalOverHome(
   );
 }
 
-export function formWithCancel(modal = false): Screen {
+export function formWithCancel(modal = false, decline = 'Cancel'): Screen {
   const formRect: Rect = { x: 0, y: 100, width: 402, height: 300 };
   const nameRect: Rect = { x: 20, y: 120, width: 362, height: 44 };
   const cancelRect: Rect = { x: 20, y: 330, width: 362, height: 50 };
@@ -177,7 +177,7 @@ export function formWithCancel(modal = false): Screen {
       type: modal ? 'Other' : 'Button',
       parentIndex: 2,
       identifier: 'qa-promo-form-cancel',
-      label: 'Cancel',
+      label: decline,
       hittable: true,
       rect: cancelRect,
     },
@@ -217,7 +217,7 @@ export function formWithCancel(modal = false): Screen {
     nodes,
     [
       { testID: 'qa-promo-form-name', role: 'textbox', label: 'Display name' },
-      { testID: 'qa-promo-form-cancel', role: 'button', label: 'Cancel' },
+      { testID: 'qa-promo-form-cancel', role: 'button', label: decline },
     ],
     'app',
     { native: 'complete', react: 'complete' },

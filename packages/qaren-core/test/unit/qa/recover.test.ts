@@ -1313,6 +1313,37 @@ test('an absent check or wait target admits a soft decline but never a Cancel', 
   assert.deepEqual(dismissCandidate(sheet('Maybe later'), [absent], undefined, 'absent-surface'), {
     label: 'Maybe later',
   });
+  for (const field of [
+    element('@field', 'Name', {
+      kind: 'input',
+      disabled: true,
+      semantic: { press: 'unsupported', fill: 'unsupported', visibility: 'visible' },
+    }),
+    element('@field', 'Name', {
+      kind: 'text',
+      semantic: { press: 'unsupported', fill: 'supported', visibility: 'visible' },
+    }),
+    element('@field', 'Name', {
+      kind: 'text',
+      semantic: { press: 'unsupported', fill: 'unknown', visibility: 'visible' },
+    }),
+  ]) {
+    for (const kind of ['check', 'wait'] as const) {
+      const snapshot = sheet('Maybe later');
+      snapshot.elements.push(field);
+      const records: InterruptionDiagnostic[] = [];
+      assert.equal(
+        dismissCandidate(
+          snapshot,
+          [{ ...absent, kind }],
+          (record) => records.push(record),
+          'absent-surface',
+        ),
+        undefined,
+      );
+      assert.equal(records[0]?.veto, 'uncovered-target');
+    }
+  }
   for (const decline of ['Cancel', 'Close'])
     assert.equal(
       dismissCandidate(sheet(decline), [absent], undefined, 'absent-surface'),
