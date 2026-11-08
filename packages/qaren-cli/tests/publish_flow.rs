@@ -92,6 +92,7 @@ fn run_dir(cross_repository: bool) -> (PathBuf, PathBuf) {
         plan_sha256: "e".repeat(64),
         video: VideoStatus::Available,
         video_reason: None,
+        video_interruption: None,
         video_continuity: Vec::new(),
         video_publication: VideoPublication::Eligible,
         video_withholding_reason: None,
@@ -2959,6 +2960,60 @@ fn both_comment_paths_reconcile_only_the_authenticated_authors_report_fingerprin
             assert_eq!(std::fs::read_to_string(dir.join(file)).unwrap(), expected);
         }
         assert_eq!(second.0.remaining(), 0);
+    }
+}
+
+#[test]
+fn non_strict_interruption_names_the_signal_instead_of_screenshot_privacy() {
+    for named in [true, false] {
+        let (runs, dir) = run_dir(false);
+        let path = dir.join("ledger.json");
+        let mut ledger: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        ledger["videoPolicy"] = "non-strict".into();
+        ledger["nonStrictPublication"] = "eligible".into();
+        ledger["videoPublication"] = "withheld-privacy".into();
+        ledger["mediaWithheld"] = serde_json::Value::Null;
+        ledger["publicationInterrupted"] = true.into();
+        ledger["admittedAtMs"] = 100_000.into();
+        if named {
+            ledger["continuityEvents"] = serde_json::json!([{
+                "signal": "runner-recovery", "atMs":112_000, "line":7,
+                "counted":true, "detail":{"unresolved":true}
+            }]);
+        }
+        std::fs::write(&path, ledger.to_string()).unwrap();
+        edit_pr(&dir, |pr| {
+            pr["blocks"] = serde_json::json!([]);
+            pr["videoPolicy"] = "non-strict".into();
+            pr["nonStrictPublication"] = "eligible".into();
+            pr["videoPublication"] = "withheld-privacy".into();
+            pr["video"] = "unavailable(app continuity was interrupted after admission)".into();
+        });
+        let mut runner = Git(MockRunner::new());
+        script_comment_and_label(&mut runner.0);
+        let receipt = publish(&mut runner, &runs, RUN, &machine());
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Published,
+            "{:?}",
+            receipt.failure
+        );
+        let body = std::fs::read_to_string(dir.join("comment.md")).unwrap();
+        if named {
+            assert!(
+                body.contains("QaReN's runner restarted at 0:12 (line 7)"),
+                "{body}"
+            );
+        } else {
+            assert!(
+                body.contains("before QaReN named the interrupting signal"),
+                "{body}"
+            );
+        }
+        assert!(!body.contains("screenshot privacy"), "{body}");
+        assert!(!body.contains("re-run"), "{body}");
+        assert_eq!(runner.0.remaining(), 0);
     }
 }
 

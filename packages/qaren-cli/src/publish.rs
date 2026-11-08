@@ -30,6 +30,8 @@ pub struct PrRunRecord {
     pub video: VideoStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub video_reason: Option<record::VideoReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_interruption: Option<VideoInterruption>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub video_continuity: Vec<record::VideoStall>,
     #[serde(default, deserialize_with = "video_publication")]
@@ -40,7 +42,11 @@ pub struct PrRunRecord {
     pub video_policy_source: Option<String>,
     #[serde(default, deserialize_with = "non_strict_publication")]
     pub non_strict_publication: Option<record::NonStrictPublication>,
-    #[serde(default, deserialize_with = "withholding_reason")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "withholding_reason"
+    )]
     pub video_withholding_reason: Option<String>,
     #[serde(default)]
     pub tested_older_commit: bool,
@@ -50,6 +56,36 @@ pub struct PrRunRecord {
     pub identity_values: Vec<String>,
     #[serde(default)]
     pub proof_in_description: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoInterruption {
+    pub signal: crate::core::ContinuitySignal,
+    pub owner: String,
+    pub at_ms: u64,
+    pub after_admission_ms: Option<u64>,
+    pub video_ms: Option<u64>,
+    pub line: Option<u32>,
+}
+
+impl VideoInterruption {
+    pub fn from_ledger(video: &VideoStatus, ledger: &Ledger, recording_from: u64) -> Option<Self> {
+        if video.reason() != Some(record::VideoReason::Interrupted) {
+            return None;
+        }
+        let event = ledger.first_counted()?;
+        Some(Self {
+            signal: event.signal,
+            owner: event.owner().into(),
+            at_ms: event.at_ms,
+            after_admission_ms: ledger
+                .admitted_at_ms
+                .and_then(|admitted| event.at_ms.checked_sub(admitted)),
+            video_ms: event.at_ms.checked_sub(recording_from),
+            line: event.line,
+        })
+    }
 }
 
 fn video_publication<'de, D: serde::Deserializer<'de>>(d: D) -> Result<VideoPublication, D::Error> {
