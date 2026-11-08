@@ -3506,8 +3506,9 @@ for recording eligibility.
 
 Interruption recovery counts as a device mutation for replay eligibility: a selector miss
 after recovery is terminal and never initiates another re-walk. The second ordinary
-action attempt captures fresh evidence but gets no additional expiry refresh;
-phrase actions retain presence capture through readback and retries.
+action attempt captures fresh evidence but normally gets no additional expiry refresh;
+see the pre-scroll recovery rules below for the late presence-read exception.
+Phrase actions retain presence capture through readback and retries.
 See the [recovery regressions](../qaren-core/test/unit/qa/walker-recover.test.ts)
 and [freshness regressions](../qaren-core/test/unit/qa/temporal-walker.test.ts).
 
