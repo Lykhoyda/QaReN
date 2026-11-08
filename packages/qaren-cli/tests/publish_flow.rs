@@ -91,6 +91,7 @@ fn run_dir(cross_repository: bool) -> (PathBuf, PathBuf) {
         device: "qaren-check".into(),
         plan_sha256: "e".repeat(64),
         video: VideoStatus::Available,
+        video_reason: None,
         video_continuity: Vec::new(),
         video_publication: VideoPublication::Eligible,
         video_withholding_reason: None,
@@ -127,6 +128,7 @@ fn final_terminal() -> TerminalResult {
             tested: TESTED.into(),
             matched: true,
             detail: None,
+            classification: None,
         },
         ownership_proven: true,
     }
@@ -2638,7 +2640,7 @@ fn a_post_admission_interruption_withholds_the_copy_and_upload() {
     );
     assert_eq!(
         status,
-        VideoStatus::Unavailable("app continuity was interrupted after admission".into())
+        VideoStatus::unavailable("app continuity was interrupted after admission".into())
     );
     assert!(!qaren::record::published_video_path(&dir).exists());
     assert!(encoder.calls.is_empty());
@@ -2682,6 +2684,22 @@ fn only_a_final_uncancelled_verified_owned_terminal_result_admits_publication() 
         },
         ..final_terminal()
     };
+    let unreadable = TerminalResult {
+        final_verification: FinalVerification {
+            matched: false,
+            detail: Some("git rev-parse HEAD failed: not a git repository".into()),
+            classification: Some(qaren::candidate::VerificationClass::Unreadable),
+            ..final_terminal().final_verification
+        },
+        ..final_terminal()
+    };
+    let drifted = TerminalResult {
+        final_verification: FinalVerification {
+            classification: Some(qaren::candidate::VerificationClass::Drifted),
+            ..unverified.final_verification.clone()
+        },
+        ..final_terminal()
+    };
     let unowned = TerminalResult {
         ownership_proven: false,
         ..final_terminal()
@@ -2694,6 +2712,8 @@ fn only_a_final_uncancelled_verified_owned_terminal_result_admits_publication() 
         (None, FailureCode::RunRecordInvalid),
         (Some(cancelled_and_changed), FailureCode::RunCancelled),
         (Some(unverified), FailureCode::CandidateDrifted),
+        (Some(drifted), FailureCode::CandidateDrifted),
+        (Some(unreadable), FailureCode::CandidateUnavailable),
         (Some(unowned), FailureCode::OwnershipUnproven),
     ] {
         let (runs, dir) = run_dir(false);
@@ -2772,6 +2792,7 @@ process.stdout.write(JSON.stringify(ledger));
     qaren::report::write(
         &dir,
         &qaren::report::ReportInput {
+            video: None,
             run_id: RUN,
             platform: "ios",
             app_id: "com.rndevagent.testapp",
@@ -3062,10 +3083,13 @@ process.stdout.write(JSON.stringify(ledger));
 #[test]
 fn persisted_non_strict_video_contract_never_relaxes_saved_blocks() {
     for strict in [
-        "withheld-privacy",
-        "withheld-fill",
-        "unknown",
-        "future-status",
+        Some(serde_json::json!("withheld-privacy")),
+        Some(serde_json::json!("withheld-fill")),
+        Some(serde_json::json!("unknown")),
+        Some(serde_json::json!("future-status")),
+        Some(serde_json::Value::Null),
+        Some(serde_json::json!({"malformed": true})),
+        None,
     ] {
         for non_strict in [
             Some("eligible"),
@@ -3077,7 +3101,11 @@ fn persisted_non_strict_video_contract_never_relaxes_saved_blocks() {
             edit_pr(&dir, |pr| {
                 pr["videoPolicy"] = "non-strict".into();
                 pr["videoPolicySource"] = ".qaren/testing.yaml".into();
-                pr["videoPublication"] = strict.into();
+                if let Some(value) = &strict {
+                    pr["videoPublication"] = value.clone();
+                } else {
+                    pr.as_object_mut().unwrap().remove("videoPublication");
+                }
                 if let Some(status) = non_strict {
                     pr["nonStrictPublication"] = status.into();
                 }
@@ -3097,15 +3125,17 @@ fn persisted_non_strict_video_contract_never_relaxes_saved_blocks() {
                 .iter()
                 .find(|c| c.label == "gh-pr-comment")
                 .unwrap();
-            let expected = matches!(strict, "withheld-privacy" | "withheld-fill")
-                && non_strict == Some("eligible");
+            let expected = matches!(
+                strict.as_ref().and_then(|value| value.as_str()),
+                Some("withheld-privacy" | "withheld-fill")
+            ) && non_strict == Some("eligible");
             assert_eq!(
                 comment
                     .args
                     .iter()
                     .any(|arg| arg == "./media/video-published.mp4"),
                 expected,
-                "{strict} {non_strict:?}"
+                "{strict:?} {non_strict:?}"
             );
             let body = std::fs::read_to_string(dir.join("comment.md")).unwrap();
             assert!(
@@ -3124,4 +3154,276 @@ fn persisted_non_strict_video_contract_never_relaxes_saved_blocks() {
             assert_eq!(runner.0.remaining(), 0);
         }
     }
+}
+
+#[test]
+fn unavailable_video_reasons_agree_across_publication_surfaces_and_retries() {
+    for (status, reason, missing) in [
+        ("unavailable(encode failed)", Some("encode-failed"), false),
+        ("available", Some("published-copy-missing"), true),
+        (
+            "unavailable(legacy recorder explanation)",
+            Some("other"),
+            false,
+        ),
+        ("too-large", None, false),
+    ] {
+        let (runs, dir) = run_dir(false);
+        edit_pr(&dir, |pr| {
+            pr["video"] = status.into();
+            pr["blocks"] = serde_json::json!([]);
+            // Legacy records intentionally have no videoReason.
+            pr.as_object_mut().unwrap().remove("videoReason");
+        });
+        if missing {
+            std::fs::remove_file(dir.join("media/video-published.mp4")).unwrap();
+        }
+        let original = std::fs::read(dir.join("pr.json")).unwrap();
+        let mut runner = Git(MockRunner::new());
+        script_comment_and_label(&mut runner.0);
+        let receipt = publish(&mut runner, &runs, RUN, &machine());
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Published,
+            "{:?}",
+            receipt.failure
+        );
+        let state = publication(&dir);
+        assert_eq!(state.video_reason.map(|code| code.as_str()), reason);
+        assert!(!state.video_attached);
+        let note = &receipt.outcomes["video_summary"];
+        let body = std::fs::read_to_string(dir.join("comment.md")).unwrap();
+        assert!(body.contains(&note.replace('`', "\\`")), "{body}\n{note}");
+        assert!(note.starts_with("Video not published: "));
+        assert_eq!(std::fs::read(dir.join("pr.json")).unwrap(), original);
+        let json: serde_json::Value = serde_json::from_str(&receipt.to_json()).unwrap();
+        if let Some(code) = reason {
+            assert_eq!(json["outcomes"]["publicationVideoReason"], code);
+        }
+        assert!(!runner
+            .0
+            .calls
+            .iter()
+            .find(|call| call.label == "gh-pr-comment")
+            .unwrap()
+            .args
+            .iter()
+            .any(|arg| arg == "./media/video-published.mp4"));
+        let again = publish(&mut runner, &runs, RUN, &machine());
+        assert_eq!(again.outcomes["video_summary"], *note);
+        assert_eq!(publication(&dir), state);
+        assert_eq!(runner.0.remaining(), 0);
+    }
+}
+
+#[test]
+fn admitted_refusal_secret_gates_and_capture_unknown_never_attach_video() {
+    for carrier in [
+        "ordinary",
+        "secret",
+        "secure-field",
+        "concealed-fill",
+        "code-row",
+        "capture-unknown",
+    ] {
+        let (runs, dir) = run_dir(false);
+        edit_pr(&dir, |pr| {
+            pr["blocks"] = serde_json::json!([]);
+            pr["videoPolicy"] = "non-strict".into();
+            pr["videoPublication"] = match carrier {
+                "ordinary" => "eligible",
+                "secret" => "withheld-fill",
+                "capture-unknown" => "unknown",
+                _ => "withheld-privacy",
+            }
+            .into();
+            if carrier == "capture-unknown" {
+                pr.as_object_mut().unwrap().remove("nonStrictPublication");
+            } else {
+                pr["nonStrictPublication"] = if carrier == "ordinary" {
+                    "eligible"
+                } else {
+                    "withheld-secret"
+                }
+                .into();
+            }
+        });
+        let mut ledger: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("ledger.json")).unwrap()).unwrap();
+        ledger["verdict"] = "REFUSED".into();
+        ledger["code"] = if carrier == "capture-unknown" {
+            "PRIVATE_INPUT_CAPTURE_UNKNOWN"
+        } else {
+            "SCROLL_NAVIGATED"
+        }
+        .into();
+        std::fs::write(
+            dir.join("ledger.json"),
+            serde_json::to_vec(&ledger).unwrap(),
+        )
+        .unwrap();
+        let mut record = qaren::runrecord::RunRecord::load(&runs, RUN).unwrap();
+        record.terminal.as_mut().unwrap().verdict = "REFUSED".into();
+        record.save(&runs).unwrap();
+        let mut runner = Git(MockRunner::new());
+        script_comment_and_label(&mut runner.0);
+        let receipt = publish(&mut runner, &runs, RUN, &machine());
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Published,
+            "{carrier}: {:?}",
+            receipt.failure
+        );
+        assert_eq!(publication(&dir).video_attached, carrier == "ordinary");
+        assert_eq!(runner.0.remaining(), 0);
+    }
+}
+
+#[test]
+fn video_detail_uses_the_same_output_redaction_as_the_comment() {
+    let (runs, dir) = run_dir(false);
+    edit_pr(&dir, |pr| {
+        pr["blocks"] = serde_json::json!([]);
+        pr["video"] = "unavailable(password=synthetic-detail-canary)".into();
+    });
+    let mut runner = Git(MockRunner::new());
+    script_comment_and_label(&mut runner.0);
+    let receipt = publish(&mut runner, &runs, RUN, &machine());
+    assert_eq!(receipt.result, ReceiptResult::Published);
+    for output in [
+        receipt.to_json(),
+        std::fs::read_to_string(dir.join("comment.md")).unwrap(),
+    ] {
+        assert!(!output.contains("synthetic-detail-canary"), "{output}");
+    }
+}
+
+#[test]
+fn publish_binary_keeps_stdout_json_and_explains_unavailable_video_on_stderr() {
+    use std::os::unix::fs::PermissionsExt;
+    let (runs, dir) = run_dir(false);
+    edit_pr(&dir, |pr| {
+        pr["blocks"] = serde_json::json!([]);
+        pr["video"] = "unavailable(encode failed)".into();
+    });
+    let mut runner = Git(MockRunner::new());
+    script_comment_and_label(&mut runner.0);
+    assert_eq!(
+        publish(&mut runner, &runs, RUN, &machine()).result,
+        ReceiptResult::Published
+    );
+    // Publication is already complete; even an unexpected forge call cannot leave the fixture.
+    let bin = runs.parent().unwrap().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    std::fs::write(bin.join("gh"), "#!/bin/sh\nexit 97\n").unwrap();
+    std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_qaren"))
+        .args(["publish", RUN, "--json"])
+        .env("QAREN_HOME", runs.parent().unwrap())
+        .env("PATH", bin)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        receipt["outcomes"]["publicationVideoReason"],
+        "encode-failed"
+    );
+    assert_eq!(receipt["commands_executed"], 0);
+    let note = receipt["outcomes"]["video_summary"].as_str().unwrap();
+    assert!(String::from_utf8_lossy(&output.stderr).contains(note));
+    assert!(std::fs::read_to_string(dir.join("comment.md"))
+        .unwrap()
+        .contains(note));
+}
+
+#[test]
+fn retries_keep_the_attempted_missing_copy_finding_even_if_the_file_returns() {
+    let (runs, dir) = run_dir(false);
+    edit_pr(&dir, |pr| pr["blocks"] = serde_json::json!([]));
+    std::fs::remove_file(dir.join("media/video-published.mp4")).unwrap();
+    let mut first = Git(MockRunner::new());
+    first
+        .0
+        .expect_run("gh pr comment", CmdOutput::failed(1, "offline"));
+    assert_eq!(
+        publish(&mut first, &runs, RUN, &machine()).result,
+        ReceiptResult::Failed
+    );
+    let original = std::fs::read_to_string(dir.join("comment.md")).unwrap();
+    assert_eq!(
+        publication(&dir).video_reason,
+        Some(qaren::record::VideoReason::PublishedCopyMissing)
+    );
+    std::fs::write(dir.join("media/video-published.mp4"), "mp4").unwrap();
+    let mut retry = Git(MockRunner::new());
+    retry
+        .0
+        .expect_run("gh api user", CmdOutput::success("publisher\n"));
+    retry
+        .0
+        .expect_run("gh pr view 12", CmdOutput::success(r#"{"comments":[]}"#));
+    script_comment_and_label(&mut retry.0);
+    let receipt = publish(&mut retry, &runs, RUN, &machine());
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Published,
+        "{:?}",
+        receipt.failure
+    );
+    assert!(!publication(&dir).video_attached);
+    assert_eq!(
+        receipt.outcomes["publicationVideoReason"],
+        "published-copy-missing"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("comment.md")).unwrap(),
+        original
+    );
+    assert_eq!(retry.0.remaining(), 0);
+}
+
+#[test]
+fn a_lost_video_upload_response_reconciles_its_report_after_the_local_copy_vanishes() {
+    let (runs, dir) = run_dir(false);
+    edit_pr(&dir, |pr| pr["blocks"] = serde_json::json!([]));
+    let mut first = Git(MockRunner::new());
+    first
+        .0
+        .expect_run("gh pr comment", CmdOutput::failed(1, "lost response"));
+    assert_eq!(
+        publish(&mut first, &runs, RUN, &machine()).result,
+        ReceiptResult::Failed
+    );
+    let body = std::fs::read_to_string(dir.join("comment.md")).unwrap();
+    std::fs::remove_file(dir.join("media/video-published.mp4")).unwrap();
+    let mut retry = Git(MockRunner::new());
+    retry
+        .0
+        .expect_run("gh api user", CmdOutput::success("publisher\n"));
+    retry.0.expect_run("gh pr view 12", CmdOutput::success(&serde_json::json!({"comments":[{
+        "body": body, "author":{"login":"publisher"}, "url":"https://github.com/o/r/pull/12#issuecomment-recovered"
+    }]}).to_string()));
+    retry
+        .0
+        .expect_run("gh pr view https://github.com/o/r/pull/12", view(""));
+    let receipt = publish(&mut retry, &runs, RUN, &machine());
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Published,
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(
+        receipt.outcomes["comment"],
+        "https://github.com/o/r/pull/12#issuecomment-recovered"
+    );
+    assert!(publication(&dir).video_attached);
+    assert_eq!(publication(&dir).video_reason, None);
+    assert_eq!(calls_named(&retry.0, "gh-pr-comment"), 0);
+    assert_eq!(retry.0.remaining(), 0);
 }

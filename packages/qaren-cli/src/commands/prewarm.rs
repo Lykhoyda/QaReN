@@ -1,5 +1,5 @@
 use crate::buildplan::{self, DepsPrewarm, PREWARM_SCHEMA};
-use crate::candidate::{self, sha256_hex, Candidate};
+use crate::candidate::{self, Candidate};
 use crate::exec::{CmdSpec, Runner};
 use crate::failure::{Failure, FailureCode};
 use crate::receipt::{Receipt, ReceiptResult};
@@ -116,9 +116,14 @@ fn prewarm_validated(
         runner,
         &cand,
         scenario.build.owner == crate::scenario::BuildOwner::Qaren,
-    )
-    .is_ok();
-    if !unchanged {
+    );
+    if let Err(candidate::CandidateCheck::Unreadable(_)) = unchanged {
+        return Err(Box::new((
+            Failure::candidate_unavailable("deps"),
+            Some(cand),
+        )));
+    }
+    if unchanged.is_err() {
         return Err(Box::new((
             Failure::new(
                 "deps",
@@ -144,9 +149,12 @@ fn prewarm_validated(
     };
     // The record must describe the lockfile the install actually satisfied; a
     // mutation during the install leaves nothing provable to bind.
-    let lockfile_now = std::fs::read(cand.project_root.join("pnpm-lock.yaml"))
-        .ok()
-        .map(|bytes| sha256_hex(&bytes));
+    let Ok(lockfile_now) = candidate::lockfile_sha256(&cand.project_root) else {
+        return Err(Box::new((
+            Failure::candidate_unavailable("deps"),
+            Some(cand),
+        )));
+    };
     if lockfile_now.as_ref() != Some(&lockfile_sha256) {
         return Err(Box::new((
             Failure::new(

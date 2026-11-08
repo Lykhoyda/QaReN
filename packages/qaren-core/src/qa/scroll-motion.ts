@@ -3,6 +3,7 @@ import {
   elementFrame,
   isScrollContainer,
   nativeTypeOf,
+  reportsNotScrollable,
   type Element,
   type NativeNode,
   type Screen,
@@ -28,8 +29,8 @@ export function scrollMotion(
 ): 'moved' | 'still' | 'still-overflow' | 'unknown' {
   const frame = elementFrame(container);
   if (!frame) return 'unknown';
-  const containers = (screen: Screen) =>
-    screen.elements.filter((e) => {
+  const containers = (screen: Screen) => {
+    const matches = screen.elements.filter((e) => {
       const rect = elementFrame(e);
       return (
         isScrollContainer(e) &&
@@ -38,6 +39,11 @@ export function scrollMotion(
         sameFrame(rect, frame)
       );
     });
+    // A same-frame twin that reports it cannot scroll (a navigation wrapper) cannot hide the list.
+    return matches.length <= 1 || reportsNotScrollable(container)
+      ? matches
+      : matches.filter((e) => !reportsNotScrollable(e));
+  };
   const rebound = containers(after);
   if (containers(before).length !== 1 || rebound.length !== 1) return 'unknown';
   const descendants = (screen: Screen, parent: Element) =>

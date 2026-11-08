@@ -2327,6 +2327,134 @@ fn check_ignores_new_watchman_cookies_but_rejects_other_changes_after_the_walk()
 }
 
 #[test]
+fn an_unreadable_candidate_after_the_walk_is_a_verify_refusal_whatever_the_walk_said() {
+    const CANARY: &str = "synthetic-private-canary";
+    let admission = serde_json::json!({
+        "verdict":"REFUSED","code":"CDP_NOT_CONNECTED","message":"admission refused",
+        "admission":{
+            "attempt":2,"lastStarted":"attach","lastCompleted":"retry_wait",
+            "inner":"no_dev_target_unknown","relaunches":0,"relaunchFailed":false,
+            "liveness":"not_probed","elapsedMs":120000,"remainingMs":1080000,
+            "budgetMs":1200000,"attachBudgetMs":120000,"walkBudgetMs":1200000,
+            "targetsTotal":1,"devTrue":0,"devFalse":0,"devUndefined":0,"devUnknown":1
+        }
+    });
+    let cancelled =
+        serde_json::json!({"verdict":"REFUSED","code":"RUN_CANCELLED","message":"cancelled"});
+    let fail = r#"{"verdict":"FAIL","path":"walk","blocks":[{"key":"plan","outcome":"fail","source":"discovered"}],"steps":[],"jev":{"calls":0,"medianMs":0},"llmTurns":0,"escapes":0,"recoveries":0,"failure":{"step":2,"seen":"no Tasks","kind":"step"}}"#;
+    for (label, stdout, exit) in [
+        ("pass", pass_stdout(), Some(0)),
+        (
+            "fail",
+            envelope(2, "admitted", "{}") + "\n" + &envelope(3, "result", fail) + "\n",
+            Some(1),
+        ),
+        (
+            "admission",
+            envelope(2, "result", &admission.to_string()) + "\n",
+            Some(4),
+        ),
+        (
+            "cancelled",
+            envelope(2, "result", &cancelled.to_string()) + "\n",
+            Some(4),
+        ),
+    ] {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        script_preflight(&mut mock, &repo);
+        script_provision(&mut mock);
+        script_drift_status(&mut mock);
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, exit);
+        script_core_identity(&mut mock);
+        script_drift_status(&mut mock);
+        mock.expect_run(
+            "git",
+            CmdOutput::failed(
+                128,
+                &format!("fatal: not a git repository: /Volumes/{CANARY}/app"),
+            ),
+        );
+        script_teardown_resources(
+            &mut mock,
+            CmdOutput::success("1 1 S\n6000 6000 S\n"),
+            false,
+            UDID,
+            Some(hosts_absent()),
+        );
+        let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries([(
+            std::ffi::OsString::from("QAREN_INPUT_VOLUME"),
+            std::ffi::OsString::from(CANARY),
+        )]));
+        let req = request(&repo, &app, 30);
+        let receipt = qaren::redact::with_input_scope(inputs, || run(&mut mock, &req));
+
+        assert_eq!(mock.remaining(), 0, "{label}");
+        assert_eq!(receipt.result, ReceiptResult::Refused, "{label}");
+        let failure = receipt.failure.as_ref().unwrap();
+        let record = RunRecord::load(&repo.join("runs"), &run_id()).unwrap();
+        let terminal = record.terminal.as_ref().unwrap();
+        assert!(!terminal.final_verification.matched, "{label}");
+        assert_eq!(
+            terminal.final_verification.classification,
+            Some(qaren::candidate::VerificationClass::Unreadable),
+            "{label}"
+        );
+        if label == "cancelled" {
+            assert_eq!(failure.code, FailureCode::RunCancelled);
+            assert!(terminal.cancelled);
+            assert!(receipt.outcomes["candidate_drift"].contains("git rev-parse HEAD failed"));
+        } else {
+            assert_eq!(failure.code, FailureCode::CandidateUnavailable, "{label}");
+            assert_eq!(failure.phase, "verify", "{label}");
+            assert_eq!(
+                failure.detail.as_str(),
+                "the candidate could not be read (git reports not a repository, or the path is missing); nothing is known to have changed"
+            );
+            assert_eq!(
+                failure.next_action.as_str(),
+                "check that the candidate's volume or path is available again, then re-run; QaReN does not recreate or move the candidate"
+            );
+            assert!(failure.recovery.is_none(), "{label}: no admission overlay");
+            assert_eq!(receipt.ledger.as_ref().unwrap().verdict, "REFUSED");
+            assert_eq!(terminal.verdict, "REFUSED");
+            assert!(!terminal.cancelled);
+            let durable: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&receipt.artifacts["ledger"]).unwrap())
+                    .unwrap();
+            assert_eq!(durable["verdict"], "REFUSED");
+            if label == "pass" {
+                assert_eq!(durable["steps"].as_array().unwrap().len(), 2, "rows kept");
+            }
+            assert_eq!(
+                receipt.outcomes["candidate_unavailable"],
+                "git rev-parse HEAD failed: [private output withheld]"
+            );
+            assert!(!receipt.outcomes.contains_key("candidate_drift"));
+        }
+        assert_eq!(receipt.cleanup["metro"], "removed", "{label}");
+        assert_eq!(receipt.cleanup["device_lease"], "removed", "{label}");
+        assert_eq!(record.phase, Phase::Cleaned);
+        assert!(record.resources.lease.is_none());
+        let persisted =
+            std::fs::read_to_string(repo.join("runs").join(run_id()).join("run.json")).unwrap();
+        let persisted_json: serde_json::Value = serde_json::from_str(&persisted).unwrap();
+        assert_eq!(
+            persisted_json["terminal"]["finalVerification"]["classification"], "unreadable",
+            "{label}"
+        );
+        for text in [
+            serde_json::to_string(&receipt).unwrap(),
+            persisted,
+            std::fs::read_to_string(&receipt.artifacts["ledger"]).unwrap(),
+        ] {
+            assert!(!text.contains(CANARY), "{label}: private value leaked");
+        }
+    }
+}
+
+#[test]
 fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
     let (repo, app) = app_repo();
     let mut mock = MockRunner::new();
@@ -2604,6 +2732,13 @@ fn a_cancelled_walk_is_a_refusal_that_still_tears_down_and_releases_the_lease() 
     let record = RunRecord::load(&repo.join("runs"), &run_id()).unwrap();
     assert_eq!(record.phase, Phase::Cleaned);
     assert!(record.resources.lease.is_none());
+    // Cancellation cuts the final git reads short; the cancellation, not unavailability, stays the cause.
+    let terminal = record.terminal.as_ref().unwrap();
+    assert!(terminal.cancelled);
+    assert_eq!(
+        terminal.final_verification.classification,
+        Some(qaren::candidate::VerificationClass::Unreadable)
+    );
 }
 
 fn script_cancelled_walk(mock: &mut MockRunner, repo: &Path, runner_host: CmdOutput) {
@@ -9249,6 +9384,7 @@ impl Runner for Encoding {
 fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
     for (encodes, first_start, login_offset, expected_offset, recorder_delay, diagnostic) in [
         (true, None, None, 2_850, 559, "off"),
+        (true, None, None, 2_850, 559, "trim-failed"),
         (true, None, None, 2_850, 559, "stall"),
         (false, None, None, 2_850, 559, "off"),
         (true, Some(0), None, 2_850, 559, "off"),
@@ -9268,7 +9404,7 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
         (true, None, None, 2_850, 559, "missing"),
         (true, None, None, 2_850, 559, "late-failed"),
     ] {
-        let stall = diagnostic != "off";
+        let stall = !matches!(diagnostic, "off" | "trim-failed");
 
         let (repo, app) = app_repo();
         if stall && diagnostic != "withheld" {
@@ -9310,6 +9446,9 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
+        if diagnostic == "trim-failed" {
+            messages.last_mut().unwrap()["payload"]["videoPublication"] = "eligible".into();
+        }
         if stall {
             let mut extra = messages[1].clone();
             extra["payload"]["line"] = 7.into();
@@ -9391,8 +9530,12 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
         if encodes {
             mock.expect_run("ffmpeg", CmdOutput::success(""));
             mock.expect_run("ffprobe", CmdOutput::success("3.5\n"));
-            mock.expect_run("ffmpeg", CmdOutput::success(""));
-            mock.expect_run("ffprobe", CmdOutput::success("0.1\n"));
+            if diagnostic == "trim-failed" {
+                mock.expect_run("ffmpeg", CmdOutput::failed(1, "trim failed"));
+            } else {
+                mock.expect_run("ffmpeg", CmdOutput::success(""));
+                mock.expect_run("ffprobe", CmdOutput::success("0.1\n"));
+            }
             if stall {
                 mock.expect_run(
                     "ffprobe",
@@ -9506,6 +9649,49 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
             "encodes={encodes}"
         );
         assert!(other.exists(), "another run's capture is never touched");
+        if diagnostic == "trim-failed" {
+            assert!(media.join("video.mp4").is_file());
+            assert!(!media.join("video-published.mp4").exists());
+            assert_eq!(
+                pr.video_reason,
+                Some(qaren::record::VideoReason::TrimFailed)
+            );
+            assert_eq!(receipt.outcomes["videoReason"], "trim-failed");
+            assert_eq!(receipt.outcomes["video"], pr.video.to_string());
+            let run_dir = repo.join("runs").join(run_id());
+            let local = std::fs::read_to_string(run_dir.join("report.md")).unwrap();
+            let ledger: qaren::core::Ledger =
+                serde_json::from_slice(&std::fs::read(run_dir.join("ledger.json")).unwrap())
+                    .unwrap();
+            let comment = qaren::report::render_pr_comment(
+                &qaren::report::ReportInput {
+                    video: Some(&pr.video),
+                    run_id: &run_id(),
+                    platform: &pr.platform,
+                    app_id: &pr.app_id,
+                    device: &pr.device,
+                    ledger: &ledger,
+                },
+                None,
+                &qaren::report::PrRun {
+                    tested_sha: &pr.head_ref_oid,
+                    tested_older_commit: false,
+                    video: &pr.video,
+                    video_continuity: &[],
+                    screenshot: None,
+                    plan_sha256: &pr.plan_sha256,
+                    video_publication: &pr.video_publication,
+                },
+                &qaren::redact::MachineIdentity::default(),
+            );
+            for output in [local, comment] {
+                assert!(
+                    output.contains(&receipt.outcomes["video_summary"]),
+                    "{output}"
+                );
+            }
+            continue;
+        }
         if encodes {
             assert!(media.join("video.mp4").is_file());
             assert!(media.join("video-published.mp4").is_file());
@@ -10984,6 +11170,7 @@ fn video_declaration_reaches_the_child_and_durable_run_outputs() {
             let ledger: qaren::core::Ledger = serde_json::from_value(ledger).unwrap();
             let body = qaren::report::render_pr_comment(
                 &qaren::report::ReportInput {
+                    video: None,
                     run_id: "check-policy",
                     platform: "ios",
                     app_id: "com.test",
@@ -11345,7 +11532,7 @@ fn admission_refusal_codes_recovery_and_private_facts_reach_the_receipt_and_end_
 
 #[test]
 fn pr_dependency_cache_publishes_only_after_pre_walk_candidate_verification() {
-    for drift in [false, true] {
+    for (drift, unreadable) in [(false, false), (true, false), (true, true)] {
         let (repo, app) = app_repo();
         std::fs::write(app.join("cache-fixture"), "").unwrap();
         let wt = repo.join("runs").join(run_id()).join("wt");
@@ -11378,7 +11565,11 @@ fn pr_dependency_cache_publishes_only_after_pre_walk_candidate_verification() {
         script_provision_candidate(mock, "expo run:ios", "", PR_HEAD, "");
         mock.expect_run(
             "rev-parse HEAD",
-            CmdOutput::success(if drift { PR_MOVED } else { PR_HEAD }),
+            if unreadable {
+                CmdOutput::failed(128, "fatal: not a git repository")
+            } else {
+                CmdOutput::success(if drift { PR_MOVED } else { PR_HEAD })
+            },
         );
         if !drift {
             mock.expect_run("--porcelain", CmdOutput::success(""));
@@ -11408,15 +11599,19 @@ fn pr_dependency_cache_publishes_only_after_pre_walk_candidate_verification() {
         let receipt = run(&mut runner, &pr_request(&repo, &app));
         assert_eq!(
             receipt.result,
-            if drift {
-                ReceiptResult::Failed
-            } else {
-                ReceiptResult::Pass
+            match (drift, unreadable) {
+                (_, true) => ReceiptResult::Refused,
+                (true, false) => ReceiptResult::Failed,
+                (false, false) => ReceiptResult::Pass,
             },
             "{:?}",
             receipt.failure
         );
-        if drift {
+        if unreadable {
+            let failure = receipt.failure.unwrap();
+            assert_eq!(failure.code, FailureCode::CandidateUnavailable);
+            assert_eq!(failure.phase, "pr");
+        } else if drift {
             assert_eq!(receipt.failure.unwrap().code, FailureCode::CandidateDrifted);
         }
         let record = RunRecord::load(&repo.join("runs"), &run_id()).unwrap();

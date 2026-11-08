@@ -1009,6 +1009,18 @@ Incomplete native captures, a missing application/window frame, no captured
 container, or an empty container frame keep the viewport gesture with
 `scrollBand.status: "no-geometry"`; a band too small for the handler's actual
 rounded drag does the same with `"too-small"`.
+On Android, if that selection would drag a container whose own accessibility
+report says it cannot scroll, QaReN repeats the selection without such
+containers. It uses the new selection only when it finds a list to drag or
+refuses because that list is covered. This avoids dragging a navigation
+library's full-screen wrapper on native-header screens. Existing refusals and
+viewport fallbacks stay unchanged, as do iOS and captures without the report.
+A list with scrolling disabled also reports that it cannot scroll; when
+excluding it finds no replacement list or covered-list refusal, the original
+selection remains. Scroll-until and container clipping rules are unchanged.
+For descendant-motion evidence on a selected list that does not report itself
+unable to scroll, a same-frame container that reports it cannot scroll is
+ignored rather than making the list's movement ambiguous.
 When the first scroll leaves the screen unchanged, QaReN scrolls once more under the same operation
 id; if both scrolls dispatched cleanly with complete native app captures
 before and after each attempt and neither changed the screen,
@@ -1535,6 +1547,14 @@ and more than 600 nodes truncate the read; either leaves the capture
 incomplete. Literal steps can read an RN `Modal`'s content; its effect on React
 host association is described below.
 
+Every Android snapshot node carries `scrollable`, the platform's own
+`AccessibilityNodeInfo.isScrollable` report. The required `SCROLLABLE_FACT_V1`
+capability makes an older runner stale and triggers the existing automatic
+rebuild path without changing the protocol version. The report is independent
+of presence evidence and does not affect screen-change or snapshot-stability
+comparisons. Its plain-scroll use is defined in the
+[plain-scroll contract](#occluded-taps-and-focus).
+
 Android QA snapshots can also request native presence through the runner's
 `A11Y_PRESENCE_V2` capability; the core treats a runner without it, including
 one that advertises only the earlier `A11Y_PRESENCE_V1` rule, as stale. The runner
@@ -1910,7 +1930,11 @@ an earlier `runtime-input` or `echo` with source `input`, including its observat
 line. A successful pre-plan login resets the video window and, in non-strict mode,
 the screenshot cause and count; a retained cause then uses the new window's
 starting line. `videoPublication` retains the strict verdict;
-`nonStrictPublication` supplies the separate non-strict verdict.
+`nonStrictPublication` supplies the separate non-strict verdict. A walk refused
+after admission keeps both computed verdicts, except a
+`PRIVATE_INPUT_CAPTURE_UNKNOWN` refusal; that refusal and any refusal before
+admission report `videoPublication: unknown` with no `nonStrictPublication`,
+which withholds video in either mode.
 The receipt includes one `media_withheld=<code>[/<kind|source>]@line <N>` note,
 preferring the video cause in non-strict mode and the screenshot cause otherwise.
 `report.md` marks each withheld row and explains
@@ -4103,7 +4127,13 @@ changes.
 
 Preparation rechecks provenance before emitting `ready`; `check` and `pr`
 recheck it before and after the walk. Detected drift fails with
-`CANDIDATE_DRIFTED` and cannot return PASS; an already-cancelled walk retains
+`CANDIDATE_DRIFTED` and cannot return PASS. A candidate that cannot be read at
+all (its repository or project root is missing, a Git read fails or times out,
+or an integration-tolerant comparison or the lockfile cannot be read) refuses
+`CANDIDATE_UNAVAILABLE` (exit 4) instead: nothing is known to have changed, so
+check that its volume or path is available again and re-run. After the walk this refusal replaces the
+walk's verdict, keeps the ledger rows and records the final verification's
+`classification` (`drifted` or `unreadable`). An already-cancelled walk retains
 `RUN_CANCELLED`. Passing blocks already saved remain available. See the
 [publication refusal contract](#test-a-pull-request) before publishing; re-run
 against an unchanged candidate to obtain attributable evidence.
@@ -4197,7 +4227,8 @@ handoff, the CLI rechecks cancellation; a late cancel marks that terminal result
 cancelled, persists it and withholds the handoff. A missing terminal result
 refuses `RUN_RECORD_INVALID`.
 Cancellation refuses `RUN_CANCELLED` (exit 4), candidate mismatch fails
-`CANDIDATE_DRIFTED` (exit 1), and unproven ownership refuses
+`CANDIDATE_DRIFTED` (exit 1), a final verification that could not read the
+candidate refuses `CANDIDATE_UNAVAILABLE` (exit 4), and unproven ownership refuses
 `OWNERSHIP_UNPROVEN` (exit 4), before uploads, comments, label changes or block
 write-back. A plain QA FAIL can still be published as a report when these
 conditions hold. Later recovery does not upgrade the original terminal result;
@@ -4222,7 +4253,19 @@ API <34 stops screen recording at 180 seconds.
 Both platforms encode the capture to `media/video.mp4` (H.264, 30 fps), using
 `ffmpeg` and checking playable duration with `ffprobe`. If these tools are
 unavailable, capture cannot start, or finalization fails, the walk can still
-complete and the receipt's `video` outcome says why. The local recording stays
+complete and the receipt's `video` outcome says why, after the published copy is
+prepared, so a failed trim is reported rather than `available`. An unavailable
+video also carries a closed `videoReason` code (`not-recorded`,
+`recorder-failed`, `ffmpeg-missing`, `encode-failed`, `no-playable-duration`,
+`cancelled`, `runtime-input-withheld`, `interrupted`, `no-admitted-frame`,
+`no-window`, `trim-failed`, `android-unsupported`, `published-copy-missing`,
+`other`) in the receipt and `pr.json`, keeping the detail text unchanged; a
+too-large recording is its own outcome, and unrecognized detail text in older
+`pr.json` files loads as `other`. `qaren publish` stores the reason it published
+in `publication.json` and the receipt's `publicationVideoReason`. When no video
+is attached, the receipt's `video_summary`, `report.md` and `qaren publish`
+repeat the PR comment's video sentence: the withholding reason when the video
+is not eligible, otherwise the unavailability reason. The local recording stays
 complete; `qaren publish` uploads only
 `media/video-published.mp4`, trimmed under the [video publication contract](#video-publication).
 Blocks the walk saved are copied to `blocks/` before the

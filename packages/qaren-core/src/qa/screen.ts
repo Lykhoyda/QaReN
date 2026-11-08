@@ -160,6 +160,8 @@ const keyboardCoveredElements = new WeakSet<Element>();
 const literalTextContributors = new WeakSet<Element>();
 // Native scroll containers (iOS names, Android class suffixes); only native-backed elements are ever members.
 const scrollContainers = new WeakMap<Element, string>();
+// Elements whose native node reported `scrollable: false`; an absent report is never a member.
+const notScrollable = new WeakSet<Element>();
 const windows = new WeakSet<Element>();
 const alerts = new WeakSet<Element>();
 const sheets = new WeakSet<Element>();
@@ -260,6 +262,10 @@ export function isScrollContainer(element: Element): boolean {
   return scrollContainers.has(element);
 }
 
+export function reportsNotScrollable(element: Element): boolean {
+  return notScrollable.has(element);
+}
+
 export function hasNativeSheet(screen: Screen): boolean {
   return screen.elements.some((element) => sheets.has(element) && !element.offscreen);
 }
@@ -341,6 +347,8 @@ export interface NativeNode {
   heading?: boolean;
   // Android only: the node holds input focus.
   focused?: boolean;
+  // Android only: the node's own report of whether it can scroll.
+  scrollable?: boolean;
   secure?: boolean;
   value?: string;
   rect?: { x: number; y: number; width: number; height: number };
@@ -1435,6 +1443,7 @@ export function join(
     // A frame its own on-screen descendant contradicts proves no reach either way.
     if (reach && !contradicted.has(i)) reaches.set(elements[i], reach);
     if (isScrollContainerType(n.type)) scrollContainers.set(elements[i], n.type!);
+    if (n.scrollable === false) notScrollable.add(elements[i]);
     if (n.type === 'Window') windows.add(elements[i]);
     if (n.type === 'Application') applications.add(elements[i]);
     if (isAppAlertType(n.type)) alerts.add(elements[i]);

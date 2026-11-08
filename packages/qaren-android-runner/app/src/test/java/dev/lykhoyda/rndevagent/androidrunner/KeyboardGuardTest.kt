@@ -100,12 +100,13 @@ class KeyboardGuardTest {
         visible: Boolean,
         type: String = "android.widget.Button",
         focused: Boolean = false,
+        scrollable: Boolean = false,
     ) =
         QaHierarchy.node(
             QaHierarchy.RawNode(
                 className = type, text = label, contentDescription = null, viewIdResourceName = null, packageName = "app",
                 bounds = rect, enabled = true, visibleToUser = visible, selected = false, checked = false,
-                password = false, heading = false, children = emptyList(), focused = focused,
+                password = false, heading = false, children = emptyList(), focused = focused, scrollable = scrollable,
             ),
         )!!
 
@@ -114,6 +115,13 @@ class KeyboardGuardTest {
         val typing = listOf(node("Code", QaHierarchy.Bounds(0, 900, 100, 1000), visible = true, focused = true))
         val dismissed = listOf(node("Code", QaHierarchy.Bounds(0, 900, 100, 1000), visible = true))
         assertEquals(KeyboardGuard.screenContent(typing), KeyboardGuard.screenContent(dismissed))
+    }
+
+    @Test fun aListThatBecomesScrollableAboveTheKeyboardKeepsScreenContent() {
+        val list = QaHierarchy.Bounds(0, 200, 1080, 1800)
+        val shown = listOf(node("", list, visible = true, type = "android.widget.ScrollView", scrollable = true))
+        val hidden = listOf(node("", list, visible = true, type = "android.widget.ScrollView"))
+        assertEquals(KeyboardGuard.screenContent(shown), KeyboardGuard.screenContent(hidden))
     }
 
     @Test fun keyboardResizeKeepsScreenContent() {

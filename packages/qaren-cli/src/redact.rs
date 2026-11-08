@@ -123,6 +123,18 @@ pub fn durable_json<T: serde::Serialize>(value: &T) -> serde_json::Result<String
             media.push(("/outcomes/video_policy".into(), note.into()));
         }
     }
+    for pointer in [
+        "/videoReason",
+        "/publicationVideoReason",
+        "/outcomes/videoReason",
+        "/outcomes/publicationVideoReason",
+    ] {
+        if let Some(value) = projected.pointer(pointer) {
+            if let Ok(code) = serde_json::from_value::<crate::record::VideoReason>(value.clone()) {
+                media.push((pointer.into(), serde_json::to_value(code)?));
+            }
+        }
+    }
     if let Some(steps) = projected.get("steps").and_then(serde_json::Value::as_array) {
         for (index, row) in steps.iter().enumerate() {
             if let Some(value) = row.get("screenshotWithheld") {

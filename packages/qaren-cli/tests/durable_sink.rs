@@ -402,6 +402,7 @@ fn evidence_documents_and_reports_still_withhold_opaque_output() {
     let report = qaren::report::write(
         &dir,
         &qaren::report::ReportInput {
+            video: None,
             run_id: "evidence",
             platform: "ios",
             app_id: "app",
@@ -492,4 +493,39 @@ fn withholding_codes_survive_input_collisions_without_exempting_free_text() {
             },
         );
     }
+}
+
+#[test]
+fn video_reason_codes_are_preserved_only_after_closed_validation() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    for input in [
+        "encode-failed",
+        "other",
+        "videoReason",
+        "publicationVideoReason",
+        "outcomes",
+    ] {
+        with_input_scope(
+            Arc::new(InputValues::from_entries([(
+                OsString::from("QAREN_INPUT_FIXTURE"),
+                OsString::from(input),
+            )])),
+            || {
+                let value = serde_json::json!({"videoReason":"encode-failed", "outcomes":{"publicationVideoReason":"other"}, "detail": format!("untrusted {input}")});
+                let output = qaren::redact::durable_json(&value).unwrap();
+                let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+                assert_eq!(parsed["videoReason"], "encode-failed");
+                assert_eq!(parsed["outcomes"]["publicationVideoReason"], "other");
+                assert!(!parsed["detail"].as_str().unwrap().contains(input));
+                let invalid = qaren::redact::durable_json(
+                    &serde_json::json!({"videoReason":format!("untrusted {input}")}),
+                )
+                .unwrap();
+                assert!(!invalid.contains(&format!("untrusted {input}")));
+            },
+        );
+    }
+    assert!(serde_json::from_str::<qaren::record::VideoReason>("\"future-reason\"").is_err());
 }

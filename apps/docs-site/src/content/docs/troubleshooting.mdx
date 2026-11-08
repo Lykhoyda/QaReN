@@ -70,6 +70,7 @@ and [iOS admission diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/p
 | `DEV_REDBOX`             | A development error overlay prevented safe progress; exit code 4 | Follow `next_action` and the [step recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#step-recovery) for platform coverage, dismissal bounds and causes |
 | `WALK_DEADLINE_EXCEEDED` | The walk ran out of time                                         | Raise `QAREN_WALK_SECONDS`, or split the plan           |
 | `CANDIDATE_DRIFTED`      | The working tree changed during the run                          | Re-run against an unchanged checkout                    |
+| `CANDIDATE_UNAVAILABLE`  | The candidate could not be read (missing path or failed Git read); nothing is known to have changed; exit code 4 | Check that the candidate's volume or path is available again, then re-run |
 
 The screen layer's own codes appear at the start of `failure.detail` or in the report, not in
 `failure.code`:

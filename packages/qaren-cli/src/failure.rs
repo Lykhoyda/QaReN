@@ -15,6 +15,7 @@ pub enum FailureCode {
     CandidateGitUnavailable,
     CandidateRevisionMismatch,
     CandidateDrifted,
+    CandidateUnavailable,
     PrereqMissing,
     PnpmProcessGroupUnsupported,
     PnpmProbeTimedOut,
@@ -90,6 +91,7 @@ impl FailureCode {
         matches!(
             self,
             FailureCode::SimulatorInventoryUnavailable
+                | FailureCode::CandidateUnavailable
                 | FailureCode::DepsNotPrewarmed
                 | FailureCode::ManifestNotWarm
                 | FailureCode::WatchmanVolumeStalled
@@ -593,6 +595,16 @@ impl Failure {
             "DEV_REDBOX_ACTION_UNCERTAIN" => "inspect_app_error_before_rerun",
             _ => "resolve the refusal, then re-run",
         }
+    }
+
+    // The candidate could not be read; nothing is known to have changed, so no recovery ladder applies.
+    pub fn candidate_unavailable(phase: &str) -> Self {
+        Failure::new(
+            phase,
+            FailureCode::CandidateUnavailable,
+            "the candidate could not be read (git reports not a repository, or the path is missing); nothing is known to have changed",
+            "check that the candidate's volume or path is available again, then re-run; QaReN does not recreate or move the candidate",
+        )
     }
 
     pub fn cancelled(phase: &str, reason: &str) -> Self {

@@ -48,6 +48,7 @@ test('a runner without FILL_EVIDENCE_V1 is incompatible on both platforms', () =
         'SYSTEM_ALERT_TAP_V1',
         'A11Y_PRESENCE_V2',
         'FOCUSED_HIDDEN_INPUT_V1',
+        'SCROLLABLE_FACT_V1',
       ],
     ],
   ] as const) {

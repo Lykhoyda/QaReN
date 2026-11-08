@@ -968,14 +968,20 @@ fn run_inner(
         }
 
         if pr_state.is_some() {
-            if let Err(detail) = candidate::verify_unchanged(ctx.runner, &ctx.record.candidate) {
-                let f = Failure::new(
-                    "pr",
-                    FailureCode::CandidateDrifted,
-                    format!("the pull request worktree changed before the walk: {detail}"),
-                    "re-run qaren pr; nothing may modify the run's worktree",
-                );
-                return finish_failed(ctx, f);
+            match candidate::verify_unchanged(ctx.runner, &ctx.record.candidate) {
+                Ok(()) => {}
+                Err(candidate::CandidateCheck::Unreadable(_)) => {
+                    return finish_failed(ctx, Failure::candidate_unavailable("pr"));
+                }
+                Err(candidate::CandidateCheck::Drifted(detail)) => {
+                    let f = Failure::new(
+                        "pr",
+                        FailureCode::CandidateDrifted,
+                        format!("the pull request worktree changed before the walk: {detail}"),
+                        "re-run qaren pr; nothing may modify the run's worktree",
+                    );
+                    return finish_failed(ctx, f);
+                }
             }
         }
         if pr_state.is_some() {
@@ -1007,7 +1013,7 @@ fn run_inner(
                 || crate::redact::private_output_mode())
         {
             events::stage("recording", StageState::Skipped, None, None);
-            video = Some(VideoStatus::Unavailable(
+            video = Some(VideoStatus::unavailable(
                 "runtime inputs withhold recording".to_string(),
             ));
         } else if pr_state.is_some() {
@@ -1017,7 +1023,7 @@ fn run_inner(
                 .is_some_and(|emulator| emulator.api_level < 34)
             {
                 events::stage("recording", StageState::Skipped, None, None);
-                video = Some(VideoStatus::Unavailable(
+                video = Some(VideoStatus::unavailable(
                     "Android API <34 stops screen recording at 180 s".into(),
                 ));
             } else {
@@ -1208,21 +1214,37 @@ fn run_inner(
         let final_verification = FinalVerification {
             tested: ctx.record.candidate.git_sha.clone(),
             matched: verified.is_ok(),
-            detail: verified.clone().err(),
+            detail: verified
+                .as_ref()
+                .err()
+                .map(|check| check.detail().to_string()),
+            classification: verified.as_ref().err().map(|check| check.classification()),
         };
+        let cancelled_walk = outcome
+            .failure
+            .as_ref()
+            .is_some_and(|failure| failure.code == FailureCode::RunCancelled)
+            || matches!(&outcome.verdict, Verdict::Refused { code, .. } if code == "RUN_CANCELLED");
         match verified {
             Ok(()) => ctx
                 .notes
                 .push(("candidate_drift".to_string(), "none".to_string())),
-            Err(detail)
-                if outcome
-                    .failure
-                    .as_ref()
-                    .is_some_and(|failure| failure.code == FailureCode::RunCancelled) =>
-            {
-                ctx.notes.push(("candidate_drift".to_string(), detail));
+            Err(check) if cancelled_walk => {
+                ctx.notes
+                    .push(("candidate_drift".to_string(), check.detail().to_string()));
             }
-            Err(detail) => {
+            Err(candidate::CandidateCheck::Unreadable(detail)) => {
+                let unavailable = Failure::candidate_unavailable("verify");
+                outcome.verdict = Verdict::Refused {
+                    code: "CANDIDATE_UNAVAILABLE".to_string(),
+                    message: unavailable.detail.to_string(),
+                };
+                outcome.ledger.verdict = "REFUSED".to_string();
+                outcome.failure = Some(unavailable);
+                ctx.notes
+                    .push(("candidate_unavailable".to_string(), detail));
+            }
+            Err(candidate::CandidateCheck::Drifted(detail)) => {
                 outcome.verdict = Verdict::Fail;
                 outcome.ledger.verdict = "FAIL".to_string();
                 outcome.failure = Some(Failure::new(
@@ -1294,7 +1316,7 @@ fn run_inner(
                     events::stage("recording", state, None, None);
                 }
                 if !outcome.clean() && video.is_none() {
-                    video = Some(VideoStatus::Unavailable(
+                    video = Some(VideoStatus::unavailable(
                         "the recorder did not stop cleanly".into(),
                     ));
                 }
@@ -1343,20 +1365,6 @@ fn run_inner(
             ctx.mark("springboard_scan", t);
         }
 
-        let report_path = match report::write(
-            &run_dir,
-            &ReportInput {
-                run_id: &run_id,
-                platform: platform_str(req.platform),
-                app_id: &config.app_id,
-                device: &device.name,
-                ledger: &outcome.ledger,
-            },
-        ) {
-            Ok(path) => path,
-            Err(f) => return ctx.fail(f),
-        };
-
         if let Some(entry) = outcome.ledger.media_withheld.as_ref().and_then(|media| {
             if config.video == record::VideoPolicy::NonStrict {
                 media.video.as_ref().or(media.screenshots.as_ref())
@@ -1397,7 +1405,10 @@ fn run_inner(
             ),
         };
         if let (Some(failure), Verdict::Refused { code, .. }) = (&mut failure, &outcome.verdict) {
-            let cause = if code == "RUN_CANCELLED"
+            // Only an admission-caused refusal takes the admission overlay; a CLI-owned verification refusal keeps its own phase and next step.
+            let cause = if failure.code == FailureCode::CandidateUnavailable {
+                None
+            } else if code == "RUN_CANCELLED"
                 && !outcome.admitted
                 && outcome.ledger.press_evidence.is_none()
             {
@@ -1439,7 +1450,6 @@ fn run_inner(
         if let Some(pr) = &pr_state {
             let raw = record::raw_capture(&run_dir.join("media"));
             let video = video.unwrap_or_else(|| record::finalize(ctx.runner, &run_dir));
-            ctx.notes.push(("video".to_string(), video.to_string()));
             if video == VideoStatus::Available {
                 if let Some(bytes) = reclaim_raw_capture(&run_dir) {
                     ctx.notes.push((
@@ -1510,6 +1520,17 @@ fn run_inner(
             } else {
                 video
             };
+            ctx.notes.push(("video".to_string(), video.to_string()));
+            if let Some(code) = video.reason() {
+                ctx.notes.push(("videoReason".into(), code.as_str().into()));
+            }
+            if let Some(line) = report::video_outcome_line(
+                &outcome.ledger,
+                &outcome.ledger.video_publication.clone().unwrap_or_default(),
+                Some(&video),
+            ) {
+                ctx.notes.push(("video_summary".into(), line));
+            }
             // ⑭: a head that moved during the run means an older commit was tested.
             match github::pr_view(ctx.runner, &pr.info.url, &pr.repo_root) {
                 Ok(now) if now.head_ref_oid != pr.info.head_ref_oid => {
@@ -1522,6 +1543,21 @@ fn run_inner(
             }
             published_video = Some(video);
         }
+
+        let report_path = match report::write(
+            &run_dir,
+            &ReportInput {
+                video: published_video.as_ref(),
+                run_id: &run_id,
+                platform: platform_str(req.platform),
+                app_id: &config.app_id,
+                device: &device.name,
+                ledger: &outcome.ledger,
+            },
+        ) {
+            Ok(path) => path,
+            Err(f) => return ctx.fail(f),
+        };
 
         let cancelled = match ensure_running(ctx.runner, "finalize") {
             Err(late) => {
@@ -1598,6 +1634,7 @@ fn run_inner(
                 app_id: config.app_id.clone(),
                 device: device.name.clone(),
                 plan_sha256: sha256_hex(plan.as_bytes()),
+                video_reason: video.reason(),
                 video,
                 video_continuity,
                 video_withholding_reason: video_publication
@@ -3203,6 +3240,7 @@ pub(crate) fn cleanup_first(cleanup: &str, failure: &Failure) -> String {
     if failure.suggestion.is_some()
         || failure.repeat.is_some()
         || failure.subreason.as_deref() == Some(PREVIOUS_PLAN_PRESS)
+        || failure.code == FailureCode::CandidateUnavailable
     {
         format!("{cleanup}; then {}", failure.next_action.as_str())
     } else {
@@ -3970,6 +4008,11 @@ mod last_screen_tests {
             "fix the plan",
         );
         assert_eq!(cleanup_first(cleanup, &plain), cleanup);
+        let unavailable = Failure::candidate_unavailable("verify");
+        assert_eq!(
+            cleanup_first(cleanup, &unavailable),
+            format!("{cleanup}; then {}", unavailable.next_action.as_str())
+        );
     }
 
     #[test]
