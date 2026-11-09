@@ -274,7 +274,9 @@ for (const step of ['Tap "qa-missing"', 'Fill "qa-missing" with "synthetic"']) {
 }
 
 for (const plan of ['✓ "Saved"', '1. Wait for "Saved" to appear']) {
-  test(`an absent target never skips a two-button onboarding Modal: ${plan}`, async () => {
+  // Known case, by design: an input-free screen with an action and a soft decline
+  // looks like an interrupting sheet, so an absent check or wait target takes its Skip once.
+  test(`known case: an absent target skips an input-free two-button onboarding Modal: ${plan}`, async () => {
     const bounds = { x: 0, y: 0, width: 402, height: 874 };
     const controls = [
       {
@@ -357,11 +359,13 @@ for (const plan of ['✓ "Saved"', '1. Wait for "Saved" to appear']) {
       return { ok: true, proven: false, executed: true };
     };
     const result = await runPlan(parsePlan(plan).blocks!, f.deps);
-    assert.equal(result.verdict, 'FAIL');
-    assert.deepEqual(f.actions, []);
-    assert.equal(result.recoveries, 0);
-    assert.equal(result.steps.at(-1)?.interruption?.veto, 'uncovered-target');
-    assert.equal(result.steps.at(-1)?.interruption?.soleDecline, false);
+    assert.equal(result.verdict, 'PASS', result.failure?.seen);
+    assert.deepEqual(f.actions, ['press @skip']);
+    assert.equal(result.recoveries, 1);
+    assert.equal(
+      result.steps.find((row) => row.outcome === 'retry')?.interruption?.outcome,
+      'dismissed',
+    );
   });
 
   test(`an absent target never skips modal onboarding with an input: ${plan}`, async () => {

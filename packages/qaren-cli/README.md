@@ -3551,7 +3551,13 @@ A multi-control promo with a missing target vetoes as
 `uncovered-target`, presses nothing and keeps the step's `TARGET_NOT_FOUND`, so an
 ordinary form's own `Cancel` is not pressed. A screen whose only control is a decline
 can still be dismissed. A failed check or ordinary unmet wait whose target is absent
-from the capture also dismisses only a sole decline or a recognised opt-in. Captured
+from the capture also dismisses only a sole decline, a recognised opt-in, or a soft
+decline (`Not now`, `Maybe later`, `Later`, `Skip`, `No thanks`, `Don't allow`)
+on a screen without input fields;
+`Close`, `Dismiss` and `Cancel` on a screen with other controls are not dismissed.
+Known case: an input-free screen under test with an action and a soft decline, such as
+two-button onboarding with `Skip`, looks the same as an interrupting sheet, so an absent
+check or wait target takes its soft decline once. Captured
 matches, including offscreen or keyboard-covered text and IDs, do not trigger this
 additional surface veto; the other guards still apply. The current target is never
 exempt. ID-only targets are checked

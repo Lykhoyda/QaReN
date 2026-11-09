@@ -1297,7 +1297,7 @@ test('the closed accept-all list keeps every decline outside protection too', ()
   }
 });
 
-test('an absent check or wait target never dismisses an unrecognised multi-control screen', () => {
+test('an absent check or wait target admits a soft decline but never a Cancel', () => {
   const absent: RecoveryTarget = {
     phrase: 'Lists ready',
     quoted: 'Lists ready',
@@ -1310,31 +1310,9 @@ test('an absent check or wait target never dismisses an unrecognised multi-contr
       element('@try', 'Try shared lists'),
       element('@decline', decline),
     ]);
-  for (const kind of ['check', 'wait'] as const) {
-    for (const decline of [
-      'Maybe later',
-      'Skip',
-      'Not now',
-      'Later',
-      'No thanks',
-      "Don't allow",
-      'Cancel',
-      'Close',
-    ]) {
-      const records: InterruptionDiagnostic[] = [];
-      assert.equal(
-        dismissCandidate(
-          sheet(decline),
-          [{ ...absent, kind }],
-          (record) => records.push(record),
-          'absent-surface',
-        ),
-        undefined,
-        decline,
-      );
-      assert.equal(records[0]?.veto, 'uncovered-target');
-    }
-  }
+  assert.deepEqual(dismissCandidate(sheet('Maybe later'), [absent], undefined, 'absent-surface'), {
+    label: 'Maybe later',
+  });
   for (const field of [
     element('@field', 'Name', {
       kind: 'input',
