@@ -1099,13 +1099,18 @@ that ran before the refusal remains a performed action. Press behavior is unchan
 
 On the iOS press branch that would otherwise refuse a still-covered centre after
 an offscreen-resolution scroll, a proven distinct cover gets one passive wait of
-up to 5 seconds. Every poll passes normal capture admission and uniquely rebinds
-the original target; missing or ambiguous identities refuse without a tap, and
-missing geometry never proves clearance. Once the target's centre is proven clear,
+up to 5 seconds within the step's remaining deadline. The initial presence recapture,
+every poll and subsequent tap retries must uniquely rebind the original target;
+a missing, ambiguous or replaced identity refuses without tapping a replacement.
+Every poll passes normal capture admission, and missing geometry never proves clearance.
+Once the target's centre is proven clear,
 the normal tap uses that observation. The row's `coverWaitMs` records elapsed
 waiting time. A persistent cover keeps the existing refusal code and names its
 kind, frame, enabled on-screen pressable count and up to four decline labels such
-as Close. The wait never presses the cover or its controls. Clearance-scroll and
+as Close. Once the target is bound for the cover read, failures bypass step
+recovery and the launch-target wait, so neither can dismiss the cover or select
+a replacement. A tap retry does not renew the cover wait. The wait never presses
+the cover or its controls. Clearance-scroll and
 inferred-overlay live-hit paths, Fill and Android keep their existing behaviour.
 Automatic cover dismissal and ignoring opacity-zero iOS duplicates are deferred.
 
@@ -3425,6 +3430,7 @@ nested in its repository they do not make the next run's candidate dirty.
 
 Selection-proof refusals bypass step recovery; follow the
 [press evidence contract](#occluded-taps-and-focus) before retrying.
+For the cover-read recovery exclusion, see [covered-target recovery](#covered-target-recovery).
 
 The first top-level Tap or Fill of a run gets one bounded wait for a quoted
 target that is absent while the screen is still loading; a passing login replay
