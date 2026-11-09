@@ -1920,8 +1920,9 @@ an exported unused `QAREN_INPUT_` namespace, or no inputs; raw subprocess output
 withholding remains unchanged. They contain no values, labels, identifiers,
 testIDs, geometry, character counts or element indices.
 
-`ledger.json` carries `screenshotWithheld` on each withheld row, including streamed
-rows retained after an interrupted walk. `mediaWithheld.screenshots` holds the
+`ledger.json` carries `screenshotWithheld` on each row with a recorded privacy
+cause, including streamed rows retained after an interrupted walk.
+`mediaWithheld.screenshots` holds the
 first `reason`, optional `kind` or `source`, `line` and withheld screenshot `count`.
 `mediaWithheld.video` holds the publication-window cause and line, without a
 count: the strict privacy cause for strict or undeclared runs, or the protected
@@ -1939,9 +1940,10 @@ completes and the Wait passes or fails. This applies under every video policy.
 These cases and any refusal before admission report
 `videoPublication: unknown` with no `nonStrictPublication`,
 which withholds video in either mode.
-The receipt includes one `media_withheld=<code>[/<kind|source>]@line <N>` note,
+When a privacy cause is recorded, the receipt includes one
+`media_withheld=<code>[/<kind|source>]@line <N>` note,
 preferring the video cause in non-strict mode and the screenshot cause otherwise.
-`report.md` marks each withheld row and explains
+`report.md` marks each row with a recorded privacy cause and explains
 the first screenshot cause and line. Line 0 means privacy latched before the walk.
 
 | Code | Meaning | What to do |
@@ -2012,12 +2014,12 @@ The [screen projection](../qaren-core/src/qa/screen.ts) owns this policy.
 
 The native snapshot is the privacy boundary before walking a screen. Capture
 refuses with `NATIVE_SNAPSHOT_INCOMPLETE` unless native completeness is attested;
-the refusal reports only a value-free node count and fixed cause codes. Native
+the refusal reports a value-free node count and fixed cause codes, with read count
+and elapsed time when Wait exhausts its retry deadline. Native
 acquisition failures also refuse without reinjection or a public-tree fallback.
 The privacy boundary is unchanged: an incomplete native snapshot is never walked
 or masked. A Wait re-reads on its normal poll cadence within its existing deadline;
-if no complete read follows, the refusal includes reads and elapsed time. If a
-complete read recovers but the quoted target stays absent, the Wait retains
+if a complete read recovers but the quoted target stays absent, the Wait retains
 `TARGET_NOT_FOUND` with the observed screen. Tap,
 Fill, Check and Scroll still refuse immediately. React-side incomplete capture
 and generic private-capture failures retain `PRIVATE_INPUT_CAPTURE_UNKNOWN`.
