@@ -24,6 +24,12 @@ pub struct LedgerSummary {
     pub llm_turns: u64,
     pub escapes: u64,
     pub recoveries: u64,
+    #[serde(
+        default,
+        rename = "devOverlayWarnings",
+        skip_serializing_if = "is_zero"
+    )]
+    pub dev_overlay_warnings: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed_step: Option<u64>,
     // Passing fills whose final value was not verified, with the ledger row's value-free reason.
@@ -41,6 +47,28 @@ pub struct LedgerSummary {
     // Plain scrolls that passed with no visible change; not proof the content ended.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub no_visible_change_scrolls: Vec<u64>,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+impl LedgerSummary {
+    pub fn verdict_label(&self) -> String {
+        if self.verdict == "PASS" && self.dev_overlay_warnings > 0 {
+            format!(
+                "PASS ({} development overlay warning{})",
+                self.dev_overlay_warnings,
+                if self.dev_overlay_warnings == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            )
+        } else {
+            self.verdict.clone()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -106,6 +134,17 @@ pub fn summarize(ledger: &Ledger) -> LedgerSummary {
         llm_turns: ledger.llm_turns,
         escapes: ledger.escapes,
         recoveries: ledger.recoveries,
+        dev_overlay_warnings: ledger
+            .steps
+            .iter()
+            .filter(|row| {
+                row.outcome == "pass"
+                    && row
+                        .dev_error
+                        .as_ref()
+                        .is_some_and(|overlay| overlay.after_action == Some(true))
+            })
+            .count() as u64,
         failed_step: ledger.failure.as_ref().map(|f| f.step),
         react_reconnections: ledger
             .steps
@@ -383,7 +422,7 @@ pub fn render(input: &ReportInput<'_>) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "# QaReN check: {}{}\n\n",
-        prose(&summary.verdict),
+        prose(&summary.verdict_label()),
         reconnect_note(&summary)
     ));
     out.push_str(&format!(
@@ -595,7 +634,11 @@ fn verdict_label(ledger: &Ledger, refusal: Option<&Failure>) -> String {
         "FAIL" => "FAIL",
         _ => "REFUSED",
     };
-    let mut out = verdict.to_string();
+    let mut out = if verdict == "PASS" {
+        summarize(ledger).verdict_label()
+    } else {
+        verdict.to_string()
+    };
     if verdict == "REFUSED" {
         if let Some(failure) = refusal {
             if let Ok(serde_json::Value::String(code)) = serde_json::to_value(&failure.code) {

@@ -3440,16 +3440,35 @@ renews it. The dismissal count is separate from the step's two interruption
 recoveries. Reload and Copy are never
 pressed, and Dismiss is not proof that the step's own action worked.
 
+On iOS, a native RedBox first seen after a dispatched Tap gets one bounded
+completion check per run. QaReN dismisses it once with its own Dismiss control
+and takes a normal admitted capture. The next item in the same block must be a
+Tap, Fill or Wait with a quoted target whose native test ID now appears and was
+absent on the Tap's screen. Labels, React-only targets and Checks cannot prove
+completion. Selection-readback presses, unverified alert-button presses,
+non-executed actions, LogBox, Android and recovery-disabled blocks keep the
+existing refusal without a dismissal. The planned Tap is never replayed.
+
+When completion is proven, the Tap passes with
+`devError: { variant: 'redbox', dismissal: 1, afterAction: true, proof: 'next-test-id-appeared' }`.
+The next item uses the post-dismissal observation. Receipts count these rows as
+`devOverlayWarnings`, and verdict displays say `PASS (1 development overlay warning)`.
+An unproven completion refuses `DEV_REDBOX_ACTION_UNCERTAIN` and says the overlay
+was dismissed once to check. A RedBox still in front after that one dismissal
+refuses `DEV_REDBOX_REPEATED`; a later post-action RedBox refuses
+`DEV_REDBOX_ACTION_UNCERTAIN` without another dismissal. Screenshot withholding,
+privacy processing and media continuity follow the same rules as other captures.
+
 When the overlay cannot be cleared this way the run refuses with
 `failure.code: DEV_REDBOX` (exit 4). The cause opens `failure.detail`:
 
 | Cause | When | `next_action` |
 | --- | --- | --- |
-| `DEV_REDBOX_REPEATED` | The overlay was still in front after three dismissals in one step | `restart_app_from_plan_start` |
+| `DEV_REDBOX_REPEATED` | The overlay was still in front after three pre-action dismissals in one step, or after the one post-action dismissal | `restart_app_from_plan_start` |
 | `DEV_REDBOX_DISMISS_FAILED` | The Dismiss press failed or was not dispatched. A press the runner refused before any gesture is observed again and pressed again within the three; one that may have run a gesture is never repeated. A LogBox Dismiss refused as `TARGET_MOVED_BEFORE_DISPATCH` is never pressed again. When available, the detail includes the runner's value-free refusal code (`runner refused: <CODE>`). The log records `dev-error-dismiss-failed=<CODE>` in `logs/core.log`, using `unknown` when no code is available. For a moved refusal, the log line also carries the runner's value-free geometry: the retained and live frames, their delta, and whether the target was re-found by identifier or label | `restart_app_from_plan_start` |
 | `DEV_REDBOX_NO_SAFE_DISMISS` | No single Dismiss control (a syntax error, an ambiguous control, or an overlay inside a login replay, which never recovers) | `restart_app_from_plan_start` |
 | `DEV_REDBOX_CLEARANCE_UNPROVEN` | A fresh capture could not prove the overlay gone | `restart_app_from_plan_start` |
-| `DEV_REDBOX_ACTION_UNCERTAIN` | The overlay was first seen after the step's action was sent, or after another recovery already acted in the same step; nothing is dismissed or replayed | `inspect_app_error_before_rerun` |
+| `DEV_REDBOX_ACTION_UNCERTAIN` | The overlay appeared after an action and completion was not proven. Eligible iOS RedBox presses dismiss once to check; other cases leave it in front. The action is never replayed | `inspect_app_error_before_rerun` |
 
 A restart from plan start loses app state; the error may race the app again. A
 device restart or an unchanged native rebuild cannot fix it. A run that passes
