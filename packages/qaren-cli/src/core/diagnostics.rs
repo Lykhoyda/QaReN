@@ -566,6 +566,7 @@ fn clean(value: &Value) -> Option<Value> {
                 "front",
                 "coverage",
                 "current-target",
+                "uncovered-target",
                 "later-target",
                 "previous-plan-press",
                 "no-candidate",

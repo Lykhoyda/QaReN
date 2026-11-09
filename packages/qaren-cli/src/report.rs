@@ -1088,6 +1088,41 @@ mod tests {
     }
 
     #[test]
+    fn an_uncovered_target_interruption_receipt_survives_and_renders() {
+        let receipt = serde_json::json!({
+            "considered": true, "outcome": "vetoed", "veto": "uncovered-target",
+            "targetLine": 7, "targetKind": "wait", "soleDecline": false
+        });
+        let ledger: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "FAIL", "path": "walk", "blocks": [],
+            "steps": [{ "block": "b", "line": 7, "attempt": 1, "kind": "step",
+                "resolvedBy": "exact", "t": 0, "outcome": "fail", "interruption": receipt }],
+            "jev": { "calls": 0, "medianMs": 0 },
+            "llmTurns": 0, "escapes": 0, "recoveries": 0,
+            "failure": { "step": 7, "seen": "TARGET_REACT_ONLY" }
+        }))
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&ledger).unwrap()["steps"][0]["interruption"],
+            receipt
+        );
+        let report = render(&ReportInput {
+            run_id: "check-test",
+            platform: "ios",
+            app_id: "com.example",
+            device: "test-device",
+            ledger: &ledger,
+            video: None,
+        });
+        assert_eq!(
+            report
+                .matches("interruption recovery: vetoed (uncovered-target; line 7 (wait))")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn an_interruption_receipt_round_trips_drops_malformed_data_and_renders_one_line() {
         let receipt = serde_json::json!({
             "considered": true, "outcome": "vetoed", "veto": "later-target",
@@ -1126,11 +1161,12 @@ mod tests {
                   "t": 0, "outcome": "fail", "interruption": receipt },
                 { "block": "b", "line": 8, "attempt": 1, "kind": "step", "resolvedBy": "exact",
                   "t": 0, "outcome": "fail", "interruption": { "considered": true,
-                  "outcome": "did-not-disappear" } }
+                  "outcome": "did-not-disappear", "pressCentreY": 25.0 } }
             ],
             "jev": { "calls": 0, "medianMs": 0 },
             "llmTurns": 0, "escapes": 0, "recoveries": 0,
-            "failure": { "step": 7, "seen": "the target did not appear" },
+            "failure": { "step": 7, "seen": "the target did not appear",
+                "suggestion": "line 9 targets this control; if the interruption is optional, move that step before line 7 or remove it" },
         }))
         .unwrap();
         let report = render(&ReportInput {
@@ -1145,12 +1181,17 @@ mod tests {
             "interruption recovery: vetoed (later-target; ownership; line 9 (press); only control is the decline)"
         ));
         assert!(!report.contains("did-not-disappear"));
-        assert!(!report.contains("Suggested plan edit:"));
+        assert!(report.contains(
+            "Suggested plan edit: line 9 targets this control; if the interruption is optional, move that step before line 7 or remove it"
+        ));
         let stayed: crate::core::InterruptionReceipt = serde_json::from_value(
-            serde_json::json!({ "considered": true, "outcome": "did-not-disappear" }),
+            serde_json::json!({ "considered": true, "outcome": "did-not-disappear", "pressCentreY": 25.0 }),
         )
         .unwrap();
-        assert_eq!(stayed.summary(), "interruption recovery: did-not-disappear");
+        assert_eq!(
+            stayed.summary(),
+            "interruption recovery: did-not-disappear (press centre y 25 pt)"
+        );
         let classed = serde_json::json!({ "considered": true, "outcome": "dismissed", "screenClass": "permission-opt-in" });
         let parsed: crate::core::InterruptionReceipt =
             serde_json::from_value(classed.clone()).unwrap();

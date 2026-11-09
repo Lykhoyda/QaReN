@@ -80,7 +80,7 @@ const DARWIN_HELPER_MANIFEST = {
 
 const LINUX_PUBLICATION_HELPER_SHA256 = {
   x64: '93bcb6e186470efd2a0944756d7b2de790182b59a5dcb3377334291076ad6032',
-  arm64: '1d0f2fc75e9eff675f8fd5ca329eca03950339796d2f339a4f59a85c2f97ba63',
+  arm64: '41711df502af684ddec8253a795fca7e0b8231090f3b35dbb58d40ec9b81d8f5',
 } as const;
 
 function defaultRun(command: string, args: readonly string[]): string {

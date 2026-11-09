@@ -114,6 +114,7 @@ import {
 } from './questions.js';
 import {
   type InterruptionDiagnostic,
+  type InterruptionProof,
   type InterruptionScreenClass,
   type LoginMarker,
   type PlannedSurface,
@@ -126,6 +127,7 @@ import {
   protectionLapses,
   soleDecline,
   surfaceGone,
+  targetBehindInterruption,
 } from './recover.js';
 import type {
   BlockOutcome,
@@ -169,6 +171,7 @@ import {
 } from '../domain/qa-dispatch.js';
 import {
   admitObservation,
+  CAPTURE_BUDGET_MS,
   observationDeadline,
   observationUsable,
   NATIVE_PRESENCE_BUDGET_MS,
@@ -946,14 +949,18 @@ async function walkBlockScoped(
     }
   };
   // The one bounded platform-presence recapture for cover evidence an ordinary capture cannot carry;
-  // an incomplete read returns nothing, so the cover stays unproven rather than refusing.
+  // a late or incomplete read returns nothing, so the cover stays unproven rather than refusing.
   const presenceRecapture = async (
     item: Exclude<Item, { kind: 'check' }>,
+    until?: number,
   ): Promise<Observation | undefined> => {
     try {
-      return await captureOnce(item, false, false, 'provenance');
+      return await captureOnce(item, false, false, 'provenance', until);
     } catch (error) {
-      if (error instanceof ResolutionError && error.code === 'SCREEN_EVIDENCE_INCOMPLETE')
+      if (
+        error instanceof CaptureDeadline ||
+        (error instanceof ResolutionError && error.code === 'SCREEN_EVIDENCE_INCOMPLETE')
+      )
         return undefined;
       throw error;
     }
@@ -1763,6 +1770,12 @@ async function walkBlockScoped(
         ...segments(reason),
         `; an app screen is in front; automatic app dismissal was withheld because the later planned item at line ${interruption.targetLine} may target it`,
       ];
+    // A later step that names the decline owns it: suggest the plan edit that frees this step.
+    if (interruption?.provenance === 'ownership' && interruption.targetLine !== undefined)
+      lastScreen = {
+        ...lastScreen,
+        suggestion: `line ${interruption.targetLine} targets this control; if the interruption is optional, move that step before line ${item.line} or remove it`,
+      };
     const withheld = privacy.textWithheld(last);
     emit({
       ...row,
@@ -2633,6 +2646,7 @@ async function walkBlockScoped(
     attempt: number,
     reason: string,
     until?: number,
+    proof?: InterruptionProof,
   ): Promise<'retry' | WalkOutcome | undefined> => {
     const first = recovered.get(item);
     if (opts.recover === false || !deps.hideDevMenu) return undefined;
@@ -2748,6 +2762,9 @@ async function walkBlockScoped(
     let declineAttempted = false;
     let dismissStarted = false;
     let declineDispatched = false;
+    // The read-back after a dispatched decline: what is on screen once the press has run.
+    let afterDecline: Screen | undefined;
+    let declineCentreY: number | undefined;
     const result = await recover(
       fresh.screen,
       {
@@ -2808,6 +2825,7 @@ async function walkBlockScoped(
           };
           let taken = 0;
           let dispatched = false;
+          let observed: Screen | undefined;
           const nested = await walkBlock(
             support,
             {
@@ -2815,8 +2833,12 @@ async function walkBlockScoped(
               captureScreen: async (options) => {
                 const screen = await captureScreen({ ...options, platformPresence: true });
                 if (!dispatched) {
-                  const candidate = dismissCandidate(screen, planTargets, (record) =>
-                    interruptionRejected(record),
+                  observed = screen;
+                  const candidate = dismissCandidate(
+                    screen,
+                    planTargets,
+                    (record) => interruptionRejected(record),
+                    proof,
                   );
                   if (!candidate || 'refuse' in candidate || candidate.label !== label)
                     throw new ResolutionError({
@@ -2834,6 +2856,12 @@ async function walkBlockScoped(
                     reason: 'the decline control was already attempted; it was not retried',
                   });
                 dispatched = true;
+                const control = observed?.elements.find((e) => e.ref === ref);
+                const frame = control && elementFrame(control);
+                // Android frames are pixels; the receipt is in points like iOS.
+                declineCentreY = frame
+                  ? (frame.y + frame.height / 2) / (observed?.pointScale ?? 1)
+                  : undefined;
                 const result = await deps.press(ref, context);
                 declineDispatched = result.executed !== false && result.mutation !== 'none';
                 if (!result.ok || result.executed === false) {
@@ -2863,6 +2891,7 @@ async function walkBlockScoped(
           if (nested.refusal) return { refuse: nested.refusal };
           if (nested.failure) return { fail: nested.failure.seen };
           const after = (await capture()).screen;
+          afterDecline = after;
           return literalEvidence(after, label, 'equals').verdict === 'fail' &&
             !after.elements.some((e) => !e.offscreen && e.label === label)
             ? 'pass'
@@ -2871,6 +2900,7 @@ async function walkBlockScoped(
       },
       deps.login?.marker,
       planTargets,
+      proof,
     ).catch((error: unknown) => {
       if (error instanceof AppProcessGoneError) {
         markContinuity(sequence, { signal: 'app-process-gone', line });
@@ -2903,6 +2933,9 @@ async function walkBlockScoped(
         // A pre-dispatch recheck's veto, target line and screen facts explain why nothing was sent.
         ...(declined === 'not-dispatched' ? interruptions.get(item.line) : {}),
         outcome: declined,
+        ...(declined === 'did-not-disappear' && declineCentreY !== undefined
+          ? { pressCentreY: declineCentreY }
+          : {}),
         ...(result && 'handled' in result && result.screenClass
           ? { screenClass: result.screenClass }
           : {}),
@@ -2950,7 +2983,7 @@ async function walkBlockScoped(
       }
       return 'retry';
     }
-    const shown = loginReplayed ? (await capture()).screen : fresh.screen;
+    const shown = loginReplayed ? (await capture()).screen : (afterDecline ?? fresh.screen);
     const shot = await shoot(item);
     return 'fail' in result
       ? failed(item, attempt, result.fail, shown, shot)
@@ -3207,7 +3240,7 @@ async function walkBlockScoped(
               ? 'CHECK_UNSURE: the expectation remained uncertain after a fresh-screen re-ask'
               : `"${item.text}" is not satisfied on screen${nearMiss ? NEAR_MISS[nearMiss] : ''}`;
           if (decision.check === 'unsure' || decision.check === 'fail') {
-            const recovering = await recovery(item, 1, reason);
+            const recovering = await recovery(item, 1, reason, undefined, 'absent-surface');
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
           }
@@ -3307,7 +3340,14 @@ async function walkBlockScoped(
             const view = proven ? reactOnlyViewport(lone) : undefined;
             if (view?.where === 'inside' && reactOnlyFactsOf(lone!)?.accessibleAncestor) {
               const reason = reactOnlyMiss(item.target, observation.screen, absent, waitAttempt)!;
-              const recovering = await recovery(item, 1, reason, deadline);
+              // A React-only target may sit behind an interruption; recovery gets its own bounded capture.
+              const recovering = await recovery(
+                item,
+                1,
+                reason,
+                deps.now() + CAPTURE_BUDGET_MS,
+                'covered-target',
+              );
               if (recovering === 'retry') continue attempts;
               if (recovering) return recovering;
               return judged(
@@ -3495,8 +3535,14 @@ async function walkBlockScoped(
               (unchanged
                 ? `"${item.target.quoted}" did not appear within ${budget / 1000}s; the screen did not change across ${absent} observations`
                 : ITEM_DEADLINE_EXCEEDED);
-            // A classified React-only miss already spent its layout read; recovery gets no fresh time for another.
-            const recovering = await recovery(item, 1, reason, reactOnly ? deadline : undefined);
+            // The wait's deadline has passed; a React-only miss still gets one bounded recovery capture.
+            const recovering = await recovery(
+              item,
+              1,
+              reason,
+              reactOnly ? deps.now() + CAPTURE_BUDGET_MS : undefined,
+              reactOnly ? 'covered-target' : 'absent-surface',
+            );
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
             if (unchanged) {
@@ -3771,6 +3817,7 @@ async function walkBlockScoped(
           let within: NativeNode['rect'];
           let scrollNeedsReadback = false;
           let scrollError: string | undefined;
+          let scrollPresenceRead = false;
           // The target that settled after this attempt's keyboard dismissal; the tap goes to it or nowhere.
           let keyboardBound: { target: Element; frame: string; scrolled: number } | undefined;
           let act: ActResult;
@@ -3882,6 +3929,56 @@ async function walkBlockScoped(
                   resolution = result;
                 } else resolution = decided;
                 if ('scroll' in resolution) {
+                  // Only a visible decline hints at an interruption worth one presence read before scrolling.
+                  if (
+                    !scrollPresenceRead &&
+                    !before.platformPresence &&
+                    before.screen.elements.some((e) => !e.offscreen && isDeclineLabel(e.label)) &&
+                    reactOnlyTarget(item.target, before.screen)
+                  ) {
+                    scrollPresenceRead = true;
+                    const proven = await presenceRecapture(
+                      item,
+                      Math.min(itemDeadline ?? Infinity, deps.now() + NATIVE_PRESENCE_BUDGET_MS),
+                    );
+                    if (proven) {
+                      before = proven;
+                      continue;
+                    }
+                    if (!observationUsable(before.timing, deps.now())) {
+                      before = await captureBeforeDispatch();
+                      continue;
+                    }
+                  }
+                  // Scrolling would move the interruption, not the target behind it.
+                  if (
+                    (item.kind === 'press' || item.kind === 'fill') &&
+                    targetBehindInterruption(before.screen, item.target)
+                  ) {
+                    const covered = `"${item.target.phrase}" is mounted behind a presented modal; it was not scrolled`;
+                    const recovering = await recovery(
+                      item,
+                      attempt,
+                      covered,
+                      undefined,
+                      'covered-target',
+                    );
+                    if (recovering === 'retry') again = true;
+                    else
+                      outcome =
+                        recovering ??
+                        failed(
+                          item,
+                          attempt,
+                          covered,
+                          before.screen,
+                          await shoot(item),
+                          undefined,
+                          false,
+                          'TARGET_NOT_FOUND',
+                        );
+                    break;
+                  }
                   if (
                     scrolled &&
                     (resolution.origin !== 'named-offscreen' ||
@@ -4496,7 +4593,7 @@ async function walkBlockScoped(
               initial = undefined;
             }
           }
-          if (outcome || typedUnverified) break;
+          if (outcome || typedUnverified || again) break;
           const readback = () =>
             captureOnce(item, false, false, before.platformPresence ? 'provenance' : 'resolve');
           let after: Observation;
@@ -4892,7 +4989,14 @@ async function walkBlockScoped(
           !deps.cancelled?.()
         ) {
           try {
-            const recovering = await recovery(item, currentAttempt, error.message);
+            // A missing target dismisses only a proven separate surface, never a screen's own Cancel.
+            const recovering = await recovery(
+              item,
+              currentAttempt,
+              error.message,
+              undefined,
+              error.code === 'TARGET_NOT_FOUND' ? 'surface' : undefined,
+            );
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
           } catch (recoveryError) {
@@ -5288,7 +5392,7 @@ export async function runPlan(
           laterTargets: laterBlocks.flatMap((later) =>
             later.items.flatMap((item) => {
               const target = recoveryTarget(item);
-              return target ? [target] : [];
+              return target ? [{ ...target, laterBlock: true }] : [];
             }),
           ),
         },

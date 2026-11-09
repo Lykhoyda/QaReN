@@ -1469,13 +1469,19 @@ function idSeen(id: string | undefined, screen: Screen, hits?: OverlayHits): boo
   );
 }
 
-export function targetOnScreen(screen: Screen, target: Target, hits?: OverlayHits): boolean {
+export function targetOnScreen(
+  screen: Screen,
+  target: Target,
+  hits?: OverlayHits,
+  includeHidden = false,
+): boolean {
   const quoted = target.quoted;
   if (quoted === undefined) return true;
   if (
     target.exact !== 'text' &&
     idIdentities(quoted, screen).some(
-      ({ element }) => !element.offscreen && !presenceCovered(element, screen, hits),
+      ({ element }) =>
+        includeHidden || (!element.offscreen && !presenceCovered(element, screen, hits)),
     )
   )
     return true;
@@ -1484,17 +1490,16 @@ export function targetOnScreen(screen: Screen, target: Target, hits?: OverlayHit
   if (evidence === 'unsure' || screen.unresolvedText?.some((line) => line.includes(quoted)))
     return true;
   return (
-    evidence === 'pass' &&
-    literalTextProjection(screen).elements.some(
+    (includeHidden || evidence === 'pass') &&
+    (includeHidden ? screen : literalTextProjection(screen)).elements.some(
       (e) =>
-        contributesLiteralText(e) &&
+        (includeHidden || contributesLiteralText(e)) &&
         (e.label?.includes(quoted) ||
           e.value?.includes(quoted) ||
           (e.kind === 'input' &&
             e.value !== undefined &&
             `${e.label ?? e.placeholder ?? e.testID ?? 'input'}: ${e.value}`.includes(quoted))) &&
-        !e.offscreen &&
-        !presenceCovered(e, screen, hits),
+        (includeHidden || (!e.offscreen && !presenceCovered(e, screen, hits))),
     )
   );
 }
