@@ -3067,13 +3067,23 @@ async function walkBlockScoped(
       until,
     );
     if (!acted.ok || acted.executed === false) return refuse('DISMISS_FAILED');
-    const after = await captureOnce(
-      item.kind === 'check' ? undefined : item,
-      false,
-      true,
-      'resolve',
-      until,
-    );
+    let after: Observation;
+    try {
+      after = await captureOnce(
+        item.kind === 'check' ? undefined : item,
+        false,
+        true,
+        'resolve',
+        until,
+      );
+    } catch (error) {
+      if (
+        error instanceof CaptureDeadline ||
+        (error instanceof ResolutionError && error.code === 'SCREEN_EVIDENCE_INCOMPLETE')
+      )
+        return refuse('ACTION_UNCERTAIN');
+      throw error;
+    }
     if (after.screen.front === 'dev-redbox')
       return refuse(
         'REPEATED',
@@ -3160,6 +3170,7 @@ async function walkBlockScoped(
         throw error;
       }
     };
+    if (sequence.devOverlayAccepted) return refuse('ACTION_UNCERTAIN');
     if (mutationStarted) {
       if (!postActionEligible(item, fresh.screen)) return refuse('ACTION_UNCERTAIN');
       await postActionOverlay(item, fresh, until);

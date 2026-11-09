@@ -237,6 +237,22 @@ test('a second post-action overlay in another block spends no further dismissal'
   assert.deepEqual(f.actions, ['@next', '@dismiss', '@next']);
 });
 
+test('a RedBox after the cached Wait refuses before the next Tap without dismissal', async () => {
+  const f = fixture();
+  const capture = f.deps.captureScreen;
+  let afterDismissal = 0;
+  f.deps.captureScreen = async (options) =>
+    f.actions.at(-1) === '@dismiss' && ++afterDismissal > 1 ? overlay() : capture(options);
+  const result = await runPlan(plan('2. Wait for "question-2"\n3. Tap "Next"'), f.deps);
+  assert.equal(result.code, 'DEV_REDBOX_ACTION_UNCERTAIN');
+  assert.deepEqual(
+    result.steps.slice(0, 2).map((row) => row.outcome),
+    ['pass', 'pass'],
+  );
+  assert.equal(result.failure!.step, 3);
+  assert.deepEqual(f.actions, ['@next', '@dismiss']);
+});
+
 test('recovery disabled keeps the existing refusal', async () => {
   const f = fixture();
   const result = await walkBlock(plan()[0], f.deps, 0, [], undefined, undefined, {
@@ -329,7 +345,8 @@ test('an incomplete post-dismissal capture cannot prove completion', async () =>
     after: { ...destination(), captureCoverage: { native: 'incomplete', react: 'complete' } },
   });
   const result = await runPlan(plan(), f.deps);
-  assert.notEqual(result.verdict, 'PASS');
+  assert.equal(result.verdict, 'REFUSED');
+  assert.equal(result.code, 'DEV_REDBOX_ACTION_UNCERTAIN');
   assert.deepEqual(f.actions, ['@next', '@dismiss']);
 });
 
@@ -383,8 +400,10 @@ for (const shot of [2, 3, 'incomplete', 'incomplete-overlay'] as const) {
       return bytes;
     };
     const result = await runPlan(plan(), f.deps);
-    if (typeof shot !== 'number') assert.notEqual(result.verdict, 'PASS');
-    else {
+    if (typeof shot !== 'number') {
+      assert.equal(result.verdict, 'REFUSED');
+      assert.equal(result.code, 'DEV_REDBOX_ACTION_UNCERTAIN');
+    } else {
       assert.equal(result.verdict, 'PASS');
       assert.equal(result.steps[0].devError?.afterAction, true);
     }
