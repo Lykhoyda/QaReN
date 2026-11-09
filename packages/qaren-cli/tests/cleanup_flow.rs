@@ -2383,7 +2383,7 @@ fn android_borrowed_cleanup_retries_a_slow_read_with_twice_the_budget() {
         adb_budgets(&mock)[4..],
         [
             ("adb-dumpsys-runner-processes", 20),
-            ("adb-shell-true", 20),
+            ("adb-shell-true", 40),
             ("adb-dumpsys-runner-processes", 40),
         ]
     );
@@ -2410,7 +2410,7 @@ fn android_borrowed_cleanup_names_every_attempt_when_a_slow_device_outlasts_the_
 
     assert_eq!(
         receipt.cleanup["android_runner"],
-        "unresolved: dumpsys activity processes: timed out after 3 attempts (20 s: 20051 ms; 40 s: 40012 ms; 60 s: 60009 ms); the device answered adb shell true in 9939 ms and 11482 ms between attempts, so it is slow, not gone; recommended budget for the next run: 60 s"
+        "unresolved: dumpsys activity processes: timed out after 3 attempts (20 s: 20051 ms; 40 s: 40012 ms; 60 s: 60009 ms); the device answered adb shell true in 9939 ms and 11482 ms between attempts, so it is slow, not gone; recommended budget for the next run: 60 s; slow-device allowance used: 121442 of 240000 ms"
     );
     assert!(receipt.cleanup["device_lease"].starts_with("unresolved: retained"));
     assert_eq!(receipt.result, ReceiptResult::Failed);
@@ -2426,20 +2426,20 @@ fn android_borrowed_cleanup_names_every_attempt_when_a_slow_device_outlasts_the_
     );
 }
 
-// A stalled device is refused after one attempt and one probe, however the probe fails.
+// A stalled device is refused after one attempt and one 40 s probe, however the probe fails.
 #[test]
 fn android_borrowed_cleanup_refuses_an_unresponsive_device_after_one_probe() {
     for (probe, expected) in [
         (
-            timed_out_after(20_004),
-            "adb shell true timed out after 20004 ms, so the device is unresponsive",
+            timed_out_after(40_004),
+            "adb shell true timed out after 40004 ms, so the device is unresponsive; slow-device allowance used: 40004 of 240000 ms",
         ),
         (
             CmdOutput {
                 duration_ms: 300,
                 ..CmdOutput::failed(1, "adb: device offline")
             },
-            "adb shell true failed (exit=1 adb: device offline) after 300 ms, so the device is unresponsive",
+            "adb shell true failed (exit=1 adb: device offline) after 300 ms, so the device is unresponsive; slow-device allowance used: 300 of 240000 ms",
         ),
     ] {
         let repo = common::temp_repo();
@@ -2480,13 +2480,13 @@ fn android_borrowed_cleanup_keeps_earlier_answers_when_the_device_then_stalls() 
     mock.expect_run("activity processes", timed_out_after(20_051));
     mock.expect_run("shell true", answered_after(9_939));
     mock.expect_run("activity processes", timed_out_after(40_012));
-    mock.expect_run("shell true", timed_out_after(20_004));
+    mock.expect_run("shell true", timed_out_after(40_004));
 
     let receipt = cleanup(&mut mock, &repo, "borrowed-run");
 
     assert_eq!(
         receipt.cleanup["android_runner"],
-        "unresolved: dumpsys activity processes: timed out after 2 attempts (20 s: 20051 ms; 40 s: 40012 ms); the device answered adb shell true in 9939 ms between attempts; adb shell true timed out after 20004 ms, so the device is unresponsive"
+        "unresolved: dumpsys activity processes: timed out after 2 attempts (20 s: 20051 ms; 40 s: 40012 ms); the device answered adb shell true in 9939 ms between attempts; adb shell true timed out after 40004 ms, so the device is unresponsive; slow-device allowance used: 89955 of 240000 ms"
     );
     assert!(receipt.cleanup["device_lease"].starts_with("unresolved: retained"));
     assert_eq!(mock.remaining(), 0);
@@ -2563,7 +2563,7 @@ fn android_borrowed_cleanup_names_a_banner_on_the_last_attempt() {
 
     assert_eq!(
         receipt.cleanup["android_runner"],
-        "unresolved: dumpsys activity processes: timed out after 3 attempts (20 s: 20051 ms; 40 s: 40051 ms; 60 s: 27226 ms, service dump timed out); the device answered adb shell true in 17191 ms and 14969 ms between attempts, so it is slow, not gone; recommended budget for the next run: 60 s"
+        "unresolved: dumpsys activity processes: timed out after 3 attempts (20 s: 20051 ms; 40 s: 40051 ms; 60 s: 27226 ms, service dump timed out); the device answered adb shell true in 17191 ms and 14969 ms between attempts, so it is slow, not gone; recommended budget for the next run: 60 s; slow-device allowance used: 99437 of 240000 ms"
     );
     assert!(receipt.cleanup["device_lease"].starts_with("unresolved: retained"));
     assert!(lock.exists());
@@ -2592,16 +2592,18 @@ fn android_borrowed_cleanup_keeps_the_ladder_when_a_retry_is_unreadable() {
 
     assert_eq!(
         receipt.cleanup["android_runner"],
-        "unresolved: dumpsys activity processes: unrecognised output on the last of 2 attempts (20 s: 20016 ms; 40 s: 300 ms); the device answered adb shell true in 15625 ms between attempts"
+        "unresolved: dumpsys activity processes: unrecognised output on the last of 2 attempts (20 s: 20016 ms; 40 s: 300 ms); the device answered adb shell true in 15625 ms between attempts; slow-device allowance used: 15925 of 240000 ms"
     );
     assert!(receipt.cleanup["device_lease"].starts_with("unresolved: retained"));
     assert_eq!(mock.remaining(), 0);
 }
 
-// Device acceptance at a 256-loop starve: both force-stops timed out at their fixed 20 s and the
-// runner survived. A slow device now gets a longer force-stop; the read-back still proves it.
+// Device acceptance at a 384-loop starve: force-stop retries spent most of the allowance and left
+// the final proof read short of its retry. Force-stop now runs once, as before this change, even
+// when it times out, so the whole allowance stays with the read-back, which here needs all three
+// attempts to prove the runner gone.
 #[test]
-fn android_borrowed_cleanup_retries_a_slow_force_stop() {
+fn android_borrowed_cleanup_keeps_the_allowance_for_the_proof_read() {
     let repo = common::temp_repo();
     let record = borrowed_record(&repo);
     let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
@@ -2611,38 +2613,38 @@ fn android_borrowed_cleanup_retries_a_slow_force_stop() {
     mock.expect_run("reverse --remove tcp:8791", CmdOutput::success(""));
     mock.expect_run("reverse --list", CmdOutput::success(""));
     mock.expect_run("forward --list", CmdOutput::success(RUNNER_FORWARD));
+    mock.expect_run("activity processes", timed_out_after(20_051));
+    mock.expect_run("shell true", answered_after(11_845));
     mock.expect_run(
         "activity processes",
-        answered_with(RUNNER_PROCESSES, 16_245),
+        answered_with(RUNNER_PROCESSES, 26_026),
     );
     mock.expect_run("forward --remove tcp:41234", CmdOutput::success(""));
     mock.expect_run(
         "am force-stop dev.lykhoyda.rndevagent.androidrunner.test",
         timed_out_after(20_051),
     );
-    mock.expect_run("shell true", answered_after(12_000));
-    mock.expect_run(
-        "am force-stop dev.lykhoyda.rndevagent.androidrunner.test",
-        answered_after(24_000),
-    );
     mock.expect_run(
         "am force-stop dev.lykhoyda.rndevagent.androidrunner",
         timed_out_after(20_051),
     );
+    mock.expect_run("forward --list", CmdOutput::success("\n"));
+    mock.expect_run("activity processes", timed_out_after(20_051));
+    mock.expect_run("shell true", answered_after(12_000));
+    mock.expect_run("activity processes", timed_out_after(40_051));
     mock.expect_run("shell true", answered_after(12_000));
     mock.expect_run(
-        "am force-stop dev.lykhoyda.rndevagent.androidrunner",
-        answered_after(22_000),
-    );
-    mock.expect_run("forward --list", CmdOutput::success("\n"));
-    mock.expect_run(
         "activity processes",
-        answered_with(NO_RUNNER_PROCESS, 16_569),
+        answered_with(NO_RUNNER_PROCESS, 30_000),
     );
 
     let receipt = cleanup(&mut mock, &repo, "borrowed-run");
 
-    assert_eq!(receipt.cleanup["android_runner"], "removed");
+    assert_eq!(
+        receipt.cleanup["android_runner"], "removed",
+        "{:?}",
+        receipt.cleanup
+    );
     assert_eq!(receipt.cleanup["device_lease"], "removed");
     assert!(!lock.exists());
     assert_eq!(mock.remaining(), 0);
@@ -2652,12 +2654,12 @@ fn android_borrowed_cleanup_retries_a_slow_force_stop() {
         .filter(|c| c.label == "adb-force-stop")
         .map(|c| c.timeout_seconds)
         .collect();
-    assert_eq!(force_stops, [20, 40, 20, 40]);
+    assert_eq!(force_stops, [20, 20]);
 }
 
-// A runner that survives its force-stops: the refusal says why the force-stops did not land.
+// A runner that survives its force-stops is named by the read-back alone, as before this change.
 #[test]
-fn android_borrowed_cleanup_names_failed_force_stops_when_the_runner_remains() {
+fn android_borrowed_cleanup_runs_each_force_stop_once() {
     let repo = common::temp_repo();
     let record = borrowed_record(&repo);
     record.save(&repo).unwrap();
@@ -2668,7 +2670,6 @@ fn android_borrowed_cleanup_names_failed_force_stops_when_the_runner_remains() {
     mock.expect_run("forward --list", CmdOutput::success("\n"));
     mock.expect_run("activity processes", CmdOutput::success(RUNNER_PROCESSES));
     mock.expect_run("am force-stop", timed_out_after(20_051));
-    mock.expect_run("shell true", timed_out_after(20_004));
     mock.expect_run("am force-stop", CmdOutput::success(""));
     mock.expect_run("forward --list", CmdOutput::success("\n"));
     mock.expect_run("activity processes", CmdOutput::success(RUNNER_PROCESSES));
@@ -2677,10 +2678,11 @@ fn android_borrowed_cleanup_names_failed_force_stops_when_the_runner_remains() {
 
     assert_eq!(
         receipt.cleanup["android_runner"],
-        "unresolved: the runner remains after force-stop (forward gone, instrumentation running); am force-stop dev.lykhoyda.rndevagent.androidrunner.test: timed out after 1 attempt (20 s: 20051 ms); adb shell true timed out after 20004 ms, so the device is unresponsive"
+        "unresolved: the runner remains after force-stop (forward gone, instrumentation running)"
     );
     assert!(receipt.cleanup["device_lease"].starts_with("unresolved: retained"));
     assert_eq!(mock.remaining(), 0);
+    assert!(mock.calls.iter().all(|c| c.label != "adb-shell-true"));
 }
 
 // A retried removal that answers "not found" took effect the first time: the mapping is absent.
@@ -2710,7 +2712,7 @@ fn android_borrowed_cleanup_retried_reverse_removal_not_found_is_absent() {
         adb_budgets(&mock)[1..4],
         [
             ("adb-reverse-remove", 30),
-            ("adb-shell-true", 20),
+            ("adb-shell-true", 40),
             ("adb-reverse-remove", 60),
         ]
     );
@@ -2726,7 +2728,7 @@ fn android_borrowed_cleanup_caps_slow_device_retries_across_the_invocation() {
     record.save(&repo).unwrap();
     let mut mock = borrowed_mock();
     mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
-    // 240 s - (20 + 60) - (20 + 90) leaves 50 s, short of the 20 s probe plus a 40 s retry.
+    // 240 s - (20 + 60) - (20 + 90) leaves 50 s, short of the 40 s probe plus a 40 s retry.
     mock.expect_run("reverse --remove tcp:8791", timed_out_after(30_000));
     mock.expect_run("shell true", answered_after(20_000));
     mock.expect_run("reverse --remove tcp:8791", timed_out_after(60_000));
@@ -2737,13 +2739,15 @@ fn android_borrowed_cleanup_caps_slow_device_retries_across_the_invocation() {
     let receipt = cleanup(&mut mock, &repo, "borrowed-run");
 
     assert!(
-        receipt.cleanup["adb_reverse"].ends_with("recommended budget for the next run: 90 s"),
+        receipt.cleanup["adb_reverse"].ends_with(
+            "recommended budget for the next run: 90 s; slow-device allowance used: 190000 of 240000 ms"
+        ),
         "{:?}",
         receipt.cleanup
     );
     assert_eq!(
         receipt.cleanup["android_runner"],
-        "unresolved: adb forward --list: timed out after 1 attempt (20 s: 20000 ms); no retry: this cleanup's 240 s for slow-device retries is spent"
+        "unresolved: adb forward --list: timed out after 1 attempt (20 s: 20000 ms); no retry: this cleanup's 240 s for slow-device retries is spent; slow-device allowance used: 190000 of 240000 ms"
     );
     assert!(lock.exists());
     assert_eq!(mock.remaining(), 0);
@@ -2751,9 +2755,9 @@ fn android_borrowed_cleanup_caps_slow_device_retries_across_the_invocation() {
         adb_budgets(&mock)[1..],
         [
             ("adb-reverse-remove", 30),
-            ("adb-shell-true", 20),
+            ("adb-shell-true", 40),
             ("adb-reverse-remove", 60),
-            ("adb-shell-true", 20),
+            ("adb-shell-true", 40),
             ("adb-reverse-remove", 90),
             ("adb-forward-list", 20),
         ]

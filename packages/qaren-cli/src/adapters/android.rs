@@ -660,14 +660,15 @@ pub fn dump_timed_out(stdout: &str) -> bool {
     })
 }
 
-// The cheapest round trip to the device's shell: an answer means slow, not gone.
+// The cheapest round trip to the device's shell: an answer means slow, not gone. 40 s, because a
+// starved but live emulator was measured past 20 s; no answer in 40 s means stalled.
 pub fn shell_true_spec(adb: &Path, server_port: u16, serial: &str) -> CmdSpec {
     adb_client(
         "adb-shell-true",
         adb,
         server_port,
         &["-s", serial, "shell", "true"],
-        20,
+        40,
     )
 }
 
