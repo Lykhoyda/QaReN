@@ -74,6 +74,7 @@ jobs:
   android-unit:
     name: Android unit (JVM)
     needs: changes
+    # Gradle stays on x64 because aapt2 has no linux-arm64 build; the skip notice runs on the ARM pool.
     runs-on: ${{ needs.changes.outputs.android == 'true' && 'self-linux-x64' || 'self-linux' }}
     # The fresh self-hosted container downloads the Android SDK and Gradle each run.
     timeout-minutes: 20

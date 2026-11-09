@@ -118,7 +118,7 @@ jobs:
           build-essential gnupg libcurl4-openssl-dev libedit2 libncurses-dev libpython3-dev
           libsqlite3-0 libxml2-dev libz3-dev pkg-config tzdata zlib1g-dev
 
-      # Swift tests skip when swift is absent, so the toolchain must be installed here.
+      # Swift tests skip when swift is absent; the ARM pool image ships Swift 6.2.1, x64 installs it here.
       - uses: swift-actions/setup-swift@7ca6abe6b3b0e8b5421b88be48feee39cbf52c6a  # v2.4.0
         if: runner.arch == 'X64'
         with:
