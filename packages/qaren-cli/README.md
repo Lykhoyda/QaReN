@@ -1900,7 +1900,7 @@ the byte limit. It excludes value text, label text, identifiers and testIDs. The
 
 ### Why were my screenshots withheld?
 
-Each withheld screenshot metric has `stage: "screenshot"`, `outcome: "withheld"`
+Each privacy-caused withheld screenshot metric has `stage: "screenshot"`, `outcome: "withheld"`
 and `withheld: "<code>"`. Slot runs retain these metrics in
 `logs/core-diagnostics.jsonl`; without used slots they follow the ordinary
 `logs/core.log` timing route, subject to subprocess output withholding.
@@ -1930,10 +1930,11 @@ starting line. `videoPublication` retains the strict verdict;
 `nonStrictPublication` supplies the separate non-strict verdict. A walk refused
 after admission keeps both computed verdicts, except a
 `PRIVATE_INPUT_CAPTURE_UNKNOWN` or `NATIVE_SNAPSHOT_INCOMPLETE` refusal.
-If a Wait absorbs an incomplete native read, media stays unknown for the whole
-run even when a later read completes and the Wait passes or fails.
-These cases and any refusal before
-admission report `videoPublication: unknown` with no `nonStrictPublication`,
+If a Wait absorbs an incomplete native read, subsequent screenshots and pixel
+comparison captures are withheld for the rest of the run, even when a later read
+completes and the Wait passes or fails. This applies under every video policy.
+These cases and any refusal before admission report
+`videoPublication: unknown` with no `nonStrictPublication`,
 which withholds video in either mode.
 The receipt includes one `media_withheld=<code>[/<kind|source>]@line <N>` note,
 preferring the video cause in non-strict mode and the screenshot cause otherwise.
@@ -2012,7 +2013,9 @@ the refusal reports only a value-free node count and fixed cause codes. Native
 acquisition failures also refuse without reinjection or a public-tree fallback.
 The privacy boundary is unchanged: an incomplete native snapshot is never walked
 or masked. A Wait re-reads on its normal poll cadence within its existing deadline;
-if no complete read follows, the refusal includes reads and elapsed time. Tap,
+if no complete read follows, the refusal includes reads and elapsed time. If a
+complete read recovers but the quoted target stays absent, the Wait retains
+`TARGET_NOT_FOUND` with the observed screen. Tap,
 Fill, Check and Scroll still refuse immediately. React-side incomplete capture
 and generic private-capture failures retain `PRIVATE_INPUT_CAPTURE_UNKNOWN`.
 
@@ -2050,7 +2053,8 @@ readbacks still require full platform presence and privacy admission.
 Only a fresh, complete snapshot can establish privacy or admit a newly arrived
 system alert; partial presence never authorizes actions, screenshots or model
 evidence. Malformed, truncated, dropped-node and other incomplete captures refuse
-immediately. The [capture implementation](../qaren-core/src/qa/capture.ts) owns
+at the capture boundary; Wait handles `NATIVE_SNAPSHOT_INCOMPLETE` as described
+above. The [capture implementation](../qaren-core/src/qa/capture.ts) owns
 retry eligibility; [settle regressions](../qaren-core/test/unit/qa/private-empty-reread.test.ts)
 cover these boundaries.
 
