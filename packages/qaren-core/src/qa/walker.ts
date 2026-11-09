@@ -776,6 +776,7 @@ async function walkBlockScoped(
   let launchWait: { startedAt: number } | undefined;
   let implicitWaitMs: number | undefined;
   let coverWaitMs: number | undefined;
+  let coverWaitTarget: Element | undefined;
   let preparationResets: number | undefined;
   // A quoted wait's one layout read and one scroll, which a recovery retry does not refund.
   let enrichment: { at: number; budget: number; waited?: number } | undefined;
@@ -2769,7 +2770,7 @@ async function walkBlockScoped(
     proof?: InterruptionProof,
   ): Promise<'retry' | 'accepted' | WalkOutcome | undefined> => {
     const first = recovered.get(item);
-    if (opts.recover === false || !deps.hideDevMenu) return undefined;
+    if (coverWaitTarget || opts.recover === false || !deps.hideDevMenu) return undefined;
     recovered.set(item, null);
     loginReplayed = false;
     let fresh: Observation;
@@ -3386,6 +3387,7 @@ async function walkBlockScoped(
     launchWait = undefined;
     implicitWaitMs = undefined;
     coverWaitMs = undefined;
+    coverWaitTarget = undefined;
     preparationResets = undefined;
     const operationId = operationFor(item.line);
     let budget = stepBudgets.get(operationId);
@@ -4010,7 +4012,6 @@ async function walkBlockScoped(
           coverGaps.delete(item.line);
           coverTargets.delete(item.line);
           let selectionTarget: Element | undefined;
-          let coverWaitTarget: Element | undefined;
           let selectionDeadline = Infinity;
           let selectionStartedAt = 0;
           const settling = (item.kind === 'press' || item.kind === 'fill') && sequence.momentum;
@@ -4560,10 +4561,10 @@ async function walkBlockScoped(
                     if (coverWaitMs !== undefined) {
                       coverWaitReason = coverWaitText(before.screen, cover.owner, coverWaitMs);
                     } else {
+                      coverWaitTarget ??= element;
                       const waited = await waitOutCover(item, before, element, cover);
                       before = waited.observation;
                       if (waited.cleared) {
-                        coverWaitTarget ??= element;
                         initial = undefined;
                         continue;
                       }
@@ -5343,6 +5344,7 @@ async function walkBlockScoped(
         const allowance = launchWait;
         if (
           allowance &&
+          !coverWaitTarget &&
           !stepDispatched &&
           (item.kind === 'press' || item.kind === 'fill') &&
           item.target.quoted !== undefined &&

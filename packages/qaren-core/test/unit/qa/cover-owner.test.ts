@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import { captureScreen, CaptureDeadline } from '../../../dist/qa/capture.js';
 import { capturePrivateScreen } from '../../../dist/qa/privacy.js';
 import { coverOwner } from '../../../dist/qa/resolve.js';
+import { dismissCandidate } from '../../../dist/qa/recover.js';
 import { touchOwnerAt } from '../../../dist/qa/screen.js';
 import type { ReactHostEvidence, Screen } from '../../../dist/qa/screen.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
@@ -420,11 +421,16 @@ async function waitOutCover(
     movingCover?: boolean;
     ambiguousAfterWait?: boolean;
     replaceOnPresence?: 'recapture' | 'poll';
+    removeOnPresence?: boolean;
+    retryReplacement?: boolean;
+    recovery?: boolean;
   } = {},
 ) {
+  const continueTarget =
+    options.replaceOnPresence || options.removeOnPresence || options.retryReplacement;
   const coveredViews = sticky();
   coveredViews[3] = { ...coveredViews[3], type: 'Other' };
-  if (options.replaceOnPresence)
+  if (continueTarget)
     coveredViews[1] = { ...coveredViews[1], id: 'primary-continue', label: 'Continue' };
   coveredViews.push({
     id: 'toast-close',
@@ -474,6 +480,9 @@ async function waitOutCover(
   );
   w.deps.platform = options.platform ?? 'ios';
   let captures = 0;
+  let capturesAfterPress = 0;
+  const pressedRefs: string[] = [];
+  if (options.recovery) w.deps.hideDevMenu = async () => ({ ok: true, proven: true });
   let waitStarted: number | undefined;
   const budgets: number[] = [];
   const polledObservations: number[] = [];
@@ -504,13 +513,31 @@ async function waitOutCover(
     delete clear.keyboardVisible;
     const off = await capture(offViews, { presence });
     off.elements.find(
-      (e) => e.testID === (options.replaceOnPresence ? 'primary-continue' : 'qa-hi-row-1'),
+      (e) => e.testID === (continueTarget ? 'primary-continue' : 'qa-hi-row-1'),
     )!.offscreen = true;
     const withoutId = (screen: Screen) => {
       if (options.labelIdentity)
         delete screen.elements.find((e) => e.testID === 'qa-hi-row-1')?.testID;
       return screen;
     };
+    if (options.removeOnPresence && presence) {
+      covered.elements = covered.elements.filter((e) => e.testID !== 'primary-continue');
+      assert.deepEqual(
+        dismissCandidate(covered, [{ quoted: 'Continue', phrase: 'Continue' }]),
+        { label: 'Close' },
+        'the persistent cover would offer Close to ordinary recovery',
+      );
+      return covered;
+    }
+    if (options.retryReplacement && presses > 0) {
+      if (++capturesAfterPress === 1) return clear;
+      return capture(
+        clearViews.map((view, index) =>
+          index === 1 ? { ...view, id: 'secondary-continue' } : view,
+        ),
+        { presence },
+      );
+    }
     if (
       options.replaceOnPresence &&
       presence &&
@@ -582,6 +609,7 @@ async function waitOutCover(
   };
   let presses = 0;
   w.deps.press = async (ref) => {
+    pressedRefs.push(ref);
     assert.equal(ref, '@e3', 'only the planned row may be pressed');
     presses++;
     if (options.nativeOcclusion)
@@ -591,11 +619,12 @@ async function waitOutCover(
         mutation: 'none',
         error: 'FOCUS_TARGET_OCCLUDED: target covered',
       };
+    if (options.retryReplacement) return { ok: true, proven: false };
     return options.refusePress
       ? { ok: false, proven: false, mutation: 'none', error: 'not dispatched' }
       : { ok: true, proven: true };
   };
-  const kind = options.replaceOnPresence
+  const kind = continueTarget
     ? 'Tap "Continue"'
     : options.kind === 'fill'
       ? 'Fill "qa-hi-row-1" with "x"'
@@ -612,6 +641,7 @@ async function waitOutCover(
     diagnostics,
     budgets,
     presses,
+    pressedRefs,
     captures,
     media,
     shots,
@@ -751,7 +781,7 @@ test('a quoted label after scrolling names a persistent cover and never presses 
 
 for (const replaceOnPresence of ['recapture', 'poll'] as const) {
   test(`a same-label replacement during the cover ${replaceOnPresence} is never pressed`, async () => {
-    const { row, presses, actions } = await waitOutCover({ replaceOnPresence });
+    const { row, presses, actions } = await waitOutCover({ replaceOnPresence, recovery: true });
     assert.equal(row?.outcome, 'fail', JSON.stringify(row));
     assert.equal(presses, 0, 'secondary-continue must not replace primary-continue');
     assert.deepEqual(actions, ['scroll down']);
@@ -765,3 +795,26 @@ for (const replaceOnPresence of ['recapture', 'poll'] as const) {
     }
   });
 }
+
+test('a target missing during the cover read never triggers Close recovery', async () => {
+  const { result, row, pressedRefs, streamed } = await waitOutCover({
+    removeOnPresence: true,
+    recovery: true,
+  });
+  assert.equal(row?.outcome, 'fail', JSON.stringify(result));
+  assert.match(String(row?.reason), /TARGET_NOT_FOUND/);
+  assert.deepEqual(pressedRefs, []);
+  assert.ok(streamed.every((entry) => entry.block !== '@interruption'));
+});
+
+test('a cleared target cannot be replaced on the ordinary dispatch retry', async () => {
+  const { row, pressedRefs, streamed } = await waitOutCover({
+    retryReplacement: true,
+    clearAt: 500,
+    recovery: true,
+  });
+  assert.ok(streamed.some((entry) => entry.outcome === 'retry'));
+  assert.equal(row?.outcome, 'fail', JSON.stringify(row));
+  assert.match(String(row?.reason), /identity selected before the cover read/);
+  assert.deepEqual(pressedRefs, ['@e3'], 'only primary-continue may receive the first tap');
+});
