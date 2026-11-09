@@ -7963,6 +7963,9 @@ impl Runner for PrRunner {
     fn adb_server_version(&self, port: u16) -> Result<u32, String> {
         self.inner.adb_server_version(port)
     }
+    fn adb_server_devices(&self, port: u16) -> Result<String, String> {
+        self.inner.adb_server_devices(port)
+    }
     fn env_var(&self, name: &str) -> Option<String> {
         self.inner.env_var(name)
     }
@@ -9364,6 +9367,9 @@ struct Encoding(PrRunner, Option<u64>, u64, bool);
 impl Runner for Encoding {
     fn adb_server_version(&self, port: u16) -> Result<u32, String> {
         self.0.adb_server_version(port)
+    }
+    fn adb_server_devices(&self, port: u16) -> Result<String, String> {
+        self.0.adb_server_devices(port)
     }
     fn env_var(&self, name: &str) -> Option<String> {
         self.0.env_var(name)
