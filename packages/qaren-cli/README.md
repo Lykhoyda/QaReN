@@ -1104,8 +1104,8 @@ every poll and subsequent tap retries must uniquely rebind the original target;
 a missing, ambiguous or replaced identity refuses without tapping a replacement.
 Every poll passes normal capture admission, and missing geometry never proves clearance.
 Once the target's centre is proven clear,
-the normal tap uses that observation. The row's `coverWaitMs` records elapsed
-waiting time. A persistent cover keeps the existing refusal code and names its
+the normal tap uses that observation. See [row timing](#row-timing) for the
+measured wait duration. A persistent cover keeps the existing refusal code and names its
 kind, frame, enabled on-screen pressable count and up to four decline labels such
 as Close. Once the target is bound for the cover read, failures bypass step
 recovery and the launch-target wait, so neither can dismiss the cover or select
@@ -3914,9 +3914,11 @@ could be tied to a native node. Quoted presses use ordinary captures without nat
 presence or React typography. On iOS a covered press or Fill refusal with that gap takes the
 walker's one bounded platform-presence recapture, the same one a plain scroll uses for
 an unproven cover, and looks up the cover again on it, at most once per cover lookup.
-For covered targets, only refusals pay for that read (a presence capture can take
-tens of seconds on device); it never adds a refusal or
-grants a dispatch. An incomplete read leaves the cover unproven
+That diagnostic-only read can take tens of seconds on device; it never adds a
+refusal or grants a dispatch. The
+[cover wait](#covered-target-recovery) also requests presence before deciding
+whether to wait or tap, with its own target identity and admission guards.
+An incomplete diagnostic read leaves the cover unproven
 (`presence-recapture-incomplete`), and a target the recapture cannot find again leaves
 `target-not-recaptured`.
 In `clearanceDiagnostic`, unread or unavailable facts
@@ -3949,6 +3951,13 @@ the accepted capture. It is omitted when no polling occurred and retains a
 measured zero. It is separate from `timing`, can remain on subsequent attempt
 rows for the same step, and must not be added to the timing partition or summed
 across those rows. The CLI preserves valid values and drops malformed ones.
+
+The optional row-level `coverWaitMs` records elapsed time in the
+[covered-target wait](#covered-target-recovery). It is omitted when no cover wait
+started and retains a measured zero. It is separate from `timing` and persists
+on subsequent attempt rows for the same step; do not add it to the timing
+partition or sum it across those rows. The CLI preserves nonnegative integer
+values in streamed and saved rows and drops malformed ones.
 
 Optional `settleMethod` and `settleMs` record measured client settle within the
 row window. Milliseconds sum across dispatched actions; the method is
