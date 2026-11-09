@@ -10,9 +10,18 @@ import { cleanDiagnostic } from '../../../dist/qa/diagnostics.js';
 import type { StoredBlock } from '../../../dist/qa/blocks.js';
 import type { Block } from '../../../dist/qa/plan.js';
 import { NativeSnapshotIncomplete } from '../../../dist/qa/private-input.js';
-import { join as joinScreen, type Screen } from '../../../dist/qa/screen.js';
+import { CaptureDeadline } from '../../../dist/qa/capture.js';
+import {
+  hostAssociationIdentity,
+  join as joinScreen,
+  keyboardCoversElement,
+  modalCoverDiagnostic,
+  type NativeNode,
+  type Screen,
+} from '../../../dist/qa/screen.js';
 import type { WalkerDeps } from '../../../dist/qa/walker.js';
 import { choice, element, screen, scriptedJudge } from './judgment-fixtures.ts';
+import { formWithCancel, homeAfterPromo, modalOverHome } from './modal-fixtures.ts';
 
 function observedButtons(elements: Screen['elements']) {
   const nodes = elements.map((e) => ({
@@ -92,17 +101,16 @@ test('a present optional pop-up is declined once before retrying the missing tar
   assert.ok(row?.screenshot);
 });
 
-test('a campaign with Skip and navigation containing all is declined and the plan continues', async () => {
+test('a campaign with Skip and navigation and no proven modal is not dismissed for a missing target', async () => {
   for (const label of ['View all offers', 'See all', 'Show all', 'Accept all offers']) {
     const f = app(screen([element('@close', 'Skip'), element('@offers', label)]));
     ticking(f);
     const result = await runPlan(plan(), f.deps);
-    assert.equal(result.verdict, 'PASS', label);
-    assert.deepEqual(f.actions, ['press @close', 'press @settings'], label);
-    assert.equal(result.recoveries, 1, label);
-    const retry = result.steps.find((row) => row.outcome === 'retry');
-    assert.match(retry?.reason ?? '', /dismissed an app screen with Skip/, label);
-    assert.equal(retry?.interruption?.outcome, 'dismissed', label);
+    // Two controls and no presented modal: a missing tap target proves no separate surface.
+    assert.equal(result.verdict, 'FAIL', label);
+    assert.deepEqual(f.actions, [], label);
+    assert.ok(!result.recoveries, label);
+    assert.match(result.failure?.seen ?? '', /^TARGET_NOT_FOUND/, label);
   }
 });
 
@@ -233,6 +241,307 @@ test('a later target in the same block prevents dismissal and reports a value-fr
   );
 });
 
+test('a missing target on a multi-control sheet with no proven modal presses nothing', async () => {
+  const f = app(screen([element('@close', 'Close'), element('@continue', 'Continue')]));
+  const vetoes: unknown[] = [];
+  f.deps.interruptionRejected = (event) => vetoes.push(event.veto);
+  const result = await runPlan(parsePlan('1. Tap "Settings"').blocks!, f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, []);
+  assert.ok(!result.recoveries);
+  assert.match(result.failure?.seen ?? '', /^TARGET_NOT_FOUND/);
+  assert.ok(vetoes.includes('uncovered-target'));
+});
+
+for (const step of ['Tap "qa-missing"', 'Fill "qa-missing" with "synthetic"']) {
+  test(`a missing target on a proven multi-control modal presses nothing: ${step}`, async () => {
+    const modal = modalOverHome({ secondControl: true });
+    const cover = modalCoverDiagnostic(modal);
+    assert.ok(cover);
+    assert.equal(cover.refused, undefined);
+    assert.equal(modal.elements.find((e) => e.ref === '@close')?.semantic?.press, 'supported');
+    const f = app(modal);
+    ticking(f);
+    const vetoes: unknown[] = [];
+    f.deps.interruptionRejected = (event) => vetoes.push(event.veto);
+    const result = await runPlan(parsePlan(`1. ${step}`).blocks!, f.deps);
+    assert.equal(result.verdict, 'FAIL');
+    assert.deepEqual(f.actions, []);
+    assert.ok(!result.recoveries);
+    assert.match(result.failure?.seen ?? '', /^TARGET_NOT_FOUND/);
+    assert.ok(vetoes.includes('uncovered-target'));
+  });
+}
+
+for (const plan of ['✓ "Saved"', '1. Wait for "Saved" to appear']) {
+  // Known case, by design: an input-free screen with an action and a soft decline
+  // looks like an interrupting sheet, so an absent check or wait target takes its Skip once.
+  test(`known case: an absent target skips an input-free two-button onboarding Modal: ${plan}`, async () => {
+    const bounds = { x: 0, y: 0, width: 402, height: 874 };
+    const controls = [
+      {
+        ref: '@continue',
+        id: 'setup-continue',
+        label: 'Continue',
+        rect: { x: 20, y: 600, width: 300, height: 50 },
+      },
+      {
+        ref: '@skip',
+        id: 'setup-skip',
+        label: 'Skip',
+        rect: { x: 20, y: 700, width: 300, height: 50 },
+      },
+    ];
+    const nodes = [
+      { ref: '@app', type: 'Application', rect: bounds },
+      { ref: '@window', type: 'Window', parentIndex: 0, rect: bounds },
+      ...controls.map((c) => ({
+        ref: c.ref,
+        identifier: c.id,
+        label: c.label,
+        type: 'Other',
+        parentIndex: 1,
+        hittable: true,
+        rect: c.rect,
+      })),
+    ];
+    const hosts = [
+      { role: null, roleSource: 'none', capabilities: {} },
+      { testID: 'react-only-container', role: null, roleSource: 'none', capabilities: {} },
+      { role: null, roleSource: 'none', capabilities: {} },
+      ...controls.map((c) => ({
+        testID: c.id,
+        role: 'button',
+        roleSource: 'role',
+        capabilities: { press: true },
+      })),
+    ];
+    const topology = [
+      { parentHostIndex: null, hostType: 'RCTRootView', rect: bounds },
+      { parentHostIndex: 0, hostType: 'RCTView', rect: bounds },
+      { parentHostIndex: 1, hostType: 'RCTModalHostView', rect: bounds },
+      ...controls.map((c) => ({ parentHostIndex: 2, hostType: 'RCTView', rect: c.rect })),
+    ];
+    const modal = joinScreen(
+      nodes,
+      controls.map((c) => ({ testID: c.id, role: 'button', label: c.label })),
+      'app',
+      { native: 'complete', react: 'complete' },
+      {
+        complete: true,
+        hosts,
+        typography: {
+          version: 1,
+          complete: true,
+          durationMs: 1,
+          coordinateSpace: 'window-points',
+          nodes: topology.map((n, hostIndex) => ({
+            ...n,
+            hostIndex,
+            rootIndex: 0,
+            text: { kind: 'none' },
+          })),
+        },
+      },
+      {
+        source: 'xcui-live',
+        nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+      },
+    );
+    const skip = modal.elements.find((e) => e.ref === '@skip')!;
+    assert.equal(hostAssociationIdentity(skip), 'matched');
+    assert.equal(skip.semantic?.press, 'supported');
+    const f = app(modal);
+    ticking(f);
+    f.deps.press = async (ref) => {
+      f.actions.push(`press ${ref}`);
+      f.show(screen([element('@saved', 'Saved', { kind: 'text' })]));
+      return { ok: true, proven: false, executed: true };
+    };
+    const result = await runPlan(parsePlan(plan).blocks!, f.deps);
+    assert.equal(result.verdict, 'PASS', result.failure?.seen);
+    assert.deepEqual(f.actions, ['press @skip']);
+    assert.equal(result.recoveries, 1);
+    assert.equal(
+      result.steps.find((row) => row.outcome === 'retry')?.interruption?.outcome,
+      'dismissed',
+    );
+  });
+
+  test(`an absent target never skips modal onboarding with an input: ${plan}`, async () => {
+    const modal = formWithCancel(true, 'Skip');
+    modal.elements.push(element('@title', 'Create your profile', { kind: 'text' }));
+    modal.visibleText.push('Create your profile');
+    const cover = modalCoverDiagnostic(modal);
+    assert.ok(cover);
+    assert.equal(cover.refused, undefined);
+    const skip = modal.elements.find((e) => e.ref === '@cancel')!;
+    assert.equal(hostAssociationIdentity(skip), 'matched');
+    assert.equal(skip.semantic?.press, 'supported');
+    const f = app(modal);
+    ticking(f);
+    const vetoes: unknown[] = [];
+    f.deps.interruptionRejected = (event) => vetoes.push(event.veto);
+    const result = await runPlan(parsePlan(plan).blocks!, f.deps);
+    assert.equal(result.verdict, 'FAIL');
+    assert.deepEqual(f.actions, []);
+    assert.equal(result.recoveries, 0);
+    assert.ok(vetoes.includes('uncovered-target'));
+    assert.match(result.failure?.seen ?? '', /Saved/);
+  });
+
+  test(`an absent target never dismisses a modal form: ${plan}`, async () => {
+    const modal = formWithCancel(true);
+    const cover = modalCoverDiagnostic(modal);
+    assert.ok(cover);
+    assert.equal(cover.refused, undefined);
+    const cancel = modal.elements.find((e) => e.ref === '@cancel')!;
+    assert.equal(hostAssociationIdentity(cancel), 'matched');
+    assert.equal(cancel.semantic?.press, 'supported');
+    const f = app(modal);
+    ticking(f);
+    const vetoes: unknown[] = [];
+    f.deps.interruptionRejected = (event) => vetoes.push(event.veto);
+    const result = await runPlan(parsePlan(plan).blocks!, f.deps);
+    assert.equal(result.verdict, 'FAIL');
+    assert.deepEqual(f.actions, []);
+    assert.equal(result.recoveries, 0);
+    assert.ok(vetoes.includes('uncovered-target'));
+    assert.match(result.failure?.seen ?? '', /Saved/);
+  });
+}
+
+for (const plan of ['✓ "Saved"', '1. Wait for "Saved" to appear']) {
+  for (const input of ['offscreen', 'unassociated'] as const) {
+    test(`an absent target never skips a form with an ${input} input: ${plan}`, async () => {
+      const bounds = { x: 0, y: 0, width: 402, height: 874 };
+      const nodes: NativeNode[] = [
+        { ref: '@app', type: 'Application', rect: bounds },
+        { ref: '@window', type: 'Window', parentIndex: 0, rect: bounds },
+        {
+          ref: '@continue',
+          type: 'Button',
+          label: 'Continue',
+          parentIndex: 1,
+          hittable: true,
+          rect: { x: 20, y: 600, width: 300, height: 50 },
+        },
+        {
+          ref: '@skip',
+          type: 'Button',
+          label: 'Skip',
+          parentIndex: 1,
+          hittable: true,
+          rect: { x: 20, y: 700, width: 300, height: 50 },
+        },
+      ];
+      if (input === 'offscreen')
+        nodes.push({
+          ref: '@field',
+          type: 'TextField',
+          label: 'Name',
+          parentIndex: 1,
+          rect: { x: 20, y: 1000, width: 300, height: 50 },
+        });
+      const form = joinScreen(
+        nodes,
+        [],
+        'app',
+        { native: 'complete', react: 'complete' },
+        {
+          complete: true,
+          hosts:
+            input === 'unassociated'
+              ? [
+                  {
+                    testID: 'profile-name',
+                    role: 'textbox',
+                    roleSource: 'role',
+                    capabilities: { fill: true },
+                  },
+                ]
+              : [],
+        },
+        {
+          source: 'xcui-live',
+          nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+        },
+      );
+      if (input === 'offscreen') {
+        const field = form.elements.find((e) => e.ref === '@field');
+        assert.equal(field?.kind, 'input');
+        assert.equal(field?.offscreen, true);
+      } else assert.equal(form.fillGapCount, 1);
+      const f = app(form);
+      ticking(f);
+      const vetoes: unknown[] = [];
+      f.deps.interruptionRejected = (event) => vetoes.push(event.veto);
+      const result = await runPlan(parsePlan(plan).blocks!, f.deps);
+      assert.equal(result.verdict, 'FAIL');
+      assert.deepEqual(f.actions, []);
+      assert.equal(result.recoveries, 0);
+      assert.ok(vetoes.includes('uncovered-target'));
+    });
+  }
+}
+
+for (const hidden of ['offscreen', 'keyboard'] as const) {
+  test(`a failed check retains recovery for captured ${hidden} text without an ID`, async () => {
+    const nodes: NativeNode[] = [
+      { ref: '@app', type: 'Application', rect: { x: 0, y: 0, width: 400, height: 800 } },
+      {
+        ref: '@saved',
+        parentIndex: 0,
+        type: 'StaticText',
+        label: 'Saved successfully',
+        rect: { x: 20, y: hidden === 'offscreen' ? 900 : 600, width: 200, height: 40 },
+      },
+      ...['Close', 'Continue'].map((label, index) => ({
+        ref: index === 0 ? '@close' : '@continue',
+        parentIndex: 0,
+        type: 'Button',
+        label,
+        hittable: true,
+        rect: { x: 20, y: 100 + index * 60, width: 200, height: 40 },
+      })),
+    ];
+    if (hidden === 'keyboard')
+      nodes.push({
+        ref: '@keyboard',
+        parentIndex: 0,
+        type: 'Keyboard',
+        rect: { x: 0, y: 500, width: 400, height: 300 },
+      });
+    const snapshot = joinScreen(
+      nodes,
+      [],
+      'app',
+      { native: 'complete', react: 'complete' },
+      { hosts: [], complete: true },
+      {
+        source: 'xcui-live',
+        nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+      },
+    );
+    const saved = snapshot.elements.find((e) => e.ref === '@saved')!;
+    assert.equal(saved.testID, undefined);
+    assert.equal(hidden === 'offscreen' ? saved.offscreen : keyboardCoversElement(saved), true);
+    const f = app(snapshot);
+    const vetoes: unknown[] = [];
+    f.deps.interruptionRejected = (event) => vetoes.push(event.veto);
+    f.deps.press = async (ref) => {
+      f.actions.push(`press ${ref}`);
+      f.show(observedButtons([element('@saved', 'Saved successfully', { kind: 'text' })]));
+      return { ok: true, proven: false, executed: true };
+    };
+    const result = await runPlan(parsePlan('✓ "Saved"').blocks!, f.deps);
+    assert.equal(result.verdict, 'PASS', result.failure?.seen);
+    assert.deepEqual(f.actions, ['press @close']);
+    assert.equal(result.recoveries, 1);
+    assert.ok(!vetoes.includes('uncovered-target'));
+  });
+}
+
 test('a later block target visible on the sheet prevents dismissal', async () => {
   for (const later of [
     element('@continue', 'Continue'),
@@ -325,10 +634,18 @@ test('replayed decline intent survives stored selectors during recovery and reva
           return result;
         };
         const result = await runPlan(replayed, f.deps);
-        assert.equal(result.verdict, 'FAIL');
-        assert.equal(result.recoveries, 0);
-        assert.deepEqual(f.actions, []);
-        assert.equal(result.steps.at(-1)?.interruption?.veto, 'later-target');
+        if (separate) {
+          // A later block's target always vetoes by presence.
+          assert.equal(result.verdict, 'FAIL');
+          assert.equal(result.recoveries, 0);
+          assert.deepEqual(f.actions, []);
+          assert.equal(result.steps.at(-1)?.interruption?.veto, 'later-target');
+        } else {
+          // Close is the only control, so a same-block tap on the decline text is a coincidence.
+          assert.equal(result.verdict, 'PASS', result.failure?.seen);
+          assert.equal(result.recoveries, 1);
+          assert.deepEqual(f.actions, ['press @close', 'press @later']);
+        }
       }
     }
   }
@@ -383,6 +700,8 @@ test('a decline that leaves the control visible is attempted only once and never
   assert.equal(result.verdict, 'FAIL');
   assert.deepEqual(f.actions, ['press @close']);
   assert.equal(result.recoveries, 1);
+  // The failure reports the screen after the decline press, not the one recovery acted on.
+  assert.match(result.failure?.seen ?? '', /last observed on screen: .*Changed/);
 });
 
 test('an unchanged decline control is never pressed a second time', async () => {
@@ -523,6 +842,7 @@ test('the veto sees masked input evidence and recovery screenshots respect priva
         secure: true,
         value: secret,
       }),
+      element('@settings', 'Settings', { kind: 'text', testID: 'Settings', offscreen: true }),
     ]),
   );
   const judge = scriptedJudge((_questions, _index, state) => {
@@ -531,8 +851,8 @@ test('the veto sees masked input evidence and recovery screenshots respect priva
   });
   f.deps.judge = judge;
   f.deps.interruptionVeto = true;
-  const result = await runPlan(plan(), f.deps);
-  assert.equal(result.verdict, 'PASS');
+  const result = await runPlan(parsePlan('✓ "Settings"').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
   assert.equal(judge.requests.length, 1);
   assert.ok(!JSON.stringify(result).includes(secret));
   const recovery = result.steps.find((row) => row.reason?.includes('dismissed an app screen'));
@@ -621,7 +941,7 @@ function changingPopup(f: ReturnType<typeof app>, skip = element('@close', 'Skip
     return press(ref, context);
   };
   f.deps.captureScreen = async () =>
-    dismissed ? home() : screen([element('@hero', `Hero ${frame++}`), skip]);
+    dismissed ? home() : screen([element('@hero', `Hero ${frame++}`, { kind: 'text' }), skip]);
 }
 
 test('a quoted wait behind an unchanged optional pop-up declines it once and retries the wait', async () => {
@@ -1111,20 +1431,37 @@ function fullScreenPromo(): Screen {
   );
 }
 
-test('a later tap whose text is in the promo copy keeps a sole-Close promo up', async () => {
+test('a later tap whose text is in the promo copy no longer keeps a sole-Close promo up', async () => {
   const f = app(fullScreenPromo());
   const streamed = ticking(f);
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    f.show(
+      ref === '@close'
+        ? screen([element('@settings', 'Settings'), element('@premium', 'Premium')])
+        : screen([element('@done', 'Done')]),
+    );
+    return { ok: true, proven: false, executed: true };
+  };
   const result = await runPlan(waitPlan('2. Tap "Premium"'), f.deps);
-  assert.equal(result.verdict, 'FAIL');
-  assert.deepEqual(f.actions, []);
-  assert.equal(result.recoveries, 0);
-  assert.equal(result.steps.at(-1)?.interruption?.veto, 'later-target');
-  assert.equal(result.steps.at(-1)?.interruption?.targetLine, 2);
-  for (const row of streamed.filter((row) => row.interruption)) {
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['press @close', 'press @premium']);
+  assert.equal(result.recoveries, 1);
+  const retry = result.steps.find((row) => row.line === 1 && row.outcome === 'retry');
+  assert.equal(retry?.interruption?.outcome, 'dismissed');
+  assert.equal(retry?.interruption?.soleDecline, true);
+  // The value-free stream carries the receipt on the originating step, not on the nested tap.
+  const receipts = streamed.filter((row) => row.interruption);
+  assert.ok(receipts.length >= 1);
+  for (const row of receipts) {
     assert.equal(row.line, 1);
     assert.equal(row.text, '');
     assert.equal(row.reason, undefined);
-    assert.equal(row.interruption?.veto, 'later-target');
+    assert.deepEqual(row.interruption, {
+      considered: true,
+      outcome: 'dismissed',
+      soleDecline: true,
+    });
   }
 });
 
@@ -1149,12 +1486,16 @@ test('a later admission rejection preserves a proven dismissal on failed retry r
     assert.deepEqual(row.interruption, receipt);
 });
 
-test('a later step naming the sole Close keeps the promo and records ownership', async () => {
+test('a later step naming the sole Close keeps the promo and suggests moving that step', async () => {
   const f = app(observedButtons([element('@close', 'Close')]));
   ticking(f);
   const result = await runPlan(waitPlan('2. Tap "Close"'), f.deps);
   assert.equal(result.verdict, 'FAIL');
   assert.deepEqual(f.actions, []);
+  assert.equal(
+    result.failure?.suggestion,
+    'line 2 targets this control; if the interruption is optional, move that step before line 1 or remove it',
+  );
   assert.deepEqual(result.steps.at(-1)?.interruption, {
     considered: true,
     outcome: 'vetoed',
@@ -1166,12 +1507,16 @@ test('a later step naming the sole Close keeps the promo and records ownership',
   });
 });
 
-test('a later wait on the sole Close ID keeps it and records the owning line', async () => {
+test('a later wait on the sole Close ID keeps it and suggests the owning line', async () => {
   const f = app(fullScreenPromo());
   const streamed = ticking(f);
   const result = await runPlan(waitPlan('2. Wait for "promo-close" to appear'), f.deps);
   assert.equal(result.verdict, 'FAIL');
   assert.deepEqual(f.actions, []);
+  assert.equal(
+    result.failure?.suggestion,
+    'line 2 targets this control; if the interruption is optional, move that step before line 1 or remove it',
+  );
   const receipt = {
     considered: true,
     outcome: 'vetoed',
@@ -1230,7 +1575,28 @@ for (const [disposition, pressResult, dispatched] of [
   ['not executed', { ok: true, executed: false }, false],
 ] as const) {
   test(`a ${disposition} decline retains dispatch evidence without retrying`, async () => {
-    const f = app(promo());
+    const nodes = [
+      {
+        ref: '@close',
+        type: 'Button',
+        label: 'Close',
+        hittable: true,
+        rect: { x: 340, y: 10, width: 40, height: 30 },
+      },
+    ];
+    const framed = () =>
+      joinScreen(
+        nodes,
+        [],
+        'app',
+        { native: 'complete', react: 'complete' },
+        { hosts: [], complete: true },
+        {
+          source: 'xcui-live',
+          nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+        },
+      );
+    const f = app(framed());
     ticking(f);
     f.deps.press = async (ref) => {
       f.actions.push(`press ${ref}`);
@@ -1241,5 +1607,209 @@ for (const [disposition, pressResult, dispatched] of [
     assert.deepEqual(f.actions, ['press @close']);
     const receipt = result.steps.at(-1)?.interruption;
     assert.equal(receipt?.outcome, dispatched ? 'did-not-disappear' : 'not-dispatched');
+    // The aimed centre of the decline that stayed, in points.
+    assert.equal(receipt?.pressCentreY, dispatched ? 25 : undefined);
   });
 }
+
+// Device runs over a full-screen promo Modal whose only control is Close, above a mounted Home.
+// As on device, only a platform-presence capture carries host association.
+function promoOverHome(
+  f: ReturnType<typeof app>,
+  options: Parameters<typeof modalOverHome>[0] = {},
+) {
+  f.deps.platform = 'ios';
+  let promoUp = true;
+  const capture = f.deps.captureScreen;
+  f.deps.captureScreen = async (request) =>
+    promoUp
+      ? modalOverHome({ ...options, ordinary: !request?.platformPresence })
+      : capture(request);
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    if (ref === '@close') promoUp = false;
+    f.show(ref === '@close' ? homeAfterPromo() : screen([element('@done', 'Done')]));
+    return { ok: true, proven: false, executed: true };
+  };
+  f.deps.scroll = async () => {
+    f.actions.push('scroll');
+    return { ok: true, proven: false, executed: true };
+  };
+}
+
+// Device run R1: the press decides on an ordinary capture, which cannot prove the modal cover.
+for (const platform of ['ios', 'android'] as const) {
+  test(`a tap on a target behind a sole-Close promo closes the promo without scrolling it (${platform})`, async () => {
+    const f = app(home());
+    promoOverHome(f);
+    f.deps.platform = platform;
+    ticking(f);
+    const result = await runPlan(
+      parsePlan('1. Tap "qa-promo-home-target"\n✓ "Done"').blocks!,
+      f.deps,
+    );
+    assert.equal(result.verdict, 'PASS', result.failure?.seen);
+    assert.deepEqual(f.actions, ['press @close', 'press @home-target']);
+    assert.equal(result.recoveries, 1);
+    assert.equal(
+      result.steps.find((row) => row.line === 1 && row.outcome === 'retry')?.interruption?.outcome,
+      'dismissed',
+    );
+  });
+}
+
+test('a wait on a React-only target behind a sole-Close promo closes it and passes', async () => {
+  const f = app(home());
+  promoOverHome(f);
+  ticking(f);
+  const result = await runPlan(
+    parsePlan('1. Wait for "qa-promo-home-target" to appear').blocks!,
+    f.deps,
+  );
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['press @close']);
+  assert.equal(result.recoveries, 1);
+});
+
+test('a first check dismisses the full-screen promo despite mounted Home controls', async () => {
+  const f = app(home());
+  promoOverHome(f);
+  ticking(f);
+  const result = await runPlan(parsePlan('✓ "Target"').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['press @close']);
+  assert.equal(result.recoveries, 1);
+});
+
+test('a first fill behind the modal dismisses Close once without scrolling', async () => {
+  const f = app(home());
+  promoOverHome(f, { input: true });
+  ticking(f);
+  const press = f.deps.press;
+  f.deps.press = async (ref, context) => {
+    const result = await press(ref, context);
+    f.show(
+      screen([element('@field', 'Target', { kind: 'input', testID: 'qa-promo-home-target' })]),
+    );
+    return result;
+  };
+  f.deps.fill = async (ref, value) => {
+    f.actions.push(`fill ${ref}`);
+    f.show(
+      screen([
+        element('@field', 'Target', { kind: 'input', testID: 'qa-promo-home-target', value }),
+        element('@done', 'Done'),
+      ]),
+    );
+    return { ok: true, executed: true, proven: true };
+  };
+  const result = await runPlan(
+    parsePlan('1. Fill "qa-promo-home-target" with "synthetic"\n✓ "Done"').blocks!,
+    f.deps,
+  );
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['press @close', 'fill @field']);
+  assert.equal(result.recoveries, 1);
+});
+
+for (const [name, presenceRead] of [
+  [
+    'late',
+    async () => {
+      throw new CaptureDeadline();
+    },
+  ],
+  [
+    'incomplete',
+    async () => ({
+      ...modalOverHome(),
+      coverage: { native: 'incomplete', react: 'complete' },
+    }),
+  ],
+] as const) {
+  test(`a ${name} pre-scroll presence read leaves the cover unproven instead of refusing`, async () => {
+    const f = app(home());
+    promoOverHome(f);
+    const ordinary = f.deps.captureScreen;
+    f.deps.captureScreen = async (request) =>
+      request?.platformPresence ? presenceRead() : ordinary(request);
+    ticking(f);
+    const result = await runPlan(parsePlan('1. Tap "qa-promo-home-target"').blocks!, f.deps);
+    assert.equal(result.verdict, 'FAIL');
+    assert.deepEqual(f.actions, ['scroll']);
+    assert.match(result.failure?.seen ?? '', /stayed off screen after one scroll/);
+  });
+
+  test(`a ${name} presence read on the second press attempt refreshes expired ordinary evidence`, async () => {
+    const f = app(homeAfterPromo());
+    f.deps.platform = 'ios';
+    let clock = 0;
+    let promoUp = false;
+    let presenceReads = 0;
+    let refreshed = false;
+    f.deps.now = () => clock;
+    f.deps.sleep = async (ms) => {
+      clock += ms;
+    };
+    f.deps.row = (row) => {
+      if (row.outcome === 'retry') promoUp = true;
+    };
+    f.deps.captureScreen = async (request) => {
+      if (request?.platformPresence) {
+        presenceReads += 1;
+        clock += 11_000;
+        return presenceRead();
+      }
+      if (presenceReads) refreshed = true;
+      return promoUp ? modalOverHome({ ordinary: true }) : homeAfterPromo();
+    };
+    f.deps.press = async (ref) => {
+      f.actions.push(`press ${ref}`);
+      return { ok: true, proven: refreshed, executed: true };
+    };
+    f.deps.scroll = async () => {
+      assert.ok(refreshed, 'scroll needs a fresh ordinary capture after the optional read');
+      f.actions.push('scroll');
+      promoUp = false;
+      return { ok: true, proven: false, executed: true };
+    };
+    const result = await runPlan(parsePlan('1. Tap "qa-promo-home-target"').blocks!, f.deps);
+    assert.equal(result.verdict, 'PASS', result.failure?.seen);
+    assert.equal(presenceReads, 1);
+    assert.deepEqual(f.actions, ['press @home-target', 'scroll', 'press @home-target']);
+    assert.equal(result.recoveries, 0);
+  });
+}
+
+test('a React-only tap target without a presented modal is never sent to dismiss Close', async () => {
+  const f = app(home());
+  promoOverHome(f, { modalType: 'RCTView' });
+  ticking(f);
+  const result = await runPlan(parsePlan('1. Tap "qa-promo-home-target"').blocks!, f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, ['scroll']);
+  assert.match(result.failure?.seen ?? '', /stayed off screen after one scroll/);
+});
+
+test('a tap whose target is simply missing never presses the form Cancel', async () => {
+  const f = app(formWithCancel());
+  const cancel = formWithCancel().elements.find((e) => e.label === 'Cancel')!;
+  // Cancel must be a visible, press-supported decline, so only the missing-target rule withholds it.
+  assert.equal(cancel.semantic?.press, 'supported');
+  assert.notEqual(cancel.semantic?.visibility, 'unknown');
+  assert.equal(cancel.hittable, true);
+  const rows = ticking(f);
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    return { ok: true, proven: false, executed: true };
+  };
+  f.deps.scroll = async () => {
+    f.actions.push('scroll');
+    return { ok: true, proven: false, executed: true };
+  };
+  const result = await runPlan(parsePlan('1. Tap "qa-submit"').blocks!, f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, []);
+  assert.ok(!result.recoveries);
+  assert.ok(rows.every((row) => row.interruption?.outcome !== 'dismissed'));
+});

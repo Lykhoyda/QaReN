@@ -34,9 +34,7 @@ struct statx {
 #define AT_EMPTY_PATH 0x1000
 #define AT_SYMLINK_NOFOLLOW 0x100
 #define O_RDONLY 0
-#define O_NOFOLLOW 0x20000
 #define O_CLOEXEC 0x80000
-#define O_DIRECTORY 0x10000
 #define RENAME_EXCHANGE 2
 #define RENAME_NOREPLACE 1
 #define STATX_BASIC_STATS 0x7ff
@@ -45,6 +43,8 @@ struct statx {
 #define S_IFDIR 0040000
 
 #if defined(__x86_64__)
+#define O_NOFOLLOW 0x20000
+#define O_DIRECTORY 0x10000
 #define SYS_CLOSE 3
 #define SYS_PREAD64 17
 #define SYS_OPENAT 257
@@ -67,6 +67,8 @@ static long syscall6(long number, long a1, long a2, long a3, long a4, long a5, l
 __asm__(".global _start\\n_start:\\nmov (%rsp), %rdi\\nlea 8(%rsp), %rsi\\n"
         "call helper_main\\nmov %eax, %edi\\nmov $60, %eax\\nsyscall\\n");
 #elif defined(__aarch64__)
+#define O_NOFOLLOW 0x8000
+#define O_DIRECTORY 0x4000
 #define SYS_CLOSE 57
 #define SYS_PREAD64 67
 #define SYS_OPENAT 56

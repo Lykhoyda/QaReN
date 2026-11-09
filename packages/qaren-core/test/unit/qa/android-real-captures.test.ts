@@ -231,10 +231,17 @@ test("the parked bottom sheet's sliders are plain views: Home projects press and
   assert.ok('elements' in semanticActionView(screen, 'fill'));
 });
 
-test('a mounted Modal leaves its capture without host association', () => {
+test('a mounted Modal associates its own window and leaves the screen behind it unassociated', () => {
   const modal = load('modal');
-  assert.equal(modal.identity('qa-sheet'), 'window-count');
-  assert.equal(modal.associated('qa-sheet'), false);
+  // Android lists only the Modal's own window: its hosts associate, Home's show only in React.
+  for (const inside of ['qa-sheet', 'qa-sheet-close']) {
+    assert.equal(modal.identity(inside), 'matched', inside);
+    assert.ok(modal.associated(inside), inside);
+  }
+  for (const behind of ['quick-add-fab', 'qa-home-card', 'tab-home']) {
+    assert.equal(modal.identity(behind), 'window-count', behind);
+    assert.equal(modal.associated(behind), false, behind);
+  }
 });
 
 test('keyboard-covered inputs do not anchor their hosts, as on iOS', () => {
