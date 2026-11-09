@@ -130,7 +130,10 @@ test('a recovered native Wait withholds later ledger and comparison screenshots'
     assert.equal(f.calls.filter((call) => call.startsWith('press')).length, 2, policy);
     assert.equal(f.calls.includes('pixel shot'), false, policy);
     assert.equal(f.calls.includes('ledger shot'), false, policy);
-    assert.ok(result.steps.every((step) => step.screenshot === undefined), policy);
+    assert.ok(
+      result.steps.every((step) => step.screenshot === undefined),
+      policy,
+    );
   }
 });
 

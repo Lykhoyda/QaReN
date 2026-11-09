@@ -247,18 +247,21 @@ test('T3: a native Wait recovers to its target with sticky unknown media under e
       shots++;
       return 'success.png';
     };
-    const result = await runPlan(
-      parsePlan('1. Wait for "x"\n2. Wait for "x"').blocks!,
-      f.deps,
-    );
+    const result = await runPlan(parsePlan('1. Wait for "x"\n2. Wait for "x"').blocks!, f.deps);
     assert.equal(result.verdict, 'PASS', policy);
     assert.equal(result.videoPublication, 'unknown', policy);
     assert.equal(result.nonStrictPublication, undefined, policy);
     assert.equal(reads, 3);
     assert.equal(shots, 0, policy);
     assert.equal(result.steps.length, 2);
-    assert.ok(result.steps.every((step) => step.screenshot === undefined), policy);
-    assert.ok(f.rows.every((row) => row.screenshot === undefined), policy);
+    assert.ok(
+      result.steps.every((step) => step.screenshot === undefined),
+      policy,
+    );
+    assert.ok(
+      f.rows.every((row) => row.screenshot === undefined),
+      policy,
+    );
     assert.ok(f.deps.now() < WAIT_BUDGET_MS);
     assert.deepEqual(f.actions, []);
   }
