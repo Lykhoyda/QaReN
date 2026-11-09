@@ -168,12 +168,79 @@ test('missing process reads resolve on the next proof or finish as unproven', as
   }
 });
 
+test('missing-process checks retain ordered evidence when a later app interruption is proven', async (t) => {
+  for (const [next, expected] of [
+    [
+      failResult('app stopped', { reason: 'app-not-running' }),
+      [
+        { signal: 'app-process-unproven', atMs: 2000, counted: true },
+        { signal: 'app-not-running', atMs: 3000, counted: true },
+      ],
+    ],
+    [
+      okResult({ nodes: [] }, { meta: { foregroundSurface: 'dev_client_picker' } }),
+      [
+        { signal: 'dev-client-picker', atMs: 3000, counted: true },
+        { signal: 'app-process-unproven', atMs: 3000, counted: true },
+      ],
+    ],
+    [appSnapshot(77), [{ signal: 'app-process-changed', atMs: 3000, counted: true }]],
+  ] as const) {
+    let now = 1000;
+    t.mock.method(Date, 'now', () => now);
+    const observations = [appSnapshot(), okResult({ nodes: [] }), next];
+    const snapshots = postAdmissionSnapshots(async () => observations.shift()!, 'com.test');
+    await snapshots.snapshot({});
+    snapshots.admit();
+    now = 2000;
+    await snapshots.snapshot({});
+    now = 3000;
+    await snapshots.snapshot({});
+    snapshots.finish();
+    assert.equal(snapshots.interrupted(), true);
+    assert.deepEqual(
+      snapshots.events().map(({ signal, atMs, counted }) => ({ signal, atMs, counted })),
+      expected,
+    );
+    t.mock.restoreAll();
+  }
+});
+
 test('runner recovery without a process baseline stays unproven', async () => {
   const snapshots = postAdmissionSnapshots(async () => runnerRecovery(), 'com.test');
   snapshots.admit();
   await snapshots.snapshot({});
   assert.equal(snapshots.interrupted(), true);
   assert.equal(snapshots.events()[0].detail?.unresolved, true);
+});
+
+test('same-process proof clears a missing read on an unknown surface but not runner recovery', async () => {
+  for (const recovery of [false, true]) {
+    const observations = [
+      appSnapshot(),
+      recovery ? runnerRecovery() : okResult({ nodes: [] }),
+      okResult({ appProcessIdentifier: 41, nodes: [] }, { meta: { foregroundSurface: 'unknown' } }),
+    ];
+    const snapshots = postAdmissionSnapshots(async () => observations.shift()!, 'com.test');
+    await snapshots.snapshot({});
+    snapshots.admit();
+    await snapshots.snapshot({});
+    await snapshots.snapshot({});
+    snapshots.finish();
+    assert.equal(snapshots.interrupted(), recovery);
+    assert.deepEqual(
+      snapshots.events().map(({ signal, counted, detail }) => ({ signal, counted, detail })),
+      recovery
+        ? [
+            {
+              signal: 'runner-recovery',
+              counted: true,
+              detail: { recoveryTier: 'relaunch', unresolved: true },
+            },
+          ]
+        : [],
+    );
+  }
 });
 
 test('repeated runner recoveries share the next process proof even when the buffer is full', async () => {

@@ -1084,7 +1084,9 @@ impl Ledger {
             .min_by_key(|event| event.at_ms)?;
         if matches!(
             first.signal,
-            ContinuitySignal::RunnerRecovery | ContinuitySignal::RunnerLeak
+            ContinuitySignal::RunnerRecovery
+                | ContinuitySignal::RunnerLeak
+                | ContinuitySignal::AppProcessUnproven
         ) && first.owner() == "qaren"
         {
             return self

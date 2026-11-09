@@ -4234,7 +4234,7 @@ and names QaReN as the owner. The list keeps at most 16 events, preserving count
 events ahead of uncounted ones; `continuityEventsDropped` counts omitted entries.
 For an interrupted video, `pr.json` records the first counted signal in
 `videoInterruption`, preferring later proven app-stop, process-change or launcher
-evidence over an earlier unresolved runner observation. The field includes the
+evidence over an earlier unresolved runner or missing-process observation. The field includes the
 owner, epoch time, offset from admission, recording time and optional plan line. Its `videoWithholdingReason` follows the
 declared video policy, so screenshot privacy is not reported as the cause when
 non-strict video is eligible. A kept video explains any recorded runner recovery

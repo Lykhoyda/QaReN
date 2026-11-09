@@ -396,8 +396,8 @@ fn launch_wait_round_trips_and_a_malformed_value_cannot_reject_a_row() {
 }
 
 #[test]
-fn proven_app_events_take_precedence_over_older_unproven_runner_events() {
-    for runner in ["runner-recovery", "runner-leak"] {
+fn proven_app_events_take_precedence_over_older_unproven_continuity_events() {
+    for unproven in ["runner-recovery", "runner-leak", "app-process-unproven"] {
         for detail in [
             json!({"unresolved":true}),
             json!({}),
@@ -413,7 +413,7 @@ fn proven_app_events_take_precedence_over_older_unproven_runner_events() {
                 let mut raw = ledger(json!([]), serde_json::Value::Null);
                 raw["admittedAtMs"] = json!(100_000);
                 raw["continuityEvents"] = json!([
-                    {"signal":runner,"atMs":101_000,"counted":true,"detail":detail},
+                    {"signal":unproven,"atMs":101_000,"counted":true,"detail":detail},
                     {"signal":signal,"atMs":112_000,"counted":true,"line":7}
                 ]);
                 let parsed: Ledger = serde_json::from_value(raw).unwrap();
@@ -466,7 +466,7 @@ fn first_counted_is_preserved_without_later_proven_app_evidence() {
         (
             "app-process-unproven",
             json!({"unresolved":true}),
-            "app-not-running",
+            "dev-overlay",
         ),
         (
             "dev-overlay",

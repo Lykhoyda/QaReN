@@ -194,7 +194,7 @@ export function postAdmissionSnapshots<A>(
         else if (pending && observed !== undefined && pending.baseline !== undefined) {
           if (observed !== pending.baseline)
             resolvePending(true, { fromPid: pending.baseline, toPid: observed });
-          else if (surface === 'app') resolvePending(false);
+          else if (surface === 'app' || pending.recoveries.length === 0) resolvePending(false);
         }
         if (appProcess !== undefined) {
           if (observed === undefined) pending ??= { baseline: appProcess, atMs, recoveries: [] };
