@@ -74,7 +74,7 @@ jobs:
   android-unit:
     name: Android unit (JVM)
     needs: changes
-    runs-on: self-linux-x64
+    runs-on: ${{ needs.changes.outputs.android == 'true' && 'self-linux-x64' || 'self-linux' }}
     # The fresh self-hosted container downloads the Android SDK and Gradle each run.
     timeout-minutes: 20
     steps:
