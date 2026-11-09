@@ -3736,7 +3736,6 @@ A strict permission opt-in is declined even while protected. Every condition mus
 on the fresh complete capture, and anything unknown keeps the veto. A refusal names
 why the opt-in was not declined:
 
-
 - Exactly two proven controls, both visible, hittable, enabled, non-secure buttons
   with supported press and no fill; a link, switch, cell or input disqualifies the screen.
 - The decline's normalised label (case, spacing and apostrophes folded) is exactly
@@ -3793,6 +3792,10 @@ is still on screen, including one that opens together with it, is therefore not
 dismissed either. When the protected screen is opt-in shaped or has only a decline
 control, the failure names its class even with text withheld and suggests adding
 a step after the planned press that taps the named decline, with privacy masks intact.
+A failed row's reason also says why recovery dismissed nothing when presence evidence
+was unreadable, late or incomplete, when a decline control's visibility or press could
+not be proven after a planned press, or when a protected screen was not a strict opt-in
+or its control evidence was incomplete.
 
 With `TYPESAFE_API_KEY`, Jev may veto a selected control when the screen may be
 related to the step or its purpose is uncertain. It never chooses a control,
