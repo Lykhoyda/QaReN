@@ -415,6 +415,9 @@ async function waitOutCover(
     refusePress?: boolean;
     privatePoll?: boolean;
     controls?: boolean;
+    labelIdentity?: boolean;
+    nativeOcclusion?: boolean;
+    movingCover?: boolean;
   } = {},
 ) {
   const coveredViews = sticky();
@@ -471,6 +474,9 @@ async function waitOutCover(
   let captures = 0;
   let waitStarted: number | undefined;
   const budgets: number[] = [];
+  const polledObservations: number[] = [];
+  const diagnostics: { code?: string; observation?: number }[] = [];
+  w.deps.diagnostic = (event) => diagnostics.push(event);
   const media: unknown[] = [];
   const shots: string[] = [];
   w.deps.videoPolicy = 'non-strict';
@@ -483,15 +489,30 @@ async function waitOutCover(
   w.deps.cancelled = () => cancelled;
   w.deps.captureScreen = async (opts) => {
     captures++;
+    const withoutId = (screen: Screen) => {
+      if (options.labelIdentity)
+        delete screen.elements.find((e) => e.testID === 'qa-hi-row-1')?.testID;
+      return screen;
+    };
     if (opts?.budgetMs !== undefined) {
       budgets.push(opts.budgetMs);
+      polledObservations.push(opts.observation!);
       waitStarted ??= w.deps.now() - 500;
       if (options.poll === 'late') {
         await w.deps.sleep(opts.budgetMs);
-        return clear;
+        return withoutId(clear);
       }
       if (options.poll === 'unproven-clear')
         return capture(coveredViews.slice(0, 2), { hosts: false });
+      if (options.movingCover) {
+        const shifted = await capture(
+          coveredViews.map((view, index) =>
+            index === 3 ? { ...view, rect: { ...COVER, y: 120 } } : view,
+          ),
+        );
+        delete shifted.keyboardVisible;
+        return shifted;
+      }
       if (options.poll === 'deadline') throw new CaptureDeadline();
       if (options.poll === 'cancel') cancelled = true;
       if (options.privatePoll) {
@@ -522,24 +543,39 @@ async function waitOutCover(
       if (options.poll === 'incomplete')
         return { ...covered, captureCoverage: { native: 'incomplete', react: 'complete' } };
       if (options.clearAt !== undefined && w.deps.now() - waitStarted >= options.clearAt)
-        return clear;
+        return withoutId(clear);
     }
-    return captures === 1 && !options.initialClearance ? off : refusalScreen;
+    if (options.nativeOcclusion) return presses === 0 ? withoutId(clear) : withoutId(refusalScreen);
+    return withoutId(captures === 1 && !options.initialClearance ? off : refusalScreen);
   };
   let presses = 0;
   w.deps.press = async () => {
     presses++;
+    if (options.nativeOcclusion)
+      return {
+        ok: false,
+        proven: false,
+        mutation: 'none',
+        error: 'FOCUS_TARGET_OCCLUDED: target covered',
+      };
     return options.refusePress
       ? { ok: false, proven: false, mutation: 'none', error: 'not dispatched' }
       : { ok: true, proven: true };
   };
-  const kind = options.kind === 'fill' ? 'Fill "qa-hi-row-1" with "x"' : 'Tap "qa-hi-row-1"';
+  const kind =
+    options.kind === 'fill'
+      ? 'Fill "qa-hi-row-1" with "x"'
+      : options.labelIdentity
+        ? 'Tap "Row 1"'
+        : 'Tap "qa-hi-row-1"';
   const result = await runPlan(parsePlan(`1. ${kind}`).blocks!, w.deps);
   return {
     result,
     row: ('steps' in result ? result.steps : []).at(-1),
     actions: w.actions,
     streamed: w.rows,
+    polledObservations,
+    diagnostics,
     budgets,
     presses,
     captures,
@@ -587,6 +623,10 @@ for (const poll of [
     if (poll === 'missing' || poll === 'duplicate')
       assert.match(String(row?.reason), /target.*(missing|ambiguous)/);
     if (poll === 'no-geometry') assert.equal(row?.coverWaitMs, 5000);
+    if (poll === 'incomplete') {
+      assert.match(String(row?.reason), /covered by other at 0,110,402,201/);
+      assert.match(String(row?.reason), /capture evidence became incomplete/);
+    }
   });
 }
 
@@ -631,4 +671,28 @@ test('cover diagnostics count only enabled on-screen pressables and bound declin
   assert.match(String(row?.reason), /the cover holds 6 pressable controls/);
   assert.match(String(row?.reason), /decline-labelled: Close, Dismiss, Cancel, Skip\)/);
   assert.doesNotMatch(String(row?.reason), /Private wording|No thanks|Not now|Later/);
+});
+
+test('native-occlusion clearance never starts a cover wait', async () => {
+  const { budgets, row, presses } = await waitOutCover({ nativeOcclusion: true });
+  assert.equal(presses, 1);
+  assert.deepEqual(budgets, []);
+  assert.equal(row?.coverWaitMs, undefined);
+});
+
+test('a unique label-only identity gets its normal tap after the cover leaves', async () => {
+  const { row, presses } = await waitOutCover({ labelIdentity: true, clearAt: 500 });
+  assert.equal(row?.outcome, 'pass', JSON.stringify(row));
+  assert.equal(presses, 1);
+  assert.equal(row?.coverWaitMs, 500);
+});
+
+test('a persistent moving cover refuses on the last admitted poll observation', async () => {
+  const { row, diagnostics, polledObservations } = await waitOutCover({ movingCover: true });
+  assert.equal(row?.coveredBy?.frame.y, 120);
+  assert.match(String(row?.reason), /covered by other at 0,120,402,201/);
+  assert.equal(
+    diagnostics.filter((event) => event.code === 'CENTRE_COVERED').at(-1)?.observation,
+    polledObservations.at(-1),
+  );
 });

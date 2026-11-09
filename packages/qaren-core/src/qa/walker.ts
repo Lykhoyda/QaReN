@@ -1564,17 +1564,19 @@ async function walkBlockScoped(
     observation: Observation,
     target: Element,
     cover: Extract<ReturnType<typeof coverOwner>, { owner: Element }>,
-  ): Promise<{ observation?: Observation; reason: string }> => {
+  ): Promise<{ observation: Observation; cleared: boolean; reason: string }> => {
     const startedAt = deps.now();
     const until = Math.min(startedAt + COVER_WAIT_MS, itemDeadline ?? Infinity);
     coverWaitMs = 0;
-    let last = observation.screen;
+    let last = observation;
+    let coverScreen = observation.screen;
     let owner = cover.owner;
     let reason = '';
     try {
       while (deps.now() < until) {
         await pause(Math.min(WAIT_POLL_MS, until - deps.now()));
         const next = await captureOnce(item, false, false, 'resolve', until);
+        last = next;
         const matches = next.screen.elements.filter((element) => sameIdentity(element, target));
         if (matches.length !== 1) {
           reason = `; the target became ${matches.length ? 'ambiguous' : 'missing'} during the cover wait`;
@@ -1585,22 +1587,24 @@ async function walkBlockScoped(
         if (!frame || frame.width <= 0 || frame.height <= 0) continue;
         const nextCover = coverOwner(current, next.screen);
         if ('owner' in nextCover) {
-          last = next.screen;
+          coverScreen = next.screen;
           owner = nextCover.owner;
           recordCover(item.line, nextCover);
         } else if (nextCover.gap === 'reaches-target' && !centreCovered(current, next.screen)) {
           recordCover(item.line, nextCover);
           coverTargets.delete(item.line);
-          return { observation: next, reason: '' };
+          return { observation: next, cleared: true, reason: '' };
         }
       }
     } catch (error) {
       if (isAbort(error)) throw error;
-      if (!(error instanceof CaptureDeadline)) throw error;
+      if (error instanceof ResolutionError && error.code === 'SCREEN_EVIDENCE_INCOMPLETE')
+        reason = '; capture evidence became incomplete during the cover wait';
+      else if (!(error instanceof CaptureDeadline)) throw error;
     } finally {
       coverWaitMs = Math.max(0, Math.round(deps.now() - startedAt));
     }
-    const pressables = last.elements.filter(
+    const pressables = coverScreen.elements.filter(
       (element) =>
         (element === owner || ancestorsOf(element).includes(owner)) &&
         element.semantic?.press === 'supported' &&
@@ -1612,6 +1616,8 @@ async function walkBlockScoped(
       ...new Set(pressables.map((element) => element.label).filter(isDeclineLabel)),
     ].slice(0, 4);
     return {
+      observation: last,
+      cleared: false,
       reason:
         `; waited ${coverWaitMs} ms; the cover holds ${pressables.length} pressable controls` +
         (labels.length ? ` (decline-labelled: ${labels.join(', ')})` : '') +
@@ -4001,6 +4007,7 @@ async function walkBlockScoped(
           coverGaps.delete(item.line);
           coverTargets.delete(item.line);
           let selectionTarget: Element | undefined;
+          let coverWaitTarget: Element | undefined;
           let selectionDeadline = Infinity;
           let selectionStartedAt = 0;
           const settling = (item.kind === 'press' || item.kind === 'fill') && sequence.momentum;
@@ -4110,6 +4117,17 @@ async function walkBlockScoped(
                     : {}),
                 });
                 occluded = undefined;
+                if (
+                  coverWaitTarget &&
+                  (!('ref' in decided) ||
+                    !decided.element ||
+                    !sameIdentity(decided.element, coverWaitTarget))
+                )
+                  throw new ResolutionError({
+                    refuse: 'TARGET_NOT_FOUND',
+                    reason:
+                      'the target no longer resolves to the identity uncovered during the cover wait',
+                  });
                 let resolution: Exclude<Resolution, { refuse: string }>;
                 if ('refuse' in decided) {
                   // A stored testID can name a field only React lists, or none: both reach the walk's fallbacks.
@@ -4510,19 +4528,29 @@ async function walkBlockScoped(
                   if (
                     item.kind === 'press' &&
                     deps.platform === 'ios' &&
-                    scrollOrigin !== 'centre-covered' &&
+                    scrollOrigin === 'offscreen-resolution' &&
                     cover &&
                     'owner' in cover &&
                     coverWaitMs === undefined
                   ) {
                     const waited = await waitOutCover(item, before, element, cover);
-                    if (waited.observation) {
-                      before = waited.observation;
-                      refusedIdentity = element;
+                    before = waited.observation;
+                    if (waited.cleared) {
+                      coverWaitTarget = element;
                       initial = undefined;
                       continue;
                     }
                     coverWaitReason = waited.reason;
+                    const matches = before.screen.elements.filter((current) =>
+                      sameIdentity(current, element!),
+                    );
+                    element = matches.length === 1 ? matches[0] : undefined;
+                    ref = element?.ref;
+                    centreDiagnostic = null;
+                    if (element)
+                      centreCovered(element, before.screen, (facts) => {
+                        centreDiagnostic = facts;
+                      });
                   }
                   outcome = failed(
                     item,
