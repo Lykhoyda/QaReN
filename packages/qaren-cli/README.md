@@ -1596,8 +1596,8 @@ rule sees a native touch listener on a non-clickable view or a cover hidden from
 accessibility; assert a tap's expected result with the plan's next step.
 
 Android phrase steps resolve against these observations. A valid capture whose
-interactive React hosts cannot all be associated (a mounted `Modal`, or inputs
-the keyboard covers) keeps the `SCREEN_EVIDENCE_INCOMPLETE` presence gap, as on
+interactive React hosts cannot all be associated (inputs the keyboard covers, or
+several mounted `Modal`s) keeps the `SCREEN_EVIDENCE_INCOMPLETE` presence gap, as on
 iOS; stale or incomplete captures refuse with `NATIVE_PRESENCE_UNUSABLE`. Quoted
 targets and literal checks remain usable without requesting presence.
 
@@ -1650,7 +1650,9 @@ React host association uses the candidate's uniquely established native Window
 ancestry and that window's origin, including captures with other app or keyboard
 windows. Unique identity, type, frame, presence and ancestor proofs still apply;
 missing or ambiguous window membership refuses association. Typography compares
-title and body evidence only within the same window.
+title and body evidence only within the same window. The ancestor proof stops at a
+mounted `Modal` host: a presented modal is its own native surface, so identified
+React ancestors above it are not required to appear natively.
 
 `react-native-safe-area-context` roots (`RNCSafeAreaView` and
 `RNCSafeAreaProvider`) support association on Android as well as iOS, allowing
@@ -1661,14 +1663,14 @@ Android [React host association](../qaren-core/src/qa/host-association.ts) scale
 React points by the display density and calibrates the origin per capture from
 at least two uniquely identified, unclipped anchors that agree within two pixels.
 It accepts frames shortened or emptied by a vertical scroll clip. Missing or
-disagreeing anchors leave association unavailable. Android layout, scroll and
+disagreeing anchors leave association unavailable. Android lists only a presented
+React Native `Modal`'s own window, so with exactly one mounted `Modal` association and
+the origin anchors come from that modal's subtree, and the hosts behind it count as
+covered rather than as gaps; several mounted `Modal`s leave association unavailable. Android layout, scroll and
 drawing classes, including parked sliders, supply no native press or fill
 capability of their own; the [screen projection](../qaren-core/src/qa/screen.ts)
 owns their classification.
 
-Known limit: a mounted Android React Native `Modal` makes association
-unavailable, even when accessibility lists only the modal's window, so phrase
-press and fill targets on such screens refuse.
 Phrase waits capture fresh screen and presence evidence on every poll, even when the
 screen appears unchanged; prior observations do not establish current presence.
 
@@ -1832,9 +1834,10 @@ detail labels the layout `react layout before scroll`. A later
 visible native match passes normally. Missing or partially
 clipped layout preserves polling until the deadline; stored-ID replay and block
 start preconditions do not use this early failure or automatic scroll.
-After a classified React-only miss, [step recovery](#step-recovery) may capture
-only within the wait's remaining time. If that capture reaches the deadline, or
-no time remains, the React-only failure reason stands. Other eligible unmet quoted
+After a classified React-only miss, [step recovery](#step-recovery) takes one
+capture with its own capture budget, even when the wait's time has run out, since
+the match may sit behind an interruption. If that capture reaches its budget, the
+React-only failure reason stands. Other eligible unmet quoted
 waits retain ordinary recovery. When recovery clears a blocking screen or system
 dialog, the wait runs once more with its full budget.
 Scroll-until-text uses the same visibility verdict
@@ -3515,20 +3518,64 @@ for recording eligibility.
 
 Interruption recovery counts as a device mutation for replay eligibility: a selector miss
 after recovery is terminal and never initiates another re-walk. The second ordinary
-action attempt captures fresh evidence but gets no additional expiry refresh;
-phrase actions retain presence capture through readback and retries.
+action attempt captures fresh evidence but normally gets no additional expiry refresh;
+see the pre-scroll recovery rules below for the late presence-read exception.
+Phrase actions retain presence capture through readback and retries.
 See the [recovery regressions](../qaren-core/test/unit/qa/walker-recover.test.ts)
 and [freshness regressions](../qaren-core/test/unit/qa/temporal-walker.test.ts).
 
 App interruptions need no app-specific configuration. Recovery requires complete
 native capture and React coverage. One shared target-presence predicate checks the
 current target and every remaining target, quoted or described, in every block:
-dismissal is allowed only when none could match an element on the interruption.
-Tap, fill, wait, scroll and check targets use the same rule, with no exemptions
-for later blocks, decline labels or screens with only a decline control.
-Unknown absence, including an unresolved description, counts as a possible match.
-A target whose centre is covered by a detected sheet or scrim does not prevent
-recovery merely because it remains in the capture. ID-only targets are checked
+dismissal normally requires that none could match an element on the interruption,
+with the sole-control exemption below. Targets in later blocks and targets naming
+the decline control remain protected. Unknown absence, including an unresolved
+description, counts as a possible match. A target whose centre is covered by a
+detected sheet or scrim does not prevent recovery merely because it remains in the
+capture. The one exemption: when the current target is absent and the screen's only
+control, counted in any enabled, hittable or ready state, carries a decline label, a
+later quoted tap or fill target in the same block does not veto by presence; nothing
+else on that screen can take the action, so its match is a coincidence with the copy
+or a text element's test ID. A later step naming the decline control by label or ID
+still keeps it, and a later wait or check on the screen still vetoes.
+This exemption requires a proven control count: press/fill association gaps or
+unknown capabilities on a non-structural, on-screen element keep the presence guard.
+React hosts outside the one mounted `Modal` are not gaps while every associated host
+sits inside it, so a full-screen promo over a mounted screen still counts as one control.
+Check-first, wait-first and tap/fill-first plans behind a presented full-screen promo
+recover under these guards and retry the step once. Before scrolling for a
+React-only tap or fill target while a decline control is on screen, an ordinary
+capture gets one bounded presence recapture within the step's remaining budget. When it proves the target is behind
+the presented `Modal`, recovery runs instead of scrolling the promo. A recapture that
+runs out of time or returns incomplete evidence leaves the cover unproven, and the
+step continues as it would have without it; it never adds a refusal of its own.
+If the ordinary observation expired during that read, it is refreshed before
+continuing, with the modal cover still unproven.
+React-only wait recovery and this pre-scroll recovery require proof that the target
+is behind the presented `Modal`, and recheck this proof in recovery's fresh capture
+and before dispatch; without it, app dismissal is vetoed as `uncovered-target`.
+When a `Modal` is mounted but no host could be associated, the proof cannot be
+formed, and these recoveries and the missing-target rule below veto as
+`uncovered-target` and press nothing.
+A tap or fill whose target is not on screen at all may dismiss only a decline that is
+the screen's only control (inputs count as controls) or a recognised permission opt-in.
+A multi-control promo with a missing target vetoes as
+`uncovered-target`, presses nothing and keeps the step's `TARGET_NOT_FOUND`, so an
+ordinary form's own `Cancel` is not pressed. A screen whose only control is a decline
+can still be dismissed. A failed check or ordinary unmet wait whose target is absent
+from the capture also dismisses only a sole decline, a recognised opt-in, or a soft
+decline (`Not now`, `Maybe later`, `Later`, `Skip`, `No thanks`, `Don't allow`)
+on a screen proven to have no input fields. This requires complete React host
+evidence and no fill-association gaps. Captured fields on the current surface count
+even when offscreen or disabled, as do elements with supported or unknown fill
+capability; inputs proven behind a separate presented modal do not count.
+`Close`, `Dismiss` and `Cancel` on a screen with other controls are not dismissed.
+Known case: an input-free screen under test with an action and a soft decline, such as
+two-button onboarding with `Skip`, looks the same as an interrupting sheet, so an absent
+check or wait target takes its soft decline once. Captured
+matches, including offscreen or keyboard-covered text and IDs, do not trigger this
+additional surface veto; the other guards still apply. The current target is never
+exempt. ID-only targets are checked
 by test ID, text-only targets by contained label or value text (including composed
 input text), and unqualified targets by either. An on-screen, uncovered match
 vetoes dismissal even when another matching ID is offscreen.
@@ -3631,7 +3678,7 @@ and cannot authorize a retry; an attempted decline still counts in `recoveries`,
 including when its read-back refuses incomplete capture.
 
 `logs/core.log` includes value-free diagnostics for failed interruption admission:
-`interruption-rejected` reports a front, coverage, indexed target,
+`interruption-rejected` reports a front, coverage, indexed target, `uncovered-target`,
 previous-plan-press or no-candidate veto, a later-target veto's `presence` or
 `ownership` provenance, whether the decline is the screen's only control
 (`soleDecline`), the exact-decline-label element count, and `controls`: the press and
@@ -3646,17 +3693,22 @@ target index and count are also retained as an `interruption-rejected` event in
 step's ledger row carries an `interruption` receipt: `considered`, an `outcome`
 (`vetoed`, `dismissed`, `not-dispatched`, `ambiguous` or `did-not-disappear`), the
 veto, whether a later-target veto came from `presence` or `ownership`, the target's
-plan line and step kind, whether the decline was the screen's only control, the
-`screenClass` a dismissed screen was recognised as (`permission-opt-in`); the report prints it as one line under the failure. A Jev veto
+plan line and step kind, whether the decline was the screen's only control, when a
+dispatched decline stayed the vertical centre in points of the control the press
+aimed at, and the `screenClass` a dismissed screen was recognised as
+(`permission-opt-in`); the report prints it as one line under the failure. An
+ownership veto fills the failure's suggested plan edit with the owning line. A Jev veto
 or a guard change before dispatch records `not-dispatched`. A dismissal stays on
 the row through the step's retry. A no-candidate veto also reports
 each decline-labelled element's first failed predicate; press capability failures
 include the existing host association identity when available.
 `presence-system-modal` reports an unrecognized SpringBoard modal's
 app state, alert/sheet counts and structural geometry and descendant counts.
-`system-dialog-stage` reports local dialog context failures. These records
+`system-dialog-stage` reports local dialog context failures. The structured events
 contain only counts, indices, booleans and fixed enums, omit labels, identifiers,
-refs and app text, and never authorize a tap or change capture admission.
+refs and app text. Private core-log interruption diagnostics also include modal-cover
+evidence with bounded React host type names. Diagnostics never authorize a tap or
+change capture admission.
 Successful selection, recognized modals and proven dialog taps emit none of
 these failure records.
 
