@@ -593,6 +593,7 @@ fn removal_is_refused_for_ios_and_usb_routes_before_any_command() {
         name: "qaren-iosrun1".to_string(),
         device_type: "dt".to_string(),
         runtime: "rt".to_string(),
+        ..Default::default()
     });
     ios.save(&repo).unwrap();
     let mut mock = MockRunner::new();
