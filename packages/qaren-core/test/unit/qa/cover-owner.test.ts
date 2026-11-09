@@ -419,10 +419,13 @@ async function waitOutCover(
     nativeOcclusion?: boolean;
     movingCover?: boolean;
     ambiguousAfterWait?: boolean;
+    replaceOnPresence?: 'recapture' | 'poll';
   } = {},
 ) {
   const coveredViews = sticky();
   coveredViews[3] = { ...coveredViews[3], type: 'Other' };
+  if (options.replaceOnPresence)
+    coveredViews[1] = { ...coveredViews[1], id: 'primary-continue', label: 'Continue' };
   coveredViews.push({
     id: 'toast-close',
     type: 'Button',
@@ -500,12 +503,28 @@ async function waitOutCover(
     const clear = await capture(clearViews, { presence });
     delete clear.keyboardVisible;
     const off = await capture(offViews, { presence });
-    off.elements.find((e) => e.testID === 'qa-hi-row-1')!.offscreen = true;
+    off.elements.find(
+      (e) => e.testID === (options.replaceOnPresence ? 'primary-continue' : 'qa-hi-row-1'),
+    )!.offscreen = true;
     const withoutId = (screen: Screen) => {
       if (options.labelIdentity)
         delete screen.elements.find((e) => e.testID === 'qa-hi-row-1')?.testID;
       return screen;
     };
+    if (
+      options.replaceOnPresence &&
+      presence &&
+      (options.replaceOnPresence === 'recapture' || opts?.budgetMs !== undefined)
+    ) {
+      const replacement = await capture(
+        clearViews.map((view, index) =>
+          index === 1 ? { ...view, id: 'secondary-continue' } : view,
+        ),
+        { presence },
+      );
+      delete replacement.keyboardVisible;
+      return replacement;
+    }
     if (opts?.budgetMs !== undefined) {
       budgets.push(opts.budgetMs);
       polledObservations.push(opts.observation!);
@@ -576,8 +595,9 @@ async function waitOutCover(
       ? { ok: false, proven: false, mutation: 'none', error: 'not dispatched' }
       : { ok: true, proven: true };
   };
-  const kind =
-    options.kind === 'fill'
+  const kind = options.replaceOnPresence
+    ? 'Tap "Continue"'
+    : options.kind === 'fill'
       ? 'Fill "qa-hi-row-1" with "x"'
       : options.labelIdentity || options.ambiguousAfterWait
         ? 'Tap "Row 1"'
@@ -728,3 +748,20 @@ test('a quoted label after scrolling names a persistent cover and never presses 
   assert.match(String(row?.reason), /the cover holds 1 pressable controls/);
   assert.match(String(row?.reason), /decline-labelled: Close/);
 });
+
+for (const replaceOnPresence of ['recapture', 'poll'] as const) {
+  test(`a same-label replacement during the cover ${replaceOnPresence} is never pressed`, async () => {
+    const { row, presses, actions } = await waitOutCover({ replaceOnPresence });
+    assert.equal(row?.outcome, 'fail', JSON.stringify(row));
+    assert.equal(presses, 0, 'secondary-continue must not replace primary-continue');
+    assert.deepEqual(actions, ['scroll down']);
+    if (replaceOnPresence === 'recapture') {
+      assert.match(String(row?.reason), /identity selected before the cover read/);
+      assert.match(String(row?.reason), /no cover named \(target-not-recaptured\)/);
+    } else {
+      assert.match(String(row?.reason), /target became missing/);
+      assert.match(String(row?.reason), /covered by other/);
+      assert.match(String(row?.reason), /decline-labelled: Close/);
+    }
+  });
+}

@@ -4123,15 +4123,20 @@ async function walkBlockScoped(
                 if (
                   coverWaitTarget &&
                   !('refuse' in decided) &&
-                  (!('ref' in decided) ||
+                  (before.screen.elements.filter((current) =>
+                    sameIdentity(current, coverWaitTarget!),
+                  ).length !== 1 ||
+                    !('ref' in decided) ||
                     !decided.element ||
                     !sameIdentity(decided.element, coverWaitTarget))
-                )
+                ) {
+                  if (!targetRows.get(item.line)?.coveredBy)
+                    recordCover(item.line, { gap: 'target-not-recaptured' });
                   throw new ResolutionError({
                     refuse: 'TARGET_NOT_FOUND',
-                    reason:
-                      'the target no longer resolves to the identity uncovered during the cover wait',
+                    reason: `the target no longer resolves uniquely to the identity selected before the cover read${await coverText(item)}`,
                   });
+                }
                 let resolution: Exclude<Resolution, { refuse: string }>;
                 if ('refuse' in decided) {
                   // A stored testID can name a field only React lists, or none: both reach the walk's fallbacks.
@@ -4498,6 +4503,7 @@ async function walkBlockScoped(
                 scrollOrigin === 'offscreen-resolution' &&
                 !before.platformPresence
               ) {
+                coverWaitTarget ??= element;
                 const proven = await presenceRecapture(item);
                 if (proven) {
                   before = proven;
@@ -4557,7 +4563,7 @@ async function walkBlockScoped(
                       const waited = await waitOutCover(item, before, element, cover);
                       before = waited.observation;
                       if (waited.cleared) {
-                        coverWaitTarget = element;
+                        coverWaitTarget ??= element;
                         initial = undefined;
                         continue;
                       }
