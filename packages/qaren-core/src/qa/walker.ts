@@ -123,6 +123,7 @@ import {
   type PressRecord,
   type RecoveryTarget,
   FIXED_CONTROL_WORDS,
+  OPT_IN_ASKED_AGAIN,
   completeCapture,
   dismissCandidate,
   isDeclineLabel,
@@ -132,6 +133,7 @@ import {
   normaliseLabel,
   pressRecord,
   recover,
+  returnedOptIn,
   protectionLapses,
   soleDecline,
   surfaceGone,
@@ -2822,6 +2824,17 @@ async function walkBlockScoped(
         fresh.screen,
         await shoot(item),
       );
+    const askedAgain = (outcome: WalkOutcome, decline: string): WalkOutcome => {
+      if (outcome.failure) {
+        const after = sequence.plannedPress?.line;
+        outcome.failure.suggestion = redact(
+          after !== undefined
+            ? `Add a step after line ${after}: Tap "${decline}".`
+            : `Add a step before line ${item.line}: Tap "${decline}".`,
+        );
+      }
+      return outcome;
+    };
     if (first === null) return undefined;
     if (first !== undefined) {
       if (fresh.screen.front !== 'dialog' && fresh.screen.front !== 'app') return undefined;
@@ -2836,7 +2849,13 @@ async function walkBlockScoped(
                 e.label !== undefined &&
                 normaliseLabel(e.label) === normaliseLabel(first.slice(4)))),
         )
-      )
+      ) {
+        const repeated = returnedOptIn(fresh.screen, sequence.declinedOptIns);
+        if (repeated !== undefined)
+          return askedAgain(
+            failed(item, attempt, OPT_IN_ASKED_AGAIN, fresh.screen, await shoot(item)),
+            repeated,
+          );
         return failed(
           item,
           attempt,
@@ -2844,6 +2863,7 @@ async function walkBlockScoped(
           fresh.screen,
           await shoot(item),
         );
+      }
     }
     const remainingItems = block.items.slice(block.items.indexOf(item) + 1);
     const laterTargets = [
@@ -3186,15 +3206,7 @@ async function walkBlockScoped(
     const shot = await shoot(item);
     if ('fail' in result) {
       const outcome = failed(item, attempt, result.fail, shown, shot);
-      if (result.repeatedOptIn && outcome.failure) {
-        const after = sequence.plannedPress?.line;
-        outcome.failure.suggestion = redact(
-          after !== undefined
-            ? `Add a step after line ${after}: Tap "${result.repeatedOptIn}".`
-            : `Add a step before line ${item.line}: Tap "${result.repeatedOptIn}".`,
-        );
-      }
-      return outcome;
+      return result.repeatedOptIn ? askedAgain(outcome, result.repeatedOptIn) : outcome;
     }
     return {
       ...failed(item, attempt, result.refuse.message, fresh.screen, shot),

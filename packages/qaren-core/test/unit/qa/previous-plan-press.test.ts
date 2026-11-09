@@ -1458,7 +1458,7 @@ test('an opt-in after a press dispatched from an incomplete capture keeps the pl
   assert.equal(result.failure?.subreason, 'previous-plan-press');
 });
 
-test('the same opt-in back on the same item after its decline keeps the per-item refusal', async () => {
+test('the same opt-in back on the same item after its decline fails as asked again without a second tap', async () => {
   const f = app(opener(), {
     '@open': () => permission(),
     '@decline': () => screen([element('@loading', 'Loading', { kind: 'text' })]),
@@ -1471,7 +1471,65 @@ test('the same opt-in back on the same item after its decline keeps the per-item
   assert.equal(result.verdict, 'FAIL');
   assert.deepEqual(f.actions, ['press @open', 'press @decline']);
   assert.equal(result.failure?.step, 2);
-  assert.match(result.failure?.seen ?? '', /the app interruption did not disappear/);
+  assert.match(
+    result.failure?.seen ?? '',
+    /the app asked again after recovery declined this permission opt-in; nothing was tapped/,
+  );
+  assert.equal(result.failure?.suggestion, 'Add a step after line 1: Tap "Not now".');
+  assert.deepEqual(result.declinedOptIns, [{ line: 2, afterPlannedPress: true }]);
+});
+
+test('a later step naming the opt-in decline in another case keeps it from recovery after a planned tap', async () => {
+  for (const laterBlock of [false, true]) {
+    for (const quoted of ['not now', 'NOT NOW']) {
+      const name = `${laterBlock} ${quoted}`;
+      const f = app(opener(), { '@open': () => permission(), '@decline': ready });
+      const result = await run(
+        '### First\n1. Tap "Open"\n2. Wait for "Ready" to appear\n' +
+          (laterBlock ? '\n### Later\n' : '') +
+          `3. Tap "${quoted}"`,
+        f,
+      );
+      const ownerLine = laterBlock ? 6 : 4;
+      assert.equal(result.verdict, 'FAIL', name);
+      assert.equal(result.failure?.step, 3, name);
+      assert.deepEqual(f.actions, ['press @open'], name);
+      assert.equal(result.recoveries, 0, name);
+      assert.equal(result.declinedOptIns, undefined, name);
+      assert.ok(f.vetoes.includes('later-target'), name);
+      assert.ok(!f.vetoes.includes('previous-plan-press'), name);
+      assert.ok(!result.steps.some((row) => row.outcome === 'retry'), name);
+      const failed = result.steps.find((row) => row.line === 3 && row.outcome === 'fail');
+      assert.deepEqual(
+        {
+          considered: failed?.interruption?.considered,
+          outcome: failed?.interruption?.outcome,
+          veto: failed?.interruption?.veto,
+          provenance: failed?.interruption?.provenance,
+          targetLine: failed?.interruption?.targetLine,
+          targetKind: failed?.interruption?.targetKind,
+          soleDecline: failed?.interruption?.soleDecline,
+          afterPlannedPress: failed?.interruption?.afterPlannedPress,
+        },
+        {
+          considered: true,
+          outcome: 'vetoed',
+          veto: 'later-target',
+          provenance: 'ownership',
+          targetLine: ownerLine,
+          targetKind: 'press',
+          soleDecline: false,
+          afterPlannedPress: undefined,
+        },
+        name,
+      );
+      assert.match(
+        result.failure?.seen ?? '',
+        new RegExp(`later planned item at line ${ownerLine}`),
+        name,
+      );
+    }
+  }
 });
 
 test('the judge veto stays in force over the opt-in exception', async () => {

@@ -1566,6 +1566,82 @@ const tappedOpen = (before = opener()): RecoveryTarget => ({
   pressRecord: pressRecord(before, before.elements[0]),
 });
 
+test('a later step naming the opt-in decline in any case keeps it, with or without protection', async () => {
+  for (const protectedPress of [false, true]) {
+    for (const [decline, quoted] of [
+      ['Not now', 'not now'],
+      ['Not now', 'NOT NOW'],
+      ['not now', 'NOT NOW'],
+      ['NOT NOW', 'Not now'],
+    ]) {
+      for (const extra of [{}, { laterBlock: true }, { kind: 'wait' as const }]) {
+        const name = `${protectedPress} ${decline} ${quoted} ${JSON.stringify(extra)}`;
+        const targets = [
+          protectedPress ? tappedOpen() : waitHome,
+          later(quoted, 'press', { line: 11, ...extra }),
+        ];
+        const { result, records } = decide(optedIn(decline, 'Allow'), targets);
+        assert.equal(result, undefined, name);
+        assert.equal(records.length, 1, name);
+        if (!protectedPress && decline !== 'Not now') {
+          assert.equal(records[0].veto, 'no-candidate', name);
+        } else {
+          assert.equal(records[0].veto, 'later-target', name);
+          assert.equal(records[0].provenance, 'ownership', name);
+          assert.equal(records[0].targetIndex, 1, name);
+          assert.equal(records[0].optInWithheld, undefined, name);
+        }
+        const dismissed: string[] = [];
+        const recovered = await recover(
+          optedIn(decline, 'Allow'),
+          {
+            dialog: async () => ({ ok: true }),
+            hideDevMenu: async () => ({ ok: true }),
+            dismiss: async (label) => {
+              dismissed.push(label);
+              return 'pass';
+            },
+          },
+          undefined,
+          targets,
+        );
+        assert.equal(recovered, undefined, name);
+        assert.deepEqual(dismissed, [], name);
+      }
+    }
+  }
+});
+
+test('opt-in decline ownership by exact ID stays case-sensitive and never comes from a label', () => {
+  const identified = (): Screen => {
+    const snapshot = optedIn('Not now', 'Allow');
+    snapshot.elements = snapshot.elements.map((e) =>
+      e.ref === '@decline' ? { ...e, testID: 'optin-decline' } : e,
+    );
+    return snapshot;
+  };
+  for (const protectedPress of [false, true]) {
+    const current = protectedPress ? tappedOpen() : waitHome;
+    const owned = decide(identified(), [current, later('optin-decline', 'press', { exact: 'id' })]);
+    assert.equal(owned.result, undefined, String(protectedPress));
+    assert.equal(owned.records[0]?.veto, 'later-target');
+    assert.equal(owned.records[0]?.provenance, 'ownership');
+    assert.equal(owned.records[0]?.targetIndex, 1);
+    for (const target of [
+      later('OPTIN-DECLINE', 'press', { exact: 'id' }),
+      later('Not now', 'press', { exact: 'id' }),
+      later('optin-decline', 'press', { exact: 'text' }),
+    ]) {
+      const { result } = decide(identified(), [current, target]);
+      assert.equal(
+        labelOf(result),
+        'Not now',
+        `${protectedPress} ${target.quoted} ${target.exact}`,
+      );
+    }
+  }
+});
+
 test("a qualifying opt-in after the plan's own tap is declined once with its signature", () => {
   for (const [decline, accept] of [
     ['Not now', 'Allow'],

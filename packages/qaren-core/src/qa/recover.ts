@@ -105,10 +105,7 @@ export async function recover(
     const candidate = dismissCandidate(screen, planTargets, deps.interruptionDiagnostic, proof);
     if (candidate && 'refuse' in candidate) return candidate;
     if (candidate && 'repeated' in candidate)
-      return {
-        fail: 'the app asked again after recovery declined this permission opt-in; nothing was tapped',
-        repeatedOptIn: candidate.repeated,
-      };
+      return { fail: OPT_IN_ASKED_AGAIN, repeatedOptIn: candidate.repeated };
     if (candidate) {
       const dismissed = await deps.dismiss(candidate.label, optInDecision(screen, candidate));
       if (dismissed === 'pass')
@@ -161,6 +158,30 @@ export function isDeclineLabel(label: string | undefined): label is string {
 }
 
 export type InterruptionProof = 'covered-target' | 'surface' | 'absent-surface';
+
+export const OPT_IN_ASKED_AGAIN =
+  'the app asked again after recovery declined this permission opt-in; nothing was tapped';
+
+// The decline label of an opt-in on screen whose signature recovery already declined in this run.
+export function returnedOptIn(
+  screen: Screen,
+  declinedOptIns: ReadonlySet<string> | undefined,
+): string | undefined {
+  if (!declinedOptIns?.size || screen.front !== 'app' || !completeCapture(screen)) return undefined;
+  const shape = optInShape(screen);
+  return shape && declinedOptIns.has(shape.signature) ? shape.decline.label : undefined;
+}
+
+// A later step naming the decline keeps it for that step, even when presence was exempt.
+function laterDeclineOwner(decline: Element, planTargets: readonly RecoveryTarget[]): number {
+  const label = decline.label!.toLowerCase();
+  return planTargets.findIndex(
+    (target, index) =>
+      index > 0 &&
+      (matchesTarget(decline, target) ||
+        (target.exact !== 'id' && target.quoted?.toLowerCase() === label)),
+  );
+}
 
 export const INTERRUPTION_VETOES = [
   'front',
@@ -308,6 +329,8 @@ export function dismissCandidate(
         ? 'controls-unproven'
         : 'not-an-opt-in';
     if (!optIn || withheld) return rejected('previous-plan-press', 0, [], undefined, withheld);
+    const ownerIndex = laterDeclineOwner(optIn.decline, planTargets);
+    if (ownerIndex !== -1) return rejected('later-target', ownerIndex, [], 'ownership');
     return {
       label: optIn.decline.label!,
       screenClass: 'permission-opt-in',
@@ -324,14 +347,7 @@ export function dismissCandidate(
       },
     };
   if (candidates.length === 1) {
-    const label = candidates[0].label!.toLowerCase();
-    // A later step naming the decline keeps it for that step, even when presence was exempt.
-    const plannedIndex = planTargets.findIndex(
-      (target, index) =>
-        index > 0 &&
-        (matchesTarget(candidates[0], target) ||
-          (target.exact !== 'id' && target.quoted?.toLowerCase() === label)),
-    );
+    const plannedIndex = laterDeclineOwner(candidates[0], planTargets);
     if (plannedIndex !== -1) return rejected('later-target', plannedIndex, [], 'ownership');
     if (
       !sole &&
