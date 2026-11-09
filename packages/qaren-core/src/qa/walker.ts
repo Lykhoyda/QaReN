@@ -1179,6 +1179,7 @@ async function walkBlockScoped(
   ): Promise<{ stable: boolean; crop?: PixelCrop; observation?: Observation }> => {
     assertActive();
     const allowed = () =>
+      !sequence.captureUnknown &&
       !privacy.screenshotLatch(deps.videoPolicy) &&
       !metadataOnly &&
       !(deps.videoPolicy === 'non-strict'
@@ -1839,7 +1840,7 @@ async function walkBlockScoped(
       withheldRows.set(item.line, latch.reason);
       return undefined;
     }
-    if (metadataOnly || latest.devError) {
+    if (sequence.captureUnknown || metadataOnly || latest.devError) {
       metric('screenshot', undefined, { outcome: 'withheld' });
       return undefined;
     }

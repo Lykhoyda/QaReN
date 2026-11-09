@@ -51,6 +51,11 @@ test('T2: a recovered native Wait with no target reports the last screen and kee
     if (++reads <= 2) throw incomplete();
     return toast();
   };
+  let shots = 0;
+  f.deps.screenshot = async () => {
+    shots++;
+    return 'failure.png';
+  };
   const result = await runPlan(parsePlan('1. Wait for "x"').blocks!, f.deps);
   assert.equal(result.verdict, 'FAIL');
   assert.equal(result.failure?.subreason, 'absent');
@@ -59,6 +64,10 @@ test('T2: a recovered native Wait with no target reports the last screen and kee
   assert.equal(f.deps.now(), WAIT_BUDGET_MS);
   assert.equal(result.videoPublication, 'unknown');
   assert.equal(result.nonStrictPublication, undefined);
+  assert.equal(shots, 0);
+  assert.equal(result.failure?.screenshot, undefined);
+  assert.ok(result.steps.every((step) => step.screenshot === undefined));
+  assert.ok(f.rows.every((row) => row.screenshot === undefined));
   assert.deepEqual(f.actions, []);
 });
 
@@ -233,11 +242,23 @@ test('T3: a native Wait recovers to its target with sticky unknown media under e
       if (++reads === 1) throw incomplete();
       return target();
     };
-    const result = await runPlan(parsePlan('1. Wait for "x"').blocks!, f.deps);
+    let shots = 0;
+    f.deps.screenshot = async () => {
+      shots++;
+      return 'success.png';
+    };
+    const result = await runPlan(
+      parsePlan('1. Wait for "x"\n2. Wait for "x"').blocks!,
+      f.deps,
+    );
     assert.equal(result.verdict, 'PASS', policy);
     assert.equal(result.videoPublication, 'unknown', policy);
     assert.equal(result.nonStrictPublication, undefined, policy);
-    assert.equal(reads, 2);
+    assert.equal(reads, 3);
+    assert.equal(shots, 0, policy);
+    assert.equal(result.steps.length, 2);
+    assert.ok(result.steps.every((step) => step.screenshot === undefined), policy);
+    assert.ok(f.rows.every((row) => row.screenshot === undefined), policy);
     assert.ok(f.deps.now() < WAIT_BUDGET_MS);
     assert.deepEqual(f.actions, []);
   }
