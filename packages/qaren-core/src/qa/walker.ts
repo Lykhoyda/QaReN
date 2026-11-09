@@ -3878,7 +3878,11 @@ async function walkBlockScoped(
                       Math.min(itemDeadline ?? Infinity, deps.now() + NATIVE_PRESENCE_BUDGET_MS),
                     );
                   } catch (error) {
-                    if (!(error instanceof NativeCaptureError)) throw error;
+                    if (
+                      !(error instanceof NativeCaptureError) &&
+                      !(error instanceof NativeSnapshotIncomplete)
+                    )
+                      throw error;
                     assertActive();
                   }
                   if (proven) {

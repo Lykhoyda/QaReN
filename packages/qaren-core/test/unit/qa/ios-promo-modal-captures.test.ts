@@ -21,7 +21,10 @@ import { parsePlan } from '../../../dist/qa/plan.js';
 import { prepareTarget } from '../../../dist/qa/resolve.js';
 import { NATIVE_PRESENCE_BUDGET_MS } from '../../../dist/qa/timing.js';
 import { AppProcessGoneError, NativeCaptureError } from '../../../dist/qa/capture.js';
-import { PrivateInputCaptureError } from '../../../dist/qa/private-input.js';
+import {
+  NativeSnapshotIncomplete,
+  PrivateInputCaptureError,
+} from '../../../dist/qa/private-input.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import { element, scriptedJudge, walker } from './judgment-fixtures.ts';
 
@@ -182,7 +185,13 @@ test('an ambiguous quoted Close recaptures once and taps the sheet control over 
   assert.equal(JSON.stringify(f.rows).includes('qa-promo-home-target'), false);
 });
 
-for (const failure of ['refused', 'incomplete', 'late', 'unproven'] as const) {
+for (const failure of [
+  'refused',
+  'incomplete',
+  'incomplete-snapshot',
+  'late',
+  'unproven',
+] as const) {
   test(`a ${failure} detailed recapture keeps the ambiguity and dispatches nothing`, async () => {
     const f = ambiguousClose();
     const captureScreen = f.deps.captureScreen;
@@ -192,6 +201,8 @@ for (const failure of ['refused', 'incomplete', 'late', 'unproven'] as const) {
       const screen = await captureScreen(options);
       if (!options?.platformPresence) return screen;
       if (failure === 'refused') throw new NativeCaptureError();
+      if (failure === 'incomplete-snapshot')
+        throw new NativeSnapshotIncomplete(1, ['presence-failure=observation:deadline']);
       if (failure === 'incomplete')
         return { ...screen, coverage: { native: 'incomplete', react: 'complete' } };
       if (failure === 'late') now += NATIVE_PRESENCE_BUDGET_MS;
