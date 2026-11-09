@@ -1200,35 +1200,43 @@ async function walkBlockScoped(
   };
   const identityText = (target: Element): string =>
     `${target.kind} ${target.label === undefined ? 'unlabelled' : `"${target.label}"`}, ${target.testID === undefined ? 'no testID' : `testID "${target.testID}"`}`;
-  // After a moved refusal, the target re-identified by the step's own exact-identity rules
-  // (one identity, same kind, label and testID) must hold one native frame across two captures.
+  // Re-prove one exact identity at the same frame across two captures.
   const settledTarget = async (
     item: Exclude<Item, { kind: 'check' }>,
     target: Element,
+    options: { nativeOnly?: true } = {},
   ): Promise<{ observation: Observation; frame: string } | { frames: string[] }> => {
     const quoted = target.testID ?? target.label;
-    const frameOf = (screen: Screen): string | undefined => {
-      // Without a testID or label there is no exact identity, so the target cannot be proven the same element.
-      if (quoted === undefined || (item.kind !== 'press' && item.kind !== 'fill')) return undefined;
+    const frameOf = (screen: Screen): { frame?: string; reason: string } => {
+      if (quoted === undefined || (item.kind !== 'press' && item.kind !== 'fill'))
+        return { reason: 'absent' };
       const matches = exactIdentities(
         screen,
         { quoted, phrase: quoted, exact: target.testID !== undefined ? 'id' : 'text' },
         item.kind,
-      ).filter(({ element }) => sameIdentity(element, target));
-      return matches.length === 1 ? frameKey(matches[0].element) : undefined;
+      ).filter(
+        ({ element }) =>
+          sameIdentity(element, target) &&
+          (!options.nativeOnly || !element.ref.startsWith('react:')),
+      );
+      if (matches.length === 0) return { reason: 'absent' };
+      if (matches.length > 1) return { reason: `ambiguous:${matches.length}` };
+      const frame = frameKey(matches[0].element);
+      return { frame, reason: frame ?? 'no-frame' };
     };
     let observation = await capture(item);
-    let previous = frameOf(observation.screen);
-    const frames = [previous ?? 'unresolved'];
+    const first = frameOf(observation.screen);
+    let previous = first.frame;
+    const frames = [first.reason];
     for (let readback = 0; readback < SCROLL_SETTLE_READBACKS; readback += 1) {
       usable(observation, item);
       const next = await capture(item);
       const current = frameOf(next.screen);
-      frames.push(current ?? 'unresolved');
-      if (current !== undefined && current === previous)
-        return { observation: next, frame: current };
+      frames.push(current.reason);
+      if (current.frame !== undefined && current.frame === previous)
+        return { observation: next, frame: current.frame };
       observation = next;
-      previous = current;
+      previous = current.frame;
     }
     return { frames };
   };
@@ -4086,7 +4094,7 @@ async function walkBlockScoped(
                   dismissal.via = await deps.dismissKeyboard!(context);
                   return { ok: true, proven: false };
                 });
-                const settled = await settledTarget(item, target);
+                const settled = await settledTarget(item, target, { nativeOnly: true });
                 if ('frames' in settled) {
                   outcome = failed(
                     item,
@@ -4097,7 +4105,7 @@ async function walkBlockScoped(
                         app: identityText(target),
                         ...(concealsScreen(latest) ? { withheld: MASK } : {}),
                       },
-                      `) did not settle across ${settled.frames.length} captures (${settled.frames.join(' | ')}); it was not dispatched${KEYBOARD_DISMISSED}`,
+                      `) did not settle across ${settled.frames.length} captures (${settled.frames.join(' | ')}); it was not dispatched; keyboard after dismissal: ${latest.keyboardVisible === true ? 'visible' : latest.keyboardVisible === false ? 'hidden' : 'unknown'}${KEYBOARD_DISMISSED}`,
                     ],
                     latest,
                     await shoot(item),

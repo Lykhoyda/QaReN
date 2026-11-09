@@ -853,12 +853,15 @@ stricter rule: exactly one identity match under the same element reference.
 On iOS, before tapping a candidate matching the row-choice heuristic above, QaReN
 attempts to dismiss a visible keyboard through the keyboard guard's dismissal chain
 (a native hide control, then the app's own `Keyboard.dismiss()`). It then requires the
-same target identity and frame across two consecutive captures, re-resolves the target
+same native target identity and frame across two consecutive captures, excluding
+React-only twins from this settle check, re-resolves the target
 and taps it once. The row records `keyboardCleared: native-control | js` only when a
 dismissal tier reports success and the settled capture no longer reports a visible
 keyboard. An unsuccessful dismissal still permits one tap after the target settles;
 it records no clearance. A target that does not settle, changes identity or moves
 from its settled frame before dispatch fails without that tap.
+An unsettled-target refusal lists each capture's frame or `absent`, `ambiguous:N`
+or `no-frame`, and the keyboard state after dismissal (`hidden`, `visible` or `unknown`).
 `RN_KEYBOARD_GUARD=0` turns this pre-tap clearance off.
 
 When that clearance did not run or did not hold, keyboard closure and an unchanged
