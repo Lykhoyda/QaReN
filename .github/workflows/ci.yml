@@ -101,7 +101,7 @@ jobs:
 
   unit-tests:
     name: Unit tests (batch ${{ matrix.batch }}/5)
-    runs-on: self-linux-x64
+    runs-on: self-linux
     strategy:
       fail-fast: false
       matrix:
@@ -118,8 +118,22 @@ jobs:
           build-essential gnupg libcurl4-openssl-dev libedit2 libncurses-dev libpython3-dev
           libsqlite3-0 libxml2-dev libz3-dev pkg-config tzdata zlib1g-dev
 
-      # Swift tests skip when swift is absent, so the toolchain must be installed here.
-      - uses: swift-actions/setup-swift@7ca6abe6b3b0e8b5421b88be48feee39cbf52c6a  # v2.4.0
+      # Swift tests skip when swift is absent; the ARM pool image ships Swift 6.2.1, x64 installs it here.
+      # The five batches fetch swift.org keys at once, so one timed-out download gets a second attempt.
+      - id: setup-swift
+        if: runner.arch == 'X64'
+        continue-on-error: true
+        uses: swift-actions/setup-swift@7ca6abe6b3b0e8b5421b88be48feee39cbf52c6a  # v2.4.0
+        with:
+          swift-version: '6.2.1'
+
+      - name: Back off before retrying the Swift install
+        if: steps.setup-swift.outcome == 'failure'
+        run: sleep 30
+
+      - name: Install Swift (retry)
+        if: steps.setup-swift.outcome == 'failure'
+        uses: swift-actions/setup-swift@7ca6abe6b3b0e8b5421b88be48feee39cbf52c6a  # v2.4.0
         with:
           swift-version: '6.2.1'
 
@@ -134,7 +148,16 @@ jobs:
           java-version: '17'
 
       - run: corepack enable
-      - run: corepack yarn install --immutable
+
+      # Concurrent batches on the shared pool occasionally lose a registry socket mid-resolution.
+      - name: Install dependencies
+        run: |
+          for attempt in 1 2 3; do
+            corepack yarn install --immutable && exit 0
+            echo "yarn install attempt $attempt failed"
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 20))
+          done
+          exit 1
 
       # GH#439: keep test discovery in the package script; Node's native shard
       # option partitions that one authoritative file set deterministically.

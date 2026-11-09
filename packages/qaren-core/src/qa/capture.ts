@@ -16,6 +16,7 @@ import { diagnosticField, privateSnapshotDiagnostics } from './snapshot-diagnost
 import type { ToolResult } from '../utils.js';
 import { foregroundSurfaceFromSnapshot } from '../handlers/expo-dev-menu.js';
 import { isRecord } from './questions.js';
+import { appendContinuityEvent, type ContinuityEvent } from './ledger.js';
 import {
   devErrorOverlay,
   frontFromSurface,
@@ -89,45 +90,131 @@ export function postAdmissionSnapshots<A>(
   snapshot: (args: A) => Promise<ToolResult>,
   appId: string,
 ) {
-  let interrupted = false;
+  let admitted = false;
   let appProcess: number | undefined;
+  const events: ContinuityEvent[] = [];
+  let dropped = 0;
+  let pending:
+    | {
+        baseline?: number;
+        atMs: number;
+        recoveries: ContinuityEvent[];
+      }
+    | undefined;
+  const record = (event: ContinuityEvent) => {
+    if (!admitted) {
+      event.counted = false;
+      event.beforeAdmission = true;
+    }
+    dropped += appendContinuityEvent(events, event);
+    return event;
+  };
+  const resolvePending = (counted: boolean, detail?: ContinuityEvent['detail']) => {
+    if (!pending) return;
+    for (const event of pending.recoveries) {
+      event.counted = counted;
+      if (detail) event.detail = { ...event.detail, ...detail };
+    }
+    if (counted) {
+      const first = pending.recoveries[0];
+      if (first && !events.includes(first)) {
+        dropped--;
+        record(first);
+      } else if (!first && detail?.unresolved) {
+        record({ signal: 'app-process-unproven', atMs: pending.atMs, counted, detail });
+      }
+    }
+    pending = undefined;
+  };
+  const finish = () => resolvePending(true, { unresolved: true });
   return {
-    interrupted: () => interrupted,
+    admit: () => {
+      admitted = true;
+    },
+    finish,
+    interrupted: () => {
+      finish();
+      return events.some((event) => event.counted);
+    },
+    events: () => events.slice().sort((a, b) => a.atMs - b.atMs),
+    dropped: () => dropped,
     async snapshot(args: A): Promise<ToolResult> {
       const result = await snapshot(args);
+      const atMs = Date.now();
       let envelope: unknown;
       try {
         envelope = JSON.parse(result.content[0]?.text ?? '');
       } catch {
-        return result;
+        envelope = undefined;
       }
-      if (!isRecord(envelope)) return result;
-      const meta = isRecord(envelope.meta) ? envelope.meta : undefined;
-      const data = isRecord(envelope.data) ? envelope.data : undefined;
+      const meta = isRecord(envelope) && isRecord(envelope.meta) ? envelope.meta : undefined;
+      const data = isRecord(envelope) && isRecord(envelope.data) ? envelope.data : undefined;
       const surface = meta?.foregroundSurface ?? foregroundSurfaceFromSnapshot(result, appId);
-      if (
-        surface === 'dev_client_picker' ||
-        surface === 'first_run_tutorial' ||
+      const launcher = surface === 'dev_client_picker' || surface === 'first_run_tutorial';
+      if (launcher)
+        record({
+          signal: surface === 'dev_client_picker' ? 'dev-client-picker' : 'first-run-tutorial',
+          atMs,
+          counted: true,
+        });
+      if (meta?.reason === 'app-not-running')
+        record({ signal: 'app-not-running', atMs, counted: true });
+      const value = data?.appProcessIdentifier;
+      const observed =
+        typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+      const recovered =
         meta?.recovered !== undefined ||
         meta?.recoveryTier !== undefined ||
-        meta?.recoveryReason !== undefined ||
-        meta?.code === 'RUNNER_LEAK' ||
-        meta?.reason === 'app-not-running'
-      )
-        interrupted = true;
-      const observed = data?.appProcessIdentifier;
-      const retryableRelaunchFailure =
-        envelope.ok === false &&
-        (envelope.code ?? meta?.code) === 'RN_FAST_RUNNER_DOWN' &&
-        meta?.runnerRelaunch === true;
-      if (
-        appProcess !== undefined &&
-        observed !== appProcess &&
-        !(retryableRelaunchFailure && observed === undefined)
-      )
-        interrupted = true;
-      if (typeof observed === 'number' && Number.isSafeInteger(observed) && observed > 0)
-        appProcess = observed;
+        meta?.recoveryReason !== undefined;
+      for (const signal of [
+        ...(recovered ? ['runner-recovery' as const] : []),
+        ...(meta?.code === 'RUNNER_LEAK' ? ['runner-leak' as const] : []),
+      ]) {
+        const event = record({
+          signal,
+          atMs,
+          counted: false,
+          detail: {
+            ...(typeof meta?.recoveryTier === 'string' ? { recoveryTier: meta.recoveryTier } : {}),
+            ...(typeof meta?.recoveryReason === 'string'
+              ? { recoveryReason: meta.recoveryReason }
+              : {}),
+          },
+        });
+        if (
+          admitted &&
+          !(appProcess !== undefined && observed === appProcess && surface === 'app')
+        ) {
+          pending ??= { baseline: appProcess, atMs, recoveries: [] };
+          if (pending.recoveries.length < 16) pending.recoveries.push(event);
+        }
+      }
+      if (admitted) {
+        if (pending && launcher) resolvePending(true);
+        else if (pending && observed !== undefined && pending.baseline !== undefined) {
+          if (observed !== pending.baseline)
+            resolvePending(true, { fromPid: pending.baseline, toPid: observed });
+          else if (surface === 'app' || pending.recoveries.length === 0) resolvePending(false);
+        }
+        if (appProcess !== undefined) {
+          if (observed === undefined) pending ??= { baseline: appProcess, atMs, recoveries: [] };
+          else if (observed !== appProcess)
+            record({
+              signal: 'app-process-changed',
+              atMs,
+              counted: true,
+              detail: { fromPid: appProcess, toPid: observed },
+            });
+        }
+      } else if (appProcess !== undefined && observed !== undefined && observed !== appProcess) {
+        record({
+          signal: 'app-process-changed',
+          atMs,
+          counted: false,
+          detail: { fromPid: appProcess, toPid: observed },
+        });
+      }
+      if (observed !== undefined) appProcess = observed;
       return result;
     },
   };

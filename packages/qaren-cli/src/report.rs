@@ -607,7 +607,52 @@ fn verdict_label(ledger: &Ledger, refusal: Option<&Failure>) -> String {
 }
 
 // Shared across the local report, run receipt, and publication surfaces.
-pub fn video_unavailable_line(video: &VideoStatus) -> Option<String> {
+pub fn video_unavailable_line(video: &VideoStatus, ledger: Option<&Ledger>) -> Option<String> {
+    if video.reason() == Some(VideoReason::Interrupted) {
+        if let Some((ledger, event)) =
+            ledger.and_then(|ledger| ledger.first_counted().map(|event| (ledger, event)))
+        {
+            let at = continuity_location(ledger, event);
+            let (cause, next) = match event.owner() {
+                "app" => (
+                    format!("the app's process changed or stopped at {at}"),
+                    "check the app's crash log",
+                ),
+                "dev-client" => {
+                    let front = match event.signal {
+                        crate::core::ContinuitySignal::DevClientPicker => "picker",
+                        crate::core::ContinuitySignal::FirstRunTutorial => "first-run tutorial",
+                        _ => match event
+                            .detail
+                            .as_ref()
+                            .and_then(|detail| detail["front"].as_str())
+                        {
+                            Some("dev-fab") => "dev button",
+                            Some("dev-menu") => "dev menu",
+                            Some("dev-redbox") => "error overlay",
+                            Some("picker") => "picker",
+                            _ => "overlay",
+                        },
+                    };
+                    (
+                        format!("the dev client's {front} came to the front at {at}"),
+                        "this is a QaReN gap; include the run id in feedback",
+                    )
+                }
+                _ => {
+                    let cause = match event.signal {
+                        crate::core::ContinuitySignal::RunnerRecovery | crate::core::ContinuitySignal::RunnerLeak =>
+                            format!("QaReN's runner restarted at {at} and QaReN could not confirm the app's process afterwards"),
+                        crate::core::ContinuitySignal::AppProcessUnproven => format!("QaReN could not read the app's process at {at}"),
+                        _ => format!("QaReN recorded an unrecognized continuity signal at {at}"),
+                    };
+                    (cause, "this is a QaReN gap; include the run id in feedback")
+                }
+            };
+            let signal = serde_json::to_value(event.signal).unwrap_or_default();
+            return Some(format!("Video not published: app continuity was interrupted after admission; {cause} (signal: {}, owner: {}); times mark observation completion; {next}", signal.as_str().unwrap_or("unknown"), event.owner()));
+        }
+    }
     let (detail, next) = match video {
         VideoStatus::Available => return None,
         VideoStatus::TooLarge => (
@@ -620,7 +665,9 @@ pub fn video_unavailable_line(video: &VideoStatus) -> Option<String> {
                 VideoReason::RecorderFailed | VideoReason::FfmpegMissing => {
                     "check the recorder and ffmpeg on this host"
                 }
-                VideoReason::Interrupted => "the app was relaunched after admission; re-run",
+                VideoReason::Interrupted => {
+                    "this run was recorded before QaReN named the interrupting signal"
+                }
                 VideoReason::NoAdmittedFrame | VideoReason::NoWindow => {
                     "the walk ended before any admitted frame; re-run"
                 }
@@ -652,8 +699,30 @@ pub fn video_outcome_line(
 ) -> Option<String> {
     match video_withholding(ledger, strict) {
         Some(reason) => Some(format!("Video withheld: {reason}")),
-        None => video.and_then(video_unavailable_line),
+        None => video.and_then(|video| {
+            video_unavailable_line(video, Some(ledger)).or_else(|| runner_recovery_line(ledger))
+        }),
     }
+}
+
+fn continuity_location(ledger: &Ledger, event: &crate::core::ContinuityEvent) -> String {
+    let at = ledger
+        .admitted_at_ms
+        .and_then(|admitted| event.at_ms.checked_sub(admitted))
+        .map(|ms| format!("{}:{:02}", ms / 60_000, ms / 1000 % 60))
+        .unwrap_or_else(|| "an unrecorded offset".into());
+    match event.line {
+        Some(line) => format!("{at} after admission (line {line})"),
+        None => format!("{at} after admission"),
+    }
+}
+
+fn runner_recovery_line(ledger: &Ledger) -> Option<String> {
+    let admitted = ledger.admitted_at_ms?;
+    let event = ledger
+        .uncounted_runner_recoveries_after(admitted.max(ledger.publish_from_ms.unwrap_or(admitted)))
+        .next()?;
+    Some(format!("QaReN observed its runner recovery at {}; the app kept running (same process), so the video was kept. This is when the snapshot completed, not the start of the runner frames.", continuity_location(ledger, event)))
 }
 
 // The comment's video paragraphs; the description reuses them so the two cannot disagree.
@@ -676,10 +745,13 @@ fn video_lines(input: &ReportInput<'_>, pr: &PrRun<'_>, clean: &dyn Fn(&str) -> 
         match pr.video {
             VideoStatus::Available => {
                 out.push_str(VIDEO_ATTACHED);
+                if let Some(line) = runner_recovery_line(input.ledger) {
+                    out.push_str(&format!("{line}\n\n"));
+                }
                 out.push_str(&continuity_lines(pr));
             }
             VideoStatus::TooLarge | VideoStatus::Unavailable { .. } => {
-                if let Some(line) = video_unavailable_line(pr.video) {
+                if let Some(line) = video_unavailable_line(pr.video, Some(input.ledger)) {
                     out.push_str(&format!("{}\n\n", clean(&line)));
                 }
             }
@@ -1016,6 +1088,41 @@ mod tests {
     }
 
     #[test]
+    fn an_uncovered_target_interruption_receipt_survives_and_renders() {
+        let receipt = serde_json::json!({
+            "considered": true, "outcome": "vetoed", "veto": "uncovered-target",
+            "targetLine": 7, "targetKind": "wait", "soleDecline": false
+        });
+        let ledger: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "FAIL", "path": "walk", "blocks": [],
+            "steps": [{ "block": "b", "line": 7, "attempt": 1, "kind": "step",
+                "resolvedBy": "exact", "t": 0, "outcome": "fail", "interruption": receipt }],
+            "jev": { "calls": 0, "medianMs": 0 },
+            "llmTurns": 0, "escapes": 0, "recoveries": 0,
+            "failure": { "step": 7, "seen": "TARGET_REACT_ONLY" }
+        }))
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&ledger).unwrap()["steps"][0]["interruption"],
+            receipt
+        );
+        let report = render(&ReportInput {
+            run_id: "check-test",
+            platform: "ios",
+            app_id: "com.example",
+            device: "test-device",
+            ledger: &ledger,
+            video: None,
+        });
+        assert_eq!(
+            report
+                .matches("interruption recovery: vetoed (uncovered-target; line 7 (wait))")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn an_interruption_receipt_round_trips_drops_malformed_data_and_renders_one_line() {
         let receipt = serde_json::json!({
             "considered": true, "outcome": "vetoed", "veto": "later-target",
@@ -1054,11 +1161,12 @@ mod tests {
                   "t": 0, "outcome": "fail", "interruption": receipt },
                 { "block": "b", "line": 8, "attempt": 1, "kind": "step", "resolvedBy": "exact",
                   "t": 0, "outcome": "fail", "interruption": { "considered": true,
-                  "outcome": "did-not-disappear" } }
+                  "outcome": "did-not-disappear", "pressCentreY": 25.0 } }
             ],
             "jev": { "calls": 0, "medianMs": 0 },
             "llmTurns": 0, "escapes": 0, "recoveries": 0,
-            "failure": { "step": 7, "seen": "the target did not appear" },
+            "failure": { "step": 7, "seen": "the target did not appear",
+                "suggestion": "line 9 targets this control; if the interruption is optional, move that step before line 7 or remove it" },
         }))
         .unwrap();
         let report = render(&ReportInput {
@@ -1073,12 +1181,17 @@ mod tests {
             "interruption recovery: vetoed (later-target; ownership; line 9 (press); only control is the decline)"
         ));
         assert!(!report.contains("did-not-disappear"));
-        assert!(!report.contains("Suggested plan edit:"));
+        assert!(report.contains(
+            "Suggested plan edit: line 9 targets this control; if the interruption is optional, move that step before line 7 or remove it"
+        ));
         let stayed: crate::core::InterruptionReceipt = serde_json::from_value(
-            serde_json::json!({ "considered": true, "outcome": "did-not-disappear" }),
+            serde_json::json!({ "considered": true, "outcome": "did-not-disappear", "pressCentreY": 25.0 }),
         )
         .unwrap();
-        assert_eq!(stayed.summary(), "interruption recovery: did-not-disappear");
+        assert_eq!(
+            stayed.summary(),
+            "interruption recovery: did-not-disappear (press centre y 25 pt)"
+        );
         let classed = serde_json::json!({ "considered": true, "outcome": "dismissed", "screenClass": "permission-opt-in" });
         let parsed: crate::core::InterruptionReceipt =
             serde_json::from_value(classed.clone()).unwrap();

@@ -93,6 +93,8 @@ export interface InterruptionReceipt {
   targetLine?: number;
   targetKind?: Item['kind'];
   soleDecline?: boolean;
+  // When a dispatched decline stayed: the vertical centre, in points, of the control it aimed at.
+  pressCentreY?: number;
   // The fixed class a dismissed screen was recognised as, when one applied.
   screenClass?: InterruptionScreenClass;
 }
@@ -131,6 +133,46 @@ export interface BlockResult {
   unsavable?: string;
 }
 
+export type ContinuitySignal =
+  | 'dev-client-picker'
+  | 'first-run-tutorial'
+  | 'runner-recovery'
+  | 'runner-leak'
+  | 'app-not-running'
+  | 'app-process-changed'
+  | 'dev-overlay'
+  | 'app-process-gone'
+  | 'app-process-unproven';
+
+export interface ContinuityEvent {
+  signal: ContinuitySignal;
+  atMs: number;
+  line?: number;
+  counted: boolean;
+  beforeAdmission?: boolean;
+  detail?: {
+    recoveryTier?: string;
+    recoveryReason?: string;
+    front?: string;
+    fromPid?: number;
+    toPid?: number;
+    unresolved?: boolean;
+  };
+}
+
+export function appendContinuityEvent(events: ContinuityEvent[], event: ContinuityEvent): number {
+  if (events.length < 16) {
+    events.push(event);
+    return 0;
+  }
+  const uncounted = events.findIndex((entry) => !entry.counted);
+  if (event.counted && uncounted !== -1) {
+    events.splice(uncounted, 1);
+    events.push(event);
+  }
+  return 1;
+}
+
 export interface Ledger {
   pressEvidence?: PressEvidence;
   verdict: 'PASS' | 'FAIL';
@@ -144,6 +186,8 @@ export interface Ledger {
   admittedAtMs?: number;
   publishFromMs?: number;
   publicationInterrupted?: boolean;
+  continuityEvents?: ContinuityEvent[];
+  continuityEventsDropped?: number;
   path: LedgerPath;
   blocks: BlockResult[];
   blocksWritten?: string[];

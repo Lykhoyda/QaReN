@@ -251,6 +251,18 @@ pub struct Ledger {
     pub publish_from_ms: Option<u64>,
     #[serde(default)]
     pub publication_interrupted: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "passive_continuity"
+    )]
+    pub continuity_events: Vec<ContinuityEvent>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub continuity_events_dropped: Option<u32>,
     pub path: String,
     pub blocks: Vec<BlockResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -529,6 +541,8 @@ pub struct InterruptionReceipt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sole_decline: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub press_centre_y: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_class: Option<InterruptionScreenClass>,
 }
 
@@ -554,6 +568,7 @@ pub enum InterruptionVeto {
     Front,
     Coverage,
     CurrentTarget,
+    UncoveredTarget,
     LaterTarget,
     PreviousPlanPress,
     NoCandidate,
@@ -597,6 +612,9 @@ impl InterruptionReceipt {
             self.sole_decline
                 .filter(|sole| *sole)
                 .map(|_| "only control is the decline".to_string()),
+            self.press_centre_y
+                .filter(|y| y.is_finite())
+                .map(|y| format!("press centre y {y:.0} pt")),
             self.screen_class.map(word),
         ]
         .into_iter()
@@ -608,7 +626,6 @@ impl InterruptionReceipt {
         text
     }
 }
-
 
 // A same-label wrapper counted as the control it wraps.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1014,7 +1031,105 @@ impl Row {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ContinuitySignal {
+    DevClientPicker,
+    FirstRunTutorial,
+    RunnerRecovery,
+    RunnerLeak,
+    AppNotRunning,
+    AppProcessChanged,
+    DevOverlay,
+    AppProcessGone,
+    AppProcessUnproven,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContinuityEvent {
+    pub signal: ContinuitySignal,
+    pub at_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    pub counted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before_admission: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<Value>,
+}
+
+impl ContinuityEvent {
+    pub fn owner(&self) -> &'static str {
+        match self.signal {
+            ContinuitySignal::AppNotRunning | ContinuitySignal::AppProcessChanged | ContinuitySignal::AppProcessGone => "app",
+            ContinuitySignal::DevClientPicker | ContinuitySignal::FirstRunTutorial | ContinuitySignal::DevOverlay => "dev-client",
+            ContinuitySignal::RunnerRecovery | ContinuitySignal::RunnerLeak if self.detail.as_ref().is_some_and(|detail| {
+                matches!((detail["fromPid"].as_u64(), detail["toPid"].as_u64()), (Some(from), Some(to)) if from != to)
+            }) => "app",
+            _ => "qaren",
+        }
+    }
+}
+
+fn passive_continuity<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<ContinuityEvent>, D::Error> {
+    Ok(passive(d)?.unwrap_or_default())
+}
+
 impl Ledger {
+    pub fn first_counted(&self) -> Option<&ContinuityEvent> {
+        let first = self
+            .continuity_events
+            .iter()
+            .filter(|event| event.counted)
+            .min_by_key(|event| event.at_ms)?;
+        if matches!(
+            first.signal,
+            ContinuitySignal::RunnerRecovery
+                | ContinuitySignal::RunnerLeak
+                | ContinuitySignal::AppProcessUnproven
+        ) && first.owner() == "qaren"
+        {
+            return self
+                .continuity_events
+                .iter()
+                .filter(|event| {
+                    event.counted
+                        && event.at_ms >= first.at_ms
+                        && matches!(
+                            event.signal,
+                            ContinuitySignal::AppNotRunning
+                                | ContinuitySignal::AppProcessChanged
+                                | ContinuitySignal::AppProcessGone
+                                | ContinuitySignal::DevClientPicker
+                                | ContinuitySignal::FirstRunTutorial
+                        )
+                })
+                .min_by_key(|event| event.at_ms)
+                .or(Some(first));
+        }
+        Some(first)
+    }
+
+    pub fn uncounted_runner_recoveries_after(
+        &self,
+        admitted_ms: u64,
+    ) -> impl Iterator<Item = &ContinuityEvent> {
+        self.continuity_events.iter().filter(move |event| {
+            !event.counted
+                && event.before_admission != Some(true)
+                && event.at_ms >= admitted_ms
+                && matches!(
+                    event.signal,
+                    ContinuitySignal::RunnerRecovery | ContinuitySignal::RunnerLeak
+                )
+        })
+    }
+
     fn redact_evidence(&mut self) {
         for row in &mut self.steps {
             row.redact_evidence();
@@ -2196,7 +2311,12 @@ fn refusal_ledger(result: &Value, rows: &[Row], seen: &str) -> Result<Ledger, St
     if let Some(eligibility) = result.get("videoPublication") {
         normalized["videoPublication"] = eligibility.clone();
     }
-    for key in ["videoPolicy", "nonStrictPublication"] {
+    for key in [
+        "videoPolicy",
+        "nonStrictPublication",
+        "continuityEvents",
+        "continuityEventsDropped",
+    ] {
         if let Some(value) = result.get(key) {
             normalized[key] = value.clone();
         }
@@ -2268,6 +2388,8 @@ pub fn synthesized_ledger(rows: &[Row], verdict: &str, seen: &str) -> Ledger {
         admitted_at_ms: None,
         publish_from_ms: None,
         publication_interrupted: false,
+        continuity_events: Vec::new(),
+        continuity_events_dropped: None,
         path: "walk".to_string(),
         blocks: Vec::new(),
         blocks_written: None,
