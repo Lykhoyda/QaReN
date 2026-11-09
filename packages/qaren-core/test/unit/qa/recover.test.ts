@@ -1304,12 +1304,15 @@ test('an absent check or wait target admits a soft decline but never a Cancel', 
     kind: 'wait',
     line: 4,
   };
-  const sheet = (decline: string) =>
-    fixtureScreen([
+  const sheet = (decline: string): Screen => ({
+    ...fixtureScreen([
       element('@new', 'New: shared lists', { kind: 'text' }),
       element('@try', 'Try shared lists'),
       element('@decline', decline),
-    ]);
+    ]),
+    reactHostEvidence: { complete: true, hosts: [] },
+    fillGapCount: 0,
+  });
   assert.deepEqual(dismissCandidate(sheet('Maybe later'), [absent], undefined, 'absent-surface'), {
     label: 'Maybe later',
   });
@@ -1329,20 +1332,40 @@ test('an absent check or wait target admits a soft decline but never a Cancel', 
     }),
   ]) {
     for (const kind of ['check', 'wait'] as const) {
-      const snapshot = sheet('Maybe later');
-      snapshot.elements.push(field);
-      const records: InterruptionDiagnostic[] = [];
-      assert.equal(
-        dismissCandidate(
-          snapshot,
-          [{ ...absent, kind }],
-          (record) => records.push(record),
-          'absent-surface',
-        ),
-        undefined,
-      );
-      assert.equal(records[0]?.veto, 'uncovered-target');
+      for (const offscreen of [false, true]) {
+        const snapshot = sheet('Maybe later');
+        snapshot.elements.push({ ...field, offscreen });
+        const records: InterruptionDiagnostic[] = [];
+        assert.equal(
+          dismissCandidate(
+            snapshot,
+            [{ ...absent, kind }],
+            (record) => records.push(record),
+            'absent-surface',
+          ),
+          undefined,
+        );
+        assert.equal(records[0]?.veto, 'uncovered-target');
+      }
     }
+  }
+  for (const evidence of [
+    { reactHostEvidence: undefined },
+    { reactHostEvidence: { complete: false, hosts: [] } },
+    { fillGapCount: undefined },
+    { fillGapCount: 1 },
+  ]) {
+    const records: InterruptionDiagnostic[] = [];
+    assert.equal(
+      dismissCandidate(
+        { ...sheet('Maybe later'), ...evidence },
+        [absent],
+        (record) => records.push(record),
+        'absent-surface',
+      ),
+      undefined,
+    );
+    assert.equal(records[0]?.veto, 'uncovered-target');
   }
   for (const decline of ['Cancel', 'Close'])
     assert.equal(
@@ -1354,6 +1377,28 @@ test('an absent check or wait target admits a soft decline but never a Cancel', 
   assert.equal(
     dismissCandidate(sheet('Maybe later'), [{ ...absent, kind: 'press' }], undefined, 'surface'),
     undefined,
+  );
+});
+
+test('an input behind a separate modal does not block its soft decline', () => {
+  const modal = modalOverHome({ input: true, secondControl: true });
+  modal.elements.find((e) => e.ref === '@close')!.label = 'Skip';
+  modal.elements.push(
+    element('@hidden-input', 'Name', {
+      kind: 'input',
+      testID: 'qa-promo-home-target',
+      offscreen: true,
+    }),
+  );
+  assert.equal(modal.fillGapCount, 0);
+  assert.deepEqual(
+    dismissCandidate(
+      modal,
+      [{ phrase: 'Saved', quoted: 'Saved', kind: 'check', line: 1 }],
+      undefined,
+      'absent-surface',
+    ),
+    { label: 'Skip' },
   );
 });
 

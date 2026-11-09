@@ -319,12 +319,15 @@ test('an unprompted sheet after later items passed on a decline-free screen is d
       element('@count', 'Reminder declines: 1', { kind: 'text' }),
       ...extra,
     ]);
-  const sheet = () =>
-    screen([
+  const sheet = (): Screen => ({
+    ...screen([
       element('@new', 'New: shared lists', { kind: 'text' }),
       element('@try', 'Try shared lists'),
       element('@later', 'Maybe later'),
-    ]);
+    ]),
+    reactHostEvidence: { complete: true, hosts: [] },
+    fillGapCount: 0,
+  });
   const f = app(optIn(), {
     '@notnow': () => home(),
     '@later': () => home(element('@lists', 'Lists ready', { kind: 'text' })),

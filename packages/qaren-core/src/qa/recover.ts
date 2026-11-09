@@ -288,13 +288,13 @@ export function dismissCandidate(
       !sole &&
       !screenClass &&
       (proof === 'surface' ||
-        // A soft decline (Maybe later, Not now) closes a sheet for an absent check or wait target
-        // only on a screen without input fields; Close, Dismiss and Cancel never do.
         (proof === 'absent-surface' &&
           (!SOFT_DECLINES.has(candidates[0].label!) ||
+            screen.reactHostEvidence?.complete !== true ||
+            screen.fillGapCount !== 0 ||
             screen.elements.some(
               (e) =>
-                !e.offscreen &&
+                !behindPresentedModal(screen, e) &&
                 !e.semantic?.nativePresence?.structural &&
                 (e.kind === 'input' ||
                   e.semantic?.fill === 'supported' ||

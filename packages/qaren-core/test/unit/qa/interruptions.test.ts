@@ -411,6 +411,80 @@ for (const plan of ['✓ "Saved"', '1. Wait for "Saved" to appear']) {
   });
 }
 
+for (const plan of ['✓ "Saved"', '1. Wait for "Saved" to appear']) {
+  for (const input of ['offscreen', 'unassociated'] as const) {
+    test(`an absent target never skips a form with an ${input} input: ${plan}`, async () => {
+      const bounds = { x: 0, y: 0, width: 402, height: 874 };
+      const nodes: NativeNode[] = [
+        { ref: '@app', type: 'Application', rect: bounds },
+        { ref: '@window', type: 'Window', parentIndex: 0, rect: bounds },
+        {
+          ref: '@continue',
+          type: 'Button',
+          label: 'Continue',
+          parentIndex: 1,
+          hittable: true,
+          rect: { x: 20, y: 600, width: 300, height: 50 },
+        },
+        {
+          ref: '@skip',
+          type: 'Button',
+          label: 'Skip',
+          parentIndex: 1,
+          hittable: true,
+          rect: { x: 20, y: 700, width: 300, height: 50 },
+        },
+      ];
+      if (input === 'offscreen')
+        nodes.push({
+          ref: '@field',
+          type: 'TextField',
+          label: 'Name',
+          parentIndex: 1,
+          rect: { x: 20, y: 1000, width: 300, height: 50 },
+        });
+      const form = joinScreen(
+        nodes,
+        [],
+        'app',
+        { native: 'complete', react: 'complete' },
+        {
+          complete: true,
+          hosts:
+            input === 'unassociated'
+              ? [
+                  {
+                    testID: 'profile-name',
+                    role: 'textbox',
+                    roleSource: 'role',
+                    capabilities: { fill: true },
+                  },
+                ]
+              : [],
+        },
+        {
+          source: 'xcui-live',
+          nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+        },
+      );
+      if (input === 'offscreen') {
+        const field = form.elements.find((e) => e.ref === '@field');
+        assert.equal(field?.kind, 'input');
+        assert.equal(field?.offscreen, true);
+      } else assert.equal(form.fillGapCount, 1);
+      const f = app(form);
+      ticking(f);
+      const vetoes: unknown[] = [];
+      f.deps.interruptionRejected = (event) => vetoes.push(event.veto);
+      const result = await runPlan(parsePlan(plan).blocks!, f.deps);
+      assert.equal(result.verdict, 'FAIL');
+      assert.deepEqual(f.actions, []);
+      assert.equal(result.recoveries, 0);
+      assert.ok(vetoes.includes('uncovered-target'));
+    });
+  }
+}
+
 for (const hidden of ['offscreen', 'keyboard'] as const) {
   test(`a failed check retains recovery for captured ${hidden} text without an ID`, async () => {
     const nodes: NativeNode[] = [
