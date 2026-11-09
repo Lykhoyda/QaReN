@@ -607,6 +607,8 @@ const DEV_ERROR_REFUSALS = {
     "a development error overlay appeared after the step's action was sent; it was not dismissed and the step was not replayed",
 } as const;
 type DevErrorRefusal = keyof typeof DEV_ERROR_REFUSALS;
+const DEV_ERROR_RECURRENCE =
+  'a development error overlay appeared again after one was already dismissed in this run; nothing was dismissed or replayed';
 
 // The runner's refusal code only: a value-free token, never the message after it.
 const refusalCode = (error: string | undefined): string | undefined =>
@@ -898,11 +900,12 @@ async function walkBlockScoped(
       if (latest.renderError && latest.front !== 'dev-redbox') throw new RenderError();
       // The overlay is never read as the app: recovery dismisses it, or the step refuses.
       if (latest.front === 'dev-redbox' && !recovery) {
-        const cause: DevErrorRefusal = mutationStarted ? 'ACTION_UNCERTAIN' : 'NO_SAFE_DISMISS';
+        const cause: DevErrorRefusal =
+          mutationStarted || sequence.devOverlayAccepted ? 'ACTION_UNCERTAIN' : 'NO_SAFE_DISMISS';
         if (!mutationStarted || !postActionEligible(activeItem, latest))
           throw new ResolutionError({
             refuse: `DEV_REDBOX_${cause}`,
-            reason: DEV_ERROR_REFUSALS[cause],
+            reason: sequence.devOverlayAccepted ? DEV_ERROR_RECURRENCE : DEV_ERROR_REFUSALS[cause],
           });
       }
       if (deps.timing)
@@ -3099,7 +3102,18 @@ async function walkBlockScoped(
       observation.screen.devError!.dismissRef!,
       until,
     );
-    if (!acted.ok || acted.executed === false) return refuse('DISMISS_FAILED');
+    if (!acted.ok || acted.executed === false) {
+      const code = refusalCode(acted.error);
+      try {
+        deps.note?.(`dev-error-dismiss-failed=${code ?? 'unknown'}`);
+      } catch {
+        // Diagnostics cannot change recovery.
+      }
+      return refuse(
+        'DISMISS_FAILED',
+        `${DEV_ERROR_REFUSALS.DISMISS_FAILED}${code ? `; runner refused: ${code}` : ''}`,
+      );
+    }
     const completionUncertain =
       "a development error overlay appeared after the step's action was sent; it was dismissed once to check the next screen, which did not prove the step completed and the step was not replayed";
     let after: Observation;
@@ -3171,8 +3185,12 @@ async function walkBlockScoped(
       fresh.screen.devError && previousDismissal
         ? { variant: fresh.screen.devError.variant, dismissal: previousDismissal }
         : undefined;
-    const refuse = (cause: DevErrorRefusal, runnerCode?: string): WalkOutcome => {
-      const message = `${DEV_ERROR_REFUSALS[cause]}${runnerCode ? `; runner refused: ${runnerCode}` : ''}`;
+    const refuse = (
+      cause: DevErrorRefusal,
+      runnerCode?: string,
+      reason: string = DEV_ERROR_REFUSALS[cause],
+    ): WalkOutcome => {
+      const message = `${reason}${runnerCode ? `; runner refused: ${runnerCode}` : ''}`;
       return {
         ...failed(
           item,
@@ -3204,7 +3222,8 @@ async function walkBlockScoped(
         throw error;
       }
     };
-    if (sequence.devOverlayAccepted) return refuse('ACTION_UNCERTAIN');
+    if (sequence.devOverlayAccepted)
+      return refuse('ACTION_UNCERTAIN', undefined, DEV_ERROR_RECURRENCE);
     if (mutationStarted) {
       if (!postActionEligible(item, fresh.screen)) return refuse('ACTION_UNCERTAIN');
       await postActionOverlay(item, fresh, until);

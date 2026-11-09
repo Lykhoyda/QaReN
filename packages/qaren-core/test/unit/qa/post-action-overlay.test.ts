@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { runPlan, walkBlock } from '../../../dist/qa/walker.js';
-import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
+import type { ActResult, WalkerDeps, WalkSequence } from '../../../dist/qa/walker.js';
 import type { LedgerRow } from '../../../dist/qa/ledger.js';
 import type { Screen } from '../../../dist/qa/screen.js';
 import { join, insideAlert } from '../../../dist/qa/screen.js';
@@ -30,6 +30,7 @@ function fixture(
     after?: Screen;
     overlay?: Screen;
     act?: ActResult;
+    dismissAct?: ActResult;
   } = {},
 ) {
   let current = options.before ?? screen([element('@next', 'Next')]);
@@ -39,6 +40,7 @@ function fixture(
   const shots: string[] = [];
   const rows: LedgerRow[] = [];
   const captures: Screen[] = [];
+  const notes: string[] = [];
   const deps: WalkerDeps = {
     platform: 'ios',
     async captureScreen() {
@@ -51,7 +53,7 @@ function fixture(
       current =
         ref === '@dismiss' ? (options.after ?? destination()) : (options.overlay ?? overlay());
       return ref === '@dismiss'
-        ? { ok: true, proven: false, executed: true }
+        ? (options.dismissAct ?? { ok: true, proven: false, executed: true })
         : (options.act ?? { ok: true, proven: false, executed: true });
     },
     async fill() {
@@ -78,6 +80,7 @@ function fixture(
       clock += ms;
     },
     row: (row) => rows.push(row),
+    note: (note) => notes.push(note),
     cancelled: () => cancelled,
   };
   return {
@@ -86,6 +89,7 @@ function fixture(
     shots,
     rows,
     captures,
+    notes,
     cancel: () => {
       cancelled = true;
     },
@@ -114,6 +118,40 @@ test('a dispatched navigation dismisses once and passes only with the next nativ
   assert.ok(!JSON.stringify([result, f.rows]).includes('CANARY'));
   assert.equal(result.steps[0].screenshot, undefined, 'overlay screenshot remains withheld');
 });
+
+test('the next quoted Fill uses the admitted post-dismissal input', async () => {
+  const f = fixture({
+    after: screen([element('@field', 'Question', { kind: 'input', testID: 'question-2' })]),
+  });
+  f.deps.fill = async (ref, text, context) => {
+    context!.authorize();
+    assert.equal(text, 'fixture');
+    f.actions.push(`fill ${ref}`);
+    return { ok: true, proven: true, executed: true };
+  };
+  const result = await runPlan(plan('2. Fill "question-2" with "fixture"'), f.deps);
+  assert.equal(result.verdict, 'PASS');
+  assert.equal(result.steps[0].devError?.afterAction, true);
+  assert.equal(result.steps[1].outcome, 'pass');
+  assert.deepEqual(f.actions, ['@next', '@dismiss', 'fill @field']);
+});
+
+for (const dismissAct of [
+  { ok: false, proven: false, executed: false },
+  { ok: true, proven: false, executed: false },
+]) {
+  test(`a failed post-action Dismiss retains its value-free runner code (${dismissAct.ok})`, async () => {
+    const f = fixture({
+      dismissAct: { ...dismissAct, error: 'TARGET_MOVED_BEFORE_DISPATCH: CANARY_RUNNER' },
+    });
+    const result = await runPlan(plan(), f.deps);
+    assert.equal(result.code, 'DEV_REDBOX_DISMISS_FAILED');
+    assert.match(result.message, /runner refused: TARGET_MOVED_BEFORE_DISPATCH/);
+    assert.deepEqual(f.notes, ['dev-error-dismiss-failed=TARGET_MOVED_BEFORE_DISPATCH']);
+    assert.deepEqual(f.actions, ['@next', '@dismiss']);
+    assert.ok(!JSON.stringify([result, f.rows, f.notes]).includes('CANARY'));
+  });
+}
 
 for (const [name, options] of Object.entries({
   absent: { after: screen([]) },
@@ -255,6 +293,33 @@ test('a RedBox after the cached Wait refuses before the next Tap without dismiss
     ['pass', 'pass'],
   );
   assert.equal(result.failure!.step, 3);
+  assert.match(result.message, /appeared again after one was already dismissed in this run/);
+  assert.doesNotMatch(result.message, /step's action was sent/);
+  assert.deepEqual(f.actions, ['@next', '@dismiss']);
+});
+
+test('a later recovery-disabled block retains the recurrence cause without dispatch', async () => {
+  const f = fixture();
+  const sequence: WalkSequence = { observation: 0 };
+  const first = await walkBlock(plan()[0], f.deps, 0, [], undefined, sequence);
+  assert.equal(first.block.outcome, 'pass');
+  assert.equal(sequence.devOverlayAccepted, true);
+  f.deps.captureScreen = async () => overlay();
+  const result = await walkBlock(
+    parsePlan('1. Tap "Next"').blocks![0],
+    f.deps,
+    0,
+    [],
+    undefined,
+    sequence,
+    { recover: false },
+  );
+  assert.equal(result.refusal?.code, 'DEV_REDBOX_ACTION_UNCERTAIN');
+  assert.match(
+    result.refusal!.message,
+    /appeared again after one was already dismissed in this run/,
+  );
+  assert.doesNotMatch(result.refusal!.message, /step's action was sent/);
   assert.deepEqual(f.actions, ['@next', '@dismiss']);
 });
 
