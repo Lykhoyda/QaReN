@@ -198,7 +198,7 @@ test('incomplete or unattested native captures log no line, whatever requirePriv
       const run = await observe(specs, { observation, requirePrivateInputs });
       assert.equal(run.count, 0, `require=${requirePrivateInputs}`);
       if (requirePrivateInputs)
-        assert.deepEqual(run.screen, { refused: 'PrivateInputCaptureError' });
+        assert.deepEqual(run.screen, { refused: 'NativeSnapshotIncomplete' });
       else assert.notEqual((run.screen as Screen).captureCoverage?.native, 'complete');
     }
   }

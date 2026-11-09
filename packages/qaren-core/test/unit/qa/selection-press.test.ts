@@ -10,6 +10,7 @@ import { parsePlan } from '../../../dist/qa/plan.js';
 import { join, screenSignature } from '../../../dist/qa/screen.js';
 import type { DigestEntry, NativeNode, Screen } from '../../../dist/qa/screen.js';
 import { NativeCaptureError } from '../../../dist/qa/capture.js';
+import { NativeSnapshotIncomplete } from '../../../dist/qa/private-input.js';
 import { QaDispatchError } from '../../../dist/domain/qa-dispatch.js';
 import { withCancellation, RunCancelledError } from '../../../dist/domain/cancellation.js';
 import { selectionPressCandidate } from '../../../dist/qa/selection-press.js';
@@ -707,6 +708,27 @@ test('a first-readback capture fault keeps its code and closed one-capture evide
     outsideTargetChange: false,
     captures: 1,
   });
+  assert.equal(presses(f), 1);
+  assert.equal(count, 2);
+});
+
+test('a native-incomplete press readback reconstructs its refusal without app text', async () => {
+  const f = rowFake([rowChips()]);
+  const error = new NativeSnapshotIncomplete(121, ['verdict=degraded']);
+  error.message = 'synthetic-private-message';
+  Reflect.set(error, 'code', 'synthetic-private-message');
+  Reflect.set(error, 'causes', ['verdict=degraded', 'synthetic-private-message']);
+  let count = 0;
+  f.deps.captureScreen = async () => {
+    if (++count === 2) throw error;
+    return rowChips();
+  };
+  const outcome = await walkBlock(rowTap, f.deps);
+  assert.deepEqual(outcome.refusal, {
+    code: 'NATIVE_SNAPSHOT_INCOMPLETE',
+    message: new NativeSnapshotIncomplete(121, ['verdict=degraded']).message,
+  });
+  assert.doesNotMatch(JSON.stringify(outcome), /synthetic-private-message/);
   assert.equal(presses(f), 1);
   assert.equal(count, 2);
 });

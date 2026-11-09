@@ -531,6 +531,7 @@ function markContinuity(
 
 export interface WalkSequence {
   observation: number;
+  captureUnknown?: boolean;
   latch?: {
     line: number;
     windowLine?: number;
@@ -825,6 +826,7 @@ async function walkBlockScoped(
     const requirePresence = assertion || (!!target && target.quoted === undefined);
     const platformPresence = requirePresence || purpose === 'provenance';
     const startedAt = deps.now();
+    let readStartedAt = startedAt;
     if (until !== undefined && startedAt >= until) throw new CaptureDeadline();
     const id = ++sequence.observation;
     latestObservation = id;
@@ -851,14 +853,33 @@ async function walkBlockScoped(
     let admitted = false;
     try {
       try {
-        latest = await captureScreen({
-          observation: id,
-          ...(platformPresence ? { platformPresence: true } : {}),
-          ...(timingObserver ? { timing: timingObserver } : {}),
-          ...(until === undefined ? {} : { budgetMs: Math.max(0, until - startedAt) }),
-        });
+        const deadline = step?.kind === 'wait' ? itemDeadline : undefined;
+        let incomplete: NativeSnapshotIncomplete | undefined;
+        let reads = 0;
+        while (true) {
+          assertActive();
+          if (incomplete && deadline !== undefined && deps.now() >= deadline)
+            throw incomplete.withReads(reads, deps.now() - startedAt);
+          try {
+            if (reads++ > 0) readStartedAt = deps.now();
+            latest = await captureScreen({
+              observation: id,
+              ...(platformPresence ? { platformPresence: true } : {}),
+              ...(timingObserver ? { timing: timingObserver } : {}),
+              ...(until === undefined ? {} : { budgetMs: Math.max(0, until - readStartedAt) }),
+            });
+            break;
+          } catch (error) {
+            if (error instanceof CaptureDeadline && incomplete)
+              throw incomplete.withReads(reads, deps.now() - startedAt);
+            if (!(error instanceof NativeSnapshotIncomplete) || deadline === undefined) throw error;
+            incomplete = new NativeSnapshotIncomplete(error.nodes, error.causes);
+            sequence.captureUnknown = true;
+            await pause(Math.min(WAIT_POLL_MS, Math.max(0, deadline - deps.now())));
+          }
+        }
         // Stamped at the capture's start until admission records its completion.
-        captured.set(latest, { at: startedAt, id });
+        captured.set(latest, { at: readStartedAt, id });
       } catch (error) {
         if (isAbort(error)) throw error;
         if (error instanceof AppProcessGoneError) throw processChanged();
@@ -895,7 +916,7 @@ async function walkBlockScoped(
         });
       assertActive();
       if (until !== undefined && deps.now() >= until) throw new CaptureDeadline();
-      const timing = admitObservation(startedAt, deps.now());
+      const timing = admitObservation(readStartedAt, deps.now());
       if (timing) captured.set(latest, { at: timing.completedAt, id });
       if (!timing)
         throw new ResolutionError({
@@ -4576,6 +4597,10 @@ async function walkBlockScoped(
               if (isAbort(error)) throw error;
               if (error instanceof NativeCaptureError)
                 return refusePress(error.code, new NativeCaptureError().message);
+              if (error instanceof NativeSnapshotIncomplete) {
+                const safe = new NativeSnapshotIncomplete(error.nodes, error.causes);
+                return refusePress(safe.code, safe.message);
+              }
               if (error instanceof PrivateInputCaptureError)
                 return refusePress(error.code, new PrivateInputCaptureError().message);
               if (error instanceof ResolutionError) return refusePress(error.code, error.message);
@@ -4943,12 +4968,19 @@ async function walkBlockScoped(
             false,
             false,
           );
-        if (error instanceof PrivateInputCaptureError || error instanceof NativeCaptureError) {
+        if (
+          error instanceof NativeSnapshotIncomplete ||
+          error instanceof PrivateInputCaptureError ||
+          error instanceof NativeCaptureError
+        ) {
           const nativeFailure = error instanceof NativeCaptureError;
           const safe = nativeFailure
             ? new NativeCaptureError()
             : error instanceof NativeSnapshotIncomplete
-              ? new NativeSnapshotIncomplete(error.nodes, error.causes)
+              ? new NativeSnapshotIncomplete(error.nodes, error.causes).withReads(
+                  error.reads,
+                  error.elapsedMs,
+                )
               : new PrivateInputCaptureError();
           const key = nativeFailure ? 'native-capture' : 'private-input-capture';
           emit({
@@ -5396,19 +5428,23 @@ export async function runPlan(
           ? { unsavable: `line ${Math.min(...privateFills)}: fills a private input` }
           : recipeMarkdown(title, blocks, privacy.privateSet('persisted'));
       const refusal = outcome?.refusal ?? (ledger.verdict === 'REFUSED' ? ledger : undefined);
-      const { nonStrictPublication: _nonStrict, ...captureUnknown } = ledger;
+      const captureUnknown =
+        sequence.captureUnknown ||
+        refusal?.code === 'PRIVATE_INPUT_CAPTURE_UNKNOWN' ||
+        refusal?.code === 'NATIVE_SNAPSHOT_INCOMPLETE';
+      const { nonStrictPublication: _nonStrict, ...withoutNonStrict } = ledger;
+      const publication = captureUnknown
+        ? { ...withoutNonStrict, videoPublication: 'unknown' as const }
+        : ledger;
       return refusal
         ? {
-            ...(refusal.code === 'PRIVATE_INPUT_CAPTURE_UNKNOWN' ? captureUnknown : ledger),
+            ...publication,
             code: refusal.code,
             message: refusal.message,
             ...(outcome?.pressEvidence ? { pressEvidence: outcome.pressEvidence } : {}),
             verdict: 'REFUSED',
-            ...(refusal.code === 'PRIVATE_INPUT_CAPTURE_UNKNOWN'
-              ? { videoPublication: 'unknown' as const }
-              : {}),
           }
-        : ledger;
+        : publication;
     };
     const withPrivateFills = (result: BlockResult, lines: number[] = []): BlockResult =>
       lines.length

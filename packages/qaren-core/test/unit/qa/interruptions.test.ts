@@ -1166,6 +1166,24 @@ test('a later step naming the sole Close keeps the promo and records ownership',
   });
 });
 
+test('an absorbed incomplete Wait read preserves the later-target interruption veto', async () => {
+  const f = app(observedButtons([element('@close', 'Close')]));
+  ticking(f);
+  const capture = f.deps.captureScreen;
+  let reads = 0;
+  f.deps.captureScreen = async (options) => {
+    if (++reads === 1) throw new NativeSnapshotIncomplete(121, ['verdict=degraded']);
+    return capture(options);
+  };
+  const result = await runPlan(waitPlan('2. Tap "Close"'), f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, []);
+  assert.equal(result.recoveries, 0);
+  assert.equal(result.steps.at(-1)?.interruption?.veto, 'later-target');
+  assert.equal(result.videoPublication, 'unknown');
+  assert.equal(result.nonStrictPublication, undefined);
+});
+
 test('a later wait on the sole Close ID keeps it and records the owning line', async () => {
   const f = app(fullScreenPromo());
   const streamed = ticking(f);

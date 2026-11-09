@@ -1929,7 +1929,10 @@ the screenshot cause and count; a retained cause then uses the new window's
 starting line. `videoPublication` retains the strict verdict;
 `nonStrictPublication` supplies the separate non-strict verdict. A walk refused
 after admission keeps both computed verdicts, except a
-`PRIVATE_INPUT_CAPTURE_UNKNOWN` refusal; that refusal and any refusal before
+`PRIVATE_INPUT_CAPTURE_UNKNOWN` or `NATIVE_SNAPSHOT_INCOMPLETE` refusal.
+If a Wait absorbs an incomplete native read, media stays unknown for the whole
+run even when a later read completes and the Wait passes or fails.
+These cases and any refusal before
 admission report `videoPublication: unknown` with no `nonStrictPublication`,
 which withholds video in either mode.
 The receipt includes one `media_withheld=<code>[/<kind|source>]@line <N>` note,
@@ -2004,9 +2007,14 @@ refuses with `SCREEN_EVIDENCE_INCOMPLETE` rather than guessing a target.
 The [screen projection](../qaren-core/src/qa/screen.ts) owns this policy.
 
 The native snapshot is the privacy boundary before walking a screen. Capture
-refuses with `PRIVATE_INPUT_CAPTURE_UNKNOWN` unless native completeness is attested;
+refuses with `NATIVE_SNAPSHOT_INCOMPLETE` unless native completeness is attested;
 the refusal reports only a value-free node count and fixed cause codes. Native
 acquisition failures also refuse without reinjection or a public-tree fallback.
+The privacy boundary is unchanged: an incomplete native snapshot is never walked
+or masked. A Wait re-reads on its normal poll cadence within its existing deadline;
+if no complete read follows, the refusal includes reads and elapsed time. Tap,
+Fill, Check and Scroll still refuse immediately. React-side incomplete capture
+and generic private-capture failures retain `PRIVATE_INPUT_CAPTURE_UNKNOWN`.
 
 A required private capture re-reads a canonical empty snapshot (`nodes=[]`,
 verdict `degraded`, `nodeCount=0`, reasons exactly `empty-capture`, no truncation
@@ -2026,7 +2034,7 @@ refuses with `NATIVE_CAPTURE_UNAVAILABLE` after the capture retry budget.
 An empty snapshot's unchanged ref map and zero-node count
 diagnostics do not prevent this read-only retry; persistent emptiness still
 refuses with the same code and message. Persistent incomplete presence refuses
-with `PRIVATE_INPUT_CAPTURE_UNKNOWN`, naming the unknown keyboard state and any
+with `NATIVE_SNAPSHOT_INCOMPLETE`, naming the unknown keyboard state and any
 known acquisition phase, failure reason or deadline read using fixed codes.
 If the retry deadline cuts off a read, the refusal retains the last incomplete
 presence snapshot's fixed causes and adds `retry-deadline` without returning that
