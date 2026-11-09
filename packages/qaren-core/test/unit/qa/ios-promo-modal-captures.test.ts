@@ -20,8 +20,10 @@ import {
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { prepareTarget } from '../../../dist/qa/resolve.js';
 import { NATIVE_PRESENCE_BUDGET_MS } from '../../../dist/qa/timing.js';
+import { AppProcessGoneError, NativeCaptureError } from '../../../dist/qa/capture.js';
+import { PrivateInputCaptureError } from '../../../dist/qa/private-input.js';
 import { runPlan } from '../../../dist/qa/walker.js';
-import { scriptedJudge, walker } from './judgment-fixtures.ts';
+import { element, scriptedJudge, walker } from './judgment-fixtures.ts';
 
 // Device-captured modal evidence; header variants add the duplicate control to those join() inputs.
 function capture(name: string, header?: 'native' | 'react-only'): Screen {
@@ -189,9 +191,9 @@ for (const failure of ['refused', 'incomplete', 'late', 'unproven'] as const) {
     f.deps.captureScreen = async (options) => {
       const screen = await captureScreen(options);
       if (!options?.platformPresence) return screen;
-      if (failure === 'refused') throw new Error('native presence refused');
+      if (failure === 'refused') throw new NativeCaptureError();
       if (failure === 'incomplete')
-        return { ...screen, coverage: { native: 'partial', react: 'complete' } };
+        return { ...screen, coverage: { native: 'incomplete', react: 'complete' } };
       if (failure === 'late') now += NATIVE_PRESENCE_BUDGET_MS;
       return failure === 'unproven' ? f.ordinary : screen;
     };
@@ -213,6 +215,64 @@ test('React-only duplicates behind a sheet remain in contention and out of exclu
   assert.ok('refuse' in result && result.refuse === 'TARGET_AMBIGUOUS', JSON.stringify(result));
   assert.equal(result.candidateExclusions, undefined);
 });
+
+test('a late detailed recapture refreshes the ordinary observation before existing live-hit probes', async () => {
+  const f = ambiguousClose();
+  f.ordinary.nativeGeneration = 7;
+  const captureScreen = f.deps.captureScreen;
+  let now = 0;
+  f.deps.now = () => now;
+  f.deps.captureScreen = async (options) => {
+    const screen = await captureScreen(options);
+    if (options?.platformPresence && options.budgetMs !== undefined) {
+      now += NATIVE_PRESENCE_BUDGET_MS;
+      throw new NativeCaptureError();
+    }
+    return screen;
+  };
+  const probes: string[] = [];
+  f.deps.hitProbe = async (ref) => {
+    assert.deepEqual(f.modes, [false, true, false]);
+    probes.push(ref);
+    return ref === '@e8' ? 'not-hittable' : 'hittable';
+  };
+  const result = await runPlan(parsePlan('1. Tap "Close"').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS', JSON.stringify(result));
+  assert.deepEqual(probes, ['@e7', '@e8']);
+  assert.deepEqual(f.actions, ['press @e7']);
+  assert.equal(f.modes.filter(Boolean).length, 1);
+  assert.equal(result.steps[0].candidateExclusions?.[0].reason, 'not-hittable');
+});
+
+for (const failure of ['process-changed', 'private-input', 'render-error', 'dev-redbox'] as const) {
+  test(`a ${failure} during detailed recapture keeps its run-level cause`, async () => {
+    const f = ambiguousClose();
+    const captureScreen = f.deps.captureScreen;
+    f.deps.captureScreen = async (options) => {
+      const screen = await captureScreen(options);
+      if (!options?.platformPresence) return screen;
+      if (failure === 'process-changed') throw new AppProcessGoneError();
+      if (failure === 'private-input') throw new PrivateInputCaptureError('private-canary');
+      return failure === 'render-error'
+        ? { ...screen, renderError: true }
+        : { ...screen, front: 'dev-redbox' };
+    };
+    const result = await runPlan(parsePlan('1. Tap "Close"').blocks!, f.deps);
+    assert.notEqual(result.verdict, 'PASS');
+    const expected =
+      failure === 'process-changed'
+        ? /APP_PROCESS_CHANGED/
+        : failure === 'private-input'
+          ? /Private input capture could not be established safely/
+          : failure === 'render-error'
+            ? /React Native error screen/
+            : /development error|DEV_REDBOX/;
+    assert.match(result.failure?.seen ?? '', expected);
+    assert.doesNotMatch(result.failure?.seen ?? '', /TARGET_AMBIGUOUS|private-canary/);
+    assert.deepEqual(f.actions, []);
+    assert.equal(f.modes.filter(Boolean).length, 1);
+  });
+}
 
 test('all native duplicates proven behind the sheet stay not found, listing each exclusion', () => {
   const detailed = capture('wait-first-presence', 'native');
@@ -272,4 +332,38 @@ test('an item retry never repeats the bounded ambiguity recapture', async () => 
   assert.match(result.failure?.seen ?? '', /TARGET_AMBIGUOUS/);
   assert.equal(recaptures, 1);
   assert.deepEqual(f.actions, ['press @e13']);
+});
+
+test('development-overlay recovery preserves the ambiguity recapture budget', async () => {
+  const f = ambiguousClose();
+  f.deps.hideDevMenu = async () => assert.fail('only the error overlay may be dismissed');
+  const captureScreen = f.deps.captureScreen;
+  let recaptures = 0;
+  let overlayShown = false;
+  const overlay: Screen = {
+    ...f.detailed,
+    elements: [element('@dismiss', 'Dismiss')],
+    front: 'dev-redbox',
+    devError: { variant: 'redbox', dismissRef: '@dismiss' },
+  };
+  f.deps.captureScreen = async (options) => {
+    const screen = await captureScreen(options);
+    if (options?.platformPresence && options.budgetMs !== undefined) {
+      recaptures++;
+      if (recaptures === 1) overlayShown = true;
+    }
+    return overlayShown ? overlay : screen;
+  };
+  f.deps.press = async (ref, context) => {
+    context!.authorize();
+    f.actions.push(`press ${ref}`);
+    assert.equal(ref, '@dismiss');
+    overlayShown = false;
+    return { ok: true, proven: true, executed: true };
+  };
+  const result = await runPlan(parsePlan('1. Tap "Close"').blocks!, f.deps);
+  assert.equal(result.verdict, 'FAIL', JSON.stringify(result));
+  assert.match(result.failure?.seen ?? '', /TARGET_AMBIGUOUS/);
+  assert.equal(recaptures, 1);
+  assert.deepEqual(f.actions, ['press @dismiss']);
 });
