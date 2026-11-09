@@ -1,15 +1,63 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync, statSync } from 'node:fs';
+import {
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
   probeProcessBirth,
   processBirthMatches,
   readProcessBirth,
+  listVerifiedDirectory,
+  readFileFromVerifiedDirectory,
 } from '../../../dist/lifecycle/process-birth.js';
 
 const noHostPidLookup = { signalPermission: () => 'unknown' as const };
+
+test(
+  'verified directory reads accept real entries and refuse symlinks and wrong identities',
+  {
+    skip: process.platform !== 'linux' && process.platform !== 'darwin',
+  },
+  () => {
+    const root = mkdtempSync(join(tmpdir(), 'qaren-verified-directory-'));
+    try {
+      const directory = join(root, 'actions');
+      mkdirSync(directory);
+      writeFileSync(join(directory, 'action.yaml'), 'appId: com.example.app\n');
+      symlinkSync('action.yaml', join(directory, 'alias.yaml'));
+      symlinkSync('actions', join(root, 'linked-actions'));
+      const stat = lstatSync(directory, { bigint: true });
+      const identity = { dev: String(stat.dev), ino: String(stat.ino) };
+
+      assert.deepEqual(listVerifiedDirectory(directory, identity).sort(), [
+        'action.yaml',
+        'alias.yaml',
+      ]);
+      assert.equal(
+        readFileFromVerifiedDirectory(directory, identity, 'action.yaml').toString(),
+        'appId: com.example.app\n',
+      );
+      assert.throws(() => readFileFromVerifiedDirectory(directory, identity, 'alias.yaml'));
+      assert.throws(() => listVerifiedDirectory(join(root, 'linked-actions'), identity));
+      assert.throws(() =>
+        listVerifiedDirectory(directory, { ...identity, ino: String(stat.ino + 1n) }),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
 
 test('macOS process identity uses full kernel start time and boot session', () => {
   const runForBoot = (bootSession, startMicroseconds = '345678') => ({
