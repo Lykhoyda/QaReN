@@ -74,6 +74,116 @@ fn publication_interruption_survives_ledger_round_trip_and_defaults_to_false() {
 }
 
 #[test]
+fn continuity_events_are_passive_and_report_the_first_counted_owner() {
+    let mut raw = ledger(json!([]), serde_json::Value::Null);
+    raw["admittedAtMs"] = json!(100_000);
+    for (signal, owner, cause) in [
+        (
+            "runner-recovery",
+            "qaren",
+            "QaReN's runner restarted at 0:12 after admission (line 7)",
+        ),
+        (
+            "runner-leak",
+            "qaren",
+            "QaReN's runner restarted at 0:12 after admission (line 7)",
+        ),
+        (
+            "app-process-unproven",
+            "qaren",
+            "QaReN could not read the app's process at 0:12 after admission (line 7)",
+        ),
+        (
+            "app-not-running",
+            "app",
+            "the app's process changed or stopped at 0:12 after admission (line 7)",
+        ),
+        (
+            "app-process-changed",
+            "app",
+            "the app's process changed or stopped at 0:12 after admission (line 7)",
+        ),
+        (
+            "app-process-gone",
+            "app",
+            "the app's process changed or stopped at 0:12 after admission (line 7)",
+        ),
+        (
+            "dev-client-picker",
+            "dev-client",
+            "the dev client's picker came to the front at 0:12 after admission (line 7)",
+        ),
+        (
+            "first-run-tutorial",
+            "dev-client",
+            "the dev client's first-run tutorial came to the front at 0:12 after admission (line 7)",
+        ),
+        (
+            "dev-overlay",
+            "dev-client",
+            "the dev client's dev menu came to the front at 0:12 after admission (line 7)",
+        ),
+    ] {
+        raw["continuityEvents"] = json!([
+            {"signal":"runner-recovery","atMs":99_000,"counted":false,"beforeAdmission":true},
+            {"signal":signal,"atMs":112_000,"line":7,"counted":true,"detail":{"front":"dev-menu","unresolved":true}}
+        ]);
+        raw["continuityEventsDropped"] = json!(2);
+        let parsed: Ledger = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(parsed.first_counted().unwrap().owner(), owner);
+        assert_eq!(parsed.continuity_events_dropped, Some(2));
+        let line = qaren::report::video_unavailable_line(
+            &qaren::record::VideoStatus::unavailable(
+                "app continuity was interrupted after admission".into(),
+            ),
+            Some(&parsed),
+        )
+        .unwrap();
+        assert!(line.contains(cause), "{line}");
+        assert!(line.contains(&format!("owner: {owner}")), "{line}");
+        assert!(!line.contains("re-run"));
+    }
+    for malformed in [
+        json!(null),
+        json!({}),
+        json!([{"signal":"runner-recovery","atMs":"bad"}]),
+    ] {
+        raw["continuityEvents"] = malformed;
+        let parsed: Ledger = serde_json::from_value(raw.clone()).unwrap();
+        assert!(parsed.continuity_events.is_empty());
+    }
+    raw["continuityEvents"] = json!([{"signal":"future-signal","atMs":112_000,"counted":true}]);
+    let parsed: Ledger = serde_json::from_value(raw).unwrap();
+    assert_eq!(
+        parsed.first_counted().unwrap().signal,
+        qaren::core::ContinuitySignal::Unknown
+    );
+}
+
+#[test]
+fn kept_video_explains_runner_frames_only_inside_the_publication_window() {
+    let mut raw = ledger(json!([]), serde_json::Value::Null);
+    raw["admittedAtMs"] = json!(100_000);
+    raw["publishFromMs"] = json!(110_000);
+    raw["videoPolicy"] = json!("non-strict");
+    raw["nonStrictPublication"] = json!("eligible");
+    for (at_ms, expected) in [(99_000, false), (105_000, false), (112_000, true)] {
+        raw["continuityEvents"] =
+            json!([{"signal":"runner-recovery","atMs":at_ms,"counted":false}]);
+        let parsed: Ledger = serde_json::from_value(raw.clone()).unwrap();
+        let note = qaren::report::video_outcome_line(
+            &parsed,
+            &qaren::record::VideoPublication::Eligible,
+            Some(&qaren::record::VideoStatus::Available),
+        );
+        assert_eq!(note.is_some(), expected);
+        if let Some(note) = note {
+            assert_eq!(note, "QaReN observed its runner recovery at 0:12 after admission; the app kept running (same process), so the video was kept. This is when the snapshot completed, not the start of the runner frames.");
+        }
+    }
+}
+
+#[test]
 fn the_admission_time_survives_ledger_round_trip() {
     let mut raw = ledger(
         json!([]),
@@ -282,5 +392,94 @@ fn launch_wait_round_trips_and_a_malformed_value_cannot_reject_a_row() {
         let parsed: Row = serde_json::from_value(row(json!({"implicitWaitMs":value}))).unwrap();
         assert_eq!(parsed.outcome, "pass");
         assert!(parsed.implicit_wait_ms.is_none());
+    }
+}
+
+#[test]
+fn proven_app_events_take_precedence_over_older_unproven_continuity_events() {
+    for unproven in ["runner-recovery", "runner-leak", "app-process-unproven"] {
+        for detail in [
+            json!({"unresolved":true}),
+            json!({}),
+            serde_json::Value::Null,
+        ] {
+            for (signal, owner) in [
+                ("app-not-running", "app"),
+                ("app-process-changed", "app"),
+                ("app-process-gone", "app"),
+                ("dev-client-picker", "dev-client"),
+                ("first-run-tutorial", "dev-client"),
+            ] {
+                let mut raw = ledger(json!([]), serde_json::Value::Null);
+                raw["admittedAtMs"] = json!(100_000);
+                raw["continuityEvents"] = json!([
+                    {"signal":unproven,"atMs":101_000,"counted":true,"detail":detail},
+                    {"signal":signal,"atMs":112_000,"counted":true,"line":7}
+                ]);
+                let parsed: Ledger = serde_json::from_value(raw).unwrap();
+                let selected = parsed.first_counted().unwrap();
+                assert_eq!(serde_json::to_value(selected.signal).unwrap(), signal);
+                assert_eq!(selected.at_ms, 112_000);
+                assert_eq!(selected.owner(), owner);
+                assert_eq!(parsed.continuity_events[0].at_ms, 101_000);
+                assert_eq!(
+                    parsed.continuity_events[0].detail,
+                    if detail.is_null() {
+                        None
+                    } else {
+                        Some(detail.clone())
+                    }
+                );
+                let status = qaren::record::VideoStatus::unavailable(
+                    "app continuity was interrupted after admission".into(),
+                );
+                let receipt =
+                    qaren::publish::VideoInterruption::from_ledger(&status, &parsed, 90_000)
+                        .unwrap();
+                assert_eq!(receipt.owner, owner);
+                assert_eq!(receipt.at_ms, 112_000);
+                assert_eq!(receipt.after_admission_ms, Some(12_000));
+                assert_eq!(receipt.video_ms, Some(22_000));
+                let line = qaren::report::video_unavailable_line(&status, Some(&parsed)).unwrap();
+                assert!(line.contains("0:12 after admission (line 7)"), "{line}");
+                assert!(line.contains(&format!("owner: {owner}")), "{line}");
+                assert!(!line.contains("could not confirm"), "{line}");
+            }
+        }
+    }
+}
+
+#[test]
+fn first_counted_is_preserved_without_later_proven_app_evidence() {
+    for (first, detail, later) in [
+        (
+            "runner-recovery",
+            json!({"unresolved":true}),
+            "app-process-unproven",
+        ),
+        ("runner-leak", json!({}), "future-signal"),
+        (
+            "runner-recovery",
+            json!({"fromPid":41,"toPid":77}),
+            "app-not-running",
+        ),
+        (
+            "app-process-unproven",
+            json!({"unresolved":true}),
+            "dev-overlay",
+        ),
+        (
+            "dev-overlay",
+            json!({"front":"dev-menu"}),
+            "app-not-running",
+        ),
+    ] {
+        let mut raw = ledger(json!([]), serde_json::Value::Null);
+        raw["continuityEvents"] = json!([
+            {"signal":first,"atMs":101_000,"counted":true,"detail":detail},
+            {"signal":later,"atMs":112_000,"counted":true}
+        ]);
+        let parsed: Ledger = serde_json::from_value(raw).unwrap();
+        assert_eq!(parsed.first_counted().unwrap().at_ms, 101_000);
     }
 }

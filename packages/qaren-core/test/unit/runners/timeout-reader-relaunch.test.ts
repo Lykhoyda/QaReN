@@ -792,6 +792,7 @@ for (const platformPresence of [true, false]) {
         return runIOS(args);
       }, 'com.test');
       await snapshots.snapshot({ command: 'snapshot', qaReadOnly: true });
+      snapshots.admit();
       await runIOS({ command: 'type', text: 'exact' });
       assert.equal(snapshots.interrupted(), false);
       appProcessIdentifier = recoveredProcess;
@@ -800,7 +801,11 @@ for (const platformPresence of [true, false]) {
       const capture = privateCapture(time.now, () => reads++, platformPresence, snapshots.snapshot);
       await nextTurn();
       assert.equal(reads, 1);
-      assert.equal(snapshots.interrupted(), false, 'transient absence is not a process change');
+      assert.equal(
+        snapshots.events().some((event) => event.counted),
+        false,
+        'transient absence is not a process change',
+      );
       await time.advance(500);
       assert.equal((await capture).captureCoverage?.native, 'complete');
       assert.equal(reads, 2);

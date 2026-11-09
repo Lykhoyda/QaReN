@@ -762,6 +762,7 @@ async function openSession(
     throw error;
   }
   const admittedAtMs = Date.now();
+  admittedSnapshots.admit();
   cancellationSignal();
 
   const press = createDevicePressHandler(getClient);
@@ -788,6 +789,8 @@ async function openSession(
     presenceUnavailable: platform === 'android',
     timing,
     publicationInterrupted: admittedSnapshots.interrupted,
+    continuityEvents: admittedSnapshots.events,
+    continuityEventsDropped: admittedSnapshots.dropped,
     readLabelProvenance: async (refs, deadline, report) => {
       const budget = Math.min(20_000, Math.floor(deadline - now()));
       if (budget <= 0) return undefined;
@@ -1259,6 +1262,8 @@ export async function mainRequest(
     ]);
     ledger.admittedAtMs = opened.admittedAtMs;
     ledger.publicationInterrupted = opened.deps.publicationInterrupted?.() === true;
+    ledger.continuityEvents = opened.deps.continuityEvents?.() ?? [];
+    ledger.continuityEventsDropped = opened.deps.continuityEventsDropped?.() ?? 0;
     return finish(ledger, () => opened.close());
   }
 }
