@@ -3067,6 +3067,8 @@ async function walkBlockScoped(
       until,
     );
     if (!acted.ok || acted.executed === false) return refuse('DISMISS_FAILED');
+    const completionUncertain =
+      "a development error overlay appeared after the step's action was sent; it was dismissed once to check the next screen, which did not prove the step completed and the step was not replayed";
     let after: Observation;
     try {
       after = await captureOnce(
@@ -3079,9 +3081,10 @@ async function walkBlockScoped(
     } catch (error) {
       if (
         error instanceof CaptureDeadline ||
+        error instanceof NativeSnapshotIncomplete ||
         (error instanceof ResolutionError && error.code === 'SCREEN_EVIDENCE_INCOMPLETE')
       )
-        return refuse('ACTION_UNCERTAIN');
+        return refuse('ACTION_UNCERTAIN', completionUncertain);
       throw error;
     }
     if (after.screen.front === 'dev-redbox')
@@ -3104,10 +3107,7 @@ async function walkBlockScoped(
         (element) => element.testID === target && !element.ref.startsWith('react:'),
       )
     )
-      return refuse(
-        'ACTION_UNCERTAIN',
-        "a development error overlay appeared after the step's action was sent; it was dismissed once to check the next screen, which did not prove the step completed and the step was not replayed",
-      );
+      return refuse('ACTION_UNCERTAIN', completionUncertain);
     postActionDevError = {
       ...postActionDevError,
       afterAction: true,

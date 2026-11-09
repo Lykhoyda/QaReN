@@ -9,6 +9,7 @@ import type { Screen } from '../../../dist/qa/screen.js';
 import { join, insideAlert } from '../../../dist/qa/screen.js';
 import { selectionPressCandidate } from '../../../dist/qa/selection-press.js';
 import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
+import { NativeSnapshotIncomplete } from '../../../dist/qa/private-input.js';
 import { element, screen } from './judgment-fixtures.ts';
 
 const plan = (next = '2. Wait for "question-2"') => parsePlan(`1. Tap "Next"\n${next}`).blocks!;
@@ -347,8 +348,32 @@ test('an incomplete post-dismissal capture cannot prove completion', async () =>
   const result = await runPlan(plan(), f.deps);
   assert.equal(result.verdict, 'REFUSED');
   assert.equal(result.code, 'DEV_REDBOX_ACTION_UNCERTAIN');
+  assert.match(result.message, /dismissed once to check the next screen/);
   assert.deepEqual(f.actions, ['@next', '@dismiss']);
 });
+
+for (const recovery of [false, true]) {
+  test(`a post-dismissal native capture exception stays action-uncertain (recovery=${recovery})`, async () => {
+    const before = screen([element('@next', 'Next')]);
+    const f = fixture({ before });
+    const capture = f.deps.captureScreen;
+    let readbacks = 0;
+    f.deps.captureScreen = async (options) => {
+      if (f.actions.at(-1) === '@dismiss')
+        throw new NativeSnapshotIncomplete(1, ['truncated']);
+      if (recovery && f.actions.at(-1) === '@next' && readbacks++ === 0) return before;
+      return capture(options);
+    };
+    const result = await walkBlock(plan()[0], f.deps, 0, [], undefined, undefined, {
+      singleAttempt: true,
+    });
+    assert.equal(result.refusal?.code, 'DEV_REDBOX_ACTION_UNCERTAIN');
+    assert.match(result.refusal!.message, /dismissed once to check the next screen/);
+    assert.match(result.refusal!.message, /step was not replayed/);
+    assert.deepEqual(f.actions, ['@next', '@dismiss']);
+    assert.deepEqual(result.rows[0].devError, { variant: 'redbox', dismissal: 1 });
+  });
+}
 
 for (const shot of [2, 3, 'incomplete', 'incomplete-overlay'] as const) {
   test(`a RedBox during pixel readback ${shot} preserves action safety`, async () => {
