@@ -1,5 +1,16 @@
 # qaren
 
+## 2.1.2
+
+### Patch Changes
+
+- faa0860: Keep plain scrolls inside reachable scroll views, detect descendant frame movement, and report proven covers or unchanged overflowing content with typed diagnostics.
+- 68639b3: Android: Fill now types into a focused input that the app keeps fully transparent (a common one-time-code pattern) instead of scrolling and refusing; such an input without focus is refused with its real cause.
+- 89b5e6f: Preserve app screens after a planned press until its identified destination departs, login replay clears protection, or a later planned item passes on its own complete capture with no decline control on screen, excluding static decline text but retaining uncertain decline controls and never lapsing on declaration-only passes (one shared predicate protects every remaining quoted or described target in every block, treating unresolved matches conservatively and naming the matching later line in failures); name the press line when steps have passed since; classify permitted permission opt-in declines, including two-window captures whose back window repeats the front controls, without granting extra dismissals; record the control-count evidence behind each rejected interruption; retain the closed accept-all consent guard and Don't allow controls; and explain protected screens with privacy-safe plan edits.
+- 89b5e6f: Dismiss full-screen interruptions only when no remaining planned target could match the screen, and record the recovery decision and any matching later line on the step's row.
+- bfe85f5: Count only what a user can see and tap when a quoted Tap or Fill names several elements, and name each nested, set-aside or covering element, or why no cover could be named, when a target is refused.
+- 7296d4c: Reuse clone-backed pnpm dependencies (isolated or hoisted, including apps in a subdirectory without a root manifest) across pull request runs while retaining frozen-lockfile validation and ownership-safe cleanup; the pnpm process-group probe no longer installs dependencies, and a cache miss names the changed input class.
+
 ## 2.1.1
 
 ### Patch Changes
