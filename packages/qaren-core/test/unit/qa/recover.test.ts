@@ -17,6 +17,7 @@ import {
   ancestorsOf,
   hostAssociationIdentity,
   join,
+  modalCoverDiagnostic,
   type Element,
   type NativeNode,
   type ReactHostEvidence,
@@ -26,6 +27,7 @@ import { centreCovered, targetEvidence } from '../../../dist/qa/resolve.js';
 import { parsePlan, type Target } from '../../../dist/qa/plan.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import { element, screen as fixtureScreen, scriptedJudge, walker } from './judgment-fixtures.ts';
+import { modalOverHome } from './modal-fixtures.ts';
 
 test('protection lapse distinguishes static decline text from possible decline controls', () => {
   const cases = [
@@ -936,11 +938,22 @@ const decide = (snapshot: Screen, targets: RecoveryTarget[]) => {
   };
 };
 
-test('a later press or fill matching promo copy keeps a sole-Close promo up', () => {
+test('a later press or fill matching promo copy does not keep a sole-Close promo up', () => {
   for (const kind of ['press', 'fill'] as const) {
     const { result, records } = decide(fullScreenPromo(), [waitHome, later('Premium', kind)]);
-    assert.equal(result, undefined, kind);
-    assert.equal(records[0]?.veto, 'later-target', kind);
+    assert.deepEqual(result, { label: 'Close' }, kind);
+    assert.deepEqual(records, [], kind);
+  }
+});
+
+test('a later-block press or a described tap matching promo copy still keeps it', () => {
+  for (const target of [
+    later('Premium', 'press', { laterBlock: true }),
+    { phrase: 'the premium offer', line: 9, kind: 'press' as const },
+  ]) {
+    const { result, records } = decide(fullScreenPromo(), [waitHome, target]);
+    assert.equal(result, undefined, target.phrase);
+    assert.equal(records[0]?.veto, 'later-target', target.phrase);
   }
 });
 
@@ -988,20 +1001,20 @@ test('a later same-block press on the container of the sole Close still keeps it
     records.map(({ veto, soleDecline, elements }) => ({ veto, soleDecline, elements })),
     [
       {
-        veto: 'later-target',
+        veto: 'no-candidate',
         soleDecline: true,
-        elements: [],
+        elements: [{ index: 3, failed: 'target-ancestor' }],
       },
     ],
   );
 });
 
-test('a later press by the testID of promo text protects the interruption', () => {
+test('a later press by the testID of promo text is a coincidence, not ownership', () => {
   const { result } = decide(fullScreenPromo(), [
     waitHome,
     later('promo-title', 'press', { exact: 'id' }),
   ]);
-  assert.equal(result, undefined);
+  assert.deepEqual(result, { label: 'Close' });
 });
 
 test('a later step naming Close by label or id keeps it, with ownership provenance', () => {
@@ -1175,6 +1188,77 @@ test('a press that opened the promo still withholds the decline', () => {
   assert.equal(records[0].veto, 'previous-plan-press');
 });
 
+test('Home Pressables behind a presented sole-Close modal do not defeat the sole decline', () => {
+  const snapshot = modalOverHome();
+  assert.equal(snapshot.pressGapCount, 0);
+  assert.equal(snapshot.pressEvidenceGap, undefined);
+  assert.equal(soleDecline(snapshot), true);
+  const waitTarget: RecoveryTarget = {
+    phrase: 'qa-promo-home-target',
+    quoted: 'qa-promo-home-target',
+    exact: 'id',
+    kind: 'wait',
+    line: 11,
+  };
+  const { result, records } = decide(snapshot, [waitTarget, later('See Pro offers', 'press')]);
+  assert.deepEqual(result, { label: 'Close' });
+  assert.deepEqual(records, []);
+  const observed = decide(snapshot, [waitTarget, later('See Pro offers', 'check')]);
+  assert.equal(observed.result, undefined);
+  assert.equal(observed.records[0].veto, 'later-target');
+  assert.equal(observed.records[0].provenance, 'presence');
+});
+
+test('Home Pressables still count as gaps without a presented modal or with Home native', () => {
+  // Without a modal the promo's covered React ancestor still applies, so even Close stays unproven.
+  assert.equal(modalOverHome({ modalType: 'RCTView' }).pressGapCount, 3);
+  // Native showing Home means the modal does not cover it, so the unmatched offer stays a gap.
+  assert.equal(modalOverHome({ homeNative: true }).pressGapCount, 1);
+  for (const options of [{ modalType: 'RCTView' }, { homeNative: true }])
+    assert.equal(soleDecline(modalOverHome(options)), false, JSON.stringify(options));
+});
+
+test('a second control inside the presented modal still defeats the sole decline', () => {
+  const snapshot = modalOverHome({ secondControl: true });
+  assert.equal(snapshot.pressGapCount, 0);
+  assert.equal(soleDecline(snapshot), false);
+});
+
+test('a rejection names which modal-cover condition failed, with counts', () => {
+  const facts = (screen: Screen) => {
+    const { refused, modalCount, associatedCount, associatedOutside, modalTypes } =
+      modalCoverDiagnostic(screen)!;
+    return { refused, modalCount, associatedCount, associatedOutside, modalTypes };
+  };
+  assert.deepEqual(facts(modalOverHome()), {
+    refused: undefined,
+    modalCount: 1,
+    associatedCount: 2,
+    associatedOutside: 0,
+    modalTypes: ['RCTModalHostView'],
+  });
+  assert.equal(modalCoverDiagnostic(modalOverHome())!.identities.matched, 2);
+  assert.deepEqual(facts(modalOverHome({ modalType: 'ModalHostView' })), {
+    refused: 'modal-count',
+    modalCount: 0,
+    associatedCount: 0,
+    associatedOutside: 0,
+    modalTypes: ['ModalHostView'],
+  });
+  assert.deepEqual(facts(modalOverHome({ homeNative: true })), {
+    refused: 'associated-outside',
+    modalCount: 1,
+    associatedCount: 4,
+    associatedOutside: 2,
+    modalTypes: ['RCTModalHostView'],
+  });
+  const { records } = decide(modalOverHome({ homeNative: true }), [
+    { phrase: 'qa-promo-home-target', quoted: 'qa-promo-home-target', kind: 'wait', line: 12 },
+  ]);
+  assert.equal(records[0].cover?.refused, 'associated-outside');
+  assert.doesNotMatch(JSON.stringify(records), /qa-|Close|Target|Pro offer/);
+});
+
 // A mid-walk opt-in: copy, one soft decline and one accepting control.
 const optIn = (decline = 'Skip', accept = 'Yes, notify me', ...extra: Element[]): Screen =>
   fixtureScreen([
@@ -1211,6 +1295,129 @@ test('the closed accept-all list keeps every decline outside protection too', ()
       assert.equal(decide(optIn(decline, accept), [waitHome]).result, undefined);
     }
   }
+});
+
+test('an absent check or wait target admits a soft decline but never a Cancel', () => {
+  const absent: RecoveryTarget = {
+    phrase: 'Lists ready',
+    quoted: 'Lists ready',
+    kind: 'wait',
+    line: 4,
+  };
+  const sheet = (decline: string): Screen => ({
+    ...fixtureScreen([
+      element('@new', 'New: shared lists', { kind: 'text' }),
+      element('@try', 'Try shared lists'),
+      element('@decline', decline),
+    ]),
+    reactHostEvidence: { complete: true, hosts: [] },
+    fillGapCount: 0,
+  });
+  assert.deepEqual(dismissCandidate(sheet('Maybe later'), [absent], undefined, 'absent-surface'), {
+    label: 'Maybe later',
+  });
+  for (const field of [
+    element('@field', 'Name', {
+      kind: 'input',
+      disabled: true,
+      semantic: { press: 'unsupported', fill: 'unsupported', visibility: 'visible' },
+    }),
+    element('@field', 'Name', {
+      kind: 'text',
+      semantic: { press: 'unsupported', fill: 'supported', visibility: 'visible' },
+    }),
+    element('@field', 'Name', {
+      kind: 'text',
+      semantic: { press: 'unsupported', fill: 'unknown', visibility: 'visible' },
+    }),
+  ]) {
+    for (const kind of ['check', 'wait'] as const) {
+      for (const offscreen of [false, true]) {
+        const snapshot = sheet('Maybe later');
+        snapshot.elements.push({ ...field, offscreen });
+        const records: InterruptionDiagnostic[] = [];
+        assert.equal(
+          dismissCandidate(
+            snapshot,
+            [{ ...absent, kind }],
+            (record) => records.push(record),
+            'absent-surface',
+          ),
+          undefined,
+        );
+        assert.equal(records[0]?.veto, 'uncovered-target');
+      }
+    }
+  }
+  for (const evidence of [
+    { reactHostEvidence: undefined },
+    { reactHostEvidence: { complete: false, hosts: [] } },
+    { fillGapCount: undefined },
+    { fillGapCount: 1 },
+  ]) {
+    const records: InterruptionDiagnostic[] = [];
+    assert.equal(
+      dismissCandidate(
+        { ...sheet('Maybe later'), ...evidence },
+        [absent],
+        (record) => records.push(record),
+        'absent-surface',
+      ),
+      undefined,
+    );
+    assert.equal(records[0]?.veto, 'uncovered-target');
+  }
+  for (const decline of ['Cancel', 'Close'])
+    assert.equal(
+      dismissCandidate(sheet(decline), [absent], undefined, 'absent-surface'),
+      undefined,
+      decline,
+    );
+  // A missing tap or fill target still needs a sole decline or an opt-in.
+  assert.equal(
+    dismissCandidate(sheet('Maybe later'), [{ ...absent, kind: 'press' }], undefined, 'surface'),
+    undefined,
+  );
+});
+
+test('an input behind a separate modal does not block its soft decline', () => {
+  const modal = modalOverHome({ input: true, secondControl: true });
+  modal.elements.find((e) => e.ref === '@close')!.label = 'Skip';
+  modal.elements.push(
+    element('@hidden-input', 'Name', {
+      kind: 'input',
+      testID: 'qa-promo-home-target',
+      offscreen: true,
+    }),
+  );
+  assert.equal(modal.fillGapCount, 0);
+  assert.deepEqual(
+    dismissCandidate(
+      modal,
+      [{ phrase: 'Saved', quoted: 'Saved', kind: 'check', line: 1 }],
+      undefined,
+      'absent-surface',
+    ),
+    { label: 'Skip' },
+  );
+});
+
+test('a recognised opt-in is a separate surface for a missing tap target', () => {
+  const missing: RecoveryTarget = {
+    phrase: 'Settings',
+    quoted: 'Settings',
+    kind: 'press',
+    line: 7,
+  };
+  assert.deepEqual(dismissCandidate(optIn(), [missing], undefined, 'surface'), {
+    label: 'Skip',
+    screenClass: 'permission-opt-in',
+  });
+  // Two controls without the opt-in shape still prove no surface.
+  assert.equal(
+    dismissCandidate(optIn('Skip', 'View all offers'), [missing], undefined, 'surface'),
+    undefined,
+  );
 });
 
 test('non-permission shapes gain no receipt class', () => {

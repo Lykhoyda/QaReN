@@ -541,6 +541,8 @@ pub struct InterruptionReceipt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sole_decline: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub press_centre_y: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_class: Option<InterruptionScreenClass>,
 }
 
@@ -566,6 +568,7 @@ pub enum InterruptionVeto {
     Front,
     Coverage,
     CurrentTarget,
+    UncoveredTarget,
     LaterTarget,
     PreviousPlanPress,
     NoCandidate,
@@ -609,6 +612,9 @@ impl InterruptionReceipt {
             self.sole_decline
                 .filter(|sole| *sole)
                 .map(|_| "only control is the decline".to_string()),
+            self.press_centre_y
+                .filter(|y| y.is_finite())
+                .map(|y| format!("press centre y {y:.0} pt")),
             self.screen_class.map(word),
         ]
         .into_iter()

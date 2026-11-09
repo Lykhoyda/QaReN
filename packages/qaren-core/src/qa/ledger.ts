@@ -98,6 +98,8 @@ export interface InterruptionReceipt {
   targetLine?: number;
   targetKind?: Item['kind'];
   soleDecline?: boolean;
+  // When a dispatched decline stayed: the vertical centre, in points, of the control it aimed at.
+  pressCentreY?: number;
   // The fixed class a dismissed screen was recognised as, when one applied.
   screenClass?: InterruptionScreenClass;
 }
