@@ -1592,7 +1592,7 @@ async function walkBlockScoped(
     try {
       while (deps.now() < until) {
         await pause(Math.min(WAIT_POLL_MS, until - deps.now()));
-        const next = await captureOnce(item, false, false, 'resolve', until);
+        const next = await captureOnce(item, false, false, 'provenance', until);
         last = next;
         const matches = next.screen.elements.filter((element) => sameIdentity(element, target));
         if (matches.length !== 1) {
@@ -4489,7 +4489,22 @@ async function walkBlockScoped(
                   centreDiagnostic = facts;
                 });
               const overlay = centreIsCovered ? inferredOverlay(centreDiagnostic) : undefined;
-              // Name the view that takes the target's touch before any tap; never the inferred band cutter.
+              if (
+                centreIsCovered &&
+                !overlay &&
+                item.kind === 'press' &&
+                deps.platform === 'ios' &&
+                scrolled &&
+                scrollOrigin === 'offscreen-resolution' &&
+                !before.platformPresence
+              ) {
+                const proven = await presenceRecapture(item);
+                if (proven) {
+                  before = proven;
+                  initial = undefined;
+                  continue;
+                }
+              }
               const cover =
                 (item.kind === 'press' || item.kind === 'fill') && element
                   ? coverOwner(element, before.screen)

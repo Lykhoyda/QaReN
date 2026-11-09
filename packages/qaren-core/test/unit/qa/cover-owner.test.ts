@@ -449,15 +449,9 @@ async function waitOutCover(
       });
   }
   if (options.kind === 'fill') coveredViews[1].type = 'TextField';
-  const covered = await capture(coveredViews);
-  if (options.controls) {
-    covered.elements.find((e) => e.testID === 'control-5')!.semantic!.disabled = true;
-    covered.elements.find((e) => e.testID === 'control-6')!.offscreen = true;
-  }
-  delete covered.keyboardVisible;
-  if (options.selfCover) coveredViews[3].pointerEvents = 'none';
-  const refusalScreen = options.selfCover ? await capture(coveredViews) : covered;
-  delete refusalScreen.keyboardVisible;
+  const refusalViews = coveredViews.map((view, index) =>
+    options.selfCover && index === 3 ? { ...view, pointerEvents: 'none' as const } : view,
+  );
   const clearViews = coveredViews.slice(0, 2);
   if (options.ambiguousAfterWait)
     clearViews.push({
@@ -466,13 +460,9 @@ async function waitOutCover(
       label: 'Row 1',
       rect: { x: 20, y: 500, width: 100, height: 40 },
     });
-  const clear = await capture(clearViews);
-  delete clear.keyboardVisible;
-  const offViews = coveredViews.map((view, index) =>
+  const offViews = refusalViews.map((view, index) =>
     index === 1 ? { ...view, rect: { ...ROW, y: 1000 } } : view,
   );
-  const off = await capture(offViews);
-  off.elements.find((e) => e.testID === 'qa-hi-row-1')!.offscreen = true;
   const w = walker(
     [],
     scriptedJudge((questions) =>
@@ -498,6 +488,19 @@ async function waitOutCover(
   w.deps.cancelled = () => cancelled;
   w.deps.captureScreen = async (opts) => {
     captures++;
+    const presence = opts?.platformPresence === true;
+    const covered = await capture(coveredViews, { presence });
+    if (options.controls) {
+      covered.elements.find((e) => e.testID === 'control-5')!.semantic!.disabled = true;
+      covered.elements.find((e) => e.testID === 'control-6')!.offscreen = true;
+    }
+    delete covered.keyboardVisible;
+    const refusalScreen = options.selfCover ? await capture(refusalViews, { presence }) : covered;
+    delete refusalScreen.keyboardVisible;
+    const clear = await capture(clearViews, { presence });
+    delete clear.keyboardVisible;
+    const off = await capture(offViews, { presence });
+    off.elements.find((e) => e.testID === 'qa-hi-row-1')!.offscreen = true;
     const withoutId = (screen: Screen) => {
       if (options.labelIdentity)
         delete screen.elements.find((e) => e.testID === 'qa-hi-row-1')?.testID;
@@ -512,12 +515,13 @@ async function waitOutCover(
         return withoutId(clear);
       }
       if (options.poll === 'unproven-clear')
-        return capture(coveredViews.slice(0, 2), { hosts: false });
+        return capture(coveredViews.slice(0, 2), { hosts: false, presence });
       if (options.movingCover) {
         const shifted = await capture(
           coveredViews.map((view, index) =>
             index === 3 ? { ...view, rect: { ...COVER, y: 120 } } : view,
           ),
+          { presence },
         );
         delete shifted.keyboardVisible;
         return shifted;
@@ -540,7 +544,7 @@ async function waitOutCover(
         options.poll === 'duplicate' ||
         options.poll === 'no-geometry'
       ) {
-        const screen = await capture(coveredViews);
+        const screen = await capture(coveredViews, { presence });
         const target = screen.elements.find((e) => e.testID === 'qa-hi-row-1')!;
         if (options.poll === 'missing')
           screen.elements = screen.elements.filter((e) => e !== target);
@@ -558,7 +562,8 @@ async function waitOutCover(
     return withoutId(captures === 1 && !options.initialClearance ? off : refusalScreen);
   };
   let presses = 0;
-  w.deps.press = async () => {
+  w.deps.press = async (ref) => {
+    assert.equal(ref, '@e3', 'only the planned row may be pressed');
     presses++;
     if (options.nativeOcclusion)
       return {
@@ -593,7 +598,7 @@ async function waitOutCover(
   };
 }
 
-test('a distinct cover leaves within five seconds: one tap, no clearance scroll', async () => {
+test('a quoted tap after scrolling waits for clearance and presses only its target', async () => {
   const { row, streamed, actions, presses, budgets } = await waitOutCover({ clearAt: 1000 });
   assert.equal(row?.outcome, 'pass', JSON.stringify(row));
   assert.equal(presses, 1);
@@ -604,7 +609,7 @@ test('a distinct cover leaves within five seconds: one tap, no clearance scroll'
   assert.deepEqual(budgets, [4500, 4000]);
 });
 
-test('a persistent cover refuses after five seconds and names its pressable Close', async () => {
+test('a quoted tap after scrolling waits five seconds and names the persistent cover Close', async () => {
   const { row, presses, budgets } = await waitOutCover();
   assert.equal(row?.outcome, 'fail');
   assert.equal(presses, 0);
@@ -712,4 +717,14 @@ test('a real ambiguity after clearance retains its refusal and never enters reco
   assert.equal(presses, 0);
   assert.match(String(row?.reason), /TARGET_AMBIGUOUS/);
   assert.doesNotMatch(String(row?.reason), /TARGET_NOT_FOUND/);
+});
+
+test('a quoted label after scrolling names a persistent cover and never presses Close', async () => {
+  const { row, presses, actions } = await waitOutCover({ labelIdentity: true });
+  assert.equal(row?.outcome, 'fail');
+  assert.equal(row?.coverWaitMs, 5000);
+  assert.equal(presses, 0);
+  assert.deepEqual(actions, ['scroll down']);
+  assert.match(String(row?.reason), /the cover holds 1 pressable controls/);
+  assert.match(String(row?.reason), /decline-labelled: Close/);
 });
