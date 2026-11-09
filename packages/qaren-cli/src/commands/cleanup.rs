@@ -2111,28 +2111,14 @@ fn release_android_runner(
     for host_port in found.forwards {
         runner.run(&android::forward_remove_spec(adb, port, serial, host_port));
     }
-    // A slow device gets a longer force-stop too; the read-back below stays the only proof.
-    let mut stop_failures = String::new();
+    // One attempt each: the read-back below is the proof, and it keeps the slow-device allowance.
     for package in android::RUNNER_PACKAGES {
-        let (stopped, ladder) = run_slow_aware(
-            runner,
-            adb,
-            port,
-            serial,
-            &|scale| scaled(android::force_stop_spec(adb, port, serial, package), scale),
-            extra_ms,
-        );
-        if !stopped.ok() {
-            stop_failures.push_str(&format!(
-                "; am force-stop {package}: {}",
-                step_failure(&stopped, &ladder)
-            ));
-        }
+        runner.run(&android::force_stop_spec(adb, port, serial, package));
     }
     match read_runner(runner, adb, port, serial, api_level, extra_ms) {
         Ok(after) if after.absent() => Outcome::Removed,
         Ok(after) => Outcome::Unresolved(format!(
-            "the runner remains after force-stop (forward {}, instrumentation {}){stop_failures}",
+            "the runner remains after force-stop (forward {}, instrumentation {})",
             if after.forward_remains {
                 "listed"
             } else {
@@ -2144,7 +2130,7 @@ fn release_android_runner(
                 "gone"
             }
         )),
-        Err(reason) => Outcome::Unresolved(format!("{reason}{stop_failures}")),
+        Err(reason) => Outcome::Unresolved(reason),
     }
 }
 
@@ -2231,6 +2217,8 @@ enum Liveness {
 struct Ladder {
     attempts: Vec<StepAttempt>,
     liveness: Vec<Liveness>,
+    // The cleanup's slow-device allowance still unspent when this step ended.
+    allowance_left_ms: u64,
 }
 
 // The spec's own budget times `scale`.
@@ -2290,7 +2278,15 @@ fn run_slow_aware(
         output = run_attempt(runner, &retry, &mut ladder);
         *extra_ms = extra_ms.saturating_sub(output.duration_ms);
     }
+    ladder.allowance_left_ms = *extra_ms;
     (output, ladder)
+}
+
+fn allowance_used(ladder: &Ladder) -> String {
+    format!(
+        "; slow-device allowance used: {} of {SLOW_DEVICE_EXTRA_MS} ms",
+        SLOW_DEVICE_EXTRA_MS.saturating_sub(ladder.allowance_left_ms)
+    )
 }
 
 // Every attempt's budget and time, then the liveness answers between them.
@@ -2336,7 +2332,11 @@ fn after_ladder(reason: String, ladder: &Ladder) -> String {
     if ladder.attempts.len() == 1 {
         return reason;
     }
-    format!("{reason} on the last of {}", ladder_history(ladder))
+    format!(
+        "{reason} on the last of {}{}",
+        ladder_history(ladder),
+        allowance_used(ladder)
+    )
 }
 
 // Today's failure text; a timeout names every attempt, the liveness answers and what they mean.
@@ -2374,6 +2374,7 @@ fn step_failure(output: &CmdOutput, ladder: &Ladder) -> String {
             }
         }
     }
+    text.push_str(&allowance_used(ladder));
     text
 }
 
