@@ -668,11 +668,14 @@ wrapper is never chosen. When a quoted press or fill still has multiple matches,
 a match whose whole frame is off screen, outside its list's
 clip or under the keyboard is set aside unless it is nested with another match; a
 later window or an inferred overlay sets nothing aside. An ambiguous quoted press
-on iOS takes one detailed recapture within the capture budget. A native duplicate
-whose React hosts are all proven behind the presented modal is set aside as
+on iOS without platform-presence evidence takes at most one detailed recapture
+per step within the capture budget, including across retries. A native duplicate
+is set aside only when all React hosts carrying its test ID are proven behind
+one presented modal, recorded as
 `behind-presented-modal`, unless it is nested with another match. React-only
-duplicates are never set aside on this proof. If that recapture is refused or
-incomplete, the original ambiguity remains; no dismissal is tried.
+duplicates are never set aside on this proof. A refused, incomplete, late or
+unproven recapture sets nothing aside on this proof; existing live-hit checks
+below can still narrow the candidates. No sheet dismissal is tried.
 Hidden-in-place duplicates without platform visibility evidence remain unchanged.
 On iOS, when every remaining
 match is uniquely identifiable, the first four are considered for a read-only live
