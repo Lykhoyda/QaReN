@@ -46,6 +46,30 @@ function observed(labels: string[]) {
   );
 }
 
+test('a rejected interruption crosses the wire on a run with no inputs', () => {
+  const lines: string[] = [];
+  const writer = createWriter((line) => lines.push(line), 'interruption-run');
+  writer.diagnostic({
+    kind: 'interruption-rejected',
+    line: 11,
+    veto: 'later-target',
+    targetIndex: 2,
+    exactDeclineCount: 1,
+  });
+  assert.deepEqual(
+    lines.map((line) => JSON.parse(line).payload),
+    [
+      {
+        kind: 'interruption-rejected',
+        line: 11,
+        veto: 'later-target',
+        targetIndex: 2,
+        exactDeclineCount: 1,
+      },
+    ],
+  );
+});
+
 test('ineligible decline emits one value-free record with the first failed predicate', () => {
   const logs: unknown[] = [];
   const control = element('@private', 'Skip');
