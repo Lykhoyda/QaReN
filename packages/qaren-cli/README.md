@@ -3553,7 +3553,10 @@ ordinary form's own `Cancel` is not pressed. A screen whose only control is a de
 can still be dismissed. A failed check or ordinary unmet wait whose target is absent
 from the capture also dismisses only a sole decline, a recognised opt-in, or a soft
 decline (`Not now`, `Maybe later`, `Later`, `Skip`, `No thanks`, `Don't allow`)
-on a screen without input fields;
+on a screen proven to have no input fields. This requires complete React host
+evidence and no fill-association gaps. Captured fields on the current surface count
+even when offscreen or disabled, as do elements with supported or unknown fill
+capability; inputs proven behind a separate presented modal do not count.
 `Close`, `Dismiss` and `Cancel` on a screen with other controls are not dismissed.
 Known case: an input-free screen under test with an action and a soft decline, such as
 two-button onboarding with `Skip`, looks the same as an interrupting sheet, so an absent
