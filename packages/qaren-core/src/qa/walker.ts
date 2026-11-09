@@ -41,6 +41,8 @@ import {
   alertPressEffect,
   insideAlert,
   elementFrame,
+  ancestorsOf,
+  semanticDisabled,
   applicationFrame,
   isNativeInput,
   describe,
@@ -469,6 +471,7 @@ const TARGET_CODES: ReadonlySet<string> = new Set([
 
 export const WAIT_BUDGET_MS = 15_000;
 export const WAIT_POLL_MS = 500;
+const COVER_WAIT_MS = 5000;
 export const SCROLL_ATTEMPTS = 6;
 export const SCROLL_NO_VISIBLE_CHANGE =
   'SCROLL_NO_VISIBLE_CHANGE: two scrolls were dispatched and the screen did not change; this is not proof that the end of the content was reached';
@@ -772,6 +775,7 @@ async function walkBlockScoped(
   // The current item's launch allowance, from when it was spent; its measured poll; preparation resets its captures saw.
   let launchWait: { startedAt: number } | undefined;
   let implicitWaitMs: number | undefined;
+  let coverWaitMs: number | undefined;
   let preparationResets: number | undefined;
   // A quoted wait's one layout read and one scroll, which a recovery retry does not refund.
   let enrichment: { at: number; budget: number; waited?: number } | undefined;
@@ -1555,6 +1559,65 @@ async function walkBlockScoped(
     const gap = coverGaps.get(line);
     return gap ? `; no cover named (${gap})` : '';
   };
+  const waitOutCover = async (
+    item: Item & { kind: 'press' },
+    observation: Observation,
+    target: Element,
+    cover: Extract<ReturnType<typeof coverOwner>, { owner: Element }>,
+  ): Promise<{ observation?: Observation; reason: string }> => {
+    const startedAt = deps.now();
+    const until = Math.min(startedAt + COVER_WAIT_MS, itemDeadline ?? Infinity);
+    coverWaitMs = 0;
+    let last = observation.screen;
+    let owner = cover.owner;
+    let reason = '';
+    try {
+      while (deps.now() < until) {
+        await pause(Math.min(WAIT_POLL_MS, until - deps.now()));
+        const next = await captureOnce(item, false, false, 'resolve', until);
+        const matches = next.screen.elements.filter((element) => sameIdentity(element, target));
+        if (matches.length !== 1) {
+          reason = `; the target became ${matches.length ? 'ambiguous' : 'missing'} during the cover wait`;
+          break;
+        }
+        const current = matches[0];
+        const frame = elementFrame(current);
+        if (!frame || frame.width <= 0 || frame.height <= 0) continue;
+        const nextCover = coverOwner(current, next.screen);
+        if ('owner' in nextCover) {
+          last = next.screen;
+          owner = nextCover.owner;
+          recordCover(item.line, nextCover);
+        } else if (nextCover.gap === 'reaches-target' && !centreCovered(current, next.screen)) {
+          recordCover(item.line, nextCover);
+          coverTargets.delete(item.line);
+          return { observation: next, reason: '' };
+        }
+      }
+    } catch (error) {
+      if (isAbort(error)) throw error;
+      if (!(error instanceof CaptureDeadline)) throw error;
+    } finally {
+      coverWaitMs = Math.max(0, Math.round(deps.now() - startedAt));
+    }
+    const pressables = last.elements.filter(
+      (element) =>
+        (element === owner || ancestorsOf(element).includes(owner)) &&
+        element.semantic?.press === 'supported' &&
+        !semanticDisabled(element) &&
+        !element.offscreen &&
+        element.semantic.visibility === 'visible',
+    );
+    const labels = [
+      ...new Set(pressables.map((element) => element.label).filter(isDeclineLabel)),
+    ].slice(0, 4);
+    return {
+      reason:
+        `; waited ${coverWaitMs} ms; the cover holds ${pressables.length} pressable controls` +
+        (labels.length ? ` (decline-labelled: ${labels.join(', ')})` : '') +
+        reason,
+    };
+  };
   const withheldRows = new Map<number, NonNullable<LedgerRow['screenshotWithheld']>>();
   // Per line, what interruption recovery last decided; a dismissal stays on this line's later rows.
   const interruptions = new Map<number, InterruptionReceipt>();
@@ -1596,6 +1659,7 @@ async function walkBlockScoped(
       ...(fillMethod ? { method: fillMethod } : {}),
       ...(keyboardCleared ? { keyboardCleared } : {}),
       ...(implicitWaitMs !== undefined ? { implicitWaitMs } : {}),
+      ...(coverWaitMs !== undefined ? { coverWaitMs } : {}),
       ...(fillMismatch && row.outcome !== 'pass' ? { entryMismatch: fillMismatch } : {}),
       operationId: operationFor(row.line),
       ...(reactCoverage ? { reactCoverage } : {}),
@@ -3312,6 +3376,7 @@ async function walkBlockScoped(
     waitAttempt = 'none';
     launchWait = undefined;
     implicitWaitMs = undefined;
+    coverWaitMs = undefined;
     preparationResets = undefined;
     const operationId = operationFor(item.line);
     let budget = stepBudgets.get(operationId);
@@ -4441,10 +4506,28 @@ async function walkBlockScoped(
                 liveHit = overlay;
               else if (centreIsCovered && element !== undefined) {
                 if (scrolled) {
+                  let coverWaitReason = '';
+                  if (
+                    item.kind === 'press' &&
+                    deps.platform === 'ios' &&
+                    scrollOrigin !== 'centre-covered' &&
+                    cover &&
+                    'owner' in cover &&
+                    coverWaitMs === undefined
+                  ) {
+                    const waited = await waitOutCover(item, before, element, cover);
+                    if (waited.observation) {
+                      before = waited.observation;
+                      refusedIdentity = element;
+                      initial = undefined;
+                      continue;
+                    }
+                    coverWaitReason = waited.reason;
+                  }
                   outcome = failed(
                     item,
                     attempt,
-                    `"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${await coverText(item)}${cutterText(centreDiagnostic)}${unaskedLiveHit(item.kind, deps.platform, centreDiagnostic)}`,
+                    `"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${await coverText(item)}${coverWaitReason}${cutterText(centreDiagnostic)}${unaskedLiveHit(item.kind, deps.platform, centreDiagnostic)}`,
                     before.screen,
                     await shoot(item),
                     ref,
@@ -5384,6 +5467,7 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     ...(row.method ? { method: row.method } : {}),
     ...(row.keyboardCleared ? { keyboardCleared: row.keyboardCleared } : {}),
     ...(row.implicitWaitMs !== undefined ? { implicitWaitMs: row.implicitWaitMs } : {}),
+    ...(row.coverWaitMs !== undefined ? { coverWaitMs: row.coverWaitMs } : {}),
     ...(row.retryCause ? { retryCause: row.retryCause } : {}),
     ...(row.devError ? { devError: row.devError } : {}),
     ...(row.scrollDetail ? { scrollDetail: row.scrollDetail } : {}),

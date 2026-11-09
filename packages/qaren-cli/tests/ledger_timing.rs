@@ -483,3 +483,37 @@ fn first_counted_is_preserved_without_later_proven_app_evidence() {
         assert_eq!(parsed.first_counted().unwrap().at_ms, 101_000);
     }
 }
+
+#[test]
+fn cover_wait_survives_stream_and_saved_ledger_and_drops_malformed_values() {
+    for value in [
+        json!(0),
+        json!(1000),
+        json!(5000),
+        json!(-1),
+        json!(1.5),
+        json!("PRIVATE-ms"),
+        json!(null),
+        json!({"ms": 10}),
+    ] {
+        let raw = json!({"block":"qa","line":2,"attempt":1,"kind":"step",
+            "resolvedBy":"exact","t":120,"outcome":"pass","coverWaitMs":value});
+        let streamed: Row = serde_json::from_value(raw.clone()).unwrap();
+        let saved: Ledger = serde_json::from_value(ledger(json!([raw]), json!(null))).unwrap();
+        let expected = value.as_u64();
+        assert_eq!(streamed.cover_wait_ms, expected);
+        assert_eq!(saved.steps[0].cover_wait_ms, expected);
+        for row in [streamed, saved.steps[0].clone()] {
+            let encoded = serde_json::to_value(row).unwrap();
+            if expected.is_some() {
+                assert_eq!(encoded["coverWaitMs"], value);
+            } else {
+                assert!(encoded.get("coverWaitMs").is_none());
+            }
+        }
+    }
+    let legacy: Row = serde_json::from_value(json!({"block":"qa","line":2,"attempt":1,
+        "kind":"step","resolvedBy":"exact","t":120,"outcome":"pass"}))
+    .unwrap();
+    assert!(legacy.cover_wait_ms.is_none());
+}

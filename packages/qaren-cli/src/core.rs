@@ -503,6 +503,12 @@ pub struct Row {
         skip_serializing_if = "Option::is_none",
         deserialize_with = "passive"
     )]
+    pub cover_wait_ms: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
     pub interruption: Option<InterruptionReceipt>,
     #[serde(
         default,

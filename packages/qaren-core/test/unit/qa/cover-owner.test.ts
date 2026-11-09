@@ -2,7 +2,8 @@
 // never a pointer-transparent view the inferred band cutter happens to pick.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { captureScreen } from '../../../dist/qa/capture.js';
+import { captureScreen, CaptureDeadline } from '../../../dist/qa/capture.js';
+import { capturePrivateScreen } from '../../../dist/qa/privacy.js';
 import { coverOwner } from '../../../dist/qa/resolve.js';
 import { touchOwnerAt } from '../../../dist/qa/screen.js';
 import type { ReactHostEvidence, Screen } from '../../../dist/qa/screen.js';
@@ -393,4 +394,241 @@ test('partially clipped owners use the touch point within all nested viewports',
     const owner = touchOwnerAt(screen, x, y);
     assert.equal(typeof owner === 'object' ? owner.testID : owner, 'partial-row', `${x},${y}`);
   }
+});
+
+async function waitOutCover(
+  options: {
+    clearAt?: number;
+    poll?:
+      | 'missing'
+      | 'duplicate'
+      | 'no-geometry'
+      | 'deadline'
+      | 'incomplete'
+      | 'cancel'
+      | 'late'
+      | 'unproven-clear';
+    platform?: 'ios' | 'android';
+    kind?: 'press' | 'fill';
+    initialClearance?: boolean;
+    selfCover?: boolean;
+    refusePress?: boolean;
+    privatePoll?: boolean;
+    controls?: boolean;
+  } = {},
+) {
+  const coveredViews = sticky();
+  coveredViews[3] = { ...coveredViews[3], type: 'Other' };
+  coveredViews.push({
+    id: 'toast-close',
+    type: 'Button',
+    label: 'Close',
+    parent: 3,
+    rect: { x: 350, y: 120, width: 40, height: 40 },
+  });
+  if (options.controls) {
+    for (const [index, label] of [
+      'Dismiss',
+      'Cancel',
+      'Skip',
+      'Later',
+      'Private wording',
+      'No thanks',
+      'Not now',
+    ].entries())
+      coveredViews.push({
+        id: `control-${index}`,
+        type: 'Button',
+        label,
+        parent: 3,
+        rect: { x: 350, y: 170 + index * 10, width: 30, height: 10 },
+      });
+  }
+  if (options.kind === 'fill') coveredViews[1].type = 'TextField';
+  const covered = await capture(coveredViews);
+  if (options.controls) {
+    covered.elements.find((e) => e.testID === 'control-5')!.semantic!.disabled = true;
+    covered.elements.find((e) => e.testID === 'control-6')!.offscreen = true;
+  }
+  delete covered.keyboardVisible;
+  if (options.selfCover) coveredViews[3].pointerEvents = 'none';
+  const refusalScreen = options.selfCover ? await capture(coveredViews) : covered;
+  delete refusalScreen.keyboardVisible;
+  const clear = await capture(coveredViews.slice(0, 2));
+  delete clear.keyboardVisible;
+  const offViews = coveredViews.map((view, index) =>
+    index === 1 ? { ...view, rect: { ...ROW, y: 1000 } } : view,
+  );
+  const off = await capture(offViews);
+  off.elements.find((e) => e.testID === 'qa-hi-row-1')!.offscreen = true;
+  const w = walker(
+    [],
+    scriptedJudge((questions) =>
+      Object.fromEntries(Object.entries(questions).map(([id, question]) => [id, choice(question)])),
+    ),
+  );
+  w.deps.platform = options.platform ?? 'ios';
+  let captures = 0;
+  let waitStarted: number | undefined;
+  const budgets: number[] = [];
+  const media: unknown[] = [];
+  const shots: string[] = [];
+  w.deps.videoPolicy = 'non-strict';
+  w.deps.mediaWithheld = (event) => media.push(event);
+  w.deps.screenshot = async (name) => {
+    shots.push(name);
+    return name;
+  };
+  let cancelled = false;
+  w.deps.cancelled = () => cancelled;
+  w.deps.captureScreen = async (opts) => {
+    captures++;
+    if (opts?.budgetMs !== undefined) {
+      budgets.push(opts.budgetMs);
+      waitStarted ??= w.deps.now() - 500;
+      if (options.poll === 'late') {
+        await w.deps.sleep(opts.budgetMs);
+        return clear;
+      }
+      if (options.poll === 'unproven-clear')
+        return capture(coveredViews.slice(0, 2), { hosts: false });
+      if (options.poll === 'deadline') throw new CaptureDeadline();
+      if (options.poll === 'cancel') cancelled = true;
+      if (options.privatePoll) {
+        capturePrivateScreen(covered, [
+          {
+            values: ['private-cover-canary'],
+            secure: true,
+            elements: [],
+            associationUnique: false,
+          },
+        ]);
+        covered.visibleText.push('private-cover-canary');
+      }
+      if (
+        options.poll === 'missing' ||
+        options.poll === 'duplicate' ||
+        options.poll === 'no-geometry'
+      ) {
+        const screen = await capture(coveredViews);
+        const target = screen.elements.find((e) => e.testID === 'qa-hi-row-1')!;
+        if (options.poll === 'missing')
+          screen.elements = screen.elements.filter((e) => e !== target);
+        if (options.poll === 'duplicate') screen.elements.push({ ...target, ref: '@e99' });
+        if (options.poll === 'no-geometry')
+          screen.elements[screen.elements.indexOf(target)] = { ...target };
+        return screen;
+      }
+      if (options.poll === 'incomplete')
+        return { ...covered, captureCoverage: { native: 'incomplete', react: 'complete' } };
+      if (options.clearAt !== undefined && w.deps.now() - waitStarted >= options.clearAt)
+        return clear;
+    }
+    return captures === 1 && !options.initialClearance ? off : refusalScreen;
+  };
+  let presses = 0;
+  w.deps.press = async () => {
+    presses++;
+    return options.refusePress
+      ? { ok: false, proven: false, mutation: 'none', error: 'not dispatched' }
+      : { ok: true, proven: true };
+  };
+  const kind = options.kind === 'fill' ? 'Fill "qa-hi-row-1" with "x"' : 'Tap "qa-hi-row-1"';
+  const result = await runPlan(parsePlan(`1. ${kind}`).blocks!, w.deps);
+  return {
+    result,
+    row: ('steps' in result ? result.steps : []).at(-1),
+    actions: w.actions,
+    streamed: w.rows,
+    budgets,
+    presses,
+    captures,
+    media,
+    shots,
+  };
+}
+
+test('a distinct cover leaves within five seconds: one tap, no clearance scroll', async () => {
+  const { row, streamed, actions, presses, budgets } = await waitOutCover({ clearAt: 1000 });
+  assert.equal(row?.outcome, 'pass', JSON.stringify(row));
+  assert.equal(presses, 1);
+  assert.deepEqual(actions, ['scroll down'], 'only the original offscreen resolution scroll');
+  assert.equal(row?.coverWaitMs, 1000);
+  assert.equal(streamed.at(-1)?.coverWaitMs, 1000);
+  assert.equal(row?.coveredBy, undefined, 'the admitted clear observation owns dispatch');
+  assert.deepEqual(budgets, [4500, 4000]);
+});
+
+test('a persistent cover refuses after five seconds and names its pressable Close', async () => {
+  const { row, presses, budgets } = await waitOutCover();
+  assert.equal(row?.outcome, 'fail');
+  assert.equal(presses, 0);
+  assert.equal(row?.coverWaitMs, 5000);
+  assert.match(String(row?.reason), /covered by other at 0,110,402,201/);
+  assert.match(String(row?.reason), /waited 5000 ms; the cover holds 1 pressable controls/);
+  assert.match(String(row?.reason), /decline-labelled: Close/);
+  assert.equal(budgets.length, 9);
+});
+
+for (const poll of [
+  'missing',
+  'duplicate',
+  'no-geometry',
+  'deadline',
+  'incomplete',
+  'late',
+  'unproven-clear',
+] as const) {
+  test(`cover wait never taps with ${poll} evidence`, async () => {
+    const { row, presses } = await waitOutCover({ poll });
+    assert.equal(row?.outcome, 'fail');
+    assert.equal(presses, 0);
+    assert.ok(row?.coverWaitMs !== undefined);
+    if (poll === 'missing' || poll === 'duplicate')
+      assert.match(String(row?.reason), /target.*(missing|ambiguous)/);
+    if (poll === 'no-geometry') assert.equal(row?.coverWaitMs, 5000);
+  });
+}
+
+for (const options of [
+  { platform: 'android' },
+  { kind: 'fill' },
+  { initialClearance: true },
+  { selfCover: true },
+] as const) {
+  test(`existing cover branch stays unchanged for ${JSON.stringify(options)}`, async () => {
+    const { row, budgets } = await waitOutCover(options);
+    assert.equal(row?.coverWaitMs, undefined);
+    assert.deepEqual(budgets, []);
+  });
+}
+
+test('the same item cannot spend another cover wait on a dispatch retry', async () => {
+  const { budgets, presses } = await waitOutCover({ clearAt: 500, refusePress: true });
+  assert.equal(presses, 1);
+  assert.deepEqual(budgets, [4500]);
+});
+
+test('cancellation during a cover poll aborts without pressing', async () => {
+  const { result, presses, budgets } = await waitOutCover({ poll: 'cancel' });
+  assert.equal(result.verdict, 'FAIL');
+  assert.match(JSON.stringify(result), /RUN_CANCELLED/);
+  assert.equal(presses, 0);
+  assert.deepEqual(budgets, [4500]);
+});
+
+test('wait captures admit private input history and withhold media without leaking values', async () => {
+  const { result, streamed, media, shots, presses } = await waitOutCover({ privatePoll: true });
+  assert.equal(presses, 0);
+  assert.ok(media.length > 0);
+  assert.deepEqual(shots, []);
+  assert.doesNotMatch(JSON.stringify({ result, streamed, media }), /private-cover-canary/);
+});
+
+test('cover diagnostics count only enabled on-screen pressables and bound decline labels', async () => {
+  const { row, presses } = await waitOutCover({ controls: true });
+  assert.equal(presses, 0);
+  assert.match(String(row?.reason), /the cover holds 6 pressable controls/);
+  assert.match(String(row?.reason), /decline-labelled: Close, Dismiss, Cancel, Skip\)/);
+  assert.doesNotMatch(String(row?.reason), /Private wording|No thanks|Not now|Later/);
 });

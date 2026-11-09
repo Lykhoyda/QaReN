@@ -1097,6 +1097,18 @@ with “stayed off screen after one scroll” and the inferred band cutter descr
 under [clearance diagnostics](#clearance-diagnostics). The scroll
 that ran before the refusal remains a performed action. Press behavior is unchanged.
 
+On the iOS press branch that would otherwise refuse a still-covered centre after
+an offscreen-resolution scroll, a proven distinct cover gets one passive wait of
+up to 5 seconds. Every poll passes normal capture admission and uniquely rebinds
+the original target; missing or ambiguous identities refuse without a tap, and
+missing geometry never proves clearance. Once the target's centre is proven clear,
+the normal tap uses that observation. The row's `coverWaitMs` records elapsed
+waiting time. A persistent cover keeps the existing refusal code and names its
+kind, frame, enabled on-screen pressable count and up to four decline labels such
+as Close. The wait never presses the cover or its controls. Clearance-scroll and
+inferred-overlay live-hit paths, Fill and Android keep their existing behaviour.
+Automatic cover dismissal and ignoring opacity-zero iOS duplicates are deferred.
+
 On iOS, quoted waits and scroll-until completion can override that inferred cover
 with a read-only `hitProbe`. It runs only for a unique captured native carrier,
 inside its clip, with the keyboard proven hidden and the app in front. A fresh

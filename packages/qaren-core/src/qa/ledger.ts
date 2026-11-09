@@ -79,6 +79,8 @@ export interface LedgerRow {
   scrollDetail?: { status: 'no_visible_change' | 'no_visible_change_content_remains'; attempts: 2 };
   // How long the first Tap or Fill after launch polled for its absent target.
   implicitWaitMs?: number;
+  // Time spent waiting for a proven cover to leave the tap point.
+  coverWaitMs?: number;
   // What interruption recovery decided for this step; value-free.
   interruption?: InterruptionReceipt;
   // Same-label wrappers counted as the control they wrap.
