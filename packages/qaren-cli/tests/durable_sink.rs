@@ -375,6 +375,8 @@ fn evidence_documents_and_reports_still_withhold_opaque_output() {
         admitted_at_ms: None,
         publish_from_ms: None,
         publication_interrupted: false,
+        continuity_events: Vec::new(),
+        continuity_events_dropped: None,
         path: "walk".into(),
         blocks: Vec::new(),
         blocks_written: None,

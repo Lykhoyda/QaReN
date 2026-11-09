@@ -10866,6 +10866,86 @@ fn script_pr_pass(mock: &mut MockRunner, repo: &Path, wt: &Path) {
 }
 
 #[test]
+fn pr_interruption_receipt_uses_effective_policy_and_records_the_first_signal() {
+    let (repo, app) = app_repo();
+    let config = app.join(".qaren/config.yaml");
+    let contents = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(config, format!("{contents}video: non-strict\n")).unwrap();
+    let wt = repo.join("runs").join(run_id()).join("wt");
+    let mut runner = PrRunner {
+        inner: MockRunner::new(),
+        app: app.clone(),
+        recorder_persisted_before_spawn: None,
+        fail_core_spawn: false,
+        planted_worktree_config: None,
+        worktree_config_planted: false,
+        fail_host_checkpoint: false,
+    };
+    let mock = &mut runner.inner;
+    script_pr_preflight(mock, &repo, &wt);
+    script_pr_provision(mock);
+    script_pr_provenance_recheck(mock);
+    script_drift_status(mock);
+    script_recorder_start(mock);
+    script_host_probe(mock, UDID, hosts_absent());
+    let admitted = mock.now_epoch_ms();
+    let stdout = pr_pass_stdout()
+        .lines()
+        .map(|line| {
+            let mut message: serde_json::Value = serde_json::from_str(line).unwrap();
+            if message["type"] == "result" {
+                let ledger = &mut message["payload"];
+                ledger["videoPolicy"] = "non-strict".into();
+                ledger["nonStrictPublication"] = "eligible".into();
+                ledger["videoPublication"] = "withheld-privacy".into();
+                ledger["mediaWithheld"] = serde_json::Value::Null;
+                ledger["publicationInterrupted"] = true.into();
+                ledger["admittedAtMs"] = admitted.into();
+                ledger["continuityEvents"] = serde_json::json!([{
+                    "signal":"runner-recovery", "atMs":admitted + 12_000,
+                    "line":7, "counted":true, "detail":{"unresolved":true}
+                }]);
+            }
+            format!("{message}\n")
+        })
+        .collect::<String>();
+    mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+    script_core_identity(mock);
+    script_drift_status(mock);
+    mock.expect_run("git", CmdOutput::success(&format!("{PR_HEAD}\n")));
+    mock.expect_run(
+        "git",
+        CmdOutput::success("?? test-app/.qaren/actions/tasks.yaml\0"),
+    );
+    script_recorder_stop(mock);
+    script_pr_teardown_after_drift(mock);
+    mock.expect_run("du -sk", CmdOutput::success("4\n"));
+    mock.expect_run("worktree remove --force", CmdOutput::success(""));
+    mock.expect_run("which ffmpeg", CmdOutput::failed(1, ""));
+    mock.expect_run(
+        "gh pr view https://github.com/o/r/pull/12",
+        pr_view_json(PR_HEAD),
+    );
+    let receipt = run(&mut runner, &pr_request(&repo, &app));
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    let pr: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(repo.join("runs").join(run_id()).join("pr.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        pr.get("videoWithholdingReason")
+            .is_none_or(serde_json::Value::is_null),
+        "{pr}"
+    );
+    assert_eq!(pr["videoReason"], "interrupted");
+    assert_eq!(pr["videoInterruption"]["signal"], "runner-recovery");
+    assert_eq!(pr["videoInterruption"]["owner"], "qaren");
+    assert_eq!(pr["videoInterruption"]["afterAdmissionMs"], 12_000);
+    assert_eq!(pr["videoInterruption"]["line"], 7);
+    assert_eq!(runner.inner.remaining(), 0);
+}
+
+#[test]
 fn check_persists_configured_deadlines_and_uses_them_as_command_budgets() {
     for case in deadline_cases() {
         let (repo, app) = app_repo();

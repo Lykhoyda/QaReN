@@ -182,6 +182,8 @@ import {
 import { createRowTimer, separateRowOperations, type RowTiming } from './row-timing.js';
 import {
   type BlockResult,
+  type ContinuityEvent,
+  appendContinuityEvent,
   type WalkResult,
   type LedgerFailure,
   type LedgerPath,
@@ -243,6 +245,8 @@ export interface WalkerDeps {
   // Android has no platform presence capture yet.
   presenceUnavailable?: boolean;
   publicationInterrupted?(): boolean;
+  continuityEvents?(): ContinuityEvent[];
+  continuityEventsDropped?(): number;
   captureScreen(options?: {
     observation?: number;
     platformPresence?: boolean;
@@ -511,6 +515,20 @@ const recoveryTarget = (item: Item): RecoveryTarget | undefined => {
   };
 };
 
+function markContinuity(
+  sequence: WalkSequence,
+  event: Omit<ContinuityEvent, 'atMs' | 'counted'>,
+): void {
+  sequence.continuityEventsDropped =
+    (sequence.continuityEventsDropped ?? 0) +
+    appendContinuityEvent((sequence.continuity ??= []), {
+      ...event,
+      atMs: Date.now(),
+      counted: true,
+    });
+  sequence.publicationInterrupted = true;
+}
+
 export interface WalkSequence {
   observation: number;
   latch?: {
@@ -522,6 +540,8 @@ export interface WalkSequence {
   operation?: number;
   stepBudgets?: Map<number, { startedAt: number; deadline?: number; devErrorDismissals: number }>;
   publicationInterrupted?: boolean;
+  continuity?: ContinuityEvent[];
+  continuityEventsDropped?: number;
   momentum?: boolean;
   planPassed?: boolean;
   window?: { fromMs: number; typed: number };
@@ -850,7 +870,7 @@ async function walkBlockScoped(
         latest.front === 'dev-menu' ||
         latest.front === 'dev-redbox'
       )
-        sequence.publicationInterrupted = true;
+        markContinuity(sequence, { signal: 'dev-overlay', line, detail: { front: latest.front } });
       const privacyStarted = deps.timing ? deps.now() : 0;
       privacy.observe(latest);
       recordMediaLatch(privacy, sequence, deps, line);
@@ -909,7 +929,7 @@ async function walkBlockScoped(
     } catch (error) {
       if (isAbort(error)) throw error;
       if (error instanceof ResolutionError && error.code === 'APP_PROCESS_CHANGED')
-        sequence.publicationInterrupted = true;
+        markContinuity(sequence, { signal: 'app-process-changed', line });
       throw error;
     } finally {
       if (deps.timing) {
@@ -2853,7 +2873,7 @@ async function walkBlockScoped(
       planTargets,
     ).catch((error: unknown) => {
       if (error instanceof AppProcessGoneError) {
-        sequence.publicationInterrupted = true;
+        markContinuity(sequence, { signal: 'app-process-gone', line });
         throw processChanged();
       }
       throw error;
@@ -5247,6 +5267,7 @@ export async function runPlan(
     const sequence: WalkSequence = {
       observation: 0,
       publicationInterrupted: false,
+      continuity: [],
       planPassed: false,
       launchWait: true,
     };
@@ -5308,6 +5329,15 @@ export async function runPlan(
         cancellationSignal();
         for (const { index, write } of pending.splice(0)) results[index] = write();
       }
+      const snapshotInterrupted = deps.publicationInterrupted?.() === true;
+      const continuityEvents: ContinuityEvent[] = [];
+      let continuityEventsDropped =
+        (sequence.continuityEventsDropped ?? 0) + (deps.continuityEventsDropped?.() ?? 0);
+      for (const event of [
+        ...(sequence.continuity ?? []),
+        ...(deps.continuityEvents?.() ?? []),
+      ].sort((a, b) => a.atMs - b.atMs))
+        continuityEventsDropped += appendContinuityEvent(continuityEvents, event);
       const ledger: WalkResult = {
         ...buildLedger(
           results.map((result) => ({ ...result, key: display(result.key) })),
@@ -5348,8 +5378,9 @@ export async function runPlan(
             }
           : {}),
         ...(sequence.window ? { publishFromMs: sequence.window.fromMs } : {}),
-        publicationInterrupted:
-          sequence.publicationInterrupted || deps.publicationInterrupted?.() === true,
+        publicationInterrupted: sequence.publicationInterrupted || snapshotInterrupted,
+        continuityEvents,
+        continuityEventsDropped,
       };
       if (ledger.mediaWithheld?.video) {
         try {
