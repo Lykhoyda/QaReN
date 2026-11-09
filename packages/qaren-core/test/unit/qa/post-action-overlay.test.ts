@@ -9,7 +9,11 @@ import type { Screen } from '../../../dist/qa/screen.js';
 import { join, insideAlert } from '../../../dist/qa/screen.js';
 import { selectionPressCandidate } from '../../../dist/qa/selection-press.js';
 import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
-import { NativeSnapshotIncomplete } from '../../../dist/qa/private-input.js';
+import {
+  NativeSnapshotIncomplete,
+  PrivateInputCaptureError,
+} from '../../../dist/qa/private-input.js';
+import { AppProcessGoneError, NativeCaptureError } from '../../../dist/qa/capture.js';
 import { element, screen } from './judgment-fixtures.ts';
 
 const plan = (next = '2. Wait for "question-2"') => parsePlan(`1. Tap "Next"\n${next}`).blocks!;
@@ -341,38 +345,32 @@ test('the next cached Tap still requires its label provenance', async () => {
   assert.deepEqual(f.actions, ['@next', '@dismiss']);
 });
 
-test('an incomplete post-dismissal capture cannot prove completion', async () => {
-  const f = fixture({
-    after: { ...destination(), captureCoverage: { native: 'incomplete', react: 'complete' } },
-  });
-  const result = await runPlan(plan(), f.deps);
-  assert.equal(result.verdict, 'REFUSED');
-  assert.equal(result.code, 'DEV_REDBOX_ACTION_UNCERTAIN');
-  assert.match(result.message, /dismissed once to check the next screen/);
-  assert.deepEqual(f.actions, ['@next', '@dismiss']);
-});
-
-for (const recovery of [false, true]) {
-  test(`a post-dismissal native capture exception stays action-uncertain (recovery=${recovery})`, async () => {
-    const before = screen([element('@next', 'Next')]);
-    const f = fixture({ before });
-    const capture = f.deps.captureScreen;
-    let readbacks = 0;
-    f.deps.captureScreen = async (options) => {
-      if (f.actions.at(-1) === '@dismiss')
-        throw new NativeSnapshotIncomplete(1, ['truncated']);
-      if (recovery && f.actions.at(-1) === '@next' && readbacks++ === 0) return before;
-      return capture(options);
-    };
-    const result = await walkBlock(plan()[0], f.deps, 0, [], undefined, undefined, {
-      singleAttempt: true,
+for (const error of [
+  new NativeSnapshotIncomplete(1, ['truncated']),
+  new NativeCaptureError(),
+  new PrivateInputCaptureError(),
+]) {
+  for (const recovery of [false, true]) {
+    test(`post-dismissal ${error.constructor.name} stays action-uncertain (recovery=${recovery})`, async () => {
+      const before = screen([element('@next', 'Next')]);
+      const f = fixture({ before });
+      const capture = f.deps.captureScreen;
+      let readbacks = 0;
+      f.deps.captureScreen = async (options) => {
+        if (f.actions.at(-1) === '@dismiss') throw error;
+        if (recovery && f.actions.at(-1) === '@next' && readbacks++ === 0) return before;
+        return capture(options);
+      };
+      const result = await walkBlock(plan()[0], f.deps, 0, [], undefined, undefined, {
+        singleAttempt: true,
+      });
+      assert.equal(result.refusal?.code, 'DEV_REDBOX_ACTION_UNCERTAIN');
+      assert.match(result.refusal!.message, /dismissed once to check the next screen/);
+      assert.match(result.refusal!.message, /step was not replayed/);
+      assert.deepEqual(f.actions, ['@next', '@dismiss']);
+      assert.deepEqual(result.rows[0].devError, { variant: 'redbox', dismissal: 1 });
     });
-    assert.equal(result.refusal?.code, 'DEV_REDBOX_ACTION_UNCERTAIN');
-    assert.match(result.refusal!.message, /dismissed once to check the next screen/);
-    assert.match(result.refusal!.message, /step was not replayed/);
-    assert.deepEqual(f.actions, ['@next', '@dismiss']);
-    assert.deepEqual(result.rows[0].devError, { variant: 'redbox', dismissal: 1 });
-  });
+  }
 }
 
 for (const shot of [2, 3, 'incomplete', 'incomplete-overlay'] as const) {
@@ -403,20 +401,15 @@ for (const shot of [2, 3, 'incomplete', 'incomplete-overlay'] as const) {
             overlay: { ...overlay(), captureCoverage: { native: 'incomplete', react: 'complete' } },
           }
         : {}),
-      ...(shot === 'incomplete'
-        ? {
-            after: {
-              ...destination(),
-              captureCoverage: { native: 'incomplete', react: 'complete' },
-            },
-          }
-        : {}),
     });
     const capture = f.deps.captureScreen;
     let raised = false;
     let shots = 0;
-    f.deps.captureScreen = async (options) =>
-      f.actions.at(-1) === '@next' && !raised ? before : capture(options);
+    f.deps.captureScreen = async (options) => {
+      if (shot === 'incomplete' && f.actions.at(-1) === '@dismiss')
+        throw new NativeSnapshotIncomplete(1, ['truncated']);
+      return f.actions.at(-1) === '@next' && !raised ? before : capture(options);
+    };
     const bytes = readFileSync(
       new URL('../../fixtures/tap-pixels/toggle1-before.png', import.meta.url),
     );
@@ -439,6 +432,19 @@ for (const shot of [2, 3, 'incomplete', 'incomplete-overlay'] as const) {
     } else assert.deepEqual(f.actions, ['@next', '@dismiss']);
   });
 }
+
+test('app-process failure after Dismiss retains its safety failure', async () => {
+  const f = fixture();
+  const capture = f.deps.captureScreen;
+  f.deps.captureScreen = async (options) => {
+    if (f.actions.at(-1) === '@dismiss') throw new AppProcessGoneError();
+    return capture(options);
+  };
+  const result = await runPlan(plan(), f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.match(result.failure!.seen, /APP_PROCESS_CHANGED/);
+  assert.deepEqual(f.actions, ['@next', '@dismiss']);
+});
 
 test('cancellation during Dismiss aborts without replay', async () => {
   const f = fixture();

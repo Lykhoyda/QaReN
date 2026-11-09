@@ -3081,7 +3081,8 @@ async function walkBlockScoped(
     } catch (error) {
       if (
         error instanceof CaptureDeadline ||
-        error instanceof NativeSnapshotIncomplete ||
+        error instanceof NativeCaptureError ||
+        error instanceof PrivateInputCaptureError ||
         (error instanceof ResolutionError && error.code === 'SCREEN_EVIDENCE_INCOMPLETE')
       )
         return refuse('ACTION_UNCERTAIN', completionUncertain);
