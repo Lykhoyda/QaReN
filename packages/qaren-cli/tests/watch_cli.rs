@@ -245,6 +245,37 @@ fn stream(home: &Path, end: bool) -> std::path::PathBuf {
 }
 
 #[test]
+fn watched_verdict_discloses_development_overlay_warnings() {
+    let home = common::temp_repo();
+    let dir = stream(&home, true);
+    let path = dir.join("logs/events.jsonl");
+    let mut events: Vec<Value> = std::fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    events.last_mut().unwrap()["payload"]["devOverlayWarnings"] = json!(1);
+    std::fs::write(
+        &path,
+        events
+            .iter()
+            .map(|event| format!("{event}\n"))
+            .collect::<String>(),
+    )
+    .unwrap();
+    let output = watch(&home, &["check-watch", "--plain"]);
+    assert!(output.status.success());
+    let output = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        output.contains("VERDICT PASS (1 development overlay warning)"),
+        "{output}"
+    );
+    let output = watch(&home, &["check-watch", "--json"]);
+    let state: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(state["end"]["devOverlayWarnings"], 1);
+}
+
+#[test]
 fn json_live_snapshot_is_immediate_and_ignores_private_fields_and_early_ledger() {
     let home = common::temp_repo();
     let dir = stream(&home, false);

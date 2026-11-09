@@ -69,6 +69,15 @@ fn summary_counts_warning_rows_once_and_preserves_legacy_summary() {
 
 #[test]
 fn every_report_verdict_discloses_development_overlay_warnings() {
+    assert_eq!(
+        report::dev_overlay_verdict("pass", 1),
+        "pass (1 development overlay warning)"
+    );
+    assert_eq!(
+        report::dev_overlay_verdict("PASS", 2),
+        "PASS (2 development overlay warnings)"
+    );
+    assert_eq!(report::dev_overlay_verdict("fail", 1), "fail");
     let observed = ledger(warning());
     let input = ReportInput {
         video: None,

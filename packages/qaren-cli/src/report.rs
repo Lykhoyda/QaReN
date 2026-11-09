@@ -55,19 +55,18 @@ fn is_zero(value: &u64) -> bool {
 
 impl LedgerSummary {
     pub fn verdict_label(&self) -> String {
-        if self.verdict == "PASS" && self.dev_overlay_warnings > 0 {
-            format!(
-                "PASS ({} development overlay warning{})",
-                self.dev_overlay_warnings,
-                if self.dev_overlay_warnings == 1 {
-                    ""
-                } else {
-                    "s"
-                }
-            )
-        } else {
-            self.verdict.clone()
-        }
+        dev_overlay_verdict(&self.verdict, self.dev_overlay_warnings)
+    }
+}
+
+pub fn dev_overlay_verdict(verdict: &str, warnings: u64) -> String {
+    if verdict.eq_ignore_ascii_case("pass") && warnings > 0 {
+        format!(
+            "{verdict} ({warnings} development overlay warning{})",
+            if warnings == 1 { "" } else { "s" }
+        )
+    } else {
+        verdict.to_string()
     }
 }
 

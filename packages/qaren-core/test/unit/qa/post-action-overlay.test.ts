@@ -262,6 +262,65 @@ test('an overlay first seen by recovery passes the press without retrying it', a
     ['pass', 'pass'],
   );
   assert.equal(result.rows[0].devError?.afterAction, true);
+  assert.deepEqual(result.rows[0].selector, { text: 'Next' });
+  assert.deepEqual(f.actions, ['@next', '@dismiss']);
+});
+
+for (const repeatedTarget of [false, true]) {
+  test(`a delayed overlay before attempt two never reuses the prior act (${repeatedTarget})`, async () => {
+    const before = screen([element('@next', 'Next')]);
+    const f = fixture({
+      before,
+      after: screen([...destination().elements, ...(repeatedTarget ? before.elements : [])]),
+    });
+    const capture = f.deps.captureScreen;
+    let readbacks = 0;
+    f.deps.captureScreen = async (options) =>
+      f.actions.at(-1) === '@next' && readbacks++ === 0 ? before : capture(options);
+    const result = await runPlan(plan(), f.deps);
+    assert.equal(result.code, 'DEV_REDBOX_ACTION_UNCERTAIN');
+    assert.deepEqual(f.actions, ['@next']);
+  });
+}
+
+for (const cause of ['incomplete', 'expired'] as const) {
+  test(`an ${cause} RedBox capture keeps the action-uncertain refusal`, async () => {
+    const shown = overlay();
+    if (cause === 'incomplete') shown.captureCoverage = { native: 'incomplete', react: 'complete' };
+    const f = fixture({ overlay: shown });
+    const capture = f.deps.captureScreen;
+    let clock = 0;
+    f.deps.now = () => clock;
+    f.deps.captureScreen = async (options) => {
+      const observed = await capture(options);
+      if (cause === 'expired' && observed.front === 'dev-redbox') clock += 1_000_000;
+      return observed;
+    };
+    const result = await runPlan(plan(), f.deps);
+    assert.equal(result.code, 'DEV_REDBOX_ACTION_UNCERTAIN');
+    assert.deepEqual(f.actions, ['@next']);
+  });
+}
+
+test('the next cached Tap still requires its label provenance', async () => {
+  const f = fixture({
+    after: screen([
+      element('@question', 'question-2, Other', {
+        kind: 'cell',
+        testID: 'question-2',
+      }),
+    ]),
+  });
+  let reads = 0;
+  f.deps.readLabelProvenance = async (refs) => {
+    reads++;
+    assert.deepEqual(refs, ['@question']);
+    return undefined;
+  };
+  const result = await runPlan(plan('2. Tap "question-2"'), f.deps);
+  assert.equal(reads, 1);
+  assert.equal(result.steps[0].outcome, 'pass');
+  assert.equal(result.failure!.step, 2);
   assert.deepEqual(f.actions, ['@next', '@dismiss']);
 });
 
@@ -274,8 +333,8 @@ test('an incomplete post-dismissal capture cannot prove completion', async () =>
   assert.deepEqual(f.actions, ['@next', '@dismiss']);
 });
 
-for (const shot of [2, 3, 'incomplete'] as const) {
-  test(`a RedBox during pixel readback ${shot} accepts navigation without replay`, async () => {
+for (const shot of [2, 3, 'incomplete', 'incomplete-overlay'] as const) {
+  test(`a RedBox during pixel readback ${shot} preserves action safety`, async () => {
     const before = {
       ...join(
         [
@@ -297,6 +356,11 @@ for (const shot of [2, 3, 'incomplete'] as const) {
     };
     const f = fixture({
       before,
+      ...(shot === 'incomplete-overlay'
+        ? {
+            overlay: { ...overlay(), captureCoverage: { native: 'incomplete', react: 'complete' } },
+          }
+        : {}),
       ...(shot === 'incomplete'
         ? {
             after: {
@@ -315,17 +379,20 @@ for (const shot of [2, 3, 'incomplete'] as const) {
       new URL('../../fixtures/tap-pixels/toggle1-before.png', import.meta.url),
     );
     f.deps.comparisonScreenshot = async () => {
-      if (++shots === (shot === 'incomplete' ? 2 : shot)) raised = true;
+      if (++shots === (typeof shot === 'number' ? shot : 2)) raised = true;
       return bytes;
     };
     const result = await runPlan(plan(), f.deps);
-    if (shot === 'incomplete') assert.notEqual(result.verdict, 'PASS');
+    if (typeof shot !== 'number') assert.notEqual(result.verdict, 'PASS');
     else {
       assert.equal(result.verdict, 'PASS');
       assert.equal(result.steps[0].devError?.afterAction, true);
     }
-    assert.equal(shots, shot === 'incomplete' ? 2 : shot);
-    assert.deepEqual(f.actions, ['@next', '@dismiss']);
+    assert.equal(shots, typeof shot === 'number' ? shot : 2);
+    if (shot === 'incomplete-overlay') {
+      assert.equal(result.code, 'DEV_REDBOX_ACTION_UNCERTAIN');
+      assert.deepEqual(f.actions, ['@next']);
+    } else assert.deepEqual(f.actions, ['@next', '@dismiss']);
   });
 }
 

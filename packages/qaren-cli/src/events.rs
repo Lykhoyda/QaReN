@@ -329,6 +329,13 @@ impl Events {
             "expectedExit": expected_exit,
             "droppedEvents": 0,
         });
+        if let Some(summary) = receipt
+            .ledger
+            .as_ref()
+            .filter(|summary| summary.dev_overlay_warnings > 0)
+        {
+            payload["devOverlayWarnings"] = summary.dev_overlay_warnings.into();
+        }
         if let (Some(code), Some(failure)) = (failure_code, &receipt.failure) {
             payload["failureCode"] = code.into();
             payload["failurePhase"] = token(&failure.phase).into();
@@ -584,6 +591,33 @@ mod tests {
         let mut r = Receipt::new("check", "check-1", result, "cleaned", "now".into());
         r.timings_ms.insert("preflight".into(), 900);
         r
+    }
+
+    #[test]
+    fn end_carries_only_the_numeric_dev_overlay_warning_count() {
+        for count in [0, 1] {
+            let dir = temp(&format!("dev-overlay-{count}"));
+            let path = dir.join("events.jsonl");
+            let mut events = Events::start(None).unwrap();
+            events.attach(&path);
+            let mut r = receipt(ReceiptResult::Pass);
+            r.ledger = Some(
+                serde_json::from_value(json!({
+                    "verdict": "PASS", "path": "walk", "steps": 1,
+                    "jev_calls": 0, "jev_median_ms": 0, "llm_turns": 0,
+                    "escapes": 0, "recoveries": 1, "devOverlayWarnings": count,
+                }))
+                .unwrap(),
+            );
+            events.end(&r, 0);
+            events.finish();
+            let end = lines(&path).pop().unwrap().payload;
+            if count == 0 {
+                assert!(end.get("devOverlayWarnings").is_none());
+            } else {
+                assert_eq!(end["devOverlayWarnings"], count);
+            }
+        }
     }
 
     #[test]

@@ -3452,7 +3452,8 @@ existing refusal without a dismissal. The planned Tap is never replayed.
 When completion is proven, the Tap passes with
 `devError: { variant: 'redbox', dismissal: 1, afterAction: true, proof: 'next-test-id-appeared' }`.
 The next item uses the post-dismissal observation. Receipts count these rows as
-`devOverlayWarnings`, and verdict displays say `PASS (1 development overlay warning)`.
+`devOverlayWarnings`, and verdict displays, including `qaren watch`, say
+`PASS (1 development overlay warning)`; the stderr summary keeps its lowercase `pass`.
 An unproven completion refuses `DEV_REDBOX_ACTION_UNCERTAIN` and says the overlay
 was dismissed once to check. A RedBox still in front after that one dismissal
 refuses `DEV_REDBOX_REPEATED`; a later post-action RedBox refuses

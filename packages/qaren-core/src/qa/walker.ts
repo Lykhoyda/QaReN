@@ -735,10 +735,18 @@ async function walkBlockScoped(
     if (item.kind === 'fill' && !typed.includes(fillText(item))) typed.push(fillText(item));
   const judge = deps.judge ?? unavailableJudge;
   let resolvedBy: LedgerRow['resolvedBy'] = 'exact';
-  let cached: { item: Item; observation: Observation; decision?: ScreenDecision } | undefined;
+  let cached:
+    | {
+        item: Item;
+        observation: Observation;
+        decision?: ScreenDecision;
+        needsLabelProvenance?: true;
+      }
+    | undefined;
   let latest: Screen = { elements: [], visibleText: [], front: 'app' };
   let pressBase: Screen | undefined;
   let pressAct: ActResult | undefined;
+  let pressSelector: Selector | undefined;
   let pressNeedsReadback = false;
   let activeItem: Item | undefined;
   let postActionTried = false;
@@ -940,6 +948,18 @@ async function walkBlockScoped(
         : observation;
     } catch (error) {
       if (isAbort(error)) throw error;
+      if (
+        latest.front === 'dev-redbox' &&
+        !recovery &&
+        mutationStarted &&
+        !postActionTried &&
+        (error instanceof CaptureDeadline ||
+          (error instanceof ResolutionError && error.code === 'SCREEN_EVIDENCE_INCOMPLETE'))
+      )
+        throw new ResolutionError({
+          refuse: 'DEV_REDBOX_ACTION_UNCERTAIN',
+          reason: DEV_ERROR_REFUSALS.ACTION_UNCERTAIN,
+        });
       if (error instanceof ResolutionError && error.code === 'APP_PROCESS_CHANGED')
         markContinuity(sequence, { signal: 'app-process-changed', line });
       throw error;
@@ -3085,7 +3105,11 @@ async function walkBlockScoped(
     };
     sequence.devOverlayAccepted = true;
     postActionObservation = after;
-    cached = { item: next, observation: after };
+    cached = {
+      item: next,
+      observation: after,
+      ...(next.kind === 'press' ? { needsLabelProvenance: true as const } : {}),
+    };
     return after;
   };
 
@@ -3141,6 +3165,7 @@ async function walkBlockScoped(
       await postActionOverlay(item, fresh, until);
       emit({
         ...base(item, attempt),
+        ...stored(pressSelector),
         outcome: 'pass',
         ...(postActionShot ? { screenshot: postActionShot } : {}),
       });
@@ -3206,6 +3231,7 @@ async function walkBlockScoped(
     pressVetoed = undefined;
     pressBase = undefined;
     pressAct = undefined;
+    pressSelector = undefined;
     pressNeedsReadback = false;
     postActionTried = false;
     postActionShot = undefined;
@@ -3822,6 +3848,9 @@ async function walkBlockScoped(
         const maxAttempts = recovered.has(item) || opts.singleAttempt ? 1 : 2;
         for (let attempt = 1; attempt <= maxAttempts && !outcome; attempt += 1) {
           currentAttempt = attempt;
+          pressAct = undefined;
+          pressSelector = undefined;
+          pressNeedsReadback = false;
           overlayRows.delete(item.line);
           scrollBands.delete(item.line);
           let plainBand: PlainScrollBand | undefined;
@@ -3858,6 +3887,7 @@ async function walkBlockScoped(
             settledFrame = settled.frame;
           } else {
             before = held?.observation ?? (await captureBeforeDispatch());
+            if (held?.needsLabelProvenance) before = await enrichLabelProvenance(before, item);
           }
           cached = undefined;
           const next = block.items[block.items.indexOf(item) + 1];
@@ -4404,6 +4434,8 @@ async function walkBlockScoped(
               act = await mutate(item, before, async (context) => {
                 if (item.kind === 'press') {
                   pressBase = before.screen;
+                  pressSelector =
+                    exactSelector(item.target) ?? (element ? elementSelector(element) : undefined);
                   return liveHit
                     ? deps.press(ref!, context, { requireLiveHit: true })
                     : deps.press(ref!, context);
