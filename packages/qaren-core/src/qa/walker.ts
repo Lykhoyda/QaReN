@@ -1559,6 +1559,23 @@ async function walkBlockScoped(
     const gap = coverGaps.get(line);
     return gap ? `; no cover named (${gap})` : '';
   };
+  const coverWaitText = (screen: Screen, owner: Element, waitedMs: number): string => {
+    const pressables = screen.elements.filter(
+      (element) =>
+        (element === owner || ancestorsOf(element).includes(owner)) &&
+        element.semantic?.press === 'supported' &&
+        !semanticDisabled(element) &&
+        !element.offscreen &&
+        element.semantic.visibility === 'visible',
+    );
+    const labels = [
+      ...new Set(pressables.map((element) => element.label).filter(isDeclineLabel)),
+    ].slice(0, 4);
+    return (
+      `; waited ${waitedMs} ms; the cover holds ${pressables.length} pressable controls` +
+      (labels.length ? ` (decline-labelled: ${labels.join(', ')})` : '')
+    );
+  };
   const waitOutCover = async (
     item: Item & { kind: 'press' },
     observation: Observation,
@@ -1604,24 +1621,10 @@ async function walkBlockScoped(
     } finally {
       coverWaitMs = Math.max(0, Math.round(deps.now() - startedAt));
     }
-    const pressables = coverScreen.elements.filter(
-      (element) =>
-        (element === owner || ancestorsOf(element).includes(owner)) &&
-        element.semantic?.press === 'supported' &&
-        !semanticDisabled(element) &&
-        !element.offscreen &&
-        element.semantic.visibility === 'visible',
-    );
-    const labels = [
-      ...new Set(pressables.map((element) => element.label).filter(isDeclineLabel)),
-    ].slice(0, 4);
     return {
       observation: last,
       cleared: false,
-      reason:
-        `; waited ${coverWaitMs} ms; the cover holds ${pressables.length} pressable controls` +
-        (labels.length ? ` (decline-labelled: ${labels.join(', ')})` : '') +
-        reason,
+      reason: coverWaitText(coverScreen, owner, coverWaitMs) + reason,
     };
   };
   const withheldRows = new Map<number, NonNullable<LedgerRow['screenshotWithheld']>>();
@@ -4119,6 +4122,7 @@ async function walkBlockScoped(
                 occluded = undefined;
                 if (
                   coverWaitTarget &&
+                  !('refuse' in decided) &&
                   (!('ref' in decided) ||
                     !decided.element ||
                     !sameIdentity(decided.element, coverWaitTarget))
@@ -4530,27 +4534,30 @@ async function walkBlockScoped(
                     deps.platform === 'ios' &&
                     scrollOrigin === 'offscreen-resolution' &&
                     cover &&
-                    'owner' in cover &&
-                    coverWaitMs === undefined
+                    'owner' in cover
                   ) {
-                    const waited = await waitOutCover(item, before, element, cover);
-                    before = waited.observation;
-                    if (waited.cleared) {
-                      coverWaitTarget = element;
-                      initial = undefined;
-                      continue;
+                    if (coverWaitMs !== undefined) {
+                      coverWaitReason = coverWaitText(before.screen, cover.owner, coverWaitMs);
+                    } else {
+                      const waited = await waitOutCover(item, before, element, cover);
+                      before = waited.observation;
+                      if (waited.cleared) {
+                        coverWaitTarget = element;
+                        initial = undefined;
+                        continue;
+                      }
+                      coverWaitReason = waited.reason;
+                      const matches = before.screen.elements.filter((current) =>
+                        sameIdentity(current, element!),
+                      );
+                      element = matches.length === 1 ? matches[0] : undefined;
+                      ref = element?.ref;
+                      centreDiagnostic = null;
+                      if (element)
+                        centreCovered(element, before.screen, (facts) => {
+                          centreDiagnostic = facts;
+                        });
                     }
-                    coverWaitReason = waited.reason;
-                    const matches = before.screen.elements.filter((current) =>
-                      sameIdentity(current, element!),
-                    );
-                    element = matches.length === 1 ? matches[0] : undefined;
-                    ref = element?.ref;
-                    centreDiagnostic = null;
-                    if (element)
-                      centreCovered(element, before.screen, (facts) => {
-                        centreDiagnostic = facts;
-                      });
                   }
                   outcome = failed(
                     item,

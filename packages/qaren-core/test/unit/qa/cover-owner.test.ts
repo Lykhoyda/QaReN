@@ -418,6 +418,7 @@ async function waitOutCover(
     labelIdentity?: boolean;
     nativeOcclusion?: boolean;
     movingCover?: boolean;
+    ambiguousAfterWait?: boolean;
   } = {},
 ) {
   const coveredViews = sticky();
@@ -457,7 +458,15 @@ async function waitOutCover(
   if (options.selfCover) coveredViews[3].pointerEvents = 'none';
   const refusalScreen = options.selfCover ? await capture(coveredViews) : covered;
   delete refusalScreen.keyboardVisible;
-  const clear = await capture(coveredViews.slice(0, 2));
+  const clearViews = coveredViews.slice(0, 2);
+  if (options.ambiguousAfterWait)
+    clearViews.push({
+      id: 'duplicate-label',
+      type: 'Button',
+      label: 'Row 1',
+      rect: { x: 20, y: 500, width: 100, height: 40 },
+    });
+  const clear = await capture(clearViews);
   delete clear.keyboardVisible;
   const offViews = coveredViews.map((view, index) =>
     index === 1 ? { ...view, rect: { ...ROW, y: 1000 } } : view,
@@ -565,7 +574,7 @@ async function waitOutCover(
   const kind =
     options.kind === 'fill'
       ? 'Fill "qa-hi-row-1" with "x"'
-      : options.labelIdentity
+      : options.labelIdentity || options.ambiguousAfterWait
         ? 'Tap "Row 1"'
         : 'Tap "qa-hi-row-1"';
   const result = await runPlan(parsePlan(`1. ${kind}`).blocks!, w.deps);
@@ -644,9 +653,10 @@ for (const options of [
 }
 
 test('the same item cannot spend another cover wait on a dispatch retry', async () => {
-  const { budgets, presses } = await waitOutCover({ clearAt: 500, refusePress: true });
+  const { budgets, presses, row } = await waitOutCover({ clearAt: 500, refusePress: true });
   assert.equal(presses, 1);
   assert.deepEqual(budgets, [4500]);
+  assert.match(String(row?.reason), /waited 500 ms; the cover holds 1 pressable controls/);
 });
 
 test('cancellation during a cover poll aborts without pressing', async () => {
@@ -695,4 +705,11 @@ test('a persistent moving cover refuses on the last admitted poll observation', 
     diagnostics.filter((event) => event.code === 'CENTRE_COVERED').at(-1)?.observation,
     polledObservations.at(-1),
   );
+});
+
+test('a real ambiguity after clearance retains its refusal and never enters recovery', async () => {
+  const { row, presses } = await waitOutCover({ ambiguousAfterWait: true, clearAt: 500 });
+  assert.equal(presses, 0);
+  assert.match(String(row?.reason), /TARGET_AMBIGUOUS/);
+  assert.doesNotMatch(String(row?.reason), /TARGET_NOT_FOUND/);
 });
