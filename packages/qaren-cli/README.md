@@ -4221,7 +4221,8 @@ too-large recording is its own outcome, and unrecognized detail text in older
 in `publication.json` and the receipt's `publicationVideoReason`. When no video
 is attached, the receipt's `video_summary`, `report.md` and `qaren publish`
 repeat the PR comment's video sentence: the withholding reason when the video
-is not eligible, otherwise the unavailability reason. The local recording stays
+is not eligible, otherwise the unavailability reason. A kept video can also have
+a `video_summary` explaining recorded runner recovery. The local recording stays
 complete; `qaren publish` uploads only
 `media/video-published.mp4`, trimmed under the [video publication contract](#video-publication).
 
@@ -4232,7 +4233,7 @@ withhold the video. A runner recovery is also uncounted when a snapshot proves
 the same app process in the foreground; an unresolved check withholds the copy
 and names QaReN as the owner. The list keeps at most 16 events, preserving counted
 events ahead of uncounted ones; `continuityEventsDropped` counts omitted entries.
-For an interrupted video, `pr.json` records the first counted signal in
+For an interrupted video, `pr.json` records the selected counted signal in
 `videoInterruption`, preferring later proven app-stop, process-change or launcher
 evidence over an earlier unresolved runner or missing-process observation. The field includes the
 owner, epoch time, offset from admission, recording time and optional plan line. Its `videoWithholdingReason` follows the
