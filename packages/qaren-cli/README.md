@@ -3437,7 +3437,7 @@ blind retry: each successful dismissal writes a `retry` row with `retryCause: DE
 `devError: { variant, dismissal }` and the step attempt number. A failed dismissal
 proven not to have sent a gesture writes the same metadata on a `retry` row when
 another attempt remains; otherwise it records the metadata on the terminal `fail` row. Every
-dismissal attempt counts in `recoveries`. A step gets at most three dismissals,
+dismissal attempt counts in `recoveries`. A step gets at most three pre-action dismissals,
 including across saved replay falling back to a walk. Dismissal, clearance and
 resumed execution share the step's existing deadline; overlay recovery never
 renews it. The dismissal count is separate from the step's two interruption
@@ -3473,7 +3473,7 @@ When the overlay cannot be cleared this way the run refuses with
 | Cause | When | `next_action` |
 | --- | --- | --- |
 | `DEV_REDBOX_REPEATED` | The overlay was still in front after three pre-action dismissals in one step, or after the one post-action dismissal | `restart_app_from_plan_start` |
-| `DEV_REDBOX_DISMISS_FAILED` | The Dismiss press failed or was not dispatched. A press the runner refused before any gesture is observed again and pressed again within the three; one that may have run a gesture is never repeated. A LogBox Dismiss refused as `TARGET_MOVED_BEFORE_DISPATCH` is never pressed again. When available, the detail includes the runner's value-free refusal code (`runner refused: <CODE>`). The log records `dev-error-dismiss-failed=<CODE>` in `logs/core.log`, using `unknown` when no code is available. For a moved refusal, the log line also carries the runner's value-free geometry: the retained and live frames, their delta, and whether the target was re-found by identifier or label | `restart_app_from_plan_start` |
+| `DEV_REDBOX_DISMISS_FAILED` | The Dismiss press failed or was not dispatched. Before the action, a press the runner refused before any gesture is observed again and pressed again within the three; one that may have run a gesture is never repeated. A post-action Dismiss is never retried. A LogBox Dismiss refused as `TARGET_MOVED_BEFORE_DISPATCH` is never pressed again. When available, the detail includes the runner's value-free refusal code (`runner refused: <CODE>`). The log records `dev-error-dismiss-failed=<CODE>` in `logs/core.log`, using `unknown` when no code is available. For a moved refusal, the log line also carries the runner's value-free geometry: the retained and live frames, their delta, and whether the target was re-found by identifier or label | `restart_app_from_plan_start` |
 | `DEV_REDBOX_NO_SAFE_DISMISS` | No single Dismiss control (a syntax error, an ambiguous control, or an overlay inside a login replay, which never recovers) | `restart_app_from_plan_start` |
 | `DEV_REDBOX_CLEARANCE_UNPROVEN` | A fresh capture could not prove the overlay gone | `restart_app_from_plan_start` |
 | `DEV_REDBOX_ACTION_UNCERTAIN` | Completion after an action was not proven, or an overlay reappeared after accepted post-action recovery. Eligible iOS RedBox presses dismiss once to check; other cases leave it in front. The action is never replayed | `inspect_app_error_before_rerun` |
