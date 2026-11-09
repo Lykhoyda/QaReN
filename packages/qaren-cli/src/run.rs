@@ -1635,9 +1635,19 @@ fn run_inner(
                 device: device.name.clone(),
                 plan_sha256: sha256_hex(plan.as_bytes()),
                 video_reason: video.reason(),
+                video_interruption: crate::publish::VideoInterruption::from_ledger(
+                    &video,
+                    &outcome.ledger,
+                    recording_from,
+                ),
                 video,
                 video_continuity,
-                video_withholding_reason: video_publication
+                video_withholding_reason: config
+                    .video
+                    .publication(
+                        &video_publication,
+                        outcome.ledger.non_strict_publication.as_ref(),
+                    )
                     .withholding_reason()
                     .map(str::to_string),
                 video_publication,

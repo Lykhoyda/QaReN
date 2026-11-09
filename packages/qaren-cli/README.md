@@ -4273,9 +4273,11 @@ too-large recording is its own outcome, and unrecognized detail text in older
 in `publication.json` and the receipt's `publicationVideoReason`. When no video
 is attached, the receipt's `video_summary`, `report.md` and `qaren publish`
 repeat the PR comment's video sentence: the withholding reason when the video
-is not eligible, otherwise the unavailability reason. The local recording stays
+is not eligible, otherwise the unavailability reason. A kept video can also have
+a `video_summary` explaining recorded runner recovery. The local recording stays
 complete; `qaren publish` uploads only
 `media/video-published.mp4`, trimmed under the [video publication contract](#video-publication).
+
 Blocks the walk saved are copied to `blocks/` before the
 worktree is removed. If the pull
 request moved during the run, the receipt names the tested commit in
@@ -4488,10 +4490,34 @@ reach the pull request. Without a start time or a successful trim, or when an ap
 process change, launcher/server-picker fallback, floating button or open dev menu
 is observed after admission, no video is uploaded, even if recovery clears the
 overlay and the retry passes. A pre-plan login does not reset these interruptions.
-During [private-capture relaunch recovery](#check-a-plan), a transient runner-down
-failure without an app process identifier does not alone mark an interruption;
-a subsequent capture reporting a different app process still does, as does
-any other existing interruption evidence.
+
+[Runner recovery](#check-a-plan) or a runner leak does not alone interrupt publication when a
+snapshot proves the same app process is still in the foreground, either in that
+observation or a later one. A missing process read can likewise resolve on later
+same-process proof. If the walk ends without the required proof, the copy is
+withheld and the report names QaReN as the owner rather than claiming an app
+restart. Proven app-stop, process-change and launcher evidence still interrupt
+publication.
+
+The ledger's `continuityEvents` records retained continuity signals with their
+epoch-millisecond observation-completion time `atMs`, optional plan `line`, and
+whether they counted toward withholding. Signals before admission are marked
+`beforeAdmission` and do not withhold the video. The list keeps at most 16 events,
+preserving counted events ahead of uncounted ones; `continuityEventsDropped`
+counts omitted entries.
+
+For an interrupted video, `pr.json` records the selected counted signal in
+`videoInterruption`, preferring later proven app-stop, process-change or launcher
+evidence over an earlier unresolved runner or missing-process observation.
+It includes the owner, epoch time, offset from admission, offset from the start
+of the untrimmed recording and optional plan line. Its `videoWithholdingReason`
+follows the declared video policy, so screenshot privacy is not reported as the
+cause when non-strict video is eligible. A kept video's report names the first
+retained runner recovery inside its publication window; the runner frames remain
+in the copy. Displayed offsets are measured after admission and mark observation
+completion, rather than the start of runner frames or a position in the trimmed
+video.
+
 For `withheld-privacy`, the pull request comment adds only the closed cause code,
 for example `(generic-value)`; it omits line numbers, qualifiers and counts.
 

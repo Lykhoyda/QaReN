@@ -11,6 +11,8 @@ const planModule = new URL('../../../dist/qa/plan.js', import.meta.url).href;
 const privacyModule = new URL('../../../dist/qa/privacy.js', import.meta.url).href;
 const inputModule = new URL('../../../dist/qa/inputs.js', import.meta.url).href;
 const captureModule = new URL('../../../dist/qa/private-input.js', import.meta.url).href;
+const continuityModule = new URL('../../../dist/qa/capture.js', import.meta.url).href;
+const utilsModule = new URL('../../../dist/utils.js', import.meta.url).href;
 const screenModule = new URL('../../../dist/qa/screen.js', import.meta.url).href;
 const fixtures = new URL('./judgment-fixtures.ts', import.meta.url).href;
 
@@ -21,6 +23,8 @@ function entry(kind: string, root: string) {
     import { ObservedPrivacy } from ${JSON.stringify(privacyModule)};
     import { RunInputs, withInputs } from ${JSON.stringify(inputModule)};
     import { NativeSnapshotIncomplete, ReactCaptureIncomplete, applyNativePrivateInputs } from ${JSON.stringify(captureModule)};
+    import { postAdmissionSnapshots } from ${JSON.stringify(continuityModule)};
+    import { okResult } from ${JSON.stringify(utilsModule)};
     import { join } from ${JSON.stringify(screenModule)};
     import { element, screen, walker, scriptedJudge } from ${JSON.stringify(fixtures)};
     const kind = ${JSON.stringify(kind)};
@@ -61,6 +65,17 @@ function entry(kind: string, root: string) {
     if (kind === 'plan') delete request.prepared;
     await withInputs(inputs, () => mainRequest(request, privacy, process.ppid, undefined, async (_request, row) => {
       if (kind === 'open') throw new Error('synthetic session refusal');
+      if (kind === 'outer-error') {
+        const observations = [okResult({ appProcessIdentifier: 41, nodes: [] }, { meta: { foregroundSurface: 'app' } }), okResult({ nodes: [] }, { meta: { recovered: true } })];
+        const snapshots = postAdmissionSnapshots(async () => observations.shift(), request.appId);
+        await snapshots.snapshot({});
+        snapshots.admit();
+        await snapshots.snapshot({});
+        f.deps.publicationInterrupted = snapshots.interrupted;
+        f.deps.continuityEvents = snapshots.events;
+        f.deps.continuityEventsDropped = snapshots.dropped;
+        privacy.classify = () => { throw new Error('synthetic outer error'); };
+      }
       f.deps.row = row;
       if (kind === 'warm') f.deps.captureScreen = async () => ({ front: 'unknown', elements: [], visibleText: [], coverage: { native: 'complete', react: 'complete' } });
       if (kind === 'cancel-open') process.emit('SIGTERM');
@@ -122,3 +137,22 @@ for (const kind of [
     assert.ok(!child.stdout.includes('synthetic-private'));
   });
 }
+
+test('walk entry finalizes pending continuity evidence on an outer walk error', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'qaren-continuity-error-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const child = entry('outer-error', root);
+  const envelopes = child.stdout
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  const result = envelopes.at(-1).payload;
+  assert.equal(child.status, 1, child.stderr + child.stdout);
+  assert.equal(result.publicationInterrupted, true);
+  assert.equal(result.continuityEventsDropped, 0);
+  assert.equal(result.continuityEvents.length, 1);
+  assert.equal(result.continuityEvents[0].signal, 'runner-recovery');
+  assert.equal(result.continuityEvents[0].counted, true);
+  assert.equal(result.continuityEvents[0].detail.unresolved, true);
+  assert.ok(result.continuityEvents[0].atMs >= result.admittedAtMs);
+});
