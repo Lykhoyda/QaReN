@@ -3425,8 +3425,9 @@ The overlays are recognized in the native capture by the
 fixed identifiers and controls React Native gives them (`redbox-dismiss`, `redbox-reload`,
 `redbox-copy`, `redbox-error`, `rn_redbox_stack`, `rn_redbox_dismiss_button`, or one window holding `Dismiss`, `Minimize` and a
 `Log N of M` header, or the syntax-error `Failed to compile` header and footer),
-never by error text. An overlay in front is never read as the app: before a step
-resolves its target, judges a check or evaluates a wait, QaReN presses the
+never by error text. An overlay in front is never read as the app. For an overlay
+seen before an action, while no post-action recovery has been accepted, QaReN
+clears it before resolving a target, judging a check or evaluating a wait: it presses the
 overlay's own Dismiss control by its exact reference, proves the overlay gone in
 a fresh capture and runs the step again. This is a retry for a known cause, not a
 blind retry: each successful dismissal writes a `retry` row with `retryCause: DEV_REDBOX`,
@@ -3454,10 +3455,13 @@ When completion is proven, the Tap passes with
 The next item uses the post-dismissal observation. Receipts count these rows as
 `devOverlayWarnings`, and verdict displays, including `qaren watch`, say
 `PASS (1 development overlay warning)`; the stderr summary keeps its lowercase `pass`.
-An unproven completion refuses `DEV_REDBOX_ACTION_UNCERTAIN` and says the overlay
-was dismissed once to check. A RedBox still in front after that one dismissal
-refuses `DEV_REDBOX_REPEATED`; a later post-action RedBox refuses
-`DEV_REDBOX_ACTION_UNCERTAIN` without another dismissal. Screenshot withholding,
+An unproven completion, including incomplete, unavailable or expired completion
+capture evidence, refuses `DEV_REDBOX_ACTION_UNCERTAIN` and says the overlay
+was dismissed once to check. Cancellation and app-process safety failures retain
+their own outcomes. A RedBox still in front after that one dismissal
+refuses `DEV_REDBOX_REPEATED`; once completion has been accepted, any later
+RedBox refuses `DEV_REDBOX_ACTION_UNCERTAIN` without another dismissal, even
+before a later action or in another block. Screenshot withholding,
 privacy processing and media continuity follow the same rules as other captures.
 
 When the overlay cannot be cleared this way the run refuses with
@@ -3469,7 +3473,7 @@ When the overlay cannot be cleared this way the run refuses with
 | `DEV_REDBOX_DISMISS_FAILED` | The Dismiss press failed or was not dispatched. A press the runner refused before any gesture is observed again and pressed again within the three; one that may have run a gesture is never repeated. A LogBox Dismiss refused as `TARGET_MOVED_BEFORE_DISPATCH` is never pressed again. When available, the detail includes the runner's value-free refusal code (`runner refused: <CODE>`). The log records `dev-error-dismiss-failed=<CODE>` in `logs/core.log`, using `unknown` when no code is available. For a moved refusal, the log line also carries the runner's value-free geometry: the retained and live frames, their delta, and whether the target was re-found by identifier or label | `restart_app_from_plan_start` |
 | `DEV_REDBOX_NO_SAFE_DISMISS` | No single Dismiss control (a syntax error, an ambiguous control, or an overlay inside a login replay, which never recovers) | `restart_app_from_plan_start` |
 | `DEV_REDBOX_CLEARANCE_UNPROVEN` | A fresh capture could not prove the overlay gone | `restart_app_from_plan_start` |
-| `DEV_REDBOX_ACTION_UNCERTAIN` | The overlay appeared after an action and completion was not proven. Eligible iOS RedBox presses dismiss once to check; other cases leave it in front. The action is never replayed | `inspect_app_error_before_rerun` |
+| `DEV_REDBOX_ACTION_UNCERTAIN` | Completion after an action was not proven, or an overlay reappeared after accepted post-action recovery. Eligible iOS RedBox presses dismiss once to check; other cases leave it in front. The action is never replayed | `inspect_app_error_before_rerun` |
 
 A restart from plan start loses app state; the error may race the app again. A
 device restart or an unchanged native rebuild cannot fix it. A run that passes
