@@ -174,6 +174,7 @@ export const INTERRUPTION_VETOES = [
 
 export interface InterruptionDiagnostic {
   veto: (typeof INTERRUPTION_VETOES)[number];
+  optInWithheld?: OptInWithheld;
   targetIndex?: number;
   // Which later-target check vetoed: the target is on screen, or it names the decline control itself.
   provenance?: 'presence' | 'ownership';
@@ -213,11 +214,13 @@ export function dismissCandidate(
     targetIndex?: number,
     elements: InterruptionDiagnostic['elements'] = [],
     provenance?: InterruptionDiagnostic['provenance'],
+    optInWithheld?: OptInWithheld,
   ) => {
     try {
       const cover = modalCoverDiagnostic(screen);
       diagnostic?.({
         veto,
+        ...(optInWithheld ? { optInWithheld } : {}),
         ...(targetIndex === undefined ? {} : { targetIndex }),
         ...(provenance ? { provenance } : {}),
         soleDecline: sole,
@@ -299,8 +302,12 @@ export function dismissCandidate(
   if (optIn && planTargets[0].declinedOptIns?.has(optIn.signature))
     return { repeated: optIn.decline.label! };
   if ((candidates.length || optIn) && planTargets[0].afterPlannedPress) {
-    if (!optIn || !optInAfterPlannedPress(screen, planTargets, optIn))
-      return rejected('previous-plan-press', 0);
+    const withheld = optIn
+      ? optInAfterPlannedPress(screen, planTargets, optIn)
+      : provenControls(screen) === undefined
+        ? 'controls-unproven'
+        : 'not-an-opt-in';
+    if (!optIn || withheld) return rejected('previous-plan-press', 0, [], undefined, withheld);
     return {
       label: optIn.decline.label!,
       screenClass: 'permission-opt-in',
@@ -562,13 +569,21 @@ const controlIdentity = (e: Element): string | undefined =>
 
 export function pressRecord(screen: Screen | undefined, tapped: Element | undefined): PressRecord {
   const label = tapped?.label === undefined ? undefined : normaliseLabel(tapped.label);
-  const controls =
-    screen && completeCapture(screen) ? provenControls(screen)?.map(controlIdentity) : undefined;
+  // Identity is independent of press capability: ordinary captures can enumerate elements even
+  // when the ability to press every host is unproven. Include offscreen and React-only identities.
+  const known =
+    screen &&
+    completeCapture(screen) &&
+    screen.elements.every((e) => !CONTROL_KINDS.has(e.kind) || controlIdentity(e) !== undefined);
+  const controls = known
+    ? screen.elements.flatMap((e) => {
+        const identity = controlIdentity(e);
+        return identity === undefined ? [] : [identity];
+      })
+    : undefined;
   return {
     ...(label ? { label } : {}),
-    ...(controls?.every((identity) => identity !== undefined)
-      ? { controls: controls as string[] }
-      : {}),
+    ...(label && controls ? { controls } : {}),
   };
 }
 
@@ -629,17 +644,28 @@ export function optInDecision(
     : undefined;
 }
 
-// The named exception to the previous-plan-press veto; anything unknown keeps the veto.
+export type OptInWithheld =
+  | 'private-or-unreadable-text'
+  | 'consent-wording'
+  | 'plan-names-control'
+  | 'react-control-in-front'
+  | 'tap-record-unknown'
+  | 'tap-was-answer'
+  | 'same-control-before-tap'
+  | 'controls-unproven'
+  | 'not-an-opt-in';
+
+// The named exception to the previous-plan-press veto; undefined permits the strict shape.
 function optInAfterPlannedPress(
   screen: Screen,
   planTargets: readonly RecoveryTarget[],
   optIn: OptInShape,
-): boolean {
+): OptInWithheld | undefined {
   if (
     concealsScreen(screen) ||
     screen.elements.some((e) => e.kind === 'text' && e.label === undefined && e.value === undefined)
   )
-    return false;
+    return 'private-or-unreadable-text';
   const text = [
     ...screen.visibleText,
     ...(screen.labelText ?? []),
@@ -649,15 +675,22 @@ function optInAfterPlannedPress(
       ...(e.value === undefined || e.secure ? [] : [e.value]),
     ]),
   ];
-  if (text.some((entry) => CONSENT_WORD.test(normaliseLabel(entry)))) return false;
+  if (text.some((entry) => CONSENT_WORD.test(normaliseLabel(entry)))) return 'consent-wording';
   if (planTargets.some((target) => target.declared && targetOnScreen(screen, target.declared)))
-    return false;
-  if ((screen.semanticUnassociatedReact ?? 0) !== 0) return false;
+    return 'plan-names-control';
+  const reactOnly = screen.elements.filter((e) => e.ref.startsWith('react:'));
+  if (
+    (screen.semanticUnassociatedReact ?? 0) !== reactOnly.length ||
+    !reactOnly.every((e) => behindPresentedModal(screen, e))
+  )
+    return 'react-control-in-front';
   const record = planTargets[0].pressRecord;
-  if (record?.label === undefined || record.controls === undefined) return false;
-  if (declinesOptIn(record.label) || acceptForm(record.label)) return false;
+  if (record?.label === undefined || record.controls === undefined) return 'tap-record-unknown';
+  if (declinesOptIn(record.label) || acceptForm(record.label)) return 'tap-was-answer';
   const identities = [controlIdentity(optIn.decline), controlIdentity(optIn.accept)];
-  return !record.controls.some((identity) => identities.includes(identity));
+  if (record.controls.some((identity) => identities.includes(identity)))
+    return 'same-control-before-tap';
+  return undefined;
 }
 
 export const completeCapture = (screen: Screen): boolean =>

@@ -1863,14 +1863,10 @@ test('a plan that addresses the opt-in or answered one with its last tap keeps t
     ),
     'record unknown': { ...waitHome, afterPlannedPress: true, pressRecord: {} },
     'record absent': { ...waitHome, afterPlannedPress: true },
-    'record evidence incomplete': tappedOpen(
-      opener(
-        element('@mystery', 'Thing', {
-          kind: 'other',
-          semantic: { press: 'unknown', fill: 'unsupported', visibility: 'visible' },
-        }),
-      ),
-    ),
+    'record evidence incomplete': tappedOpen({
+      ...opener(),
+      coverage: { native: 'complete', react: 'incomplete' },
+    }),
   };
   for (const [name, target] of Object.entries(withheld)) {
     const { result, records } = decide(snapshot, [target]);

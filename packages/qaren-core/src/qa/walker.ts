@@ -114,6 +114,7 @@ import {
 } from './questions.js';
 import {
   type InterruptionDiagnostic,
+  type OptInWithheld,
   type InterruptionProof,
   type InterruptionScreenClass,
   type LoginMarker,
@@ -1870,6 +1871,8 @@ async function walkBlockScoped(
         ...lastScreen,
         suggestion: `line ${interruption.targetLine} targets this control; if the interruption is optional, move that step before line ${item.line} or remove it`,
       };
+    if (interruptionWithheld?.item === item)
+      reason = [...segments(reason), interruptionWithheld.clause];
     const withheld = privacy.textWithheld(last);
     emit({
       ...row,
@@ -2648,6 +2651,23 @@ async function walkBlockScoped(
   let loginReplayed = false;
   // The item whose recovery withheld an app dismissal because a planned press opened the screen.
   let pressVetoed: Item | undefined;
+  // Explanations are local to this attempt, never part of the receipt or structured event.
+  let interruptionWithheld: { item: Item; clause: string } | undefined;
+  const optInWithheldClauses: Record<OptInWithheld, string> = {
+    'private-or-unreadable-text':
+      '; the opt-in text is private or unreadable, so nothing was dismissed',
+    'consent-wording': '; the screen contains consent wording, so nothing was dismissed',
+    'plan-names-control': '; the plan names a control on this screen, so nothing was dismissed',
+    'react-control-in-front':
+      '; a React control is not proven behind the presented modal, so nothing was dismissed',
+    'tap-record-unknown': '; the previous tap record is unknown, so nothing was dismissed',
+    'tap-was-answer': '; the previous tap was an opt-in answer, so nothing was dismissed',
+    'same-control-before-tap':
+      '; an opt-in control was present before the previous tap, so nothing was dismissed',
+    'controls-unproven':
+      '; the control evidence is incomplete or unknown, so nothing was dismissed',
+    'not-an-opt-in': '; the screen is not a strict permission opt-in, so nothing was dismissed',
+  };
   const replayLogin = async () => {
     const login = deps.login?.block;
     if (!login) {
@@ -2770,6 +2790,11 @@ async function walkBlockScoped(
       } catch {
         /* Diagnostics cannot change recovery. */
       }
+      interruptionWithheld = {
+        item,
+        clause:
+          "; recovery could not read the screen's presence evidence, so nothing was dismissed",
+      };
       return undefined;
     }
     if (fresh.screen.front === 'dev-redbox') {
@@ -2848,6 +2873,20 @@ async function walkBlockScoped(
     if (interruptions.get(item.line)?.outcome !== 'dismissed') interruptions.delete(item.line);
     const interruptionRejected = (record: InterruptionDiagnostic, observation?: number) => {
       if (record.veto === 'previous-plan-press') pressVetoed = item;
+      if (record.veto === 'previous-plan-press' && record.optInWithheld)
+        interruptionWithheld = { item, clause: optInWithheldClauses[record.optInWithheld] };
+      else if (
+        record.veto === 'no-candidate' &&
+        sequence.plannedPress &&
+        record.elements.some(
+          ({ failed }) => failed === 'not-visible' || failed === 'press-not-supported',
+        )
+      )
+        interruptionWithheld = {
+          item,
+          clause:
+            '; a decline control is in front, but its visibility or press evidence could not be proven, so nothing was dismissed',
+        };
       const behind = record.targetIndex === undefined ? undefined : planTargets[record.targetIndex];
       if (interruptions.get(item.line)?.outcome !== 'dismissed')
         interruptions.set(item.line, {
@@ -3090,6 +3129,7 @@ async function walkBlockScoped(
     if (!result) return undefined;
     if ('handled' in result && !declineAttempted) recoveries += 1;
     if ('handled' in result) {
+      interruptionWithheld = undefined;
       if (prompt !== undefined && result.handled === 'dialog') declinedPrompts.add(prompt);
       // A dialog step answers with its own action, so it never gets a second, decline-only recovery.
       if (
@@ -3461,6 +3501,7 @@ async function walkBlockScoped(
       | { target: NonNullable<ReturnType<typeof pixelTarget>>; crop: PixelCrop }
       | undefined;
     attempts: for (;;) {
+      interruptionWithheld = undefined;
       overlayRows.delete(item.line);
       scrollBands.delete(item.line);
       targetRows.delete(item.line);
@@ -4048,6 +4089,7 @@ async function walkBlockScoped(
             : capture(item);
         const maxAttempts = recovered.has(item) || opts.singleAttempt ? 1 : 2;
         for (let attempt = 1; attempt <= maxAttempts && !outcome; attempt += 1) {
+          interruptionWithheld = undefined;
           currentAttempt = attempt;
           pressAct = undefined;
           pressSelector = undefined;
@@ -4250,6 +4292,11 @@ async function walkBlockScoped(
                       before = proven;
                       continue;
                     }
+                    interruptionWithheld = {
+                      item,
+                      clause:
+                        '; a decline control was visible, but the presence read for it was late or incomplete',
+                    };
                     if (!observationUsable(before.timing, deps.now())) {
                       before = await captureBeforeDispatch();
                       continue;

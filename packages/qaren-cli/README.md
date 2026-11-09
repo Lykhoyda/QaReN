@@ -3733,7 +3733,9 @@ or `Enable all` identifies base consent; none of its declines is taken.
 Navigation labels such as `View all offers`, `See all` or `Show all` do not identify consent.
 
 A strict permission opt-in is declined even while protected. Every condition must hold
-on the fresh complete capture, and anything unknown keeps the veto:
+on the fresh complete capture, and anything unknown keeps the veto. A refusal names
+why the opt-in was not declined:
+
 
 - Exactly two proven controls, both visible, hittable, enabled, non-secure buttons
   with supported press and no fill; a link, switch, cell or input disqualifies the screen.
@@ -3748,13 +3750,16 @@ on the fresh complete capture, and anything unknown keeps the veto:
   `cookie(s)`, `partner(s)`, `companies`, `third`, `analytics`, `tracking`, `marketing`,
   `advertising`, `ads`, `share`, `sharing`) appears anywhere in the captured text,
   including merged labels, non-secure values, unresolved text and offscreen elements.
-  A concealed screen, a text element with neither label nor value, or an unassociated
-  React host makes this unknown.
+  A concealed screen or a text element with neither label nor value makes this unknown.
+  Every React-only control must be proven behind the one presented modal, and their
+  count must account for every unassociated React control.
 - The later-target veto passes; a replayed step's declared wording is checked as well
   as its stored selector.
 - The planned press's tapped label, read from the capture it was dispatched from, is
-  known and is neither a decline nor an accept form, and no proven control in that
-  capture shares either opt-in control's kind and test ID (or label).
+  known and is neither a decline nor an accept form. Every element with an identity
+  in that complete dispatch capture is checked, including offscreen and React-only
+  elements; none may share either opt-in control's kind and test ID (or label).
+  A control without either test ID or label keeps the tap record unknown.
 - The same opt-in, identified by its decline, accept and subject, was not already
   declined this way in the run.
 

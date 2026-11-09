@@ -14,11 +14,26 @@ import {
   type InterruptionProof,
   type RecoveryTarget,
 } from '../../../dist/qa/recover.js';
-import { behindPresentedModal, join, type Screen } from '../../../dist/qa/screen.js';
+import {
+  behindPresentedModal,
+  frontFromSurface,
+  join,
+  validateReactHostEvidence,
+  type Screen,
+} from '../../../dist/qa/screen.js';
+import { validateNativePresence } from '../../../dist/qa/native-presence.js';
+import { reactCoverage } from '../../../dist/qa/acquisition-coverage.js';
 import { element, screen, scriptedJudge } from './judgment-fixtures.ts';
 
 type Fixture = {
-  mode: 'ordinary' | 'presence';
+  mode: 'ordinary' | 'platform-presence';
+  presenceBudgetMs: number;
+  rawBeforeValidation: {
+    presenceCapture?: unknown;
+    snapshotGeneration: number;
+    surface: string;
+    reactHostEvidence: NonNullable<Parameters<typeof join>[4]>;
+  };
   captureCoverage: NonNullable<Screen['captureCoverage']>;
   joinArgs: {
     nodes: Parameters<typeof join>[0];
@@ -40,20 +55,52 @@ function fixture(name: string): Fixture {
 }
 function captured(name: string, edit?: (fixture: Fixture) => void): Screen {
   const f = fixture(name);
+  // Negative fixtures edit the same raw host envelope that production validates.
+  f.joinArgs.reactHostEvidence = f.rawBeforeValidation.reactHostEvidence;
   edit?.(f);
   const a = f.joinArgs;
-  // Production keeps native acquisition separate from native presence. Never upgrade an ordinary read.
+  const raw = f.rawBeforeValidation;
+  // The dump retains production's acquisition verdict, not the original snapshotVerdict fields.
+  // Restore that exact envelope, then recompute presence admission and projection independently.
+  const captureCoverage = { ...f.captureCoverage };
+  const hostEvidence = validateReactHostEvidence(raw.reactHostEvidence);
+  const nativePresence =
+    f.mode === 'platform-presence' && captureCoverage.native === 'complete'
+      ? validateNativePresence(
+          raw.presenceCapture,
+          a.nodes,
+          raw.snapshotGeneration,
+          'com.rndevagent.testapp',
+          f.presenceBudgetMs,
+        )
+      : undefined;
+  const coverage: NonNullable<Screen['coverage']> = {
+    native: nativePresence
+      ? 'complete'
+      : captureCoverage.native === 'incomplete' ||
+          (f.mode === 'platform-presence' && raw.presenceCapture !== undefined)
+        ? 'incomplete'
+        : 'unknown',
+    react: reactCoverage(
+      { interactive: a.digest, hostEvidence: raw.reactHostEvidence },
+      captureCoverage.react,
+      hostEvidence,
+    ),
+  };
   return {
     ...join(
       a.nodes,
       a.digest,
-      a.front,
-      a.coverage,
-      a.reactHostEvidence,
-      a.nativePresence,
-      a.nativeAcquisition,
+      frontFromSurface(raw.surface, a.nodes),
+      coverage,
+      hostEvidence,
+      nativePresence ??
+        (f.mode === 'platform-presence' && raw.presenceCapture !== undefined
+          ? 'unknown'
+          : undefined),
+      captureCoverage.native,
     ),
-    captureCoverage: f.captureCoverage,
+    captureCoverage,
   };
 }
 const opener = () => captured('tap');
@@ -107,7 +154,7 @@ test('H2/H2a: the recovery capture qualifies with both the captured and a known 
   }
 });
 
-type Fault = 'late' | 'incomplete' | 'unavailable' | 'visibility' | 'gap';
+type Fault = 'late' | 'incomplete' | 'unavailable' | 'visibility' | 'gap' | 'consent' | 'close';
 function walkCaptured(fault?: Fault) {
   let phase = 'tap';
   let clock = 0;
@@ -136,6 +183,21 @@ function walkCaptured(fault?: Fault) {
           reason: 'unavailable fixture',
         });
       const s = captured(presence === 1 ? 'scroll-presence' : 'recovery');
+      if (presence > 1 && fault === 'consent') {
+        // Keep the notification target mounted behind the real consent capture for this route.
+        const consent = captured('consent');
+        const target = consent.elements.find((e) => e.ref.startsWith('react:'))!;
+        target.testID = 'qa-notification-pair-target';
+        target.ref = 'react:qa-notification-pair-target';
+        consent.reactHostEvidence!.hosts.find(
+          (h) => h.testID === 'qa-consent-pair-target',
+        )!.testID = target.testID;
+        return consent;
+      }
+      if (presence > 1 && fault === 'close') {
+        s.elements.find((e) => e.testID === 'qa-notification-pair-decline')!.label = 'Close';
+        s.elements.find((e) => e.testID === 'qa-notification-pair-accept')!.label = 'Continue';
+      }
       if (presence > 1 && fault === 'visibility') decline(s).semantic!.visibility = 'unknown';
       if (presence > 1 && fault === 'gap') s.pressGapCount = 1;
       return s;
@@ -232,7 +294,11 @@ test('H3b: 4c refuses unproven, inside-modal and mismatched React-only controls'
       }),
     );
     s.semanticUnassociatedReact = fault === 'anonymous' ? 3 : 2;
-    if (fault === 'refused') s.reactHostEvidence!.typography!.complete = false;
+    if (fault === 'refused') {
+      // A synthetic known control count isolates 4c from the earlier count veto. No cover
+      // proof is supplied: metadata or a copied element array cannot establish that proof.
+      s.elements = s.elements.slice();
+    }
     const r = decide(s, { ...target(), quoted: 'missing', phrase: 'missing' }, 'surface');
     assert.equal(r.result, undefined, fault);
     assert.equal(r.record?.veto, 'previous-plan-press', fault);
@@ -306,4 +372,66 @@ test('H6: real consent capture and outside-vocabulary Close refuse without an an
   assert.equal(c.result, undefined);
   assert.equal(c.record?.veto, 'previous-plan-press');
   assert.equal(c.record?.optInWithheld, 'not-an-opt-in');
+});
+
+// Loss of cover on the raw arguments can fail shape before 4c; never bypass that earlier gate.
+test('a refused cover on the real capture keeps control-count evidence unproven', () => {
+  const s = captured('recovery', (f) => {
+    f.joinArgs.reactHostEvidence.typography!.nodes.find(
+      (n) => n.hostType === 'RCTModalHostView',
+    )!.hostType = 'RCTView';
+  });
+  assert.equal(controlEvidence(s).controls, undefined);
+  const r = decide(s, { ...target(), quoted: 'missing', phrase: 'missing' }, 'surface');
+  assert.equal(r.result, undefined);
+  assert.equal(r.record?.veto, 'previous-plan-press');
+  assert.equal(r.record?.optInWithheld, 'controls-unproven');
+});
+
+test('consent and outside-vocabulary screens fail the walker without pressing an answer', async () => {
+  for (const fault of ['consent', 'close'] as const) {
+    const f = walkCaptured(fault);
+    const r = await f.result();
+    assert.equal(r.verdict, 'FAIL');
+    assert.deepEqual(f.actions, ['press @e6']);
+    assert.equal(r.recoveries, 0);
+    assert.equal(r.failure?.subreason, 'previous-plan-press');
+    assert.match(r.failure?.seen ?? '', /not a strict permission opt-in/);
+    if (fault === 'consent') assert.match(r.failure?.seen ?? '', /Privacy consent/);
+    assert.equal(r.declinedOptIns, undefined);
+  }
+});
+
+test('strict opt-in refusals disclose only fixed causes for private text, consent and plan ownership', () => {
+  for (const reason of [
+    'private-or-unreadable-text',
+    'consent-wording',
+    'plan-names-control',
+  ] as const) {
+    const s = captured('recovery');
+    const t = target();
+    if (reason === 'private-or-unreadable-text')
+      s.elements.push(element('@unreadable', '', { kind: 'text', label: undefined }));
+    if (reason === 'consent-wording') s.unresolvedText = ['marketing'];
+    if (reason === 'plan-names-control')
+      t.declared = { phrase: 'Allow', quoted: 'Allow', exact: 'text' };
+    const r = decide(s, t);
+    assert.equal(r.result, undefined);
+    assert.equal(r.record?.veto, 'previous-plan-press');
+    assert.equal(r.record?.optInWithheld, reason);
+  }
+});
+
+test('capture replay revalidates raw presence and never upgrades incomplete acquisition or ordinary mode', () => {
+  for (const fault of ['generation', 'budget', 'incomplete', 'ordinary'] as const) {
+    const s = captured('recovery', (f) => {
+      if (fault === 'generation') f.rawBeforeValidation.snapshotGeneration += 1;
+      if (fault === 'budget') f.presenceBudgetMs -= 1;
+      if (fault === 'incomplete') f.captureCoverage.native = 'incomplete';
+      if (fault === 'ordinary') f.mode = 'ordinary';
+    });
+    assert.notEqual(s.coverage?.native, 'complete', fault);
+    assert.notEqual(decline(s).semantic?.visibility, 'visible', fault);
+    assert.equal(decide(s).result, undefined, fault);
+  }
 });
