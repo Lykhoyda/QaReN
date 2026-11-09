@@ -627,6 +627,9 @@ impl qaren::exec::Runner for IosBuildRunner {
     fn adb_server_version(&self, port: u16) -> Result<u32, String> {
         self.inner.adb_server_version(port)
     }
+    fn adb_server_devices(&self, port: u16) -> Result<String, String> {
+        self.inner.adb_server_devices(port)
+    }
     fn execute(&mut self, spec: &qaren::exec::CmdSpec, interruptible: bool) -> CmdOutput {
         if let Some(observe) = self.observe.as_mut() {
             observe(spec);

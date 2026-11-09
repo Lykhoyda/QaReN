@@ -148,32 +148,72 @@ pub fn borrowed_server_port(socket: Option<&str>, port: Option<&str>) -> Result<
     }
 }
 
-// The server's own host:version reply: proves an adb server listens, without any client that could restart it.
-pub fn server_version(port: u16) -> Result<u32, String> {
-    use std::io::{Read, Write};
-    let budget = std::time::Duration::from_millis(500);
+// One host request to the local adb server, without any client that could start or restart one.
+// Request: four hex digits of payload length, then the payload. Reply: OKAY or FAIL, four hex digits of length, that many bytes.
+// max_len bounds an OKAY body and 1024 a FAIL message; each read waits at most 500 ms and the whole reply one second.
+fn server_query(port: u16, request: &str, max_len: u32) -> Result<Vec<u8>, String> {
+    use std::io::{ErrorKind, Read, Write};
+    use std::time::{Duration, Instant};
+    let budget = Duration::from_millis(500);
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let mut stream = std::net::TcpStream::connect_timeout(&addr, budget)
         .map_err(|e| format!("cannot connect to 127.0.0.1:{port}: {e}"))?;
     stream
-        .set_read_timeout(Some(budget))
-        .and_then(|()| stream.set_write_timeout(Some(budget)))
-        .and_then(|()| stream.write_all(b"000chost:version"))
-        .map_err(|e| format!("cannot ask 127.0.0.1:{port} for its version: {e}"))?;
+        .set_write_timeout(Some(budget))
+        .and_then(|()| stream.write_all(format!("{:04x}{request}", request.len()).as_bytes()))
+        .map_err(|e| format!("cannot ask 127.0.0.1:{port} for {request}: {e}"))?;
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let mut read_exact = |buf: &mut [u8]| -> std::io::Result<()> {
+        let mut filled = 0;
+        while filled < buf.len() {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(ErrorKind::TimedOut.into());
+            }
+            stream.set_read_timeout(Some(left.min(budget)))?;
+            match stream.read(&mut buf[filled..]) {
+                Ok(0) => return Err(ErrorKind::UnexpectedEof.into()),
+                Ok(n) => filled += n,
+                Err(e) if e.kind() == ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    };
     let mut head = [0u8; 8];
-    stream
-        .read_exact(&mut head)
-        .map_err(|e| format!("no adb reply from 127.0.0.1:{port}: {e}"))?;
+    read_exact(&mut head).map_err(|e| format!("no adb reply from 127.0.0.1:{port}: {e}"))?;
     let not_adb = || format!("127.0.0.1:{port} did not answer as an adb server");
-    if &head[..4] != b"OKAY" {
-        return Err(not_adb());
-    }
+    let refused = match &head[..4] {
+        b"OKAY" => false,
+        b"FAIL" => true,
+        _ => return Err(not_adb()),
+    };
+    // A refusal is one short line from adb; its own cap keeps the message whatever the success cap.
+    let cap = if refused { 1024 } else { max_len };
     let len = parse_hex(&head[4..])
-        .filter(|n| (1..=8).contains(n))
+        .filter(|n| *n <= cap)
         .ok_or_else(not_adb)?;
     let mut body = vec![0u8; len as usize];
-    stream.read_exact(&mut body).map_err(|_| not_adb())?;
-    parse_hex(&body).ok_or_else(not_adb)
+    read_exact(&mut body).map_err(|_| not_adb())?;
+    if refused {
+        let message: String = String::from_utf8_lossy(&body).chars().take(200).collect();
+        return Err(format!(
+            "the adb server on 127.0.0.1:{port} refused {request}: {message}"
+        ));
+    }
+    Ok(body)
+}
+
+// The server's own host:version reply: proves an adb server listens, without any client that could restart it.
+pub fn server_version(port: u16) -> Result<u32, String> {
+    let body = server_query(port, "host:version", 8)?;
+    parse_hex(&body).ok_or_else(|| format!("127.0.0.1:{port} did not answer as an adb server"))
+}
+
+// The server's own device list, in `adb devices` row form without the header; OKAY0000 is an empty list.
+pub fn server_devices(port: u16) -> Result<String, String> {
+    server_query(port, "host:devices", 0xffff)
+        .map(|body| String::from_utf8_lossy(&body).into_owned())
 }
 
 fn parse_hex(bytes: &[u8]) -> Option<u32> {
@@ -225,16 +265,99 @@ pub fn devices_spec(adb: &Path, server_port: u16) -> CmdSpec {
     adb_client("adb-devices", adb, server_port, &["devices"], 20)
 }
 
-// (serial, state) pairs from `adb devices`, skipping the header and blank lines.
+// (serial, state) pairs from `adb devices` or host:devices, skipping the header and blank lines.
+// Rows are `serial\tstate`; a serial adb cannot read may contain spaces (`(no serial number)`).
+// The state is the first word, except `no permissions (...)`, which keeps both words.
 pub fn parse_devices(stdout: &str) -> Vec<(String, String)> {
     stdout
         .lines()
         .filter(|l| !l.starts_with("List of devices") && !l.starts_with('*'))
         .filter_map(|l| {
-            let mut parts = l.split_whitespace();
-            Some((parts.next()?.to_string(), parts.next()?.to_string()))
+            let line = l.trim();
+            let (serial, rest) = line
+                .split_once('\t')
+                .or_else(|| line.split_once(char::is_whitespace))?;
+            let (serial, rest) = (serial.trim(), rest.trim_start());
+            let state = if rest.starts_with("no permissions") {
+                "no permissions"
+            } else {
+                rest.split_whitespace().next()?
+            };
+            Some((serial.to_string(), state.to_string()))
         })
         .collect()
+}
+
+// A listed row that is neither an emulator nor a host:port endpoint; an unreadable serial still counts.
+pub fn is_physical_serial(serial: &str) -> bool {
+    !crate::scenario::is_emulator_serial(serial) && !serial.contains(':')
+}
+
+// (subreason, detail, next step) for an attached device that cannot be used.
+pub type DeviceProblem = (&'static str, String, String);
+
+fn device_label(serial: &str) -> String {
+    if crate::scenario::is_usb_serial(serial) {
+        format!("Android device {serial}")
+    } else {
+        "an attached device whose serial adb cannot read".to_string()
+    }
+}
+
+// The one owner of what an adb device state means and how to fix it; doctor and check both name these.
+pub fn device_problem(serial: &str, state: &str, linux: bool) -> Option<DeviceProblem> {
+    let who = device_label(serial);
+    let replug = "replug the USB cable and wake the phone; re-run when it lists as `device`";
+    Some(match state {
+        "device" => return None,
+        "no permissions" => (
+            "usb-no-permissions",
+            format!("{who}: this account has no USB permission for it (adb: no permissions)"),
+            if linux {
+                "give this account USB access: add it to the plugdev group (`sudo usermod -aG plugdev $LOGNAME`, then log out and in) and install the Android udev rules (Ubuntu: `apt-get install android-sdk-platform-tools-common`), replug the phone, restart this account's adb server, then re-run"
+            } else {
+                "replug the phone and check the cable, then re-run"
+            }
+            .to_string(),
+        ),
+        "unauthorized" => (
+            "usb-unauthorized",
+            format!("{who}: USB debugging from this computer is not accepted on the phone (adb: unauthorized)"),
+            "unlock the phone and accept 'Allow USB debugging' (tick 'Always allow from this computer'); if no prompt shows, replug the cable; then re-run".to_string(),
+        ),
+        "offline" => ("device-offline", format!("{who}: offline (adb: offline)"), replug.to_string()),
+        other => {
+            // The state is the server's text: show it only as one short plain word.
+            let shown = if other.len() <= 32 && other.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+                other
+            } else {
+                "an unrecognized state"
+            };
+            ("device-offline", format!("{who}: not ready (adb: {shown})"), replug.to_string())
+        }
+    })
+}
+
+// One USB device is held by one adb server: name the one that holds it, never stop it.
+pub fn held_by_other_server(serial: &str, port: u16, holder_port: u16) -> DeviceProblem {
+    (
+        "device-held-by-other-server",
+        format!(
+            "{} is attached to the adb server on port {holder_port}, not to the one on port {port}",
+            device_label(serial)
+        ),
+        format!("set ANDROID_ADB_SERVER_PORT={holder_port} and unset ADB_SERVER_SOCKET to run through it, or have its owner stop it; QaReN does not stop a server it did not start"),
+    )
+}
+
+pub fn not_attached(serial: &str, port: u16) -> DeviceProblem {
+    (
+        "device-not-attached",
+        format!(
+            "no Android device with serial {serial} is attached to the adb server on port {port}"
+        ),
+        "attach the phone over USB with USB debugging enabled, then re-run".to_string(),
+    )
 }
 
 pub fn getprop_spec(adb: &Path, server_port: u16, serial: &str, prop: &str) -> CmdSpec {

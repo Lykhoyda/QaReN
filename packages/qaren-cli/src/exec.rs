@@ -334,6 +334,9 @@ pub trait Runner {
     fn adb_server_version(&self, port: u16) -> Result<u32, String> {
         crate::adapters::android::server_version(port)
     }
+    fn adb_server_devices(&self, port: u16) -> Result<String, String> {
+        crate::adapters::android::server_devices(port)
+    }
 }
 
 pub(crate) struct DeadlineRunner<'a> {
@@ -427,6 +430,9 @@ impl Runner for DeadlineRunner<'_> {
     fn adb_server_version(&self, port: u16) -> Result<u32, String> {
         self.inner.adb_server_version(port)
     }
+    fn adb_server_devices(&self, port: u16) -> Result<String, String> {
+        self.inner.adb_server_devices(port)
+    }
 }
 
 pub(crate) struct CleanupRunner<'a>(pub(crate) &'a mut dyn Runner);
@@ -472,6 +478,9 @@ impl Runner for CleanupRunner<'_> {
     }
     fn adb_server_version(&self, port: u16) -> Result<u32, String> {
         self.0.adb_server_version(port)
+    }
+    fn adb_server_devices(&self, port: u16) -> Result<String, String> {
+        self.0.adb_server_devices(port)
     }
 }
 
@@ -1049,6 +1058,8 @@ pub struct MockRunner {
     pub advance_on: Option<(String, u64)>,
     // (port, version) of the adb servers the scripted host runs; the real probe never runs.
     pub adb_servers: Vec<(u16, u32)>,
+    // (port, host:devices reply body) of those servers; an unlisted port refuses the connection.
+    pub adb_devices: Vec<(u16, String)>,
     script: VecDeque<MockExpectation>,
     now_ms: u64,
 }
@@ -1067,6 +1078,7 @@ impl MockRunner {
             cancel_at_ms: None,
             advance_on: None,
             adb_servers: Vec::new(),
+            adb_devices: Vec::new(),
             script: VecDeque::new(),
             now_ms: 1_770_000_000_000,
         }
@@ -1181,6 +1193,13 @@ impl Runner for MockRunner {
             .iter()
             .find(|(p, _)| *p == port)
             .map(|(_, version)| *version)
+            .ok_or_else(|| "connection refused".to_string())
+    }
+    fn adb_server_devices(&self, port: u16) -> Result<String, String> {
+        self.adb_devices
+            .iter()
+            .find(|(p, _)| *p == port)
+            .map(|(_, listed)| listed.clone())
             .ok_or_else(|| "connection refused".to_string())
     }
     fn execute(&mut self, spec: &CmdSpec, _interruptible: bool) -> CmdOutput {
