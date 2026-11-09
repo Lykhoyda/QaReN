@@ -3159,6 +3159,7 @@ async function walkBlockScoped(
     itemStartedAt = budget.startedAt;
     itemDeadline = budget.deadline;
     let pixelBaselineTaken = false;
+    let ambiguityPresenceRead = false;
     let pixelBaseline:
       | { target: NonNullable<ReturnType<typeof pixelTarget>>; crop: PixelCrop }
       | undefined;
@@ -3853,6 +3854,31 @@ async function walkBlockScoped(
                               reason: 'the original input identity no longer resolves uniquely',
                             }
                         : decision.target!;
+                if (
+                  item.kind === 'press' &&
+                  item.target.quoted !== undefined &&
+                  deps.platform === 'ios' &&
+                  !ambiguityPresenceRead &&
+                  !before.platformPresence &&
+                  'refuse' in prepared &&
+                  prepared.refuse === 'TARGET_AMBIGUOUS'
+                ) {
+                  ambiguityPresenceRead = true;
+                  let proven: Observation | undefined;
+                  try {
+                    proven = await presenceRecapture(
+                      item,
+                      Math.min(itemDeadline ?? Infinity, deps.now() + NATIVE_PRESENCE_BUDGET_MS),
+                    );
+                  } catch (error) {
+                    if (isAbort(error)) throw error;
+                    assertActive();
+                  }
+                  if (proven) {
+                    before = proven;
+                    continue;
+                  }
+                }
                 const decided = await probeDuplicates(item, before, prepared);
                 targetRows.set(item.line, {
                   ...targetRows.get(item.line),

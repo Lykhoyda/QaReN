@@ -359,8 +359,27 @@ for (const scenario of ['disabled', 'stored-label', 'wrong-kind', 'react-only'] 
     assert.deepEqual(result.candidateExclusions, [
       { ref: '@e4', kind: 'button', frame: { ...VISIBLE, y: 760 }, reason: 'clipped-by-viewport' },
     ]);
+    assert.match(
+      result.reason,
+      /; excluded: button id=Close frame=20,760,120,44 native \(clipped-by-viewport\)$/,
+    );
   });
 }
+
+test('a live exclusion is listed when its sole survivor refuses', () => {
+  const s = screen([{ rect: VISIBLE, enabled: false }, { rect: { ...VISIBLE, y: 260 } }]);
+  const result = contend(
+    tap,
+    s,
+    [s.elements[3]],
+    [{ ref: '@e4', kind: 'button', reason: 'not-hittable' }],
+  );
+  assert.ok('refuse' in result, JSON.stringify(result));
+  assert.match(
+    result.reason,
+    /; excluded: button no-id frame=20,260,120,44 native \(not-hittable\)$/,
+  );
+});
 
 test('scroll resolutions retain frame and live exclusion facts', () => {
   const s = screen([{ rect: { ...VISIBLE, y: 760 } }]);

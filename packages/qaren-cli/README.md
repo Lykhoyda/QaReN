@@ -667,7 +667,14 @@ inner control that is offscreen, disabled or not hittable never collapses, and t
 wrapper is never chosen. When a quoted press or fill still has multiple matches,
 a match whose whole frame is off screen, outside its list's
 clip or under the keyboard is set aside unless it is nested with another match; a
-later window or an inferred overlay sets nothing aside. On iOS, when every remaining
+later window or an inferred overlay sets nothing aside. An ambiguous quoted press
+on iOS takes one detailed recapture within the capture budget. A native duplicate
+whose React hosts are all proven behind the presented modal is set aside as
+`behind-presented-modal`, unless it is nested with another match. React-only
+duplicates are never set aside on this proof. If that recapture is refused or
+incomplete, the original ambiguity remains; no dismissal is tried.
+Hidden-in-place duplicates without platform visibility evidence remain unchanged.
+On iOS, when every remaining
 match is uniquely identifiable, the first four are considered for a read-only live
 hit read inside the observation's expiry, skipping nested candidates; only
 `not-hittable` sets one aside. Partial exposure or missing geometry alone never

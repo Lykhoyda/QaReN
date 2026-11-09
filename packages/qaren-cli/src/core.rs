@@ -659,6 +659,7 @@ pub enum ExclusionReason {
     ClippedByViewport,
     UnderKeyboard,
     NotHittable,
+    BehindPresentedModal,
 }
 
 impl ExclusionReason {
@@ -668,6 +669,7 @@ impl ExclusionReason {
             Self::ClippedByViewport => "clipped-by-viewport",
             Self::UnderKeyboard => "under-keyboard",
             Self::NotHittable => "not-hittable",
+            Self::BehindPresentedModal => "behind-presented-modal",
         }
     }
 }

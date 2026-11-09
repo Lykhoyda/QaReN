@@ -1510,6 +1510,73 @@ fn a_typed_refusal_needs_exit_four() {
 }
 
 #[test]
+fn presented_modal_exclusions_survive_streamed_and_saved_rows_without_values() {
+    for streamed in [false, true] {
+        let valid = serde_json::json!({
+            "ref": "@e17", "kind": "button", "reason": "behind-presented-modal",
+            "frame": {"x": 20.0, "y": 60.0, "width": 80.0, "height": 44.0}
+        });
+        let mut bad_ref = valid.clone();
+        bad_ref["ref"] = "react:private-canary".into();
+        let mut bad_reason = valid.clone();
+        bad_reason["reason"] = "private-canary".into();
+        let mut with_label = valid.clone();
+        with_label["label"] = "private-canary".into();
+        for (exclusion, accepted) in [
+            (valid.clone(), true),
+            (bad_ref, false),
+            (bad_reason, false),
+            (with_label, false),
+        ] {
+            let repo = common::temp_repo();
+            let mut step: serde_json::Value = serde_json::from_str(&row(1, 1, "pass")).unwrap();
+            step["candidateExclusions"] = serde_json::json!([exclusion]);
+            let (stdout, exit) = if streamed {
+                let result = serde_json::json!({
+                    "verdict": "REFUSED", "code": "JEV_AUTH_FAILED", "message": "refused"
+                });
+                (
+                    format!(
+                        "{}\n{}\n",
+                        envelope(2, "row", &step.to_string()),
+                        envelope(3, "result", &result.to_string())
+                    ),
+                    4,
+                )
+            } else {
+                (
+                    format!(
+                        "{}\n",
+                        envelope(2, "result", &pass_ledger(&[step.to_string()]))
+                    ),
+                    0,
+                )
+            };
+            let mut mock = MockRunner::new();
+            mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(exit));
+            let outcome = run_child(&mut mock, &repo.join("core.log"));
+            assert_eq!(outcome.ledger.steps.len(), 1, "{outcome:?}");
+            let saved = serde_json::to_value(&outcome.ledger.steps[0]).unwrap();
+            if accepted {
+                assert_eq!(saved["candidateExclusions"], serde_json::json!([valid]));
+                let rendered = qaren::report::render(&qaren::report::ReportInput {
+                    video: None,
+                    run_id: RUN,
+                    platform: "ios",
+                    app_id: "com.test",
+                    device: "test-device",
+                    ledger: &outcome.ledger,
+                });
+                assert!(rendered.contains("set aside @e17 (behind-presented-modal)"));
+            } else {
+                assert!(saved.get("candidateExclusions").is_none());
+            }
+            assert!(!saved.to_string().contains("private-canary"));
+        }
+    }
+}
+
+#[test]
 fn react_coverage_loss_survives_the_child_receipt_and_report() {
     use qaren::receipt::{Receipt, ReceiptResult};
     use qaren::report::{self, ReportInput};

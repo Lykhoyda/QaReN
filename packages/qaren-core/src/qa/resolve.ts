@@ -29,6 +29,7 @@ import {
   isWindow,
   insideAlert,
   hasNativeSheet,
+  behindPresentedModal,
   matchedHostPress,
   reachOf,
   touchOwnerAt,
@@ -80,12 +81,17 @@ export interface CollapsedCandidate {
   frame?: Rect;
   into: string;
 }
-// A same-label candidate set aside on proof: its whole frame unreachable, or a live hit read found no hit point.
+// A same-label candidate set aside on reach, presented-modal or live-hit proof.
 export interface CandidateExclusion {
   ref: string;
   kind: Element['kind'];
   frame?: Rect;
-  reason: 'offscreen-by-frame' | 'clipped-by-viewport' | 'under-keyboard' | 'not-hittable';
+  reason:
+    | 'offscreen-by-frame'
+    | 'clipped-by-viewport'
+    | 'under-keyboard'
+    | 'not-hittable'
+    | 'behind-presented-modal';
 }
 // What covers a present target's centre; the label only when it is QaReN's own dismiss vocabulary.
 export interface CoveredBy {
@@ -231,6 +237,17 @@ export function excludedCandidate(
   return { ref: element.ref, kind: element.kind, ...(frame ? { frame } : {}), reason };
 }
 
+function describeExclusions(screen: Screen, exclusions: CandidateExclusion[]): string {
+  return exclusions.length
+    ? `excluded: ${exclusions
+        .map((x) => {
+          const element = screen.elements.find((e) => e.ref === x.ref);
+          return `${element ? describeCandidate(element) : x.ref} (${x.reason})`;
+        })
+        .join('; ')}`
+    : '';
+}
+
 // One candidate left resolves; several stay ambiguous; none is not found, each exclusion named.
 export function contend(
   step: Step,
@@ -240,14 +257,7 @@ export function contend(
   collapsed: CollapsedCandidate[] = [],
 ): Resolution {
   const quoted = stepTarget(step)?.quoted;
-  const excluded = exclusions.length
-    ? `excluded: ${exclusions
-        .map((x) => {
-          const element = screen.elements.find((e) => e.ref === x.ref);
-          return `${element ? describeCandidate(element) : x.ref} (${x.reason})`;
-        })
-        .join('; ')}`
-    : '';
+  const excluded = describeExclusions(screen, exclusions);
   const recorded = {
     ...(exclusions.length ? { candidateExclusions: exclusions } : {}),
     ...(collapsed.length ? { collapsed } : {}),
@@ -270,10 +280,14 @@ export function contend(
   if ('question' in result)
     return {
       refuse: 'NO_TARGET',
-      reason: 'only a quoted target can be narrowed to one candidate',
+      reason: `only a quoted target can be narrowed to one candidate${excluded ? `; ${excluded}` : ''}`,
       ...recorded,
     };
-  return { ...result, ...recorded };
+  return {
+    ...result,
+    ...('refuse' in result && excluded ? { reason: `${result.reason}; ${excluded}` } : {}),
+    ...recorded,
+  };
 }
 
 // Press only: collapses wrappers from the innermost outward; never resolves to a wrapper.
@@ -362,17 +376,22 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
     const { collapsed } = collapse;
     let { identities } = collapse;
     const acting = step.kind === 'press' || step.kind === 'fill';
-    // Set aside a candidate only on whole-frame proof, and never one nested with another candidate.
+    // Only reach or presented-modal proof sets a duplicate aside; nested candidates stay.
     const exclusions: CandidateExclusion[] =
       acting && identities.length > 1
         ? identities.flatMap(({ element }) => {
             const reach = reachOf(element);
-            return EXCLUDING.has(reach) &&
+            const reason = EXCLUDING.has(reach)
+              ? (reach as CandidateExclusion['reason'])
+              : element.ref.startsWith('@e') && behindPresentedModal(screen, element)
+                ? 'behind-presented-modal'
+                : undefined;
+            return reason &&
               !nestedCandidate(
                 element,
                 identities.map(({ element }) => element),
               )
-              ? [excludedCandidate(element, reach as CandidateExclusion['reason'])]
+              ? [excludedCandidate(element, reason)]
               : [];
           })
         : [];
@@ -384,6 +403,8 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
       ...(collapsed.length ? { collapsed } : {}),
       ...(exclusions.length ? { candidateExclusions: exclusions } : {}),
     };
+    const excluded = describeExclusions(screen, exclusions);
+    const suffix = excluded ? `; ${excluded}` : '';
     if (acting && (identities.length > 1 || !identities.length) && named.length > 1)
       return contend(
         step,
@@ -403,7 +424,7 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
     if (only && step.kind === 'fill' && only.ref.startsWith('react:'))
       return {
         refuse: 'TARGET_NOT_FOUND',
-        reason: `no eligible element labelled or identified "${target.quoted}" is on screen`,
+        reason: `no eligible element labelled or identified "${target.quoted}" is on screen${suffix}`,
         ...recorded,
       };
     const eligible =
@@ -416,12 +437,12 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
       if (target.exact)
         return {
           refuse: 'REPLAY_SELECTOR',
-          reason: `${count} eligible elements match the stored ${target.exact === 'id' ? 'testID' : 'label'} "${target.quoted}"`,
+          reason: `${count} eligible elements match the stored ${target.exact === 'id' ? 'testID' : 'label'} "${target.quoted}"${suffix}`,
           ...recorded,
         };
       return {
         refuse: 'TARGET_NOT_FOUND',
-        reason: `no eligible element labelled or identified "${target.quoted}" is on screen`,
+        reason: `no eligible element labelled or identified "${target.quoted}" is on screen${suffix}`,
         ...(only ? {} : { missing: true as const }),
         ...recorded,
       };
@@ -432,7 +453,7 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
     if (step.kind === 'fill' && only.hiddenInView === 'unfocused')
       return {
         refuse: 'TARGET_NOT_FOUND',
-        reason: `"${target.quoted}" is on screen but not visible to the user (hidden in place, typically opacity 0 on it or a parent) and it does not hold input focus; nothing was typed and no scroll was tried. Next step: add a step before this Fill that taps the visible control which focuses this field, or fill the visible field instead.`,
+        reason: `"${target.quoted}" is on screen but not visible to the user (hidden in place, typically opacity 0 on it or a parent) and it does not hold input focus; nothing was typed and no scroll was tried. Next step: add a step before this Fill that taps the visible control which focuses this field, or fill the visible field instead.${suffix}`,
         ...recorded,
       };
     return { ...(only.offscreen ? scrollTo(only) : { ref: only.ref, element: only }), ...recorded };
