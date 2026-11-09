@@ -3580,7 +3580,8 @@ unsure after its re-ask gets a deterministic recovery, subject to the
 [quoted-wait deadline limits](#plan-checks-and-screen-evidence), then the step runs once more from a fresh
 capture. If it fails again, a second recovery may decline a different system prompt or app
 interruption once the first is proven gone. An app interruption with the same decline label
-fails with `the app interruption did not disappear`; a different kind of interruption or
+fails with `the app interruption did not disappear`, except a returning strict permission
+opt-in (below); a different kind of interruption or
 decline label may be eligible, subject to the same guards on each recovery. A step never
 gets more than two interruption recoveries. The order is owned by [`recover.ts`](../qaren-core/src/qa/recover.ts): a
 recognized system prompt met during an ordinary app step is declined, never accepted
@@ -3768,7 +3769,7 @@ on a complete capture that both labels are gone in any normalised spelling; othe
 retries the step once within the step's interruption recoveries. The retry row reads
 `recovered: declined a permission opt-in that followed the plan's own tap (<decline>)`,
 naming a fixed decline word or `the decline control`. When an opt-in declined this way
-returns, even after protection lapses, nothing is tapped: the step fails with
+returns, on the step's own retry or even after protection lapses, nothing is tapped: the step fails with
 `the app asked again after recovery declined this permission opt-in; nothing was tapped`
 and suggests a `Tap "<decline>"` step after the planned press, or before the failing
 step once protection has lapsed. An opt-in declined outside
