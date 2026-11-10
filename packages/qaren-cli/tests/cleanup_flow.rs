@@ -2923,9 +2923,20 @@ fn script_borrowed_recorder_release(mock: &mut MockRunner) {
 #[test]
 fn dead_owner_android_recorder_is_reclaimed_before_borrowed_release_and_keeps_lease_on_failure() {
     use qaren::runrecord::{RecorderKind, RecorderResource};
-    for failure in ["none", "pull", "rm", "changed", "probe"] {
+    for (phone, failure) in [false, true].into_iter().flat_map(|phone| {
+        ["none", "pull", "rm", "changed", "probe"].map(|failure| (phone, failure))
+    }) {
         let repo = common::temp_repo();
-        let mut record = borrowed_record(&repo);
+        let mut record = if phone {
+            phone_record(&repo)
+        } else {
+            borrowed_record(&repo)
+        };
+        let claim = record
+            .resources
+            .usb_device
+            .as_ref()
+            .map(|usb| usb.lock_dir.clone());
         record.resources.core = None;
         let media = RunRecord::run_dir(&repo, &record.run_id).join("media");
         std::fs::create_dir_all(&media).unwrap();
@@ -2937,7 +2948,7 @@ fn dead_owner_android_recorder_is_reclaimed_before_borrowed_release_and_keeps_le
             birth: Some(common::identity(7100, LSTART)),
             pulled_sha256: None,
             kind: RecorderKind::AndroidEmulator,
-            device: BORROWED.into(),
+            device: if phone { PHONE } else { BORROWED }.into(),
             output: path.clone().into(),
         });
         let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
@@ -2977,6 +2988,18 @@ fn dead_owner_android_recorder_is_reclaimed_before_borrowed_release_and_keeps_le
             }
         }
         script_borrowed_recorder_release(&mut mock);
+        if phone {
+            for package in qaren::adapters::android::RUNNER_PACKAGES {
+                mock.expect_run(
+                    &format!("uninstall {package}"),
+                    CmdOutput::success("Success\n"),
+                );
+                mock.expect_run(
+                    &format!("pm list packages {package}"),
+                    CmdOutput::success(""),
+                );
+            }
+        }
         let receipt = cleanup(&mut mock, &repo, "borrowed-run");
         assert_eq!(mock.remaining(), 0, "{failure}");
         let position = |label: &str| {
@@ -2991,6 +3014,10 @@ fn dead_owner_android_recorder_is_reclaimed_before_borrowed_release_and_keeps_le
             assert_eq!(receipt.cleanup["recorder"], "removed");
             assert_eq!(receipt.cleanup["device_lease"], "removed");
             assert!(!lock.exists());
+            if let Some(claim) = &claim {
+                assert!(!claim.exists());
+                assert_eq!(receipt.cleanup["usb_device_claim"], "removed");
+            }
             assert!(RunRecord::load(&repo, "borrowed-run")
                 .unwrap()
                 .resources
@@ -3004,6 +3031,12 @@ fn dead_owner_android_recorder_is_reclaimed_before_borrowed_release_and_keeps_le
             );
             assert!(receipt.cleanup["device_lease"].contains("recorder"));
             assert!(lock.exists());
+            if let Some(claim) = &claim {
+                assert!(claim.exists());
+                assert!(
+                    receipt.cleanup["usb_device_claim"].contains("retaining the exclusive claim")
+                );
+            }
             assert!(RunRecord::load(&repo, "borrowed-run")
                 .unwrap()
                 .resources
@@ -3029,10 +3062,26 @@ fn dead_owner_android_recorder_is_reclaimed_before_borrowed_release_and_keeps_le
             }
             retry.expect_run("shell rm -f", CmdOutput::success(""));
             script_borrowed_recorder_release(&mut retry);
+            if phone {
+                for package in qaren::adapters::android::RUNNER_PACKAGES {
+                    retry.expect_run(
+                        &format!("uninstall {package}"),
+                        CmdOutput::success("Success\n"),
+                    );
+                    retry.expect_run(
+                        &format!("pm list packages {package}"),
+                        CmdOutput::success(""),
+                    );
+                }
+            }
             let recovered = cleanup(&mut retry, &repo, "borrowed-run");
             assert_eq!(recovered.cleanup["recorder"], "removed");
             assert_eq!(recovered.cleanup["device_lease"], "removed");
             assert!(!lock.exists());
+            if let Some(claim) = &claim {
+                assert!(!claim.exists());
+                assert_eq!(recovered.cleanup["usb_device_claim"], "removed");
+            }
             assert_eq!(retry.remaining(), 0);
         }
     }

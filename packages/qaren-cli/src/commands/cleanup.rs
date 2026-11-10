@@ -1082,6 +1082,7 @@ fn push_reverse_outcome(
 
 // Every leg of a borrowed phone that can still address it: the claim waits for all of them.
 pub(crate) const BORROWED_PHONE_LEGS: &[&str] = &[
+    "recorder",
     "adb_reverse",
     "android_runner",
     "android_runner_packages",
