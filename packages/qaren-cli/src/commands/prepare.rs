@@ -2342,6 +2342,7 @@ pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
     let project_root = ctx.record.candidate.project_root.clone();
     let fp = fingerprint::compute(ctx.runner, &repo_root, &project_root, platform)?
         .with_ios_workspace(ctx.record.scenario.build.ios_workspace.as_ref());
+    record_fingerprint_timings(ctx, "plan", &fp);
     let state = buildplan::load_state(&repo_root, platform, &ctx.record.candidate.app_id);
     if let Some(compiler) = &fp.ios_compiler {
         ctx.ios_generated_native = !fp.native_dir_in_candidate;
@@ -2398,6 +2399,21 @@ pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
     };
     ctx.notes.extend(fingerprint_notes(&fp));
     Ok(buildplan::decide(&inputs, &state, store))
+}
+
+fn record_fingerprint_timings(ctx: &mut Ctx, prefix: &str, fp: &NativeFingerprint) {
+    let timings = &fp.timings;
+    for (part, ms) in [
+        ("total", Some(timings.total_ms)),
+        ("list", Some(timings.list_ms)),
+        ("expo", timings.expo_ms),
+        ("toolchain", Some(timings.toolchain_ms)),
+        ("hash", Some(timings.hash_ms)),
+    ] {
+        if let Some(ms) = ms {
+            ctx.timings.push((format!("{prefix}_fp_{part}"), ms));
+        }
+    }
 }
 
 fn cache_root_failure(reason: String) -> Failure {
@@ -2471,7 +2487,7 @@ fn fingerprint_notes(fp: &fingerprint::NativeFingerprint) -> Vec<(String, String
         ("fingerprint_parts".to_string(), parts),
         ("fingerprint_complete".to_string(), fp.complete.to_string()),
     ];
-    if let Some(ms) = fp.expo_fingerprint_ms {
+    if let Some(ms) = fp.timings.expo_ms {
         notes.push(("expo_fingerprint_ms".to_string(), ms.to_string()));
     }
     if let Some(reason) = &fp.expo_unavailable {
@@ -3845,6 +3861,7 @@ pub(crate) fn recheck_fingerprint(
     let project_root = ctx.record.candidate.project_root.clone();
     let fp = fingerprint::compute(ctx.runner, &repo_root, &project_root, platform)?
         .with_ios_workspace(ctx.record.scenario.build.ios_workspace.as_ref());
+    record_fingerprint_timings(ctx, "verify", &fp);
     if fp.value != plan.fingerprint {
         return Err(candidate_drift(
             &ctx.record.run_id,
@@ -6067,7 +6084,7 @@ mod launch_tests {
                 complete: true,
                 incompleteness: Vec::new(),
                 parts: Default::default(),
-                expo_fingerprint_ms: None,
+                timings: Default::default(),
                 expo_unavailable: None,
                 ios_compiler: None,
             };
