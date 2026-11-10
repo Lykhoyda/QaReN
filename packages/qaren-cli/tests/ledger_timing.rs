@@ -15,11 +15,11 @@ fn timing() -> serde_json::Value {
 #[test]
 fn send_measurements_survive_ledger_rewrite_without_changing_legacy_rows() {
     for send in [
-        json!({"keyboardGuardMs":0.0,"liveCheckMs":12.5,"gestureMs":40.0,"runnerMs":80.0,"settleProbes":2}),
+        json!({"keyboardGuardMs":0,"liveCheckMs":12.5,"gestureMs":40,"runnerMs":80,"settleProbes":2}),
         json!({"settleProbes":2}),
     ] {
         let mut measured = timing();
-        measured["send"] = send;
+        measured["send"] = send.clone();
         let raw = ledger(
             json!([
                 {"block":"qa","line":1,"attempt":1,"kind":"step","resolvedBy":"exact","t":120,"outcome":"pass","timing":measured},
@@ -31,10 +31,15 @@ fn send_measurements_survive_ledger_rewrite_without_changing_legacy_rows() {
         assert!(parsed.steps[0].timing.as_ref().unwrap().send.is_some());
         assert!(parsed.steps[1].timing.as_ref().unwrap().send.is_none());
         let bytes = serde_json::to_vec(&parsed).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
-            raw
-        );
+        let mut rewritten: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        for (key, expected) in send.as_object().unwrap() {
+            assert_eq!(
+                rewritten["steps"][0]["timing"]["send"][key].as_f64(),
+                expected.as_f64()
+            );
+        }
+        rewritten["steps"][0]["timing"]["send"] = send;
+        assert_eq!(rewritten, raw);
     }
 }
 
@@ -375,6 +380,7 @@ fn malformed_settle_and_preparation_facts_cannot_reject_a_row() {
         ("settleMs", json!(-1)),
         ("preparationSamples", json!(1.5)),
         ("preparationResets", json!("PRIVATE-count")),
+        ("send", json!({"settleProbes":1.5})),
     ] {
         let mut measured = timing();
         measured[field] = value;

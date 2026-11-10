@@ -7,6 +7,7 @@ import {
 import { waitForSettle } from '../../../dist/lifecycle/settle.js';
 import { settleAfterMutation } from '../../../dist/agent-device-wrapper.js';
 import { okResult } from '../../../dist/utils.js';
+import { cleanTimingEvent } from '../../../dist/qa/timing.js';
 
 const data = {
   keyboardGuardMs: 0,
@@ -53,6 +54,37 @@ test('send accumulation counts every request and keeps partial older replies opt
   });
   const empty = okResult({});
   assert.equal(createSendTimingAccumulator().finish(empty), empty);
+});
+
+test('send accumulation sums probe counts and records no probes when settlement is disabled', () => {
+  const accumulator = createSendTimingAccumulator();
+  accumulator.observe(okResult(data, { meta: { settle: { probes: 2 } } }));
+  accumulator.observe(okResult(data, { meta: { settle: { probes: 3 } } }));
+  assert.equal(JSON.parse(accumulator.finish(okResult({})).content[0].text).meta.settle.probes, 5);
+  const disabled = createSendTimingAccumulator({ settleDisabled: true });
+  disabled.observe(okResult(data));
+  assert.equal(JSON.parse(disabled.finish(okResult({})).content[0].text).meta.settle.probes, 0);
+});
+
+test('timing events retain only valid measured send numbers', () => {
+  const event = { stage: 'settle', edge: 'end', outcome: 'ok', at: 0 } as const;
+  const send = {
+    keyboardGuardMs: 0,
+    liveCheckMs: 12.5,
+    gestureMs: 40,
+    runnerMs: 80,
+    settleProbes: 2,
+  };
+  assert.deepEqual(cleanTimingEvent({ ...event, send }), { ...event, send });
+  for (const invalid of [
+    null,
+    'private',
+    { runnerMs: -1 },
+    { runnerMs: NaN },
+    { settleProbes: 1.5 },
+  ])
+    assert.equal(cleanTimingEvent({ ...event, send: invalid }), undefined);
+  assert.deepEqual(cleanTimingEvent({ ...event, send: {} }), event);
 });
 
 for (const changing of [false, true]) {

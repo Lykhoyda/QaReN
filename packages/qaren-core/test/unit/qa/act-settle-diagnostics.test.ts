@@ -92,6 +92,24 @@ const unknown = {
   ms: 'unknown',
 };
 
+test('act projects measured send fields into the row contract', async () => {
+  const outcome = await fixture().act(
+    async () =>
+      result({
+        timings_ms: { keyboardGuard: 0, liveCheck: 12.5, gesture: 40, runner: 80, settle: 200 },
+        settle: { probes: 2 },
+      }),
+    true,
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(outcome.send)), {
+    keyboardGuardMs: 0,
+    liveCheckMs: 12.5,
+    gestureMs: 40,
+    runnerMs: 80,
+    settleProbes: 2,
+  });
+});
+
 test('act carries only measured allowlisted settle metadata', async () => {
   for (const method of ['screen-static', 'snapshot-eq', 'window-gate', 'timeout']) {
     const f = fixture();
