@@ -427,6 +427,9 @@ export function createDeviceSnapshotHandler(
         if (msg.startsWith('RUNNER_OWNERSHIP_MISMATCH')) {
           return failResult(msg, 'RUNNER_OWNERSHIP_MISMATCH');
         }
+        if (msg.startsWith('RUNNER_INSTALL_BLOCKED')) {
+          return failResult(msg, 'RUNNER_INSTALL_BLOCKED');
+        }
         const code = lockPlatform === 'ios' ? 'RN_FAST_RUNNER_DOWN' : 'RN_ANDROID_RUNNER_DOWN';
         return failResult(`Failed to start device runner: ${msg}`, code);
       }

@@ -595,8 +595,16 @@ impl Failure {
             | "DEV_REDBOX_NO_SAFE_DISMISS"
             | "DEV_REDBOX_CLEARANCE_UNPROVEN" => "restart_app_from_plan_start",
             "DEV_REDBOX_ACTION_UNCERTAIN" => "inspect_app_error_before_rerun",
+            // The core already replaced the runner apps once; what is left is the user's call.
+            "RUNNER_INSTALL_BLOCKED" =>
+                "QaReN could not replace its own runner apps on the device (adb's reason is in the detail); only if nothing else is using the device, remove them with `adb -s <serial> uninstall dev.lykhoyda.rndevagent.androidrunner` and the same for `dev.lykhoyda.rndevagent.androidrunner.test`, then re-run",
             _ => "resolve the refusal, then re-run",
         }
+    }
+
+    // A core refusal that is a device cause carries it as a machine-readable subreason.
+    pub fn core_refusal_subreason(code: &str) -> Option<String> {
+        (code == "RUNNER_INSTALL_BLOCKED").then(|| "runner-install-blocked".to_string())
     }
 
     // The candidate could not be read; nothing is known to have changed, so no recovery ladder applies.

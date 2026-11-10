@@ -3425,6 +3425,51 @@ fn an_old_node_refuses_at_preflight() {
 }
 
 #[test]
+fn a_blocked_runner_install_is_a_device_refusal_with_its_cause_and_next_step() {
+    // Session-open refuses during admission, so no `admitted` line precedes the result; the
+    // mapping does not depend on the platform.
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    script_provision(&mut mock);
+    script_drift_status(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    let refusal = serde_json::json!({
+        "verdict": "REFUSED",
+        "code": "RUNNER_INSTALL_BLOCKED",
+        "message": "QaReN's runner apps on the device block the install (signature: INSTALL_FAILED_UPDATE_INCOMPATIBLE) and could not be replaced: the one reinstall failed too: INSTALL_FAILED_UPDATE_INCOMPATIBLE"
+    });
+    mock.expect_spawn_piped(
+        "walk.js",
+        9000,
+        &format!("{}\n", envelope(2, "result", &refusal.to_string())),
+        Some(4),
+    );
+    script_core_identity(&mut mock);
+    script_teardown(&mut mock);
+
+    let receipt = run(&mut mock, &request(&repo, &app, 30));
+
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::DeviceUnavailable);
+    assert_eq!(failure.subreason.as_deref(), Some("runner-install-blocked"));
+    assert!(
+        failure
+            .detail
+            .starts_with("RUNNER_INSTALL_BLOCKED: QaReN's runner apps on the device block the install (signature: INSTALL_FAILED_UPDATE_INCOMPATIBLE)"),
+        "{}",
+        failure.detail
+    );
+    assert_eq!(
+        failure.next_action,
+        "QaReN could not replace its own runner apps on the device (adb's reason is in the detail); only if nothing else is using the device, remove them with `adb -s <serial> uninstall dev.lykhoyda.rndevagent.androidrunner` and the same for `dev.lykhoyda.rndevagent.androidrunner.test`, then re-run"
+    );
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
 fn a_child_refusal_is_a_typed_refusal_with_the_child_code() {
     for admitted in [false, true] {
         let (repo, app) = app_repo();
