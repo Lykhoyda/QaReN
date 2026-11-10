@@ -1,6 +1,6 @@
 use crate::events::Envelope;
 use crate::report::{prose, term_safe};
-use crate::runrecord::{validate_run_id, PidLiveness, RunRecord};
+use crate::runrecord::{validate_run_id, PidLiveness, RunRecord, RunState};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashSet};
@@ -747,7 +747,15 @@ fn follow(
                 state.settle();
             }
         }
-        state.terminal = record.as_ref().is_some_and(|r| r.terminal.is_some());
+        state.terminal = record.as_ref().is_some_and(|r| {
+            matches!(
+                r.state(),
+                RunState::Ended {
+                    walked: Some(_),
+                    ..
+                }
+            )
+        });
         if state.status() == Status::Live {
             state.now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
