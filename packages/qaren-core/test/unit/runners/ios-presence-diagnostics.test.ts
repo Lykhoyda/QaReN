@@ -134,6 +134,22 @@ ${section(snapshot, '  private func presenceRead<', '  private func presenceAppI
       }
     }
 
+    // A failure from an earlier phase is not decisive; a gate that recorded none falls back to its own.
+    let decided = PresenceCaptureTiming(started: 0, now: { 0 })
+    decided.fail(.readUnavailable)
+    decided.begin(.revalidation)
+    decided.failDecisive(.ineligible)
+    decided.fail(.deadline)
+    decided.failDecisive(.deadline)
+    precondition(decided.diagnostics(complete: false).failure?.phase == .initialEligibility)
+    precondition(decided.diagnostics(complete: false).decisiveFailure?.phase == .revalidation)
+    precondition(decided.diagnostics(complete: false).decisiveFailure?.reason == .ineligible)
+    precondition(decided.diagnostics(complete: true).decisiveFailure == nil)
+    let unrecorded = PresenceCaptureTiming(started: 0, now: { 0 })
+    unrecorded.failDecisive(.deadline, phase: .finalization)
+    precondition(unrecorded.diagnostics(complete: false).failure?.phase == .finalization)
+    precondition(unrecorded.diagnostics(complete: false).decisiveFailure?.reason == .deadline)
+
     let legacy = PlatformPresenceCapture(
       version: 2, source: "xcui-live", captureId: "test", appId: "test", generation: 1,
       startedUptimeMs: 0, endedUptimeMs: 1, enumeration: "raw-unfiltered", complete: true,
