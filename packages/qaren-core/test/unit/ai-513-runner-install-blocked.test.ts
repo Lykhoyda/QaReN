@@ -20,9 +20,15 @@ writeFileSync(appApk, 'this host app APK');
 writeFileSync(testApk, 'this host test APK');
 const previousRoot = process.env.QAREN_NATIVE_RUNNER_ROOT;
 process.env.QAREN_NATIVE_RUNNER_ROOT = root;
+// Runner state and the session file live under the QaReN home: never touch the real one.
+const previousHome = process.env.QAREN_HOME;
+process.env.QAREN_HOME = join(root, 'home');
 const client = await import('../../dist/runners/qaren-android-runner-client.js');
 const { createDeviceSnapshotHandler } = await import('../../dist/handlers/device-session.js');
-const { clearActiveSession, runNative } = await import('../../dist/agent-device-wrapper.js');
+const { attachMetaNote, clearActiveSession, runNative } =
+  await import('../../dist/agent-device-wrapper.js');
+const { unwrap } = await import('../../dist/qa/adapt.js');
+const { okResult } = await import('../../dist/utils.js');
 const { withCancellation, RunCancelledError, isAbort } =
   await import('../../dist/domain/cancellation.js');
 if (previousRoot === undefined) delete process.env.QAREN_NATIVE_RUNNER_ROOT;
@@ -33,7 +39,11 @@ const MAIN = 'dev.lykhoyda.rndevagent.androidrunner';
 const TEST = `${MAIN}.test`;
 const PROCESSES_HEADER = 'ACTIVITY MANAGER RUNNING PROCESSES (dumpsys activity processes)';
 
-test.after(() => rmSync(root, { recursive: true, force: true }));
+test.after(() => {
+  if (previousHome === undefined) delete process.env.QAREN_HOME;
+  else process.env.QAREN_HOME = previousHome;
+  rmSync(root, { recursive: true, force: true });
+});
 
 type Channel = 'stdout' | 'stderr' | 'message';
 type Kind = 'signature' | 'downgrade';
@@ -168,9 +178,10 @@ function harness(t: TestContext, fx: Fixture = {}) {
       if (command[0] === 'uninstall') {
         const pkg = command[1];
         effects.uninstalls.push(pkg);
+        const existed = device.has(pkg);
         if (!fx.keepListed?.includes(pkg) && !fx.uninstallFails?.includes(pkg)) device.delete(pkg);
         // adb fails the uninstall of a package that is not installed.
-        if (fx.uninstallFails?.includes(pkg) || !device.has(pkg))
+        if (fx.uninstallFails?.includes(pkg) || !existed)
           throw Object.assign(new Error(`Command failed: adb ${joined}`), {
             code: 1,
             stdout: 'Failure [DELETE_FAILED_INTERNAL_ERROR]\n',
@@ -357,6 +368,12 @@ test('AI-513: an install failure that names no adb reason keeps the offline hint
     client.startAndroidRunner(SERIAL, 'com.example', 0),
     /Is the emulator\/device online\? .*error: closed/s,
   );
+});
+
+test('AI-513: the open note reaches the walk as meta.note', () => {
+  // The walk logs the token it finds in the unwrapped open result's meta.note.
+  const note = 'downloaded prebuilt runner; runner-apps-replaced reason=signature';
+  assert.equal(unwrap(attachMetaNote(okResult({}), note)).meta?.note, note);
 });
 
 test('AI-513: session-open reports RUNNER_INSTALL_BLOCKED, not runner-down', async () => {
