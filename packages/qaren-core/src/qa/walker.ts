@@ -2729,6 +2729,10 @@ async function walkBlockScoped(
           ? await capture(undefined, true, true)
           : await captureOnce(undefined, true, true, 'resolve', captureDeadline);
     } catch (error) {
+      if (item.kind === 'wait' && error instanceof NativeSnapshotIncomplete) {
+        sequence.captureUnknown = true;
+        return undefined;
+      }
       if (error instanceof CaptureDeadline) return undefined;
       if (
         !deps.presenceUnavailable ||

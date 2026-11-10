@@ -71,6 +71,45 @@ test('T2: a recovered native Wait with no target reports the last screen and kee
   assert.deepEqual(f.actions, []);
 });
 
+test('an incomplete recovery read preserves observed Wait absence after the deadline', async () => {
+  for (const policy of ['strict', 'non-strict', 'undeclared'] as const) {
+    const f = walker(
+      [],
+      scriptedJudge(() => assert.fail('literal wait is model-free')),
+    );
+    f.deps.videoPolicy = policy;
+    f.deps.hideDevMenu = async () => assert.fail('no overlay was observed');
+    let reads = 0;
+    let completeReads = 0;
+    let recoveryReads = 0;
+    f.deps.captureScreen = async (options) => {
+      if (++reads === 1) throw incomplete();
+      if (options?.platformPresence) {
+        recoveryReads++;
+        assert.equal(f.deps.now(), WAIT_BUDGET_MS);
+        throw incomplete();
+      }
+      completeReads++;
+      return toast();
+    };
+    f.deps.screenshot = async () => assert.fail('incomplete reads withhold screenshots');
+    const result = await runPlan(parsePlan('1. Wait for "x"').blocks!, f.deps);
+    assert.equal(result.verdict, 'FAIL', policy);
+    assert.equal(result.failure?.subreason, 'absent');
+    assert.match(result.failure?.seen ?? '', /"x" did not appear within 15s/);
+    assert.match(result.failure?.seen ?? '', /Request failed/);
+    assert.ok(completeReads >= 2);
+    assert.equal(recoveryReads, 1);
+    assert.equal(f.deps.now(), WAIT_BUDGET_MS);
+    assert.equal(result.videoPublication, 'unknown', policy);
+    assert.equal(result.nonStrictPublication, undefined);
+    assert.equal(result.failure?.screenshot, undefined);
+    assert.ok(result.steps.every((step) => step.screenshot === undefined));
+    assert.ok(f.rows.every((row) => row.screenshot === undefined));
+    assert.deepEqual(f.actions, []);
+  }
+});
+
 test('T3b: the visibility probe absorbs an incomplete recapture', async () => {
   const judge = scriptedJudge((_, index) => ({
     visibility_1: { type: 'noul', noul: index === 0 ? 0.5 : 0.99 },
