@@ -157,6 +157,25 @@ impl<'de> Deserialize<'de> for VideoStatus {
     }
 }
 
+pub fn video_next_step(status: &VideoStatus) -> Option<&'static str> {
+    match status {
+        VideoStatus::Available => None,
+        VideoStatus::TooLarge => {
+            Some("shorten or split the plan; an encoded video file may not exceed 100 MB")
+        }
+        VideoStatus::Unavailable { detail: reason, .. } if reason == "ffmpeg" || reason.starts_with("ffprobe") => {
+            Some("install ffmpeg and ffprobe, then rerun with --record; the raw capture is kept in media/")
+        }
+        VideoStatus::Unavailable { detail: reason, .. } if reason == "runtime inputs withhold recording" => {
+            Some("runs with runtime inputs are recorded only when the app config declares video: non-strict and private output mode is off")
+        }
+        VideoStatus::Unavailable { detail: reason, .. } if reason.starts_with("Android API <34") => {
+            Some("use an emulator with API 34 or later to record")
+        }
+        VideoStatus::Unavailable { .. } => Some("rerun with --record; the run's verdict is not affected"),
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum VideoPublication {
@@ -947,6 +966,36 @@ mod tests {
             .contains(&raw.to_string_lossy().into_owned()));
         assert_eq!(runner.mock.remaining(), 0);
         std::fs::remove_dir_all(run_dir).unwrap();
+    }
+
+    #[test]
+    fn each_missing_video_names_its_next_step() {
+        let unavailable = |reason: &str| VideoStatus::unavailable(reason.into());
+        assert_eq!(video_next_step(&VideoStatus::Available), None);
+        assert_eq!(
+            video_next_step(&VideoStatus::TooLarge),
+            Some("shorten or split the plan; an encoded video file may not exceed 100 MB")
+        );
+        for reason in ["ffmpeg", "ffprobe found no playable duration"] {
+            assert_eq!(
+                video_next_step(&unavailable(reason)),
+                Some("install ffmpeg and ffprobe, then rerun with --record; the raw capture is kept in media/")
+            );
+        }
+        assert_eq!(
+            video_next_step(&unavailable("runtime inputs withhold recording")),
+            Some("runs with runtime inputs are recorded only when the app config declares video: non-strict and private output mode is off")
+        );
+        assert_eq!(
+            video_next_step(&unavailable(
+                "Android API <34 stops screen recording at 180 s"
+            )),
+            Some("use an emulator with API 34 or later to record")
+        );
+        assert_eq!(
+            video_next_step(&unavailable("recorder did not spawn")),
+            Some("rerun with --record; the run's verdict is not affected")
+        );
     }
 
     #[test]

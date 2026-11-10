@@ -580,6 +580,51 @@ app and running emulator: `--remove-app` on a borrowed emulator refuses
 probes the emulator only through the borrowed adb server, rechecking compatibility
 before device probes and reporting them as inconclusive if that check fails.
 
+### Record a check
+
+`qaren check` records no video by default. Once a check reaches the walk, its
+receipt and stderr summary say
+`video: not recorded; pass --record to qaren check to record this walk`; a check
+refused earlier (preflight, build) carries no video line.
+`qaren check --record` records the walk through the same recorder, start rules,
+encode and trimmed copy as `qaren pr`, including the runtime-input rule and the
+Android API 34 requirement. `--record` on `qaren pr` changes nothing, because `pr`
+always records; any other verb rejects it with the usage text.
+
+Nothing is uploaded from `check`; `qaren publish` refuses a check run because it
+has no pull request record. A recorded check can leave these files in the run directory:
+
+- `media/video-published.mp4`: the trimmed copy, starting at admission (or after
+  the login replay) and ending at the last row. This is the only file the
+  receipt names.
+- `media/video.mp4`: the full recording, including setup and any login replay.
+  It stays private: no policy verdict applies to it; do not share it.
+- `media/raw.mov` (iOS) or `media/raw.mp4` (Android): the raw capture, kept
+  when encoding did not succeed or the run ended before the video was finalized.
+
+The receipt's `outcomes` gains these keys:
+
+- `video`: the final status, `available`, `too-large` or `unavailable(<reason>)`.
+  A check that ends after the recorder started, before the video was finalized,
+  carries `unavailable(recording started; the run ended before it was finalized; the raw capture is kept in media/)`.
+- `video_file`: `media/video-published.mp4`, only when the status is `available`
+  and that file exists.
+- `video_policy_verdict`: present only with `video_file`. It is the declared
+  [video policy](#video-publication)'s privacy verdict for that file alone
+  (`eligible`, or a withheld value with its reason and `keep this file local`),
+  not permission from `qaren publish`.
+- `video_next_step`: when there is no video, what to change: shorten or split the
+  plan, install ffmpeg and ffprobe, declare `video: non-strict` for runs with
+  runtime inputs, use an API 34+ emulator, or rerun with `--record`.
+
+The stderr summary prints the `video:` and `video file:` lines. Recording adds a
+recorder process and an encode and trim after the walk (each ffmpeg step is
+limited to 900 seconds). An encoded file over 100 MB is reported as `too-large`;
+the full and trimmed files coexist, and an oversized `media/video.mp4` can remain
+when its size reduction fails. Recording is
+best effort: a recorder, ffmpeg or trim problem never changes the verdict or the
+exit code.
+
 ### Android runner provisioning
 
 The Android runner uses the runtime's shipped source; no published runner APK
@@ -4475,7 +4520,8 @@ The receipt, report and PR comment name the policy and the selected config: its 
 Feature artwork withheld solely for an ordinary accessibility value without a typed safe path (ANT-664) is eligible in non-strict mode and remains withheld in strict or undeclared mode. The [screenshot publication regression](tests/publish_flow.rs) covers this policy decision with synthetic artwork; it does not establish live device acceptance.
 
 Only the selected config declares the video mode; no flag, environment variable,
-plan annotation or inferred backend selects it.
+plan annotation or inferred backend selects it. `--record` turns recording on for a
+check; it does not select the video mode.
 
 SECRET text masking and no readback apply in both modes. A runtime input displayed in a non-secure field can be marked `(test-pii)` only if it is test data; that annotation cannot exempt secure fields or code rows. Non-strict is an operator declaration, not proof: an undeclared secret prefilled into a non-secure field, real personal data, or a value visible only between captures can appear in published media. QaReN does not mask media regions or identify the backend. Upgrade every CLI/CI runtime before adding the key; older versions refuse it. Removing the key restores strict behavior.
 
