@@ -3485,10 +3485,15 @@ mod tests {
         devices
     }
 
+    const USB_PERMISSION_FIX: &str = if cfg!(target_os = "linux") {
+        "give this account USB access: add it to the plugdev group (`sudo usermod -aG plugdev $LOGNAME`, then log out and in) and install the Android udev rules (Ubuntu: `apt-get install android-sdk-platform-tools-common`), replug the phone, restart this account's adb server, then re-run"
+    } else {
+        "replug the phone and check the cable, then re-run"
+    };
+    const USB_AUTHORIZATION_FIX: &str = "unlock the phone and accept 'Allow USB debugging' (tick 'Always allow from this computer'); if no prompt shows, replug the cable; then re-run";
+
     #[test]
     fn android_devices_reports_each_unusable_device_and_never_runs_adb() {
-        let linux = cfg!(target_os = "linux");
-        let fix = |state: &str| android::device_problem("0A1B2C3D", state, linux).unwrap().2;
         let ready = android_devices_with(
             &[],
             &[(5037, Some("emulator-5554\tdevice\n0A1B2C3D\tdevice\n"))],
@@ -3504,15 +3509,15 @@ mod tests {
             assert_eq!(none.status, Status::Pass);
             assert_eq!(none.detail, "no physical device attached");
         }
-        for (listed, state) in [
-            ("0A1B2C3D\tunauthorized\n", "unauthorized"),
-            ("0A1B2C3D\tno permissions (user in plugdev group; are your udev rules wrong?); see [http://developer.android.com/tools/device.html]\n", "no permissions"),
-            ("0A1B2C3D\toffline\n", "offline"),
+        for (listed, cause, fix) in [
+            ("0A1B2C3D\tunauthorized\n", "USB debugging from this computer is not accepted on the phone (adb: unauthorized)", USB_AUTHORIZATION_FIX),
+            ("0A1B2C3D\tno permissions (user in plugdev group; are your udev rules wrong?); see [http://developer.android.com/tools/device.html]\n", "this account has no USB permission for it (adb: no permissions)", USB_PERMISSION_FIX),
+            ("0A1B2C3D\toffline\n", "offline (adb: offline)", "replug the USB cable and wake the phone; re-run when it lists as `device`"),
         ] {
             let row = android_devices_with(&[], &[(5037, Some(listed))]);
-            assert_eq!(row.status, Status::Warn, "{state}");
-            assert!(row.detail.contains("0A1B2C3D"), "{}", row.detail);
-            assert_eq!(row.fix.as_deref(), Some(fix(state).as_str()));
+            assert_eq!(row.status, Status::Warn, "{cause}");
+            assert_eq!(row.detail, format!("Android device 0A1B2C3D: {cause}"));
+            assert_eq!(row.fix.as_deref(), Some(fix));
         }
         // An unreadable serial stays in the inventory, reported but never named by its placeholder.
         let unreadable = android_devices_with(
@@ -3536,9 +3541,7 @@ mod tests {
         assert_eq!(empty_serial.status, Status::Warn);
         assert_eq!(
             empty_serial.detail,
-            android::device_problem("(no serial number)", "no permissions", linux)
-                .unwrap()
-                .1
+            "an attached device whose serial adb cannot read: this account has no USB permission for it (adb: no permissions)"
         );
         assert!(
             !empty_serial.detail.contains("no serial number"),
@@ -3547,11 +3550,11 @@ mod tests {
         );
         assert_eq!(
             empty_serial.fix.as_deref(),
-            Some(fix("no permissions").as_str())
+            Some(USB_PERMISSION_FIX)
         );
         assert_eq!(
             unreadable.fix.as_deref(),
-            Some(format!("{}\n{}", fix("no permissions"), fix("unauthorized")).as_str())
+            Some(format!("{USB_PERMISSION_FIX}\n{USB_AUTHORIZATION_FIX}").as_str())
         );
         // Two devices with one fix list it once.
         let twice = android_devices_with(
@@ -3561,7 +3564,7 @@ mod tests {
                 Some("0A1B2C3D\tunauthorized\n0A1B2C3E\tunauthorized\n"),
             )],
         );
-        assert_eq!(twice.fix.as_deref(), Some(fix("unauthorized").as_str()));
+        assert_eq!(twice.fix.as_deref(), Some(USB_AUTHORIZATION_FIX));
         assert!(twice.detail.contains("0A1B2C3E"), "{}", twice.detail);
     }
 
@@ -3620,7 +3623,6 @@ mod tests {
 
     #[test]
     fn android_target_fails_unless_that_device_is_ready() {
-        let linux = cfg!(target_os = "linux");
         let target = |env: &[(&str, &str)], servers: &[(u16, Option<&str>)], serial: &str| {
             let runner = adb_host(env, servers);
             let row = android_target_row(&runner, serial);
@@ -3634,12 +3636,19 @@ mod tests {
         assert!(ready.detail.contains("0A1B2C3D"), "{}", ready.detail);
         let unauthorized = target(&[], &[(5037, Some(listed))], "0A1B2C3E");
         assert_eq!(unauthorized.status, Status::Fail);
-        let expected = android::device_problem("0A1B2C3E", "unauthorized", linux).unwrap();
-        assert_eq!(unauthorized.detail, expected.1);
-        assert_eq!(unauthorized.fix, Some(expected.2));
+        assert_eq!(unauthorized.detail, "Android device 0A1B2C3E: USB debugging from this computer is not accepted on the phone (adb: unauthorized)");
+        assert_eq!(unauthorized.fix.as_deref(), Some(USB_AUTHORIZATION_FIX));
+        let permissions = target(
+            &[],
+            &[(5037, Some("0A1B2C3D\tno permissions\n"))],
+            "0A1B2C3D",
+        );
+        assert_eq!(permissions.status, Status::Fail);
+        assert_eq!(permissions.detail, "Android device 0A1B2C3D: this account has no USB permission for it (adb: no permissions)");
+        assert_eq!(permissions.fix.as_deref(), Some(USB_PERMISSION_FIX));
         let absent = target(&[], &[(5037, Some(listed))], "0A1B2C3F");
         assert_eq!(absent.status, Status::Fail);
-        assert_eq!(absent.detail, android::not_attached("0A1B2C3F", 5037).1);
+        assert_eq!(absent.detail, "no Android device with serial 0A1B2C3F is attached to the adb server on port 5037");
         let env = [("ANDROID_ADB_SERVER_PORT", "5147")];
         let held = target(
             &env,
@@ -3649,7 +3658,7 @@ mod tests {
         assert_eq!(held.status, Status::Fail);
         assert_eq!(
             held.detail,
-            android::held_by_other_server("0A1B2C3D", 5147, 5037).1
+            "Android device 0A1B2C3D is attached to the adb server on port 5037, not to the one on port 5147"
         );
         let no_server = target(&[], &[], "0A1B2C3D");
         assert_eq!(no_server.status, Status::Fail);
