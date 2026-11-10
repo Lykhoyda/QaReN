@@ -1157,6 +1157,31 @@ test('QA placeholder identity confirms once before native fill without entering 
   }
 });
 
+test('the dispatch-time React read binds the placeholder of a long sheet through the real producer', async () => {
+  const { longListSheet } = await import('./qa/long-list-capture-fixtures.ts');
+  const { client } = longListSheet(260, placeholderKey);
+  const context = new QaDispatchContext(10, () => 1);
+  const observed = await withFillSeam({ nodes: [unnamedInput] as never, authorize: true }, () =>
+    performExactFill(
+      {
+        ref: '@e1',
+        text: 'query',
+        placeholderIdentity: placeholderKey,
+        qaContext: context,
+        alwaysRetype: true,
+      },
+      client as never,
+      {},
+    ),
+  );
+  assert.equal(envelope(observed.result).ok, true);
+  assert.deepEqual(
+    observed.calls.map((call) => call.cliArgs[0]),
+    ['snapshot', 'fill', 'verify-input'],
+  );
+  assert.equal(context.authorizations, 1);
+});
+
 for (const [name, snapshotEvidence] of [
   ['truncated', { truncated: true }],
   ['dropped', { normalizationDroppedNodes: 1 }],
