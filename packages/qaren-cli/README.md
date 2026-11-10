@@ -45,13 +45,16 @@ When an app config is valid, the five-second `watch-project` probe may establish
 the subsequent [cookie sync](#ios-simulator-lifecycle) writes a cookie in the resolved watch root and may leave it there on timeout.
 Doctor never starts a Watchman service, starts a device or resets a service. It does not run ADB
 or start an ADB server. In text and JSON output, Doctor never prints
-file contents, environment variable values, credentials or any other config value;
-it may name the configured iOS runtime and Android AVD. It also prints diagnostic
+file contents, credentials or unrelated config values;
+it may name the configured iOS runtime and Android AVD. Android device rows also
+report device serials, adb server ports, invalid adb server settings and server
+error replies. It also prints diagnostic
 paths, key names and environment variable names. It exits 1 when any row fails,
 0 otherwise, and 2 on a usage error. `--json` prints
 `{identity, checks: [{id, status, detail, fix?}], verdict}` and nothing else.
 
-`FAIL` means `qaren check` cannot run correctly on this host; `WARN` is anything
+`FAIL` means a host prerequisite or an explicitly selected device check failed;
+an `android-target` pass does not enable physical-device `check` runs. `WARN` is anything
 that can conflict with a session or is hygiene; `SKIP` means the check is not
 applicable or its subject was not assessed, as explained in the row's detail.
 
@@ -126,6 +129,13 @@ pnpm version. Host load alone never refuses `check`. Metro still must belong to
 the exact group QaReN started.
 
 ### Android device rows
+
+`android-devices` requires Android configuration and an executable SDK `adb`
+file; `android-target` runs whenever a physical Android serial is selected,
+even without Android configuration. Select a plain serial containing only
+letters, digits, `.`, `_` or `-`, not starting with `-` or `emulator-`;
+`booted` and `host:port` endpoints are not accepted, and a simulator UUID
+selects `ios-lane` instead.
 
 `android-devices` and `android-target` ask the running adb server for its device
 list over the adb protocol, on the port `check` would borrow (`ADB_SERVER_SOCKET`,
