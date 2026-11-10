@@ -5823,8 +5823,14 @@ fn android_check_wakes_and_dismisses_a_swipe_keyguard_once_and_decides_on_the_re
     let asleep = POWER.replace("mWakefulness=Awake", "mWakefulness=Asleep");
     let showing = WINDOW_POLICY.replace("      showing=false", "      showing=true");
     let secure_showing = secure_hidden().replace("      showing=false", "      showing=true");
-    // (case, before-install read, read back, passes)
+    let unknown_power = "POWER MANAGER (dumpsys power)\n".to_string();
     let cases = [
+        (
+            "unknown wakefulness gets one wake and a readback",
+            (unknown_power.clone(), WINDOW_POLICY.to_string()),
+            Some((unknown_power, WINDOW_POLICY.to_string())),
+            true,
+        ),
         (
             "swipe keyguard on a sleeping emulator",
             (asleep.clone(), showing.clone()),
@@ -5856,10 +5862,12 @@ fn android_check_wakes_and_dismisses_a_swipe_keyguard_once_and_decides_on_the_re
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
         mock.expect_run("ls-files", CmdOutput::success(""));
         script_lock_read(&mut mock, &power, &window);
-        if let Some((power, window)) = &read_back {
+        if let Some((read_power, read_window)) = &read_back {
             mock.expect_run("input keyevent KEYCODE_WAKEUP", CmdOutput::success(""));
-            mock.expect_run("wm dismiss-keyguard", CmdOutput::success(""));
-            script_lock_read(&mut mock, power, window);
+            if window.contains("      showing=true") {
+                mock.expect_run("wm dismiss-keyguard", CmdOutput::success(""));
+            }
+            script_lock_read(&mut mock, read_power, read_window);
         }
         if passes {
             script_android_install_launch(&mut mock, 0);
@@ -5899,7 +5907,8 @@ fn android_check_wakes_and_dismisses_a_swipe_keyguard_once_and_decides_on_the_re
         }
         let adb = adb_calls(&mock);
         assert!(
-            adb.iter().filter(|c| c.contains("KEYCODE_WAKEUP")).count() <= 1,
+            adb.iter().filter(|c| c.contains("KEYCODE_WAKEUP")).count()
+                == usize::from(read_back.is_some()),
             "{case}"
         );
         assert!(

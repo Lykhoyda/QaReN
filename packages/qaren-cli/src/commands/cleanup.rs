@@ -353,20 +353,21 @@ pub fn cleanup_with_policy(
         || (record.resources.device_borrowed
             && record.resources.ios_simulator.is_some()
             && record.resources.lease.is_some());
+    let guarded_phone = record.resources.android_device.is_some();
     let cache_owned = record
         .resources
         .deps_cache
         .as_ref()
         .is_some_and(|r| r.reader || r.staging);
     let owner = match (
-        producers || guarded_simulator || cache_owned,
+        producers || guarded_simulator || guarded_phone || cache_owned,
         &record.prepare,
     ) {
         (true, Some(prepare)) => Some(probe_pid_identity(runner, prepare)),
         _ => None,
     };
     if owner == Some(PidLiveness::AliveMatching)
-        || (guarded_simulator
+        || ((guarded_simulator || guarded_phone)
             && !matches!(owner, Some(PidLiveness::Dead | PidLiveness::AliveForeign)))
     {
         if had_runner {
@@ -381,6 +382,8 @@ pub fn cleanup_with_policy(
             vec![(
                 if guarded_simulator {
                     "simulator"
+                } else if guarded_phone {
+                    "android_device"
                 } else {
                     "core"
                 }

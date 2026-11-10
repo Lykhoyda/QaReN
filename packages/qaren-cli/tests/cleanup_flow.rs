@@ -2382,6 +2382,57 @@ fn script_phone_reverse_and_stopped_runner(mock: &mut MockRunner) {
 }
 
 #[test]
+fn android_phone_cleanup_retains_pre_walk_resources_until_owner_is_proven_gone() {
+    for owner in ["live", "unknown", "missing"] {
+        let repo = common::temp_repo();
+        let mut record = phone_record(&repo);
+        record.resources.core = None;
+        record.resources.app_install = None;
+        record.resources.adb_reverse_port = None;
+        let lease = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+        let claim = record
+            .resources
+            .usb_device
+            .as_ref()
+            .unwrap()
+            .lock_dir
+            .clone();
+        if owner == "missing" {
+            record.prepare = None;
+        }
+        record.save(&repo).unwrap();
+        let record_path = RunRecord::run_dir(&repo, "borrowed-run").join("run.json");
+        let before = std::fs::read(&record_path).unwrap();
+        let mut mock = MockRunner::new();
+        if owner == "live" {
+            mock.expect_run(
+                "ps -p 999 -o lstart=",
+                CmdOutput::success("Wed Aug 12 15:00:00 2026"),
+            );
+            mock.expect_run("ps -p 999 -o stat=", CmdOutput::success("S"));
+        } else if owner == "unknown" {
+            mock.expect_run("ps -p 999 -o lstart=", CmdOutput::failed(1, "ps denied"));
+        }
+
+        let receipt = cleanup(&mut mock, &repo, "borrowed-run");
+
+        assert_eq!(receipt.result, ReceiptResult::Refused, "{owner}");
+        assert!(
+            receipt.cleanup["android_device"].starts_with("refused:"),
+            "{owner}"
+        );
+        assert!(adb_commands(&mock).is_empty(), "{owner}");
+        assert!(
+            mock.calls.iter().all(|call| call.program.ends_with("ps")),
+            "{owner}"
+        );
+        assert!(claim.exists() && lease.exists(), "{owner}");
+        assert_eq!(std::fs::read(record_path).unwrap(), before, "{owner}");
+        assert_eq!(mock.remaining(), 0, "{owner}");
+    }
+}
+
+#[test]
 fn android_phone_cleanup_removes_its_runner_apps_and_releases_the_claim_before_the_lease() {
     let repo = common::temp_repo();
     let record = phone_record(&repo);

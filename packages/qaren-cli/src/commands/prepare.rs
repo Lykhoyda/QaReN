@@ -3860,13 +3860,10 @@ fn artifact_install_failure(
     )
 }
 
-// A borrowed device just before install: wake once, dismiss a keyguard once, then decide only on
-// the read back, because both commands exit 0 while a secure keyguard stays. Nothing is saved or
-// restored, and no sleep, lock or credential command is ever sent.
 fn wake_and_unlock(ctx: &mut Ctx, adb: &Path, port: u16, serial: &str) -> Result<(), Failure> {
     ensure_running(ctx.runner, "build")?;
     let mut state = android::read_lock_state(ctx.runner, adb, port, serial);
-    let wake = state.awake == Some(false);
+    let wake = state.awake != Some(true);
     let dismiss = state.showing == Some(true);
     if wake {
         ctx.runner.run(&android::wake_spec(adb, port, serial));
