@@ -1091,11 +1091,12 @@ resolved target returns true does the runner activate that live element with
 XCTest's element tap, letting XCTest choose a hittable point instead of tapping
 the captured centre. If native element activation is unavailable, it refuses
 `LIVE_HIT_UNPROVEN` with no tap and never falls back to coordinates.
-A false read, a moved target, or an unavailable read (expired snapshot, no identity, absent or ambiguous match, a
+A false read can enter the passive cover wait described below; otherwise it,
+a moved target, or an unavailable read (expired snapshot, no identity, absent or ambiguous match, a
 read that threw or ran out of time) refuses `LIVE_HIT_UNPROVEN` with no tap, and the step fails
 with “stayed off screen after one scroll” and the inferred band cutter described
 under [clearance diagnostics](#clearance-diagnostics). The scroll
-that ran before the refusal remains a performed action. Press behavior is unchanged.
+that ran before the refusal remains a performed action.
 
 On the iOS press branch that would otherwise refuse a still-covered centre after
 an offscreen-resolution scroll, a proven distinct cover gets one passive wait of
