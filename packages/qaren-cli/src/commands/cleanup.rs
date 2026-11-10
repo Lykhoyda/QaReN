@@ -2045,6 +2045,11 @@ pub(crate) fn release_borrowed_android(
     let Some(emulator) = record.resources.borrowed_android() else {
         return Vec::new();
     };
+    // The run's own teardown released these legs, then its lease, before saving Cleaned. A lease
+    // still recorded (missing, unreadable or foreign holder) keeps the refusal below.
+    if record.phase == Phase::Cleaned && record.resources.lease.is_none() {
+        return Vec::new();
+    }
     let mut legs: Vec<&str> = Vec::new();
     if record.resources.adb_reverse_port.is_some() {
         legs.push("adb_reverse");

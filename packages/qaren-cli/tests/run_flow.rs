@@ -4334,6 +4334,38 @@ fn adb_calls(mock: &MockRunner) -> Vec<String> {
         .collect()
 }
 
+// A second `qaren cleanup` of a borrowed run that cleaned itself reports clean and touches no device.
+fn assert_a_repeat_cleanup_is_clean_and_silent(runs_root: &Path, run_id: &str) {
+    let record = RunRecord::load(runs_root, run_id).unwrap();
+    assert_eq!(record.phase, Phase::Cleaned);
+    assert!(record.resources.lease.is_none());
+    let mut again = MockRunner::new();
+    // A phone record makes cleanup prove its owner gone first; an emulator record no longer needs to.
+    if record.resources.android_device.is_some() {
+        let owner_pid = record.prepare.as_ref().unwrap().pid;
+        again.expect_run(
+            &format!("ps -p {owner_pid} -o lstart="),
+            CmdOutput::success(""),
+        );
+    }
+
+    let receipt = qaren::commands::cleanup::cleanup(&mut again, runs_root, run_id);
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Cleaned,
+        "{:?}",
+        receipt.cleanup
+    );
+    assert!(receipt.failure.is_none(), "{:?}", receipt.failure);
+    assert!(adb_calls(&again).is_empty(), "{:?}", adb_calls(&again));
+    assert_eq!(again.remaining(), 0);
+    assert_eq!(
+        RunRecord::load(runs_root, run_id).unwrap().phase,
+        Phase::Cleaned
+    );
+}
+
 fn no_ios_or_expo_android_build(mock: &MockRunner) {
     for call in &mock.calls {
         let rendered = call.rendered();
@@ -5021,6 +5053,7 @@ fn android_check_reuse_installs_the_cached_apk_by_serial() {
         (EMULATOR, "adb-install")
     );
     assert!(record.resources.runner_host.is_none());
+    assert_a_repeat_cleanup_is_clean_and_silent(&req.runs_root, &run_id());
 }
 
 #[test]
@@ -5385,6 +5418,7 @@ fn android_check_borrows_the_only_ready_phone_and_leaves_only_the_app_behind() {
         assert!(adb.iter().all(|c| !c.contains(never)), "{never}: {adb:?}");
     }
     assert!(!receipt.outcomes.contains_key("adb_server"));
+    assert_a_repeat_cleanup_is_clean_and_silent(&req.runs_root, &receipt.run_id);
 }
 
 #[test]

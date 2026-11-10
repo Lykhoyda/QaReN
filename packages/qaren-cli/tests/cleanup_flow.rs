@@ -2528,6 +2528,11 @@ fn android_phone_cleanup_keeps_claim_and_lease_while_a_runner_app_remains_or_no_
     assert_ne!(receipt.cleanup["device_lease"], "removed");
     assert!(claim.exists() && lease.exists());
     assert_eq!(mock.remaining(), 0);
+    // Cleaned implies the packages are gone, so a later cleanup still addresses the phone.
+    assert_ne!(
+        RunRecord::load(&repo, "borrowed-run").unwrap().phase,
+        Phase::Cleaned
+    );
 
     // No server answers: cleanup starts none, sends nothing and keeps both locks, as incomplete.
     let repo = common::temp_repo();
@@ -2706,6 +2711,76 @@ fn android_borrowed_cleanup_refuses_without_the_runs_lease() {
                 with_recorder
             );
             assert_eq!(mock.remaining(), 0);
+        }
+    }
+}
+
+// Only phase Cleaned with no lease recorded (what the run's own release leaves) skips the device legs;
+// a lease still recorded, or any other phase, keeps the refusal.
+#[test]
+fn android_borrowed_repeat_cleanup_is_clean_only_for_a_cleaned_run_without_a_lease() {
+    for phone in [false, true] {
+        for case in [
+            "cleaned",
+            "cleaned with a foreign lease",
+            "walking without a lease",
+        ] {
+            let repo = common::temp_repo();
+            let mut record = if phone {
+                phone_record(&repo)
+            } else {
+                borrowed_record(&repo)
+            };
+            if case == "cleaned with a foreign lease" {
+                record.resources.lease.as_mut().unwrap().holder = "another-run-holder".to_string();
+            } else {
+                qaren::lease::release(&record.resources.lease.take().unwrap());
+            }
+            if case != "walking without a lease" {
+                record.phase = Phase::Cleaned;
+            }
+            if case == "cleaned" {
+                if let Some(claim) = &record.resources.usb_device {
+                    std::fs::remove_dir_all(&claim.lock_dir).unwrap();
+                }
+            }
+            record.save(&repo).unwrap();
+            let mut mock = borrowed_mock();
+
+            let receipt = cleanup(&mut mock, &repo, "borrowed-run");
+
+            let label = format!("phone={phone} {case}");
+            assert!(
+                adb_commands(&mock).is_empty(),
+                "{label}: {:?}",
+                adb_commands(&mock)
+            );
+            assert_eq!(mock.remaining(), 0, "{label}");
+            if case == "cleaned" {
+                assert_eq!(
+                    receipt.result,
+                    ReceiptResult::Cleaned,
+                    "{label}: {:?}",
+                    receipt.cleanup
+                );
+                for leg in ["adb_reverse", "android_runner", "android_runner_packages"] {
+                    assert!(!receipt.cleanup.contains_key(leg), "{label}: {leg}");
+                }
+                if phone {
+                    assert_eq!(receipt.cleanup["usb_device_claim"], "absent", "{label}");
+                }
+            } else {
+                assert_eq!(
+                    receipt.cleanup["adb_reverse"],
+                    "refused: the device lease is not held by this run",
+                    "{label}"
+                );
+                assert_eq!(
+                    receipt.failure.as_ref().unwrap().code,
+                    FailureCode::OwnershipUnproven,
+                    "{label}"
+                );
+            }
         }
     }
 }
