@@ -424,6 +424,11 @@ async function waitOutCover(
     removeOnPresence?: boolean;
     retryReplacement?: boolean;
     recovery?: boolean;
+    inferredOverlay?: boolean;
+    ownerEntry?: 'incomplete' | 'missing' | 'duplicate' | 'gap';
+    acceptLiveHit?: boolean;
+    liveHitReason?: 'unavailable' | 'ambiguous' | 'expired' | 'moved';
+    unquoted?: boolean;
   } = {},
 ) {
   const continueTarget =
@@ -475,7 +480,12 @@ async function waitOutCover(
   const w = walker(
     [],
     scriptedJudge((questions) =>
-      Object.fromEntries(Object.entries(questions).map(([id, question]) => [id, choice(question)])),
+      Object.fromEntries(
+        Object.entries(questions).map(([id, question]) => [
+          id,
+          choice(question, options.unquoted && !w.actions.length ? 'none' : 'e0'),
+        ]),
+      ),
     ),
   );
   w.deps.platform = options.platform ?? 'ios';
@@ -498,7 +508,12 @@ async function waitOutCover(
   };
   let cancelled = false;
   w.deps.cancelled = () => cancelled;
-  w.deps.captureScreen = async (opts) => {
+  const notes: string[] = [];
+  w.deps.note = (note) => notes.push(note);
+  let currentScreen: Screen;
+  let entryRecaptures = 0;
+  let pendingOwnerRead = false;
+  const captureNext: typeof w.deps.captureScreen = async (opts) => {
     captures++;
     const presence = opts?.platformPresence === true;
     const covered = await capture(coveredViews, { presence });
@@ -512,14 +527,28 @@ async function waitOutCover(
     const clear = await capture(clearViews, { presence });
     delete clear.keyboardVisible;
     const off = await capture(offViews, { presence });
-    off.elements.find(
+    const offTarget = off.elements.find(
       (e) => e.testID === (continueTarget ? 'primary-continue' : 'qa-hi-row-1'),
-    )!.offscreen = true;
+    )!;
+    offTarget.offscreen = true;
+    if (options.unquoted) offTarget.semantic!.visibility = 'offscreen';
     const withoutId = (screen: Screen) => {
       if (options.labelIdentity)
         delete screen.elements.find((e) => e.testID === 'qa-hi-row-1')?.testID;
       return screen;
     };
+    const ownerRead = presence && pendingOwnerRead && opts?.budgetMs === undefined;
+    if (presence) pendingOwnerRead = false;
+    if (ownerRead) {
+      entryRecaptures++;
+      if (options.ownerEntry === 'incomplete')
+        return { ...covered, captureCoverage: { native: 'incomplete', react: 'complete' } };
+      const target = covered.elements.find((element) => element.testID === 'qa-hi-row-1')!;
+      if (options.ownerEntry === 'missing')
+        covered.elements = covered.elements.filter((element) => element !== target);
+      if (options.ownerEntry === 'duplicate') covered.elements.push({ ...target, ref: '@e99' });
+      if (options.ownerEntry === 'gap') return capture(coveredViews, { hosts: false, presence });
+    }
     if (options.removeOnPresence && presence) {
       covered.elements = covered.elements.filter((e) => e.testID !== 'primary-continue');
       assert.deepEqual(
@@ -607,11 +636,33 @@ async function waitOutCover(
     if (options.nativeOcclusion) return presses === 0 ? withoutId(clear) : withoutId(refusalScreen);
     return withoutId(captures === 1 && !options.initialClearance ? off : refusalScreen);
   };
+  w.deps.captureScreen = async (opts) => {
+    currentScreen = await captureNext(opts);
+    if (options.inferredOverlay) currentScreen.keyboardVisible = false;
+    return currentScreen;
+  };
   let presses = 0;
-  w.deps.press = async (ref) => {
+  let landed = 0;
+  const pressOptions: Array<Parameters<typeof w.deps.press>[2]> = [];
+  w.deps.press = async (ref, _context, option) => {
+    pressOptions.push(option);
     pressedRefs.push(ref);
     assert.equal(ref, '@e3', 'only the planned row may be pressed');
     presses++;
+    if (
+      options.inferredOverlay &&
+      !options.acceptLiveHit &&
+      option?.requireLiveHit &&
+      currentScreen.elements.some((element) => element.testID === 'qa-hi-cover')
+    ) {
+      pendingOwnerRead = true;
+      return {
+        ok: false,
+        proven: false,
+        mutation: 'none',
+        error: `LIVE_HIT_UNPROVEN: ${options.liveHitReason ?? 'not-hittable'}; no tap was performed`,
+      };
+    }
     if (options.nativeOcclusion)
       return {
         ok: false,
@@ -620,17 +671,20 @@ async function waitOutCover(
         error: 'FOCUS_TARGET_OCCLUDED: target covered',
       };
     if (options.retryReplacement) return { ok: true, proven: false };
+    if (!options.refusePress) landed++;
     return options.refusePress
       ? { ok: false, proven: false, mutation: 'none', error: 'not dispatched' }
       : { ok: true, proven: true };
   };
-  const kind = continueTarget
-    ? 'Tap "Continue"'
-    : options.kind === 'fill'
-      ? 'Fill "qa-hi-row-1" with "x"'
-      : options.labelIdentity || options.ambiguousAfterWait
-        ? 'Tap "Row 1"'
-        : 'Tap "qa-hi-row-1"';
+  const kind = options.unquoted
+    ? 'Tap Row 1'
+    : continueTarget
+      ? 'Tap "Continue"'
+      : options.kind === 'fill'
+        ? 'Fill "qa-hi-row-1" with "x"'
+        : options.labelIdentity || options.ambiguousAfterWait
+          ? 'Tap "Row 1"'
+          : 'Tap "qa-hi-row-1"';
   const result = await runPlan(parsePlan(`1. ${kind}`).blocks!, w.deps);
   return {
     result,
@@ -645,6 +699,10 @@ async function waitOutCover(
     captures,
     media,
     shots,
+    landed,
+    pressOptions,
+    notes,
+    entryRecaptures,
   };
 }
 
@@ -668,6 +726,173 @@ test('a quoted tap after scrolling waits five seconds and names the persistent c
   assert.match(String(row?.reason), /waited 5000 ms; the cover holds 1 pressable controls/);
   assert.match(String(row?.reason), /decline-labelled: Close/);
   assert.equal(budgets.length, 9);
+});
+
+test('a refused live hit after scrolling waits and names the persistent cover Close', async () => {
+  const {
+    row,
+    streamed,
+    presses,
+    landed,
+    actions,
+    diagnostics,
+    polledObservations,
+    entryRecaptures,
+    notes,
+  } = await waitOutCover({ inferredOverlay: true });
+  assert.equal(row?.outcome, 'fail', JSON.stringify(row));
+  assert.match(String(row?.reason), /the live hit read refused the press \(not-hittable\)/);
+  assert.equal(presses, 1, 'the live hit read refuses without a mutation');
+  assert.equal(landed, 0, 'the persistent cover must leave the receiver untouched');
+  assert.equal(entryRecaptures, 1, 'one owner presence recapture, with none for refusal text');
+  assert.deepEqual(actions, ['scroll down']);
+  assert.deepEqual(row?.coveredBy, { ref: '@e5', kind: 'other', frame: COVER });
+  assert.equal(row?.coverWaitMs, 5000, JSON.stringify(row));
+  assert.equal(streamed.at(-1)?.coverWaitMs, 5000);
+  assert.match(String(row?.reason), /waited 5000 ms/);
+  assert.match(String(row?.reason), /the cover holds 1 pressable controls/);
+  assert.match(String(row?.reason), /decline-labelled: Close/);
+  assert.equal(
+    diagnostics.filter((event) => event.code === 'CENTRE_COVERED').at(-1)?.observation,
+    polledObservations.at(-1),
+  );
+  assert.deepEqual(
+    notes
+      .filter((note) => note.startsWith('cover-wait '))
+      .map((note) => JSON.parse(note.slice(11))),
+    [
+      { line: 1, phase: 'start', at: 0 },
+      { line: 1, phase: 'end', at: 5000, waitedMs: 5000, cleared: false },
+    ],
+  );
+});
+
+test('a refused live hit waits for clearance then taps once without stale strictness', async () => {
+  const { row, streamed, actions, presses, landed, pressOptions, notes } = await waitOutCover({
+    inferredOverlay: true,
+    clearAt: 1000,
+  });
+  assert.equal(row?.outcome, 'pass', JSON.stringify(row));
+  assert.equal(presses, 2, 'one refused read and one landed tap');
+  assert.equal(landed, 1);
+  assert.deepEqual(actions, ['scroll down']);
+  assert.deepEqual(pressOptions, [{ requireLiveHit: true }, undefined]);
+  assert.equal(row?.coverWaitMs, 1000);
+  assert.equal(streamed.at(-1)?.coverWaitMs, 1000);
+  assert.deepEqual(
+    notes
+      .filter((note) => note.startsWith('cover-wait '))
+      .map((note) => JSON.parse(note.slice(11))),
+    [
+      { line: 1, phase: 'start', at: 0 },
+      { line: 1, phase: 'end', at: 1000, waitedMs: 1000, cleared: true },
+    ],
+  );
+});
+
+const liveHitRefusalText = (cover: string, reason = 'not-hittable') =>
+  '"qa-hi-row-1" stayed off screen after one scroll: its centre is past the visible area or under the keyboard' +
+  cover +
+  '; inferred band cutter @e5 (other) at 0,110,402,201 moved the band top from 206 to 311' +
+  `; the live hit read refused the press (${reason}); no tap was performed`;
+
+for (const [ownerEntry, gap] of [
+  ['incomplete', 'presence-recapture-incomplete'],
+  ['missing', 'target-not-recaptured'],
+  ['duplicate', 'target-not-recaptured'],
+  ['gap', 'react-evidence-incomplete'],
+] as const) {
+  test(`a refused live hit with ${ownerEntry} owner evidence keeps its refusal without waiting`, async () => {
+    const { row, entryRecaptures, budgets, landed } = await waitOutCover({
+      inferredOverlay: true,
+      ownerEntry,
+    });
+    assert.equal(entryRecaptures, 1);
+    assert.equal(landed, 0);
+    assert.equal(row?.coverWaitMs, undefined);
+    assert.deepEqual(budgets, []);
+    assert.equal(row?.reason, liveHitRefusalText(`; no cover named (${gap})`));
+  });
+}
+
+test('an accepted live hit under a named owner taps once without waiting', async () => {
+  const { row, presses, landed, pressOptions, budgets, notes } = await waitOutCover({
+    inferredOverlay: true,
+    acceptLiveHit: true,
+  });
+  assert.equal(row?.outcome, 'pass', JSON.stringify(row));
+  assert.equal(presses, 1);
+  assert.equal(landed, 1);
+  assert.deepEqual(pressOptions, [{ requireLiveHit: true }]);
+  assert.equal(row?.coverWaitMs, undefined);
+  assert.deepEqual(budgets, []);
+  assert.ok(!notes.some((note) => note.startsWith('cover-wait ')));
+});
+
+for (const liveHitReason of ['unavailable', 'ambiguous', 'expired', 'moved'] as const) {
+  test(`a live hit ${liveHitReason} refusal names the owner without starting a wait`, async () => {
+    const { row, presses, landed, budgets } = await waitOutCover({
+      inferredOverlay: true,
+      liveHitReason,
+    });
+    assert.equal(presses, 1);
+    assert.equal(landed, 0);
+    assert.equal(row?.coverWaitMs, undefined);
+    assert.deepEqual(budgets, []);
+    assert.equal(
+      row?.reason,
+      liveHitRefusalText('; covered by other at 0,110,402,201', liveHitReason),
+    );
+  });
+}
+
+test('a centre-covered clearance scroll keeps its exact live-hit refusal without waiting', async () => {
+  const { row, actions, presses, landed, budgets } = await waitOutCover({
+    inferredOverlay: true,
+    initialClearance: true,
+  });
+  assert.equal(presses, 1);
+  assert.equal(landed, 0);
+  assert.deepEqual(actions, ['scroll up']);
+  assert.equal(row?.coverWaitMs, undefined);
+  assert.deepEqual(budgets, []);
+  assert.equal(row?.reason, liveHitRefusalText('; covered by other at 0,110,402,201'));
+});
+
+test('a second live-hit refusal retains the earlier wait without stale control counts', async () => {
+  const { row, budgets, landed, pressOptions, notes, entryRecaptures } = await waitOutCover({
+    inferredOverlay: true,
+    clearAt: 500,
+    refusePress: true,
+  });
+  assert.equal(landed, 0);
+  assert.equal(row?.coverWaitMs, 500);
+  assert.deepEqual(budgets, [4500]);
+  assert.deepEqual(pressOptions, [{ requireLiveHit: true }, undefined, { requireLiveHit: true }]);
+  assert.match(String(row?.reason), /waited 500 ms earlier in this step/);
+  assert.doesNotMatch(String(row?.reason), /pressable controls|decline-labelled|Close/);
+  assert.deepEqual(row?.coveredBy, { ref: '@e5', kind: 'other', frame: COVER });
+  assert.equal(entryRecaptures, 2, 'wait entry and ordinary refusal naming each take one read');
+  assert.match(String(row?.reason), /the live hit read refused the press/);
+  assert.equal(notes.filter((note) => note.startsWith('cover-wait ')).length, 2);
+});
+
+test('a repeat live-hit refusal counts controls only on its own presence capture', async () => {
+  const { row, budgets, landed, pressOptions, entryRecaptures } = await waitOutCover({
+    inferredOverlay: true,
+    unquoted: true,
+    clearAt: 500,
+    refusePress: true,
+  });
+  assert.equal(landed, 0);
+  assert.equal(row?.coverWaitMs, 500, JSON.stringify(row));
+  assert.deepEqual(budgets, [4500]);
+  assert.deepEqual(pressOptions, [{ requireLiveHit: true }, undefined, { requireLiveHit: true }]);
+  assert.match(
+    String(row?.reason),
+    /waited 500 ms earlier in this step; the cover holds 1 pressable controls \(decline-labelled: Close\)/,
+  );
+  assert.equal(entryRecaptures, 0, 'the dispatch captures already carry presence');
 });
 
 for (const poll of [

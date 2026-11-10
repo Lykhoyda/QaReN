@@ -1560,7 +1560,7 @@ async function walkBlockScoped(
     const gap = coverGaps.get(line);
     return gap ? `; no cover named (${gap})` : '';
   };
-  const coverWaitText = (screen: Screen, owner: Element, waitedMs: number): string => {
+  const coverControlsText = (screen: Screen, owner: Element): string => {
     const pressables = screen.elements.filter(
       (element) =>
         (element === owner || ancestorsOf(element).includes(owner)) &&
@@ -1573,10 +1573,12 @@ async function walkBlockScoped(
       ...new Set(pressables.map((element) => element.label).filter(isDeclineLabel)),
     ].slice(0, 4);
     return (
-      `; waited ${waitedMs} ms; the cover holds ${pressables.length} pressable controls` +
+      `; the cover holds ${pressables.length} pressable controls` +
       (labels.length ? ` (decline-labelled: ${labels.join(', ')})` : '')
     );
   };
+  const coverWaitText = (screen: Screen, owner: Element, waitedMs: number): string =>
+    `; waited ${waitedMs} ms${coverControlsText(screen, owner)}`;
   const waitOutCover = async (
     item: Item & { kind: 'press' },
     observation: Observation,
@@ -1590,6 +1592,8 @@ async function walkBlockScoped(
     let coverScreen = observation.screen;
     let owner = cover.owner;
     let reason = '';
+    let cleared = false;
+    deps.note?.(`cover-wait ${JSON.stringify({ line: item.line, phase: 'start', at: startedAt })}`);
     try {
       while (deps.now() < until) {
         await pause(Math.min(WAIT_POLL_MS, until - deps.now()));
@@ -1611,6 +1615,7 @@ async function walkBlockScoped(
         } else if (nextCover.gap === 'reaches-target' && !centreCovered(current, next.screen)) {
           recordCover(item.line, nextCover);
           coverTargets.delete(item.line);
+          cleared = true;
           return { observation: next, cleared: true, reason: '' };
         }
       }
@@ -1621,6 +1626,9 @@ async function walkBlockScoped(
       else if (!(error instanceof CaptureDeadline)) throw error;
     } finally {
       coverWaitMs = Math.max(0, Math.round(deps.now() - startedAt));
+      deps.note?.(
+        `cover-wait ${JSON.stringify({ line: item.line, phase: 'end', at: deps.now(), waitedMs: coverWaitMs, cleared })}`,
+      );
     }
     return {
       observation: last,
@@ -4769,10 +4777,58 @@ async function walkBlockScoped(
               }
               // Not hittable, unavailable, ambiguous, expired or moved: the inferred overlay refuses.
               if (liveHit && item.kind === 'press' && !act.ok && act.mutation === 'none') {
+                let coverWaitReason = '';
+                let refusalCoverage: Readonly<CentreCoverageDiagnostic> | null = liveHit;
+                if (
+                  liveHitRefusal(act.error) === 'not-hittable' &&
+                  scrollOrigin === 'offscreen-resolution' &&
+                  coverWaitMs === undefined
+                ) {
+                  coverTargets.delete(item.line);
+                  const proven = before.platformPresence
+                    ? before
+                    : await presenceRecapture(item, itemDeadline);
+                  const matches = proven?.screen.elements.filter((current) =>
+                    sameIdentity(current, element!),
+                  );
+                  const waitCover = !proven
+                    ? { gap: 'presence-recapture-incomplete' as const }
+                    : matches?.length === 1
+                      ? coverOwner(matches[0], proven.screen)
+                      : { gap: 'target-not-recaptured' as const };
+                  recordCover(item.line, waitCover);
+                  if (proven && matches?.length === 1 && 'owner' in waitCover) {
+                    coverWaitTarget ??= element;
+                    const waited = await waitOutCover(item, proven, matches[0], waitCover);
+                    before = waited.observation;
+                    const rebound = before.screen.elements.filter((current) =>
+                      sameIdentity(current, element!),
+                    );
+                    element = rebound.length === 1 ? rebound[0] : undefined;
+                    ref = element?.ref;
+                    refusalCoverage = null;
+                    if (element)
+                      centreCovered(element, before.screen, (facts) => {
+                        refusalCoverage = facts;
+                      });
+                    if (waited.cleared) {
+                      initial = undefined;
+                      liveHit = undefined;
+                      continue;
+                    }
+                    coverWaitReason = waited.reason;
+                  }
+                } else if (coverWaitMs !== undefined) {
+                  coverWaitReason =
+                    `; waited ${coverWaitMs} ms earlier in this step` +
+                    (cover && 'owner' in cover
+                      ? coverControlsText(before.screen, cover.owner)
+                      : '');
+                }
                 outcome = failed(
                   item,
                   attempt,
-                  `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${await coverText(item)}${cutterText(liveHit)}; the live hit read refused the press (${liveHitRefusal(act.error)}); no tap was performed`,
+                  `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${await coverText(item)}${coverWaitReason}${cutterText(refusalCoverage)}; the live hit read refused the press (${liveHitRefusal(act.error)}); no tap was performed`,
                   before.screen,
                   await shoot(item),
                   ref,
@@ -4788,7 +4844,7 @@ async function walkBlockScoped(
                   undefined,
                   undefined,
                   {
-                    predicate: liveHit,
+                    predicate: refusalCoverage,
                     scrollOrigin,
                     requestedDirection: scrollDirection,
                     targetCentreChanged: centreChanged(element),

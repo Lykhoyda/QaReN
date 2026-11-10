@@ -1099,7 +1099,10 @@ that ran before the refusal remains a performed action. Press behavior is unchan
 
 On the iOS press branch that would otherwise refuse a still-covered centre after
 an offscreen-resolution scroll, a proven distinct cover gets one passive wait of
-up to 5 seconds within the step's remaining deadline. The initial presence recapture,
+up to 5 seconds within the step's remaining deadline. This includes an inferred
+overlay when the live hit read refuses with `not-hittable` and no mutation; the
+live hit read still runs first. Only targets scrolled into view receive this wait.
+The initial presence recapture,
 every poll and subsequent tap retries must uniquely rebind the original target;
 a missing, ambiguous or replaced identity refuses without tapping a replacement.
 Every poll passes normal capture admission, and missing geometry never proves clearance.
@@ -1109,9 +1112,12 @@ measured wait duration. A persistent cover keeps the existing refusal code and n
 kind, frame, enabled on-screen pressable count and up to four decline labels such
 as Close. Once the target is bound for the cover read, failures bypass step
 recovery and the launch-target wait, so neither can dismiss the cover or select
-a replacement. A tap retry does not renew the cover wait. The wait never presses
-the cover or its controls. Clearance-scroll and
-inferred-overlay live-hit paths, Fill and Android keep their existing behaviour.
+a replacement. A tap retry does not renew the cover wait: its refusal reports the
+time waited earlier in the step and counts controls only when that retry's own
+capture proves the owner. Value-free `cover-wait` start and end notes record the
+step line, clock time and final duration and clearance result. The wait never
+presses the cover or its controls. Centre-covered clearance scrolling, other
+live-hit refusal reasons, native occlusion, Fill and Android keep their existing behaviour.
 Automatic cover dismissal and ignoring opacity-zero iOS duplicates are deferred.
 
 On iOS, quoted waits and scroll-until completion can override that inferred cover
