@@ -155,6 +155,7 @@ const soleLabelTexts = new WeakMap<Element, Element>();
 const nativeTypes = new WeakMap<Element, string>();
 const elementFrames = new WeakMap<Element, NonNullable<NativeNode['rect']>>();
 const nativeAncestors = new WeakMap<Element, Element[]>();
+const associatedHostAncestors = new WeakMap<Element, Element[]>();
 const elementViewports = new WeakMap<Element, NonNullable<NativeNode['rect']>>();
 const keyboardCoveredElements = new WeakSet<Element>();
 const literalTextContributors = new WeakSet<Element>();
@@ -289,6 +290,10 @@ export function soleLabelTextOf(element: Element): Element | undefined {
 // Native tree ancestors, nearest first.
 export function ancestorsOf(element: Element): readonly Element[] {
   return nativeAncestors.get(element) ?? [];
+}
+
+export function associatedHostAncestorsOf(element: Element): readonly Element[] {
+  return associatedHostAncestors.get(element) ?? [];
 }
 
 export function nativeTypeOf(element: Element): string | undefined {
@@ -1316,6 +1321,17 @@ export function join(
     elements.push(element);
   });
   const typography = reactHostEvidence?.typography;
+  if (reactHostEvidence?.complete && typography?.complete)
+    for (const [host, { nativeIndex }] of associations)
+      associatedHostAncestors.set(
+        elements[nativeIndex],
+        hostPath(typography, host)
+          ?.slice(1)
+          .flatMap((ancestor) => {
+            const index = associations.get(ancestor)?.nativeIndex;
+            return index === undefined ? [] : [elements[index]];
+          }) ?? [],
+      );
   for (const element of elements) {
     if (!element.ref.startsWith('react:') || element.testID === undefined) continue;
     const byId = reactHostEvidence?.hosts.flatMap((h, i) =>

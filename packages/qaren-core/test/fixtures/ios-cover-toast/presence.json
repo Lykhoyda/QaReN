@@ -1,0 +1,1840 @@
+{
+  "nodes": [
+    {
+      "ref": "@e0",
+      "type": "Application",
+      "rect": {
+        "height": 874,
+        "y": 0,
+        "width": 402,
+        "x": 0
+      },
+      "index": 0,
+      "depth": 0,
+      "label": "rn-dev-agent-test",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e1",
+      "type": "Window",
+      "rect": {
+        "y": 0,
+        "width": 402,
+        "x": 0,
+        "height": 874
+      },
+      "index": 1,
+      "depth": 1,
+      "parentIndex": 0,
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e2",
+      "type": "Other",
+      "rect": {
+        "height": 874,
+        "x": 0,
+        "width": 402,
+        "y": 0
+      },
+      "index": 2,
+      "depth": 2,
+      "parentIndex": 1,
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e3",
+      "type": "Other",
+      "rect": {
+        "width": 402,
+        "height": 874,
+        "x": 0,
+        "y": 0
+      },
+      "index": 3,
+      "depth": 3,
+      "parentIndex": 2,
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e4",
+      "type": "Other",
+      "rect": {
+        "x": 0,
+        "height": 874,
+        "width": 402,
+        "y": 0
+      },
+      "index": 4,
+      "depth": 4,
+      "parentIndex": 3,
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e5",
+      "type": "Other",
+      "rect": {
+        "width": 402,
+        "y": 0,
+        "height": 874,
+        "x": 0
+      },
+      "index": 5,
+      "depth": 5,
+      "parentIndex": 4,
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e6",
+      "type": "Other",
+      "rect": {
+        "height": 874,
+        "y": 0,
+        "x": 0,
+        "width": 402
+      },
+      "index": 6,
+      "depth": 6,
+      "parentIndex": 5,
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e7",
+      "type": "Other",
+      "rect": {
+        "height": 874,
+        "y": 0,
+        "width": 402,
+        "x": 0
+      },
+      "index": 7,
+      "depth": 7,
+      "parentIndex": 6,
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e8",
+      "type": "Other",
+      "rect": {
+        "y": 0,
+        "width": 402,
+        "height": 874,
+        "x": 0
+      },
+      "index": 8,
+      "depth": 8,
+      "parentIndex": 7,
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e9",
+      "type": "Other",
+      "rect": {
+        "height": 874,
+        "x": 0,
+        "width": 402,
+        "y": 0
+      },
+      "index": 9,
+      "depth": 9,
+      "parentIndex": 8,
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e10",
+      "type": "Other",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "height": 874,
+        "width": 402
+      },
+      "index": 10,
+      "depth": 10,
+      "parentIndex": 9,
+      "label": "Tabs",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e11",
+      "type": "Other",
+      "rect": {
+        "y": 0,
+        "width": 402,
+        "x": 0,
+        "height": 874
+      },
+      "index": 11,
+      "depth": 11,
+      "parentIndex": 10,
+      "identifier": "app-root",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e12",
+      "type": "Other",
+      "rect": {
+        "y": 0,
+        "width": 402,
+        "height": 874,
+        "x": 0
+      },
+      "index": 12,
+      "depth": 11,
+      "parentIndex": 10,
+      "label": "Tabs",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e13",
+      "type": "Other",
+      "rect": {
+        "y": 0,
+        "height": 874,
+        "width": 402,
+        "x": 0
+      },
+      "index": 13,
+      "depth": 12,
+      "parentIndex": 12,
+      "label": "Tabs",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e14",
+      "type": "NavigationBar",
+      "rect": {
+        "height": 54,
+        "width": 402,
+        "y": 62,
+        "x": 0
+      },
+      "index": 14,
+      "depth": 13,
+      "parentIndex": 13,
+      "label": "Tabs",
+      "identifier": "Covering toast",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e15",
+      "type": "Button",
+      "rect": {
+        "y": 62,
+        "height": 44,
+        "width": 88.33333333333333,
+        "x": 16.000000000000004
+      },
+      "index": 15,
+      "depth": 14,
+      "parentIndex": 14,
+      "label": "Tabs",
+      "identifier": "BackButton",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e16",
+      "type": "StaticText",
+      "rect": {
+        "y": 73.66666666666666,
+        "width": 116,
+        "height": 20.66666666666667,
+        "x": 143
+      },
+      "index": 16,
+      "depth": 14,
+      "parentIndex": 14,
+      "label": "Covering toast",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e17",
+      "type": "Other",
+      "rect": {
+        "width": 402,
+        "height": 874,
+        "x": 0,
+        "y": 0
+      },
+      "index": 17,
+      "depth": 13,
+      "parentIndex": 13,
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e18",
+      "type": "Other",
+      "rect": {
+        "y": 0,
+        "x": 0,
+        "width": 402,
+        "height": 874
+      },
+      "index": 18,
+      "depth": 14,
+      "parentIndex": 17,
+      "label": "Persistent toast",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e19",
+      "type": "Other",
+      "rect": {
+        "width": 402,
+        "y": 116,
+        "x": 0,
+        "height": 758
+      },
+      "index": 19,
+      "depth": 15,
+      "parentIndex": 18,
+      "label": "Persistent toast",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e20",
+      "type": "Other",
+      "rect": {
+        "y": 116,
+        "height": 758,
+        "width": 402,
+        "x": 0
+      },
+      "index": 20,
+      "depth": 16,
+      "parentIndex": 19,
+      "label": "Persistent toast",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e21",
+      "type": "Other",
+      "rect": {
+        "height": 758,
+        "x": 0,
+        "y": 116,
+        "width": 402
+      },
+      "index": 21,
+      "depth": 17,
+      "parentIndex": 20,
+      "label": "Persistent toast",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e22",
+      "type": "Other",
+      "rect": {
+        "width": 402,
+        "height": 758,
+        "y": 116,
+        "x": 0
+      },
+      "index": 22,
+      "depth": 18,
+      "parentIndex": 21,
+      "identifier": "qa-cover-toast-screen",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e23",
+      "type": "StaticText",
+      "rect": {
+        "y": 130,
+        "width": 360,
+        "height": 24.666667938232422,
+        "x": 21
+      },
+      "index": 23,
+      "depth": 18,
+      "parentIndex": 21,
+      "label": "Persistent toast",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e24",
+      "type": "StaticText",
+      "rect": {
+        "x": 21,
+        "y": 130,
+        "width": 360,
+        "height": 24.666667938232422
+      },
+      "index": 24,
+      "depth": 19,
+      "parentIndex": 23,
+      "label": "Persistent toast",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e25",
+      "type": "StaticText",
+      "rect": {
+        "width": 360,
+        "x": 21,
+        "y": 161.66666793823242,
+        "height": 20.999996185302734
+      },
+      "index": 25,
+      "depth": 18,
+      "parentIndex": 21,
+      "label": "Bottom button taps: 0",
+      "identifier": "qa-cover-toast-taps",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e26",
+      "type": "StaticText",
+      "rect": {
+        "x": 21,
+        "width": 360,
+        "y": 161.66666793823242,
+        "height": 20.999996185302734
+      },
+      "index": 26,
+      "depth": 19,
+      "parentIndex": 25,
+      "label": "Bottom button taps: 0",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e27",
+      "type": "StaticText",
+      "rect": {
+        "y": 186,
+        "height": 17,
+        "width": 360,
+        "x": 21
+      },
+      "index": 27,
+      "depth": 18,
+      "parentIndex": 21,
+      "label": "Toast: shown",
+      "identifier": "qa-cover-toast-state",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e28",
+      "type": "StaticText",
+      "rect": {
+        "width": 360,
+        "height": 17,
+        "y": 186,
+        "x": 21
+      },
+      "index": 28,
+      "depth": 19,
+      "parentIndex": 27,
+      "label": "Toast: shown",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e29",
+      "type": "Other",
+      "rect": {
+        "x": 0,
+        "height": 663.6666870117188,
+        "y": 210.33333587646484,
+        "width": 402
+      },
+      "index": 29,
+      "depth": 18,
+      "parentIndex": 21,
+      "label": "Scroll down to reach the bottom button. An error toast appears when you scroll.",
+      "identifier": "qa-cover-toast-scroll",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e30",
+      "type": "ScrollView",
+      "rect": {
+        "width": 402,
+        "x": 0,
+        "height": 663.6666666666666,
+        "y": 210.33333587646484
+      },
+      "index": 30,
+      "depth": 19,
+      "parentIndex": 29,
+      "label": "Scroll down to reach the bottom button. An error toast appears when you scroll.",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e31",
+      "type": "Other",
+      "rect": {
+        "y": -1.6666641235351562,
+        "width": 402,
+        "height": 875.6666870117188,
+        "x": 0
+      },
+      "index": 31,
+      "depth": 20,
+      "parentIndex": 30,
+      "label": "Scroll down to reach the bottom button. An error toast appears when you scroll.",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e32",
+      "type": "Other",
+      "rect": {
+        "height": 875.6666870117188,
+        "width": 402,
+        "x": 0,
+        "y": -1.6666641235351562
+      },
+      "index": 32,
+      "depth": 21,
+      "parentIndex": 31,
+      "label": "Scroll down to reach the bottom button. An error toast appears when you scroll.",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e33",
+      "type": "Other",
+      "rect": {
+        "width": 402,
+        "x": 0,
+        "height": 779.6666870117188,
+        "y": -1.6666641235351562
+      },
+      "index": 33,
+      "depth": 22,
+      "parentIndex": 32,
+      "identifier": "qa-cover-toast-spacer",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e34",
+      "type": "StaticText",
+      "rect": {
+        "height": 42,
+        "y": -1.6666641235351562,
+        "x": 21,
+        "width": 360
+      },
+      "index": 34,
+      "depth": 22,
+      "parentIndex": 32,
+      "label": "Scroll down to reach the bottom button. An error toast appears when you scroll.",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e35",
+      "type": "StaticText",
+      "rect": {
+        "width": 360,
+        "x": 21,
+        "y": -1.6666641235351562,
+        "height": 42
+      },
+      "index": 35,
+      "depth": 23,
+      "parentIndex": 34,
+      "label": "Scroll down to reach the bottom button. An error toast appears when you scroll.",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e36",
+      "type": "Button",
+      "rect": {
+        "y": 778.0000228881836,
+        "x": 21,
+        "width": 360,
+        "height": 48
+      },
+      "index": 36,
+      "depth": 22,
+      "parentIndex": 32,
+      "label": "Continue",
+      "identifier": "qa-cover-toast-continue",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e37",
+      "type": "Other",
+      "rect": {
+        "width": 30,
+        "height": 573.6666666666666,
+        "x": 369,
+        "y": 238.33333587646484
+      },
+      "index": 37,
+      "depth": 20,
+      "parentIndex": 30,
+      "label": "Vertical scroll bar, 2 pages",
+      "value": "100%",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e38",
+      "type": "Other",
+      "rect": {
+        "y": 378.6666692097982,
+        "height": 430.33333333333337,
+        "width": 3,
+        "x": 396
+      },
+      "index": 38,
+      "depth": 21,
+      "parentIndex": 37,
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e39",
+      "type": "Other",
+      "rect": {
+        "width": 278,
+        "y": 841.0000025431315,
+        "x": 62,
+        "height": 30
+      },
+      "index": 39,
+      "depth": 20,
+      "parentIndex": 30,
+      "label": "Horizontal scroll bar, 1 page",
+      "value": "0%",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e40",
+      "type": "Other",
+      "rect": {
+        "width": 272,
+        "x": 65,
+        "y": 868.0000025431315,
+        "height": 3
+      },
+      "index": 40,
+      "depth": 21,
+      "parentIndex": 39,
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e41",
+      "type": "Other",
+      "rect": {
+        "y": 238.33333587646484,
+        "width": 30,
+        "height": 573.6666666666666,
+        "x": 369
+      },
+      "index": 41,
+      "depth": 20,
+      "parentIndex": 30,
+      "label": "Vertical scroll bar, 2 pages",
+      "value": "100%",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e42",
+      "type": "Other",
+      "rect": {
+        "y": 378.6666692097982,
+        "x": 396,
+        "width": 3,
+        "height": 430.33333333333337
+      },
+      "index": 42,
+      "depth": 21,
+      "parentIndex": 41,
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e43",
+      "type": "Other",
+      "rect": {
+        "width": 278,
+        "y": 841.0000025431315,
+        "height": 30,
+        "x": 62
+      },
+      "index": 43,
+      "depth": 20,
+      "parentIndex": 30,
+      "label": "Horizontal scroll bar, 1 page",
+      "value": "0%",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e44",
+      "type": "Other",
+      "rect": {
+        "x": 65,
+        "y": 868.0000025431315,
+        "width": 272,
+        "height": 3
+      },
+      "index": 44,
+      "depth": 21,
+      "parentIndex": 43,
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e45",
+      "type": "Other",
+      "rect": {
+        "width": 374,
+        "height": 120,
+        "y": 754,
+        "x": 14
+      },
+      "index": 45,
+      "depth": 18,
+      "parentIndex": 21,
+      "identifier": "qa-cover-toast",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e46",
+      "type": "StaticText",
+      "rect": {
+        "y": 801.6666679382324,
+        "x": 28,
+        "width": 6,
+        "height": 24.6666259765625
+      },
+      "index": 46,
+      "depth": 18,
+      "parentIndex": 21,
+      "label": "!",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e47",
+      "type": "StaticText",
+      "rect": {
+        "height": 24.6666259765625,
+        "y": 801.6666679382324,
+        "width": 6,
+        "x": 28
+      },
+      "index": 47,
+      "depth": 19,
+      "parentIndex": 46,
+      "label": "!",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e48",
+      "type": "Button",
+      "rect": {
+        "x": 315,
+        "width": 59,
+        "height": 35,
+        "y": 796.6666679382324
+      },
+      "index": 48,
+      "depth": 18,
+      "parentIndex": 21,
+      "label": "Close",
+      "identifier": "qa-cover-toast-close",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e49",
+      "type": "StaticText",
+      "rect": {
+        "y": 805.3333320617676,
+        "width": 270.6666564941406,
+        "x": 44.33333396911621,
+        "height": 17
+      },
+      "index": 49,
+      "depth": 18,
+      "parentIndex": 21,
+      "label": "Something went wrong",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e50",
+      "type": "StaticText",
+      "rect": {
+        "x": 44.33333396911621,
+        "y": 805.3333320617676,
+        "height": 17,
+        "width": 270.6666564941406
+      },
+      "index": 50,
+      "depth": 19,
+      "parentIndex": 49,
+      "label": "Something went wrong",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e51",
+      "type": "Other",
+      "rect": {
+        "height": 874,
+        "x": 0,
+        "y": 0,
+        "width": 402
+      },
+      "index": 51,
+      "depth": 13,
+      "parentIndex": 13,
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e52",
+      "type": "Other",
+      "rect": {
+        "height": 874,
+        "x": 0,
+        "width": 402,
+        "y": 0
+      },
+      "index": 52,
+      "depth": 14,
+      "parentIndex": 51,
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e53",
+      "type": "Other",
+      "rect": {
+        "width": 402,
+        "y": 0,
+        "height": 874,
+        "x": 0
+      },
+      "index": 53,
+      "depth": 8,
+      "parentIndex": 7,
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e54",
+      "type": "Other",
+      "rect": {
+        "y": 0,
+        "x": 0,
+        "width": 402,
+        "height": 874
+      },
+      "index": 54,
+      "depth": 9,
+      "parentIndex": 53,
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e55",
+      "type": "Other",
+      "rect": {
+        "width": 402,
+        "height": 874,
+        "y": 0,
+        "x": 0
+      },
+      "index": 55,
+      "depth": 10,
+      "parentIndex": 54,
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e56",
+      "type": "Window",
+      "rect": {
+        "y": 0,
+        "height": 874,
+        "width": 402,
+        "x": 0
+      },
+      "index": 56,
+      "depth": 1,
+      "parentIndex": 0,
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e57",
+      "type": "Other",
+      "rect": {
+        "x": 0,
+        "width": 402,
+        "height": 874,
+        "y": 0
+      },
+      "index": 57,
+      "depth": 2,
+      "parentIndex": 56,
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e58",
+      "type": "Other",
+      "rect": {
+        "height": 874,
+        "x": 0,
+        "width": 402,
+        "y": 0
+      },
+      "index": 58,
+      "depth": 3,
+      "parentIndex": 57,
+      "enabled": true,
+      "hittable": true
+    }
+  ],
+  "digest": [
+    {
+      "role": "button",
+      "testID": "qa-cover-toast-close",
+      "text": "Close",
+      "capabilities": {
+        "press": true,
+        "fill": false
+      }
+    },
+    {
+      "role": "button",
+      "testID": "qa-cover-toast-continue",
+      "text": "Continue",
+      "capabilities": {
+        "press": true,
+        "fill": false
+      }
+    }
+  ],
+  "front": "app",
+  "coverage": {
+    "native": "complete",
+    "react": "complete"
+  },
+  "reactHostEvidence": {
+    "hosts": [
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "pointerEvents": "box-none",
+        "order": 0
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "pointerEvents": "box-none",
+        "order": 0
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "order": 0
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "order": 0
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "nativeID": "0",
+        "order": 0
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "order": 0
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "pointerEvents": "box-none",
+        "order": 0
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "testID": "app-root",
+        "order": 0
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "order": 0
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "order": 0
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "order": 1
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "order": 0
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "order": 0
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "testID": "qa-cover-toast-screen",
+        "order": 0
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "order": 0
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "testID": "qa-cover-toast",
+        "order": 2
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "testID": "qa-cover-toast-scroll",
+        "order": 1
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "order": 0
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "testID": "qa-cover-toast-taps",
+        "order": 1
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "testID": "qa-cover-toast-state",
+        "order": 2
+      },
+      {
+        "role": "button",
+        "roleSource": "accessibilityRole",
+        "capabilities": {
+          "press": true
+        },
+        "testID": "qa-cover-toast-close",
+        "order": 2
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "testID": "qa-cover-toast-spacer",
+        "order": 0
+      },
+      {
+        "role": "button",
+        "roleSource": "accessibilityRole",
+        "capabilities": {
+          "press": true
+        },
+        "testID": "qa-cover-toast-continue",
+        "order": 1
+      }
+    ],
+    "complete": true,
+    "typography": {
+      "version": 1,
+      "complete": true,
+      "durationMs": 102,
+      "coordinateSpace": "window-points",
+      "nodes": [
+        {
+          "hostIndex": 0,
+          "parentHostIndex": null,
+          "rootIndex": 0,
+          "hostType": "RCTView",
+          "text": {
+            "kind": "none"
+          },
+          "accessibility": {
+            "accessible": "absent",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 402,
+            "height": 874
+          }
+        },
+        {
+          "hostIndex": 1,
+          "parentHostIndex": 0,
+          "rootIndex": 0,
+          "hostType": "RCTView",
+          "text": {
+            "kind": "none"
+          },
+          "accessibility": {
+            "accessible": "absent",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 402,
+            "height": 874
+          }
+        },
+        {
+          "hostIndex": 2,
+          "parentHostIndex": 1,
+          "rootIndex": 0,
+          "hostType": "RNCSafeAreaProvider",
+          "text": {
+            "kind": "none"
+          },
+          "accessibility": {
+            "accessible": "absent",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 402,
+            "height": 874
+          }
+        },
+        {
+          "hostIndex": 3,
+          "parentHostIndex": 2,
+          "rootIndex": 0,
+          "hostType": "RCTView",
+          "text": {
+            "kind": "none"
+          },
+          "accessibility": {
+            "accessible": "absent",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 402,
+            "height": 874
+          }
+        },
+        {
+          "hostIndex": 4,
+          "parentHostIndex": 3,
+          "rootIndex": 0,
+          "hostType": "KeyboardControllerView",
+          "text": {
+            "kind": "none"
+          },
+          "accessibility": {
+            "accessible": "absent",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 402,
+            "height": 874
+          }
+        },
+        {
+          "hostIndex": 5,
+          "parentHostIndex": 4,
+          "rootIndex": 0,
+          "hostType": "RCTView",
+          "text": {
+            "kind": "none"
+          },
+          "accessibility": {
+            "accessible": "absent",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 402,
+            "height": 874
+          }
+        },
+        {
+          "hostIndex": 6,
+          "parentHostIndex": 5,
+          "rootIndex": 0,
+          "hostType": "RCTView",
+          "text": {
+            "kind": "none"
+          },
+          "accessibility": {
+            "accessible": "absent",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 402,
+            "height": 874
+          }
+        },
+        {
+          "hostIndex": 7,
+          "parentHostIndex": 6,
+          "rootIndex": 0,
+          "hostType": "RCTView",
+          "text": {
+            "kind": "none"
+          },
+          "accessibility": {
+            "accessible": "absent",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 402,
+            "height": 874
+          }
+        },
+        {
+          "hostIndex": 8,
+          "parentHostIndex": 7,
+          "rootIndex": 0,
+          "hostType": "RCTView",
+          "text": {
+            "kind": "none"
+          },
+          "accessibility": {
+            "accessible": "absent",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 402,
+            "height": 874
+          }
+        },
+        {
+          "hostIndex": 9,
+          "parentHostIndex": 8,
+          "rootIndex": 0,
+          "hostType": "RNSScreenStack",
+          "text": {
+            "kind": "none"
+          },
+          "accessibility": {
+            "accessible": "absent",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 402,
+            "height": 874
+          }
+        },
+        {
+          "hostIndex": 10,
+          "parentHostIndex": 9,
+          "rootIndex": 0,
+          "hostType": "RNSScreen",
+          "text": {
+            "kind": "none"
+          },
+          "accessibility": {
+            "accessible": "absent",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 402,
+            "height": 758
+          }
+        },
+        {
+          "hostIndex": 11,
+          "parentHostIndex": 10,
+          "rootIndex": 0,
+          "hostType": "RNSScreenContentWrapper",
+          "text": {
+            "kind": "none"
+          },
+          "accessibility": {
+            "accessible": "absent",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 0,
+            "y": 116,
+            "width": 402,
+            "height": 758
+          }
+        },
+        {
+          "hostIndex": 12,
+          "parentHostIndex": 11,
+          "rootIndex": 0,
+          "hostType": "RNSSafeAreaView",
+          "text": {
+            "kind": "none"
+          },
+          "accessibility": {
+            "accessible": "absent",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 0,
+            "y": 116,
+            "width": 402,
+            "height": 758
+          }
+        },
+        {
+          "hostIndex": 13,
+          "parentHostIndex": 12,
+          "rootIndex": 0,
+          "hostType": "RCTView",
+          "text": {
+            "kind": "none"
+          },
+          "accessibility": {
+            "accessible": "absent",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 0,
+            "y": 116,
+            "width": 402,
+            "height": 758
+          }
+        },
+        {
+          "hostIndex": 14,
+          "parentHostIndex": 13,
+          "rootIndex": 0,
+          "hostType": "RCTView",
+          "text": {
+            "kind": "none"
+          },
+          "accessibility": {
+            "accessible": "absent",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 0,
+            "y": 116,
+            "width": 402,
+            "height": 94.33333587646484
+          }
+        },
+        {
+          "hostIndex": 15,
+          "parentHostIndex": 13,
+          "rootIndex": 0,
+          "hostType": "RCTView",
+          "text": {
+            "kind": "none"
+          },
+          "accessibility": {
+            "accessible": "absent",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 14,
+            "y": 754,
+            "width": 374,
+            "height": 120
+          }
+        },
+        {
+          "hostIndex": 16,
+          "parentHostIndex": 13,
+          "rootIndex": 0,
+          "hostType": "RCTScrollView",
+          "text": {
+            "kind": "none"
+          },
+          "accessibility": {
+            "accessible": "absent",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 0,
+            "y": 210.33333587646484,
+            "width": 402,
+            "height": 663.6666870117188
+          }
+        },
+        {
+          "hostIndex": 17,
+          "parentHostIndex": 16,
+          "rootIndex": 0,
+          "hostType": "RCTScrollContentView",
+          "text": {
+            "kind": "none"
+          },
+          "accessibility": {
+            "accessible": "absent",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 0,
+            "y": -1.6666641235351562,
+            "width": 402,
+            "height": 875.6666870117188
+          }
+        },
+        {
+          "hostIndex": 18,
+          "parentHostIndex": 14,
+          "rootIndex": 0,
+          "hostType": "RCTText",
+          "text": {
+            "kind": "block",
+            "content": "Bottom button taps: 0",
+            "runs": [
+              {
+                "start": 0,
+                "end": 21,
+                "fontSize": 14
+              }
+            ],
+            "scaling": {
+              "allowFontScaling": true,
+              "maxFontSizeMultiplier": 0
+            }
+          },
+          "accessibility": {
+            "accessible": "true",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 21,
+            "y": 161.66666793823242,
+            "width": 360,
+            "height": 20.999996185302734
+          }
+        },
+        {
+          "hostIndex": 19,
+          "parentHostIndex": 14,
+          "rootIndex": 0,
+          "hostType": "RCTText",
+          "text": {
+            "kind": "block",
+            "content": "Toast: shown",
+            "runs": [
+              {
+                "start": 0,
+                "end": 12,
+                "fontSize": 14
+              }
+            ],
+            "scaling": {
+              "allowFontScaling": true,
+              "maxFontSizeMultiplier": 0
+            }
+          },
+          "accessibility": {
+            "accessible": "true",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 21,
+            "y": 186,
+            "width": 360,
+            "height": 17
+          }
+        },
+        {
+          "hostIndex": 20,
+          "parentHostIndex": 15,
+          "rootIndex": 0,
+          "hostType": "RCTView",
+          "text": {
+            "kind": "none"
+          },
+          "accessibility": {
+            "accessible": "true",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 315,
+            "y": 796.6666679382324,
+            "width": 59,
+            "height": 35
+          }
+        },
+        {
+          "hostIndex": 21,
+          "parentHostIndex": 17,
+          "rootIndex": 0,
+          "hostType": "RCTView",
+          "text": {
+            "kind": "none"
+          },
+          "accessibility": {
+            "accessible": "absent",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 0,
+            "y": -1.6666641235351562,
+            "width": 402,
+            "height": 779.6666870117188
+          }
+        },
+        {
+          "hostIndex": 22,
+          "parentHostIndex": 17,
+          "rootIndex": 0,
+          "hostType": "RCTView",
+          "text": {
+            "kind": "none"
+          },
+          "accessibility": {
+            "accessible": "true",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 21,
+            "y": 778.0000228881836,
+            "width": 360,
+            "height": 48
+          }
+        }
+      ]
+    }
+  },
+  "nativePresence": {
+    "source": "xcui-live",
+    "nodes": [
+      {
+        "status": "unknown",
+        "labelSource": "direct"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "none"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "none"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "none"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "none"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "none"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "none"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "none"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "none"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "none"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "descendant"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "none",
+        "unknownReason": "not-hittable"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "descendant"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "descendant"
+      },
+      {
+        "status": "observed",
+        "labelSource": "descendant"
+      },
+      {
+        "status": "observed",
+        "labelSource": "direct"
+      },
+      {
+        "status": "observed",
+        "labelSource": "direct"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "none"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "descendant"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "descendant"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "descendant"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "descendant"
+      },
+      {
+        "status": "observed",
+        "labelSource": "none"
+      },
+      {
+        "status": "observed",
+        "labelSource": "direct"
+      },
+      {
+        "status": "observed",
+        "labelSource": "direct"
+      },
+      {
+        "status": "observed",
+        "labelSource": "direct"
+      },
+      {
+        "status": "observed",
+        "labelSource": "direct"
+      },
+      {
+        "status": "observed",
+        "labelSource": "direct"
+      },
+      {
+        "status": "observed",
+        "labelSource": "direct"
+      },
+      {
+        "status": "observed",
+        "labelSource": "descendant"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "descendant"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "descendant"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "descendant"
+      },
+      {
+        "status": "observed",
+        "labelSource": "none"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "direct",
+        "unknownReason": "clipped"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "direct",
+        "unknownReason": "clipped"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "direct",
+        "unknownReason": "not-hittable"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "direct",
+        "unknownReason": "ambiguous-descriptor"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "none"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "direct",
+        "unknownReason": "ambiguous-descriptor"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "none"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "direct",
+        "unknownReason": "ambiguous-descriptor"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "none"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "direct",
+        "unknownReason": "ambiguous-descriptor"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "none"
+      },
+      {
+        "status": "observed",
+        "labelSource": "none"
+      },
+      {
+        "status": "observed",
+        "labelSource": "direct"
+      },
+      {
+        "status": "observed",
+        "labelSource": "direct"
+      },
+      {
+        "status": "observed",
+        "labelSource": "direct"
+      },
+      {
+        "status": "observed",
+        "labelSource": "direct"
+      },
+      {
+        "status": "observed",
+        "labelSource": "direct"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "none"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "none"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "none"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "none"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "none"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "none"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "none"
+      },
+      {
+        "status": "unknown",
+        "labelSource": "none"
+      }
+    ]
+  },
+  "nativeAcquisition": "complete"
+}

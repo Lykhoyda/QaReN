@@ -1,0 +1,444 @@
+{
+  "nodes": [
+    {
+      "ref": "@e0",
+      "type": "Application",
+      "rect": {
+        "height": 874,
+        "x": 0,
+        "y": 0,
+        "width": 402
+      },
+      "index": 0,
+      "depth": 0,
+      "label": "rn-dev-agent-test",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e1",
+      "type": "Window",
+      "rect": {
+        "height": 874,
+        "x": 0,
+        "y": 0,
+        "width": 402
+      },
+      "index": 1,
+      "depth": 1,
+      "parentIndex": 0,
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e2",
+      "type": "Other",
+      "rect": {
+        "height": 874,
+        "x": 0,
+        "y": 0,
+        "width": 402
+      },
+      "index": 2,
+      "depth": 1,
+      "parentIndex": 0,
+      "label": "Tabs",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e3",
+      "type": "Other",
+      "rect": {
+        "height": 874,
+        "x": 0,
+        "y": 0,
+        "width": 402
+      },
+      "index": 3,
+      "depth": 2,
+      "parentIndex": 2,
+      "identifier": "app-root",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e4",
+      "type": "NavigationBar",
+      "rect": {
+        "height": 54,
+        "x": 0,
+        "y": 62,
+        "width": 402
+      },
+      "index": 4,
+      "depth": 2,
+      "parentIndex": 2,
+      "label": "Tabs",
+      "identifier": "Covering toast",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e5",
+      "type": "Button",
+      "rect": {
+        "height": 44,
+        "x": 16.000000000000004,
+        "y": 62,
+        "width": 88.33333333333333
+      },
+      "index": 5,
+      "depth": 3,
+      "parentIndex": 4,
+      "label": "Tabs",
+      "identifier": "BackButton",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e6",
+      "type": "StaticText",
+      "rect": {
+        "height": 20.66666666666667,
+        "x": 143,
+        "y": 73.66666666666666,
+        "width": 116
+      },
+      "index": 6,
+      "depth": 3,
+      "parentIndex": 4,
+      "label": "Covering toast",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e7",
+      "type": "Other",
+      "rect": {
+        "height": 874,
+        "x": 0,
+        "y": 0,
+        "width": 402
+      },
+      "index": 7,
+      "depth": 2,
+      "parentIndex": 2,
+      "label": "Persistent toast",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e8",
+      "type": "Other",
+      "rect": {
+        "height": 758,
+        "x": 0,
+        "y": 116,
+        "width": 402
+      },
+      "index": 8,
+      "depth": 3,
+      "parentIndex": 7,
+      "label": "Persistent toast",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e9",
+      "type": "Other",
+      "rect": {
+        "height": 758,
+        "x": 0,
+        "y": 116,
+        "width": 402
+      },
+      "index": 9,
+      "depth": 4,
+      "parentIndex": 8,
+      "identifier": "qa-cover-toast-screen",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e10",
+      "type": "StaticText",
+      "rect": {
+        "height": 24.666667938232422,
+        "x": 21,
+        "y": 130,
+        "width": 360
+      },
+      "index": 10,
+      "depth": 4,
+      "parentIndex": 8,
+      "label": "Persistent toast",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e11",
+      "type": "StaticText",
+      "rect": {
+        "height": 20.999996185302734,
+        "x": 21,
+        "y": 161.66666793823242,
+        "width": 360
+      },
+      "index": 11,
+      "depth": 4,
+      "parentIndex": 8,
+      "label": "Bottom button taps: 0",
+      "identifier": "qa-cover-toast-taps",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e12",
+      "type": "StaticText",
+      "rect": {
+        "height": 20.999996185302734,
+        "x": 21,
+        "y": 161.66666793823242,
+        "width": 360
+      },
+      "index": 12,
+      "depth": 5,
+      "parentIndex": 11,
+      "label": "Bottom button taps: 0",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e13",
+      "type": "StaticText",
+      "rect": {
+        "height": 17,
+        "x": 21,
+        "y": 186,
+        "width": 360
+      },
+      "index": 13,
+      "depth": 4,
+      "parentIndex": 8,
+      "label": "Toast: waiting for scroll",
+      "identifier": "qa-cover-toast-state",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e14",
+      "type": "StaticText",
+      "rect": {
+        "y": 186,
+        "x": 21,
+        "width": 360,
+        "height": 17
+      },
+      "index": 14,
+      "depth": 5,
+      "parentIndex": 13,
+      "label": "Toast: waiting for scroll",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e15",
+      "type": "Other",
+      "rect": {
+        "y": 210.33333587646484,
+        "x": 0,
+        "width": 402,
+        "height": 663.6666870117188
+      },
+      "index": 15,
+      "depth": 4,
+      "parentIndex": 8,
+      "label": "Scroll down to reach the bottom button. An error toast appears when you scroll.",
+      "identifier": "qa-cover-toast-scroll",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e16",
+      "type": "ScrollView",
+      "rect": {
+        "y": 210.33333587646484,
+        "x": 0,
+        "width": 402,
+        "height": 663.6666666666666
+      },
+      "index": 16,
+      "depth": 5,
+      "parentIndex": 15,
+      "label": "Scroll down to reach the bottom button. An error toast appears when you scroll.",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e17",
+      "type": "Other",
+      "rect": {
+        "y": 210.33333587646484,
+        "x": 0,
+        "width": 402,
+        "height": 875.6666870117188
+      },
+      "index": 17,
+      "depth": 6,
+      "parentIndex": 16,
+      "label": "Scroll down to reach the bottom button. An error toast appears when you scroll.",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e18",
+      "type": "Other",
+      "rect": {
+        "y": 210.33333587646484,
+        "x": 0,
+        "width": 402,
+        "height": 779.6666870117188
+      },
+      "index": 18,
+      "depth": 7,
+      "parentIndex": 17,
+      "identifier": "qa-cover-toast-spacer",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e19",
+      "type": "StaticText",
+      "rect": {
+        "y": 210.33333587646484,
+        "x": 21,
+        "width": 360,
+        "height": 42
+      },
+      "index": 19,
+      "depth": 7,
+      "parentIndex": 17,
+      "label": "Scroll down to reach the bottom button. An error toast appears when you scroll.",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e20",
+      "type": "Button",
+      "rect": {
+        "y": 990.0000228881836,
+        "x": 21,
+        "width": 360,
+        "height": 48
+      },
+      "index": 20,
+      "depth": 7,
+      "parentIndex": 17,
+      "label": "Continue",
+      "identifier": "qa-cover-toast-continue",
+      "enabled": true,
+      "hittable": false
+    },
+    {
+      "ref": "@e21",
+      "type": "Other",
+      "rect": {
+        "y": 238.33333587646484,
+        "x": 369,
+        "width": 30,
+        "height": 573.6666666666666
+      },
+      "index": 21,
+      "depth": 6,
+      "parentIndex": 16,
+      "label": "Vertical scroll bar, 2 pages",
+      "value": "0%",
+      "enabled": true,
+      "hittable": true
+    },
+    {
+      "ref": "@e22",
+      "type": "Other",
+      "rect": {
+        "y": 841.0000025431315,
+        "x": 62,
+        "width": 278,
+        "height": 30
+      },
+      "index": 22,
+      "depth": 6,
+      "parentIndex": 16,
+      "label": "Horizontal scroll bar, 1 page",
+      "value": "0%",
+      "enabled": true,
+      "hittable": true
+    }
+  ],
+  "digest": [
+    {
+      "role": "button",
+      "testID": "qa-cover-toast-continue",
+      "text": "Continue",
+      "capabilities": {
+        "press": true,
+        "fill": false
+      }
+    }
+  ],
+  "front": "app",
+  "coverage": {
+    "native": "unknown",
+    "react": "complete"
+  },
+  "reactHostEvidence": {
+    "hosts": [
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "testID": "qa-cover-toast-screen",
+        "order": 0
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "testID": "qa-cover-toast-scroll",
+        "order": 1
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "testID": "qa-cover-toast-taps",
+        "order": 1
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "testID": "qa-cover-toast-state",
+        "order": 2
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "testID": "qa-cover-toast-spacer",
+        "order": 0
+      },
+      {
+        "role": "button",
+        "roleSource": "accessibilityRole",
+        "capabilities": {
+          "press": true
+        },
+        "testID": "qa-cover-toast-continue",
+        "order": 1
+      }
+    ],
+    "complete": true
+  },
+  "nativeAcquisition": "complete"
+}

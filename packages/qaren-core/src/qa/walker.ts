@@ -42,6 +42,7 @@ import {
   insideAlert,
   elementFrame,
   ancestorsOf,
+  associatedHostAncestorsOf,
   semanticDisabled,
   applicationFrame,
   isNativeInput,
@@ -1563,7 +1564,9 @@ async function walkBlockScoped(
   const coverControlsText = (screen: Screen, owner: Element): string => {
     const pressables = screen.elements.filter(
       (element) =>
-        (element === owner || ancestorsOf(element).includes(owner)) &&
+        (element === owner ||
+          ancestorsOf(element).includes(owner) ||
+          associatedHostAncestorsOf(element).includes(owner)) &&
         element.semantic?.press === 'supported' &&
         !semanticDisabled(element) &&
         !element.offscreen &&
