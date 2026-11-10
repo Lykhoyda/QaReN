@@ -3093,12 +3093,15 @@ remains unproven, cleanup retains the resources and lease.
 A failed startup also retains its driver handle until exit is proven; a surviving
 driver blocks replacement with `RUNNER_ADOPTION_REQUIRED`.
 
-After teardown, an iOS check with a recorded runner driver polls
-`~/Library/Logs/DiagnosticReports` for up to 60 seconds, stopping early on a match
-or cancellation. It looks for a SpringBoard `.ips` report whose body `captureTime`
-is at or after core spawn and whose device path or coalition matches the selected
-simulator. File modification time and the header's report-delivery timestamp do
-not establish crash time; a missing or invalid `captureTime` is not attributed.
+After teardown, an iOS check with a recorded runner driver scans
+`~/Library/Logs/DiagnosticReports` once immediately. A pass or a failure marked as
+a plan step's failure does not wait; other outcomes poll for up to 60 seconds,
+stopping early on a match or cancellation. A core execution failure or a surviving
+core process group always keeps that polling window. It looks for a SpringBoard
+`.ips` report whose body `captureTime` is at or after core spawn and whose device
+path or coalition matches the selected simulator. File modification time and the
+header's report-delivery timestamp do not establish crash time; a missing or
+invalid `captureTime` is not attributed.
 A match adds `outcomes.springboard_crash` to the receipt and a lane-health entry to
 `run.json` history, including the crash time in UTC and optionally a sanitized
 exception type; report paths and raw contents are not copied. Attribution to this
