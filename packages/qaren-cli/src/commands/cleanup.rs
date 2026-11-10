@@ -2209,9 +2209,8 @@ fn release_android_runner(
     }
     let api_level = record
         .resources
-        .android_emulator
-        .as_ref()
-        .map_or(0, |emulator| emulator.api_level);
+        .borrowed_android()
+        .map_or(0, |target| target.api_level);
     let found = match read_runner(runner, adb, port, serial, api_level, extra_ms) {
         Ok(state) => state,
         Err(reason) => return Outcome::Unresolved(reason),

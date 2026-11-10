@@ -2822,9 +2822,79 @@ fn script_phone_reverse_and_stopped_runner(mock: &mut MockRunner) {
     );
     mock.expect_run("forward --list", CmdOutput::success("\n"));
     mock.expect_run(
-        "dumpsys activity processes",
+        "dumpsys -t 20 activity processes",
         CmdOutput::success(NO_RUNNER_PROCESS),
     );
+}
+
+#[test]
+fn android_cleanup_runner_reads_use_the_borrowed_targets_api_level() {
+    for physical in [false, true] {
+        for api_level in [25, 34] {
+            let repo = common::temp_repo();
+            let mut record = if physical {
+                phone_record(&repo)
+            } else {
+                borrowed_record(&repo)
+            };
+            if let Some(phone) = record.resources.android_device.as_mut() {
+                phone.api_level = api_level;
+            }
+            if let Some(emulator) = record.resources.android_emulator.as_mut() {
+                emulator.api_level = api_level;
+            }
+            record.resources.adb_reverse_port = None;
+            let lease = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+            let claim = record
+                .resources
+                .usb_device
+                .as_ref()
+                .map(|d| d.lock_dir.clone());
+            record.save(&repo).unwrap();
+            let mut mock = borrowed_mock();
+            mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+            mock.expect_run("forward --list", CmdOutput::success("\n"));
+            let dump = if api_level == 34 {
+                "dumpsys -t 20 activity processes"
+            } else {
+                "dumpsys activity processes"
+            };
+            mock.expect_run(dump, CmdOutput::success(RUNNER_PROCESSES));
+            for package in qaren::adapters::android::RUNNER_PACKAGES {
+                mock.expect_run(
+                    &format!("am force-stop {package}"),
+                    CmdOutput::success(""),
+                );
+            }
+            mock.expect_run("forward --list", CmdOutput::success("\n"));
+            mock.expect_run(dump, CmdOutput::success(NO_RUNNER_PROCESS));
+            if physical {
+                for package in qaren::adapters::android::RUNNER_PACKAGES {
+                    mock.expect_run(
+                        &format!("uninstall {package}"),
+                        CmdOutput::success("Success\n"),
+                    );
+                    mock.expect_run(
+                        &format!("pm list packages {package}"),
+                        CmdOutput::success(""),
+                    );
+                }
+            }
+
+            let receipt = cleanup(&mut mock, &repo, "borrowed-run");
+
+            assert_eq!(
+                receipt.result,
+                ReceiptResult::Cleaned,
+                "{:?}",
+                receipt.cleanup
+            );
+            assert_eq!(receipt.cleanup["android_runner"], "removed");
+            assert!(!lease.exists());
+            assert!(claim.is_none_or(|path| !path.exists()));
+            assert_eq!(mock.remaining(), 0);
+        }
+    }
 }
 
 #[test]
