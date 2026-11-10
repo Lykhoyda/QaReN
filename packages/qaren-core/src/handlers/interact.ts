@@ -27,7 +27,7 @@ export interface InteractArgs {
   scrollX?: number;
   scrollY?: number;
   animated: boolean;
-  // setFieldValue — see injected-helpers.ts setFieldValue handler.
+  // setFieldValue — see the setFieldValue handler in runtime/legacy.program.txt.
   name?: string;
   value?: string | number | boolean;
   shouldValidate?: boolean;
