@@ -792,17 +792,16 @@ fn disk(runner: &mut dyn Runner, cwd: &Path, home: &Path) -> Check {
 // The adb server a user's own adb client starts; it may hold a phone another port cannot see.
 const DEFAULT_ADB_PORT: u16 = 5037;
 
-// Device states from the running adb server's own protocol: no adb client runs and no server starts.
-// Err((no server answers, detail, fix)).
 fn adb_listing(
     runner: &dyn Runner,
-) -> Result<(u16, Vec<(String, String)>), (bool, String, String)> {
+) -> Result<(u16, Vec<(String, String)>), (Option<u16>, bool, String, String)> {
     let port = android::borrowed_server_port(
         runner.env_var("ADB_SERVER_SOCKET").as_deref(),
         runner.env_var("ANDROID_ADB_SERVER_PORT").as_deref(),
     )
     .map_err(|detail| {
         (
+            None,
             false,
             detail,
             "point ADB_SERVER_SOCKET at a local adb server (tcp:127.0.0.1:<port>) or unset it, then re-run".to_string(),
@@ -810,6 +809,7 @@ fn adb_listing(
     })?;
     if let Err(e) = runner.adb_server_version(port) {
         return Err((
+            Some(port),
             true,
             format!("no adb server answers on port {port} ({e})"),
             "start this account's adb server (`adb start-server`), then re-run".to_string(),
@@ -817,6 +817,7 @@ fn adb_listing(
     }
     let listed = runner.adb_server_devices(port).map_err(|e| {
         (
+            Some(port),
             false,
             format!("cannot read the device list of the adb server on port {port}: {e}"),
             "check the adb server, then re-run".to_string(),
@@ -865,16 +866,29 @@ fn device_check(id: &'static str, status: Status, problems: &[android::DevicePro
 
 fn android_devices_row(runner: &dyn Runner) -> Check {
     const ID: &str = "android-devices";
-    let (port, rows) = match adb_listing(runner) {
-        Ok(listing) => listing,
-        Err((true, detail, _)) => {
-            return Check::skip(
-                ID,
-                format!("{detail}; device states are unknown until one runs"),
-            )
-        }
-        Err((false, detail, fix)) => return Check::warn(ID, detail, fix),
-    };
+    let (port, rows) =
+        match adb_listing(runner) {
+            Ok(listing) => listing,
+            Err((port, no_server, detail, fix)) => {
+                let mut problems = vec![("", detail, fix)];
+                if let Some(port) = port {
+                    problems.extend(held_on_default_server(runner, port, &[]).iter().map(
+                        |serial| android::held_by_other_server(serial, port, DEFAULT_ADB_PORT),
+                    ));
+                }
+                return if no_server && problems.len() == 1 {
+                    Check::skip(
+                        ID,
+                        format!(
+                            "{}; device states are unknown until one runs",
+                            problems[0].1
+                        ),
+                    )
+                } else {
+                    device_check(ID, Status::Warn, &problems)
+                };
+            }
+        };
     let physical: Vec<_> = rows
         .iter()
         .filter(|(serial, _)| android::is_physical_serial(serial))
@@ -910,7 +924,22 @@ pub fn android_target_row(runner: &dyn Runner, serial: &str) -> Check {
     }
     let (port, rows) = match adb_listing(runner) {
         Ok(listing) => listing,
-        Err((_, detail, fix)) => return Check::fail(ID, detail, fix),
+        Err((port, _, detail, fix)) => {
+            let mut problems = vec![("", detail, fix)];
+            if let Some(port) = port {
+                if held_on_default_server(runner, port, &[])
+                    .iter()
+                    .any(|s| s == serial)
+                {
+                    problems.push(android::held_by_other_server(
+                        serial,
+                        port,
+                        DEFAULT_ADB_PORT,
+                    ));
+                }
+            }
+            return device_check(ID, Status::Fail, &problems);
+        }
     };
     let state = rows
         .iter()
@@ -3623,6 +3652,92 @@ mod tests {
     }
 
     const WIRELESS: &str = "adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp";
+
+    #[test]
+    fn android_devices_checks_default_server_when_selected_server_is_unavailable() {
+        let env = [("ANDROID_ADB_SERVER_PORT", "5147")];
+        for selected in [None, Some((5147, None))] {
+            let mut servers: Vec<_> = selected.into_iter().collect();
+            servers.push((5037, Some("0A1B2C3D\tdevice\n0A1B2C3E\tdevice\n")));
+            let row = android_devices_with(&env, &servers);
+            assert_eq!(row.status, Status::Warn);
+            let diagnosis = if selected.is_none() {
+                "no adb server answers on port 5147 (connection refused)"
+            } else {
+                "cannot read the device list of the adb server on port 5147"
+            };
+            assert!(row.detail.starts_with(diagnosis), "{}", row.detail);
+            for serial in ["0A1B2C3D", "0A1B2C3E"] {
+                assert!(row.detail.contains(&format!("Android device {serial} is attached to the adb server on port 5037, not to the one on port 5147")), "{}", row.detail);
+            }
+            let fix = row.fix.unwrap();
+            assert!(fix.contains("set ANDROID_ADB_SERVER_PORT=5037"), "{fix}");
+            assert!(
+                fix.contains(if selected.is_none() {
+                    "start this account's adb server"
+                } else {
+                    "check the adb server"
+                }),
+                "{fix}"
+            );
+        }
+        let wireless = format!("{WIRELESS}\tdevice\n");
+        for listed in [
+            None,
+            Some(""),
+            Some("????????\tdevice\n0A1B2C3D\tunauthorized\n"),
+            Some(wireless.as_str()),
+        ] {
+            let servers: Vec<_> = listed.map(|rows| (5037, Some(rows))).into_iter().collect();
+            let row = android_devices_with(&env, &servers);
+            assert_eq!(row.status, Status::Skip);
+            assert_eq!(row.detail, "no adb server answers on port 5147 (connection refused); device states are unknown until one runs");
+        }
+    }
+
+    #[test]
+    fn android_target_checks_default_server_when_selected_server_is_unavailable() {
+        let env = [("ANDROID_ADB_SERVER_PORT", "5147")];
+        for selected in [None, Some((5147, None))] {
+            for default_serial in [None, Some("0A1B2C3D"), Some("0A1B2C3E")] {
+                let listed = default_serial.map(|serial| format!("{serial}\tdevice\n"));
+                let mut servers: Vec<_> = selected.into_iter().collect();
+                if let Some(listed) = listed.as_deref() {
+                    servers.push((5037, Some(listed)));
+                }
+                let runner = adb_host(&env, &servers);
+                let row = android_target_row(&runner, "0A1B2C3D");
+                assert!(runner.calls.is_empty(), "{:?}", runner.calls);
+                assert_eq!(row.status, Status::Fail);
+                let diagnosis = if selected.is_none() {
+                    "no adb server answers on port 5147 (connection refused)"
+                } else {
+                    "cannot read the device list of the adb server on port 5147"
+                };
+                assert!(row.detail.starts_with(diagnosis), "{}", row.detail);
+                if default_serial == Some("0A1B2C3D") {
+                    assert!(row.detail.contains("Android device 0A1B2C3D is attached to the adb server on port 5037, not to the one on port 5147"), "{}", row.detail);
+                    assert!(row
+                        .fix
+                        .unwrap()
+                        .contains("set ANDROID_ADB_SERVER_PORT=5037"));
+                } else {
+                    assert!(!row.detail.contains("is attached"), "{}", row.detail);
+                    if selected.is_none() {
+                        assert_eq!(row.detail, diagnosis);
+                    }
+                    assert_eq!(
+                        row.fix.as_deref(),
+                        Some(if selected.is_none() {
+                            "start this account's adb server (`adb start-server`), then re-run"
+                        } else {
+                            "check the adb server, then re-run"
+                        })
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn a_wireless_adb_row_is_counted_apart_and_never_reported_as_a_device() {
