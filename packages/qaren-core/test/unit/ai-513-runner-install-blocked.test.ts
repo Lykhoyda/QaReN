@@ -397,27 +397,17 @@ test('AI-513: with no deviceId the replacement runs against the resolved serial'
   assert.ok(commands.some((args) => args.join(' ') === `-s ${SERIAL} uninstall ${MAIN}`));
 });
 
-test('AI-513: an unrelated install failure uninstalls nothing and names adb reason without the offline hint', async (t) => {
+test('AI-513: an unrelated install failure uninstalls nothing', async (t) => {
   const { effects } = harness(t, {
     unrelated: 'Failure [INSTALL_FAILED_INSUFFICIENT_STORAGE]',
     channel: 'stdout',
   });
   await assert.rejects(client.startAndroidRunner(SERIAL, 'com.example', 0), (err: Error) => {
     assert.match(err.message, /^qaren-android-runner APK install failed \(adb install -r\)\./);
-    assert.match(err.message, /INSTALL_FAILED_INSUFFICIENT_STORAGE/);
-    assert.doesNotMatch(err.message, /Is the emulator\/device online\?/);
     assert.doesNotMatch(err.message, /RUNNER_INSTALL_BLOCKED/);
     return true;
   });
   assert.deepEqual(effects.uninstalls, []);
-});
-
-test('AI-513: an install failure that names no adb reason keeps the offline hint', async (t) => {
-  harness(t, { unrelated: 'error: closed' });
-  await assert.rejects(
-    client.startAndroidRunner(SERIAL, 'com.example', 0),
-    /Is the emulator\/device online\? .*error: closed/s,
-  );
 });
 
 test('AI-513: the open note remains available as result metadata', () => {

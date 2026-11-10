@@ -752,13 +752,9 @@ async function ensureAndroidRunnerInstalled(
         if (isAbort(err)) throw err;
         const block = runnerInstallBlock(adbFailureText(err));
         if (!block || !deviceId) {
-          const message = errMessage(err);
-          const reason = adbReason(err);
-          const named = /INSTALL_FAILED_/.test(reason);
           throw new Error(
-            `qaren-android-runner APK install failed (adb install -r).` +
-              `${named ? '' : ' Is the emulator/device online?'} ${message}` +
-              `${named && !message.includes(reason) ? ` (${reason})` : ''}`,
+            `qaren-android-runner APK install failed (adb install -r). Is the emulator/device online? ` +
+              `${err instanceof Error ? err.message : String(err)}`,
             { cause: err },
           );
         }
