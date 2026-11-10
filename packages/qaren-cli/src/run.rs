@@ -3235,9 +3235,6 @@ fn select_android(
         )
     };
     match device {
-        Some(wanted) if crate::scenario::is_wireless_serial(wanted) => Err(device_refusal(
-            android::device_problem(wanted, "device", linux).expect("wireless connection"),
-        )),
         Some(wanted) if is_usb_serial(wanted) => {
             let Some((_, state)) = attached.iter().find(|(serial, _)| serial == wanted) else {
                 return Err(device_refusal(android::not_attached(wanted, port)));

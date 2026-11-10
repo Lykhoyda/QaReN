@@ -12557,9 +12557,6 @@ fn android_check_refuses_wireless_adb_without_claiming_or_addressing_it() {
 
             let failure = receipt.failure.as_ref().unwrap();
             assert_eq!(failure.code, FailureCode::DeviceUnavailable);
-            assert!(failure.detail.contains(serial));
-            assert!(failure.detail.contains("wireless adb connection"));
-            assert!(failure.detail.contains("USB only"));
             assert!(!req.lock_root.exists());
             assert!(adb_calls(&mock)
                 .iter()

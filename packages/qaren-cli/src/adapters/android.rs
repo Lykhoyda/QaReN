@@ -297,24 +297,16 @@ pub fn is_physical_serial(serial: &str) -> bool {
 pub type DeviceProblem = (&'static str, String, String);
 
 fn device_label(serial: &str) -> String {
-    if crate::scenario::is_wireless_serial(serial) {
-        format!("wireless adb connection {serial}")
-    } else if crate::scenario::is_usb_serial(serial) {
+    if crate::scenario::is_usb_serial(serial) {
         format!("Android device {serial}")
     } else {
         "an attached device whose serial adb cannot read".to_string()
     }
 }
 
+// Shared device-state causes and fixes for doctor; physical-device check support is deferred.
 pub fn device_problem(serial: &str, state: &str, linux: bool) -> Option<DeviceProblem> {
     let who = device_label(serial);
-    if crate::scenario::is_wireless_serial(serial) {
-        return Some((
-            "wireless-adb",
-            format!("{who}: QaReN drives a phone over USB only"),
-            "connect the phone with a USB cable and use its USB serial, then re-run".to_string(),
-        ));
-    }
     let replug = "replug the USB cable and wake the phone; re-run when it lists as `device`";
     Some(match state {
         "device" => return None,
