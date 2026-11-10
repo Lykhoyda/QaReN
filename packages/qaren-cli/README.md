@@ -2384,6 +2384,22 @@ Post-boot proof keeps `SIMULATOR_BOOT_FAILED`, with unavailable-read facts or th
 observed state and read latency; bootstatus failures are unchanged. Unresolved
 post-shutdown readback retains the lease for cleanup recovery.
 
+Every iOS install attempt of `check`, `pr` and `prepare` first proves the
+simulator is still in the run's custody and `Booted`: a leased target must still
+hold this run's lease, rechecked after the inventory read, before and after any
+re-boot and immediately before `simctl install`; a temporary simulator the run
+created needs no lease. Under one second of install budget left, the attempt ends
+with the install timeout without reading or touching the device. A `Shutdown`
+target is re-booted under the run's custody when this run may boot it
+(`--boot-device`, `--restart-device`, a pool member or a created simulator) and the
+remaining budget covers `deadlines.device_boot_seconds` plus one inventory read;
+the run history and the `device_reboot` note name when it was last observed
+`Booted` and when `Shutdown`. Otherwise it refuses with `DEVICE_NOT_BOOTED`
+(exit 4, phase `install`) naming both times, or the missing budget, and the
+remedy; `prepare` on a `--device` target without `--boot-device` keeps its
+`DEVICE_UNAVAILABLE` refusal. Launch and `ready` re-proofs never re-boot. An
+install failure on a `Booted` target stays `ARTIFACT_INSTALL_FAILED`.
+
 Default cleanup leaves the borrowed simulator running and keeps the installed app.
 `--shutdown-device-on-exit --device <simulator-UUID>` opts into shutdown
 during teardown, including post-arm cancellation and dead-owner recovery, subject to the
@@ -3442,31 +3458,55 @@ The overlays are recognized in the native capture by the
 fixed identifiers and controls React Native gives them (`redbox-dismiss`, `redbox-reload`,
 `redbox-copy`, `redbox-error`, `rn_redbox_stack`, `rn_redbox_dismiss_button`, or one window holding `Dismiss`, `Minimize` and a
 `Log N of M` header, or the syntax-error `Failed to compile` header and footer),
-never by error text. An overlay in front is never read as the app: before a step
-resolves its target, judges a check or evaluates a wait, QaReN presses the
+never by error text. An overlay in front is never read as the app. For an overlay
+seen before an action, while no post-action recovery has been accepted, QaReN
+clears it before resolving a target, judging a check or evaluating a wait: it presses the
 overlay's own Dismiss control by its exact reference, proves the overlay gone in
 a fresh capture and runs the step again. This is a retry for a known cause, not a
 blind retry: each successful dismissal writes a `retry` row with `retryCause: DEV_REDBOX`,
 `devError: { variant, dismissal }` and the step attempt number. A failed dismissal
 proven not to have sent a gesture writes the same metadata on a `retry` row when
 another attempt remains; otherwise it records the metadata on the terminal `fail` row. Every
-dismissal attempt counts in `recoveries`. A step gets at most three dismissals,
+dismissal attempt counts in `recoveries`. A step gets at most three pre-action dismissals,
 including across saved replay falling back to a walk. Dismissal, clearance and
 resumed execution share the step's existing deadline; overlay recovery never
 renews it. The dismissal count is separate from the step's two interruption
 recoveries. Reload and Copy are never
 pressed, and Dismiss is not proof that the step's own action worked.
 
+On iOS, a native RedBox first seen after a dispatched Tap gets one bounded
+completion check per run. QaReN dismisses it once with its own Dismiss control
+and takes a normal admitted capture. The next item in the same block must be a
+Tap, Fill or Wait with a quoted target whose native test ID now appears and was
+absent on the Tap's screen. Labels, React-only targets and Checks cannot prove
+completion. Selection-readback presses, unverified alert-button presses,
+non-executed actions, LogBox, Android and recovery-disabled blocks keep the
+existing refusal without a dismissal. The planned Tap is never replayed.
+
+When completion is proven, the Tap passes with
+`devError: { variant: 'redbox', dismissal: 1, afterAction: true, proof: 'next-test-id-appeared' }`.
+The next item uses the post-dismissal observation. Receipts count these rows as
+`devOverlayWarnings`, and verdict displays, including `qaren watch`, say
+`PASS (1 development overlay warning)`; the stderr summary keeps its lowercase `pass`.
+An unproven completion, including incomplete, unavailable or expired completion
+capture evidence, refuses `DEV_REDBOX_ACTION_UNCERTAIN` and says the overlay
+was dismissed once to check. Cancellation and app-process safety failures retain
+their own outcomes. A RedBox still in front after that one dismissal
+refuses `DEV_REDBOX_REPEATED`; once completion has been accepted, any later
+RedBox refuses `DEV_REDBOX_ACTION_UNCERTAIN` without another dismissal, even
+before a later action or in another block. Screenshot withholding,
+privacy processing and media continuity follow the same rules as other captures.
+
 When the overlay cannot be cleared this way the run refuses with
 `failure.code: DEV_REDBOX` (exit 4). The cause opens `failure.detail`:
 
 | Cause | When | `next_action` |
 | --- | --- | --- |
-| `DEV_REDBOX_REPEATED` | The overlay was still in front after three dismissals in one step | `restart_app_from_plan_start` |
-| `DEV_REDBOX_DISMISS_FAILED` | The Dismiss press failed or was not dispatched. A press the runner refused before any gesture is observed again and pressed again within the three; one that may have run a gesture is never repeated. A LogBox Dismiss refused as `TARGET_MOVED_BEFORE_DISPATCH` is never pressed again. When available, the detail includes the runner's value-free refusal code (`runner refused: <CODE>`). The log records `dev-error-dismiss-failed=<CODE>` in `logs/core.log`, using `unknown` when no code is available. For a moved refusal, the log line also carries the runner's value-free geometry: the retained and live frames, their delta, and whether the target was re-found by identifier or label | `restart_app_from_plan_start` |
+| `DEV_REDBOX_REPEATED` | The overlay was still in front after three pre-action dismissals in one step, or after the one post-action dismissal | `restart_app_from_plan_start` |
+| `DEV_REDBOX_DISMISS_FAILED` | The Dismiss press failed or was not dispatched. Before the action, a press the runner refused before any gesture is observed again and pressed again within the three; one that may have run a gesture is never repeated. A post-action Dismiss is never retried. A LogBox Dismiss refused as `TARGET_MOVED_BEFORE_DISPATCH` is never pressed again. When available, the detail includes the runner's value-free refusal code (`runner refused: <CODE>`). The log records `dev-error-dismiss-failed=<CODE>` in `logs/core.log`, using `unknown` when no code is available. For a moved refusal, the log line also carries the runner's value-free geometry: the retained and live frames, their delta, and whether the target was re-found by identifier or label | `restart_app_from_plan_start` |
 | `DEV_REDBOX_NO_SAFE_DISMISS` | No single Dismiss control (a syntax error, an ambiguous control, or an overlay inside a login replay, which never recovers) | `restart_app_from_plan_start` |
 | `DEV_REDBOX_CLEARANCE_UNPROVEN` | A fresh capture could not prove the overlay gone | `restart_app_from_plan_start` |
-| `DEV_REDBOX_ACTION_UNCERTAIN` | The overlay was first seen after the step's action was sent, or after another recovery already acted in the same step; nothing is dismissed or replayed | `inspect_app_error_before_rerun` |
+| `DEV_REDBOX_ACTION_UNCERTAIN` | Completion after an action was not proven, or an overlay reappeared after accepted post-action recovery. Eligible iOS RedBox presses dismiss once to check; other cases leave it in front. The action is never replayed | `inspect_app_error_before_rerun` |
 
 A restart from plan start loses app state; the error may race the app again. A
 device restart or an unchanged native rebuild cannot fix it. A run that passes
@@ -4716,7 +4756,9 @@ through that run's own cleanup, and records the borrowed simulator before
 dependencies, strict foreign-driver admission, boot, build, install or launch.
 It re-proves the lease and the exact target under custody before booting,
 before each install attempt, before launch and before publishing `ready`, and
-refuses rather than reboots a target that changed.
+refuses rather than reboots a target that changed. Only a target found
+`Shutdown` before an install attempt is re-booted, and only with
+`--boot-device` (see [iOS simulator lifecycle](#ios-simulator-lifecycle)).
 Builds stay generic; only install, the [warm lane](#warm-lane) settings, launch
 and probes address the UUID.
 `ready` keeps the lease, Metro and app for attached agents, and `status`

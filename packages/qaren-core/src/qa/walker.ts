@@ -535,6 +535,7 @@ function markContinuity(
 export interface WalkSequence {
   observation: number;
   captureUnknown?: boolean;
+  devOverlayAccepted?: true;
   latch?: {
     line: number;
     windowLine?: number;
@@ -607,6 +608,8 @@ const DEV_ERROR_REFUSALS = {
     "a development error overlay appeared after the step's action was sent; it was not dismissed and the step was not replayed",
 } as const;
 type DevErrorRefusal = keyof typeof DEV_ERROR_REFUSALS;
+const DEV_ERROR_RECURRENCE =
+  'a development error overlay appeared again after one was already dismissed in this run; nothing was dismissed or replayed';
 
 // The runner's refusal code only: a value-free token, never the message after it.
 const refusalCode = (error: string | undefined): string | undefined =>
@@ -738,9 +741,24 @@ async function walkBlockScoped(
     if (item.kind === 'fill' && !typed.includes(fillText(item))) typed.push(fillText(item));
   const judge = deps.judge ?? unavailableJudge;
   let resolvedBy: LedgerRow['resolvedBy'] = 'exact';
-  let cached: { item: Item; observation: Observation; decision?: ScreenDecision } | undefined;
+  let cached:
+    | {
+        item: Item;
+        observation: Observation;
+        decision?: ScreenDecision;
+        needsLabelProvenance?: true;
+      }
+    | undefined;
   let latest: Screen = { elements: [], visibleText: [], front: 'app' };
   let pressBase: Screen | undefined;
+  let pressAct: ActResult | undefined;
+  let pressSelector: Selector | undefined;
+  let pressNeedsReadback = false;
+  let activeItem: Item | undefined;
+  let postActionTried = false;
+  let postActionShot: string | undefined;
+  let postActionObservation: Observation | undefined;
+  let postActionDevError: LedgerRow['devError'];
   let line = 0;
   let mutationStarted = false;
   // The Fill ladder rung of the current item's last fill dispatch, and when the item began.
@@ -903,11 +921,13 @@ async function walkBlockScoped(
       if (latest.renderError && latest.front !== 'dev-redbox') throw new RenderError();
       // The overlay is never read as the app: recovery dismisses it, or the step refuses.
       if (latest.front === 'dev-redbox' && !recovery) {
-        const cause: DevErrorRefusal = mutationStarted ? 'ACTION_UNCERTAIN' : 'NO_SAFE_DISMISS';
-        throw new ResolutionError({
-          refuse: `DEV_REDBOX_${cause}`,
-          reason: DEV_ERROR_REFUSALS[cause],
-        });
+        const cause: DevErrorRefusal =
+          mutationStarted || sequence.devOverlayAccepted ? 'ACTION_UNCERTAIN' : 'NO_SAFE_DISMISS';
+        if (!mutationStarted || !postActionEligible(activeItem, latest))
+          throw new ResolutionError({
+            refuse: `DEV_REDBOX_${cause}`,
+            reason: sequence.devOverlayAccepted ? DEV_ERROR_RECURRENCE : DEV_ERROR_REFUSALS[cause],
+          });
       }
       if (deps.timing)
         observeTiming(timingObserver, {
@@ -949,9 +969,24 @@ async function walkBlockScoped(
       newest = latest;
       metadataOnly = false;
       emitCaptureDiagnostics(latest);
-      return { screen: latest, timing, id, platformPresence };
+      const observation = { screen: latest, timing, id, platformPresence };
+      return latest.front === 'dev-redbox' && !recovery
+        ? await postActionOverlay(activeItem!, observation, until)
+        : observation;
     } catch (error) {
       if (isAbort(error)) throw error;
+      if (
+        latest.front === 'dev-redbox' &&
+        !recovery &&
+        mutationStarted &&
+        !postActionTried &&
+        (error instanceof CaptureDeadline ||
+          (error instanceof ResolutionError && error.code === 'SCREEN_EVIDENCE_INCOMPLETE'))
+      )
+        throw new ResolutionError({
+          refuse: 'DEV_REDBOX_ACTION_UNCERTAIN',
+          reason: DEV_ERROR_REFUSALS.ACTION_UNCERTAIN,
+        });
       if (error instanceof ResolutionError && error.code === 'APP_PROCESS_CHANGED')
         markContinuity(sequence, { signal: 'app-process-changed', line });
       throw error;
@@ -1217,6 +1252,7 @@ async function walkBlockScoped(
     } catch (error) {
       if (
         isAbort(error) ||
+        postActionTried ||
         (error instanceof ResolutionError && error.code.startsWith('DEV_REDBOX_'))
       )
         throw error;
@@ -1545,6 +1581,17 @@ async function walkBlockScoped(
   // Per line, what interruption recovery last decided; a dismissal stays on this line's later rows.
   const interruptions = new Map<number, InterruptionReceipt>();
   const emit = (row: WalkRow): void => {
+    if (row.line === activeItem?.line && postActionDevError)
+      row = {
+        ...row,
+        devError: postActionDevError,
+        ...(row.outcome === 'pass' && postActionDevError.afterAction
+          ? {
+              reason:
+                'development overlay warning: dismissed once; the next native test ID appeared',
+            }
+          : {}),
+      };
     const scrollBand = scrollBands.get(row.line);
     if (scrollBand) row = { ...row, scrollBand };
     const interruption = interruptions.get(row.line);
@@ -2669,7 +2716,7 @@ async function walkBlockScoped(
     reason: string,
     until?: number,
     proof?: InterruptionProof,
-  ): Promise<'retry' | WalkOutcome | undefined> => {
+  ): Promise<'retry' | 'accepted' | WalkOutcome | undefined> => {
     const first = recovered.get(item);
     if (opts.recover === false || !deps.hideDevMenu) return undefined;
     recovered.set(item, null);
@@ -3015,13 +3062,145 @@ async function walkBlockScoped(
         };
   };
 
+  const dismissDevError = async (
+    item: Item,
+    observation: Observation,
+    ref: string,
+    until?: number,
+  ): Promise<ActResult> => {
+    const state = { mutationStarted, dispatchedOn, stepDispatched, dispatchStarted };
+    try {
+      return await mutate(
+        item,
+        observation,
+        (context) => deps.press(ref, context),
+        until,
+        'recovery',
+      );
+    } catch (error) {
+      if (isAbort(error)) throw error;
+      return {
+        ok: false,
+        proven: false,
+        executed: false,
+        ...(error instanceof QaDispatchError ? { error: `${error.code}: ` } : {}),
+        ...(error instanceof QaDispatchError && error.code === 'TARGET_MOVED_BEFORE_DISPATCH'
+          ? { mutation: 'none' as const }
+          : {}),
+      };
+    } finally {
+      ({ mutationStarted, dispatchedOn, stepDispatched, dispatchStarted } = state);
+    }
+  };
+  const postActionEligible = (item: Item | undefined, screen: Screen): boolean =>
+    deps.platform === 'ios' &&
+    screen.devError?.variant === 'redbox' &&
+    screen.devError.dismissRef !== undefined &&
+    item?.kind === 'press' &&
+    pressAct?.ok === true &&
+    pressAct.executed !== false &&
+    pressAct.mutation !== 'none' &&
+    !pressNeedsReadback &&
+    opts.recover !== false &&
+    !sequence.devOverlayAccepted &&
+    !postActionTried;
+
+  const postActionOverlay = async (
+    item: Item,
+    observation: Observation,
+    until?: number,
+  ): Promise<Observation> => {
+    const refuse = (cause: DevErrorRefusal, reason: string = DEV_ERROR_REFUSALS[cause]): never => {
+      throw new ResolutionError({ refuse: `DEV_REDBOX_${cause}`, reason });
+    };
+    if (!postActionEligible(item, observation.screen)) return refuse('ACTION_UNCERTAIN');
+    postActionTried = true;
+    postActionShot = await shoot(item);
+    postActionDevError = { variant: 'redbox', dismissal: 1 };
+    recoveries += 1;
+    const acted = await dismissDevError(
+      item,
+      observation,
+      observation.screen.devError!.dismissRef!,
+      until,
+    );
+    if (!acted.ok || acted.executed === false) {
+      const code = refusalCode(acted.error);
+      try {
+        deps.note?.(`dev-error-dismiss-failed=${code ?? 'unknown'}`);
+      } catch {
+        // Diagnostics cannot change recovery.
+      }
+      return refuse(
+        'DISMISS_FAILED',
+        `${DEV_ERROR_REFUSALS.DISMISS_FAILED}${code ? `; runner refused: ${code}` : ''}`,
+      );
+    }
+    const completionUncertain =
+      "a development error overlay appeared after the step's action was sent; it was dismissed once to check the next screen, which did not prove the step completed and the step was not replayed";
+    let after: Observation;
+    try {
+      after = await captureOnce(
+        item.kind === 'check' ? undefined : item,
+        false,
+        true,
+        'resolve',
+        until,
+      );
+    } catch (error) {
+      if (
+        error instanceof CaptureDeadline ||
+        error instanceof NativeCaptureError ||
+        error instanceof NativeSnapshotIncomplete ||
+        error instanceof PrivateInputCaptureError ||
+        (error instanceof ResolutionError && error.code === 'SCREEN_EVIDENCE_INCOMPLETE')
+      )
+        return refuse('ACTION_UNCERTAIN', completionUncertain);
+      throw error;
+    }
+    if (after.screen.front === 'dev-redbox')
+      return refuse(
+        'REPEATED',
+        'a development error overlay was still in front after one dismissal; nothing else was tapped',
+      );
+    const next = block.items[block.items.indexOf(item) + 1];
+    const target =
+      next && (next.kind === 'press' || next.kind === 'fill' || next.kind === 'wait')
+        ? next.target.quoted
+        : undefined;
+    if (
+      after.screen.front !== 'app' ||
+      after.screen.devError ||
+      target === undefined ||
+      !pressBase ||
+      pressBase.elements.some((element) => element.testID === target) ||
+      !after.screen.elements.some(
+        (element) => element.testID === target && !element.ref.startsWith('react:'),
+      )
+    )
+      return refuse('ACTION_UNCERTAIN', completionUncertain);
+    postActionDevError = {
+      ...postActionDevError,
+      afterAction: true,
+      proof: 'next-test-id-appeared',
+    };
+    sequence.devOverlayAccepted = true;
+    postActionObservation = after;
+    cached = {
+      item: next,
+      observation: after,
+      ...(next.kind === 'press' ? { needsLabelProvenance: true as const } : {}),
+    };
+    return after;
+  };
+
   // Dismisses the overlay with its own control, never replaying a step whose action may have run.
   const devErrorRecovery = async (
     item: Item,
     attempt: number,
     fresh: Observation,
     until?: number,
-  ): Promise<'retry' | WalkOutcome> => {
+  ): Promise<'retry' | 'accepted' | WalkOutcome> => {
     let observation = fresh;
     const budget = stepBudgets.get(operationFor(item.line))!;
     const previousDismissal = budget.devErrorDismissals;
@@ -3029,8 +3208,12 @@ async function walkBlockScoped(
       fresh.screen.devError && previousDismissal
         ? { variant: fresh.screen.devError.variant, dismissal: previousDismissal }
         : undefined;
-    const refuse = (cause: DevErrorRefusal, runnerCode?: string): WalkOutcome => {
-      const message = `${DEV_ERROR_REFUSALS[cause]}${runnerCode ? `; runner refused: ${runnerCode}` : ''}`;
+    const refuse = (
+      cause: DevErrorRefusal,
+      runnerCode?: string,
+      reason: string = DEV_ERROR_REFUSALS[cause],
+    ): WalkOutcome => {
+      const message = `${reason}${runnerCode ? `; runner refused: ${runnerCode}` : ''}`;
       return {
         ...failed(
           item,
@@ -3062,7 +3245,19 @@ async function walkBlockScoped(
         throw error;
       }
     };
-    if (mutationStarted) return refuse('ACTION_UNCERTAIN');
+    if (sequence.devOverlayAccepted)
+      return refuse('ACTION_UNCERTAIN', undefined, DEV_ERROR_RECURRENCE);
+    if (mutationStarted) {
+      if (!postActionEligible(item, fresh.screen)) return refuse('ACTION_UNCERTAIN');
+      await postActionOverlay(item, fresh, until);
+      emit({
+        ...base(item, attempt),
+        ...stored(pressSelector),
+        outcome: 'pass',
+        ...(postActionShot ? { screenshot: postActionShot } : {}),
+      });
+      return 'accepted';
+    }
     while (observation.screen.front === 'dev-redbox') {
       const dismissal = budget.devErrorDismissals + 1;
       if (dismissal > DEV_ERROR_DISMISSALS) return refuse('REPEATED');
@@ -3072,33 +3267,7 @@ async function walkBlockScoped(
       devError = { variant: overlay.variant, dismissal };
       budget.devErrorDismissals = dismissal;
       recoveries += 1;
-      const dispatched = dispatchedOn;
-      let acted: ActResult;
-      try {
-        acted = await mutate(
-          item,
-          observation,
-          (context) => deps.press(ref, context),
-          until,
-          'recovery',
-        );
-      } catch (error) {
-        if (isAbort(error)) throw error;
-        acted = {
-          ok: false,
-          proven: false,
-          executed: false,
-          ...(error instanceof QaDispatchError ? { error: `${error.code}: ` } : {}),
-          // The runner refused before any gesture, as the walker's own moved-target retry relies on.
-          ...(error instanceof QaDispatchError && error.code === 'TARGET_MOVED_BEFORE_DISPATCH'
-            ? { mutation: 'none' as const }
-            : {}),
-        };
-      } finally {
-        // The overlay's own Dismiss is not the step's action, so the step stays unmutated.
-        mutationStarted = false;
-        dispatchedOn = dispatched;
-      }
+      const acted = await dismissDevError(item, observation, ref, until);
       if (!acted.ok || acted.executed === false) {
         const code = refusalCode(acted.error);
         const moved =
@@ -3110,9 +3279,7 @@ async function walkBlockScoped(
         } catch {
           /* Diagnostics cannot change recovery. */
         }
-        // Only a refusal that proves no gesture ran may be followed by another Dismiss, within the bound.
-        // shortcut: LogBox's Dismiss has no identifier, so the runner re-finds it by label and refuses it as
-        // moved every time; refuse at once until the runner's label path is fixed.
+        // LogBox's label-only Dismiss is refused at once until its moved-target path is fixed.
         if (
           acted.mutation !== 'none' ||
           dismissal >= DEV_ERROR_DISMISSALS ||
@@ -3147,8 +3314,16 @@ async function walkBlockScoped(
       continue;
     }
     itemObservationStart = sequence.observation;
+    activeItem = item;
     pressVetoed = undefined;
     pressBase = undefined;
+    pressAct = undefined;
+    pressSelector = undefined;
+    pressNeedsReadback = false;
+    postActionTried = false;
+    postActionShot = undefined;
+    postActionObservation = undefined;
+    postActionDevError = undefined;
     mutationStarted = false;
     stepDispatched = false;
     fillMethod = undefined;
@@ -3263,6 +3438,7 @@ async function walkBlockScoped(
               : `"${item.text}" is not satisfied on screen${nearMiss ? NEAR_MISS[nearMiss] : ''}`;
           if (decision.check === 'unsure' || decision.check === 'fail') {
             const recovering = await recovery(item, 1, reason, undefined, 'absent-surface');
+            if (recovering === 'accepted') continue items;
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
           }
@@ -3370,6 +3546,7 @@ async function walkBlockScoped(
                 deps.now() + CAPTURE_BUDGET_MS,
                 'covered-target',
               );
+              if (recovering === 'accepted') continue items;
               if (recovering === 'retry') continue attempts;
               if (recovering) return recovering;
               return judged(
@@ -3565,6 +3742,7 @@ async function walkBlockScoped(
               reactOnly ? deps.now() + CAPTURE_BUDGET_MS : undefined,
               reactOnly ? 'covered-target' : 'absent-surface',
             );
+            if (recovering === 'accepted') continue items;
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
             if (unchanged) {
@@ -3770,6 +3948,9 @@ async function walkBlockScoped(
         const maxAttempts = recovered.has(item) || opts.singleAttempt ? 1 : 2;
         for (let attempt = 1; attempt <= maxAttempts && !outcome; attempt += 1) {
           currentAttempt = attempt;
+          pressAct = undefined;
+          pressSelector = undefined;
+          pressNeedsReadback = false;
           overlayRows.delete(item.line);
           scrollBands.delete(item.line);
           let plainBand: PlainScrollBand | undefined;
@@ -3806,6 +3987,7 @@ async function walkBlockScoped(
             settledFrame = settled.frame;
           } else {
             before = held?.observation ?? (await captureBeforeDispatch());
+            if (held?.needsLabelProvenance) before = await enrichLabelProvenance(before, item);
           }
           cached = undefined;
           const next = block.items[block.items.indexOf(item) + 1];
@@ -3985,6 +4167,7 @@ async function walkBlockScoped(
                       undefined,
                       'covered-target',
                     );
+                    if (recovering === 'accepted') continue items;
                     if (recovering === 'retry') again = true;
                     else
                       outcome =
@@ -4403,6 +4586,8 @@ async function walkBlockScoped(
               act = await mutate(item, before, async (context) => {
                 if (item.kind === 'press') {
                   pressBase = before.screen;
+                  pressSelector =
+                    exactSelector(item.target) ?? (element ? elementSelector(element) : undefined);
                   return liveHit
                     ? deps.press(ref!, context, { requireLiveHit: true })
                     : deps.press(ref!, context);
@@ -4433,6 +4618,11 @@ async function walkBlockScoped(
                       ? deps.back(context)
                       : deps.dialog(item.action, context);
               });
+              if (item.kind === 'press') {
+                pressAct = act;
+                pressNeedsReadback =
+                  !!selectionTarget || (!!element && insideAlert(element) && !act.proven);
+              }
               if (item.kind === 'fill') fillMethod = act.method ?? 'keyboard';
               if (
                 strictFillFocus &&
@@ -4772,6 +4962,10 @@ async function walkBlockScoped(
               }
             }
           }
+          if (postActionObservation) {
+            after = postActionObservation;
+            changed = true;
+          }
           diagnostic(item, after, 'decision', 'ACCEPTED');
           metric('readback', after);
           if (item.kind === 'fill') {
@@ -4785,7 +4979,7 @@ async function walkBlockScoped(
                   target !== undefined && screen.elements.some((e) => sameIdentity(e, target)),
               )) ?? act!;
           }
-          const shot = await shoot(item);
+          const shot = postActionTried ? postActionShot : await shoot(item);
           const unverified =
             item.kind === 'fill' &&
             !(act!.ok && act!.proven) &&
@@ -4989,6 +5183,7 @@ async function walkBlockScoped(
             ? `${act!.error}; ${noKeyboard}${unchangedScreen}${stillness}${selection}`
             : `${noKeyboard}${unchangedScreen}${stillness}${selection}`;
           const recovering = await recovery(item, attempt, unchanged);
+          if (recovering === 'accepted') continue items;
           if (recovering === 'retry') {
             again = true;
             break;
@@ -5012,6 +5207,7 @@ async function walkBlockScoped(
         if (
           error instanceof ResolutionError &&
           !UNRECOVERABLE.has(error.code) &&
+          !postActionTried &&
           !deps.cancelled?.()
         ) {
           try {
@@ -5023,6 +5219,7 @@ async function walkBlockScoped(
               undefined,
               error.code === 'TARGET_NOT_FOUND' ? 'surface' : undefined,
             );
+            if (recovering === 'accepted') continue items;
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
           } catch (recoveryError) {
@@ -5120,14 +5317,15 @@ async function walkBlockScoped(
           error instanceof JevError && error.isRefusal
             ? { code: error.code, message: error.message }
             : undefined;
-        const shot =
-          error instanceof QaDispatchError ||
-          error instanceof EvidenceExpired ||
-          (error instanceof ResolutionError &&
-            (error.code === 'APP_PROCESS_CHANGED' ||
-              error.code === 'APP_PROCESS_UNKNOWN' ||
-              (item.kind === 'check' && !item.literal))) ||
-          deps.cancelled?.()
+        const shot = postActionTried
+          ? postActionShot
+          : error instanceof QaDispatchError ||
+              error instanceof EvidenceExpired ||
+              (error instanceof ResolutionError &&
+                (error.code === 'APP_PROCESS_CHANGED' ||
+                  error.code === 'APP_PROCESS_UNKNOWN' ||
+                  (item.kind === 'check' && !item.literal))) ||
+              deps.cancelled?.()
             ? undefined
             : refusal
               ? await shoot(item).catch((error) => {
@@ -5221,6 +5419,7 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     ...(row.keyboardCleared ? { keyboardCleared: row.keyboardCleared } : {}),
     ...(row.implicitWaitMs !== undefined ? { implicitWaitMs: row.implicitWaitMs } : {}),
     ...(row.retryCause ? { retryCause: row.retryCause } : {}),
+    ...(row.devError ? { devError: row.devError } : {}),
     ...(row.scrollDetail ? { scrollDetail: row.scrollDetail } : {}),
     ...(row.scrollBand ? { scrollBand: row.scrollBand } : {}),
     ...(row.interruption ? { interruption: row.interruption } : {}),

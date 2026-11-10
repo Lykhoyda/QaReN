@@ -601,7 +601,13 @@ fn main_inner(args: Vec<String>) -> ExitCode {
     eprintln!(
         "qaren {}: {} (run {}, phase {}, {} commands)",
         receipt.verb,
-        result_str(receipt.result),
+        qaren::report::dev_overlay_verdict(
+            result_str(receipt.result),
+            receipt
+                .ledger
+                .as_ref()
+                .map_or(0, |summary| summary.dev_overlay_warnings)
+        ),
         receipt.run_id,
         receipt.phase,
         receipt.commands_executed

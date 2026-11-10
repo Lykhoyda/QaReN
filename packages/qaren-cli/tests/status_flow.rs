@@ -19,6 +19,7 @@ fn ios_ready_record(repo: &std::path::Path, run_id: &str) -> RunRecord {
         name: format!("qaren-{run_id}"),
         device_type: "dt".to_string(),
         runtime: "rt".to_string(),
+        ..Default::default()
     });
     record.resources.metro = Some(MetroResource {
         port: 8791,
@@ -650,6 +651,7 @@ fn borrowed_ready_record(repo: &std::path::Path, run_id: &str) -> RunRecord {
         name: "qa-lane".to_string(),
         device_type: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro".to_string(),
         runtime: "com.apple.CoreSimulator.SimRuntime.iOS-26-4".to_string(),
+        ..Default::default()
     });
     record.resources.lease = Some(
         qaren::lease::acquire(

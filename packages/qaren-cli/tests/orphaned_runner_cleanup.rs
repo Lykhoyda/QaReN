@@ -48,6 +48,7 @@ fn fixture(family: &str) -> (PathBuf, RunRecord, FakeRunner) {
         name: "qaren-orphan-run".into(),
         device_type: "iPhone".into(),
         runtime: "iOS".into(),
+        ..Default::default()
     });
     record.resources.lease = Some(
         qaren::lease::acquire(

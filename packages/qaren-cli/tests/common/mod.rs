@@ -284,7 +284,7 @@ pub fn script_finite_ios_build_with(
         command,
         CmdOutput::success(""),
         prepublish,
-        |m| m.expect_run("simctl install", CmdOutput::success("")),
+        |m| script_proven_install(m, CmdOutput::success("")),
         script_ios_launch,
     );
 }
@@ -324,6 +324,32 @@ pub fn script_ios_after_publish(
     script_ios_metro_wait_and_launch_with(mock, defaults, launch);
 }
 
+pub const CREATED_UDID: &str = "AAAABBBB-1111-2222-3333-444455556666";
+
+pub fn sim_inventory(udid: &str, state: &str) -> String {
+    serde_json::json!({"devices": {"com.apple.CoreSimulator.SimRuntime.iOS-26-4": [{
+        "udid": udid,
+        "name": "qaren-sim",
+        "state": state,
+        "isAvailable": true,
+        "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+    }]}})
+    .to_string()
+}
+
+// Each install attempt first proves the created simulator is still Booted.
+pub fn script_install_proof(mock: &mut MockRunner) {
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&sim_inventory(CREATED_UDID, "Booted")),
+    );
+}
+
+pub fn script_proven_install(mock: &mut MockRunner, output: CmdOutput) {
+    script_install_proof(mock);
+    mock.expect_run("simctl install", output);
+}
+
 pub fn script_ios_install_and_launch(mock: &mut MockRunner) {
     script_ios_install_and_launch_with(mock, CmdOutput::success(""));
 }
@@ -337,7 +363,7 @@ pub fn script_devmenu_defaults(mock: &mut MockRunner, result: CmdOutput) {
 pub fn script_ios_install_and_launch_with(mock: &mut MockRunner, defaults: CmdOutput) {
     script_ios_app_verification(mock);
     script_ios_metro_spawn(mock);
-    mock.expect_run("simctl install", CmdOutput::success(""));
+    script_proven_install(mock, CmdOutput::success(""));
     script_ios_metro_wait_and_launch(mock, defaults);
 }
 

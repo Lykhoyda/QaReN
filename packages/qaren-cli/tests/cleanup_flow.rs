@@ -25,6 +25,7 @@ fn interrupted_finite_build_retains_ownership_until_group_absence_is_proven() {
             name: "qaren-core-run".into(),
             device_type: "iPhone".into(),
             runtime: "iOS".into(),
+            ..Default::default()
         });
         record.resources.begin_build().unwrap();
         if !pending {
@@ -803,6 +804,7 @@ fn assert_borrowed_ios_owner_refusal_with_metro(with_owner: bool) {
         name: "borrowed".into(),
         device_type: "dt".into(),
         runtime: "rt".into(),
+        ..Default::default()
     });
     record.resources.device_borrowed = true;
     record.resources.runner_host = Some(qaren::runrecord::RunnerHostResource {
@@ -995,6 +997,7 @@ fn ios_ready_record(repo: &std::path::Path) -> RunRecord {
         name: "qaren-iosrun1".to_string(),
         device_type: "dt".to_string(),
         runtime: "rt".to_string(),
+        ..Default::default()
     });
     record.resources.metro = Some(MetroResource {
         port: 8791,
@@ -1968,6 +1971,7 @@ fn a_dead_owners_runner_host_must_exit_naturally_before_the_lease_is_released() 
         name: "borrowed".to_string(),
         device_type: "dt".to_string(),
         runtime: "rt".to_string(),
+        ..Default::default()
     });
     record.resources.runner_host = Some(qaren::runrecord::RunnerHostResource {
         udid: UDID.to_string(),
@@ -2024,6 +2028,7 @@ fn a_transient_runner_host_read_releases_the_lease_on_the_first_cleanup() {
         name: "borrowed".into(),
         device_type: "dt".into(),
         runtime: "rt".into(),
+        ..Default::default()
     });
     let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
     record.save(&repo).unwrap();
@@ -2987,6 +2992,7 @@ fn borrowed_ios_record(repo: &std::path::Path) -> RunRecord {
         name: "qa-company-app".into(),
         device_type: BORROWED_IOS_TYPE.into(),
         runtime: BORROWED_IOS_RUNTIME.into(),
+        ..Default::default()
     });
     record.resources.lease = Some(
         qaren::lease::acquire(
@@ -3570,6 +3576,7 @@ fn crashed_pool_creation_deletes_the_owned_simulator_and_releases_the_creation_l
         name: name.clone(),
         device_type: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro".into(),
         runtime: "com.apple.CoreSimulator.SimRuntime.iOS-26-4".into(),
+        ..Default::default()
     });
     let lease = qaren::lease::acquire(
         &mut MockRunner::new(),
@@ -3654,6 +3661,7 @@ fn cleanup_never_releases_the_pool_creation_lock_of_a_live_creator() {
                 name: format!("qaren-pool-{run_id}"),
                 device_type: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro".into(),
                 runtime: "com.apple.CoreSimulator.SimRuntime.iOS-26-4".into(),
+                ..Default::default()
             });
         }
         let holder = qaren::buildplan::LockHolder {

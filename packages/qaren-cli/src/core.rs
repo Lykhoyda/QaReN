@@ -849,10 +849,48 @@ impl ScrollStatus {
 
 // The development error overlay variant and dismissal attempt number, including failed attempts.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase", try_from = "DevErrorDismissalWire")]
 pub struct DevErrorDismissal {
     pub variant: DevErrorVariant,
     pub dismissal: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_action: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proof: Option<DevErrorProof>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DevErrorDismissalWire {
+    variant: DevErrorVariant,
+    dismissal: u8,
+    after_action: Option<bool>,
+    proof: Option<DevErrorProof>,
+}
+
+impl TryFrom<DevErrorDismissalWire> for DevErrorDismissal {
+    type Error = &'static str;
+
+    fn try_from(wire: DevErrorDismissalWire) -> Result<Self, Self::Error> {
+        match (wire.after_action, wire.proof) {
+            (None, None) => {}
+            (Some(true), Some(_))
+                if wire.dismissal == 1 && wire.variant == DevErrorVariant::Redbox => {}
+            _ => return Err("post-action dismissal requires one RedBox dismissal and its proof"),
+        }
+        Ok(Self {
+            variant: wire.variant,
+            dismissal: wire.dismissal,
+            after_action: wire.after_action,
+            proof: wire.proof,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum DevErrorProof {
+    NextTestIdAppeared,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

@@ -268,6 +268,9 @@ impl State {
                 let mut end = json!({"result": string(p, "result"), "phase": string(p, "phase"),
                     "expectedExit": p["expectedExit"].as_u64(), "droppedEvents": p["droppedEvents"].as_u64(),
                     "cleanup": {}, "timingsMs": {}});
+                if let Some(count) = p["devOverlayWarnings"].as_u64().filter(|count| *count > 0) {
+                    end["devOverlayWarnings"] = count.into();
+                }
                 for key in ["failureCode", "failurePhase"] {
                     if p[key].is_string() {
                         end[key] = string(p, key).into();
@@ -469,7 +472,10 @@ fn verdict(s: &State) -> Option<String> {
         };
         Some(format!(
             "VERDICT {}  (expected exit {}){code}  cleanup {}{dropped}",
-            string(end, "result").to_uppercase(),
+            crate::report::dev_overlay_verdict(
+                &string(end, "result").to_uppercase(),
+                end["devOverlayWarnings"].as_u64().unwrap_or(0)
+            ),
             end["expectedExit"],
             if clean { "clean" } else { "unclean" }
         ))
