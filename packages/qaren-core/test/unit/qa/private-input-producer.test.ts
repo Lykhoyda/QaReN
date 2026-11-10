@@ -1013,7 +1013,8 @@ test('unreadable input props beyond 2000 fibers still refuse without invoking ge
   assert.equal(calls, 0);
 });
 
-test('the larger strict capture lists past 200 and refuses past its own interactive limit', () => {
+test('the larger strict capture lists past 200 and refuses past its own interactive limit', (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
   assert.equal(withChildren(201, { onPress() {} }, 'RCTView').api.beginQaCapture().state, 'ready');
   // Composite rows enter the list without being hosts, so the host limit cannot stop them first.
   const fixture = setup({}, 'RCTView');
@@ -1077,7 +1078,8 @@ test('non-input numeric and opaque object values coexist with an input without c
   assert.equal(coercions, 0);
 });
 
-test('host and fiber bounds refuse instead of truncating the capture', () => {
+test('host and fiber bounds refuse instead of truncating the capture', (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
   const { maxHosts } = PRIVATE_INPUT_LIMITS;
   assert.equal(withChildren(maxHosts - 2, {}, 'RCTView').api.beginQaCapture().state, 'ready');
   assert.deepEqual(

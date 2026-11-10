@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { atomicWriter } from '../../../dist/domain/atomic-writer.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import type { Block } from '../../../dist/qa/plan.js';
 import type { Element, Screen } from '../../../dist/qa/screen.js';
@@ -618,7 +619,9 @@ test('a late target keeps the same retry budget as one present at once', async (
   }
 });
 
-test('a re-walk after a replay miss is not a launch', async () => {
+test('a re-walk after a replay miss is not a launch', async (t) => {
+  // Keep replay setup independent of host process-identity probe deadlines.
+  t.mock.method(atomicWriter, 'withLock', (_path, write) => write());
   const dir = mkdtempSync(join(tmpdir(), 'qaren-launch-'));
   mkdirSync(join(dir, '.qaren'));
   const store: BlockStore = { appRoot: dir, platform: 'ios', appId: 'com.example.app' };
@@ -627,6 +630,7 @@ test('a re-walk after a replay miss is not a launch', async () => {
     const first = app(lateProfile(0));
     const saved = (await runPlan(blocks(plan), first.deps, [], store)) as Ledger;
     assert.equal(saved.verdict, 'PASS', JSON.stringify(saved.failure));
+    assert.deepEqual(saved.blocksWritten, ['profile'], JSON.stringify(saved.blocks));
     // The stored home testID no longer matches, so the replay misses at line 1 and re-walks.
     const renamed = element('@home', 'Home', { kind: 'text', testID: 'home-heading' });
     const second = app(() => view([renamed]));

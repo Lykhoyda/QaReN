@@ -28,6 +28,8 @@ export function longListSheet(rows: number, placeholder: string) {
     previous = pressable;
   }
   const sandbox = createSandbox({ fiberRoot: root });
+  // Count-bound fixtures must not consume the producer deadline under host load.
+  sandbox.Date = { now: () => 1000 };
   // One stable root object, as a live renderer reports, so the capture's tree check holds.
   const stable = { current: root };
   sandbox.__REACT_DEVTOOLS_GLOBAL_HOOK__.getFiberRoots = (id: number) =>

@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { atomicWriter } from '../../../dist/domain/atomic-writer.js';
 import { loadBlock } from '../../../dist/qa/blocks.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { loginBlock, replayBlock, runPlan } from '../../../dist/qa/walker.js';
@@ -816,6 +817,8 @@ for (const disposition of ['failed', 'not-executed', 'success'] as const) {
 }
 
 test('interruption support actions do not become required commands in the saved block', async (t) => {
+  // Process-identity lock admission is covered separately from recovery persistence.
+  t.mock.method(atomicWriter, 'withLock', (_path, write) => write());
   const root = mkdtempSync(join(tmpdir(), 'qaren-interruption-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const f = app(promo());
@@ -825,7 +828,7 @@ test('interruption support actions do not become required commands in the saved 
     platform: 'ios',
   });
   assert.equal(result.verdict, 'PASS');
-  assert.deepEqual(result.blocksWritten, ['plan']);
+  assert.deepEqual(result.blocksWritten, ['plan'], JSON.stringify(result.blocks));
   const saved = loadBlock(root, 'plan')!;
   assert.match(saved, /Settings/);
   assert.ok(!saved.includes('Close'));
@@ -860,6 +863,7 @@ test('the veto sees masked input evidence and recovery screenshots respect priva
 });
 
 test('saved-block replay excludes completed blocks from the later-target guard', async (t) => {
+  t.mock.method(atomicWriter, 'withLock', (_path, write) => write());
   const root = mkdtempSync(join(tmpdir(), 'qaren-interruption-replay-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const blocks = parsePlan(
