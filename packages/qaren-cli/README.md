@@ -152,7 +152,8 @@ the fix: `no permissions` (on Linux, the account lacks USB access: the
 this computer not yet accepted on the phone) or `offline`. When the run's server
 is not on 5037 and the server on 5037 lists a phone as ready that the run's
 server does not, the row names that server's port, even if the run's server is
-absent or its device list cannot be read; QaReN never stops it. An
+absent or its device list cannot be read; QaReN never stops it. That is then the
+phone's one cause, whatever the run's server lists it as. An
 unusable attached device makes `android-devices` warn rather than fail, so a
 phone left charging does not fail doctor; `--device <android-serial>` fails
 unless that device is ready. `check` does not yet run on a physical device.

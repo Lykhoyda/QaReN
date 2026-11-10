@@ -2051,6 +2051,81 @@ fn device_problems_name_the_cause_and_the_fix_for_the_host() {
     assert!(absent.1.contains("0A1B2C3D") && absent.1.contains("5147"));
 }
 
+// Plan 7.5: one cause per phone on the run's port, and a phone another server has as `device` takes the held one.
+#[test]
+fn a_phone_gets_one_cause_and_a_held_phone_gets_the_held_one() {
+    const HELD: &str = "Android device 0A1B2C3D is attached to the adb server on port 5037, not to the one on port 5147";
+    let held = ["0A1B2C3D".to_string()];
+    let cause = |state: Option<&str>, port: u16, held: &[String]| {
+        android::device_cause("0A1B2C3D", state, port, held, true)
+            .map(|(subreason, detail, _)| (subreason, detail))
+    };
+    // Ready on the run's port: no cause, whatever the server on 5037 shows.
+    assert_eq!(cause(Some("device"), 5147, &held), None);
+    assert_eq!(cause(Some("device"), 5147, &[]), None);
+    for (state, own) in [
+        (Some("no permissions"), "usb-no-permissions"),
+        (Some("unauthorized"), "usb-unauthorized"),
+        (Some("offline"), "device-offline"),
+        (Some("recovery"), "device-offline"),
+        (None, "device-not-attached"),
+    ] {
+        // Not ready here while 5037 has it as `device`: the held cause replaces the state's own.
+        assert_eq!(
+            cause(state, 5147, &held),
+            Some(("device-held-by-other-server", HELD.to_string())),
+            "{state:?}"
+        );
+        // 5037 does not have it as `device` (another state, not listed, no server, a failed answer).
+        assert_eq!(cause(state, 5147, &[]).map(|c| c.0), Some(own), "{state:?}");
+        // The run's own port is 5037: never held.
+        assert_eq!(
+            cause(state, 5037, &held).map(|c| c.0),
+            Some(own),
+            "{state:?}"
+        );
+    }
+    assert_eq!(
+        cause(None, 5147, &[]).unwrap().1,
+        "no Android device with serial 0A1B2C3D is attached to the adb server on port 5147"
+    );
+}
+
+#[test]
+fn the_held_list_is_the_ready_usb_phones_on_5037_that_the_run_port_does_not_have_ready() {
+    // (5037's host:devices reply, or None for a server whose list cannot be read); no entry: no server.
+    let held = |port: u16, here: &str, default: Option<Option<&str>>| {
+        let mut runner = qaren::exec::MockRunner::new();
+        if let Some(listed) = default {
+            runner.adb_servers.push((5037, 41));
+            if let Some(listed) = listed {
+                runner.adb_devices.push((5037, listed.to_string()));
+            }
+        }
+        let held = android::held_on_default_server(&runner, port, &android::parse_devices(here));
+        assert!(runner.calls.is_empty(), "{:?}", runner.calls);
+        held
+    };
+    let default = "0A1B2C3D\tdevice\n0A1B2C3E\tdevice\n0A1B2C3F\tunauthorized\n0A1B2C40\toffline\n????????????\tdevice\nemulator-5554\tdevice\nadb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp\tdevice\n";
+    // Whether or not the run's port lists them: absent here, or listed here in any state but `device`.
+    assert_eq!(
+        held(5147, "", Some(Some(default))),
+        ["0A1B2C3D", "0A1B2C3E"]
+    );
+    assert_eq!(
+        held(
+            5147,
+            "0A1B2C3D\tno permissions\n0A1B2C3E\tdevice\n",
+            Some(Some(default))
+        ),
+        ["0A1B2C3D"]
+    );
+    // No server on 5037, a list it cannot give, or the run's own port being 5037: nobody holds it.
+    assert!(held(5147, "", None).is_empty());
+    assert!(held(5147, "", Some(None)).is_empty());
+    assert!(held(5037, "", Some(Some(default))).is_empty());
+}
+
 #[test]
 fn usb_serials_are_plain_and_never_emulator_or_endpoint_forms() {
     // (serial, is_usb_serial, is_wireless_serial, is_physical_serial). The wireless names are

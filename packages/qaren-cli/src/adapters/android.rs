@@ -362,6 +362,54 @@ pub fn not_attached(serial: &str, port: u16) -> DeviceProblem {
     )
 }
 
+// The adb server a user's own adb client starts; it may hold a phone another port cannot see.
+pub const DEFAULT_ADB_PORT: u16 = 5037;
+
+// Readable USB serials the server on 5037 lists as `device` and the run's port does not, listed there or not.
+// One raw host:devices query: no adb client runs and no server starts; no answer means nobody holds one.
+pub fn held_on_default_server(
+    runner: &dyn crate::exec::Runner,
+    port: u16,
+    rows: &[(String, String)],
+) -> Vec<String> {
+    if port == DEFAULT_ADB_PORT {
+        return Vec::new();
+    }
+    let Ok(listed) = runner.adb_server_devices(DEFAULT_ADB_PORT) else {
+        return Vec::new();
+    };
+    parse_devices(&listed)
+        .into_iter()
+        .filter(|(serial, state)| {
+            state == "device"
+                && crate::scenario::is_usb_serial(serial)
+                && !rows.iter().any(|(s, st)| s == serial && st == "device")
+        })
+        .map(|(serial, _)| serial)
+        .collect()
+}
+
+// The one cause for a phone on the run's port (`state` None: not listed there), for doctor and check alike.
+// Another server having it as `device` comes before its own state: that next step can be taken at once.
+pub fn device_cause(
+    serial: &str,
+    state: Option<&str>,
+    port: u16,
+    held: &[String],
+    linux: bool,
+) -> Option<DeviceProblem> {
+    if state == Some("device") {
+        return None;
+    }
+    if port != DEFAULT_ADB_PORT && held.iter().any(|s| s == serial) {
+        return Some(held_by_other_server(serial, port, DEFAULT_ADB_PORT));
+    }
+    match state {
+        Some(state) => device_problem(serial, state, linux),
+        None => Some(not_attached(serial, port)),
+    }
+}
+
 pub fn wireless_not_supported(serial: &str) -> DeviceProblem {
     (
         "wireless-not-supported",
