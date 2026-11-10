@@ -1791,11 +1791,12 @@ Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`
 when the final evidence remains unsure. Initial captures, polling captures and
 evidence-refresh captures, including a refresh during the first visibility check,
 share the wait's deadline for both quoted and phrase targets. A wait whose first
-capture never completes fails with `TARGET_WAIT_TIMEOUT` and
+capture times out without reporting native incompleteness fails with `TARGET_WAIT_TIMEOUT` and
 `cause=capture-deadline`, with `next_action=inspect_capture_health`. If a later
 refresh reaches the deadline, the wait ends
 from its completed observations; a phrase wait whose visibility remains undecided
 ends with `VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED`.
+For incomplete native reads, follow the [capture and privacy contract](#why-were-my-screenshots-withheld).
 A quoted wait with at least two definite
 absence observations sharing one screen signature normally fails at its deadline with
 “did not appear”; it does not report expired evidence for that stable absence.
@@ -2020,7 +2021,8 @@ acquisition failures also refuse without reinjection or a public-tree fallback.
 The privacy boundary is unchanged: an incomplete native snapshot is never walked
 or masked. A Wait re-reads on its normal poll cadence within its existing deadline;
 if a complete read recovers but the quoted target stays absent, the Wait retains
-`TARGET_NOT_FOUND` with the observed screen. Tap,
+`TARGET_NOT_FOUND` with the observed screen, even if a later recovery capture is
+incomplete. Tap,
 Fill, Check and Scroll still refuse immediately. React-side incomplete capture
 and generic private-capture failures retain `PRIVATE_INPUT_CAPTURE_UNKNOWN`.
 
