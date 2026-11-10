@@ -118,13 +118,20 @@ test('a persistently incomplete presence refusal and log name the decisive failu
 
 test('a deadline-cut re-read keeps the decisive presence failure with retry-deadline', async (t) => {
   const time = clock(t);
+  const logs: string[] = [];
+  const prior = decisivePresence();
+  Object.assign(prior.presenceCapture.diagnostics, {
+    deadline: { phase: 'finalization', read: 'finalization', edge: 'after' },
+    detail: 'deadline-private-canary',
+  });
   let reads = 0;
   const result = captureScreen({
     platformPresence: true,
     requirePrivateInputs: true,
     now: time.now,
     native: async () =>
-      ++reads === 1 ? decisivePresence() : new Promise<NativeObservation>(() => {}),
+      ++reads === 1 ? prior : new Promise<NativeObservation>(() => {}),
+    warn: (line) => logs.push(line),
     react: async () => assert.fail('no React read after incomplete native evidence expires'),
   }).catch((error: Error) => error);
   await nextTurn();
@@ -133,8 +140,13 @@ test('a deadline-cut re-read keeps the decisive presence failure with retry-dead
   await time.advance(6_000 - time.now());
   const error = await result;
   assert.ok(error instanceof NativeSnapshotIncomplete, String(error));
-  for (const cause of [...DECISIVE_CAUSES, 'retry-deadline'])
+  for (const cause of [...DECISIVE_CAUSES, 'presence-deadline=finalization:finalization:after']) {
     assert.ok(error.causes.includes(cause), cause);
+    assert.ok(error.message.includes(cause), cause);
+    assert.ok(logs.includes(cause), cause);
+  }
+  assert.ok(error.causes.includes('retry-deadline'));
+  assert.equal([error.message, ...logs].join('\n').includes('deadline-private-canary'), false);
 });
 
 test('a malformed decisive failure adds no presence-incomplete cause or content', async () => {

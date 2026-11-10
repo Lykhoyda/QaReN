@@ -625,6 +625,24 @@ export async function captureScreen(deps: CaptureDeps): Promise<Screen> {
   }
 }
 
+function reportPresenceDiagnostics(deps: CaptureDeps, native: NativeObservation): void {
+  if (deps.warn && isRecord(native.presenceCapture)) {
+    try {
+      for (const cause of presenceDiagnostics(native.presenceCapture.diagnostics)) {
+        if (
+          cause.startsWith('presence-failure=') ||
+          cause.startsWith('presence-incomplete=') ||
+          cause.startsWith('presence-incomplete-mismatch=') ||
+          cause.startsWith('presence-deadline=') ||
+          cause.startsWith('presence-mismatch=') ||
+          cause.startsWith('presence-preparation-')
+        )
+          deps.warn(cause);
+      }
+    } catch {}
+  }
+}
+
 async function capture(deps: CaptureDeps): Promise<Screen> {
   const observation =
     typeof deps.observation === 'number' &&
@@ -662,8 +680,10 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
       if (deps.timing) observeNativeTiming(native.presenceCapture, deps.timing, now());
     } catch (error) {
       if (isAbort(error)) throw error;
-      if (error === retryRefusal && retryRefusal instanceof NativeSnapshotIncomplete)
+      if (error === retryRefusal && retryRefusal instanceof NativeSnapshotIncomplete) {
+        reportPresenceDiagnostics(deps, native);
         throw retryRefusal;
+      }
       if (error instanceof AppProcessGoneError) throw error;
       if (!deps.requirePrivateInputs) throw error;
       if (
@@ -710,23 +730,7 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
       /* Diagnostics cannot change capture admission. */
     }
   }
-  if (deps.warn && isRecord(native.presenceCapture)) {
-    try {
-      for (const cause of presenceDiagnostics(native.presenceCapture.diagnostics)) {
-        if (
-          cause.startsWith('presence-failure=') ||
-          cause.startsWith('presence-incomplete=') ||
-          cause.startsWith('presence-incomplete-mismatch=') ||
-          cause.startsWith('presence-deadline=') ||
-          cause.startsWith('presence-mismatch=') ||
-          cause.startsWith('presence-preparation-')
-        )
-          deps.warn(cause);
-      }
-    } catch {
-      // Diagnostics cannot change capture admission or failure.
-    }
-  }
+  reportPresenceDiagnostics(deps, native);
   let react: ReactObservation = {};
   let reactWarning: string | undefined;
   let reactConnection: Screen['reactConnection'];
