@@ -10,7 +10,7 @@ Start with the [installation guide](../../README.md#install-the-plugin-yourself)
 then use the [setup skill](skills/setup/SKILL.md) and
 [using-qaren skill](skills/using-qaren/SKILL.md). Guided setup prepares an iOS simulator
 on an Apple silicon Mac. The [CLI command reference](../qaren-cli/README.md#check-a-plan)
-also supports checks on a booted Android emulator.
+covers Android device support and selection.
 
 ## Network
 

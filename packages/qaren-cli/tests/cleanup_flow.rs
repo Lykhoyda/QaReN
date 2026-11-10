@@ -3007,6 +3007,9 @@ fn dead_owner_android_recorder_is_reclaimed_before_borrowed_release_and_keeps_le
         let mut mock = MockRunner::new();
         mock.adb_servers.push((5037, 41));
         owner_gone(&mut mock);
+        if phone {
+            owner_gone(&mut mock);
+        }
         mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
         mock.expect_run("shell pkill -INT -f", CmdOutput::success(""));
         mock.expect_run(
@@ -3104,6 +3107,9 @@ fn dead_owner_android_recorder_is_reclaimed_before_borrowed_release_and_keeps_le
             let mut retry = MockRunner::new();
             retry.adb_servers.push((5037, 41));
             owner_gone(&mut retry);
+            if phone {
+                owner_gone(&mut retry);
+            }
             retry.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
             retry.expect_run("shell pkill -INT -f", CmdOutput::failed(1, ""));
             retry.expect_run("shell pgrep -f", CmdOutput::failed(1, ""));

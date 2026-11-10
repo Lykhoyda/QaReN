@@ -25,7 +25,7 @@ plan preflight -> device selection -> lease + durable run record
 
 The plan is parsed first, so an unparseable plan or a missing [Jev](../jev/) key refuses before any
 device is touched. The run then leases the device, prepares the app and its own Metro,
-walks the plan and cleans up owned resources. By default, the simulator or emulator
+walks the plan and cleans up owned resources. By default, the borrowed device
 stays running and the installed app stays. Failed iOS checks can hold resources for inspection;
 see [Leases, cancellation and cleanup](#leases-cancellation-and-cleanup).
 See [CLI-owned iOS build routes](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#cli-owned-ios-build-routes)
@@ -44,24 +44,10 @@ For explicit boot, restart or exit shutdown, follow the
 
 ### Android
 
-`--platform android` borrows one booted emulator, or one physical USB phone, through the
-host's adb server. When nothing listens on its port, qaren runs `adb start-server` once,
-leaves the server running and says so in the receipt; it never stops or restarts a server.
-With an `adb` under `ANDROID_HOME` whose version differs from the server's, it refuses
-`DEVICE_UNAVAILABLE`.
-
-An emulator in adb's `device` state is eligible. While one is, automatic selection counts only
-eligible emulators that have finished booting; exactly one must qualify, and with several, pass
-`--device emulator-NNNN`. With no eligible emulator, the one ready phone is chosen, or pass
-`--device <serial>`. A phone that is unauthorized,
-lacks USB permission, is offline or shows a secure lock screen refuses with the cause and
-the fix. See the
-[CLI README](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan)
-for the full contract.
-
-The build runs Gradle `:app:assembleDebug` for the device's ABI, after
-`expo prebuild --platform android --clean` when `android/` is absent. An absent `android/`
-must be git-ignored; otherwise the build fails `BUILD_FAILED` before generating it.
+`--platform android` borrows a booted emulator or a physical USB phone. Pass
+`--device <serial>` to choose one explicitly. For automatic selection, adb server
+startup, lock checks, builds and cleanup, follow the authoritative
+[Android run contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan).
 
 ## Flags
 
@@ -69,7 +55,7 @@ must be git-ignored; otherwise the build fails `BUILD_FAILED` before generating 
 | ------------------------------- | ---------------------------------------------------------------------------------- |
 | `--plan-file <plan.md>`         | The plan to walk. Required.                                                        |
 | `--platform ios\|android`       | Defaults to `ios`.                                                                 |
-| `--device <id>`                 | A simulator UUID on iOS, an emulator serial on Android.                            |
+| `--device <id>`                 | A simulator UUID on iOS, an emulator or USB phone serial on Android.                            |
 | `--config <path>`               | Another configuration file. Defaults to `.qaren/config.yaml`.                      |
 | `--fresh-install`               | See the [fresh-install contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#fresh-install). |
 | `--hold`, `--no-hold`            | Check-only inspection controls; see the [iOS admission and cleanup contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup). |

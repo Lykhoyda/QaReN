@@ -246,7 +246,7 @@ does not end the command. Ending it reveals any earlier command still running,
 or clears the label when none remain.
 Preflight and dependencies pass when their work completes; verify runs after
 every build decision, including reuse. Reuse skips prebuild and native compile.
-On iOS and on a borrowed Android emulator, native compile (including any
+On iOS and on a borrowed Android device, native compile (including any
 prebuild of an absent native directory) ends before install/launch/ready.
 On iOS, install/launch/ready streams its substages in order: `install_cached`,
 `metro_ready`, `dev_client_manifest`, `dev_menu_defaults`, `app_launch` and
@@ -632,17 +632,17 @@ the same way. The run keeps the app and the device. An install refused with
 `INSTALL_FAILED_UPDATE_INCOMPATIBLE` means the device holds the app from another
 signer; the next step names `--fresh-install`, which deletes that app's data.
 
-The Metro reverse is created with `adb reverse --no-rebind`: when the emulator
+The Metro reverse is created with `adb reverse --no-rebind`: when the device
 already maps that port, the run refuses `DEVICE_BUSY` before the walk and
 leaves the mapping alone. Teardown, and `qaren cleanup <run-id>` after a crash
-or `SIGKILL`, release what the run put on the emulator, and only while the run
+or `SIGKILL`, release what the run put on the device, and only while the run
 still holds the device lease; otherwise those legs are refused and no adb
 command runs. Before the release sequence, the borrowed server must answer with
 the version of the recorded `adb`; a missing or incompatible server leaves the
 release unresolved. The `adb_reverse` leg verifies a successful removal with
 `reverse --list`; adb's explicit listener-not-found response counts as `absent`.
 The `android_runner` leg requires proven core and runner-driver shutdown, then
-removes the runner's forwards on the selected emulator, force-stops both runner
+removes the runner's forwards on the selected device, force-stops both runner
 packages, and verifies absence through `forward --list` and the runner package's
 entry in `dumpsys activity processes`; output that is not a recognised processes
 dump leaves the leg unresolved. The runner port and packages are defined in
@@ -655,9 +655,9 @@ proves them absent with `pm list packages` (they are QaReN's own and hold no
 user data; emulators keep them), then `usb_device_claim` releases the claim.
 An unproven leg keeps the claim and the lease, so a later
 `qaren cleanup <run-id>` can finish. Cleanup preserves the adb server, installed
-app and running emulator: `--remove-app` on a borrowed emulator refuses
+app and running device: `--remove-app` on a borrowed Android device refuses
 `APP_REMOVAL_NOT_CONFIRMED` (uninstall the app yourself), and `qaren status`
-probes the emulator only through the borrowed adb server, rechecking compatibility
+probes the device only through the borrowed adb server, rechecking compatibility
 before device probes and reporting them as inconclusive if that check fails.
 
 ### Android runner provisioning
@@ -704,14 +704,14 @@ for this runner directory stopped before removing that fence and any SQLite
 sidecars. Separate runner directories remain independent.
 
 A runner left
-on the emulator by rn-dev-agent 1.x is
+on the device by rn-dev-agent 1.x is
 signed differently and cannot be replaced in place: uninstall
 `dev.lykhoyda.rndevagent.androidrunner` and `dev.lykhoyda.rndevagent.androidrunner.test`
-from that emulator first. The walk's advisory scan on the borrowed emulator refuses
+from that device first. The walk's advisory scan on the borrowed device refuses
 `BUSY_FOREIGN_FLOW` with the process scan's message when another UIAutomator or
 agent-device process runs there (`adb -s <serial> shell ps -A`). The scan does
 not recognise every driver and fails open when `ps` cannot run, so borrow an
-emulator no other automation uses. The separate [fresh-install admission](#fresh-install)
+device no other automation uses. The separate [fresh-install admission](#fresh-install)
 must succeed before app reset.
 
 Plans contain a `## QA` section, named `###` blocks, numbered actions and
@@ -2407,7 +2407,7 @@ borrowed server. A matching UIAutomator, agent-device, Maestro or instrumentatio
 process refuses `DEVICE_BUSY`, excluding QaReN's own runner package. A scan
 error, timeout or empty output refuses `FRESH_INSTALL_ADMISSION_UNKNOWN`.
 Both refusals occur before uninstall. This flow never boots, wipes or restarts
-the emulator. For refusal diagnostics and recovery on either platform, and iOS
+the device. For refusal diagnostics and recovery on either platform, and iOS
 admission rules, see [iOS admission and cleanup](#ios-admission-and-cleanup).
 
 ### iOS simulator lifecycle
@@ -2601,7 +2601,7 @@ features. Unset `EXPO_OFFLINE` to restore the offline default.
 This default applies to Metro-only starts; fresh Android preparation through
 `expo run:android` retains its inherited Expo environment.
 
-The readiness margin only gates launch. Borrowed-emulator builds and cached Android preparation retain
+The readiness margin only gates launch. Borrowed-device Android builds and cached Android preparation retain
 one manifest answer under the dev client's 10-second timeout. Fresh Android
 scenario-based `prepare` keeps launch and Metro under `expo run:android` and does not perform
 this warmup.
@@ -4372,7 +4372,7 @@ a per-run local ref rather than shared `FETCH_HEAD`, so concurrent PR runs
 verify their own fetched commits.
 
 On iOS the simulator screen is recorded from just before the walk to just after
-it. On Android, `pr` [borrows a booted emulator like `check`](#check-a-plan).
+it. On Android, `pr` follows the [Android run contract](#check-a-plan).
 API 34 or newer records one continuous MP4 with `screenrecord --time-limit 0`,
 including walks longer than 180 seconds. API 33 and older still run the walk,
 but skip recording with the explicit video-unavailable reason that Android
@@ -4422,7 +4422,7 @@ the receipt's `cleanup.recorder` reports that final outcome. If shutdown remains
 unresolved, recover with `qaren cleanup <run-id>`; iOS follows the
 [iOS admission and cleanup contract](#ios-admission-and-cleanup).
 
-Android recorder cleanup requires the run's device lease, its recorded emulator
+Android recorder cleanup requires the run's device lease, its recorded device
 endpoint and a compatible borrowed adb server. It signals only the device
 recorder matching the per-run output path, first with INT, then with KILL if
 needed; a KILL fallback is recorded as abnormal media finalization. Cleanup
@@ -5135,7 +5135,7 @@ holds the cached APK, kept under this worktree's `.qaren/native-cache/artifacts/
    Committed native directories keep incremental builds for changed or
    incomplete fingerprints. iOS follows the
    [CLI-owned build routes](#cli-owned-ios-build-routes); borrowed Android
-   emulators follow [Check a plan](#check-a-plan), while scenario-based Android
+   devices follow [Check a plan](#check-a-plan), while scenario-based Android
    `prepare` recompiles with `expo run:android` over the existing Gradle caches.
 3. **Clean** — `build.strategy: clean` always bypasses reuse. Otherwise, mandatory
    whenever compatibility is unprovable and no verified
@@ -5241,8 +5241,8 @@ simulator can be borrowed instead; see
   `ADB_SERVER_SOCKET`; the Mac's global adb server is never used. Serials are
   validated against the loopback-tunnel form before any adb call; farm output
   naming a non `emulator-*` serial is rejected at parse time. A physical
-  phone is reachable only through the separate `android_usb` adapter, which
-  requires its exact serial in the scenario, an exclusive uncontended claim
+  phone in scenario-based `prepare` is reachable only through the separate
+  `android_usb` adapter, which requires its exact serial in the scenario, an exclusive uncontended claim
   lock, and its own run-scoped `--one-device` server — the two adapters
   never blend (a scenario naming both is invalid).
   `adb connect`/`disconnect` name their endpoint positionally — `-s` is not
@@ -5309,7 +5309,7 @@ simulator can be borrowed instead; see
   `app_install` leg, executed before Android resource teardown while the
   lease, tunnel and private adb server are still alive, and only on the
   leased Android emulator route
-  (USB, iOS, borrowed emulators and records without a farm lease are refused before any cleanup
+  (USB, iOS, borrowed Android devices and records without a farm lease are refused before any cleanup
   command runs; CLI git-root discovery precedes record loading). It requires
   `--confirm-remove-app <run-id>/<remote-serial>/<app-id>`
   naming exactly the loaded record's run id, recorded `emulator-*` serial
