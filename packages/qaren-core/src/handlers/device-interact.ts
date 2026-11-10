@@ -1697,6 +1697,7 @@ export async function readReactInputValue(
   focused: boolean;
   privateValue?: boolean;
   secure?: boolean;
+  disabled?: boolean;
   contentLength?: number;
   exact?: boolean;
   mismatch?: EntryMismatch;
@@ -1716,6 +1717,7 @@ export async function readReactInputValue(
       focused?: boolean;
       privateValue?: boolean;
       secure?: boolean;
+      disabled?: boolean;
       contentLength?: number;
       exact?: boolean;
       mismatch?: Record<string, unknown>;
@@ -1729,6 +1731,7 @@ export async function readReactInputValue(
       focused: parsed.focused === true,
       ...(parsed.privateValue === true ? { privateValue: true } : {}),
       ...(typeof parsed.secure === 'boolean' ? { secure: parsed.secure } : {}),
+      ...(typeof parsed.disabled === 'boolean' ? { disabled: parsed.disabled } : {}),
       ...(Number.isSafeInteger(parsed.contentLength) && parsed.contentLength! >= 0
         ? { contentLength: parsed.contentLength }
         : {}),
@@ -1805,7 +1808,7 @@ async function comparePrivateInput(
   client: CDPClient | null,
   testID: string | null,
   args: Pick<FillArgs, 'text' | 'qaContext' | 'qaTiming'>,
-  options: { beforeTyping?: true; requireFocused?: true } = {},
+  options: { beforeTyping?: true; requireFocused?: true; requireEnabled?: true } = {},
 ): Promise<{ verdict: ReactValueVerification; mismatch?: EntryMismatch }> {
   return measureTiming(
     options.beforeTyping ? undefined : args.qaTiming?.observe,
@@ -1826,6 +1829,7 @@ async function comparePrivateInput(
         });
         const eligible = (read: typeof state) =>
           read?.exact === true &&
+          (!options.requireEnabled || read.disabled === false) &&
           (!options.beforeTyping ||
             (read.controlled && read.secure !== true && (!options.requireFocused || read.focused)));
         if (eligible(state)) {
@@ -1854,6 +1858,28 @@ async function comparePrivateInput(
     ({ verdict }) =>
       verdict === 'exact' ? 'ok' : verdict === 'mismatch' ? 'failed' : 'unavailable',
   );
+}
+
+// Before focus, only two exact reads of an enabled controlled input can avoid the tap.
+export async function inputAlreadyHolds(
+  client: CDPClient | null,
+  testID: string,
+  text: string,
+  privateValue: boolean,
+  onPrivateInput?: () => void,
+): Promise<boolean> {
+  const comparison = await comparePrivateInput(
+    client,
+    testID,
+    { text },
+    {
+      beforeTyping: true,
+      requireEnabled: true,
+    },
+  );
+  if (comparison.verdict !== 'exact') return false;
+  if (privateValue) onPrivateInput?.();
+  return true;
 }
 
 // Fill ladder rung 3: the input's own change handler receives the whole value, then the same exact verification decides.

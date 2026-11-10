@@ -486,6 +486,22 @@ function hostOutside(screen: Screen, inner?: string, outer?: string): boolean {
   return path !== undefined && !path.includes(wrapper);
 }
 
+// Positive ancestry proof for the React input read before a focus tap.
+export function fillHostInside(screen: Screen, inputId: string, wrapperTestID?: string): boolean {
+  const evidence = screen.reactHostEvidence;
+  if (!evidence?.complete || !evidence.typography?.complete || !wrapperTestID) return false;
+  const inputs = evidence.hosts.flatMap((host, i) =>
+    host.capabilities.fill && (host.testID === inputId || host.nativeID === inputId) ? [i] : [],
+  );
+  if (inputs.length !== 1) return false;
+  const input = inputs[0];
+  const wrappers = evidence.hosts.flatMap((host, i) =>
+    i !== input && host.testID === wrapperTestID ? [i] : [],
+  );
+  if (wrappers.length !== 1) return false;
+  return hostPath(evidence.typography, input)?.includes(wrappers[0]) === true;
+}
+
 // The one non-input element a quoted fill may tap before typing through the keyboard; undefined keeps the strict refusal.
 export function keyboardFallbackTarget(
   step: Step,

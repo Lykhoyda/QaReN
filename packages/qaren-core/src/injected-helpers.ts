@@ -3873,6 +3873,7 @@ export const INJECTED_HELPERS = `
         : undefined;
       return JSON.stringify({
         value: null, controlled: readable, focused: focused, secure: false,
+        disabled: !!textInputDesignationDisabled(props),
         privateValue: options.privateValue === true,
         contentLength: readable ? localValue.length : undefined,
         exact: exact,

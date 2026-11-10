@@ -3177,3 +3177,79 @@ test('a later Fill attempt does not inherit an earlier overlay probe receipt', a
   assert.ok((outcome.rows[0].overlayChecks?.[0].observation ?? 0) > 0);
   assert.equal(outcome.rows.at(-1)?.overlayChecks, undefined);
 });
+
+function preFocusEvidence(screen: Screen, inputID: string, wrapperID: string): void {
+  screen.coverage = { native: 'complete', react: 'complete' };
+  screen.reactHostEvidence = {
+    complete: true,
+    hosts: [
+      { testID: wrapperID, role: 'button', roleSource: 'role', capabilities: { press: true } },
+      { testID: inputID, role: null, roleSource: 'none', capabilities: { fill: true } },
+    ],
+    typography: {
+      version: 1,
+      complete: true,
+      durationMs: 1,
+      coordinateSpace: 'window-points',
+      nodes: [
+        {
+          hostIndex: 0,
+          parentHostIndex: null,
+          rootIndex: 0,
+          hostType: 'RCTView',
+          text: { kind: 'none' },
+        },
+        {
+          hostIndex: 1,
+          parentHostIndex: 0,
+          rootIndex: 0,
+          hostType: 'RCTSinglelineTextInputView',
+          text: { kind: 'none' },
+        },
+      ],
+    },
+  };
+}
+
+test('pre-focus regression: the centre coverage check precedes an already-set comparison', async () => {
+  const screen = keyboardWrapperAt(700);
+  preFocusEvidence(screen, 'email', 'email-pressable');
+  const f = fake([screen], {});
+  let comparisons = 0;
+  f.deps.reactFocused = async () => true;
+  f.deps.typeFocused = async () => assert.fail('covered input cannot type');
+  f.deps.fillAlreadySet = async () => {
+    comparisons++;
+    return true;
+  };
+  const outcome = await walkBlock(block('1. Fill "email" with "x"'), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(comparisons, 0);
+  assert.deepEqual(
+    f.calls.filter((call) => call !== 'capture'),
+    ['scroll down'],
+  );
+});
+
+test('pre-focus regression: a refused overlay probe precedes an already-set comparison', async () => {
+  const f = overlayProbeFake('not-hittable', 'Wrapper');
+  const capture = f.deps.captureScreen;
+  f.deps.captureScreen = async (options) => {
+    const screen = await capture(options);
+    preFocusEvidence(screen, 'row-1', 'row-1-pressable');
+    return screen;
+  };
+  let comparisons = 0;
+  f.deps.fillAlreadySet = async () => {
+    comparisons++;
+    return true;
+  };
+  const outcome = await walkBlock(block('1. Fill "row-1" with "x"'), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(comparisons, 0);
+  assert.deepEqual(f.probes, [{ ref: '@target', generation: 7 }]);
+  assert.deepEqual(
+    f.calls.filter((call) => call !== 'capture'),
+    [],
+  );
+});

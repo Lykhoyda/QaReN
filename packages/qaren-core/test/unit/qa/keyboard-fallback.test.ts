@@ -22,6 +22,7 @@ import {
 import { describe } from '../../../dist/qa/screen.js';
 import { exactIdentities } from '../../../dist/qa/identity.js';
 import { keyboardFallbackTarget, prepareTarget } from '../../../dist/qa/resolve.js';
+import * as resolution from '../../../dist/qa/resolve.js';
 import {
   KEYBOARD_READY_CAPTURES,
   loginBlock,
@@ -325,7 +326,7 @@ function wrappedInput(
         complete: true,
         hosts: [
           { testID: wrapperID, role: 'button', roleSource: 'role', capabilities: { press: true } },
-          input,
+          { ...input },
         ],
         typography: {
           version: 1,
@@ -3758,3 +3759,241 @@ for (const route of [
     }
   });
 }
+
+// The pre-focus comparison needs a distinct observed wrapper above the input.
+function prefilledApp(captured = wrappedInput('Email address')) {
+  const fake = app({
+    initial: captured.elements,
+    hosts: captured.reactHostEvidence?.hosts,
+    focused: [{ ...captured, keyboardVisible: true }],
+  });
+  fake.deps.platform = 'ios';
+  const capture = fake.deps.captureScreen;
+  fake.deps.captureScreen = async (options) => {
+    if (fake.state() === 'idle') {
+      fake.log.push('capture');
+      return captured;
+    }
+    return capture(options);
+  };
+  return fake;
+}
+
+for (const wrapperID of [WRAP, 'email-wrap']) {
+  test(`prefilled input skips focus under the distinct wrapper ${wrapperID}`, async () => {
+    const captured = wrappedInput('Email address', false, true, INNER, wrapperID);
+    const fake = prefilledApp(captured);
+    const compared: unknown[][] = [];
+    fake.deps.fillAlreadySet = async (...args) => {
+      compared.push(args);
+      return true;
+    };
+    const result = await walkBlock(blocks(plan(EMAIL, INNER.testID, ''))[0], fake.deps);
+    assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
+    assert.equal(compared.length, 1);
+    assert.deepEqual(compared[0].slice(0, 3), [INNER.testID, EMAIL, false]);
+    assert.deepEqual(fake.log, ['capture']);
+    assert.equal(result.rows[0].method, 'already-set');
+    assert.equal(result.rows[0].ref, '@wrap');
+    assert.deepEqual(result.rows[0].selector, { id: INNER.testID });
+  });
+}
+
+test('prefilled input skips focus after the clearance scroll and its captures', async () => {
+  const captured = wrappedInput('Email address');
+  const fake = prefilledApp(captured);
+  let cleared = false;
+  let capturesAfterCompare = 0;
+  let comparisons = 0;
+  // The native view reports focus occlusion on the first attempt; the scroll repairs it.
+  fake.deps.press = async () => {
+    fake.log.push('press refused');
+    return { ok: false, mutation: 'none', error: 'FOCUS_TARGET_OCCLUDED: outside clip' };
+  };
+  fake.deps.scroll = async () => {
+    fake.log.push('scroll');
+    cleared = true;
+    return { ok: true, proven: false };
+  };
+  fake.deps.captureScreen = async () => {
+    fake.log.push('capture');
+    if (comparisons === 2) capturesAfterCompare++;
+    return captured;
+  };
+  fake.deps.fillAlreadySet = async () => {
+    comparisons++;
+    return cleared;
+  };
+  const result = await walkBlock(blocks(plan(EMAIL, INNER.testID, ''))[0], fake.deps);
+  assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
+  assert.equal(comparisons, 2);
+  assert.equal(capturesAfterCompare, 0);
+  assert.deepEqual(steps(fake.log), ['press refused', 'scroll']);
+  assert.equal(result.rows[0].method, 'already-set');
+});
+
+for (const idKind of ['testID', 'nativeID'] as const) {
+  test(`fillHostInside proves strict ancestry of the fillable ${idKind}`, () => {
+    const captured = wrappedInput('Email address');
+    if (idKind === 'nativeID') {
+      const host = captured.reactHostEvidence!.hosts[1];
+      host.nativeID = host.testID;
+      delete host.testID;
+    }
+    assert.equal(resolution.fillHostInside(captured, INNER.testID, WRAP), true);
+  });
+}
+
+for (const shape of [
+  'beside',
+  'outside',
+  'incomplete',
+  'duplicate-input',
+  'missing-wrapper',
+  'self',
+  'duplicate-wrapper',
+  'cycle',
+] as const) {
+  test(`fillHostInside rejects ${shape}`, () => {
+    const captured = wrappedInput('Email address');
+    const evidence = captured.reactHostEvidence!;
+    const typography = evidence.typography!;
+    if (shape === 'beside') typography.nodes[1].parentHostIndex = null;
+    if (shape === 'outside') typography.nodes[0].parentHostIndex = 1;
+    if (shape === 'incomplete') typography.complete = false;
+    if (shape === 'duplicate-input') evidence.hosts.push({ ...INNER });
+    if (shape === 'missing-wrapper') delete evidence.hosts[0].testID;
+    if (shape === 'self') evidence.hosts[0].testID = undefined;
+    if (shape === 'duplicate-wrapper') evidence.hosts.push({ ...evidence.hosts[0] });
+    if (shape === 'cycle') typography.nodes[1].parentHostIndex = 1;
+    assert.equal(
+      resolution.fillHostInside(captured, INNER.testID, shape === 'self' ? INNER.testID : WRAP),
+      false,
+    );
+  });
+}
+
+for (const comparison of [false, 'throw'] as const) {
+  test(`pre-focus regression: ${comparison} comparison keeps the base tap and type path`, async () => {
+    const fake = prefilledApp();
+    fake.deps.fillAlreadySet = async () => {
+      if (comparison === 'throw') throw new Error('unreadable');
+      return false;
+    };
+    const result = await walkBlock(blocks(plan(EMAIL, INNER.testID, ''))[0], fake.deps);
+    assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
+    assert.deepEqual(steps(fake.log), ['press @wrap', 'type @wrap']);
+    assert.equal(fake.log.filter((entry) => entry === 'capture').length, 4);
+    assert.equal(result.rows[0].method, 'keyboard');
+  });
+}
+
+for (const shape of [
+  'wrapper-id',
+  'always-retype',
+  'incomplete-hosts',
+  'incomplete-typography',
+  'duplicate-input',
+  'hidden',
+  'disabled',
+  'readOnly',
+  'underneath',
+  'missing-wrapper-id',
+  'shared-id',
+  'keyboard-up',
+] as const) {
+  test(`pre-focus regression: ${shape} never compares`, async () => {
+    const captured = wrappedInput(
+      'Email address',
+      false,
+      true,
+      INNER,
+      shape === 'shared-id' ? INNER.testID : WRAP,
+    );
+    const evidence = captured.reactHostEvidence!;
+    if (shape === 'incomplete-hosts') evidence.complete = false;
+    if (shape === 'incomplete-typography') evidence.typography!.complete = false;
+    if (shape === 'duplicate-input') evidence.hosts.push({ ...INNER });
+    if (shape === 'hidden' || shape === 'disabled' || shape === 'readOnly')
+      evidence.hosts[1][shape] = true;
+    // A mounted input on a different screen has no ancestor relationship to the front wrapper.
+    if (shape === 'underneath') {
+      evidence.typography!.nodes[1].parentHostIndex = null;
+      evidence.typography!.nodes[1].rootIndex = 1;
+    }
+    if (shape === 'missing-wrapper-id') delete evidence.hosts[0].testID;
+    if (shape === 'keyboard-up') captured.keyboardVisible = true;
+    const fake = prefilledApp(captured);
+    let comparisons = 0;
+    fake.deps.fillAlreadySet = async () => {
+      comparisons++;
+      return true;
+    };
+    const markdown = plan(EMAIL, shape === 'wrapper-id' ? WRAP : INNER.testID, '');
+    const result = await walkBlock(
+      blocks(
+        shape === 'always-retype'
+          ? markdown.replace(/(1\. Fill .*)/, '$1 (always retype)')
+          : markdown,
+      )[0],
+      fake.deps,
+    );
+    assert.equal(comparisons, 0);
+    assert.notEqual(result.rows[0]?.method, 'already-set');
+  });
+}
+
+for (const skip of [false, true]) {
+  test(`${skip ? 'prefilled input' : 'pre-focus regression:'} runtime input preserves echoes, promotion and the media latch`, async () => {
+    const captured = wrappedInput('Email address');
+    const fake = prefilledApp(captured);
+    const inputs = new RunInputs({ EMAIL }, ['EMAIL']);
+    const sequence: WalkSequence = { observation: 0 };
+    const privacy = new ObservedPrivacy();
+    const flags: boolean[] = [];
+    const promotions: string[] = [];
+    fake.deps.fillAlreadySet = async (_id, _text, privateValue, promote) => {
+      flags.push(privateValue);
+      if (skip) {
+        promote?.();
+        promotions.push('compare');
+      }
+      return skip;
+    };
+    fake.deps.typeFocused = async (_ref, _text, _id, _context, _focused, privateValue, promote) => {
+      flags.push(privateValue === true);
+      promote?.();
+      promotions.push('type');
+      return { ok: true, proven: true, method: 'already-set' };
+    };
+    const markdown = '1. Fill "qa-hidden-email" with input EMAIL';
+    const result = await withInputs(inputs, () =>
+      walkBlock(blocks(markdown)[0], fake.deps, 0, [], privacy, sequence),
+    );
+    assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
+    assert.equal(result.rows[0].method, 'already-set');
+    assert.ok(flags.every((flag) => flag === true));
+    assert.deepEqual(promotions, [skip ? 'compare' : 'type']);
+    assert.equal(result.privateFills, undefined);
+    assert.equal(sequence.latch?.line, 1);
+    assert.equal(privacy.latched()?.reason, 'concealed-fill');
+    assert.notEqual(inputs.maskFilledEcho({ identifier: WRAP, label: EMAIL }).label, EMAIL);
+    assert.equal(JSON.stringify(result).includes(EMAIL), false);
+    if (skip) assert.deepEqual(fake.log, ['capture']);
+  });
+}
+
+test('prefilled input comparison propagates an abort without sending the focus tap', async () => {
+  const fake = prefilledApp();
+  const abort = new DOMException('cancelled', 'AbortError');
+  fake.deps.fillAlreadySet = async () => {
+    throw abort;
+  };
+  await assert.rejects(walkBlock(blocks(plan(EMAIL, INNER.testID, ''))[0], fake.deps), abort);
+  assert.deepEqual(fake.log, ['capture']);
+});
+
+test('fillHostInside accepts a wrapper sharing the input id only as a distinct ancestor', () => {
+  const captured = wrappedInput('Email address', false, true, INNER, INNER.testID);
+  assert.equal(resolution.fillHostInside(captured, INNER.testID, INNER.testID), true);
+});
