@@ -78,6 +78,8 @@ export function isAndroidUsbSerial(value: string): boolean {
     /^[A-Za-z0-9._-]+$/.test(value) &&
     !value.startsWith('-') &&
     !value.startsWith('emulator-') &&
+    !value.includes('._adb-tls-connect._tcp') &&
+    !value.includes('._adb._tcp') &&
     !isIosSimulatorUdid(value)
   );
 }

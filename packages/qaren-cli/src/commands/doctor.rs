@@ -912,7 +912,7 @@ pub fn android_target_row(runner: &dyn Runner, serial: &str) -> Check {
         .iter()
         .find(|(s, _)| s == serial)
         .map(|(_, state)| state);
-    if state.is_some_and(|state| state == "device") {
+    if crate::scenario::is_usb_serial(serial) && state.is_some_and(|state| state == "device") {
         return Check::pass(
             ID,
             format!("Android device {serial} is ready on the adb server at port {port}"),
@@ -3619,6 +3619,21 @@ mod tests {
             ],
         );
         assert_eq!(both.status, Status::Pass);
+    }
+
+    #[test]
+    fn wireless_adb_warns_in_inventory_and_fails_as_a_target() {
+        for serial in ["adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp", "adb-0A1B2C3D-AbCdEf._adb._tcp"] {
+            let listed = format!("{serial}\tdevice\n");
+            let inventory = android_devices_with(&[], &[(5037, Some(&listed))]);
+            assert_eq!(inventory.status, Status::Warn);
+            assert!(inventory.detail.contains("wireless adb connection"));
+            let runner = adb_host(&[], &[(5037, Some(&listed))]);
+            let target = android_target_row(&runner, serial);
+            assert_eq!(target.status, Status::Fail);
+            assert!(target.detail.contains("wireless adb connection"));
+            assert!(runner.calls.is_empty());
+        }
     }
 
     #[test]

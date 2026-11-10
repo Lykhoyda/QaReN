@@ -12532,3 +12532,39 @@ fn pr_dependency_cache_publishes_only_after_pre_walk_candidate_verification() {
         std::fs::remove_dir_all(repo).unwrap();
     }
 }
+
+#[test]
+fn android_check_refuses_wireless_adb_without_claiming_or_addressing_it() {
+    for serial in [
+        "adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp",
+        "adb-0A1B2C3D-AbCdEf._adb._tcp",
+    ] {
+        for named in [false, true] {
+            let (repo, app) = app_repo();
+            let mut req = android_request(&repo, &app);
+            if named {
+                req.device = Some(serial.to_string());
+            }
+            let mut mock = android_mock();
+            android_until_borrow(&repo, &mut mock);
+            mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+            mock.expect_run(
+                "devices",
+                CmdOutput::success(&format!("List of devices attached\n{serial}\tdevice\n")),
+            );
+
+            let receipt = run(&mut mock, &req);
+
+            let failure = receipt.failure.as_ref().unwrap();
+            assert_eq!(failure.code, FailureCode::DeviceUnavailable);
+            assert!(failure.detail.contains(serial));
+            assert!(failure.detail.contains("wireless adb connection"));
+            assert!(failure.detail.contains("USB only"));
+            assert!(!req.lock_root.exists());
+            assert!(adb_calls(&mock)
+                .iter()
+                .all(|command| !command.contains(serial)));
+            assert_eq!(mock.remaining(), 0);
+        }
+    }
+}

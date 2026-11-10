@@ -2061,6 +2061,9 @@ fn usb_serials_are_plain_and_never_emulator_or_endpoint_forms() {
         "-s",
         "????????????",
         "emulator-5554",
+        "emulator-invalid",
+        "adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp",
+        "adb-0A1B2C3D-AbCdEf._adb._tcp",
         "127.0.0.1:5555",
         "has space",
     ] {
@@ -2367,4 +2370,24 @@ fn server_absent_is_only_a_refused_connect() {
     assert!(!android::server_absent(port));
     drop(listener);
     assert!(android::server_absent(port));
+}
+
+#[test]
+fn wireless_adb_rows_report_usb_only_cause_and_fix() {
+    for serial in [
+        "adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp",
+        "adb-0A1B2C3D-AbCdEf._adb._tcp",
+    ] {
+        for state in ["device", "offline", "unauthorized"] {
+            let problem = android::device_problem(serial, state, false).unwrap();
+            assert_eq!(problem.0, "wireless-adb");
+            assert!(problem.1.contains(serial));
+            assert!(problem.1.contains("wireless adb connection"));
+            assert!(problem.1.contains("USB only"));
+            assert_eq!(
+                problem.2,
+                "connect the phone with a USB cable and use its USB serial, then re-run"
+            );
+        }
+    }
 }

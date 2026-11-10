@@ -67,7 +67,13 @@ fn is_plain_serial(serial: &str) -> bool {
 
 // A physical USB device serial that may be selected or passed to adb; never an emulator or host:port endpoint.
 pub fn is_usb_serial(serial: &str) -> bool {
-    is_plain_serial(serial) && !serial.starts_with("emulator-")
+    is_plain_serial(serial) && !serial.starts_with("emulator-") && !is_wireless_serial(serial)
+}
+
+pub fn is_wireless_serial(serial: &str) -> bool {
+    serial.contains(':')
+        || serial.contains("._adb-tls-connect._tcp")
+        || serial.contains("._adb._tcp")
 }
 
 fn is_dev_client_scheme(scheme: &str) -> bool {
