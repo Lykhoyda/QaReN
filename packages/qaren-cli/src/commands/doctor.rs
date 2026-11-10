@@ -540,9 +540,13 @@ pub fn held_note(lock_root: &Path, runs_root: &Path, udid: &str) -> Option<Strin
         .map(|qaren_home| qaren_home.join("runs"));
     let runs_root = holder_runs.as_deref().unwrap_or(runs_root);
     let record = crate::runrecord::RunRecord::load(runs_root, &holder.run_id).ok()?;
-    let held = record
-        .held
-        .filter(|_| record.phase == crate::runrecord::Phase::Walking)?;
+    let crate::runrecord::RunState::Ended {
+        cleanup: crate::runrecord::Cleanup::Held(held),
+        ..
+    } = record.state()
+    else {
+        return None;
+    };
     Some(format!(
         " ({} since {}, run {}; {} releases it)",
         held.reason,

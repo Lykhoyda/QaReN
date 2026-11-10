@@ -183,7 +183,7 @@ test('Android incomplete producer reply never permits a mutation', async () => {
     f.deps.captureScreen = () => capture(data);
     const result = await runPlan(parsePlan('1. Tap "Save"').blocks!, f.deps);
     assert.equal(result.verdict, 'REFUSED');
-    assert.equal((result as { code?: string }).code, 'PRIVATE_INPUT_CAPTURE_UNKNOWN');
+    assert.equal((result as { code?: string }).code, 'NATIVE_SNAPSHOT_INCOMPLETE');
     assert.deepEqual(f.actions, []);
     assert.equal(judge.calls.length, 0);
   }

@@ -484,7 +484,7 @@ test('a container label built from a prefilled child value is masked when comple
     }
     if (truncated !== false) {
       assert.equal(result.verdict, 'REFUSED');
-      assert.equal('code' in result && result.code, 'PRIVATE_INPUT_CAPTURE_UNKNOWN');
+      assert.equal('code' in result && result.code, 'NATIVE_SNAPSHOT_INCOMPLETE');
       assert.match(result.failure!.seen, truncated ? /causes=truncated\)/ : /causes=unattested\)/);
     } else {
       assert.equal(judge.requests.length, 1, JSON.stringify(result));

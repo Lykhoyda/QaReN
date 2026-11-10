@@ -614,6 +614,51 @@ app and running emulator: `--remove-app` on a borrowed emulator refuses
 probes the emulator only through the borrowed adb server, rechecking compatibility
 before device probes and reporting them as inconclusive if that check fails.
 
+### Record a check
+
+`qaren check` records no video by default. Once a check reaches the walk, its
+receipt and stderr summary say
+`video: not recorded; pass --record to qaren check to record this walk`; a check
+refused earlier (preflight, build) carries no video line.
+`qaren check --record` records the walk through the same recorder, start rules,
+encode and trimmed copy as `qaren pr`, including the runtime-input rule and the
+Android API 34 requirement. `--record` on `qaren pr` changes nothing, because `pr`
+always records; any other verb rejects it with the usage text.
+
+Nothing is uploaded from `check`; `qaren publish` refuses a check run because it
+has no pull request record. A recorded check can leave these files in the run directory:
+
+- `media/video-published.mp4`: the trimmed copy, starting at admission (or after
+  the login replay) and ending at the last row. This is the only file the
+  receipt names.
+- `media/video.mp4`: the full recording, including setup and any login replay.
+  It stays private: no policy verdict applies to it; do not share it.
+- `media/raw.mov` (iOS) or `media/raw.mp4` (Android): the raw capture, kept
+  when encoding did not succeed or the run ended before the video was finalized.
+
+The receipt's `outcomes` gains these keys:
+
+- `video`: the final status, `available`, `too-large` or `unavailable(<reason>)`.
+  A check that ends after the recorder started, before the video was finalized,
+  carries `unavailable(recording started; the run ended before it was finalized; the raw capture is kept in media/)`.
+- `video_file`: `media/video-published.mp4`, only when the status is `available`
+  and that file exists.
+- `video_policy_verdict`: present only with `video_file`. It is the declared
+  [video policy](#video-publication)'s privacy verdict for that file alone
+  (`eligible`, or a withheld value with its reason and `keep this file local`),
+  not permission from `qaren publish`.
+- `video_next_step`: when there is no video, what to change: shorten or split the
+  plan, install ffmpeg and ffprobe, declare `video: non-strict` for runs with
+  runtime inputs, use an API 34+ emulator, or rerun with `--record`.
+
+The stderr summary prints the `video:` and `video file:` lines. Recording adds a
+recorder process and an encode and trim after the walk (each ffmpeg step is
+limited to 900 seconds). An encoded file over 100 MB is reported as `too-large`;
+the full and trimmed files coexist, and an oversized `media/video.mp4` can remain
+when its size reduction fails. Recording is
+best effort: a recorder, ffmpeg or trim problem never changes the verdict or the
+exit code.
+
 ### Android runner provisioning
 
 The Android runner uses the runtime's shipped source; no published runner APK
@@ -887,12 +932,15 @@ stricter rule: exactly one identity match under the same element reference.
 On iOS, before tapping a candidate matching the row-choice heuristic above, QaReN
 attempts to dismiss a visible keyboard through the keyboard guard's dismissal chain
 (a native hide control, then the app's own `Keyboard.dismiss()`). It then requires the
-same target identity and frame across two consecutive captures, re-resolves the target
+same native target identity and frame across two consecutive captures, excluding
+React-only twins from this settle check, re-resolves the target
 and taps it once. The row records `keyboardCleared: native-control | js` only when a
 dismissal tier reports success and the settled capture no longer reports a visible
 keyboard. An unsuccessful dismissal still permits one tap after the target settles;
 it records no clearance. A target that does not settle, changes identity or moves
 from its settled frame before dispatch fails without that tap.
+An unsettled-target refusal lists each capture's frame or `absent`, `ambiguous:N`
+or `no-frame`, and the keyboard state after dismissal (`hidden`, `visible` or `unknown`).
 `RN_KEYBOARD_GUARD=0` turns this pre-tap clearance off.
 
 When that clearance did not run or did not hold, keyboard closure and an unchanged
@@ -1825,11 +1873,12 @@ Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`
 when the final evidence remains unsure. Initial captures, polling captures and
 evidence-refresh captures, including a refresh during the first visibility check,
 share the wait's deadline for both quoted and phrase targets. A wait whose first
-capture never completes fails with `TARGET_WAIT_TIMEOUT` and
+capture times out without reporting native incompleteness fails with `TARGET_WAIT_TIMEOUT` and
 `cause=capture-deadline`, with `next_action=inspect_capture_health`. If a later
 refresh reaches the deadline, the wait ends
 from its completed observations; a phrase wait whose visibility remains undecided
 ends with `VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED`.
+For incomplete native reads, follow the [capture and privacy contract](#why-were-my-screenshots-withheld).
 A quoted wait with at least two definite
 absence observations sharing one screen signature normally fails at its deadline with
 “did not appear”; it does not report expired evidence for that stable absence.
@@ -1937,7 +1986,7 @@ the byte limit. It excludes value text, label text, identifiers and testIDs. The
 
 ### Why were my screenshots withheld?
 
-Each withheld screenshot metric has `stage: "screenshot"`, `outcome: "withheld"`
+Each privacy-caused withheld screenshot metric has `stage: "screenshot"`, `outcome: "withheld"`
 and `withheld: "<code>"`. Slot runs retain these metrics in
 `logs/core-diagnostics.jsonl`; without used slots they follow the ordinary
 `logs/core.log` timing route, subject to subprocess output withholding.
@@ -1954,8 +2003,9 @@ an exported unused `QAREN_INPUT_` namespace, or no inputs; raw subprocess output
 withholding remains unchanged. They contain no values, labels, identifiers,
 testIDs, geometry, character counts or element indices.
 
-`ledger.json` carries `screenshotWithheld` on each withheld row, including streamed
-rows retained after an interrupted walk. `mediaWithheld.screenshots` holds the
+`ledger.json` carries `screenshotWithheld` on each row with a recorded privacy
+cause, including streamed rows retained after an interrupted walk.
+`mediaWithheld.screenshots` holds the
 first `reason`, optional `kind` or `source`, `line` and withheld screenshot `count`.
 `mediaWithheld.video` holds the publication-window cause and line, without a
 count: the strict privacy cause for strict or undeclared runs, or the protected
@@ -1966,12 +2016,17 @@ the screenshot cause and count; a retained cause then uses the new window's
 starting line. `videoPublication` retains the strict verdict;
 `nonStrictPublication` supplies the separate non-strict verdict. A walk refused
 after admission keeps both computed verdicts, except a
-`PRIVATE_INPUT_CAPTURE_UNKNOWN` refusal; that refusal and any refusal before
-admission report `videoPublication: unknown` with no `nonStrictPublication`,
+`PRIVATE_INPUT_CAPTURE_UNKNOWN` or `NATIVE_SNAPSHOT_INCOMPLETE` refusal.
+If a Wait absorbs an incomplete native read, subsequent screenshots and pixel
+comparison captures are withheld for the rest of the run, even when a later read
+completes and the Wait passes or fails. This applies under every video policy.
+These cases and any refusal before admission report
+`videoPublication: unknown` with no `nonStrictPublication`,
 which withholds video in either mode.
-The receipt includes one `media_withheld=<code>[/<kind|source>]@line <N>` note,
+When a privacy cause is recorded, the receipt includes one
+`media_withheld=<code>[/<kind|source>]@line <N>` note,
 preferring the video cause in non-strict mode and the screenshot cause otherwise.
-`report.md` marks each withheld row and explains
+`report.md` marks each row with a recorded privacy cause and explains
 the first screenshot cause and line. Line 0 means privacy latched before the walk.
 
 | Code | Meaning | What to do |
@@ -2041,9 +2096,17 @@ refuses with `SCREEN_EVIDENCE_INCOMPLETE` rather than guessing a target.
 The [screen projection](../qaren-core/src/qa/screen.ts) owns this policy.
 
 The native snapshot is the privacy boundary before walking a screen. Capture
-refuses with `PRIVATE_INPUT_CAPTURE_UNKNOWN` unless native completeness is attested;
-the refusal reports only a value-free node count and fixed cause codes. Native
+refuses with `NATIVE_SNAPSHOT_INCOMPLETE` unless native completeness is attested;
+the refusal reports a value-free node count and fixed cause codes, with read count
+and elapsed time when Wait exhausts its retry deadline. Native
 acquisition failures also refuse without reinjection or a public-tree fallback.
+The privacy boundary is unchanged: an incomplete native snapshot is never walked
+or masked. A Wait re-reads on its normal poll cadence within its existing deadline;
+if a complete read recovers but the quoted target stays absent, the Wait retains
+`TARGET_NOT_FOUND` with the observed screen, even if a later recovery capture is
+incomplete. Tap,
+Fill, Check and Scroll still refuse immediately. React-side incomplete capture
+and generic private-capture failures retain `PRIVATE_INPUT_CAPTURE_UNKNOWN`.
 
 A required private capture re-reads a canonical empty snapshot (`nodes=[]`,
 verdict `degraded`, `nodeCount=0`, reasons exactly `empty-capture`, no truncation
@@ -2063,7 +2126,7 @@ refuses with `NATIVE_CAPTURE_UNAVAILABLE` after the capture retry budget.
 An empty snapshot's unchanged ref map and zero-node count
 diagnostics do not prevent this read-only retry; persistent emptiness still
 refuses with the same code and message. Persistent incomplete presence refuses
-with `PRIVATE_INPUT_CAPTURE_UNKNOWN`, naming the unknown keyboard state and any
+with `NATIVE_SNAPSHOT_INCOMPLETE`, naming the unknown keyboard state and any
 known acquisition phase, failure reason or deadline read using fixed codes.
 If the retry deadline cuts off a read, the refusal retains the last incomplete
 presence snapshot's fixed causes and adds `retry-deadline` without returning that
@@ -2079,7 +2142,8 @@ readbacks still require full platform presence and privacy admission.
 Only a fresh, complete snapshot can establish privacy or admit a newly arrived
 system alert; partial presence never authorizes actions, screenshots or model
 evidence. Malformed, truncated, dropped-node and other incomplete captures refuse
-immediately. The [capture implementation](../qaren-core/src/qa/capture.ts) owns
+at the capture boundary; Wait handles `NATIVE_SNAPSHOT_INCOMPLETE` as described
+above. The [capture implementation](../qaren-core/src/qa/capture.ts) owns
 retry eligibility; [settle regressions](../qaren-core/test/unit/qa/private-empty-reread.test.ts)
 cover these boundaries.
 
@@ -4490,7 +4554,8 @@ The receipt, report and PR comment name the policy and the selected config: its 
 Feature artwork withheld solely for an ordinary accessibility value without a typed safe path (ANT-664) is eligible in non-strict mode and remains withheld in strict or undeclared mode. The [screenshot publication regression](tests/publish_flow.rs) covers this policy decision with synthetic artwork; it does not establish live device acceptance.
 
 Only the selected config declares the video mode; no flag, environment variable,
-plan annotation or inferred backend selects it.
+plan annotation or inferred backend selects it. `--record` turns recording on for a
+check; it does not select the video mode.
 
 SECRET text masking and no readback apply in both modes. A runtime input displayed in a non-secure field can be marked `(test-pii)` only if it is test data; that annotation cannot exempt secure fields or code rows. Non-strict is an operator declaration, not proof: an undeclared secret prefilled into a non-secure field, real personal data, or a value visible only between captures can appear in published media. QaReN does not mask media regions or identify the backend. Upgrade every CLI/CI runtime before adding the key; older versions refuse it. Removing the key restores strict behavior.
 

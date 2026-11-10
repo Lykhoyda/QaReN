@@ -6,7 +6,7 @@ use crate::receipt::{Receipt, ReceiptResult};
 use crate::record::{self, VideoPublication, VideoStatus};
 use crate::redact::{redact_machine, MachineIdentity};
 use crate::report::{self, PrRun, ReportInput};
-use crate::runrecord::{validate_run_id, RunRecord};
+use crate::runrecord::{validate_run_id, RunRecord, RunState};
 use crate::timefmt;
 use crate::worktree;
 use serde::{Deserialize, Serialize};
@@ -981,14 +981,18 @@ fn publish_inner(
     let run_dir = RunRecord::run_dir(runs_root, run_id);
     let _lock = PublishLock::acquire(&run_dir)?;
     let run = RunRecord::load(runs_root, run_id)?;
-    let terminal = run.terminal.ok_or_else(|| {
-        Failure::new(
+    let RunState::Ended {
+        walked: Some(terminal),
+        ..
+    } = run.state()
+    else {
+        return Err(Failure::new(
             "publish",
             FailureCode::RunRecordInvalid,
             format!("run {run_id} has no final result; it did not finish"),
             "re-run qaren pr; only a finished run can be published",
-        )
-    })?;
+        ));
+    };
     if let Some(refusal) = terminal.publication_refusal() {
         return Err(refusal);
     }

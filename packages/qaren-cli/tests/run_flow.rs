@@ -169,6 +169,7 @@ fn request(repo: &Path, app: &Path, step_seconds: u64) -> RunRequest {
         },
         pr: None,
         hold: None,
+        record: false,
     }
 }
 
@@ -4252,10 +4253,6 @@ fn android_mock() -> MockRunner {
     mock
 }
 
-fn script_borrow(mock: &mut MockRunner, devices: &str, serial: &str) {
-    script_borrow_api(mock, devices, serial, 37);
-}
-
 fn script_borrow_api(mock: &mut MockRunner, devices: &str, serial: &str, api: u16) {
     mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
     mock.expect_run("adb devices", CmdOutput::success(devices));
@@ -4287,9 +4284,21 @@ fn script_android_preflight_requiring(
     required: &[&str],
     non_secret: &[&str],
 ) {
+    script_android_preflight_api(mock, repo, devices, serial, required, non_secret, 37);
+}
+
+fn script_android_preflight_api(
+    mock: &mut MockRunner,
+    repo: &Path,
+    devices: &str,
+    serial: &str,
+    required: &[&str],
+    non_secret: &[&str],
+    api: u16,
+) {
     mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
     script_plan_requiring(mock, repo, required, non_secret);
-    script_borrow(mock, devices, serial);
+    script_borrow_api(mock, devices, serial, api);
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
@@ -11777,6 +11786,616 @@ fn pr_dependency_cache_publishes_only_after_pre_walk_candidate_verification() {
                     .position(|l| l == "expo-ios-build-help")
                     .unwrap()
         );
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+}
+
+// A recorded check's tools: the recorder writes its raw capture and each successful encode writes its output.
+// With the flag set, the run is cancelled at the first host probe after the recorder spawned.
+struct RecordedCheck(MockRunner, bool);
+
+impl Runner for RecordedCheck {
+    fn adb_server_version(&self, port: u16) -> Result<u32, String> {
+        self.0.adb_server_version(port)
+    }
+    fn env_var(&self, name: &str) -> Option<String> {
+        self.0.env_var(name)
+    }
+    fn execute(&mut self, spec: &CmdSpec, interruptible: bool) -> CmdOutput {
+        let output = self.0.execute(spec, interruptible);
+        if output.ok() && matches!(spec.label.as_str(), "ffmpeg-encode" | "adb-pull") {
+            std::fs::write(spec.args.last().unwrap(), vec![0u8; 64]).unwrap();
+        }
+        output
+    }
+    fn execute_private(
+        &mut self,
+        spec: &CmdSpec,
+        input: &[u8],
+        interruptible: bool,
+    ) -> qaren::exec::PrivateOutput {
+        self.0.execute_private(spec, input, interruptible)
+    }
+    fn spawn_group_unchecked(&mut self, spec: &CmdSpec, log: &Path) -> std::io::Result<Spawned> {
+        if spec.label == "simctl-record-video" {
+            std::fs::write(spec.args.last().unwrap(), vec![0u8; 4096]).unwrap();
+        }
+        self.0.spawn_group_unchecked(spec, log)
+    }
+    fn spawn_piped_unchecked(&mut self, spec: &CmdSpec, log: &Path) -> std::io::Result<PipedChild> {
+        self.0.spawn_piped_unchecked(spec, log)
+    }
+    fn sleep(&mut self, d: std::time::Duration) {
+        self.0.sleep(d)
+    }
+    fn now_epoch_ms(&self) -> u64 {
+        self.0.now_epoch_ms()
+    }
+    fn commands_executed(&self) -> u64 {
+        self.0.commands_executed()
+    }
+    fn cancellation(&self) -> Option<String> {
+        let calls = &self.0.calls;
+        let started = calls
+            .iter()
+            .position(|c| c.label == "simctl-record-video")
+            .filter(|_| self.1);
+        match started {
+            Some(at)
+                if calls[at..]
+                    .iter()
+                    .any(|c| c.rendered().contains("launchctl list")) =>
+            {
+                Some("received SIGTERM".into())
+            }
+            _ => self.0.cancellation(),
+        }
+    }
+}
+
+const NOT_RECORDED: &str = "not recorded; pass --record to qaren check to record this walk";
+
+fn record_request(repo: &Path, app: &Path) -> RunRequest {
+    let mut req = request(repo, app, 30);
+    req.record = true;
+    req
+}
+
+// An admitted walk whose last row ends 33.5 s in, eligible under the strict rules.
+fn recorded_check_stdout(admitted: u64) -> String {
+    pass_stdout()
+        .replace(
+            r#""recoveries":0}"#,
+            &format!(r#""recoveries":0,"admittedAtMs":{admitted},"videoPublication":"eligible"}}"#),
+        )
+        .replace("\"t\":200", "\"t\":33526")
+}
+
+fn recording_stages(events: &[serde_json::Value]) -> Vec<String> {
+    events
+        .iter()
+        .filter(|e| e["event"] == "stage" && e["payload"]["name"] == "recording")
+        .map(|e| e["payload"]["state"].as_str().unwrap().to_string())
+        .collect()
+}
+
+fn core_request_payload(mock: &MockRunner) -> serde_json::Value {
+    (0..mock.piped_stdin.len())
+        .map(|i| mock.piped_stdin_text(i))
+        .filter_map(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .find(|value| value["payload"].get("plan").is_some())
+        .unwrap()["payload"]
+        .clone()
+}
+
+// After the walk of a recorded iOS check: drift report, the recorder stop, then the core, Metro and host teardown.
+fn script_recorded_check_teardown(mock: &mut MockRunner) {
+    script_drift_status(mock);
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
+    mock.expect_run("git", CmdOutput::success(UNTRACKED_PLAN));
+    script_recorder_stop(mock);
+    script_teardown_resources(
+        mock,
+        CmdOutput::success("1 1 S\n6000 6000 S\n"),
+        false,
+        UDID,
+        Some(hosts_absent()),
+    );
+}
+
+fn script_encode(mock: &mut MockRunner, trim: CmdOutput) {
+    mock.expect_run("which ffmpeg", CmdOutput::success("/opt/ffmpeg\n"));
+    mock.expect_run("ffmpeg", CmdOutput::success(""));
+    mock.expect_run("ffprobe", CmdOutput::success("3.5\n"));
+    let trimmed = trim.ok();
+    mock.expect_run("ffmpeg", trim);
+    if trimmed {
+        mock.expect_run("ffprobe", CmdOutput::success("0.1\n"));
+    }
+}
+
+// R1
+#[test]
+fn a_check_without_record_records_nothing_and_says_so() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    script_provision(&mut mock);
+    script_drift_status(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+    script_core_identity(&mut mock);
+    script_teardown(&mut mock);
+
+    let (receipt, events) = run_with_events(&mut mock, &request(&repo, &app, 30));
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    assert!(!labels(&mock).iter().any(|l| l.contains("record")));
+    assert_eq!(recording_stages(&events), ["skipped"]);
+    assert_eq!(receipt.outcomes["video"], NOT_RECORDED);
+    for key in ["video_file", "video_policy_verdict", "video_next_step"] {
+        assert!(!receipt.outcomes.contains_key(key), "{key}");
+    }
+    assert!(!repo.join("runs").join(run_id()).join("media").exists());
+    std::fs::remove_dir_all(repo).unwrap();
+}
+
+fn recorded_ios_check(
+    trim: CmdOutput,
+) -> (
+    qaren::receipt::Receipt,
+    Vec<serde_json::Value>,
+    RecordedCheck,
+    PathBuf,
+) {
+    let (repo, app) = app_repo();
+    let mut runner = RecordedCheck(MockRunner::new(), false);
+    let mock = &mut runner.0;
+    let admitted = mock.now_epoch_ms() + 4_100;
+    script_preflight(mock, &repo);
+    script_provision(mock);
+    script_drift_status(mock);
+    script_recorder_start(mock);
+    script_host_probe(mock, UDID, hosts_absent());
+    mock.expect_spawn_piped("walk.js", 9000, &recorded_check_stdout(admitted), Some(0));
+    script_core_identity(mock);
+    script_recorded_check_teardown(mock);
+    let trimmed = trim.ok();
+    script_encode(mock, trim);
+    if trimmed {
+        mock.expect_run("ffprobe", CmdOutput::failed(1, "no duration"));
+    }
+    let (receipt, events) = run_with_events(&mut runner, &record_request(&repo, &app));
+    (receipt, events, runner, repo)
+}
+
+// R2
+#[test]
+fn a_recorded_ios_check_keeps_the_trimmed_copy_local_and_names_it() {
+    let (receipt, events, runner, repo) = recorded_ios_check(CmdOutput::success(""));
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(runner.0.remaining(), 0);
+    assert_subsequence(
+        &labels(&runner.0),
+        &[
+            "simctl-record-video",
+            "core-walk",
+            "recorder-interrupt",
+            "kill-group",
+            "ffmpeg-encode",
+            "ffmpeg-encode",
+        ],
+    );
+    assert!(!labels(&runner.0).iter().any(|l| l.starts_with("gh")));
+    assert_eq!(recording_stages(&events), ["running", "passed"]);
+    assert_eq!(receipt.cleanup["recorder"], "removed");
+    assert_eq!(receipt.outcomes["video"], "available");
+    assert_eq!(receipt.outcomes["video_file"], "media/video-published.mp4");
+    assert_eq!(receipt.outcomes["video_policy_verdict"], "eligible");
+    assert!(!receipt.outcomes.contains_key("video_next_step"));
+    let run_dir = repo.join("runs").join(run_id());
+    assert!(run_dir.join("media/video-published.mp4").is_file());
+    assert!(run_dir.join("media/video.mp4").is_file());
+    assert!(!run_dir.join("pr.json").exists());
+    std::fs::remove_dir_all(repo).unwrap();
+}
+
+// R9: the trim fails after a successful encode.
+#[test]
+fn a_recorded_check_whose_trim_fails_names_no_file_and_no_verdict() {
+    let (receipt, _, runner, repo) = recorded_ios_check(CmdOutput::failed(1, "trim failed"));
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(runner.0.remaining(), 0);
+    assert_eq!(
+        receipt.outcomes["video"],
+        "unavailable(the admitted part of the recording could not be prepared)"
+    );
+    assert!(!receipt.outcomes.contains_key("video_file"));
+    assert!(!receipt.outcomes.contains_key("video_policy_verdict"));
+    assert_eq!(
+        receipt.outcomes["video_next_step"],
+        "rerun with --record; the run's verdict is not affected"
+    );
+    assert!(repo
+        .join("runs")
+        .join(run_id())
+        .join("media/video.mp4")
+        .is_file());
+    std::fs::remove_dir_all(repo).unwrap();
+}
+
+// R9: a run cancelled after the recorder started keeps the provisional note and stops the recorder.
+#[test]
+fn a_recorded_check_cancelled_after_the_recorder_started_says_the_video_was_not_finalized() {
+    let (repo, app) = app_repo();
+    let mut runner = RecordedCheck(MockRunner::new(), true);
+    let mock = &mut runner.0;
+    script_preflight(mock, &repo);
+    script_provision(mock);
+    script_drift_status(mock);
+    script_recorder_start(mock);
+    script_host_probe(mock, UDID, hosts_absent());
+    script_metro_teardown(mock, UDID, None);
+    script_recorder_stop(mock);
+
+    let receipt = run(&mut runner, &record_request(&repo, &app));
+
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::RunCancelled
+    );
+    assert_eq!(runner.0.remaining(), 0, "{:?}", labels(&runner.0));
+    assert!(!labels(&runner.0).iter().any(|l| l == "core-walk"));
+    assert_eq!(receipt.cleanup["recorder"], "removed");
+    assert_eq!(
+        receipt.outcomes["video"],
+        "unavailable(recording started; the run ended before it was finalized; the raw capture is kept in media/)"
+    );
+    assert!(repo
+        .join("runs")
+        .join(run_id())
+        .join("media/raw.mov")
+        .is_file());
+    std::fs::remove_dir_all(repo).unwrap();
+}
+
+// R9: a cancel that lands after the walk skips finalization instead of blaming a missing ffmpeg.
+#[test]
+fn a_recorded_check_cancelled_after_the_walk_keeps_the_provisional_video_note() {
+    let (repo, app) = app_repo();
+    let mut runner = RecordedCheck(MockRunner::new(), false);
+    let mock = &mut runner.0;
+    let admitted = mock.now_epoch_ms() + 4_100;
+    script_preflight(mock, &repo);
+    script_provision(mock);
+    script_drift_status(mock);
+    script_recorder_start(mock);
+    script_host_probe(mock, UDID, hosts_absent());
+    mock.expect_spawn_piped("walk.js", 9000, &recorded_check_stdout(admitted), Some(0));
+    script_core_identity(mock);
+    script_recorded_check_teardown(mock);
+    mock.cancel_after = Some(("/bin/kill".into(), "received SIGTERM".into()));
+
+    let receipt = run(&mut runner, &record_request(&repo, &app));
+
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::RunCancelled
+    );
+    assert_eq!(runner.0.remaining(), 0, "{:?}", labels(&runner.0));
+    assert!(!labels(&runner.0).iter().any(|l| l.contains("ffmpeg")));
+    assert_eq!(receipt.cleanup["recorder"], "removed");
+    assert_eq!(
+        receipt.outcomes["video"],
+        "unavailable(recording started; the run ended before it was finalized; the raw capture is kept in media/)"
+    );
+    assert!(!receipt.outcomes.contains_key("video_next_step"));
+    assert!(repo
+        .join("runs")
+        .join(run_id())
+        .join("media/raw.mov")
+        .is_file());
+    std::fs::remove_dir_all(repo).unwrap();
+}
+
+// R5
+#[test]
+fn a_recorded_check_whose_recorder_cannot_start_keeps_its_verdict() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    script_provision(&mut mock);
+    script_drift_status(&mut mock);
+    mock.expect_spawn_failure("recordVideo", "recorder spawn failure");
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+    script_core_identity(&mut mock);
+    script_teardown(&mut mock);
+
+    let (receipt, events) = run_with_events(&mut mock, &record_request(&repo, &app));
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(recording_stages(&events), ["running", "failed"]);
+    assert_eq!(
+        receipt.outcomes["video"],
+        "unavailable(recorder did not spawn)"
+    );
+    assert_eq!(
+        receipt.outcomes["video_next_step"],
+        "rerun with --record; the run's verdict is not affected"
+    );
+    assert!(!receipt.outcomes.contains_key("video_file"));
+    std::fs::remove_dir_all(repo).unwrap();
+}
+
+// R6
+#[test]
+fn a_failed_recorded_ios_check_stops_the_recorder_before_holding() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    script_provision(&mut mock);
+    script_drift_status(&mut mock);
+    script_recorder_start(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    let stdout = format!(
+        "{}\n{}\n",
+        envelope(2, "admitted", "{}"),
+        envelope(3, "result", HELD_FAIL)
+    );
+    mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(1));
+    script_core_identity(&mut mock);
+    script_drift_status(&mut mock);
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
+    mock.expect_run("git", CmdOutput::success(UNTRACKED_PLAN));
+    script_recorder_stop(&mut mock);
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n6000 6000 S\n"));
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    mock.expect_run("which ffmpeg", CmdOutput::failed(1, ""));
+
+    let receipt = run(&mut mock, &record_request(&repo, &app));
+
+    assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0, "{:?}", labels(&mock));
+    assert_subsequence(&labels(&mock), &["core-walk", "recorder-interrupt"]);
+    let release = format!("qaren cleanup {} releases it", run_id());
+    assert_eq!(receipt.cleanup["recorder"], "removed");
+    assert_eq!(
+        receipt.cleanup["metro"],
+        format!("held: retained for inspection; {release}")
+    );
+    assert_eq!(receipt.cleanup["simulator"], "kept");
+    assert_eq!(
+        receipt.cleanup["device_lease"],
+        format!("held: retained for inspection; {release}")
+    );
+    assert_eq!(
+        receipt.held.as_ref().unwrap().retained,
+        ["metro", "simulator", "device_lease"]
+    );
+    assert_eq!(receipt.outcomes["video"], "unavailable(ffmpeg)");
+    assert_eq!(
+        receipt.outcomes["video_next_step"],
+        "install ffmpeg and ffprobe, then rerun with --record; the raw capture is kept in media/"
+    );
+    let record = RunRecord::load(&repo.join("runs"), &run_id()).unwrap();
+    assert!(record.resources.recorder.is_none());
+    assert!(record.resources.lease.is_some());
+    std::fs::remove_dir_all(repo).unwrap();
+}
+
+fn script_preflight_requiring(
+    mock: &mut MockRunner,
+    repo: &Path,
+    required: &[&str],
+    non_secret: &[&str],
+) {
+    mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
+    script_plan_requiring(mock, repo, required, non_secret);
+    mock.expect_run("simctl list devices -j", CmdOutput::success(&booted_json()));
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
+    mock.expect_run("git", CmdOutput::success(UNTRACKED_PLAN));
+    for tool in IOS_TOOLS {
+        mock.expect_run("which", CmdOutput::success(&format!("/usr/bin/{tool}\n")));
+    }
+    mock.expect_run(
+        "QAREN_PNPM_LAUNCH_GROUP",
+        CmdOutput::success(qaren::adapters::pnpm::GROUP_OK),
+    );
+    mock.expect_run("df", df_ok());
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
+    mock.expect_run("ps", CmdOutput::success("qaren check\n"));
+    mock.expect_run("lsof", free_port());
+}
+
+// R4
+#[test]
+fn a_recorded_check_with_a_test_pii_input_follows_the_declared_video_policy() {
+    for policy in ["strict", "non-strict"] {
+        let records = policy == "non-strict";
+        let (repo, app) = app_repo();
+        std::fs::write(
+            app.join("plan.md"),
+            "1. Fill \"name\" with input NAME (test-pii)\n",
+        )
+        .unwrap();
+        let req = record_request(&repo, &app);
+        let yaml = std::fs::read_to_string(&req.config_path).unwrap();
+        std::fs::write(&req.config_path, format!("{yaml}video: {policy}\n")).unwrap();
+        let mut mock = MockRunner::new();
+        script_preflight_requiring(&mut mock, &repo, &["NAME"], &["NAME"]);
+        script_provision(&mut mock);
+        script_drift_status(&mut mock);
+        if records {
+            mock.expect_spawn_failure("recordVideo", "recorder spawn failure");
+        }
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+        script_core_identity(&mut mock);
+        script_teardown(&mut mock);
+        let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries(vec![(
+            "QAREN_INPUT_NAME".into(),
+            "synthetic-name".into(),
+        )]));
+
+        let (receipt, events) =
+            qaren::redact::with_input_scope(inputs, || run_with_events(&mut mock, &req));
+
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+        assert_eq!(mock.remaining(), 0, "{:?}", labels(&mock));
+        assert_eq!(labels(&mock).iter().any(|l| l.contains("record")), records);
+        if records {
+            assert_eq!(recording_stages(&events), ["running", "failed"]);
+            assert_eq!(
+                receipt.outcomes["video"],
+                "unavailable(recorder did not spawn)"
+            );
+        } else {
+            assert_eq!(recording_stages(&events), ["skipped"]);
+            assert_eq!(
+                receipt.outcomes["video"],
+                "unavailable(runtime inputs withhold recording)"
+            );
+            assert_eq!(
+                receipt.outcomes["video_next_step"],
+                "runs with runtime inputs are recorded only when the app config declares video: non-strict and private output mode is off"
+            );
+        }
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+}
+
+// R7
+#[test]
+fn record_leaves_the_core_request_unchanged() {
+    let normalized = |mock: &MockRunner, repo: &Path| {
+        let mut payload = core_request_payload(mock);
+        for key in ["runId", "runDir", "lease", "t0"] {
+            payload.as_object_mut().unwrap().remove(key);
+        }
+        serde_json::from_str::<serde_json::Value>(
+            &payload
+                .to_string()
+                .replace(&repo.display().to_string(), "<repo>"),
+        )
+        .unwrap()
+    };
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    script_provision(&mut mock);
+    script_drift_status(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+    script_core_identity(&mut mock);
+    script_teardown(&mut mock);
+    let plain = run(&mut mock, &request(&repo, &app, 30));
+    assert_eq!(plain.result, ReceiptResult::Pass, "{:?}", plain.failure);
+    let without = normalized(&mock, &repo);
+    std::fs::remove_dir_all(&repo).unwrap();
+
+    let (_, _, runner, repo) = recorded_ios_check(CmdOutput::success(""));
+    let with = normalized(&runner.0, &repo);
+    assert_eq!(with["videoPolicy"], without["videoPolicy"]);
+    assert_eq!(with, without);
+    std::fs::remove_dir_all(repo).unwrap();
+}
+
+// R3
+#[test]
+fn a_recorded_android_check_records_on_api_34_and_says_why_not_below() {
+    for api in [34, 33] {
+        let (repo, app) = app_repo();
+        let mut req = android_request(&repo, &app);
+        req.record = true;
+        let mut runner = RecordedCheck(android_mock(), false);
+        let mock = &mut runner.0;
+        script_android_preflight_api(mock, &repo, ONE_EMULATOR, EMULATOR, &[], &[], api);
+        mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+        mock.expect_run("ls-files", CmdOutput::success(""));
+        mock.expect_run("check-ignore -q android/", CmdOutput::success(""));
+        script_android_finite_build(mock, PREBUILD, 5000, 0);
+        script_android_finite_build(mock, GRADLE, 5001, 0);
+        script_android_launch(mock, 0);
+        script_android_app_tick(mock, CmdOutput::success("4242\n"));
+        mock.expect_run("ls-files", CmdOutput::success(""));
+        script_drift_status(mock);
+        if api >= 34 {
+            mock.expect_run("shell rm -f", CmdOutput::success(""));
+            mock.expect_spawn(
+                "shell screenrecord --time-limit 0 --bit-rate 4000000",
+                Spawned {
+                    pid: 7100,
+                    pgid: 7100,
+                },
+            );
+            mock.expect_run("ps", CmdOutput::success(LSTART));
+            mock.expect_run("ps", CmdOutput::success("adb shell screenrecord"));
+            mock.expect_run("shell pgrep -f", CmdOutput::success("42\n"));
+        }
+        let admitted = mock.now_epoch_ms() + 4_100;
+        mock.expect_spawn_piped("walk.js", 9000, &recorded_check_stdout(admitted), Some(0));
+        script_core_identity(mock);
+        script_drift_status(mock);
+        mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
+        mock.expect_run("git", CmdOutput::success(UNTRACKED_PLAN));
+        if api >= 34 {
+            mock.expect_run(
+                "adb version",
+                CmdOutput::success("Android Debug Bridge version 1.0.41"),
+            );
+            mock.expect_run("shell pkill -INT -f", CmdOutput::success(""));
+            mock.expect_run("shell pgrep -f", CmdOutput::failed(1, ""));
+            mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+            mock.expect_run("pull", CmdOutput::success(""));
+            mock.expect_run("shell rm -f", CmdOutput::success(""));
+        }
+        mock.expect_run("ps -A", CmdOutput::success("1 1 S\n6000 6000 S\n"));
+        script_metro_teardown(mock, EMULATOR, None);
+        script_borrowed_release(mock, false);
+        if api >= 34 {
+            script_encode(mock, CmdOutput::success(""));
+        }
+
+        let receipt = run(&mut runner, &req);
+
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+        assert_eq!(runner.0.remaining(), 0, "{:?}", labels(&runner.0));
+        no_ios_or_expo_android_build(&runner.0);
+        if api >= 34 {
+            assert_subsequence(
+                &labels(&runner.0),
+                &[
+                    "adb-screenrecord",
+                    "core-walk",
+                    "adb-device-pkill",
+                    "adb-pull",
+                ],
+            );
+            assert_eq!(receipt.cleanup["recorder"], "removed");
+            assert_eq!(receipt.outcomes["video"], "available");
+            assert_eq!(receipt.outcomes["video_file"], "media/video-published.mp4");
+            assert!(!receipt.outcomes.contains_key("video_next_step"));
+        } else {
+            assert!(!labels(&runner.0).iter().any(|l| l == "adb-screenrecord"));
+            assert_eq!(
+                receipt.outcomes["video"],
+                "unavailable(Android API <34 stops screen recording at 180 s)"
+            );
+            assert_eq!(
+                receipt.outcomes["video_next_step"],
+                "use an emulator with API 34 or later to record"
+            );
+            assert!(!receipt.outcomes.contains_key("video_file"));
+        }
         std::fs::remove_dir_all(repo).unwrap();
     }
 }

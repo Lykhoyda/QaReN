@@ -205,7 +205,7 @@ test('an incomplete native capture is never usable, while a missing React digest
       const result = await runPlan(plan.blocks, f.deps);
       // Strict rule 1: a provably incomplete native tree refuses at capture.
       assert.equal(result.verdict, 'REFUSED', source);
-      assert.equal('code' in result && result.code, 'PRIVATE_INPUT_CAPTURE_UNKNOWN', source);
+      assert.equal('code' in result && result.code, 'NATIVE_SNAPSHOT_INCOMPLETE', source);
       assert.equal(JSON.stringify({ result, rows: f.rows }).includes(secret), false);
       assert.equal(judge.requests.length, 0);
       assert.deepEqual(f.actions, []);
