@@ -129,8 +129,7 @@ test('a deadline-cut re-read keeps the decisive presence failure with retry-dead
     platformPresence: true,
     requirePrivateInputs: true,
     now: time.now,
-    native: async () =>
-      ++reads === 1 ? prior : new Promise<NativeObservation>(() => {}),
+    native: async () => (++reads === 1 ? prior : new Promise<NativeObservation>(() => {})),
     warn: (line) => logs.push(line),
     react: async () => assert.fail('no React read after incomplete native evidence expires'),
   }).catch((error: Error) => error);
