@@ -122,7 +122,13 @@ for (const kind of [
     if (!admitted || kind.startsWith('capture-')) {
       assert.equal(result.videoPublication, 'unknown');
       assert.equal(Object.hasOwn(result, 'nonStrictPublication'), false);
-      if (admitted) assert.equal(result.code, 'PRIVATE_INPUT_CAPTURE_UNKNOWN');
+      if (admitted)
+        assert.equal(
+          result.code,
+          kind === 'capture-native'
+            ? 'NATIVE_SNAPSHOT_INCOMPLETE'
+            : 'PRIVATE_INPUT_CAPTURE_UNKNOWN',
+        );
     } else {
       assert.equal(result.code, 'SCROLL_NAVIGATED');
       assert.equal(

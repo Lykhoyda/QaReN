@@ -730,6 +730,28 @@ impl TerminalResult {
     }
 }
 
+// The run's state, derived from phase, terminal and held. Read-only: writers still assign the fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunState<'a> {
+    // Created, DepsInstalled, ResourcesAllocated or Building.
+    Preparing,
+    Ready,
+    HandedOff,
+    // The walk is running.
+    Walking,
+    Ended {
+        walked: Option<&'a TerminalResult>,
+        cleanup: Cleanup<'a>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cleanup<'a> {
+    Clean,
+    Owed,
+    Held(&'a Held),
+}
+
 pub fn validate_run_id(run_id: &str) -> Result<(), Failure> {
     let ok = !run_id.is_empty()
         && !run_id.starts_with('-')
@@ -749,6 +771,27 @@ pub fn validate_run_id(run_id: &str) -> Result<(), Failure> {
 }
 
 impl RunRecord {
+    // First match wins. A walk that ends with unclean teardown goes back to walking with terminal set,
+    // and a hold is saved before terminal, so walking + held is ended whether terminal is there or not.
+    pub fn state(&self) -> RunState<'_> {
+        let walked = self.terminal.as_ref();
+        let ended = |cleanup| RunState::Ended { walked, cleanup };
+        match (self.phase, walked, self.held.as_ref()) {
+            (Phase::Cleaned, _, _) => ended(Cleanup::Clean),
+            (Phase::Failed, _, _) => ended(Cleanup::Owed),
+            (Phase::Walking, _, Some(held)) => ended(Cleanup::Held(held)),
+            (_, Some(_), _) => ended(Cleanup::Owed),
+            (Phase::Walking, None, None) => RunState::Walking,
+            (Phase::Ready, None, _) => RunState::Ready,
+            (Phase::HandedOff, None, _) => RunState::HandedOff,
+            (
+                Phase::Created | Phase::DepsInstalled | Phase::ResourcesAllocated | Phase::Building,
+                None,
+                _,
+            ) => RunState::Preparing,
+        }
+    }
+
     pub(crate) fn holds_device_lease(&self) -> bool {
         self.resources.lease.as_ref().is_some_and(|lease| {
             crate::buildplan::read_holder(&lease.lock_dir)

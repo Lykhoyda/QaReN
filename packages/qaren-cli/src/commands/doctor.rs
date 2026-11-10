@@ -540,9 +540,13 @@ pub fn held_note(lock_root: &Path, runs_root: &Path, udid: &str) -> Option<Strin
         .map(|qaren_home| qaren_home.join("runs"));
     let runs_root = holder_runs.as_deref().unwrap_or(runs_root);
     let record = crate::runrecord::RunRecord::load(runs_root, &holder.run_id).ok()?;
-    let held = record
-        .held
-        .filter(|_| record.phase == crate::runrecord::Phase::Walking)?;
+    let crate::runrecord::RunState::Ended {
+        cleanup: crate::runrecord::Cleanup::Held(held),
+        ..
+    } = record.state()
+    else {
+        return None;
+    };
     Some(format!(
         " ({} since {}, run {}; {} releases it)",
         held.reason,
@@ -789,20 +793,16 @@ fn disk(runner: &mut dyn Runner, cwd: &Path, home: &Path) -> Check {
     }
 }
 
-// The adb server a user's own adb client starts; it may hold a phone another port cannot see.
-const DEFAULT_ADB_PORT: u16 = 5037;
-
-// Device states from the running adb server's own protocol: no adb client runs and no server starts.
-// Err((no server answers, detail, fix)).
 fn adb_listing(
     runner: &dyn Runner,
-) -> Result<(u16, Vec<(String, String)>), (bool, String, String)> {
+) -> Result<(u16, Vec<(String, String)>), (Option<u16>, bool, String, String)> {
     let port = android::borrowed_server_port(
         runner.env_var("ADB_SERVER_SOCKET").as_deref(),
         runner.env_var("ANDROID_ADB_SERVER_PORT").as_deref(),
     )
     .map_err(|detail| {
         (
+            None,
             false,
             detail,
             "point ADB_SERVER_SOCKET at a local adb server (tcp:127.0.0.1:<port>) or unset it, then re-run".to_string(),
@@ -810,6 +810,7 @@ fn adb_listing(
     })?;
     if let Err(e) = runner.adb_server_version(port) {
         return Err((
+            Some(port),
             true,
             format!("no adb server answers on port {port} ({e})"),
             "start this account's adb server (`adb start-server`), then re-run".to_string(),
@@ -817,35 +818,13 @@ fn adb_listing(
     }
     let listed = runner.adb_server_devices(port).map_err(|e| {
         (
+            Some(port),
             false,
             format!("cannot read the device list of the adb server on port {port}: {e}"),
             "check the adb server, then re-run".to_string(),
         )
     })?;
     Ok((port, android::parse_devices(&listed)))
-}
-
-// One USB device is held by one server: a phone missing here may be held by the default server.
-fn held_on_default_server(
-    runner: &dyn Runner,
-    port: u16,
-    rows: &[(String, String)],
-) -> Vec<String> {
-    if port == DEFAULT_ADB_PORT {
-        return Vec::new();
-    }
-    let Ok(listed) = runner.adb_server_devices(DEFAULT_ADB_PORT) else {
-        return Vec::new();
-    };
-    android::parse_devices(&listed)
-        .into_iter()
-        .filter(|(serial, state)| {
-            state == "device"
-                && crate::scenario::is_usb_serial(serial)
-                && !rows.iter().any(|(s, st)| s == serial && st == "device")
-        })
-        .map(|(serial, _)| serial)
-        .collect()
 }
 
 fn device_check(id: &'static str, status: Status, problems: &[android::DeviceProblem]) -> Check {
@@ -867,36 +846,56 @@ fn android_devices_row(runner: &dyn Runner) -> Check {
     const ID: &str = "android-devices";
     let (port, rows) = match adb_listing(runner) {
         Ok(listing) => listing,
-        Err((true, detail, _)) => {
-            return Check::skip(
-                ID,
-                format!("{detail}; device states are unknown until one runs"),
-            )
+        Err((port, no_server, detail, fix)) => {
+            let mut problems = vec![("", detail, fix)];
+            if let Some(port) = port {
+                problems.extend(
+                    android::held_on_default_server(runner, port, &[])
+                        .iter()
+                        .map(|serial| {
+                            android::held_by_other_server(serial, port, android::DEFAULT_ADB_PORT)
+                        }),
+                );
+            }
+            return if no_server && problems.len() == 1 {
+                Check::skip(
+                    ID,
+                    format!(
+                        "{}; device states are unknown until one runs",
+                        problems[0].1
+                    ),
+                )
+            } else {
+                device_check(ID, Status::Warn, &problems)
+            };
         }
-        Err((false, detail, fix)) => return Check::warn(ID, detail, fix),
     };
     let physical: Vec<_> = rows
         .iter()
         .filter(|(serial, _)| android::is_physical_serial(serial))
         .collect();
+    let held = android::held_on_default_server(runner, port, &rows);
+    let linux = cfg!(target_os = "linux");
     let mut problems: Vec<_> = physical
         .iter()
         .filter_map(|(serial, state)| {
-            android::device_problem(serial, state, cfg!(target_os = "linux"))
+            android::device_cause(serial, Some(state.as_str()), port, &held, linux)
         })
         .collect();
+    // A phone only the server on 5037 lists is still reported.
     problems.extend(
-        held_on_default_server(runner, port, &rows)
-            .iter()
-            .map(|serial| android::held_by_other_server(serial, port, DEFAULT_ADB_PORT)),
+        held.iter()
+            .filter(|serial| !physical.iter().any(|(s, _)| s == *serial))
+            .filter_map(|serial| android::device_cause(serial, None, port, &held, linux)),
     );
+    let note = android::wireless_note(&rows);
     match (problems.is_empty(), physical.len()) {
         // A phone left charging must not fail doctor for an emulator user; --device fails instead.
         (false, _) => device_check(ID, Status::Warn, &problems),
-        (true, 0) => Check::pass(ID, "no physical device attached"),
+        (true, 0) => Check::pass(ID, format!("no physical device attached{note}")),
         (true, n) => Check::pass(
             ID,
-            format!("{n} physical device(s) ready on the adb server at port {port}"),
+            format!("{n} physical device(s) ready on the adb server at port {port}{note}"),
         ),
     }
 }
@@ -904,38 +903,45 @@ fn android_devices_row(runner: &dyn Runner) -> Check {
 // `doctor --device <android serial>`: that one device, read like android-devices; anything but ready fails.
 pub fn android_target_row(runner: &dyn Runner, serial: &str) -> Check {
     const ID: &str = "android-target";
+    if crate::scenario::is_wireless_serial(serial) {
+        return device_check(ID, Status::Fail, &[android::wireless_not_supported(serial)]);
+    }
     let (port, rows) = match adb_listing(runner) {
         Ok(listing) => listing,
-        Err((_, detail, fix)) => return Check::fail(ID, detail, fix),
+        Err((port, _, detail, fix)) => {
+            let mut problems = vec![("", detail, fix)];
+            if let Some(port) = port {
+                if android::held_on_default_server(runner, port, &[])
+                    .iter()
+                    .any(|s| s == serial)
+                {
+                    problems.push(android::held_by_other_server(
+                        serial,
+                        port,
+                        android::DEFAULT_ADB_PORT,
+                    ));
+                }
+            }
+            return device_check(ID, Status::Fail, &problems);
+        }
     };
     let state = rows
         .iter()
         .find(|(s, _)| s == serial)
-        .map(|(_, state)| state);
-    if state.is_some_and(|state| state == "device") {
-        return Check::pass(
+        .map(|(_, state)| state.as_str());
+    // A ready phone needs no read of the server on 5037.
+    let held = if state == Some("device") {
+        Vec::new()
+    } else {
+        android::held_on_default_server(runner, port, &rows)
+    };
+    match android::device_cause(serial, state, port, &held, cfg!(target_os = "linux")) {
+        None => Check::pass(
             ID,
             format!("Android device {serial} is ready on the adb server at port {port}"),
-        );
+        ),
+        Some(problem) => device_check(ID, Status::Fail, &[problem]),
     }
-    let mut problems: Vec<_> = state
-        .and_then(|state| android::device_problem(serial, state, cfg!(target_os = "linux")))
-        .into_iter()
-        .collect();
-    if held_on_default_server(runner, port, &rows)
-        .iter()
-        .any(|s| s == serial)
-    {
-        problems.push(android::held_by_other_server(
-            serial,
-            port,
-            DEFAULT_ADB_PORT,
-        ));
-    }
-    if problems.is_empty() {
-        problems.push(android::not_attached(serial, port));
-    }
-    device_check(ID, Status::Fail, &problems)
 }
 
 fn android_checks(
@@ -3548,10 +3554,7 @@ mod tests {
             "{}",
             empty_serial.detail
         );
-        assert_eq!(
-            empty_serial.fix.as_deref(),
-            Some(USB_PERMISSION_FIX)
-        );
+        assert_eq!(empty_serial.fix.as_deref(), Some(USB_PERMISSION_FIX));
         assert_eq!(
             unreadable.fix.as_deref(),
             Some(format!("{USB_PERMISSION_FIX}\n{USB_AUTHORIZATION_FIX}").as_str())
@@ -3621,6 +3624,191 @@ mod tests {
         assert_eq!(both.status, Status::Pass);
     }
 
+    const HELD_DETAIL: &str = "Android device 0A1B2C3D is attached to the adb server on port 5037, not to the one on port 5147";
+    const HELD_FIX: &str = "set ANDROID_ADB_SERVER_PORT=5037 and unset ADB_SERVER_SOCKET to run through it, or have its owner stop it; QaReN does not stop a server it did not start";
+
+    // Plan 7.5: whatever the phone lists as on the run's port, the held cause is its one cause.
+    #[test]
+    fn a_held_phone_shows_only_the_held_cause_whatever_it_lists_as_here() {
+        let env = [("ANDROID_ADB_SERVER_PORT", "5147")];
+        for here in [
+            "0A1B2C3D\tno permissions (missing udev rules? user is in the plugdev group); see [http://developer.android.com/tools/device.html]\n",
+            "0A1B2C3D\tunauthorized\n",
+            "0A1B2C3D\toffline\n",
+            "",
+        ] {
+            let servers = [(5147, Some(here)), (5037, Some("0A1B2C3D\tdevice\n"))];
+            let devices = android_devices_with(&env, &servers);
+            assert_eq!(devices.status, Status::Warn, "{here:?}");
+            assert_eq!(devices.detail, HELD_DETAIL, "{here:?}");
+            assert_eq!(devices.fix.as_deref(), Some(HELD_FIX), "{here:?}");
+            let runner = adb_host(&env, &servers);
+            let target = android_target_row(&runner, "0A1B2C3D");
+            assert!(runner.calls.is_empty(), "{:?}", runner.calls);
+            assert_eq!(target.status, Status::Fail, "{here:?}");
+            assert_eq!(target.detail, HELD_DETAIL, "{here:?}");
+            assert_eq!(target.fix.as_deref(), Some(HELD_FIX), "{here:?}");
+        }
+        // An unreadable serial here cannot be matched with one on 5037: its own cause, the held phone beside it.
+        let beside = android_devices_with(
+            &env,
+            &[
+                (5147, Some("????????????\tno permissions\n")),
+                (5037, Some("0A1B2C3D\tdevice\n")),
+            ],
+        );
+        assert_eq!(beside.status, Status::Warn);
+        assert_eq!(
+            beside.detail,
+            format!("an attached device whose serial adb cannot read: this account has no USB permission for it (adb: no permissions); {HELD_DETAIL}")
+        );
+        assert_eq!(
+            beside.fix.as_deref(),
+            Some(format!("{USB_PERMISSION_FIX}\n{HELD_FIX}").as_str())
+        );
+    }
+
+    const WIRELESS: &str = "adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp";
+
+    #[test]
+    fn android_devices_checks_default_server_when_selected_server_is_unavailable() {
+        let env = [("ANDROID_ADB_SERVER_PORT", "5147")];
+        for selected in [None, Some((5147, None))] {
+            let mut servers: Vec<_> = selected.into_iter().collect();
+            servers.push((5037, Some("0A1B2C3D\tdevice\n0A1B2C3E\tdevice\n")));
+            let row = android_devices_with(&env, &servers);
+            assert_eq!(row.status, Status::Warn);
+            let diagnosis = if selected.is_none() {
+                "no adb server answers on port 5147 (connection refused)"
+            } else {
+                "cannot read the device list of the adb server on port 5147"
+            };
+            assert!(row.detail.starts_with(diagnosis), "{}", row.detail);
+            for serial in ["0A1B2C3D", "0A1B2C3E"] {
+                assert!(row.detail.contains(&format!("Android device {serial} is attached to the adb server on port 5037, not to the one on port 5147")), "{}", row.detail);
+            }
+            let fix = row.fix.unwrap();
+            assert!(fix.contains("set ANDROID_ADB_SERVER_PORT=5037"), "{fix}");
+            assert!(
+                fix.contains(if selected.is_none() {
+                    "start this account's adb server"
+                } else {
+                    "check the adb server"
+                }),
+                "{fix}"
+            );
+        }
+        let wireless = format!("{WIRELESS}\tdevice\n");
+        for listed in [
+            None,
+            Some(""),
+            Some("????????\tdevice\n0A1B2C3D\tunauthorized\n"),
+            Some(wireless.as_str()),
+        ] {
+            let servers: Vec<_> = listed.map(|rows| (5037, Some(rows))).into_iter().collect();
+            let row = android_devices_with(&env, &servers);
+            assert_eq!(row.status, Status::Skip);
+            assert_eq!(row.detail, "no adb server answers on port 5147 (connection refused); device states are unknown until one runs");
+        }
+    }
+
+    #[test]
+    fn android_target_checks_default_server_when_selected_server_is_unavailable() {
+        let env = [("ANDROID_ADB_SERVER_PORT", "5147")];
+        for selected in [None, Some((5147, None))] {
+            for default_serial in [None, Some("0A1B2C3D"), Some("0A1B2C3E")] {
+                let listed = default_serial.map(|serial| format!("{serial}\tdevice\n"));
+                let mut servers: Vec<_> = selected.into_iter().collect();
+                if let Some(listed) = listed.as_deref() {
+                    servers.push((5037, Some(listed)));
+                }
+                let runner = adb_host(&env, &servers);
+                let row = android_target_row(&runner, "0A1B2C3D");
+                assert!(runner.calls.is_empty(), "{:?}", runner.calls);
+                assert_eq!(row.status, Status::Fail);
+                let diagnosis = if selected.is_none() {
+                    "no adb server answers on port 5147 (connection refused)"
+                } else {
+                    "cannot read the device list of the adb server on port 5147"
+                };
+                assert!(row.detail.starts_with(diagnosis), "{}", row.detail);
+                if default_serial == Some("0A1B2C3D") {
+                    assert!(row.detail.contains("Android device 0A1B2C3D is attached to the adb server on port 5037, not to the one on port 5147"), "{}", row.detail);
+                    assert!(row
+                        .fix
+                        .unwrap()
+                        .contains("set ANDROID_ADB_SERVER_PORT=5037"));
+                } else {
+                    assert!(!row.detail.contains("is attached"), "{}", row.detail);
+                    if selected.is_none() {
+                        assert_eq!(row.detail, diagnosis);
+                    }
+                    assert_eq!(
+                        row.fix.as_deref(),
+                        Some(if selected.is_none() {
+                            "start this account's adb server (`adb start-server`), then re-run"
+                        } else {
+                            "check the adb server, then re-run"
+                        })
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_wireless_adb_row_is_counted_apart_and_never_reported_as_a_device() {
+        let both = android_devices_with(
+            &[],
+            &[(
+                5037,
+                Some(&format!("0A1B2C3D\tdevice\n{WIRELESS}\tdevice\n")),
+            )],
+        );
+        assert_eq!(both.status, Status::Pass);
+        assert_eq!(both.detail, "1 physical device(s) ready on the adb server at port 5037; 1 wireless adb connection(s) listed and not used (USB cable only)");
+        for state in ["device", "offline"] {
+            let only =
+                android_devices_with(&[], &[(5037, Some(&format!("{WIRELESS}\t{state}\n")))]);
+            assert_eq!(only.status, Status::Pass, "{state}");
+            assert_eq!(only.detail, "no physical device attached; 1 wireless adb connection(s) listed and not used (USB cable only)");
+            for text in ["cannot read", "replug", WIRELESS] {
+                assert!(!only.detail.contains(text), "{state}: {}", only.detail);
+            }
+        }
+        // Ready only on the default server: a wireless row is never "held by another server".
+        let elsewhere = android_devices_with(
+            &[("ANDROID_ADB_SERVER_PORT", "5147")],
+            &[
+                (5147, Some("")),
+                (5037, Some(&format!("{WIRELESS}\tdevice\n"))),
+            ],
+        );
+        assert_eq!(elsewhere.status, Status::Pass);
+        assert_eq!(elsewhere.detail, "no physical device attached");
+    }
+
+    #[test]
+    fn android_target_refuses_a_wireless_name_without_asking_the_server() {
+        let runner = adb_host(&[], &[]);
+        let row = android_target_row(&runner, WIRELESS);
+        assert!(runner.calls.is_empty(), "{:?}", runner.calls);
+        assert_eq!(row.id, "android-target");
+        assert_eq!(row.status, Status::Fail);
+        assert_eq!(
+            row.detail,
+            format!(
+                "{WIRELESS} is a wireless adb connection; QaReN uses a phone over a USB cable only"
+            )
+        );
+        assert_eq!(row.fix.as_deref(), Some("attach the phone with a USB cable and pass the serial adb lists for the cable connection, then re-run"));
+        assert!(
+            !row.detail.contains("no adb server answers"),
+            "{}",
+            row.detail
+        );
+    }
+
     #[test]
     fn android_target_fails_unless_that_device_is_ready() {
         let target = |env: &[(&str, &str)], servers: &[(u16, Option<&str>)], serial: &str| {
@@ -3648,7 +3836,10 @@ mod tests {
         assert_eq!(permissions.fix.as_deref(), Some(USB_PERMISSION_FIX));
         let absent = target(&[], &[(5037, Some(listed))], "0A1B2C3F");
         assert_eq!(absent.status, Status::Fail);
-        assert_eq!(absent.detail, "no Android device with serial 0A1B2C3F is attached to the adb server on port 5037");
+        assert_eq!(
+            absent.detail,
+            "no Android device with serial 0A1B2C3F is attached to the adb server on port 5037"
+        );
         let env = [("ANDROID_ADB_SERVER_PORT", "5147")];
         let held = target(
             &env,

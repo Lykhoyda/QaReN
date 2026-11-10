@@ -285,6 +285,20 @@ fn handoff_owner_rejects_clean_strategy_and_scheme_and_usb_port() {
 }
 
 #[test]
+fn android_usb_serial_refuses_a_wireless_adb_connection() {
+    let usb = |serial: &str| {
+        format!("schema: qaren/1\nname: usb\nplatform: android\ncandidate:\n  project_root: test-app\n  app_id: com.rndevagent.testapp\n  revision: HEAD\nmetro:\n  port: 8794\nandroid_usb:\n  serial: {serial}\n  adb_server_port: 15039\n")
+    };
+    assert!(parse(&usb("R5CR20XXYZ")).is_ok());
+    let failure = parse(&usb("adb-R5CR20XXYZ-AbCdEf._adb-tls-connect._tcp")).unwrap_err();
+    assert_eq!(failure.code, FailureCode::ScenarioInvalid);
+    assert_eq!(
+        failure.detail,
+        "android_usb.serial \"adb-R5CR20XXYZ-AbCdEf._adb-tls-connect._tcp\" must name a physical USB device, not an emulator, loopback endpoint or wireless connection"
+    );
+}
+
+#[test]
 fn qaren_owner_usb_still_requires_adb_server_port() {
     let usb = "schema: qaren/1\nname: usb\nplatform: android\ncandidate:\n  project_root: test-app\n  app_id: com.rndevagent.testapp\n  revision: HEAD\nmetro:\n  port: 8794\nandroid_usb:\n  serial: R5CR20XXYZ\n";
     let failure = parse(usb).unwrap_err();

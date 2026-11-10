@@ -288,9 +288,11 @@ pub fn parse_devices(stdout: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-// A listed row that is neither an emulator nor a host:port endpoint; an unreadable serial still counts.
+// A listed row that is not an emulator, a host:port endpoint or a wireless connection; an unreadable serial still counts.
 pub fn is_physical_serial(serial: &str) -> bool {
-    !crate::scenario::is_emulator_serial(serial) && !serial.contains(':')
+    !crate::scenario::is_emulator_serial(serial)
+        && !serial.contains(':')
+        && !crate::scenario::is_wireless_serial(serial)
 }
 
 // (subreason, detail, next step) for an attached device that cannot be used.
@@ -358,6 +360,74 @@ pub fn not_attached(serial: &str, port: u16) -> DeviceProblem {
         ),
         "attach the phone over USB with USB debugging enabled, then re-run".to_string(),
     )
+}
+
+// The adb server a user's own adb client starts; it may hold a phone another port cannot see.
+pub const DEFAULT_ADB_PORT: u16 = 5037;
+
+// Readable USB serials the server on 5037 lists as `device` and the run's port does not, listed there or not.
+// One raw host:devices query: no adb client runs and no server starts; no answer means nobody holds one.
+pub fn held_on_default_server(
+    runner: &dyn crate::exec::Runner,
+    port: u16,
+    rows: &[(String, String)],
+) -> Vec<String> {
+    if port == DEFAULT_ADB_PORT {
+        return Vec::new();
+    }
+    let Ok(listed) = runner.adb_server_devices(DEFAULT_ADB_PORT) else {
+        return Vec::new();
+    };
+    parse_devices(&listed)
+        .into_iter()
+        .filter(|(serial, state)| {
+            state == "device"
+                && crate::scenario::is_usb_serial(serial)
+                && !rows.iter().any(|(s, st)| s == serial && st == "device")
+        })
+        .map(|(serial, _)| serial)
+        .collect()
+}
+
+// The one cause for a phone on the run's port (`state` None: not listed there), for doctor and check alike.
+// Another server having it as `device` comes before its own state: that next step can be taken at once.
+pub fn device_cause(
+    serial: &str,
+    state: Option<&str>,
+    port: u16,
+    held: &[String],
+    linux: bool,
+) -> Option<DeviceProblem> {
+    if state == Some("device") {
+        return None;
+    }
+    if port != DEFAULT_ADB_PORT && held.iter().any(|s| s == serial) {
+        return Some(held_by_other_server(serial, port, DEFAULT_ADB_PORT));
+    }
+    match state {
+        Some(state) => device_problem(serial, state, linux),
+        None => Some(not_attached(serial, port)),
+    }
+}
+
+pub fn wireless_not_supported(serial: &str) -> DeviceProblem {
+    (
+        "wireless-not-supported",
+        format!("{serial} is a wireless adb connection; QaReN uses a phone over a USB cable only"),
+        "attach the phone with a USB cable and pass the serial adb lists for the cable connection, then re-run".to_string(),
+    )
+}
+
+// For texts that say what was listed and not used; empty when no wireless row is listed.
+pub fn wireless_note(rows: &[(String, String)]) -> String {
+    match rows
+        .iter()
+        .filter(|(serial, _)| crate::scenario::is_wireless_serial(serial))
+        .count()
+    {
+        0 => String::new(),
+        n => format!("; {n} wireless adb connection(s) listed and not used (USB cable only)"),
+    }
 }
 
 pub fn getprop_spec(adb: &Path, server_port: u16, serial: &str, prop: &str) -> CmdSpec {

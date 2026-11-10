@@ -15,16 +15,38 @@ export class PrivateInputCaptureError extends Error {
 const NATIVE_CAUSE =
   /^(unattested|truncated|ref-map-not-updated|node-count-mismatch|keyboard-state-unknown|snapshot-generation-unknown|retry-deadline|dropped=\d{1,7}|verdict=(failed|degraded)|reason=(empty-capture|snapshot-ref-freshness-unknown|unrecognized)|presence-failure=(initial-eligibility|preparation|enumeration|observation|final-eligibility|revalidation|finalization):(deadline|read-unavailable|ineligible|node-limit|enumeration-changed)|presence-deadline=(initial-eligibility|preparation|enumeration|observation|final-eligibility|revalidation|finalization):(app-state|alerts|sheets|root-snapshot|preparation-poll|enumeration|observation-loop|observation|first-match|all-matches|candidate-snapshot|candidate-hit|post-hit-snapshot|revalidation|finalization):(before|after))$/;
 
-export class NativeSnapshotIncomplete extends PrivateInputCaptureError {
+export class NativeSnapshotIncomplete extends Error {
+  readonly code = 'NATIVE_SNAPSHOT_INCOMPLETE' as const;
   readonly nodes: number;
   readonly causes: readonly string[];
+  readonly reads?: number;
+  readonly elapsedMs?: number;
 
-  constructor(nodes: number, causes: readonly string[]) {
+  constructor(nodes: number, causes: readonly string[], reads?: number, elapsedMs?: number) {
     const count = Number.isSafeInteger(nodes) && nodes >= 0 ? nodes : 0;
     const known = causes.filter((cause) => typeof cause === 'string' && NATIVE_CAUSE.test(cause));
-    super(`The native snapshot was incomplete (nodes=${count}; causes=${known.join(',')}).`);
+    const attempts =
+      typeof reads === 'number' && Number.isSafeInteger(reads) && reads >= 0 ? reads : undefined;
+    const elapsed =
+      typeof elapsedMs === 'number' && Number.isSafeInteger(elapsedMs) && elapsedMs >= 0
+        ? elapsedMs
+        : undefined;
+    super(
+      `The native snapshot was incomplete (nodes=${count}; causes=${known.join(',')})${
+        attempts !== undefined && elapsed !== undefined
+          ? `; read ${attempts} times over ${elapsed} ms`
+          : ''
+      }.`,
+    );
+    this.name = 'NativeSnapshotIncomplete';
     this.nodes = count;
     this.causes = known;
+    this.reads = attempts;
+    this.elapsedMs = elapsed;
+  }
+
+  withReads(reads?: number, elapsedMs?: number): NativeSnapshotIncomplete {
+    return new NativeSnapshotIncomplete(this.nodes, this.causes, reads, elapsedMs);
   }
 }
 

@@ -15,8 +15,8 @@ use crate::receipt::{Receipt, ReceiptResult};
 use crate::redact::redact_secrets;
 use crate::runrecord::{
     capture_pid_identity, probe_pid_identity, AppInstallResource, BuildLockObservation,
-    BuildLockResource, FarmResource, IosSimResource, LockObservation, MetroResource, Phase,
-    PidLiveness, RunRecord, TunnelResource, UsbDeviceResource, RUN_SCHEMA,
+    BuildLockResource, Cleanup, FarmResource, IosSimResource, LockObservation, MetroResource,
+    Phase, PidLiveness, RunRecord, RunState, TunnelResource, UsbDeviceResource, RUN_SCHEMA,
 };
 use crate::scenario::{BuildOwner, BuildStrategy, DepsPolicy, IosSpec, Platform, Scenario};
 use crate::timefmt;
@@ -1421,10 +1421,16 @@ fn ready_holder(
         return None;
     }
     let record = RunRecord::load(runs_root, &holder.run_id).ok()?;
-    (matches!(
-        record.phase,
-        Phase::Ready | Phase::Walking | Phase::HandedOff
-    ) && record.terminal.is_none())
+    matches!(
+        record.state(),
+        RunState::Ready
+            | RunState::HandedOff
+            | RunState::Walking
+            | RunState::Ended {
+                walked: None,
+                cleanup: Cleanup::Held(_)
+            }
+    )
     .then(|| holder.run_id.clone())
 }
 

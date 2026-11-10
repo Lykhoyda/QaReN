@@ -534,6 +534,7 @@ function markContinuity(
 
 export interface WalkSequence {
   observation: number;
+  captureUnknown?: boolean;
   devOverlayAccepted?: true;
   latch?: {
     line: number;
@@ -846,6 +847,7 @@ async function walkBlockScoped(
     const requirePresence = assertion || (!!target && target.quoted === undefined);
     const platformPresence = requirePresence || purpose === 'provenance';
     const startedAt = deps.now();
+    let readStartedAt = startedAt;
     if (until !== undefined && startedAt >= until) throw new CaptureDeadline();
     const id = ++sequence.observation;
     latestObservation = id;
@@ -872,14 +874,33 @@ async function walkBlockScoped(
     let admitted = false;
     try {
       try {
-        latest = await captureScreen({
-          observation: id,
-          ...(platformPresence ? { platformPresence: true } : {}),
-          ...(timingObserver ? { timing: timingObserver } : {}),
-          ...(until === undefined ? {} : { budgetMs: Math.max(0, until - startedAt) }),
-        });
+        const deadline = step?.kind === 'wait' ? itemDeadline : undefined;
+        let incomplete: NativeSnapshotIncomplete | undefined;
+        let reads = 0;
+        while (true) {
+          assertActive();
+          if (incomplete && deadline !== undefined && deps.now() >= deadline)
+            throw incomplete.withReads(reads, deps.now() - startedAt);
+          try {
+            if (reads++ > 0) readStartedAt = deps.now();
+            latest = await captureScreen({
+              observation: id,
+              ...(platformPresence ? { platformPresence: true } : {}),
+              ...(timingObserver ? { timing: timingObserver } : {}),
+              ...(until === undefined ? {} : { budgetMs: Math.max(0, until - readStartedAt) }),
+            });
+            break;
+          } catch (error) {
+            if (error instanceof CaptureDeadline && incomplete)
+              throw incomplete.withReads(reads, deps.now() - startedAt);
+            if (!(error instanceof NativeSnapshotIncomplete) || deadline === undefined) throw error;
+            incomplete = new NativeSnapshotIncomplete(error.nodes, error.causes);
+            sequence.captureUnknown = true;
+            await pause(Math.min(WAIT_POLL_MS, Math.max(0, deadline - deps.now())));
+          }
+        }
         // Stamped at the capture's start until admission records its completion.
-        captured.set(latest, { at: startedAt, id });
+        captured.set(latest, { at: readStartedAt, id });
       } catch (error) {
         if (isAbort(error)) throw error;
         if (error instanceof AppProcessGoneError) throw processChanged();
@@ -918,7 +939,7 @@ async function walkBlockScoped(
         });
       assertActive();
       if (until !== undefined && deps.now() >= until) throw new CaptureDeadline();
-      const timing = admitObservation(startedAt, deps.now());
+      const timing = admitObservation(readStartedAt, deps.now());
       if (timing) captured.set(latest, { at: timing.completedAt, id });
       if (!timing)
         throw new ResolutionError({
@@ -1200,6 +1221,7 @@ async function walkBlockScoped(
   ): Promise<{ stable: boolean; crop?: PixelCrop; observation?: Observation }> => {
     assertActive();
     const allowed = () =>
+      !sequence.captureUnknown &&
       !privacy.screenshotLatch(deps.videoPolicy) &&
       !metadataOnly &&
       !(deps.videoPolicy === 'non-strict'
@@ -1243,35 +1265,43 @@ async function walkBlockScoped(
   };
   const identityText = (target: Element): string =>
     `${target.kind} ${target.label === undefined ? 'unlabelled' : `"${target.label}"`}, ${target.testID === undefined ? 'no testID' : `testID "${target.testID}"`}`;
-  // After a moved refusal, the target re-identified by the step's own exact-identity rules
-  // (one identity, same kind, label and testID) must hold one native frame across two captures.
+  // Re-prove one exact identity at the same frame across two captures.
   const settledTarget = async (
     item: Exclude<Item, { kind: 'check' }>,
     target: Element,
+    options: { nativeOnly?: true } = {},
   ): Promise<{ observation: Observation; frame: string } | { frames: string[] }> => {
     const quoted = target.testID ?? target.label;
-    const frameOf = (screen: Screen): string | undefined => {
-      // Without a testID or label there is no exact identity, so the target cannot be proven the same element.
-      if (quoted === undefined || (item.kind !== 'press' && item.kind !== 'fill')) return undefined;
+    const frameOf = (screen: Screen): { frame?: string; reason: string } => {
+      if (quoted === undefined || (item.kind !== 'press' && item.kind !== 'fill'))
+        return { reason: 'absent' };
       const matches = exactIdentities(
         screen,
         { quoted, phrase: quoted, exact: target.testID !== undefined ? 'id' : 'text' },
         item.kind,
-      ).filter(({ element }) => sameIdentity(element, target));
-      return matches.length === 1 ? frameKey(matches[0].element) : undefined;
+      ).filter(
+        ({ element }) =>
+          sameIdentity(element, target) &&
+          (!options.nativeOnly || !element.ref.startsWith('react:')),
+      );
+      if (matches.length === 0) return { reason: 'absent' };
+      if (matches.length > 1) return { reason: `ambiguous:${matches.length}` };
+      const frame = frameKey(matches[0].element);
+      return { frame, reason: frame ?? 'no-frame' };
     };
     let observation = await capture(item);
-    let previous = frameOf(observation.screen);
-    const frames = [previous ?? 'unresolved'];
+    const first = frameOf(observation.screen);
+    let previous = first.frame;
+    const frames = [first.reason];
     for (let readback = 0; readback < SCROLL_SETTLE_READBACKS; readback += 1) {
       usable(observation, item);
       const next = await capture(item);
       const current = frameOf(next.screen);
-      frames.push(current ?? 'unresolved');
-      if (current !== undefined && current === previous)
-        return { observation: next, frame: current };
+      frames.push(current.reason);
+      if (current.frame !== undefined && current.frame === previous)
+        return { observation: next, frame: current.frame };
       observation = next;
-      previous = current;
+      previous = current.frame;
     }
     return { frames };
   };
@@ -1878,7 +1908,7 @@ async function walkBlockScoped(
       withheldRows.set(item.line, latch.reason);
       return undefined;
     }
-    if (metadataOnly || latest.devError) {
+    if (sequence.captureUnknown || metadataOnly || latest.devError) {
       metric('screenshot', undefined, { outcome: 'withheld' });
       return undefined;
     }
@@ -2707,6 +2737,10 @@ async function walkBlockScoped(
           ? await capture(undefined, true, true)
           : await captureOnce(undefined, true, true, 'resolve', captureDeadline);
     } catch (error) {
+      if (item.kind === 'wait' && error instanceof NativeSnapshotIncomplete) {
+        sequence.captureUnknown = true;
+        return undefined;
+      }
       if (error instanceof CaptureDeadline) return undefined;
       if (
         !deps.presenceUnavailable ||
@@ -3129,6 +3163,7 @@ async function walkBlockScoped(
       if (
         error instanceof CaptureDeadline ||
         error instanceof NativeCaptureError ||
+        error instanceof NativeSnapshotIncomplete ||
         error instanceof PrivateInputCaptureError ||
         (error instanceof ResolutionError && error.code === 'SCREEN_EVIDENCE_INCOMPLETE')
       )
@@ -4365,7 +4400,7 @@ async function walkBlockScoped(
                   dismissal.via = await deps.dismissKeyboard!(context);
                   return { ok: true, proven: false };
                 });
-                const settled = await settledTarget(item, target);
+                const settled = await settledTarget(item, target, { nativeOnly: true });
                 if ('frames' in settled) {
                   outcome = failed(
                     item,
@@ -4376,7 +4411,7 @@ async function walkBlockScoped(
                         app: identityText(target),
                         ...(concealsScreen(latest) ? { withheld: MASK } : {}),
                       },
-                      `) did not settle across ${settled.frames.length} captures (${settled.frames.join(' | ')}); it was not dispatched${KEYBOARD_DISMISSED}`,
+                      `) did not settle across ${settled.frames.length} captures (${settled.frames.join(' | ')}); it was not dispatched; keyboard after dismissal: ${latest.keyboardVisible === true ? 'visible' : latest.keyboardVisible === false ? 'hidden' : 'unknown'}${KEYBOARD_DISMISSED}`,
                     ],
                     latest,
                     await shoot(item),
@@ -4862,6 +4897,10 @@ async function walkBlockScoped(
               if (isAbort(error)) throw error;
               if (error instanceof NativeCaptureError)
                 return refusePress(error.code, new NativeCaptureError().message);
+              if (error instanceof NativeSnapshotIncomplete) {
+                const safe = new NativeSnapshotIncomplete(error.nodes, error.causes);
+                return refusePress(safe.code, safe.message);
+              }
               if (error instanceof PrivateInputCaptureError)
                 return refusePress(error.code, new PrivateInputCaptureError().message);
               if (error instanceof ResolutionError) return refusePress(error.code, error.message);
@@ -5243,12 +5282,19 @@ async function walkBlockScoped(
             false,
             false,
           );
-        if (error instanceof PrivateInputCaptureError || error instanceof NativeCaptureError) {
+        if (
+          error instanceof NativeSnapshotIncomplete ||
+          error instanceof PrivateInputCaptureError ||
+          error instanceof NativeCaptureError
+        ) {
           const nativeFailure = error instanceof NativeCaptureError;
           const safe = nativeFailure
             ? new NativeCaptureError()
             : error instanceof NativeSnapshotIncomplete
-              ? new NativeSnapshotIncomplete(error.nodes, error.causes)
+              ? new NativeSnapshotIncomplete(error.nodes, error.causes).withReads(
+                  error.reads,
+                  error.elapsedMs,
+                )
               : new PrivateInputCaptureError();
           const key = nativeFailure ? 'native-capture' : 'private-input-capture';
           emit({
@@ -5698,19 +5744,23 @@ export async function runPlan(
           ? { unsavable: `line ${Math.min(...privateFills)}: fills a private input` }
           : recipeMarkdown(title, blocks, privacy.privateSet('persisted'));
       const refusal = outcome?.refusal ?? (ledger.verdict === 'REFUSED' ? ledger : undefined);
-      const { nonStrictPublication: _nonStrict, ...captureUnknown } = ledger;
+      const captureUnknown =
+        sequence.captureUnknown ||
+        refusal?.code === 'PRIVATE_INPUT_CAPTURE_UNKNOWN' ||
+        refusal?.code === 'NATIVE_SNAPSHOT_INCOMPLETE';
+      const { nonStrictPublication: _nonStrict, ...withoutNonStrict } = ledger;
+      const publication = captureUnknown
+        ? { ...withoutNonStrict, videoPublication: 'unknown' as const }
+        : ledger;
       return refusal
         ? {
-            ...(refusal.code === 'PRIVATE_INPUT_CAPTURE_UNKNOWN' ? captureUnknown : ledger),
+            ...publication,
             code: refusal.code,
             message: refusal.message,
             ...(outcome?.pressEvidence ? { pressEvidence: outcome.pressEvidence } : {}),
             verdict: 'REFUSED',
-            ...(refusal.code === 'PRIVATE_INPUT_CAPTURE_UNKNOWN'
-              ? { videoPublication: 'unknown' as const }
-              : {}),
           }
-        : ledger;
+        : publication;
     };
     const withPrivateFills = (result: BlockResult, lines: number[] = []): BlockResult =>
       lines.length

@@ -2,7 +2,7 @@ use crate::adapters::{android, ios, metro};
 use crate::exec::Runner;
 use crate::failure::{Failure, FailureCode};
 use crate::receipt::{Receipt, ReceiptResult};
-use crate::runrecord::{probe_pid_identity, Phase, PidLiveness, RunRecord};
+use crate::runrecord::{probe_pid_identity, Cleanup, Phase, PidLiveness, RunRecord, RunState};
 use crate::scenario::Platform;
 use crate::timefmt;
 use std::path::Path;
@@ -131,10 +131,10 @@ pub fn status(runner: &mut dyn Runner, runs_root: &Path, run_id: &str) -> Receip
         _ => "re-run status; if still unknown, inspect the run directory".to_string(),
     };
     // Retention is the record's intent; the probe rows above say whether Metro and the lease are still live.
-    if let Some(held) = record
-        .held
-        .as_ref()
-        .filter(|_| record.phase == Phase::Walking)
+    if let RunState::Ended {
+        cleanup: Cleanup::Held(held),
+        ..
+    } = record.state()
     {
         receipt.outcomes.insert(
             "held".to_string(),
