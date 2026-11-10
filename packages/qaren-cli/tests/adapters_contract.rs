@@ -2010,6 +2010,37 @@ fn runner_processes_witness_reads_only_a_recognised_dump() {
     }
 }
 
+// The banner a starved API 37 emulator printed instead of a processes dump (text from the device
+// acceptance capture; its raw bytes stayed on the device host). A dump cut short by it is not a dump.
+#[test]
+fn dumpsys_timeout_banner_is_a_timeout_wherever_it_appears() {
+    let banner = include_str!("fixtures/android-dumpsys-dump-timeout.txt");
+    let stopped = include_str!("fixtures/android-runner-processes-stopped.txt");
+    assert!(android::dump_timed_out(banner));
+    assert!(android::dump_timed_out(&format!(
+        "{}\n*** SERVICE 'activity' DUMP TIMEOUT (20000ms) EXPIRED ***\r\n",
+        &stopped[..200]
+    )));
+    let running = include_str!("fixtures/android-runner-processes-running.txt");
+    let unsupported = include_str!("fixtures/android-dumpsys-unsupported.txt");
+    for complete in [stopped, running, unsupported, ""] {
+        assert!(!android::dump_timed_out(complete));
+    }
+}
+
+// dumpsys takes `-t` from Android 8; an older image keeps the plain command, whose `-t` it would
+// read as a service name.
+#[test]
+fn runner_processes_service_timeout_follows_the_attempt_budget_from_api_26() {
+    let adb = Path::new("/sdk/platform-tools/adb");
+    let spec = android::runner_processes_spec(adb, 5147, "emulator-5554", 3, 26);
+    assert_eq!(spec.timeout_seconds, 60);
+    assert_eq!(spec.args[3..6], ["dumpsys", "-t", "60"]);
+    let old = android::runner_processes_spec(adb, 5147, "emulator-5554", 2, 25);
+    assert_eq!(old.timeout_seconds, 40);
+    assert_eq!(old.args[3..5], ["dumpsys", "activity"]);
+}
+
 #[test]
 fn borrowed_runner_release_commands_go_through_the_borrowed_server() {
     let adb = Path::new("/sdk/platform-tools/adb");
@@ -2034,12 +2065,14 @@ fn borrowed_runner_release_commands_go_through_the_borrowed_server() {
             ],
         ),
         (
-            android::runner_processes_spec(adb, 5147, "emulator-5554"),
+            android::runner_processes_spec(adb, 5147, "emulator-5554", 1, 37),
             vec![
                 "-s",
                 "emulator-5554",
                 "shell",
                 "dumpsys",
+                "-t",
+                "20",
                 "activity",
                 "processes",
                 "dev.lykhoyda.rndevagent.androidrunner",
