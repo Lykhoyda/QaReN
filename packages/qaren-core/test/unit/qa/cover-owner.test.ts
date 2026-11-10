@@ -2,6 +2,7 @@
 // never a pointer-transparent view the inferred band cutter happens to pick.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { crc32, deflateSync } from 'node:zlib';
 import { captureScreen, CaptureDeadline } from '../../../dist/qa/capture.js';
 import { capturePrivateScreen } from '../../../dist/qa/privacy.js';
 import { coverOwner } from '../../../dist/qa/resolve.js';
@@ -429,6 +430,7 @@ async function waitOutCover(
     acceptLiveHit?: boolean;
     liveHitReason?: 'unavailable' | 'ambiguous' | 'expired' | 'moved';
     unquoted?: boolean;
+    pixelOnly?: boolean;
   } = {},
 ) {
   const continueTarget =
@@ -513,6 +515,34 @@ async function waitOutCover(
   let currentScreen: Screen;
   let entryRecaptures = 0;
   let pendingOwnerRead = false;
+  let comparisonShots = 0;
+  if (options.pixelOnly)
+    w.deps.comparisonScreenshot = async () => {
+      comparisonShots++;
+      const stride = FULL.width * 3 + 1;
+      const raw = Buffer.alloc(stride * FULL.height);
+      for (let y = 0; y < FULL.height; y++)
+        raw.fill(landed ? 255 : 0, y * stride + 1, (y + 1) * stride);
+      const chunk = (type: string, bytes: Uint8Array) => {
+        const body = Buffer.concat([Buffer.from(type), bytes]);
+        const size = Buffer.alloc(4);
+        const crc = Buffer.alloc(4);
+        size.writeUInt32BE(bytes.length);
+        crc.writeUInt32BE(crc32(body));
+        return Buffer.concat([size, body, crc]);
+      };
+      const header = Buffer.alloc(13);
+      header.writeUInt32BE(FULL.width);
+      header.writeUInt32BE(FULL.height, 4);
+      header[8] = 8;
+      header[9] = 2;
+      return Buffer.concat([
+        Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+        chunk('IHDR', header),
+        chunk('IDAT', deflateSync(raw)),
+        chunk('IEND', Buffer.alloc(0)),
+      ]);
+    };
   const captureNext: typeof w.deps.captureScreen = async (opts) => {
     captures++;
     const presence = opts?.platformPresence === true;
@@ -525,6 +555,7 @@ async function waitOutCover(
     const refusalScreen = options.selfCover ? await capture(refusalViews, { presence }) : covered;
     delete refusalScreen.keyboardVisible;
     const clear = await capture(clearViews, { presence });
+    if (options.pixelOnly) clear.pointScale = 1;
     delete clear.keyboardVisible;
     const off = await capture(offViews, { presence });
     const offTarget = off.elements.find(
@@ -537,7 +568,10 @@ async function waitOutCover(
         delete screen.elements.find((e) => e.testID === 'qa-hi-row-1')?.testID;
       return screen;
     };
-    const ownerRead = presence && pendingOwnerRead && opts?.budgetMs === undefined;
+    const ownerRead =
+      presence &&
+      (pendingOwnerRead || (!options.inferredOverlay && options.ownerEntry !== undefined)) &&
+      opts?.budgetMs === undefined;
     if (presence) pendingOwnerRead = false;
     if (ownerRead) {
       entryRecaptures++;
@@ -633,6 +667,13 @@ async function waitOutCover(
       if (options.clearAt !== undefined && w.deps.now() - waitStarted >= options.clearAt)
         return withoutId(clear);
     }
+    if (
+      options.pixelOnly &&
+      waitStarted !== undefined &&
+      options.clearAt !== undefined &&
+      w.deps.now() - waitStarted >= options.clearAt
+    )
+      return withoutId(clear);
     if (options.nativeOcclusion) return presses === 0 ? withoutId(clear) : withoutId(refusalScreen);
     return withoutId(captures === 1 && !options.initialClearance ? off : refusalScreen);
   };
@@ -674,7 +715,7 @@ async function waitOutCover(
     if (!options.refusePress) landed++;
     return options.refusePress
       ? { ok: false, proven: false, mutation: 'none', error: 'not dispatched' }
-      : { ok: true, proven: true };
+      : { ok: true, proven: !options.pixelOnly };
   };
   const kind = options.unquoted
     ? 'Tap Row 1'
@@ -703,6 +744,7 @@ async function waitOutCover(
     pressOptions,
     notes,
     entryRecaptures,
+    comparisonShots,
   };
 }
 
@@ -788,6 +830,32 @@ test('a refused live hit waits for clearance then taps once without stale strict
       { line: 1, phase: 'end', at: 1000, waitedMs: 1000, cleared: true },
     ],
   );
+});
+
+test('a pixel-only tap after a cleared live-hit wait lands exactly once', async () => {
+  const { row, presses, landed, comparisonShots, actions } = await waitOutCover({
+    inferredOverlay: true,
+    clearAt: 1000,
+    pixelOnly: true,
+  });
+  assert.equal(row?.outcome, 'pass', JSON.stringify(row));
+  assert.equal(presses, 2, 'one refused read and one landed tap');
+  assert.equal(landed, 1, 'a visual toggle must not be tapped twice');
+  assert.equal(comparisonShots, 3, 'one clear baseline and two stable changed crops');
+  assert.equal(row?.coverWaitMs, 1000);
+  assert.deepEqual(actions, ['scroll down']);
+});
+
+test('an incomplete owner recapture on the non-overlay path is not repeated for naming', async () => {
+  const { row, entryRecaptures, budgets, presses } = await waitOutCover({
+    ownerEntry: 'incomplete',
+  });
+  assert.equal(row?.outcome, 'fail');
+  assert.equal(entryRecaptures, 1, 'entry and refusal naming share one presence read');
+  assert.equal(presses, 0);
+  assert.equal(row?.coverWaitMs, undefined);
+  assert.deepEqual(budgets, []);
+  assert.match(String(row?.reason), /no cover named \(presence-recapture-incomplete\)/);
 });
 
 const liveHitRefusalText = (cover: string, reason = 'not-hittable') =>
@@ -936,7 +1004,10 @@ test('the same item cannot spend another cover wait on a dispatch retry', async 
   const { budgets, presses, row } = await waitOutCover({ clearAt: 500, refusePress: true });
   assert.equal(presses, 1);
   assert.deepEqual(budgets, [4500]);
-  assert.match(String(row?.reason), /waited 500 ms; the cover holds 1 pressable controls/);
+  assert.match(
+    String(row?.reason),
+    /waited 500 ms earlier in this step; the cover holds 1 pressable controls/,
+  );
 });
 
 test('cancellation during a cover poll aborts without pressing', async () => {

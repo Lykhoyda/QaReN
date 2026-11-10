@@ -4503,6 +4503,7 @@ async function walkBlockScoped(
                   centreDiagnostic = facts;
                 });
               const overlay = centreIsCovered ? inferredOverlay(centreDiagnostic) : undefined;
+              let entryPresenceFailed = false;
               if (
                 centreIsCovered &&
                 !overlay &&
@@ -4519,13 +4520,17 @@ async function walkBlockScoped(
                   initial = undefined;
                   continue;
                 }
+                entryPresenceFailed = true;
               }
               const cover =
                 (item.kind === 'press' || item.kind === 'fill') && element
                   ? coverOwner(element, before.screen)
                   : undefined;
               recordCover(item.line, cover);
-              if (cover && element) coverTargets.set(item.line, element);
+              if (entryPresenceFailed) {
+                coverTargets.delete(item.line);
+                coverGaps.set(item.line, 'presence-recapture-incomplete');
+              } else if (cover && element) coverTargets.set(item.line, element);
               else coverTargets.delete(item.line);
               // List order is not paint order: an inferred overlay alone never refuses an iOS press.
               if (
@@ -4567,7 +4572,9 @@ async function walkBlockScoped(
                     'owner' in cover
                   ) {
                     if (coverWaitMs !== undefined) {
-                      coverWaitReason = coverWaitText(before.screen, cover.owner, coverWaitMs);
+                      coverWaitReason =
+                        `; waited ${coverWaitMs} ms earlier in this step` +
+                        coverControlsText(before.screen, cover.owner);
                     } else {
                       coverWaitTarget ??= element;
                       const waited = await waitOutCover(item, before, element, cover);
@@ -4814,6 +4821,7 @@ async function walkBlockScoped(
                     if (waited.cleared) {
                       initial = undefined;
                       liveHit = undefined;
+                      pixelBaselineTaken = false;
                       continue;
                     }
                     coverWaitReason = waited.reason;
