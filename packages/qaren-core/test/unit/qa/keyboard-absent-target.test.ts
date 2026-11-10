@@ -278,7 +278,10 @@ for (const variant of [
     else await walkBlock(replayed, f.deps);
     assert.equal(f.actions.includes('dismiss'), false);
     if (['android', 'fill', 'guard-disabled'].includes(variant))
-      assert.equal(f.captures.some((capture) => capture.typography && !capture.presence), false);
+      assert.equal(
+        f.captures.some((capture) => capture.typography && !capture.presence),
+        false,
+      );
   });
 }
 

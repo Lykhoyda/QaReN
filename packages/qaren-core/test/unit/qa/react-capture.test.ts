@@ -180,7 +180,10 @@ test('real producer and adapter interoperate through an in-memory CDP socket', a
 
 test('Fill then an absent quoted Tap obtains modal proof without a presence read', async () => {
   const producer = realProducer({ testID: 'field', editable: true });
-  const f = walker([], scriptedJudge(() => assert.fail('quoted actions must be model-free')));
+  const f = walker(
+    [],
+    scriptedJudge(() => assert.fail('quoted actions must be model-free')),
+  );
   f.deps.platform = 'ios';
   let keyboardVisible = false;
   let targetVisible = false;
@@ -242,7 +245,10 @@ test('Fill then an absent quoted Tap obtains modal proof without a presence read
   assert.equal(result.verdict, 'PASS', result.failure?.seen);
   assert.deepEqual(f.actions, ['fill @field', 'dismiss', 'press @submit']);
   assert.equal(result.steps.at(-1)?.keyboardCleared, 'js');
-  assert.equal(modes.some((mode) => mode.presence), false);
+  assert.equal(
+    modes.some((mode) => mode.presence),
+    false,
+  );
   assert.ok(modes.some((mode) => !mode.typography));
   assert.ok(modes.some((mode) => mode.typography));
 });
