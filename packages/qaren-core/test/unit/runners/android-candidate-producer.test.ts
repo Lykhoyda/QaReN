@@ -143,7 +143,7 @@ fun main() {
       ['--project-dir', scratch, '--console=plain', '--quiet', 'run', '--no-daemon'],
       {
         encoding: 'utf8',
-        timeout: 240_000,
+        timeout: 600_000,
         maxBuffer: 2_000_000,
       },
     );

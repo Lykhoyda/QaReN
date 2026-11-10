@@ -11,6 +11,7 @@ import {
   type Screen,
 } from './screen.js';
 import { hostPath, MODAL_HOST_TYPES, type HostAssociationDiagnostic } from './host-association.js';
+import { concealsScreen } from './privacy.js';
 import { reactOnlyTarget, targetOnScreen } from './resolve.js';
 import type { Reason } from './untrusted.js';
 import type { ActResult } from './walker.js';
@@ -18,6 +19,14 @@ import type { ActResult } from './walker.js';
 export interface LoginMarker {
   id?: string;
   text?: string;
+}
+
+// What the planned press was dispatched from; an absent field is unknown.
+export interface PressRecord {
+  // The normalised label of the tapped control.
+  label?: string;
+  // The identities of the dispatch capture's proven controls.
+  controls?: string[];
 }
 
 export interface RecoveryTarget extends Target {
@@ -28,9 +37,23 @@ export interface RecoveryTarget extends Target {
   laterBlock?: boolean;
   // The current target follows a passed planned press, so the screen in front is the plan's own.
   afterPlannedPress?: boolean;
+  // The plan's own wording of a replayed step whose target is its stored selector.
+  declared?: Target;
+  // Current target only: the passed planned press's dispatch record.
+  pressRecord?: PressRecord;
+  // Current target only: opt-in signatures recovery declined earlier in this run.
+  declinedOptIns?: ReadonlySet<string>;
 }
 
 export type InterruptionScreenClass = 'permission-opt-in';
+
+// A permission opt-in declined although it followed the plan's own tap.
+export interface OptInDecision {
+  signature: string;
+  accept: string;
+  // Declined by the named exception to the previous-plan-press veto, not by the ordinary rule.
+  afterPlannedPress: boolean;
+}
 
 export type LoginReplay =
   | 'pass'
@@ -42,7 +65,7 @@ export interface RecoverDeps {
   dialog(): Promise<ActResult>;
   hideDevMenu(): Promise<ActResult>;
   replayLogin?(): Promise<LoginReplay>;
-  dismiss?(label: string): Promise<LoginReplay>;
+  dismiss?(label: string, optIn?: OptInDecision): Promise<LoginReplay>;
   interruptionDiagnostic?(record: InterruptionDiagnostic): void;
 }
 
@@ -52,7 +75,8 @@ export type Recovery =
       label?: string;
       screenClass?: InterruptionScreenClass;
     }
-  | { fail: Reason }
+  // repeatedOptIn: the decline label of an opt-in that returned after recovery declined it.
+  | { fail: Reason; repeatedOptIn?: string }
   | { refuse: { code: string; message: string } };
 
 // Deterministic, in this order; undefined means nothing applies and the original failure stands.
@@ -80,8 +104,10 @@ export async function recover(
   if (screen.front === 'app' && deps.dismiss) {
     const candidate = dismissCandidate(screen, planTargets, deps.interruptionDiagnostic, proof);
     if (candidate && 'refuse' in candidate) return candidate;
+    if (candidate && 'repeated' in candidate)
+      return { fail: OPT_IN_ASKED_AGAIN, repeatedOptIn: candidate.repeated };
     if (candidate) {
-      const dismissed = await deps.dismiss(candidate.label);
+      const dismissed = await deps.dismiss(candidate.label, optInDecision(screen, candidate));
       if (dismissed === 'pass')
         return {
           handled: 'interruption',
@@ -133,6 +159,30 @@ export function isDeclineLabel(label: string | undefined): label is string {
 
 export type InterruptionProof = 'covered-target' | 'surface' | 'absent-surface';
 
+export const OPT_IN_ASKED_AGAIN =
+  'the app asked again after recovery declined this permission opt-in; nothing was tapped';
+
+// The decline label of an opt-in on screen whose signature recovery already declined in this run.
+export function returnedOptIn(
+  screen: Screen,
+  declinedOptIns: ReadonlySet<string> | undefined,
+): string | undefined {
+  if (!declinedOptIns?.size || screen.front !== 'app' || !completeCapture(screen)) return undefined;
+  const shape = optInShape(screen);
+  return shape && declinedOptIns.has(shape.signature) ? shape.decline.label : undefined;
+}
+
+// A later step naming the decline keeps it for that step, even when presence was exempt.
+function laterDeclineOwner(decline: Element, planTargets: readonly RecoveryTarget[]): number {
+  const label = decline.label!.toLowerCase();
+  return planTargets.findIndex(
+    (target, index) =>
+      index > 0 &&
+      (matchesTarget(decline, target) ||
+        (target.exact !== 'id' && target.quoted?.toLowerCase() === label)),
+  );
+}
+
 export const INTERRUPTION_VETOES = [
   'front',
   'coverage',
@@ -145,6 +195,7 @@ export const INTERRUPTION_VETOES = [
 
 export interface InterruptionDiagnostic {
   veto: (typeof INTERRUPTION_VETOES)[number];
+  optInWithheld?: OptInWithheld;
   targetIndex?: number;
   // Which later-target check vetoed: the target is on screen, or it names the decline control itself.
   provenance?: 'presence' | 'ownership';
@@ -174,8 +225,9 @@ export function dismissCandidate(
   diagnostic?: (record: InterruptionDiagnostic) => void,
   proof?: InterruptionProof,
 ):
-  | { label: string; screenClass?: InterruptionScreenClass }
+  | { label: string; screenClass?: InterruptionScreenClass; optIn?: OptInDecision }
   | { refuse: { code: string; message: string } }
+  | { repeated: string }
   | undefined {
   const sole = soleDecline(screen);
   const rejected = (
@@ -183,11 +235,13 @@ export function dismissCandidate(
     targetIndex?: number,
     elements: InterruptionDiagnostic['elements'] = [],
     provenance?: InterruptionDiagnostic['provenance'],
+    optInWithheld?: OptInWithheld,
   ) => {
     try {
       const cover = modalCoverDiagnostic(screen);
       diagnostic?.({
         veto,
+        ...(optInWithheld ? { optInWithheld } : {}),
         ...(targetIndex === undefined ? {} : { targetIndex }),
         ...(provenance ? { provenance } : {}),
         soleDecline: sole,
@@ -263,8 +317,26 @@ export function dismissCandidate(
     (e) => e.label !== undefined && DECLINE_LABELS.has(e.label) && failedPredicate(e) === undefined,
   );
   const only = candidates.length === 1 ? candidates[0] : undefined;
-  if (candidates.length && planTargets[0].afterPlannedPress)
-    return rejected('previous-plan-press', 0);
+  // The strict exception has normalized vocabulary; ordinary dismissal keeps its raw-label gate.
+  const shape = optInShape(screen);
+  const optIn = shape && failedPredicate(shape.decline) === undefined ? shape : undefined;
+  if (optIn && planTargets[0].declinedOptIns?.has(optIn.signature))
+    return { repeated: optIn.decline.label! };
+  if ((candidates.length || optIn) && planTargets[0].afterPlannedPress) {
+    const withheld = optIn
+      ? optInAfterPlannedPress(screen, planTargets, optIn)
+      : provenControls(screen) === undefined
+        ? 'controls-unproven'
+        : 'not-an-opt-in';
+    if (!optIn || withheld) return rejected('previous-plan-press', 0, [], undefined, withheld);
+    const ownerIndex = laterDeclineOwner(optIn.decline, planTargets);
+    if (ownerIndex !== -1) return rejected('later-target', ownerIndex, [], 'ownership');
+    return {
+      label: optIn.decline.label!,
+      screenClass: 'permission-opt-in',
+      optIn: { signature: optIn.signature, accept: optIn.accept.label!, afterPlannedPress: true },
+    };
+  }
   const screenClass = only && optInShaped(screen) === only ? 'permission-opt-in' : undefined;
   if (acceptAll) return rejected('no-candidate');
   if (candidates.length > 1)
@@ -275,14 +347,7 @@ export function dismissCandidate(
       },
     };
   if (candidates.length === 1) {
-    const label = candidates[0].label!.toLowerCase();
-    // A later step naming the decline keeps it for that step, even when presence was exempt.
-    const plannedIndex = planTargets.findIndex(
-      (target, index) =>
-        index > 0 &&
-        (matchesTarget(candidates[0], target) ||
-          (target.exact !== 'id' && target.quoted?.toLowerCase() === label)),
-    );
+    const plannedIndex = laterDeclineOwner(candidates[0], planTargets);
     if (plannedIndex !== -1) return rejected('later-target', plannedIndex, [], 'ownership');
     if (
       !sole &&
@@ -429,7 +494,222 @@ export function optInShaped(screen: Screen): Element | undefined {
     : undefined;
 }
 
-const completeCapture = (screen: Screen): boolean =>
+const OPT_IN_DECLINES = new Set([
+  'skip',
+  'not now',
+  'later',
+  'maybe later',
+  'no thanks',
+  "don't allow",
+]);
+const OPT_IN_ACCEPT_HEADS = ['allow', 'enable', 'turn on'];
+const OPT_IN_FILLERS = new Set(['access', 'to', 'my', 'the', 'push']);
+const PERMISSION_SUBJECTS = [
+  'face id',
+  'touch id',
+  'notifications',
+  'notification',
+  'notify',
+  'location',
+  'camera',
+  'microphone',
+  'photos',
+  'contacts',
+  'calendar',
+  'bluetooth',
+  'biometrics',
+  'biometric',
+];
+const CONSENT_WORDS = [
+  'agree',
+  'accept',
+  'consent',
+  'terms',
+  'privacy',
+  'policy',
+  'policies',
+  'cookie',
+  'cookies',
+  'partner',
+  'partners',
+  'companies',
+  'third',
+  'analytics',
+  'tracking',
+  'marketing',
+  'advertising',
+  'ads',
+  'share',
+  'sharing',
+];
+const wholeWords = (words: readonly string[]): RegExp =>
+  new RegExp(`(?:^|[^\\p{L}\\p{N}])(${words.join('|')})(?![\\p{L}\\p{N}])`, 'u');
+const SUBJECT_WORD = wholeWords(PERMISSION_SUBJECTS);
+const CONSENT_WORD = wholeWords(CONSENT_WORDS);
+
+export function normaliseLabel(text: string): string {
+  return text
+    .replace(/[‘’]/gu, "'")
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/gu, ' ');
+}
+
+// A closed accept form and the permission subject its label names; bare is a head word alone.
+function acceptForm(label: string): { subject?: string; bare: boolean } | undefined {
+  const text = normaliseLabel(label);
+  if (text === 'notify me' || text === 'yes, notify me') return { subject: 'notify', bare: false };
+  const head = OPT_IN_ACCEPT_HEADS.find((word) => text === word || text.startsWith(`${word} `));
+  if (!head) return undefined;
+  const words = text.slice(head.length).split(' ').filter(Boolean);
+  let subject: string | undefined;
+  for (let i = 0; i < words.length; i += 1) {
+    const pair = `${words[i]} ${words[i + 1]}`;
+    if (i + 1 < words.length && PERMISSION_SUBJECTS.includes(pair)) {
+      subject ??= pair;
+      i += 1;
+    } else if (PERMISSION_SUBJECTS.includes(words[i])) subject ??= words[i];
+    else if (!OPT_IN_FILLERS.has(words[i])) return undefined;
+  }
+  return { ...(subject ? { subject } : {}), bare: words.length === 0 };
+}
+
+const declinesOptIn = (label: string): boolean => OPT_IN_DECLINES.has(normaliseLabel(label));
+
+const controlIdentity = (e: Element): string | undefined =>
+  e.testID
+    ? JSON.stringify([e.kind, 'id', e.testID])
+    : e.label !== undefined
+      ? JSON.stringify([e.kind, 'label', normaliseLabel(e.label)])
+      : undefined;
+
+export function pressRecord(screen: Screen | undefined, tapped: Element | undefined): PressRecord {
+  const label = tapped?.label === undefined ? undefined : normaliseLabel(tapped.label);
+  // Identity is independent of press capability: ordinary captures can enumerate elements even
+  // when the ability to press every host is unproven. Include offscreen and React-only identities.
+  const known =
+    screen &&
+    completeCapture(screen) &&
+    screen.elements.every((e) => !CONTROL_KINDS.has(e.kind) || controlIdentity(e) !== undefined);
+  const controls = known
+    ? screen.elements.flatMap((e) => {
+        const identity = controlIdentity(e);
+        return identity === undefined ? [] : [identity];
+      })
+    : undefined;
+  return {
+    ...(label ? { label } : {}),
+    ...(label && controls ? { controls } : {}),
+  };
+}
+
+interface OptInShape {
+  decline: Element;
+  accept: Element;
+  signature: string;
+}
+
+// Exactly two proven buttons, a closed-vocabulary decline and accept, and a named permission subject.
+function optInShape(screen: Screen): OptInShape | undefined {
+  const controls = provenControls(screen);
+  if (controls?.length !== 2) return undefined;
+  if (
+    !controls.every(
+      (e) =>
+        e.kind === 'button' &&
+        e.label !== undefined &&
+        e.hittable &&
+        !e.secure &&
+        !disabledState(e) &&
+        e.semantic?.visibility === 'visible' &&
+        e.semantic.press === 'supported' &&
+        e.semantic.fill !== 'supported',
+    )
+  )
+    return undefined;
+  const decline = controls.find((e) => declinesOptIn(e.label!));
+  const accept = controls.find((e) => e !== decline);
+  const form = accept ? acceptForm(accept.label!) : undefined;
+  if (!decline || !accept || !form) return undefined;
+  const subject =
+    form.subject ??
+    (form.bare
+      ? screen.visibleText.map((text) => SUBJECT_WORD.exec(normaliseLabel(text))?.[1]).find(Boolean)
+      : undefined);
+  if (!subject) return undefined;
+  return {
+    decline,
+    accept,
+    signature: JSON.stringify([
+      normaliseLabel(decline.label!),
+      normaliseLabel(accept.label!),
+      subject,
+    ]),
+  };
+}
+
+// The opt-in a decline answers: the exception's decision, else a strictly shaped one the ordinary rule declines.
+export function optInDecision(
+  screen: Screen,
+  candidate: { label: string; optIn?: OptInDecision },
+): OptInDecision | undefined {
+  if (candidate.optIn) return candidate.optIn;
+  const shape = optInShape(screen);
+  return shape?.decline.label === candidate.label
+    ? { signature: shape.signature, accept: shape.accept.label!, afterPlannedPress: false }
+    : undefined;
+}
+
+export type OptInWithheld =
+  | 'private-or-unreadable-text'
+  | 'consent-wording'
+  | 'plan-names-control'
+  | 'react-control-in-front'
+  | 'tap-record-unknown'
+  | 'tap-was-answer'
+  | 'same-control-before-tap'
+  | 'controls-unproven'
+  | 'not-an-opt-in';
+
+// The named exception to the previous-plan-press veto; undefined permits the strict shape.
+function optInAfterPlannedPress(
+  screen: Screen,
+  planTargets: readonly RecoveryTarget[],
+  optIn: OptInShape,
+): OptInWithheld | undefined {
+  if (
+    concealsScreen(screen) ||
+    screen.elements.some((e) => e.kind === 'text' && e.label === undefined && e.value === undefined)
+  )
+    return 'private-or-unreadable-text';
+  const text = [
+    ...screen.visibleText,
+    ...(screen.labelText ?? []),
+    ...(screen.unresolvedText ?? []),
+    ...screen.elements.flatMap((e) => [
+      ...(e.label === undefined ? [] : [e.label]),
+      ...(e.value === undefined || e.secure ? [] : [e.value]),
+    ]),
+  ];
+  if (text.some((entry) => CONSENT_WORD.test(normaliseLabel(entry)))) return 'consent-wording';
+  if (planTargets.some((target) => target.declared && targetOnScreen(screen, target.declared)))
+    return 'plan-names-control';
+  const reactOnly = screen.elements.filter((e) => e.ref.startsWith('react:'));
+  if (
+    (screen.semanticUnassociatedReact ?? 0) !== reactOnly.length ||
+    !reactOnly.every((e) => behindPresentedModal(screen, e))
+  )
+    return 'react-control-in-front';
+  const record = planTargets[0].pressRecord;
+  if (record?.label === undefined || record.controls === undefined) return 'tap-record-unknown';
+  if (declinesOptIn(record.label) || acceptForm(record.label)) return 'tap-was-answer';
+  const identities = [controlIdentity(optIn.decline), controlIdentity(optIn.accept)];
+  if (record.controls.some((identity) => identities.includes(identity)))
+    return 'same-control-before-tap';
+  return undefined;
+}
+
+export const completeCapture = (screen: Screen): boolean =>
   (screen.captureCoverage?.native ?? screen.coverage?.native) === 'complete' &&
   screen.coverage?.react === 'complete';
 
@@ -469,6 +749,7 @@ export function protectionLapses(passed: Screen): boolean {
   return (
     passed.front === 'app' &&
     completeCapture(passed) &&
+    optInShape(passed) === undefined &&
     !passed.elements.some(
       (e) =>
         !e.offscreen &&

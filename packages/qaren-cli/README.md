@@ -3600,7 +3600,8 @@ unsure after its re-ask gets a deterministic recovery, subject to the
 [quoted-wait deadline limits](#plan-checks-and-screen-evidence), then the step runs once more from a fresh
 capture. If it fails again, a second recovery may decline a different system prompt or app
 interruption once the first is proven gone. An app interruption with the same decline label
-fails with `the app interruption did not disappear`; a different kind of interruption or
+fails with `the app interruption did not disappear`, except a returning strict permission
+opt-in (below); a different kind of interruption or
 decline label may be eligible, subject to the same guards on each recovery. A step never
 gets more than two interruption recoveries. The order is owned by [`recover.ts`](../qaren-core/src/qa/recover.ts): a
 recognized system prompt met during an ordinary app step is declined, never accepted
@@ -3724,7 +3725,8 @@ absent can expire protection that way. Protection also lapses once a later plann
 item passes on its own complete capture with no decline control on screen; an interruption
 appearing after that point is eligible for bounded recovery. Until a later item
 passes, protection holds, so a screen the tap opens late stays protected, and a
-later item passing while a decline control is still on screen keeps it. After the
+later item passing while a decline control or a strict permission opt-in shape (below)
+is still on screen keeps it. After the
 lapse, a later step targeting the interruption still keeps it through the later-target
 veto, which is checked before planned-press protection. Static decline text does not
 keep protection; an on-screen, non-structural decline with supported or unknown press
@@ -3735,10 +3737,11 @@ destination, even when it closes an identified modal. If that destination has no
 identifiable container, protection remains on, including against later sheets,
 until it lapses. When an identified destination is proven gone, later unsolicited
 sheets can be dismissed. Recovery's decline presses and login presses never arm it.
-While protected, recovery dismisses no app screen: neither an opt-in shape,
-a screen absent at press readback, nor a newly identified modal proves independence
-from the planned tap. A push opt-in arriving right after a planned tap, before a
-later item passes, must be answered explicitly by the plan. Opt-ins and intro sheets
+While protected, recovery dismisses no app screen except a strict permission opt-in
+(below): neither a looser opt-in shape, a screen absent at press readback, nor a newly
+identified modal proves independence from the planned tap. Any other opt-in arriving
+right after a planned tap, before a later item passes, must be answered explicitly by
+the plan. Opt-ins and intro sheets
 at launch, after login replay, after an identified destination departs, or after
 protection lapses remain eligible for bounded recovery.
 Outside protection, a permission opt-in shape labels an otherwise permitted
@@ -3749,6 +3752,49 @@ starting with `Yes` and mentioning notifications, without negation.
 A whole-label, case-insensitive match for `Allow all`, `Accept all`, `Agree to all`
 or `Enable all` identifies base consent; none of its declines is taken.
 Navigation labels such as `View all offers`, `See all` or `Show all` do not identify consent.
+
+A strict permission opt-in is declined even while protected. Every condition must hold
+on the fresh complete capture, and anything unknown keeps the veto. A refusal names
+why the opt-in was not declined:
+
+- Exactly two proven controls, both visible, hittable, enabled, non-secure buttons
+  with supported press and no fill; a link, switch, cell or input disqualifies the screen.
+- The decline's normalised label (case, spacing and apostrophes folded) is exactly
+  `skip`, `not now`, `later`, `maybe later`, `no thanks` or `don't allow`. The accept
+  is `notify me`, `yes, notify me`, or `allow`, `enable` or `turn on` alone or followed
+  only by permission subjects and the fillers `access`, `to`, `my`, `the` and `push`.
+- A permission subject (`notification(s)`, `notify`, `location`, `camera`, `microphone`,
+  `photos`, `contacts`, `calendar`, `bluetooth`, `face id`, `touch id`, `biometric(s)`)
+  is named in the accept, or in the visible text when the accept is bare.
+- No consent word (`agree`, `accept`, `consent`, `terms`, `privacy`, `policy`, `policies`,
+  `cookie(s)`, `partner(s)`, `companies`, `third`, `analytics`, `tracking`, `marketing`,
+  `advertising`, `ads`, `share`, `sharing`) appears anywhere in the captured text,
+  including merged labels, non-secure values, unresolved text and offscreen elements.
+  A concealed screen or a text element with neither label nor value makes this unknown.
+  Every React-only control must be proven behind the one presented modal, and their
+  count must account for every unassociated React control.
+- The later-target veto passes; a replayed step's declared wording is checked as well
+  as its stored selector.
+- The planned press's tapped label, read from the capture it was dispatched from, is
+  known and is neither a decline nor an accept form. Every element with an identity
+  in that complete dispatch capture is checked, including offscreen and React-only
+  elements; none may share either opt-in control's kind and test ID (or label).
+  A control without either test ID or label keeps the tap record unknown.
+- The same opt-in, identified by its decline, accept and subject, was not already
+  declined this way in the run.
+
+The Jev veto still applies. Recovery taps the decline once, never the accept, and proves
+on a complete capture that both labels are gone in any normalised spelling; otherwise the step fails with
+`the permission opt-in was still in front after its decline; it was not retried`. It then
+retries the step once within the step's interruption recoveries. The retry row reads
+`recovered: declined a permission opt-in that followed the plan's own tap (<decline>)`,
+naming a fixed decline word or `the decline control`. When an opt-in declined this way
+returns, on the step's own retry or even after protection lapses, nothing is tapped: the step fails with
+`the app asked again after recovery declined this permission opt-in; nothing was tapped`
+and suggests a `Tap "<decline>"` step after the planned press, or before the failing
+step once protection has lapsed. An opt-in declined outside
+protection is declined again when it returns. System permission alerts follow the
+dialog rules above.
 Login replay also clears the withheld-dismissal diagnostic for the retried item.
 While protected, recovery still answers system
 prompts and dev menus and still replays login, but withholds every app decline,
@@ -3767,6 +3813,10 @@ is still on screen, including one that opens together with it, is therefore not
 dismissed either. When the protected screen is opt-in shaped or has only a decline
 control, the failure names its class even with text withheld and suggests adding
 a step after the planned press that taps the named decline, with privacy masks intact.
+A failed row's reason also says why recovery dismissed nothing when presence evidence
+was unreadable, late or incomplete, when a decline control's visibility or press could
+not be proven after a planned press, or when a protected screen was not a strict opt-in
+or its control evidence was incomplete.
 
 With `TYPESAFE_API_KEY`, Jev may veto a selected control when the screen may be
 related to the step or its purpose is uncertain. It never chooses a control,
@@ -3807,9 +3857,13 @@ step's ledger row carries an `interruption` receipt: `considered`, an `outcome`
 veto, whether a later-target veto came from `presence` or `ownership`, the target's
 plan line and step kind, whether the decline was the screen's only control, when a
 dispatched decline stayed the vertical centre in points of the control the press
-aimed at, and the `screenClass` a dismissed screen was recognised as
-(`permission-opt-in`); the report prints it as one line under the failure. An
-ownership veto fills the failure's suggested plan edit with the owning line. A Jev veto
+aimed at, the `screenClass` a dismissed screen was recognised as
+(`permission-opt-in`), and `afterPlannedPress: true` when the strict opt-in exception
+declined it; the report prints it as one line under the failure. An ownership veto
+fills the failure's suggested plan edit with the owning line.
+Each strictly shaped opt-in decline adds `{ line, afterPlannedPress }` to the ledger's
+`declinedOptIns`, one entry per dismissal. The verdict stays `PASS`, and a passing
+report and pull-request comment add `N opt-in(s) declined (line(s) …)` beside it. A Jev veto
 or a guard change before dispatch records `not-dispatched`. A dismissal stays on
 the row through the step's retry. A no-candidate veto also reports
 each decline-labelled element's first failed predicate; press capability failures
