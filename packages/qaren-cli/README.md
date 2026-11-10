@@ -668,7 +668,7 @@ using the original, twice and three times the original command budget. From
 API 26 the runner-process read passes that budget to `dumpsys -t`, so the service
 is not cut at its own 10 seconds; output carrying dumpsys's
 `DUMP TIMEOUT ... EXPIRED` banner counts as a timeout, never as a dump. Before
-each retry, the selected emulator must answer `adb shell true` within 40 seconds;
+each retry, the selected device must answer `adb shell true` within 40 seconds;
 a failed or timed-out probe stops retries for that command. Non-timeout command
 failures are not retried. Probes and retries share a 240-second extra allowance
 across the release sequence; a retry starts only if that allowance covers both
@@ -788,7 +788,7 @@ signed differently and cannot be replaced in place: uninstall
 from that device first. The walk's advisory scan on the borrowed device refuses
 `BUSY_FOREIGN_FLOW` with the process scan's message when another UIAutomator or
 agent-device process runs there (`adb -s <serial> shell ps -A`). The scan does
-not recognise every driver and fails open when `ps` cannot run, so borrow an
+not recognise every driver and fails open when `ps` cannot run, so borrow a
 device no other automation uses. The separate [fresh-install admission](#fresh-install)
 must succeed before app reset.
 

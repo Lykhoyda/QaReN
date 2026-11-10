@@ -306,7 +306,7 @@ fn device_label(serial: &str) -> String {
     }
 }
 
-// Shared device-state causes and fixes for doctor; physical-device check support is deferred.
+// Shared device-state causes and fixes for doctor and check.
 pub fn device_problem(serial: &str, state: &str, linux: bool) -> Option<DeviceProblem> {
     let who = device_label(serial);
     let replug = "replug the USB cable and wake the phone; re-run when it lists as `device`";

@@ -2034,8 +2034,7 @@ fn cleanup_runner_host_with_policy(
     Some(outcome)
 }
 
-// Releases what a run put on a borrowed emulator: its Metro reverse and the core's runner.
-// The adb server, the app and the emulator are never touched.
+// Borrowed-device teardown keeps the adb server, installed app and device.
 pub(crate) fn release_borrowed_android(
     runner: &mut dyn Runner,
     record: &RunRecord,

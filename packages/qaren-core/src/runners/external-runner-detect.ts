@@ -72,10 +72,7 @@ export function isAndroidEmulatorSerial(value: string): boolean {
   return /^emulator-\d{1,5}$/.test(value);
 }
 
-/**
- * A physical USB device serial: never an emulator form, a host:port endpoint, an iOS simulator UUID,
- * or a wireless adb connection (its mDNS service name, `._adb-tls-connect._tcp` or `._adb._tcp`).
- */
+/** USB serials exclude emulator, host:port, simulator UUID and wireless mDNS forms. */
 export function isAndroidUsbSerial(value: string): boolean {
   return (
     /^[A-Za-z0-9._-]+$/.test(value) &&

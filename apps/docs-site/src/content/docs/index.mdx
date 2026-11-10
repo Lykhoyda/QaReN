@@ -1,10 +1,10 @@
 ---
 title: QaReN
-description: QaReN is a QA engineer for your coding agent. It tries your React Native change on an iOS simulator and reports PASS or FAIL with the evidence.
+description: QaReN is a QA engineer for your coding agent. It tries your React Native change in your app and reports PASS or FAIL with the evidence.
 ---
 
-Claude Code, Codex or Cursor writes the React Native change. QaReN tries it in your app on an
-iOS simulator and comes back with PASS or FAIL, and the evidence behind it.
+Claude Code, Codex or Cursor writes the React Native change. QaReN tries it in your app
+and comes back with PASS or FAIL, and the evidence behind it.
 
 ## Your agent says it is done. Did anyone open the app?
 
@@ -31,7 +31,7 @@ happened.
    3. Tap "tab-tasks"
    ```
 
-3. QaReN borrows a simulator, builds and installs the app from your working tree, starts
+3. QaReN borrows a device, builds and installs the app from your working tree, starts
    Metro, walks the plan step by step and tears down what it started.
 4. You get PASS or FAIL with the evidence. On a pull request, QaReN can record the screen
    and post the result as a comment.
@@ -71,7 +71,7 @@ ledger.blocks: replayed · patched · discovered
 - **Coding agent:** Claude Code, Codex or Cursor, through the QaReN plugin.
 - **App:** an Expo React Native app that uses `expo-dev-client` and pnpm.
 - **Mac:** an Apple silicon Mac with Xcode. QaReN 2.0 sets up and checks on an iOS simulator.
-- **Android:** coming in 2.1.
+- **Android:** see the [Android run contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan) for supported devices and prerequisites.
 
 ## Get started
 
