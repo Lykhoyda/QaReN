@@ -2114,9 +2114,14 @@ diagnostics do not prevent this read-only retry; persistent emptiness still
 refuses with the same code and message. Persistent incomplete presence refuses
 with `NATIVE_SNAPSHOT_INCOMPLETE`, naming the unknown keyboard state and any
 known acquisition phase, failure reason or deadline read using fixed codes.
+On iOS, `presence-failure=<phase>:<reason>` names the first recorded failure,
+which can be a harmless node-level read; `presence-incomplete=<phase>:<reason>`
+names the decisive failure that left the snapshot incomplete. A known revalidation
+mismatch adds `presence-incomplete-mismatch=<kind>`. These codes appear in both
+the refusal and capture log and carry no screen content.
 If the retry deadline cuts off a read, the refusal retains the last incomplete
 presence snapshot's fixed causes and adds `retry-deadline` without returning that
-snapshot as usable evidence.
+snapshot as usable evidence; the capture log also retains its presence diagnostics.
 Where presence is required after a system dialog closes, iOS native preparation
 compares consecutive full enumerations and waits for a 500 ms quiet window before
 observing candidates. Any descriptor or hierarchy change resets that quiet window
