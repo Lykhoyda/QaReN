@@ -763,6 +763,7 @@ async function ensureAndroidRunnerInstalled(
           );
         }
         await replaceBlockedRunnerApps(deviceId, block, err, installPair, opts.signal);
+        process.stderr.write(`qaren-core: runner-apps-replaced reason=${block}\n`);
         pendingUpgradeNote = [pendingUpgradeNote, `runner-apps-replaced reason=${block}`]
           .filter(Boolean)
           .join('; ');
@@ -1012,6 +1013,7 @@ export async function reapMismatchedAndroidRunner(
   release?: (opts: { deviceId: string; includeLegacy?: boolean }) => Promise<{
     stoppedOwnRunner: boolean;
     forceStoppedPackages: string[];
+    warnings?: string[];
   }>,
   verify?: (
     state: { deviceId: string; hostPort?: number; devicePort?: number },
@@ -1043,7 +1045,8 @@ export async function reapMismatchedAndroidRunner(
   );
   if (!receipt.stoppedOwnRunner || missingPackages.length > 0) {
     throw new Error(
-      `RUNNER_CLEANUP_UNCONFIRMED: stale Android runner cleanup failed for ${deviceId}`,
+      `RUNNER_CLEANUP_UNCONFIRMED: stale Android runner cleanup failed for ${deviceId}` +
+        (receipt.warnings?.length ? `: ${receipt.warnings.join('; ')}` : ''),
     );
   }
   const verifyReleased =

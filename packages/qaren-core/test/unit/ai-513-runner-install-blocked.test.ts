@@ -297,6 +297,56 @@ test('AI-513: a runner process that survives the stop refuses before any uninsta
   assert.equal(effects.installs, 1);
 });
 
+for (const kind of ['signature', 'downgrade'] as const) {
+  for (const pkg of [MAIN, TEST]) {
+    test(`AI-513: a ${kind} replacement preserves adb failure stopping ${pkg}`, async (t) => {
+      const adbError = new Error(`error: device '${SERIAL}' not found`);
+      const { effects } = harness(t, {
+        foreign: [MAIN, TEST],
+        kind,
+        before: {
+          [`shell am force-stop ${pkg}`]: () => {
+            throw adbError;
+          },
+        },
+      });
+      await assert.rejects(client.startAndroidRunner(SERIAL, 'com.example', 0), (err: Error) => {
+        assert.match(err.message, /^RUNNER_INSTALL_BLOCKED: /);
+        assert.match(
+          err.message,
+          kind === 'signature'
+            ? /INSTALL_FAILED_UPDATE_INCOMPATIBLE/
+            : /INSTALL_FAILED_VERSION_DOWNGRADE/,
+        );
+        assert.ok(err.message.includes(adbError.message));
+        assert.match((err.cause as Error).message, /^RUNNER_CLEANUP_UNCONFIRMED: /);
+        return true;
+      });
+      assert.deepEqual(effects.uninstalls, []);
+      assert.equal(effects.installs, 1);
+    });
+  }
+
+  test(`AI-513: a completed ${kind} replacement logs once before instrumentation fails`, async (t) => {
+    const { device } = harness(t, { foreign: [MAIN, TEST], kind });
+    const stderr: string[] = [];
+    t.mock.method(process.stderr, 'write', (chunk: string) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+    await assert.rejects(client.startAndroidRunner(SERIAL, 'com.example', 0), LAUNCHED);
+    assert.equal(device.get(MAIN), 'this-host');
+    assert.equal(device.get(TEST), 'this-host');
+    assert.deepEqual(
+      stderr
+        .join('')
+        .split('\n')
+        .filter((line) => line.includes('runner-apps-replaced')),
+      [`qaren-core: runner-apps-replaced reason=${kind}`],
+    );
+  });
+}
+
 test('AI-513: a runner package that was not installed counts as absent', async (t) => {
   const { device, effects } = harness(t, { foreign: [MAIN] });
   await assert.rejects(client.startAndroidRunner(SERIAL, 'com.example', 0), LAUNCHED);
@@ -370,8 +420,7 @@ test('AI-513: an install failure that names no adb reason keeps the offline hint
   );
 });
 
-test('AI-513: the open note reaches the walk as meta.note', () => {
-  // The walk logs the token it finds in the unwrapped open result's meta.note.
+test('AI-513: the open note remains available as result metadata', () => {
   const note = 'downloaded prebuilt runner; runner-apps-replaced reason=signature';
   assert.equal(unwrap(attachMetaNote(okResult({}), note)).meta?.note, note);
 });

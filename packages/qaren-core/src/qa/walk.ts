@@ -653,7 +653,7 @@ async function openSession(
         },
         open: async () => {
           deviceOpen = true;
-          const opened = await adapt(snapshot)({
+          await adapt(snapshot)({
             action: 'open',
             appId,
             deviceId: target.deviceId,
@@ -661,11 +661,6 @@ async function openSession(
             attachOnly: false,
             sessionName: `qaren-${request.runId}`,
           });
-          // Only the value-free token; the open note can carry other free text.
-          const replaced = /runner-apps-replaced reason=(?:signature|downgrade)/.exec(
-            String(opened.meta?.note ?? ''),
-          )?.[0];
-          if (replaced) log(replaced);
         },
         // Opening the session may have relaunched the app: prove the bundle the walk will see.
         prove: () => prove({ evaluate: (expr) => cdp.evaluate(expr) }, target),
