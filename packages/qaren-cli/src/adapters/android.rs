@@ -552,10 +552,14 @@ pub fn read_lock_state(
 }
 
 // QaReN neither can nor may pass a PIN or pattern: a lock still showing after one wake and dismiss refuses.
-pub fn device_locked(serial: &str, state: &LockState) -> DeviceProblem {
+// `tried` says what QaReN already did; a secure lock seen at selection is refused before any attempt.
+pub fn device_locked(serial: &str, state: &LockState, tried: &str) -> DeviceProblem {
     (
         "device-locked",
-        format!("{serial} shows its lock screen ({})", state.describe()),
+        format!(
+            "{serial} shows its lock screen ({}); {tried}",
+            state.describe()
+        ),
         "unlock the device; for a dedicated test phone set Screen lock to None or Swipe; then re-run"
             .to_string(),
     )

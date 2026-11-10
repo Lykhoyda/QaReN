@@ -3056,28 +3056,38 @@ fn borrow_android(
                 rereads += 1;
                 runner.sleep(std::time::Duration::from_secs(2));
             }
-            // A USB phone is held by one server: name the default one when it holds the phone, never stop it.
             Err(f)
-                if f.subreason.as_deref() == Some("device-not-attached")
-                    && port != DEFAULT_ADB_PORT =>
+                if matches!(
+                    f.subreason.as_deref(),
+                    Some("device-offline" | "device-not-attached")
+                ) =>
             {
-                let wanted = device.expect("only a named phone is reported not attached");
-                let held = runner
-                    .adb_server_devices(DEFAULT_ADB_PORT)
-                    .is_ok_and(|listed| {
-                        android::parse_devices(&listed)
-                            .iter()
-                            .any(|(serial, state)| serial == wanted && state == "device")
-                    });
-                return Err(if held {
+                // A USB phone is held by one server: name the default one when it holds the phone, never stop it.
+                let held = f.subreason.as_deref() == Some("device-not-attached")
+                    && port != DEFAULT_ADB_PORT
+                    && runner
+                        .adb_server_devices(DEFAULT_ADB_PORT)
+                        .is_ok_and(|listed| {
+                            android::parse_devices(&listed)
+                                .iter()
+                                .any(|(serial, state)| {
+                                    Some(serial.as_str()) == device && state == "device"
+                                })
+                        });
+                let mut f = if held {
                     device_refusal(android::held_by_other_server(
-                        wanted,
+                        device.expect("only a named phone is reported not attached"),
                         port,
                         DEFAULT_ADB_PORT,
                     ))
                 } else {
                     f
-                });
+                };
+                f.detail = OutputText::from_output(&format!(
+                    "{} (QaReN re-read the device list {rereads} times, 2 s apart)",
+                    f.detail
+                ));
+                return Err(f);
             }
             other => break other?,
         }
@@ -3141,7 +3151,11 @@ fn borrow_android(
     // Read only, before the lease: a showing secure lock cannot be recovered, so stop before any build.
     let lock = android::read_lock_state(runner, &adb, port, &serial);
     if lock.secure_lock_showing() {
-        return Err(device_refusal(android::device_locked(&serial, &lock)));
+        return Err(device_refusal(android::device_locked(
+            &serial,
+            &lock,
+            "a secure lock is never dismissed by QaReN, so nothing was sent and nothing was built",
+        )));
     }
     Ok(Device {
         id: serial.clone(),

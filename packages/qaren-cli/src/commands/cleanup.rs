@@ -1105,15 +1105,23 @@ pub(crate) fn release_usb_claim(
     let Some(usb) = record.resources.usb_device.clone() else {
         return;
     };
-    let device_paths_clean = outcomes
+    let unclean: Vec<&Outcome> = outcomes
         .iter()
-        .filter(|(name, _)| legs.contains(&name.as_str()))
-        .all(|(_, o)| o.clean());
-    let outcome = if !device_paths_clean {
-        Outcome::Refused(
-            "resources that can still address the device are not proven gone; retaining the exclusive claim"
-                .to_string(),
-        )
+        .filter(|(name, o)| legs.contains(&name.as_str()) && !o.clean())
+        .map(|(_, o)| o)
+        .collect();
+    let outcome = if !unclean.is_empty() {
+        let reason = "resources that can still address the device are not proven gone; retaining the exclusive claim"
+            .to_string();
+        // A borrowed phone's claim refuses only with a refused leg, so a transient failure stays
+        // unresolved like its lease; the private-server route keeps refusing.
+        if record.resources.borrowed_android().is_some()
+            && !unclean.iter().any(|o| matches!(o, Outcome::Refused(_)))
+        {
+            Outcome::Unresolved(reason)
+        } else {
+            Outcome::Refused(reason)
+        }
     } else {
         match crate::buildplan::release_lock(&usb.lock_dir, &usb.holder, &record.run_id) {
             crate::buildplan::ReleaseOutcome::Removed => Outcome::Removed,
@@ -1136,22 +1144,20 @@ pub(crate) fn release_runner_packages(
     outcomes: &[(String, Outcome)],
 ) -> Option<(String, Outcome)> {
     let phone = record.resources.android_device.as_ref()?;
-    // The runner leg passed the lease, serial and server checks moments ago and proved it stopped.
-    let stopped = outcomes
+    // The runner leg passed the lease, serial and server checks moments ago and proved it stopped;
+    // otherwise this leg takes that leg's kind, so only a refused ownership refuses.
+    let runner_leg = outcomes
         .iter()
-        .any(|(leg, o)| leg == "android_runner" && matches!(o, Outcome::Removed | Outcome::Absent));
-    if !stopped {
-        return outcomes
-            .iter()
-            .any(|(leg, _)| leg == "android_runner")
-            .then(|| {
-                (
-                    "android_runner_packages".to_string(),
-                    Outcome::Refused(
-                        "the runner is not proven stopped; its apps are left installed".into(),
-                    ),
-                )
-            });
+        .find(|(leg, _)| leg == "android_runner")
+        .map(|(_, o)| o)?;
+    if !matches!(runner_leg, Outcome::Removed | Outcome::Absent) {
+        let reason = "the runner is not proven stopped; its apps are left installed".to_string();
+        let outcome = if matches!(runner_leg, Outcome::Refused(_)) {
+            Outcome::Refused(reason)
+        } else {
+            Outcome::Unresolved(reason)
+        };
+        return Some(("android_runner_packages".to_string(), outcome));
     }
     let adb = record.resources.adb_path.clone()?;
     let mut cleanup_runner = crate::exec::CleanupRunner(runner);

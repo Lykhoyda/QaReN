@@ -3878,21 +3878,27 @@ fn wake_and_unlock(ctx: &mut Ctx, adb: &Path, port: u16, serial: &str) -> Result
     if wake || dismiss {
         state = android::read_lock_state(ctx.runner, adb, port, serial);
     }
+    let sent = match (wake, dismiss) {
+        (true, true) => "woke the device once and dismissed its keyguard once",
+        (true, false) => "woke the device once",
+        (false, true) => "dismissed the keyguard once",
+        (false, false) => "",
+    };
     if state.showing == Some(true) || state.awake == Some(false) {
         return Err(crate::run::device_refusal(android::device_locked(
-            serial, &state,
+            serial,
+            &state,
+            &format!("QaReN {sent} and read this back"),
         )));
     }
-    let sent = match (wake, dismiss) {
-        (true, true) => "woke the device and dismissed its keyguard",
-        (true, false) => "woke the device",
-        (false, true) => "dismissed the keyguard",
-        (false, false) if state.unknown() => "unknown before install; proceeding",
-        (false, false) => return Ok(()),
+    let note = match sent {
+        "" if state.unknown() => "unknown before install; proceeding",
+        "" => return Ok(()),
+        sent => sent,
     };
     ctx.notes.push((
         "device_lock".into(),
-        format!("{sent} ({})", state.describe()),
+        format!("{note} ({})", state.describe()),
     ));
     Ok(())
 }

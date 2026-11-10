@@ -4485,6 +4485,13 @@ fn android_check_does_not_cache_an_apk_replaced_after_install() {
     assert_eq!(installed.sha256, qaren::candidate::sha256_hex(b"built apk"));
     assert_eq!(std::fs::read(&installed.path).unwrap(), b"replacement apk");
     assert!(receipt.outcomes["artifact_cache"].contains("differs from the verified build"));
+    // An emulator run's record keeps today's shape: no phone key, and no lock note on an awake emulator.
+    let raw = std::fs::read_to_string(
+        RunRecord::run_dir(&req.runs_root, &receipt.run_id).join("run.json"),
+    )
+    .unwrap();
+    assert!(raw.contains("android_emulator") && !raw.contains("android_device"));
+    assert!(!receipt.outcomes.contains_key("device_lock"));
     assert!(!qaren::buildplan::state_path(&repo, "android", "com.rndevagent.testapp").exists());
     let artifacts = qaren::buildplan::cache_dir(&repo).join("artifacts/android");
     for bucket in std::fs::read_dir(artifacts).unwrap() {
@@ -5611,6 +5618,14 @@ fn android_check_names_an_absent_phone_or_the_server_that_holds_it_after_five_re
             assert_eq!(failure.subreason.as_deref(), Some("device-not-attached"));
             assert!(failure.next_action.contains("attach the phone over USB"));
         }
+        // The refusal says what QaReN already tried.
+        assert!(
+            failure
+                .detail
+                .contains("QaReN re-read the device list 5 times, 2 s apart"),
+            "{}",
+            failure.detail
+        );
         assert!(!req.lock_root.exists());
     }
 }
@@ -5870,11 +5885,12 @@ fn android_check_wakes_and_dismisses_a_swipe_keyguard_once_and_decides_on_the_re
                 Some("device-locked"),
                 "{case}"
             );
-            assert!(
-                failure.detail.contains("showing=true secure=true"),
-                "{case}: {}",
-                failure.detail
-            );
+            for said in [
+                "showing=true secure=true",
+                "QaReN woke the device once and dismissed its keyguard once and read this back",
+            ] {
+                assert!(failure.detail.contains(said), "{case}: {}", failure.detail);
+            }
             assert!(
                 adb_calls(&mock).iter().all(|c| !c.contains("install -r")),
                 "{case}"
