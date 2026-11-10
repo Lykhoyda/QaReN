@@ -595,9 +595,14 @@ used refuses `DEVICE_UNAVAILABLE` (exit 4) with the `subreason` and fix the
 [Android device rows](#android-device-rows) give: `usb-no-permissions`,
 `usb-unauthorized`, `device-offline`, `device-not-attached` for a named phone
 that is not listed, and `device-held-by-other-server` when the run uses another
-port and the server on 5037 holds it. An offline or unlisted phone is re-read
-up to five times, 2 s apart, before that refusal. A device whose serial adb
-cannot read is described, never selected or addressed.
+port and the server on 5037 lists the phone as `device`. That is then the
+phone's one cause, whatever the run's server lists it as; with no `--device` and
+nothing else to report, it replaces "no booted emulator". An offline or unlisted
+phone is re-read up to five times, 2 s apart, before its refusal, and only then
+is 5037 asked. A device whose serial adb cannot read is described, never
+selected or addressed. A wireless adb connection is never used: `--device` with
+its name refuses `wireless-not-supported` before any adb command, and a listed
+one is only counted in the refusal's text.
 
 Before any build, selection reads `dumpsys power` and `dumpsys window policy`
 and refuses `device-locked` when a secure lock screen is showing. Just before

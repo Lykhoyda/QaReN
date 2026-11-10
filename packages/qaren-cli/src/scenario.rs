@@ -665,7 +665,7 @@ impl Scenario {
         }
         if !is_usb_serial(&device.serial) {
             return Err(invalid(format!(
-                "android_device.serial {:?} must be a plain USB device serial ([A-Za-z0-9._-], not an emulator or host:port endpoint)",
+                "android_device.serial {:?} must be a plain USB device serial ([A-Za-z0-9._-], not an emulator, host:port endpoint or wireless connection)",
                 device.serial
             )));
         }

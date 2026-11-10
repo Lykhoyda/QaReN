@@ -26,8 +26,8 @@ use crate::runrecord::{
     TerminalResult, RUN_SCHEMA,
 };
 use crate::scenario::{
-    is_emulator_serial, is_usb_serial, AndroidDeviceSpec, AndroidEmulatorSpec, BuildSpec,
-    CandidateSpec, DepsSpec, IosSpec, MetroSpec, Platform, Scenario, SCENARIO_SCHEMA,
+    is_emulator_serial, is_usb_serial, is_wireless_serial, AndroidDeviceSpec, AndroidEmulatorSpec,
+    BuildSpec, CandidateSpec, DepsSpec, IosSpec, MetroSpec, Platform, Scenario, SCENARIO_SCHEMA,
 };
 use crate::timefmt;
 use crate::worktree;
@@ -3005,9 +3005,6 @@ fn resolve_device(
     }
 }
 
-// The port another account's server, or the user's own default one, holds a USB phone on.
-const DEFAULT_ADB_PORT: u16 = 5037;
-
 pub(crate) fn device_refusal((subreason, detail, next): android::DeviceProblem) -> Failure {
     let mut failure = Failure::new("device", FailureCode::DeviceUnavailable, detail, next);
     failure.subreason = Some(subreason.to_string());
@@ -3030,6 +3027,9 @@ fn borrow_android(
     android_home: Option<&str>,
     adb_server_started: &mut Option<u16>,
 ) -> Result<Device, Failure> {
+    if let Some(wanted) = device.filter(|d| is_wireless_serial(d)) {
+        return Err(device_refusal(android::wireless_not_supported(wanted)));
+    }
     let unavailable = |detail: String, next: &str| {
         Failure::new("device", FailureCode::DeviceUnavailable, detail, next)
     };
@@ -3134,10 +3134,11 @@ fn borrow_android(
             ));
         }
         let attached = android::parse_devices(&listed.stdout);
-        match select_android(runner, &adb, port, device, &attached) {
+        let settled = rereads == 5;
+        match select_android(runner, &adb, port, device, &attached, settled) {
             // A phone still connecting lists as offline, or not at all, for a moment.
             Err(f)
-                if rereads < 5
+                if !settled
                     && matches!(
                         f.subreason.as_deref(),
                         Some("device-offline" | "device-not-attached")
@@ -3146,33 +3147,17 @@ fn borrow_android(
                 rereads += 1;
                 runner.sleep(std::time::Duration::from_secs(2));
             }
-            Err(f)
-                if matches!(
-                    f.subreason.as_deref(),
-                    Some("device-offline" | "device-not-attached")
-                ) =>
+            Err(mut f)
+                if settled
+                    && matches!(
+                        f.subreason.as_deref(),
+                        Some(
+                            "device-offline"
+                                | "device-not-attached"
+                                | "device-held-by-other-server"
+                        )
+                    ) =>
             {
-                // A USB phone is held by one server: name the default one when it holds the phone, never stop it.
-                let held = f.subreason.as_deref() == Some("device-not-attached")
-                    && port != DEFAULT_ADB_PORT
-                    && runner
-                        .adb_server_devices(DEFAULT_ADB_PORT)
-                        .is_ok_and(|listed| {
-                            android::parse_devices(&listed)
-                                .iter()
-                                .any(|(serial, state)| {
-                                    Some(serial.as_str()) == device && state == "device"
-                                })
-                        });
-                let mut f = if held {
-                    device_refusal(android::held_by_other_server(
-                        device.expect("only a named phone is reported not attached"),
-                        port,
-                        DEFAULT_ADB_PORT,
-                    ))
-                } else {
-                    f
-                };
                 f.detail = OutputText::from_output(&format!(
                     "{} (QaReN re-read the device list {rereads} times, 2 s apart)",
                     f.detail
@@ -3266,6 +3251,25 @@ fn borrow_android(
     })
 }
 
+// A phone's one cause on the run's port (None when it is `device` there). An offline or absent phone
+// is re-read first: only once `settled`, and at once for any other state, may 5037 having it decide.
+fn phone_cause(
+    runner: &dyn Runner,
+    port: u16,
+    attached: &[(String, String)],
+    serial: &str,
+    state: Option<&str>,
+    settled: bool,
+) -> Option<android::DeviceProblem> {
+    let linux = cfg!(target_os = "linux");
+    let own = android::device_cause(serial, state, port, &[], linux)?;
+    if !settled && matches!(own.0, "device-offline" | "device-not-attached") {
+        return Some(own);
+    }
+    let held = android::held_on_default_server(runner, port, attached);
+    android::device_cause(serial, state, port, &held, linux)
+}
+
 // An eligible emulator (state `device`) wins as before phones were borrowed; a phone is taken
 // when --device names it, or when no emulator is eligible and it is the only ready phone.
 fn select_android(
@@ -3274,11 +3278,11 @@ fn select_android(
     port: u16,
     device: Option<&str>,
     attached: &[(String, String)],
+    settled: bool,
 ) -> Result<(String, bool), Failure> {
     let unavailable = |detail: String, next: &str| {
         Failure::new("device", FailureCode::DeviceUnavailable, detail, next)
     };
-    let linux = cfg!(target_os = "linux");
     let emulators: Vec<&str> = attached
         .iter()
         .filter(|(serial, state)| state == "device" && is_emulator_serial(serial))
@@ -3288,11 +3292,12 @@ fn select_android(
         .iter()
         .filter(|(serial, _)| android::is_physical_serial(serial))
         .collect();
+    let wireless = android::wireless_note(attached);
     let also = if physical.is_empty() {
-        String::new()
+        wireless.clone()
     } else {
         format!(
-            "; {} physical device(s) also attached; pass --device <serial> to use one",
+            "; {} physical device(s) also attached; pass --device <serial> to use one{wireless}",
             physical.len()
         )
     };
@@ -3326,10 +3331,11 @@ fn select_android(
     };
     match device {
         Some(wanted) if is_usb_serial(wanted) => {
-            let Some((_, state)) = attached.iter().find(|(serial, _)| serial == wanted) else {
-                return Err(device_refusal(android::not_attached(wanted, port)));
-            };
-            if let Some(problem) = android::device_problem(wanted, state, linux) {
+            let state = attached
+                .iter()
+                .find(|(serial, _)| serial == wanted)
+                .map(|(_, state)| state.as_str());
+            if let Some(problem) = phone_cause(runner, port, attached, wanted, state, settled) {
                 return Err(device_refusal(problem));
             }
             if !boot_completed(runner, wanted, "device")? {
@@ -3379,30 +3385,41 @@ fn select_android(
             // No eligible emulator: the physical rows decide, in listed order. An unreadable serial is
             // reported through its state and never selected or addressed.
             let mut ready = Vec::new();
-            let mut first_cause = None;
+            // The first row that is not ready and has a cause: a state here, or `device` still booting.
+            let mut first = None;
             for (serial, state) in &physical {
-                let cause = if let Some(problem) = android::device_problem(serial, state, linux) {
-                    Some(device_refusal(problem))
-                } else if !is_usb_serial(serial) {
-                    None
-                } else if boot_completed(runner, serial, "device")? {
+                let usable = state == "device" && is_usb_serial(serial);
+                if usable && boot_completed(runner, serial, "device")? {
                     ready.push(serial.as_str());
-                    None
-                } else {
-                    Some(not_booted(&[serial.as_str()], "device"))
-                };
-                if first_cause.is_none() {
-                    first_cause = cause;
+                } else if first.is_none() && (usable || state != "device") {
+                    first = Some((serial.as_str(), state.as_str()));
                 }
             }
             match ready.as_slice() {
                 [one] => Ok((one.to_string(), true)),
-                [] => Err(first_cause.unwrap_or_else(|| {
-                    unavailable(
-                        format!("no booted emulator{also}"),
-                        "boot the emulator to walk on, then re-run",
-                    )
-                })),
+                // Nothing ready: only now may the server on 5037 decide a cause.
+                [] => Err(match first {
+                    Some((serial, "device")) => not_booted(&[serial], "device"),
+                    Some((serial, state)) => device_refusal(
+                        phone_cause(runner, port, attached, serial, Some(state), settled)
+                            .expect("a row not `device` here has a cause"),
+                    ),
+                    None => match android::held_on_default_server(runner, port, attached).first() {
+                        Some(held) => device_refusal(android::held_by_other_server(
+                            held,
+                            port,
+                            android::DEFAULT_ADB_PORT,
+                        )),
+                        None => unavailable(
+                            format!("no booted emulator{also}"),
+                            if wireless.is_empty() {
+                                "boot the emulator to walk on, then re-run"
+                            } else {
+                                "attach the phone with a USB cable, or boot an emulator, then re-run"
+                            },
+                        ),
+                    },
+                }),
                 many => Err(device_refusal(android::several_devices(many))),
             }
         }

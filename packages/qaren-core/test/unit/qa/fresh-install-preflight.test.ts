@@ -1830,6 +1830,10 @@ else {
       ['--platform', 'android', '--device', '-0A1B2C3D'],
       ['--platform', 'android', '--device', '????????????'],
       ['--platform', 'android', '--device', '127.0.0.1:5555'],
+      // Wireless adb connections, built from adb's mDNS service types.
+      ['--platform', 'android', '--device', 'adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp'],
+      ['--platform', 'android', '--device', 'adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp.'],
+      ['--platform', 'android', '--device', 'adb-0A1B2C3D._adb._tcp'],
       ['--platform', 'android', '--device', `${SERIAL}\n`],
       ['--platform', 'android', '--device', `${SERIAL} -s other`],
       [...android, '--process-observer', '/usr/bin/true'],

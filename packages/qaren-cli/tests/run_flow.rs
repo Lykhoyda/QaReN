@@ -5630,19 +5630,19 @@ fn android_check_rereads_a_named_phone_that_is_still_connecting() {
 #[test]
 fn android_check_names_an_absent_phone_or_the_server_that_holds_it_after_five_rereads() {
     const EMPTY: &str = "List of devices attached\n\n";
-    for held_on_default in [false, true] {
+    // (the run's port, what 5037 lists as `device`): only this phone there makes it held.
+    for (port, on_default) in [(5037, None), (5038, Some(PHONE)), (5038, Some("9Z8Y7X6W"))] {
+        let held_on_default = on_default == Some(PHONE);
         let (repo, app) = app_repo();
         let mut req = android_request(&repo, &app);
         req.device = Some(PHONE.into());
         let mut mock = MockRunner::new();
-        let port = if held_on_default {
+        if port != 5037 {
             mock.environment
-                .insert("ANDROID_ADB_SERVER_PORT".into(), "5038".into());
-            mock.adb_devices.push((5037, format!("{PHONE}\tdevice\n")));
-            5038
-        } else {
-            5037
-        };
+                .insert("ANDROID_ADB_SERVER_PORT".into(), port.to_string());
+            mock.adb_devices
+                .push((5037, format!("{}\tdevice\n", on_default.unwrap())));
+        }
         mock.adb_servers.push((port, 41));
         android_until_borrow(&repo, &mut mock);
         mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
@@ -5650,7 +5650,7 @@ fn android_check_names_an_absent_phone_or_the_server_that_holds_it_after_five_re
             mock.expect_run("adb devices", CmdOutput::success(EMPTY));
         }
         let failure = run(&mut mock, &req).failure.unwrap();
-        assert_eq!(mock.remaining(), 0, "{held_on_default}");
+        assert_eq!(mock.remaining(), 0, "{port} {on_default:?}");
         if held_on_default {
             assert_eq!(
                 failure.subreason.as_deref(),
@@ -5674,6 +5674,121 @@ fn android_check_names_an_absent_phone_or_the_server_that_holds_it_after_five_re
         );
         assert!(!req.lock_root.exists());
     }
+}
+
+// The run's server on 5038 while the server on 5037 lists `default` (raw host:devices rows).
+fn held_mock(default: &str) -> MockRunner {
+    let mut mock = MockRunner::new();
+    mock.environment
+        .insert("ANDROID_ADB_SERVER_PORT".into(), "5038".into());
+    mock.adb_servers.push((5038, 41));
+    mock.adb_devices.push((5037, default.to_string()));
+    mock
+}
+
+// Plan section 7.5: a phone the server on 5037 has as `device` has that one cause here, whatever it
+// lists as here; states that refuse at once take it at once.
+#[test]
+fn android_check_gives_a_phone_another_server_holds_one_cause_whatever_it_lists_as_here() {
+    const HELD: &str = "adb server on port 5037, not to the one on port 5038";
+    let no_permissions = |serial: &str| {
+        format!("{serial}\tno permissions (missing udev rules? user is in the plugdev group); see [http://developer.android.com/tools/device.html]\n")
+    };
+    let on_default = format!("{PHONE}\tdevice\n");
+    // (case, --device, the run's rows, 5037's rows, the expected sub-reason)
+    let cases = [
+        (
+            "named, no permissions here",
+            Some(PHONE),
+            no_permissions(PHONE),
+            on_default.clone(),
+            "device-held-by-other-server",
+        ),
+        (
+            "named, unauthorized here",
+            Some(PHONE),
+            format!("{PHONE}\tunauthorized\n"),
+            on_default.clone(),
+            "device-held-by-other-server",
+        ),
+        (
+            "alone, no permissions here",
+            None,
+            no_permissions(PHONE),
+            on_default.clone(),
+            "device-held-by-other-server",
+        ),
+        (
+            "nothing listed here",
+            None,
+            String::new(),
+            on_default.clone(),
+            "device-held-by-other-server",
+        ),
+        (
+            "two with causes here: the first listed decides",
+            None,
+            format!("{PHONE}\tunauthorized\n{}", no_permissions("9Z8Y7X6W")),
+            "9Z8Y7X6W\tdevice\n".to_string(),
+            "usb-unauthorized",
+        ),
+    ];
+    for (case, device, here, default, subreason) in cases {
+        let (repo, app) = app_repo();
+        let mut req = android_request(&repo, &app);
+        req.device = device.map(String::from);
+        let mut mock = held_mock(&default);
+        android_until_borrow(&repo, &mut mock);
+        mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+        // One read: none of these is re-read.
+        mock.expect_run(
+            "adb devices",
+            CmdOutput::success(&format!("List of devices attached\n{here}\n")),
+        );
+
+        let failure = run(&mut mock, &req).failure.unwrap();
+
+        assert_eq!(failure.code, FailureCode::DeviceUnavailable, "{case}");
+        assert_eq!(failure.subreason.as_deref(), Some(subreason), "{case}");
+        let held = subreason == "device-held-by-other-server";
+        assert_eq!(
+            failure.detail.contains(HELD),
+            held,
+            "{case}: {}",
+            failure.detail
+        );
+        assert!(failure.detail.contains(PHONE), "{case}: {}", failure.detail);
+        assert!(
+            !failure.detail.contains("re-read") && !failure.detail.contains("no booted emulator"),
+            "{case}: {}",
+            failure.detail
+        );
+        assert_eq!(mock.remaining(), 0, "{case}");
+        assert!(!req.lock_root.exists(), "{case}");
+    }
+
+    // A phone ready here is selected; another one held on 5037 changes nothing.
+    let (repo, app) = app_repo();
+    let req = android_request(&repo, &app);
+    let mut mock = held_mock("9Z8Y7X6W\tdevice\n");
+    android_until_borrow(&repo, &mut mock);
+    script_phone_borrow(
+        &mut mock,
+        &format!(
+            "List of devices attached\n{PHONE}\tdevice\n{}",
+            no_permissions("9Z8Y7X6W")
+        ),
+    );
+    stop_after_borrow(&mut mock);
+    let receipt = run(&mut mock, &req);
+    assert_ne!(
+        receipt.failure.as_ref().map(|f| f.code),
+        Some(FailureCode::DeviceUnavailable),
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert!(adb_calls(&mock).iter().all(|c| !c.contains("9Z8Y7X6W")));
 }
 
 #[test]
@@ -12630,37 +12745,132 @@ fn pr_dependency_cache_publishes_only_after_pre_walk_candidate_verification() {
     }
 }
 
+// Built from adb's mDNS service types, not captured.
+const WIRELESS: [&str; 3] = [
+    "adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp",
+    "adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp.",
+    "adb-0A1B2C3D._adb._tcp",
+];
+
+// Plan step 8.1-13: a named wireless connection is refused before ANDROID_HOME, any adb command,
+// server probe or start, and the lease.
 #[test]
-fn android_check_refuses_wireless_adb_without_claiming_or_addressing_it() {
-    for serial in [
-        "adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp",
-        "adb-0A1B2C3D-AbCdEf._adb._tcp",
-    ] {
-        for named in [false, true] {
+fn android_check_refuses_a_named_wireless_connection_before_touching_adb() {
+    for serial in WIRELESS {
+        for android_home in [true, false] {
             let (repo, app) = app_repo();
             let mut req = android_request(&repo, &app);
-            if named {
-                req.device = Some(serial.to_string());
+            req.device = Some(serial.to_string());
+            if !android_home {
+                req.android_home = None;
             }
-            let mut mock = android_mock();
+            // No adb server: a probe would start one, and the start is a recorded adb command.
+            let mut mock = MockRunner::new();
             android_until_borrow(&repo, &mut mock);
-            mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
-            mock.expect_run(
-                "devices",
-                CmdOutput::success(&format!("List of devices attached\n{serial}\tdevice\n")),
-            );
 
             let receipt = run(&mut mock, &req);
 
             let failure = receipt.failure.as_ref().unwrap();
-            assert_eq!(failure.code, FailureCode::DeviceUnavailable);
+            assert_eq!(failure.code, FailureCode::DeviceUnavailable, "{serial}");
+            assert_eq!(failure.subreason.as_deref(), Some("wireless-not-supported"));
+            assert!(failure.detail.contains(serial), "{}", failure.detail);
+            assert!(
+                failure.next_action.contains("USB cable"),
+                "{}",
+                failure.next_action
+            );
+            assert!(adb_calls(&mock).is_empty(), "{:?}", adb_calls(&mock));
+            assert_eq!(mock.remaining(), 0, "{serial}");
+            assert!(!receipt.outcomes.contains_key("adb_server"));
             assert!(!req.lock_root.exists());
-            assert!(adb_calls(&mock)
-                .iter()
-                .all(|command| !command.contains(serial)));
-            assert_eq!(mock.remaining(), 0);
         }
     }
+}
+
+// Plan step 8.1-13: a listed wireless connection is counted in the refusal's tail and never
+// selected or addressed.
+#[test]
+fn android_check_never_selects_or_addresses_a_listed_wireless_connection() {
+    let wireless = WIRELESS[0];
+    let borrows = |devices: &str, script: fn(&mut MockRunner, &str)| {
+        let (repo, app) = app_repo();
+        let req = android_request(&repo, &app);
+        let mut mock = android_mock();
+        android_until_borrow(&repo, &mut mock);
+        script(&mut mock, devices);
+        stop_after_borrow(&mut mock);
+        let receipt = run(&mut mock, &req);
+        assert_ne!(
+            receipt.failure.as_ref().map(|f| f.code),
+            Some(FailureCode::DeviceUnavailable),
+            "{:?}",
+            receipt.failure
+        );
+        assert_eq!(mock.remaining(), 0);
+        assert!(adb_calls(&mock).iter().all(|c| !c.contains(wireless)));
+    };
+    // Beside a cable phone, the cable phone is selected; beside a ready emulator, the emulator.
+    borrows(
+        &format!("List of devices attached\n{wireless}\tdevice\n{PHONE}\tdevice\n"),
+        script_phone_borrow,
+    );
+    borrows(
+        &format!("List of devices attached\nemulator-5554\tdevice\n{wireless}\tdevice\n"),
+        |mock, devices| script_borrow(mock, devices, EMULATOR),
+    );
+
+    let refused = |devices: String, boot_reads: usize| {
+        let (repo, app) = app_repo();
+        let req = android_request(&repo, &app);
+        let mut mock = android_mock();
+        android_until_borrow(&repo, &mut mock);
+        mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+        mock.expect_run("adb devices", CmdOutput::success(&devices));
+        for _ in 0..boot_reads {
+            mock.expect_run("getprop sys.boot_completed", CmdOutput::success("1\n"));
+        }
+        let failure = run(&mut mock, &req).failure.unwrap();
+        assert_eq!(failure.code, FailureCode::DeviceUnavailable);
+        assert_eq!(failure.subreason, None);
+        assert_eq!(mock.remaining(), 0);
+        assert!(adb_calls(&mock).iter().all(|c| !c.contains(wireless)));
+        assert!(!req.lock_root.exists());
+        failure
+    };
+    const TAIL: &str = "; 1 wireless adb connection(s) listed and not used (USB cable only)";
+    // Alone, in either state: not a phone, so the emulator refusal names it and advises the cable.
+    for state in ["device", "offline"] {
+        let failure = refused(
+            format!("List of devices attached\n{wireless}\t{state}\n"),
+            0,
+        );
+        assert_eq!(
+            failure.detail,
+            format!("no booted emulator{TAIL}"),
+            "{state}"
+        );
+        assert_eq!(
+            failure.next_action,
+            "attach the phone with a USB cable, or boot an emulator, then re-run"
+        );
+        for word in ["pass --device", "cannot read", "replug", wireless] {
+            assert!(!failure.detail.contains(word), "{state}: {word}");
+            assert!(!failure.next_action.contains(word), "{state}: {word}");
+        }
+    }
+    // Two booted emulators: today's refusal, with the wireless clause in its tail.
+    let failure = refused(
+        format!("List of devices attached\nemulator-5554\tdevice\nemulator-5556\tdevice\n{wireless}\tdevice\n"),
+        2,
+    );
+    assert_eq!(
+        failure.detail,
+        format!("2 booted emulators; qaren check borrows exactly one{TAIL}")
+    );
+    assert_eq!(
+        failure.next_action,
+        "pass --device emulator-NNNN, or shut down the emulators you are not testing on"
+    );
 }
 
 // A recorded check's tools: the recorder writes its raw capture and each successful encode writes its output.

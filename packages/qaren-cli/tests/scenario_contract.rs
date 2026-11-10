@@ -425,6 +425,8 @@ fn android_device_matrix_and_emulator_records_keep_their_shape() {
         ("127.0.0.1:5555", "m"),
         ("-0A1B", "m"),
         ("????????????", "m"),
+        ("adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp", "m"),
+        ("adb-0A1B2C3D._adb._tcp", "m"),
         ("0A1B2C3D", "\"\""),
         ("0A1B2C3D", "bad/model"),
         ("0A1B2C3D", &"m".repeat(129)),
@@ -435,6 +437,15 @@ fn android_device_matrix_and_emulator_records_keep_their_shape() {
             FailureCode::ScenarioInvalid,
             "{serial} {model}"
         );
+        if serial.contains("._adb") {
+            assert!(
+                failure
+                    .detail
+                    .contains("not an emulator, host:port endpoint or wireless connection"),
+                "{}",
+                failure.detail
+            );
+        }
     }
     let phone = phone_yaml("0A1B2C3D", "m");
     let both = format!("{phone}android_emulator:\n  serial: emulator-5554\n  avd: avd\n");
