@@ -359,7 +359,7 @@ test('AI-513: a failed uninstall that leaves the package listed refuses', async 
   const { effects } = harness(t, { foreign: [MAIN, TEST], uninstallFails: [TEST] });
   await assert.rejects(client.startAndroidRunner(SERIAL, 'com.example', 0), (err: Error) => {
     assert.match(err.message, /^RUNNER_INSTALL_BLOCKED: /);
-    assert.match(err.message, new RegExp(`${TEST.replace(/\./g, '\\.')} is still installed`));
+    assert.ok(err.message.includes(`${TEST} is still installed`), err.message);
     assert.match(err.message, /DELETE_FAILED_INTERNAL_ERROR/);
     return true;
   });
