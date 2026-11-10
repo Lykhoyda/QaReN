@@ -470,12 +470,42 @@ const dialogInFront = (phrase?: string) =>
 
 // Refusals about the step's own target; their failure carries the last observed screen.
 export const LAUNCH_MISS = 'TARGET_NOT_FOUND_AFTER_LAUNCH';
-const TARGET_CODES: ReadonlySet<string> = new Set([
-  'TARGET_NOT_FOUND',
-  LAUNCH_MISS,
-  'REPLAY_SELECTOR',
-  'TARGET_AMBIGUOUS',
+// Fixed words naming a step's first reason in a refusal; any other code is named `other`.
+const STEP_REASONS: ReadonlyMap<string, string> = new Map([
+  ['TARGET_NOT_FOUND', 'target-not-found'],
+  [LAUNCH_MISS, 'target-not-found-after-launch'],
+  ['REPLAY_SELECTOR', 'replay-selector'],
+  ['TARGET_AMBIGUOUS', 'target-ambiguous'],
 ]);
+const TARGET_CODES: ReadonlySet<string> = new Set(STEP_REASONS.keys());
+
+// Recovery's refused read replaces the step's error, so its refusal names the first reason in fixed words.
+function withStepReason(
+  refused: NativeSnapshotIncomplete,
+  first: ResolutionError,
+  screen: Screen,
+  item: Item,
+): NativeSnapshotIncomplete {
+  let pairing: string | undefined;
+  try {
+    if (item.kind !== 'check') {
+      const target = stepTarget(item);
+      pairing = target && placeholderPairingGap(target, screen, item.kind);
+    }
+  } catch {
+    // A diagnostic cannot change which refusal ends the step.
+  }
+  return new NativeSnapshotIncomplete(
+    refused.nodes,
+    [
+      ...refused.causes,
+      `step-reason=${STEP_REASONS.get(first.code) ?? 'other'}`,
+      ...(pairing ? [`placeholder-pairing=${pairing}`] : []),
+    ],
+    refused.reads,
+    refused.elapsedMs,
+  );
+}
 
 export const WAIT_BUDGET_MS = 15_000;
 export const WAIT_POLL_MS = 500;
@@ -5371,6 +5401,9 @@ async function walkBlockScoped(
           !postActionTried &&
           !deps.cancelled?.()
         ) {
+          // Recovery can move `latest` on before a later read throws.
+          const first = error;
+          const held = latest;
           try {
             // A missing target dismisses only a proven separate surface, never a screen's own Cancel.
             const recovering = await recovery(
@@ -5385,7 +5418,10 @@ async function walkBlockScoped(
             if (recovering) return recovering;
           } catch (recoveryError) {
             if (isAbort(recoveryError)) throw recoveryError;
-            error = recoveryError;
+            error =
+              recoveryError instanceof NativeSnapshotIncomplete
+                ? withStepReason(recoveryError, first, held, item)
+                : recoveryError;
           }
         }
         // Only an absent quoted target qualifies; disabled, ambiguous, stored and offscreen misses keep their class.
