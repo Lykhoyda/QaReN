@@ -2265,3 +2265,106 @@ fn explicit_runner_host_inventory_ignores_apps_and_marks_foreign_runner_candidat
     }
     assert!(ios::parse_runner_host_inventory(&format!("{output}broken")).is_none());
 }
+
+#[test]
+fn lock_state_reads_wakefulness_and_only_the_keyguard_delegates_own_keys() {
+    let power = include_str!("fixtures/android-dumpsys-power.txt");
+    let window = include_str!("fixtures/android-window-policy.txt");
+    let state = |power: &str, window: &str| android::parse_lock_state(Some(power), Some(window));
+    let awake = state(power, window);
+    assert_eq!(
+        (awake.awake, awake.showing, awake.secure),
+        (Some(true), Some(false), Some(false))
+    );
+    assert!(!awake.unknown() && !awake.secure_lock_showing());
+    // The probe's states: Dozing with a secure keyguard showing, and an unlocked phone with a lock set.
+    let locked = state(
+        &power.replace("mWakefulness=Awake", "mWakefulness=Dozing"),
+        &window
+            .replace("      showing=false", "      showing=true")
+            .replace("      secure=false", "      secure=true"),
+    );
+    assert_eq!(locked.awake, Some(false));
+    assert!(locked.secure_lock_showing());
+    let unlocked_with_lock = state(
+        power,
+        &window.replace("      secure=false", "      secure=true"),
+    );
+    assert!(!unlocked_with_lock.secure_lock_showing());
+    // Look-alike keys never count: showingAndNotOccluded=, the monitor's mIsShowing= and mSimSecure=.
+    let lookalikes = state(
+        power,
+        &window
+            .replace("showingAndNotOccluded=false", "showingAndNotOccluded=true")
+            .replace("mIsShowing=false", "mIsShowing=true")
+            .replace("mSimSecure=false", "mSimSecure=true"),
+    );
+    assert_eq!(
+        (lookalikes.showing, lookalikes.secure),
+        (Some(false), Some(false))
+    );
+    // mWakefulnessChanging= is not mWakefulness=.
+    assert_eq!(
+        state(&power.replace("  mWakefulness=Awake\n", ""), window).awake,
+        None
+    );
+    // A block this Android version does not print, or a failed read, is unknown, never unlocked.
+    let missing = state(
+        power,
+        "WINDOW MANAGER POLICY STATE (dumpsys window policy)\n",
+    );
+    assert_eq!((missing.showing, missing.secure), (None, None));
+    assert!(missing.unknown());
+    let unread = android::parse_lock_state(None, None);
+    assert!(unread.unknown() && !unread.secure_lock_showing());
+    assert_eq!(
+        unread.describe(),
+        "awake=unknown keyguard showing=unknown secure=unknown"
+    );
+}
+
+#[test]
+fn phone_model_is_record_safe_and_lock_commands_never_sleep_or_lock() {
+    assert_eq!(
+        android::sanitize_model(" Pixel 9 Pro (Global)\n"),
+        "Pixel_9_Pro__Global_"
+    );
+    assert_eq!(android::sanitize_model(&"x".repeat(300)).len(), 128);
+    assert_eq!(android::sanitize_model("\n"), "");
+    let adb = Path::new("/sdk/platform-tools/adb");
+    for (spec, args) in [
+        (
+            android::dumpsys_power_spec(adb, 5037, "0A1B2C3D"),
+            "-s 0A1B2C3D shell dumpsys power",
+        ),
+        (
+            android::dumpsys_window_policy_spec(adb, 5037, "0A1B2C3D"),
+            "-s 0A1B2C3D shell dumpsys window policy",
+        ),
+        (
+            android::wake_spec(adb, 5037, "0A1B2C3D"),
+            "-s 0A1B2C3D shell input keyevent KEYCODE_WAKEUP",
+        ),
+        (
+            android::dismiss_keyguard_spec(adb, 5037, "0A1B2C3D"),
+            "-s 0A1B2C3D shell wm dismiss-keyguard",
+        ),
+        (android::start_server_spec(adb, 5199), "start-server"),
+    ] {
+        assert_eq!(spec.args.join(" "), args);
+    }
+    // adb hands ADB_SERVER_SOCKET to the server it launches as `-L`, which rejects an explicit host.
+    assert_eq!(
+        android::start_server_spec(adb, 5199).env,
+        [("ADB_SERVER_SOCKET".to_string(), "tcp:5199".to_string())]
+    );
+}
+
+#[test]
+fn server_absent_is_only_a_refused_connect() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    assert!(!android::server_absent(port));
+    drop(listener);
+    assert!(android::server_absent(port));
+}

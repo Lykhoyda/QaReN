@@ -2318,6 +2318,182 @@ fn android_borrowed_cleanup_removes_reverse_and_releases_runner() {
     assert!(!adb_commands(&mock).iter().any(|c| c.contains("41299")));
 }
 
+const PHONE: &str = "0A1B2C3D";
+
+// The same dead run on a borrowed phone: it also holds the `usb-<serial>` claim prepare's route takes.
+fn phone_record(repo: &std::path::Path) -> RunRecord {
+    let mut record = borrowed_record(repo);
+    qaren::lease::release(record.resources.lease.as_ref().unwrap());
+    record.resources.lease = Some(
+        qaren::lease::acquire(
+            &mut MockRunner::new(),
+            &repo.join("locks"),
+            qaren::scenario::Platform::Android,
+            PHONE,
+            "borrowed-run",
+            None,
+        )
+        .unwrap(),
+    );
+    record.scenario.android_emulator = None;
+    record.scenario.android_device = Some(qaren::scenario::AndroidDeviceSpec {
+        serial: PHONE.to_string(),
+        model: "Test_Phone_5".to_string(),
+    });
+    record.resources.android_emulator = None;
+    record.resources.android_device = Some(qaren::runrecord::BorrowedDeviceResource {
+        serial: PHONE.to_string(),
+        model: "Test_Phone_5".to_string(),
+        server_port: 5037,
+        api_level: 30,
+        abi: "arm64-v8a".to_string(),
+    });
+    record.resources.adb_local_serial = Some(PHONE.to_string());
+    let lock_dir = repo.join("locks").join(format!("usb-{PHONE}"));
+    std::fs::create_dir_all(&lock_dir).unwrap();
+    std::fs::write(
+        lock_dir.join("holder.json"),
+        r#"{"holder":"qaren-borrowed-run","run_id":"borrowed-run","at":"2026-08-12T16:00:00Z"}"#,
+    )
+    .unwrap();
+    record.resources.usb_device = Some(qaren::runrecord::UsbDeviceResource {
+        serial: PHONE.to_string(),
+        lock_dir,
+        holder: "qaren-borrowed-run".to_string(),
+    });
+    record
+}
+
+fn script_phone_reverse_and_stopped_runner(mock: &mut MockRunner) {
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+    mock.expect_run(
+        &format!("-s {PHONE} reverse --remove tcp:8791"),
+        CmdOutput::success(""),
+    );
+    mock.expect_run(
+        &format!("-s {PHONE} reverse --list"),
+        CmdOutput::success(""),
+    );
+    mock.expect_run("forward --list", CmdOutput::success("\n"));
+    mock.expect_run(
+        "dumpsys activity processes",
+        CmdOutput::success(NO_RUNNER_PROCESS),
+    );
+}
+
+#[test]
+fn android_phone_cleanup_removes_its_runner_apps_and_releases_the_claim_before_the_lease() {
+    let repo = common::temp_repo();
+    let record = phone_record(&repo);
+    let lease = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+    let claim = record
+        .resources
+        .usb_device
+        .as_ref()
+        .unwrap()
+        .lock_dir
+        .clone();
+    record.save(&repo).unwrap();
+    let mut mock = borrowed_mock();
+    script_phone_reverse_and_stopped_runner(&mut mock);
+    for package in qaren::adapters::android::RUNNER_PACKAGES {
+        mock.expect_run(
+            &format!("-s {PHONE} uninstall {package}"),
+            CmdOutput::success("Success\n"),
+        );
+        mock.expect_run(
+            &format!("-s {PHONE} shell pm list packages {package}"),
+            CmdOutput::success(""),
+        );
+    }
+
+    let receipt = cleanup(&mut mock, &repo, "borrowed-run");
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Cleaned,
+        "{:?}",
+        receipt.cleanup
+    );
+    for (leg, outcome) in [
+        ("adb_reverse", "removed"),
+        ("android_runner", "absent"),
+        ("android_runner_packages", "removed"),
+        ("usb_device_claim", "removed"),
+        ("device_lease", "removed"),
+    ] {
+        assert_eq!(receipt.cleanup[leg], outcome, "{leg}");
+    }
+    assert_no_owned_server_legs(&receipt);
+    assert_eq!(mock.remaining(), 0);
+    assert!(!claim.exists() && !lease.exists());
+    let adb = adb_commands(&mock);
+    assert!(adb
+        .iter()
+        .all(|c| c.contains(PHONE) || c == "version" || c == "forward --list"));
+    // The app under test and the host's server stay.
+    assert!(adb
+        .iter()
+        .all(|c| !c.contains("uninstall com.rndevagent.testapp")
+            && !c.contains("kill-server")
+            && !c.contains("start-server")));
+}
+
+#[test]
+fn android_phone_cleanup_keeps_claim_and_lease_while_a_runner_app_remains_or_no_server_answers() {
+    let repo = common::temp_repo();
+    let record = phone_record(&repo);
+    let lease = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+    let claim = record
+        .resources
+        .usb_device
+        .as_ref()
+        .unwrap()
+        .lock_dir
+        .clone();
+    record.save(&repo).unwrap();
+    let mut mock = borrowed_mock();
+    script_phone_reverse_and_stopped_runner(&mut mock);
+    let first = qaren::adapters::android::RUNNER_PACKAGES[0];
+    mock.expect_run(
+        &format!("uninstall {first}"),
+        CmdOutput::failed(1, "Failure [DELETE_FAILED_INTERNAL_ERROR]"),
+    );
+    mock.expect_run(
+        &format!("pm list packages {first}"),
+        CmdOutput::success(&format!("package:{first}\n")),
+    );
+
+    let receipt = cleanup(&mut mock, &repo, "borrowed-run");
+
+    assert_ne!(receipt.result, ReceiptResult::Cleaned);
+    assert!(receipt.cleanup["android_runner_packages"].contains("still installed"));
+    assert!(receipt.cleanup["usb_device_claim"].contains("retaining the exclusive claim"));
+    assert_ne!(receipt.cleanup["device_lease"], "removed");
+    assert!(claim.exists() && lease.exists());
+    assert_eq!(mock.remaining(), 0);
+
+    // No server answers: cleanup starts none, sends nothing and keeps both locks.
+    let repo = common::temp_repo();
+    let record = phone_record(&repo);
+    let claim = record
+        .resources
+        .usb_device
+        .as_ref()
+        .unwrap()
+        .lock_dir
+        .clone();
+    record.save(&repo).unwrap();
+    let mut mock = MockRunner::new();
+    owner_gone(&mut mock);
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    let receipt = cleanup(&mut mock, &repo, "borrowed-run");
+    assert!(adb_commands(&mock).is_empty(), "{:?}", adb_commands(&mock));
+    assert!(receipt.cleanup["android_runner_packages"].contains("not proven stopped"));
+    assert!(receipt.cleanup["usb_device_claim"].contains("retaining the exclusive claim"));
+    assert!(claim.exists());
+}
+
 #[test]
 fn android_borrowed_cleanup_absent_reverse_is_absent() {
     let repo = common::temp_repo();
@@ -2831,6 +3007,9 @@ impl qaren::exec::Runner for RecorderRetirementRunner {
             }
         }
         output
+    }
+    fn adb_server_absent(&self, port: u16) -> bool {
+        self.mock.adb_server_absent(port)
     }
     fn adb_server_version(&self, port: u16) -> Result<u32, String> {
         self.mock.adb_server_version(port)

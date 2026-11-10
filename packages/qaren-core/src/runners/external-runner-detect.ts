@@ -72,6 +72,16 @@ export function isAndroidEmulatorSerial(value: string): boolean {
   return /^emulator-\d{1,5}$/.test(value);
 }
 
+/** A physical USB device serial: never an emulator form, a host:port endpoint or an iOS simulator UUID. */
+export function isAndroidUsbSerial(value: string): boolean {
+  return (
+    /^[A-Za-z0-9._-]+$/.test(value) &&
+    !value.startsWith('-') &&
+    !value.startsWith('emulator-') &&
+    !isIosSimulatorUdid(value)
+  );
+}
+
 /** Strict admission for a destructive reset: only a readable process table without a driver is clear. */
 export async function probeAndroidExternalRunnerAdmission(
   serial: string,

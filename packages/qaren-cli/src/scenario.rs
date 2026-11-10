@@ -21,6 +21,8 @@ pub struct Scenario {
     pub android_usb: Option<AndroidUsbSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub android_emulator: Option<AndroidEmulatorSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub android_device: Option<AndroidDeviceSpec>,
     #[serde(default)]
     pub build: BuildSpec,
     #[serde(default)]
@@ -126,6 +128,14 @@ pub struct AndroidUsbSpec {
 pub struct AndroidEmulatorSpec {
     pub serial: String,
     pub avd: String,
+}
+
+// The attached physical device `qaren check` borrows on the host's running adb server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AndroidDeviceSpec {
+    pub serial: String,
+    pub model: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -456,7 +466,9 @@ impl Scenario {
                 )));
             }
         }
-        if (self.platform == Platform::Ios || self.android_emulator.is_some())
+        if (self.platform == Platform::Ios
+            || self.android_emulator.is_some()
+            || self.android_device.is_some())
             && self.build.owner == BuildOwner::Cli
         {
             require_launch_scheme(self.candidate.dev_client_scheme.as_deref())?;
@@ -478,9 +490,10 @@ impl Scenario {
                 if self.android.is_some()
                     || self.android_usb.is_some()
                     || self.android_emulator.is_some()
+                    || self.android_device.is_some()
                 {
                     return Err(invalid(
-                        "platform ios must not carry an `android:`, `android_usb:` or `android_emulator:` section"
+                        "platform ios must not carry an `android:`, `android_usb:`, `android_emulator:` or `android_device:` section"
                             .into(),
                     ));
                 }
@@ -509,13 +522,24 @@ impl Scenario {
                         "platform android must not carry an `ios:` section".into(),
                     ));
                 }
+                let borrowed = [
+                    self.android_emulator.is_some(),
+                    self.android_device.is_some(),
+                ];
+                if borrowed.contains(&true)
+                    && (self.android.is_some()
+                        || self.android_usb.is_some()
+                        || borrowed == [true; 2])
+                {
+                    return Err(invalid(
+                        "platform android must carry exactly one of `android:` (farm), `android_usb:`, `android_emulator:` or `android_device:`".into(),
+                    ));
+                }
                 if let Some(emulator) = &self.android_emulator {
-                    if self.android.is_some() || self.android_usb.is_some() {
-                        return Err(invalid(
-                            "platform android must carry exactly one of `android:` (farm), `android_usb:` or `android_emulator:`".into(),
-                        ));
-                    }
                     return self.validate_android_emulator(emulator);
+                }
+                if let Some(device) = &self.android_device {
+                    return self.validate_android_device(device);
                 }
                 let android = match (&self.android, &self.android_usb) {
                     (Some(android), None) => {
@@ -615,6 +639,40 @@ impl Scenario {
             return Err(invalid(format!(
                 "android_emulator.avd {:?} must be 1–128 bytes of [A-Za-z0-9._-]",
                 emulator.avd
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_android_device(&self, device: &AndroidDeviceSpec) -> Result<(), Failure> {
+        let invalid = |detail: String| {
+            Failure::new(
+                "validate",
+                FailureCode::ScenarioInvalid,
+                detail,
+                "fix the scenario file against packages/qaren-cli/README.md",
+            )
+        };
+        if self.build.owner != BuildOwner::Cli {
+            return Err(invalid(
+                "android_device is borrowed by qaren check and requires build.owner cli".into(),
+            ));
+        }
+        if !is_usb_serial(&device.serial) {
+            return Err(invalid(format!(
+                "android_device.serial {:?} must be a plain USB device serial ([A-Za-z0-9._-], not an emulator or host:port endpoint)",
+                device.serial
+            )));
+        }
+        let model_ok = (1..=128).contains(&device.model.len())
+            && device
+                .model
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+        if !model_ok {
+            return Err(invalid(format!(
+                "android_device.model {:?} must be 1–128 bytes of [A-Za-z0-9._-]",
+                device.model
             )));
         }
         Ok(())

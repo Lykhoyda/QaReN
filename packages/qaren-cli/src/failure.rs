@@ -189,6 +189,7 @@ pub struct Failure {
     // Failed or refused walk steps: the line and, for a target-class failure, its miss reason and screen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<u64>,
+    // A step's miss reason, or the cause of a device refusal (`usb-unauthorized`, `device-locked`, ...).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subreason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

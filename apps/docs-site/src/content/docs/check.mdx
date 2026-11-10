@@ -44,15 +44,22 @@ For explicit boot, restart or exit shutdown, follow the
 
 ### Android
 
-`--platform android` borrows one booted emulator through the adb server that is already
-running. qaren never starts or stops the adb server; with none answering, or with an `adb`
-under `ANDROID_HOME` whose version differs from the server's, it refuses
+`--platform android` borrows one booted emulator, or one physical USB phone, through the
+host's adb server. When nothing listens on its port, qaren runs `adb start-server` once,
+leaves the server running and says so in the receipt; it never stops or restarts a server.
+With an `adb` under `ANDROID_HOME` whose version differs from the server's, it refuses
 `DEVICE_UNAVAILABLE`.
 
-Automatic selection counts only emulators that have finished booting. Exactly one must
-qualify; with several, pass `--device emulator-NNNN`. Physical devices are not supported.
+An emulator in adb's `device` state is eligible. While one is, automatic selection counts only
+eligible emulators that have finished booting; exactly one must qualify, and with several, pass
+`--device emulator-NNNN`. With no eligible emulator, the one ready phone is chosen, or pass
+`--device <serial>`. A phone that is unauthorized,
+lacks USB permission, is offline or shows a secure lock screen refuses with the cause and
+the fix. See the
+[CLI README](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan)
+for the full contract.
 
-The build runs Gradle `:app:assembleDebug` for the emulator's ABI, after
+The build runs Gradle `:app:assembleDebug` for the device's ABI, after
 `expo prebuild --platform android --clean` when `android/` is absent. An absent `android/`
 must be git-ignored; otherwise the build fails `BUILD_FAILED` before generating it.
 

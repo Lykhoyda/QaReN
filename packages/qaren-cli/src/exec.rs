@@ -331,6 +331,10 @@ pub trait Runner {
     fn try_reap(&mut self, _pid: i32) -> bool {
         false
     }
+    // True only when the loopback port refuses the connection: nothing listens there.
+    fn adb_server_absent(&self, port: u16) -> bool {
+        crate::adapters::android::server_absent(port)
+    }
     fn adb_server_version(&self, port: u16) -> Result<u32, String> {
         crate::adapters::android::server_version(port)
     }
@@ -427,6 +431,9 @@ impl Runner for DeadlineRunner<'_> {
     fn try_reap(&mut self, pid: i32) -> bool {
         self.inner.try_reap(pid)
     }
+    fn adb_server_absent(&self, port: u16) -> bool {
+        self.inner.adb_server_absent(port)
+    }
     fn adb_server_version(&self, port: u16) -> Result<u32, String> {
         self.inner.adb_server_version(port)
     }
@@ -475,6 +482,9 @@ impl Runner for CleanupRunner<'_> {
     }
     fn try_reap(&mut self, pid: i32) -> bool {
         self.0.try_reap(pid)
+    }
+    fn adb_server_absent(&self, port: u16) -> bool {
+        self.0.adb_server_absent(port)
     }
     fn adb_server_version(&self, port: u16) -> Result<u32, String> {
         self.0.adb_server_version(port)
@@ -1056,6 +1066,10 @@ pub struct MockRunner {
     pub cancel_at_ms: Option<(u64, String)>,
     // (command substring, ms): the scripted clock advances while a matching command runs.
     pub advance_on: Option<(String, u64)>,
+    // Ports whose probe is inconclusive (a timeout, not a refused connect); every other unlisted port refuses.
+    pub adb_inconclusive: Vec<u16>,
+    // (port, version) of the server a scripted `adb start-server` brings up, taken once.
+    pub adb_server_after_start: Option<(u16, u32)>,
     // (port, version) of the adb servers the scripted host runs; the real probe never runs.
     pub adb_servers: Vec<(u16, u32)>,
     // (port, host:devices reply body) of those servers; an unlisted port refuses the connection.
@@ -1077,6 +1091,8 @@ impl MockRunner {
             cancel_after: None,
             cancel_at_ms: None,
             advance_on: None,
+            adb_inconclusive: Vec::new(),
+            adb_server_after_start: None,
             adb_servers: Vec::new(),
             adb_devices: Vec::new(),
             script: VecDeque::new(),
@@ -1188,6 +1204,9 @@ impl Runner for MockRunner {
     fn env_names(&self) -> Vec<String> {
         self.environment.keys().cloned().collect()
     }
+    fn adb_server_absent(&self, port: u16) -> bool {
+        !self.adb_servers.iter().any(|(p, _)| *p == port) && !self.adb_inconclusive.contains(&port)
+    }
     fn adb_server_version(&self, port: u16) -> Result<u32, String> {
         self.adb_servers
             .iter()
@@ -1204,6 +1223,9 @@ impl Runner for MockRunner {
     }
     fn execute(&mut self, spec: &CmdSpec, _interruptible: bool) -> CmdOutput {
         self.calls.push(spec.clone());
+        if spec.label == "adb-start-server" {
+            self.adb_servers.extend(self.adb_server_after_start.take());
+        }
         if let Some((hint, ms)) = &self.advance_on {
             if spec.rendered().contains(hint.as_str()) {
                 self.now_ms += ms;

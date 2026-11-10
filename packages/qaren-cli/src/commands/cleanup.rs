@@ -323,10 +323,10 @@ pub fn cleanup_with_policy(
             receipt.scenario = Some(super::scenario_identity(&record));
             receipt.candidate = Some(record.candidate.clone());
             receipt.device = Some(super::device_identity(&record));
-            let next_action = match record.resources.android_emulator.as_ref() {
-                Some(emulator) => format!(
+            let next_action = match record.resources.borrowed_android() {
+                Some(borrowed) => format!(
                     "omit --remove-app; to remove the app, run adb -s {} uninstall {} yourself",
-                    emulator.serial, record.candidate.app_id
+                    borrowed.serial, record.candidate.app_id
                 ),
                 None => "re-run with --remove-app --confirm-remove-app <run-id>/<remote-serial>/<app-id> naming exactly this run, its leased emulator serial and its app id, or omit --remove-app for legacy cleanup".to_string(),
             };
@@ -497,9 +497,11 @@ pub fn cleanup_with_policy(
                 outcomes.push(("simulator".to_string(), outcome));
             }
         }
-        // A borrowed emulator has no owned server, tunnel or claim; the lease release below still gates on its legs.
-        Platform::Android if record.resources.android_emulator.is_some() => {
+        // A borrowed device has no owned server or tunnel; a phone's claim and the lease below gate on its legs.
+        Platform::Android if record.resources.borrowed_android().is_some() => {
             outcomes.extend(release_borrowed_android(runner, &record));
+            outcomes.extend(release_runner_packages(runner, &record, &outcomes));
+            release_usb_claim(&record, &mut outcomes, BORROWED_PHONE_LEGS);
         }
         Platform::Android => {
             let server = record.resources.adb_server.clone();
@@ -672,45 +674,11 @@ pub fn cleanup_with_policy(
                 };
                 outcomes.push(("farm_lease".to_string(), outcome));
             }
-            // The exclusive device claim is released last, and only once every
-            // resource capable of addressing the device (reverse mapping, adb
-            // server, and the build/metro process group that drives adb with
-            // this run's server socket and serial) is proven removed or absent
-            // — releasing earlier could hand the phone to the next run while
-            // this run still reaches it.
-            // A foreign holder proves this run's claim never succeeded
-            // (persist-before-claim; Strict claims are never adopted), so it
-            // reads as absent.
-            if let Some(usb) = record.resources.usb_device.clone() {
-                let device_paths_clean = outcomes
-                    .iter()
-                    .filter(|(name, _)| {
-                        name == "adb_reverse" || name == "adb_server" || name == "metro"
-                    })
-                    .all(|(_, o)| o.clean());
-                let outcome = if !device_paths_clean {
-                    Outcome::Refused(
-                        "resources that can still address the device are not proven gone; retaining the exclusive claim"
-                            .to_string(),
-                    )
-                } else {
-                    match crate::buildplan::release_lock(&usb.lock_dir, &usb.holder, &record.run_id)
-                    {
-                        crate::buildplan::ReleaseOutcome::Removed => Outcome::Removed,
-                        crate::buildplan::ReleaseOutcome::Absent => Outcome::Absent,
-                        // Foreign proves this run's Strict claim never
-                        // succeeded; nothing of ours remains to release.
-                        crate::buildplan::ReleaseOutcome::Foreign(_) => Outcome::Absent,
-                        crate::buildplan::ReleaseOutcome::Refused(reason) => {
-                            Outcome::Refused(reason)
-                        }
-                        crate::buildplan::ReleaseOutcome::Unresolved(reason) => {
-                            Outcome::Unresolved(reason)
-                        }
-                    }
-                };
-                outcomes.push(("usb_device_claim".to_string(), outcome));
-            }
+            release_usb_claim(
+                &record,
+                &mut outcomes,
+                &["adb_reverse", "adb_server", "metro"],
+            );
         }
     }
 
@@ -1112,9 +1080,132 @@ fn push_reverse_outcome(
     outcomes.push(("adb_reverse".to_string(), outcome));
 }
 
+// Every leg of a borrowed phone that can still address it: the claim waits for all of them.
+pub(crate) const BORROWED_PHONE_LEGS: &[&str] = &[
+    "adb_reverse",
+    "android_runner",
+    "android_runner_packages",
+    "metro",
+    "core",
+];
+
+// The exclusive device claim is released last, and only once every resource
+// capable of addressing the device (for the private-server route: reverse
+// mapping, adb server, and the build/metro process group that drives adb with
+// this run's server socket and serial; for a borrowed phone: BORROWED_PHONE_LEGS)
+// is proven removed or absent — releasing earlier could hand the phone to the
+// next run while this run still reaches it.
+// A foreign holder proves this run's claim never succeeded (persist-before-claim;
+// Strict claims are never adopted), so it reads as absent.
+pub(crate) fn release_usb_claim(
+    record: &RunRecord,
+    outcomes: &mut Vec<(String, Outcome)>,
+    legs: &[&str],
+) {
+    let Some(usb) = record.resources.usb_device.clone() else {
+        return;
+    };
+    let device_paths_clean = outcomes
+        .iter()
+        .filter(|(name, _)| legs.contains(&name.as_str()))
+        .all(|(_, o)| o.clean());
+    let outcome = if !device_paths_clean {
+        Outcome::Refused(
+            "resources that can still address the device are not proven gone; retaining the exclusive claim"
+                .to_string(),
+        )
+    } else {
+        match crate::buildplan::release_lock(&usb.lock_dir, &usb.holder, &record.run_id) {
+            crate::buildplan::ReleaseOutcome::Removed => Outcome::Removed,
+            crate::buildplan::ReleaseOutcome::Absent => Outcome::Absent,
+            // Foreign proves this run's Strict claim never
+            // succeeded; nothing of ours remains to release.
+            crate::buildplan::ReleaseOutcome::Foreign(_) => Outcome::Absent,
+            crate::buildplan::ReleaseOutcome::Refused(reason) => Outcome::Refused(reason),
+            crate::buildplan::ReleaseOutcome::Unresolved(reason) => Outcome::Unresolved(reason),
+        }
+    };
+    outcomes.push(("usb_device_claim".to_string(), outcome));
+}
+
+// A phone keeps no QaReN app behind: once its runner is proven stopped, uninstall the two runner
+// packages (QaReN's own, no user data) and prove them absent. Emulators keep them, as before.
+pub(crate) fn release_runner_packages(
+    runner: &mut dyn Runner,
+    record: &RunRecord,
+    outcomes: &[(String, Outcome)],
+) -> Option<(String, Outcome)> {
+    let phone = record.resources.android_device.as_ref()?;
+    // The runner leg passed the lease, serial and server checks moments ago and proved it stopped.
+    let stopped = outcomes
+        .iter()
+        .any(|(leg, o)| leg == "android_runner" && matches!(o, Outcome::Removed | Outcome::Absent));
+    if !stopped {
+        return outcomes
+            .iter()
+            .any(|(leg, _)| leg == "android_runner")
+            .then(|| {
+                (
+                    "android_runner_packages".to_string(),
+                    Outcome::Refused(
+                        "the runner is not proven stopped; its apps are left installed".into(),
+                    ),
+                )
+            });
+    }
+    let adb = record.resources.adb_path.clone()?;
+    let mut cleanup_runner = crate::exec::CleanupRunner(runner);
+    let runner: &mut dyn Runner = &mut cleanup_runner;
+    let mut removed = false;
+    for package in android::RUNNER_PACKAGES {
+        let uninstalled = runner.run(&android::uninstall_spec(
+            &adb,
+            phone.server_port,
+            &phone.serial,
+            package,
+        ));
+        removed |= uninstalled.ok() && uninstalled.stdout.contains("Success");
+        // "Not installed" counts as absent: only the package list decides.
+        let listed = runner.run(&android::pm_list_packages_spec(
+            &adb,
+            phone.server_port,
+            &phone.serial,
+            package,
+        ));
+        if !listed.ok() {
+            return Some((
+                "android_runner_packages".to_string(),
+                Outcome::Unresolved(format!("pm list packages {package}: {}", listed.summary())),
+            ));
+        }
+        if android::package_list_has_exact(&listed.stdout, package) {
+            return Some((
+                "android_runner_packages".to_string(),
+                Outcome::Unresolved(format!(
+                    "{package} is still installed after adb uninstall ({})",
+                    uninstalled.summary()
+                )),
+            ));
+        }
+    }
+    let outcome = if removed {
+        Outcome::Removed
+    } else {
+        Outcome::Absent
+    };
+    Some(("android_runner_packages".to_string(), outcome))
+}
+
 fn removal_confirmed(record: &RunRecord, confirmation: &str) -> Result<(), String> {
-    if record.resources.android_emulator.is_some() {
-        return Err("a borrowed emulator keeps the app; uninstall it yourself".to_string());
+    if let Some(borrowed) = record.resources.borrowed_android() {
+        let kind = if borrowed.physical {
+            "device"
+        } else {
+            "emulator"
+        };
+        return Err(format!(
+            "a borrowed {kind} keeps the app; uninstall it yourself"
+        ));
     }
     let farm_route = record.scenario.platform == Platform::Android
         && record.resources.usb_device.is_none()
@@ -1941,7 +2032,7 @@ pub(crate) fn release_borrowed_android(
 ) -> Vec<(String, Outcome)> {
     let mut cleanup_runner = crate::exec::CleanupRunner(runner);
     let runner: &mut dyn Runner = &mut cleanup_runner;
-    let Some(emulator) = record.resources.android_emulator.as_ref() else {
+    let Some(emulator) = record.resources.borrowed_android() else {
         return Vec::new();
     };
     let mut legs: Vec<&str> = Vec::new();
@@ -1979,8 +2070,13 @@ pub(crate) fn release_borrowed_android(
         ));
     };
     if serial != emulator.serial {
+        let kind = if emulator.physical {
+            "device"
+        } else {
+            "emulator"
+        };
         return every(Outcome::Refused(format!(
-            "recorded serial {serial:?} is not the borrowed emulator {:?}; not addressing it",
+            "recorded serial {serial:?} is not the borrowed {kind} {:?}; not addressing it",
             emulator.serial
         )));
     }

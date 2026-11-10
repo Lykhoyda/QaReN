@@ -388,6 +388,206 @@ pub fn parse_avd_name(stdout: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+// A positive "nothing listens": only a refused loopback connect; a timeout or any other error is inconclusive.
+pub fn server_absent(port: u16) -> bool {
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    matches!(
+        std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500)),
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused
+    )
+}
+
+// adb prefers ADB_SERVER_SOCKET and hands it to the server it launches as `-L`, which rejects an
+// explicit host: the bare port binds loopback on exactly the port the run resolved.
+pub fn start_server_spec(adb: &Path, server_port: u16) -> CmdSpec {
+    CmdSpec::new(
+        "adb-start-server",
+        &adb.to_string_lossy(),
+        &["start-server"],
+        30,
+    )
+    .env("ADB_SERVER_SOCKET", &server_bind_socket(server_port))
+}
+
+// getprop ro.product.model as a record-safe name: other characters become `_`, at most 128 bytes.
+pub fn sanitize_model(raw: &str) -> String {
+    raw.trim()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(128)
+        .collect()
+}
+
+pub fn dumpsys_power_spec(adb: &Path, server_port: u16, serial: &str) -> CmdSpec {
+    adb_client(
+        "adb-dumpsys-power",
+        adb,
+        server_port,
+        &["-s", serial, "shell", "dumpsys", "power"],
+        20,
+    )
+}
+
+pub fn dumpsys_window_policy_spec(adb: &Path, server_port: u16, serial: &str) -> CmdSpec {
+    adb_client(
+        "adb-dumpsys-window-policy",
+        adb,
+        server_port,
+        &["-s", serial, "shell", "dumpsys", "window", "policy"],
+        20,
+    )
+}
+
+pub fn wake_spec(adb: &Path, server_port: u16, serial: &str) -> CmdSpec {
+    adb_client(
+        "adb-wake",
+        adb,
+        server_port,
+        &["-s", serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP"],
+        20,
+    )
+}
+
+// Dismisses only a non-secure keyguard; a PIN or pattern stays, whatever the exit status says.
+pub fn dismiss_keyguard_spec(adb: &Path, server_port: u16, serial: &str) -> CmdSpec {
+    adb_client(
+        "adb-dismiss-keyguard",
+        adb,
+        server_port,
+        &["-s", serial, "shell", "wm", "dismiss-keyguard"],
+        20,
+    )
+}
+
+// None is unknown: an unreadable read or a field this Android version does not print.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LockState {
+    pub awake: Option<bool>,
+    pub showing: Option<bool>,
+    pub secure: Option<bool>,
+}
+
+impl LockState {
+    pub fn secure_lock_showing(&self) -> bool {
+        self.showing == Some(true) && self.secure == Some(true)
+    }
+
+    pub fn unknown(&self) -> bool {
+        self.awake.is_none() || self.showing.is_none() || self.secure.is_none()
+    }
+
+    pub fn describe(&self) -> String {
+        let show = |v: Option<bool>| v.map_or("unknown".to_string(), |v| v.to_string());
+        format!(
+            "awake={} keyguard showing={} secure={}",
+            show(self.awake),
+            show(self.showing),
+            show(self.secure)
+        )
+    }
+}
+
+// `dumpsys power` mWakefulness=, then `dumpsys window policy`'s KeyguardServiceDelegate block: exact keys only,
+// so showingAndNotOccluded= and the nested KeyguardStateMonitor's mIsShowing= never count.
+pub fn parse_lock_state(power: Option<&str>, window: Option<&str>) -> LockState {
+    let awake = power.and_then(|text| {
+        text.lines()
+            .find_map(|l| l.trim().strip_prefix("mWakefulness="))
+            .map(|v| v.trim() == "Awake")
+    });
+    let mut showing = None;
+    let mut secure = None;
+    if let Some(text) = window {
+        let mut lines = text.lines();
+        if let Some(head) = lines
+            .by_ref()
+            .find(|l| l.trim() == "KeyguardServiceDelegate")
+        {
+            let depth = head.len() - head.trim_start().len();
+            for line in lines {
+                let indent = line.len() - line.trim_start().len();
+                if line.trim().is_empty() || indent <= depth {
+                    break;
+                }
+                let flag = |v: &str| match v.trim() {
+                    "true" => Some(true),
+                    "false" => Some(false),
+                    _ => None,
+                };
+                if let Some(v) = line.trim().strip_prefix("showing=") {
+                    showing = flag(v);
+                } else if let Some(v) = line.trim().strip_prefix("secure=") {
+                    secure = flag(v);
+                }
+            }
+        }
+    }
+    LockState {
+        awake,
+        showing,
+        secure,
+    }
+}
+
+// Two reads, never a change: a failed read leaves its fields unknown.
+pub fn read_lock_state(
+    runner: &mut dyn crate::exec::Runner,
+    adb: &Path,
+    server_port: u16,
+    serial: &str,
+) -> LockState {
+    let mut read = |spec: CmdSpec| {
+        let output = runner.run(&spec);
+        output.ok().then_some(output.stdout)
+    };
+    let power = read(dumpsys_power_spec(adb, server_port, serial));
+    let window = read(dumpsys_window_policy_spec(adb, server_port, serial));
+    parse_lock_state(power.as_deref(), window.as_deref())
+}
+
+// QaReN neither can nor may pass a PIN or pattern: a lock still showing after one wake and dismiss refuses.
+pub fn device_locked(serial: &str, state: &LockState) -> DeviceProblem {
+    (
+        "device-locked",
+        format!("{serial} shows its lock screen ({})", state.describe()),
+        "unlock the device; for a dedicated test phone set Screen lock to None or Swipe; then re-run"
+            .to_string(),
+    )
+}
+
+pub fn several_devices(serials: &[&str]) -> DeviceProblem {
+    let listed = serials.join(", ");
+    (
+        "several-devices",
+        format!(
+            "{} physical devices are ready ({listed}); qaren check borrows exactly one",
+            serials.len()
+        ),
+        format!("pass --device <serial>: {listed}"),
+    )
+}
+
+// One start was tried: report what the command said and that the port still does not answer, separately.
+pub fn server_not_started(adb: &Path, port: u16, command: &str, probe: &str) -> DeviceProblem {
+    (
+        "adb-server-not-started",
+        format!(
+            "no adb server answered on port {port}; QaReN ran `adb start-server` once ({command}) and the port still does not answer ({probe})"
+        ),
+        format!(
+            "QaReN tried once to start the adb server on port {port} and it does not answer; run `ADB_SERVER_SOCKET={} '{}' start-server` and read its error, then re-run",
+            server_bind_socket(port),
+            adb.display()
+        ),
+    )
+}
+
 // --no-daemon so no Gradle JVM outlives the run's build group; ANDROID_HOME is inherited.
 pub fn gradle_assemble_spec(project_root: &Path, abi: &str, deadline_seconds: u64) -> CmdSpec {
     CmdSpec::new(

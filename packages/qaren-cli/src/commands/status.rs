@@ -444,7 +444,7 @@ fn probe_ios(runner: &mut dyn Runner, record: &RunRecord, outcomes: &mut Vec<(St
 }
 
 fn probe_android(runner: &mut dyn Runner, record: &RunRecord, outcomes: &mut Vec<(String, Probe)>) {
-    if record.resources.android_emulator.is_some() {
+    if record.resources.borrowed_android().is_some() {
         probe_borrowed_emulator(runner, record, outcomes);
         return;
     }
@@ -530,7 +530,7 @@ fn probe_android(runner: &mut dyn Runner, record: &RunRecord, outcomes: &mut Vec
     probe_device_and_app(runner, record, &adb, server_port, serial, outcomes);
 }
 
-// A borrowed emulator is reached only through the adb server it was borrowed from.
+// A borrowed emulator or phone is reached only through the adb server it was borrowed from.
 fn probe_borrowed_emulator(
     runner: &mut dyn Runner,
     record: &RunRecord,
@@ -538,8 +538,7 @@ fn probe_borrowed_emulator(
 ) {
     let emulator = record
         .resources
-        .android_emulator
-        .as_ref()
+        .borrowed_android()
         .expect("borrowed branch");
     let Some(serial) = record
         .resources

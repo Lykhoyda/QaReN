@@ -1,7 +1,7 @@
 # qaren — plan-based React Native QA CLI
 
 `qaren check` owns a QA run against the current app worktree: it leases a
-borrowed iOS simulator or Android emulator, prepares the app and Metro,
+borrowed iOS simulator, Android emulator or USB Android phone, prepares the app and Metro,
 starts the TypeScript screen child, walks a Markdown plan, writes evidence,
 and cleans up owned resources under the [iOS admission and cleanup contract](#ios-admission-and-cleanup).
 This file is the CLI reference; the product introduction and the agent path are in the [root README](../../README.md).
@@ -53,8 +53,8 @@ paths, key names and environment variable names. It exits 1 when any row fails,
 0 otherwise, and 2 on a usage error. `--json` prints
 `{identity, checks: [{id, status, detail, fix?}], verdict}` and nothing else.
 
-`FAIL` means a host prerequisite or an explicitly selected device check failed;
-an `android-target` pass does not enable physical-device `check` runs. `WARN` is anything
+`FAIL` means a host prerequisite or an explicitly selected device check failed.
+`WARN` is anything
 that can conflict with a session or is hygiene; `SKIP` means the check is not
 applicable or its subject was not assessed, as explained in the row's detail.
 
@@ -150,7 +150,8 @@ is not on 5037 and the server on 5037 lists a phone as ready that the run's
 server does not, the row names that server's port; QaReN never stops it. An
 unusable attached device makes `android-devices` warn rather than fail, so a
 phone left charging does not fail doctor; `--device <android-serial>` fails
-unless that device is ready. `check` does not yet run on a physical device.
+unless that device is ready. `check` and `pr` refuse the same causes with the
+same texts when they select a phone.
 
 ### Host budget
 
@@ -558,32 +559,78 @@ package manager keeps its own configuration: QaReN does not rewrite it or
 validate credentials. Output withholding does not contain what
 those processes can write themselves or send over the network.
 
-`--platform android` borrows one booted emulator on the host's already running
-adb server: `ADB_SERVER_SOCKET` (loopback only), else `ANDROID_ADB_SERVER_PORT`,
-else 5037. `qaren` asks that server for its version over the adb protocol and
-issues no server start or stop command: with no server answering it refuses
-`DEVICE_UNAVAILABLE`, and so it does when `adb version` under `ANDROID_HOME`
-differs from the server's, because a client of another version would restart the
-server. This admission check does not continuously monitor the server; another
+`--platform android` borrows one booted emulator, or one physical USB phone, on
+the host's adb server: `ADB_SERVER_SOCKET` (loopback only), else
+`ANDROID_ADB_SERVER_PORT`, else 5037. `qaren` reads `adb version` under
+`ANDROID_HOME`, then asks that server for its version over the adb protocol.
+Only when the port refuses the connection (nothing listens) do `check` and `pr`
+run `adb start-server` once through that endpoint and probe again: a server
+that now answers is used, left running, and named in the receipt's `adb_server`
+outcome; one that still does not answer refuses `DEVICE_UNAVAILABLE` with
+`subreason` `adb-server-not-started`, giving what the command reported. A probe
+that times out or gets a malformed reply starts nothing and refuses. `qaren`
+does not restart a server it finds and never stops one; doctor, status and
+cleanup never start one. A client whose version differs from the server's
+refuses `DEVICE_UNAVAILABLE`, because it would restart the server. This
+admission check does not continuously monitor the server; another
 tool restarting it mid-run is outside `qaren`'s control. If it exits during the
 build or walk, a subsequent adb call can start a new server. Status and cleanup
-recheck compatibility as described below. Automatic selection counts only emulators in adb's
-`device` state whose `sys.boot_completed` is `1`, ignoring those still booting.
-Exactly one must qualify; otherwise selection refuses `DEVICE_UNAVAILABLE`
-(exit 4). With several boot-completed emulators, `--device emulator-NNNN`
-chooses one; an explicitly selected emulator still booting refuses without
-waiting or switching devices. Physical devices are not supported.
+recheck compatibility as described below.
+
+An emulator in adb's `device` state is eligible. While one is, automatic
+selection counts only eligible emulators whose `sys.boot_completed` is `1`, and
+exactly one must qualify; a phone is never picked then, and the refusal counts
+the physical devices also attached. With no eligible emulator, the one attached
+phone in `device` state that has finished booting is chosen; several refuse
+`several-devices` and list their serials. `--device` names an emulator
+(`emulator-NNNN`) or a phone by serial; an explicitly selected device still
+booting refuses without waiting or switching devices. A phone that cannot be
+used refuses `DEVICE_UNAVAILABLE` (exit 4) with the `subreason` and fix the
+[Android device rows](#android-device-rows) give: `usb-no-permissions`,
+`usb-unauthorized`, `device-offline`, `device-not-attached` for a named phone
+that is not listed, and `device-held-by-other-server` when the run uses another
+port and the server on 5037 holds it. An offline or unlisted phone is re-read
+up to five times, 2 s apart, before that refusal. A device whose serial adb
+cannot read is described, never selected or addressed.
+
+Before any build, selection reads `dumpsys power` and `dumpsys window policy`
+and refuses `device-locked` when a secure lock screen is showing. Just before
+the install it reads again: a sleeping device is woken once
+(`input keyevent KEYCODE_WAKEUP`), a showing keyguard dismissed once
+(`wm dismiss-keyguard`), and only the read back decides, because both commands
+exit 0 while a PIN or pattern stays; a keyguard still showing, or a device still
+asleep, refuses `device-locked`. An emulator gets the same two reads. A state
+these reads cannot tell proceeds with a `device_lock` note. QaReN never enters
+a credential and never sends a sleep, lock or settings command, and does not
+keep the screen on: for unattended runs, turn on Stay awake in Developer options
+and leave the phone unlocked, or use a test phone without a secure lock. The
+one-time steps a person does are accepting "Allow USB debugging" on the phone
+and, on Linux, an administrator's udev rule for the account whose server opens it.
+
+A phone run also takes the `usb-<serial>` claim that `prepare`'s `android_usb:`
+route and its handoff take, so the two never drive one phone: a held claim
+refuses `DEVICE_CLAIM_CONTENDED`. Its record names the phone under
+`android_device` (serial and sanitized model) instead of `android_emulator`.
+This build reads every older record; an older build refuses a phone run's
+record `RUN_RECORD_INVALID`, so clean up a phone run with a build that supports
+phones. Prefer a dedicated test phone: the app under test is installed or
+replaced and stays installed, `--fresh-install` deletes its data, and
+notifications can appear in screenshots.
 See [iOS simulator lifecycle](#ios-simulator-lifecycle) for power options and
 [Fresh install](#fresh-install) for app reset.
 `ANDROID_HOME` must name
 the SDK whose `platform-tools/adb` reaches that server. The build is a Gradle
-`:app:assembleDebug` limited to the emulator's ABI, preceded by
-`expo prebuild --platform android --clean` when `android/` is absent. An absent
+`:app:assembleDebug` limited to the device's ABI, preceded by
+`expo prebuild --platform android --clean` when `android/` is absent. A phone's
+ABI is part of the native build fingerprint, so a cached build for another ABI
+is rebuilt rather than installed; emulator fingerprints are unchanged. An absent
 `android/` must be git-ignored: one git would track would change the candidate's
 native inputs mid-run, so the build fails with `BUILD_FAILED` before generating
 it. Add `android/` to `.gitignore`, or generate and commit it before the run.
 The APK is installed with `adb -s <serial>`, and a fingerprint-matched cached APK is reused
-the same way. The run keeps the app and the emulator.
+the same way. The run keeps the app and the device. An install refused with
+`INSTALL_FAILED_UPDATE_INCOMPATIBLE` means the device holds the app from another
+signer; the next step names `--fresh-install`, which deletes that app's data.
 
 The Metro reverse is created with `adb reverse --no-rebind`: when the emulator
 already maps that port, the run refuses `DEVICE_BUSY` before the walk and
@@ -602,7 +649,11 @@ dump leaves the leg unresolved. The runner port and packages are defined in
 [`src/adapters/android.rs`](src/adapters/android.rs) and checked against the core by
 the [runner sync test](../qaren-core/test/unit/qaren-cli-android-runner-sync.test.ts).
 A walk that never started a runner reads as `absent`; a run that never reached
-the walk needs no runner release. An unproven leg keeps the lease, so a later
+the walk needs no runner release. On a phone, once that leg proves the runner
+stopped, the `android_runner_packages` leg uninstalls both runner packages and
+proves them absent with `pm list packages` (they are QaReN's own and hold no
+user data; emulators keep them), then `usb_device_claim` releases the claim.
+An unproven leg keeps the claim and the lease, so a later
 `qaren cleanup <run-id>` can finish. Cleanup preserves the adb server, installed
 app and running emulator: `--remove-app` on a borrowed emulator refuses
 `APP_REMOVAL_NOT_CONFIRMED` (uninstall the app yourself), and `qaren status`

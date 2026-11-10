@@ -245,6 +245,26 @@ pub struct BorrowedEmulatorResource {
     pub abi: String,
 }
 
+// A physical USB device borrowed the same way: the host's server, the app and the phone are kept.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BorrowedDeviceResource {
+    pub serial: String,
+    pub model: String,
+    pub server_port: u16,
+    pub api_level: u32,
+    pub abi: String,
+}
+
+// Whichever borrowed Android target the run recorded, emulator or phone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BorrowedAndroid {
+    pub serial: String,
+    pub server_port: u16,
+    pub api_level: u32,
+    pub abi: String,
+    pub physical: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsbDeviceResource {
     pub serial: String,
@@ -345,6 +365,8 @@ pub struct Resources {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub android_emulator: Option<BorrowedEmulatorResource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub android_device: Option<BorrowedDeviceResource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_lock: Option<BuildLockResource>,
     // The per-home pool creation lock, persisted before the claim like build_lock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -395,8 +417,27 @@ impl Resources {
             .adb_server
             .as_ref()
             .map(|s| s.server_port)
-            .or_else(|| self.android_emulator.as_ref().map(|e| e.server_port))?;
+            .or_else(|| self.borrowed_android().map(|b| b.server_port))?;
         Some((self.adb_path.clone()?, self.adb_local_serial.clone()?, port))
+    }
+
+    pub fn borrowed_android(&self) -> Option<BorrowedAndroid> {
+        if let Some(e) = &self.android_emulator {
+            return Some(BorrowedAndroid {
+                serial: e.serial.clone(),
+                server_port: e.server_port,
+                api_level: e.api_level,
+                abi: e.abi.clone(),
+                physical: false,
+            });
+        }
+        self.android_device.as_ref().map(|d| BorrowedAndroid {
+            serial: d.serial.clone(),
+            server_port: d.server_port,
+            api_level: d.api_level,
+            abi: d.abi.clone(),
+            physical: true,
+        })
     }
 
     pub fn build_process(&self) -> Option<&BuildProcess> {

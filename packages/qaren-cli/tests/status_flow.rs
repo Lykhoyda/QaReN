@@ -641,6 +641,71 @@ fn android_borrowed_status_never_starts_or_restarts_the_adb_server() {
     }
 }
 
+#[test]
+fn android_phone_status_probes_through_the_borrowed_server_and_never_starts_one() {
+    const PHONE: &str = "0A1B2C3D";
+    for server in [true, false] {
+        let repo = common::temp_repo();
+        let mut record = borrowed_walking_record(&repo);
+        record.scenario.android_emulator = None;
+        record.scenario.android_device = Some(qaren::scenario::AndroidDeviceSpec {
+            serial: PHONE.to_string(),
+            model: "Test_Phone_5".to_string(),
+        });
+        record.resources.android_emulator = None;
+        record.resources.android_device = Some(qaren::runrecord::BorrowedDeviceResource {
+            serial: PHONE.to_string(),
+            model: "Test_Phone_5".to_string(),
+            server_port: 5147,
+            api_level: 30,
+            abi: "arm64-v8a".to_string(),
+        });
+        record.resources.adb_local_serial = Some(PHONE.to_string());
+        // The phone's claim is recorded too; the borrowed probe, not the private-server one, answers.
+        record.resources.usb_device = Some(qaren::runrecord::UsbDeviceResource {
+            serial: PHONE.to_string(),
+            lock_dir: repo.join("locks/usb-0A1B2C3D"),
+            holder: "qaren-borrowed".to_string(),
+        });
+        record.save(&repo).unwrap();
+        let mut mock = MockRunner::new();
+        if server {
+            mock.adb_servers.push((5147, 41));
+            mock.expect_run(
+                "adb version",
+                CmdOutput::success("Android Debug Bridge version 1.0.41\n"),
+            );
+            mock.expect_run(
+                &format!("-s {PHONE} get-state"),
+                CmdOutput::success("device\n"),
+            );
+            mock.expect_run(
+                &format!("-s {PHONE} shell pm path"),
+                CmdOutput::success("package:/data/app/base.apk\n"),
+            );
+            mock.expect_run(
+                &format!("-s {PHONE} shell pidof"),
+                CmdOutput::success("4242\n"),
+            );
+        }
+
+        let receipt = status(&mut mock, &repo, "borrowed");
+
+        if server {
+            assert_eq!(
+                receipt.outcomes["device_online"], "pass",
+                "{:?}",
+                receipt.outcomes
+            );
+        } else {
+            assert_eq!(receipt.outcomes["adb_server_alive"], "fail");
+            assert!(mock.calls.is_empty(), "{:?}", mock.calls);
+        }
+        assert!(!receipt.outcomes.contains_key("usb_recorded"));
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
 const BORROWED: &str = "1DC408C4-51DA-4C4F-ACA1-39881C916FDD";
 
 fn borrowed_ready_record(repo: &std::path::Path, run_id: &str) -> RunRecord {
