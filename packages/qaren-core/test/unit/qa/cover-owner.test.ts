@@ -404,6 +404,7 @@ type CapturedClearance =
   | 'outside'
   | 'ancestor'
   | 'nested-press'
+  | 'nested-press-text'
   | 'incomplete'
   | 'typography-incomplete'
   | 'none'
@@ -487,6 +488,28 @@ function capturedToast(name: string, clearance?: CapturedClearance): Screen {
       currentHosts[currentText].pointerEvents = 'none';
     if (clearance === 'ancestor') currentHosts[currentTarget].pointerEvents = 'none';
     if (clearance === 'nested-press') currentHosts[currentText].capabilities.press = true;
+    if (clearance === 'nested-press-text') {
+      const text = typography.nodes[currentText];
+      for (const node of typography.nodes) {
+        if (node.hostIndex >= currentText) node.hostIndex++;
+        if (node.parentHostIndex !== null && node.parentHostIndex >= currentText)
+          node.parentHostIndex++;
+      }
+      currentHosts.splice(currentText, 0, {
+        role: 'button',
+        roleSource: 'accessibilityRole',
+        capabilities: { press: true },
+        order: 0,
+      });
+      typography.nodes.splice(currentText, 0, {
+        ...text,
+        hostIndex: currentText,
+        parentHostIndex: currentTarget,
+        hostType: 'RCTView',
+        text: { kind: 'none' },
+      });
+      text.parentHostIndex = currentText;
+    }
     if (clearance === 'incomplete') input.reactHostEvidence.complete = false;
     if (clearance === 'typography-incomplete') typography.complete = false;
     if (clearance === 'none') currentHosts[0].pointerEvents = 'none';
@@ -1042,6 +1065,7 @@ for (const clearance of [
   'outside',
   'ancestor',
   'nested-press',
+  'nested-press-text',
   'incomplete',
   'typography-incomplete',
   'none',

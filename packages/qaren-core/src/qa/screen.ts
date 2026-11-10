@@ -1586,12 +1586,14 @@ export function join(
         y: rect.y + window.y,
       }))(frame.x + frame.width / 2, frame.y + frame.height / 2);
       if (typeof hit !== 'number') return false;
-      if (hit === host) return true;
-      const capabilities = evidence.hosts[hit]?.capabilities;
+      const path = hostPath(evidence.typography!, hit);
+      const targetAt = path?.indexOf(host) ?? -1;
       return (
-        !!capabilities &&
-        capabilities.press !== true &&
-        !!hostPath(evidence.typography!, hit)?.includes(host)
+        targetAt >= 0 &&
+        path!.slice(0, targetAt).every((index) => {
+          const capabilities = evidence.hosts[index]?.capabilities;
+          return !!capabilities && capabilities.press !== true;
+        })
       );
     });
   }
