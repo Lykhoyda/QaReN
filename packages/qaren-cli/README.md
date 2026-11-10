@@ -5052,7 +5052,7 @@ in decision evidence). Unresolvable local refs and `workspace:` dependencies
 in any of those sections also make it incomplete.
 On iOS the value also binds the selected Xcode (`xcodebuild -version`), so a
 build is never reused across Xcode versions, and an unavailable Xcode makes the
-fingerprint incomplete. Android binds the manifest hash alone.
+fingerprint incomplete.
 
 `DEVELOPER_DIR` and `TOOLCHAINS` select the inherited toolchain. The inherited
 `EXPO_USE_PRECOMPILED_MODULES=0` and `RCT_USE_PREBUILT_RNCORE=0` switches select
@@ -5113,21 +5113,23 @@ for example) and the CocoaPods version are not bound.
 
 **Dynamic `app.config.*` (Android).** QaReN resolves the app's own
 `@expo/fingerprint` once and evaluates `fingerprint:generate --platform android`
-twice: with `CI` removed for prebuild, and with `CI=1` for Gradle and
-`expo run:android`. Both commands use `EXPO_NO_TELEMETRY=1`, private capture and
-the same output requirements and 120 s budget described above. Both must succeed
-to bind `rnfp`, `expo` and `expo-ci` in the `qaren-expo-native-android/1`
+twice. The `expo` view removes `CI` to match prebuild, and the `expo-ci` view sets
+`CI=1` to match Gradle and `expo run:android`. Both commands use
+`EXPO_NO_TELEMETRY=1`, private capture and the same output requirements described
+above. Resolution and each evaluation have a 120 s command timeout. Both must
+succeed to bind `rnfp`, `expo` and `expo-ci` in the `qaren-expo-native-android/1`
 composite and clear the dynamic-config incompleteness. Other incompleteness
 still forbids reuse. If either evaluation is unavailable, neither Expo part is
-bound: the value stays the native-input manifest hash, the fingerprint stays
-incomplete, and rebuild evidence names the closed cause. Static Android configs
-run no evaluation and retain their existing fingerprint value. Android does not
-bind JDK, SDK or NDK identity.
+bound. The value stays the native-input manifest hash, with both the
+dynamic-config and unavailable-evaluation incompleteness reasons. Rebuild evidence
+records `Expo fingerprint unavailable: <cause>` with the closed cause. Static
+Android configs run no evaluation and retain their existing fingerprint value.
+Android does not bind JDK, SDK or NDK identity.
 
-The first check of a previously recorded Android build with a dynamic config
-rebuilds because that record has no Expo parts. Later checks with unchanged complete native inputs
-reuse the verified APK, skip prebuild and Gradle, and install it. A changed
-evaluated config rebuilds with evidence naming `expo` or `expo-ci`.
+A previously recorded Android build with a dynamic config and no Expo parts
+rebuilds once. Later checks with unchanged complete native inputs reuse the
+verified APK, skip prebuild and Gradle, and install it. A changed evaluated config
+rebuilds with evidence naming `expo` or `expo-ci`.
 
 Android rechecks both evaluations after preparation. When plan-time evaluation
 was unavailable, only the native-input manifest is compared for drift, and a
@@ -5135,8 +5137,9 @@ successful build is recorded under the incomplete **plan-time** fingerprint.
 An evaluation first seen after the build never becomes that build's identity;
 the next check with available evaluations rebuilds. When both Expo parts were
 available at plan time, an unavailable recheck gets one more evaluation attempt.
-If still unavailable, the run fails with the evaluation's cause; changed parts
-instead fail as native-input drift and name the part. Receipt notes include
+If still unavailable, the run fails with `BUILD_FAILED` and a closed detail saying
+the app config could not be evaluated again after the build, including the cause.
+Changed parts fail as `CANDIDATE_DRIFTED` and name the part. Receipt notes include
 `expo_fingerprint_ms` for the plan-time evaluations.
 
 An incomplete fingerprint over an existing generated native directory requires a
