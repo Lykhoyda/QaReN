@@ -93,11 +93,6 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
 - Core screen layer: edit `packages/qaren-core/src/`, then
   `corepack yarn build:core`. Unit tests import `dist/`; the package's test
   scripts rebuild it automatically before running them.
-- Injected helper program: edit `packages/qaren-core/src/runtime/legacy.program.txt`,
-  then `node scripts/build-injected-helpers.ts` to regenerate the committed
-  `src/injected-helpers.bundle.ts`, and raise `HELPERS_VERSION` in
-  `src/runtime/version.ts` whenever the program bytes change. CI runs the
-  script with `--check` and `--check --base-ref <sha>` to enforce both.
 - CLI: edit `packages/qaren-cli/src/`, then
   `cargo test --manifest-path packages/qaren-cli/Cargo.toml --locked`.
 - Host surface: edit `packages/qaren-plugin/` in place. There is no mirror,
