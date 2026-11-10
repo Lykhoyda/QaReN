@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { atomicWriter } from '../../../dist/domain/atomic-writer.js';
 import { captureScreen, NativeCaptureError } from '../../../dist/qa/capture.js';
 import {
   PrivateInputCaptureError,
@@ -77,7 +78,9 @@ test('a React digest failure degrades coverage without a retry or a refusal', as
   }
 });
 
-test('a lost connection withholds every block of the walk; a capture limit or reconnect only its own block', async () => {
+test('a lost connection withholds every block of the walk; a capture limit or reconnect only its own block', async (t) => {
+  // Coverage persistence is independent of host process-identity admission.
+  t.mock.method(atomicWriter, 'withLock', (_path, write) => write());
   const healthy = () => ({
     interactive: [],
     verdict: { state: 'ok', path: 'interactive', complete: true },

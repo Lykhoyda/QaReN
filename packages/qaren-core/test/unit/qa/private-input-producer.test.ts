@@ -486,7 +486,8 @@ test('private names follow at most two own-data React wrapper links with own-nam
   assert.equal(privateNamedType(Symbol.for('react.fragment')).role, 'button');
 });
 
-test('private wrapper traversal never executes accessors or follows inherited or unrecognized links', () => {
+test('private wrapper traversal never executes accessors or follows inherited or unrecognized links', (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
   function TextInput() {
     assert.fail('render must not execute');
   }
