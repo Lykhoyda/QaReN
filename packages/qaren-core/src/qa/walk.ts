@@ -501,6 +501,7 @@ async function openSession(
       event = { ...event, line: currentLine };
     if (
       currentInputs()?.hasInputs ||
+      event.stage === 'native-reread' ||
       event.stage === 'manifest-probe' ||
       event.stage === 'dev-client-relaunch'
     )

@@ -2090,8 +2090,8 @@ The privacy boundary is unchanged: an incomplete native snapshot is never walked
 or masked. A Wait re-reads on its normal poll cadence within its existing deadline;
 if a complete read recovers but the quoted target stays absent, the Wait retains
 `TARGET_NOT_FOUND` with the observed screen, even if a later recovery capture is
-incomplete. Tap,
-Fill, Check and Scroll still refuse immediately. React-side incomplete capture
+incomplete. Other steps refuse incomplete native evidence after any eligible capture
+retries described below. React-side incomplete capture
 and generic private-capture failures retain `PRIVATE_INPUT_CAPTURE_UNKNOWN`.
 
 A required private capture re-reads a canonical empty snapshot (`nodes=[]`,
@@ -2104,6 +2104,15 @@ count, a known matching generation and withheld keyboard state, or an iOS
 capture budget. These conditions share one retry
 deadline; re-reads on both ordinary and platform-presence routes, including
 readiness probes and snapshot transport, stop waiting at that deadline.
+A required private ordinary capture with no caller budget also re-reads a nonempty,
+untruncated snapshot whose only incomplete cause is `dropped=<n>`, within that same
+window capped at 22 seconds from capture start. Wait polls and platform-presence
+captures keep one native read for this cause. Each dropped-snapshot re-read emits a
+value-free `native-reread` point in `core-diagnostics.jsonl`. Only a fresh complete
+read is admitted; persistent drops refuse with their latest count and `retry-deadline`,
+including when an intervening empty read is followed by a read that exceeds the window.
+A re-read that becomes truncated or degraded refuses with its own causes and no
+expiry marker; a native read failure retains `NATIVE_CAPTURE_UNAVAILABLE`.
 After timeout containment relaunches the iOS reader, it waits for an `alive`
 probe with `PLATFORM_PRESENCE_V2` within the remaining `READY_TIMEOUT_MS`
 (30 seconds by default), shared with reader startup;
@@ -2132,9 +2141,9 @@ ordinary privacy admission or lift screenshot withholding. Semantic phrase-actio
 readbacks still require full platform presence and privacy admission.
 Only a fresh, complete snapshot can establish privacy or admit a newly arrived
 system alert; partial presence never authorizes actions, screenshots or model
-evidence. Malformed, truncated, dropped-node and other incomplete captures refuse
-at the capture boundary; Wait handles `NATIVE_SNAPSHOT_INCOMPLETE` as described
-above. The [capture implementation](../qaren-core/src/qa/capture.ts) owns
+evidence. Incomplete captures outside the retry conditions or still incomplete after
+their retry window refuse at the capture boundary; Wait handles
+`NATIVE_SNAPSHOT_INCOMPLETE` as described above. The [capture implementation](../qaren-core/src/qa/capture.ts) owns
 retry eligibility; [settle regressions](../qaren-core/test/unit/qa/private-empty-reread.test.ts)
 cover these boundaries.
 

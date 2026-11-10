@@ -15,6 +15,7 @@ export const TIMING_STAGES = [
   'walk',
   'capture',
   'native-total',
+  'native-reread',
   'native-production',
   'native-initial-eligibility',
   'native-preparation',
