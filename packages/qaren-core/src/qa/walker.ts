@@ -212,7 +212,8 @@ import {
 import type { InterruptionReceipt } from './ledger.js';
 
 export interface ActResult {
-  settle?: Pick<TimingEvent, 'method' | 'ms'>;
+  settle?: Pick<TimingEvent, 'method' | 'ms' | 'probes'>;
+  send?: TimingEvent['send'];
   executed?: boolean;
   ok: boolean;
   proven: boolean;
@@ -1422,9 +1423,10 @@ async function walkBlockScoped(
   };
   let dispatchStarted: number | undefined;
   const observeRowSettle = (result: ActResult): void => {
-    if (deps.rowSettle && result.settle)
+    if (deps.rowSettle && (result.settle || result.send))
       observeTiming(deps.rowSettle, {
         ...result.settle,
+        ...(result.send ? { send: result.send } : {}),
         stage: 'settle',
         edge: 'end',
         outcome: 'ok',

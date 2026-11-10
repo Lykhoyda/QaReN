@@ -28,31 +28,82 @@ export function surfaceKeyboardGuard<T extends ToolResult>(result: T): T {
   } catch {
     return result;
   }
-  // "never throws" contract: JSON.parse('null') / scalars survive the try
-  // block but explode on property access below.
   if (envelope === null || typeof envelope !== 'object') return result;
 
   const data = envelope.data as Record<string, unknown> | undefined;
   const keyboardGuard = data?.keyboardGuard;
-  if (typeof keyboardGuard !== 'string') return result;
-
   const meta = (envelope.meta as Record<string, unknown> | undefined) ?? {};
-  envelope.meta = { ...meta, keyboardGuard };
-
-  // #379: runners report the guard step's native duration (probe + dismissal)
-  // as data.keyboardGuardMs; lift it into the meta.timings_ms convention.
-  const keyboardGuardMs = data?.keyboardGuardMs;
-  if (typeof keyboardGuardMs === 'number') {
-    const timings = (meta.timings_ms as Record<string, unknown> | undefined) ?? {};
-    envelope.meta = {
-      ...(envelope.meta as Record<string, unknown>),
-      timings_ms: { ...timings, keyboardGuard: keyboardGuardMs },
-    };
+  const lifted: Record<string, number> = {};
+  for (const [source, target] of [
+    ['keyboardGuardMs', 'keyboardGuard'],
+    ['liveCheckMs', 'liveCheck'],
+    ['handledMs', 'runner'],
+  ] as const) {
+    const value = data?.[source];
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) lifted[target] = value;
   }
+  const start = data?.gestureStartUptimeMs;
+  const end = data?.gestureEndUptimeMs;
+  if (
+    typeof start === 'number' &&
+    typeof end === 'number' &&
+    Number.isFinite(start) &&
+    Number.isFinite(end) &&
+    start >= 0 &&
+    end >= start
+  )
+    lifted.gesture = end - start;
+  if (typeof keyboardGuard !== 'string' && !Object.keys(lifted).length) return result;
+  envelope.meta = {
+    ...meta,
+    ...(typeof keyboardGuard === 'string' ? { keyboardGuard } : {}),
+    ...(Object.keys(lifted).length
+      ? { timings_ms: { ...(meta.timings_ms as object), ...lifted } }
+      : {}),
+  };
 
   return {
     ...result,
     content: [{ type: 'text' as const, text: JSON.stringify(envelope) }],
+  };
+}
+
+export function createSendTimingAccumulator(options: { settleDisabled?: boolean } = {}) {
+  const sums: Record<string, number> = {};
+  let probes: number | undefined;
+  return {
+    observe(result: ToolResult): ToolResult {
+      const lifted = surfaceKeyboardGuard(result);
+      try {
+        const envelope = JSON.parse(lifted.content[0].text);
+        const count = envelope.meta?.settle?.probes;
+        if (Number.isSafeInteger(count) && count >= 0) probes = (probes ?? 0) + count;
+        for (const key of ['keyboardGuard', 'liveCheck', 'gesture', 'runner'] as const) {
+          const value = envelope.meta?.timings_ms?.[key];
+          if (typeof value === 'number' && Number.isFinite(value) && value >= 0)
+            sums[key] = (sums[key] ?? 0) + value;
+        }
+      } catch {
+        // Unmeasured replies leave the accumulated measurements intact.
+      }
+      return lifted;
+    },
+    finish(result: ToolResult): ToolResult {
+      if (!Object.keys(sums).length) return result;
+      try {
+        const envelope = JSON.parse(result.content[0].text);
+        envelope.meta = {
+          ...envelope.meta,
+          timings_ms: { ...envelope.meta?.timings_ms, ...sums },
+          ...(probes !== undefined || options.settleDisabled
+            ? { settle: { ...envelope.meta?.settle, probes: probes ?? 0 } }
+            : {}),
+        };
+        return { ...result, content: [{ type: 'text', text: JSON.stringify(envelope) }] };
+      } catch {
+        return result;
+      }
+    },
   };
 }
 

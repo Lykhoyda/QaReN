@@ -13,6 +13,32 @@ fn timing() -> serde_json::Value {
 }
 
 #[test]
+fn send_measurements_survive_ledger_rewrite_without_changing_legacy_rows() {
+    for send in [
+        json!({"keyboardGuardMs":0.0,"liveCheckMs":12.5,"gestureMs":40.0,"runnerMs":80.0,"settleProbes":2}),
+        json!({"settleProbes":2}),
+    ] {
+        let mut measured = timing();
+        measured["send"] = send;
+        let raw = ledger(
+            json!([
+                {"block":"qa","line":1,"attempt":1,"kind":"step","resolvedBy":"exact","t":120,"outcome":"pass","timing":measured},
+                {"block":"qa","line":2,"attempt":1,"kind":"step","resolvedBy":"exact","t":240,"outcome":"pass","timing":timing()}
+            ]),
+            json!({"walkMs":240,"steps":2,"passed":2,"failed":0}),
+        );
+        let parsed: Ledger = serde_json::from_value(raw.clone()).unwrap();
+        assert!(parsed.steps[0].timing.as_ref().unwrap().send.is_some());
+        assert!(parsed.steps[1].timing.as_ref().unwrap().send.is_none());
+        let bytes = serde_json::to_vec(&parsed).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+            raw
+        );
+    }
+}
+
+#[test]
 fn row_timing_and_ledger_speed_round_trip_through_the_ledger() {
     let mut raw = ledger(
         json!([{"block":"qa","line":1,"attempt":1,"kind":"step","resolvedBy":"jev","t":120,
