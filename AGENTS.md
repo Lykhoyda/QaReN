@@ -65,7 +65,8 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
   no longer has an `install` subcommand; pin-cache messages that still name `ensure-maestro-runner.sh`
   are rewritten with the Phase 8 install path.
 - Do not create compatibility symlinks or shims for removed paths and names.
-- Code in `src/injected-helpers.ts` is evaluated via CDP inside an
+- The injected helper program (`src/runtime/legacy.program.txt`) and the
+  scripts left in `src/injected-helpers.ts` are evaluated via CDP inside an
   already-bundled Metro/Hermes runtime: `require('<package-name>')` throws
   there. Prove "is X bundled?" with Metro's dev registry
   (`globalThis.__r.getModules()`, per-module `verboseName`) or fiber/render
@@ -92,6 +93,11 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
 - Core screen layer: edit `packages/qaren-core/src/`, then
   `corepack yarn build:core`. Unit tests import `dist/`; the package's test
   scripts rebuild it automatically before running them.
+- Injected helper program: edit `packages/qaren-core/src/runtime/legacy.program.txt`,
+  then `node scripts/build-injected-helpers.ts` to regenerate the committed
+  `src/injected-helpers.bundle.ts`, and raise `HELPERS_VERSION` in
+  `src/runtime/version.ts` whenever the program bytes change. CI runs the
+  script with `--check` and `--check --base-ref <sha>` to enforce both.
 - CLI: edit `packages/qaren-cli/src/`, then
   `cargo test --manifest-path packages/qaren-cli/Cargo.toml --locked`.
 - Host surface: edit `packages/qaren-plugin/` in place. There is no mirror,
@@ -123,7 +129,7 @@ Doctrine for the kept handlers, each with one owner:
   `test/unit/gh-869-replay-tap-type-walkup.test.ts` and
   `test/unit/textinput-designation-replay.test.ts`.
 - Exact-ID visibility has one owner: the injected `isTestIdFrontmost` oracle
-  in `src/injected-helpers.ts`, consumed through `frontmostFor`; it scans
+  in `src/runtime/legacy.program.txt`, consumed through `frontmostFor`; it scans
   fibers exactly and fail-closes on renderer coverage and scan budget, and its
   refusal carries `meta.coverage`. `replayTreeData` is a readability gate only;
   never infer exact-ID presence from `getTree(filter)` substrings. Fibers are
