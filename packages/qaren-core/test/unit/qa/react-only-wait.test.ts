@@ -6,6 +6,7 @@ import type { DigestEntry, Front, NativeNode, ReactHostEvidence } from '../../..
 import { reactOnlyMiss } from '../../../dist/qa/resolve.js';
 import { runPlan, WAIT_BUDGET_MS, WAIT_POLL_MS } from '../../../dist/qa/walker.js';
 import { CaptureDeadline } from '../../../dist/qa/capture.js';
+import { NativeSnapshotIncomplete } from '../../../dist/qa/private-input.js';
 import { CAPTURE_BUDGET_MS } from '../../../dist/qa/timing.js';
 import type { ActResult } from '../../../dist/qa/walker.js';
 import { element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
@@ -443,6 +444,32 @@ test('recovery after a React-only refusal gets its own bounded capture', async (
   assert.deepEqual(presence, [WAIT_BUDGET_MS - 2 * WAIT_POLL_MS, CAPTURE_BUDGET_MS]);
   assert.equal(f.deps.now(), 2 * WAIT_POLL_MS + CAPTURE_BUDGET_MS);
   assert.deepEqual(f.actions, []);
+});
+
+test('an incomplete recovery read preserves both React-only Wait miss paths', async () => {
+  for (const accessible of [false, true]) {
+    const f = walker(
+      [],
+      scriptedJudge(() => assert.fail('a quoted wait is model-free')),
+    );
+    f.deps.hideDevMenu = async () => assert.fail('no overlay was observed');
+    let presenceReads = 0;
+    f.deps.captureScreen = async (options) => {
+      if (options?.platformPresence && ++presenceReads === 2)
+        throw new NativeSnapshotIncomplete(121, ['retry-deadline']);
+      return form(options?.platformPresence === true, { accessible });
+    };
+    f.deps.screenshot = async () => assert.fail('incomplete reads withhold screenshots');
+    const result = await runPlan(parsePlan('1. Wait for "name-field" to appear').blocks!, f.deps);
+    assert.equal(result.verdict, 'FAIL');
+    assert.match(result.failure?.seen ?? '', /^TARGET_REACT_ONLY: /);
+    assert.equal(presenceReads, 2);
+    assert.equal(f.deps.now(), accessible ? 2 * WAIT_POLL_MS : WAIT_BUDGET_MS);
+    assert.equal(result.videoPublication, 'unknown');
+    assert.equal(result.nonStrictPublication, undefined);
+    assert.equal(result.failure?.screenshot, undefined);
+    assert.deepEqual(f.actions, []);
+  }
 });
 
 test('a first visibility check whose evidence refresh runs out of time ends as a wait failure', async () => {

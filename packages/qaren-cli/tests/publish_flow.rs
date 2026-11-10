@@ -3280,6 +3280,7 @@ fn admitted_refusal_secret_gates_and_capture_unknown_never_attach_video() {
         "concealed-fill",
         "code-row",
         "capture-unknown",
+        "native-incomplete",
     ] {
         let (runs, dir) = run_dir(false);
         edit_pr(&dir, |pr| {
@@ -3288,11 +3289,11 @@ fn admitted_refusal_secret_gates_and_capture_unknown_never_attach_video() {
             pr["videoPublication"] = match carrier {
                 "ordinary" => "eligible",
                 "secret" => "withheld-fill",
-                "capture-unknown" => "unknown",
+                "capture-unknown" | "native-incomplete" => "unknown",
                 _ => "withheld-privacy",
             }
             .into();
-            if carrier == "capture-unknown" {
+            if matches!(carrier, "capture-unknown" | "native-incomplete") {
                 pr.as_object_mut().unwrap().remove("nonStrictPublication");
             } else {
                 pr["nonStrictPublication"] = if carrier == "ordinary" {
@@ -3306,10 +3307,10 @@ fn admitted_refusal_secret_gates_and_capture_unknown_never_attach_video() {
         let mut ledger: serde_json::Value =
             serde_json::from_slice(&std::fs::read(dir.join("ledger.json")).unwrap()).unwrap();
         ledger["verdict"] = "REFUSED".into();
-        ledger["code"] = if carrier == "capture-unknown" {
-            "PRIVATE_INPUT_CAPTURE_UNKNOWN"
-        } else {
-            "SCROLL_NAVIGATED"
+        ledger["code"] = match carrier {
+            "capture-unknown" => "PRIVATE_INPUT_CAPTURE_UNKNOWN",
+            "native-incomplete" => "NATIVE_SNAPSHOT_INCOMPLETE",
+            _ => "SCROLL_NAVIGATED",
         }
         .into();
         std::fs::write(
@@ -3330,6 +3331,12 @@ fn admitted_refusal_secret_gates_and_capture_unknown_never_attach_video() {
             receipt.failure
         );
         assert_eq!(publication(&dir).video_attached, carrier == "ordinary");
+        if matches!(carrier, "capture-unknown" | "native-incomplete") {
+            assert_eq!(
+                receipt.outcomes.get("video_summary").map(String::as_str),
+                Some("Video withheld: video publication eligibility is missing or unknown.")
+            );
+        }
         assert_eq!(runner.0.remaining(), 0);
     }
 }

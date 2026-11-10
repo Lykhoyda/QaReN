@@ -296,7 +296,7 @@ test('a literal check refuses when the native tree is not proven complete', asyn
       });
     const result = await runPlan(parsePlan('✓ "Welcome"').blocks!, f.deps);
     assert.equal(result.verdict, 'REFUSED', cause);
-    assert.equal('code' in result && result.code, 'PRIVATE_INPUT_CAPTURE_UNKNOWN');
+    assert.equal('code' in result && result.code, 'NATIVE_SNAPSHOT_INCOMPLETE');
     assert.match(result.failure!.seen, new RegExp(`causes=${cause}\\)`));
   }
 });

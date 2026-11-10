@@ -1791,11 +1791,12 @@ Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`
 when the final evidence remains unsure. Initial captures, polling captures and
 evidence-refresh captures, including a refresh during the first visibility check,
 share the wait's deadline for both quoted and phrase targets. A wait whose first
-capture never completes fails with `TARGET_WAIT_TIMEOUT` and
+capture times out without reporting native incompleteness fails with `TARGET_WAIT_TIMEOUT` and
 `cause=capture-deadline`, with `next_action=inspect_capture_health`. If a later
 refresh reaches the deadline, the wait ends
 from its completed observations; a phrase wait whose visibility remains undecided
 ends with `VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED`.
+For incomplete native reads, follow the [capture and privacy contract](#why-were-my-screenshots-withheld).
 A quoted wait with at least two definite
 absence observations sharing one screen signature normally fails at its deadline with
 “did not appear”; it does not report expired evidence for that stable absence.
@@ -1903,7 +1904,7 @@ the byte limit. It excludes value text, label text, identifiers and testIDs. The
 
 ### Why were my screenshots withheld?
 
-Each withheld screenshot metric has `stage: "screenshot"`, `outcome: "withheld"`
+Each privacy-caused withheld screenshot metric has `stage: "screenshot"`, `outcome: "withheld"`
 and `withheld: "<code>"`. Slot runs retain these metrics in
 `logs/core-diagnostics.jsonl`; without used slots they follow the ordinary
 `logs/core.log` timing route, subject to subprocess output withholding.
@@ -1920,8 +1921,9 @@ an exported unused `QAREN_INPUT_` namespace, or no inputs; raw subprocess output
 withholding remains unchanged. They contain no values, labels, identifiers,
 testIDs, geometry, character counts or element indices.
 
-`ledger.json` carries `screenshotWithheld` on each withheld row, including streamed
-rows retained after an interrupted walk. `mediaWithheld.screenshots` holds the
+`ledger.json` carries `screenshotWithheld` on each row with a recorded privacy
+cause, including streamed rows retained after an interrupted walk.
+`mediaWithheld.screenshots` holds the
 first `reason`, optional `kind` or `source`, `line` and withheld screenshot `count`.
 `mediaWithheld.video` holds the publication-window cause and line, without a
 count: the strict privacy cause for strict or undeclared runs, or the protected
@@ -1932,12 +1934,17 @@ the screenshot cause and count; a retained cause then uses the new window's
 starting line. `videoPublication` retains the strict verdict;
 `nonStrictPublication` supplies the separate non-strict verdict. A walk refused
 after admission keeps both computed verdicts, except a
-`PRIVATE_INPUT_CAPTURE_UNKNOWN` refusal; that refusal and any refusal before
-admission report `videoPublication: unknown` with no `nonStrictPublication`,
+`PRIVATE_INPUT_CAPTURE_UNKNOWN` or `NATIVE_SNAPSHOT_INCOMPLETE` refusal.
+If a Wait absorbs an incomplete native read, subsequent screenshots and pixel
+comparison captures are withheld for the rest of the run, even when a later read
+completes and the Wait passes or fails. This applies under every video policy.
+These cases and any refusal before admission report
+`videoPublication: unknown` with no `nonStrictPublication`,
 which withholds video in either mode.
-The receipt includes one `media_withheld=<code>[/<kind|source>]@line <N>` note,
+When a privacy cause is recorded, the receipt includes one
+`media_withheld=<code>[/<kind|source>]@line <N>` note,
 preferring the video cause in non-strict mode and the screenshot cause otherwise.
-`report.md` marks each withheld row and explains
+`report.md` marks each row with a recorded privacy cause and explains
 the first screenshot cause and line. Line 0 means privacy latched before the walk.
 
 | Code | Meaning | What to do |
@@ -2007,9 +2014,17 @@ refuses with `SCREEN_EVIDENCE_INCOMPLETE` rather than guessing a target.
 The [screen projection](../qaren-core/src/qa/screen.ts) owns this policy.
 
 The native snapshot is the privacy boundary before walking a screen. Capture
-refuses with `PRIVATE_INPUT_CAPTURE_UNKNOWN` unless native completeness is attested;
-the refusal reports only a value-free node count and fixed cause codes. Native
+refuses with `NATIVE_SNAPSHOT_INCOMPLETE` unless native completeness is attested;
+the refusal reports a value-free node count and fixed cause codes, with read count
+and elapsed time when Wait exhausts its retry deadline. Native
 acquisition failures also refuse without reinjection or a public-tree fallback.
+The privacy boundary is unchanged: an incomplete native snapshot is never walked
+or masked. A Wait re-reads on its normal poll cadence within its existing deadline;
+if a complete read recovers but the quoted target stays absent, the Wait retains
+`TARGET_NOT_FOUND` with the observed screen, even if a later recovery capture is
+incomplete. Tap,
+Fill, Check and Scroll still refuse immediately. React-side incomplete capture
+and generic private-capture failures retain `PRIVATE_INPUT_CAPTURE_UNKNOWN`.
 
 A required private capture re-reads a canonical empty snapshot (`nodes=[]`,
 verdict `degraded`, `nodeCount=0`, reasons exactly `empty-capture`, no truncation
@@ -2029,7 +2044,7 @@ refuses with `NATIVE_CAPTURE_UNAVAILABLE` after the capture retry budget.
 An empty snapshot's unchanged ref map and zero-node count
 diagnostics do not prevent this read-only retry; persistent emptiness still
 refuses with the same code and message. Persistent incomplete presence refuses
-with `PRIVATE_INPUT_CAPTURE_UNKNOWN`, naming the unknown keyboard state and any
+with `NATIVE_SNAPSHOT_INCOMPLETE`, naming the unknown keyboard state and any
 known acquisition phase, failure reason or deadline read using fixed codes.
 If the retry deadline cuts off a read, the refusal retains the last incomplete
 presence snapshot's fixed causes and adds `retry-deadline` without returning that
@@ -2045,7 +2060,8 @@ readbacks still require full platform presence and privacy admission.
 Only a fresh, complete snapshot can establish privacy or admit a newly arrived
 system alert; partial presence never authorizes actions, screenshots or model
 evidence. Malformed, truncated, dropped-node and other incomplete captures refuse
-immediately. The [capture implementation](../qaren-core/src/qa/capture.ts) owns
+at the capture boundary; Wait handles `NATIVE_SNAPSHOT_INCOMPLETE` as described
+above. The [capture implementation](../qaren-core/src/qa/capture.ts) owns
 retry eligibility; [settle regressions](../qaren-core/test/unit/qa/private-empty-reread.test.ts)
 cover these boundaries.
 

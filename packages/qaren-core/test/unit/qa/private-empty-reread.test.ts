@@ -173,7 +173,7 @@ for (const firstReadMs of [20_500, 4_000]) {
     await time.advance(deadline - time.now());
     const error = await result;
     assert.ok(error instanceof NativeSnapshotIncomplete, String(error));
-    assert.equal(error.code, 'PRIVATE_INPUT_CAPTURE_UNKNOWN');
+    assert.equal(error.code, 'NATIVE_SNAPSHOT_INCOMPLETE');
     assert.equal(error.nodes, 2);
     assert.ok(error.causes.includes('keyboard-state-unknown'));
     assert.ok(error.causes.includes('presence-failure=revalidation:enumeration-changed'));
@@ -420,10 +420,10 @@ test('a persistently empty private capture refuses unchanged after the existing 
   await time.advance(1);
   const error = await result;
   assert.ok(error instanceof NativeSnapshotIncomplete);
-  assert.equal(error.code, 'PRIVATE_INPUT_CAPTURE_UNKNOWN');
+  assert.equal(error.code, 'NATIVE_SNAPSHOT_INCOMPLETE');
   assert.equal(
     error.message,
-    'Private input capture could not be established safely. The native snapshot was incomplete (nodes=0; causes=verdict=degraded,ref-map-not-updated,reason=empty-capture,node-count-mismatch).',
+    'The native snapshot was incomplete (nodes=0; causes=verdict=degraded,ref-map-not-updated,reason=empty-capture,node-count-mismatch).',
   );
   assert.equal(reads.length, 12);
   assert.equal(reads.at(-1), 5_500);

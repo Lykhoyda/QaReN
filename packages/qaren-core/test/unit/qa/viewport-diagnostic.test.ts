@@ -325,7 +325,7 @@ test('only a complete native capture emits the line, and emitting changes nothin
     }
   }
   const refused = await emitted(true, true);
-  assert.deepEqual(refused.outcome, { refused: 'PrivateInputCaptureError' });
+  assert.deepEqual(refused.outcome, { refused: 'NativeSnapshotIncomplete' });
 });
 
 test('a slow diagnostic sink cannot change the capture budget verdict', async () => {

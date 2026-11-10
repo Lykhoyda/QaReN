@@ -175,7 +175,7 @@ test('a recognised system alert answering a presence request is admitted as a di
   const empty = { ...nativeCapture(), nodes: [] };
   empty.presenceCapture.complete = false;
   await assert.rejects(capture(empty, 0, 'RCTView', true), {
-    code: 'PRIVATE_INPUT_CAPTURE_UNKNOWN',
+    code: 'NATIVE_SNAPSHOT_INCOMPLETE',
   });
 });
 

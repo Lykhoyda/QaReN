@@ -99,7 +99,10 @@ for (const source of ['descendant', 'direct', 'none', 'unsettled'] as const) {
     if (source === 'descendant') assert.equal(result.verdict, 'PASS', JSON.stringify(result));
     else {
       assert.match(JSON.stringify(result), /TARGET_AMBIGUOUS/);
-      assert.doesNotMatch(JSON.stringify(result), /PRIVATE_INPUT_CAPTURE_UNKNOWN/);
+      assert.doesNotMatch(
+        JSON.stringify(result),
+        /PRIVATE_INPUT_CAPTURE_UNKNOWN|NATIVE_SNAPSHOT_INCOMPLETE/,
+      );
       if (source === 'unsettled')
         assert.match(JSON.stringify(result), /provenance was unavailable/);
     }
@@ -164,7 +167,7 @@ for (const failure of ['ordinary-private', 'metadata-private', 'metadata-deadlin
     assert.match(
       JSON.stringify(result),
       failure === 'ordinary-private'
-        ? /PRIVATE_INPUT_CAPTURE_UNKNOWN/
+        ? /NATIVE_SNAPSHOT_INCOMPLETE/
         : /TARGET_AMBIGUOUS: candidate label provenance was unavailable/,
     );
     assert.doesNotMatch(JSON.stringify(result), /private-error-canary/);
@@ -274,6 +277,6 @@ test('unresolved candidate provenance emits value-free native sample and mismatc
   });
   assert.doesNotMatch(
     JSON.stringify({ result, events }),
-    /PRIVATE_INPUT_CAPTURE_UNKNOWN|private-canary/,
+    /PRIVATE_INPUT_CAPTURE_UNKNOWN|NATIVE_SNAPSHOT_INCOMPLETE|private-canary/,
   );
 });
