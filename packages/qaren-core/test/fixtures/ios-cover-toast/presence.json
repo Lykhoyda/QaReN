@@ -1114,6 +1114,12 @@
         },
         "testID": "qa-cover-toast-continue",
         "order": 1
+      },
+      {
+        "role": null,
+        "roleSource": "none",
+        "capabilities": {},
+        "order": 0
       }
     ],
     "complete": true,
@@ -1582,6 +1588,37 @@
             "y": 778.0000228881836,
             "width": 360,
             "height": 48
+          }
+        },
+        {
+          "hostIndex": 23,
+          "parentHostIndex": 22,
+          "rootIndex": 0,
+          "hostType": "RCTText",
+          "text": {
+            "kind": "block",
+            "content": "Continue",
+            "runs": [
+              {
+                "start": 0,
+                "end": 8,
+                "fontSize": 14
+              }
+            ],
+            "scaling": {
+              "allowFontScaling": true,
+              "maxFontSizeMultiplier": 0
+            }
+          },
+          "accessibility": {
+            "accessible": "true",
+            "authoredLabel": "absent"
+          },
+          "rect": {
+            "x": 170.3333282470703,
+            "y": 793.3333559036255,
+            "width": 61,
+            "height": 17
           }
         }
       ]

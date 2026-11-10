@@ -14,3 +14,8 @@ prove that Close belongs to the toast.
 The test adds the capture admission and keyboard annotations recorded by the
 run, then executes the normal walker with the captured screens. Disabled and
 sibling-control cases are explicit mutations of the captured input.
+
+The presence input also retains Continue's text host, which has no native node.
+Clearance tests remove the toast's native nodes and React subtree, retain that
+text host, and mark Continue observed; the remaining cases explicitly change
+the touch path, evidence completeness or viewport to exercise safe refusals.

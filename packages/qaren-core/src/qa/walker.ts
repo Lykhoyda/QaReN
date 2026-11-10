@@ -48,6 +48,7 @@ import {
   isNativeInput,
   describe,
   reactOnlyFactsOf,
+  targetSubtreeTakesTouch,
 } from './screen.js';
 import {
   type Resolution,
@@ -1615,7 +1616,12 @@ async function walkBlockScoped(
           coverScreen = next.screen;
           owner = nextCover.owner;
           recordCover(item.line, nextCover);
-        } else if (nextCover.gap === 'reaches-target' && !centreCovered(current, next.screen)) {
+        } else if (
+          !centreCovered(current, next.screen) &&
+          (nextCover.gap === 'reaches-target' ||
+            (nextCover.gap === 'unassociated-host' &&
+              targetSubtreeTakesTouch(current, next.screen)))
+        ) {
           recordCover(item.line, nextCover);
           coverTargets.delete(item.line);
           cleared = true;

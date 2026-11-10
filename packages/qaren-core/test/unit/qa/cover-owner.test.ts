@@ -1,13 +1,13 @@
-// Device QA C1: the cover a refusal names is the view React Native's own hit test gives the touch to,
-// never a pointer-transparent view the inferred band cutter happens to pick.
+// Cover naming follows the proven React touch owner.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { crc32, deflateSync } from 'node:zlib';
 import { captureScreen, CaptureDeadline } from '../../../dist/qa/capture.js';
 import { capturePrivateScreen } from '../../../dist/qa/privacy.js';
-import { coverOwner } from '../../../dist/qa/resolve.js';
+import { centreCovered, coverOwner } from '../../../dist/qa/resolve.js';
 import { dismissCandidate } from '../../../dist/qa/recover.js';
-import { touchOwnerAt } from '../../../dist/qa/screen.js';
+import { hostAssociationIdentity, join, touchOwnerAt } from '../../../dist/qa/screen.js';
 import type { ReactHostEvidence, Screen } from '../../../dist/qa/screen.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { runPlan } from '../../../dist/qa/walker.js';
@@ -398,6 +398,141 @@ test('partially clipped owners use the touch point within all nested viewports',
   }
 });
 
+type CapturedClearance =
+  | 'text'
+  | 'target'
+  | 'outside'
+  | 'ancestor'
+  | 'nested-press'
+  | 'incomplete'
+  | 'typography-incomplete'
+  | 'none'
+  | 'unmatched'
+  | 'unresolved'
+  | 'roots'
+  | 'clipped'
+  | 'transparent'
+  | 'transparent-covered'
+  | 'persistent';
+
+function capturedToast(name: string, clearance?: CapturedClearance): Screen {
+  type Args = Parameters<typeof join>;
+  const input: {
+    nodes: Args[0];
+    digest: Args[1];
+    front: Args[2];
+    coverage: Args[3];
+    reactHostEvidence: NonNullable<Args[4]>;
+    nativePresence: NonNullable<Args[5]>;
+    nativeAcquisition: Args[6];
+  } = JSON.parse(
+    readFileSync(new URL(`../../fixtures/ios-cover-toast/${name}.json`, import.meta.url), 'utf8'),
+  );
+  const { hosts, typography } = input.reactHostEvidence;
+  if (clearance && clearance !== 'persistent') {
+    assert.ok(typography);
+    const target = hosts.findIndex((host) => host.testID === 'qa-cover-toast-continue');
+    const text = typography.nodes.findIndex((node) => node.parentHostIndex === target);
+    assert.equal(typography.nodes[text].hostType, 'RCTText');
+    const toast = hosts.findIndex((host) => host.testID === 'qa-cover-toast');
+    hosts[toast].pointerEvents = 'none';
+    if (clearance !== 'transparent-covered') {
+      // Observation 27 flattens the toast's six native nodes into siblings.
+      const kept = input.nodes.flatMap((_, i) => (i < 45 || i > 50 ? [i] : []));
+      const remap = new Map(kept.map((index, i) => [index, i]));
+      input.nodes = kept.map((index) => ({
+        ...input.nodes[index],
+        index: remap.get(index),
+        parentIndex: remap.get(input.nodes[index].parentIndex!),
+      }));
+      assert.ok(typeof input.nativePresence === 'object');
+      input.nativePresence.nodes = kept.map((index) => input.nativePresence.nodes[index]);
+      const removed = new Set([toast]);
+      for (const node of typography.nodes)
+        if (removed.has(node.parentHostIndex!)) removed.add(node.hostIndex);
+      const hostMap = new Map(
+        hosts.flatMap((_, i) => (removed.has(i) ? [] : [i])).map((index, i) => [index, i]),
+      );
+      input.reactHostEvidence.hosts = hosts.filter((_, i) => !removed.has(i));
+      typography.nodes = typography.nodes.flatMap((node) =>
+        removed.has(node.hostIndex)
+          ? []
+          : [
+              {
+                ...node,
+                hostIndex: hostMap.get(node.hostIndex)!,
+                parentHostIndex:
+                  node.parentHostIndex === null ? null : hostMap.get(node.parentHostIndex)!,
+              },
+            ],
+      );
+      input.digest = input.digest.filter((entry) => entry.testID !== 'qa-cover-toast-close');
+    }
+    const currentHosts = input.reactHostEvidence.hosts;
+    const currentTarget = currentHosts.findIndex(
+      (host) => host.testID === 'qa-cover-toast-continue',
+    );
+    const currentText = typography.nodes.findIndex(
+      (node) => node.parentHostIndex === currentTarget,
+    );
+    const targetNode = input.nodes.findIndex(
+      (node) => node.identifier === 'qa-cover-toast-continue',
+    );
+    input.nativePresence.nodes[targetNode] = {
+      ...input.nativePresence.nodes[targetNode],
+      status: 'observed',
+    };
+    delete input.nativePresence.nodes[targetNode].unknownReason;
+    if (clearance === 'target' || clearance === 'ancestor')
+      currentHosts[currentText].pointerEvents = 'none';
+    if (clearance === 'ancestor') currentHosts[currentTarget].pointerEvents = 'none';
+    if (clearance === 'nested-press') currentHosts[currentText].capabilities.press = true;
+    if (clearance === 'incomplete') input.reactHostEvidence.complete = false;
+    if (clearance === 'typography-incomplete') typography.complete = false;
+    if (clearance === 'none') currentHosts[0].pointerEvents = 'none';
+    if (clearance === 'unmatched') typography.nodes[currentTarget].rect!.width++;
+    if (
+      clearance === 'outside' ||
+      clearance === 'unresolved' ||
+      clearance === 'roots' ||
+      clearance === 'transparent'
+    ) {
+      const index = currentHosts.length;
+      currentHosts.push({
+        role: null,
+        roleSource: 'none',
+        capabilities: {},
+        ...(clearance === 'unresolved' ? {} : { order: 99 }),
+        ...(clearance === 'transparent' ? { pointerEvents: 'none' as const } : {}),
+      });
+      typography.nodes.push({
+        ...typography.nodes[currentText],
+        hostIndex: index,
+        parentHostIndex:
+          clearance === 'roots' ? null : typography.nodes[currentTarget].parentHostIndex,
+      });
+    }
+    if (clearance === 'clipped') {
+      const scroll = input.nodes.find((node) => node.type === 'ScrollView');
+      assert.ok(scroll?.rect);
+      scroll.rect.height = 500;
+    }
+  }
+  return {
+    ...join(
+      input.nodes,
+      input.digest,
+      input.front,
+      input.coverage,
+      input.reactHostEvidence,
+      input.nativePresence,
+      input.nativeAcquisition,
+    ),
+    captureCoverage: { native: input.nativeAcquisition, react: input.coverage?.react },
+    keyboardVisible: false,
+  };
+}
+
 async function waitOutCover(
   options: {
     clearAt?: number;
@@ -431,6 +566,9 @@ async function waitOutCover(
     liveHitReason?: 'unavailable' | 'ambiguous' | 'expired' | 'moved';
     unquoted?: boolean;
     pixelOnly?: boolean;
+    pixelFailureAt?: number;
+    pixelNoMutation?: boolean;
+    capturedClearance?: CapturedClearance;
   } = {},
 ) {
   const continueTarget =
@@ -516,9 +654,20 @@ async function waitOutCover(
   let entryRecaptures = 0;
   let pendingOwnerRead = false;
   let comparisonShots = 0;
+  const comparisonPhases: Array<{ presses: number; waitedMs?: number; covered: boolean }> = [];
   if (options.pixelOnly)
     w.deps.comparisonScreenshot = async () => {
       comparisonShots++;
+      comparisonPhases.push({
+        presses,
+        waitedMs: waitStarted === undefined ? undefined : w.deps.now() - waitStarted,
+        covered: centreCovered(
+          currentScreen.elements.find((element) => element.testID === 'qa-hi-row-1')!,
+          currentScreen,
+        ),
+      });
+      if (comparisonShots === options.pixelFailureAt)
+        throw new Error('comparison screenshot unavailable');
       const stride = FULL.width * 3 + 1;
       const raw = Buffer.alloc(stride * FULL.height);
       for (let y = 0; y < FULL.height; y++)
@@ -678,7 +827,20 @@ async function waitOutCover(
     return withoutId(captures === 1 && !options.initialClearance ? off : refusalScreen);
   };
   w.deps.captureScreen = async (opts) => {
-    currentScreen = await captureNext(opts);
+    if (options.capturedClearance) {
+      if (opts?.budgetMs !== undefined) {
+        budgets.push(opts.budgetMs);
+        waitStarted ??= w.deps.now() - 500;
+      }
+      currentScreen = capturedToast(
+        waitStarted !== undefined || opts?.platformPresence
+          ? 'presence'
+          : !w.actions.length
+            ? 'before-scroll'
+            : 'after-scroll',
+        waitStarted !== undefined ? options.capturedClearance : undefined,
+      );
+    } else currentScreen = await captureNext(opts);
     if (options.inferredOverlay) currentScreen.keyboardVisible = false;
     return currentScreen;
   };
@@ -688,13 +850,22 @@ async function waitOutCover(
   w.deps.press = async (ref, _context, option) => {
     pressOptions.push(option);
     pressedRefs.push(ref);
-    assert.equal(ref, '@e3', 'only the planned row may be pressed');
+    assert.equal(
+      ref,
+      options.capturedClearance
+        ? currentScreen.elements.find((element) => element.testID === 'qa-cover-toast-continue')
+            ?.ref
+        : '@e3',
+      'only the planned target may be pressed',
+    );
     presses++;
     if (
       options.inferredOverlay &&
       !options.acceptLiveHit &&
       option?.requireLiveHit &&
-      currentScreen.elements.some((element) => element.testID === 'qa-hi-cover')
+      (options.capturedClearance
+        ? waitStarted === undefined
+        : currentScreen.elements.some((element) => element.testID === 'qa-hi-cover'))
     ) {
       pendingOwnerRead = true;
       return {
@@ -712,14 +883,14 @@ async function waitOutCover(
         error: 'FOCUS_TARGET_OCCLUDED: target covered',
       };
     if (options.retryReplacement) return { ok: true, proven: false };
-    if (!options.refusePress) landed++;
+    if (!options.refusePress && !options.pixelNoMutation) landed++;
     return options.refusePress
       ? { ok: false, proven: false, mutation: 'none', error: 'not dispatched' }
       : { ok: true, proven: !options.pixelOnly };
   };
   const kind = options.unquoted
     ? 'Tap Row 1'
-    : continueTarget
+    : continueTarget || options.capturedClearance
       ? 'Tap "Continue"'
       : options.kind === 'fill'
         ? 'Fill "qa-hi-row-1" with "x"'
@@ -745,6 +916,7 @@ async function waitOutCover(
     notes,
     entryRecaptures,
     comparisonShots,
+    comparisonPhases,
   };
 }
 
@@ -845,6 +1017,100 @@ test('a pixel-only tap after a cleared live-hit wait lands exactly once', async 
   assert.equal(row?.coverWaitMs, 1000);
   assert.deepEqual(actions, ['scroll down']);
 });
+
+for (const clearance of ['text', 'target', 'transparent'] as const) {
+  test(`captured clearance ${clearance}: the wait clears and exactly one target tap lands (T8/T9b)`, async () => {
+    const screen = capturedToast('presence', clearance);
+    const target = screen.elements.find((element) => element.testID === 'qa-cover-toast-continue')!;
+    assert.equal(hostAssociationIdentity(target), 'matched');
+    assert.equal(centreCovered(target, screen), false);
+    assert.deepEqual(coverOwner(target, screen), { gap: 'unassociated-host' });
+    const { row, presses, landed, pressOptions, actions } = await waitOutCover({
+      inferredOverlay: true,
+      capturedClearance: clearance,
+    });
+    assert.equal(row?.outcome, 'pass', JSON.stringify(row));
+    assert.equal(row?.coverWaitMs, 500);
+    assert.equal(presses, 2, 'one non-mutating live-hit read, then one target tap');
+    assert.equal(landed, 1);
+    assert.deepEqual(pressOptions, [{ requireLiveHit: true }, undefined]);
+    assert.deepEqual(actions, ['scroll down']);
+  });
+}
+
+for (const clearance of [
+  'outside',
+  'ancestor',
+  'nested-press',
+  'incomplete',
+  'typography-incomplete',
+  'none',
+  'unmatched',
+  'unresolved',
+  'roots',
+  'clipped',
+  'transparent-covered',
+  'persistent',
+] as const) {
+  test(`captured clearance ${clearance}: uncertain or covered touch waits to the deadline (T9/T10)`, async () => {
+    const screen = capturedToast('presence', clearance);
+    const target = screen.elements.find((element) => element.testID === 'qa-cover-toast-continue')!;
+    const gaps = {
+      incomplete: 'react-evidence-incomplete',
+      'typography-incomplete': 'typography-incomplete',
+      unresolved: 'unordered-siblings',
+      roots: 'separate-roots',
+      none: 'none',
+    };
+    if (clearance !== 'persistent')
+      assert.deepEqual(coverOwner(target, screen), { gap: gaps[clearance] ?? 'unassociated-host' });
+    if (clearance === 'clipped' || clearance === 'transparent-covered')
+      assert.equal(centreCovered(target, screen), true);
+    const { row, presses, landed, budgets } = await waitOutCover({
+      inferredOverlay: true,
+      capturedClearance: clearance,
+    });
+    assert.equal(row?.outcome, 'fail', JSON.stringify(row));
+    assert.equal(row?.coverWaitMs, 5000);
+    assert.equal(presses, 1, 'no dispatch after the refused live hit');
+    assert.equal(landed, 0);
+    assert.equal(budgets.length, 9);
+    assert.match(
+      String(row?.reason),
+      /waited 5000 ms; the cover holds 1 pressable controls \(decline-labelled: Close\)/,
+    );
+  });
+}
+
+for (const pixelFailureAt of [1, 2]) {
+  test(`pixel probe: screenshot ${pixelFailureAt} fails after clearance without proving a non-mutating tap`, async () => {
+    const { row, landed, comparisonPhases } = await waitOutCover({
+      inferredOverlay: true,
+      clearAt: 1000,
+      pixelOnly: true,
+      pixelNoMutation: true,
+      pixelFailureAt,
+    });
+    assert.equal(row?.outcome, 'fail', JSON.stringify(row));
+    assert.equal(landed, 0);
+    assert.deepEqual(
+      comparisonPhases[0],
+      { presses: 1, waitedMs: 1000, covered: false },
+      'the first picture is the baseline after clearance, never a covered pre-wait baseline',
+    );
+    if (pixelFailureAt === 2)
+      assert.deepEqual(
+        comparisonPhases[1],
+        { presses: 2, waitedMs: 1000, covered: false },
+        'the failing second picture is a post-tap comparison, not a baseline retake',
+      );
+    assert.ok(
+      comparisonPhases.every(
+        (phase) => !phase.covered && phase.waitedMs !== undefined && phase.waitedMs >= 1000,
+      ),
+    );
+  });
+}
 
 test('an incomplete owner recapture on the non-overlay path is not repeated for naming', async () => {
   const { row, entryRecaptures, budgets, presses } = await waitOutCover({

@@ -27,6 +27,7 @@ import {
 } from './native-presence.js';
 import type { NativePresence, NativePresenceNode } from './native-presence.js';
 import { associateHeadings, validateHostTypography } from './host-typography.js';
+import { reactHitTest } from './react-hit-test.js';
 import type { HeadingEvidence, HostTypography } from './host-typography.js';
 import {
   associateHosts,
@@ -242,6 +243,12 @@ const touchOwners = new WeakMap<
 export function touchOwnerAt(screen: Screen, x: number, y: number): Element | 'none' | TouchGap {
   const owner = touchOwners.get(screen.elements) ?? 'not-joined';
   return typeof owner === 'string' ? owner : owner(x, y);
+}
+
+const targetSubtreeTouches = new WeakMap<Screen['elements'], (target: Element) => boolean>();
+
+export function targetSubtreeTakesTouch(target: Element, screen: Screen): boolean {
+  return targetSubtreeTouches.get(screen.elements)?.(target) ?? false;
 }
 
 // The matched React host's own press handler; a native button kind says nothing about it.
@@ -1555,6 +1562,39 @@ export function join(
             : 'owner-not-projected';
         },
   );
+  if (reactHostEvidence?.complete && reactHostEvidence.typography?.complete) {
+    const evidence = reactHostEvidence;
+    targetSubtreeTouches.set(screen.elements, (target) => {
+      const nativeIndex = elements.indexOf(target);
+      const hosts = evidence.hosts.flatMap((host, index) =>
+        target.testID && host.testID === target.testID ? [index] : [],
+      );
+      const host = hosts[0];
+      if (
+        nativeIndex < 0 ||
+        hosts.length !== 1 ||
+        associationDiagnostics.get(host)?.identity !== 'matched'
+      )
+        return false;
+      const windowIndex = nativeWindowIndex(nodes, nativeIndex);
+      const window = windowIndex === undefined ? undefined : nodes[windowIndex].rect;
+      const frame = elementFrame(target);
+      if (!window || !frame) return false;
+      const hit = reactHitTest(evidence, (rect) => ({
+        ...rect,
+        x: rect.x + window.x,
+        y: rect.y + window.y,
+      }))(frame.x + frame.width / 2, frame.y + frame.height / 2);
+      if (typeof hit !== 'number') return false;
+      if (hit === host) return true;
+      const capabilities = evidence.hosts[hit]?.capabilities;
+      return (
+        !!capabilities &&
+        capabilities.press !== true &&
+        !!hostPath(evidence.typography!, hit)?.includes(host)
+      );
+    });
+  }
   return screen;
 }
 
