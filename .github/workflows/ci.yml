@@ -141,11 +141,36 @@ jobs:
         with:
           node-version: 24
 
-      - name: Set up Java for Android producer tests
+      # The five batches resolve the JDK at once, so one failed lookup gets a second attempt.
+      - id: setup-java
+        name: Set up Java for Android producer tests
+        continue-on-error: true
         uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
           java-version: '17'
+
+      - name: Back off before retrying the Java install
+        if: steps.setup-java.outcome == 'failure'
+        run: sleep 30
+
+      - name: Set up Java for Android producer tests (retry)
+        if: steps.setup-java.outcome == 'failure'
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # The Android producer test runs Gradle under a deadline; fetch the wrapper distribution first.
+      - name: Download the Gradle wrapper distribution
+        working-directory: packages/qaren-android-runner
+        run: |
+          for attempt in 1 2 3; do
+            ./gradlew --version --no-daemon --quiet && exit 0
+            echo "Gradle wrapper download attempt $attempt failed"
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 20))
+          done
+          exit 1
 
       - run: corepack enable
 
