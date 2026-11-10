@@ -367,7 +367,8 @@ fn main_inner(args: Vec<String>) -> ExitCode {
                 // `booted` is the simulator alias, never an Android serial.
                 None if verb == "doctor"
                     && raw != "booted"
-                    && qaren::scenario::is_usb_serial(&raw) =>
+                    && (qaren::scenario::is_usb_serial(&raw)
+                        || qaren::scenario::is_wireless_serial(&raw)) =>
                 {
                     android_target = Some(raw)
                 }

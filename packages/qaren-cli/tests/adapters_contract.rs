@@ -2053,23 +2053,67 @@ fn device_problems_name_the_cause_and_the_fix_for_the_host() {
 
 #[test]
 fn usb_serials_are_plain_and_never_emulator_or_endpoint_forms() {
-    for serial in ["0A1B2C3D", "R58M12ABCDE", "a.b_c-d"] {
-        assert!(qaren::scenario::is_usb_serial(serial), "{serial}");
+    // (serial, is_usb_serial, is_wireless_serial, is_physical_serial). The wireless names are
+    // built from adb's mDNS service types, not captured; `adb-0A1B2C3D` has no service type.
+    let table: &[(&str, bool, bool, Option<bool>)] = &[
+        ("0A1B2C3D", true, false, Some(true)),
+        ("R58M12ABCDE", true, false, Some(true)),
+        ("a.b_c-d", true, false, Some(true)),
+        ("adb-0A1B2C3D", true, false, Some(true)),
+        (
+            "adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp",
+            false,
+            true,
+            Some(false),
+        ),
+        (
+            "adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp.",
+            false,
+            true,
+            Some(false),
+        ),
+        ("adb-0A1B2C3D._adb._tcp", false, true, Some(false)),
+        ("????????????", false, false, Some(true)),
+        ("emulator-5554", false, false, Some(false)),
+        ("127.0.0.1:5555", false, false, Some(false)),
+        ("", false, false, None),
+        ("-s", false, false, None),
+        ("has space", false, false, None),
+    ];
+    for &(serial, usb, wireless, physical) in table {
+        assert_eq!(qaren::scenario::is_usb_serial(serial), usb, "{serial:?}");
+        assert_eq!(
+            qaren::scenario::is_wireless_serial(serial),
+            wireless,
+            "{serial:?}"
+        );
+        if let Some(physical) = physical {
+            assert_eq!(android::is_physical_serial(serial), physical, "{serial:?}");
+        }
     }
-    for serial in [
-        "",
-        "-s",
-        "????????????",
-        "emulator-5554",
-        "127.0.0.1:5555",
-        "has space",
-    ] {
-        assert!(!qaren::scenario::is_usb_serial(serial), "{serial}");
-    }
-    assert!(android::is_physical_serial("????????????"));
-    assert!(android::is_physical_serial("0A1B2C3D"));
-    assert!(!android::is_physical_serial("emulator-5554"));
-    assert!(!android::is_physical_serial("127.0.0.1:5555"));
+}
+
+#[test]
+fn a_wireless_adb_connection_is_named_and_never_used() {
+    let name = "adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp";
+    let refused = android::wireless_not_supported(name);
+    assert_eq!(refused.0, "wireless-not-supported");
+    assert!(refused.1.contains(name), "{}", refused.1);
+    assert!(refused.2.contains("USB cable"), "{}", refused.2);
+    let row = |serial: &str, state: &str| (serial.to_string(), state.to_string());
+    assert_eq!(
+        android::wireless_note(&[row("0A1B2C3D", "device"), row("emulator-5554", "device")]),
+        ""
+    );
+    assert_eq!(android::wireless_note(&[]), "");
+    assert_eq!(
+        android::wireless_note(&[
+            row("0A1B2C3D", "device"),
+            row(name, "device"),
+            row("adb-0A1B2C3E._adb._tcp", "offline"),
+        ]),
+        "; 2 wireless adb connection(s) listed and not used (USB cable only)"
+    );
 }
 
 #[test]

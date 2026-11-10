@@ -63,9 +63,14 @@ fn is_plain_serial(serial: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
 }
 
-// A physical USB device serial that may be selected or passed to adb; never an emulator or host:port endpoint.
+// adb lists a wireless (mDNS) connection under its service name, which is otherwise a plain serial.
+pub fn is_wireless_serial(serial: &str) -> bool {
+    serial.contains("._adb-tls-connect._tcp") || serial.contains("._adb._tcp")
+}
+
+// A physical USB device serial that may be selected or passed to adb; never an emulator, a host:port endpoint or a wireless connection.
 pub fn is_usb_serial(serial: &str) -> bool {
-    is_plain_serial(serial) && !serial.starts_with("emulator-")
+    is_plain_serial(serial) && !serial.starts_with("emulator-") && !is_wireless_serial(serial)
 }
 
 fn is_dev_client_scheme(scheme: &str) -> bool {
@@ -639,7 +644,7 @@ impl Scenario {
         // accepting them here would blur the two exclusive allocation paths.
         if !is_usb_serial(serial) {
             return Err(invalid(format!(
-                "android_usb.serial {serial:?} must name a physical USB device, not an emulator or loopback endpoint"
+                "android_usb.serial {serial:?} must name a physical USB device, not an emulator, loopback endpoint or wireless connection"
             )));
         }
         match (usb.adb_server_port, self.build.owner) {

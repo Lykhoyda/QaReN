@@ -142,7 +142,9 @@ list over the adb protocol, on the port `check` would borrow (`ADB_SERVER_SOCKET
 else `ANDROID_ADB_SERVER_PORT`, else 5037). They run no adb client and start no
 server. Every listed device that is not an emulator or a `host:port` endpoint
 counts, including one whose serial adb cannot read; that one is described
-rather than named. For each device that is not ready the row gives the cause and
+rather than named. A phone connected over wireless adb is not used:
+`android-devices` counts it separately and `android-target` fails for it; attach
+the phone with a USB cable. For each device that is not ready the row gives the cause and
 the fix: `no permissions` (on Linux, the account lacks USB access: the
 `plugdev` group and the Android udev rules), `unauthorized` (USB debugging from
 this computer not yet accepted on the phone) or `offline`. When the run's server

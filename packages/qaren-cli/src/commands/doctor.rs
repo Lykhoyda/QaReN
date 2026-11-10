@@ -890,13 +890,14 @@ fn android_devices_row(runner: &dyn Runner) -> Check {
             .iter()
             .map(|serial| android::held_by_other_server(serial, port, DEFAULT_ADB_PORT)),
     );
+    let note = android::wireless_note(&rows);
     match (problems.is_empty(), physical.len()) {
         // A phone left charging must not fail doctor for an emulator user; --device fails instead.
         (false, _) => device_check(ID, Status::Warn, &problems),
-        (true, 0) => Check::pass(ID, "no physical device attached"),
+        (true, 0) => Check::pass(ID, format!("no physical device attached{note}")),
         (true, n) => Check::pass(
             ID,
-            format!("{n} physical device(s) ready on the adb server at port {port}"),
+            format!("{n} physical device(s) ready on the adb server at port {port}{note}"),
         ),
     }
 }
@@ -904,6 +905,9 @@ fn android_devices_row(runner: &dyn Runner) -> Check {
 // `doctor --device <android serial>`: that one device, read like android-devices; anything but ready fails.
 pub fn android_target_row(runner: &dyn Runner, serial: &str) -> Check {
     const ID: &str = "android-target";
+    if crate::scenario::is_wireless_serial(serial) {
+        return device_check(ID, Status::Fail, &[android::wireless_not_supported(serial)]);
+    }
     let (port, rows) = match adb_listing(runner) {
         Ok(listing) => listing,
         Err((_, detail, fix)) => return Check::fail(ID, detail, fix),
@@ -3548,10 +3552,7 @@ mod tests {
             "{}",
             empty_serial.detail
         );
-        assert_eq!(
-            empty_serial.fix.as_deref(),
-            Some(USB_PERMISSION_FIX)
-        );
+        assert_eq!(empty_serial.fix.as_deref(), Some(USB_PERMISSION_FIX));
         assert_eq!(
             unreadable.fix.as_deref(),
             Some(format!("{USB_PERMISSION_FIX}\n{USB_AUTHORIZATION_FIX}").as_str())
@@ -3621,6 +3622,61 @@ mod tests {
         assert_eq!(both.status, Status::Pass);
     }
 
+    const WIRELESS: &str = "adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp";
+
+    #[test]
+    fn a_wireless_adb_row_is_counted_apart_and_never_reported_as_a_device() {
+        let both = android_devices_with(
+            &[],
+            &[(
+                5037,
+                Some(&format!("0A1B2C3D\tdevice\n{WIRELESS}\tdevice\n")),
+            )],
+        );
+        assert_eq!(both.status, Status::Pass);
+        assert_eq!(both.detail, "1 physical device(s) ready on the adb server at port 5037; 1 wireless adb connection(s) listed and not used (USB cable only)");
+        for state in ["device", "offline"] {
+            let only =
+                android_devices_with(&[], &[(5037, Some(&format!("{WIRELESS}\t{state}\n")))]);
+            assert_eq!(only.status, Status::Pass, "{state}");
+            assert_eq!(only.detail, "no physical device attached; 1 wireless adb connection(s) listed and not used (USB cable only)");
+            for text in ["cannot read", "replug", WIRELESS] {
+                assert!(!only.detail.contains(text), "{state}: {}", only.detail);
+            }
+        }
+        // Ready only on the default server: a wireless row is never "held by another server".
+        let elsewhere = android_devices_with(
+            &[("ANDROID_ADB_SERVER_PORT", "5147")],
+            &[
+                (5147, Some("")),
+                (5037, Some(&format!("{WIRELESS}\tdevice\n"))),
+            ],
+        );
+        assert_eq!(elsewhere.status, Status::Pass);
+        assert_eq!(elsewhere.detail, "no physical device attached");
+    }
+
+    #[test]
+    fn android_target_refuses_a_wireless_name_without_asking_the_server() {
+        let runner = adb_host(&[], &[]);
+        let row = android_target_row(&runner, WIRELESS);
+        assert!(runner.calls.is_empty(), "{:?}", runner.calls);
+        assert_eq!(row.id, "android-target");
+        assert_eq!(row.status, Status::Fail);
+        assert_eq!(
+            row.detail,
+            format!(
+                "{WIRELESS} is a wireless adb connection; QaReN uses a phone over a USB cable only"
+            )
+        );
+        assert_eq!(row.fix.as_deref(), Some("attach the phone with a USB cable and pass the serial adb lists for the cable connection, then re-run"));
+        assert!(
+            !row.detail.contains("no adb server answers"),
+            "{}",
+            row.detail
+        );
+    }
+
     #[test]
     fn android_target_fails_unless_that_device_is_ready() {
         let target = |env: &[(&str, &str)], servers: &[(u16, Option<&str>)], serial: &str| {
@@ -3648,7 +3704,10 @@ mod tests {
         assert_eq!(permissions.fix.as_deref(), Some(USB_PERMISSION_FIX));
         let absent = target(&[], &[(5037, Some(listed))], "0A1B2C3F");
         assert_eq!(absent.status, Status::Fail);
-        assert_eq!(absent.detail, "no Android device with serial 0A1B2C3F is attached to the adb server on port 5037");
+        assert_eq!(
+            absent.detail,
+            "no Android device with serial 0A1B2C3F is attached to the adb server on port 5037"
+        );
         let env = [("ANDROID_ADB_SERVER_PORT", "5147")];
         let held = target(
             &env,
