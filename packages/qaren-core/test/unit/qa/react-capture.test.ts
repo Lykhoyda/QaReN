@@ -7,6 +7,9 @@ import { createComponentTreeHandler } from '../../../dist/handlers/component-tre
 import { buildFiber, createSandbox } from '../helpers/inject-harness.js';
 import { captureQaReact, createQaReactCapture } from '../../../dist/qa/react-capture.js';
 import { captureScreen } from '../../../dist/qa/capture.js';
+import { parsePlan } from '../../../dist/qa/plan.js';
+import { modalCoverDiagnostic } from '../../../dist/qa/screen.js';
+import { runPlan } from '../../../dist/qa/walker.js';
 import {
   PrivateInputCaptureError,
   ReactCaptureIncomplete,
@@ -15,6 +18,7 @@ import { inputValues } from '../../../dist/qa/privacy.js';
 import type { NativeNode } from '../../../dist/qa/screen.js';
 import { attested, nativeCapture } from './platform-presence-fixtures.ts';
 import { startFakeCDP } from '../../helpers/fake-cdp-server.js';
+import { scriptedJudge, walker } from './judgment-fixtures.ts';
 
 const sentinel = 'PRIVATE_TEST_INPUT_7abf';
 const id = '1abcd';
@@ -172,6 +176,75 @@ test('real producer and adapter interoperate through an in-memory CDP socket', a
     assert.deepEqual(Object.keys(sandbox), globalKeys);
     assert.equal(inspect(client, { depth: 8 }).includes(sentinel), false);
   }
+});
+
+test('Fill then an absent quoted Tap obtains modal proof without a presence read', async () => {
+  const producer = realProducer({ testID: 'field', editable: true });
+  const f = walker([], scriptedJudge(() => assert.fail('quoted actions must be model-free')));
+  f.deps.platform = 'ios';
+  let keyboardVisible = false;
+  let targetVisible = false;
+  let value = '';
+  const modes: Array<{ presence: boolean; typography: boolean }> = [];
+  f.deps.captureScreen = async (options) => {
+    const presence = options?.platformPresence === true;
+    const typography = presence || options?.typography === true;
+    modes.push({ presence, typography });
+    const base = nativeEcho(true);
+    const nodes = base.nodes.map(({ presence: observed, ...node }) => ({
+      ...node,
+      ...(node.ref === '@field' ? { value } : {}),
+      ...(presence ? { presence: observed } : {}),
+    }));
+    if (targetVisible)
+      nodes.push({
+        ...nodes[1],
+        ref: '@submit',
+        index: nodes.length,
+        identifier: 'submit',
+        label: 'Continue',
+        type: 'Button',
+      });
+    const captured = await captureScreen({
+      appId: 'com.test',
+      requirePrivateInputs: true,
+      platformPresence: presence,
+      native: async () => ({
+        ...base,
+        nodes,
+        keyboardVisible,
+        presenceCapture: presence ? base.presenceCapture : undefined,
+        snapshotVerdict: { ...base.snapshotVerdict, nodeCount: nodes.length },
+      }),
+      react: () => captureQaReact(producer.client, typography),
+    });
+    assert.equal(modalCoverDiagnostic(captured)?.modalCount, typography ? 0 : undefined);
+    return captured;
+  };
+  f.deps.fill = async (ref, text, context) => {
+    context.authorize();
+    f.actions.push(`fill ${ref}`);
+    value = text;
+    keyboardVisible = true;
+    return { ok: true, proven: true };
+  };
+  f.deps.dismissKeyboard = async (context) => {
+    context.authorize();
+    f.actions.push('dismiss');
+    keyboardVisible = false;
+    targetVisible = true;
+    return 'js';
+  };
+  const result = await runPlan(
+    parsePlan('1. Fill "field" with "hello"\n2. Tap "submit"').blocks!,
+    f.deps,
+  );
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['fill @field', 'dismiss', 'press @submit']);
+  assert.equal(result.steps.at(-1)?.keyboardCleared, 'js');
+  assert.equal(modes.some((mode) => mode.presence), false);
+  assert.ok(modes.some((mode) => !mode.typography));
+  assert.ok(modes.some((mode) => mode.typography));
 });
 
 test('legacy whole-tree handler neither enters nor exposes the private capture channel', async (t) => {

@@ -77,13 +77,15 @@ function device(initial: Screen) {
   let time = 0;
   const actions: string[] = [];
   const notes: string[] = [];
-  const captures: Array<{ presence: boolean }> = [];
+  const captures: Array<{ presence: boolean; typography: boolean }> = [];
   const deps: WalkerDeps = {
     platform: 'ios',
     async captureScreen(options) {
-      captures.push({ presence: options?.platformPresence === true });
+      const presence = options?.platformPresence === true;
+      const typography = presence || options?.typography === true;
+      captures.push({ presence, typography });
       time += 100;
-      return current;
+      return typography ? current : { ...current, elements: [...current.elements] };
     },
     async dismissKeyboard(context) {
       context.authorize();
@@ -235,6 +237,7 @@ for (const variant of [
   'modal',
   'hidden',
   'android',
+  'guard-disabled',
   'fill',
   'launch',
   'no-modal-proof',
@@ -263,6 +266,7 @@ for (const variant of [
     if (variant === 'no-modal-proof') initial.elements = [...initial.elements];
     const f = device(initial);
     if (variant === 'android') f.deps.platform = 'android';
+    if (variant === 'guard-disabled') delete f.deps.dismissKeyboard;
     const replayed =
       variant === 'replay'
         ? replayBlock(block, {
@@ -273,6 +277,8 @@ for (const variant of [
     if (variant === 'launch') await runPlan([replayed], f.deps);
     else await walkBlock(replayed, f.deps);
     assert.equal(f.actions.includes('dismiss'), false);
+    if (['android', 'fill', 'guard-disabled'].includes(variant))
+      assert.equal(f.captures.some((capture) => capture.typography && !capture.presence), false);
   });
 }
 

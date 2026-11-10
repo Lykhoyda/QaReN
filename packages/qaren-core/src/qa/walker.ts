@@ -264,6 +264,7 @@ export interface WalkerDeps {
   captureScreen(options?: {
     observation?: number;
     platformPresence?: boolean;
+    typography?: boolean;
     timing?: TimingObserver;
     // A wait's remaining time: the capture rejects with CaptureDeadline once it is spent.
     budgetMs?: number;
@@ -863,6 +864,11 @@ async function walkBlockScoped(
       step && ('target' in step ? step.target : step.kind === 'scroll' ? step.until : undefined);
     const requirePresence = assertion || (!!target && target.quoted === undefined);
     const platformPresence = requirePresence || purpose === 'provenance';
+    const typography =
+      step?.kind === 'press' &&
+      step.target.quoted !== undefined &&
+      deps.platform === 'ios' &&
+      deps.dismissKeyboard !== undefined;
     const startedAt = deps.now();
     let readStartedAt = startedAt;
     if (until !== undefined && startedAt >= until) throw new CaptureDeadline();
@@ -903,6 +909,7 @@ async function walkBlockScoped(
             latest = await captureScreen({
               observation: id,
               ...(platformPresence ? { platformPresence: true } : {}),
+              ...(typography ? { typography: true } : {}),
               ...(timingObserver ? { timing: timingObserver } : {}),
               ...(until === undefined ? {} : { budgetMs: Math.max(0, until - readStartedAt) }),
             });
