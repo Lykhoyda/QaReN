@@ -3377,25 +3377,7 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
         Platform::Android => {
             let (adb, serial, server_port) =
                 ctx.record.resources.adb_endpoint().expect("allocated");
-            ensure_running(ctx.runner, "build")?;
-            let installed = ctx.runner.run(&android::adb_install_spec(
-                &adb,
-                server_port,
-                &serial,
-                &artifact.path,
-            ));
-            if !installed.ok() || !installed.stdout.contains("Success") {
-                return Err(artifact_install_failure(
-                    &ctx.record.run_id,
-                    &artifact,
-                    installed.summary(),
-                    if installed.timed_out {
-                        ArtifactInstallFailure::InstallTimeout
-                    } else {
-                        ArtifactInstallFailure::InstallFailed
-                    },
-                ));
-            }
+            install_cached_android_apk(ctx, &artifact, &adb, server_port, &serial, deadline)?;
             ctx.record.resources.app_install = Some(AppInstallResource {
                 app_id: ctx.record.candidate.app_id.clone(),
                 serial: serial.clone(),
@@ -3776,6 +3758,117 @@ fn install_cached_ios_app(
         summary,
         ArtifactInstallFailure::InstallTimeout,
     ))
+}
+
+// The run owns recovery: one missing acknowledgement may be retried after the
+// package manager answers steadily. A package-manager verdict is terminal.
+fn install_cached_android_apk(
+    ctx: &mut Ctx,
+    artifact: &CachedArtifact,
+    adb: &Path,
+    server_port: u16,
+    serial: &str,
+    deadline: u64,
+) -> Result<(), Failure> {
+    ensure_running(ctx.runner, "build")?;
+    let spec = android::adb_install_spec(adb, server_port, serial, &artifact.path);
+    let first = ctx.runner.run(&spec);
+    let wait_started = ctx.runner.monotonic_ms();
+    if first.ok() && first.stdout.contains("Success") {
+        return Ok(());
+    }
+    ensure_running(ctx.runner, "build")?;
+    if [&first.stdout, &first.stderr]
+        .iter()
+        .any(|text| text.contains("INSTALL_FAILED_") || text.contains("INSTALL_PARSE_FAILED_"))
+    {
+        return Err(artifact_install_failure(
+            &ctx.record.run_id,
+            artifact,
+            "the device's package manager refused the install".into(),
+            ArtifactInstallFailure::InstallFailed,
+        ));
+    }
+
+    let wait_deadline = wait_started.saturating_add(180_000);
+    let mut consecutive = 0;
+    loop {
+        ensure_running(ctx.runner, "build")?;
+        let left = wait_deadline.saturating_sub(ctx.runner.monotonic_ms());
+        // Commands have whole-second budgets; spend a subsecond remainder
+        // without starting a probe that could overrun the wait.
+        if left < 1000 {
+            if left > 0 {
+                ensure_running(ctx.runner, "build")?;
+                ctx.runner.sleep(Duration::from_millis(left));
+                ensure_running(ctx.runner, "build")?;
+            }
+            return Err(artifact_install_failure(
+                &ctx.record.run_id,
+                artifact,
+                "the first install failed; the device's package manager did not answer for 180 s; no second install was tried".into(),
+                ArtifactInstallFailure::InstallFailed,
+            ));
+        }
+        let probe = ctx.runner.run(&android::pm_path_spec(
+            adb,
+            server_port,
+            serial,
+            "android",
+            30.min(left / 1000),
+        ));
+        ensure_running(ctx.runner, "build")?;
+        if probe.ok()
+            && probe
+                .stdout
+                .lines()
+                .any(|line| line.trim().starts_with("package:"))
+        {
+            consecutive += 1;
+        } else {
+            consecutive = 0;
+        }
+        if consecutive == 3 {
+            break;
+        }
+        ensure_running(ctx.runner, "build")?;
+        let pause = 5_000.min(wait_deadline.saturating_sub(ctx.runner.monotonic_ms()));
+        ctx.runner.sleep(Duration::from_millis(pause));
+    }
+
+    ensure_running(ctx.runner, "build")?;
+    let left = deadline.saturating_sub(ctx.runner.monotonic_ms());
+    if left < 1000 {
+        return Err(artifact_install_failure(
+            &ctx.record.run_id,
+            artifact,
+            "the first install failed; the package manager answered, but the preparation budget was spent; no second install was tried".into(),
+            ArtifactInstallFailure::InstallTimeout,
+        ));
+    }
+    let recovery_wait_ms = ctx.runner.monotonic_ms().saturating_sub(wait_started);
+    let mut retry = spec;
+    retry.timeout_seconds = 300.min(left / 1000);
+    let second = ctx.runner.run(&retry);
+    ensure_running(ctx.runner, "build")?;
+    if !second.ok() || !second.stdout.contains("Success") {
+        return Err(artifact_install_failure(
+            &ctx.record.run_id,
+            artifact,
+            "the install failed twice; the package manager answered between the attempts".into(),
+            if second.timed_out {
+                ArtifactInstallFailure::InstallTimeout
+            } else {
+                ArtifactInstallFailure::InstallFailed
+            },
+        ));
+    }
+    ctx.notes.push(("install_attempts".into(), "2".into()));
+    ctx.notes.push((
+        "install_recovery_wait_ms".into(),
+        recovery_wait_ms.to_string(),
+    ));
+    Ok(())
 }
 
 fn installed_bundle_matches(ctx: &mut Ctx, udid: &str, artifact: &CachedArtifact) -> bool {
@@ -5062,9 +5155,13 @@ fn ready_probes(ctx: &mut Ctx, metro_resource: &MetroResource, watched: bool) ->
             let Some((adb, serial, server_port)) = ctx.record.resources.adb_endpoint() else {
                 return Readiness::Pending;
             };
-            let installed =
-                ctx.runner
-                    .run(&android::pm_path_spec(&adb, server_port, &serial, &app_id));
+            let installed = ctx.runner.run(&android::pm_path_spec(
+                &adb,
+                server_port,
+                &serial,
+                &app_id,
+                30,
+            ));
             if !installed.ok() || !installed.stdout.contains("package:") {
                 return Readiness::Pending;
             }
