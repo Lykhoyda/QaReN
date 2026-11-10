@@ -5109,8 +5109,35 @@ before, with the unavailability named in the evidence. A config whose evaluated
 value changes between runs (an environment read, a time or random value) changes
 the hash and rebuilds.
 Limits: environment read only by native build scripts (a Podfile reading `ENV`,
-for example) and the CocoaPods version are not bound; Android keeps a dynamic
-config incomplete.
+for example) and the CocoaPods version are not bound.
+
+**Dynamic `app.config.*` (Android).** QaReN resolves the app's own
+`@expo/fingerprint` once and evaluates `fingerprint:generate --platform android`
+twice: with `CI` removed for prebuild, and with `CI=1` for Gradle and
+`expo run:android`. Both commands use `EXPO_NO_TELEMETRY=1`, private capture and
+the same output requirements and 120 s budget described above. Both must succeed
+to bind `rnfp`, `expo` and `expo-ci` in the `qaren-expo-native-android/1`
+composite and clear the dynamic-config incompleteness. Other incompleteness
+still forbids reuse. If either evaluation is unavailable, neither Expo part is
+bound: the value stays the native-input manifest hash, the fingerprint stays
+incomplete, and rebuild evidence names the closed cause. Static Android configs
+run no evaluation and retain their existing fingerprint value. Android does not
+bind JDK, SDK or NDK identity.
+
+The first check of a previously recorded Android build with a dynamic config
+rebuilds because that record has no Expo parts. Later checks with unchanged complete native inputs
+reuse the verified APK, skip prebuild and Gradle, and install it. A changed
+evaluated config rebuilds with evidence naming `expo` or `expo-ci`.
+
+Android rechecks both evaluations after preparation. When plan-time evaluation
+was unavailable, only the native-input manifest is compared for drift, and a
+successful build is recorded under the incomplete **plan-time** fingerprint.
+An evaluation first seen after the build never becomes that build's identity;
+the next check with available evaluations rebuilds. When both Expo parts were
+available at plan time, an unavailable recheck gets one more evaluation attempt.
+If still unavailable, the run fails with the evaluation's cause; changed parts
+instead fail as native-input drift and name the part. Receipt notes include
+`expo_fingerprint_ms` for the plan-time evaluations.
 
 An incomplete fingerprint over an existing generated native directory requires a
 clean prebuild, which deletes that directory with its installed native
@@ -5222,9 +5249,10 @@ is copied and content-hashed in a staging directory inside its fingerprint's
 store entry (iOS) or under `.qaren/native-cache/artifacts/android/<app_id>-<fingerprint-key>/`
 (Android). Copying checks cancellation between entries and file chunks. A final
 cancellation check precedes moving the staged bundle into an exclusively created
-run-specific generation and
-atomically saving cache state with the readiness-rechecked fingerprint
-(native-input drift during the build fails the run as `CANDIDATE_DRIFTED`).
+run-specific generation and atomically saving cache state with the
+readiness-rechecked fingerprint, retaining the Android plan-time fingerprint when
+plan-time Expo evaluation was unavailable. Native-input drift during the build
+fails the run as `CANDIDATE_DRIFTED`.
 Cancellation before that publication removes staging and preserves the previous
 state without rebinding installation ownership. A failed state save removes the
 new generation and retains the previous state. On iOS a complete fingerprint then
