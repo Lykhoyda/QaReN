@@ -119,23 +119,32 @@ jobs:
           libsqlite3-0 libxml2-dev libz3-dev pkg-config tzdata zlib1g-dev
 
       # Swift tests skip when swift is absent; the ARM pool image ships Swift 6.2.1, x64 installs it here.
-      # The five batches fetch swift.org keys at once, so one timed-out download gets a second attempt.
-      - id: setup-swift
+      # The toolchain is verified against swift.org's published keys with no keyserver refresh,
+      # because keyserver.ubuntu.com is not reliably reachable from this pool.
+      - name: Install Swift
         if: runner.arch == 'X64'
-        continue-on-error: true
-        uses: swift-actions/setup-swift@7ca6abe6b3b0e8b5421b88be48feee39cbf52c6a  # v2.4.0
-        with:
-          swift-version: '6.2.1'
-
-      - name: Back off before retrying the Swift install
-        if: steps.setup-swift.outcome == 'failure'
-        run: sleep 30
-
-      - name: Install Swift (retry)
-        if: steps.setup-swift.outcome == 'failure'
-        uses: swift-actions/setup-swift@7ca6abe6b3b0e8b5421b88be48feee39cbf52c6a  # v2.4.0
-        with:
-          swift-version: '6.2.1'
+        env:
+          SWIFT_VERSION: '6.2.1'
+        run: |
+          set -euo pipefail
+          release="swift-$SWIFT_VERSION-RELEASE"
+          url="https://download.swift.org/swift-$SWIFT_VERSION-release/ubuntu2404/$release/$release-ubuntu24.04.tar.gz"
+          work="$RUNNER_TEMP/swift-install"
+          dest="$RUNNER_TEMP/swift"
+          rm -rf "$work" "$dest"
+          mkdir -p "$work/gnupg" "$dest"
+          chmod 700 "$work/gnupg"
+          fetch() { curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$1" "$2"; }
+          fetch "$work/keys.asc" https://swift.org/keys/all-keys.asc
+          fetch "$work/swift.tar.gz.sig" "$url.sig"
+          fetch "$work/swift.tar.gz" "$url"
+          export GNUPGHOME="$work/gnupg"
+          gpg --batch --quiet --import "$work/keys.asc"
+          gpg --batch --verify "$work/swift.tar.gz.sig" "$work/swift.tar.gz"
+          tar -xzf "$work/swift.tar.gz" -C "$dest" --strip-components=1
+          rm -rf "$work"
+          echo "$dest/usr/bin" >> "$GITHUB_PATH"
+          "$dest/usr/bin/swift" --version
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0 — Phase 134.5 SHA pin
         with:
