@@ -89,12 +89,14 @@ export function createSendTimingAccumulator(options: { settleDisabled?: boolean 
       return lifted;
     },
     finish(result: ToolResult): ToolResult {
-      if (!Object.keys(sums).length) return result;
+      if (!Object.keys(sums).length && probes === undefined) return result;
       try {
         const envelope = JSON.parse(result.content[0].text);
         envelope.meta = {
           ...envelope.meta,
-          timings_ms: { ...envelope.meta?.timings_ms, ...sums },
+          ...(Object.keys(sums).length
+            ? { timings_ms: { ...envelope.meta?.timings_ms, ...sums } }
+            : {}),
           ...(probes !== undefined || options.settleDisabled
             ? { settle: { ...envelope.meta?.settle, probes: probes ?? 0 } }
             : {}),

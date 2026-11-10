@@ -6,6 +6,8 @@ import {
   runNative,
   setActiveSessionInMemoryForTest,
   resetActiveSessionInMemoryForTest,
+  _setRunAgentDeviceForTest,
+  markSnapshotDirty,
 } from '../../../dist/agent-device-wrapper.js';
 import {
   _setFastRunnerStateForTest,
@@ -21,7 +23,11 @@ import { runInNewContext } from 'node:vm';
 import {
   entryMismatchOf,
   extractMutationDisposition,
+  performExactFill,
 } from '../../../dist/handlers/device-interact.js';
+import { clearRefMap, updateRefMapFromFlat } from '../../../dist/fast-runner-ref-map.js';
+import { okResult } from '../../../dist/utils.js';
+import { createRowTimer } from '../../../dist/qa/row-timing.js';
 import { HandlerError, describeError, fillEvidence, unwrap } from '../../../dist/qa/adapt.js';
 import { classifyNativeVerification } from '../../../dist/handlers/fill-verify.js';
 import { isRecord } from '../../../dist/qa/questions.js';
@@ -109,6 +115,76 @@ test('act projects measured send fields into the row contract', async () => {
     settleProbes: 2,
   });
 });
+
+for (const platform of ['ios', 'android'] as const) {
+  for (const verdict of ['mismatch', 'case-normalized', 'unreadable']) {
+    for (const probes of [undefined, 0, 2]) {
+      test(`failed exact Fill retains ${probes ?? 'unmeasured'} probes on ${platform} after ${verdict}`, async () => {
+        const node = {
+          ref: '@e1',
+          identifier: 'name',
+          type: 'TextField',
+          rect: { x: 20, y: 100, width: 320, height: 40 },
+        };
+        const commands: string[] = [];
+        setActiveSessionInMemoryForTest({ platform, deviceId: 'TEST-DEVICE', appId: 'com.test' });
+        clearRefMap();
+        markSnapshotDirty();
+        updateRefMapFromFlat([node], { snapshotGeneration: 7, keyboardVisible: true });
+        _setRunAgentDeviceForTest(async (command: string[]) => {
+          commands.push(command[0]);
+          if (command[0] === 'snapshot') {
+            updateRefMapFromFlat([node], { snapshotGeneration: 8, keyboardVisible: true });
+            return okResult({ nodes: [node] });
+          }
+          if (command[0] === 'fill')
+            return okResult(
+              { typed: true },
+              probes === undefined ? {} : { meta: { settle: { probes } } },
+            );
+          assert.equal(command[0], 'verify-input');
+          return okResult({ verifyVerdict: verdict, verifyStable: true });
+        });
+        try {
+          const reply = await performExactFill({ ref: '@e1', text: 'synthetic' }, null, {});
+          const envelope = JSON.parse(reply.content[0].text);
+          const expectedMutation = verdict === 'unreadable' ? 'possible' : 'observed';
+          assert.equal(reply.isError, true);
+          assert.equal(envelope.ok, false);
+          assert.equal(envelope.code, 'TEXT_ENTRY_UNVERIFIED');
+          assert.equal(envelope.meta.mutation, expectedMutation);
+          assert.equal(envelope.meta.verification.native, verdict);
+          assert.deepEqual(
+            commands,
+            platform === 'ios'
+              ? ['snapshot', 'verify-input', 'fill', 'verify-input']
+              : ['snapshot', 'fill', 'verify-input'],
+          );
+          assert.equal(envelope.meta.settle?.probes, probes);
+          assert.equal(envelope.meta.timings_ms, undefined);
+          const timer = createRowTimer(0);
+          const outcome = await fixture().act(async () => reply, false, {
+            now: () => 1,
+            observe: (event) => timer.observe(event),
+          });
+          assert.equal(outcome.ok, false);
+          assert.equal(outcome.mutation, expectedMutation);
+          assert.match(outcome.error!, /TEXT_ENTRY_UNVERIFIED/);
+          const expectedSend = probes === undefined ? undefined : { settleProbes: probes };
+          assert.deepEqual(
+            JSON.parse(JSON.stringify({ send: outcome.send })),
+            expectedSend === undefined ? {} : { send: expectedSend },
+          );
+          assert.deepEqual(timer.take(2, 0).send, expectedSend);
+        } finally {
+          _setRunAgentDeviceForTest(null);
+          resetActiveSessionInMemoryForTest();
+          clearRefMap();
+        }
+      });
+    }
+  }
+}
 
 test('act carries only measured allowlisted settle metadata', async () => {
   for (const method of ['screen-static', 'snapshot-eq', 'window-gate', 'timeout']) {
