@@ -2274,7 +2274,7 @@ async function walkBlockScoped(
       'UNVERIFIED_FILL: set through the change handler; its final value could not be validated';
     return qualifier ? `${unverified}; ${qualifier}` : unverified;
   };
-  // Best effort: the field is not an observable native input, so only the tap and the keyboard prove anything.
+  // Without an observable native input, require React ancestry/value proof or focus and keyboard evidence.
   const keyboardFallback = async (
     item: Item & { kind: 'fill' },
     attempt: number,
