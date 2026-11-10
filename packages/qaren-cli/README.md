@@ -2100,19 +2100,20 @@ or dropped nodes), a structurally valid incomplete version-2 snapshot on the
 platform-presence route with no truncation or dropped nodes, a consistent node
 count, a known matching generation and withheld keyboard state, or an iOS
 `RN_FAST_RUNNER_DOWN` failure marked as pending runner relaunch recovery, at
-500 ms intervals within the existing 6-second settle budget and remaining total
-capture budget. These conditions share one retry
-deadline; re-reads on both ordinary and platform-presence routes, including
-readiness probes and snapshot transport, stop waiting at that deadline.
+500 ms intervals until the earlier of six seconds after the first retryable result
+and 22 seconds after capture start. These conditions share one retry deadline.
+Re-reads on both ordinary and platform-presence routes, including readiness probes
+and snapshot transport, stop waiting at that deadline.
 A required private ordinary capture with no caller budget also re-reads a nonempty,
-untruncated snapshot whose only incomplete cause is `dropped=<n>`, within that same
-window capped at 22 seconds from capture start. Wait polls and platform-presence
-captures keep one native read for this cause. Each dropped-snapshot re-read emits a
-value-free `native-reread` point in `core-diagnostics.jsonl`. Only a fresh complete
-read is admitted; persistent drops refuse with their latest count and `retry-deadline`,
-including when an intervening empty read is followed by a read that exceeds the window.
+untruncated snapshot whose only incomplete cause is `dropped=<n>`, within that shared
+deadline. Wait polls and platform-presence captures keep one native read for this
+cause. Each dropped-snapshot re-read emits a
+value-free `native-reread` point in `logs/core-diagnostics.jsonl`, with or without
+runtime inputs. Only a fresh complete read is admitted. Persistent drops refuse
+with their latest node count, dropped count and `retry-deadline`, including when an
+intervening empty read is followed by a read that exceeds the window.
 A re-read that becomes truncated or degraded refuses with its own causes and no
-expiry marker; a native read failure retains `NATIVE_CAPTURE_UNAVAILABLE`.
+expiry marker. Native read exceptions keep their existing classification.
 After timeout containment relaunches the iOS reader, it waits for an `alive`
 probe with `PLATFORM_PRESENCE_V2` within the remaining `READY_TIMEOUT_MS`
 (30 seconds by default), shared with reader startup;
