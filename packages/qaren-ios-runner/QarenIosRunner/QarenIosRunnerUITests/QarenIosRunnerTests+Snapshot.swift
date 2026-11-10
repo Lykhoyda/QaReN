@@ -693,6 +693,8 @@ extension QarenIosRunnerTests {
       deadline, read: .finalization, edge: .after, phase: .finalization, at: ended
     )
     if !complete {
+      // Every gate exit lands here, and no later gate runs after one fails.
+      timing.failDecisive(.readUnavailable)
       for index in nodes.indices {
         nodes[index].presence?.status = .unknown
         nodes[index].presence?.observedUptimeMs = nil
@@ -1259,6 +1261,7 @@ final class PresenceCaptureTiming {
   private var invalidClock = false
   private var phase: PlatformPresenceDiagnostics.Phase = .initialEligibility
   private var phaseStarted: Double?
+  private var phaseFailure: PlatformPresenceDiagnostics.Failure?
   private var recorded = PlatformPresenceDiagnostics(phaseMs: [:])
 
   init(started: Double, now: @escaping () -> Double) {
@@ -1270,6 +1273,7 @@ final class PresenceCaptureTiming {
   func begin(_ phase: PlatformPresenceDiagnostics.Phase) {
     self.phase = phase
     phaseStarted = now()
+    phaseFailure = nil
   }
 
   func preparationStarted(quietWindowMs: Double) {
@@ -1299,9 +1303,17 @@ final class PresenceCaptureTiming {
     _ reason: PlatformPresenceDiagnostics.Reason, phase: PlatformPresenceDiagnostics.Phase? = nil,
     mismatch: PlatformPresenceDiagnostics.Mismatch? = nil
   ) {
-    if recorded.failure == nil {
-      recorded.failure = .init(phase: phase ?? self.phase, reason: reason, mismatch: mismatch)
-    }
+    let failure = PlatformPresenceDiagnostics.Failure(phase: phase ?? self.phase, reason: reason, mismatch: mismatch)
+    if recorded.failure == nil { recorded.failure = failure }
+    if phaseFailure == nil { phaseFailure = failure }
+  }
+
+  // A presence gate stops at its first failure, so the first one since its phase began is the decisive one.
+  func failDecisive(
+    _ reason: PlatformPresenceDiagnostics.Reason, phase: PlatformPresenceDiagnostics.Phase? = nil
+  ) {
+    if phaseFailure == nil { fail(reason, phase: phase) }
+    if recorded.decisiveFailure == nil { recorded.decisiveFailure = phaseFailure }
   }
 
   func deadlineReached(
@@ -1331,7 +1343,8 @@ final class PresenceCaptureTiming {
       preparationResets: recorded.preparationResets,
       preparationQuietWindowMs: recorded.preparationQuietWindowMs,
       preparationQuietElapsedMs: recorded.preparationQuietElapsedMs,
-      failure: complete ? nil : recorded.failure, deadline: recorded.deadline
+      failure: complete ? nil : recorded.failure, deadline: recorded.deadline,
+      decisiveFailure: complete ? nil : recorded.decisiveFailure
     )
   }
 }

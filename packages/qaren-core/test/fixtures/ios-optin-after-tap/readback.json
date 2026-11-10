@@ -1,0 +1,5078 @@
+{
+  "mode": "ordinary",
+  "captureCoverage": {
+    "native": "complete",
+    "react": "complete"
+  },
+  "presenceBudgetMs": 20000,
+  "rawBeforeValidation": {
+    "snapshotGeneration": 44,
+    "surface": "app",
+    "reactHostEvidence": {
+      "hosts": [
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "box-none",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "box-none",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "none",
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "nativeID": "0",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "box-none",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "app-root",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "pointerEvents": "box-none",
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "box-none",
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "qa-notification-pair",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "tab-home-press-counters",
+          "hidden": true,
+          "pointerEvents": "none",
+          "zIndex": 100,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "qa-notification-pair-declines",
+          "order": 3
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "qa-notification-pair-accepts",
+          "order": 4
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "qa-notification-pair-back-dismissals",
+          "order": 5
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "qa-notification-pair-target-taps",
+          "order": 6
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "qa-notification-pair-ready",
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "tab-home-handler-count",
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 2
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "tab-home-tabpress-count",
+          "hidden": true,
+          "order": 3
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "nativeID": "16",
+          "hidden": true,
+          "zIndex": 100,
+          "order": 2
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-notification-pair-target",
+          "order": 2
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "quick-add-fab",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "pointerEvents": "box-none",
+          "order": 4
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "phosphor-react-native-plus-undefined",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "nativeID": "19",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {},
+          "nativeID": "18",
+          "hidden": true,
+          "pointerEvents": "none",
+          "order": 3
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": "adjustable",
+          "roleSource": "accessibilityRole",
+          "capabilities": {},
+          "hidden": true,
+          "pointerEvents": "none",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "pointerEvents": "auto",
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "pointerEvents": "none",
+          "order": 0
+        },
+        {
+          "role": "tablist",
+          "roleSource": "role",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "nativeID": "23",
+          "hidden": true,
+          "order": 2
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "pointerEvents": "box-none",
+          "order": 0
+        },
+        {
+          "role": "adjustable",
+          "roleSource": "accessibilityRole",
+          "capabilities": {},
+          "nativeID": "21",
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": "adjustable",
+          "roleSource": "accessibilityRole",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 2
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 3
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": "button",
+          "roleSource": "role",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "tab-home",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": "button",
+          "roleSource": "role",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "tab-notifications",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": "button",
+          "roleSource": "role",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "tab-tasks",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": "button",
+          "roleSource": "role",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "tab-profile",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 2
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 2
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "phosphor-react-native-house-fill",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "phosphor-react-native-house-regular",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "phosphor-react-native-bell-fill",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "phosphor-react-native-bell-regular",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "phosphor-react-native-check-square-fill",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "phosphor-react-native-check-square-regular",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "phosphor-react-native-user-fill",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "phosphor-react-native-user-regular",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "pointerEvents": "box-none",
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "home-welcome",
+          "nativeID": "10",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 3
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 4
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 5
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "task-stats-card",
+          "hidden": true,
+          "order": 8
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "home-feature-list",
+          "hidden": true,
+          "order": 9
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-otp-autosubmit",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-otp-autosubmit-delayed",
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-otp-autosubmit-busy",
+          "hidden": true,
+          "order": 2
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-capture-size",
+          "hidden": true,
+          "order": 6
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-qa-acceptance-btn",
+          "hidden": true,
+          "order": 7
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-login-btn",
+          "hidden": true,
+          "order": 10
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-observation-qa-btn",
+          "hidden": true,
+          "order": 11
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-otp-qa-btn",
+          "hidden": true,
+          "order": 12
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-auto-inputs-qa-btn",
+          "hidden": true,
+          "order": 13
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-autofocus",
+          "hidden": true,
+          "order": 14
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-nested-close",
+          "hidden": true,
+          "order": 15
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-image-placeholder-qa-btn",
+          "hidden": true,
+          "order": 16
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-header-inset",
+          "hidden": true,
+          "order": 17
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-scroll-native-tabs",
+          "hidden": true,
+          "order": 18
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-scroll-native-tabs-short",
+          "hidden": true,
+          "order": 19
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-webview-scroll-qa-btn",
+          "hidden": true,
+          "order": 20
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-capture-display-qa-btn",
+          "hidden": true,
+          "order": 21
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-optin-qa-btn",
+          "hidden": true,
+          "order": 22
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-notification-optin-qa-btn",
+          "hidden": true,
+          "order": 23
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-consent-pair-qa-btn",
+          "hidden": true,
+          "order": 24
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-shared-lists-sheet-qa-btn",
+          "hidden": true,
+          "order": 25
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-skip-echo-qa-btn",
+          "hidden": true,
+          "order": 26
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-skip-echo-single-qa-btn",
+          "hidden": true,
+          "order": 27
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-sheet-home-btn",
+          "hidden": true,
+          "order": 28
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-sheet-rows-btn",
+          "hidden": true,
+          "order": 29
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-sheet-native-btn",
+          "hidden": true,
+          "order": 30
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-sheet-capture-btn",
+          "hidden": true,
+          "order": 31
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-merged-rows-btn",
+          "hidden": true,
+          "order": 32
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-normalize-qa-btn",
+          "hidden": true,
+          "order": 33
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-pager-qa-btn",
+          "hidden": true,
+          "order": 34
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-footer-motion-qa-btn",
+          "hidden": true,
+          "order": 35
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-keyboard-form-qa-btn",
+          "hidden": true,
+          "order": 36
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-keyboard-form-hidden-qa-btn",
+          "hidden": true,
+          "order": 37
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-keyboard-form-forwarded-qa-btn",
+          "hidden": true,
+          "order": 38
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-choice-chips-qa-btn",
+          "hidden": true,
+          "order": 39
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-chip-row-qa-btn",
+          "hidden": true,
+          "order": 40
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-planned-destination-qa-btn",
+          "hidden": true,
+          "order": 41
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-dev-error-qa-btn",
+          "hidden": true,
+          "order": 42
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-deep-qa-btn",
+          "hidden": true,
+          "order": 43
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-feed-btn",
+          "hidden": true,
+          "order": 44
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "go-to-dashboard",
+          "hidden": true,
+          "order": 45
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-diagnostics-btn",
+          "hidden": true,
+          "order": 46
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-input-libraries-btn",
+          "hidden": true,
+          "order": 47
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-otp-library",
+          "hidden": true,
+          "order": 48
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-promo-home",
+          "hidden": true,
+          "order": 49
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-promo-home-field",
+          "hidden": true,
+          "order": 50
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-search-btn",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "command-palette-btn",
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "home-feature-0",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "home-feature-1",
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "home-feature-2",
+          "hidden": true,
+          "order": 2
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "nativeID": "11",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "nativeID": "12",
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "nativeID": "13",
+          "hidden": true,
+          "order": 2
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "nativeID": "15",
+          "hidden": true,
+          "order": 3
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "phosphor-react-native-command-undefined",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "task-stats-title",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "task-stats-total",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "task-stats-active",
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "task-stats-done",
+          "hidden": true,
+          "order": 2
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "task-stats-progress-bg",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "task-stats-progress-label",
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "task-stats-priority-high",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "task-stats-priority-medium",
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "task-stats-priority-low",
+          "hidden": true,
+          "order": 2
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "task-stats-progress-fill",
+          "nativeID": "14",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        }
+      ],
+      "complete": true
+    }
+  },
+  "joinArgs": {
+    "nodes": [
+      {
+        "ref": "@e0",
+        "type": "Application",
+        "rect": {
+          "x": 0,
+          "width": 402,
+          "y": 0,
+          "height": 874
+        },
+        "index": 0,
+        "depth": 0,
+        "label": "rn-dev-agent-test",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e1",
+        "type": "Window",
+        "rect": {
+          "width": 402,
+          "height": 874,
+          "y": 0,
+          "x": 0
+        },
+        "index": 1,
+        "depth": 1,
+        "parentIndex": 0,
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e2",
+        "type": "Other",
+        "rect": {
+          "width": 402,
+          "height": 874,
+          "y": 0,
+          "x": 0
+        },
+        "index": 2,
+        "depth": 1,
+        "parentIndex": 0,
+        "identifier": "app-root",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e3",
+        "type": "Other",
+        "rect": {
+          "width": 402,
+          "height": 874,
+          "y": 0,
+          "x": 0
+        },
+        "index": 3,
+        "depth": 1,
+        "parentIndex": 0,
+        "label": "Your lists",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e4",
+        "type": "Other",
+        "rect": {
+          "width": 402,
+          "height": 874,
+          "y": 0,
+          "x": 0
+        },
+        "index": 4,
+        "depth": 2,
+        "parentIndex": 3,
+        "identifier": "qa-notification-pair",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e5",
+        "type": "StaticText",
+        "rect": {
+          "width": 360,
+          "height": 28,
+          "y": 86,
+          "x": 21
+        },
+        "index": 5,
+        "depth": 2,
+        "parentIndex": 3,
+        "label": "Your lists",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e6",
+        "type": "StaticText",
+        "rect": {
+          "width": 360,
+          "height": 17,
+          "x": 21,
+          "y": 135
+        },
+        "index": 6,
+        "depth": 2,
+        "parentIndex": 3,
+        "label": "Lists ready",
+        "identifier": "qa-notification-pair-ready",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e7",
+        "type": "StaticText",
+        "rect": {
+          "width": 360,
+          "height": 17,
+          "x": 21,
+          "y": 135
+        },
+        "index": 7,
+        "depth": 3,
+        "parentIndex": 6,
+        "label": "Lists ready",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e8",
+        "type": "Button",
+        "rect": {
+          "width": 360,
+          "height": 42,
+          "x": 21,
+          "y": 173
+        },
+        "index": 8,
+        "depth": 2,
+        "parentIndex": 3,
+        "label": "Open saved list",
+        "identifier": "qa-notification-pair-target",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e9",
+        "type": "StaticText",
+        "rect": {
+          "width": 360,
+          "height": 17,
+          "x": 21,
+          "y": 229
+        },
+        "index": 9,
+        "depth": 2,
+        "parentIndex": 3,
+        "label": "Declines: 1",
+        "identifier": "qa-notification-pair-declines",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e10",
+        "type": "StaticText",
+        "rect": {
+          "width": 360,
+          "height": 17,
+          "x": 21,
+          "y": 229
+        },
+        "index": 10,
+        "depth": 3,
+        "parentIndex": 9,
+        "label": "Declines: 1",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e11",
+        "type": "StaticText",
+        "rect": {
+          "width": 360,
+          "height": 17,
+          "x": 21,
+          "y": 246
+        },
+        "index": 11,
+        "depth": 2,
+        "parentIndex": 3,
+        "label": "Accepts: 0",
+        "identifier": "qa-notification-pair-accepts",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e12",
+        "type": "StaticText",
+        "rect": {
+          "width": 360,
+          "height": 17,
+          "x": 21,
+          "y": 246
+        },
+        "index": 12,
+        "depth": 3,
+        "parentIndex": 11,
+        "label": "Accepts: 0",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e13",
+        "type": "StaticText",
+        "rect": {
+          "width": 360,
+          "height": 17,
+          "x": 21,
+          "y": 263
+        },
+        "index": 13,
+        "depth": 2,
+        "parentIndex": 3,
+        "label": "Back dismissals: 0",
+        "identifier": "qa-notification-pair-back-dismissals",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e14",
+        "type": "StaticText",
+        "rect": {
+          "width": 360,
+          "height": 17,
+          "x": 21,
+          "y": 263
+        },
+        "index": 14,
+        "depth": 3,
+        "parentIndex": 13,
+        "label": "Back dismissals: 0",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e15",
+        "type": "StaticText",
+        "rect": {
+          "width": 360,
+          "height": 17,
+          "x": 21,
+          "y": 280
+        },
+        "index": 15,
+        "depth": 2,
+        "parentIndex": 3,
+        "label": "Target taps: 0",
+        "identifier": "qa-notification-pair-target-taps",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e16",
+        "type": "StaticText",
+        "rect": {
+          "width": 360,
+          "height": 17,
+          "x": 21,
+          "y": 280
+        },
+        "index": 16,
+        "depth": 3,
+        "parentIndex": 15,
+        "label": "Target taps: 0",
+        "enabled": true,
+        "hittable": true
+      }
+    ],
+    "digest": [
+      {
+        "role": "button",
+        "testID": "qa-notification-pair-target",
+        "text": "Open saved list",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        }
+      },
+      {
+        "role": "button",
+        "testID": "quick-add-fab",
+        "label": "Quick add",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "label": "Bottom sheet backdrop",
+        "capabilities": {
+          "press": false,
+          "fill": false
+        },
+        "hidden": true,
+        "handlerless": true
+      },
+      {
+        "role": "button",
+        "label": "Bottom sheet backdrop",
+        "capabilities": {
+          "press": false,
+          "fill": false
+        },
+        "hidden": true,
+        "handlerless": true
+      },
+      {
+        "role": "button",
+        "label": "Bottom sheet backdrop",
+        "capabilities": {
+          "press": false,
+          "fill": false
+        },
+        "hidden": true,
+        "handlerless": true
+      },
+      {
+        "role": "adjustable",
+        "label": "Bottom Sheet",
+        "capabilities": {
+          "press": false,
+          "fill": false
+        },
+        "hidden": true,
+        "handlerless": true
+      },
+      {
+        "role": "adjustable",
+        "label": "Bottom Sheet",
+        "capabilities": {
+          "press": false,
+          "fill": false
+        },
+        "hidden": true,
+        "handlerless": true
+      },
+      {
+        "role": "adjustable",
+        "label": "Bottom Sheet",
+        "capabilities": {
+          "press": false,
+          "fill": false
+        },
+        "hidden": true,
+        "handlerless": true
+      },
+      {
+        "role": "adjustable",
+        "label": "Bottom Sheet",
+        "capabilities": {
+          "press": false,
+          "fill": false
+        },
+        "hidden": true,
+        "handlerless": true
+      },
+      {
+        "role": "adjustable",
+        "label": "Bottom Sheet",
+        "capabilities": {
+          "press": false,
+          "fill": false
+        },
+        "hidden": true,
+        "handlerless": true
+      },
+      {
+        "role": "adjustable",
+        "label": "Bottom Sheet",
+        "capabilities": {
+          "press": false,
+          "fill": false
+        },
+        "hidden": true,
+        "handlerless": true
+      },
+      {
+        "role": "adjustable",
+        "label": "Bottom Sheet",
+        "capabilities": {
+          "press": false,
+          "fill": false
+        },
+        "hidden": true,
+        "handlerless": true
+      },
+      {
+        "role": "adjustable",
+        "label": "Bottom Sheet",
+        "capabilities": {
+          "press": false,
+          "fill": false
+        },
+        "hidden": true,
+        "handlerless": true
+      },
+      {
+        "role": "adjustable",
+        "label": "Bottom sheet handle",
+        "capabilities": {
+          "press": false,
+          "fill": false
+        },
+        "hidden": true,
+        "handlerless": true
+      },
+      {
+        "role": "button",
+        "testID": "tab-home",
+        "text": "Home",
+        "label": "Home, tab, 1 of 4",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "tab-notifications",
+        "text": "Notifications",
+        "label": "Notifications, tab, 2 of 4",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "tab-tasks",
+        "text": "Tasks",
+        "label": "Tasks, tab, 3 of 4",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "tab-profile",
+        "text": "Profile",
+        "label": "Profile, tab, 4 of 4",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "adjustable",
+        "label": "Bottom sheet handle",
+        "capabilities": {
+          "press": false,
+          "fill": false
+        },
+        "hidden": true,
+        "handlerless": true
+      },
+      {
+        "role": "adjustable",
+        "label": "Bottom sheet handle",
+        "capabilities": {
+          "press": false,
+          "fill": false
+        },
+        "hidden": true,
+        "handlerless": true
+      },
+      {
+        "role": "button",
+        "testID": "qa-open-otp-autosubmit",
+        "text": "Open Login / OTP auto-submit QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "qa-open-otp-autosubmit-delayed",
+        "text": "Open Login / OTP delayed auto-submit QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "qa-open-otp-autosubmit-busy",
+        "text": "Open Login / OTP busy auto-submit QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "qa-open-capture-size",
+        "text": "Open capture size fixture",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-qa-acceptance-btn",
+        "text": "Open QA Acceptance Fixture",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-login-btn",
+        "text": "Open Login / OTP QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-observation-qa-btn",
+        "text": "Open Observation QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-otp-qa-btn",
+        "text": "Open OTP Code QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-auto-inputs-qa-btn",
+        "text": "Open Auto-advancing Inputs QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "qa-open-autofocus",
+        "text": "Open Autofocus QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "qa-open-nested-close",
+        "text": "Open Nested Close QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-image-placeholder-qa-btn",
+        "text": "Open Image Placeholder QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "qa-open-header-inset",
+        "text": "Open Header Inset QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "qa-open-scroll-native-tabs",
+        "text": "Scroll native tabs",
+        "label": "Scroll native tabs",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "qa-open-scroll-native-tabs-short",
+        "text": "Scroll native tabs short list",
+        "label": "Scroll native tabs short list",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-webview-scroll-qa-btn",
+        "text": "Open WebView Scroll QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-capture-display-qa-btn",
+        "text": "Open Capture Display QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-optin-qa-btn",
+        "text": "Open Opt-in QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-notification-optin-qa-btn",
+        "text": "Open Notification Opt-in QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-consent-pair-qa-btn",
+        "text": "Open Consent Pair QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-shared-lists-sheet-qa-btn",
+        "text": "Open Shared Lists Sheet QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-skip-echo-qa-btn",
+        "text": "Open Skip Echo QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-skip-echo-single-qa-btn",
+        "text": "Open Single Skip QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-sheet-home-btn",
+        "text": "Open Sheet Home QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-sheet-rows-btn",
+        "text": "Open Sheet Rows QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-sheet-native-btn",
+        "text": "Open Native Sheet Rows QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-sheet-capture-btn",
+        "text": "Open Sheet Capture QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-merged-rows-btn",
+        "text": "Open Merged Rows QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-normalize-qa-btn",
+        "text": "Open Normalizing Inputs QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-pager-qa-btn",
+        "text": "Open Pager QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-footer-motion-qa-btn",
+        "text": "Open Footer Motion QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-keyboard-form-qa-btn",
+        "text": "Open Keyboard Form QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-keyboard-form-hidden-qa-btn",
+        "text": "Open Keyboard Form Hidden Field QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-keyboard-form-forwarded-qa-btn",
+        "text": "Open Keyboard Form Forwarded Field QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-choice-chips-qa-btn",
+        "text": "Open Choice Chips QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-chip-row-qa-btn",
+        "text": "Open Chip Row QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-planned-destination-qa-btn",
+        "text": "Open Planned Destination QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-dev-error-qa-btn",
+        "text": "Open Dev Error QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-deep-qa-btn",
+        "text": "Open Deep Tree QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-feed-btn",
+        "text": "Go to Feed",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "go-to-dashboard",
+        "text": "Go to Dashboard",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-diagnostics-btn",
+        "text": "Diagnostics (Dev)",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-input-libraries-btn",
+        "text": "Input Libraries (Dev)",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "qa-open-otp-library",
+        "text": "Open Verify Code QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "qa-open-promo-home",
+        "text": "Open Promo Home QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "qa-open-promo-home-field",
+        "text": "Open Promo Home with field QA",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "home-search-btn",
+        "text": "Search tasks, notifications, feed...",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      },
+      {
+        "role": "button",
+        "testID": "command-palette-btn",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        },
+        "hidden": true
+      }
+    ],
+    "front": "app",
+    "coverage": {
+      "native": "unknown",
+      "react": "complete"
+    },
+    "reactHostEvidence": {
+      "hosts": [
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "box-none",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "box-none",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "none",
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "nativeID": "0",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "box-none",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "app-root",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "pointerEvents": "box-none",
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "box-none",
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "qa-notification-pair",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "tab-home-press-counters",
+          "hidden": true,
+          "pointerEvents": "none",
+          "zIndex": 100,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "qa-notification-pair-declines",
+          "order": 3
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "qa-notification-pair-accepts",
+          "order": 4
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "qa-notification-pair-back-dismissals",
+          "order": 5
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "qa-notification-pair-target-taps",
+          "order": 6
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "qa-notification-pair-ready",
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "tab-home-handler-count",
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 2
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "tab-home-tabpress-count",
+          "hidden": true,
+          "order": 3
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "nativeID": "16",
+          "hidden": true,
+          "zIndex": 100,
+          "order": 2
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-notification-pair-target",
+          "order": 2
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "quick-add-fab",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "pointerEvents": "box-none",
+          "order": 4
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "phosphor-react-native-plus-undefined",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "nativeID": "19",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {},
+          "nativeID": "18",
+          "hidden": true,
+          "pointerEvents": "none",
+          "order": 3
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": "adjustable",
+          "roleSource": "accessibilityRole",
+          "capabilities": {},
+          "hidden": true,
+          "pointerEvents": "none",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "pointerEvents": "auto",
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "pointerEvents": "none",
+          "order": 0
+        },
+        {
+          "role": "tablist",
+          "roleSource": "role",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "nativeID": "23",
+          "hidden": true,
+          "order": 2
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "pointerEvents": "box-none",
+          "order": 0
+        },
+        {
+          "role": "adjustable",
+          "roleSource": "accessibilityRole",
+          "capabilities": {},
+          "nativeID": "21",
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": "adjustable",
+          "roleSource": "accessibilityRole",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 2
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 3
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": "button",
+          "roleSource": "role",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "tab-home",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": "button",
+          "roleSource": "role",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "tab-notifications",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": "button",
+          "roleSource": "role",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "tab-tasks",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": "button",
+          "roleSource": "role",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "tab-profile",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 2
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 2
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "phosphor-react-native-house-fill",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "phosphor-react-native-house-regular",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "phosphor-react-native-bell-fill",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "phosphor-react-native-bell-regular",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "phosphor-react-native-check-square-fill",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "phosphor-react-native-check-square-regular",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "phosphor-react-native-user-fill",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "phosphor-react-native-user-regular",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "pointerEvents": "box-none",
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "home-welcome",
+          "nativeID": "10",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 3
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 4
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 5
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "task-stats-card",
+          "hidden": true,
+          "order": 8
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "home-feature-list",
+          "hidden": true,
+          "order": 9
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-otp-autosubmit",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-otp-autosubmit-delayed",
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-otp-autosubmit-busy",
+          "hidden": true,
+          "order": 2
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-capture-size",
+          "hidden": true,
+          "order": 6
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-qa-acceptance-btn",
+          "hidden": true,
+          "order": 7
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-login-btn",
+          "hidden": true,
+          "order": 10
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-observation-qa-btn",
+          "hidden": true,
+          "order": 11
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-otp-qa-btn",
+          "hidden": true,
+          "order": 12
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-auto-inputs-qa-btn",
+          "hidden": true,
+          "order": 13
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-autofocus",
+          "hidden": true,
+          "order": 14
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-nested-close",
+          "hidden": true,
+          "order": 15
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-image-placeholder-qa-btn",
+          "hidden": true,
+          "order": 16
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-header-inset",
+          "hidden": true,
+          "order": 17
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-scroll-native-tabs",
+          "hidden": true,
+          "order": 18
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-scroll-native-tabs-short",
+          "hidden": true,
+          "order": 19
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-webview-scroll-qa-btn",
+          "hidden": true,
+          "order": 20
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-capture-display-qa-btn",
+          "hidden": true,
+          "order": 21
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-optin-qa-btn",
+          "hidden": true,
+          "order": 22
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-notification-optin-qa-btn",
+          "hidden": true,
+          "order": 23
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-consent-pair-qa-btn",
+          "hidden": true,
+          "order": 24
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-shared-lists-sheet-qa-btn",
+          "hidden": true,
+          "order": 25
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-skip-echo-qa-btn",
+          "hidden": true,
+          "order": 26
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-skip-echo-single-qa-btn",
+          "hidden": true,
+          "order": 27
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-sheet-home-btn",
+          "hidden": true,
+          "order": 28
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-sheet-rows-btn",
+          "hidden": true,
+          "order": 29
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-sheet-native-btn",
+          "hidden": true,
+          "order": 30
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-sheet-capture-btn",
+          "hidden": true,
+          "order": 31
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-merged-rows-btn",
+          "hidden": true,
+          "order": 32
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-normalize-qa-btn",
+          "hidden": true,
+          "order": 33
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-pager-qa-btn",
+          "hidden": true,
+          "order": 34
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-footer-motion-qa-btn",
+          "hidden": true,
+          "order": 35
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-keyboard-form-qa-btn",
+          "hidden": true,
+          "order": 36
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-keyboard-form-hidden-qa-btn",
+          "hidden": true,
+          "order": 37
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-keyboard-form-forwarded-qa-btn",
+          "hidden": true,
+          "order": 38
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-choice-chips-qa-btn",
+          "hidden": true,
+          "order": 39
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-chip-row-qa-btn",
+          "hidden": true,
+          "order": 40
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-planned-destination-qa-btn",
+          "hidden": true,
+          "order": 41
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-dev-error-qa-btn",
+          "hidden": true,
+          "order": 42
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-deep-qa-btn",
+          "hidden": true,
+          "order": 43
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-feed-btn",
+          "hidden": true,
+          "order": 44
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "go-to-dashboard",
+          "hidden": true,
+          "order": 45
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-diagnostics-btn",
+          "hidden": true,
+          "order": 46
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-input-libraries-btn",
+          "hidden": true,
+          "order": 47
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-otp-library",
+          "hidden": true,
+          "order": 48
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-promo-home",
+          "hidden": true,
+          "order": 49
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-open-promo-home-field",
+          "hidden": true,
+          "order": 50
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "home-search-btn",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "command-palette-btn",
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "home-feature-0",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "home-feature-1",
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "home-feature-2",
+          "hidden": true,
+          "order": 2
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "nativeID": "11",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "nativeID": "12",
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "nativeID": "13",
+          "hidden": true,
+          "order": 2
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "nativeID": "15",
+          "hidden": true,
+          "order": 3
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "phosphor-react-native-command-undefined",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "task-stats-title",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "task-stats-total",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "task-stats-active",
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "task-stats-done",
+          "hidden": true,
+          "order": 2
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "task-stats-progress-bg",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "task-stats-progress-label",
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "task-stats-priority-high",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "task-stats-priority-medium",
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "task-stats-priority-low",
+          "hidden": true,
+          "order": 2
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "task-stats-progress-fill",
+          "nativeID": "14",
+          "hidden": true,
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "hidden": true,
+          "order": 0
+        }
+      ],
+      "complete": true
+    },
+    "nativeAcquisition": "complete"
+  }
+}

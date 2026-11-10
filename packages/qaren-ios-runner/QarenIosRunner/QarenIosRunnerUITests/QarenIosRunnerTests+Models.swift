@@ -510,6 +510,8 @@ struct PlatformPresenceDiagnostics: Codable {
   var preparationQuietElapsedMs: Double?
   var failure: Failure?
   var deadline: Deadline?
+  // The failure that left the capture incomplete; `failure` keeps only the first one.
+  var decisiveFailure: Failure?
 }
 
 struct PlatformPresenceObservation: Codable {
