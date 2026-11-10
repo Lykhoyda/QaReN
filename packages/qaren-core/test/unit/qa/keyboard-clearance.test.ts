@@ -398,6 +398,36 @@ test('the native tier is recorded when it cleared the keyboard', async () => {
   assert.equal(outcome.rows.at(-1)!.keyboardCleared, 'native-control');
 });
 
+test('a resolved chip keeps its existing keyboard dismissal after a recovery retry', async () => {
+  const f = fake([]);
+  let current: Screen = { ...screen({ chipState: 'absent' }), front: 'dialog' };
+  f.deps.captureScreen = async () => current;
+  f.deps.dismissKeyboard = async (context) => {
+    context.authorize();
+    f.calls.push('dismiss');
+    current = screen();
+    return 'js';
+  };
+  f.deps.press = async (ref, context) => {
+    context.authorize();
+    f.calls.push(`press ${ref}`);
+    current = screen({ selected: true });
+    return { ok: true, proven: true };
+  };
+  f.deps.hideDevMenu = async () => {
+    throw new Error('unexpected dev menu');
+  };
+  f.deps.dialog = async (_action, context) => {
+    context.authorize();
+    f.calls.push('dialog');
+    current = screen({ keyboard: true });
+    return { ok: true, proven: true, executed: true };
+  };
+  const outcome = await walkBlock(tap, f.deps);
+  assert.equal(outcome.block.outcome, 'pass', outcome.failure?.seen);
+  assert.deepEqual(f.calls, ['dialog', 'dismiss', 'press @chip']);
+});
+
 for (const [name, shape] of [
   ['no keyboard', {}],
   ['a target outside any scroll container', { inScroll: false }],

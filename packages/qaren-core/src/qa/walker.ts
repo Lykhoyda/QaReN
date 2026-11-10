@@ -45,6 +45,7 @@ import {
   isNativeInput,
   describe,
   reactOnlyFactsOf,
+  modalCoverDiagnostic,
 } from './screen.js';
 import {
   type Resolution,
@@ -3509,6 +3510,8 @@ async function walkBlockScoped(
     itemStartedAt = budget.startedAt;
     itemDeadline = budget.deadline;
     let pixelBaselineTaken = false;
+    // This allowance survives recovery retries of the item.
+    let absentTargetKeyboardAttempted = false;
     let pixelBaseline:
       | { target: NonNullable<ReturnType<typeof pixelTarget>>; crop: PixelCrop }
       | undefined;
@@ -4225,6 +4228,38 @@ async function walkBlockScoped(
                 occluded = undefined;
                 let resolution: Exclude<Resolution, { refuse: string }>;
                 if ('refuse' in decided) {
+                  const modal = modalCoverDiagnostic(before.screen);
+                  if (
+                    item.kind === 'press' &&
+                    item.target.quoted !== undefined &&
+                    deps.platform === 'ios' &&
+                    deps.dismissKeyboard &&
+                    decided.refuse === 'TARGET_NOT_FOUND' &&
+                    decided.missing &&
+                    before.screen.keyboardVisible === true &&
+                    before.screen.front === 'app' &&
+                    modal?.refused === 'modal-count' &&
+                    modal.modalCount === 0 &&
+                    !launchWait &&
+                    !absentTargetKeyboardAttempted &&
+                    !keyboardAttempted
+                  ) {
+                    absentTargetKeyboardAttempted = true;
+                    keyboardAttempted = true;
+                    const dismissal: { via: 'native-control' | 'js' | 'none' } = { via: 'none' };
+                    await mutate(item, before, async (context) => {
+                      dismissal.via = await deps.dismissKeyboard!(context);
+                      return { ok: true, proven: false };
+                    });
+                    before = await settledCapture(item);
+                    if (dismissal.via !== 'none' && before.screen.keyboardVisible === false)
+                      keyboardCleared = dismissal.via;
+                    deps.note?.(
+                      `keyboard-clearance ${JSON.stringify({ line: item.line, via: dismissal.via, hidden: before.screen.keyboardVisible === false })}`,
+                    );
+                    initial = undefined;
+                    continue;
+                  }
                   // A stored testID can name a field only React lists, or none: both reach the walk's fallbacks.
                   const unresolved =
                     decided.refuse === 'TARGET_NOT_FOUND' || decided.refuse === 'REPLAY_SELECTOR';
@@ -4263,7 +4298,12 @@ async function walkBlockScoped(
                     throw new ResolutionError(
                       keyboardBound
                         ? { ...decided, reason: `${decided.reason}${KEYBOARD_DISMISSED}` }
-                        : decided,
+                        : absentTargetKeyboardAttempted
+                          ? {
+                              ...decided,
+                              reason: `${decided.reason}; ${before.screen.keyboardVisible === false ? 'the keyboard was hidden and the target is still not found' : 'the keyboard could not be hidden'}`,
+                            }
+                          : decided,
                     );
                   fellBack = true;
                   fillIdentity = fallback.oracleTestID;
