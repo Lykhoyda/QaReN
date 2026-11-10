@@ -861,6 +861,29 @@ rounded frame.
 
 ### Occluded taps and focus
 
+On iOS, a quoted Tap whose target is proven absent (`TARGET_NOT_FOUND` carrying
+`missing`) gets one keyboard-dismissal attempt before failing when the keyboard is
+visible, the app is in front, and React capture proves no presented modal. This
+uses the keyboard guard's dismissal chain described below, without a native
+platform-presence read. QaReN takes fresh settled captures and resolves the target
+again on the same attempt, acting on the resulting screen: blurring the field can
+validate or navigate in the app. The row's `keyboardCleared` field follows the
+tier-and-hidden-keyboard rule described below.
+The absent-target dismissal allowance survives recovery retries and is spent at
+most once per plan item; it also prevents another keyboard dismissal in that attempt.
+
+If the target is still absent, the failure adds “the keyboard was hidden and the
+target is still not found” when the fresh capture proves it hidden, or “the keyboard
+could not be hidden” otherwise. Authorization of the dismissal counts as dispatch;
+ordinary missing-target recovery still requires proof of a separate surface.
+This path does not run while the [launch-target wait](#step-recovery) is armed,
+after another keyboard dismissal in the attempt, or without proof that no modal is
+present. Disabled or otherwise ineligible targets, candidates all set aside,
+name mismatches, ambiguity, stored-selector replay misses, system dialogs, Fill
+and Android keep their existing paths. `RN_KEYBOARD_GUARD=0` disables this clearance.
+The [absent-target regression tests](../qaren-core/test/unit/qa/keyboard-absent-target.test.ts)
+cover these boundaries.
+
 Before an iOS tap or exact fill, the runner resolves the retained target by
 native type and identifier (or label when unidentified) in the same snapshot
 generation. A unique live match whose frame no longer approximately matches
@@ -4036,7 +4059,7 @@ occlusion. Runtime-input suppression follows the contract above.
 The [walker cover result type](../qaren-core/src/qa/walker.ts) owns the fixed gap values.
 `no-native-presence` means the capture carried no native presence, so no React host
 could be tied to a native node. Quoted presses use ordinary captures without native
-presence or React typography. On iOS a covered press or Fill refusal with that gap takes the
+presence. On iOS a covered press or Fill refusal with that gap takes the
 walker's one bounded platform-presence recapture, the same one a plain scroll uses for
 an unproven cover, and looks up the cover again on it, at most once per cover lookup.
 For covered targets, only refusals pay for that read (a presence capture can take
