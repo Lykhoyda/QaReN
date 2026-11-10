@@ -101,6 +101,13 @@ test('captured iOS toast: a disabled Close is not counted', async () => {
 });
 
 test('captured iOS toast: an overlapping sibling Close is not owned by the cover', async () => {
+  const screen = capture('presence', 'sibling-close');
+  const owner = screen.elements.find((element) => element.testID === 'qa-cover-toast');
+  const close = screen.elements.find((element) => element.testID === 'qa-cover-toast-close');
+  assert.ok(owner && close);
+  assert.equal(close.semantic?.press, 'supported');
+  assert.equal(close.semantic?.visibility, 'visible');
+  assert.equal(associatedHostAncestorsOf(close).includes(owner), false);
   const row = await persistentToast('sibling-close');
   assert.match(String(row?.reason), /the cover holds 0 pressable controls/);
   assert.doesNotMatch(String(row?.reason), /decline-labelled:/);

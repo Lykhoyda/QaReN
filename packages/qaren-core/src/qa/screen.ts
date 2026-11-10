@@ -1321,7 +1321,7 @@ export function join(
     elements.push(element);
   });
   const typography = reactHostEvidence?.typography;
-  if (reactHostEvidence?.complete && typography?.complete)
+  if (typography)
     for (const [host, { nativeIndex }] of associations)
       associatedHostAncestors.set(
         elements[nativeIndex],
