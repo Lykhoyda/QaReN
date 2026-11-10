@@ -5,7 +5,7 @@ description: "Entry point for QaReN: QA a React Native app on the simulator with
 
 # Using QaReN
 
-QaReN walks a Markdown QA plan on the iOS simulator, or a booted Android emulator with `--platform android`, like a user would and returns a PASS, FAIL or REFUSED receipt with the run's evidence at the artifact paths in its receipt. Run every command from the app's root directory.
+QaReN walks a Markdown QA plan on the iOS simulator, or with `--platform android` on a booted emulator or one USB-connected phone (see [Check a plan](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan)), like a user would and returns a PASS, FAIL or REFUSED receipt with the run's evidence at the artifact paths in its receipt. Run every command from the app's root directory.
 
 | The user wants to | Do |
 |---|---|
