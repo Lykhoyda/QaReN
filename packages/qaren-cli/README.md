@@ -2686,7 +2686,9 @@ the package manager did not answer for 180 seconds, and no second install was
 tried. If the package manager answers but the preparation window is spent,
 `install-timeout` says no second install was tried. A failed second attempt is
 `install-failed` or `install-timeout`, stating that the install failed twice and
-the package manager answered between attempts. Cancellation remains `RUN_CANCELLED`.
+the package manager answered between attempts. Cancellation remains `RUN_CANCELLED`;
+after an acknowledged retry install, QaReN saves its installation record for
+cleanup ownership proof before honoring cancellation.
 
 Cached dev-client verification and installation failures on either platform
 use `ARTIFACT_INSTALL_FAILED`. `failure.detail` carries `artifact-invalid`,
