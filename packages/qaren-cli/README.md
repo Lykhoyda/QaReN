@@ -2112,8 +2112,9 @@ value-free `native-reread` point in `logs/core-diagnostics.jsonl`, with or witho
 runtime inputs. Only a fresh complete read is admitted. Persistent drops refuse
 with their latest node count, dropped count and `retry-deadline`, including when an
 intervening empty read is followed by a read that exceeds the window.
-A re-read that becomes truncated or degraded refuses with its own causes and no
-expiry marker. Native read exceptions keep their existing classification.
+A truncated replacement or a degraded replacement outside the retry conditions
+above refuses with its own causes and no expiry marker. Native read exceptions
+keep their existing classification.
 After timeout containment relaunches the iOS reader, it waits for an `alive`
 probe with `PLATFORM_PRESENCE_V2` within the remaining `READY_TIMEOUT_MS`
 (30 seconds by default), shared with reader startup;
