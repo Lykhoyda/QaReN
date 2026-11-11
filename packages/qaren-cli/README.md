@@ -4105,6 +4105,26 @@ a measured zero is retained. Settle time overlaps `actMs` and preparation
 counts add no time to the partition. Waits and scrolls that only capture can
 carry preparation counts without a client settle.
 
+Optional `timing.send` details measured Tap and Fill dispatch work:
+
+- `keyboardGuardMs`: native keyboard check and dismissal time.
+- `liveCheckMs`: native target movement and live-hit check time.
+- `gestureMs`: native action interval; Fill includes focus, clearing, typing
+  and intervening waits on that path.
+- `runnerMs`: whole native command handling time, excluding transport and
+  client settle.
+- `settleProbes`: number of client settle probe calls, including failed probes.
+
+Each field sums available measurements across dispatches in the row window.
+Durations can be fractional milliseconds; `settleProbes` is an integer count.
+The duration fields overlap `actMs`, and `runnerMs` includes the measured native
+subphases; do not add them together or to `total`. Probe counts add no time.
+These fields are value-free and retained for runtime-input runs. Unmeasured
+fields are omitted, including on older runners or paths that skip native work;
+a measured zero is retained. Focused Fill records zero settle probes when
+client settle is disabled and native send measurements are available. Availability
+depends on the platform and dispatch path; absent fields do not mean zero cost.
+
 The ledger's `speed` summary groups timed action/check rows by operation, keeping
 login-replay steps separate from plan steps that share a line and kind. Every retry,
 passing and failing attempt of one operation sums into one logical-step duration,
