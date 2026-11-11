@@ -1446,8 +1446,9 @@ reached through fallback can skip after two exact comparisons that also prove fo
 Before a fallback focus tap, iOS can also skip when the plan names the input by its
 own testID. Complete React host and typography evidence must prove there is exactly
 one fillable host carrying that ID as its testID or nativeID, neither hidden,
-disabled nor read-only, inside exactly one distinct ancestor host carrying the
-observed tap target's testID. The overlay probe and centre coverage checks still
+disabled nor read-only. Exactly one other host in the capture must carry the
+observed tap target's testID, and that host must be an ancestor of the input.
+The overlay probe and centre coverage checks still
 run first, including after a clearance scroll. Two exact in-app reads, 150 ms apart,
 must both report a controlled, non-secure, enabled input. Success records
 `already-set` without a tap, keyboard wait or further capture; the field keeps its
