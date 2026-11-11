@@ -63,6 +63,11 @@ export const TIMING_STAGES = [
   'overflow',
 ] as const;
 export type TimingStage = (typeof TIMING_STAGES)[number];
+export const INPUT_FREE_DIAGNOSTIC_STAGES = [
+  'native-reread',
+  'manifest-probe',
+  'dev-client-relaunch',
+] as const satisfies readonly TimingStage[];
 const NATIVE_READINESS_REASONS = [
   'alive',
   'dead',
