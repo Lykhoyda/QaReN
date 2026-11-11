@@ -11,7 +11,7 @@
       "name": "qaren",
       "source": "./packages/qaren-plugin",
       "description": "A QA engineer for your coding agent. It tests each React Native change on a simulator and tells you PASS or FAIL, with video proof.",
-      "version": "2.1.2",
+      "version": "2.2.0",
       "homepage": "https://github.com/Lykhoyda/QaReN"
     }
   ]
