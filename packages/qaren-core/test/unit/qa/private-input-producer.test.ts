@@ -486,7 +486,8 @@ test('private names follow at most two own-data React wrapper links with own-nam
   assert.equal(privateNamedType(Symbol.for('react.fragment')).role, 'button');
 });
 
-test('private wrapper traversal never executes accessors or follows inherited or unrecognized links', () => {
+test('private wrapper traversal never executes accessors or follows inherited or unrecognized links', (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
   function TextInput() {
     assert.fail('render must not execute');
   }
@@ -1013,9 +1014,17 @@ test('unreadable input props beyond 2000 fibers still refuse without invoking ge
   assert.equal(calls, 0);
 });
 
-test('the larger strict capture retains the 200-interactive-node limit', () => {
-  const fixture = withChildren(201, { onPress() {} }, 'RCTView');
-  assert.equal(fixture.api.beginQaCapture().state, 'refused');
+test('the larger strict capture lists past 200 and refuses past its own interactive limit', (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
+  assert.equal(withChildren(201, { onPress() {} }, 'RCTView').api.beginQaCapture().state, 'ready');
+  // Composite rows enter the list without being hosts, so the host limit cannot stop them first.
+  const fixture = setup({}, 'RCTView');
+  const rows = PRIVATE_INPUT_LIMITS.maxHosts + 1;
+  link(
+    fixture.fiber,
+    Array.from({ length: rows }, () => composite('Row', { onPress() {} })),
+  );
+  assert.equal(refusal(fixture.api).interactive, PRIVATE_INPUT_LIMITS.maxHosts);
 });
 
 test('a larger strict capture still refuses measurement completion at its original deadline', async () => {
@@ -1070,7 +1079,8 @@ test('non-input numeric and opaque object values coexist with an input without c
   assert.equal(coercions, 0);
 });
 
-test('host and fiber bounds refuse instead of truncating the capture', () => {
+test('host and fiber bounds refuse instead of truncating the capture', (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
   const { maxHosts } = PRIVATE_INPUT_LIMITS;
   assert.equal(withChildren(maxHosts - 2, {}, 'RCTView').api.beginQaCapture().state, 'ready');
   assert.deepEqual(
@@ -1227,17 +1237,18 @@ test('typography-incomplete refusals name the first fixed site without app strin
 test('truncation reports the queued frontier and inactive fibers pruned by the walk', (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: 1000 });
   const capped = setup({}, 'RCTView');
+  const cap = PRIVATE_INPUT_LIMITS.maxHosts;
   link(
     capped.fiber,
-    Array.from({ length: 250 }, () => host({ onPress() {} })),
+    Array.from({ length: cap + 50 }, () => composite('Row', { onPress() {} })),
   );
   assert.deepEqual(refusal(capped.api), {
     cause: 'truncated',
-    scanned: 201,
+    scanned: cap + 1,
     budget: 5000,
     roots: 1,
-    hosts: 201,
-    interactive: 200,
+    hosts: 1,
+    interactive: cap,
     queued: 50,
     pruned: 0,
   });

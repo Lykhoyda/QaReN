@@ -810,6 +810,7 @@ pub fn compute(
     let mut dep_manifest: Vec<(String, String)> = Vec::new();
     let mut packages: BTreeSet<String> = BTreeSet::new();
     let mut evaluated: Option<String> = None;
+    let mut evaluated_ci: Option<String> = None;
     let mut expo_fingerprint_ms = None;
     let mut expo_unavailable = None;
     if platform_dir == "ios" && (dynamic_config.is_some() || uses_expo(project_root)) {
@@ -818,6 +819,17 @@ pub fn compute(
         expo_fingerprint_ms = Some(runner.monotonic_ms().saturating_sub(started));
         match expo {
             Ok(expo) => evaluated = Some(expo),
+            Err(reason) => expo_unavailable = Some(reason),
+        }
+    } else if platform_dir == "android" && dynamic_config.is_some() {
+        let started = runner.monotonic_ms();
+        let expo = android_expo_fingerprint(runner, project_root);
+        expo_fingerprint_ms = Some(runner.monotonic_ms().saturating_sub(started));
+        match expo {
+            Ok((expo, ci)) => {
+                evaluated = Some(expo);
+                evaluated_ci = Some(ci);
+            }
             Err(reason) => expo_unavailable = Some(reason),
         }
     }
@@ -968,7 +980,16 @@ pub fn compute(
             parts.insert("toolchain".to_string(), toolchain);
             format!("{FINGERPRINT_VERSION}:{}", sha256_hex(&bytes))
         }
-        None => rnfp,
+        None => match (evaluated, evaluated_ci) {
+            (Some(expo), Some(ci)) => {
+                let bytes = serde_json::to_vec(&("qaren-expo-native-android/1", &rnfp, &expo, &ci))
+                    .expect("fingerprint parts serialize to JSON");
+                parts.insert("expo".to_string(), expo);
+                parts.insert("expo-ci".to_string(), ci);
+                format!("{FINGERPRINT_VERSION}:{}", sha256_hex(&bytes))
+            }
+            _ => rnfp,
+        },
     };
     Ok(NativeFingerprint {
         value,
@@ -1004,6 +1025,31 @@ fn expo_fingerprint(
     project_root: &Path,
     platform: &str,
 ) -> Result<String, String> {
+    let cli = resolve_expo_fingerprint(runner, project_root)?;
+    generate_expo_fingerprint(runner, project_root, platform, &cli, false)
+}
+
+fn android_expo_fingerprint(
+    runner: &mut dyn Runner,
+    project_root: &Path,
+) -> Result<(String, String), String> {
+    let cli = resolve_expo_fingerprint(runner, project_root)?;
+    // Prebuild removes CI; Gradle and expo run:android set CI=1. Both views
+    // must be available before either may authorize native reuse.
+    let expo = generate_expo_fingerprint(runner, project_root, "android", &cli, false);
+    let ci = generate_expo_fingerprint(runner, project_root, "android", &cli, true);
+    match (expo, ci) {
+        (Ok(expo), Ok(ci)) => Ok((expo, ci)),
+        (Err(expo), Err(ci)) => Err(format!("expo: {expo}; expo-ci: {ci}")),
+        (Err(reason), _) => Err(format!("expo: {reason}")),
+        (_, Err(reason)) => Err(format!("expo-ci: {reason}")),
+    }
+}
+
+fn resolve_expo_fingerprint(
+    runner: &mut dyn Runner,
+    project_root: &Path,
+) -> Result<String, String> {
     let root = project_root.to_string_lossy();
     let resolved = runner.run_private(
         &expo_fingerprint_spec(
@@ -1020,15 +1066,30 @@ fn expo_fingerprint(
             outcome(&resolved)
         ));
     }
-    let cli = cli.to_string();
-    let generated = runner.run_private(
-        &expo_fingerprint_spec(
-            "expo-fingerprint",
-            project_root,
-            &[&cli, "fingerprint:generate", "--platform", platform],
-        ),
-        &[],
+    Ok(cli.to_string())
+}
+
+fn generate_expo_fingerprint(
+    runner: &mut dyn Runner,
+    project_root: &Path,
+    platform: &str,
+    cli: &str,
+    ci: bool,
+) -> Result<String, String> {
+    let mut spec = expo_fingerprint_spec(
+        if ci {
+            "expo-fingerprint-ci"
+        } else {
+            "expo-fingerprint"
+        },
+        project_root,
+        &[cli, "fingerprint:generate", "--platform", platform],
     );
+    if ci {
+        spec.unset.retain(|key| key != "CI");
+        spec = spec.env("CI", "1");
+    }
+    let generated = runner.run_private(&spec, &[]);
     if !exited_zero(&generated) {
         return Err(format!(
             "@expo/fingerprint fingerprint:generate did not complete ({})",
