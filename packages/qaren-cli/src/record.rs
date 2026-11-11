@@ -18,18 +18,111 @@ const POLL_MS: u64 = 250;
 pub const MAX_VIDEO_BYTES: u64 = 100 * 1024 * 1024;
 const FFMPEG_SECONDS: u64 = 900;
 
+// Closed recording/publication findings; legacy detail text is retained independently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VideoReason {
+    NotRecorded,
+    RecorderFailed,
+    FfmpegMissing,
+    EncodeFailed,
+    NoPlayableDuration,
+    Cancelled,
+    RuntimeInputWithheld,
+    Interrupted,
+    NoAdmittedFrame,
+    NoWindow,
+    TrimFailed,
+    AndroidUnsupported,
+    PublishedCopyMissing,
+    Other,
+}
+
+impl VideoReason {
+    fn from_detail(detail: &str) -> Self {
+        match detail {
+            "the calling process exited"
+            | "received SIGTERM"
+            | "received SIGINT"
+            | "received SIGHUP" => Self::Cancelled,
+            _ if detail.starts_with("received signal ") && detail[16..].parse::<i32>().is_ok() => {
+                Self::Cancelled
+            }
+            "no capture was written" => Self::NotRecorded,
+            "ffmpeg" => Self::FfmpegMissing,
+            "encode failed" => Self::EncodeFailed,
+            "ffprobe found no playable duration" => Self::NoPlayableDuration,
+            "runtime inputs withhold recording" => Self::RuntimeInputWithheld,
+            "app continuity was interrupted after admission" => Self::Interrupted,
+            "no admitted app frame was recorded" => Self::NoAdmittedFrame,
+            "no positive publication window was recorded" => Self::NoWindow,
+            "the admitted part of the recording could not be prepared" => Self::TrimFailed,
+            "Android API <34 stops screen recording at 180 s" => Self::AndroidUnsupported,
+            "published recording is unavailable" => Self::PublishedCopyMissing,
+            "media directory"
+            | "run record not persisted"
+            | "recorder did not spawn"
+            | "recorder identity was not persisted"
+            | "could not clear recorder device file"
+            | "the recorder did not stop cleanly" => Self::RecorderFailed,
+            _ if detail.starts_with("recording did not start within ")
+                || detail.starts_with("recorder did not start (stop: ")
+                || detail.starts_with("recorder identity was not persisted (stop: ") =>
+            {
+                Self::RecorderFailed
+            }
+            _ => Self::Other,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotRecorded => "not-recorded",
+            Self::RecorderFailed => "recorder-failed",
+            Self::FfmpegMissing => "ffmpeg-missing",
+            Self::EncodeFailed => "encode-failed",
+            Self::NoPlayableDuration => "no-playable-duration",
+            Self::Cancelled => "cancelled",
+            Self::RuntimeInputWithheld => "runtime-input-withheld",
+            Self::Interrupted => "interrupted",
+            Self::NoAdmittedFrame => "no-admitted-frame",
+            Self::NoWindow => "no-window",
+            Self::TrimFailed => "trim-failed",
+            Self::AndroidUnsupported => "android-unsupported",
+            Self::PublishedCopyMissing => "published-copy-missing",
+            Self::Other => "other",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VideoStatus {
     Available,
-    Unavailable(String),
+    Unavailable { code: VideoReason, detail: String },
     TooLarge,
+}
+
+impl VideoStatus {
+    pub fn unavailable(detail: String) -> Self {
+        Self::Unavailable {
+            code: VideoReason::from_detail(&detail),
+            detail,
+        }
+    }
+
+    pub fn reason(&self) -> Option<VideoReason> {
+        match self {
+            Self::Unavailable { code, .. } => Some(*code),
+            Self::Available | Self::TooLarge => None,
+        }
+    }
 }
 
 impl std::fmt::Display for VideoStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             VideoStatus::Available => f.write_str("available"),
-            VideoStatus::Unavailable(reason) => write!(f, "unavailable({reason})"),
+            VideoStatus::Unavailable { detail: reason, .. } => write!(f, "unavailable({reason})"),
             VideoStatus::TooLarge => f.write_str("too-large"),
         }
     }
@@ -44,7 +137,7 @@ impl std::str::FromStr for VideoStatus {
             other => other
                 .strip_prefix("unavailable(")
                 .and_then(|r| r.strip_suffix(')'))
-                .map(|r| VideoStatus::Unavailable(r.to_string()))
+                .map(|r| VideoStatus::unavailable(r.to_string()))
                 .ok_or_else(|| format!("unknown video status {other}")),
         }
     }
@@ -61,6 +154,25 @@ impl<'de> Deserialize<'de> for VideoStatus {
         String::deserialize(d)?
             .parse()
             .map_err(serde::de::Error::custom)
+    }
+}
+
+pub fn video_next_step(status: &VideoStatus) -> Option<&'static str> {
+    match status {
+        VideoStatus::Available => None,
+        VideoStatus::TooLarge => {
+            Some("shorten or split the plan; an encoded video file may not exceed 100 MB")
+        }
+        VideoStatus::Unavailable { detail: reason, .. } if reason == "ffmpeg" || reason.starts_with("ffprobe") => {
+            Some("install ffmpeg and ffprobe, then rerun with --record; the raw capture is kept in media/")
+        }
+        VideoStatus::Unavailable { detail: reason, .. } if reason == "runtime inputs withhold recording" => {
+            Some("runs with runtime inputs are recorded only when the app config declares video: non-strict and private output mode is off")
+        }
+        VideoStatus::Unavailable { detail: reason, .. } if reason.starts_with("Android API <34") => {
+            Some("use an emulator with API 34 or later to record")
+        }
+        VideoStatus::Unavailable { .. } => Some("rerun with --record; the run's verdict is not affected"),
     }
 }
 
@@ -206,10 +318,13 @@ pub fn start(
         }
     };
     if let Some(reason) = runner.cancellation() {
-        return Err(VideoStatus::Unavailable(reason));
+        return Err(VideoStatus::Unavailable {
+            code: VideoReason::Cancelled,
+            detail: reason,
+        });
     }
     let run_dir = RunRecord::run_dir(runs_root, &record.run_id);
-    let unavailable = |why: &str| VideoStatus::Unavailable(why.to_string());
+    let unavailable = |why: &str| VideoStatus::unavailable(why.to_string());
     std::fs::create_dir_all(media_dir(&run_dir)).map_err(|_| unavailable("media directory"))?;
     let raw = media_dir(&run_dir).join("raw.mov");
     let spec = record_spec(udid, &raw);
@@ -262,7 +377,10 @@ pub fn start(
     loop {
         if let Some(reason) = runner.cancellation() {
             stop(runner, record, runs_root);
-            return Err(unavailable(&reason));
+            return Err(VideoStatus::Unavailable {
+                code: VideoReason::Cancelled,
+                detail: reason,
+            });
         }
         if std::fs::read_to_string(&log).is_ok_and(|l| l.contains("Recording started")) {
             return Ok(());
@@ -288,9 +406,12 @@ fn start_android(
     port: u16,
     serial: &str,
 ) -> Result<(), VideoStatus> {
-    let unavailable = |why: &str| VideoStatus::Unavailable(why.to_string());
+    let unavailable = |why: &str| VideoStatus::unavailable(why.to_string());
     if let Some(reason) = runner.cancellation() {
-        return Err(unavailable(&reason));
+        return Err(VideoStatus::Unavailable {
+            code: VideoReason::Cancelled,
+            detail: reason,
+        });
     }
     let run_dir = RunRecord::run_dir(runs_root, &record.run_id);
     std::fs::create_dir_all(media_dir(&run_dir)).map_err(|_| unavailable("media directory"))?;
@@ -343,7 +464,10 @@ fn start_android(
     loop {
         if let Some(reason) = runner.cancellation() {
             stop(runner, record, runs_root);
-            return Err(unavailable(&reason));
+            return Err(VideoStatus::Unavailable {
+                code: VideoReason::Cancelled,
+                detail: reason,
+            });
         }
         if runner
             .run(&android::device_pgrep_spec(adb, port, serial, &output))
@@ -630,7 +754,7 @@ fn size_of(path: &Path) -> u64 {
 }
 
 pub fn finalize(runner: &mut dyn Runner, run_dir: &Path) -> VideoStatus {
-    let unavailable = |why: &str| VideoStatus::Unavailable(why.to_string());
+    let unavailable = |why: &str| VideoStatus::unavailable(why.to_string());
     if !runner
         .run(&CmdSpec::new("which", "which", &["ffmpeg"], 10))
         .ok()
@@ -680,16 +804,16 @@ pub fn publication_copy(
     let out = published_video_path(run_dir);
     let _ = std::fs::remove_file(&out);
     if publication_interrupted {
-        return VideoStatus::Unavailable("app continuity was interrupted after admission".into());
+        return VideoStatus::unavailable("app continuity was interrupted after admission".into());
     }
     let Some(offset) = start_offset_ms else {
-        return VideoStatus::Unavailable("no admitted app frame was recorded".into());
+        return VideoStatus::unavailable("no admitted app frame was recorded".into());
     };
     let Some(duration) = end_offset_ms
         .and_then(|end| end.checked_sub(offset))
         .filter(|duration| *duration > 0)
     else {
-        return VideoStatus::Unavailable("no positive publication window was recorded".into());
+        return VideoStatus::unavailable("no positive publication window was recorded".into());
     };
     let start = format!("{}.{:03}", offset / 1000, offset % 1000);
     let source = video_path(run_dir).to_string_lossy().into_owned();
@@ -704,7 +828,7 @@ pub fn publication_copy(
     let input: Vec<&str> = input.iter().map(String::as_str).collect();
     if !ffmpeg_encode(runner, &input, &out, None) || probe_duration_ms(runner, &out).is_none() {
         let _ = std::fs::remove_file(&out);
-        return VideoStatus::Unavailable(
+        return VideoStatus::unavailable(
             "the admitted part of the recording could not be prepared".into(),
         );
     }
@@ -738,6 +862,75 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_details_keep_the_legacy_wire_form_and_closed_reason() {
+        for (detail, code) in [
+            ("no capture was written", VideoReason::NotRecorded),
+            ("recorder did not spawn", VideoReason::RecorderFailed),
+            (
+                "recording did not start within 10s (stop: clean)",
+                VideoReason::RecorderFailed,
+            ),
+            ("ffmpeg", VideoReason::FfmpegMissing),
+            ("encode failed", VideoReason::EncodeFailed),
+            (
+                "ffprobe found no playable duration",
+                VideoReason::NoPlayableDuration,
+            ),
+            ("received SIGTERM", VideoReason::Cancelled),
+            (
+                "runtime inputs withhold recording",
+                VideoReason::RuntimeInputWithheld,
+            ),
+            (
+                "app continuity was interrupted after admission",
+                VideoReason::Interrupted,
+            ),
+            (
+                "no admitted app frame was recorded",
+                VideoReason::NoAdmittedFrame,
+            ),
+            (
+                "no positive publication window was recorded",
+                VideoReason::NoWindow,
+            ),
+            (
+                "the admitted part of the recording could not be prepared",
+                VideoReason::TrimFailed,
+            ),
+            (
+                "Android API <34 stops screen recording at 180 s",
+                VideoReason::AndroidUnsupported,
+            ),
+            (
+                "published recording is unavailable",
+                VideoReason::PublishedCopyMissing,
+            ),
+            ("legacy arbitrary (explanation)", VideoReason::Other),
+        ] {
+            let text = format!("unavailable({detail})");
+            let status: VideoStatus = text.parse().unwrap();
+            assert_eq!(status.reason(), Some(code));
+            assert_eq!(status.to_string(), text);
+            assert_eq!(
+                serde_json::from_value::<VideoStatus>(serde_json::json!(text)).unwrap(),
+                status
+            );
+            assert_eq!(serde_json::to_value(code).unwrap(), code.as_str());
+        }
+    }
+
+    #[test]
+    fn unknown_strict_always_withholds_even_with_non_strict_permission() {
+        assert_eq!(
+            VideoPolicy::NonStrict.publication(
+                &VideoPublication::Unknown,
+                Some(&NonStrictPublication::Eligible)
+            ),
+            VideoPublication::Unknown
+        );
+    }
+
+    #[test]
     fn an_ffprobe_failure_refuses_the_attachment() {
         let run_dir = temp_run_dir();
         write_raw(&run_dir, 10);
@@ -747,7 +940,7 @@ mod tests {
         mock.expect_run("ffprobe", CmdOutput::failed(1, "moov atom not found"));
         assert!(matches!(
             finalize(&mut mock, &run_dir),
-            VideoStatus::Unavailable(r) if r.contains("ffprobe")
+            VideoStatus::Unavailable { detail: r, .. } if r.contains("ffprobe")
         ));
     }
 
@@ -776,13 +969,43 @@ mod tests {
     }
 
     #[test]
+    fn each_missing_video_names_its_next_step() {
+        let unavailable = |reason: &str| VideoStatus::unavailable(reason.into());
+        assert_eq!(video_next_step(&VideoStatus::Available), None);
+        assert_eq!(
+            video_next_step(&VideoStatus::TooLarge),
+            Some("shorten or split the plan; an encoded video file may not exceed 100 MB")
+        );
+        for reason in ["ffmpeg", "ffprobe found no playable duration"] {
+            assert_eq!(
+                video_next_step(&unavailable(reason)),
+                Some("install ffmpeg and ffprobe, then rerun with --record; the raw capture is kept in media/")
+            );
+        }
+        assert_eq!(
+            video_next_step(&unavailable("runtime inputs withhold recording")),
+            Some("runs with runtime inputs are recorded only when the app config declares video: non-strict and private output mode is off")
+        );
+        assert_eq!(
+            video_next_step(&unavailable(
+                "Android API <34 stops screen recording at 180 s"
+            )),
+            Some("use an emulator with API 34 or later to record")
+        );
+        assert_eq!(
+            video_next_step(&unavailable("recorder did not spawn")),
+            Some("rerun with --record; the run's verdict is not affected")
+        );
+    }
+
+    #[test]
     fn missing_ffmpeg_is_unavailable() {
         let run_dir = temp_run_dir();
         let mut mock = MockRunner::new();
         mock.expect_run("which ffmpeg", CmdOutput::failed(1, ""));
         assert_eq!(
             finalize(&mut mock, &run_dir),
-            VideoStatus::Unavailable("ffmpeg".into())
+            VideoStatus::unavailable("ffmpeg".into())
         );
     }
 
@@ -872,7 +1095,7 @@ mod tests {
             let mut runner = MockRunner::new();
             assert_eq!(
                 publication_copy(&mut runner, &run_dir, Some(12_345), end, false),
-                VideoStatus::Unavailable("no positive publication window was recorded".into()),
+                VideoStatus::unavailable("no positive publication window was recorded".into()),
                 "end: {end:?}"
             );
             assert!(runner.calls.is_empty());
@@ -918,7 +1141,7 @@ mod tests {
         let mut mock = MockRunner::new();
         assert!(matches!(
             publication_copy(&mut mock, &run_dir, Some(12_345), None, true),
-            VideoStatus::Unavailable(_)
+            VideoStatus::Unavailable { .. }
         ));
         assert!(mock.calls.is_empty());
         assert!(!published_video_path(&run_dir).exists());
@@ -936,7 +1159,7 @@ mod tests {
         let mut mock = MockRunner::new();
         assert!(matches!(
             publication_copy(&mut mock, &run_dir, None, None, false),
-            VideoStatus::Unavailable(_)
+            VideoStatus::Unavailable { .. }
         ));
         assert!(mock.calls.is_empty());
         assert!(!published_video_path(&run_dir).exists());
@@ -957,7 +1180,7 @@ mod tests {
             .expect_run("ffprobe", CmdOutput::failed(1, "no duration"));
         assert!(matches!(
             publication_copy(&mut runner, &run_dir, Some(90_000), Some(100_000), false),
-            VideoStatus::Unavailable(_)
+            VideoStatus::Unavailable { .. }
         ));
         assert!(!published_video_path(&run_dir).exists());
     }
@@ -1014,13 +1237,13 @@ mod tests {
         for status in [
             VideoStatus::Available,
             VideoStatus::TooLarge,
-            VideoStatus::Unavailable("ffmpeg".into()),
+            VideoStatus::unavailable("ffmpeg".into()),
         ] {
             let json = serde_json::to_string(&status).unwrap();
             assert_eq!(serde_json::from_str::<VideoStatus>(&json).unwrap(), status);
         }
         assert_eq!(
-            VideoStatus::Unavailable("ffmpeg".into()).to_string(),
+            VideoStatus::unavailable("ffmpeg".into()).to_string(),
             "unavailable(ffmpeg)"
         );
     }

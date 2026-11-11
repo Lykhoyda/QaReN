@@ -569,3 +569,34 @@ fn new_is_prepare_only_and_excludes_an_existing_device() {
         assert!(!stderr.contains("unknown flag"), "{stderr}");
     }
 }
+
+#[test]
+fn record_is_accepted_for_check_and_pr_and_rejected_elsewhere() {
+    for args in [vec!["check", "--record"], vec!["pr", "12", "--record"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_qaren"))
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("requires --plan-file"), "{stderr}");
+    }
+    for args in [
+        vec!["prepare", "scenario.yaml", "--record"],
+        vec!["doctor", "--record"],
+        vec!["publish", "run", "--record"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_qaren"))
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("--record are only valid for check and pr"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("usage: qaren check"), "{stderr}");
+    }
+}

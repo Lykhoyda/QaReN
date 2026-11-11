@@ -67,6 +67,7 @@ must be git-ignored; otherwise the build fails `BUILD_FAILED` before generating 
 | `--fresh-install`               | See the [fresh-install contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#fresh-install). |
 | `--hold`, `--no-hold`            | Check-only inspection controls; see the [iOS admission and cleanup contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup). |
 | `--boot-device`, `--restart-device`, `--shutdown-device-on-exit` | See the [iOS simulator lifecycle contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle). |
+| `--record`                      | Records the walk locally; nothing is uploaded. See [Record a check](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#record-a-check). |
 | `--json`                        | Accepted for scripts; the receipt is always JSON on stdout.                        |
 
 ## The receipt
@@ -121,13 +122,15 @@ The [run storage contract](https://github.com/Lykhoyda/QaReN/blob/develop/packag
 | `report.md`        | The human-readable report; app text follows the [failure text contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#app-derived-failure-text) |
 | `logs/events.jsonl`| The local event stream that `qaren watch` reads; see the [run identity and privacy contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#watch-a-run) |
 | `logs/core.log`    | The screen child's private log                                   |
-| `logs/core-diagnostics.jsonl` | Private [media-withheld diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#why-were-my-screenshots-withheld), [target-miss diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence), [runtime-input diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs) and [admission recovery timings](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#walk-timing), when emitted |
+| `logs/core-diagnostics.jsonl` | Private [media-withheld diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#why-were-my-screenshots-withheld), [target-miss diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence), [interruption diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#step-recovery), [runtime-input diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs) and [admission recovery timings](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#walk-timing), when emitted |
 
 ## The tested candidate
 
 `check` records the commit, the lockfile hash and a fingerprint of the working tree before
 the walk and checks them again after it. A change in between fails the run with
-`CANDIDATE_DRIFTED`, which can never be a pass. See the
+`CANDIDATE_DRIFTED`, which can never be a pass. If the candidate cannot be read at all, for
+example because its volume dropped out, the run refuses `CANDIDATE_UNAVAILABLE` (exit 4)
+instead: nothing is known to have changed. See the
 [candidate provenance contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#candidate-provenance)
 for excluded paths and untracked Watchman cookies.
 

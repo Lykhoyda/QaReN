@@ -52,6 +52,7 @@ and [iOS admission diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/p
 | -------------------- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
 | `DEVICE_UNAVAILABLE` | No booted simulator, more than one, or the named one is not booted  | Boot the simulator to walk on, or shut down the ones you are not testing on        |
 | `DEVICE_UNAVAILABLE` | On Android: no adb server answering, a version mismatch, or not exactly one booted emulator | Start the emulator, or pass `--device emulator-NNNN`                 |
+| `DEVICE_NOT_BOOTED`  | The simulator was shut down before the app install, and the run could not re-boot it | Boot it and re-run, or pass `--boot-device`; the detail names when it was seen `Booted` and `Shutdown` |
 | `DEVICE_BUSY`        | Another run holds the device's lease                                | Wait for that run to finish, or clean it up with `qaren cleanup <its-run-id>`; a live holder is never stolen |
 | `ARTIFACT_INSTALL_FAILED` | The cached dev-client verification or installation failed | Follow `next_action`; see the [cached-install recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan) |
 | `APP_EXITED_AT_LAUNCH` | The launched app exited before it became ready; on iOS the detail cites the simulator crash report | Follow `next_action`, which for a missing app-embedded framework is a CocoaPods reinstall; see the [launch readiness contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle) |
@@ -70,6 +71,7 @@ and [iOS admission diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/p
 | `DEV_REDBOX`             | A development error overlay prevented safe progress; exit code 4 | Follow `next_action` and the [step recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#step-recovery) for platform coverage, dismissal bounds and causes |
 | `WALK_DEADLINE_EXCEEDED` | The walk ran out of time                                         | Raise `QAREN_WALK_SECONDS`, or split the plan           |
 | `CANDIDATE_DRIFTED`      | The working tree changed during the run                          | Re-run against an unchanged checkout                    |
+| `CANDIDATE_UNAVAILABLE`  | The candidate could not be read (missing path or failed Git read); nothing is known to have changed; exit code 4 | Check that the candidate's volume or path is available again, then re-run |
 
 The screen layer's own codes appear at the start of `failure.detail` or in the report, not in
 `failure.code`:

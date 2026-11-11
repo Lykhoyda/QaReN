@@ -762,6 +762,7 @@ async function openSession(
     throw error;
   }
   const admittedAtMs = Date.now();
+  admittedSnapshots.admit();
   cancellationSignal();
 
   const press = createDevicePressHandler(getClient);
@@ -788,6 +789,8 @@ async function openSession(
     presenceUnavailable: platform === 'android',
     timing,
     publicationInterrupted: admittedSnapshots.interrupted,
+    continuityEvents: admittedSnapshots.events,
+    continuityEventsDropped: admittedSnapshots.dropped,
     readLabelProvenance: async (refs, deadline, report) => {
       const budget = Math.min(20_000, Math.floor(deadline - now()));
       if (budget <= 0) return undefined;
@@ -1038,6 +1041,7 @@ async function main(): Promise<void> {
         code: 'CORE_REFUSED',
         message: 'runtime inputs are invalid',
         lease: publicRequest.lease,
+        videoPublication: 'unknown',
       }),
     );
   }
@@ -1049,11 +1053,12 @@ async function main(): Promise<void> {
   );
 }
 
-async function mainRequest(
+export async function mainRequest(
   request: WireRequest,
   privacy: ObservedPrivacy,
   cliParent: number,
   apiKey: string | undefined,
+  open: typeof openSession = openSession,
 ): Promise<void> {
   let pinnedLogin = readLoginBlock(request);
   if (request.loginSnapshot) {
@@ -1089,6 +1094,7 @@ async function mainRequest(
           verdict: 'REFUSED',
           code: 'CORE_REFUSED',
           message: 'private run teardown refused',
+          videoPublication: 'unknown',
           lease: request.lease,
           jev: payload.jev,
         };
@@ -1106,6 +1112,7 @@ async function mainRequest(
                 ? stop.signal.reason.message
                 : 'the run was cancelled',
             lease: request.lease,
+            videoPublication: 'unknown',
             ...(pressReadback && !(stop.signal.reason instanceof InputPrivacyRefusal)
               ? { pressEvidence: pressReadback }
               : {}),
@@ -1128,6 +1135,7 @@ async function mainRequest(
         code,
         message,
         lease: request.lease,
+        videoPublication: 'unknown',
         ...(admission === undefined ? {} : { admission: cleanAdmissionFacts(admission) }),
         jev: summarizeJev(request.preflightCalls ?? []),
       },
@@ -1172,7 +1180,7 @@ async function mainRequest(
   let inFlight: number | undefined;
   try {
     opened = await stop.track(() =>
-      openSession(
+      open(
         request,
         emitRow,
         (start) => {
@@ -1254,6 +1262,8 @@ async function mainRequest(
     ]);
     ledger.admittedAtMs = opened.admittedAtMs;
     ledger.publicationInterrupted = opened.deps.publicationInterrupted?.() === true;
+    ledger.continuityEvents = opened.deps.continuityEvents?.() ?? [];
+    ledger.continuityEventsDropped = opened.deps.continuityEventsDropped?.() ?? 0;
     return finish(ledger, () => opened.close());
   }
 }

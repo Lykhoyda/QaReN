@@ -677,30 +677,32 @@ fn candidate_provenance_diagnostics_are_value_free_and_private_without_inputs() 
 
 #[test]
 fn an_interruption_rejection_is_persisted_without_runtime_inputs_or_a_later_miss() {
-    let repo = common::temp_repo();
-    let event = serde_json::json!({
-        "kind": "interruption-rejected", "line": 7, "veto": "later-target",
-        "targetIndex": 1, "exactDeclineCount": 6
-    });
-    let mut malformed = event.clone();
-    malformed["label"] = "Close".into();
-    let stdout = format!(
-        "{}\n{}\n{}\n",
-        envelope(2, "diagnostic", &event.to_string()),
-        envelope(3, "diagnostic", &malformed.to_string()),
-        envelope(4, "result", &pass_ledger(&[]))
-    );
-    let mut mock = MockRunner::new();
-    mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
-    let result = run_child(&mut mock, &repo.join("core.log"));
-    assert_eq!(result.verdict, Verdict::Pass);
-    let stored = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
-    assert_eq!(stored.lines().count(), 1);
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(stored.trim()).unwrap(),
-        event
-    );
-    assert!(!stored.contains("Close"));
+    for veto in ["later-target", "uncovered-target"] {
+        let repo = common::temp_repo();
+        let event = serde_json::json!({
+            "kind": "interruption-rejected", "line": 7, "veto": veto,
+            "targetIndex": 1, "exactDeclineCount": 6
+        });
+        let mut malformed = event.clone();
+        malformed["label"] = "Close".into();
+        let stdout = format!(
+            "{}\n{}\n{}\n",
+            envelope(2, "diagnostic", &event.to_string()),
+            envelope(3, "diagnostic", &malformed.to_string()),
+            envelope(4, "result", &pass_ledger(&[]))
+        );
+        let mut mock = MockRunner::new();
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+        let result = run_child(&mut mock, &repo.join("core.log"));
+        assert_eq!(result.verdict, Verdict::Pass);
+        let stored = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
+        assert_eq!(stored.lines().count(), 1);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(stored.trim()).unwrap(),
+            event
+        );
+        assert!(!stored.contains("Close"));
+    }
 }
 
 #[test]
@@ -1555,6 +1557,7 @@ fn react_coverage_loss_survives_the_child_receipt_and_report() {
             ])
         );
         let rendered = report::render(&ReportInput {
+            video: None,
             run_id: RUN,
             platform: "ios",
             app_id: "com.test",
@@ -1606,6 +1609,7 @@ fn same_line_loss_and_reconnect_survive_the_child_receipt_and_report() {
         serde_json::json!([{"line": 22, "coverage": "lost"}])
     );
     let report = report::render(&ReportInput {
+        video: None,
         run_id: RUN,
         platform: "ios",
         app_id: "com.test",

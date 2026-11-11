@@ -15,8 +15,8 @@ use crate::receipt::{Receipt, ReceiptResult};
 use crate::redact::redact_secrets;
 use crate::runrecord::{
     capture_pid_identity, probe_pid_identity, AppInstallResource, BuildLockObservation,
-    BuildLockResource, FarmResource, IosSimResource, LockObservation, MetroResource, Phase,
-    PidLiveness, RunRecord, TunnelResource, UsbDeviceResource, RUN_SCHEMA,
+    BuildLockResource, Cleanup, FarmResource, IosSimResource, LockObservation, MetroResource,
+    Phase, PidLiveness, RunRecord, RunState, TunnelResource, UsbDeviceResource, RUN_SCHEMA,
 };
 use crate::scenario::{BuildOwner, BuildStrategy, DepsPolicy, IosSpec, Platform, Scenario};
 use crate::timefmt;
@@ -61,6 +61,8 @@ pub(crate) struct Ctx<'a> {
     pub(crate) runs_root: PathBuf,
     pub(crate) native_cache_root: PathBuf,
     pub(crate) native_store_entry: Option<buildplan::NativeStoreEntry>,
+    // The build may only be recorded under an identity evaluated before it ran.
+    pub(crate) plan_fingerprint: Option<NativeFingerprint>,
     pub(crate) ios_observation: Option<crate::ios_toolchain::Observation>,
     pub(crate) linkage_before_build: Option<crate::ios_toolchain::Linkage>,
     pub(crate) ios_generated_native: bool,
@@ -148,7 +150,10 @@ impl<'a> Ctx<'a> {
             let cleanup = format!("qaren cleanup {} --json", self.record.run_id);
             let next = if matches!(
                 failure.code,
-                FailureCode::ManifestNotWarm | FailureCode::WatchmanVolumeStalled
+                FailureCode::ManifestNotWarm
+                    | FailureCode::WatchmanVolumeStalled
+                    | FailureCode::CandidateUnavailable
+                    | FailureCode::DeviceNotBooted
             ) {
                 format!("{cleanup}; then {}", failure.next_action)
             } else {
@@ -602,6 +607,9 @@ fn prepare_validated(
             name: sim.name.clone(),
             device_type: sim.device_type.clone(),
             runtime: sim.runtime.clone(),
+            // A pool member is QaReN's to boot; a --device target only with --boot-device.
+            boot_authorized: args.boot_device || pool_claimed,
+            ..Default::default()
         });
     }
     let record = RunRecord {
@@ -639,6 +647,7 @@ fn prepare_validated(
         runs_root: args.runs_root.clone(),
         native_cache_root: args.native_cache_root.clone(),
         native_store_entry: None,
+        plan_fingerprint: None,
         ios_observation: None,
         linkage_before_build: None,
         ios_generated_native: false,
@@ -1168,6 +1177,9 @@ fn allocate_ios(ctx: &mut Ctx, mut pool: Option<(&Path, &Path)>) -> Result<(), F
         name: name.clone(),
         device_type: ios.device_type.clone(),
         runtime: ios.runtime.clone(),
+        boot_authorized: true,
+        owned_by_run: true,
+        booted_proven_at: None,
     });
     ctx.save()?;
     ensure_running(ctx.runner, "allocate")?;
@@ -1212,6 +1224,7 @@ fn allocate_ios(ctx: &mut Ctx, mut pool: Option<(&Path, &Path)>) -> Result<(), F
             "run qaren cleanup for this run, then retry prepare",
         ));
     }
+    stamp_booted(ctx);
     Ok(())
 }
 
@@ -1403,10 +1416,16 @@ fn ready_holder(
         return None;
     }
     let record = RunRecord::load(runs_root, &holder.run_id).ok()?;
-    (matches!(
-        record.phase,
-        Phase::Ready | Phase::Walking | Phase::HandedOff
-    ) && record.terminal.is_none())
+    matches!(
+        record.state(),
+        RunState::Ready
+            | RunState::HandedOff
+            | RunState::Walking
+            | RunState::Ended {
+                walked: None,
+                cleanup: Cleanup::Held(_)
+            }
+    )
     .then(|| holder.run_id.clone())
 }
 
@@ -1847,6 +1866,9 @@ fn reprove_borrowed_ios(
         deadline_ms,
     )?;
     ensure_running(ctx.runner, "device")?;
+    if sim.state == ios::SimState::Booted {
+        stamp_booted(ctx);
+    }
     require_borrowed_power(&sim, boot_device)
 }
 
@@ -1859,6 +1881,142 @@ fn reprove_borrowed_prepare(ctx: &mut Ctx, deadline_ms: Option<u64>) -> Result<(
         })?;
     }
     Ok(())
+}
+
+pub(crate) fn stamp_booted(ctx: &mut Ctx) {
+    let at = timefmt::iso8601_utc(ctx.runner.now_epoch_ms());
+    if let Some(sim) = ctx.record.resources.ios_simulator.as_mut() {
+        sim.booted_proven_at = Some(at);
+    }
+}
+
+// A point-in-time check: a leased simulator still holds its lease; one the run created needs none.
+fn require_sim_custody(ctx: &Ctx) -> Result<(), Failure> {
+    let resources = &ctx.record.resources;
+    let owned = resources.lease.is_none()
+        && resources
+            .ios_simulator
+            .as_ref()
+            .is_some_and(|sim| sim.owned_by_run);
+    if owned || ctx.record.holds_device_lease() {
+        Ok(())
+    } else {
+        Err(borrowed_failure(
+            "the device lease is no longer held by this run",
+        ))
+    }
+}
+
+// A created simulator keeps the scenario's identifiers, which may be short forms; its UUID is its identity.
+fn same_simulator(recorded: &IosSimResource, observed: &ios::Simulator) -> bool {
+    recorded.owned_by_run
+        || (observed.device_type == recorded.device_type && observed.runtime == recorded.runtime)
+}
+
+enum InstallTarget {
+    Booted,
+    BudgetSpent,
+}
+
+fn device_not_booted(reason: String, remedy: &str) -> Failure {
+    Failure::new(
+        "install",
+        FailureCode::DeviceNotBooted,
+        format!("{reason}; {remedy}"),
+        remedy,
+    )
+}
+
+// Before every install attempt: the simulator is still this run's and Booted, or re-booted under its custody when allowed.
+fn prove_sim_booted_before_install(ctx: &mut Ctx, deadline: u64) -> Result<InstallTarget, Failure> {
+    ensure_running(ctx.runner, "install")?;
+    require_sim_custody(ctx)?;
+    let recorded = ctx
+        .record
+        .resources
+        .ios_simulator
+        .clone()
+        .expect("ios allocated");
+    let inventory = match ios::read_inventory(
+        ctx.runner,
+        ios::InventoryRead::device(deadline, &mut |runner| ensure_running(runner, "install")),
+    ) {
+        Ok(inventory) => inventory,
+        Err(unavailable) if matches!(unavailable.last, ios::InventoryReadLast::DeadlineSpent) => {
+            return Ok(InstallTarget::BudgetSpent)
+        }
+        Err(unavailable) => {
+            return Err(
+                unavailable.into_failure("install", FailureCode::SimulatorInventoryUnavailable)
+            )
+        }
+    };
+    require_sim_custody(ctx)?;
+    let sim = ios::parse_selected_sim_value(&inventory.value, &recorded.udid)
+        .filter(|sim| same_simulator(&recorded, sim))
+        .ok_or_else(|| {
+            borrowed_failure("selected UUID is not one available iOS simulator with the scenario's device type and runtime")
+        })?;
+    if sim.state == ios::SimState::Booted {
+        stamp_booted(ctx);
+        return Ok(InstallTarget::Booted);
+    }
+    if ctx.verb == "prepare" && ctx.record.resources.device_borrowed {
+        require_borrowed_power(&sim, recorded.boot_authorized)?;
+    }
+    let shutdown_ms = ctx.runner.now_epoch_ms();
+    let shutdown_at = timefmt::iso8601_utc(shutdown_ms);
+    let observed = match recorded.booted_proven_at.as_deref() {
+        Some(booted_at) => {
+            let later = timefmt::parse_iso8601_utc(booted_at)
+                .map(|booted_ms| format!(", {} min later", shutdown_ms.saturating_sub(booted_ms) / 60_000))
+                .unwrap_or_default();
+            format!("the simulator was observed Booted at {booted_at} and Shutdown at {shutdown_at}{later}, before install")
+        }
+        None => format!("the simulator was observed Shutdown at {shutdown_at} before install (proof time unknown)"),
+    };
+    if !recorded.boot_authorized {
+        return Err(device_not_booted(
+            format!("{observed}; booting it was not authorised for this run"),
+            "boot it and re-run, or pass --boot-device",
+        ));
+    }
+    let boot_ms = ctx
+        .record
+        .scenario
+        .deadlines
+        .device_boot_seconds
+        .saturating_mul(1000);
+    let needed_ms = boot_ms.saturating_add(ios::INVENTORY_READ_TIMEOUT.as_millis() as u64);
+    let remaining_ms = deadline.saturating_sub(ctx.runner.monotonic_ms());
+    if remaining_ms < needed_ms {
+        return Err(device_not_booted(
+            format!(
+                "{observed}; insufficient remaining budget to re-boot ({} s left, {} s needed)",
+                remaining_ms / 1000,
+                needed_ms / 1000
+            ),
+            "boot it and re-run",
+        ));
+    }
+    require_sim_custody(ctx)?;
+    boot_borrowed_ios(ctx, true)?;
+    require_sim_custody(ctx)?;
+    let history = format!(
+        "re-booted under this run's custody: observed Booted at {}, Shutdown at {shutdown_at}",
+        recorded
+            .booted_proven_at
+            .as_deref()
+            .unwrap_or("an unknown time")
+    );
+    let at = timefmt::iso8601_utc(ctx.runner.now_epoch_ms());
+    ctx.record.push_history(at, &history);
+    ctx.notes.push(("device_reboot".into(), history));
+    ctx.save()?;
+    if deadline.saturating_sub(ctx.runner.monotonic_ms()) < 1000 {
+        return Ok(InstallTarget::BudgetSpent);
+    }
+    Ok(InstallTarget::Booted)
 }
 
 // Boots (only when asked) and re-proves the recorded borrowed simulator Booted with unchanged identity.
@@ -1897,9 +2055,7 @@ pub(crate) fn boot_borrowed_ios(ctx: &mut Ctx, needs_boot: bool) -> Result<(), F
     })?;
     let observed = ios::parse_selected_sim_value(&inventory.value, &sim.udid);
     if observed.as_ref().is_some_and(|observed| {
-        observed.state == ios::SimState::Booted
-            && observed.device_type == sim.device_type
-            && observed.runtime == sim.runtime
+        observed.state == ios::SimState::Booted && same_simulator(&sim, observed)
     }) {
         ctx.notes
             .push(("inventory_attempts".into(), inventory.attempts.to_string()));
@@ -1907,6 +2063,7 @@ pub(crate) fn boot_borrowed_ios(ctx: &mut Ctx, needs_boot: bool) -> Result<(), F
             "inventory_latency_ms".into(),
             inventory.latency_ms.to_string(),
         ));
+        stamp_booted(ctx);
         return Ok(());
     }
     let state = observed.map_or("unknown", |observed| match observed.state {
@@ -2243,7 +2400,9 @@ pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
         native_dir_in_candidate: fp.native_dir_in_candidate,
     };
     ctx.notes.extend(fingerprint_notes(&fp));
-    Ok(buildplan::decide(&inputs, &state, store))
+    let plan = buildplan::decide(&inputs, &state, store);
+    ctx.plan_fingerprint = Some(fp);
+    Ok(plan)
 }
 
 fn cache_root_failure(reason: String) -> Failure {
@@ -3571,11 +3730,17 @@ fn install_cached_ios_app(
     let mut attempts = 0;
     let mut last = None;
     loop {
-        match reprove_borrowed_prepare(ctx, Some(deadline)) {
-            // The install budget ran out during the re-proof: report the install timeout below.
-            Err(f) if f.code == FailureCode::ReadyDeadlineExceeded => break,
-            result => result?,
+        ensure_running(ctx.runner, "build")?;
+        // A spent budget, before or during the proof, reports the install timeout below without touching the device.
+        if remaining_budget(ctx, deadline)?.is_none() {
+            break;
         }
+        if let InstallTarget::BudgetSpent = prove_sim_booted_before_install(ctx, deadline)? {
+            ctx.notes
+                .push(("launch_ready_budget".into(), "spent".into()));
+            break;
+        }
+        require_sim_custody(ctx)?;
         let Some(installed) = run_budgeted_attempt(ctx, &spec, deadline, &mut attempts)? else {
             break;
         };
@@ -3683,8 +3848,53 @@ pub(crate) fn recheck_fingerprint(
     let platform = platform_dir(ctx.record.scenario.platform);
     let repo_root = ctx.record.candidate.repo_root.clone();
     let project_root = ctx.record.candidate.project_root.clone();
-    let fp = fingerprint::compute(ctx.runner, &repo_root, &project_root, platform)?
+    let mut fp = fingerprint::compute(ctx.runner, &repo_root, &project_root, platform)?
         .with_ios_workspace(ctx.record.scenario.build.ios_workspace.as_ref());
+    if platform == "android" {
+        let planned = ctx.plan_fingerprint.as_ref().expect("fingerprint planned");
+        if !planned.parts.contains_key("expo") {
+            if fp.parts.get("rnfp") != planned.parts.get("rnfp") {
+                return Err(candidate_drift(
+                    &ctx.record.run_id,
+                    "native inputs changed during preparation: rnfp".into(),
+                ));
+            }
+            // Late evaluation cannot attest the build that already ran.
+            return Ok(planned.clone());
+        }
+        if fp.expo_unavailable.is_some() {
+            ensure_running(ctx.runner, "verify")?;
+            fp = fingerprint::compute(ctx.runner, &repo_root, &project_root, platform)?
+                .with_ios_workspace(ctx.record.scenario.build.ios_workspace.as_ref());
+            if let Some(cause) = &fp.expo_unavailable {
+                return Err(Failure::new(
+                    "verify",
+                    FailureCode::BuildFailed,
+                    format!("the app config could not be evaluated again after the build: {cause}"),
+                    "re-run prepare when the app's Expo config can be evaluated",
+                ));
+            }
+        }
+        if fp.value != plan.fingerprint {
+            let changed = planned
+                .parts
+                .keys()
+                .chain(fp.parts.keys())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .filter(|part| planned.parts.get(*part) != fp.parts.get(*part))
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            return Err(candidate_drift(
+                &ctx.record.run_id,
+                format!(
+                    "native inputs changed during preparation: {}",
+                    changed.join(", ")
+                ),
+            ));
+        }
+        return Ok(fp);
+    }
     if fp.value != plan.fingerprint {
         return Err(candidate_drift(
             &ctx.record.run_id,
@@ -4079,8 +4289,14 @@ fn recheck_candidate(ctx: &mut Ctx) -> Result<(), Failure> {
     // Handoff baselines are recorded through the integration filter, so the
     // recheck must look through the same filter to compare like with like.
     let tolerate = ctx.record.scenario.build.owner == BuildOwner::Qaren;
-    candidate::verify_unchanged_with(ctx.runner, &ctx.record.candidate, tolerate)
-        .map_err(|detail| candidate_drift(&ctx.record.run_id, format!("{detail} during the run")))
+    candidate::verify_unchanged_with(ctx.runner, &ctx.record.candidate, tolerate).map_err(|check| {
+        match check {
+            candidate::CandidateCheck::Unreadable(_) => Failure::candidate_unavailable("verify"),
+            candidate::CandidateCheck::Drifted(detail) => {
+                candidate_drift(&ctx.record.run_id, format!("{detail} during the run"))
+            }
+        }
+    })
 }
 
 fn candidate_drift(run_id: &str, detail: String) -> Failure {
@@ -4477,6 +4693,7 @@ fn with_build_window<T>(
         runs_root: ctx.runs_root.clone(),
         native_cache_root: ctx.native_cache_root.clone(),
         native_store_entry: ctx.native_store_entry.take(),
+        plan_fingerprint: ctx.plan_fingerprint.clone(),
         ios_observation: ctx.ios_observation.take(),
         linkage_before_build: ctx.linkage_before_build.take(),
         ios_generated_native: ctx.ios_generated_native,
@@ -5427,6 +5644,19 @@ fn launch_deadline_spent(run_id: &str) -> Failure {
     )
 }
 
+// Command limits are whole seconds: under one second left, wait it out and record the budget spent.
+fn remaining_budget(ctx: &mut Ctx, deadline: u64) -> Result<Option<u64>, Failure> {
+    let remaining_ms = deadline.saturating_sub(ctx.runner.monotonic_ms());
+    if remaining_ms >= 1000 {
+        return Ok(Some(remaining_ms));
+    }
+    ctx.runner.sleep(Duration::from_millis(remaining_ms));
+    ensure_running(ctx.runner, "build")?;
+    ctx.notes
+        .push(("launch_ready_budget".into(), "spent".into()));
+    Ok(None)
+}
+
 // None once the shared preparation budget is spent; each attempt is recorded in the receipt.
 fn run_budgeted_attempt(
     ctx: &mut Ctx,
@@ -5435,15 +5665,9 @@ fn run_budgeted_attempt(
     attempts: &mut usize,
 ) -> Result<Option<crate::exec::CmdOutput>, Failure> {
     ensure_running(ctx.runner, "build")?;
-    let remaining_ms = deadline.saturating_sub(ctx.runner.monotonic_ms());
-    // Command limits are whole seconds; do not start a call beyond the remaining budget.
-    if remaining_ms < 1000 {
-        ctx.runner.sleep(Duration::from_millis(remaining_ms));
-        ensure_running(ctx.runner, "build")?;
-        ctx.notes
-            .push(("launch_ready_budget".into(), "spent".into()));
+    let Some(remaining_ms) = remaining_budget(ctx, deadline)? else {
         return Ok(None);
-    }
+    };
     let mut bounded = spec.clone();
     bounded.timeout_seconds = bounded.timeout_seconds.min(remaining_ms / 1000);
     let output = ctx.runner.run(&bounded);
@@ -5698,6 +5922,9 @@ fn launch_failure(
 }
 
 #[cfg(test)]
+mod install_proof_tests;
+
+#[cfg(test)]
 mod launch_tests {
     use super::*;
     use crate::exec::CmdOutput;
@@ -5870,6 +6097,7 @@ mod launch_tests {
                 runs_root: root.clone(),
                 native_cache_root: root.join("native-store"),
                 native_store_entry: None,
+                plan_fingerprint: None,
                 ios_observation: None,
                 linkage_before_build: None,
                 ios_generated_native: false,

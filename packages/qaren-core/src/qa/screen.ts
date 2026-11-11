@@ -31,7 +31,9 @@ import type { HeadingEvidence, HostTypography } from './host-typography.js';
 import {
   associateHosts,
   hostPath,
+  modalCover,
   nativeWindowIndex,
+  type ModalCoverFacts,
   touchOwner,
   type TouchOwnerGap,
   type TouchPointGap,
@@ -158,6 +160,8 @@ const keyboardCoveredElements = new WeakSet<Element>();
 const literalTextContributors = new WeakSet<Element>();
 // Native scroll containers (iOS names, Android class suffixes); only native-backed elements are ever members.
 const scrollContainers = new WeakMap<Element, string>();
+// Elements whose native node reported `scrollable: false`; an absent report is never a member.
+const notScrollable = new WeakSet<Element>();
 const windows = new WeakSet<Element>();
 const alerts = new WeakSet<Element>();
 const sheets = new WeakSet<Element>();
@@ -258,6 +262,10 @@ export function isScrollContainer(element: Element): boolean {
   return scrollContainers.has(element);
 }
 
+export function reportsNotScrollable(element: Element): boolean {
+  return notScrollable.has(element);
+}
+
 export function hasNativeSheet(screen: Screen): boolean {
   return screen.elements.some((element) => sheets.has(element) && !element.offscreen);
 }
@@ -339,6 +347,8 @@ export interface NativeNode {
   heading?: boolean;
   // Android only: the node holds input focus.
   focused?: boolean;
+  // Android only: the node's own report of whether it can scroll.
+  scrollable?: boolean;
   secure?: boolean;
   value?: string;
   rect?: { x: number; y: number; width: number; height: number };
@@ -668,6 +678,29 @@ export function joinedSnapshotDiagnostics(screen: Screen) {
   return projectionCounts.get(screen.elements) ?? null;
 }
 
+export type ModalCoverDiagnostic = ModalCoverFacts & {
+  identities: Partial<Record<HostAssociationDiagnostic['identity'], number>>;
+};
+
+const modalCovers = new WeakMap<
+  Screen['elements'],
+  { hosts: ReadonlySet<number>; diagnostic: ModalCoverDiagnostic }
+>();
+
+// Why the capture did or did not prove a presented modal cover; only when typography was captured.
+export function modalCoverDiagnostic(screen: Screen): ModalCoverDiagnostic | undefined {
+  return modalCovers.get(screen.elements)?.diagnostic;
+}
+
+// Every React host carrying the element's test ID sits behind the one presented modal.
+export function behindPresentedModal(screen: Screen, element: Element): boolean {
+  const covered = modalCovers.get(screen.elements)?.hosts;
+  const hosts = screen.reactHostEvidence?.hosts;
+  if (!covered?.size || !hosts || !element.testID) return false;
+  const matching = hosts.flatMap((host, index) => (host.testID === element.testID ? [index] : []));
+  return matching.length > 0 && matching.every((index) => covered.has(index));
+}
+
 function androidDescendantLabels(
   nodes: NativeNode[],
   elements: Element[],
@@ -821,10 +854,15 @@ export function join(
   const interactiveRole = (role: string | null | undefined) =>
     !!role && ['button', 'input', 'switch', 'link'].includes(kindOfRole(role));
   const inputRole = (role: string | null | undefined) => !!role && kindOfRole(role) === 'input';
-  // Native type may rule out an operation only while every React host offering it is accounted for.
+  // Native type may rule out an operation only while every React host offering it is accounted for;
+  // a host the presented modal covers is accounted for, since it cannot be any node native shows.
+  const cover = modalCover(reactHostEvidence, new Set(associations.keys()));
+  const behindModal = cover.hosts;
   const unassociated = (offers: (host: ReactHostObservation) => boolean) =>
     reactHostEvidence?.hosts.flatMap((host, hostIndex) =>
-      !host.hidden && offers(host) && !associations.has(hostIndex) ? [hostIndex] : [],
+      !host.hidden && offers(host) && !associations.has(hostIndex) && !behindModal.has(hostIndex)
+        ? [hostIndex]
+        : [],
     ) ?? [];
   const evidenceGap = (count: number) =>
     reactHostEvidence === undefined
@@ -1405,6 +1443,7 @@ export function join(
     // A frame its own on-screen descendant contradicts proves no reach either way.
     if (reach && !contradicted.has(i)) reaches.set(elements[i], reach);
     if (isScrollContainerType(n.type)) scrollContainers.set(elements[i], n.type!);
+    if (n.scrollable === false) notScrollable.add(elements[i]);
     if (n.type === 'Window') windows.add(elements[i]);
     if (n.type === 'Application') applications.add(elements[i]);
     if (isAppAlertType(n.type)) alerts.add(elements[i]);
@@ -1478,6 +1517,15 @@ export function join(
     if (diagnosticRect(diagnosticField(node, 'rect'))) counts.rectKnownCount++;
   });
   projectionCounts.set(screen.elements, counts);
+  if (reactHostEvidence?.typography) {
+    const identities: ModalCoverDiagnostic['identities'] = {};
+    for (const { identity } of associationDiagnostics.values())
+      identities[identity] = (identities[identity] ?? 0) + 1;
+    modalCovers.set(screen.elements, {
+      hosts: behindModal,
+      diagnostic: { ...cover.facts, identities },
+    });
+  }
   const owner = touchOwner(nodes, reactHostEvidence, presence, associations);
   touchOwners.set(
     screen.elements,

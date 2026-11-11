@@ -973,6 +973,10 @@ fn ios_install_over_120_seconds_completes_within_the_preparation_budget() {
     let mut mock = MockRunner::new();
     script_ios_prepare_install(&mut mock, &repo, CmdOutput::success(""), |m| {
         m.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&common::sim_inventory(common::CREATED_UDID, "Booted")),
+        );
+        m.expect_run(
             "simctl install",
             CmdOutput {
                 duration_ms: 130_000,
@@ -1006,7 +1010,9 @@ fn ios_install_timeout_proven_by_the_installed_bundle_is_not_reissued() {
     let repo = common::temp_repo();
     let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
     let mut mock = MockRunner::new();
-    script_ios_prepare_install(&mut mock, &repo, CmdOutput::success(""), |_| {});
+    script_ios_prepare_install(&mut mock, &repo, CmdOutput::success(""), |m| {
+        common::script_install_proof(m)
+    });
     mock.timeouts = [("simctl-install".into(), 120_000)].into();
     mock.container_is_installed_app = true;
 
@@ -1038,9 +1044,14 @@ fn ios_install_timeout_without_an_installed_bundle_reinstalls_within_the_budget(
     let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
     let mut mock = MockRunner::new();
     script_ios_prepare_install(&mut mock, &repo, CmdOutput::success(""), |m| {
+        common::script_install_proof(m);
         m.expect_run(
             "simctl get_app_container",
             CmdOutput::failed(2, "No such file or directory"),
+        );
+        m.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&common::sim_inventory(common::CREATED_UDID, "Booted")),
         );
         m.expect_run("simctl install", CmdOutput::success(""));
     });
@@ -1079,6 +1090,7 @@ fn ios_install_timeouts_fail_once_the_shared_budget_is_spent() {
     );
     let mut mock = MockRunner::new();
     script_ios_prepare_before_install(&mut mock, &repo);
+    common::script_install_proof(&mut mock);
     mock.expect_run(
         "simctl get_app_container",
         CmdOutput::failed(2, "No such file or directory"),
@@ -1114,7 +1126,15 @@ fn ios_install_coordination_refusal_is_retried_within_the_budget() {
     let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
     let mut mock = MockRunner::new();
     script_ios_prepare_install(&mut mock, &repo, CmdOutput::success(""), |m| {
+        m.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&common::sim_inventory(common::CREATED_UDID, "Booted")),
+        );
         m.expect_run("simctl install", CmdOutput::failed(2, IX_REFUSAL));
+        m.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&common::sim_inventory(common::CREATED_UDID, "Booted")),
+        );
         m.expect_run("simctl install", CmdOutput::success(""));
     });
 
@@ -1146,6 +1166,10 @@ fn ios_install_coordination_refusals_fail_once_the_shared_budget_is_spent() {
     let mut mock = MockRunner::new();
     script_ios_prepare_before_install(&mut mock, &repo);
     for _ in 0..4 {
+        mock.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&common::sim_inventory(common::CREATED_UDID, "Booted")),
+        );
         mock.expect_run("simctl install", CmdOutput::failed(2, IX_REFUSAL));
     }
     common::script_ios_metro_cleanup(&mut mock);
@@ -1239,6 +1263,10 @@ fn ios_install_error_fails_after_one_attempt() {
     let mut mock = MockRunner::new();
     script_ios_prepare_before_install(&mut mock, &repo);
     mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&common::sim_inventory(common::CREATED_UDID, "Booted")),
+    );
+    mock.expect_run(
         "simctl install",
         CmdOutput::failed(1, "An error was encountered processing the command"),
     );
@@ -1265,6 +1293,10 @@ fn ios_install_refusal_on_stdout_is_terminal() {
     let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
     let mut mock = MockRunner::new();
     script_ios_prepare_before_install(&mut mock, &repo);
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&common::sim_inventory(common::CREATED_UDID, "Booted")),
+    );
     mock.expect_run(
         "simctl install",
         CmdOutput {
@@ -1305,6 +1337,10 @@ fn script_ios_prepare_before_request_probe_reading(
     read_artifact: impl FnOnce(&mut MockRunner),
 ) {
     script_ios_prepare_reading_artifact(mock, repo, read_artifact);
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&common::sim_inventory(common::CREATED_UDID, "Booted")),
+    );
     mock.expect_run("simctl install", CmdOutput::success(""));
     mock.expect_run("ps", CmdOutput::success(LSTART));
     mock.expect_run("ps", CmdOutput::success("S"));
@@ -2288,6 +2324,10 @@ fn ios_prepare_continues_with_a_note_when_dev_menu_defaults_fail() {
 
 fn script_ios_prepare(mock: &mut MockRunner, repo: &std::path::Path, defaults: CmdOutput) {
     script_ios_prepare_install(mock, repo, defaults, |m| {
+        m.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&common::sim_inventory(common::CREATED_UDID, "Booted")),
+        );
         m.expect_run("simctl install", CmdOutput::success(""))
     });
 }
@@ -2330,7 +2370,7 @@ fn script_ios_prepare_launch(
         empty,
         empty,
         empty,
-        |m| m.expect_run("simctl install", CmdOutput::success("")),
+        |m| common::script_proven_install(m, CmdOutput::success("")),
         launch,
     );
 }
@@ -2408,7 +2448,7 @@ fn expo_hash_drift_between_plan_and_readiness_fails_as_candidate_drift() {
         fingerprint("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
         fingerprint("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
         fingerprint("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
-        |m| m.expect_run("simctl install", CmdOutput::success("")),
+        |m| common::script_proven_install(m, CmdOutput::success("")),
         common::script_ios_launch,
     );
     common::script_ios_metro_cleanup(&mut mock);
@@ -3729,7 +3769,7 @@ fn script_prepare_to_recheck(
     common::script_ios_after_publish(
         mock,
         CmdOutput::success(""),
-        |m| m.expect_run("simctl install", CmdOutput::success("")),
+        |m| common::script_proven_install(m, CmdOutput::success("")),
         common::script_ios_launch,
     );
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
@@ -4045,6 +4085,8 @@ fn dry_run_plans_generated_native_regeneration_before_every_build_route() {
                     common::script_expo_fingerprint_unresolvable(&mut fp_runner);
                 } else if platform == "ios" {
                     common::script_xcode(&mut fp_runner);
+                } else if incomplete {
+                    common::script_expo_fingerprint_unresolvable(&mut fp_runner);
                 }
                 let fp = qaren::fingerprint::compute(&mut fp_runner, &repo, &project, platform)
                     .unwrap()
@@ -4099,6 +4141,8 @@ fn dry_run_plans_generated_native_regeneration_before_every_build_route() {
                     common::script_expo_fingerprint_unresolvable(&mut mock);
                 } else if platform == "ios" {
                     common::script_xcode(&mut mock);
+                } else if incomplete {
+                    common::script_expo_fingerprint_unresolvable(&mut mock);
                 }
                 let sdk = (platform == "android").then(|| android_sdk(&repo));
                 let receipt = prepare(
@@ -4493,7 +4537,7 @@ fn recording_a_build_retires_run_output_and_publishes_to_the_machine_store_witho
     common::script_ios_after_publish(
         &mut mock,
         CmdOutput::success(""),
-        |m| m.expect_run("simctl install", CmdOutput::success("")),
+        |m| common::script_proven_install(m, CmdOutput::success("")),
         common::script_ios_launch,
     );
     script_ios_readiness(&mut mock);
@@ -5915,6 +5959,7 @@ fn plant_borrowed_holder(repo: &std::path::Path) -> qaren::lease::Lease {
         name: "qa-lane".to_string(),
         device_type: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro".to_string(),
         runtime: "com.apple.CoreSimulator.SimRuntime.iOS-26-4".to_string(),
+        ..Default::default()
     });
     record.save(repo).unwrap();
     held
@@ -6426,6 +6471,7 @@ fn plant_pool_holder(repo: &std::path::Path, udid: &str, phase: Phase) -> qaren:
         name: POOL_NAME.to_string(),
         device_type: IOS_TYPE.to_string(),
         runtime: IOS_RUNTIME.to_string(),
+        ..Default::default()
     });
     record.save(repo).unwrap();
     held
@@ -7459,7 +7505,7 @@ fn a_contended_ios_build_waits_for_the_holder_then_builds_and_releases_before_in
     common::script_ios_after_publish(
         &mut mock,
         CmdOutput::success(""),
-        |m| m.expect_run("simctl install", CmdOutput::success("")),
+        |m| common::script_proven_install(m, CmdOutput::success("")),
         common::script_ios_launch,
     );
     script_ios_readiness(&mut mock);
@@ -7571,6 +7617,9 @@ fn a_contended_ios_build_refuses_after_its_budget_naming_the_holder_and_next_ste
             ios_scenario_yaml(8791)
         ),
     );
+    let timestamped_path = repo.join("scenario-1794242368865142289.yaml");
+    std::fs::rename(&scenario_path, &timestamped_path).unwrap();
+    let scenario_path = timestamped_path;
     let lock = seed_build_holder(&repo);
     let mut mock = MockRunner::new();
     script_ios_prepare_to_claim(&mut mock, &repo);
@@ -7615,9 +7664,15 @@ fn a_contended_ios_build_refuses_after_its_budget_naming_the_holder_and_next_ste
         "holder-run"
     );
     let json = receipt.to_json();
-    for private in ["other-home", ".locks", "qaren-holder-run", "4242"] {
+    for private in ["other-home", ".locks", "qaren-holder-run"] {
         assert!(!json.contains(private), "{private} leaked: {json}");
     }
+    assert!(
+        !json
+            .split(|c: char| !c.is_ascii_digit())
+            .any(|token| token == "4242"),
+        "holder PID leaked: {json}"
+    );
 }
 
 #[test]
@@ -7784,6 +7839,47 @@ fn an_unresolved_build_lock_release_stops_before_install_and_keeps_the_lock() {
 }
 
 #[test]
+fn an_unreadable_candidate_at_the_post_build_recheck_refuses_as_unavailable() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_validation(&mut mock, &repo, IOS_TOOLS);
+    mock.expect_run("lsof", free_port());
+    mock.expect_run("ps", CmdOutput::success(LSTART));
+    mock.expect_run("ps", CmdOutput::success("qaren prepare"));
+    common::script_ios_deps(&mut mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
+    mock.expect_run("simctl create", CmdOutput::success(UDID));
+    mock.expect_run("simctl bootstatus", CmdOutput::success("finished"));
+    common::script_finite_ios_build_only(&mut mock, "expo run:ios");
+    mock.expect_run(
+        "git",
+        CmdOutput::failed(
+            128,
+            "fatal: not a git repository (or any of the parent directories): .git",
+        ),
+    );
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    let failure = receipt.failure.unwrap();
+    assert_eq!(failure.code, FailureCode::CandidateUnavailable);
+    assert_eq!(failure.phase, "verify");
+    assert!(failure.recovery.is_none());
+    assert_eq!(
+        failure.next_action.as_str(),
+        format!(
+            "qaren cleanup {} --json; then check that the candidate's volume or path is available again, then re-run; QaReN does not recreate or move the candidate",
+            receipt.run_id
+        )
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert!(!mock.calls.iter().any(|spec| spec.label == "simctl-install"));
+}
+
+#[test]
 fn build_probe_timeouts_prioritize_expiry_over_candidate_drift() {
     use qaren::failure::RecoveryReason;
     for elapsed_ms in [1000, 30_000] {
@@ -7826,11 +7922,11 @@ fn build_probe_timeouts_prioritize_expiry_over_candidate_drift() {
                 RecoveryReason::BuildBudgetExhausted
             );
         } else {
-            assert_eq!(failure.code, FailureCode::CandidateDrifted);
-            assert_eq!(
-                failure.build_recovery().unwrap().reason,
-                RecoveryReason::CandidateDrifted
-            );
+            // A timed-out git status proves no change: the candidate was unreadable, not drifted.
+            assert_eq!(failure.code, FailureCode::CandidateUnavailable);
+            assert_eq!(failure.phase, "verify");
+            assert!(failure.recovery.is_none());
+            assert_eq!(receipt.result, ReceiptResult::Refused);
         }
         assert_eq!(mock.remaining(), 0);
         assert!(!repo.join(".locks/native-build-ios").exists());
@@ -7984,6 +8080,10 @@ fn ios_metro_preserves_effective_pnpm_options_or_inherited_fallback() {
         mock.environment
             .insert("NODE_OPTIONS".into(), "--trace-warnings".into());
         script_ios_prepare_reading_artifact_with_options(&mut mock, &repo, |_| {}, output);
+        mock.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&common::sim_inventory(common::CREATED_UDID, "Booted")),
+        );
         mock.expect_run("simctl install", CmdOutput::success(""));
         common::script_ios_metro_wait_and_launch(&mut mock, CmdOutput::success(""));
         script_ios_readiness(&mut mock);

@@ -67,6 +67,121 @@ function incompletePresence() {
   };
 }
 
+// The long-list shape: a harmless node read failed first, then revalidation left the capture incomplete.
+function decisivePresence(
+  decisiveFailure: unknown = {
+    phase: 'revalidation',
+    reason: 'enumeration-changed',
+    mismatch: { kind: 'node', index: 1, fieldMask: 16, beforeType: 9, afterType: 9 },
+  },
+) {
+  const native = incompletePresence();
+  return {
+    ...native,
+    presenceCapture: {
+      ...native.presenceCapture,
+      diagnostics: {
+        failure: { phase: 'observation', reason: 'read-unavailable' },
+        decisiveFailure,
+      },
+    },
+  };
+}
+
+const DECISIVE_CAUSES = [
+  'presence-failure=observation:read-unavailable',
+  'presence-incomplete=revalidation:enumeration-changed',
+  'presence-incomplete-mismatch=node',
+];
+
+test('a persistently incomplete presence refusal and log name the decisive failure beside the first', async (t) => {
+  const time = clock(t);
+  const logs: string[] = [];
+  const result = captureScreen({
+    requirePrivateInputs: true,
+    platformPresence: true,
+    now: time.now,
+    native: async () => decisivePresence(),
+    react: async () => ({}),
+    warn: (line) => logs.push(line),
+  }).catch((error: Error) => error);
+  await nextTurn();
+  for (let poll = 0; poll < 12; poll++) await time.advance(500);
+  const error = await result;
+  assert.ok(error instanceof NativeSnapshotIncomplete, String(error));
+  for (const cause of DECISIVE_CAUSES) {
+    assert.ok(error.causes.includes(cause), cause);
+    assert.ok(error.message.includes(cause), cause);
+    assert.ok(logs.includes(cause), cause);
+  }
+});
+
+test('a deadline-cut re-read keeps the decisive presence failure with retry-deadline', async (t) => {
+  const time = clock(t);
+  const logs: string[] = [];
+  const prior = decisivePresence();
+  Object.assign(prior.presenceCapture.diagnostics, {
+    deadline: { phase: 'finalization', read: 'finalization', edge: 'after' },
+    detail: 'deadline-private-canary',
+  });
+  let reads = 0;
+  const result = captureScreen({
+    platformPresence: true,
+    requirePrivateInputs: true,
+    now: time.now,
+    native: async () => (++reads === 1 ? prior : new Promise<NativeObservation>(() => {})),
+    warn: (line) => logs.push(line),
+    react: async () => assert.fail('no React read after incomplete native evidence expires'),
+  }).catch((error: Error) => error);
+  await nextTurn();
+  await time.advance(500);
+  assert.equal(reads, 2);
+  await time.advance(6_000 - time.now());
+  const error = await result;
+  assert.ok(error instanceof NativeSnapshotIncomplete, String(error));
+  for (const cause of [...DECISIVE_CAUSES, 'presence-deadline=finalization:finalization:after']) {
+    assert.ok(error.causes.includes(cause), cause);
+    assert.ok(error.message.includes(cause), cause);
+    assert.ok(logs.includes(cause), cause);
+  }
+  assert.ok(error.causes.includes('retry-deadline'));
+  assert.equal([error.message, ...logs].join('\n').includes('deadline-private-canary'), false);
+});
+
+test('a malformed decisive failure adds no presence-incomplete cause or content', async () => {
+  for (const decisive of [
+    { phase: 'private-phase-canary', reason: 'enumeration-changed' },
+    { phase: 'revalidation', reason: 'private-reason-canary' },
+    {
+      phase: 'revalidation',
+      reason: 'enumeration-changed',
+      mismatch: { kind: 'private-kind-canary' },
+    },
+    'private-string-canary',
+  ]) {
+    const logs: string[] = [];
+    const error = await captureScreen({
+      requirePrivateInputs: true,
+      platformPresence: true,
+      budgetMs: 1_000,
+      native: async () => decisivePresence(decisive),
+      react: async () => ({}),
+      warn: (line) => logs.push(line),
+    }).catch((error: Error) => error);
+    assert.ok(error instanceof NativeSnapshotIncomplete, String(error));
+    const valid = typeof decisive === 'object' && 'mismatch' in decisive;
+    assert.equal(
+      error.causes.includes('presence-incomplete=revalidation:enumeration-changed'),
+      valid,
+    );
+    assert.equal(
+      [...error.causes, ...logs].some((cause) => cause.startsWith('presence-incomplete-mismatch=')),
+      false,
+    );
+    assert.equal([error.message, ...logs].join('\n').includes('canary'), false);
+  }
+});
+
 test('incomplete presence waits for a fresh complete capture even without private-fill history', async (t) => {
   const time = clock(t);
   let reads = 0;
@@ -173,7 +288,7 @@ for (const firstReadMs of [20_500, 4_000]) {
     await time.advance(deadline - time.now());
     const error = await result;
     assert.ok(error instanceof NativeSnapshotIncomplete, String(error));
-    assert.equal(error.code, 'PRIVATE_INPUT_CAPTURE_UNKNOWN');
+    assert.equal(error.code, 'NATIVE_SNAPSHOT_INCOMPLETE');
     assert.equal(error.nodes, 2);
     assert.ok(error.causes.includes('keyboard-state-unknown'));
     assert.ok(error.causes.includes('presence-failure=revalidation:enumeration-changed'));
@@ -420,10 +535,10 @@ test('a persistently empty private capture refuses unchanged after the existing 
   await time.advance(1);
   const error = await result;
   assert.ok(error instanceof NativeSnapshotIncomplete);
-  assert.equal(error.code, 'PRIVATE_INPUT_CAPTURE_UNKNOWN');
+  assert.equal(error.code, 'NATIVE_SNAPSHOT_INCOMPLETE');
   assert.equal(
     error.message,
-    'Private input capture could not be established safely. The native snapshot was incomplete (nodes=0; causes=verdict=degraded,ref-map-not-updated,reason=empty-capture,node-count-mismatch).',
+    'The native snapshot was incomplete (nodes=0; causes=verdict=degraded,ref-map-not-updated,reason=empty-capture,node-count-mismatch).',
   );
   assert.equal(reads.length, 12);
   assert.equal(reads.at(-1), 5_500);

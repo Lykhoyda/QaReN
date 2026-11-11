@@ -272,6 +272,20 @@ class QaHierarchyTest {
         assertFalse(out.nodes[0].focused)
     }
 
+    @Test fun eachNodeKeepsItsOwnScrollableReport() {
+        val tree = node(
+            "android.widget.ScrollView",
+            bounds = full,
+            children = listOf(node("android.widget.ScrollView", viewId = "$app:id/list", scrollable = true)),
+        )
+        val out = QaHierarchy.assemble(listOf(appWindow(tree)), app, display)
+        val (wrapper, list) = out.nodes.drop(2)
+
+        assertFalse(wrapper.scrollable)
+        assertTrue(list.scrollable)
+        assertFalse(out.nodes[0].scrollable)
+    }
+
     private val permissions = "com.google.android.permissioncontroller"
 
     private fun permissionDialog(vararg buttons: RawNode, id: Int = 5, owner: String = permissions) = RawWindow(
@@ -418,6 +432,7 @@ class QaHierarchyTest {
         enabled: Boolean = true,
         heading: Boolean = false,
         focused: Boolean = false,
+        scrollable: Boolean = false,
     ) = RawNode(
         className = className,
         text = text,
@@ -433,5 +448,6 @@ class QaHierarchyTest {
         heading = heading,
         children = children,
         focused = focused,
+        scrollable = scrollable,
     )
 }

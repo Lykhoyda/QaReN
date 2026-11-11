@@ -6,6 +6,8 @@ import type { DigestEntry, Front, NativeNode, ReactHostEvidence } from '../../..
 import { reactOnlyMiss } from '../../../dist/qa/resolve.js';
 import { runPlan, WAIT_BUDGET_MS, WAIT_POLL_MS } from '../../../dist/qa/walker.js';
 import { CaptureDeadline } from '../../../dist/qa/capture.js';
+import { NativeSnapshotIncomplete } from '../../../dist/qa/private-input.js';
+import { CAPTURE_BUDGET_MS } from '../../../dist/qa/timing.js';
 import type { ActResult } from '../../../dist/qa/walker.js';
 import { element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
 
@@ -419,7 +421,9 @@ test('an ordinary poll cut off at the deadline names the stage it was in', async
   assert.equal(f.deps.now(), WAIT_BUDGET_MS);
 });
 
-test("recovery after a React-only refusal captures inside the wait's deadline", async () => {
+// A React-only target can sit behind an interruption, so recovery gets its own bounded capture
+// instead of whatever is left of the wait.
+test('recovery after a React-only refusal gets its own bounded capture', async () => {
   const f = walker(
     [],
     scriptedJudge(() => assert.fail('model-free')),
@@ -437,12 +441,35 @@ test("recovery after a React-only refusal captures inside the wait's deadline", 
   };
   const r = await runPlan(parsePlan('1. Wait for "name-field" to appear').blocks!, f.deps);
   assert.match(r.failure?.seen ?? '', /^TARGET_REACT_ONLY: "name-field" is mounted in React /);
-  assert.deepEqual(presence, [
-    WAIT_BUDGET_MS - 2 * WAIT_POLL_MS,
-    WAIT_BUDGET_MS - 2 * WAIT_POLL_MS,
-  ]);
-  assert.equal(f.deps.now(), WAIT_BUDGET_MS);
+  assert.deepEqual(presence, [WAIT_BUDGET_MS - 2 * WAIT_POLL_MS, CAPTURE_BUDGET_MS]);
+  assert.equal(f.deps.now(), 2 * WAIT_POLL_MS + CAPTURE_BUDGET_MS);
   assert.deepEqual(f.actions, []);
+});
+
+test('an incomplete recovery read preserves both React-only Wait miss paths', async () => {
+  for (const accessible of [false, true]) {
+    const f = walker(
+      [],
+      scriptedJudge(() => assert.fail('a quoted wait is model-free')),
+    );
+    f.deps.hideDevMenu = async () => assert.fail('no overlay was observed');
+    let presenceReads = 0;
+    f.deps.captureScreen = async (options) => {
+      if (options?.platformPresence && ++presenceReads === 2)
+        throw new NativeSnapshotIncomplete(121, ['retry-deadline']);
+      return form(options?.platformPresence === true, { accessible });
+    };
+    f.deps.screenshot = async () => assert.fail('incomplete reads withhold screenshots');
+    const result = await runPlan(parsePlan('1. Wait for "name-field" to appear').blocks!, f.deps);
+    assert.equal(result.verdict, 'FAIL');
+    assert.match(result.failure?.seen ?? '', /^TARGET_REACT_ONLY: /);
+    assert.equal(presenceReads, 2);
+    assert.equal(f.deps.now(), accessible ? 2 * WAIT_POLL_MS : WAIT_BUDGET_MS);
+    assert.equal(result.videoPublication, 'unknown');
+    assert.equal(result.nonStrictPublication, undefined);
+    assert.equal(result.failure?.screenshot, undefined);
+    assert.deepEqual(f.actions, []);
+  }
 });
 
 test('a first visibility check whose evidence refresh runs out of time ends as a wait failure', async () => {
@@ -505,3 +532,33 @@ test('a wait whose first capture never completes reports the capture deadline', 
   );
   assert.deepEqual(f.actions, []);
 });
+
+for (const accessible of [false, true]) {
+  test(`a React-only wait on a form with Cancel never dismisses it (accessible wrapper: ${accessible})`, async () => {
+    const f = walker(
+      [],
+      scriptedJudge(() => assert.fail('a quoted wait is model-free')),
+    );
+    f.deps.hideDevMenu = async () => ({ ok: true, proven: true });
+    f.deps.captureScreen = async (options) => {
+      const snapshot = form(options?.platformPresence === true, {
+        accessible,
+        fieldY: accessible ? 404 : 700,
+        otherScroll: !accessible,
+      });
+      return {
+        ...snapshot,
+        elements: [...snapshot.elements, element('@cancel', 'Cancel')],
+        visibleText: [...snapshot.visibleText, 'Cancel'],
+      };
+    };
+    const result = await runPlan(parsePlan('1. Wait for "name-field" to appear').blocks!, f.deps);
+    assert.equal(result.verdict, 'FAIL');
+    assert.match(result.failure?.seen ?? '', /^TARGET_REACT_ONLY: /);
+    assert.deepEqual(f.actions, []);
+    assert.equal(f.deps.now(), accessible ? 2 * WAIT_POLL_MS : WAIT_BUDGET_MS);
+    assert.ok(!result.recoveries);
+    assert.equal(result.steps.at(-1)?.interruption?.outcome, 'vetoed');
+    assert.equal(result.steps.at(-1)?.interruption?.veto, 'uncovered-target');
+  });
+}

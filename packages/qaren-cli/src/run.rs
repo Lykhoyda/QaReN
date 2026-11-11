@@ -64,6 +64,8 @@ pub struct RunRequest {
     pub pr: Option<PrTarget>,
     // --hold / --no-hold; None leaves the decision to hold_on_fail.
     pub hold: Option<bool>,
+    // qaren check --record: record this walk under the same rules as qaren pr.
+    pub record: bool,
 }
 
 const HOLD_REASON: &str = "retained for inspection";
@@ -156,6 +158,8 @@ struct Device {
     ios: Option<(String, String)>,
     android: Option<BorrowedEmulatorResource>,
     needs_boot: bool,
+    // Wall-clock time the inventory showed the simulator Booted.
+    booted_at_ms: Option<u64>,
 }
 
 fn platform_str(platform: Platform) -> &'static str {
@@ -650,6 +654,9 @@ fn run_inner(
             name: device.name.clone(),
             device_type: device_type.clone(),
             runtime: runtime.clone(),
+            boot_authorized: req.boot_device || req.restart_device,
+            owned_by_run: false,
+            booted_proven_at: device.booted_at_ms.map(timefmt::iso8601_utc),
         });
     if let Some(emulator) = &device.android {
         let home = req
@@ -699,6 +706,7 @@ fn run_inner(
         runs_root: req.runs_root.clone(),
         native_cache_root: req.native_cache_root.clone(),
         native_store_entry: None,
+        plan_fingerprint: None,
         ios_observation: None,
         linkage_before_build: None,
         ios_generated_native: false,
@@ -779,6 +787,9 @@ fn run_inner(
                 );
             }
             device.needs_boot = refreshed.needs_boot;
+            if let Some(sim) = ctx.record.resources.ios_simulator.as_mut() {
+                sim.booted_proven_at = refreshed.booted_at_ms.map(timefmt::iso8601_utc);
+            }
         }
 
         let ios_lifecycle = req.boot_device || req.restart_device || req.shutdown_device_on_exit;
@@ -968,14 +979,20 @@ fn run_inner(
         }
 
         if pr_state.is_some() {
-            if let Err(detail) = candidate::verify_unchanged(ctx.runner, &ctx.record.candidate) {
-                let f = Failure::new(
-                    "pr",
-                    FailureCode::CandidateDrifted,
-                    format!("the pull request worktree changed before the walk: {detail}"),
-                    "re-run qaren pr; nothing may modify the run's worktree",
-                );
-                return finish_failed(ctx, f);
+            match candidate::verify_unchanged(ctx.runner, &ctx.record.candidate) {
+                Ok(()) => {}
+                Err(candidate::CandidateCheck::Unreadable(_)) => {
+                    return finish_failed(ctx, Failure::candidate_unavailable("pr"));
+                }
+                Err(candidate::CandidateCheck::Drifted(detail)) => {
+                    let f = Failure::new(
+                        "pr",
+                        FailureCode::CandidateDrifted,
+                        format!("the pull request worktree changed before the walk: {detail}"),
+                        "re-run qaren pr; nothing may modify the run's worktree",
+                    );
+                    return finish_failed(ctx, f);
+                }
             }
         }
         if pr_state.is_some() {
@@ -1002,44 +1019,53 @@ fn run_inner(
         let mut video = None;
         // Taken before the spawn, so the trim offset can only cut later than the true admission frame.
         let recording_from = ctx.runner.now_epoch_ms();
-        if resolved_inputs.has_inputs()
+        let recording_requested = pr_state.is_some() || req.record;
+        if !recording_requested {
+            events::stage("recording", StageState::Skipped, None, None);
+        } else if resolved_inputs.has_inputs()
             && (config.video != record::VideoPolicy::NonStrict
                 || crate::redact::private_output_mode())
         {
             events::stage("recording", StageState::Skipped, None, None);
-            video = Some(VideoStatus::Unavailable(
+            video = Some(VideoStatus::unavailable(
                 "runtime inputs withhold recording".to_string(),
             ));
-        } else if pr_state.is_some() {
-            if device
-                .android
-                .as_ref()
-                .is_some_and(|emulator| emulator.api_level < 34)
-            {
-                events::stage("recording", StageState::Skipped, None, None);
-                video = Some(VideoStatus::Unavailable(
-                    "Android API <34 stops screen recording at 180 s".into(),
-                ));
-            } else {
-                events::stage("recording", StageState::Running, None, None);
-                let adb = ctx.record.resources.adb_path.clone();
-                let target = match &device.android {
-                    Some(emulator) => record::RecordTarget::Android {
-                        adb: adb.as_deref().expect("borrowed emulator adb path"),
-                        port: emulator.server_port,
-                        serial: &emulator.serial,
-                    },
-                    None => record::RecordTarget::Ios(&device.id),
-                };
-                if let Err(status) =
-                    record::start(ctx.runner, &mut ctx.record, &ctx.runs_root, target)
-                {
-                    events::stage("recording", StageState::Failed, None, None);
-                    video = Some(status);
-                }
-            }
-        } else {
+        } else if device
+            .android
+            .as_ref()
+            .is_some_and(|emulator| emulator.api_level < 34)
+        {
             events::stage("recording", StageState::Skipped, None, None);
+            video = Some(VideoStatus::unavailable(
+                "Android API <34 stops screen recording at 180 s".into(),
+            ));
+        } else {
+            events::stage("recording", StageState::Running, None, None);
+            let adb = ctx.record.resources.adb_path.clone();
+            let target = match &device.android {
+                Some(emulator) => record::RecordTarget::Android {
+                    adb: adb.as_deref().expect("borrowed emulator adb path"),
+                    port: emulator.server_port,
+                    serial: &emulator.serial,
+                },
+                None => record::RecordTarget::Ios(&device.id),
+            };
+            if let Err(status) = record::start(ctx.runner, &mut ctx.record, &ctx.runs_root, target)
+            {
+                events::stage("recording", StageState::Failed, None, None);
+                video = Some(status);
+            }
+        }
+        // Any exit after this point carries the check's video statement; the normal path replaces it.
+        if pr_state.is_none() {
+            let provisional = match &video {
+                _ if !req.record => {
+                    "not recorded; pass --record to qaren check to record this walk".to_string()
+                }
+                Some(status) => status.to_string(),
+                None => "unavailable(recording started; the run ended before it was finalized; the raw capture is kept in media/)".to_string(),
+            };
+            ctx.notes.push(("video".to_string(), provisional));
         }
         let recording_ready = ctx.runner.now_epoch_ms();
         if req.platform == Platform::Ios && resolved_inputs.has_inputs() {
@@ -1208,21 +1234,37 @@ fn run_inner(
         let final_verification = FinalVerification {
             tested: ctx.record.candidate.git_sha.clone(),
             matched: verified.is_ok(),
-            detail: verified.clone().err(),
+            detail: verified
+                .as_ref()
+                .err()
+                .map(|check| check.detail().to_string()),
+            classification: verified.as_ref().err().map(|check| check.classification()),
         };
+        let cancelled_walk = outcome
+            .failure
+            .as_ref()
+            .is_some_and(|failure| failure.code == FailureCode::RunCancelled)
+            || matches!(&outcome.verdict, Verdict::Refused { code, .. } if code == "RUN_CANCELLED");
         match verified {
             Ok(()) => ctx
                 .notes
                 .push(("candidate_drift".to_string(), "none".to_string())),
-            Err(detail)
-                if outcome
-                    .failure
-                    .as_ref()
-                    .is_some_and(|failure| failure.code == FailureCode::RunCancelled) =>
-            {
-                ctx.notes.push(("candidate_drift".to_string(), detail));
+            Err(check) if cancelled_walk => {
+                ctx.notes
+                    .push(("candidate_drift".to_string(), check.detail().to_string()));
             }
-            Err(detail) => {
+            Err(candidate::CandidateCheck::Unreadable(detail)) => {
+                let unavailable = Failure::candidate_unavailable("verify");
+                outcome.verdict = Verdict::Refused {
+                    code: "CANDIDATE_UNAVAILABLE".to_string(),
+                    message: unavailable.detail.to_string(),
+                };
+                outcome.ledger.verdict = "REFUSED".to_string();
+                outcome.failure = Some(unavailable);
+                ctx.notes
+                    .push(("candidate_unavailable".to_string(), detail));
+            }
+            Err(candidate::CandidateCheck::Drifted(detail)) => {
                 outcome.verdict = Verdict::Fail;
                 outcome.ledger.verdict = "FAIL".to_string();
                 outcome.failure = Some(Failure::new(
@@ -1282,24 +1324,24 @@ fn run_inner(
         }
         let mut early_cleanup = Vec::new();
         let mut blocks = Vec::new();
-        if pr_state.is_some() {
-            if ctx.record.resources.recorder.is_some() {
-                let outcome = record::stop(ctx.runner, &mut ctx.record, &ctx.runs_root);
-                let state = if outcome.clean() {
-                    StageState::Passed
-                } else {
-                    StageState::Failed
-                };
-                if video.is_none() {
-                    events::stage("recording", state, None, None);
-                }
-                if !outcome.clean() && video.is_none() {
-                    video = Some(VideoStatus::Unavailable(
-                        "the recorder did not stop cleanly".into(),
-                    ));
-                }
-                early_cleanup.push(("recorder".to_string(), outcome.render()));
+        if ctx.record.resources.recorder.is_some() {
+            let outcome = record::stop(ctx.runner, &mut ctx.record, &ctx.runs_root);
+            let state = if outcome.clean() {
+                StageState::Passed
+            } else {
+                StageState::Failed
+            };
+            if video.is_none() {
+                events::stage("recording", state, None, None);
             }
+            if !outcome.clean() && video.is_none() {
+                video = Some(VideoStatus::unavailable(
+                    "the recorder did not stop cleanly".into(),
+                ));
+            }
+            early_cleanup.push(("recorder".to_string(), outcome.render()));
+        }
+        if pr_state.is_some() {
             let refused;
             (blocks, refused) = worktree::copy_blocks(
                 ctx.runner,
@@ -1343,20 +1385,6 @@ fn run_inner(
             ctx.mark("springboard_scan", t);
         }
 
-        let report_path = match report::write(
-            &run_dir,
-            &ReportInput {
-                run_id: &run_id,
-                platform: platform_str(req.platform),
-                app_id: &config.app_id,
-                device: &device.name,
-                ledger: &outcome.ledger,
-            },
-        ) {
-            Ok(path) => path,
-            Err(f) => return ctx.fail(f),
-        };
-
         if let Some(entry) = outcome.ledger.media_withheld.as_ref().and_then(|media| {
             if config.video == record::VideoPolicy::NonStrict {
                 media.video.as_ref().or(media.screenshots.as_ref())
@@ -1397,7 +1425,10 @@ fn run_inner(
             ),
         };
         if let (Some(failure), Verdict::Refused { code, .. }) = (&mut failure, &outcome.verdict) {
-            let cause = if code == "RUN_CANCELLED"
+            // Only an admission-caused refusal takes the admission overlay; a CLI-owned verification refusal keeps its own phase and next step.
+            let cause = if failure.code == FailureCode::CandidateUnavailable {
+                None
+            } else if code == "RUN_CANCELLED"
                 && !outcome.admitted
                 && outcome.ledger.press_evidence.is_none()
             {
@@ -1437,79 +1468,28 @@ fn run_inner(
         let mut published_video = None;
         let mut video_continuity = Vec::new();
         if let Some(pr) = &pr_state {
-            let raw = record::raw_capture(&run_dir.join("media"));
-            let video = video.unwrap_or_else(|| record::finalize(ctx.runner, &run_dir));
+            let (video, continuity) = finish_video(
+                &mut ctx,
+                &run_dir,
+                video,
+                &outcome,
+                req.platform,
+                recording_from,
+                recording_ready,
+                core_request.t0,
+            );
+            video_continuity = continuity;
             ctx.notes.push(("video".to_string(), video.to_string()));
-            if video == VideoStatus::Available {
-                if let Some(bytes) = reclaim_raw_capture(&run_dir) {
-                    ctx.notes.push((
-                        "reclaimed".to_string(),
-                        format!(
-                            "media/{}: {bytes} bytes",
-                            raw.file_name().unwrap().to_string_lossy()
-                        ),
-                    ));
-                }
+            if let Some(code) = video.reason() {
+                ctx.notes.push(("videoReason".into(), code.as_str().into()));
             }
-            // The copy skips setup while preserving admission and pre-plan login boundaries.
-            let video = if video == VideoStatus::Available || outcome.ledger.publication_interrupted
-            {
-                let offset = outcome.ledger.admitted_at_ms.map(|admitted| {
-                    admitted
-                        .max(outcome.ledger.publish_from_ms.unwrap_or(admitted))
-                        .saturating_sub(recording_from)
-                        .max(outcome.first_step_start_ms.unwrap_or(0))
-                });
-                // Row t is relative to t0, taken after the recording started, so it can only cut before the true last-row frame.
-                let end = outcome.ledger.steps.iter().map(|s| s.t).max();
-                let video = record::publication_copy(
-                    ctx.runner,
-                    &run_dir,
-                    offset,
-                    end,
-                    outcome.ledger.publication_interrupted,
-                );
-                if video == VideoStatus::Available {
-                    if let Some(offset) = offset.filter(|_| req.platform == Platform::Ios) {
-                        if let Some(stalls) = record::detect_continuity(
-                            ctx.runner,
-                            &run_dir,
-                            &outcome.ledger,
-                            recording_from,
-                            recording_ready,
-                            offset,
-                            core_request.t0,
-                        ) {
-                            video_continuity = stalls;
-                            ctx.notes.push((
-                                "video_continuity".into(),
-                                if video_continuity.is_empty() {
-                                    "examined".into()
-                                } else {
-                                    video_continuity
-                                        .iter()
-                                        .map(record::VideoStall::receipt)
-                                        .collect::<Vec<_>>()
-                                        .join("; ")
-                                },
-                            ));
-                        }
-                    }
-                    if let Some((start, end)) = offset.zip(end).and_then(|(start, end)| {
-                        let admitted = outcome.ledger.admitted_at_ms?;
-                        Some((
-                            recording_from.checked_add(start)?.checked_sub(admitted)?,
-                            recording_from.checked_add(end)?.checked_sub(admitted)?,
-                        ))
-                    }) {
-                        ctx.notes
-                            .push(("video_window".into(), format!("start={start}; end={end}")));
-                    }
-                }
-                video
-            } else {
-                video
-            };
+            if let Some(line) = report::video_outcome_line(
+                &outcome.ledger,
+                &outcome.ledger.video_publication.clone().unwrap_or_default(),
+                Some(&video),
+            ) {
+                ctx.notes.push(("video_summary".into(), line));
+            }
             // ⑭: a head that moved during the run means an older commit was tested.
             match github::pr_view(ctx.runner, &pr.info.url, &pr.repo_root) {
                 Ok(now) if now.head_ref_oid != pr.info.head_ref_oid => {
@@ -1521,7 +1501,41 @@ fn run_inner(
                     .push(("pr_head_recheck".to_string(), f.detail.to_string())),
             }
             published_video = Some(video);
+        } else if req.record && ctx.runner.cancellation().is_none() {
+            // A cancelled run refuses the encoder's commands, so the provisional note stays.
+            let (video, _) = finish_video(
+                &mut ctx,
+                &run_dir,
+                video,
+                &outcome,
+                req.platform,
+                recording_from,
+                recording_ready,
+                core_request.t0,
+            );
+            check_video_notes(
+                &mut ctx.notes,
+                &run_dir,
+                &video,
+                config.video,
+                &outcome.ledger,
+            );
         }
+
+        let report_path = match report::write(
+            &run_dir,
+            &ReportInput {
+                video: published_video.as_ref(),
+                run_id: &run_id,
+                platform: platform_str(req.platform),
+                app_id: &config.app_id,
+                device: &device.name,
+                ledger: &outcome.ledger,
+            },
+        ) {
+            Ok(path) => path,
+            Err(f) => return ctx.fail(f),
+        };
 
         let cancelled = match ensure_running(ctx.runner, "finalize") {
             Err(late) => {
@@ -1598,9 +1612,20 @@ fn run_inner(
                 app_id: config.app_id.clone(),
                 device: device.name.clone(),
                 plan_sha256: sha256_hex(plan.as_bytes()),
+                video_reason: video.reason(),
+                video_interruption: crate::publish::VideoInterruption::from_ledger(
+                    &video,
+                    &outcome.ledger,
+                    recording_from,
+                ),
                 video,
                 video_continuity,
-                video_withholding_reason: video_publication
+                video_withholding_reason: config
+                    .video
+                    .publication(
+                        &video_publication,
+                        outcome.ledger.non_strict_publication.as_ref(),
+                    )
                     .withholding_reason()
                     .map(str::to_string),
                 video_publication,
@@ -1727,6 +1752,127 @@ fn springboard_crash_after(runner: &mut dyn Runner, udid: &str, since_ms: u64) -
         runner.sleep(std::time::Duration::from_secs(1));
     }
     None
+}
+
+// ⑨: encode, trim and the window notes, shared by pr and check --record.
+#[allow(clippy::too_many_arguments)]
+fn finish_video(
+    ctx: &mut Ctx,
+    run_dir: &Path,
+    video: Option<VideoStatus>,
+    outcome: &core::CoreOutcome,
+    platform: Platform,
+    recording_from: u64,
+    recording_ready: u64,
+    t0: u64,
+) -> (VideoStatus, Vec<record::VideoStall>) {
+    let mut continuity = Vec::new();
+    let raw = record::raw_capture(&run_dir.join("media"));
+    let video = video.unwrap_or_else(|| record::finalize(ctx.runner, run_dir));
+    if video == VideoStatus::Available {
+        if let Some(bytes) = reclaim_raw_capture(run_dir) {
+            ctx.notes.push((
+                "reclaimed".to_string(),
+                format!(
+                    "media/{}: {bytes} bytes",
+                    raw.file_name().unwrap().to_string_lossy()
+                ),
+            ));
+        }
+    }
+    // The copy skips setup while preserving admission and pre-plan login boundaries.
+    let video = if video == VideoStatus::Available || outcome.ledger.publication_interrupted {
+        let offset = outcome.ledger.admitted_at_ms.map(|admitted| {
+            admitted
+                .max(outcome.ledger.publish_from_ms.unwrap_or(admitted))
+                .saturating_sub(recording_from)
+                .max(outcome.first_step_start_ms.unwrap_or(0))
+        });
+        // Row t is relative to t0, taken after the recording started, so it can only cut before the true last-row frame.
+        let end = outcome.ledger.steps.iter().map(|s| s.t).max();
+        let video = record::publication_copy(
+            ctx.runner,
+            run_dir,
+            offset,
+            end,
+            outcome.ledger.publication_interrupted,
+        );
+        if video == VideoStatus::Available {
+            if let Some(offset) = offset.filter(|_| platform == Platform::Ios) {
+                if let Some(stalls) = record::detect_continuity(
+                    ctx.runner,
+                    run_dir,
+                    &outcome.ledger,
+                    recording_from,
+                    recording_ready,
+                    offset,
+                    t0,
+                ) {
+                    continuity = stalls;
+                    ctx.notes.push((
+                        "video_continuity".into(),
+                        if continuity.is_empty() {
+                            "examined".into()
+                        } else {
+                            continuity
+                                .iter()
+                                .map(record::VideoStall::receipt)
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        },
+                    ));
+                }
+            }
+            if let Some((start, end)) = offset.zip(end).and_then(|(start, end)| {
+                let admitted = outcome.ledger.admitted_at_ms?;
+                Some((
+                    recording_from.checked_add(start)?.checked_sub(admitted)?,
+                    recording_from.checked_add(end)?.checked_sub(admitted)?,
+                ))
+            }) {
+                ctx.notes
+                    .push(("video_window".into(), format!("start={start}; end={end}")));
+            }
+        }
+        video
+    } else {
+        video
+    };
+    (video, continuity)
+}
+
+// A check names only the trimmed copy, and the declared policy's privacy verdict for that file alone.
+fn check_video_notes(
+    notes: &mut Vec<(String, String)>,
+    run_dir: &Path,
+    video: &VideoStatus,
+    policy: record::VideoPolicy,
+    ledger: &core::Ledger,
+) {
+    notes.retain(|(key, _)| key != "video");
+    notes.push(("video".to_string(), video.to_string()));
+    let published = record::published_video_path(run_dir);
+    if let (VideoStatus::Available, Ok(file)) = (video, published.strip_prefix(run_dir)) {
+        if published.is_file() {
+            notes.push(("video_file".to_string(), file.display().to_string()));
+            let verdict = policy.publication(
+                &ledger.video_publication.clone().unwrap_or_default(),
+                ledger.non_strict_publication.as_ref(),
+            );
+            let name = serde_json::to_value(&verdict)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_string))
+                .unwrap_or_default();
+            let verdict = match verdict.withholding_reason() {
+                None => name,
+                Some(reason) => format!("{name}: {reason}; keep this file local"),
+            };
+            notes.push(("video_policy_verdict".to_string(), verdict));
+        }
+    }
+    if let Some(step) = record::video_next_step(video) {
+        notes.push(("video_next_step".to_string(), step.to_string()));
+    }
 }
 
 // The raw capture in this run's own directory is redundant once a playable video.mp4 replaces it.
@@ -2717,12 +2863,14 @@ fn resolve_device(
             .map_err(|unavailable| {
                 unavailable.into_failure("device", FailureCode::SimulatorInventoryUnavailable)
             })?;
+            let observed_ms = runner.now_epoch_ms();
             let borrow = |sim: &ios::Simulator| Device {
                 id: sim.udid.clone(),
                 name: sim.name.clone(),
                 ios: Some((sim.device_type.clone(), sim.runtime.clone())),
                 android: None,
                 needs_boot: sim.state == ios::SimState::Shutdown,
+                booted_at_ms: (sim.state == ios::SimState::Booted).then_some(observed_ms),
             };
             if strict_inventory {
                 return device
@@ -2990,6 +3138,7 @@ fn borrow_emulator(
             abi,
         }),
         needs_boot: false,
+        booted_at_ms: None,
     })
 }
 
@@ -3203,6 +3352,7 @@ pub(crate) fn cleanup_first(cleanup: &str, failure: &Failure) -> String {
     if failure.suggestion.is_some()
         || failure.repeat.is_some()
         || failure.subreason.as_deref() == Some(PREVIOUS_PLAN_PRESS)
+        || failure.code == FailureCode::CandidateUnavailable
     {
         format!("{cleanup}; then {}", failure.next_action.as_str())
     } else {
@@ -3970,6 +4120,11 @@ mod last_screen_tests {
             "fix the plan",
         );
         assert_eq!(cleanup_first(cleanup, &plain), cleanup);
+        let unavailable = Failure::candidate_unavailable("verify");
+        assert_eq!(
+            cleanup_first(cleanup, &unavailable),
+            format!("{cleanup}; then {}", unavailable.next_action.as_str())
+        );
     }
 
     #[test]

@@ -9,6 +9,7 @@ import {
 import { join } from '../../../dist/qa/screen.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
+import { createWriter, resultForWalk } from '../../../dist/qa/wire.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import { element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
 
@@ -503,8 +504,18 @@ for (const policy of [undefined, 'strict', 'non-strict'] as const) {
           (prior === 'plan-fill' ? '\n1. Fill "fixture" with "synthetic"' : '');
         const result = await runPlan(parsePlan(plan).blocks!, f.deps);
         assert.equal(result.verdict, 'REFUSED');
-        assert.equal(result.code, 'PRIVATE_INPUT_CAPTURE_UNKNOWN');
+        assert.equal(
+          result.code,
+          kind === 'native' ? 'NATIVE_SNAPSHOT_INCOMPLETE' : 'PRIVATE_INPUT_CAPTURE_UNKNOWN',
+        );
         assert.equal(result.videoPublication, 'unknown');
+        assert.equal(Object.hasOwn(result, 'nonStrictPublication'), false);
+        const lines: string[] = [];
+        const writer = createWriter((line) => lines.push(line), 'capture-unknown');
+        assert.equal(writer.result(resultForWalk(result, 'lease')), 4);
+        const payload = JSON.parse(lines[0]).payload;
+        assert.equal(payload.videoPublication, 'unknown');
+        assert.equal(Object.hasOwn(payload, 'nonStrictPublication'), false);
         assert.equal(result.publicationInterrupted, false);
         assert.ok(!JSON.stringify(result).includes(canary));
       });

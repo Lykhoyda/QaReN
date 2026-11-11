@@ -6,11 +6,14 @@ import { renderReason } from '../../../dist/qa/untrusted.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { applicationFrame, elementFrame, join, screenSignature } from '../../../dist/qa/screen.js';
 import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
-import { walkBlock } from '../../../dist/qa/walker.js';
+import { runPlan, walkBlock } from '../../../dist/qa/walker.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
 import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
 import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
-import { applyNativePrivateInputs } from '../../../dist/qa/private-input.js';
+import {
+  applyNativePrivateInputs,
+  NativeSnapshotIncomplete,
+} from '../../../dist/qa/private-input.js';
 
 const fixture = (name: string) =>
   readFileSync(new URL(`../../fixtures/tap-pixels/${name}.png`, import.meta.url));
@@ -104,6 +107,34 @@ test('a stable visible toggle with no accessibility state passes on its first pr
     'sleep 200',
     'pixel shot',
   ]);
+});
+
+test('a recovered native Wait withholds later ledger and comparison screenshots', async () => {
+  const before = fixture('toggle1-before');
+  const after = fixture('toggle1-after');
+  for (const policy of ['strict', 'non-strict', 'undeclared'] as const) {
+    const f = fake([option(before)], [before, after, after]);
+    f.deps.videoPolicy = policy;
+    const capture = f.deps.captureScreen;
+    let reads = 0;
+    f.deps.captureScreen = async (options) => {
+      if (++reads === 1) throw new NativeSnapshotIncomplete(1, ['retry-deadline']);
+      return capture(options);
+    };
+    const result = await runPlan(
+      parsePlan('1. Wait for "option"\n2. Tap "option"').blocks!,
+      f.deps,
+    );
+    assert.equal(result.verdict, 'FAIL', policy);
+    assert.equal(result.videoPublication, 'unknown', policy);
+    assert.equal(f.calls.filter((call) => call.startsWith('press')).length, 2, policy);
+    assert.equal(f.calls.includes('pixel shot'), false, policy);
+    assert.equal(f.calls.includes('ledger shot'), false, policy);
+    assert.ok(
+      result.steps.every((step) => step.screenshot === undefined),
+      policy,
+    );
+  }
 });
 
 for (const policy of [undefined, 'strict', 'non-strict'] as const) {

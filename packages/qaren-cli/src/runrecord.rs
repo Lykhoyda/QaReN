@@ -148,12 +148,21 @@ pub struct LaneEvidence {
     pub first_screen: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IosSimResource {
     pub udid: String,
     pub name: String,
     pub device_type: String,
     pub runtime: String,
+    // This run may boot the simulator: a created or pool simulator, or --boot-device/--restart-device.
+    #[serde(default)]
+    pub boot_authorized: bool,
+    // The run created this simulator, so it is in custody without a device lease.
+    #[serde(default)]
+    pub owned_by_run: bool,
+    // When this run last observed the simulator Booted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub booted_proven_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -631,6 +640,9 @@ pub struct FinalVerification {
     pub matched: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    // Absent on records written before verification was classified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classification: Option<crate::candidate::VerificationClass>,
 }
 
 impl TerminalResult {
@@ -649,6 +661,12 @@ impl TerminalResult {
                 "the run was cancelled before its result was final",
                 "re-run qaren pr; a cancelled run is never published",
             );
+        }
+        if !self.final_verification.matched
+            && self.final_verification.classification
+                == Some(crate::candidate::VerificationClass::Unreadable)
+        {
+            return Some(Failure::candidate_unavailable("publish"));
         }
         if !self.final_verification.matched {
             return refuse(
@@ -671,6 +689,28 @@ impl TerminalResult {
     }
 }
 
+// The run's state, derived from phase, terminal and held. Read-only: writers still assign the fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunState<'a> {
+    // Created, DepsInstalled, ResourcesAllocated or Building.
+    Preparing,
+    Ready,
+    HandedOff,
+    // The walk is running.
+    Walking,
+    Ended {
+        walked: Option<&'a TerminalResult>,
+        cleanup: Cleanup<'a>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cleanup<'a> {
+    Clean,
+    Owed,
+    Held(&'a Held),
+}
+
 pub fn validate_run_id(run_id: &str) -> Result<(), Failure> {
     let ok = !run_id.is_empty()
         && !run_id.starts_with('-')
@@ -690,6 +730,27 @@ pub fn validate_run_id(run_id: &str) -> Result<(), Failure> {
 }
 
 impl RunRecord {
+    // First match wins. A walk that ends with unclean teardown goes back to walking with terminal set,
+    // and a hold is saved before terminal, so walking + held is ended whether terminal is there or not.
+    pub fn state(&self) -> RunState<'_> {
+        let walked = self.terminal.as_ref();
+        let ended = |cleanup| RunState::Ended { walked, cleanup };
+        match (self.phase, walked, self.held.as_ref()) {
+            (Phase::Cleaned, _, _) => ended(Cleanup::Clean),
+            (Phase::Failed, _, _) => ended(Cleanup::Owed),
+            (Phase::Walking, _, Some(held)) => ended(Cleanup::Held(held)),
+            (_, Some(_), _) => ended(Cleanup::Owed),
+            (Phase::Walking, None, None) => RunState::Walking,
+            (Phase::Ready, None, _) => RunState::Ready,
+            (Phase::HandedOff, None, _) => RunState::HandedOff,
+            (
+                Phase::Created | Phase::DepsInstalled | Phase::ResourcesAllocated | Phase::Building,
+                None,
+                _,
+            ) => RunState::Preparing,
+        }
+    }
+
     pub(crate) fn holds_device_lease(&self) -> bool {
         self.resources.lease.as_ref().is_some_and(|lease| {
             crate::buildplan::read_holder(&lease.lock_dir)

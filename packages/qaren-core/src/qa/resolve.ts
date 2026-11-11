@@ -25,6 +25,7 @@ import {
   elementViewport,
   forwardedInputOf,
   isScrollContainer,
+  reportsNotScrollable,
   isWindow,
   insideAlert,
   hasNativeSheet,
@@ -1086,6 +1087,27 @@ export function plainScrollBand(
   direction: 'up' | 'down',
   platform?: 'ios' | 'android',
 ): PlainScrollBand {
+  // Today's selection stands unless it would drag a container that reports it cannot scroll (an
+  // Android navigation wrapper); only then does the selection without such containers decide.
+  const all = selectPlainScrollBand(screen, direction, platform, () => true);
+  if (!all.container || all.status === 'unreachable' || !reportsNotScrollable(all.container))
+    return all;
+  const real = selectPlainScrollBand(
+    screen,
+    direction,
+    platform,
+    (container) => !reportsNotScrollable(container),
+  );
+  // A list to drag, or the refusal that its cover is in the way; never a bare fallback.
+  return real.container ? real : all;
+}
+
+function selectPlainScrollBand(
+  screen: Screen,
+  direction: 'up' | 'down',
+  platform: 'ios' | 'android' | undefined,
+  eligible: (container: Element) => boolean,
+): PlainScrollBand {
   if ((screen.captureCoverage?.native ?? screen.coverage?.native) !== 'complete')
     return { status: 'no-geometry' };
   const root =
@@ -1099,6 +1121,7 @@ export function plainScrollBand(
   const unproven: typeof candidates = [];
   let tooSmall: ScrollBandReceipt | undefined;
   for (const container of screen.elements) {
+    if (!eligible(container)) continue;
     if (!isScrollContainer(container) || horizontalOnlyContainer(scrollContainerType(container)))
       continue;
     const frame = elementFrame(container);
@@ -1446,13 +1469,19 @@ function idSeen(id: string | undefined, screen: Screen, hits?: OverlayHits): boo
   );
 }
 
-export function targetOnScreen(screen: Screen, target: Target, hits?: OverlayHits): boolean {
+export function targetOnScreen(
+  screen: Screen,
+  target: Target,
+  hits?: OverlayHits,
+  includeHidden = false,
+): boolean {
   const quoted = target.quoted;
   if (quoted === undefined) return true;
   if (
     target.exact !== 'text' &&
     idIdentities(quoted, screen).some(
-      ({ element }) => !element.offscreen && !presenceCovered(element, screen, hits),
+      ({ element }) =>
+        includeHidden || (!element.offscreen && !presenceCovered(element, screen, hits)),
     )
   )
     return true;
@@ -1461,17 +1490,16 @@ export function targetOnScreen(screen: Screen, target: Target, hits?: OverlayHit
   if (evidence === 'unsure' || screen.unresolvedText?.some((line) => line.includes(quoted)))
     return true;
   return (
-    evidence === 'pass' &&
-    literalTextProjection(screen).elements.some(
+    (includeHidden || evidence === 'pass') &&
+    (includeHidden ? screen : literalTextProjection(screen)).elements.some(
       (e) =>
-        contributesLiteralText(e) &&
+        (includeHidden || contributesLiteralText(e)) &&
         (e.label?.includes(quoted) ||
           e.value?.includes(quoted) ||
           (e.kind === 'input' &&
             e.value !== undefined &&
             `${e.label ?? e.placeholder ?? e.testID ?? 'input'}: ${e.value}`.includes(quoted))) &&
-        !e.offscreen &&
-        !presenceCovered(e, screen, hits),
+        (includeHidden || (!e.offscreen && !presenceCovered(e, screen, hits))),
     )
   );
 }

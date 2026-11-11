@@ -107,6 +107,7 @@ fn run_record_round_trips() {
         name: "qaren-roundtrip1".to_string(),
         device_type: "dt".to_string(),
         runtime: "rt".to_string(),
+        ..Default::default()
     });
     record.resources.metro = Some(qaren::runrecord::MetroResource {
         port: 8791,
@@ -271,6 +272,7 @@ fn borrowed_ios_stop_transitions_and_load_validation_require_canonical_borrowed_
         name: "selected".into(),
         device_type: "com.apple.CoreSimulator.SimDeviceType.iPhone-17".into(),
         runtime: "com.apple.CoreSimulator.SimRuntime.iOS-26-5".into(),
+        ..Default::default()
     };
     let mut resources = Resources::default();
     assert_eq!(resources.borrowed_ios_stop(), BorrowedIosStop::NotArmed);
@@ -487,4 +489,220 @@ fn press_failure_recovery_round_trips_without_build_metadata() {
     assert!(restored.build_recovery().is_none());
     let recovery = restored.recovery.unwrap().with_own_cleanup("own-run");
     assert_eq!(serde_json::to_value(recovery).unwrap(), value["recovery"]);
+}
+
+const ALL_PHASES: [Phase; 9] = [
+    Phase::Created,
+    Phase::DepsInstalled,
+    Phase::ResourcesAllocated,
+    Phase::Building,
+    Phase::Ready,
+    Phase::Walking,
+    Phase::HandedOff,
+    Phase::Failed,
+    Phase::Cleaned,
+];
+
+fn state_terminal(cancelled: bool) -> qaren::runrecord::TerminalResult {
+    qaren::runrecord::TerminalResult {
+        verdict: "FAIL".into(),
+        cancelled,
+        final_verification: qaren::runrecord::FinalVerification {
+            tested: "b".repeat(40),
+            matched: true,
+            detail: None,
+            classification: None,
+        },
+        ownership_proven: true,
+    }
+}
+
+fn state_held() -> qaren::runrecord::Held {
+    qaren::runrecord::Held {
+        since: "2026-11-10T10:00:00Z".into(),
+        reason: "the walk failed".into(),
+        retained: vec!["metro".into(), "lease".into()],
+    }
+}
+
+fn state_record() -> RunRecord {
+    let repo = common::temp_repo();
+    common::base_record(
+        &repo,
+        &common::ios_scenario_yaml(8791),
+        "state1",
+        Phase::Created,
+    )
+}
+
+#[test]
+fn run_state_follows_the_derivation_table() {
+    use qaren::runrecord::{Cleanup, RunState};
+    let base = state_record();
+    let terminal = state_terminal(false);
+    let held = state_held();
+    let record = |phase,
+                  terminal: Option<&qaren::runrecord::TerminalResult>,
+                  held: Option<&qaren::runrecord::Held>| {
+        let mut record = base.clone();
+        record.phase = phase;
+        record.terminal = terminal.cloned();
+        record.held = held.cloned();
+        record
+    };
+    let ended = |walked, cleanup| RunState::Ended { walked, cleanup };
+    let t = Some(&terminal);
+    let h = Some(&held);
+    let rows = [
+        (1, record(Phase::Cleaned, t, h), ended(t, Cleanup::Clean)),
+        (
+            1,
+            record(Phase::Cleaned, None, None),
+            ended(None, Cleanup::Clean),
+        ),
+        (2, record(Phase::Failed, t, h), ended(t, Cleanup::Owed)),
+        (
+            2,
+            record(Phase::Failed, None, None),
+            ended(None, Cleanup::Owed),
+        ),
+        (
+            3,
+            record(Phase::Walking, t, h),
+            ended(t, Cleanup::Held(&held)),
+        ),
+        (
+            3,
+            record(Phase::Walking, None, h),
+            ended(None, Cleanup::Held(&held)),
+        ),
+        (4, record(Phase::Walking, t, None), ended(t, Cleanup::Owed)),
+        (5, record(Phase::Walking, None, None), RunState::Walking),
+        (6, record(Phase::Ready, t, h), ended(t, Cleanup::Owed)),
+        (
+            6,
+            record(Phase::HandedOff, t, None),
+            ended(t, Cleanup::Owed),
+        ),
+        (6, record(Phase::Building, t, None), ended(t, Cleanup::Owed)),
+        (7, record(Phase::Ready, None, h), RunState::Ready),
+        (8, record(Phase::HandedOff, None, h), RunState::HandedOff),
+        (9, record(Phase::Created, None, h), RunState::Preparing),
+        (
+            9,
+            record(Phase::DepsInstalled, None, None),
+            RunState::Preparing,
+        ),
+        (
+            9,
+            record(Phase::ResourcesAllocated, None, None),
+            RunState::Preparing,
+        ),
+        (9, record(Phase::Building, None, None), RunState::Preparing),
+    ];
+    for (row, record, expected) in &rows {
+        assert_eq!(
+            record.state(),
+            *expected,
+            "row {row}: {:?} terminal={} held={}",
+            record.phase,
+            record.terminal.is_some(),
+            record.held.is_some()
+        );
+    }
+}
+
+// Each moved reader's expression before and after RunRecord::state(), over every field combination.
+#[test]
+fn run_state_readers_answer_as_the_field_expressions_did() {
+    use qaren::runrecord::{Cleanup, RunState};
+    let base = state_record();
+    let mut checked = 0;
+    for phase in ALL_PHASES {
+        for terminal in [
+            None,
+            Some(state_terminal(false)),
+            Some(state_terminal(true)),
+        ] {
+            for held in [None, Some(state_held())] {
+                let mut r = base.clone();
+                r.phase = phase;
+                r.terminal = terminal.clone();
+                r.held = held.clone();
+                let case = format!(
+                    "{phase:?} terminal={:?} held={}",
+                    r.terminal.as_ref().map(|t| t.cancelled),
+                    r.held.is_some()
+                );
+
+                // commands/prepare.rs ready_holder
+                let old = matches!(r.phase, Phase::Ready | Phase::Walking | Phase::HandedOff)
+                    && r.terminal.is_none();
+                let new = matches!(
+                    r.state(),
+                    RunState::Ready
+                        | RunState::HandedOff
+                        | RunState::Walking
+                        | RunState::Ended {
+                            walked: None,
+                            cleanup: Cleanup::Held(_)
+                        }
+                );
+                assert_eq!(old, new, "ready_holder: {case}");
+
+                // commands/status.rs hold note
+                let old = r.held.as_ref().filter(|_| r.phase == Phase::Walking);
+                let new = match r.state() {
+                    RunState::Ended {
+                        cleanup: Cleanup::Held(held),
+                        ..
+                    } => Some(held),
+                    _ => None,
+                };
+                assert_eq!(old, new, "status hold note: {case}");
+
+                // commands/doctor.rs hold note
+                let old = r.held.clone().filter(|_| r.phase == Phase::Walking);
+                let new = (|| {
+                    let RunState::Ended {
+                        cleanup: Cleanup::Held(held),
+                        ..
+                    } = r.state()
+                    else {
+                        return None;
+                    };
+                    Some(held)
+                })();
+                assert_eq!(old.as_ref(), new, "doctor hold note: {case}");
+
+                // publish.rs final result
+                let old = r.terminal.clone();
+                let new = match r.state() {
+                    RunState::Ended {
+                        walked: Some(terminal),
+                        ..
+                    } => Some(terminal),
+                    _ => None,
+                };
+                assert_eq!(old.as_ref(), new, "publish: {case}");
+
+                // watch.rs terminal flag, on its Option<RunRecord>
+                let record = Some(r.clone());
+                let old = record.as_ref().is_some_and(|r| r.terminal.is_some());
+                let new = record.as_ref().is_some_and(|r| {
+                    matches!(
+                        r.state(),
+                        RunState::Ended {
+                            walked: Some(_),
+                            ..
+                        }
+                    )
+                });
+                assert_eq!(old, new, "watch: {case}");
+
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(checked, 54);
 }

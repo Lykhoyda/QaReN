@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import vm from 'node:vm';
+import { createSandbox } from '../helpers/inject-harness.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
-import { join, type NativeNode, type Screen } from '../../../dist/qa/screen.js';
+import { join, type DigestEntry, type NativeNode, type Screen } from '../../../dist/qa/screen.js';
 import { walkBlock } from '../../../dist/qa/walker.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
+import { NativeCaptureError } from '../../../dist/qa/capture.js';
 
 interface Shape {
   keyboard?: boolean;
@@ -15,6 +18,32 @@ interface Shape {
   inScroll?: boolean;
   frameX?: number;
   testID?: string;
+  twin?: boolean;
+  chipState?: 'absent' | 'duplicate' | 'no-frame';
+}
+
+function twinDigest(testID: string): DigestEntry[] {
+  const press = { testID, onClick() {} };
+  const node = (name: string, tag: number, props: object, child?: object) => ({
+    tag,
+    type: tag === 5 ? name : { displayName: name },
+    memoizedProps: props,
+    ...(child ? { child } : {}),
+  });
+  const chip = node(
+    'Chip',
+    0,
+    press,
+    node(
+      'ChipInner',
+      0,
+      { onClick() {} },
+      node('RCTView', 5, press, { tag: 6, type: null, memoizedProps: 'Choice' }),
+    ),
+  );
+  const sandbox = createSandbox({ fiberRoot: node('Screen', 0, {}, chip) });
+  return JSON.parse(vm.runInContext('__QAREN.getTree({ interactiveOnly: true })', sandbox))
+    .interactive;
 }
 
 function screen({
@@ -27,6 +56,8 @@ function screen({
   inScroll = true,
   frameX = 20,
   testID = 'chip',
+  twin = false,
+  chipState,
 }: Shape = {}): Screen {
   const nodes: NativeNode[] = [
     { ref: '@app', index: 0, type: 'Application', rect: { x: 0, y: 0, width: 400, height: 800 } },
@@ -73,8 +104,13 @@ function screen({
         ]
       : []),
   ];
+  if (chipState === 'no-frame') delete nodes[3].rect;
+  if (chipState === 'duplicate') nodes.push({ ...nodes[3], ref: '@duplicate', index: 5 });
   return {
-    ...join(nodes, []),
+    ...join(
+      nodes.filter((node) => chipState !== 'absent' || node.ref !== '@chip'),
+      twin ? twinDigest(testID) : [],
+    ),
     keyboardVisible: keyboard,
     coverage: { native: 'complete', react: 'complete' },
   };
@@ -133,6 +169,212 @@ const withDismissal = (
 const tap = parsePlan('1. Tap "chip"\n').blocks![0];
 const count = (f: ReturnType<typeof fake>, prefix: string) =>
   f.calls.filter((call) => call.startsWith(prefix)).length;
+
+test('a stable native chip with a React-only twin settles after keyboard dismissal', async () => {
+  const shape = { testID: 'qa-chip', twin: true };
+  const initial = screen({ ...shape, keyboard: true });
+  assert.deepEqual(
+    initial.elements.filter((e) => e.testID === 'qa-chip').map((e) => [e.ref, e.kind]),
+    [
+      ['@chip', 'button'],
+      ['react:qa-chip', 'button'],
+    ],
+  );
+  const f = withDismissal(fake([initial, ...Array.from({ length: 4 }, () => screen(shape))]));
+  const capture = f.deps.captureScreen;
+  f.deps.captureScreen = async () => {
+    if (count(f, 'press') === 0) return capture();
+    f.calls.push('capture');
+    return screen({ ...shape, selected: true });
+  };
+  const outcome = await walkBlock(parsePlan('1. Tap "qa-chip"\n').blocks![0], f.deps);
+  assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure?.seen));
+  assert.equal(count(f, 'press'), 1);
+  assert.deepEqual(f.calls, ['capture', 'dismiss', 'capture', 'capture', 'press @chip', 'capture']);
+});
+
+test('a moving native chip with a twin refuses with all four frames after dismissal', async () => {
+  const f = withDismissal(
+    fake([
+      screen({ keyboard: true, twin: true }),
+      ...[30, 40, 50, 60].map((frameX) => screen({ frameX, twin: true })),
+    ]),
+  );
+  const outcome = await walkBlock(tap, f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(count(f, 'press'), 0);
+  assert.equal(count(f, 'capture'), 5);
+  assert.match(
+    JSON.stringify(outcome.failure?.seen),
+    /did not settle across 4 captures \(30,220,100,44 \| 40,220,100,44 \| 50,220,100,44 \| 60,220,100,44\); it was not dispatched; keyboard after dismissal: hidden/,
+  );
+});
+
+test('an absent capture followed by two equal native frames with a twin settles', async () => {
+  const f = withDismissal(
+    fake([
+      screen({ keyboard: true, twin: true }),
+      screen({ chipState: 'absent', twin: true }),
+      screen({ twin: true }),
+      screen({ twin: true }),
+      screen({ twin: true, selected: true }),
+    ]),
+  );
+  const outcome = await walkBlock(tap, f.deps);
+  assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure?.seen));
+  assert.equal(count(f, 'press'), 1);
+  assert.equal(count(f, 'capture'), 5);
+});
+
+for (const [chipState, reason] of [
+  ['absent', 'absent'],
+  ['duplicate', 'ambiguous:2'],
+  ['no-frame', 'no-frame'],
+] as const) {
+  test(`a native chip that becomes ${chipState} after dismissal refuses with ${reason}`, async () => {
+    const f = withDismissal(
+      fake([screen({ keyboard: true, twin: true }), screen({ chipState, twin: true })]),
+    );
+    const outcome = await walkBlock(tap, f.deps);
+    assert.equal(outcome.block.outcome, 'fail');
+    assert.equal(count(f, 'press'), 0);
+    assert.equal(count(f, 'capture'), 5);
+    assert.ok(
+      JSON.stringify(outcome.failure?.seen).includes(
+        `did not settle across 4 captures (${Array(4).fill(reason).join(' | ')}); it was not dispatched; keyboard after dismissal: hidden`,
+      ),
+      JSON.stringify(outcome.failure?.seen),
+    );
+  });
+}
+
+for (const keyboard of [true, undefined] as const) {
+  test(`an absent target reports keyboard after dismissal as ${keyboard ? 'visible' : 'unknown'}`, async () => {
+    const after = screen({ chipState: 'absent', twin: true });
+    after.keyboardVisible = keyboard;
+    const f = withDismissal(fake([screen({ keyboard: true, twin: true }), after]));
+    const outcome = await walkBlock(tap, f.deps);
+    assert.equal(count(f, 'press'), 0);
+    assert.ok(
+      JSON.stringify(outcome.failure?.seen).includes(
+        `keyboard after dismissal: ${keyboard ? 'visible' : 'unknown'}`,
+      ),
+    );
+  });
+}
+
+test('a moved-target retry retains its React-only twin ambiguity without keyboard clearance', async () => {
+  const f = withDismissal(
+    fake(
+      [screen({ twin: true })],
+      [{ ok: false, proven: false, mutation: 'none', error: 'TARGET_MOVED_BEFORE_DISPATCH' }],
+    ),
+  );
+  const outcome = await walkBlock(tap, f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(count(f, 'press'), 1);
+  assert.equal(count(f, 'dismiss'), 0);
+  assert.match(
+    JSON.stringify(outcome.failure?.seen),
+    /did not settle across 4 captures \(ambiguous:2 \| ambiguous:2 \| ambiguous:2 \| ambiguous:2\); it was not dispatched again/,
+  );
+});
+
+test('a Fill retains React-only twins in its identity ambiguity', async () => {
+  const input: Screen = {
+    ...join(
+      [
+        {
+          ref: '@field',
+          index: 0,
+          type: 'TextField',
+          identifier: 'field',
+          hittable: true,
+          rect: { x: 20, y: 100, width: 300, height: 44 },
+        },
+      ],
+      [
+        { role: 'textinput', testID: 'field' },
+        { role: 'textinput', testID: 'field' },
+      ],
+    ),
+    coverage: { native: 'complete', react: 'complete' },
+  };
+  const f = withDismissal(fake([input]));
+  f.deps.fill = async (ref) => {
+    f.calls.push(`fill ${ref}`);
+    return { ok: true, proven: true };
+  };
+  const outcome = await walkBlock(
+    parsePlan('1. Fill "field" with "synthetic"\n').blocks![0],
+    f.deps,
+  );
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(count(f, 'fill'), 0);
+  assert.equal(count(f, 'dismiss'), 0);
+  assert.match(JSON.stringify(outcome.failure?.seen), /TARGET_AMBIGUOUS/);
+});
+
+for (const veto of ['dev-redbox', 'render-error', 'native-capture'] as const) {
+  for (const readback of [1, 2] as const) {
+    test(`a twin capture preserves the ${veto} veto on settle readback ${readback}`, async () => {
+      const f = withDismissal(
+        fake([screen({ keyboard: true, twin: true }), screen({ twin: true })]),
+      );
+      const capture = f.deps.captureScreen;
+      f.deps.captureScreen = async () => {
+        const captured = await capture();
+        if (count(f, 'capture') !== readback + 1) return captured;
+        if (veto === 'native-capture') throw new NativeCaptureError();
+        return {
+          ...captured,
+          ...(veto === 'dev-redbox' ? { front: 'dev-redbox' as const } : { renderError: true }),
+        };
+      };
+      const outcome = await walkBlock(tap, f.deps);
+      assert.equal(outcome.block.outcome, 'fail');
+      assert.equal(count(f, 'dismiss'), 1);
+      assert.equal(count(f, 'press'), 0);
+      if (veto === 'native-capture')
+        assert.equal(outcome.refusal?.code, 'NATIVE_CAPTURE_UNAVAILABLE');
+      assert.match(
+        JSON.stringify(outcome.failure?.seen),
+        veto === 'native-capture'
+          ? /Native capture is unavailable/
+          : veto === 'dev-redbox'
+            ? /DEV_REDBOX_ACTION_UNCERTAIN/
+            : /the app is showing a React Native error screen/,
+      );
+    });
+  }
+}
+
+for (const changed of [false, true]) {
+  test(`an expired settled twin capture ${changed ? 'rejects a moved target' : 'rebinds the same target'}`, async () => {
+    const f = withDismissal(
+      fake([
+        screen({ keyboard: true, twin: true }),
+        screen({ twin: true }),
+        screen({ twin: true }),
+        screen({ twin: true, frameX: changed ? 60 : 20 }),
+        screen({ twin: true, selected: true }),
+      ]),
+    );
+    let clock = 0;
+    f.deps.now = () => (clock += 100);
+    f.deps.note = (line) => {
+      if (line.startsWith('keyboard-clearance')) clock += 60_000;
+    };
+    const outcome = await walkBlock(tap, f.deps);
+    assert.equal(
+      outcome.block.outcome,
+      changed ? 'fail' : 'pass',
+      JSON.stringify(outcome.failure?.seen),
+    );
+    assert.equal(count(f, 'press'), changed ? 0 : 1);
+    if (changed) assert.match(JSON.stringify(outcome.failure?.seen), /not the target that settled/);
+  });
+}
 
 test('a visible keyboard is dismissed before a row-choice tap, then the chip is tapped once', async () => {
   const f = withDismissal(

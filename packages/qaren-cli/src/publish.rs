@@ -6,7 +6,7 @@ use crate::receipt::{Receipt, ReceiptResult};
 use crate::record::{self, VideoPublication, VideoStatus};
 use crate::redact::{redact_machine, MachineIdentity};
 use crate::report::{self, PrRun, ReportInput};
-use crate::runrecord::{validate_run_id, RunRecord};
+use crate::runrecord::{validate_run_id, RunRecord, RunState};
 use crate::timefmt;
 use crate::worktree;
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,10 @@ pub struct PrRunRecord {
     pub device: String,
     pub plan_sha256: String,
     pub video: VideoStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_reason: Option<record::VideoReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_interruption: Option<VideoInterruption>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub video_continuity: Vec<record::VideoStall>,
     #[serde(default, deserialize_with = "video_publication")]
@@ -38,7 +42,11 @@ pub struct PrRunRecord {
     pub video_policy_source: Option<String>,
     #[serde(default, deserialize_with = "non_strict_publication")]
     pub non_strict_publication: Option<record::NonStrictPublication>,
-    #[serde(default, deserialize_with = "withholding_reason")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "withholding_reason"
+    )]
     pub video_withholding_reason: Option<String>,
     #[serde(default)]
     pub tested_older_commit: bool,
@@ -48,6 +56,36 @@ pub struct PrRunRecord {
     pub identity_values: Vec<String>,
     #[serde(default)]
     pub proof_in_description: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoInterruption {
+    pub signal: crate::core::ContinuitySignal,
+    pub owner: String,
+    pub at_ms: u64,
+    pub after_admission_ms: Option<u64>,
+    pub video_ms: Option<u64>,
+    pub line: Option<u32>,
+}
+
+impl VideoInterruption {
+    pub fn from_ledger(video: &VideoStatus, ledger: &Ledger, recording_from: u64) -> Option<Self> {
+        if video.reason() != Some(record::VideoReason::Interrupted) {
+            return None;
+        }
+        let event = ledger.first_counted()?;
+        Some(Self {
+            signal: event.signal,
+            owner: event.owner().into(),
+            at_ms: event.at_ms,
+            after_admission_ms: ledger
+                .admitted_at_ms
+                .and_then(|admitted| event.at_ms.checked_sub(admitted)),
+            video_ms: event.at_ms.checked_sub(recording_from),
+            line: event.line,
+        })
+    }
 }
 
 fn video_publication<'de, D: serde::Deserializer<'de>>(d: D) -> Result<VideoPublication, D::Error> {
@@ -84,6 +122,8 @@ pub struct Publication {
     pub writeback: Option<String>,
     #[serde(default)]
     pub video_attached: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_reason: Option<record::VideoReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
@@ -255,7 +295,7 @@ fn publish_ledger(run_dir: &Path, pr: &PrRunRecord) -> Result<Ledger, Failure> {
 
 fn effective_video(pr: &PrRunRecord, attached: bool) -> VideoStatus {
     if pr.video == VideoStatus::Available && !attached {
-        VideoStatus::Unavailable("published recording is unavailable".into())
+        VideoStatus::unavailable("published recording is unavailable".into())
     } else {
         pr.video.clone()
     }
@@ -779,6 +819,24 @@ pub fn publish(
             .outcomes
             .insert("writeback".into(), writeback.clone());
     }
+    if let Some(code) = publication.video_reason {
+        receipt
+            .outcomes
+            .insert("publicationVideoReason".into(), code.as_str().into());
+    }
+    if publication.rendered && !publication.video_attached {
+        let run_dir = RunRecord::run_dir(runs_root, run_id);
+        if let Ok(pr) = read_json::<PrRunRecord>(&run_dir.join("pr.json")) {
+            if let Ok(ledger) = publish_ledger(&run_dir, &pr) {
+                let video = effective_video(&pr, false);
+                if let Some(line) =
+                    report::video_outcome_line(&ledger, &pr.video_publication, Some(&video))
+                {
+                    receipt.outcomes.insert("video_summary".into(), line);
+                }
+            }
+        }
+    }
     let retry = transient.is_some();
     let description = publication.description.or(transient);
     if let Some(description) = &description {
@@ -861,6 +919,7 @@ fn describe(
     let video = effective_video(pr, publication.video_attached);
     let section = report::render_pr_description(
         &ReportInput {
+            video: Some(&video),
             run_id,
             platform: &pr.platform,
             app_id: &pr.app_id,
@@ -922,14 +981,18 @@ fn publish_inner(
     let run_dir = RunRecord::run_dir(runs_root, run_id);
     let _lock = PublishLock::acquire(&run_dir)?;
     let run = RunRecord::load(runs_root, run_id)?;
-    let terminal = run.terminal.ok_or_else(|| {
-        Failure::new(
+    let RunState::Ended {
+        walked: Some(terminal),
+        ..
+    } = run.state()
+    else {
+        return Err(Failure::new(
             "publish",
             FailureCode::RunRecordInvalid,
             format!("run {run_id} has no final result; it did not finish"),
             "re-run qaren pr; only a finished run can be published",
-        )
-    })?;
+        ));
+    };
     if let Some(refusal) = terminal.publication_refusal() {
         return Err(refusal);
     }
@@ -950,11 +1013,30 @@ fn publish_inner(
         if video_publication == VideoPublication::Eligible
             && pr.video == VideoStatus::Available
             && record::published_video_path(&run_dir).is_file()
+            && !(publication.comment_attempted && publication.video_reason.is_some())
         {
             attachments.push((PathBuf::from("./media/video-published.mp4"), None));
         }
-        let video_attached = !attachments.is_empty();
+        let video_present = !attachments.is_empty();
+        // Retry the same publication finding. A lost upload response must still match
+        // its original report marker even if the local attachment has since vanished.
+        let retained_finding = publication.comment_attempted
+            && (publication.video_attached || publication.video_reason.is_some());
+        let video_attached = if retained_finding && video_publication == VideoPublication::Eligible
+        {
+            publication.video_attached
+        } else {
+            video_present
+        };
         let video = effective_video(&pr, video_attached);
+        if !retained_finding {
+            publication.video_reason = if video_publication == VideoPublication::Eligible {
+                video.reason()
+            } else {
+                None
+            };
+            save(&run_dir, publication)?;
+        }
         let ledger: Option<Ledger> = read_json(&run_dir.join("ledger.json")).ok();
         let mut screenshot = None;
         if let Some(shot) = ledger.as_ref().and_then(report::failing_screenshot) {
@@ -980,6 +1062,7 @@ fn publish_inner(
                 let ledger = publish_ledger(&run_dir, &pr)?;
                 Ok(report::render_pr_comment(
                     &ReportInput {
+                        video: Some(&video),
                         run_id,
                         platform: &pr.platform,
                         app_id: &pr.app_id,
@@ -1000,6 +1083,9 @@ fn publish_inner(
                 ))
             },
             &mut || {
+                if video_attached && !video_present {
+                    return Err(failure("the attempted video attachment is missing and no matching comment was found", "restore the published copy before retrying qaren publish"));
+                }
                 publication.rendered = true;
                 publication.comment_attempted = true;
                 publication.video_attached = video_attached;

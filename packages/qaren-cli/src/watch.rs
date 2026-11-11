@@ -1,6 +1,6 @@
 use crate::events::Envelope;
 use crate::report::{prose, term_safe};
-use crate::runrecord::{validate_run_id, PidLiveness, RunRecord};
+use crate::runrecord::{validate_run_id, PidLiveness, RunRecord, RunState};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashSet};
@@ -268,6 +268,9 @@ impl State {
                 let mut end = json!({"result": string(p, "result"), "phase": string(p, "phase"),
                     "expectedExit": p["expectedExit"].as_u64(), "droppedEvents": p["droppedEvents"].as_u64(),
                     "cleanup": {}, "timingsMs": {}});
+                if let Some(count) = p["devOverlayWarnings"].as_u64().filter(|count| *count > 0) {
+                    end["devOverlayWarnings"] = count.into();
+                }
                 for key in ["failureCode", "failurePhase"] {
                     if p[key].is_string() {
                         end[key] = string(p, key).into();
@@ -469,7 +472,10 @@ fn verdict(s: &State) -> Option<String> {
         };
         Some(format!(
             "VERDICT {}  (expected exit {}){code}  cleanup {}{dropped}",
-            string(end, "result").to_uppercase(),
+            crate::report::dev_overlay_verdict(
+                &string(end, "result").to_uppercase(),
+                end["devOverlayWarnings"].as_u64().unwrap_or(0)
+            ),
             end["expectedExit"],
             if clean { "clean" } else { "unclean" }
         ))
@@ -741,7 +747,15 @@ fn follow(
                 state.settle();
             }
         }
-        state.terminal = record.as_ref().is_some_and(|r| r.terminal.is_some());
+        state.terminal = record.as_ref().is_some_and(|r| {
+            matches!(
+                r.state(),
+                RunState::Ended {
+                    walked: Some(_),
+                    ..
+                }
+            )
+        });
         if state.status() == Status::Live {
             state.now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)

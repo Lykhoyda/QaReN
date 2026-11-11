@@ -69,7 +69,12 @@ export interface LedgerRow {
   // Why this step was sent again: a swallowed press, or a dismissed development error overlay.
   retryCause?: 'KEYBOARD_SWALLOWED_TAP' | 'DEV_REDBOX';
   // The overlay variant and dismissal attempt number, including failed attempts, never its text.
-  devError?: { variant: 'redbox' | 'logbox'; dismissal: number };
+  devError?: {
+    variant: 'redbox' | 'logbox';
+    dismissal: number;
+    afterAction?: true;
+    proof?: 'next-test-id-appeared';
+  };
   // A plain scroll that passed although two dispatched attempts left the screen unchanged.
   scrollDetail?: { status: 'no_visible_change' | 'no_visible_change_content_remains'; attempts: 2 };
   // How long the first Tap or Fill after launch polled for its absent target.
@@ -93,8 +98,18 @@ export interface InterruptionReceipt {
   targetLine?: number;
   targetKind?: Item['kind'];
   soleDecline?: boolean;
+  // When a dispatched decline stayed: the vertical centre, in points, of the control it aimed at.
+  pressCentreY?: number;
   // The fixed class a dismissed screen was recognised as, when one applied.
   screenClass?: InterruptionScreenClass;
+  // A permission opt-in declined although it followed the plan's own tap.
+  afterPlannedPress?: true;
+}
+
+// One permission opt-in dismissal; a line repeats when one step declined two.
+export interface DeclinedOptIn {
+  line: number;
+  afterPlannedPress: boolean;
 }
 
 // The value-free announcement that a plan line begins; its row later carries the same operationId.
@@ -131,6 +146,46 @@ export interface BlockResult {
   unsavable?: string;
 }
 
+export type ContinuitySignal =
+  | 'dev-client-picker'
+  | 'first-run-tutorial'
+  | 'runner-recovery'
+  | 'runner-leak'
+  | 'app-not-running'
+  | 'app-process-changed'
+  | 'dev-overlay'
+  | 'app-process-gone'
+  | 'app-process-unproven';
+
+export interface ContinuityEvent {
+  signal: ContinuitySignal;
+  atMs: number;
+  line?: number;
+  counted: boolean;
+  beforeAdmission?: boolean;
+  detail?: {
+    recoveryTier?: string;
+    recoveryReason?: string;
+    front?: string;
+    fromPid?: number;
+    toPid?: number;
+    unresolved?: boolean;
+  };
+}
+
+export function appendContinuityEvent(events: ContinuityEvent[], event: ContinuityEvent): number {
+  if (events.length < 16) {
+    events.push(event);
+    return 0;
+  }
+  const uncounted = events.findIndex((entry) => !entry.counted);
+  if (event.counted && uncounted !== -1) {
+    events.splice(uncounted, 1);
+    events.push(event);
+  }
+  return 1;
+}
+
 export interface Ledger {
   pressEvidence?: PressEvidence;
   verdict: 'PASS' | 'FAIL';
@@ -144,6 +199,8 @@ export interface Ledger {
   admittedAtMs?: number;
   publishFromMs?: number;
   publicationInterrupted?: boolean;
+  continuityEvents?: ContinuityEvent[];
+  continuityEventsDropped?: number;
   path: LedgerPath;
   blocks: BlockResult[];
   blocksWritten?: string[];
@@ -152,6 +209,7 @@ export interface Ledger {
   llmTurns: number;
   escapes: number;
   recoveries: number;
+  declinedOptIns?: DeclinedOptIn[];
   speed?: LedgerSpeed;
   failure?: LedgerFailure;
   recipe?: { slug: string; markdown: string } | { unsavable: string };

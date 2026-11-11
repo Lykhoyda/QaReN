@@ -1,6 +1,6 @@
 use crate::core::{Ledger, Row};
 use crate::failure::{Failure, FailureCode, ScreenNow};
-use crate::record::{VideoPublication, VideoStatus};
+use crate::record::{VideoPublication, VideoReason, VideoStatus};
 use crate::redact::{redact_machine, redact_secrets, MachineIdentity};
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
@@ -24,6 +24,12 @@ pub struct LedgerSummary {
     pub llm_turns: u64,
     pub escapes: u64,
     pub recoveries: u64,
+    #[serde(
+        default,
+        rename = "devOverlayWarnings",
+        skip_serializing_if = "is_zero"
+    )]
+    pub dev_overlay_warnings: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed_step: Option<u64>,
     // Passing fills whose final value was not verified, with the ledger row's value-free reason.
@@ -41,6 +47,36 @@ pub struct LedgerSummary {
     // Plain scrolls that passed with no visible change; not proof the content ended.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub no_visible_change_scrolls: Vec<u64>,
+    // One entry per permission opt-in recovery declined.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declined_opt_ins: Vec<DeclinedOptInLine>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeclinedOptInLine {
+    pub line: u64,
+    pub after_planned_press: bool,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+impl LedgerSummary {
+    pub fn verdict_label(&self) -> String {
+        dev_overlay_verdict(&self.verdict, self.dev_overlay_warnings)
+    }
+}
+
+pub fn dev_overlay_verdict(verdict: &str, warnings: u64) -> String {
+    if verdict.eq_ignore_ascii_case("pass") && warnings > 0 {
+        format!(
+            "{verdict} ({warnings} development overlay warning{})",
+            if warnings == 1 { "" } else { "s" }
+        )
+    } else {
+        verdict.to_string()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -106,7 +142,26 @@ pub fn summarize(ledger: &Ledger) -> LedgerSummary {
         llm_turns: ledger.llm_turns,
         escapes: ledger.escapes,
         recoveries: ledger.recoveries,
+        dev_overlay_warnings: ledger
+            .steps
+            .iter()
+            .filter(|row| {
+                row.outcome == "pass"
+                    && row
+                        .dev_error
+                        .as_ref()
+                        .is_some_and(|overlay| overlay.after_action == Some(true))
+            })
+            .count() as u64,
         failed_step: ledger.failure.as_ref().map(|f| f.step),
+        declined_opt_ins: ledger
+            .declined_opt_ins
+            .iter()
+            .map(|entry| DeclinedOptInLine {
+                line: entry.line,
+                after_planned_press: entry.after_planned_press,
+            })
+            .collect(),
         react_reconnections: ledger
             .steps
             .iter()
@@ -190,6 +245,7 @@ pub struct ReportInput<'a> {
     pub app_id: &'a str,
     pub device: &'a str,
     pub ledger: &'a Ledger,
+    pub video: Option<&'a VideoStatus>,
 }
 
 // Dynamic prose comes from the child and the app under test: redacted, one line, no Markdown syntax.
@@ -212,7 +268,7 @@ pub(crate) fn prose(raw: &str) -> String {
 }
 
 // Terminal output: C0 and C1 controls (escape sequences included) never reach the screen.
-pub(crate) fn term_safe(s: &str) -> String {
+pub fn term_safe(s: &str) -> String {
     s.chars()
         .filter(|c| !matches!(*c, '\u{0}'..='\u{1f}' | '\u{7f}'..='\u{9f}'))
         .collect()
@@ -324,6 +380,28 @@ fn reconnect_note(summary: &LedgerSummary) -> String {
     format!(" · React reconnected at line {}", lines.join(", "))
 }
 
+// A pass that declined permission opt-ins says so beside the verdict; the verdict itself stays PASS.
+fn opt_in_note(summary: &LedgerSummary) -> String {
+    let count = summary.declined_opt_ins.len();
+    if summary.verdict != "PASS" || count == 0 {
+        return String::new();
+    }
+    let lines: Vec<String> = summary
+        .declined_opt_ins
+        .iter()
+        .map(|entry| entry.line)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect();
+    format!(
+        " · {count} opt-in{} declined (line{} {})",
+        if count == 1 { "" } else { "s" },
+        if lines.len() == 1 { "" } else { "s" },
+        lines.join(", ")
+    )
+}
+
 fn video_policy_text(ledger: &Ledger) -> String {
     let source = ledger
         .video_policy_source
@@ -381,9 +459,10 @@ pub fn render(input: &ReportInput<'_>) -> String {
     let summary = summarize(input.ledger);
     let mut out = String::new();
     out.push_str(&format!(
-        "# QaReN check: {}{}\n\n",
-        prose(&summary.verdict),
-        reconnect_note(&summary)
+        "# QaReN check: {}{}{}\n\n",
+        prose(&summary.verdict_label()),
+        reconnect_note(&summary),
+        opt_in_note(&summary)
     ));
     out.push_str(&format!(
         "Run `{}` · {} · `{}` · device {}\n\n",
@@ -459,11 +538,12 @@ pub fn render(input: &ReportInput<'_>) -> String {
     }
     out.push_str("\n## Run details\n\n");
     out.push_str(&format!("- {}\n", prose(&video_policy_text(input.ledger))));
-    if let Some(reason) = video_withholding(
+    if let Some(line) = video_outcome_line(
         input.ledger,
         &input.ledger.video_publication.clone().unwrap_or_default(),
+        input.video,
     ) {
-        out.push_str(&format!("- Video withheld: {}\n", prose(&reason)));
+        out.push_str(&format!("- {}\n", prose(&line)));
     }
     if let Some(entry) = input
         .ledger
@@ -593,7 +673,11 @@ fn verdict_label(ledger: &Ledger, refusal: Option<&Failure>) -> String {
         "FAIL" => "FAIL",
         _ => "REFUSED",
     };
-    let mut out = verdict.to_string();
+    let mut out = if verdict == "PASS" {
+        summarize(ledger).verdict_label()
+    } else {
+        verdict.to_string()
+    };
     if verdict == "REFUSED" {
         if let Some(failure) = refusal {
             if let Ok(serde_json::Value::String(code)) = serde_json::to_value(&failure.code) {
@@ -602,6 +686,125 @@ fn verdict_label(ledger: &Ledger, refusal: Option<&Failure>) -> String {
         }
     }
     out
+}
+
+// Shared across the local report, run receipt, and publication surfaces.
+pub fn video_unavailable_line(video: &VideoStatus, ledger: Option<&Ledger>) -> Option<String> {
+    if video.reason() == Some(VideoReason::Interrupted) {
+        if let Some((ledger, event)) =
+            ledger.and_then(|ledger| ledger.first_counted().map(|event| (ledger, event)))
+        {
+            let at = continuity_location(ledger, event);
+            let (cause, next) = match event.owner() {
+                "app" => (
+                    format!("the app's process changed or stopped at {at}"),
+                    "check the app's crash log",
+                ),
+                "dev-client" => {
+                    let front = match event.signal {
+                        crate::core::ContinuitySignal::DevClientPicker => "picker",
+                        crate::core::ContinuitySignal::FirstRunTutorial => "first-run tutorial",
+                        _ => match event
+                            .detail
+                            .as_ref()
+                            .and_then(|detail| detail["front"].as_str())
+                        {
+                            Some("dev-fab") => "dev button",
+                            Some("dev-menu") => "dev menu",
+                            Some("dev-redbox") => "error overlay",
+                            Some("picker") => "picker",
+                            _ => "overlay",
+                        },
+                    };
+                    (
+                        format!("the dev client's {front} came to the front at {at}"),
+                        "this is a QaReN gap; include the run id in feedback",
+                    )
+                }
+                _ => {
+                    let cause = match event.signal {
+                        crate::core::ContinuitySignal::RunnerRecovery | crate::core::ContinuitySignal::RunnerLeak =>
+                            format!("QaReN's runner restarted at {at} and QaReN could not confirm the app's process afterwards"),
+                        crate::core::ContinuitySignal::AppProcessUnproven => format!("QaReN could not read the app's process at {at}"),
+                        _ => format!("QaReN recorded an unrecognized continuity signal at {at}"),
+                    };
+                    (cause, "this is a QaReN gap; include the run id in feedback")
+                }
+            };
+            let signal = serde_json::to_value(event.signal).unwrap_or_default();
+            return Some(format!("Video not published: app continuity was interrupted after admission; {cause} (signal: {}, owner: {}); times mark observation completion; {next}", signal.as_str().unwrap_or("unknown"), event.owner()));
+        }
+    }
+    let (detail, next) = match video {
+        VideoStatus::Available => return None,
+        VideoStatus::TooLarge => (
+            "the recording was too large to attach",
+            "the recording exceeds the size cap; a shorter plan or trimming is needed",
+        ),
+        VideoStatus::Unavailable { code, detail } => (
+            detail.as_str(),
+            match code {
+                VideoReason::RecorderFailed | VideoReason::FfmpegMissing => {
+                    "check the recorder and ffmpeg on this host"
+                }
+                VideoReason::Interrupted => {
+                    "this run was recorded before QaReN named the interrupting signal"
+                }
+                VideoReason::NoAdmittedFrame | VideoReason::NoWindow => {
+                    "the walk ended before any admitted frame; re-run"
+                }
+                VideoReason::PublishedCopyMissing => {
+                    "the published copy is missing; re-run `qaren pr`"
+                }
+                VideoReason::NotRecorded => "re-run qaren pr to record the walk",
+                VideoReason::EncodeFailed
+                | VideoReason::NoPlayableDuration
+                | VideoReason::TrimFailed => "check ffmpeg and re-run qaren pr",
+                VideoReason::Cancelled => "re-run qaren pr to complete the walk",
+                VideoReason::RuntimeInputWithheld => {
+                    "review the runtime input privacy policy before re-running"
+                }
+                VideoReason::AndroidUnsupported => "use an Android API 34 or newer target",
+                VideoReason::Other => "check the recording diagnostics and re-run qaren pr",
+            },
+        ),
+    };
+    Some(redact_secrets(&format!(
+        "Video not published: {detail}; {next}"
+    )))
+}
+
+pub fn video_outcome_line(
+    ledger: &Ledger,
+    strict: &VideoPublication,
+    video: Option<&VideoStatus>,
+) -> Option<String> {
+    match video_withholding(ledger, strict) {
+        Some(reason) => Some(format!("Video withheld: {reason}")),
+        None => video.and_then(|video| {
+            video_unavailable_line(video, Some(ledger)).or_else(|| runner_recovery_line(ledger))
+        }),
+    }
+}
+
+fn continuity_location(ledger: &Ledger, event: &crate::core::ContinuityEvent) -> String {
+    let at = ledger
+        .admitted_at_ms
+        .and_then(|admitted| event.at_ms.checked_sub(admitted))
+        .map(|ms| format!("{}:{:02}", ms / 60_000, ms / 1000 % 60))
+        .unwrap_or_else(|| "an unrecorded offset".into());
+    match event.line {
+        Some(line) => format!("{at} after admission (line {line})"),
+        None => format!("{at} after admission"),
+    }
+}
+
+fn runner_recovery_line(ledger: &Ledger) -> Option<String> {
+    let admitted = ledger.admitted_at_ms?;
+    let event = ledger
+        .uncounted_runner_recoveries_after(admitted.max(ledger.publish_from_ms.unwrap_or(admitted)))
+        .next()?;
+    Some(format!("QaReN observed its runner recovery at {}; the app kept running (same process), so the video was kept. This is when the snapshot completed, not the start of the runner frames.", continuity_location(ledger, event)))
 }
 
 // The comment's video paragraphs; the description reuses them so the two cannot disagree.
@@ -624,13 +827,15 @@ fn video_lines(input: &ReportInput<'_>, pr: &PrRun<'_>, clean: &dyn Fn(&str) -> 
         match pr.video {
             VideoStatus::Available => {
                 out.push_str(VIDEO_ATTACHED);
+                if let Some(line) = runner_recovery_line(input.ledger) {
+                    out.push_str(&format!("{line}\n\n"));
+                }
                 out.push_str(&continuity_lines(pr));
             }
-            VideoStatus::TooLarge => {
-                out.push_str("Video: the recording was too large to attach.\n\n")
-            }
-            VideoStatus::Unavailable(reason) => {
-                out.push_str(&format!("Video: unavailable ({}).\n\n", clean(reason)))
+            VideoStatus::TooLarge | VideoStatus::Unavailable { .. } => {
+                if let Some(line) = video_unavailable_line(pr.video, Some(input.ledger)) {
+                    out.push_str(&format!("{}\n\n", clean(&line)));
+                }
             }
         }
     }
@@ -725,6 +930,7 @@ pub fn render_pr_comment(
     out.push('\n');
     out.push_str(&verdict_label(input.ledger, refusal));
     out.push_str(&reconnect_note(&summary));
+    out.push_str(&opt_in_note(&summary));
     out.push_str("\n\n");
     out.push_str(&format!(
         "Tested: commit `{}` on {}",
@@ -839,6 +1045,7 @@ mod tests {
         for sources in [vec!["replayed", "patched", "discovered"], vec![]] {
             let ledger = block_ledger(&sources);
             let input = ReportInput {
+                video: None,
                 run_id: "check-test",
                 platform: "ios",
                 app_id: "com.example",
@@ -872,6 +1079,64 @@ mod tests {
     }
 
     #[test]
+    fn a_pre_admission_refusal_states_only_the_withheld_reason_the_comment_shows() {
+        for policy in ["non-strict", "strict"] {
+            let ledger: Ledger = serde_json::from_value(serde_json::json!({
+                "verdict": "REFUSED", "path": "walk", "blocks": [], "steps": [],
+                "jev": { "calls": 0, "medianMs": 0 },
+                "llmTurns": 0, "escapes": 0, "recoveries": 0,
+                "videoPublication": "unknown", "videoPolicy": policy,
+            }))
+            .unwrap();
+            let video = VideoStatus::unavailable("no admitted app frame was recorded".into());
+            let strict = ledger.video_publication.clone().unwrap_or_default();
+            let input = ReportInput {
+                video: Some(&video),
+                run_id: "check-test",
+                platform: "ios",
+                app_id: "com.example",
+                device: "test-device",
+                ledger: &ledger,
+            };
+            let summary = video_outcome_line(&ledger, &strict, Some(&video)).unwrap();
+            assert!(summary.starts_with("Video withheld: "), "{summary}");
+            let report = render(&input);
+            let comment = render_pr_comment(
+                &input,
+                None,
+                &PrRun {
+                    tested_sha: "abcdef1234567",
+                    tested_older_commit: false,
+                    video: &video,
+                    video_continuity: &[],
+                    screenshot: None,
+                    plan_sha256: "plan-hash",
+                    video_publication: &strict,
+                },
+                &MachineIdentity::default(),
+            );
+            for output in [&report, &comment] {
+                assert!(output.contains(&summary), "{output}");
+                assert!(!output.contains("Video not published"), "{output}");
+            }
+        }
+        let ledger: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "FAIL", "path": "walk", "blocks": [], "steps": [],
+            "jev": { "calls": 0, "medianMs": 0 },
+            "llmTurns": 0, "escapes": 0, "recoveries": 0,
+            "videoPublication": "eligible", "videoPolicy": "strict",
+        }))
+        .unwrap();
+        let video = VideoStatus::unavailable("no admitted app frame was recorded".into());
+        let summary =
+            video_outcome_line(&ledger, &VideoPublication::Eligible, Some(&video)).unwrap();
+        assert!(
+            summary.starts_with("Video not published: no admitted app frame was recorded;"),
+            "{summary}"
+        );
+    }
+
+    #[test]
     fn a_target_failure_renders_the_last_observed_screen_and_its_suggestion() {
         let ledger: Ledger = serde_json::from_value(serde_json::json!({
             "verdict": "FAIL", "path": "walk", "blocks": [], "steps": [],
@@ -887,6 +1152,7 @@ mod tests {
         }))
         .unwrap();
         let report = render(&ReportInput {
+            video: None,
             run_id: "check-test",
             platform: "ios",
             app_id: "com.example",
@@ -902,6 +1168,41 @@ mod tests {
             "Suggested plan edit: consider adding, before line 2, the step that enables it"
         ));
         assert!(report.contains("Text inside app-text tags came from the app under test"));
+    }
+
+    #[test]
+    fn an_uncovered_target_interruption_receipt_survives_and_renders() {
+        let receipt = serde_json::json!({
+            "considered": true, "outcome": "vetoed", "veto": "uncovered-target",
+            "targetLine": 7, "targetKind": "wait", "soleDecline": false
+        });
+        let ledger: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "FAIL", "path": "walk", "blocks": [],
+            "steps": [{ "block": "b", "line": 7, "attempt": 1, "kind": "step",
+                "resolvedBy": "exact", "t": 0, "outcome": "fail", "interruption": receipt }],
+            "jev": { "calls": 0, "medianMs": 0 },
+            "llmTurns": 0, "escapes": 0, "recoveries": 0,
+            "failure": { "step": 7, "seen": "TARGET_REACT_ONLY" }
+        }))
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&ledger).unwrap()["steps"][0]["interruption"],
+            receipt
+        );
+        let report = render(&ReportInput {
+            run_id: "check-test",
+            platform: "ios",
+            app_id: "com.example",
+            device: "test-device",
+            ledger: &ledger,
+            video: None,
+        });
+        assert_eq!(
+            report
+                .matches("interruption recovery: vetoed (uncovered-target; line 7 (wait))")
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -943,14 +1244,16 @@ mod tests {
                   "t": 0, "outcome": "fail", "interruption": receipt },
                 { "block": "b", "line": 8, "attempt": 1, "kind": "step", "resolvedBy": "exact",
                   "t": 0, "outcome": "fail", "interruption": { "considered": true,
-                  "outcome": "did-not-disappear" } }
+                  "outcome": "did-not-disappear", "pressCentreY": 25.0 } }
             ],
             "jev": { "calls": 0, "medianMs": 0 },
             "llmTurns": 0, "escapes": 0, "recoveries": 0,
-            "failure": { "step": 7, "seen": "the target did not appear" },
+            "failure": { "step": 7, "seen": "the target did not appear",
+                "suggestion": "line 9 targets this control; if the interruption is optional, move that step before line 7 or remove it" },
         }))
         .unwrap();
         let report = render(&ReportInput {
+            video: None,
             run_id: "check-test",
             platform: "ios",
             app_id: "com.example",
@@ -961,12 +1264,17 @@ mod tests {
             "interruption recovery: vetoed (later-target; ownership; line 9 (press); only control is the decline)"
         ));
         assert!(!report.contains("did-not-disappear"));
-        assert!(!report.contains("Suggested plan edit:"));
+        assert!(report.contains(
+            "Suggested plan edit: line 9 targets this control; if the interruption is optional, move that step before line 7 or remove it"
+        ));
         let stayed: crate::core::InterruptionReceipt = serde_json::from_value(
-            serde_json::json!({ "considered": true, "outcome": "did-not-disappear" }),
+            serde_json::json!({ "considered": true, "outcome": "did-not-disappear", "pressCentreY": 25.0 }),
         )
         .unwrap();
-        assert_eq!(stayed.summary(), "interruption recovery: did-not-disappear");
+        assert_eq!(
+            stayed.summary(),
+            "interruption recovery: did-not-disappear (press centre y 25 pt)"
+        );
         let classed = serde_json::json!({ "considered": true, "outcome": "dismissed", "screenClass": "permission-opt-in" });
         let parsed: crate::core::InterruptionReceipt =
             serde_json::from_value(classed.clone()).unwrap();
@@ -989,6 +1297,125 @@ mod tests {
     }
 
     #[test]
+    fn a_declined_opt_in_after_the_plans_tap_marks_the_pass_without_changing_the_verdict() {
+        let receipt = serde_json::json!({
+            "considered": true, "outcome": "dismissed",
+            "screenClass": "permission-opt-in", "afterPlannedPress": true
+        });
+        let parsed: crate::core::InterruptionReceipt =
+            serde_json::from_value(receipt.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), receipt);
+        assert_eq!(
+            parsed.summary(),
+            "interruption recovery: dismissed (permission-opt-in; after the plan's own tap)"
+        );
+        let row = |line: u64, attempt: u64, outcome: &str| {
+            serde_json::json!({
+                "block": "b", "line": line, "attempt": attempt, "kind": "step",
+                "resolvedBy": "exact", "t": 0, "outcome": outcome, "interruption": receipt,
+            })
+        };
+        let ledger_with = |verdict: &str, declined: serde_json::Value| -> Ledger {
+            serde_json::from_value(serde_json::json!({
+                "verdict": verdict, "path": "walk", "blocks": [],
+                "steps": [row(3, 1, "retry"), row(3, 2, "retry"), row(3, 3, "pass"), row(5, 1, "pass")],
+                "jev": { "calls": 0, "medianMs": 0 },
+                "llmTurns": 0, "escapes": 0, "recoveries": 3,
+                "declinedOptIns": declined,
+            }))
+            .unwrap()
+        };
+        let ledger = ledger_with(
+            "PASS",
+            serde_json::json!([
+                { "line": 3, "afterPlannedPress": true },
+                { "line": 3, "afterPlannedPress": true },
+                { "line": 5, "afterPlannedPress": false },
+            ]),
+        );
+        assert_eq!(ledger.verdict, "PASS");
+        assert_eq!(
+            serde_json::to_value(&ledger).unwrap()["declinedOptIns"],
+            serde_json::json!([
+                { "line": 3, "afterPlannedPress": true },
+                { "line": 3, "afterPlannedPress": true },
+                { "line": 5, "afterPlannedPress": false },
+            ])
+        );
+        assert_eq!(
+            serde_json::to_value(summarize(&ledger)).unwrap()["declined_opt_ins"],
+            serde_json::json!([
+                { "line": 3, "after_planned_press": true },
+                { "line": 3, "after_planned_press": true },
+                { "line": 5, "after_planned_press": false },
+            ])
+        );
+        let input = ReportInput {
+            run_id: "check-test",
+            platform: "ios",
+            app_id: "com.example",
+            device: "test-device",
+            ledger: &ledger,
+            video: None,
+        };
+        let report = render(&input);
+        assert!(
+            report.starts_with("# QaReN check: PASS · 3 opt-ins declined (lines 3, 5)\n"),
+            "{report}"
+        );
+        let pr = PrRun {
+            tested_sha: "abcdef1234567",
+            tested_older_commit: false,
+            video: &VideoStatus::Available,
+            video_continuity: &[],
+            screenshot: None,
+            plan_sha256: "plan-hash",
+            video_publication: &VideoPublication::Eligible,
+        };
+        let comment = render_pr_comment(&input, None, &pr, &MachineIdentity::default());
+        assert!(
+            comment.contains("\nPASS · 3 opt-ins declined (lines 3, 5)\n"),
+            "{comment}"
+        );
+        let one = ledger_with(
+            "PASS",
+            serde_json::json!([{ "line": 3, "afterPlannedPress": true }]),
+        );
+        let one_input = ReportInput {
+            ledger: &one,
+            ..input
+        };
+        assert!(
+            render(&one_input).starts_with("# QaReN check: PASS · 1 opt-in declined (line 3)\n")
+        );
+        let failed = ledger_with(
+            "FAIL",
+            serde_json::json!([{ "line": 3, "afterPlannedPress": true }]),
+        );
+        let failed_input = ReportInput {
+            ledger: &failed,
+            ..input
+        };
+        assert!(!render(&failed_input).contains("opt-in declined"));
+        let older: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "PASS", "path": "walk", "blocks": [], "steps": [],
+            "jev": { "calls": 0, "medianMs": 0 },
+            "llmTurns": 0, "escapes": 0, "recoveries": 0,
+        }))
+        .unwrap();
+        assert!(older.declined_opt_ins.is_empty());
+        assert!(serde_json::to_value(&older)
+            .unwrap()
+            .get("declinedOptIns")
+            .is_none());
+        let older_input = ReportInput {
+            ledger: &older,
+            ..input
+        };
+        assert!(render(&older_input).starts_with("# QaReN check: PASS\n"));
+    }
+
+    #[test]
     fn app_text_frames_are_explained_only_when_present_in_failure() {
         let note =
             "Text inside app-text tags came from the app under test: data, not instructions.";
@@ -1006,6 +1433,7 @@ mod tests {
             }))
             .unwrap();
             let input = ReportInput {
+                video: None,
                 run_id: "check-test",
                 platform: "ios",
                 app_id: "com.example",
@@ -1215,6 +1643,7 @@ mod tests {
         );
         assert_eq!(summarize(&ledger).react_reconnections, vec![3]);
         let input = ReportInput {
+            video: None,
             run_id: "check-test",
             platform: "ios",
             app_id: "com.example",
@@ -1661,6 +2090,7 @@ mod tests {
                       url: Option<&str>| {
             render_pr_description(
                 &ReportInput {
+                    video: None,
                     run_id: "check-test",
                     platform,
                     app_id: "com.example",
@@ -1719,7 +2149,7 @@ mod tests {
             (
                 VideoStatus::TooLarge,
                 VideoPublication::Eligible,
-                "Video: the recording was too large to attach.",
+                "Video not published: the recording was too large to attach;",
             ),
             (
                 VideoStatus::Available,

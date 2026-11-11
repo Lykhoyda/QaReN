@@ -572,6 +572,26 @@ entry in `dumpsys activity processes`; output that is not a recognised processes
 dump leaves the leg unresolved. The runner port and packages are defined in
 [`src/adapters/android.rs`](src/adapters/android.rs) and checked against the core by
 the [runner sync test](../qaren-core/test/unit/qaren-cli-android-runner-sync.test.ts).
+
+Both automatic teardown and explicit cleanup retry timed-out reverse removal,
+reverse listing, forward listing and runner-process reads up to three attempts,
+using the original, twice and three times the original command budget. From
+API 26 the runner-process read passes that budget to `dumpsys -t`, so the service
+is not cut at its own 10 seconds; output carrying dumpsys's
+`DUMP TIMEOUT ... EXPIRED` banner counts as a timeout, never as a dump. Before
+each retry, the selected emulator must answer `adb shell true` within 40 seconds;
+a failed or timed-out probe stops retries for that command. Non-timeout command
+failures are not retried. Probes and retries share a 240-second extra allowance
+across the release sequence; a retry starts only if that allowance covers both
+the probe and retry budgets. Initial attempts do not consume this allowance.
+Unresolved timeout diagnostics report attempt budgets and durations, liveness
+answers, whether the device was slow, unresponsive or the allowance could not
+cover another retry, and how much of the allowance the cleanup used; a retry that
+answers but cannot be read keeps the attempts before it. Forward removal and
+runner force-stop run once with their original budgets, so the allowance stays
+with the reads that follow them; successful absence verification is still
+required to release the lease.
+
 A walk that never started a runner reads as `absent`; a run that never reached
 the walk needs no runner release. An unproven leg keeps the lease, so a later
 `qaren cleanup <run-id>` can finish. Cleanup preserves the adb server, installed
@@ -579,6 +599,51 @@ app and running emulator: `--remove-app` on a borrowed emulator refuses
 `APP_REMOVAL_NOT_CONFIRMED` (uninstall the app yourself), and `qaren status`
 probes the emulator only through the borrowed adb server, rechecking compatibility
 before device probes and reporting them as inconclusive if that check fails.
+
+### Record a check
+
+`qaren check` records no video by default. Once a check reaches the walk, its
+receipt and stderr summary say
+`video: not recorded; pass --record to qaren check to record this walk`; a check
+refused earlier (preflight, build) carries no video line.
+`qaren check --record` records the walk through the same recorder, start rules,
+encode and trimmed copy as `qaren pr`, including the runtime-input rule and the
+Android API 34 requirement. `--record` on `qaren pr` changes nothing, because `pr`
+always records; any other verb rejects it with the usage text.
+
+Nothing is uploaded from `check`; `qaren publish` refuses a check run because it
+has no pull request record. A recorded check can leave these files in the run directory:
+
+- `media/video-published.mp4`: the trimmed copy, starting at admission (or after
+  the login replay) and ending at the last row. This is the only file the
+  receipt names.
+- `media/video.mp4`: the full recording, including setup and any login replay.
+  It stays private: no policy verdict applies to it; do not share it.
+- `media/raw.mov` (iOS) or `media/raw.mp4` (Android): the raw capture, kept
+  when encoding did not succeed or the run ended before the video was finalized.
+
+The receipt's `outcomes` gains these keys:
+
+- `video`: the final status, `available`, `too-large` or `unavailable(<reason>)`.
+  A check that ends after the recorder started, before the video was finalized,
+  carries `unavailable(recording started; the run ended before it was finalized; the raw capture is kept in media/)`.
+- `video_file`: `media/video-published.mp4`, only when the status is `available`
+  and that file exists.
+- `video_policy_verdict`: present only with `video_file`. It is the declared
+  [video policy](#video-publication)'s privacy verdict for that file alone
+  (`eligible`, or a withheld value with its reason and `keep this file local`),
+  not permission from `qaren publish`.
+- `video_next_step`: when there is no video, what to change: shorten or split the
+  plan, install ffmpeg and ffprobe, declare `video: non-strict` for runs with
+  runtime inputs, use an API 34+ emulator, or rerun with `--record`.
+
+The stderr summary prints the `video:` and `video file:` lines. Recording adds a
+recorder process and an encode and trim after the walk (each ffmpeg step is
+limited to 900 seconds). An encoded file over 100 MB is reported as `too-large`;
+the full and trimmed files coexist, and an oversized `media/video.mp4` can remain
+when its size reduction fails. Recording is
+best effort: a recorder, ffmpeg or trim problem never changes the verdict or the
+exit code.
 
 ### Android runner provisioning
 
@@ -853,12 +918,15 @@ stricter rule: exactly one identity match under the same element reference.
 On iOS, before tapping a candidate matching the row-choice heuristic above, QaReN
 attempts to dismiss a visible keyboard through the keyboard guard's dismissal chain
 (a native hide control, then the app's own `Keyboard.dismiss()`). It then requires the
-same target identity and frame across two consecutive captures, re-resolves the target
+same native target identity and frame across two consecutive captures, excluding
+React-only twins from this settle check, re-resolves the target
 and taps it once. The row records `keyboardCleared: native-control | js` only when a
 dismissal tier reports success and the settled capture no longer reports a visible
 keyboard. An unsuccessful dismissal still permits one tap after the target settles;
 it records no clearance. A target that does not settle, changes identity or moves
 from its settled frame before dispatch fails without that tap.
+An unsettled-target refusal lists each capture's frame or `absent`, `ambiguous:N`
+or `no-frame`, and the keyboard state after dismissal (`hidden`, `visible` or `unknown`).
 `RN_KEYBOARD_GUARD=0` turns this pre-tap clearance off.
 
 When that clearance did not run or did not hold, keyboard closure and an unchanged
@@ -1009,6 +1077,18 @@ Incomplete native captures, a missing application/window frame, no captured
 container, or an empty container frame keep the viewport gesture with
 `scrollBand.status: "no-geometry"`; a band too small for the handler's actual
 rounded drag does the same with `"too-small"`.
+On Android, if that selection would drag a container whose own accessibility
+report says it cannot scroll, QaReN repeats the selection without such
+containers. It uses the new selection only when it finds a list to drag or
+refuses because that list is covered. This avoids dragging a navigation
+library's full-screen wrapper on native-header screens. Existing refusals and
+viewport fallbacks stay unchanged, as do iOS and captures without the report.
+A list with scrolling disabled also reports that it cannot scroll; when
+excluding it finds no replacement list or covered-list refusal, the original
+selection remains. Scroll-until and container clipping rules are unchanged.
+For descendant-motion evidence on a selected list that does not report itself
+unable to scroll, a same-frame container that reports it cannot scroll is
+ignored rather than making the list's movement ambiguous.
 When the first scroll leaves the screen unchanged, QaReN scrolls once more under the same operation
 id; if both scrolls dispatched cleanly with complete native app captures
 before and after each attempt and neither changed the screen,
@@ -1535,6 +1615,14 @@ and more than 600 nodes truncate the read; either leaves the capture
 incomplete. Literal steps can read an RN `Modal`'s content; its effect on React
 host association is described below.
 
+Every Android snapshot node carries `scrollable`, the platform's own
+`AccessibilityNodeInfo.isScrollable` report. The required `SCROLLABLE_FACT_V1`
+capability makes an older runner stale and triggers the existing automatic
+rebuild path without changing the protocol version. The report is independent
+of presence evidence and does not affect screen-change or snapshot-stability
+comparisons. Its plain-scroll use is defined in the
+[plain-scroll contract](#occluded-taps-and-focus).
+
 Android QA snapshots can also request native presence through the runner's
 `A11Y_PRESENCE_V2` capability; the core treats a runner without it, including
 one that advertises only the earlier `A11Y_PRESENCE_V1` rule, as stale. The runner
@@ -1576,8 +1664,8 @@ rule sees a native touch listener on a non-clickable view or a cover hidden from
 accessibility; assert a tap's expected result with the plan's next step.
 
 Android phrase steps resolve against these observations. A valid capture whose
-interactive React hosts cannot all be associated (a mounted `Modal`, or inputs
-the keyboard covers) keeps the `SCREEN_EVIDENCE_INCOMPLETE` presence gap, as on
+interactive React hosts cannot all be associated (inputs the keyboard covers, or
+several mounted `Modal`s) keeps the `SCREEN_EVIDENCE_INCOMPLETE` presence gap, as on
 iOS; stale or incomplete captures refuse with `NATIVE_PRESENCE_UNUSABLE`. Quoted
 targets and literal checks remain usable without requesting presence.
 
@@ -1630,7 +1718,9 @@ React host association uses the candidate's uniquely established native Window
 ancestry and that window's origin, including captures with other app or keyboard
 windows. Unique identity, type, frame, presence and ancestor proofs still apply;
 missing or ambiguous window membership refuses association. Typography compares
-title and body evidence only within the same window.
+title and body evidence only within the same window. The ancestor proof stops at a
+mounted `Modal` host: a presented modal is its own native surface, so identified
+React ancestors above it are not required to appear natively.
 
 `react-native-safe-area-context` roots (`RNCSafeAreaView` and
 `RNCSafeAreaProvider`) support association on Android as well as iOS, allowing
@@ -1641,14 +1731,14 @@ Android [React host association](../qaren-core/src/qa/host-association.ts) scale
 React points by the display density and calibrates the origin per capture from
 at least two uniquely identified, unclipped anchors that agree within two pixels.
 It accepts frames shortened or emptied by a vertical scroll clip. Missing or
-disagreeing anchors leave association unavailable. Android layout, scroll and
+disagreeing anchors leave association unavailable. Android lists only a presented
+React Native `Modal`'s own window, so with exactly one mounted `Modal` association and
+the origin anchors come from that modal's subtree, and the hosts behind it count as
+covered rather than as gaps; several mounted `Modal`s leave association unavailable. Android layout, scroll and
 drawing classes, including parked sliders, supply no native press or fill
 capability of their own; the [screen projection](../qaren-core/src/qa/screen.ts)
 owns their classification.
 
-Known limit: a mounted Android React Native `Modal` makes association
-unavailable, even when accessibility lists only the modal's window, so phrase
-press and fill targets on such screens refuse.
 Phrase waits capture fresh screen and presence evidence on every poll, even when the
 screen appears unchanged; prior observations do not establish current presence.
 
@@ -1769,11 +1859,12 @@ Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`
 when the final evidence remains unsure. Initial captures, polling captures and
 evidence-refresh captures, including a refresh during the first visibility check,
 share the wait's deadline for both quoted and phrase targets. A wait whose first
-capture never completes fails with `TARGET_WAIT_TIMEOUT` and
+capture times out without reporting native incompleteness fails with `TARGET_WAIT_TIMEOUT` and
 `cause=capture-deadline`, with `next_action=inspect_capture_health`. If a later
 refresh reaches the deadline, the wait ends
 from its completed observations; a phrase wait whose visibility remains undecided
 ends with `VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED`.
+For incomplete native reads, follow the [capture and privacy contract](#why-were-my-screenshots-withheld).
 A quoted wait with at least two definite
 absence observations sharing one screen signature normally fails at its deadline with
 “did not appear”; it does not report expired evidence for that stable absence.
@@ -1812,9 +1903,10 @@ detail labels the layout `react layout before scroll`. A later
 visible native match passes normally. Missing or partially
 clipped layout preserves polling until the deadline; stored-ID replay and block
 start preconditions do not use this early failure or automatic scroll.
-After a classified React-only miss, [step recovery](#step-recovery) may capture
-only within the wait's remaining time. If that capture reaches the deadline, or
-no time remains, the React-only failure reason stands. Other eligible unmet quoted
+After a classified React-only miss, [step recovery](#step-recovery) takes one
+capture with its own capture budget, even when the wait's time has run out, since
+the match may sit behind an interruption. If that capture reaches its budget, the
+React-only failure reason stands. Other eligible unmet quoted
 waits retain ordinary recovery. When recovery clears a blocking screen or system
 dialog, the wait runs once more with its full budget.
 Scroll-until-text uses the same visibility verdict
@@ -1880,7 +1972,7 @@ the byte limit. It excludes value text, label text, identifiers and testIDs. The
 
 ### Why were my screenshots withheld?
 
-Each withheld screenshot metric has `stage: "screenshot"`, `outcome: "withheld"`
+Each privacy-caused withheld screenshot metric has `stage: "screenshot"`, `outcome: "withheld"`
 and `withheld: "<code>"`. Slot runs retain these metrics in
 `logs/core-diagnostics.jsonl`; without used slots they follow the ordinary
 `logs/core.log` timing route, subject to subprocess output withholding.
@@ -1897,8 +1989,9 @@ an exported unused `QAREN_INPUT_` namespace, or no inputs; raw subprocess output
 withholding remains unchanged. They contain no values, labels, identifiers,
 testIDs, geometry, character counts or element indices.
 
-`ledger.json` carries `screenshotWithheld` on each withheld row, including streamed
-rows retained after an interrupted walk. `mediaWithheld.screenshots` holds the
+`ledger.json` carries `screenshotWithheld` on each row with a recorded privacy
+cause, including streamed rows retained after an interrupted walk.
+`mediaWithheld.screenshots` holds the
 first `reason`, optional `kind` or `source`, `line` and withheld screenshot `count`.
 `mediaWithheld.video` holds the publication-window cause and line, without a
 count: the strict privacy cause for strict or undeclared runs, or the protected
@@ -1907,10 +2000,19 @@ an earlier `runtime-input` or `echo` with source `input`, including its observat
 line. A successful pre-plan login resets the video window and, in non-strict mode,
 the screenshot cause and count; a retained cause then uses the new window's
 starting line. `videoPublication` retains the strict verdict;
-`nonStrictPublication` supplies the separate non-strict verdict.
-The receipt includes one `media_withheld=<code>[/<kind|source>]@line <N>` note,
+`nonStrictPublication` supplies the separate non-strict verdict. A walk refused
+after admission keeps both computed verdicts, except a
+`PRIVATE_INPUT_CAPTURE_UNKNOWN` or `NATIVE_SNAPSHOT_INCOMPLETE` refusal.
+If a Wait absorbs an incomplete native read, subsequent screenshots and pixel
+comparison captures are withheld for the rest of the run, even when a later read
+completes and the Wait passes or fails. This applies under every video policy.
+These cases and any refusal before admission report
+`videoPublication: unknown` with no `nonStrictPublication`,
+which withholds video in either mode.
+When a privacy cause is recorded, the receipt includes one
+`media_withheld=<code>[/<kind|source>]@line <N>` note,
 preferring the video cause in non-strict mode and the screenshot cause otherwise.
-`report.md` marks each withheld row and explains
+`report.md` marks each row with a recorded privacy cause and explains
 the first screenshot cause and line. Line 0 means privacy latched before the walk.
 
 | Code | Meaning | What to do |
@@ -1980,9 +2082,17 @@ refuses with `SCREEN_EVIDENCE_INCOMPLETE` rather than guessing a target.
 The [screen projection](../qaren-core/src/qa/screen.ts) owns this policy.
 
 The native snapshot is the privacy boundary before walking a screen. Capture
-refuses with `PRIVATE_INPUT_CAPTURE_UNKNOWN` unless native completeness is attested;
-the refusal reports only a value-free node count and fixed cause codes. Native
+refuses with `NATIVE_SNAPSHOT_INCOMPLETE` unless native completeness is attested;
+the refusal reports a value-free node count and fixed cause codes, with read count
+and elapsed time when Wait exhausts its retry deadline. Native
 acquisition failures also refuse without reinjection or a public-tree fallback.
+The privacy boundary is unchanged: an incomplete native snapshot is never walked
+or masked. A Wait re-reads on its normal poll cadence within its existing deadline;
+if a complete read recovers but the quoted target stays absent, the Wait retains
+`TARGET_NOT_FOUND` with the observed screen, even if a later recovery capture is
+incomplete. Tap,
+Fill, Check and Scroll still refuse immediately. React-side incomplete capture
+and generic private-capture failures retain `PRIVATE_INPUT_CAPTURE_UNKNOWN`.
 
 A required private capture re-reads a canonical empty snapshot (`nodes=[]`,
 verdict `degraded`, `nodeCount=0`, reasons exactly `empty-capture`, no truncation
@@ -2002,11 +2112,16 @@ refuses with `NATIVE_CAPTURE_UNAVAILABLE` after the capture retry budget.
 An empty snapshot's unchanged ref map and zero-node count
 diagnostics do not prevent this read-only retry; persistent emptiness still
 refuses with the same code and message. Persistent incomplete presence refuses
-with `PRIVATE_INPUT_CAPTURE_UNKNOWN`, naming the unknown keyboard state and any
+with `NATIVE_SNAPSHOT_INCOMPLETE`, naming the unknown keyboard state and any
 known acquisition phase, failure reason or deadline read using fixed codes.
+On iOS, `presence-failure=<phase>:<reason>` names the first recorded failure,
+which can be a harmless node-level read; `presence-incomplete=<phase>:<reason>`
+names the decisive failure that left the snapshot incomplete. A known revalidation
+mismatch adds `presence-incomplete-mismatch=<kind>`. These codes appear in both
+the refusal and capture log and carry no screen content.
 If the retry deadline cuts off a read, the refusal retains the last incomplete
 presence snapshot's fixed causes and adds `retry-deadline` without returning that
-snapshot as usable evidence.
+snapshot as usable evidence; the capture log also retains its presence diagnostics.
 Where presence is required after a system dialog closes, iOS native preparation
 compares consecutive full enumerations and waits for a 500 ms quiet window before
 observing candidates. Any descriptor or hierarchy change resets that quiet window
@@ -2018,7 +2133,8 @@ readbacks still require full platform presence and privacy admission.
 Only a fresh, complete snapshot can establish privacy or admit a newly arrived
 system alert; partial presence never authorizes actions, screenshots or model
 evidence. Malformed, truncated, dropped-node and other incomplete captures refuse
-immediately. The [capture implementation](../qaren-core/src/qa/capture.ts) owns
+at the capture boundary; Wait handles `NATIVE_SNAPSHOT_INCOMPLETE` as described
+above. The [capture implementation](../qaren-core/src/qa/capture.ts) owns
 retry eligibility; [settle regressions](../qaren-core/test/unit/qa/private-empty-reread.test.ts)
 cover these boundaries.
 
@@ -2076,8 +2192,12 @@ Reports show both facts beside each row and name reconnects on the report and
 pull-request verdict lines. A `lost` row withholds every new or patched block of the
 walk, even when later captures recover; any other gap withholds only the block it belongs to.
 Strict private React capture can scan up to 5,000 fibers across renderer roots,
-including a single-root screen. Existing capture and item deadlines, host-evidence and
-interactive-node limits still apply.
+including a single-root screen. Its interactive-entry cap now shares the private
+host-evidence bound in [PRIVATE_INPUT_LIMITS](../qaren-core/src/qa/private-input-limits.ts),
+so long-list sheets can retain the React placeholders needed for quoted Fill.
+The agent-facing digest stays capped at 200 entries. A digest truncated by any
+bound is still discarded in full; capture and item deadlines and all other bounds
+remain unchanged.
 
 On composite components, the digest omits non-string `title`,
 `accessibilityLabel` and `placeholder` props without coercing or serializing them;
@@ -2342,6 +2462,22 @@ pre-install or pre-launch proof, the caller retains its preparation timeout.
 Post-boot proof keeps `SIMULATOR_BOOT_FAILED`, with unavailable-read facts or the
 observed state and read latency; bootstatus failures are unchanged. Unresolved
 post-shutdown readback retains the lease for cleanup recovery.
+
+Every iOS install attempt of `check`, `pr` and `prepare` first proves the
+simulator is still in the run's custody and `Booted`: a leased target must still
+hold this run's lease, rechecked after the inventory read, before and after any
+re-boot and immediately before `simctl install`; a temporary simulator the run
+created needs no lease. Under one second of install budget left, the attempt ends
+with the install timeout without reading or touching the device. A `Shutdown`
+target is re-booted under the run's custody when this run may boot it
+(`--boot-device`, `--restart-device`, a pool member or a created simulator) and the
+remaining budget covers `deadlines.device_boot_seconds` plus one inventory read;
+the run history and the `device_reboot` note name when it was last observed
+`Booted` and when `Shutdown`. Otherwise it refuses with `DEVICE_NOT_BOOTED`
+(exit 4, phase `install`) naming both times, or the missing budget, and the
+remedy; `prepare` on a `--device` target without `--boot-device` keeps its
+`DEVICE_UNAVAILABLE` refusal. Launch and `ready` re-proofs never re-boot. An
+install failure on a `Booted` target stays `ARTIFACT_INSTALL_FAILED`.
 
 Default cleanup leaves the borrowed simulator running and keeps the installed app.
 `--shutdown-device-on-exit --device <simulator-UUID>` opts into shutdown
@@ -3390,6 +3526,18 @@ read when it saw any, and a suggestion to insert a `Wait for` the target before
 that line, or move an earlier wait to an element that renders with it. See
 [row timing](#row-timing) for the measured wait duration.
 
+If interruption recovery after a target-resolution failure throws
+`NATIVE_SNAPSHOT_INCOMPLETE`, that capture refusal remains the outcome and adds
+`step-reason=<word>` for the step's first reason: `target-not-found`,
+`target-not-found-after-launch`, `replay-selector` or `target-ambiguous` for the
+corresponding target code, and `other` for any other code. For a quoted Fill with
+no matching field name, when the screen held before recovery has exactly one
+eligible unnamed native input that could pair with the placeholder, it also adds
+`placeholder-pairing=unknown` or `placeholder-pairing=incomplete` for its React
+coverage gap. These are fixed words, never target text. Screenshots remain
+withheld and video publication remains unknown. A refusal returned by recovery
+rather than thrown is unchanged; error precedence and launch polling are unchanged.
+
 Development error overlay recognition covers iOS RedBox and LogBox and Android
 native RedBox. Android native RedBox recognition has automated test coverage only,
 with no Android device proof; Android LogBox is out of scope. On iOS, LogBox is
@@ -3401,31 +3549,55 @@ The overlays are recognized in the native capture by the
 fixed identifiers and controls React Native gives them (`redbox-dismiss`, `redbox-reload`,
 `redbox-copy`, `redbox-error`, `rn_redbox_stack`, `rn_redbox_dismiss_button`, or one window holding `Dismiss`, `Minimize` and a
 `Log N of M` header, or the syntax-error `Failed to compile` header and footer),
-never by error text. An overlay in front is never read as the app: before a step
-resolves its target, judges a check or evaluates a wait, QaReN presses the
+never by error text. An overlay in front is never read as the app. For an overlay
+seen before an action, while no post-action recovery has been accepted, QaReN
+clears it before resolving a target, judging a check or evaluating a wait: it presses the
 overlay's own Dismiss control by its exact reference, proves the overlay gone in
 a fresh capture and runs the step again. This is a retry for a known cause, not a
 blind retry: each successful dismissal writes a `retry` row with `retryCause: DEV_REDBOX`,
 `devError: { variant, dismissal }` and the step attempt number. A failed dismissal
 proven not to have sent a gesture writes the same metadata on a `retry` row when
 another attempt remains; otherwise it records the metadata on the terminal `fail` row. Every
-dismissal attempt counts in `recoveries`. A step gets at most three dismissals,
+dismissal attempt counts in `recoveries`. A step gets at most three pre-action dismissals,
 including across saved replay falling back to a walk. Dismissal, clearance and
 resumed execution share the step's existing deadline; overlay recovery never
 renews it. The dismissal count is separate from the step's two interruption
 recoveries. Reload and Copy are never
 pressed, and Dismiss is not proof that the step's own action worked.
 
+On iOS, a native RedBox first seen after a dispatched Tap gets one bounded
+completion check per run. QaReN dismisses it once with its own Dismiss control
+and takes a normal admitted capture. The next item in the same block must be a
+Tap, Fill or Wait with a quoted target whose native test ID now appears and was
+absent on the Tap's screen. Labels, React-only targets and Checks cannot prove
+completion. Selection-readback presses, unverified alert-button presses,
+non-executed actions, LogBox, Android and recovery-disabled blocks keep the
+existing refusal without a dismissal. The planned Tap is never replayed.
+
+When completion is proven, the Tap passes with
+`devError: { variant: 'redbox', dismissal: 1, afterAction: true, proof: 'next-test-id-appeared' }`.
+The next item uses the post-dismissal observation. Receipts count these rows as
+`devOverlayWarnings`, and verdict displays, including `qaren watch`, say
+`PASS (1 development overlay warning)`; the stderr summary keeps its lowercase `pass`.
+An unproven completion, including incomplete, unavailable or expired completion
+capture evidence, refuses `DEV_REDBOX_ACTION_UNCERTAIN` and says the overlay
+was dismissed once to check. Cancellation and app-process safety failures retain
+their own outcomes. A RedBox still in front after that one dismissal
+refuses `DEV_REDBOX_REPEATED`; once completion has been accepted, any later
+RedBox refuses `DEV_REDBOX_ACTION_UNCERTAIN` without another dismissal, even
+before a later action or in another block. Screenshot withholding,
+privacy processing and media continuity follow the same rules as other captures.
+
 When the overlay cannot be cleared this way the run refuses with
 `failure.code: DEV_REDBOX` (exit 4). The cause opens `failure.detail`:
 
 | Cause | When | `next_action` |
 | --- | --- | --- |
-| `DEV_REDBOX_REPEATED` | The overlay was still in front after three dismissals in one step | `restart_app_from_plan_start` |
-| `DEV_REDBOX_DISMISS_FAILED` | The Dismiss press failed or was not dispatched. A press the runner refused before any gesture is observed again and pressed again within the three; one that may have run a gesture is never repeated. A LogBox Dismiss refused as `TARGET_MOVED_BEFORE_DISPATCH` is never pressed again. When available, the detail includes the runner's value-free refusal code (`runner refused: <CODE>`). The log records `dev-error-dismiss-failed=<CODE>` in `logs/core.log`, using `unknown` when no code is available. For a moved refusal, the log line also carries the runner's value-free geometry: the retained and live frames, their delta, and whether the target was re-found by identifier or label | `restart_app_from_plan_start` |
+| `DEV_REDBOX_REPEATED` | The overlay was still in front after three pre-action dismissals in one step, or after the one post-action dismissal | `restart_app_from_plan_start` |
+| `DEV_REDBOX_DISMISS_FAILED` | The Dismiss press failed or was not dispatched. Before the action, a press the runner refused before any gesture is observed again and pressed again within the three; one that may have run a gesture is never repeated. A post-action Dismiss is never retried. A LogBox Dismiss refused as `TARGET_MOVED_BEFORE_DISPATCH` is never pressed again. When available, the detail includes the runner's value-free refusal code (`runner refused: <CODE>`). The log records `dev-error-dismiss-failed=<CODE>` in `logs/core.log`, using `unknown` when no code is available. For a moved refusal, the log line also carries the runner's value-free geometry: the retained and live frames, their delta, and whether the target was re-found by identifier or label | `restart_app_from_plan_start` |
 | `DEV_REDBOX_NO_SAFE_DISMISS` | No single Dismiss control (a syntax error, an ambiguous control, or an overlay inside a login replay, which never recovers) | `restart_app_from_plan_start` |
 | `DEV_REDBOX_CLEARANCE_UNPROVEN` | A fresh capture could not prove the overlay gone | `restart_app_from_plan_start` |
-| `DEV_REDBOX_ACTION_UNCERTAIN` | The overlay was first seen after the step's action was sent, or after another recovery already acted in the same step; nothing is dismissed or replayed | `inspect_app_error_before_rerun` |
+| `DEV_REDBOX_ACTION_UNCERTAIN` | Completion after an action was not proven, or an overlay reappeared after accepted post-action recovery. Eligible iOS RedBox presses dismiss once to check; other cases leave it in front. The action is never replayed | `inspect_app_error_before_rerun` |
 
 A restart from plan start loses app state; the error may race the app again. A
 device restart or an unchanged native rebuild cannot fix it. A run that passes
@@ -3449,7 +3621,8 @@ unsure after its re-ask gets a deterministic recovery, subject to the
 [quoted-wait deadline limits](#plan-checks-and-screen-evidence), then the step runs once more from a fresh
 capture. If it fails again, a second recovery may decline a different system prompt or app
 interruption once the first is proven gone. An app interruption with the same decline label
-fails with `the app interruption did not disappear`; a different kind of interruption or
+fails with `the app interruption did not disappear`, except a returning strict permission
+opt-in (below); a different kind of interruption or
 decline label may be eligible, subject to the same guards on each recovery. A step never
 gets more than two interruption recoveries. The order is owned by [`recover.ts`](../qaren-core/src/qa/recover.ts): a
 recognized system prompt met during an ordinary app step is declined, never accepted
@@ -3479,20 +3652,64 @@ for recording eligibility.
 
 Interruption recovery counts as a device mutation for replay eligibility: a selector miss
 after recovery is terminal and never initiates another re-walk. The second ordinary
-action attempt captures fresh evidence but gets no additional expiry refresh;
-phrase actions retain presence capture through readback and retries.
+action attempt captures fresh evidence but normally gets no additional expiry refresh;
+see the pre-scroll recovery rules below for the late presence-read exception.
+Phrase actions retain presence capture through readback and retries.
 See the [recovery regressions](../qaren-core/test/unit/qa/walker-recover.test.ts)
 and [freshness regressions](../qaren-core/test/unit/qa/temporal-walker.test.ts).
 
 App interruptions need no app-specific configuration. Recovery requires complete
 native capture and React coverage. One shared target-presence predicate checks the
 current target and every remaining target, quoted or described, in every block:
-dismissal is allowed only when none could match an element on the interruption.
-Tap, fill, wait, scroll and check targets use the same rule, with no exemptions
-for later blocks, decline labels or screens with only a decline control.
-Unknown absence, including an unresolved description, counts as a possible match.
-A target whose centre is covered by a detected sheet or scrim does not prevent
-recovery merely because it remains in the capture. ID-only targets are checked
+dismissal normally requires that none could match an element on the interruption,
+with the sole-control exemption below. Targets in later blocks and targets naming
+the decline control remain protected. Unknown absence, including an unresolved
+description, counts as a possible match. A target whose centre is covered by a
+detected sheet or scrim does not prevent recovery merely because it remains in the
+capture. The one exemption: when the current target is absent and the screen's only
+control, counted in any enabled, hittable or ready state, carries a decline label, a
+later quoted tap or fill target in the same block does not veto by presence; nothing
+else on that screen can take the action, so its match is a coincidence with the copy
+or a text element's test ID. A later step naming the decline control by label or ID
+still keeps it, and a later wait or check on the screen still vetoes.
+This exemption requires a proven control count: press/fill association gaps or
+unknown capabilities on a non-structural, on-screen element keep the presence guard.
+React hosts outside the one mounted `Modal` are not gaps while every associated host
+sits inside it, so a full-screen promo over a mounted screen still counts as one control.
+Check-first, wait-first and tap/fill-first plans behind a presented full-screen promo
+recover under these guards and retry the step once. Before scrolling for a
+React-only tap or fill target while a decline control is on screen, an ordinary
+capture gets one bounded presence recapture within the step's remaining budget. When it proves the target is behind
+the presented `Modal`, recovery runs instead of scrolling the promo. A recapture that
+runs out of time or returns incomplete evidence leaves the cover unproven, and the
+step continues as it would have without it; it never adds a refusal of its own.
+If the ordinary observation expired during that read, it is refreshed before
+continuing, with the modal cover still unproven.
+React-only wait recovery and this pre-scroll recovery require proof that the target
+is behind the presented `Modal`, and recheck this proof in recovery's fresh capture
+and before dispatch; without it, app dismissal is vetoed as `uncovered-target`.
+When a `Modal` is mounted but no host could be associated, the proof cannot be
+formed, and these recoveries and the missing-target rule below veto as
+`uncovered-target` and press nothing.
+A tap or fill whose target is not on screen at all may dismiss only a decline that is
+the screen's only control (inputs count as controls) or a recognised permission opt-in.
+A multi-control promo with a missing target vetoes as
+`uncovered-target`, presses nothing and keeps the step's `TARGET_NOT_FOUND`, so an
+ordinary form's own `Cancel` is not pressed. A screen whose only control is a decline
+can still be dismissed. A failed check or ordinary unmet wait whose target is absent
+from the capture also dismisses only a sole decline, a recognised opt-in, or a soft
+decline (`Not now`, `Maybe later`, `Later`, `Skip`, `No thanks`, `Don't allow`)
+on a screen proven to have no input fields. This requires complete React host
+evidence and no fill-association gaps. Captured fields on the current surface count
+even when offscreen or disabled, as do elements with supported or unknown fill
+capability; inputs proven behind a separate presented modal do not count.
+`Close`, `Dismiss` and `Cancel` on a screen with other controls are not dismissed.
+Known case: an input-free screen under test with an action and a soft decline, such as
+two-button onboarding with `Skip`, looks the same as an interrupting sheet, so an absent
+check or wait target takes its soft decline once. Captured
+matches, including offscreen or keyboard-covered text and IDs, do not trigger this
+additional surface veto; the other guards still apply. The current target is never
+exempt. ID-only targets are checked
 by test ID, text-only targets by contained label or value text (including composed
 input text), and unqualified targets by either. An on-screen, uncovered match
 vetoes dismissal even when another matching ID is offscreen.
@@ -3529,7 +3746,8 @@ absent can expire protection that way. Protection also lapses once a later plann
 item passes on its own complete capture with no decline control on screen; an interruption
 appearing after that point is eligible for bounded recovery. Until a later item
 passes, protection holds, so a screen the tap opens late stays protected, and a
-later item passing while a decline control is still on screen keeps it. After the
+later item passing while a decline control or a strict permission opt-in shape (below)
+is still on screen keeps it. After the
 lapse, a later step targeting the interruption still keeps it through the later-target
 veto, which is checked before planned-press protection. Static decline text does not
 keep protection; an on-screen, non-structural decline with supported or unknown press
@@ -3540,10 +3758,11 @@ destination, even when it closes an identified modal. If that destination has no
 identifiable container, protection remains on, including against later sheets,
 until it lapses. When an identified destination is proven gone, later unsolicited
 sheets can be dismissed. Recovery's decline presses and login presses never arm it.
-While protected, recovery dismisses no app screen: neither an opt-in shape,
-a screen absent at press readback, nor a newly identified modal proves independence
-from the planned tap. A push opt-in arriving right after a planned tap, before a
-later item passes, must be answered explicitly by the plan. Opt-ins and intro sheets
+While protected, recovery dismisses no app screen except a strict permission opt-in
+(below): neither a looser opt-in shape, a screen absent at press readback, nor a newly
+identified modal proves independence from the planned tap. Any other opt-in arriving
+right after a planned tap, before a later item passes, must be answered explicitly by
+the plan. Opt-ins and intro sheets
 at launch, after login replay, after an identified destination departs, or after
 protection lapses remain eligible for bounded recovery.
 Outside protection, a permission opt-in shape labels an otherwise permitted
@@ -3554,6 +3773,49 @@ starting with `Yes` and mentioning notifications, without negation.
 A whole-label, case-insensitive match for `Allow all`, `Accept all`, `Agree to all`
 or `Enable all` identifies base consent; none of its declines is taken.
 Navigation labels such as `View all offers`, `See all` or `Show all` do not identify consent.
+
+A strict permission opt-in is declined even while protected. Every condition must hold
+on the fresh complete capture, and anything unknown keeps the veto. A refusal names
+why the opt-in was not declined:
+
+- Exactly two proven controls, both visible, hittable, enabled, non-secure buttons
+  with supported press and no fill; a link, switch, cell or input disqualifies the screen.
+- The decline's normalised label (case, spacing and apostrophes folded) is exactly
+  `skip`, `not now`, `later`, `maybe later`, `no thanks` or `don't allow`. The accept
+  is `notify me`, `yes, notify me`, or `allow`, `enable` or `turn on` alone or followed
+  only by permission subjects and the fillers `access`, `to`, `my`, `the` and `push`.
+- A permission subject (`notification(s)`, `notify`, `location`, `camera`, `microphone`,
+  `photos`, `contacts`, `calendar`, `bluetooth`, `face id`, `touch id`, `biometric(s)`)
+  is named in the accept, or in the visible text when the accept is bare.
+- No consent word (`agree`, `accept`, `consent`, `terms`, `privacy`, `policy`, `policies`,
+  `cookie(s)`, `partner(s)`, `companies`, `third`, `analytics`, `tracking`, `marketing`,
+  `advertising`, `ads`, `share`, `sharing`) appears anywhere in the captured text,
+  including merged labels, non-secure values, unresolved text and offscreen elements.
+  A concealed screen or a text element with neither label nor value makes this unknown.
+  Every React-only control must be proven behind the one presented modal, and their
+  count must account for every unassociated React control.
+- The later-target veto passes; a replayed step's declared wording is checked as well
+  as its stored selector.
+- The planned press's tapped label, read from the capture it was dispatched from, is
+  known and is neither a decline nor an accept form. Every element with an identity
+  in that complete dispatch capture is checked, including offscreen and React-only
+  elements; none may share either opt-in control's kind and test ID (or label).
+  A control without either test ID or label keeps the tap record unknown.
+- The same opt-in, identified by its decline, accept and subject, was not already
+  declined this way in the run.
+
+The Jev veto still applies. Recovery taps the decline once, never the accept, and proves
+on a complete capture that both labels are gone in any normalised spelling; otherwise the step fails with
+`the permission opt-in was still in front after its decline; it was not retried`. It then
+retries the step once within the step's interruption recoveries. The retry row reads
+`recovered: declined a permission opt-in that followed the plan's own tap (<decline>)`,
+naming a fixed decline word or `the decline control`. When an opt-in declined this way
+returns, on the step's own retry or even after protection lapses, nothing is tapped: the step fails with
+`the app asked again after recovery declined this permission opt-in; nothing was tapped`
+and suggests a `Tap "<decline>"` step after the planned press, or before the failing
+step once protection has lapsed. An opt-in declined outside
+protection is declined again when it returns. System permission alerts follow the
+dialog rules above.
 Login replay also clears the withheld-dismissal diagnostic for the retried item.
 While protected, recovery still answers system
 prompts and dev menus and still replays login, but withholds every app decline,
@@ -3572,6 +3834,10 @@ is still on screen, including one that opens together with it, is therefore not
 dismissed either. When the protected screen is opt-in shaped or has only a decline
 control, the failure names its class even with text withheld and suggests adding
 a step after the planned press that taps the named decline, with privacy masks intact.
+A failed row's reason also says why recovery dismissed nothing when presence evidence
+was unreadable, late or incomplete, when a decline control's visibility or press could
+not be proven after a planned press, or when a protected screen was not a strict opt-in
+or its control evidence was incomplete.
 
 With `TYPESAFE_API_KEY`, Jev may veto a selected control when the screen may be
 related to the step or its purpose is uncertain. It never chooses a control,
@@ -3595,7 +3861,7 @@ and cannot authorize a retry; an attempted decline still counts in `recoveries`,
 including when its read-back refuses incomplete capture.
 
 `logs/core.log` includes value-free diagnostics for failed interruption admission:
-`interruption-rejected` reports a front, coverage, indexed target,
+`interruption-rejected` reports a front, coverage, indexed target, `uncovered-target`,
 previous-plan-press or no-candidate veto, a later-target veto's `presence` or
 `ownership` provenance, whether the decline is the screen's only control
 (`soleDecline`), the exact-decline-label element count, and `controls`: the press and
@@ -3610,17 +3876,26 @@ target index and count are also retained as an `interruption-rejected` event in
 step's ledger row carries an `interruption` receipt: `considered`, an `outcome`
 (`vetoed`, `dismissed`, `not-dispatched`, `ambiguous` or `did-not-disappear`), the
 veto, whether a later-target veto came from `presence` or `ownership`, the target's
-plan line and step kind, whether the decline was the screen's only control, the
-`screenClass` a dismissed screen was recognised as (`permission-opt-in`); the report prints it as one line under the failure. A Jev veto
+plan line and step kind, whether the decline was the screen's only control, when a
+dispatched decline stayed the vertical centre in points of the control the press
+aimed at, the `screenClass` a dismissed screen was recognised as
+(`permission-opt-in`), and `afterPlannedPress: true` when the strict opt-in exception
+declined it; the report prints it as one line under the failure. An ownership veto
+fills the failure's suggested plan edit with the owning line.
+Each strictly shaped opt-in decline adds `{ line, afterPlannedPress }` to the ledger's
+`declinedOptIns`, one entry per dismissal. The verdict stays `PASS`, and a passing
+report and pull-request comment add `N opt-in(s) declined (line(s) …)` beside it. A Jev veto
 or a guard change before dispatch records `not-dispatched`. A dismissal stays on
 the row through the step's retry. A no-candidate veto also reports
 each decline-labelled element's first failed predicate; press capability failures
 include the existing host association identity when available.
 `presence-system-modal` reports an unrecognized SpringBoard modal's
 app state, alert/sheet counts and structural geometry and descendant counts.
-`system-dialog-stage` reports local dialog context failures. These records
+`system-dialog-stage` reports local dialog context failures. The structured events
 contain only counts, indices, booleans and fixed enums, omit labels, identifiers,
-refs and app text, and never authorize a tap or change capture admission.
+refs and app text. Private core-log interruption diagnostics also include modal-cover
+evidence with bounded React host type names. Diagnostics never authorize a tap or
+change capture admission.
 Successful selection, recognized modals and proven dialog taps emit none of
 these failure records.
 
@@ -4059,7 +4334,13 @@ changes.
 
 Preparation rechecks provenance before emitting `ready`; `check` and `pr`
 recheck it before and after the walk. Detected drift fails with
-`CANDIDATE_DRIFTED` and cannot return PASS; an already-cancelled walk retains
+`CANDIDATE_DRIFTED` and cannot return PASS. A candidate that cannot be read at
+all (its repository or project root is missing, a Git read fails or times out,
+or an integration-tolerant comparison or the lockfile cannot be read) refuses
+`CANDIDATE_UNAVAILABLE` (exit 4) instead: nothing is known to have changed, so
+check that its volume or path is available again and re-run. After the walk this refusal replaces the
+walk's verdict, keeps the ledger rows and records the final verification's
+`classification` (`drifted` or `unreadable`). An already-cancelled walk retains
 `RUN_CANCELLED`. Passing blocks already saved remain available. See the
 [publication refusal contract](#test-a-pull-request) before publishing; re-run
 against an unchanged candidate to obtain attributable evidence.
@@ -4153,7 +4434,8 @@ handoff, the CLI rechecks cancellation; a late cancel marks that terminal result
 cancelled, persists it and withholds the handoff. A missing terminal result
 refuses `RUN_RECORD_INVALID`.
 Cancellation refuses `RUN_CANCELLED` (exit 4), candidate mismatch fails
-`CANDIDATE_DRIFTED` (exit 1), and unproven ownership refuses
+`CANDIDATE_DRIFTED` (exit 1), a final verification that could not read the
+candidate refuses `CANDIDATE_UNAVAILABLE` (exit 4), and unproven ownership refuses
 `OWNERSHIP_UNPROVEN` (exit 4), before uploads, comments, label changes or block
 write-back. A plain QA FAIL can still be published as a report when these
 conditions hold. Later recovery does not upgrade the original terminal result;
@@ -4178,9 +4460,23 @@ API <34 stops screen recording at 180 seconds.
 Both platforms encode the capture to `media/video.mp4` (H.264, 30 fps), using
 `ffmpeg` and checking playable duration with `ffprobe`. If these tools are
 unavailable, capture cannot start, or finalization fails, the walk can still
-complete and the receipt's `video` outcome says why. The local recording stays
+complete and the receipt's `video` outcome says why, after the published copy is
+prepared, so a failed trim is reported rather than `available`. An unavailable
+video also carries a closed `videoReason` code (`not-recorded`,
+`recorder-failed`, `ffmpeg-missing`, `encode-failed`, `no-playable-duration`,
+`cancelled`, `runtime-input-withheld`, `interrupted`, `no-admitted-frame`,
+`no-window`, `trim-failed`, `android-unsupported`, `published-copy-missing`,
+`other`) in the receipt and `pr.json`, keeping the detail text unchanged; a
+too-large recording is its own outcome, and unrecognized detail text in older
+`pr.json` files loads as `other`. `qaren publish` stores the reason it published
+in `publication.json` and the receipt's `publicationVideoReason`. When no video
+is attached, the receipt's `video_summary`, `report.md` and `qaren publish`
+repeat the PR comment's video sentence: the withholding reason when the video
+is not eligible, otherwise the unavailability reason. A kept video can also have
+a `video_summary` explaining recorded runner recovery. The local recording stays
 complete; `qaren publish` uploads only
 `media/video-published.mp4`, trimmed under the [video publication contract](#video-publication).
+
 Blocks the walk saved are copied to `blocks/` before the
 worktree is removed. If the pull
 request moved during the run, the receipt names the tested commit in
@@ -4319,7 +4615,8 @@ The receipt, report and PR comment name the policy and the selected config: its 
 Feature artwork withheld solely for an ordinary accessibility value without a typed safe path (ANT-664) is eligible in non-strict mode and remains withheld in strict or undeclared mode. The [screenshot publication regression](tests/publish_flow.rs) covers this policy decision with synthetic artwork; it does not establish live device acceptance.
 
 Only the selected config declares the video mode; no flag, environment variable,
-plan annotation or inferred backend selects it.
+plan annotation or inferred backend selects it. `--record` turns recording on for a
+check; it does not select the video mode.
 
 SECRET text masking and no readback apply in both modes. A runtime input displayed in a non-secure field can be marked `(test-pii)` only if it is test data; that annotation cannot exempt secure fields or code rows. Non-strict is an operator declaration, not proof: an undeclared secret prefilled into a non-secure field, real personal data, or a value visible only between captures can appear in published media. QaReN does not mask media regions or identify the backend. Upgrade every CLI/CI runtime before adding the key; older versions refuse it. Removing the key restores strict behavior.
 
@@ -4393,10 +4690,34 @@ reach the pull request. Without a start time or a successful trim, or when an ap
 process change, launcher/server-picker fallback, floating button or open dev menu
 is observed after admission, no video is uploaded, even if recovery clears the
 overlay and the retry passes. A pre-plan login does not reset these interruptions.
-During [private-capture relaunch recovery](#check-a-plan), a transient runner-down
-failure without an app process identifier does not alone mark an interruption;
-a subsequent capture reporting a different app process still does, as does
-any other existing interruption evidence.
+
+[Runner recovery](#check-a-plan) or a runner leak does not alone interrupt publication when a
+snapshot proves the same app process is still in the foreground, either in that
+observation or a later one. A missing process read can likewise resolve on later
+same-process proof. If the walk ends without the required proof, the copy is
+withheld and the report names QaReN as the owner rather than claiming an app
+restart. Proven app-stop, process-change and launcher evidence still interrupt
+publication.
+
+The ledger's `continuityEvents` records retained continuity signals with their
+epoch-millisecond observation-completion time `atMs`, optional plan `line`, and
+whether they counted toward withholding. Signals before admission are marked
+`beforeAdmission` and do not withhold the video. The list keeps at most 16 events,
+preserving counted events ahead of uncounted ones; `continuityEventsDropped`
+counts omitted entries.
+
+For an interrupted video, `pr.json` records the selected counted signal in
+`videoInterruption`, preferring later proven app-stop, process-change or launcher
+evidence over an earlier unresolved runner or missing-process observation.
+It includes the owner, epoch time, offset from admission, offset from the start
+of the untrimmed recording and optional plan line. Its `videoWithholdingReason`
+follows the declared video policy, so screenshot privacy is not reported as the
+cause when non-strict video is eligible. A kept video's report names the first
+retained runner recovery inside its publication window; the runner frames remain
+in the copy. Displayed offsets are measured after admission and mark observation
+completion, rather than the start of runner frames or a position in the trimmed
+video.
+
 For `withheld-privacy`, the pull request comment adds only the closed cause code,
 for example `(generic-value)`; it omits line numbers, qualifiers and counts.
 
@@ -4581,7 +4902,9 @@ through that run's own cleanup, and records the borrowed simulator before
 dependencies, strict foreign-driver admission, boot, build, install or launch.
 It re-proves the lease and the exact target under custody before booting,
 before each install attempt, before launch and before publishing `ready`, and
-refuses rather than reboots a target that changed.
+refuses rather than reboots a target that changed. Only a target found
+`Shutdown` before an install attempt is re-booted, and only with
+`--boot-device` (see [iOS simulator lifecycle](#ios-simulator-lifecycle)).
 Builds stay generic; only install, the [warm lane](#warm-lane) settings, launch
 and probes address the UUID.
 `ready` keeps the lease, Metro and app for attached agents, and `status`
@@ -4745,7 +5068,7 @@ in decision evidence). Unresolvable local refs and `workspace:` dependencies
 in any of those sections also make it incomplete.
 On iOS the value also binds the selected Xcode (`xcodebuild -version`), so a
 build is never reused across Xcode versions, and an unavailable Xcode makes the
-fingerprint incomplete. Android binds the manifest hash alone.
+fingerprint incomplete.
 
 `DEVELOPER_DIR` and `TOOLCHAINS` select the inherited toolchain. The inherited
 `EXPO_USE_PRECOMPILED_MODULES=0` and `RCT_USE_PREBUILT_RNCORE=0` switches select
@@ -4802,8 +5125,40 @@ before, with the unavailability named in the evidence. A config whose evaluated
 value changes between runs (an environment read, a time or random value) changes
 the hash and rebuilds.
 Limits: environment read only by native build scripts (a Podfile reading `ENV`,
-for example) and the CocoaPods version are not bound; Android keeps a dynamic
-config incomplete.
+for example) and the CocoaPods version are not bound.
+
+**Dynamic `app.config.*` (Android).** QaReN resolves the app's own
+`@expo/fingerprint` once and evaluates `fingerprint:generate --platform android`
+twice. The `expo` view removes `CI` to match prebuild, and the `expo-ci` view sets
+`CI=1` to match Gradle and `expo run:android`. Both commands use
+`EXPO_NO_TELEMETRY=1`, private capture and the same output requirements described
+above. Resolution and each evaluation have a 120 s command timeout. Both must
+succeed to bind `rnfp`, `expo` and `expo-ci` in the `qaren-expo-native-android/1`
+composite and clear the dynamic-config incompleteness. Other incompleteness
+still forbids reuse. If either evaluation is unavailable, neither Expo part is
+bound. The value stays the native-input manifest hash, with both the
+dynamic-config and unavailable-evaluation incompleteness reasons. Rebuild evidence
+records `Expo fingerprint unavailable: <cause>` with the closed cause. Static
+Android configs run no evaluation and retain their existing fingerprint value.
+Android does not bind JDK, SDK or NDK identity.
+
+A previously recorded Android build with a dynamic config and no Expo parts
+rebuilds once both evaluations become available. Later checks with unchanged
+complete native inputs reuse the verified APK, skip prebuild and Gradle, and
+install it. A changed evaluated config rebuilds with evidence naming `expo` or
+`expo-ci`.
+
+For dynamic configs, Android rechecks both evaluations after preparation. When
+plan-time evaluation was unavailable, only the native-input manifest is compared
+for drift, and a successful build is recorded under the incomplete **plan-time**
+fingerprint.
+An evaluation first seen after the build never becomes that build's identity;
+the next check with available evaluations rebuilds. When both Expo parts were
+available at plan time, an unavailable recheck gets one more evaluation attempt.
+If still unavailable, the run fails with `BUILD_FAILED` and a closed detail saying
+the app config could not be evaluated again after the build, including the cause.
+Changed parts fail as `CANDIDATE_DRIFTED` and name the part. Receipt notes include
+`expo_fingerprint_ms` for the plan-time evaluations.
 
 An incomplete fingerprint over an existing generated native directory requires a
 clean prebuild, which deletes that directory with its installed native
@@ -4915,9 +5270,10 @@ is copied and content-hashed in a staging directory inside its fingerprint's
 store entry (iOS) or under `.qaren/native-cache/artifacts/android/<app_id>-<fingerprint-key>/`
 (Android). Copying checks cancellation between entries and file chunks. A final
 cancellation check precedes moving the staged bundle into an exclusively created
-run-specific generation and
-atomically saving cache state with the readiness-rechecked fingerprint
-(native-input drift during the build fails the run as `CANDIDATE_DRIFTED`).
+run-specific generation and atomically saving cache state with the
+readiness-rechecked fingerprint, retaining the Android plan-time fingerprint when
+plan-time Expo evaluation was unavailable. Native-input drift during the build
+fails the run as `CANDIDATE_DRIFTED`.
 Cancellation before that publication removes staging and preserves the previous
 state without rebinding installation ownership. A failed state save removes the
 new generation and retains the previous state. On iOS a complete fingerprint then
