@@ -2192,8 +2192,12 @@ Reports show both facts beside each row and name reconnects on the report and
 pull-request verdict lines. A `lost` row withholds every new or patched block of the
 walk, even when later captures recover; any other gap withholds only the block it belongs to.
 Strict private React capture can scan up to 5,000 fibers across renderer roots,
-including a single-root screen. Existing capture and item deadlines, host-evidence and
-interactive-node limits still apply.
+including a single-root screen. Its interactive-entry cap now shares the private
+host-evidence bound in [PRIVATE_INPUT_LIMITS](../qaren-core/src/qa/private-input-limits.ts),
+so long-list sheets can retain the React placeholders needed for quoted Fill.
+The agent-facing digest stays capped at 200 entries. A digest truncated by any
+bound is still discarded in full; capture and item deadlines and all other bounds
+remain unchanged.
 
 On composite components, the digest omits non-string `title`,
 `accessibilityLabel` and `placeholder` props without coercing or serializing them;
@@ -3521,6 +3525,18 @@ A target that never appears fails
 read when it saw any, and a suggestion to insert a `Wait for` the target before
 that line, or move an earlier wait to an element that renders with it. See
 [row timing](#row-timing) for the measured wait duration.
+
+If interruption recovery after a target-resolution failure throws
+`NATIVE_SNAPSHOT_INCOMPLETE`, that capture refusal remains the outcome and adds
+`step-reason=<word>` for the step's first reason: `target-not-found`,
+`target-not-found-after-launch`, `replay-selector` or `target-ambiguous` for the
+corresponding target code, and `other` for any other code. For a quoted Fill with
+no matching field name, when the screen held before recovery has exactly one
+eligible unnamed native input that could pair with the placeholder, it also adds
+`placeholder-pairing=unknown` or `placeholder-pairing=incomplete` for its React
+coverage gap. These are fixed words, never target text. Screenshots remain
+withheld and video publication remains unknown. A refusal returned by recovery
+rather than thrown is unchanged; error precedence and launch polling are unchanged.
 
 Development error overlay recognition covers iOS RedBox and LogBox and Android
 native RedBox. Android native RedBox recognition has automated test coverage only,
