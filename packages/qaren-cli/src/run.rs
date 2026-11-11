@@ -2195,6 +2195,20 @@ mod block_start_tests {
     }
 
     #[test]
+    fn springboard_scan_stops_polling_when_cancelled() {
+        let home = home_with_reports("springboard-cancelled", &[]);
+        let mut runner = crate::exec::MockRunner::new();
+        runner
+            .environment
+            .insert("HOME".into(), home.display().to_string());
+        let start = runner.now_epoch_ms();
+        runner.cancel_at_ms = Some((start + 2_000, "cancelled".into()));
+        assert_eq!(springboard_crash_after(&mut runner, "AAAA", start, 60), None);
+        assert_eq!(runner.now_epoch_ms(), start + 2_000);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
     fn springboard_scan_without_wait_does_not_advance_the_clock() {
         let home = home_with_reports("springboard-no-wait", &[]);
         let mut runner = crate::exec::MockRunner::new();
