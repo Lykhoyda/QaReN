@@ -419,11 +419,27 @@ function actionKeyboard(meta?: Record<string, unknown>): boolean | undefined {
 function logActionSettle(
   meta?: Record<string, unknown>,
   timing?: TimingContext,
-): Pick<ActResult, 'settle'> {
-  let measured: Pick<ActResult, 'settle'> = {};
+): Pick<ActResult, 'settle' | 'send'> {
+  let measured: Pick<ActResult, 'settle' | 'send'> = {};
   try {
     const settle = isRecord(meta?.settle) ? meta.settle : {};
     const ms = isRecord(meta?.timings_ms) ? meta.timings_ms.settle : undefined;
+    const send: NonNullable<ActResult['send']> = {};
+    for (const [source, target] of [
+      ['keyboardGuard', 'keyboardGuardMs'],
+      ['liveCheck', 'liveCheckMs'],
+      ['gesture', 'gestureMs'],
+      ['runner', 'runnerMs'],
+    ] as const) {
+      const value = isRecord(meta?.timings_ms) ? meta.timings_ms[source] : undefined;
+      if (typeof value === 'number' && Number.isFinite(value) && value >= 0) send[target] = value;
+    }
+    const probes =
+      typeof settle.probes === 'number' && Number.isSafeInteger(settle.probes) && settle.probes >= 0
+        ? settle.probes
+        : undefined;
+    if (probes !== undefined) send.settleProbes = probes;
+    if (Object.keys(send).length) measured.send = send;
     const summary: Pick<TimingEvent, 'method' | 'settled' | 'hierarchyChanged'> & {
       ms: number | 'unknown';
     } = {
@@ -441,7 +457,11 @@ function logActionSettle(
           : 'unknown',
     };
     if (typeof summary.ms === 'number')
-      measured = { settle: { method: summary.method, ms: summary.ms } };
+      measured.settle = {
+        method: summary.method,
+        ms: summary.ms,
+        ...(probes !== undefined ? { probes } : {}),
+      };
     if (timing)
       observeTiming(timing.observe, {
         stage: 'settle',
@@ -451,6 +471,7 @@ function logActionSettle(
         method: summary.method,
         settled: summary.settled,
         hierarchyChanged: summary.hierarchyChanged,
+        ...(measured.send ? { send: measured.send } : {}),
         ...(typeof summary.ms === 'number' ? { ms: summary.ms } : {}),
       });
     log(`action-settle=${JSON.stringify(summary)}`);

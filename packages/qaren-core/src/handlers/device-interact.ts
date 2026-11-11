@@ -36,6 +36,7 @@ import {
 import { stopAndroidRunner } from '../runners/qaren-android-runner-client.js';
 import {
   surfaceKeyboardGuard,
+  createSendTimingAccumulator,
   healKeyboardOccludedTap,
   dismissKeyboardWithParity,
   dismissalTier,
@@ -1406,6 +1407,16 @@ export async function performExactFill(
   client: CDPClient | null,
   tiers: ExactFillTiers,
 ): Promise<ToolResult> {
+  const timings = createSendTimingAccumulator();
+  return timings.finish(await exactFill(args, client, tiers, timings));
+}
+
+async function exactFill(
+  args: FillArgs,
+  client: CDPClient | null,
+  tiers: ExactFillTiers,
+  timings: ReturnType<typeof createSendTimingAccumulator>,
+): Promise<ToolResult> {
   const pathsTried: string[] = [];
   let mutationSeen: FillMutationDisposition = 'none';
 
@@ -1548,19 +1559,21 @@ export async function performExactFill(
   };
   const tNative = Date.now();
   const operationToken = randomUUID();
-  const primary = await runNative(
-    // A fill replaces the field's content; verification expects exactly args.text.
-    [
-      'fill',
-      binding.inputRef,
-      args.text,
-      '--clear-first',
-      ...(args.requireLiveHit ? [REQUIRE_LIVE_HIT_FLAG] : []),
-    ],
-    {
-      ...settleOpts(args),
-      exactTarget: { ...exactTarget, operationToken },
-    },
+  const primary = timings.observe(
+    await runNative(
+      // A fill replaces the field's content; verification expects exactly args.text.
+      [
+        'fill',
+        binding.inputRef,
+        args.text,
+        '--clear-first',
+        ...(args.requireLiveHit ? [REQUIRE_LIVE_HIT_FLAG] : []),
+      ],
+      {
+        ...settleOpts(args),
+        exactTarget: { ...exactTarget, operationToken },
+      },
+    ),
   );
   if (primary.isError) {
     const mutation = extractMutationDisposition(primary);
@@ -2016,14 +2029,16 @@ export async function performFocusedFill(
   client: CDPClient | null,
 ): Promise<ToolResult> {
   const rung = { cleared: false, alreadySet: false };
-  const result = await focusedFill(args, client, rung);
-  return withFillMethod(result, rung.cleared ? 'clear-type' : 'keyboard');
+  const timings = createSendTimingAccumulator({ settleDisabled: true });
+  const result = await focusedFill(args, client, rung, timings);
+  return timings.finish(withFillMethod(result, rung.cleared ? 'clear-type' : 'keyboard'));
 }
 
 async function focusedFill(
   args: FillArgs,
   client: CDPClient | null,
   rung: { cleared: boolean; alreadySet: boolean },
+  timings: ReturnType<typeof createSendTimingAccumulator>,
 ): Promise<ToolResult> {
   const pathsTried = ['focused'];
   if (getActiveSession()?.platform === 'android') {
@@ -2148,13 +2163,15 @@ async function focusedFill(
     }
     const type = async (text: string): Promise<ToolResult> => {
       const changed = awaiting;
-      const result = await runNative(['fill', args.ref, text], {
-        qaContext: args.qaContext,
-        qaTiming: args.qaTiming,
-        focusedType: true,
-        focusedProof: changed ? () => focusedProof(true) : focusedProof,
-        settle: { enabled: false },
-      });
+      const result = timings.observe(
+        await runNative(['fill', args.ref, text], {
+          qaContext: args.qaContext,
+          qaTiming: args.qaTiming,
+          focusedType: true,
+          focusedProof: changed ? () => focusedProof(true) : focusedProof,
+          settle: { enabled: false },
+        }),
+      );
       if (changed && result.isError && extractMutationDisposition(result) === 'none') {
         return failResult(
           changed === 'empty'

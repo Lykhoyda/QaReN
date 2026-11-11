@@ -1,5 +1,36 @@
 # qaren
 
+## 2.2.0
+
+### Minor Changes
+
+- 5515f95: `qaren check --record` records the walk under the same video rules as `qaren pr` and keeps the video locally; a check now states whether a video was recorded.
+
+### Patch Changes
+
+- a3147f7: Reuse Android builds with unchanged dynamic Expo configs by binding both prebuild and CI evaluations, and preserve the planned build identity when evaluation is unavailable.
+- 353f6d8: Android: a plain Scroll now drags the app's own list on screens with a native navigation header, instead of a full-screen wrapper that cannot scroll; covered lists get their proper refusal.
+- 8d7106e: Keep continuous app video through verified runner recovery and report the true signal, time and owner when publication is interrupted.
+- 9ac0983: Report a candidate that cannot be read mid-run (missing repository or project root, failed or timed-out Git read, unreadable integration or lockfile read) as the refusal `CANDIDATE_UNAVAILABLE` (exit 4) instead of `CANDIDATE_DRIFTED`, at every verification site; after the walk the refusal keeps the ledger rows, keeps its own phase and next step, and persists the final verification's classification.
+- b47a67c: Decline an in-app permission opt-in that follows the plan's own tap when it is exactly two proven buttons with a closed-vocabulary decline and permission accept, names a permission subject, carries no consent wording anywhere in the capture, is not addressed by the plan (including a replayed step's declared wording), and was not answered by the plan's last tap; tap only the decline, prove both controls gone, retry the step once, and never tap an opt-in declined this way a second time in a run; an opt-in declined by the ordinary rule is still declined again when it returns. The interruption receipt gains `afterPlannedPress`, the ledger records `declinedOptIns`, the verdict stays `PASS`, and the report and pull-request comment show the declined opt-ins beside the pass.
+
+  Match the strict opt-in vocabulary across case, whitespace and typographic apostrophe variants. Equivalent labels retain planned-press protection and cannot bypass disappearance proof or repeat guards; ordinary dismissal rules remain unchanged.
+
+  Use the complete dispatch capture to compare identities, including offscreen and React-only elements. React-only controls may remain when each is proven behind the presented modal and their count accounts for every unassociated React control. A refusal names why an opt-in was not declined.
+
+- 5b35f1d: Allow stable native choice chips with React-only twins to settle after keyboard dismissal and report specific capture reasons when they cannot settle.
+- 32bd01f: Fix saved-action reads and publication on Linux ARM64 by using the correct directory and symlink open flags.
+- 6019eb3: Retry incomplete native snapshots within a Wait's existing deadline and report persistent observation failures as NATIVE_SNAPSHOT_INCOMPLETE while keeping media withheld.
+- eaafa6e: Name the failure that left an iOS native snapshot incomplete as `presence-incomplete=<phase>:<reason>` in NATIVE_SNAPSHOT_INCOMPLETE refusals and logs, alongside the first recorded failure.
+- 689bcdb: Recover check-first, wait-first and tap/fill-first plans behind a presented full-screen React Native Modal promo whose only control is a decline label, while a missing tap or fill target never dismisses an ordinary screen's own Cancel.
+- cdc8a8f: Raise the interactive React entry cap from 200 to 1,000 for QaReN's private QA captures while retaining complete-capture requirements.
+- 936575d: Prove the iOS simulator is still in the run's custody and Booted before every install attempt: re-boot a Shutdown target under the run's custody when the run may boot it and enough budget remains, otherwise refuse with `DEVICE_NOT_BOOTED` (exit 4), naming when the simulator was last seen Booted and when it was found Shutdown, and how to recover.
+- d9cbcbb: Continue after one iOS RedBox dismissal when the next native test ID proves a dispatched navigation completed, and disclose the development overlay warning in receipts and verdict displays.
+- cdc8a8f: When interruption recovery's own read is refused as NATIVE_SNAPSHOT_INCOMPLETE, the refusal now also names the step's first reason as `step-reason=<word>` and, for an unpaired placeholder field, `placeholder-pairing=<unknown|incomplete>`.
+- 889286e: Preserve computed video eligibility on admitted refusals while withholding recordings when private-input capture is unknown. Report closed video-unavailability reasons consistently in local reports, receipts, and publication output, including trimming failures and missing published copies.
+- 451acff: Internal: one owner for a run's state, derived from its record; no behaviour change.
+- 418cc7f: Borrowed Android emulator cleanup now retries timed-out reverse removal and absence reads with bounded larger budgets while the device answers a 40 s liveness check, gives the runner-process dump the same budget instead of dumpsys's own 10 s and treats its timeout banner as a timeout, retaining the lease if cleanup remains unproven and reporting timeout attempts, device responsiveness and the retry allowance used.
+
 ## 2.1.2
 
 ### Patch Changes

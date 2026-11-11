@@ -202,6 +202,22 @@ export type DispatchPhase =
   | 'dispatch-settle'
   | 'dispatch-health'
   | 'dispatch-readback';
+export interface SendTiming {
+  keyboardGuardMs?: number;
+  liveCheckMs?: number;
+  gestureMs?: number;
+  runnerMs?: number;
+  settleProbes?: number;
+}
+
+export const SEND_TIMING_FIELDS = [
+  'keyboardGuardMs',
+  'liveCheckMs',
+  'gestureMs',
+  'runnerMs',
+  'settleProbes',
+] as const;
+
 export interface TimingEvent {
   stage: TimingStage;
   edge: 'start' | 'end' | 'point';
@@ -210,6 +226,8 @@ export interface TimingEvent {
   line?: number;
   observation?: number;
   ms?: number;
+  send?: SendTiming;
+  probes?: number;
   useMs?: number;
   ageMs?: number;
   count?: number;
@@ -289,6 +307,28 @@ export function cleanTimingEvent(value: unknown): TimingEvent | undefined {
   )
     return undefined;
   const event = { stage: input.stage, edge: input.edge, outcome: input.outcome } as TimingEvent;
+  if (input.send !== undefined) {
+    if (!input.send || typeof input.send !== 'object') return undefined;
+    const send: SendTiming = {};
+    for (const key of SEND_TIMING_FIELDS) {
+      const value = (input.send as Record<string, unknown>)[key];
+      if (value === undefined) continue;
+      if (
+        typeof value !== 'number' ||
+        !Number.isFinite(value) ||
+        value < 0 ||
+        value > Number.MAX_SAFE_INTEGER ||
+        (key === 'settleProbes' && !Number.isSafeInteger(value))
+      )
+        return undefined;
+      send[key] = value;
+    }
+    if (Object.keys(send).length) event.send = send;
+  }
+  if (input.probes !== undefined) {
+    if (!Number.isSafeInteger(input.probes) || (input.probes as number) < 0) return undefined;
+    event.probes = input.probes as number;
+  }
   if (input.readinessReason !== undefined) {
     if (
       input.stage !== 'native-readiness' ||
