@@ -40,7 +40,8 @@ test('actual Swift preparation and retry loop cannot activate, retarget or recov
     timeout: 90_000,
     input: `
 import Foundation
-${readFileSync(new URL('DispatchGuard.swift', native), 'utf8')}
+${section(readFileSync(new URL('DispatchGuard.swift', native), 'utf8'), 'enum DispatchGuard {', '  static func hitTest<T>(')}
+}
 ${section(read('Models'), 'enum CommandType:', 'struct Response:')}
 ${section(read('Models'), 'struct SnapshotRect:', 'struct SnapshotNode:')}
 struct ErrorPayload { var code: String? = nil; let message: String; var mutation: String? = nil; var reason: String? = nil }
