@@ -5127,13 +5127,15 @@ Android configs run no evaluation and retain their existing fingerprint value.
 Android does not bind JDK, SDK or NDK identity.
 
 A previously recorded Android build with a dynamic config and no Expo parts
-rebuilds once. Later checks with unchanged complete native inputs reuse the
-verified APK, skip prebuild and Gradle, and install it. A changed evaluated config
-rebuilds with evidence naming `expo` or `expo-ci`.
+rebuilds once both evaluations become available. Later checks with unchanged
+complete native inputs reuse the verified APK, skip prebuild and Gradle, and
+install it. A changed evaluated config rebuilds with evidence naming `expo` or
+`expo-ci`.
 
-Android rechecks both evaluations after preparation. When plan-time evaluation
-was unavailable, only the native-input manifest is compared for drift, and a
-successful build is recorded under the incomplete **plan-time** fingerprint.
+For dynamic configs, Android rechecks both evaluations after preparation. When
+plan-time evaluation was unavailable, only the native-input manifest is compared
+for drift, and a successful build is recorded under the incomplete **plan-time**
+fingerprint.
 An evaluation first seen after the build never becomes that build's identity;
 the next check with available evaluations rebuilds. When both Expo parts were
 available at plan time, an unavailable recheck gets one more evaluation attempt.
