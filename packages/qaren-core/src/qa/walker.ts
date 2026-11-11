@@ -854,7 +854,7 @@ async function walkBlockScoped(
     step?: Exclude<Item, { kind: 'check' }>,
     assertion = false,
     recovery = false,
-    purpose: 'resolve' | 'provenance' = 'resolve',
+    purpose: 'resolve' | 'provenance' | 'modal' = 'resolve',
     until?: number,
   ): Promise<Observation> => {
     assertActive();
@@ -864,11 +864,6 @@ async function walkBlockScoped(
       step && ('target' in step ? step.target : step.kind === 'scroll' ? step.until : undefined);
     const requirePresence = assertion || (!!target && target.quoted === undefined);
     const platformPresence = requirePresence || purpose === 'provenance';
-    const typography =
-      step?.kind === 'press' &&
-      step.target.quoted !== undefined &&
-      deps.platform === 'ios' &&
-      deps.dismissKeyboard !== undefined;
     const startedAt = deps.now();
     let readStartedAt = startedAt;
     if (until !== undefined && startedAt >= until) throw new CaptureDeadline();
@@ -909,7 +904,7 @@ async function walkBlockScoped(
             latest = await captureScreen({
               observation: id,
               ...(platformPresence ? { platformPresence: true } : {}),
-              ...(typography ? { typography: true } : {}),
+              ...(purpose === 'modal' ? { typography: true } : {}),
               ...(timingObserver ? { timing: timingObserver } : {}),
               ...(until === undefined ? {} : { budgetMs: Math.max(0, until - readStartedAt) }),
             });
@@ -4222,34 +4217,33 @@ async function walkBlockScoped(
                               reason: 'the original input identity no longer resolves uniquely',
                             }
                         : decision.target!;
-                const decided = await probeDuplicates(item, before, prepared);
-                targetRows.set(item.line, {
-                  ...targetRows.get(item.line),
-                  ...('collapsed' in decided && decided.collapsed
-                    ? { collapsed: decided.collapsed }
-                    : {}),
-                  ...('candidateExclusions' in decided && decided.candidateExclusions
-                    ? { candidateExclusions: decided.candidateExclusions }
-                    : {}),
-                });
-                occluded = undefined;
-                let resolution: Exclude<Resolution, { refuse: string }>;
-                if ('refuse' in decided) {
+                let decided = await probeDuplicates(item, before, prepared);
+                if (
+                  item.kind === 'press' &&
+                  item.target.quoted !== undefined &&
+                  deps.platform === 'ios' &&
+                  deps.dismissKeyboard &&
+                  'refuse' in decided &&
+                  decided.refuse === 'TARGET_NOT_FOUND' &&
+                  decided.missing &&
+                  before.screen.keyboardVisible === true &&
+                  before.screen.front === 'app' &&
+                  !launchWait &&
+                  !absentTargetKeyboardAttempted &&
+                  !keyboardAttempted
+                ) {
+                  before = await captureOnce(item, false, false, 'modal');
+                  const refreshed = await decide(before, undefined, item);
+                  decided = await probeDuplicates(item, before, refreshed.target!);
                   const modal = modalCoverDiagnostic(before.screen);
                   if (
-                    item.kind === 'press' &&
-                    item.target.quoted !== undefined &&
-                    deps.platform === 'ios' &&
-                    deps.dismissKeyboard &&
+                    'refuse' in decided &&
                     decided.refuse === 'TARGET_NOT_FOUND' &&
                     decided.missing &&
                     before.screen.keyboardVisible === true &&
                     before.screen.front === 'app' &&
                     modal?.refused === 'modal-count' &&
-                    modal.modalCount === 0 &&
-                    !launchWait &&
-                    !absentTargetKeyboardAttempted &&
-                    !keyboardAttempted
+                    modal.modalCount === 0
                   ) {
                     absentTargetKeyboardAttempted = true;
                     keyboardAttempted = true;
@@ -4267,6 +4261,19 @@ async function walkBlockScoped(
                     initial = undefined;
                     continue;
                   }
+                }
+                targetRows.set(item.line, {
+                  ...targetRows.get(item.line),
+                  ...('collapsed' in decided && decided.collapsed
+                    ? { collapsed: decided.collapsed }
+                    : {}),
+                  ...('candidateExclusions' in decided && decided.candidateExclusions
+                    ? { candidateExclusions: decided.candidateExclusions }
+                    : {}),
+                });
+                occluded = undefined;
+                let resolution: Exclude<Resolution, { refuse: string }>;
+                if ('refuse' in decided) {
                   // A stored testID can name a field only React lists, or none: both reach the walk's fallbacks.
                   const unresolved =
                     decided.refuse === 'TARGET_NOT_FOUND' || decided.refuse === 'REPLAY_SELECTOR';

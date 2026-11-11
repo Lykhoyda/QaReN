@@ -159,6 +159,31 @@ test('an absent quoted Tap hides the keyboard once, resolves again and passes on
   );
 });
 
+test('a target appearing during modal proof is resolved without an absent-target dismissal', async () => {
+  const f = device(screen({ keyboard: true }));
+  const acquire = f.deps.captureScreen;
+  f.deps.captureScreen = async (options) => {
+    if (options?.typography) f.show(screen({ target: true }));
+    return acquire(options);
+  };
+  const outcome = await walkBlock(tap(), f.deps);
+  assert.equal(outcome.block.outcome, 'pass', outcome.failure?.seen);
+  assert.deepEqual(f.actions, ['press @submit']);
+  assert.equal(f.captures.filter((capture) => capture.typography).length, 1);
+});
+
+test('a modal appearing during modal proof prevents absent-target dismissal', async () => {
+  const f = device(screen({ keyboard: true }));
+  const acquire = f.deps.captureScreen;
+  f.deps.captureScreen = async (options) => {
+    if (options?.typography) f.show({ ...formWithCancel(true, 'Stay'), keyboardVisible: true });
+    return acquire(options);
+  };
+  const outcome = await walkBlock(tap(), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(f.actions.includes('dismiss'), false);
+});
+
 for (const hidden of [true, false]) {
   test(`a still absent Tap reports that the keyboard ${hidden ? 'was hidden' : 'could not be hidden'} and preserves surface recovery`, async () => {
     const f = device(screen({ keyboard: true }));
@@ -277,7 +302,7 @@ for (const variant of [
     if (variant === 'launch') await runPlan([replayed], f.deps);
     else await walkBlock(replayed, f.deps);
     assert.equal(f.actions.includes('dismiss'), false);
-    if (['android', 'fill', 'guard-disabled'].includes(variant))
+    if (!['modal', 'no-modal-proof'].includes(variant))
       assert.equal(
         f.captures.some((capture) => capture.typography && !capture.presence),
         false,
