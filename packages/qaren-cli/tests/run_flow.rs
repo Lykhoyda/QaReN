@@ -1734,6 +1734,14 @@ fn script_clean_build_plan(mock: &mut MockRunner) {
 }
 
 fn script_ready_recheck(mock: &mut MockRunner, native_files: &str) {
+    script_ready_recheck_with(mock, native_files, common::script_xcode);
+}
+
+fn script_ready_recheck_with(
+    mock: &mut MockRunner,
+    native_files: &str,
+    fingerprint: impl FnOnce(&mut qaren::exec::MockRunner),
+) {
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n"))); // liveness probe
     mock.expect_run("ps", CmdOutput::success("S\n")); // not a zombie
     mock.expect_run("lsof", CmdOutput::success("6001\n"));
@@ -1749,7 +1757,7 @@ fn script_ready_recheck(mock: &mut MockRunner, native_files: &str) {
     );
     mock.expect_run("simctl spawn", CmdOutput::success(common::APP_RUNNING));
     mock.expect_run("ls-files", CmdOutput::success(native_files)); // fingerprint recheck
-    common::script_xcode(mock);
+    fingerprint(mock);
 }
 
 // The app-root status the walk's worktree drift is measured against, before and after the core.
@@ -4944,7 +4952,22 @@ fn android_check_reuse_installs_the_cached_apk_by_serial() {
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_android_launch_walk_teardown(&mut mock);
 
-    let receipt = run(&mut mock, &req);
+    let (receipt, events) = run_with_events(&mut mock, &req);
+
+    for prefix in ["plan", "verify"] {
+        let expo_key = format!("{prefix}_fp_expo");
+        assert!(!receipt.timings_ms.contains_key(&expo_key));
+        assert!(events.last().unwrap()["payload"]["timingsMs"]
+            .get(&expo_key)
+            .is_none());
+        for part in ["total", "list", "toolchain", "hash"] {
+            let key = format!("{prefix}_fp_{part}");
+            assert_eq!(
+                events.last().unwrap()["payload"]["timingsMs"][&key],
+                receipt.timings_ms[&key]
+            );
+        }
+    }
 
     assert_eq!(
         receipt.result,
@@ -9942,6 +9965,87 @@ fn a_walk_without_a_result_never_renders_plan_text_into_durable_sinks() {
         report.contains("- ✗ line 1\n") || report.contains("- ✓ line 1\n"),
         "{report}"
     );
+}
+
+#[test]
+fn fingerprint_parts_reach_the_receipt_and_end_event_on_expo_reuse() {
+    let (repo, app) = app_repo();
+    common::write_ios_workspace(&app, "ios/First.xcworkspace");
+    configure_workspace(&app, "ios/First.xcworkspace", "Debug");
+    std::fs::write(
+        app.join("package.json"),
+        r#"{"dependencies":{"expo":"56.0.23"}}"#,
+    )
+    .unwrap();
+    let files = format!("{}test-app/package.json\0", common::IOS_NATIVE_FILES);
+    let expo = |mock: &mut qaren::exec::MockRunner| {
+        common::script_expo_fingerprint(
+            mock,
+            "abcdef0123456789",
+            "Xcode 27.0\nBuild version 27A123\n",
+        );
+    };
+    for reuse in [false, true] {
+        let mut req = request(&repo, &app, 30);
+        req.runs_root = repo.join(if reuse { "runs-reuse" } else { "runs-seed" });
+        let mut mock = MockRunner::new();
+        mock.advance_on = Some(("fingerprint".into(), 17));
+        script_preflight(&mut mock, &repo);
+        mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+        mock.expect_run("ls-files", CmdOutput::success(&files));
+        expo(&mut mock);
+        for package in ["expo-modules-core", "expo-modules-jsi"] {
+            mock.expect_run(package, CmdOutput::success("null"));
+        }
+        if reuse {
+            script_check_install_and_launch(&mut mock);
+        } else {
+            mock.expect_run("df", df_ok());
+            script_check_build_with(&mut mock, "xcodebuild", |m| {
+                script_candidate_recheck(m);
+                m.expect_run("ls-files", CmdOutput::success(&files));
+                expo(m);
+            });
+        }
+        script_ready_recheck_with(&mut mock, &files, expo);
+        script_drift_status(&mut mock);
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+        script_core_identity(&mut mock);
+        script_teardown(&mut mock);
+
+        let (receipt, events) = run_with_events(&mut mock, &req);
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+        assert_eq!(mock.remaining(), 0);
+        assert_eq!(
+            receipt.build.as_ref().unwrap().decision == qaren::buildplan::BuildDecision::Reuse,
+            reuse
+        );
+        for (prefix, stage) in [("plan", "plan"), ("verify", "verify")] {
+            let mut sum = 0;
+            for part in ["total", "list", "expo", "toolchain", "hash"] {
+                let key = format!("{prefix}_fp_{part}");
+                let ms = *receipt
+                    .timings_ms
+                    .get(&key)
+                    .unwrap_or_else(|| panic!("missing {key}"));
+                assert_eq!(events.last().unwrap()["payload"]["timingsMs"][&key], ms);
+                if part != "total" {
+                    sum += ms;
+                }
+            }
+            assert_eq!(receipt.timings_ms[&format!("{prefix}_fp_expo")], 34);
+            assert!(sum <= receipt.timings_ms[&format!("{prefix}_fp_total")]);
+            assert!(receipt.timings_ms[&format!("{prefix}_fp_total")] <= receipt.timings_ms[stage]);
+        }
+        assert!(!events.iter().any(|event| {
+            event["event"] == "cmd"
+                && matches!(
+                    event["payload"]["label"].as_str(),
+                    Some("expo-fingerprint" | "expo-fingerprint-resolve")
+                )
+        }));
+    }
 }
 
 #[test]

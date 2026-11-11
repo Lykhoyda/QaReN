@@ -5072,6 +5072,12 @@ bound by the lockfile plus the `version` of the package Node resolution finds
 in `node_modules` from the project root up to the worktree root (pnpm symlinks
 included); pure Node built-ins are ignored, and a package that does not resolve to a
 versioned `package.json` makes the fingerprint incomplete.
+Other Node built-ins, including unknown `node:` names, make it incomplete because
+they may read unbound inputs. Their refusal names the first file traced importing
+the specifier, for example: `Node built-in "node:fs" imported by plugins/withX.js
+may read unbound inputs; the input set is unprovably complete`. A specifier that
+is not a resolvable package name also names its importing file. This attribution
+is diagnostic only and is not hashed.
 Local package plugins and bare imports declared through `link:`, `file:` or
 `workspace:`, or resolved into worktree source outside `node_modules`, are not
 traced and always make the fingerprint incomplete; relative plugin files in
@@ -5119,6 +5125,18 @@ or select a compatible installed Xcode with `DEVELOPER_DIR`.
 
 Receipts report normalized `toolchain` information: selected Xcode, Swift version,
 and observed Expo module linkage. Unknown evidence remains unknown.
+
+**Fingerprint timings.** Successful build-decision and pre-walk re-check
+computations report durations in receipt `timings_ms` and the `end` event's
+`timingsMs`, with prefixes `plan_fp_` and `verify_fp_`, respectively. Each prefix
+has `total` (the whole fingerprint call), `list` (candidate input listing),
+`toolchain` (compiler identity collection) and `hash` (input reading, tracing and
+hashing). The `expo` suffix measures Expo resolution and evaluation and appears
+only when attempted (on iOS for Expo or dynamic configs, and on Android for
+dynamic configs); it is absent otherwise, including on static Android configs.
+For each prefix, the four parts sum to no more than `total`; these are
+subdivisions, not extra time to add to the enclosing stage. Only durations are
+exposed: private fingerprint subprocesses emit no `cmd` events.
 
 **Expo native identity (iOS).** When the app's `package.json` declares `expo` in
 `dependencies`, `devDependencies`, `optionalDependencies` or `peerDependencies`,
