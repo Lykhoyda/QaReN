@@ -32,6 +32,7 @@ async function run(
     clearLeaves?: Read;
     clearReply?: { value?: string; error?: string };
     warmLost?: boolean;
+    sendTiming?: boolean;
   } = {},
 ): Promise<{ env: any; dispatched: string[][]; clears: number[]; raw: string[][] }> {
   _setActiveSessionForTest({ platform: 'ios', deviceId: 'TEST-DEVICE', appId: 'com.test' });
@@ -44,6 +45,20 @@ async function run(
   const clears: number[] = [];
   let current = before;
   let warmed = '';
+  const typedReply = () =>
+    okResult({
+      typed: true,
+      textEntryRoute: 'synthesized-first-responder',
+      ...(options.sendTiming
+        ? {
+            keyboardGuardMs: 0,
+            liveCheckMs: 3,
+            handledMs: 20,
+            gestureStartUptimeMs: 100,
+            gestureEndUptimeMs: 110,
+          }
+        : {}),
+    });
   _setRunAgentDeviceForTest(
     async (
       cliArgs: string[],
@@ -64,7 +79,7 @@ async function run(
         warmed = typed;
         if (!options.warmLost)
           current = { value: (current?.value ?? '') + typed, focused: current?.focused === true };
-        return okResult({ typed: true, textEntryRoute: 'synthesized-first-responder' });
+        return typedReply();
       }
       dispatched.push([warmed + typed]);
       warmed = '';
@@ -75,7 +90,7 @@ async function run(
               ? after[Math.min(dispatched.length - 1, after.length - 1)]
               : after) ?? null)
           : { value: options.text ?? 'real@example.test', focused: true };
-      return okResult({ typed: true, textEntryRoute: 'synthesized-first-responder' });
+      return typedReply();
     },
   );
   const client = {
@@ -147,6 +162,32 @@ async function run(
 }
 
 const TEXT = 'real@example.test';
+for (const retry of [false, true]) {
+  test(`focused Fill sums both burst replies${retry ? ' including a retained-prefix retry' : ''}`, async () => {
+    const { env, raw } = await run(
+      { value: 'old', focused: true },
+      {
+        sendTiming: true,
+        ...(retry
+          ? {
+              after: [
+                { value: 'old' + TEXT, focused: true },
+                { value: TEXT, focused: true },
+              ],
+            }
+          : {}),
+      },
+    );
+    assert.equal(env.ok, true);
+    assert.equal(raw.length, retry ? 4 : 2);
+    assert.deepEqual(env.meta.timings_ms, {
+      keyboardGuard: 0,
+      liveCheck: retry ? 12 : 6,
+      runner: retry ? 80 : 40,
+      gesture: retry ? 40 : 20,
+    });
+  });
+}
 const LONG = 'qa-tests+m9271792187899724906001234@long-example-domain.test';
 
 for (const before of ['', 'decoy@example.test', TEXT, LONG]) {

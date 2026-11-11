@@ -474,6 +474,17 @@ test('legitimate switch booleans retain an empty private binding', async () => {
   }
 });
 
+test('a private digest of more than 200 and at most 1000 entries is accepted', async () => {
+  const entry = { role: 'button', testID: 'row', capabilities: { press: true, fill: false } };
+  for (const length of [261, 1000]) {
+    const tree = publicTree();
+    const interactive = [...tree.interactive, ...Array.from({ length: length - 1 }, () => entry)];
+    const mock = mockClient([{ ...ready(), tree: JSON.stringify({ ...tree, interactive }) }]);
+    const observation = await captureQaReact(mock.client);
+    assert.equal(observation.interactive?.length, length);
+  }
+});
+
 test('ordinary public tree content is not claimed to be private-channel redacted', async () => {
   const tree = publicTree();
   tree.interactive[0].placeholder = sentinel;
@@ -867,9 +878,9 @@ test('each consumer refusal site carries one fixed cause and integer counters', 
     ['missing interactive', readyWith({ label: sentinel }), 'tree-shape', {}],
     [
       'interactive cap',
-      readyWith(countedTree({ interactive: Array.from({ length: 201 }, () => entry) })),
+      readyWith(countedTree({ interactive: Array.from({ length: 1001 }, () => entry) })),
       'interactive-cap',
-      { ...treeCounters, interactive: 201 },
+      { ...treeCounters, interactive: 1001 },
     ],
     ['truncated', readyWith(countedTree({ truncated: true })), 'truncated', treeCounters],
     [

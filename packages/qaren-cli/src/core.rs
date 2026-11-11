@@ -1235,6 +1235,8 @@ pub struct RowTiming {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settle_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send: Option<SendTiming>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preparation_samples: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preparation_resets: Option<u64>,
@@ -1244,6 +1246,21 @@ pub struct RowTiming {
     pub post_capture_ms: u64,
     pub other_ms: u64,
     pub total: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SendTiming {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyboard_guard_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_check_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gesture_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settle_probes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

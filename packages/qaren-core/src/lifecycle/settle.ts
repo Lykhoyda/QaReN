@@ -18,6 +18,7 @@ export interface SettleOutcome {
   settled: boolean;
   method: SettleMethod;
   ms: number;
+  probes?: number;
   hierarchyChanged?: boolean;
 }
 
@@ -59,29 +60,34 @@ export async function waitForSettle(opts: WaitForSettleOpts): Promise<SettleOutc
       ? Math.min(requested, SETTLE_MAX_BUDGET_MS)
       : SETTLE_DEFAULT_BUDGET_MS;
   const start = probes.now();
+  let probeCount = 0;
+  const probe = async <T>(read: () => Promise<T>): Promise<T | null> => {
+    probeCount++;
+    return safeProbe(read);
+  };
   const elapsed = (): number => probes.now() - start;
   const remaining = (): number => budgetMs - elapsed();
 
   if (platform === 'android' && capabilities.includes('WINDOW_UPDATE') && probes.isWindowUpdating) {
-    const updating = await safeProbe(() => probes.isWindowUpdating!(WINDOW_GATE_TIMEOUT_MS));
+    const updating = await probe(() => probes.isWindowUpdating!(WINDOW_GATE_TIMEOUT_MS));
     if (updating === false) {
       // NB: false ≠ "our screen is static" — waitForWindowUpdate also returns
       // false immediately when the frontmost package differs (e.g. after a back
       // that left the app). Benign: nothing of ours left to settle.
       await probes.sleep(WINDOW_GATE_SETTLED_SLEEP_MS);
-      let change = await postSettleChange(probes, initialSnapshotHash);
+      let change = await postSettleChange(probes, initialSnapshotHash, probe);
       // A busy JS thread can commit the effect after the 100ms gate: before
       // reporting "no change", wait once more for a window update inside the
       // remaining budget (the runner clamps the probe to 0..2000ms).
       const reprobeMs = Math.min(remaining(), 2000);
       if (change.hierarchyChanged === false && reprobeMs > 0) {
-        const lateUpdate = await safeProbe(() => probes.isWindowUpdating!(reprobeMs));
+        const lateUpdate = await probe(() => probes.isWindowUpdating!(reprobeMs));
         if (lateUpdate === true) {
-          const late = await postSettleChange(probes, initialSnapshotHash);
+          const late = await postSettleChange(probes, initialSnapshotHash, probe);
           if (late.hierarchyChanged !== undefined) change = late;
         }
       }
-      return { settled: true, method: 'window-gate', ms: elapsed(), ...change };
+      return { settled: true, method: 'window-gate', ms: elapsed(), probes: probeCount, ...change };
     }
     // updating or probe failure → pay for snapshot polling below
   }
@@ -90,7 +96,7 @@ export async function waitForSettle(opts: WaitForSettleOpts): Promise<SettleOutc
   let hierarchyChanged: boolean | undefined;
   for (let i = 0; i < SNAPSHOT_POLL_MAX; i++) {
     if (remaining() <= 0) break;
-    const hash = await safeProbe(() => probes.snapshotHash());
+    const hash = await probe(() => probes.snapshotHash());
     if (typeof hash === 'string') {
       if (initialSnapshotHash !== undefined) {
         hierarchyChanged = hierarchyChanged === true || hash !== initialSnapshotHash;
@@ -100,6 +106,7 @@ export async function waitForSettle(opts: WaitForSettleOpts): Promise<SettleOutc
           settled: true,
           method: 'snapshot-eq',
           ms: elapsed(),
+          probes: probeCount,
           ...(hierarchyChanged !== undefined ? { hierarchyChanged } : {}),
         };
       }
@@ -112,6 +119,7 @@ export async function waitForSettle(opts: WaitForSettleOpts): Promise<SettleOutc
     settled: false,
     method: 'timeout',
     ms: elapsed(),
+    probes: probeCount,
     ...(hierarchyChanged !== undefined ? { hierarchyChanged } : {}),
   };
 }
@@ -130,9 +138,10 @@ async function safeProbe<T>(fn: () => Promise<T>): Promise<T | null> {
 async function postSettleChange(
   probes: SettleProbes,
   initialSnapshotHash: string | undefined,
+  probe: <T>(read: () => Promise<T>) => Promise<T | null>,
 ): Promise<{ hierarchyChanged?: boolean }> {
   if (initialSnapshotHash === undefined) return {};
-  const hash = await safeProbe(() => probes.snapshotHash());
+  const hash = await probe(() => probes.snapshotHash());
   if (typeof hash !== 'string') return {};
   return { hierarchyChanged: hash !== initialSnapshotHash };
 }
