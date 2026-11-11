@@ -870,8 +870,9 @@ keyboard visibility and the front surface before dismissing. This uses the keybo
 guard's dismissal chain described below, without a native platform-presence read.
 QaReN takes fresh settled captures after dismissal and resolves the target
 again on the same attempt, acting on the resulting screen: blurring the field can
-validate or navigate in the app. The row's `keyboardCleared` field follows the
-tier-and-hidden-keyboard rule described below.
+validate or navigate in the app. This path records `keyboardCleared` only when the
+dismissal reports a successful tier and the settled capture explicitly reports
+`keyboardVisible: false`.
 The absent-target dismissal allowance survives recovery retries and is spent at
 most once per plan item; it also prevents another keyboard dismissal in that attempt.
 
