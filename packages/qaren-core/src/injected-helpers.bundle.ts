@@ -1562,7 +1562,9 @@ export const INJECTED_HELPERS = `
       var iEnqueued = iQueue.length;
       var iEnqueueTruncated = false;
       var iPruned = 0;
-      while (iQueue.length > 0 && iScanned < iBudget && (Date.now() - iStart) < 3000 && (!typography || Date.now() < typography.deadline) && salient.length < 200) {
+      // The agent-facing digest is a list to read; a private capture is bounded like its hosts.
+      var iEntryCap = privateCapture ? ${PRIVATE_INPUT_LIMITS.maxHosts} : 200;
+      while (iQueue.length > 0 && iScanned < iBudget && (Date.now() - iStart) < 3000 && (!typography || Date.now() < typography.deadline) && salient.length < iEntryCap) {
         var iframe = iQueue.shift();
         var ifiber = iframe.fiber;
         if (!ifiber || iSeen.has(ifiber)) continue;

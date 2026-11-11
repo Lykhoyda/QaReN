@@ -23,7 +23,7 @@ export const INTERPOLATIONS = [
     expression: 'TYPOGRAPHY_TEXT_LIMITS.maxTotalChars',
     count: 1,
   },
-  { token: '@@QAREN_MAX_HOSTS@@', expression: 'PRIVATE_INPUT_LIMITS.maxHosts', count: 2 },
+  { token: '@@QAREN_MAX_HOSTS@@', expression: 'PRIVATE_INPUT_LIMITS.maxHosts', count: 3 },
   { token: '@@QAREN_INPUT_HOST_TYPES@@', expression: 'JSON.stringify(INPUT_HOST_TYPES)', count: 1 },
 ] as const;
 

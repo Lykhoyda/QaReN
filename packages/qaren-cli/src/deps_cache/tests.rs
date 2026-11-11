@@ -47,6 +47,7 @@ impl Fixture {
             runs_root: self.0.join("runs"),
             native_cache_root: self.0.join("native"),
             native_store_entry: None,
+            plan_fingerprint: None,
             ios_observation: None,
             linkage_before_build: None,
             ios_generated_native: false,

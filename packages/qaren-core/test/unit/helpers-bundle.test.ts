@@ -19,16 +19,16 @@ const read = (path: string): string => readFileSync(new URL(path, import.meta.ur
 const legacy = read('../../src/runtime/legacy.program.txt');
 const baseline = JSON.parse(read('../fixtures/helpers/baseline.txt'));
 const sha256 = (program: string): string => createHash('sha256').update(program).digest('hex');
-const originalHash = 'c14242dfb9c7444a4fbe9a309b1ebf1a2d8fab5dcbe3ef80cbb15075b99a1b82';
+const originalHash = 'f41041b3c6ce53bbaec15099b93babe634e7e31321c3ab2347f2598a1687dcee';
 
 // PR 1 only: later extraction PRs replace this fixed-byte oracle with the
 // declared edit list and differential checks, and refresh the base fixture.
 test('A: the generated program has exactly the original evaluated bytes', () => {
   assert.equal(HELPERS_VERSION, 105);
-  assert.equal(INJECTED_HELPERS.length, 225765);
-  assert.equal(Buffer.byteLength(INJECTED_HELPERS), 225952);
+  assert.equal(INJECTED_HELPERS.length, 225919);
+  assert.equal(Buffer.byteLength(INJECTED_HELPERS), 226106);
   assert.equal(sha256(INJECTED_HELPERS), originalHash);
-  assert.equal(baseline.revision, 'eaafa6ef8477746cd14b073f38dc5215332ab144');
+  assert.equal(baseline.revision, 'a3147f7878ebcffbf90879f93d3581e3e9e62b8e');
   assert.equal(sha256(baseline.program), originalHash);
   assert.equal(baseline.version, 105);
   assert.equal(INJECTED_HELPERS, baseline.program);
@@ -62,7 +62,7 @@ test('literal backslashes, backticks and interpolation syntax survive generation
     PRIVATE_INPUT_LIMITS: { maxHosts: 1000 },
     INPUT_HOST_TYPES: ['TextInput'],
   });
-  assert.equal(program, literal + '105|4096|16384|1000|1000|["TextInput"]' + literal);
+  assert.equal(program, literal + '105|4096|16384|1000|1000|1000|["TextInput"]' + literal);
 });
 
 test('K: evaluated source and built exports agree with the base fixture', () => {

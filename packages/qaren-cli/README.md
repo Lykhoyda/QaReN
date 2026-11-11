@@ -2192,8 +2192,12 @@ Reports show both facts beside each row and name reconnects on the report and
 pull-request verdict lines. A `lost` row withholds every new or patched block of the
 walk, even when later captures recover; any other gap withholds only the block it belongs to.
 Strict private React capture can scan up to 5,000 fibers across renderer roots,
-including a single-root screen. Existing capture and item deadlines, host-evidence and
-interactive-node limits still apply.
+including a single-root screen. Its interactive-entry cap now shares the private
+host-evidence bound in [PRIVATE_INPUT_LIMITS](../qaren-core/src/qa/private-input-limits.ts),
+so long-list sheets can retain the React placeholders needed for quoted Fill.
+The agent-facing digest stays capped at 200 entries. A digest truncated by any
+bound is still discarded in full; capture and item deadlines and all other bounds
+remain unchanged.
 
 On composite components, the digest omits non-string `title`,
 `accessibilityLabel` and `placeholder` props without coercing or serializing them;
@@ -3521,6 +3525,18 @@ A target that never appears fails
 read when it saw any, and a suggestion to insert a `Wait for` the target before
 that line, or move an earlier wait to an element that renders with it. See
 [row timing](#row-timing) for the measured wait duration.
+
+If interruption recovery after a target-resolution failure throws
+`NATIVE_SNAPSHOT_INCOMPLETE`, that capture refusal remains the outcome and adds
+`step-reason=<word>` for the step's first reason: `target-not-found`,
+`target-not-found-after-launch`, `replay-selector` or `target-ambiguous` for the
+corresponding target code, and `other` for any other code. For a quoted Fill with
+no matching field name, when the screen held before recovery has exactly one
+eligible unnamed native input that could pair with the placeholder, it also adds
+`placeholder-pairing=unknown` or `placeholder-pairing=incomplete` for its React
+coverage gap. These are fixed words, never target text. Screenshots remain
+withheld and video publication remains unknown. A refusal returned by recovery
+rather than thrown is unchanged; error precedence and launch polling are unchanged.
 
 Development error overlay recognition covers iOS RedBox and LogBox and Android
 native RedBox. Android native RedBox recognition has automated test coverage only,
@@ -5052,7 +5068,7 @@ in decision evidence). Unresolvable local refs and `workspace:` dependencies
 in any of those sections also make it incomplete.
 On iOS the value also binds the selected Xcode (`xcodebuild -version`), so a
 build is never reused across Xcode versions, and an unavailable Xcode makes the
-fingerprint incomplete. Android binds the manifest hash alone.
+fingerprint incomplete.
 
 `DEVELOPER_DIR` and `TOOLCHAINS` select the inherited toolchain. The inherited
 `EXPO_USE_PRECOMPILED_MODULES=0` and `RCT_USE_PREBUILT_RNCORE=0` switches select
@@ -5109,8 +5125,40 @@ before, with the unavailability named in the evidence. A config whose evaluated
 value changes between runs (an environment read, a time or random value) changes
 the hash and rebuilds.
 Limits: environment read only by native build scripts (a Podfile reading `ENV`,
-for example) and the CocoaPods version are not bound; Android keeps a dynamic
-config incomplete.
+for example) and the CocoaPods version are not bound.
+
+**Dynamic `app.config.*` (Android).** QaReN resolves the app's own
+`@expo/fingerprint` once and evaluates `fingerprint:generate --platform android`
+twice. The `expo` view removes `CI` to match prebuild, and the `expo-ci` view sets
+`CI=1` to match Gradle and `expo run:android`. Both commands use
+`EXPO_NO_TELEMETRY=1`, private capture and the same output requirements described
+above. Resolution and each evaluation have a 120 s command timeout. Both must
+succeed to bind `rnfp`, `expo` and `expo-ci` in the `qaren-expo-native-android/1`
+composite and clear the dynamic-config incompleteness. Other incompleteness
+still forbids reuse. If either evaluation is unavailable, neither Expo part is
+bound. The value stays the native-input manifest hash, with both the
+dynamic-config and unavailable-evaluation incompleteness reasons. Rebuild evidence
+records `Expo fingerprint unavailable: <cause>` with the closed cause. Static
+Android configs run no evaluation and retain their existing fingerprint value.
+Android does not bind JDK, SDK or NDK identity.
+
+A previously recorded Android build with a dynamic config and no Expo parts
+rebuilds once both evaluations become available. Later checks with unchanged
+complete native inputs reuse the verified APK, skip prebuild and Gradle, and
+install it. A changed evaluated config rebuilds with evidence naming `expo` or
+`expo-ci`.
+
+For dynamic configs, Android rechecks both evaluations after preparation. When
+plan-time evaluation was unavailable, only the native-input manifest is compared
+for drift, and a successful build is recorded under the incomplete **plan-time**
+fingerprint.
+An evaluation first seen after the build never becomes that build's identity;
+the next check with available evaluations rebuilds. When both Expo parts were
+available at plan time, an unavailable recheck gets one more evaluation attempt.
+If still unavailable, the run fails with `BUILD_FAILED` and a closed detail saying
+the app config could not be evaluated again after the build, including the cause.
+Changed parts fail as `CANDIDATE_DRIFTED` and name the part. Receipt notes include
+`expo_fingerprint_ms` for the plan-time evaluations.
 
 An incomplete fingerprint over an existing generated native directory requires a
 clean prebuild, which deletes that directory with its installed native
@@ -5222,9 +5270,10 @@ is copied and content-hashed in a staging directory inside its fingerprint's
 store entry (iOS) or under `.qaren/native-cache/artifacts/android/<app_id>-<fingerprint-key>/`
 (Android). Copying checks cancellation between entries and file chunks. A final
 cancellation check precedes moving the staged bundle into an exclusively created
-run-specific generation and
-atomically saving cache state with the readiness-rechecked fingerprint
-(native-input drift during the build fails the run as `CANDIDATE_DRIFTED`).
+run-specific generation and atomically saving cache state with the
+readiness-rechecked fingerprint, retaining the Android plan-time fingerprint when
+plan-time Expo evaluation was unavailable. Native-input drift during the build
+fails the run as `CANDIDATE_DRIFTED`.
 Cancellation before that publication removes staging and preserves the previous
 state without rebinding installation ownership. A failed state save removes the
 new generation and retains the previous state. On iOS a complete fingerprint then
