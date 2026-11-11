@@ -172,6 +172,64 @@ test('a target appearing during modal proof is resolved without an absent-target
   assert.equal(f.captures.filter((capture) => capture.typography).length, 1);
 });
 
+for (const source of ['descendant', 'direct'] as const) {
+  test(`a nested target appearing during modal proof respects ${source} label provenance`, async () => {
+    const f = device(screen({ keyboard: true }));
+    const acquire = f.deps.captureScreen;
+    f.deps.captureScreen = async (options) => {
+      if (options?.typography)
+        f.show({
+          ...join(
+            [
+              {
+                ref: '@app',
+                type: 'Application',
+                rect: { x: 0, y: 0, width: 400, height: 800 },
+              },
+              {
+                ref: '@container',
+                type: 'Other',
+                parentIndex: 0,
+                label: 'Continue',
+                hittable: true,
+                rect: { x: 10, y: 150, width: 300, height: 200 },
+              },
+              {
+                ref: '@continue',
+                type: 'Button',
+                parentIndex: 1,
+                label: 'Continue',
+                hittable: true,
+                rect: { x: 20, y: 200, width: 100, height: 44 },
+              },
+            ],
+            [],
+            'app',
+            { native: 'complete', react: 'complete' },
+          ),
+          keyboardVisible: false,
+        });
+      return acquire(options);
+    };
+    f.deps.readLabelProvenance = async (refs) => {
+      assert.deepEqual(refs, ['@container', '@continue']);
+      return [
+        { ref: '@container', labelSource: source },
+        { ref: '@continue', labelSource: 'direct' },
+      ];
+    };
+    const outcome = await walkBlock(parsePlan('1. Tap "Continue"').blocks![0], f.deps);
+    assert.equal(outcome.block.outcome, source === 'descendant' ? 'pass' : 'fail');
+    assert.deepEqual(f.actions, source === 'descendant' ? ['press @continue'] : []);
+    if (source === 'descendant')
+      assert.equal(
+        f.captures.some((capture) => capture.presence),
+        false,
+      );
+    else assert.match(JSON.stringify(outcome.failure?.seen), /TARGET_AMBIGUOUS/);
+  });
+}
+
 test('a modal appearing during modal proof prevents absent-target dismissal', async () => {
   const f = device(screen({ keyboard: true }));
   const acquire = f.deps.captureScreen;

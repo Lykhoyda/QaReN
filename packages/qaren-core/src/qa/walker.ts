@@ -4232,7 +4232,10 @@ async function walkBlockScoped(
                   !absentTargetKeyboardAttempted &&
                   !keyboardAttempted
                 ) {
-                  before = await captureOnce(item, false, false, 'modal');
+                  before = await enrichLabelProvenance(
+                    await captureOnce(item, false, false, 'modal'),
+                    item,
+                  );
                   const refreshed = await decide(before, undefined, item);
                   decided = await probeDuplicates(item, before, refreshed.target!);
                   const modal = modalCoverDiagnostic(before.screen);
