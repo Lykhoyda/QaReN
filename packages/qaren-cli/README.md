@@ -863,9 +863,12 @@ rounded frame.
 
 On iOS, a quoted Tap whose target is proven absent (`TARGET_NOT_FOUND` carrying
 `missing`) gets one keyboard-dismissal attempt before failing when the keyboard is
-visible, the app is in front, and React capture proves no presented modal. This
-uses the keyboard guard's dismissal chain described below, without a native
-platform-presence read. QaReN takes fresh settled captures and resolves the target
+visible, the app is in front, and React capture proves no presented modal. Only
+after an otherwise eligible absent-target refusal does QaReN request an extra
+capture with React typography for modal proof, then recheck target absence,
+keyboard visibility and the front surface before dismissing. This uses the keyboard
+guard's dismissal chain described below, without a native platform-presence read.
+QaReN takes fresh settled captures after dismissal and resolves the target
 again on the same attempt, acting on the resulting screen: blurring the field can
 validate or navigate in the app. The row's `keyboardCleared` field follows the
 tier-and-hidden-keyboard rule described below.
@@ -4059,7 +4062,8 @@ occlusion. Runtime-input suppression follows the contract above.
 The [walker cover result type](../qaren-core/src/qa/walker.ts) owns the fixed gap values.
 `no-native-presence` means the capture carried no native presence, so no React host
 could be tied to a native node. Quoted presses use ordinary captures without native
-presence. On iOS a covered press or Fill refusal with that gap takes the
+presence or React typography; the [absent-target keyboard clearance](#occluded-taps-and-focus)
+has a separate modal-proof capture. On iOS a covered press or Fill refusal with that gap takes the
 walker's one bounded platform-presence recapture, the same one a plain scroll uses for
 an unproven cover, and looks up the cover again on it, at most once per cover lookup.
 For covered targets, only refusals pay for that read (a presence capture can take
