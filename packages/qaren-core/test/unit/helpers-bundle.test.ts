@@ -20,18 +20,35 @@ const legacy = read('../../src/runtime/legacy.program.txt');
 const baseline = JSON.parse(read('../fixtures/helpers/baseline.txt'));
 const sha256 = (program: string): string => createHash('sha256').update(program).digest('hex');
 const originalHash = 'f41041b3c6ce53bbaec15099b93babe634e7e31321c3ab2347f2598a1687dcee';
+const currentHash = 'd7d616764136987fe4356ea0a81bebeb0305c3a79cca447d10d3598e77a498e3';
+const baseVersionSite = '__HELPERS_VERSION__ = 105';
 
 // PR 1 only: later extraction PRs replace this fixed-byte oracle with the
 // declared edit list and differential checks, and refresh the base fixture.
-test('A: the generated program has exactly the original evaluated bytes', () => {
-  assert.equal(HELPERS_VERSION, 105);
+test('A: the generated program is the original evaluated bytes at version 106', () => {
+  assert.equal(HELPERS_VERSION, 106);
   assert.equal(INJECTED_HELPERS.length, 225919);
   assert.equal(Buffer.byteLength(INJECTED_HELPERS), 226106);
-  assert.equal(sha256(INJECTED_HELPERS), originalHash);
+  assert.equal(sha256(INJECTED_HELPERS), currentHash);
   assert.equal(baseline.revision, 'a3147f7878ebcffbf90879f93d3581e3e9e62b8e');
   assert.equal(sha256(baseline.program), originalHash);
   assert.equal(baseline.version, 105);
-  assert.equal(INJECTED_HELPERS, baseline.program);
+  assert.equal(baseline.program.split(baseVersionSite).length, 2);
+  assert.equal(
+    INJECTED_HELPERS,
+    baseline.program.replace(baseVersionSite, '__HELPERS_VERSION__ = 106'),
+  );
+});
+
+test('an app holding the base helpers receives the current helpers', () => {
+  const context = vm.createContext({});
+  vm.runInContext(baseline.program, context);
+  const installed = vm.runInContext('globalThis.__QAREN', context);
+  assert.equal(installed.__v, 105);
+  vm.runInContext(INJECTED_HELPERS, context);
+  const current = vm.runInContext('globalThis.__QAREN', context);
+  assert.notEqual(current, installed);
+  assert.equal(current.__v, 106);
 });
 
 test('B: the committed bundle is the current generator output', () => {
