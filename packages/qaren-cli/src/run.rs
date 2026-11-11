@@ -706,6 +706,7 @@ fn run_inner(
         runs_root: req.runs_root.clone(),
         native_cache_root: req.native_cache_root.clone(),
         native_store_entry: None,
+        plan_fingerprint: None,
         ios_observation: None,
         linkage_before_build: None,
         ios_generated_native: false,

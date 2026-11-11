@@ -5,6 +5,7 @@ import { buildFiber, createSandbox } from '../helpers/inject-harness.js';
 import { captureQaReact } from '../../../dist/qa/react-capture.js';
 import { captureScreen } from '../../../dist/qa/capture.js';
 import { PrivateInputCaptureError } from '../../../dist/qa/private-input.js';
+import { PRIVATE_INPUT_LIMITS } from '../../../dist/qa/private-input-limits.js';
 import { join, semanticActionView, visibilityView } from '../../../dist/qa/screen.js';
 import { prepareTarget } from '../../../dist/qa/resolve.js';
 import { exactIdentities } from '../../../dist/qa/identity.js';
@@ -142,7 +143,8 @@ test('J1 does not remove host evidence or turn incomplete captures into complete
   ]);
   const screen = join([], react.interactive!, 'app', { native: 'complete', react: 'incomplete' });
   assert.ok('refuse' in visibilityView(screen));
-  const capped = Array.from({ length: 200 }, () => wrapper());
+  // Each wrapper adds two entries and one host: past the private entry limit, under the host limit.
+  const capped = Array.from({ length: PRIVATE_INPUT_LIMITS.maxHosts / 2 + 1 }, () => wrapper());
   await assert.rejects(observe(capped), PrivateInputCaptureError);
 });
 

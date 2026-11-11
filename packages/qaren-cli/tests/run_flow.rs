@@ -1,3 +1,5 @@
+#[path = "run_flow/android_dynamic_config.rs"]
+mod android_dynamic_config;
 mod common;
 use common::IosBuildRunner as MockRunner;
 

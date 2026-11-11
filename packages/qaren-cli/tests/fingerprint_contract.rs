@@ -1239,6 +1239,35 @@ fn android_static_config_keeps_its_cache_key() {
 }
 
 #[test]
+fn android_static_expo_config_keeps_the_manifest_only_vector() {
+    let root = dynamic_project();
+    std::fs::remove_file(root.join("app.config.ts")).unwrap();
+    std::fs::write(
+        root.join("package.json"),
+        r#"{"dependencies":{"expo":"57"}}"#,
+    )
+    .unwrap();
+    std::fs::write(root.join("app.json"), r#"{"expo":{"name":"app"}}"#).unwrap();
+    let mut runner = MockRunner::new();
+    runner.expect_run("ls-files", CmdOutput::success("package.json\0app.json\0"));
+    let fp = compute(&mut runner, &root, &root, "android").unwrap();
+    assert!(fp.complete);
+    assert_eq!(
+        fp.value,
+        "rnfp1:fba62c768ca25823dd91105206323feae967a7709798d869810ee331ef434f41"
+    );
+    assert_eq!(fp.parts["rnfp"], fp.value);
+    assert_eq!(fp.parts.len(), 1);
+    assert_eq!(fp.timings.expo_ms, None);
+    assert!(!runner
+        .calls
+        .iter()
+        .any(|call| call.label.starts_with("expo-fingerprint")));
+    assert_eq!(runner.remaining(), 0);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn evaluated_dynamic_config_clears_only_its_own_incompleteness_and_reuses() {
     let root = dynamic_project();
     let (fp, runner) = dynamic_fingerprint(&root, DYNAMIC_FILES, |m| {
@@ -1522,14 +1551,191 @@ fn an_evaluated_config_never_clears_any_other_incompleteness() {
 }
 
 #[test]
-fn android_dynamic_config_is_unchanged_and_never_runs_expo() {
+fn android_dynamic_config_binds_both_build_environments() {
     let root = dynamic_project();
-    let mut runner = MockRunner::new();
-    runner.expect_run("ls-files", CmdOutput::success(DYNAMIC_FILES));
-    let fp = compute(&mut runner, &root, &root, "android").unwrap();
-    assert_eq!(fp.incompleteness.len(), 1);
-    assert!(fp.incompleteness[0].starts_with("app.config.ts is a dynamic config"));
-    assert_eq!(fp.timings.expo_ms, None);
+    let evaluate = |expo: &str, ci: &str| {
+        let mut runner = MockRunner::new();
+        runner.advance_on = Some(("fingerprint:generate".into(), 17));
+        runner.expect_run("ls-files", CmdOutput::success(DYNAMIC_FILES));
+        runner.expect_run(
+            "require.resolve",
+            CmdOutput::success(common::EXPO_FINGERPRINT_CLI),
+        );
+        for hash in [expo, ci] {
+            runner.expect_run("fingerprint:generate", expo_output(hash));
+        }
+        let fp = compute(&mut runner, &root, &root, "android").unwrap();
+        assert!(fp.complete, "{:?}", fp.incompleteness);
+        assert_eq!(runner.remaining(), 0);
+        let calls: Vec<_> = runner
+            .calls
+            .iter()
+            .filter(|c| c.label.starts_with("expo-fingerprint"))
+            .collect();
+        assert_eq!(calls.len(), 3, "resolve once, evaluate twice");
+        for call in &calls {
+            assert_eq!(call.timeout_seconds, 120);
+            assert_eq!(call.cwd.as_deref(), Some(root.as_path()));
+        }
+        assert!(calls[1].unset.contains(&"CI".into()));
+        assert!(calls[2].env.contains(&("CI".into(), "1".into())));
+        assert!(!calls[2].unset.contains(&"CI".into()));
+        assert!(calls[1]
+            .args
+            .ends_with(&["--platform".into(), "android".into()]));
+        assert!(calls[2]
+            .args
+            .ends_with(&["--platform".into(), "android".into()]));
+        assert_eq!(runner.private_inputs.len(), 3);
+        assert_eq!(
+            fp.parts.keys().collect::<Vec<_>>(),
+            ["expo", "expo-ci", "rnfp"]
+        );
+        assert_eq!(fp.parts["expo"], format!("expo:{expo}"));
+        assert_eq!(fp.parts["expo-ci"], format!("expo:{ci}"));
+        assert_ne!(fp.value, fp.parts["rnfp"]);
+        assert_eq!(fp.timings.expo_ms, Some(34));
+        fp
+    };
+    let base = evaluate(EXPO_H, EXPO_H);
+    assert_eq!(
+        base.parts["rnfp"],
+        "rnfp1:74f2615a2a029e64bc2918fb6d855bbe171a1b443143bdfdd1e2d0b9815d5187"
+    );
+    assert_eq!(
+        base.value,
+        "rnfp1:e3b537c5cc593799acc3826f89d42acf7caec6bc20c4a274f0bf49b6376cd14f"
+    );
+    assert_eq!(base, evaluate(EXPO_H, EXPO_H));
+    for changed in [evaluate("aaaa", EXPO_H), evaluate(EXPO_H, "bbbb")] {
+        assert_eq!(base.parts["rnfp"], changed.parts["rnfp"]);
+        assert_ne!(base.value, changed.value);
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+fn expo_output(hash: &str) -> CmdOutput {
+    CmdOutput::success(
+        &serde_json::json!({
+            "hash": hash,
+            "sources": [{"type":"contents", "id":"expoConfig", "contents":"{}"}]
+        })
+        .to_string(),
+    )
+}
+
+#[test]
+fn android_dynamic_config_unavailability_never_binds_a_partial_evaluation() {
+    let root = dynamic_project();
+    let cases = [
+        (
+            "did not complete (exit 1)",
+            CmdOutput::failed(1, UNAVAILABLE_CANARY),
+        ),
+        (
+            "timed out after 120 s",
+            CmdOutput {
+                timed_out: true,
+                ..CmdOutput::failed(124, UNAVAILABLE_CANARY)
+            },
+        ),
+        (
+            "terminated by a signal",
+            CmdOutput {
+                exit_code: None,
+                stderr: UNAVAILABLE_CANARY.into(),
+                ..Default::default()
+            },
+        ),
+        ("no hex hash", CmdOutput::success(UNAVAILABLE_CANARY)),
+        ("no hex hash", CmdOutput::success(r#"{"hash":""}"#)),
+        (
+            "no hex hash",
+            CmdOutput::success(r#"{"hash":"../private"}"#),
+        ),
+        (
+            "no evaluated Expo config",
+            CmdOutput::success(r#"{"hash":"abcd","sources":[]}"#),
+        ),
+    ];
+    for (cause, output) in cases {
+        for failed_part in ["expo", "expo-ci"] {
+            let mut runner = MockRunner::new();
+            runner.expect_run("ls-files", CmdOutput::success(DYNAMIC_FILES));
+            runner.expect_run(
+                "require.resolve",
+                CmdOutput::success(common::EXPO_FINGERPRINT_CLI),
+            );
+            for part in ["expo", "expo-ci"] {
+                runner.expect_run(
+                    "fingerprint:generate",
+                    if part == failed_part {
+                        output.clone()
+                    } else {
+                        expo_output(EXPO_H)
+                    },
+                );
+            }
+            let fp = compute(&mut runner, &root, &root, "android").unwrap();
+            assert!(!fp.complete);
+            assert_eq!(fp.incompleteness.len(), 2);
+            assert_eq!(fp.value, fp.parts["rnfp"]);
+            assert_eq!(fp.parts.keys().collect::<Vec<_>>(), ["rnfp"]);
+            let unavailable = fp.expo_unavailable.as_deref().unwrap();
+            assert!(unavailable.starts_with(&format!("{failed_part}: ")));
+            assert!(unavailable.contains(cause), "{unavailable}");
+            let plan = matching_build(&root, &fp, "android");
+            assert_eq!(plan.decision, qaren::buildplan::BuildDecision::Clean);
+            assert!(plan.regenerate_native_dir);
+            let shown = serde_json::to_string(&plan).unwrap();
+            assert!(
+                shown.contains(&format!("Expo fingerprint unavailable: {unavailable}")),
+                "{shown}"
+            );
+            assert!(!format!("{fp:?}{shown}").contains(UNAVAILABLE_CANARY));
+            assert_eq!(runner.remaining(), 0);
+        }
+    }
+    for (output, outcome) in [
+        (CmdOutput::failed(1, UNAVAILABLE_CANARY), "exit 1"),
+        (
+            CmdOutput::success("relative/bin/cli.js"),
+            "exit 0 with unexpected output",
+        ),
+        (
+            CmdOutput {
+                timed_out: true,
+                ..CmdOutput::failed(124, UNAVAILABLE_CANARY)
+            },
+            "timed out after 120 s",
+        ),
+        (
+            CmdOutput {
+                exit_code: None,
+                stderr: UNAVAILABLE_CANARY.into(),
+                ..Default::default()
+            },
+            "terminated by a signal",
+        ),
+    ] {
+        let mut runner = MockRunner::new();
+        runner.expect_run("ls-files", CmdOutput::success(DYNAMIC_FILES));
+        runner.expect_run("require.resolve", output);
+        let fp = compute(&mut runner, &root, &root, "android").unwrap();
+        assert!(!fp.complete);
+        assert_eq!(fp.incompleteness.len(), 2);
+        assert_eq!(fp.value, fp.parts["rnfp"]);
+        assert_eq!(fp.parts.len(), 1);
+        assert!(fp
+            .expo_unavailable
+            .as_deref()
+            .unwrap()
+            .contains("does not resolve"));
+        assert!(fp.expo_unavailable.as_deref().unwrap().contains(outcome));
+        assert!(!format!("{fp:?}").contains(UNAVAILABLE_CANARY));
+        assert_eq!(runner.remaining(), 0);
+    }
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

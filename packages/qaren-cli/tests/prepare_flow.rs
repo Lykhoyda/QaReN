@@ -4085,6 +4085,8 @@ fn dry_run_plans_generated_native_regeneration_before_every_build_route() {
                     common::script_expo_fingerprint_unresolvable(&mut fp_runner);
                 } else if platform == "ios" {
                     common::script_xcode(&mut fp_runner);
+                } else if incomplete {
+                    common::script_expo_fingerprint_unresolvable(&mut fp_runner);
                 }
                 let fp = qaren::fingerprint::compute(&mut fp_runner, &repo, &project, platform)
                     .unwrap()
@@ -4139,6 +4141,8 @@ fn dry_run_plans_generated_native_regeneration_before_every_build_route() {
                     common::script_expo_fingerprint_unresolvable(&mut mock);
                 } else if platform == "ios" {
                     common::script_xcode(&mut mock);
+                } else if incomplete {
+                    common::script_expo_fingerprint_unresolvable(&mut mock);
                 }
                 let sdk = (platform == "android").then(|| android_sdk(&repo));
                 let receipt = prepare(
