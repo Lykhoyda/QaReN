@@ -230,6 +230,24 @@ fn dynamic_android_recheck_recovers_one_unavailable_evaluation() {
     assert_eq!(state(&repo).fingerprint_parts["expo"], "expo:aaaa");
 }
 
+// A phone run that builds for arm64-v8a, up to the recheck.
+fn script_phone_prepare(mock: &mut MockRunner, repo: &Path, app: &Path) {
+    android_until_borrow(repo, mock);
+    script_phone_borrow(mock, PHONE_BESIDE_OFFLINE_EMULATOR);
+    script_android_after_borrow(mock, repo);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    script_fingerprint(mock, STABLE);
+    if app.join("android").exists() {
+        mock.expect_run(PREBUILD, CmdOutput::success(""));
+    } else {
+        mock.expect_run("check-ignore -q android/", CmdOutput::success(""));
+        script_android_finite_build(mock, PREBUILD, 5000, 0);
+    }
+    script_android_finite_build(mock, GRADLE_ARM64, 5001, 0);
+    script_android_launch(mock, 0);
+    script_android_app_tick(mock, CmdOutput::success("4242\n"));
+}
+
 // The phone's ABI is in the planned fingerprint, so the recheck, also after one failed evaluation,
 // must add it too; without it an unchanged app is refused as changed.
 #[test]
@@ -238,16 +256,7 @@ fn dynamic_android_phone_build_passes_the_recheck_with_its_abi() {
         let (repo, app) = dynamic_app();
         let req = android_request(&repo, &app);
         let mut mock = android_mock();
-        android_until_borrow(&repo, &mut mock);
-        script_phone_borrow(&mut mock, PHONE_BESIDE_OFFLINE_EMULATOR);
-        script_android_after_borrow(&mut mock, &repo);
-        mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
-        script_fingerprint(&mut mock, STABLE);
-        mock.expect_run("check-ignore -q android/", CmdOutput::success(""));
-        script_android_finite_build(&mut mock, PREBUILD, 5000, 0);
-        script_android_finite_build(&mut mock, GRADLE_ARM64, 5001, 0);
-        script_android_launch(&mut mock, 0);
-        script_android_app_tick(&mut mock, CmdOutput::success("4242\n"));
+        script_phone_prepare(&mut mock, &repo, &app);
         for evaluation in recheck {
             script_fingerprint(&mut mock, *evaluation);
         }
@@ -364,4 +373,28 @@ fn android_manifest_drift_during_preparation_still_refuses() {
     assert_eq!(receipt.failure.unwrap().code, FailureCode::CandidateDrifted);
     assert_eq!(mock.remaining(), 0);
     assert!(!buildplan::state_path(&repo, "android", "com.rndevagent.testapp").exists());
+}
+
+// Same app, same Expo config: the emulator's build is never reused on the phone, whose ABI is in
+// the fingerprint value.
+#[test]
+fn dynamic_android_phone_never_reuses_an_emulator_build() {
+    let (repo, app) = dynamic_app();
+    let mut req = android_request(&repo, &app);
+    seed_build(&repo, &app, &req, STABLE, STABLE);
+    req.runs_root = repo.join("runs-phone");
+    let mut mock = android_mock();
+    script_phone_prepare(&mut mock, &repo, &app);
+    script_fingerprint(&mut mock, STABLE);
+    script_walk(&mut mock);
+    the_two_runner_packages_are_removed(&mut mock);
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{}", receipt.to_json());
+    assert_eq!(mock.remaining(), 0);
+    assert_ne!(
+        receipt.build.as_ref().unwrap().decision,
+        BuildDecision::Reuse
+    );
 }
