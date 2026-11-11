@@ -634,7 +634,8 @@ the SDK whose `platform-tools/adb` reaches that server. The build is a Gradle
 `:app:assembleDebug` limited to the device's ABI, preceded by
 `expo prebuild --platform android --clean` when `android/` is absent. A phone's
 ABI is part of the native build fingerprint, so a cached build for another ABI
-is rebuilt rather than installed; emulator fingerprints are unchanged. An absent
+is rebuilt rather than installed; an emulator build is never reused on a phone,
+even with the same ABI. Emulator fingerprints are unchanged. An absent
 `android/` must be git-ignored: one git would track would change the candidate's
 native inputs mid-run, so the build fails with `BUILD_FAILED` before generating
 it. Add `android/` to `.gitignore`, or generate and commit it before the run.
@@ -5229,10 +5230,11 @@ above. Resolution and each evaluation have a 120 s command timeout. Both must
 succeed to bind `rnfp`, `expo` and `expo-ci` in the `qaren-expo-native-android/1`
 composite and clear the dynamic-config incompleteness. Other incompleteness
 still forbids reuse. If either evaluation is unavailable, neither Expo part is
-bound. The value stays the native-input manifest hash, with both the
-dynamic-config and unavailable-evaluation incompleteness reasons. Rebuild evidence
+bound. Before device-specific binding, the value stays the native-input manifest
+hash, with both the dynamic-config and unavailable-evaluation incompleteness reasons. Rebuild evidence
 records `Expo fingerprint unavailable: <cause>` with the closed cause. Static
-Android configs run no evaluation and retain their existing fingerprint value.
+Android configs run no Expo evaluation; device-specific fingerprint binding
+follows the [Android run contract](#check-a-plan).
 Android does not bind JDK, SDK or NDK identity.
 
 A previously recorded Android build with a dynamic config and no Expo parts
