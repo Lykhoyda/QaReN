@@ -298,7 +298,23 @@ export async function healKeyboardOccludedTap(
   first: ToolResult,
   deps: KeyboardAutoHealDeps | null,
   qaContext?: QaDispatchContext,
+  deferKeyboardDismissal = false,
 ): Promise<ToolResult> {
+  if (qaContext && deferKeyboardDismissal && isKeyboardOccludedRefusal(first)) {
+    const envelope = JSON.parse(first.content[0].text) as {
+      code?: string;
+      error?: string;
+      meta?: { mutation?: unknown };
+    };
+    // The walker can dismiss and rebind only when the runner proves no tap occurred.
+    if (
+      envelope.meta?.mutation === 'none' &&
+      (envelope.code === 'KEYBOARD_DISMISS_FAILED' ||
+        (typeof envelope.error === 'string' &&
+          envelope.error.startsWith('KEYBOARD_DISMISS_FAILED:')))
+    )
+      return first;
+  }
   // This repair has no retained-identity/no-invocation proof for QA.
   if (qaContext && isKeyboardOccludedRefusal(first)) qaContext.refuse('ACTION_OUTCOME_UNCERTAIN');
   if (!deps || !isKeyboardOccludedRefusal(first)) return first;

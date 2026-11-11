@@ -899,6 +899,8 @@ interface PressArgs {
   retryIfNoChange?: boolean;
   // iOS: tap only when the runner's live hit read proves the target hittable.
   requireLiveHit?: boolean;
+  // QA walker owns the settled dismissal/rebind after a proven uninvoked press.
+  deferKeyboardDismissal?: boolean;
 }
 
 // Story 04 (#385): thread a caller-supplied settle budget into runNative.
@@ -1050,6 +1052,7 @@ export function createDevicePressHandler(
           target ? { ref: target, identity } : undefined,
         ),
         args.qaContext,
+        args.deferKeyboardDismissal,
       );
     }
     if (!result.isError && args.waitForFocusMs && args.waitForFocusMs > 0) {

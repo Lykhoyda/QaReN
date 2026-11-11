@@ -887,6 +887,16 @@ and Android keep their existing paths. `RN_KEYBOARD_GUARD=0` disables this clear
 The [absent-target regression tests](../qaren-core/test/unit/qa/keyboard-absent-target.test.ts)
 cover these boundaries.
 
+For a resolved quoted iOS Tap, a runner `KEYBOARD_DISMISS_FAILED` refusal with
+`mutation: none` can use the same per-item allowance. QaReN dismisses the keyboard,
+settles the original target, and resolves again. A different identity or a frame
+that changes after settling refuses the Tap. The pixel baseline is taken again
+after dismissal so keyboard disappearance cannot count as the Tap's effect. A
+second refusal keeps the runner's reason and adds “the keyboard covers the target
+and could not be hidden”. Live-hit presses, recovery and dialog presses,
+`KEYBOARD_RELAYOUT_REQUIRED`, and refusals without proof of no mutation retain
+their existing handling.
+
 Before an iOS tap or exact fill, the runner resolves the retained target by
 native type and identifier (or label when unidentified) in the same snapshot
 generation. A unique live match whose frame no longer approximately matches

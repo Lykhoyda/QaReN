@@ -274,7 +274,7 @@ export interface WalkerDeps {
   press(
     ref: string,
     context: QaDispatchContext,
-    options?: { requireLiveHit: true },
+    options?: { requireLiveHit?: true; deferKeyboardDismissal?: true },
   ): Promise<ActResult>;
   fill(
     ref: string,
@@ -3545,7 +3545,7 @@ async function walkBlockScoped(
     itemDeadline = budget.deadline;
     let pixelBaselineTaken = false;
     // This allowance survives recovery retries of the item.
-    let absentTargetKeyboardAttempted = false;
+    let itemKeyboardAttempted = false;
     let pixelBaseline:
       | { target: NonNullable<ReturnType<typeof pixelTarget>>; crop: PixelCrop }
       | undefined;
@@ -4216,6 +4216,41 @@ async function walkBlockScoped(
           let scrollPresenceRead = false;
           // The target that settled after this attempt's keyboard dismissal; the tap goes to it or nowhere.
           let keyboardBound: { target: Element; frame: string; scrolled: number } | undefined;
+          const dismissResolvedTarget = async (target: Element): Promise<boolean> => {
+            keyboardAttempted = true;
+            const dismissal: { via: 'native-control' | 'js' | 'none' } = { via: 'none' };
+            await mutate(item, before, async (context) => {
+              dismissal.via = await deps.dismissKeyboard!(context);
+              return { ok: true, proven: false };
+            });
+            const settled = await settledTarget(item, target, { nativeOnly: true });
+            if ('frames' in settled) {
+              outcome = failed(
+                item,
+                attempt,
+                [
+                  'the target (',
+                  {
+                    app: identityText(target),
+                    ...(concealsScreen(latest) ? { withheld: MASK } : {}),
+                  },
+                  `) did not settle across ${settled.frames.length} captures (${settled.frames.join(' | ')}); it was not dispatched; keyboard after dismissal: ${latest.keyboardVisible === true ? 'visible' : latest.keyboardVisible === false ? 'hidden' : 'unknown'}${KEYBOARD_DISMISSED}`,
+                ],
+                latest,
+                await shoot(item),
+              );
+              return false;
+            }
+            before = settled.observation;
+            if (dismissal.via !== 'none' && before.screen.keyboardVisible !== true)
+              keyboardCleared = dismissal.via;
+            deps.note?.(
+              `keyboard-clearance ${JSON.stringify({ line: item.line, via: dismissal.via, hidden: before.screen.keyboardVisible === false })}`,
+            );
+            keyboardBound = { target, frame: settled.frame, scrolled };
+            initial = undefined;
+            return true;
+          };
           let act: ActResult;
           for (;;) {
             try {
@@ -4261,7 +4296,7 @@ async function walkBlockScoped(
                   before.screen.keyboardVisible === true &&
                   before.screen.front === 'app' &&
                   !launchWait &&
-                  !absentTargetKeyboardAttempted &&
+                  !itemKeyboardAttempted &&
                   !keyboardAttempted
                 ) {
                   before = await enrichLabelProvenance(
@@ -4280,7 +4315,7 @@ async function walkBlockScoped(
                     modal?.refused === 'modal-count' &&
                     modal.modalCount === 0
                   ) {
-                    absentTargetKeyboardAttempted = true;
+                    itemKeyboardAttempted = true;
                     keyboardAttempted = true;
                     const dismissal: { via: 'native-control' | 'js' | 'none' } = { via: 'none' };
                     await mutate(item, before, async (context) => {
@@ -4347,7 +4382,7 @@ async function walkBlockScoped(
                     throw new ResolutionError(
                       keyboardBound
                         ? { ...decided, reason: `${decided.reason}${KEYBOARD_DISMISSED}` }
-                        : absentTargetKeyboardAttempted
+                        : itemKeyboardAttempted
                           ? {
                               ...decided,
                               reason: `${decided.reason}; ${before.screen.keyboardVisible === false ? 'the keyboard was hidden and the target is still not found' : 'the keyboard could not be hidden'}`,
@@ -4630,39 +4665,7 @@ async function walkBlockScoped(
                 element !== undefined &&
                 selectionPressCandidate(element, before.screen)
               ) {
-                keyboardAttempted = true;
-                const target = element;
-                const dismissal: { via: 'native-control' | 'js' | 'none' } = { via: 'none' };
-                await mutate(item, before, async (context) => {
-                  dismissal.via = await deps.dismissKeyboard!(context);
-                  return { ok: true, proven: false };
-                });
-                const settled = await settledTarget(item, target, { nativeOnly: true });
-                if ('frames' in settled) {
-                  outcome = failed(
-                    item,
-                    attempt,
-                    [
-                      'the target (',
-                      {
-                        app: identityText(target),
-                        ...(concealsScreen(latest) ? { withheld: MASK } : {}),
-                      },
-                      `) did not settle across ${settled.frames.length} captures (${settled.frames.join(' | ')}); it was not dispatched; keyboard after dismissal: ${latest.keyboardVisible === true ? 'visible' : latest.keyboardVisible === false ? 'hidden' : 'unknown'}${KEYBOARD_DISMISSED}`,
-                    ],
-                    latest,
-                    await shoot(item),
-                  );
-                  break;
-                }
-                before = settled.observation;
-                if (dismissal.via !== 'none' && before.screen.keyboardVisible !== true)
-                  keyboardCleared = dismissal.via;
-                deps.note?.(
-                  `keyboard-clearance ${JSON.stringify({ line: item.line, via: dismissal.via, hidden: before.screen.keyboardVisible === false })}`,
-                );
-                keyboardBound = { target, frame: settled.frame, scrolled };
-                initial = undefined;
+                if (!(await dismissResolvedTarget(element))) break;
                 continue;
               }
               let strictFillFocus = false;
@@ -4840,7 +4843,11 @@ async function walkBlockScoped(
                   pressDispatch = pressRecord(before.screen, element);
                   return liveHit
                     ? deps.press(ref!, context, { requireLiveHit: true })
-                    : deps.press(ref!, context);
+                    : item.target.quoted !== undefined &&
+                        deps.platform === 'ios' &&
+                        deps.dismissKeyboard
+                      ? deps.press(ref!, context, { deferKeyboardDismissal: true })
+                      : deps.press(ref!, context);
                 }
                 return item.kind === 'fill'
                   ? deps.fill(
@@ -4942,6 +4949,35 @@ async function walkBlockScoped(
                   'TARGET_AMBIGUOUS',
                 );
                 break;
+              }
+              if (
+                item.kind === 'press' &&
+                item.target.quoted !== undefined &&
+                deps.platform === 'ios' &&
+                deps.dismissKeyboard &&
+                !liveHit &&
+                element !== undefined &&
+                !act.ok &&
+                act.mutation === 'none' &&
+                act.error?.startsWith('KEYBOARD_DISMISS_FAILED:')
+              ) {
+                if (itemKeyboardAttempted) {
+                  outcome = failed(
+                    item,
+                    attempt,
+                    `${act.error}; the keyboard covers the target and could not be hidden`,
+                    before.screen,
+                    await shoot(item),
+                    ref,
+                  );
+                  break;
+                }
+                itemKeyboardAttempted = true;
+                // A vanished keyboard cannot count as the later tap's visible effect.
+                pixelBaselineTaken = false;
+                pixelBaseline = undefined;
+                if (!(await dismissResolvedTarget(element))) break;
+                continue;
               }
               if (
                 !act.ok &&
