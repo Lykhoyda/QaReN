@@ -3850,8 +3850,8 @@ fn install_cached_android_apk(
     let mut retry = spec;
     retry.timeout_seconds = 300.min(left / 1000);
     let second = ctx.runner.run(&retry);
-    ensure_running(ctx.runner, "build")?;
     if !second.ok() || !second.stdout.contains("Success") {
+        ensure_running(ctx.runner, "build")?;
         return Err(artifact_install_failure(
             &ctx.record.run_id,
             artifact,

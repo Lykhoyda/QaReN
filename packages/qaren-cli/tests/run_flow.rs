@@ -10720,6 +10720,41 @@ fn android_install_recovery_does_not_probe_after_cancellation_at_the_first_insta
 }
 
 #[test]
+fn android_install_recovery_records_success_before_cancellation() {
+    let (req, mut mock) = android_install_recovery_fixture();
+    mock.expect_run("install -r -d", CmdOutput::failed(1, "transport failure"));
+    script_package_manager_recovery(&mut mock);
+    mock.expect_run("install -r -d", CmdOutput::success("Success\n"));
+    mock.advance_on = Some(("install -r -d".into(), 1));
+    mock.cancel_at_ms = Some((mock.now_epoch_ms() + 10_002, "received SIGTERM".into()));
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.failure.unwrap().code, FailureCode::RunCancelled);
+    assert_eq!(receipt.outcomes["install_attempts"], "2");
+    assert_eq!(receipt.outcomes["install_recovery_wait_ms"], "10000");
+    assert_eq!(
+        mock.calls
+            .iter()
+            .filter(|c| c.label == "adb-install")
+            .count(),
+        2
+    );
+    assert!(!adb_calls(&mock).iter().any(|c| c.contains("reverse")));
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert_eq!(mock.remaining(), 0);
+    let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+    let install = record.resources.app_install.as_ref().unwrap();
+    assert_eq!(install.app_id, record.candidate.app_id);
+    assert_eq!(install.serial, EMULATOR);
+    assert_eq!(install.via, "adb-install");
+    let artifact = record.build.as_ref().unwrap().artifact.as_ref().unwrap();
+    assert_eq!(install.artifact.sha256, artifact.sha256);
+    assert_eq!(record.resources.adb_reverse_port, None);
+    assert!(record.resources.lease.is_none());
+}
+
+#[test]
 fn android_check_install_failure_and_timeout_keep_verified_apk_and_release_only_the_lease() {
     for (label, installed) in [
         (
