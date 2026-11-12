@@ -4,7 +4,12 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { join, type NativeNode, type Screen } from '../../../dist/qa/screen.js';
-import { walkBlock, type ActResult, type WalkerDeps } from '../../../dist/qa/walker.js';
+import {
+  walkBlock,
+  type ActResult,
+  type WalkerDeps,
+  type WalkerTimingDiagnostic,
+} from '../../../dist/qa/walker.js';
 import { QaDispatchContext, QaDispatchError } from '../../../dist/domain/qa-dispatch.js';
 import {
   createDevicePressHandler,
@@ -558,4 +563,97 @@ test('guard: a Fill never opts into keyboard dismissal on a keyboard refusal', a
   assert.equal(outcome.block.outcome, 'fail');
   assert.ok(count(f, 'fill') > 0);
   assert.equal(count(f, 'dismiss'), 0);
+});
+
+function dispatchTrace(f: ReturnType<typeof device>) {
+  const events: WalkerTimingDiagnostic[] = [];
+  f.deps.diagnostic = (event) => events.push(event);
+  return {
+    events,
+    completed: () =>
+      events
+        .filter(
+          (event) => event.line === 1 && event.stage === 'dispatch' && event.code === 'COMPLETED',
+        )
+        .map((event) => {
+          const { action, ok, nativeMutation, resultCode } = event;
+          return {
+            action,
+            ok,
+            ...(nativeMutation === undefined ? {} : { nativeMutation }),
+            ...(resultCode === undefined ? {} : { resultCode }),
+          };
+        }),
+  };
+}
+
+const refusedPressTrace = {
+  action: 'press',
+  ok: false,
+  nativeMutation: 'none',
+  resultCode: 'KEYBOARD_DISMISS_FAILED',
+};
+
+test('T1: dispatch trace identifies the refused press, dismissal and completed press', async () => {
+  const f = device();
+  const trace = dispatchTrace(f);
+  const outcome = await walkBlock(tap(), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(trace.completed(), [
+    refusedPressTrace,
+    { action: 'dismiss-keyboard', ok: true },
+    { action: 'press', ok: true },
+  ]);
+  assert.deepEqual(
+    trace.events
+      .filter((event) => event.stage === 'dispatch' && event.code === 'ACCEPTED')
+      .map((event) => event.action),
+    ['press', 'dismiss-keyboard', 'press'],
+  );
+});
+
+test('T2: dispatch trace ends after the second refused press', async () => {
+  const f = device();
+  f.results([refusal, refusal]);
+  const trace = dispatchTrace(f);
+  const outcome = await walkBlock(tap(), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.deepEqual(trace.completed(), [
+    refusedPressTrace,
+    { action: 'dismiss-keyboard', ok: true },
+    refusedPressTrace,
+  ]);
+});
+
+test('T3: absent-target trace records a dismissal without a preceding press', async () => {
+  const f = device();
+  const absent = screen(true, 20, 'Continue', false);
+  f.show(absent);
+  f.deps.dismissKeyboard = async (context) => {
+    context.authorize();
+    f.calls.push('dismiss');
+    f.show({ ...absent, keyboardVisible: false });
+    return 'js';
+  };
+  const trace = dispatchTrace(f);
+  const outcome = await walkBlock(tap(), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.deepEqual(trace.completed(), [{ action: 'dismiss-keyboard', ok: true }]);
+  assert.equal(count(f, 'press'), 0);
+});
+
+test('T4: dispatch trace maps an unlisted error to OTHER without retaining its text', async () => {
+  const f = device();
+  const error = 'PRIVATE_SYNTHETIC_CODE: synthetic-private-error-text';
+  f.results([{ ok: false, proven: false, mutation: 'none', error }]);
+  const trace = dispatchTrace(f);
+  await walkBlock(tap(), f.deps);
+  assert.deepEqual(trace.completed()[0], {
+    action: 'press',
+    ok: false,
+    nativeMutation: 'none',
+    resultCode: 'OTHER',
+  });
+  assert.ok(!JSON.stringify(trace.events).includes('PRIVATE_SYNTHETIC_CODE'));
+  assert.ok(!JSON.stringify(trace.events).includes('synthetic-private-error-text'));
 });

@@ -497,6 +497,9 @@ fn clean(value: &Value) -> Option<Value> {
                 "nativeMutation",
                 "refusalStage",
                 "mutating",
+                "action",
+                "ok",
+                "resultCode",
             ],
         ),
         "block-outcome" => (&["line", "outcome"], &[]),
@@ -575,6 +578,25 @@ fn clean(value: &Value) -> Option<Value> {
                 Some(&["ok", "failed", "unknown", "withheld", "unavailable"])
             }
             "outcome" => Some(&["pass", "fail", "refused"]),
+            "action" => Some(&[
+                "press",
+                "fill",
+                "type",
+                "scroll",
+                "back",
+                "dialog",
+                "dismiss-keyboard",
+                "blur",
+            ]),
+            "resultCode" => Some(&[
+                "KEYBOARD_DISMISS_FAILED",
+                "FOCUS_TARGET_OCCLUDED",
+                "OUTSIDE_APP_WINDOW",
+                "NO_TEXT_INPUT_TARGET",
+                "TEXT_ENTRY_UNVERIFIED",
+                "RUN_CANCELLED",
+                "OTHER",
+            ]),
             "code" => Some(CODES),
             "nativeCode" => Some(NATIVE_CODES),
             "refusalStage" => Some(&["dispatch-error", "native-response", "settle"]),
@@ -617,7 +639,9 @@ fn clean(value: &Value) -> Option<Value> {
         if let Some(words) = words {
             let word = words.iter().find(|&&word| value.as_str() == Some(word))?;
             clean.insert(key.clone(), (*word).into());
-        } else if ["settled", "hierarchyChanged", "keyboard", "mutating"].contains(&key.as_str()) {
+        } else if ["settled", "hierarchyChanged", "keyboard", "mutating", "ok"]
+            .contains(&key.as_str())
+        {
             clean.insert(key.clone(), value.as_bool()?.into());
         } else {
             let number = value.as_f64()?;
@@ -719,4 +743,57 @@ fn private_file(path: &Path) -> Option<File> {
         options.mode(0o600);
     }
     options.open(path).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clean;
+    use serde_json::json;
+
+    #[test]
+    fn t6_dispatch_trace_keeps_only_closed_words_and_boolean_ok() {
+        let event = json!({
+            "kind": "timing", "stage": "dispatch", "code": "COMPLETED",
+            "line": 1, "at": 10, "acquisitionMs": 2, "observationAgeMs": 8,
+            "action": "press", "ok": false, "nativeMutation": "none",
+            "resultCode": "KEYBOARD_DISMISS_FAILED"
+        });
+        assert_eq!(clean(&event), Some(event.clone()));
+        for action in [
+            "press",
+            "fill",
+            "type",
+            "scroll",
+            "back",
+            "dialog",
+            "dismiss-keyboard",
+            "blur",
+        ] {
+            let mut valid = event.clone();
+            valid["action"] = action.into();
+            assert_eq!(clean(&valid), Some(valid.clone()));
+        }
+        for code in [
+            "KEYBOARD_DISMISS_FAILED",
+            "FOCUS_TARGET_OCCLUDED",
+            "OUTSIDE_APP_WINDOW",
+            "NO_TEXT_INPUT_TARGET",
+            "TEXT_ENTRY_UNVERIFIED",
+            "RUN_CANCELLED",
+            "OTHER",
+        ] {
+            let mut valid = event.clone();
+            valid["resultCode"] = code.into();
+            assert_eq!(clean(&valid), Some(valid.clone()));
+        }
+        for (key, value) in [
+            ("action", json!("private-action")),
+            ("resultCode", json!("private-code")),
+            ("ok", json!("false")),
+        ] {
+            let mut invalid = event.clone();
+            invalid[key] = value;
+            assert_eq!(clean(&invalid), None);
+        }
+    }
 }

@@ -1,3 +1,4 @@
+import { DISPATCH_ACTIONS, DISPATCH_RESULT_CODES } from './diagnostics.js';
 import {
   hitProbeNote,
   OverlayHits,
@@ -365,6 +366,10 @@ export interface WalkerTimingDiagnostic {
   acquisitionMs: number;
   observationAgeMs: number;
   authorizations?: number;
+  action?: (typeof DISPATCH_ACTIONS)[number];
+  ok?: boolean;
+  nativeMutation?: 'none' | 'observed' | 'possible';
+  resultCode?: (typeof DISPATCH_RESULT_CODES)[number];
   observation?: number;
   visibilityBlocker?: VisibilityBlockerDiagnostic;
   refusalDiagnostic?: QaDispatchDiagnostic;
@@ -1166,6 +1171,7 @@ async function walkBlockScoped(
     visibilityBlocker?: VisibilityBlockerDiagnostic,
     refusalDiagnostic?: QaDispatchDiagnostic,
     clearanceDiagnostic?: WalkerTimingDiagnostic['clearanceDiagnostic'],
+    dispatch?: Pick<WalkerTimingDiagnostic, 'action' | 'ok' | 'nativeMutation' | 'resultCode'>,
   ): void => {
     try {
       const at = deps.now();
@@ -1181,6 +1187,7 @@ async function walkBlockScoped(
         ...(visibilityBlocker ? { visibilityBlocker } : {}),
         ...(refusalDiagnostic ? { refusalDiagnostic } : {}),
         ...(clearanceDiagnostic ? { clearanceDiagnostic } : {}),
+        ...dispatch,
       });
     } catch (error) {
       if (isAbort(error)) throw error;
@@ -1469,6 +1476,7 @@ async function walkBlockScoped(
   const mutate = async (
     item: Item,
     observation: Observation,
+    kind: (typeof DISPATCH_ACTIONS)[number],
     send: (context: QaDispatchContext) => Promise<ActResult>,
     deadline = Infinity,
     owner: 'step' | 'recovery' = 'step',
@@ -1482,7 +1490,17 @@ async function walkBlockScoped(
         super.authorize();
         mutationStarted = true;
         if (owner === 'step') stepDispatched = true;
-        diagnostic(item, observation, 'dispatch', 'ACCEPTED', this.authorizations);
+        diagnostic(
+          item,
+          observation,
+          'dispatch',
+          'ACCEPTED',
+          this.authorizations,
+          undefined,
+          undefined,
+          undefined,
+          { action: kind },
+        );
         if (deps.timing)
           metric('authorization', observation, {
             count: this.authorizations,
@@ -1501,7 +1519,27 @@ async function walkBlockScoped(
       observeRowSettle(result);
       if (result.entryMismatch) fillMismatch = result.entryMismatch;
       context.assertComplete();
-      diagnostic(item, observation, 'dispatch', 'COMPLETED', context.authorizations);
+      const resultCode = result.error?.split(':', 1)[0];
+      diagnostic(
+        item,
+        observation,
+        'dispatch',
+        'COMPLETED',
+        context.authorizations,
+        undefined,
+        undefined,
+        undefined,
+        {
+          action: kind,
+          ok: result.ok,
+          ...(['none', 'observed', 'possible'].includes(result.mutation ?? '')
+            ? { nativeMutation: result.mutation }
+            : {}),
+          ...(!result.ok
+            ? { resultCode: DISPATCH_RESULT_CODES.find((code) => code === resultCode) ?? 'OTHER' }
+            : {}),
+        },
+      );
       completed = true;
       return result;
     } catch (error) {
@@ -1523,6 +1561,8 @@ async function walkBlockScoped(
           context.authorizations,
           undefined,
           context.refusalDiagnostic,
+          undefined,
+          { action: kind },
         );
         if (refusal.code === 'EVIDENCE_EXPIRED' && context.authorizations === 0)
           throw new EvidenceExpired(itemExpired);
@@ -2267,6 +2307,7 @@ async function walkBlockScoped(
       const result = await mutate(
         item,
         fresh,
+        'fill',
         (context) => {
           fillHandlerAttempted = true;
           return deps.setByHandler!(testID, fillText(item), context, secretFill(item), () =>
@@ -2359,7 +2400,7 @@ async function walkBlockScoped(
       );
     if (overlay || !centreCovered(target.element, before.screen))
       try {
-        tap = await mutate(item, before, (context) =>
+        tap = await mutate(item, before, 'press', (context) =>
           overlay
             ? deps.press(target.element.ref, context, { requireLiveHit: true })
             : deps.press(target.element.ref, context),
@@ -2388,7 +2429,7 @@ async function walkBlockScoped(
           before.screen,
           'TARGET_NOT_FOUND',
         );
-      const scroll = await mutate(item, before, (context) =>
+      const scroll = await mutate(item, before, 'scroll', (context) =>
         deps.scroll(
           clearanceScroll(target.element, before.screen),
           context,
@@ -2461,7 +2502,7 @@ async function walkBlockScoped(
         let blurred = false;
         try {
           try {
-            await mutate(item, after, async (context) => {
+            await mutate(item, after, 'blur', async (context) => {
               blurred = await deps.blurFocusedInput!(context);
               return { ok: true, proven: false };
             });
@@ -2500,7 +2541,7 @@ async function walkBlockScoped(
               after.screen,
               'TARGET_NOT_FOUND',
             );
-          const retap = await mutate(item, after, (context) =>
+          const retap = await mutate(item, after, 'press', (context) =>
             retryOverlay
               ? deps.press(rebound.ref, context, { requireLiveHit: true })
               : deps.press(rebound.ref, context),
@@ -2547,7 +2588,7 @@ async function walkBlockScoped(
     let entry: ActResult;
     currentInputs()?.expectEcho(again.element.testID ?? again.oracleTestID, item.input);
     try {
-      entry = await mutate(item, after, (context) =>
+      entry = await mutate(item, after, 'type', (context) =>
         deps.typeFocused!(
           again.element.ref,
           fillText(item),
@@ -2628,7 +2669,7 @@ async function walkBlockScoped(
     let entry: ActResult;
     currentInputs()?.expectEcho(quoted, item.input);
     try {
-      entry = await mutate(item, before, (context) =>
+      entry = await mutate(item, before, 'type', (context) =>
         deps.typeFocused!(
           quoted,
           fillText(item),
@@ -2988,6 +3029,7 @@ async function walkBlockScoped(
           return (dialogAct = await mutate(
             item,
             fresh,
+            'dialog',
             (context) => deps.dialog(item.kind === 'dialog' ? item.action : 'dismiss', context),
             Infinity,
             'recovery',
@@ -3260,6 +3302,7 @@ async function walkBlockScoped(
       return await mutate(
         item,
         observation,
+        'press',
         (context) => deps.press(ref, context),
         until,
         'recovery',
@@ -3767,6 +3810,7 @@ async function walkBlockScoped(
                 act = await mutate(
                   item,
                   observation,
+                  'scroll',
                   (context) =>
                     deps.scroll(
                       view.where === 'below' ? 'down' : 'up',
@@ -4024,6 +4068,7 @@ async function walkBlockScoped(
               act = await mutate(
                 item,
                 observation,
+                'scroll',
                 (context) =>
                   deps.scroll(
                     scrollUntilDirection(item.until!, observation.screen, item.direction),
@@ -4219,7 +4264,7 @@ async function walkBlockScoped(
           const dismissResolvedTarget = async (target: Element): Promise<boolean> => {
             keyboardAttempted = true;
             const dismissal: { via: 'native-control' | 'js' | 'none' } = { via: 'none' };
-            await mutate(item, before, async (context) => {
+            await mutate(item, before, 'dismiss-keyboard', async (context) => {
               dismissal.via = await deps.dismissKeyboard!(context);
               return { ok: true, proven: false };
             });
@@ -4318,7 +4363,7 @@ async function walkBlockScoped(
                     itemKeyboardAttempted = true;
                     keyboardAttempted = true;
                     const dismissal: { via: 'native-control' | 'js' | 'none' } = { via: 'none' };
-                    await mutate(item, before, async (context) => {
+                    await mutate(item, before, 'dismiss-keyboard', async (context) => {
                       dismissal.via = await deps.dismissKeyboard!(context);
                       return { ok: true, proven: false };
                     });
@@ -4506,7 +4551,7 @@ async function walkBlockScoped(
                   const preScroll = before;
                   const gaps = (screen: Screen) =>
                     (item.kind === 'fill' ? screen.fillGapCount : screen.pressGapCount) ?? 0;
-                  const result = await mutate(item, before, (context) =>
+                  const result = await mutate(item, before, 'scroll', (context) =>
                     deps.scroll(resolution.scroll, context, distance, band),
                   );
                   scrolled += 1;
@@ -4835,7 +4880,7 @@ async function walkBlockScoped(
                   break;
                 }
               }
-              act = await mutate(item, before, async (context) => {
+              act = await mutate(item, before, item.kind, async (context) => {
                 if (item.kind === 'press') {
                   pressBase = before.screen;
                   pressSelector =
