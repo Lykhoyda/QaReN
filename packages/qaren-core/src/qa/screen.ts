@@ -135,6 +135,15 @@ export function reactInputHostOf(element: Element): number | undefined {
   return reactInputHosts.get(element);
 }
 
+// A native element's own React entry: the host carrying its identity and the input hosts beneath that entry.
+const reactEntryHosts = new WeakMap<Element, { host: number; inputs: readonly number[] }>();
+
+export function reactEntryHostsOf(
+  element: Element,
+): { host: number; inputs: readonly number[] } | undefined {
+  return reactEntryHosts.get(element);
+}
+
 // Value-free React facts for an element absent from the native capture; a missing field was not measured.
 export interface ReactOnlyFacts {
   host?: number;
@@ -368,6 +377,8 @@ export interface DigestEntry {
   // Custom composite with a separately emitted interactive descendant, not a view or declared control.
   compositeWrapper?: true;
   inputHostIndices?: number[];
+  // The host that carries this entry's own identity; withdrawn when an input lies beyond a portal.
+  hostIndex?: number;
   // Under a host view that hides its subtree from accessibility.
   hidden?: boolean;
 }
@@ -1089,6 +1100,8 @@ export function join(
     };
     if (label) element.label = label;
     if (testID) element.testID = testID;
+    if (uniqueMatch && match?.hostIndex !== undefined && match.inputHostIndices)
+      reactEntryHosts.set(element, { host: match.hostIndex, inputs: match.inputHostIndices });
     if (host && testID !== undefined && host.testID === testID) {
       const hosts = reactHostEvidence!.hosts;
       // Association requires complete typography, so the host's ancestry is always known here.

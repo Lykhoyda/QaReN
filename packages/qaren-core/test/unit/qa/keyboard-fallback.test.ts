@@ -12,7 +12,13 @@ import { NativeCaptureError } from '../../../dist/qa/capture.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import type { Block, Step } from '../../../dist/qa/plan.js';
 import { join as joinScreen } from '../../../dist/qa/screen.js';
-import type { Element, NativeNode, ReactHostObservation, Screen } from '../../../dist/qa/screen.js';
+import type {
+  DigestEntry,
+  Element,
+  NativeNode,
+  ReactHostObservation,
+  Screen,
+} from '../../../dist/qa/screen.js';
 import {
   MASK,
   ObservedPrivacy,
@@ -272,12 +278,21 @@ const strings = (value: unknown): string[] =>
       ? Object.values(value).flatMap(strings)
       : [];
 
+interface WrappedFacts {
+  // Joined with typography, as a platform-presence capture is; an ordinary capture has none.
+  typography?: boolean;
+  entry?: Partial<DigestEntry>;
+  digest?: DigestEntry[];
+  hosts?: ReactHostObservation[];
+}
+
 function wrappedInput(
   label: string,
   unrelated = false,
   ancestry = true,
   input: ReactHostObservation = INNER,
   wrapperID = WRAP,
+  facts: WrappedFacts = {},
 ): Screen {
   const nodes: NativeNode[] = [
     { ref: '@app', type: 'Application', rect: { x: 0, y: 0, width: 400, height: 800 } },
@@ -311,14 +326,22 @@ function wrappedInput(
     ...joinScreen(
       nodes,
       [
-        { role: 'button', testID: wrapperID, capabilities: { press: true, fill: false } },
+        {
+          role: 'button',
+          testID: wrapperID,
+          capabilities: { press: true, fill: false },
+          ...(ancestry ? { hostIndex: 0, inputHostIndices: [1] } : {}),
+          ...facts.entry,
+        },
         {
           role: 'textinput',
           testID: input.testID,
           placeholder: label,
+          hostIndex: 1,
           inputHostIndices: [1],
           capabilities: { fill: true, press: false },
         },
+        ...(facts.digest ?? []),
       ],
       'app',
       { native: 'complete', react: 'complete' },
@@ -327,29 +350,33 @@ function wrappedInput(
         hosts: [
           { testID: wrapperID, role: 'button', roleSource: 'role', capabilities: { press: true } },
           { ...input },
+          ...(facts.hosts ?? []),
         ],
-        typography: {
-          version: 1,
-          complete: true,
-          durationMs: 1,
-          coordinateSpace: 'window-points',
-          nodes: [
-            {
-              hostIndex: 0,
-              parentHostIndex: null,
-              rootIndex: 0,
-              hostType: 'RCTView',
-              text: { kind: 'none' },
-            },
-            {
-              hostIndex: 1,
-              parentHostIndex: ancestry ? 0 : null,
-              rootIndex: ancestry ? 0 : 1,
-              hostType: 'RCTSinglelineTextInputView',
-              text: { kind: 'none' },
-            },
-          ],
-        },
+        typography:
+          facts.typography === false
+            ? undefined
+            : {
+                version: 1,
+                complete: true,
+                durationMs: 1,
+                coordinateSpace: 'window-points',
+                nodes: [
+                  {
+                    hostIndex: 0,
+                    parentHostIndex: null,
+                    rootIndex: 0,
+                    hostType: 'RCTView',
+                    text: { kind: 'none' },
+                  },
+                  {
+                    hostIndex: 1,
+                    parentHostIndex: ancestry ? 0 : null,
+                    rootIndex: ancestry ? 0 : 1,
+                    hostType: 'RCTSinglelineTextInputView',
+                    text: { kind: 'none' },
+                  },
+                ],
+              },
       },
     ),
     keyboardVisible: false,
@@ -3760,48 +3787,78 @@ for (const route of [
   });
 }
 
-// The pre-focus comparison needs a distinct observed wrapper above the input.
-function prefilledApp(captured = wrappedInput('Email address')) {
+// The pre-focus comparison needs the wrapper's own React entry to name its host and the one input beneath it.
+type Capture = (typography: boolean) => Screen;
+interface Prefilled extends WrappedFacts {
+  ancestry?: boolean;
+  wrapperID?: string;
+  after?: (screen: Screen) => void;
+}
+const prefilled =
+  ({ ancestry = true, wrapperID = WRAP, after, ...facts }: Prefilled = {}): Capture =>
+  (typography) => {
+    const screen = wrappedInput('Email address', false, ancestry, INNER, wrapperID, {
+      ...facts,
+      typography,
+    });
+    after?.(screen);
+    return screen;
+  };
+const wrapOf = (screen: Screen): Element => screen.elements.find((e) => e.ref === '@wrap')!;
+const OTHER_INPUT: ReactHostObservation = { ...INNER, testID: 'qa-hidden-other' };
+
+// A real capture carries typography only when it asks for platform presence; this double does the same.
+function prefilledApp(capture: Capture = prefilled()) {
+  const captured = capture(false);
   const fake = app({
     initial: captured.elements,
     hosts: captured.reactHostEvidence?.hosts,
     focused: [{ ...captured, keyboardVisible: true }],
   });
   fake.deps.platform = 'ios';
-  const capture = fake.deps.captureScreen;
+  const focused = fake.deps.captureScreen;
   fake.deps.captureScreen = async (options) => {
     if (fake.state() === 'idle') {
       fake.log.push('capture');
-      return captured;
+      return capture(options?.platformPresence === true);
     }
-    return capture(options);
+    return focused(options);
   };
   return fake;
 }
 
-for (const wrapperID of [WRAP, 'email-wrap']) {
-  test(`prefilled input skips focus under the distinct wrapper ${wrapperID}`, async () => {
-    const captured = wrappedInput('Email address', false, true, INNER, wrapperID);
-    const fake = prefilledApp(captured);
-    const compared: unknown[][] = [];
-    fake.deps.fillAlreadySet = async (...args) => {
-      compared.push(args);
-      return true;
-    };
-    const result = await walkBlock(blocks(plan(EMAIL, INNER.testID, ''))[0], fake.deps);
-    assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
-    assert.equal(compared.length, 1);
-    assert.deepEqual(compared[0].slice(0, 3), [INNER.testID, EMAIL, false]);
-    assert.deepEqual(fake.log, ['capture']);
-    assert.equal(result.rows[0].method, 'already-set');
-    assert.equal(result.rows[0].ref, '@wrap');
-    assert.deepEqual(result.rows[0].selector, { id: INNER.testID });
-  });
+async function comparisonsFor(capture: Capture, markdown = plan(EMAIL, INNER.testID, '')) {
+  const fake = prefilledApp(capture);
+  let comparisons = 0;
+  fake.deps.fillAlreadySet = async () => {
+    comparisons++;
+    return true;
+  };
+  const result = await walkBlock(blocks(markdown)[0], fake.deps);
+  return { comparisons, result };
 }
 
-test('prefilled input skips focus after the clearance scroll and its captures', async () => {
-  const captured = wrappedInput('Email address');
-  const fake = prefilledApp(captured);
+test('C2 U2: an ordinary capture proves the prefilled input and skips the focus tap', async () => {
+  const fake = prefilledApp();
+  const compared: unknown[][] = [];
+  fake.deps.fillAlreadySet = async (...args) => {
+    compared.push(args);
+    return true;
+  };
+  const result = await walkBlock(blocks(plan(EMAIL, INNER.testID, ''))[0], fake.deps);
+  assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
+  assert.equal(compared.length, 1);
+  assert.deepEqual(compared[0].slice(0, 3), [INNER.testID, EMAIL, false]);
+  assert.deepEqual(fake.log, ['capture']);
+  assert.equal(result.rows[0].method, 'already-set');
+  assert.equal(result.rows[0].ref, '@wrap');
+  assert.deepEqual(result.rows[0].selector, { id: INNER.testID });
+});
+
+test('C2 U3: after the clearance scroll a newly joined capture proves the input and skips the tap', async () => {
+  const capture = prefilled();
+  const fake = prefilledApp(capture);
+  const screens: Screen[] = [];
   let cleared = false;
   let capturesAfterCompare = 0;
   let comparisons = 0;
@@ -3815,10 +3872,12 @@ test('prefilled input skips focus after the clearance scroll and its captures', 
     cleared = true;
     return { ok: true, proven: false };
   };
-  fake.deps.captureScreen = async () => {
+  fake.deps.captureScreen = async (options) => {
     fake.log.push('capture');
     if (comparisons === 2) capturesAfterCompare++;
-    return captured;
+    const screen = capture(options?.platformPresence === true);
+    screens.push(screen);
+    return screen;
   };
   fake.deps.fillAlreadySet = async () => {
     comparisons++;
@@ -3828,125 +3887,105 @@ test('prefilled input skips focus after the clearance scroll and its captures', 
   assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
   assert.equal(comparisons, 2);
   assert.equal(capturesAfterCompare, 0);
+  assert.ok(screens.length > 1 && screens.at(-1) !== screens[0]);
   assert.deepEqual(steps(fake.log), ['press refused', 'scroll']);
   assert.equal(result.rows[0].method, 'already-set');
 });
 
 for (const idKind of ['testID', 'nativeID'] as const) {
-  test(`fillHostInside proves strict ancestry of the fillable ${idKind}`, () => {
-    const captured = wrappedInput('Email address');
-    if (idKind === 'nativeID') {
-      const host = captured.reactHostEvidence!.hosts[1];
-      host.nativeID = host.testID;
-      delete host.testID;
-    }
-    assert.equal(resolution.fillHostInside(captured, INNER.testID, WRAP), true);
+  test(`fillHostInside proves the ${idKind} input beneath the wrapper's own host from an ordinary capture`, () => {
+    const captured = prefilled({
+      after: (screen) => {
+        if (idKind === 'testID') return;
+        const host = screen.reactHostEvidence!.hosts[1];
+        host.nativeID = host.testID;
+        delete host.testID;
+      },
+    })(false);
+    assert.equal(captured.reactHostEvidence?.typography, undefined);
+    assert.equal(resolution.fillHostInside(captured, INNER.testID, wrapOf(captured)), true);
   });
 }
 
-for (const shape of [
-  'beside',
-  'outside',
-  'incomplete',
-  'duplicate-input',
-  'missing-wrapper',
-  'self',
-  'duplicate-wrapper',
-  'cycle',
-] as const) {
-  test(`fillHostInside rejects ${shape}`, () => {
-    const captured = wrappedInput('Email address');
-    const evidence = captured.reactHostEvidence!;
-    const typography = evidence.typography!;
-    if (shape === 'beside') typography.nodes[1].parentHostIndex = null;
-    if (shape === 'outside') typography.nodes[0].parentHostIndex = 1;
-    if (shape === 'incomplete') typography.complete = false;
-    if (shape === 'duplicate-input') evidence.hosts.push({ ...INNER });
-    if (shape === 'missing-wrapper') delete evidence.hosts[0].testID;
-    if (shape === 'self') evidence.hosts[0].testID = undefined;
-    if (shape === 'duplicate-wrapper') evidence.hosts.push({ ...evidence.hosts[0] });
-    if (shape === 'cycle') typography.nodes[1].parentHostIndex = 1;
-    assert.equal(
-      resolution.fillHostInside(captured, INNER.testID, shape === 'self' ? INNER.testID : WRAP),
-      false,
-    );
+// Each guard is the U2 capture with one fact changed; the gate refuses it and the tap is sent.
+const gateGuards: Record<string, Prefilled> = {
+  'the wrapper entry has no input list (beside, outside, or on a screen beneath the top one)': {
+    ancestry: false,
+  },
+  'the wrapper entry has a list and no hostIndex': { entry: { hostIndex: undefined } },
+  'the wrapper entry names another host': { entry: { hostIndex: 1 } },
+  'the input list has two hosts': { entry: { inputHostIndices: [1, 2] }, hosts: [OTHER_INPUT] },
+  'the input list names another host': { entry: { inputHostIndices: [2] }, hosts: [OTHER_INPUT] },
+  'two React entries carry the wrapper id': {
+    digest: [{ role: 'button', testID: WRAP, capabilities: { press: true, fill: false } }],
+  },
+  'two hosts carry the wrapper id': {
+    hosts: [{ testID: WRAP, role: 'button', roleSource: 'role', capabilities: { press: true } }],
+  },
+  'no host carries the wrapper id': {
+    after: (screen) => delete screen.reactHostEvidence!.hosts[0].testID,
+  },
+  'the wrapper has no test id': { after: (screen) => delete wrapOf(screen).testID },
+  'two fillable hosts carry the input id': { hosts: [{ ...INNER }] },
+  'host evidence is incomplete': {
+    after: (screen) => (screen.reactHostEvidence!.complete = false),
+  },
+  'the wrapper shares the input id': { wrapperID: INNER.testID },
+};
+
+for (const [name, facts] of Object.entries(gateGuards)) {
+  test(`pre-focus guard: ${name} never compares`, async () => {
+    const captured = prefilled(facts)(false);
+    assert.equal(resolution.fillHostInside(captured, INNER.testID, wrapOf(captured)), false);
+    const { comparisons, result } = await comparisonsFor(prefilled(facts));
+    assert.equal(comparisons, 0);
+    assert.notEqual(result.rows[0]?.method, 'already-set');
+  });
+}
+
+for (const [name, facts, markdown] of [
+  ['the input host is hidden', { after: (s) => (s.reactHostEvidence!.hosts[1].hidden = true) }],
+  ['the input host is disabled', { after: (s) => (s.reactHostEvidence!.hosts[1].disabled = true) }],
+  [
+    'the input host is read-only',
+    { after: (s) => (s.reactHostEvidence!.hosts[1].readOnly = true) },
+  ],
+  [
+    'the line says (always retype)',
+    {},
+    plan(EMAIL, INNER.testID, '').replace(/(1\. Fill .*)/, '$1 (always retype)'),
+  ],
+  ['the plan names the wrapper', {}, plan(EMAIL, WRAP, '')],
+  ['the keyboard is already up without proof mode', { after: (s) => (s.keyboardVisible = true) }],
+] as Array<[string, Prefilled, string?]>) {
+  test(`pre-focus guard: ${name} never compares`, async () => {
+    const { comparisons, result } = await comparisonsFor(prefilled(facts), markdown);
+    assert.equal(comparisons, 0);
+    assert.notEqual(result.rows[0]?.method, 'already-set');
   });
 }
 
 for (const comparison of [false, 'throw'] as const) {
   test(`pre-focus regression: ${comparison} comparison keeps the base tap and type path`, async () => {
     const fake = prefilledApp();
+    let comparisons = 0;
     fake.deps.fillAlreadySet = async () => {
+      comparisons++;
       if (comparison === 'throw') throw new Error('unreadable');
       return false;
     };
     const result = await walkBlock(blocks(plan(EMAIL, INNER.testID, ''))[0], fake.deps);
     assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
+    assert.equal(comparisons, 1);
     assert.deepEqual(steps(fake.log), ['press @wrap', 'type @wrap']);
     assert.equal(fake.log.filter((entry) => entry === 'capture').length, 4);
     assert.equal(result.rows[0].method, 'keyboard');
   });
 }
 
-for (const shape of [
-  'wrapper-id',
-  'always-retype',
-  'incomplete-hosts',
-  'incomplete-typography',
-  'duplicate-input',
-  'hidden',
-  'disabled',
-  'readOnly',
-  'underneath',
-  'missing-wrapper-id',
-  'shared-id',
-  'keyboard-up',
-] as const) {
-  test(`pre-focus regression: ${shape} never compares`, async () => {
-    const captured = wrappedInput(
-      'Email address',
-      false,
-      true,
-      INNER,
-      shape === 'shared-id' ? INNER.testID : WRAP,
-    );
-    const evidence = captured.reactHostEvidence!;
-    if (shape === 'incomplete-hosts') evidence.complete = false;
-    if (shape === 'incomplete-typography') evidence.typography!.complete = false;
-    if (shape === 'duplicate-input') evidence.hosts.push({ ...INNER });
-    if (shape === 'hidden' || shape === 'disabled' || shape === 'readOnly')
-      evidence.hosts[1][shape] = true;
-    // A mounted input on a different screen has no ancestor relationship to the front wrapper.
-    if (shape === 'underneath') {
-      evidence.typography!.nodes[1].parentHostIndex = null;
-      evidence.typography!.nodes[1].rootIndex = 1;
-    }
-    if (shape === 'missing-wrapper-id') delete evidence.hosts[0].testID;
-    if (shape === 'keyboard-up') captured.keyboardVisible = true;
-    const fake = prefilledApp(captured);
-    let comparisons = 0;
-    fake.deps.fillAlreadySet = async () => {
-      comparisons++;
-      return true;
-    };
-    const markdown = plan(EMAIL, shape === 'wrapper-id' ? WRAP : INNER.testID, '');
-    const result = await walkBlock(
-      blocks(
-        shape === 'always-retype'
-          ? markdown.replace(/(1\. Fill .*)/, '$1 (always retype)')
-          : markdown,
-      )[0],
-      fake.deps,
-    );
-    assert.equal(comparisons, 0);
-    assert.notEqual(result.rows[0]?.method, 'already-set');
-  });
-}
-
 for (const skip of [false, true]) {
   test(`${skip ? 'prefilled input' : 'pre-focus regression:'} runtime input preserves echoes, promotion and the media latch`, async () => {
-    const captured = wrappedInput('Email address');
-    const fake = prefilledApp(captured);
+    const fake = prefilledApp();
     const inputs = new RunInputs({ EMAIL }, ['EMAIL']);
     const sequence: WalkSequence = { observation: 0 };
     const privacy = new ObservedPrivacy();
@@ -3972,6 +4011,7 @@ for (const skip of [false, true]) {
     );
     assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
     assert.equal(result.rows[0].method, 'already-set');
+    assert.equal(flags.length, skip ? 1 : 2);
     assert.ok(flags.every((flag) => flag === true));
     assert.deepEqual(promotions, [skip ? 'compare' : 'type']);
     assert.equal(result.privateFills, undefined);
@@ -3991,9 +4031,4 @@ test('prefilled input comparison propagates an abort without sending the focus t
   };
   await assert.rejects(walkBlock(blocks(plan(EMAIL, INNER.testID, ''))[0], fake.deps), abort);
   assert.deepEqual(fake.log, ['capture']);
-});
-
-test('fillHostInside accepts a wrapper sharing the input id only as a distinct ancestor', () => {
-  const captured = wrappedInput('Email address', false, true, INNER, INNER.testID);
-  assert.equal(resolution.fillHostInside(captured, INNER.testID, INNER.testID), true);
 });

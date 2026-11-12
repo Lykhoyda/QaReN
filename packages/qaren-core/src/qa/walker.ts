@@ -2379,7 +2379,7 @@ async function walkBlockScoped(
           !inputs[0].hidden &&
           !inputs[0].disabled &&
           !inputs[0].readOnly &&
-          fillHostInside(before.screen, target.oracleTestID, target.element.testID)
+          fillHostInside(before.screen, target.oracleTestID, target.element)
         ) {
           let alreadySet = false;
           try {

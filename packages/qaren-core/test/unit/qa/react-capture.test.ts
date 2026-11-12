@@ -636,6 +636,30 @@ test('the hidden digest fact survives capture and a malformed one refuses', asyn
   await assert.rejects(capture({ ...entry, hidden: 'yes' }), PrivateInputCaptureError);
 });
 
+test('the hostIndex digest fact survives capture and a malformed one refuses', async () => {
+  const hosts = [
+    { testID: 'wrap', role: 'button', roleSource: 'role', capabilities: { press: true } },
+    { testID: 'field', role: null, roleSource: 'none', capabilities: { fill: true } },
+  ];
+  const capture = (entry: Record<string, unknown>) =>
+    captureQaReact(
+      mockClient([
+        {
+          ...ready(),
+          tree: JSON.stringify({
+            ...publicTree(),
+            interactive: [entry],
+            hostEvidence: { complete: true, hosts },
+          }),
+        },
+      ]).client,
+    );
+  const entry = { role: 'button', testID: 'wrap', hostIndex: 0, inputHostIndices: [1] };
+  assert.deepEqual((await capture(entry)).interactive, [entry]);
+  for (const hostIndex of [-1, 2, 0.5, '0', null, true])
+    await assert.rejects(capture({ ...entry, hostIndex }), PrivateInputCaptureError);
+});
+
 test('a QA render-error observation survives capture without exporting private helper fields', async () => {
   const observation = await captureQaReact({
     async withPrivateHelperWorld(read) {

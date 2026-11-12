@@ -1444,10 +1444,12 @@ matches keep the existing typing path. Android keeps typing. A controlled iOS in
 reached through fallback can skip after two exact comparisons that also prove focus.
 
 Before a fallback focus tap, iOS can also skip when the plan names the input by its
-own testID. Complete React host and typography evidence must prove there is exactly
-one fillable host carrying that ID as its testID or nativeID, neither hidden,
-disabled nor read-only. Exactly one other host in the capture must carry the
-observed tap target's testID, and that host must be an ancestor of the input.
+own testID. Complete React host evidence in the ordinary capture must prove there is
+exactly one fillable host carrying that ID as its testID or nativeID, neither hidden,
+disabled nor read-only. Exactly one other host must carry the observed tap target's
+testID, which differs from the input's. The target's own React entry must name that
+host as its own and list exactly that one input host beneath it; an input rendered
+through a portal does not count.
 The overlay probe and centre coverage checks still
 run first, including after a clearance scroll. Two exact in-app reads, 150 ms apart,
 must both report a controlled, non-secure, enabled input. Success records

@@ -20,7 +20,7 @@ const legacy = read('../../src/runtime/legacy.program.txt');
 const baseline = JSON.parse(read('../fixtures/helpers/baseline.txt'));
 const sha256 = (program: string): string => createHash('sha256').update(program).digest('hex');
 const originalHash = 'f41041b3c6ce53bbaec15099b93babe634e7e31321c3ab2347f2598a1687dcee';
-const currentHash = 'fa85f143db57e59057bb36f41e0d4773e2c730342829dc1aeb0b487c784e75bc';
+const currentHash = '90fef0bbd29b4f9d54ae8ff3140eca74c86f20f0ccf82f848c2794d3f2c19694';
 const baseVersionSite = '__HELPERS_VERSION__ = 105';
 // Each declared edit replaces one unique run of the base program.
 const declaredEdits: Array<[string, string]> = [
@@ -28,6 +28,24 @@ const declaredEdits: Array<[string, string]> = [
   [
     'secure: false,\n        privateValue: options.privateValue === true,',
     'secure: false,\n        disabled: !!textInputDesignationDisabled(props),\n        privateValue: options.privateValue === true,',
+  ],
+  // An entry names its own host; a portal withdraws it from entries above an input beyond it.
+  ['      var iPruned = 0;\n', '      var iPruned = 0;\n      var beyondPortal = new Set();\n'],
+  [
+    '            ancestor.inputHostIndices.push(hostIndex);\n',
+    '            ancestor.inputHostIndices.push(hostIndex);\n            if (ai < (iframe.portalCut || 0)) { beyondPortal.add(ancestor); delete ancestor.hostIndex; }\n',
+  ],
+  [
+    '            if (entry.hidden) forwarded.hidden = true;\n',
+    '            if (entry.hidden) forwarded.hidden = true;\n            if (hostIndex !== null && forwarded.hostIndex === undefined && !beyondPortal.has(forwarded)) forwarded.hostIndex = hostIndex;\n',
+  ],
+  [
+    'entry.inputHostIndices = [hostIndex];\n',
+    'entry.inputHostIndices = [hostIndex];\n            if (hostIndex !== null) entry.hostIndex = hostIndex;\n',
+  ],
+  [
+    'textOwnerHostIndex: textOwnerHostIndex, rootIndex: iframe.rootIndex,',
+    'textOwnerHostIndex: textOwnerHostIndex, portalCut: ifiber.tag === 4 ? inputAncestors.length : iframe.portalCut, rootIndex: iframe.rootIndex,',
   ],
 ];
 

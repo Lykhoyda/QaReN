@@ -7,7 +7,7 @@ import { parsePlan } from '../../../dist/qa/plan.js';
 import { renderReason } from '../../../dist/qa/untrusted.js';
 import type { WalkSequence } from '../../../dist/qa/walker.js';
 import { join } from '../../../dist/qa/screen.js';
-import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
+import type { DigestEntry, NativeNode, Screen } from '../../../dist/qa/screen.js';
 import { choice, element, scriptedJudge } from './judgment-fixtures.ts';
 import { runPlan, walkBlock } from '../../../dist/qa/walker.js';
 import { capturePrivateScreen } from '../../../dist/qa/privacy.js';
@@ -449,8 +449,8 @@ test('keyboard fallback never taps a replacement wrapper after clearance', async
   assert.equal(f.calls.filter((call) => call.startsWith('press')).length, 1);
 });
 
-function keyboardWrapperAt(y: number): Screen {
-  const screen = clipped(y, 'Button', 'keyboard');
+function keyboardWrapperAt(y: number, wrapperFacts = false): Screen {
+  const screen = clipped(y, 'Button', 'keyboard', wrapperFacts ? 'email-pressable' : undefined);
   targetOf(screen, '@target')!.testID = 'email-pressable';
   screen.keyboardVisible = true;
   screen.coverage = { native: 'complete', react: 'incomplete' };
@@ -598,8 +598,22 @@ for (const kind of ['press', 'fill'] as const) {
   }
 }
 
-function clipped(y: number, type = 'Button', occluder: 'tabs' | 'keyboard' = 'tabs'): Screen {
-  const id = type === 'Button' ? 'go' : 'field';
+// The React entry of a wrapper whose own host (0) holds the one input host (1).
+const wrapperEntry = (testID: string): DigestEntry => ({
+  role: 'button',
+  testID,
+  capabilities: { press: true, fill: false },
+  hostIndex: 0,
+  inputHostIndices: [1],
+});
+
+function clipped(
+  y: number,
+  type = 'Button',
+  occluder: 'tabs' | 'keyboard' = 'tabs',
+  wrapperID?: string,
+): Screen {
+  const id = wrapperID ?? (type === 'Button' ? 'go' : 'field');
   return covered(
     join(
       [
@@ -634,7 +648,7 @@ function clipped(y: number, type = 'Button', occluder: 'tabs' | 'keyboard' = 'ta
             ]
           : []),
       ],
-      [],
+      wrapperID ? [wrapperEntry(wrapperID)] : [],
     ),
   );
 }
@@ -2510,6 +2524,7 @@ function pulledUpList(
   type = 'Other',
   clipTop = 20,
   frontSurface?: 'Sheet' | 'Alert',
+  wrapperID?: string,
 ): Screen {
   const full = { x: 0, y: 0, width: 402, height: 874 };
   const screen = covered(
@@ -2538,7 +2553,7 @@ function pulledUpList(
           index: 6,
           parentIndex: 5,
           type,
-          identifier: 'row-1',
+          identifier: wrapperID ?? 'row-1',
           label: 'PRIVATE-row',
           hittable: true,
           rect: { x: 21, y: 249, width: 360, height: 56 },
@@ -2565,7 +2580,7 @@ function pulledUpList(
             ]
           : []),
       ],
-      [],
+      wrapperID ? [wrapperEntry(wrapperID)] : [],
     ),
   );
   screen.keyboardVisible = keyboard === 'unknown' ? undefined : keyboard;
@@ -2823,7 +2838,7 @@ for (const [name, platform, screen, step, why] of [
   });
 }
 
-function overlayProbeFake(result: HitProbeResult, type = 'Other') {
+function overlayProbeFake(result: HitProbeResult, type = 'Other', wrapperFacts = false) {
   let focused = false;
   const screens: Screen[] = [];
   const f = fake([pulledUpList(false, type)], {});
@@ -2832,7 +2847,13 @@ function overlayProbeFake(result: HitProbeResult, type = 'Other') {
   const streamed: LedgerRow[] = [];
   f.deps.row = (row) => streamed.push(row);
   const makeScreen = () => {
-    const screen = pulledUpList(focused, type);
+    const screen = pulledUpList(
+      focused,
+      type,
+      20,
+      undefined,
+      wrapperFacts ? 'row-1-pressable' : undefined,
+    );
     screen.nativeGeneration = 7;
     if (type === 'Wrapper') {
       const target = targetOf(screen, '@target')!;
@@ -3180,76 +3201,60 @@ test('a later Fill attempt does not inherit an earlier overlay probe receipt', a
 
 function preFocusEvidence(screen: Screen, inputID: string, wrapperID: string): void {
   screen.coverage = { native: 'complete', react: 'complete' };
+  // An ordinary capture: host evidence without typography.
   screen.reactHostEvidence = {
     complete: true,
     hosts: [
       { testID: wrapperID, role: 'button', roleSource: 'role', capabilities: { press: true } },
       { testID: inputID, role: null, roleSource: 'none', capabilities: { fill: true } },
     ],
-    typography: {
-      version: 1,
-      complete: true,
-      durationMs: 1,
-      coordinateSpace: 'window-points',
-      nodes: [
-        {
-          hostIndex: 0,
-          parentHostIndex: null,
-          rootIndex: 0,
-          hostType: 'RCTView',
-          text: { kind: 'none' },
-        },
-        {
-          hostIndex: 1,
-          parentHostIndex: 0,
-          rootIndex: 0,
-          hostType: 'RCTSinglelineTextInputView',
-          text: { kind: 'none' },
-        },
-      ],
-    },
   };
 }
 
-test('pre-focus regression: the centre coverage check precedes an already-set comparison', async () => {
-  const screen = keyboardWrapperAt(700);
-  preFocusEvidence(screen, 'email', 'email-pressable');
-  const f = fake([screen], {});
-  let comparisons = 0;
-  f.deps.reactFocused = async () => true;
-  f.deps.typeFocused = async () => assert.fail('covered input cannot type');
-  f.deps.fillAlreadySet = async () => {
-    comparisons++;
-    return true;
-  };
-  const outcome = await walkBlock(block('1. Fill "email" with "x"'), f.deps);
-  assert.equal(outcome.block.outcome, 'fail');
-  assert.equal(comparisons, 0);
-  assert.deepEqual(
-    f.calls.filter((call) => call !== 'capture'),
-    ['scroll down'],
-  );
-});
+// The uncovered control proves the fixture reaches the comparison; the covered one never does.
+for (const y of [300, 700]) {
+  test(`pre-focus regression: the centre coverage check precedes an already-set comparison (wrapper at ${y})`, async () => {
+    const screen = keyboardWrapperAt(y, true);
+    preFocusEvidence(screen, 'email', 'email-pressable');
+    const f = fake([screen], {});
+    let comparisons = 0;
+    f.deps.reactFocused = async () => true;
+    f.deps.typeFocused = async () => assert.fail('the input already holds the text');
+    f.deps.fillAlreadySet = async () => {
+      comparisons++;
+      return true;
+    };
+    const outcome = await walkBlock(block('1. Fill "email" with "x"'), f.deps);
+    assert.equal(outcome.block.outcome, y === 300 ? 'pass' : 'fail');
+    assert.equal(comparisons, y === 300 ? 1 : 0);
+    assert.deepEqual(
+      f.calls.filter((call) => call !== 'capture'),
+      y === 300 ? [] : ['scroll down'],
+    );
+  });
+}
 
-test('pre-focus regression: a refused overlay probe precedes an already-set comparison', async () => {
-  const f = overlayProbeFake('not-hittable', 'Wrapper');
-  const capture = f.deps.captureScreen;
-  f.deps.captureScreen = async (options) => {
-    const screen = await capture(options);
-    preFocusEvidence(screen, 'row-1', 'row-1-pressable');
-    return screen;
-  };
-  let comparisons = 0;
-  f.deps.fillAlreadySet = async () => {
-    comparisons++;
-    return true;
-  };
-  const outcome = await walkBlock(block('1. Fill "row-1" with "x"'), f.deps);
-  assert.equal(outcome.block.outcome, 'fail');
-  assert.equal(comparisons, 0);
-  assert.deepEqual(f.probes, [{ ref: '@target', generation: 7 }]);
-  assert.deepEqual(
-    f.calls.filter((call) => call !== 'capture'),
-    [],
-  );
-});
+for (const result of ['hittable', 'not-hittable'] as const) {
+  test(`pre-focus regression: the overlay probe precedes an already-set comparison (${result})`, async () => {
+    const f = overlayProbeFake(result, 'Wrapper', true);
+    const capture = f.deps.captureScreen;
+    f.deps.captureScreen = async (options) => {
+      const screen = await capture(options);
+      preFocusEvidence(screen, 'row-1', 'row-1-pressable');
+      return screen;
+    };
+    let comparisons = 0;
+    f.deps.fillAlreadySet = async () => {
+      comparisons++;
+      return true;
+    };
+    const outcome = await walkBlock(block('1. Fill "row-1" with "x"'), f.deps);
+    assert.equal(outcome.block.outcome, result === 'hittable' ? 'pass' : 'fail');
+    assert.equal(comparisons, result === 'hittable' ? 1 : 0);
+    assert.deepEqual(f.probes, [{ ref: '@target', generation: 7 }]);
+    assert.deepEqual(
+      f.calls.filter((call) => call !== 'capture'),
+      [],
+    );
+  });
+}
