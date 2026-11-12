@@ -894,7 +894,9 @@ settles the original target, and resolves again. A different identity or a frame
 that changes after settling refuses the Tap. The pixel baseline is taken again
 after dismissal so keyboard disappearance cannot count as the Tap's effect. A
 second refusal keeps the runner's reason and adds “the keyboard covers the target
-and could not be hidden”. Live-hit presses, recovery and dialog presses,
+and could not be hidden”. Proactive row-choice clearance also spends this allowance,
+so a subsequent keyboard refusal fails without another dismissal. Live-hit presses,
+recovery and dialog presses,
 `KEYBOARD_RELAYOUT_REQUIRED`, and refusals without proof of no mutation retain
 their existing handling.
 
@@ -1035,8 +1037,9 @@ another resolution is not dispatched again and fails with its observed frames.
 When the runner instead refuses a sent tap or type because its retained target
 is gone or stale (`NO_TEXT_INPUT_TARGET`, `KEYBOARD_TARGET_STALE`, or an Android
 `exact-target-*` reason) and attests mutation `none`, the step fails as
-`TARGET_MOVED_BEFORE_DISPATCH` without retry or fallback; any other refusal
-after a send stays `ACTION_OUTCOME_UNCERTAIN`.
+`TARGET_MOVED_BEFORE_DISPATCH` without retry or fallback. Apart from the
+[quoted iOS Tap keyboard-refusal handoff](#occluded-taps-and-focus), any other
+refusal after a send stays `ACTION_OUTCOME_UNCERTAIN`.
 Resolution, frame comparison and hit testing share one 300 ms deadline.
 Missing retained identity, a generation mismatch, zero or ambiguous live
 matches, and failed or over-budget checks leave the check unavailable and
