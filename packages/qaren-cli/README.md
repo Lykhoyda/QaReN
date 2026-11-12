@@ -4054,6 +4054,17 @@ For runs using runtime inputs, see the [runtime-input diagnostics](#runtime-inpu
 for the retained event file and field limits. The `core.log` details below apply
 to runs without runtime inputs.
 
+Every walker dispatch timing event records its `action`. A `COMPLETED` event
+means the handler returned, not that it succeeded: `ok` records the returned
+boolean, `nativeMutation` retains a recognized mutation classification when
+provided, and a non-ok result adds `resultCode`. That code is the leading error
+code when allowlisted, or `OTHER`; error text is never copied into these fields.
+The [diagnostic allowlists](../qaren-core/src/qa/diagnostics.ts) own the action,
+mutation and result-code vocabulary. These fields survive the TypeScript and CLI
+cleaners into runtime-input runs' private `logs/core-diagnostics.jsonl` as well.
+They distinguish a non-ok press, keyboard dismissal and a successful retry in
+order without changing dispatch behavior, refusal diagnostics or ledger rows.
+
 Private `timing` events in `logs/core.log` may include `refusalDiagnostic` when
 an instrumented iOS dispatch boundary records the context's first refusal. This
 bounded, value-free record retains allowlisted refusal, native-response and

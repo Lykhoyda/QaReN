@@ -2,6 +2,4 @@
 "qaren": patch
 ---
 
-A Tap whose target is not found while the keyboard is up hides the keyboard once and looks again before it fails.
-
-An iOS quoted Tap that the keyboard guard refuses without pressing anything can also use this allowance: hide the keyboard, settle and rebind the target, then try the Tap with a fresh pixel baseline.
+Allow quoted iOS Taps with an absent target or a proven no-mutation keyboard refusal to dismiss the keyboard once per item and resolve again before failing, refreshing the pixel baseline before retrying a refused Tap.
