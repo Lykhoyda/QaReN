@@ -1195,8 +1195,8 @@ keep their existing rules.
 
 A missing required capability refuses before dispatch; reopen the device session
 to rebuild the runner. A target hit point never authorizes a drag corridor:
-scroll-until drags retain every static overlay cut, including cuts caused by
-transparent containers. A zero or undersized band still refuses
+scroll-until drags retain the static cuts required by the
+[scroll-until overlay policy](#scroll-until-overlay-policy). A zero or undersized band still refuses
 `SCROLL_BAND_TOO_SMALL`. For scroll-until, the row's `scrollBand.status`
 distinguishes `no-geometry`, `overlay-cut` and `clear`. For plain-scroll band
 selection and refusals, see [the plain-scroll contract](#occluded-taps-and-focus).
@@ -1838,6 +1838,24 @@ remaining vertical span supplies the drag band; an exhausted span refuses
 `SCROLL_BAND_TOO_SMALL`. Padding uses four points, scaled by the captured Android
 display density when available. Without a scroll container, the centred window
 drag is retained.
+
+<a id="scroll-until-overlay-policy"></a>
+
+For scroll-until bands and target coverage on iOS, a later-drawn `Other` or
+`Toolbar` is ignored when its frame contains the list's whole clip, its React
+host is not proven touch-opaque, and React supplies no press/fill hint or matched
+interactive entry. A handlerless entry without a testID that supplies only a
+role on a label does not count as interactive. Every captured descendant must
+have a frame wholly outside the list's clip; touching an edge counts as outside,
+and the offscreen flag alone is insufficient. A childless `Toolbar` also qualifies,
+but a childless `Other` remains a potential dim layer. Controls, partial covers,
+touch-opaque hosts, and containers with overlapping or frameless descendants
+remain covers. This exception makes no live hit reads and does not change plain
+Scroll or Android.
+Quoted targets use the ordinary capture and benefit from this rule on iOS 27.2.
+Unquoted phrase targets retain their presence capture: a toolbar containing a
+childless full-size `Other` can still exhaust the band because that child cannot
+be distinguished structurally from a dim layer; support for that case is deferred.
 Quoted scroll-until uses the current ordinary capture for target visibility and
 geometry, with the [iOS inferred-overlay probe](#covered-target-recovery) governing
 completion under an inferred cover. Otherwise, a target whose tap point is covered
