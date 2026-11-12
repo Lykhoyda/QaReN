@@ -4262,6 +4262,7 @@ async function walkBlockScoped(
           // The target that settled after this attempt's keyboard dismissal; the tap goes to it or nowhere.
           let keyboardBound: { target: Element; frame: string; scrolled: number } | undefined;
           const dismissResolvedTarget = async (target: Element): Promise<boolean> => {
+            itemKeyboardAttempted = true;
             keyboardAttempted = true;
             const dismissal: { via: 'native-control' | 'js' | 'none' } = { via: 'none' };
             await mutate(item, before, 'dismiss-keyboard', async (context) => {

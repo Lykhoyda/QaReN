@@ -497,6 +497,23 @@ test('a dismissal that cannot prove the keyboard hidden still taps once on the r
   assert.equal(outcome.rows.at(-1)!.keyboardCleared, undefined);
 });
 
+test('K8: proactive selection clearance spends the allowance before a keyboard-refused press', async () => {
+  const error = 'KEYBOARD_DISMISS_FAILED: native control could not hide the keyboard';
+  const refusal: ActResult = { ok: false, proven: false, mutation: 'none', error };
+  const f = withDismissal(fake([screen({ keyboard: true })], [refusal, refusal]), 'none');
+  const outcome = await walkBlock(tap, f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.deepEqual(
+    f.calls.filter((call) => call === 'dismiss' || call.startsWith('press')),
+    ['dismiss', 'press @chip'],
+  );
+  assert.match(
+    JSON.stringify(outcome.failure?.seen),
+    /KEYBOARD_DISMISS_FAILED: native control could not hide the keyboard; the keyboard covers the target and could not be hidden/,
+  );
+  assert.equal(outcome.rows.at(-1)!.keyboardCleared, undefined);
+});
+
 test('a selected peer does not authorize a retry after keyboard closure', async () => {
   const f = fake([screen({ keyboard: true, peerSelected: true }), screen({ peerSelected: true })]);
   const outcome = await walkBlock(tap, f.deps);
