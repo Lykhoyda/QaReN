@@ -80,6 +80,7 @@ import { createJev } from './jev.js';
 import { isRecord } from './questions.js';
 import {
   createTimingObserver,
+  INPUT_FREE_DIAGNOSTIC_STAGES,
   formatTimingEvent,
   observeDispatchPhases,
   observeTiming,
@@ -522,8 +523,7 @@ async function openSession(
       event = { ...event, line: currentLine };
     if (
       currentInputs()?.hasInputs ||
-      event.stage === 'manifest-probe' ||
-      event.stage === 'dev-client-relaunch'
+      INPUT_FREE_DIAGNOSTIC_STAGES.some((stage) => stage === event.stage)
     )
       diagnostic({ kind: 'metric', ...event });
     else process.stderr.write(redactApiKey(formatTimingEvent(event)));

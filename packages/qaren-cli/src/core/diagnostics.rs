@@ -187,6 +187,7 @@ const STAGES: &[&str] = &[
     "walk",
     "capture",
     "native-total",
+    "native-reread",
     "native-production",
     "native-initial-eligibility",
     "native-preparation",
@@ -674,7 +675,7 @@ impl Sink {
             ) || (event["kind"] == "metric"
                 && matches!(
                     event["stage"].as_str(),
-                    Some("manifest-probe" | "dev-client-relaunch")
+                    Some("native-reread" | "manifest-probe" | "dev-client-relaunch")
                 )))
         {
             self.file = private_file(&self.path);
