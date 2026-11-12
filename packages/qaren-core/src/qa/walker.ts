@@ -4706,6 +4706,7 @@ async function walkBlockScoped(
                 item.kind === 'press' &&
                 deps.platform === 'ios' &&
                 deps.dismissKeyboard &&
+                !itemKeyboardAttempted &&
                 !keyboardAttempted &&
                 before.screen.keyboardVisible === true &&
                 element !== undefined &&
