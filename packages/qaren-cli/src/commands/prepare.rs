@@ -61,6 +61,8 @@ pub(crate) struct Ctx<'a> {
     pub(crate) runs_root: PathBuf,
     pub(crate) native_cache_root: PathBuf,
     pub(crate) native_store_entry: Option<buildplan::NativeStoreEntry>,
+    // The build may only be recorded under an identity evaluated before it ran.
+    pub(crate) plan_fingerprint: Option<NativeFingerprint>,
     pub(crate) ios_observation: Option<crate::ios_toolchain::Observation>,
     pub(crate) linkage_before_build: Option<crate::ios_toolchain::Linkage>,
     pub(crate) ios_generated_native: bool,
@@ -645,6 +647,7 @@ fn prepare_validated(
         runs_root: args.runs_root.clone(),
         native_cache_root: args.native_cache_root.clone(),
         native_store_entry: None,
+        plan_fingerprint: None,
         ios_observation: None,
         linkage_before_build: None,
         ios_generated_native: false,
@@ -2342,6 +2345,7 @@ pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
     let project_root = ctx.record.candidate.project_root.clone();
     let fp = fingerprint::compute(ctx.runner, &repo_root, &project_root, platform)?
         .with_ios_workspace(ctx.record.scenario.build.ios_workspace.as_ref());
+    record_fingerprint_timings(ctx, "plan", &fp);
     let state = buildplan::load_state(&repo_root, platform, &ctx.record.candidate.app_id);
     if let Some(compiler) = &fp.ios_compiler {
         ctx.ios_generated_native = !fp.native_dir_in_candidate;
@@ -2397,7 +2401,24 @@ pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
         native_dir_in_candidate: fp.native_dir_in_candidate,
     };
     ctx.notes.extend(fingerprint_notes(&fp));
-    Ok(buildplan::decide(&inputs, &state, store))
+    let plan = buildplan::decide(&inputs, &state, store);
+    ctx.plan_fingerprint = Some(fp);
+    Ok(plan)
+}
+
+fn record_fingerprint_timings(ctx: &mut Ctx, prefix: &str, fp: &NativeFingerprint) {
+    let timings = &fp.timings;
+    for (part, ms) in [
+        ("total", Some(timings.total_ms)),
+        ("list", Some(timings.list_ms)),
+        ("expo", timings.expo_ms),
+        ("toolchain", Some(timings.toolchain_ms)),
+        ("hash", Some(timings.hash_ms)),
+    ] {
+        if let Some(ms) = ms {
+            ctx.timings.push((format!("{prefix}_fp_{part}"), ms));
+        }
+    }
 }
 
 fn cache_root_failure(reason: String) -> Failure {
@@ -2471,7 +2492,7 @@ fn fingerprint_notes(fp: &fingerprint::NativeFingerprint) -> Vec<(String, String
         ("fingerprint_parts".to_string(), parts),
         ("fingerprint_complete".to_string(), fp.complete.to_string()),
     ];
-    if let Some(ms) = fp.expo_fingerprint_ms {
+    if let Some(ms) = fp.timings.expo_ms {
         notes.push(("expo_fingerprint_ms".to_string(), ms.to_string()));
     }
     if let Some(reason) = &fp.expo_unavailable {
@@ -3843,8 +3864,55 @@ pub(crate) fn recheck_fingerprint(
     let platform = platform_dir(ctx.record.scenario.platform);
     let repo_root = ctx.record.candidate.repo_root.clone();
     let project_root = ctx.record.candidate.project_root.clone();
-    let fp = fingerprint::compute(ctx.runner, &repo_root, &project_root, platform)?
+    let mut fp = fingerprint::compute(ctx.runner, &repo_root, &project_root, platform)?
         .with_ios_workspace(ctx.record.scenario.build.ios_workspace.as_ref());
+    record_fingerprint_timings(ctx, "verify", &fp);
+    if platform == "android" {
+        let planned = ctx.plan_fingerprint.clone().expect("fingerprint planned");
+        if !planned.parts.contains_key("expo") {
+            if fp.parts.get("rnfp") != planned.parts.get("rnfp") {
+                return Err(candidate_drift(
+                    &ctx.record.run_id,
+                    "native inputs changed during preparation: rnfp".into(),
+                ));
+            }
+            // Late evaluation cannot attest the build that already ran.
+            return Ok(planned);
+        }
+        if fp.expo_unavailable.is_some() {
+            ensure_running(ctx.runner, "verify")?;
+            fp = fingerprint::compute(ctx.runner, &repo_root, &project_root, platform)?
+                .with_ios_workspace(ctx.record.scenario.build.ios_workspace.as_ref());
+            record_fingerprint_timings(ctx, "verify", &fp);
+            if let Some(cause) = &fp.expo_unavailable {
+                return Err(Failure::new(
+                    "verify",
+                    FailureCode::BuildFailed,
+                    format!("the app config could not be evaluated again after the build: {cause}"),
+                    "re-run prepare when the app's Expo config can be evaluated",
+                ));
+            }
+        }
+        if fp.value != plan.fingerprint {
+            let changed = planned
+                .parts
+                .keys()
+                .chain(fp.parts.keys())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .filter(|part| planned.parts.get(*part) != fp.parts.get(*part))
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            return Err(candidate_drift(
+                &ctx.record.run_id,
+                format!(
+                    "native inputs changed during preparation: {}",
+                    changed.join(", ")
+                ),
+            ));
+        }
+        return Ok(fp);
+    }
     if fp.value != plan.fingerprint {
         return Err(candidate_drift(
             &ctx.record.run_id,
@@ -4643,6 +4711,7 @@ fn with_build_window<T>(
         runs_root: ctx.runs_root.clone(),
         native_cache_root: ctx.native_cache_root.clone(),
         native_store_entry: ctx.native_store_entry.take(),
+        plan_fingerprint: ctx.plan_fingerprint.clone(),
         ios_observation: ctx.ios_observation.take(),
         linkage_before_build: ctx.linkage_before_build.take(),
         ios_generated_native: ctx.ios_generated_native,
@@ -6046,6 +6115,7 @@ mod launch_tests {
                 runs_root: root.clone(),
                 native_cache_root: root.join("native-store"),
                 native_store_entry: None,
+                plan_fingerprint: None,
                 ios_observation: None,
                 linkage_before_build: None,
                 ios_generated_native: false,
@@ -6067,7 +6137,7 @@ mod launch_tests {
                 complete: true,
                 incompleteness: Vec::new(),
                 parts: Default::default(),
-                expo_fingerprint_ms: None,
+                timings: Default::default(),
                 expo_unavailable: None,
                 ios_compiler: None,
             };

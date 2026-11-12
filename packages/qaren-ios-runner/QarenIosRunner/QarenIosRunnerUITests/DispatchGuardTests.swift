@@ -1,6 +1,32 @@
 import XCTest
 
 final class DispatchGuardTests: XCTestCase {
+  func testCommandMeasurementsPreserveResultsAndIncludeEveryLiveCheck() {
+    var clock = 100.0
+    let commandStart = clock
+    clock += 20
+    var liveMs = 0.0
+    for expected in [DispatchGuard.TargetCheck.unavailable, .hittable(true)] {
+      let measured = DispatchGuard.measure(now: { clock }) {
+        clock += 15
+        return expected
+      }
+      XCTAssertEqual(measured.value, expected)
+      liveMs += measured.endMs - measured.startMs
+    }
+    let gesture = DispatchGuard.measure(now: { clock }) { clock += 40 }
+    let payload = DataPayload(
+      gestureStartUptimeMs: gesture.startMs,
+      gestureEndUptimeMs: gesture.endMs,
+      handledMs: clock - commandStart,
+      liveCheckMs: liveMs
+    )
+    XCTAssertEqual(payload.liveCheckMs, 30)
+    XCTAssertEqual(payload.handledMs, 90)
+    XCTAssertGreaterThanOrEqual(payload.handledMs!, payload.gestureEndUptimeMs! - payload.gestureStartUptimeMs!)
+    XCTAssertNil(DataPayload().liveCheckMs)
+  }
+
   func testKeyboardOverPointOccludesWhateverTheHitTestSays() {
     for hittable in [true, false, nil] as [Bool?] {
       XCTAssertEqual(DispatchGuard.decide(liveHittable: hittable, keyboardContainsPoint: true), .occluded)

@@ -51,6 +51,7 @@ async function run(
     onRead?: () => void;
     abortSignal?: AbortSignal;
     nativeClient?: boolean;
+    sendTiming?: boolean;
   } = {},
 ) {
   const calls: Call[] = [];
@@ -161,7 +162,18 @@ async function run(
       props.value = command.includes('--clear-first')
         ? command[2]
         : (props.value ?? '') + command[2];
-      return okResult({ typed: true });
+      return okResult({
+        typed: true,
+        ...(options.sendTiming
+          ? {
+              keyboardGuardMs: 0,
+              liveCheckMs: 12,
+              handledMs: 80,
+              gestureStartUptimeMs: 100,
+              gestureEndUptimeMs: 140,
+            }
+          : {}),
+      });
     }
     throw new Error('unexpected command');
   });
@@ -199,6 +211,15 @@ function preReads(calls: Call[]) {
     (c) => c.command[0] === 'verify-input' && !c.opts.exactTarget?.operationToken,
   );
 }
+
+test('exact Fill retains runner timing even when its reply has no keyboard status', async () => {
+  const { env } = await run({ verdict: 'mismatch', sendTiming: true });
+  assert.equal(env.ok, true);
+  assert.equal(env.meta.timings_ms.keyboardGuard, 0);
+  assert.equal(env.meta.timings_ms.liveCheck, 12);
+  assert.equal(env.meta.timings_ms.gesture, 40);
+  assert.equal(env.meta.timings_ms.runner, 80);
+});
 function fills(calls: Call[]) {
   return calls.filter((c) => c.command[0] === 'fill');
 }

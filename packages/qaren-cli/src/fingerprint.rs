@@ -6,6 +6,15 @@ use std::path::Path;
 
 pub const FINGERPRINT_VERSION: &str = "rnfp1";
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct FingerprintTimings {
+    pub total_ms: u64,
+    pub list_ms: u64,
+    pub expo_ms: Option<u64>,
+    pub toolchain_ms: u64,
+    pub hash_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeFingerprint {
     pub value: String,
@@ -16,7 +25,7 @@ pub struct NativeFingerprint {
     pub incompleteness: Vec<String>,
     // Hash-only evidence: rnfp, iOS toolchain, and evaluated Expo inputs.
     pub parts: BTreeMap<String, String>,
-    pub expo_fingerprint_ms: Option<u64>,
+    pub timings: FingerprintTimings,
     // The closed-template cause when the app's Expo fingerprint could not be computed.
     pub expo_unavailable: Option<String>,
     pub ios_compiler: Option<crate::ios_toolchain::CompilerIdentity>,
@@ -111,7 +120,8 @@ fn uses_expo(project_root: &Path) -> bool {
 struct ReferencedInputs {
     files: BTreeSet<String>,
     modules: Vec<String>,
-    packages: BTreeSet<String>,
+    // Specifier to its first importing file, for diagnostics only.
+    packages: BTreeMap<String, String>,
     incompleteness: Vec<String>,
 }
 
@@ -145,7 +155,9 @@ fn referenced_paths(app_json: &str, project_root: &Path) -> ReferencedInputs {
                             .to_string(),
                     );
                 } else {
-                    out.packages.insert(reference.to_string());
+                    out.packages
+                        .entry(reference.to_string())
+                        .or_insert_with(|| "app.json".to_string());
                 }
             }
         }
@@ -290,7 +302,7 @@ fn trace_local_imports(
     project_root: &Path,
     seeds: Vec<String>,
     inputs: &mut BTreeSet<String>,
-    packages: &mut BTreeSet<String>,
+    packages: &mut BTreeMap<String, String>,
     incompleteness: &mut Vec<String>,
 ) {
     let mut worklist = seeds;
@@ -362,7 +374,7 @@ fn trace_local_imports(
         }
         for specifier in specifiers.found {
             if !specifier.starts_with('.') {
-                packages.insert(specifier);
+                packages.entry(specifier).or_insert_with(|| rel.clone());
                 continue;
             }
             let Some(normalized) = normalize_rel(base_dir, &specifier) else {
@@ -426,12 +438,12 @@ const PURE_NODE_BUILTINS: &[&str] = &[
 fn package_manifest(
     project_root: &Path,
     repo_root: &Path,
-    packages: &BTreeSet<String>,
+    packages: &BTreeMap<String, String>,
     manifest: &mut Vec<(String, String)>,
     incompleteness: &mut Vec<String>,
 ) {
     let mut versions: BTreeMap<String, String> = BTreeMap::new();
-    for specifier in packages {
+    for (specifier, importer) in packages {
         let builtin = specifier.strip_prefix("node:").unwrap_or(specifier);
         let root = builtin.split('/').next().unwrap_or(builtin);
         if PURE_NODE_BUILTINS.contains(&root) {
@@ -439,7 +451,7 @@ fn package_manifest(
         }
         if specifier.starts_with("node:") || NODE_BUILTINS.contains(&root) {
             incompleteness.push(format!(
-                "Node built-in {specifier:?} may read unbound inputs; the input set is unprovably complete"
+                "Node built-in {specifier:?} imported by {importer} may read unbound inputs; the input set is unprovably complete"
             ));
             continue;
         }
@@ -455,7 +467,7 @@ fn package_manifest(
             });
         if !valid {
             incompleteness.push(format!(
-                "package {specifier:?} is not a resolvable package name; the input set is unprovably complete"
+                "package {specifier:?} imported by {importer} is not a resolvable package name; the input set is unprovably complete"
             ));
             continue;
         }
@@ -730,6 +742,7 @@ pub fn compute(
     project_root: &Path,
     platform_dir: &str,
 ) -> Result<NativeFingerprint, Failure> {
+    let started = runner.monotonic_ms();
     let Ok(project_rel_path) = project_root.strip_prefix(repo_root) else {
         return Err(Failure::new(
             "plan",
@@ -797,9 +810,11 @@ pub fn compute(
         }
     }
     let mut incompleteness = Vec::new();
+    let list_ms = runner.monotonic_ms().saturating_sub(started);
     let mut dep_manifest: Vec<(String, String)> = Vec::new();
-    let mut packages: BTreeSet<String> = BTreeSet::new();
+    let mut packages: BTreeMap<String, String> = BTreeMap::new();
     let mut evaluated: Option<String> = None;
+    let mut evaluated_ci: Option<String> = None;
     let mut expo_fingerprint_ms = None;
     let mut expo_unavailable = None;
     if platform_dir == "ios" && (dynamic_config.is_some() || uses_expo(project_root)) {
@@ -808,6 +823,17 @@ pub fn compute(
         expo_fingerprint_ms = Some(runner.monotonic_ms().saturating_sub(started));
         match expo {
             Ok(expo) => evaluated = Some(expo),
+            Err(reason) => expo_unavailable = Some(reason),
+        }
+    } else if platform_dir == "android" && dynamic_config.is_some() {
+        let started = runner.monotonic_ms();
+        let expo = android_expo_fingerprint(runner, project_root);
+        expo_fingerprint_ms = Some(runner.monotonic_ms().saturating_sub(started));
+        match expo {
+            Ok((expo, ci)) => {
+                evaluated = Some(expo);
+                evaluated_ci = Some(ci);
+            }
             Err(reason) => expo_unavailable = Some(reason),
         }
     }
@@ -822,6 +848,7 @@ pub fn compute(
         }
     }
     // Failed dynamic-config evaluation already forbids reuse; static Expo fallback still binds Xcode.
+    let toolchain_started = runner.monotonic_ms();
     let ios_compiler = (platform_dir == "ios"
         && (dynamic_config.is_none() || expo_unavailable.is_none()))
     .then(|| crate::ios_toolchain::CompilerIdentity::collect(runner));
@@ -837,6 +864,8 @@ pub fn compute(
             "toolchain identity unavailable ({reason}); reuse across an unknown Xcode is unprovable"
         ));
     }
+    let toolchain_ms = runner.monotonic_ms().saturating_sub(toolchain_started);
+    let hash_started = runner.monotonic_ms();
     if inputs.contains("app.json") {
         match std::fs::read_to_string(project_root.join("app.json")) {
             Ok(app_json) => {
@@ -958,8 +987,18 @@ pub fn compute(
             parts.insert("toolchain".to_string(), toolchain);
             format!("{FINGERPRINT_VERSION}:{}", sha256_hex(&bytes))
         }
-        None => rnfp,
+        None => match (evaluated, evaluated_ci) {
+            (Some(expo), Some(ci)) => {
+                let bytes = serde_json::to_vec(&("qaren-expo-native-android/1", &rnfp, &expo, &ci))
+                    .expect("fingerprint parts serialize to JSON");
+                parts.insert("expo".to_string(), expo);
+                parts.insert("expo-ci".to_string(), ci);
+                format!("{FINGERPRINT_VERSION}:{}", sha256_hex(&bytes))
+            }
+            _ => rnfp,
+        },
     };
+    let finished = runner.monotonic_ms();
     Ok(NativeFingerprint {
         value,
         file_count,
@@ -967,7 +1006,13 @@ pub fn compute(
         complete: incompleteness.is_empty(),
         incompleteness,
         parts,
-        expo_fingerprint_ms,
+        timings: FingerprintTimings {
+            total_ms: finished.saturating_sub(started),
+            list_ms,
+            expo_ms: expo_fingerprint_ms,
+            toolchain_ms,
+            hash_ms: finished.saturating_sub(hash_started),
+        },
         expo_unavailable,
         ios_compiler,
     })
@@ -994,6 +1039,31 @@ fn expo_fingerprint(
     project_root: &Path,
     platform: &str,
 ) -> Result<String, String> {
+    let cli = resolve_expo_fingerprint(runner, project_root)?;
+    generate_expo_fingerprint(runner, project_root, platform, &cli, false)
+}
+
+fn android_expo_fingerprint(
+    runner: &mut dyn Runner,
+    project_root: &Path,
+) -> Result<(String, String), String> {
+    let cli = resolve_expo_fingerprint(runner, project_root)?;
+    // Prebuild removes CI; Gradle and expo run:android set CI=1. Both views
+    // must be available before either may authorize native reuse.
+    let expo = generate_expo_fingerprint(runner, project_root, "android", &cli, false);
+    let ci = generate_expo_fingerprint(runner, project_root, "android", &cli, true);
+    match (expo, ci) {
+        (Ok(expo), Ok(ci)) => Ok((expo, ci)),
+        (Err(expo), Err(ci)) => Err(format!("expo: {expo}; expo-ci: {ci}")),
+        (Err(reason), _) => Err(format!("expo: {reason}")),
+        (_, Err(reason)) => Err(format!("expo-ci: {reason}")),
+    }
+}
+
+fn resolve_expo_fingerprint(
+    runner: &mut dyn Runner,
+    project_root: &Path,
+) -> Result<String, String> {
     let root = project_root.to_string_lossy();
     let resolved = runner.run_private(
         &expo_fingerprint_spec(
@@ -1010,15 +1080,30 @@ fn expo_fingerprint(
             outcome(&resolved)
         ));
     }
-    let cli = cli.to_string();
-    let generated = runner.run_private(
-        &expo_fingerprint_spec(
-            "expo-fingerprint",
-            project_root,
-            &[&cli, "fingerprint:generate", "--platform", platform],
-        ),
-        &[],
+    Ok(cli.to_string())
+}
+
+fn generate_expo_fingerprint(
+    runner: &mut dyn Runner,
+    project_root: &Path,
+    platform: &str,
+    cli: &str,
+    ci: bool,
+) -> Result<String, String> {
+    let mut spec = expo_fingerprint_spec(
+        if ci {
+            "expo-fingerprint-ci"
+        } else {
+            "expo-fingerprint"
+        },
+        project_root,
+        &[cli, "fingerprint:generate", "--platform", platform],
     );
+    if ci {
+        spec.unset.retain(|key| key != "CI");
+        spec = spec.env("CI", "1");
+    }
+    let generated = runner.run_private(&spec, &[]);
     if !exited_zero(&generated) {
         return Err(format!(
             "@expo/fingerprint fingerprint:generate did not complete ({})",
@@ -1193,7 +1278,7 @@ mod tests {
             &dir,
             vec!["plugins/withThing.ts".to_string()],
             &mut inputs,
-            &mut BTreeSet::new(),
+            &mut BTreeMap::new(),
             &mut incompleteness,
         );
         assert!(inputs.contains("lib/helper.ts"));

@@ -247,7 +247,11 @@ for (const enabled of [true, false]) {
         const envelope = JSON.parse(result.content[0].text);
         assert.equal(envelope.ok, true);
         if (enabled) {
-          assert.deepEqual(envelope.meta?.settle, { method: 'snapshot-eq', settled: true });
+          assert.deepEqual(envelope.meta?.settle, {
+            method: 'snapshot-eq',
+            settled: true,
+            probes: 2,
+          });
           assert.equal(snapshots, 2);
         } else {
           assert.equal(envelope.meta?.settle, undefined);
