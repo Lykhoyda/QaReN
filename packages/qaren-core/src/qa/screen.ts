@@ -173,6 +173,13 @@ const localCapabilities = new WeakMap<
   Pick<NonNullable<Element['semantic']>, 'press' | 'fill'>
 >();
 
+// Elements React lists as interactive: any matched entry, except one that is only a role on a label.
+const reactInteractive = new WeakSet<Element>();
+
+export function reactHintsInteractive(element: Element): boolean {
+  return reactInteractive.has(element);
+}
+
 // Touch routing of the React host anchored by the element's own testID, absent when no such host is
 // matched. A box-only ancestor still takes the touch itself, so it never makes a cover transparent.
 const touchPolicies = new WeakMap<Element, 'transparent' | 'opaque'>();
@@ -1179,6 +1186,8 @@ export function join(
       // Diagnostics cannot change host association.
     }
     localCapabilities.set(element, local);
+    if (hints.press || hints.fill || reactCandidates.some((d) => !(d.handlerless && !d.testID)))
+      reactInteractive.add(element);
     return element;
   });
   const nativeInputs = elements.filter((e) => e.kind === 'input');
