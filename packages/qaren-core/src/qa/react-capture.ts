@@ -3,6 +3,7 @@ import { isRecord } from './questions.js';
 import type { CDPClient } from '../cdp-client.js';
 import type { ReactObservation } from './capture.js';
 import { isReactCaptureCause, ReactCaptureIncomplete } from './private-input.js';
+import { PRIVATE_INPUT_LIMITS } from './private-input-limits.js';
 import { validateReactHostEvidence } from './screen.js';
 import type { DigestEntry } from './screen.js';
 
@@ -109,7 +110,8 @@ function publicObservation(tree: unknown): ReactObservation {
   if (!isRecord(value) || !Array.isArray(value.interactive))
     throw new ReactCaptureIncomplete('tree-shape');
   const counters = treeCounters(value);
-  if (value.interactive.length > 200) throw new ReactCaptureIncomplete('interactive-cap', counters);
+  if (value.interactive.length > PRIVATE_INPUT_LIMITS.maxHosts)
+    throw new ReactCaptureIncomplete('interactive-cap', counters);
   if (value.truncated !== undefined && value.truncated !== false)
     throw new ReactCaptureIncomplete('truncated', counters);
   const entryShape = () => new ReactCaptureIncomplete('entry-shape', counters);
@@ -186,6 +188,15 @@ function publicObservation(tree: unknown): ReactObservation {
       )
         throw entryShape();
       result.inputHostIndices = [...entry.inputHostIndices];
+    }
+    if (entry.hostIndex !== undefined) {
+      if (
+        !Number.isInteger(entry.hostIndex) ||
+        Number(entry.hostIndex) < 0 ||
+        Number(entry.hostIndex) >= hostEvidence.hosts.length
+      )
+        throw entryShape();
+      result.hostIndex = Number(entry.hostIndex);
     }
     if (entry.handlerless !== undefined) {
       if (

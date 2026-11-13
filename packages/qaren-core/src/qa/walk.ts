@@ -36,6 +36,7 @@ import {
   dismissKeyboardForQa,
   dismissViaJs,
   readReactInputValue,
+  inputAlreadyHolds,
   entryMismatchOf,
 } from '../handlers/device-interact.js';
 import { captureQaScreenshot } from './screenshot.js';
@@ -80,6 +81,7 @@ import { createJev } from './jev.js';
 import { isRecord } from './questions.js';
 import {
   createTimingObserver,
+  INPUT_FREE_DIAGNOSTIC_STAGES,
   formatTimingEvent,
   observeDispatchPhases,
   observeTiming,
@@ -418,11 +420,27 @@ function actionKeyboard(meta?: Record<string, unknown>): boolean | undefined {
 function logActionSettle(
   meta?: Record<string, unknown>,
   timing?: TimingContext,
-): Pick<ActResult, 'settle'> {
-  let measured: Pick<ActResult, 'settle'> = {};
+): Pick<ActResult, 'settle' | 'send'> {
+  let measured: Pick<ActResult, 'settle' | 'send'> = {};
   try {
     const settle = isRecord(meta?.settle) ? meta.settle : {};
     const ms = isRecord(meta?.timings_ms) ? meta.timings_ms.settle : undefined;
+    const send: NonNullable<ActResult['send']> = {};
+    for (const [source, target] of [
+      ['keyboardGuard', 'keyboardGuardMs'],
+      ['liveCheck', 'liveCheckMs'],
+      ['gesture', 'gestureMs'],
+      ['runner', 'runnerMs'],
+    ] as const) {
+      const value = isRecord(meta?.timings_ms) ? meta.timings_ms[source] : undefined;
+      if (typeof value === 'number' && Number.isFinite(value) && value >= 0) send[target] = value;
+    }
+    const probes =
+      typeof settle.probes === 'number' && Number.isSafeInteger(settle.probes) && settle.probes >= 0
+        ? settle.probes
+        : undefined;
+    if (probes !== undefined) send.settleProbes = probes;
+    if (Object.keys(send).length) measured.send = send;
     const summary: Pick<TimingEvent, 'method' | 'settled' | 'hierarchyChanged'> & {
       ms: number | 'unknown';
     } = {
@@ -440,7 +458,11 @@ function logActionSettle(
           : 'unknown',
     };
     if (typeof summary.ms === 'number')
-      measured = { settle: { method: summary.method, ms: summary.ms } };
+      measured.settle = {
+        method: summary.method,
+        ms: summary.ms,
+        ...(probes !== undefined ? { probes } : {}),
+      };
     if (timing)
       observeTiming(timing.observe, {
         stage: 'settle',
@@ -450,6 +472,7 @@ function logActionSettle(
         method: summary.method,
         settled: summary.settled,
         hierarchyChanged: summary.hierarchyChanged,
+        ...(measured.send ? { send: measured.send } : {}),
         ...(typeof summary.ms === 'number' ? { ms: summary.ms } : {}),
       });
     log(`action-settle=${JSON.stringify(summary)}`);
@@ -501,8 +524,7 @@ async function openSession(
       event = { ...event, line: currentLine };
     if (
       currentInputs()?.hasInputs ||
-      event.stage === 'manifest-probe' ||
-      event.stage === 'dev-client-relaunch'
+      INPUT_FREE_DIAGNOSTIC_STAGES.some((stage) => stage === event.stage)
     )
       diagnostic({ kind: 'metric', ...event });
     else process.stderr.write(redactApiKey(formatTimingEvent(event)));
@@ -815,7 +837,8 @@ async function openSession(
                 presenceBudgetMs,
                 options?.timing ? { now, observe: options.timing } : undefined,
               ),
-            react: () => captureReact(options?.platformPresence === true),
+            react: () =>
+              captureReact(options?.platformPresence === true || options?.typography === true),
           }),
         ),
       ),
@@ -936,6 +959,14 @@ async function openSession(
       ? {
           appProcess: {},
           reactFocused: (testID: string) => reactFocused(cdpClientOrNull(getClient), testID),
+          fillAlreadySet: (testID, text, privateValue, onPrivateInput) =>
+            inputAlreadyHolds(
+              cdpClientOrNull(getClient),
+              testID,
+              text,
+              privateValue,
+              onPrivateInput,
+            ),
           // RN_KEYBOARD_GUARD=0 turns off every QaReN keyboard clearance, this one included.
           ...(resolveKeyboardGuard(process.env)
             ? {

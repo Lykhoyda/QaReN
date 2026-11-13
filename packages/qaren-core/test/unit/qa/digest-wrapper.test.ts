@@ -5,8 +5,9 @@ import { buildFiber, createSandbox } from '../helpers/inject-harness.js';
 import { captureQaReact } from '../../../dist/qa/react-capture.js';
 import { captureScreen } from '../../../dist/qa/capture.js';
 import { PrivateInputCaptureError } from '../../../dist/qa/private-input.js';
+import { PRIVATE_INPUT_LIMITS } from '../../../dist/qa/private-input-limits.js';
 import { join, semanticActionView, visibilityView } from '../../../dist/qa/screen.js';
-import { prepareTarget } from '../../../dist/qa/resolve.js';
+import { fillHostInside, prepareTarget } from '../../../dist/qa/resolve.js';
 import { exactIdentities } from '../../../dist/qa/identity.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { runPlan } from '../../../dist/qa/walker.js';
@@ -18,6 +19,8 @@ interface FiberSpec {
   hostType?: string;
   props?: Record<string, unknown>;
   children?: FiberSpec[];
+  // A React portal fiber (tag 4): its children are drawn into another host.
+  portal?: true;
 }
 
 const handler = () => assert.fail('capture must not invoke callbacks');
@@ -32,8 +35,24 @@ const wrapper = (children: FiberSpec[] = [control()]): FiberSpec => ({
   children,
 });
 
+function markPortals(
+  fiber: { tag?: number; type?: unknown; child?: unknown; sibling?: unknown },
+  spec: FiberSpec,
+): void {
+  if (spec.portal) {
+    fiber.tag = 4;
+    fiber.type = null;
+  }
+  let child = fiber.child as typeof fiber | null;
+  for (const childSpec of spec.children ?? []) {
+    markPortals(child!, childSpec);
+    child = child!.sibling as typeof fiber | null;
+  }
+}
+
 async function observe(children: FiberSpec[]) {
   const root = { current: buildFiber({ name: 'Screen', children }) };
+  markPortals(root.current, { children });
   const sandbox = createSandbox({ fiberRoot: root.current });
   sandbox.__REACT_DEVTOOLS_GLOBAL_HOOK__.getFiberRoots = (id: number) =>
     id === 1 ? new Set([root]) : new Set();
@@ -142,7 +161,8 @@ test('J1 does not remove host evidence or turn incomplete captures into complete
   ]);
   const screen = join([], react.interactive!, 'app', { native: 'complete', react: 'incomplete' });
   assert.ok('refuse' in visibilityView(screen));
-  const capped = Array.from({ length: 200 }, () => wrapper());
+  // Each wrapper adds two entries and one host: past the private entry limit, under the host limit.
+  const capped = Array.from({ length: PRIVATE_INPUT_LIMITS.maxHosts / 2 + 1 }, () => wrapper());
   await assert.rejects(observe(capped), PrivateInputCaptureError);
 });
 
@@ -314,4 +334,216 @@ test('separate nested inputs sharing a placeholder still refuse, including a Rea
     assert.equal(ledger.verdict, 'FAIL');
     assert.deepEqual(f.actions, []);
   }
+});
+
+// C2: an ordinary capture proves a React-only input lies beneath the wrapper view QaReN would tap.
+const W = 'qa-hidden-c-pressable';
+const X = 'qa-hidden-c';
+const presetInput = (id = X): FiberSpec => ({
+  name: 'TextInput',
+  props: { testID: id, value: 'preset', onChangeText: handler },
+  children: [
+    {
+      name: 'InternalTextInput',
+      props: { testID: id, value: 'preset', onChangeText: handler },
+      children: [
+        {
+          hostType: 'RCTSinglelineTextInputView',
+          props: { testID: id, text: 'preset', onChange: handler, onChangeText: handler },
+        },
+      ],
+    },
+  ],
+});
+const plainView = (children: FiberSpec[]): FiberSpec => ({
+  name: 'View',
+  props: {},
+  children: [{ hostType: 'RCTView', props: {}, children }],
+});
+const pressableAround = (children: FiberSpec[], id = W): FiberSpec => {
+  const own = { testID: id, accessible: true, onClick: handler, onResponderGrant: handler };
+  return {
+    name: 'Pressable',
+    props: { testID: id, onPress: handler },
+    children: [
+      { name: 'View', props: own, children: [{ hostType: 'RCTView', props: own, children }] },
+    ],
+  };
+};
+const wrapperShapes: Array<{ name: string; met: boolean; id?: string; tree: FiberSpec[] }> = [
+  {
+    name: '1 the Test App fixture: HiddenPressableInput > Pressable W > view > TextInput X',
+    met: true,
+    tree: [
+      {
+        name: 'HiddenPressableInput',
+        props: { baseId: X, inputTestID: X, value: 'preset', onChangeText: handler },
+        children: [pressableAround([plainView([presetInput()])])],
+      },
+    ],
+  },
+  {
+    name: '2 a custom component W passes W on to such a pressable',
+    met: true,
+    tree: [
+      {
+        name: 'FormField',
+        props: { testID: W, onPress: handler },
+        children: [pressableAround([plainView([presetInput()])])],
+      },
+    ],
+  },
+  {
+    name: '3 a plain view between the component W and its view W',
+    met: true,
+    tree: [
+      {
+        name: 'Pressable',
+        props: { testID: W, onPress: handler },
+        children: [
+          {
+            hostType: 'RCTView',
+            props: {},
+            children: [
+              {
+                hostType: 'RCTView',
+                props: { testID: W, onClick: handler },
+                children: [plainView([presetInput()])],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+  {
+    name: '4 the pressable W and the input are siblings',
+    met: false,
+    tree: [plainView([pressableAround([]), presetInput()])],
+  },
+  {
+    name: '5 two inputs inside the pressable',
+    met: false,
+    tree: [pressableAround([plainView([presetInput(), presetInput('other-input')])])],
+  },
+  {
+    name: '6 a front view W; a back component W passes W to no view and wraps the input',
+    met: false,
+    tree: [
+      {
+        name: 'Front',
+        props: {},
+        children: [{ hostType: 'RCTView', props: { testID: W, accessible: true } }],
+      },
+      {
+        name: 'Back',
+        props: {},
+        children: [
+          {
+            name: 'Field',
+            props: { testID: W, accessibilityRole: 'button', onPress: handler },
+            children: [presetInput()],
+          },
+        ],
+      },
+    ],
+  },
+  {
+    name: '7 a component W draws its view W beside the input',
+    met: false,
+    tree: [
+      {
+        name: 'Field',
+        props: { testID: W, onChangeText: handler },
+        children: [{ hostType: 'RCTView', props: { testID: W } }, presetInput()],
+      },
+    ],
+  },
+  {
+    name: '8 the wrapper carries the input id',
+    met: false,
+    id: X,
+    tree: [pressableAround([plainView([presetInput()])], X)],
+  },
+  {
+    name: '9 the input is rendered through a portal below the wrapper view',
+    met: false,
+    tree: [pressableAround([{ portal: true, children: [presetInput()] }])],
+  },
+  {
+    name: '10 a portal between the component W and its view W',
+    met: false,
+    tree: [
+      {
+        name: 'Pressable',
+        props: { testID: W, onPress: handler },
+        children: [
+          {
+            portal: true,
+            children: [
+              {
+                hostType: 'RCTView',
+                props: { testID: W, onClick: handler },
+                children: [plainView([presetInput()])],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+];
+const wrapperNode = (ref: string, id: string, y: number) => ({
+  ref,
+  type: 'Other',
+  identifier: id,
+  label: '',
+  hittable: true,
+  rect: { x: 20, y, width: 300, height: 44 },
+});
+
+for (const shape of wrapperShapes) {
+  test(`C2 U1 shape ${shape.name}: the ordinary capture ${shape.met ? 'proves' : 'does not prove'} the input beneath the wrapper view`, async () => {
+    const wrapperID = shape.id ?? W;
+    const react = await observe(shape.tree);
+    const hosts = react.hostEvidence!.hosts;
+    assert.equal(react.hostEvidence!.typography, undefined);
+    assert.equal(react.hostEvidence!.complete, true);
+    if (shape.met) {
+      const entries = react.interactive!.filter((entry) => entry.testID === W);
+      assert.equal(entries.length, 1, JSON.stringify(react.interactive));
+      const viewHosts = hosts.flatMap((host, i) =>
+        host.testID === W && !host.capabilities.fill ? [i] : [],
+      );
+      const inputHosts = hosts.flatMap((host, i) =>
+        host.testID === X && host.capabilities.fill ? [i] : [],
+      );
+      assert.equal(viewHosts.length, 1);
+      assert.equal(inputHosts.length, 1);
+      assert.equal(entries[0].hostIndex, viewHosts[0], JSON.stringify(entries[0]));
+      assert.deepEqual(entries[0].inputHostIndices, inputHosts);
+    }
+    const screen = join(
+      [wrapperNode('@wrap', wrapperID, 100)],
+      react.interactive!,
+      'app',
+      { native: 'complete', react: 'complete' },
+      react.hostEvidence,
+    );
+    const wrap = screen.elements.find((element) => element.ref === '@wrap')!;
+    assert.equal(fillHostInside(screen, X, wrap), shape.met, JSON.stringify(react.interactive));
+  });
+}
+
+test('C2 U1: two native nodes carrying the wrapper id do not prove the input beneath either', async () => {
+  const react = await observe(wrapperShapes[0].tree);
+  const screen = join(
+    [wrapperNode('@wrap', W, 100), wrapperNode('@twin', W, 300)],
+    react.interactive!,
+    'app',
+    { native: 'complete', react: 'complete' },
+    react.hostEvidence,
+  );
+  for (const ref of ['@wrap', '@twin'])
+    assert.equal(fillHostInside(screen, X, screen.elements.find((e) => e.ref === ref)!), false);
 });

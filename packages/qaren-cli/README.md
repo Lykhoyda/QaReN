@@ -572,6 +572,26 @@ entry in `dumpsys activity processes`; output that is not a recognised processes
 dump leaves the leg unresolved. The runner port and packages are defined in
 [`src/adapters/android.rs`](src/adapters/android.rs) and checked against the core by
 the [runner sync test](../qaren-core/test/unit/qaren-cli-android-runner-sync.test.ts).
+
+Both automatic teardown and explicit cleanup retry timed-out reverse removal,
+reverse listing, forward listing and runner-process reads up to three attempts,
+using the original, twice and three times the original command budget. From
+API 26 the runner-process read passes that budget to `dumpsys -t`, so the service
+is not cut at its own 10 seconds; output carrying dumpsys's
+`DUMP TIMEOUT ... EXPIRED` banner counts as a timeout, never as a dump. Before
+each retry, the selected emulator must answer `adb shell true` within 40 seconds;
+a failed or timed-out probe stops retries for that command. Non-timeout command
+failures are not retried. Probes and retries share a 240-second extra allowance
+across the release sequence; a retry starts only if that allowance covers both
+the probe and retry budgets. Initial attempts do not consume this allowance.
+Unresolved timeout diagnostics report attempt budgets and durations, liveness
+answers, whether the device was slow, unresponsive or the allowance could not
+cover another retry, and how much of the allowance the cleanup used; a retry that
+answers but cannot be read keeps the attempts before it. Forward removal and
+runner force-stop run once with their original budgets, so the allowance stays
+with the reads that follow them; successful absence verification is still
+required to release the lease.
+
 A walk that never started a runner reads as `absent`; a run that never reached
 the walk needs no runner release. An unproven leg keeps the lease, so a later
 `qaren cleanup <run-id>` can finish. Cleanup preserves the adb server, installed
@@ -579,6 +599,51 @@ app and running emulator: `--remove-app` on a borrowed emulator refuses
 `APP_REMOVAL_NOT_CONFIRMED` (uninstall the app yourself), and `qaren status`
 probes the emulator only through the borrowed adb server, rechecking compatibility
 before device probes and reporting them as inconclusive if that check fails.
+
+### Record a check
+
+`qaren check` records no video by default. Once a check reaches the walk, its
+receipt and stderr summary say
+`video: not recorded; pass --record to qaren check to record this walk`; a check
+refused earlier (preflight, build) carries no video line.
+`qaren check --record` records the walk through the same recorder, start rules,
+encode and trimmed copy as `qaren pr`, including the runtime-input rule and the
+Android API 34 requirement. `--record` on `qaren pr` changes nothing, because `pr`
+always records; any other verb rejects it with the usage text.
+
+Nothing is uploaded from `check`; `qaren publish` refuses a check run because it
+has no pull request record. A recorded check can leave these files in the run directory:
+
+- `media/video-published.mp4`: the trimmed copy, starting at admission (or after
+  the login replay) and ending at the last row. This is the only file the
+  receipt names.
+- `media/video.mp4`: the full recording, including setup and any login replay.
+  It stays private: no policy verdict applies to it; do not share it.
+- `media/raw.mov` (iOS) or `media/raw.mp4` (Android): the raw capture, kept
+  when encoding did not succeed or the run ended before the video was finalized.
+
+The receipt's `outcomes` gains these keys:
+
+- `video`: the final status, `available`, `too-large` or `unavailable(<reason>)`.
+  A check that ends after the recorder started, before the video was finalized,
+  carries `unavailable(recording started; the run ended before it was finalized; the raw capture is kept in media/)`.
+- `video_file`: `media/video-published.mp4`, only when the status is `available`
+  and that file exists.
+- `video_policy_verdict`: present only with `video_file`. It is the declared
+  [video policy](#video-publication)'s privacy verdict for that file alone
+  (`eligible`, or a withheld value with its reason and `keep this file local`),
+  not permission from `qaren publish`.
+- `video_next_step`: when there is no video, what to change: shorten or split the
+  plan, install ffmpeg and ffprobe, declare `video: non-strict` for runs with
+  runtime inputs, use an API 34+ emulator, or rerun with `--record`.
+
+The stderr summary prints the `video:` and `video file:` lines. Recording adds a
+recorder process and an encode and trim after the walk (each ffmpeg step is
+limited to 900 seconds). An encoded file over 100 MB is reported as `too-large`;
+the full and trimmed files coexist, and an oversized `media/video.mp4` can remain
+when its size reduction fails. Recording is
+best effort: a recorder, ffmpeg or trim problem never changes the verdict or the
+exit code.
 
 ### Android runner provisioning
 
@@ -806,6 +871,45 @@ rounded frame.
 
 ### Occluded taps and focus
 
+On iOS, a quoted Tap whose target is proven absent (`TARGET_NOT_FOUND` carrying
+`missing`) gets one keyboard-dismissal attempt before failing when the keyboard is
+visible, the app is in front, and React capture proves no presented modal. Only
+after an otherwise eligible absent-target refusal does QaReN request an extra
+capture with React typography for modal proof, then recheck target absence,
+keyboard visibility and the front surface before dismissing. This uses the keyboard
+guard's dismissal chain described below, without a native platform-presence read.
+QaReN takes fresh settled captures after dismissal and resolves the target
+again on the same attempt, acting on the resulting screen: blurring the field can
+validate or navigate in the app. This path records `keyboardCleared` only when the
+dismissal reports a successful tier and the settled capture explicitly reports
+`keyboardVisible: false`.
+The absent-target dismissal allowance survives recovery retries and is spent at
+most once per plan item; it also prevents another keyboard dismissal in that attempt.
+
+If the target is still absent, the failure adds “the keyboard was hidden and the
+target is still not found” when the fresh capture proves it hidden, or “the keyboard
+could not be hidden” otherwise. Authorization of the dismissal counts as dispatch;
+ordinary missing-target recovery still requires proof of a separate surface.
+This path does not run while the [launch-target wait](#step-recovery) is armed,
+after another keyboard dismissal in the attempt, or without proof that no modal is
+present. Disabled or otherwise ineligible targets, candidates all set aside,
+name mismatches, ambiguity, stored-selector replay misses, system dialogs, Fill
+and Android keep their existing paths. `RN_KEYBOARD_GUARD=0` disables this clearance.
+The [absent-target regression tests](../qaren-core/test/unit/qa/keyboard-absent-target.test.ts)
+cover these boundaries.
+
+For a resolved quoted iOS Tap, a runner `KEYBOARD_DISMISS_FAILED` refusal with
+`mutation: none` can use the same per-item allowance. QaReN dismisses the keyboard,
+settles the original target, and resolves again. A different identity or a frame
+that changes after settling refuses the Tap. The pixel baseline is taken again
+after dismissal so keyboard disappearance cannot count as the Tap's effect. A
+second refusal keeps the runner's reason and adds “the keyboard covers the target
+and could not be hidden”. Proactive row-choice clearance also spends this allowance,
+so a subsequent keyboard refusal fails without another dismissal. Live-hit presses,
+recovery and dialog presses,
+`KEYBOARD_RELAYOUT_REQUIRED`, and refusals without proof of no mutation retain
+their existing handling.
+
 Before an iOS tap or exact fill, the runner resolves the retained target by
 native type and identifier (or label when unidentified) in the same snapshot
 generation. A unique live match whose frame no longer approximately matches
@@ -863,12 +967,15 @@ stricter rule: exactly one identity match under the same element reference.
 On iOS, before tapping a candidate matching the row-choice heuristic above, QaReN
 attempts to dismiss a visible keyboard through the keyboard guard's dismissal chain
 (a native hide control, then the app's own `Keyboard.dismiss()`). It then requires the
-same target identity and frame across two consecutive captures, re-resolves the target
+same native target identity and frame across two consecutive captures, excluding
+React-only twins from this settle check, re-resolves the target
 and taps it once. The row records `keyboardCleared: native-control | js` only when a
 dismissal tier reports success and the settled capture no longer reports a visible
 keyboard. An unsuccessful dismissal still permits one tap after the target settles;
 it records no clearance. A target that does not settle, changes identity or moves
 from its settled frame before dispatch fails without that tap.
+An unsettled-target refusal lists each capture's frame or `absent`, `ambiguous:N`
+or `no-frame`, and the keyboard state after dismissal (`hidden`, `visible` or `unknown`).
 `RN_KEYBOARD_GUARD=0` turns this pre-tap clearance off.
 
 When that clearance did not run or did not hold, keyboard closure and an unchanged
@@ -940,8 +1047,9 @@ another resolution is not dispatched again and fails with its observed frames.
 When the runner instead refuses a sent tap or type because its retained target
 is gone or stale (`NO_TEXT_INPUT_TARGET`, `KEYBOARD_TARGET_STALE`, or an Android
 `exact-target-*` reason) and attests mutation `none`, the step fails as
-`TARGET_MOVED_BEFORE_DISPATCH` without retry or fallback; any other refusal
-after a send stays `ACTION_OUTCOME_UNCERTAIN`.
+`TARGET_MOVED_BEFORE_DISPATCH` without retry or fallback. Apart from the
+[quoted iOS Tap keyboard-refusal handoff](#occluded-taps-and-focus), any other
+refusal after a send stays `ACTION_OUTCOME_UNCERTAIN`.
 Resolution, frame comparison and hit testing share one 300 ms deadline.
 Missing retained identity, a generation mismatch, zero or ambiguous live
 matches, and failed or over-budget checks leave the check unavailable and
@@ -1137,8 +1245,8 @@ keep their existing rules.
 
 A missing required capability refuses before dispatch; reopen the device session
 to rebuild the runner. A target hit point never authorizes a drag corridor:
-scroll-until drags retain every static overlay cut, including cuts caused by
-transparent containers. A zero or undersized band still refuses
+scroll-until drags retain the static cuts required by the
+[scroll-until overlay policy](#scroll-until-overlay-policy). A zero or undersized band still refuses
 `SCROLL_BAND_TOO_SMALL`. For scroll-until, the row's `scrollBand.status`
 distinguishes `no-geometry`, `overlay-cut` and `clear`. For plain-scroll band
 selection and refusals, see [the plain-scroll contract](#occluded-taps-and-focus).
@@ -1225,9 +1333,8 @@ letter is still a mismatch. A screen change alone never verifies a fill. A quote
 iOS fill can use keyboard fallback when no observable native input resolves, or
 strict binding refuses `NO_TEXT_INPUT_TARGET` before any text mutation for a
 non-native-input target. Phrase fills and stored text selectors do not use
-this fallback; a stored testID replays through it exactly as the walk did, and
-the saved block stores the field's testID the focus proof used. Ambiguous targets
-and potentially mutated fills still fail.
+this fallback; a stored testID replays through it exactly as the walk did.
+Ambiguous targets and potentially mutated fills still fail.
 
 On iOS, if the bound field disappears after typing (for example, an auto-submitting
 code field), the runner skips its post-type attribute read and stops verification
@@ -1276,7 +1383,8 @@ placeholder. A separate same-label element does not establish forwarding.
 A wrapper echoing its hidden React input's identity counts as that one input
 for fallback, unless complete React ancestry places the input outside the wrapper.
 This does not collapse candidates for strict fills.
-The keyboard-down path requires proof that the keyboard is hidden before the
+The [already-set rules](#fill-ladder) can avoid the fallback focus tap. Otherwise,
+the keyboard-down path requires proof that the keyboard is hidden before the
 tap (with the [one-scroll occlusion recovery](#occluded-taps-and-focus)). Every
 binding after the tap, including refreshed strict bindings,
 must uniquely resolve the original testID or its proven wrapper-to-input
@@ -1294,8 +1402,8 @@ becoming natively observable resumes strict verification; otherwise a
 still-hidden keyboard refuses without typing.
 
 When the keyboard is already up, iOS fallback types only with positive React
-proof that the intended input is focused. With an eligible target, QaReN taps it,
-recaptures with the [settlement check](#occluded-taps-and-focus), rebinds the
+proof that the intended input is focused. With an eligible target that does not
+skip, QaReN taps it, recaptures with the [settlement check](#occluded-taps-and-focus), rebinds the
 same identity and then requires that proof. Without a target, it requires that
 no secure or disabled element carries the quoted
 testID and React reports that exact input focused. The guard and proof use the
@@ -1356,7 +1464,8 @@ field keeps the runner's mutation disposition. The [focused replacement tests](.
 cover these guards and mutation reporting.
 An unverified keyboard step records a passing row with reason `UNVERIFIED_FILL`,
 allowing later plan steps to continue; it does not establish the field's final
-value. Apart from that one replacement recovery and the ladder step below, failed keyboard typing is not retried. Before the fallback tap or
+value. Apart from that one replacement recovery and the ladder step below, failed
+keyboard typing is not retried. Before the pre-focus comparison, fallback tap or
 no-target typing dispatch, the value is protected under the
 [shared masking rules](#input-value-masking), and screenshots follow the
 [declared policy](#video-publication). For block persistence after fallback, see [Saved blocks](#saved-blocks).
@@ -1381,9 +1490,24 @@ shows it as `via <method>`:
 
 A secure field is never pre-read for skipping. Private values are compared inside the app;
 only comparison metadata leaves it. Unreadable, placeholder, formatted, case-only and unstable
-matches keep the existing typing path. Android and keyboard fallback without an observable input
-keep typing. An observable, controlled iOS input reached through fallback can skip after two
-exact comparisons that also prove focus.
+matches keep the existing typing path. Android keeps typing. A controlled iOS input
+reached through fallback can skip after two exact comparisons that also prove focus.
+
+Before a fallback focus tap, iOS can also skip when the plan names the input by its
+own testID. Complete React host evidence in the ordinary capture must prove there is
+exactly one fillable host carrying that ID as its testID or nativeID, neither hidden,
+disabled nor read-only. Exactly one other host must carry the observed tap target's
+testID, which differs from the input's. The target's own React entry must name that
+host as its own and list exactly that one input host beneath it; an input rendered
+through a portal does not count.
+The overlay probe and centre coverage checks still
+run first, including after a clearance scroll. Two exact in-app reads, 150 ms apart,
+must both report a controlled, non-secure, enabled input. Success records
+`already-set` without a tap, keyboard wait or further capture; the field keeps its
+focus state and no focus handler runs. A missing proof, failed comparison or
+non-abort read error keeps the tap-and-type path. See the
+[pre-focus regressions](../qaren-core/test/unit/qa/keyboard-fallback.test.ts).
+
 To require a change event even when the value already matches, add a trailing `(always retype)`,
 for example `Fill "name" with input NAME (secret) (always retype)`. It combines with
 `(any method)` in either order, case-insensitively. Behaviour labels must trail the line;
@@ -1780,6 +1904,24 @@ remaining vertical span supplies the drag band; an exhausted span refuses
 `SCROLL_BAND_TOO_SMALL`. Padding uses four points, scaled by the captured Android
 display density when available. Without a scroll container, the centred window
 drag is retained.
+
+<a id="scroll-until-overlay-policy"></a>
+
+For scroll-until bands and target coverage on iOS, a later-drawn `Other` or
+`Toolbar` is ignored when its frame contains the list's whole clip, its React
+host is not proven touch-opaque, and React supplies no press/fill hint or matched
+interactive entry. A handlerless entry without a testID that supplies only a
+role on a label does not count as interactive. Every captured descendant must
+have a frame wholly outside the list's clip; touching an edge counts as outside,
+and the offscreen flag alone is insufficient. A childless `Toolbar` also qualifies,
+but a childless `Other` remains a potential dim layer. Controls, partial covers,
+touch-opaque hosts, and containers with overlapping or frameless descendants
+remain covers. This exception makes no live hit reads and does not change plain
+Scroll or Android.
+Quoted targets use the ordinary capture and benefit from this rule on iOS 27.2.
+Unquoted phrase targets retain their presence capture: a toolbar containing a
+childless full-size `Other` can still exhaust the band because that child cannot
+be distinguished structurally from a dim layer; support for that case is deferred.
 Quoted scroll-until uses the current ordinary capture for target visibility and
 geometry, with the [iOS inferred-overlay probe](#covered-target-recovery) governing
 completion under an inferred cover. Otherwise, a target whose tap point is covered
@@ -1801,11 +1943,12 @@ Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`
 when the final evidence remains unsure. Initial captures, polling captures and
 evidence-refresh captures, including a refresh during the first visibility check,
 share the wait's deadline for both quoted and phrase targets. A wait whose first
-capture never completes fails with `TARGET_WAIT_TIMEOUT` and
+capture times out without reporting native incompleteness fails with `TARGET_WAIT_TIMEOUT` and
 `cause=capture-deadline`, with `next_action=inspect_capture_health`. If a later
 refresh reaches the deadline, the wait ends
 from its completed observations; a phrase wait whose visibility remains undecided
 ends with `VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED`.
+For incomplete native reads, follow the [capture and privacy contract](#why-were-my-screenshots-withheld).
 A quoted wait with at least two definite
 absence observations sharing one screen signature normally fails at its deadline with
 “did not appear”; it does not report expired evidence for that stable absence.
@@ -1913,7 +2056,7 @@ the byte limit. It excludes value text, label text, identifiers and testIDs. The
 
 ### Why were my screenshots withheld?
 
-Each withheld screenshot metric has `stage: "screenshot"`, `outcome: "withheld"`
+Each privacy-caused withheld screenshot metric has `stage: "screenshot"`, `outcome: "withheld"`
 and `withheld: "<code>"`. Slot runs retain these metrics in
 `logs/core-diagnostics.jsonl`; without used slots they follow the ordinary
 `logs/core.log` timing route, subject to subprocess output withholding.
@@ -1930,8 +2073,9 @@ an exported unused `QAREN_INPUT_` namespace, or no inputs; raw subprocess output
 withholding remains unchanged. They contain no values, labels, identifiers,
 testIDs, geometry, character counts or element indices.
 
-`ledger.json` carries `screenshotWithheld` on each withheld row, including streamed
-rows retained after an interrupted walk. `mediaWithheld.screenshots` holds the
+`ledger.json` carries `screenshotWithheld` on each row with a recorded privacy
+cause, including streamed rows retained after an interrupted walk.
+`mediaWithheld.screenshots` holds the
 first `reason`, optional `kind` or `source`, `line` and withheld screenshot `count`.
 `mediaWithheld.video` holds the publication-window cause and line, without a
 count: the strict privacy cause for strict or undeclared runs, or the protected
@@ -1942,12 +2086,17 @@ the screenshot cause and count; a retained cause then uses the new window's
 starting line. `videoPublication` retains the strict verdict;
 `nonStrictPublication` supplies the separate non-strict verdict. A walk refused
 after admission keeps both computed verdicts, except a
-`PRIVATE_INPUT_CAPTURE_UNKNOWN` refusal; that refusal and any refusal before
-admission report `videoPublication: unknown` with no `nonStrictPublication`,
+`PRIVATE_INPUT_CAPTURE_UNKNOWN` or `NATIVE_SNAPSHOT_INCOMPLETE` refusal.
+If a Wait absorbs an incomplete native read, subsequent screenshots and pixel
+comparison captures are withheld for the rest of the run, even when a later read
+completes and the Wait passes or fails. This applies under every video policy.
+These cases and any refusal before admission report
+`videoPublication: unknown` with no `nonStrictPublication`,
 which withholds video in either mode.
-The receipt includes one `media_withheld=<code>[/<kind|source>]@line <N>` note,
+When a privacy cause is recorded, the receipt includes one
+`media_withheld=<code>[/<kind|source>]@line <N>` note,
 preferring the video cause in non-strict mode and the screenshot cause otherwise.
-`report.md` marks each withheld row and explains
+`report.md` marks each row with a recorded privacy cause and explains
 the first screenshot cause and line. Line 0 means privacy latched before the walk.
 
 | Code | Meaning | What to do |
@@ -2017,9 +2166,17 @@ refuses with `SCREEN_EVIDENCE_INCOMPLETE` rather than guessing a target.
 The [screen projection](../qaren-core/src/qa/screen.ts) owns this policy.
 
 The native snapshot is the privacy boundary before walking a screen. Capture
-refuses with `PRIVATE_INPUT_CAPTURE_UNKNOWN` unless native completeness is attested;
-the refusal reports only a value-free node count and fixed cause codes. Native
+refuses with `NATIVE_SNAPSHOT_INCOMPLETE` unless native completeness is attested;
+the refusal reports a value-free node count and fixed cause codes, with read count
+and elapsed time when Wait exhausts its retry deadline. Native
 acquisition failures also refuse without reinjection or a public-tree fallback.
+The privacy boundary is unchanged: an incomplete native snapshot is never walked
+or masked. A Wait re-reads on its normal poll cadence within its existing deadline;
+if a complete read recovers but the quoted target stays absent, the Wait retains
+`TARGET_NOT_FOUND` with the observed screen, even if a later recovery capture is
+incomplete. Other steps refuse incomplete native evidence after any eligible capture
+retries described below. React-side incomplete capture
+and generic private-capture failures retain `PRIVATE_INPUT_CAPTURE_UNKNOWN`.
 
 A required private capture re-reads a canonical empty snapshot (`nodes=[]`,
 verdict `degraded`, `nodeCount=0`, reasons exactly `empty-capture`, no truncation
@@ -2027,10 +2184,21 @@ or dropped nodes), a structurally valid incomplete version-2 snapshot on the
 platform-presence route with no truncation or dropped nodes, a consistent node
 count, a known matching generation and withheld keyboard state, or an iOS
 `RN_FAST_RUNNER_DOWN` failure marked as pending runner relaunch recovery, at
-500 ms intervals within the existing 6-second settle budget and remaining total
-capture budget. These conditions share one retry
-deadline; re-reads on both ordinary and platform-presence routes, including
-readiness probes and snapshot transport, stop waiting at that deadline.
+500 ms intervals until the earlier of six seconds after the first retryable result
+and 22 seconds after capture start. These conditions share one retry deadline.
+Re-reads on both ordinary and platform-presence routes, including readiness probes
+and snapshot transport, stop waiting at that deadline.
+A required private ordinary capture with no caller budget also re-reads a nonempty,
+untruncated snapshot whose only incomplete cause is `dropped=<n>`, within that shared
+deadline. Wait polls and platform-presence captures keep one native read for this
+cause. Each dropped-snapshot re-read emits a
+value-free `native-reread` point in `logs/core-diagnostics.jsonl`, with or without
+runtime inputs. Only a fresh complete read is admitted. Persistent drops refuse
+with their latest node count, dropped count and `retry-deadline`, including when an
+intervening empty read is followed by a read that exceeds the window.
+A truncated replacement or a degraded replacement outside the retry conditions
+above refuses with its own causes and no expiry marker. Native read exceptions
+keep their existing classification.
 After timeout containment relaunches the iOS reader, it waits for an `alive`
 probe with `PLATFORM_PRESENCE_V2` within the remaining `READY_TIMEOUT_MS`
 (30 seconds by default), shared with reader startup;
@@ -2039,11 +2207,16 @@ refuses with `NATIVE_CAPTURE_UNAVAILABLE` after the capture retry budget.
 An empty snapshot's unchanged ref map and zero-node count
 diagnostics do not prevent this read-only retry; persistent emptiness still
 refuses with the same code and message. Persistent incomplete presence refuses
-with `PRIVATE_INPUT_CAPTURE_UNKNOWN`, naming the unknown keyboard state and any
+with `NATIVE_SNAPSHOT_INCOMPLETE`, naming the unknown keyboard state and any
 known acquisition phase, failure reason or deadline read using fixed codes.
+On iOS, `presence-failure=<phase>:<reason>` names the first recorded failure,
+which can be a harmless node-level read; `presence-incomplete=<phase>:<reason>`
+names the decisive failure that left the snapshot incomplete. A known revalidation
+mismatch adds `presence-incomplete-mismatch=<kind>`. These codes appear in both
+the refusal and capture log and carry no screen content.
 If the retry deadline cuts off a read, the refusal retains the last incomplete
 presence snapshot's fixed causes and adds `retry-deadline` without returning that
-snapshot as usable evidence.
+snapshot as usable evidence; the capture log also retains its presence diagnostics.
 Where presence is required after a system dialog closes, iOS native preparation
 compares consecutive full enumerations and waits for a 500 ms quiet window before
 observing candidates. Any descriptor or hierarchy change resets that quiet window
@@ -2054,8 +2227,9 @@ ordinary privacy admission or lift screenshot withholding. Semantic phrase-actio
 readbacks still require full platform presence and privacy admission.
 Only a fresh, complete snapshot can establish privacy or admit a newly arrived
 system alert; partial presence never authorizes actions, screenshots or model
-evidence. Malformed, truncated, dropped-node and other incomplete captures refuse
-immediately. The [capture implementation](../qaren-core/src/qa/capture.ts) owns
+evidence. Incomplete captures outside the retry conditions or still incomplete after
+their retry window refuse at the capture boundary; Wait handles
+`NATIVE_SNAPSHOT_INCOMPLETE` as described above. The [capture implementation](../qaren-core/src/qa/capture.ts) owns
 retry eligibility; [settle regressions](../qaren-core/test/unit/qa/private-empty-reread.test.ts)
 cover these boundaries.
 
@@ -2113,8 +2287,12 @@ Reports show both facts beside each row and name reconnects on the report and
 pull-request verdict lines. A `lost` row withholds every new or patched block of the
 walk, even when later captures recover; any other gap withholds only the block it belongs to.
 Strict private React capture can scan up to 5,000 fibers across renderer roots,
-including a single-root screen. Existing capture and item deadlines, host-evidence and
-interactive-node limits still apply.
+including a single-root screen. Its interactive-entry cap now shares the private
+host-evidence bound in [PRIVATE_INPUT_LIMITS](../qaren-core/src/qa/private-input-limits.ts),
+so long-list sheets can retain the React placeholders needed for quoted Fill.
+The agent-facing digest stays capped at 200 entries. A digest truncated by any
+bound is still discarded in full; capture and item deadlines and all other bounds
+remain unchanged.
 
 On composite components, the digest omits non-string `title`,
 `accessibilityLabel` and `placeholder` props without coercing or serializing them;
@@ -3014,12 +3192,15 @@ remains unproven, cleanup retains the resources and lease.
 A failed startup also retains its driver handle until exit is proven; a surviving
 driver blocks replacement with `RUNNER_ADOPTION_REQUIRED`.
 
-After teardown, an iOS check with a recorded runner driver polls
-`~/Library/Logs/DiagnosticReports` for up to 60 seconds, stopping early on a match
-or cancellation. It looks for a SpringBoard `.ips` report whose body `captureTime`
-is at or after core spawn and whose device path or coalition matches the selected
-simulator. File modification time and the header's report-delivery timestamp do
-not establish crash time; a missing or invalid `captureTime` is not attributed.
+After teardown, an iOS check with a recorded runner driver scans
+`~/Library/Logs/DiagnosticReports` once immediately. A pass or a failure marked as
+a plan step's failure does not wait; other outcomes poll for up to 60 seconds,
+stopping early on a match or cancellation. A core execution failure or a surviving
+core process group always keeps that polling window. It looks for a SpringBoard
+`.ips` report whose body `captureTime` is at or after core spawn and whose device
+path or coalition matches the selected simulator. File modification time and the
+header's report-delivery timestamp do not establish crash time; a missing or
+invalid `captureTime` is not attributed.
 A match adds `outcomes.springboard_crash` to the receipt and a lane-health entry to
 `run.json` history, including the crash time in UTC and optionally a sanitized
 exception type; report paths and raw contents are not copied. Attribution to this
@@ -3223,7 +3404,7 @@ A step without a `testID` or label, a phrase wait, or a literal fill into a secu
 [keyboard fallback](#fill-verification-and-keyboard-fallback) leaves the block
 unsaved and the ledger says why without naming any value. A [runtime input](#runtime-inputs)
 fill can be saved in those private or fallback paths when it has a stored selector,
-which is the field's testID the focus proof used, even for a passing `UNVERIFIED_FILL`
+which is the bound field's testID, even for a passing `UNVERIFIED_FILL`
 row; the remaining persistence checks still apply. Planned fill literals
 also undergo the [shared masking rules](#input-value-masking), so a protected
 literal withholds a newly discovered or patched block even for an ordinary input.
@@ -3443,6 +3624,18 @@ read when it saw any, and a suggestion to insert a `Wait for` the target before
 that line, or move an earlier wait to an element that renders with it. See
 [row timing](#row-timing) for the measured wait duration.
 
+If interruption recovery after a target-resolution failure throws
+`NATIVE_SNAPSHOT_INCOMPLETE`, that capture refusal remains the outcome and adds
+`step-reason=<word>` for the step's first reason: `target-not-found`,
+`target-not-found-after-launch`, `replay-selector` or `target-ambiguous` for the
+corresponding target code, and `other` for any other code. For a quoted Fill with
+no matching field name, when the screen held before recovery has exactly one
+eligible unnamed native input that could pair with the placeholder, it also adds
+`placeholder-pairing=unknown` or `placeholder-pairing=incomplete` for its React
+coverage gap. These are fixed words, never target text. Screenshots remain
+withheld and video publication remains unknown. A refusal returned by recovery
+rather than thrown is unchanged; error precedence and launch polling are unchanged.
+
 Development error overlay recognition covers iOS RedBox and LogBox and Android
 native RedBox. Android native RedBox recognition has automated test coverage only,
 with no Android device proof; Android LogBox is out of scope. On iOS, LogBox is
@@ -3526,7 +3719,8 @@ unsure after its re-ask gets a deterministic recovery, subject to the
 [quoted-wait deadline limits](#plan-checks-and-screen-evidence), then the step runs once more from a fresh
 capture. If it fails again, a second recovery may decline a different system prompt or app
 interruption once the first is proven gone. An app interruption with the same decline label
-fails with `the app interruption did not disappear`; a different kind of interruption or
+fails with `the app interruption did not disappear`, except a returning strict permission
+opt-in (below); a different kind of interruption or
 decline label may be eligible, subject to the same guards on each recovery. A step never
 gets more than two interruption recoveries. The order is owned by [`recover.ts`](../qaren-core/src/qa/recover.ts): a
 recognized system prompt met during an ordinary app step is declined, never accepted
@@ -3650,7 +3844,8 @@ absent can expire protection that way. Protection also lapses once a later plann
 item passes on its own complete capture with no decline control on screen; an interruption
 appearing after that point is eligible for bounded recovery. Until a later item
 passes, protection holds, so a screen the tap opens late stays protected, and a
-later item passing while a decline control is still on screen keeps it. After the
+later item passing while a decline control or a strict permission opt-in shape (below)
+is still on screen keeps it. After the
 lapse, a later step targeting the interruption still keeps it through the later-target
 veto, which is checked before planned-press protection. Static decline text does not
 keep protection; an on-screen, non-structural decline with supported or unknown press
@@ -3661,10 +3856,11 @@ destination, even when it closes an identified modal. If that destination has no
 identifiable container, protection remains on, including against later sheets,
 until it lapses. When an identified destination is proven gone, later unsolicited
 sheets can be dismissed. Recovery's decline presses and login presses never arm it.
-While protected, recovery dismisses no app screen: neither an opt-in shape,
-a screen absent at press readback, nor a newly identified modal proves independence
-from the planned tap. A push opt-in arriving right after a planned tap, before a
-later item passes, must be answered explicitly by the plan. Opt-ins and intro sheets
+While protected, recovery dismisses no app screen except a strict permission opt-in
+(below): neither a looser opt-in shape, a screen absent at press readback, nor a newly
+identified modal proves independence from the planned tap. Any other opt-in arriving
+right after a planned tap, before a later item passes, must be answered explicitly by
+the plan. Opt-ins and intro sheets
 at launch, after login replay, after an identified destination departs, or after
 protection lapses remain eligible for bounded recovery.
 Outside protection, a permission opt-in shape labels an otherwise permitted
@@ -3675,6 +3871,49 @@ starting with `Yes` and mentioning notifications, without negation.
 A whole-label, case-insensitive match for `Allow all`, `Accept all`, `Agree to all`
 or `Enable all` identifies base consent; none of its declines is taken.
 Navigation labels such as `View all offers`, `See all` or `Show all` do not identify consent.
+
+A strict permission opt-in is declined even while protected. Every condition must hold
+on the fresh complete capture, and anything unknown keeps the veto. A refusal names
+why the opt-in was not declined:
+
+- Exactly two proven controls, both visible, hittable, enabled, non-secure buttons
+  with supported press and no fill; a link, switch, cell or input disqualifies the screen.
+- The decline's normalised label (case, spacing and apostrophes folded) is exactly
+  `skip`, `not now`, `later`, `maybe later`, `no thanks` or `don't allow`. The accept
+  is `notify me`, `yes, notify me`, or `allow`, `enable` or `turn on` alone or followed
+  only by permission subjects and the fillers `access`, `to`, `my`, `the` and `push`.
+- A permission subject (`notification(s)`, `notify`, `location`, `camera`, `microphone`,
+  `photos`, `contacts`, `calendar`, `bluetooth`, `face id`, `touch id`, `biometric(s)`)
+  is named in the accept, or in the visible text when the accept is bare.
+- No consent word (`agree`, `accept`, `consent`, `terms`, `privacy`, `policy`, `policies`,
+  `cookie(s)`, `partner(s)`, `companies`, `third`, `analytics`, `tracking`, `marketing`,
+  `advertising`, `ads`, `share`, `sharing`) appears anywhere in the captured text,
+  including merged labels, non-secure values, unresolved text and offscreen elements.
+  A concealed screen or a text element with neither label nor value makes this unknown.
+  Every React-only control must be proven behind the one presented modal, and their
+  count must account for every unassociated React control.
+- The later-target veto passes; a replayed step's declared wording is checked as well
+  as its stored selector.
+- The planned press's tapped label, read from the capture it was dispatched from, is
+  known and is neither a decline nor an accept form. Every element with an identity
+  in that complete dispatch capture is checked, including offscreen and React-only
+  elements; none may share either opt-in control's kind and test ID (or label).
+  A control without either test ID or label keeps the tap record unknown.
+- The same opt-in, identified by its decline, accept and subject, was not already
+  declined this way in the run.
+
+The Jev veto still applies. Recovery taps the decline once, never the accept, and proves
+on a complete capture that both labels are gone in any normalised spelling; otherwise the step fails with
+`the permission opt-in was still in front after its decline; it was not retried`. It then
+retries the step once within the step's interruption recoveries. The retry row reads
+`recovered: declined a permission opt-in that followed the plan's own tap (<decline>)`,
+naming a fixed decline word or `the decline control`. When an opt-in declined this way
+returns, on the step's own retry or even after protection lapses, nothing is tapped: the step fails with
+`the app asked again after recovery declined this permission opt-in; nothing was tapped`
+and suggests a `Tap "<decline>"` step after the planned press, or before the failing
+step once protection has lapsed. An opt-in declined outside
+protection is declined again when it returns. System permission alerts follow the
+dialog rules above.
 Login replay also clears the withheld-dismissal diagnostic for the retried item.
 While protected, recovery still answers system
 prompts and dev menus and still replays login, but withholds every app decline,
@@ -3693,6 +3932,10 @@ is still on screen, including one that opens together with it, is therefore not
 dismissed either. When the protected screen is opt-in shaped or has only a decline
 control, the failure names its class even with text withheld and suggests adding
 a step after the planned press that taps the named decline, with privacy masks intact.
+A failed row's reason also says why recovery dismissed nothing when presence evidence
+was unreadable, late or incomplete, when a decline control's visibility or press could
+not be proven after a planned press, or when a protected screen was not a strict opt-in
+or its control evidence was incomplete.
 
 With `TYPESAFE_API_KEY`, Jev may veto a selected control when the screen may be
 related to the step or its purpose is uncertain. It never chooses a control,
@@ -3733,9 +3976,13 @@ step's ledger row carries an `interruption` receipt: `considered`, an `outcome`
 veto, whether a later-target veto came from `presence` or `ownership`, the target's
 plan line and step kind, whether the decline was the screen's only control, when a
 dispatched decline stayed the vertical centre in points of the control the press
-aimed at, and the `screenClass` a dismissed screen was recognised as
-(`permission-opt-in`); the report prints it as one line under the failure. An
-ownership veto fills the failure's suggested plan edit with the owning line. A Jev veto
+aimed at, the `screenClass` a dismissed screen was recognised as
+(`permission-opt-in`), and `afterPlannedPress: true` when the strict opt-in exception
+declined it; the report prints it as one line under the failure. An ownership veto
+fills the failure's suggested plan edit with the owning line.
+Each strictly shaped opt-in decline adds `{ line, afterPlannedPress }` to the ledger's
+`declinedOptIns`, one entry per dismissal. The verdict stays `PASS`, and a passing
+report and pull-request comment add `N opt-in(s) declined (line(s) …)` beside it. A Jev veto
 or a guard change before dispatch records `not-dispatched`. A dismissal stays on
 the row through the step's retry. A no-candidate veto also reports
 each decline-labelled element's first failed predicate; press capability failures
@@ -3865,6 +4112,26 @@ For runs using runtime inputs, see the [runtime-input diagnostics](#runtime-inpu
 for the retained event file and field limits. The `core.log` details below apply
 to runs without runtime inputs.
 
+Every walker dispatch timing event records its `action`. A `COMPLETED` event
+means the handler returned, not that it succeeded: `ok` records the returned
+boolean, `nativeMutation` retains a recognized mutation classification when
+provided, and a non-ok result adds `resultCode`. That code is the leading error
+code when allowlisted, or `OTHER`; error text is never copied into these fields.
+The [diagnostic allowlists](../qaren-core/src/qa/diagnostics.ts) own the action,
+mutation and result-code vocabulary. These fields survive the TypeScript and CLI
+cleaners into runtime-input runs' private `logs/core-diagnostics.jsonl` as well.
+They distinguish a non-ok press, keyboard dismissal and a successful retry in
+order without changing dispatch behavior, refusal diagnostics or ledger rows.
+
+For the [keyboard-refusal handoff](#occluded-taps-and-focus), read the dispatch
+`COMPLETED` events in order: `press` with `ok: false`,
+`resultCode: KEYBOARD_DISMISS_FAILED` and `nativeMutation: none`, then
+`dismiss-keyboard`, then `press` with its returned result. A repeated refusal
+ends after that third dispatch; the absent-target path starts with dismissal,
+without a preceding press. Dismissal's `ok: true` alone does not prove the
+keyboard disappeared: the separate `keyboard-clearance` note in `logs/core.log`
+must report `hidden: true` to establish that observation.
+
 Private `timing` events in `logs/core.log` may include `refusalDiagnostic` when
 an instrumented iOS dispatch boundary records the context's first refusal. This
 bounded, value-free record retains allowlisted refusal, native-response and
@@ -3903,7 +4170,8 @@ occlusion. Runtime-input suppression follows the contract above.
 The [walker cover result type](../qaren-core/src/qa/walker.ts) owns the fixed gap values.
 `no-native-presence` means the capture carried no native presence, so no React host
 could be tied to a native node. Quoted presses use ordinary captures without native
-presence or React typography. On iOS a covered press or Fill refusal with that gap takes the
+presence or React typography; the [absent-target keyboard clearance](#occluded-taps-and-focus)
+has a separate modal-proof capture. On iOS a covered press or Fill refusal with that gap takes the
 walker's one bounded platform-presence recapture, the same one a plain scroll uses for
 an unproven cover, and looks up the cover again on it, at most once per cover lookup.
 For covered targets, only refusals pay for that read (a presence capture can take
@@ -3952,6 +4220,26 @@ available without private-input diagnostics, and omitted when not measured;
 a measured zero is retained. Settle time overlaps `actMs` and preparation
 counts add no time to the partition. Waits and scrolls that only capture can
 carry preparation counts without a client settle.
+
+Optional `timing.send` details measured Tap and Fill dispatch work:
+
+- `keyboardGuardMs`: native keyboard check and dismissal time.
+- `liveCheckMs`: native target movement and live-hit check time.
+- `gestureMs`: native action interval; Fill includes focus, clearing, typing
+  and intervening waits on that path.
+- `runnerMs`: whole native command handling time, excluding transport and
+  client settle.
+- `settleProbes`: number of client settle probe calls, including failed probes.
+
+Each field sums available measurements across dispatches in the row window.
+Durations can be fractional milliseconds; `settleProbes` is an integer count.
+The duration fields overlap `actMs`, and `runnerMs` includes the measured native
+subphases; do not add them together or to `total`. Probe counts add no time.
+These fields are value-free and retained for runtime-input runs. Unmeasured
+fields are omitted, including on older runners or paths that skip native work;
+a measured zero is retained. Focused Fill records zero settle probes when
+client settle is disabled and native send measurements are available. Availability
+depends on the platform and dispatch path; absent fields do not mean zero cost.
 
 The ledger's `speed` summary groups timed action/check rows by operation, keeping
 login-replay steps separate from plan steps that share a line and kind. Every retry,
@@ -4466,7 +4754,8 @@ The receipt, report and PR comment name the policy and the selected config: its 
 Feature artwork withheld solely for an ordinary accessibility value without a typed safe path (ANT-664) is eligible in non-strict mode and remains withheld in strict or undeclared mode. The [screenshot publication regression](tests/publish_flow.rs) covers this policy decision with synthetic artwork; it does not establish live device acceptance.
 
 Only the selected config declares the video mode; no flag, environment variable,
-plan annotation or inferred backend selects it.
+plan annotation or inferred backend selects it. `--record` turns recording on for a
+check; it does not select the video mode.
 
 SECRET text masking and no readback apply in both modes. A runtime input displayed in a non-secure field can be marked `(test-pii)` only if it is test data; that annotation cannot exempt secure fields or code rows. Non-strict is an operator declaration, not proof: an undeclared secret prefilled into a non-secure field, real personal data, or a value visible only between captures can appear in published media. QaReN does not mask media regions or identify the backend. Upgrade every CLI/CI runtime before adding the key; older versions refuse it. Removing the key restores strict behavior.
 
@@ -4899,6 +5188,12 @@ bound by the lockfile plus the `version` of the package Node resolution finds
 in `node_modules` from the project root up to the worktree root (pnpm symlinks
 included); pure Node built-ins are ignored, and a package that does not resolve to a
 versioned `package.json` makes the fingerprint incomplete.
+Other Node built-ins, including unknown `node:` names, make it incomplete because
+they may read unbound inputs. Their refusal names the first file traced importing
+the specifier, for example: `Node built-in "node:fs" imported by plugins/withX.js
+may read unbound inputs; the input set is unprovably complete`. A specifier that
+is not a resolvable package name also names its importing file. This attribution
+is diagnostic only and is not hashed.
 Local package plugins and bare imports declared through `link:`, `file:` or
 `workspace:`, or resolved into worktree source outside `node_modules`, are not
 traced and always make the fingerprint incomplete; relative plugin files in
@@ -4918,7 +5213,7 @@ in decision evidence). Unresolvable local refs and `workspace:` dependencies
 in any of those sections also make it incomplete.
 On iOS the value also binds the selected Xcode (`xcodebuild -version`), so a
 build is never reused across Xcode versions, and an unavailable Xcode makes the
-fingerprint incomplete. Android binds the manifest hash alone.
+fingerprint incomplete.
 
 `DEVELOPER_DIR` and `TOOLCHAINS` select the inherited toolchain. The inherited
 `EXPO_USE_PRECOMPILED_MODULES=0` and `RCT_USE_PREBUILT_RNCORE=0` switches select
@@ -4946,6 +5241,18 @@ or select a compatible installed Xcode with `DEVELOPER_DIR`.
 
 Receipts report normalized `toolchain` information: selected Xcode, Swift version,
 and observed Expo module linkage. Unknown evidence remains unknown.
+
+**Fingerprint timings.** Successful build-decision and pre-walk re-check
+computations report durations in receipt `timings_ms` and the `end` event's
+`timingsMs`, with prefixes `plan_fp_` and `verify_fp_`, respectively. Each prefix
+has `total` (the whole fingerprint call), `list` (candidate input listing),
+`toolchain` (compiler identity collection) and `hash` (input reading, tracing and
+hashing). The `expo` suffix measures Expo resolution and evaluation and appears
+only when attempted (on iOS for Expo or dynamic configs, and on Android for
+dynamic configs); it is absent otherwise, including on static Android configs.
+For each prefix, the four parts sum to no more than `total`; these are
+subdivisions, not extra time to add to the enclosing stage. Only durations are
+exposed: private fingerprint subprocesses emit no `cmd` events.
 
 **Expo native identity (iOS).** When the app's `package.json` declares `expo` in
 `dependencies`, `devDependencies`, `optionalDependencies` or `peerDependencies`,
@@ -4975,8 +5282,40 @@ before, with the unavailability named in the evidence. A config whose evaluated
 value changes between runs (an environment read, a time or random value) changes
 the hash and rebuilds.
 Limits: environment read only by native build scripts (a Podfile reading `ENV`,
-for example) and the CocoaPods version are not bound; Android keeps a dynamic
-config incomplete.
+for example) and the CocoaPods version are not bound.
+
+**Dynamic `app.config.*` (Android).** QaReN resolves the app's own
+`@expo/fingerprint` once and evaluates `fingerprint:generate --platform android`
+twice. The `expo` view removes `CI` to match prebuild, and the `expo-ci` view sets
+`CI=1` to match Gradle and `expo run:android`. Both commands use
+`EXPO_NO_TELEMETRY=1`, private capture and the same output requirements described
+above. Resolution and each evaluation have a 120 s command timeout. Both must
+succeed to bind `rnfp`, `expo` and `expo-ci` in the `qaren-expo-native-android/1`
+composite and clear the dynamic-config incompleteness. Other incompleteness
+still forbids reuse. If either evaluation is unavailable, neither Expo part is
+bound. The value stays the native-input manifest hash, with both the
+dynamic-config and unavailable-evaluation incompleteness reasons. Rebuild evidence
+records `Expo fingerprint unavailable: <cause>` with the closed cause. Static
+Android configs run no evaluation and retain their existing fingerprint value.
+Android does not bind JDK, SDK or NDK identity.
+
+A previously recorded Android build with a dynamic config and no Expo parts
+rebuilds once both evaluations become available. Later checks with unchanged
+complete native inputs reuse the verified APK, skip prebuild and Gradle, and
+install it. A changed evaluated config rebuilds with evidence naming `expo` or
+`expo-ci`.
+
+For dynamic configs, Android rechecks both evaluations after preparation. When
+plan-time evaluation was unavailable, only the native-input manifest is compared
+for drift, and a successful build is recorded under the incomplete **plan-time**
+fingerprint.
+An evaluation first seen after the build never becomes that build's identity;
+the next check with available evaluations rebuilds. When both Expo parts were
+available at plan time, an unavailable recheck gets one more evaluation attempt.
+If still unavailable, the run fails with `BUILD_FAILED` and a closed detail saying
+the app config could not be evaluated again after the build, including the cause.
+Changed parts fail as `CANDIDATE_DRIFTED` and name the part. Receipt notes include
+`expo_fingerprint_ms` for the plan-time evaluations.
 
 An incomplete fingerprint over an existing generated native directory requires a
 clean prebuild, which deletes that directory with its installed native
@@ -5088,9 +5427,10 @@ is copied and content-hashed in a staging directory inside its fingerprint's
 store entry (iOS) or under `.qaren/native-cache/artifacts/android/<app_id>-<fingerprint-key>/`
 (Android). Copying checks cancellation between entries and file chunks. A final
 cancellation check precedes moving the staged bundle into an exclusively created
-run-specific generation and
-atomically saving cache state with the readiness-rechecked fingerprint
-(native-input drift during the build fails the run as `CANDIDATE_DRIFTED`).
+run-specific generation and atomically saving cache state with the
+readiness-rechecked fingerprint, retaining the Android plan-time fingerprint when
+plan-time Expo evaluation was unavailable. Native-input drift during the build
+fails the run as `CANDIDATE_DRIFTED`.
 Cancellation before that publication removes staging and preserves the previous
 state without rebinding installation ownership. A failed state save removes the
 new generation and retains the previous state. On iOS a complete fingerprint then

@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { cleanDiagnostic } from '../../../dist/qa/diagnostics.js';
 import { createWriter } from '../../../dist/qa/wire.js';
 import { InputPrivacyRefusal, RunInputs, withInputs } from '../../../dist/qa/inputs.js';
 import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
@@ -380,4 +381,57 @@ test('failure-path diagnostics retain finite stages and scrub adversarial values
     return lines.join('');
   });
   assert.equal(outputs[0], outputs[1]);
+});
+
+test('T5: timing diagnostics retain closed dispatch fields and drop invalid values', () => {
+  const base = {
+    kind: 'timing',
+    stage: 'dispatch',
+    code: 'COMPLETED',
+    line: 1,
+    at: 10,
+    acquisitionMs: 2,
+    observationAgeMs: 8,
+  };
+  const fields = {
+    action: 'press',
+    ok: false,
+    nativeMutation: 'none',
+    resultCode: 'KEYBOARD_DISMISS_FAILED',
+  };
+  assert.deepEqual(cleanDiagnostic({ ...base, ...fields }), { ...base, ...fields });
+  assert.deepEqual(
+    cleanDiagnostic({
+      ...base,
+      action: 'private-action',
+      ok: 'false',
+      resultCode: 'private-code',
+      nativeMutation: 'private-mutation',
+    }),
+    base,
+  );
+  for (const action of [
+    'press',
+    'fill',
+    'type',
+    'scroll',
+    'back',
+    'dialog',
+    'dismiss-keyboard',
+    'blur',
+  ])
+    assert.deepEqual(cleanDiagnostic({ ...base, action }), { ...base, action });
+  for (const resultCode of [
+    'KEYBOARD_DISMISS_FAILED',
+    'FOCUS_TARGET_OCCLUDED',
+    'OUTSIDE_APP_WINDOW',
+    'NO_TEXT_INPUT_TARGET',
+    'TEXT_ENTRY_UNVERIFIED',
+    'RUN_CANCELLED',
+    'OTHER',
+  ])
+    assert.deepEqual(cleanDiagnostic({ ...base, resultCode }), { ...base, resultCode });
+  for (const nativeMutation of ['none', 'observed', 'possible'])
+    assert.deepEqual(cleanDiagnostic({ ...base, nativeMutation }), { ...base, nativeMutation });
+  assert.deepEqual(cleanDiagnostic({ ...base, ok: true }), { ...base, ok: true });
 });

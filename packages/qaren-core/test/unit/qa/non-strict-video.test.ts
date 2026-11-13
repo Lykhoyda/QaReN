@@ -504,7 +504,10 @@ for (const policy of [undefined, 'strict', 'non-strict'] as const) {
           (prior === 'plan-fill' ? '\n1. Fill "fixture" with "synthetic"' : '');
         const result = await runPlan(parsePlan(plan).blocks!, f.deps);
         assert.equal(result.verdict, 'REFUSED');
-        assert.equal(result.code, 'PRIVATE_INPUT_CAPTURE_UNKNOWN');
+        assert.equal(
+          result.code,
+          kind === 'native' ? 'NATIVE_SNAPSHOT_INCOMPLETE' : 'PRIVATE_INPUT_CAPTURE_UNKNOWN',
+        );
         assert.equal(result.videoPublication, 'unknown');
         assert.equal(Object.hasOwn(result, 'nonStrictPublication'), false);
         const lines: string[] = [];

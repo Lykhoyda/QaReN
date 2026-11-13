@@ -292,7 +292,10 @@ function nativeIncompleteCauses(observation: NativeObservation): string[] {
       causes.push(
         ...presenceDiagnostics(observation.presenceCapture.diagnostics).filter(
           (cause) =>
-            cause.startsWith('presence-failure=') || cause.startsWith('presence-deadline='),
+            cause.startsWith('presence-failure=') ||
+            cause.startsWith('presence-incomplete=') ||
+            cause.startsWith('presence-incomplete-mismatch=') ||
+            cause.startsWith('presence-deadline='),
         ),
       );
   }
@@ -321,6 +324,19 @@ function retryableEmptyCapture(observation: NativeObservation): boolean {
     Array.isArray(verdict.reasons) &&
     verdict.reasons.length === 1 &&
     verdict.reasons[0] === 'empty-capture'
+  );
+}
+
+function retryableDroppedCapture(observation: NativeObservation): boolean {
+  const causes = nativeIncompleteCauses(observation);
+  return (
+    Array.isArray(observation.nodes) &&
+    observation.nodes.length > 0 &&
+    observation.truncated === false &&
+    typeof observation.normalizationDroppedNodes === 'number' &&
+    observation.normalizationDroppedNodes > 0 &&
+    causes.length === 1 &&
+    causes[0] === `dropped=${observation.normalizationDroppedNodes}`
   );
 }
 
@@ -434,13 +450,15 @@ function presenceGeometry(value: unknown): string | undefined {
   return JSON.stringify(geometry);
 }
 
+const PRESENCE_MISMATCH_KINDS = new Set<unknown>([
+  'descriptor-count',
+  'added-node',
+  'missing-node',
+  'node',
+]);
+
 function presenceMismatch(value: unknown): string | undefined {
-  if (
-    !isRecord(value) ||
-    typeof value.kind !== 'string' ||
-    !['descriptor-count', 'added-node', 'missing-node', 'node'].includes(value.kind)
-  )
-    return undefined;
+  if (!isRecord(value) || !PRESENCE_MISMATCH_KINDS.has(value.kind)) return undefined;
   // Bits mirror PlatformPresenceDiagnostics.Mismatch.Field; no descriptor content crosses this boundary.
   if (
     !boundedPresenceInteger(value.fieldMask, 511) ||
@@ -537,6 +555,17 @@ function presenceDiagnostics(value: unknown): string[] {
       if (mismatch) causes.push(mismatch);
     }
   }
+  // The first failure can be a harmless node read; this one left the capture incomplete.
+  const decisive = value.decisiveFailure;
+  if (
+    isRecord(decisive) &&
+    PRESENCE_FAILURE_PHASES.has(decisive.phase) &&
+    PRESENCE_FAILURE_REASONS.has(decisive.reason)
+  ) {
+    causes.push(`presence-incomplete=${decisive.phase}:${decisive.reason}`);
+    const kind = isRecord(decisive.mismatch) ? decisive.mismatch.kind : undefined;
+    if (PRESENCE_MISMATCH_KINDS.has(kind)) causes.push(`presence-incomplete-mismatch=${kind}`);
+  }
   if (
     isRecord(deadline) &&
     PRESENCE_FAILURE_PHASES.has(deadline.phase) &&
@@ -609,6 +638,24 @@ export async function captureScreen(deps: CaptureDeps): Promise<Screen> {
   }
 }
 
+function reportPresenceDiagnostics(deps: CaptureDeps, native: NativeObservation): void {
+  if (deps.warn && isRecord(native.presenceCapture)) {
+    try {
+      for (const cause of presenceDiagnostics(native.presenceCapture.diagnostics)) {
+        if (
+          cause.startsWith('presence-failure=') ||
+          cause.startsWith('presence-incomplete=') ||
+          cause.startsWith('presence-incomplete-mismatch=') ||
+          cause.startsWith('presence-deadline=') ||
+          cause.startsWith('presence-mismatch=') ||
+          cause.startsWith('presence-preparation-')
+        )
+          deps.warn(cause);
+      }
+    } catch {}
+  }
+}
+
 async function capture(deps: CaptureDeps): Promise<Screen> {
   const observation =
     typeof deps.observation === 'number' &&
@@ -625,6 +672,8 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
       : Math.max(1, Math.min(NATIVE_PRESENCE_BUDGET_MS, Math.floor(deps.budgetMs)));
   let native: NativeObservation = {};
   let retryDeadline: number | undefined;
+  let droppedRead: { nodes: number; causes: string[] } | undefined;
+  let retryExpired = false;
   for (;;) {
     let runnerDown = false;
     const retryRefusal =
@@ -633,7 +682,12 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
             ...nativeIncompleteCauses(native),
             'retry-deadline',
           ])
-        : new NativeCaptureError();
+        : droppedRead
+          ? new NativeSnapshotIncomplete(droppedRead.nodes, [
+              ...droppedRead.causes,
+              'retry-deadline',
+            ])
+          : new NativeCaptureError();
     try {
       native = await measureTiming(deps.timing, now, 'native-total', () =>
         retryDeadline === undefined
@@ -646,8 +700,10 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
       if (deps.timing) observeNativeTiming(native.presenceCapture, deps.timing, now());
     } catch (error) {
       if (isAbort(error)) throw error;
-      if (error === retryRefusal && retryRefusal instanceof NativeSnapshotIncomplete)
+      if (error === retryRefusal && retryRefusal instanceof NativeSnapshotIncomplete) {
+        reportPresenceDiagnostics(deps, native);
         throw retryRefusal;
+      }
       if (error instanceof AppProcessGoneError) throw error;
       if (!deps.requirePrivateInputs) throw error;
       if (
@@ -658,11 +714,20 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
         throw new NativeCaptureError();
       runnerDown = true;
     }
+    const retryDropped =
+      !runnerDown &&
+      deps.requirePrivateInputs &&
+      deps.budgetMs === undefined &&
+      deps.platformPresence !== true &&
+      retryableDroppedCapture(native);
+    if (retryDropped)
+      droppedRead = { nodes: native.nodes!.length, causes: nativeIncompleteCauses(native) };
     if (
       !runnerDown &&
       (!deps.requirePrivateInputs ||
         !(
           retryableEmptyCapture(native) ||
+          retryDropped ||
           (deps.platformPresence === true &&
             deps.budgetMs === undefined &&
             retryablePresenceCapture(native))
@@ -674,15 +739,24 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
     const remaining = retryDeadline - at;
     if (!(remaining > 0)) {
       if (runnerDown) throw new NativeCaptureError();
+      retryExpired = true;
       break;
     }
     await sleep(Math.min(WAIT_POLL_MS, remaining));
     const readBudget = Math.floor(retryDeadline - now());
     if (!(readBudget > 0)) {
       if (runnerDown) throw new NativeCaptureError();
+      retryExpired = true;
       break;
     }
     presenceBudgetMs = Math.min(NATIVE_PRESENCE_BUDGET_MS, readBudget);
+    if (retryDropped)
+      observeTiming(deps.timing, {
+        stage: 'native-reread',
+        edge: 'point',
+        outcome: 'ok',
+        at: now(),
+      });
   }
   // A read finishing after its scope ended publishes nothing more.
   throwIfCancelled();
@@ -694,21 +768,7 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
       /* Diagnostics cannot change capture admission. */
     }
   }
-  if (deps.warn && isRecord(native.presenceCapture)) {
-    try {
-      for (const cause of presenceDiagnostics(native.presenceCapture.diagnostics)) {
-        if (
-          cause.startsWith('presence-failure=') ||
-          cause.startsWith('presence-deadline=') ||
-          cause.startsWith('presence-mismatch=') ||
-          cause.startsWith('presence-preparation-')
-        )
-          deps.warn(cause);
-      }
-    } catch {
-      // Diagnostics cannot change capture admission or failure.
-    }
-  }
+  reportPresenceDiagnostics(deps, native);
   let react: ReactObservation = {};
   let reactWarning: string | undefined;
   let reactConnection: Screen['reactConnection'];
@@ -740,7 +800,12 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
     if (deps.requirePrivateInputs && captureCoverage.native !== 'complete')
       throw new NativeSnapshotIncomplete(
         nodes.length,
-        captureCoverage.native === 'unknown' ? ['unattested'] : nativeIncompleteCauses(native),
+        captureCoverage.native === 'unknown'
+          ? ['unattested']
+          : [
+              ...nativeIncompleteCauses(native),
+              ...(retryExpired && retryableDroppedCapture(native) ? ['retry-deadline'] : []),
+            ],
       );
     const hostEvidence = validateReactHostEvidence(react.hostEvidence);
     const nativePresence =

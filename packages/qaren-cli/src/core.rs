@@ -273,6 +273,12 @@ pub struct Ledger {
     pub escapes: u64,
     pub recoveries: u64,
     #[serde(
+        rename = "declinedOptIns",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub declined_opt_ins: Vec<DeclinedOptIn>,
+    #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         deserialize_with = "passive"
@@ -544,6 +550,16 @@ pub struct InterruptionReceipt {
     pub press_centre_y: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_class: Option<InterruptionScreenClass>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_planned_press: Option<bool>,
+}
+
+// One permission opt-in dismissal; a line repeats when one step declined two.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeclinedOptIn {
+    pub line: u64,
+    pub after_planned_press: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -616,6 +632,9 @@ impl InterruptionReceipt {
                 .filter(|y| y.is_finite())
                 .map(|y| format!("press centre y {y:.0} pt")),
             self.screen_class.map(word),
+            self.after_planned_press
+                .filter(|after| *after)
+                .map(|_| "after the plan's own tap".to_string()),
         ]
         .into_iter()
         .flatten()
@@ -1216,6 +1235,8 @@ pub struct RowTiming {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settle_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send: Option<SendTiming>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preparation_samples: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preparation_resets: Option<u64>,
@@ -1225,6 +1246,21 @@ pub struct RowTiming {
     pub post_capture_ms: u64,
     pub other_ms: u64,
     pub total: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SendTiming {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyboard_guard_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_check_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gesture_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settle_probes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2437,6 +2473,7 @@ pub fn synthesized_ledger(rows: &[Row], verdict: &str, seen: &str) -> Ledger {
         llm_turns: 0,
         escapes: 0,
         recoveries: 0,
+        declined_opt_ins: Vec::new(),
         speed: None,
         recipe: None,
     }

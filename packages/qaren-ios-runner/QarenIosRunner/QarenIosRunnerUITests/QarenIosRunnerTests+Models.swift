@@ -197,6 +197,8 @@ struct DataPayload: Codable {
   let orientation: String?
   let keyboardGuard: String?
   let keyboardGuardMs: Double?
+  let handledMs: Double?
+  let liveCheckMs: Double?
   let keyboardVisible: Bool?
   let snapshotGeneration: Int?
   let snapshotDiagnostics: SnapshotDiagnostics?
@@ -246,6 +248,8 @@ struct DataPayload: Codable {
     orientation: String? = nil,
     keyboardGuard: String? = nil,
     keyboardGuardMs: Double? = nil,
+    handledMs: Double? = nil,
+    liveCheckMs: Double? = nil,
     keyboardVisible: Bool? = nil,
     snapshotGeneration: Int? = nil,
     snapshotDiagnostics: SnapshotDiagnostics? = nil,
@@ -282,6 +286,8 @@ struct DataPayload: Codable {
     self.orientation = orientation
     self.keyboardGuard = keyboardGuard
     self.keyboardGuardMs = keyboardGuardMs
+    self.handledMs = handledMs
+    self.liveCheckMs = liveCheckMs
     self.keyboardVisible = keyboardVisible
     self.snapshotGeneration = snapshotGeneration
     self.snapshotDiagnostics = snapshotDiagnostics
@@ -510,6 +516,8 @@ struct PlatformPresenceDiagnostics: Codable {
   var preparationQuietElapsedMs: Double?
   var failure: Failure?
   var deadline: Deadline?
+  // The failure that left the capture incomplete; `failure` keeps only the first one.
+  var decisiveFailure: Failure?
 }
 
 struct PlatformPresenceObservation: Codable {

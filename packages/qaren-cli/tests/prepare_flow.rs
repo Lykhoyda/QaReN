@@ -4085,6 +4085,8 @@ fn dry_run_plans_generated_native_regeneration_before_every_build_route() {
                     common::script_expo_fingerprint_unresolvable(&mut fp_runner);
                 } else if platform == "ios" {
                     common::script_xcode(&mut fp_runner);
+                } else if incomplete {
+                    common::script_expo_fingerprint_unresolvable(&mut fp_runner);
                 }
                 let fp = qaren::fingerprint::compute(&mut fp_runner, &repo, &project, platform)
                     .unwrap()
@@ -4139,6 +4141,8 @@ fn dry_run_plans_generated_native_regeneration_before_every_build_route() {
                     common::script_expo_fingerprint_unresolvable(&mut mock);
                 } else if platform == "ios" {
                     common::script_xcode(&mut mock);
+                } else if incomplete {
+                    common::script_expo_fingerprint_unresolvable(&mut mock);
                 }
                 let sdk = (platform == "android").then(|| android_sdk(&repo));
                 let receipt = prepare(
@@ -7613,6 +7617,9 @@ fn a_contended_ios_build_refuses_after_its_budget_naming_the_holder_and_next_ste
             ios_scenario_yaml(8791)
         ),
     );
+    let timestamped_path = repo.join("scenario-1794242368865142289.yaml");
+    std::fs::rename(&scenario_path, &timestamped_path).unwrap();
+    let scenario_path = timestamped_path;
     let lock = seed_build_holder(&repo);
     let mut mock = MockRunner::new();
     script_ios_prepare_to_claim(&mut mock, &repo);
@@ -7657,9 +7664,15 @@ fn a_contended_ios_build_refuses_after_its_budget_naming_the_holder_and_next_ste
         "holder-run"
     );
     let json = receipt.to_json();
-    for private in ["other-home", ".locks", "qaren-holder-run", "4242"] {
+    for private in ["other-home", ".locks", "qaren-holder-run"] {
         assert!(!json.contains(private), "{private} leaked: {json}");
     }
+    assert!(
+        !json
+            .split(|c: char| !c.is_ascii_digit())
+            .any(|token| token == "4242"),
+        "holder PID leaked: {json}"
+    );
 }
 
 #[test]

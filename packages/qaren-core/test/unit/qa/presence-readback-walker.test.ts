@@ -301,7 +301,7 @@ test('under-budget native readback rejection retains only allowlisted failure di
       const result = await runPlan(parsePlan('1. Tap the save button').blocks!, f.deps);
       // A provably incomplete native tree refuses at capture; the refusal names only counts and causes.
       assert.equal(result.verdict, 'REFUSED');
-      assert.equal('code' in result && result.code, 'PRIVATE_INPUT_CAPTURE_UNKNOWN');
+      assert.equal('code' in result && result.code, 'NATIVE_SNAPSHOT_INCOMPLETE');
       assert.match(
         'message' in result ? result.message : '',
         /native snapshot was incomplete \(nodes=\d+; causes=/,

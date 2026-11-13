@@ -12,6 +12,7 @@ import { HandlerError } from '../../../dist/qa/adapt.js';
 import { NativeSnapshotIncomplete } from '../../../dist/qa/private-input.js';
 import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { nativeCapture } from './platform-presence-fixtures.ts';
+import type { TimingEvent } from '../../../dist/qa/timing.js';
 
 function emptyCapture(): NativeObservation {
   return {
@@ -48,6 +49,264 @@ function clock(t: TestContext) {
   };
 }
 
+function droppedCapture(dropped = 5): NativeObservation {
+  return {
+    nodes: [{ ref: '@partial', type: 'Button', label: 'Partial screen' }],
+    truncated: false,
+    normalizationDroppedNodes: dropped,
+    snapshotVerdict: { state: 'ok', nodeCount: 1, refMapUpdated: true, reasons: [] },
+  };
+}
+
+for (const withEmpty of [false, true]) {
+  test(`dropped private capture recovers to a fresh complete screen${withEmpty ? ' through an empty read' : ''}`, async (t) => {
+    const time = clock(t);
+    const events: TimingEvent[] = [];
+    const reads: number[] = [];
+    let reactReads = 0;
+    const result = captureScreen({
+      requirePrivateInputs: true,
+      now: time.now,
+      timing: (event) => events.push(event),
+      native: async () => {
+        reads.push(time.now());
+        if (reads.length === 1) return droppedCapture();
+        if (withEmpty && reads.length === 2) return emptyCapture();
+        return {
+          ...droppedCapture(0),
+          nodes: [{ ref: '@complete', type: 'Button', label: 'Complete screen' }],
+        };
+      },
+      react: async () => {
+        reactReads++;
+        return {};
+      },
+    }).catch((error: Error) => error);
+    await nextTurn();
+    assert.equal(reactReads, 0);
+    await time.advance(499);
+    assert.deepEqual(reads, [0]);
+    await time.advance(1);
+    if (withEmpty) await time.advance(500);
+    const screen = await result;
+    assert.ok(!(screen instanceof Error), String(screen));
+    assert.equal(screen.captureCoverage?.native, 'complete');
+    assert.deepEqual(
+      screen.elements.map((element) => element.ref),
+      ['@complete'],
+    );
+    assert.deepEqual(reads, withEmpty ? [0, 500, 1_000] : [0, 500]);
+    assert.equal(reactReads, 1);
+    assert.deepEqual(
+      events.filter((event) => event.stage === 'native-reread'),
+      [{ stage: 'native-reread', edge: 'point', outcome: 'ok', at: 500 }],
+    );
+  });
+}
+
+for (const firstReadMs of [0, 20_900]) {
+  test(`persistent dropped private capture stops at the settle or total window after ${firstReadMs}ms`, async (t) => {
+    const time = clock(t);
+    const reads: number[] = [];
+    const events: TimingEvent[] = [];
+    let reactReads = 0;
+    let finished = false;
+    const result = captureScreen({
+      requirePrivateInputs: true,
+      now: time.now,
+      timing: (event) => events.push(event),
+      native: async () => {
+        reads.push(time.now());
+        if (reads.length === 1) time.elapse(firstReadMs);
+        return droppedCapture(reads.length === 1 ? 5 : 3);
+      },
+      react: async () => {
+        reactReads++;
+        return {};
+      },
+    }).catch((error: Error) => {
+      finished = true;
+      return error;
+    });
+    await nextTurn();
+    const deadline = firstReadMs === 0 ? 6_000 : 22_000;
+    while (time.now() + 500 < deadline) await time.advance(500);
+    await time.advance(deadline - time.now() - 1);
+    assert.equal(finished, false);
+    await time.advance(1);
+    const error = await result;
+    assert.ok(error instanceof NativeSnapshotIncomplete, String(error));
+    assert.equal(error.nodes, 1);
+    assert.deepEqual(error.causes, ['dropped=3', 'retry-deadline']);
+    assert.equal(reads.length, firstReadMs === 0 ? 12 : 3);
+    assert.equal(reads.at(-1), deadline - (firstReadMs === 0 ? 500 : 100));
+    assert.equal(
+      events.filter((event) => event.stage === 'native-reread').length,
+      reads.length - 1,
+    );
+    assert.equal(reactReads, 1);
+    assert.equal(time.now(), deadline);
+  });
+}
+
+for (const withEmpty of [false, true]) {
+  test(`an overrunning dropped re-read remembers its cause${withEmpty ? ' across an empty read' : ''}`, async (t) => {
+    const time = clock(t);
+    let reads = 0;
+    const result = captureScreen({
+      requirePrivateInputs: true,
+      now: time.now,
+      native: async () => {
+        if (++reads === 1) return droppedCapture();
+        if (withEmpty && reads === 2) return emptyCapture();
+        return new Promise<NativeObservation>(() => {});
+      },
+      react: async () => assert.fail('no React read after native evidence expires'),
+    }).catch((error: Error) => error);
+    await nextTurn();
+    await time.advance(500);
+    if (withEmpty) await time.advance(500);
+    assert.equal(reads, withEmpty ? 3 : 2);
+    await time.advance(6_000 - time.now());
+    const error = await result;
+    assert.ok(error instanceof NativeSnapshotIncomplete, String(error));
+    assert.equal(error.nodes, 1);
+    assert.deepEqual(error.causes, ['dropped=5', 'retry-deadline']);
+    assert.equal(time.now(), 6_000);
+  });
+}
+
+for (const changed of ['truncated', 'degraded'] as const) {
+  test(`a dropped re-read that becomes ${changed} refuses its own causes without an expiry marker`, async (t) => {
+    const time = clock(t);
+    let reads = 0;
+    let reactReads = 0;
+    const final = droppedCapture(2);
+    if (changed === 'truncated') final.truncated = true;
+    else
+      final.snapshotVerdict = { state: 'degraded', nodeCount: 1, refMapUpdated: true, reasons: [] };
+    const result = captureScreen({
+      requirePrivateInputs: true,
+      now: time.now,
+      native: async () => (++reads === 1 ? droppedCapture() : final),
+      react: async () => {
+        reactReads++;
+        return {};
+      },
+    }).catch((error: Error) => error);
+    await nextTurn();
+    await time.advance(500);
+    const error = await result;
+    assert.ok(error instanceof NativeSnapshotIncomplete, String(error));
+    assert.deepEqual(
+      error.causes,
+      changed === 'truncated' ? ['truncated', 'dropped=2'] : ['dropped=2', 'verdict=degraded'],
+    );
+    assert.equal(reads, 2);
+    assert.equal(reactReads, 1);
+  });
+}
+
+test('dropped private captures with another cause, a wait budget or presence mode refuse after one read', async () => {
+  const dropped = droppedCapture();
+  for (const [native, options, causes] of [
+    [{ ...dropped, truncated: true }, {}, ['truncated', 'dropped=5']],
+    [
+      {
+        ...dropped,
+        snapshotVerdict: { state: 'degraded', nodeCount: 1, refMapUpdated: true, reasons: [] },
+      },
+      {},
+      ['dropped=5', 'verdict=degraded'],
+    ],
+    [dropped, { budgetMs: 1_000 }, ['dropped=5']],
+    [dropped, { platformPresence: true }, ['dropped=5']],
+  ] as const) {
+    let reads = 0;
+    let reactReads = 0;
+    const events: TimingEvent[] = [];
+    await assert.rejects(
+      captureScreen({
+        requirePrivateInputs: true,
+        ...options,
+        timing: (event) => events.push(event),
+        native: async () => {
+          reads++;
+          return native;
+        },
+        react: async () => {
+          reactReads++;
+          return {};
+        },
+      }),
+      (error) => {
+        assert.ok(error instanceof NativeSnapshotIncomplete, String(error));
+        assert.deepEqual(error.causes, causes);
+        return true;
+      },
+    );
+    assert.equal(reads, 1);
+    assert.equal(reactReads, 1);
+    assert.equal(
+      events.some((event) => event.stage === 'native-reread'),
+      false,
+    );
+  }
+});
+
+test('a native failure on a dropped re-read remains a native capture failure', async (t) => {
+  const time = clock(t);
+  let reads = 0;
+  const result = captureScreen({
+    requirePrivateInputs: true,
+    now: time.now,
+    native: async () => {
+      if (++reads === 1) return droppedCapture();
+      throw new Error('private-native-failure-canary');
+    },
+    react: async () => assert.fail('failed acquisition must not read React'),
+  }).catch((error: Error) => error);
+  await nextTurn();
+  await time.advance(500);
+  const error = await result;
+  assert.ok(error instanceof NativeCaptureError, String(error));
+  assert.equal(error.message, 'Native capture is unavailable.');
+  assert.equal(reads, 2);
+});
+
+test('a complete first private capture keeps one native read and its timing stages', async () => {
+  let reads = 0;
+  let reactReads = 0;
+  const events: TimingEvent[] = [];
+  const screen = await captureScreen({
+    requirePrivateInputs: true,
+    now: () => 0,
+    timing: (event) => events.push(event),
+    native: async () => {
+      reads++;
+      return { ...droppedCapture(0) };
+    },
+    react: async () => {
+      reactReads++;
+      return {};
+    },
+  });
+  assert.equal(screen.captureCoverage?.native, 'complete');
+  assert.equal(reads, 1);
+  assert.equal(reactReads, 1);
+  assert.deepEqual(
+    events.map(({ stage, edge }) => [stage, edge]),
+    [
+      ['native-total', 'start'],
+      ['native-total', 'end'],
+      ['react-private', 'start'],
+      ['react-private', 'end'],
+      ['join-private', 'start'],
+      ['join-private', 'end'],
+    ],
+  );
+});
+
 function incompletePresence() {
   const native = nativeCapture();
   return {
@@ -66,6 +325,121 @@ function incompletePresence() {
     },
   };
 }
+
+// The long-list shape: a harmless node read failed first, then revalidation left the capture incomplete.
+function decisivePresence(
+  decisiveFailure: unknown = {
+    phase: 'revalidation',
+    reason: 'enumeration-changed',
+    mismatch: { kind: 'node', index: 1, fieldMask: 16, beforeType: 9, afterType: 9 },
+  },
+) {
+  const native = incompletePresence();
+  return {
+    ...native,
+    presenceCapture: {
+      ...native.presenceCapture,
+      diagnostics: {
+        failure: { phase: 'observation', reason: 'read-unavailable' },
+        decisiveFailure,
+      },
+    },
+  };
+}
+
+const DECISIVE_CAUSES = [
+  'presence-failure=observation:read-unavailable',
+  'presence-incomplete=revalidation:enumeration-changed',
+  'presence-incomplete-mismatch=node',
+];
+
+test('a persistently incomplete presence refusal and log name the decisive failure beside the first', async (t) => {
+  const time = clock(t);
+  const logs: string[] = [];
+  const result = captureScreen({
+    requirePrivateInputs: true,
+    platformPresence: true,
+    now: time.now,
+    native: async () => decisivePresence(),
+    react: async () => ({}),
+    warn: (line) => logs.push(line),
+  }).catch((error: Error) => error);
+  await nextTurn();
+  for (let poll = 0; poll < 12; poll++) await time.advance(500);
+  const error = await result;
+  assert.ok(error instanceof NativeSnapshotIncomplete, String(error));
+  for (const cause of DECISIVE_CAUSES) {
+    assert.ok(error.causes.includes(cause), cause);
+    assert.ok(error.message.includes(cause), cause);
+    assert.ok(logs.includes(cause), cause);
+  }
+});
+
+test('a deadline-cut re-read keeps the decisive presence failure with retry-deadline', async (t) => {
+  const time = clock(t);
+  const logs: string[] = [];
+  const prior = decisivePresence();
+  Object.assign(prior.presenceCapture.diagnostics, {
+    deadline: { phase: 'finalization', read: 'finalization', edge: 'after' },
+    detail: 'deadline-private-canary',
+  });
+  let reads = 0;
+  const result = captureScreen({
+    platformPresence: true,
+    requirePrivateInputs: true,
+    now: time.now,
+    native: async () => (++reads === 1 ? prior : new Promise<NativeObservation>(() => {})),
+    warn: (line) => logs.push(line),
+    react: async () => assert.fail('no React read after incomplete native evidence expires'),
+  }).catch((error: Error) => error);
+  await nextTurn();
+  await time.advance(500);
+  assert.equal(reads, 2);
+  await time.advance(6_000 - time.now());
+  const error = await result;
+  assert.ok(error instanceof NativeSnapshotIncomplete, String(error));
+  for (const cause of [...DECISIVE_CAUSES, 'presence-deadline=finalization:finalization:after']) {
+    assert.ok(error.causes.includes(cause), cause);
+    assert.ok(error.message.includes(cause), cause);
+    assert.ok(logs.includes(cause), cause);
+  }
+  assert.ok(error.causes.includes('retry-deadline'));
+  assert.equal([error.message, ...logs].join('\n').includes('deadline-private-canary'), false);
+});
+
+test('a malformed decisive failure adds no presence-incomplete cause or content', async () => {
+  for (const decisive of [
+    { phase: 'private-phase-canary', reason: 'enumeration-changed' },
+    { phase: 'revalidation', reason: 'private-reason-canary' },
+    {
+      phase: 'revalidation',
+      reason: 'enumeration-changed',
+      mismatch: { kind: 'private-kind-canary' },
+    },
+    'private-string-canary',
+  ]) {
+    const logs: string[] = [];
+    const error = await captureScreen({
+      requirePrivateInputs: true,
+      platformPresence: true,
+      budgetMs: 1_000,
+      native: async () => decisivePresence(decisive),
+      react: async () => ({}),
+      warn: (line) => logs.push(line),
+    }).catch((error: Error) => error);
+    assert.ok(error instanceof NativeSnapshotIncomplete, String(error));
+    const valid = typeof decisive === 'object' && 'mismatch' in decisive;
+    assert.equal(
+      error.causes.includes('presence-incomplete=revalidation:enumeration-changed'),
+      valid,
+    );
+    assert.equal(
+      [...error.causes, ...logs].some((cause) => cause.startsWith('presence-incomplete-mismatch=')),
+      false,
+    );
+    assert.equal([error.message, ...logs].join('\n').includes('canary'), false);
+  }
+});
 
 test('incomplete presence waits for a fresh complete capture even without private-fill history', async (t) => {
   const time = clock(t);
@@ -173,7 +547,7 @@ for (const firstReadMs of [20_500, 4_000]) {
     await time.advance(deadline - time.now());
     const error = await result;
     assert.ok(error instanceof NativeSnapshotIncomplete, String(error));
-    assert.equal(error.code, 'PRIVATE_INPUT_CAPTURE_UNKNOWN');
+    assert.equal(error.code, 'NATIVE_SNAPSHOT_INCOMPLETE');
     assert.equal(error.nodes, 2);
     assert.ok(error.causes.includes('keyboard-state-unknown'));
     assert.ok(error.causes.includes('presence-failure=revalidation:enumeration-changed'));
@@ -420,10 +794,10 @@ test('a persistently empty private capture refuses unchanged after the existing 
   await time.advance(1);
   const error = await result;
   assert.ok(error instanceof NativeSnapshotIncomplete);
-  assert.equal(error.code, 'PRIVATE_INPUT_CAPTURE_UNKNOWN');
+  assert.equal(error.code, 'NATIVE_SNAPSHOT_INCOMPLETE');
   assert.equal(
     error.message,
-    'Private input capture could not be established safely. The native snapshot was incomplete (nodes=0; causes=verdict=degraded,ref-map-not-updated,reason=empty-capture,node-count-mismatch).',
+    'The native snapshot was incomplete (nodes=0; causes=verdict=degraded,ref-map-not-updated,reason=empty-capture,node-count-mismatch).',
   );
   assert.equal(reads.length, 12);
   assert.equal(reads.at(-1), 5_500);

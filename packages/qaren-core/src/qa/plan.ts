@@ -32,7 +32,13 @@ export interface Check {
   literal: boolean;
 }
 
-export type Item = (Step | Check) & { line: number; raw: string; source: 'grammar' | 'jev' };
+// declared: runtime only, set by replay; the plan's own target for a step replayed by its stored selector.
+export type Item = (Step | Check) & {
+  line: number;
+  raw: string;
+  source: 'grammar' | 'jev';
+  declared?: Target;
+};
 
 export interface Block {
   slug: string;

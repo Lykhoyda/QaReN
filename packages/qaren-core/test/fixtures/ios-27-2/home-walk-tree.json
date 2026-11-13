@@ -1,0 +1,2166 @@
+{
+  "ok": true,
+  "data": {
+    "snapshotGeneration": 3,
+    "truncated": false,
+    "snapshotDiagnostics": {
+      "v": 1,
+      "viewport": [
+        0,
+        0,
+        402,
+        874
+      ],
+      "viewportSource": "first-nonempty-window"
+    },
+    "keyboardVisible": false,
+    "appProcessIdentifier": 96098,
+    "nodes": [
+      {
+        "index": 0,
+        "enabled": true,
+        "rect": {
+          "width": 402,
+          "y": 0,
+          "height": 874,
+          "x": 0
+        },
+        "label": "rn-dev-agent-test",
+        "depth": 0,
+        "type": "Application",
+        "hittable": true
+      },
+      {
+        "parentIndex": 0,
+        "index": 1,
+        "enabled": true,
+        "rect": {
+          "width": 402,
+          "y": 0,
+          "height": 874,
+          "x": 0
+        },
+        "depth": 1,
+        "type": "Window",
+        "hittable": true
+      },
+      {
+        "parentIndex": 0,
+        "index": 2,
+        "enabled": true,
+        "rect": {
+          "width": 402,
+          "y": 0,
+          "height": 874,
+          "x": 0
+        },
+        "label": "Toolbar",
+        "depth": 1,
+        "type": "Other",
+        "hittable": true
+      },
+      {
+        "hittable": true,
+        "parentIndex": 2,
+        "index": 3,
+        "enabled": true,
+        "rect": {
+          "width": 402,
+          "y": 0,
+          "height": 874,
+          "x": 0
+        },
+        "depth": 2,
+        "type": "Other",
+        "identifier": "app-root"
+      },
+      {
+        "parentIndex": 2,
+        "index": 4,
+        "enabled": true,
+        "rect": {
+          "width": 402,
+          "y": 0,
+          "height": 874,
+          "x": 0
+        },
+        "label": "home handler",
+        "depth": 2,
+        "type": "Other",
+        "hittable": true
+      },
+      {
+        "parentIndex": 4,
+        "index": 5,
+        "enabled": true,
+        "rect": {
+          "width": 402,
+          "y": 0,
+          "height": 791,
+          "x": 0
+        },
+        "label": "Toolbar",
+        "depth": 3,
+        "type": "Other",
+        "hittable": true
+      },
+      {
+        "parentIndex": 5,
+        "index": 6,
+        "enabled": true,
+        "rect": {
+          "width": 402,
+          "y": 0,
+          "height": 791,
+          "x": 0
+        },
+        "label": "Vertical scroll bar, 5 pages",
+        "depth": 4,
+        "type": "Other",
+        "hittable": true
+      },
+      {
+        "type": "Other",
+        "rect": {
+          "width": 402,
+          "y": 0,
+          "height": 791,
+          "x": 0
+        },
+        "hittable": true,
+        "parentIndex": 6,
+        "label": "Next",
+        "index": 7,
+        "enabled": true,
+        "identifier": "home-welcome",
+        "depth": 5
+      },
+      {
+        "type": "ScrollView",
+        "rect": {
+          "width": 402,
+          "y": 0,
+          "height": 791,
+          "x": 0
+        },
+        "hittable": true,
+        "parentIndex": 7,
+        "label": "Next",
+        "index": 8,
+        "enabled": true,
+        "depth": 6
+      },
+      {
+        "type": "Other",
+        "rect": {
+          "width": 388,
+          "y": 0,
+          "height": 3502.666748046875,
+          "x": 0
+        },
+        "hittable": false,
+        "parentIndex": 8,
+        "label": "Next",
+        "index": 9,
+        "enabled": true,
+        "depth": 7
+      },
+      {
+        "type": "Other",
+        "rect": {
+          "width": 374,
+          "y": 0,
+          "height": 3502.666748046875,
+          "x": 14
+        },
+        "hittable": false,
+        "parentIndex": 9,
+        "label": "Next",
+        "index": 10,
+        "enabled": true,
+        "depth": 8
+      },
+      {
+        "type": "Button",
+        "rect": {
+          "width": 374,
+          "y": 80.66666412353516,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": true,
+        "parentIndex": 10,
+        "label": "Next",
+        "index": 11,
+        "enabled": true,
+        "identifier": "qa-native-redbox-next",
+        "depth": 9
+      },
+      {
+        "type": "Button",
+        "rect": {
+          "width": 374,
+          "y": 129.33333206176758,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": true,
+        "parentIndex": 10,
+        "label": "Next (broken)",
+        "index": 12,
+        "enabled": true,
+        "identifier": "qa-native-redbox-broken",
+        "depth": 9
+      },
+      {
+        "type": "StaticText",
+        "rect": {
+          "width": 374,
+          "y": 167,
+          "height": 17,
+          "x": 14
+        },
+        "hittable": true,
+        "parentIndex": 10,
+        "label": "Broken presses: 0",
+        "index": 13,
+        "enabled": true,
+        "depth": 9
+      },
+      {
+        "type": "Button",
+        "rect": {
+          "width": 374,
+          "y": 194.6666717529297,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": true,
+        "parentIndex": 10,
+        "label": "Open Login / OTP auto-submit QA",
+        "index": 14,
+        "enabled": true,
+        "identifier": "qa-open-otp-autosubmit",
+        "depth": 9
+      },
+      {
+        "type": "Button",
+        "rect": {
+          "width": 374,
+          "y": 243,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": true,
+        "parentIndex": 10,
+        "label": "Open Login / OTP delayed auto-submit QA",
+        "index": 15,
+        "enabled": true,
+        "identifier": "qa-open-otp-autosubmit-delayed",
+        "depth": 9
+      },
+      {
+        "type": "Button",
+        "rect": {
+          "width": 374,
+          "y": 291.6666564941406,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": true,
+        "parentIndex": 10,
+        "label": "Open Login / OTP busy auto-submit QA",
+        "index": 16,
+        "enabled": true,
+        "identifier": "qa-open-otp-autosubmit-busy",
+        "depth": 9
+      },
+      {
+        "type": "StaticText",
+        "rect": {
+          "width": 374,
+          "y": 329.3333435058594,
+          "height": 28,
+          "x": 14
+        },
+        "hittable": true,
+        "parentIndex": 10,
+        "label": "Welcome",
+        "index": 17,
+        "enabled": true,
+        "depth": 9
+      },
+      {
+        "type": "StaticText",
+        "rect": {
+          "width": 374,
+          "y": 361,
+          "height": 17,
+          "x": 14
+        },
+        "hittable": true,
+        "parentIndex": 10,
+        "label": "Sample app",
+        "index": 18,
+        "enabled": true,
+        "depth": 9
+      },
+      {
+        "type": "Other",
+        "rect": {
+          "width": 324,
+          "y": 388.6666564941406,
+          "height": 36.333343505859375,
+          "x": 14
+        },
+        "hittable": true,
+        "parentIndex": 10,
+        "label": "Search tasks, notifications, feed...",
+        "index": 19,
+        "enabled": true,
+        "identifier": "home-search-btn",
+        "depth": 9
+      },
+      {
+        "type": "Other",
+        "rect": {
+          "width": 43,
+          "y": 388.6666564941406,
+          "height": 36.333343505859375,
+          "x": 345
+        },
+        "hittable": true,
+        "parentIndex": 10,
+        "index": 20,
+        "enabled": true,
+        "identifier": "command-palette-btn",
+        "depth": 9
+      },
+      {
+        "type": "Other",
+        "rect": {
+          "width": 20,
+          "y": 396.9999895095825,
+          "height": 20,
+          "x": 356.6666669845581
+        },
+        "hittable": true,
+        "parentIndex": 20,
+        "index": 21,
+        "enabled": true,
+        "identifier": "phosphor-react-native-command-undefined",
+        "depth": 10
+      },
+      {
+        "type": "Button",
+        "rect": {
+          "width": 374,
+          "y": 439,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": true,
+        "parentIndex": 10,
+        "label": "Open capture size fixture",
+        "index": 22,
+        "enabled": true,
+        "identifier": "qa-open-capture-size",
+        "depth": 9
+      },
+      {
+        "type": "Button",
+        "rect": {
+          "width": 374,
+          "y": 491,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": true,
+        "parentIndex": 10,
+        "label": "Open QA Acceptance Fixture",
+        "index": 23,
+        "enabled": true,
+        "identifier": "home-qa-acceptance-btn",
+        "depth": 9
+      },
+      {
+        "type": "Other",
+        "rect": {
+          "width": 374,
+          "y": 539.6666870117188,
+          "height": 157.6666259765625,
+          "x": 14
+        },
+        "hittable": true,
+        "parentIndex": 10,
+        "index": 24,
+        "enabled": true,
+        "identifier": "task-stats-card",
+        "depth": 9
+      },
+      {
+        "type": "Other",
+        "rect": {
+          "y": 553.6666870117188,
+          "x": 28,
+          "width": 346,
+          "height": 17.6666259765625
+        },
+        "hittable": true,
+        "parentIndex": 10,
+        "label": "TASK OVERVIEW",
+        "index": 25,
+        "enabled": true,
+        "depth": 9
+      },
+      {
+        "hittable": true,
+        "enabled": true,
+        "index": 26,
+        "identifier": "task-stats-title",
+        "type": "StaticText",
+        "label": "TASK OVERVIEW",
+        "depth": 10,
+        "parentIndex": 25,
+        "rect": {
+          "y": 553.6666870117188,
+          "x": 28,
+          "width": 346,
+          "height": 17.66668701171875
+        }
+      },
+      {
+        "hittable": true,
+        "enabled": true,
+        "index": 27,
+        "type": "StaticText",
+        "depth": 11,
+        "label": "TASK OVERVIEW",
+        "parentIndex": 26,
+        "rect": {
+          "y": 553.6666870117188,
+          "x": 28,
+          "width": 346,
+          "height": 17.66668701171875
+        }
+      },
+      {
+        "hittable": true,
+        "enabled": true,
+        "index": 28,
+        "type": "Other",
+        "depth": 9,
+        "label": "3",
+        "parentIndex": 10,
+        "rect": {
+          "y": 582.0000190734863,
+          "x": 28,
+          "width": 346,
+          "height": 42
+        }
+      },
+      {
+        "hittable": true,
+        "enabled": true,
+        "index": 29,
+        "identifier": "task-stats-total",
+        "type": "Other",
+        "depth": 10,
+        "parentIndex": 28,
+        "rect": {
+          "y": 582.0000190734863,
+          "x": 28,
+          "width": 24.666667938232422,
+          "height": 42
+        }
+      },
+      {
+        "hittable": true,
+        "enabled": true,
+        "index": 30,
+        "type": "StaticText",
+        "depth": 10,
+        "label": "3",
+        "parentIndex": 28,
+        "rect": {
+          "y": 582.0000190734863,
+          "x": 33.33333349227905,
+          "width": 13.666667938232422,
+          "height": 28
+        }
+      },
+      {
+        "hittable": true,
+        "enabled": true,
+        "index": 31,
+        "identifier": "task-stats-active",
+        "type": "Other",
+        "depth": 10,
+        "parentIndex": 28,
+        "rect": {
+          "y": 582.0000190734863,
+          "x": 184.6666717529297,
+          "width": 31.333328247070312,
+          "height": 42
+        }
+      },
+      {
+        "hittable": true,
+        "enabled": true,
+        "index": 32,
+        "type": "StaticText",
+        "depth": 10,
+        "label": "2",
+        "parentIndex": 28,
+        "rect": {
+          "y": 582.0000190734863,
+          "x": 193.6666717529297,
+          "width": 13,
+          "height": 28
+        }
+      },
+      {
+        "hittable": true,
+        "enabled": true,
+        "index": 33,
+        "identifier": "task-stats-done",
+        "type": "Other",
+        "depth": 10,
+        "parentIndex": 28,
+        "rect": {
+          "y": 582.0000190734863,
+          "x": 347.6666564941406,
+          "width": 26.333343505859375,
+          "height": 42
+        }
+      },
+      {
+        "hittable": true,
+        "enabled": true,
+        "index": 34,
+        "type": "StaticText",
+        "depth": 10,
+        "label": "1",
+        "parentIndex": 28,
+        "rect": {
+          "y": 582.0000190734863,
+          "x": 355.6666564941406,
+          "width": 10.333343505859375,
+          "height": 28
+        }
+      },
+      {
+        "hittable": true,
+        "enabled": true,
+        "index": 35,
+        "type": "StaticText",
+        "depth": 10,
+        "label": "Total",
+        "parentIndex": 28,
+        "rect": {
+          "y": 610.0000190734863,
+          "x": 28,
+          "width": 24.666667938232422,
+          "height": 14
+        }
+      },
+      {
+        "hittable": true,
+        "enabled": true,
+        "index": 36,
+        "type": "StaticText",
+        "depth": 10,
+        "label": "Active",
+        "parentIndex": 28,
+        "rect": {
+          "y": 610.0000190734863,
+          "x": 184.6666717529297,
+          "width": 31.333343505859375,
+          "height": 14
+        }
+      },
+      {
+        "hittable": true,
+        "enabled": true,
+        "index": 37,
+        "type": "StaticText",
+        "depth": 10,
+        "label": "Done",
+        "parentIndex": 28,
+        "rect": {
+          "y": 610.0000190734863,
+          "x": 347.6666564941406,
+          "width": 26.333343505859375,
+          "height": 14
+        }
+      },
+      {
+        "hittable": true,
+        "enabled": true,
+        "index": 38,
+        "type": "Other",
+        "depth": 9,
+        "label": "33% complete",
+        "parentIndex": 10,
+        "rect": {
+          "y": 634.3333511352539,
+          "x": 28,
+          "width": 346,
+          "height": 24.3333740234375
+        }
+      },
+      {
+        "hittable": true,
+        "enabled": true,
+        "index": 39,
+        "identifier": "task-stats-progress-bg",
+        "type": "Other",
+        "depth": 10,
+        "parentIndex": 38,
+        "rect": {
+          "y": 634.3333511352539,
+          "x": 28,
+          "width": 346,
+          "height": 7
+        }
+      },
+      {
+        "hittable": true,
+        "enabled": true,
+        "index": 40,
+        "identifier": "task-stats-progress-fill",
+        "type": "Other",
+        "depth": 11,
+        "parentIndex": 39,
+        "rect": {
+          "y": 634.3333511352539,
+          "x": 28,
+          "width": 115.33333677053452,
+          "height": 7
+        }
+      },
+      {
+        "hittable": true,
+        "enabled": true,
+        "index": 41,
+        "identifier": "task-stats-progress-label",
+        "type": "StaticText",
+        "label": "33% complete",
+        "depth": 10,
+        "parentIndex": 38,
+        "rect": {
+          "y": 644.6666841506958,
+          "x": 28,
+          "width": 346,
+          "height": 14
+        }
+      },
+      {
+        "hittable": true,
+        "enabled": true,
+        "index": 42,
+        "type": "StaticText",
+        "depth": 11,
+        "label": "33% complete",
+        "parentIndex": 41,
+        "rect": {
+          "y": 644.6666841506958,
+          "x": 28,
+          "width": 346,
+          "height": 14
+        }
+      },
+      {
+        "hittable": true,
+        "enabled": true,
+        "index": 43,
+        "type": "Other",
+        "depth": 9,
+        "label": "High 1",
+        "parentIndex": 10,
+        "rect": {
+          "y": 669.3333587646484,
+          "x": 28,
+          "width": 346,
+          "height": 14
+        }
+      },
+      {
+        "hittable": true,
+        "enabled": true,
+        "index": 44,
+        "identifier": "task-stats-priority-high",
+        "type": "Other",
+        "depth": 10,
+        "parentIndex": 43,
+        "rect": {
+          "y": 669.3333587646484,
+          "x": 28,
+          "width": 45.666664123535156,
+          "height": 14
+        }
+      },
+      {
+        "hittable": true,
+        "enabled": true,
+        "index": 45,
+        "type": "StaticText",
+        "depth": 10,
+        "label": "High 1",
+        "parentIndex": 43,
+        "rect": {
+          "y": 669.3333587646484,
+          "x": 42,
+          "width": 31.666664123535156,
+          "height": 14
+        }
+      },
+      {
+        "hittable": true,
+        "enabled": true,
+        "index": 46,
+        "identifier": "task-stats-priority-medium",
+        "type": "Other",
+        "depth": 10,
+        "parentIndex": 43,
+        "rect": {
+          "y": 669.3333587646484,
+          "x": 87.66666793823242,
+          "width": 44.00000762939453,
+          "height": 14
+        }
+      },
+      {
+        "label": "Med 1",
+        "parentIndex": 43,
+        "hittable": true,
+        "rect": {
+          "y": 669.3333587646484,
+          "x": 101.66666793823242,
+          "width": 30.00000762939453,
+          "height": 14
+        },
+        "depth": 10,
+        "enabled": true,
+        "type": "StaticText",
+        "index": 47
+      },
+      {
+        "parentIndex": 43,
+        "hittable": true,
+        "identifier": "task-stats-priority-low",
+        "rect": {
+          "y": 669.3333587646484,
+          "x": 145.66666412353516,
+          "width": 42.33332824707031,
+          "height": 14
+        },
+        "enabled": true,
+        "type": "Other",
+        "depth": 10,
+        "index": 48
+      },
+      {
+        "label": "Low 1",
+        "parentIndex": 43,
+        "hittable": true,
+        "rect": {
+          "y": 669.3333587646484,
+          "x": 159.66666412353516,
+          "width": 28.333328247070312,
+          "height": 14
+        },
+        "depth": 10,
+        "enabled": true,
+        "type": "StaticText",
+        "index": 49
+      },
+      {
+        "parentIndex": 10,
+        "hittable": true,
+        "identifier": "home-feature-0",
+        "rect": {
+          "y": 711,
+          "x": 14,
+          "width": 374,
+          "height": 70.33331298828125
+        },
+        "enabled": true,
+        "type": "Other",
+        "depth": 9,
+        "index": 50
+      },
+      {
+        "parentIndex": 10,
+        "hittable": true,
+        "identifier": "home-feature-list",
+        "rect": {
+          "y": 711,
+          "x": 14,
+          "width": 374,
+          "height": 242
+        },
+        "enabled": true,
+        "type": "Other",
+        "depth": 9,
+        "index": 51
+      },
+      {
+        "label": "Component Tree",
+        "parentIndex": 10,
+        "hittable": true,
+        "rect": {
+          "y": 725,
+          "x": 28,
+          "width": 346,
+          "height": 21
+        },
+        "depth": 9,
+        "enabled": true,
+        "type": "StaticText",
+        "index": 52
+      },
+      {
+        "label": "Tests cdp_component_tree with nested testIDs",
+        "parentIndex": 10,
+        "hittable": true,
+        "rect": {
+          "y": 749.3333320617676,
+          "x": 28,
+          "width": 346,
+          "height": 17.66668701171875
+        },
+        "depth": 9,
+        "enabled": true,
+        "type": "StaticText",
+        "index": 53
+      },
+      {
+        "parentIndex": 10,
+        "hittable": true,
+        "identifier": "home-feature-1",
+        "rect": {
+          "y": 791.6666641235352,
+          "x": 14,
+          "width": 374,
+          "height": 70.33331298828125
+        },
+        "enabled": true,
+        "type": "Other",
+        "depth": 9,
+        "index": 54
+      },
+      {
+        "label": "Navigation State",
+        "parentIndex": 10,
+        "hittable": true,
+        "rect": {
+          "y": 805.6666641235352,
+          "x": 28,
+          "width": 346,
+          "height": 21
+        },
+        "depth": 9,
+        "enabled": true,
+        "type": "StaticText",
+        "index": 55
+      },
+      {
+        "label": "Tests cdp_navigation_state across tabs and stacks",
+        "parentIndex": 10,
+        "hittable": true,
+        "rect": {
+          "y": 829.9999961853027,
+          "x": 28,
+          "width": 346,
+          "height": 17.66668701171875
+        },
+        "depth": 9,
+        "enabled": true,
+        "type": "StaticText",
+        "index": 56
+      },
+      {
+        "parentIndex": 10,
+        "hittable": false,
+        "identifier": "home-feature-2",
+        "rect": {
+          "y": 872.3333282470703,
+          "x": 14,
+          "width": 374,
+          "height": 70.3333740234375
+        },
+        "enabled": true,
+        "type": "Other",
+        "depth": 9,
+        "index": 57
+      },
+      {
+        "label": "Store State",
+        "parentIndex": 10,
+        "hittable": false,
+        "rect": {
+          "y": 886.3333282470703,
+          "x": 28,
+          "width": 346,
+          "height": 21
+        },
+        "depth": 9,
+        "enabled": true,
+        "type": "StaticText",
+        "index": 58
+      },
+      {
+        "label": "Tests cdp_store_state with Redux Toolkit slices",
+        "parentIndex": 10,
+        "hittable": false,
+        "rect": {
+          "height": 17.6666259765625,
+          "width": 346,
+          "x": 28,
+          "y": 910.6666603088379
+        },
+        "depth": 9,
+        "type": "StaticText",
+        "enabled": true,
+        "index": 59
+      },
+      {
+        "label": "Open Login / OTP QA",
+        "parentIndex": 10,
+        "hittable": false,
+        "identifier": "home-login-btn",
+        "rect": {
+          "width": 374,
+          "y": 967,
+          "height": 38,
+          "x": 14
+        },
+        "enabled": true,
+        "type": "Button",
+        "depth": 9,
+        "index": 60
+      },
+      {
+        "label": "Open Observation QA",
+        "parentIndex": 10,
+        "hittable": false,
+        "rect": {
+          "y": 1015.6666870117188,
+          "width": 374,
+          "height": 37.99993896484375,
+          "x": 14
+        },
+        "identifier": "home-observation-qa-btn",
+        "enabled": true,
+        "type": "Button",
+        "depth": 9,
+        "index": 61
+      },
+      {
+        "label": "Open OTP Code QA",
+        "parentIndex": 10,
+        "hittable": false,
+        "rect": {
+          "y": 1064,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "identifier": "home-otp-qa-btn",
+        "enabled": true,
+        "type": "Button",
+        "depth": 9,
+        "index": 62
+      },
+      {
+        "label": "Open Auto-advancing Inputs QA",
+        "parentIndex": 10,
+        "hittable": false,
+        "rect": {
+          "y": 1112.6666259765625,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "identifier": "home-auto-inputs-qa-btn",
+        "enabled": true,
+        "type": "Button",
+        "depth": 9,
+        "index": 63
+      },
+      {
+        "label": "Open Autofocus QA",
+        "parentIndex": 10,
+        "hittable": false,
+        "rect": {
+          "y": 1161,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "identifier": "qa-open-autofocus",
+        "enabled": true,
+        "type": "Button",
+        "depth": 9,
+        "index": 64
+      },
+      {
+        "label": "Open Nested Close QA",
+        "parentIndex": 10,
+        "hittable": false,
+        "rect": {
+          "y": 1209.6666259765625,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "identifier": "qa-open-nested-close",
+        "enabled": true,
+        "type": "Button",
+        "depth": 9,
+        "index": 65
+      },
+      {
+        "label": "Open Image Placeholder QA",
+        "parentIndex": 10,
+        "hittable": false,
+        "rect": {
+          "y": 1258,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "identifier": "home-image-placeholder-qa-btn",
+        "enabled": true,
+        "type": "Button",
+        "depth": 9,
+        "index": 66
+      },
+      {
+        "label": "Open Header Inset QA",
+        "parentIndex": 10,
+        "hittable": false,
+        "rect": {
+          "y": 1306.6666259765625,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "identifier": "qa-open-header-inset",
+        "enabled": true,
+        "type": "Button",
+        "depth": 9,
+        "index": 67
+      },
+      {
+        "type": "Button",
+        "label": "Scroll native tabs",
+        "parentIndex": 10,
+        "rect": {
+          "y": 1355,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": false,
+        "depth": 9,
+        "identifier": "qa-open-scroll-native-tabs",
+        "index": 68,
+        "enabled": true
+      },
+      {
+        "type": "Button",
+        "label": "Scroll native tabs short list",
+        "parentIndex": 10,
+        "rect": {
+          "y": 1403.6666259765625,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": false,
+        "depth": 9,
+        "identifier": "qa-open-scroll-native-tabs-short",
+        "index": 69,
+        "enabled": true
+      },
+      {
+        "type": "Button",
+        "label": "Open WebView Scroll QA",
+        "parentIndex": 10,
+        "rect": {
+          "y": 1452,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": false,
+        "depth": 9,
+        "identifier": "home-webview-scroll-qa-btn",
+        "index": 70,
+        "enabled": true
+      },
+      {
+        "type": "Button",
+        "label": "Open Capture Display QA",
+        "parentIndex": 10,
+        "rect": {
+          "y": 1500.6666259765625,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": false,
+        "depth": 9,
+        "identifier": "home-capture-display-qa-btn",
+        "index": 71,
+        "enabled": true
+      },
+      {
+        "type": "Button",
+        "label": "Open Opt-in QA",
+        "parentIndex": 10,
+        "rect": {
+          "y": 1549,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": false,
+        "depth": 9,
+        "identifier": "home-optin-qa-btn",
+        "index": 72,
+        "enabled": true
+      },
+      {
+        "type": "Button",
+        "label": "Open Notification Opt-in QA",
+        "parentIndex": 10,
+        "rect": {
+          "y": 1597.6666259765625,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": false,
+        "depth": 9,
+        "identifier": "home-notification-optin-qa-btn",
+        "index": 73,
+        "enabled": true
+      },
+      {
+        "type": "Button",
+        "label": "Open Consent Pair QA",
+        "parentIndex": 10,
+        "rect": {
+          "y": 1646,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": false,
+        "depth": 9,
+        "identifier": "home-consent-pair-qa-btn",
+        "index": 74,
+        "enabled": true
+      },
+      {
+        "type": "Button",
+        "label": "Open Shared Lists Sheet QA",
+        "parentIndex": 10,
+        "rect": {
+          "y": 1694.6666259765625,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": false,
+        "depth": 9,
+        "identifier": "home-shared-lists-sheet-qa-btn",
+        "index": 75,
+        "enabled": true
+      },
+      {
+        "type": "Button",
+        "label": "Open Skip Echo QA",
+        "parentIndex": 10,
+        "rect": {
+          "y": 1743,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": false,
+        "depth": 9,
+        "identifier": "home-skip-echo-qa-btn",
+        "index": 76,
+        "enabled": true
+      },
+      {
+        "type": "Button",
+        "label": "Open Single Skip QA",
+        "parentIndex": 10,
+        "rect": {
+          "y": 1791.6666259765625,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": false,
+        "depth": 9,
+        "identifier": "home-skip-echo-single-qa-btn",
+        "index": 77,
+        "enabled": true
+      },
+      {
+        "type": "Button",
+        "label": "Open Sheet Home QA",
+        "parentIndex": 10,
+        "rect": {
+          "y": 1840,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": false,
+        "depth": 9,
+        "identifier": "home-sheet-home-btn",
+        "index": 78,
+        "enabled": true
+      },
+      {
+        "type": "Button",
+        "label": "Open Sheet Rows QA",
+        "parentIndex": 10,
+        "rect": {
+          "y": 1888.6666259765625,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": false,
+        "depth": 9,
+        "identifier": "home-sheet-rows-btn",
+        "index": 79,
+        "enabled": true
+      },
+      {
+        "type": "Button",
+        "label": "Open Native Sheet Rows QA",
+        "parentIndex": 10,
+        "rect": {
+          "y": 1937,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": false,
+        "depth": 9,
+        "identifier": "home-sheet-native-btn",
+        "index": 80,
+        "enabled": true
+      },
+      {
+        "type": "Button",
+        "label": "Open Sheet Capture QA",
+        "parentIndex": 10,
+        "rect": {
+          "y": 1985.6666259765625,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": false,
+        "depth": 9,
+        "identifier": "home-sheet-capture-btn",
+        "index": 81,
+        "enabled": true
+      },
+      {
+        "type": "Button",
+        "label": "Open Merged Rows QA",
+        "parentIndex": 10,
+        "rect": {
+          "y": 2034,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": false,
+        "depth": 9,
+        "identifier": "home-merged-rows-btn",
+        "index": 82,
+        "enabled": true
+      },
+      {
+        "type": "Button",
+        "label": "Open Normalizing Inputs QA",
+        "parentIndex": 10,
+        "rect": {
+          "y": 2082.666748046875,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": false,
+        "depth": 9,
+        "identifier": "home-normalize-qa-btn",
+        "index": 83,
+        "enabled": true
+      },
+      {
+        "type": "Button",
+        "label": "Open Pager QA",
+        "parentIndex": 10,
+        "rect": {
+          "y": 2131,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": false,
+        "depth": 9,
+        "identifier": "home-pager-qa-btn",
+        "index": 84,
+        "enabled": true
+      },
+      {
+        "type": "Button",
+        "label": "Open Footer Motion QA",
+        "parentIndex": 10,
+        "rect": {
+          "y": 2179.666748046875,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": false,
+        "depth": 9,
+        "identifier": "home-footer-motion-qa-btn",
+        "index": 85,
+        "enabled": true
+      },
+      {
+        "type": "Button",
+        "label": "Open Keyboard Form QA",
+        "parentIndex": 10,
+        "rect": {
+          "y": 2228,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": false,
+        "depth": 9,
+        "identifier": "home-keyboard-form-qa-btn",
+        "index": 86,
+        "enabled": true
+      },
+      {
+        "type": "Button",
+        "label": "Open Keyboard Form Hidden Field QA",
+        "parentIndex": 10,
+        "rect": {
+          "y": 2276.666748046875,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": false,
+        "depth": 9,
+        "identifier": "home-keyboard-form-hidden-qa-btn",
+        "index": 87,
+        "enabled": true
+      },
+      {
+        "type": "Button",
+        "label": "Open Keyboard Form Forwarded Field QA",
+        "parentIndex": 10,
+        "rect": {
+          "y": 2325,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "hittable": false,
+        "depth": 9,
+        "identifier": "home-keyboard-form-forwarded-qa-btn",
+        "index": 88,
+        "enabled": true
+      },
+      {
+        "rect": {
+          "y": 2373.666748046875,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "identifier": "home-choice-chips-qa-btn",
+        "type": "Button",
+        "hittable": false,
+        "depth": 9,
+        "label": "Open Choice Chips QA",
+        "index": 89,
+        "parentIndex": 10,
+        "enabled": true
+      },
+      {
+        "rect": {
+          "y": 2422,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "identifier": "home-chip-row-qa-btn",
+        "type": "Button",
+        "hittable": false,
+        "depth": 9,
+        "label": "Open Chip Row QA",
+        "index": 90,
+        "parentIndex": 10,
+        "enabled": true
+      },
+      {
+        "rect": {
+          "y": 2470.666748046875,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "identifier": "home-keyboard-chips-qa-btn",
+        "type": "Button",
+        "hittable": false,
+        "depth": 9,
+        "label": "Open Keyboard Chips QA",
+        "index": 91,
+        "parentIndex": 10,
+        "enabled": true
+      },
+      {
+        "rect": {
+          "y": 2519,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "identifier": "home-sheet-over-header-qa-btn",
+        "type": "Button",
+        "hittable": false,
+        "depth": 9,
+        "label": "Open Sheet Over Header QA",
+        "index": 92,
+        "parentIndex": 10,
+        "enabled": true
+      },
+      {
+        "rect": {
+          "y": 2567.666748046875,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "identifier": "home-toast-auto-hide-qa-btn",
+        "type": "Button",
+        "hittable": false,
+        "depth": 9,
+        "label": "Open Auto-Hiding Toast QA",
+        "index": 93,
+        "parentIndex": 10,
+        "enabled": true
+      },
+      {
+        "rect": {
+          "y": 2616,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "identifier": "home-toast-persistent-qa-btn",
+        "type": "Button",
+        "hittable": false,
+        "depth": 9,
+        "label": "Open Persistent Toast QA",
+        "index": 94,
+        "parentIndex": 10,
+        "enabled": true
+      },
+      {
+        "rect": {
+          "y": 2664.666748046875,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "identifier": "home-planned-destination-qa-btn",
+        "type": "Button",
+        "hittable": false,
+        "depth": 9,
+        "label": "Open Planned Destination QA",
+        "index": 95,
+        "parentIndex": 10,
+        "enabled": true
+      },
+      {
+        "rect": {
+          "y": 2713,
+          "width": 374,
+          "height": 38,
+          "x": 14
+        },
+        "identifier": "home-dev-error-qa-btn",
+        "type": "Button",
+        "hittable": false,
+        "depth": 9,
+        "label": "Open Dev Error QA",
+        "index": 96,
+        "parentIndex": 10,
+        "enabled": true
+      },
+      {
+        "rect": {
+          "width": 374,
+          "x": 14,
+          "height": 38,
+          "y": 2761.666748046875
+        },
+        "identifier": "home-deep-qa-btn",
+        "type": "Button",
+        "hittable": false,
+        "depth": 9,
+        "label": "Open Deep Tree QA",
+        "index": 97,
+        "parentIndex": 10,
+        "enabled": true
+      },
+      {
+        "rect": {
+          "width": 374,
+          "x": 14,
+          "height": 38,
+          "y": 2810
+        },
+        "identifier": "home-feed-btn",
+        "type": "Other",
+        "hittable": false,
+        "depth": 9,
+        "label": "Go to Feed",
+        "index": 98,
+        "parentIndex": 10,
+        "enabled": true
+      },
+      {
+        "rect": {
+          "width": 374,
+          "x": 14,
+          "height": 38,
+          "y": 2858.666748046875
+        },
+        "identifier": "go-to-dashboard",
+        "type": "Other",
+        "hittable": false,
+        "depth": 9,
+        "label": "Go to Dashboard",
+        "index": 99,
+        "parentIndex": 10,
+        "enabled": true
+      },
+      {
+        "rect": {
+          "width": 374,
+          "x": 14,
+          "height": 40,
+          "y": 2907
+        },
+        "identifier": "home-diagnostics-btn",
+        "type": "Other",
+        "hittable": false,
+        "depth": 9,
+        "label": "Diagnostics (Dev)",
+        "index": 100,
+        "parentIndex": 10,
+        "enabled": true
+      },
+      {
+        "rect": {
+          "width": 374,
+          "x": 14,
+          "height": 40,
+          "y": 2957.666748046875
+        },
+        "identifier": "home-input-libraries-btn",
+        "type": "Other",
+        "hittable": false,
+        "depth": 9,
+        "label": "Input Libraries (Dev)",
+        "index": 101,
+        "parentIndex": 10,
+        "enabled": true
+      },
+      {
+        "rect": {
+          "width": 374,
+          "x": 14,
+          "height": 38,
+          "y": 3008
+        },
+        "identifier": "qa-open-otp-library",
+        "type": "Button",
+        "hittable": false,
+        "depth": 9,
+        "label": "Open Verify Code QA",
+        "index": 102,
+        "parentIndex": 10,
+        "enabled": true
+      },
+      {
+        "rect": {
+          "width": 374,
+          "x": 14,
+          "height": 38,
+          "y": 3056.666748046875
+        },
+        "identifier": "qa-open-promo-home",
+        "type": "Button",
+        "hittable": false,
+        "depth": 9,
+        "label": "Open Promo Home QA",
+        "index": 103,
+        "parentIndex": 10,
+        "enabled": true
+      },
+      {
+        "rect": {
+          "width": 374,
+          "x": 14,
+          "height": 38,
+          "y": 3105
+        },
+        "identifier": "qa-open-promo-home-field",
+        "type": "Button",
+        "hittable": false,
+        "depth": 9,
+        "label": "Open Promo Home with field QA",
+        "index": 104,
+        "parentIndex": 10,
+        "enabled": true
+      },
+      {
+        "rect": {
+          "width": 374,
+          "x": 14,
+          "height": 38,
+          "y": 3153.666748046875
+        },
+        "identifier": "qa-open-long-list-sheet",
+        "type": "Button",
+        "hittable": false,
+        "depth": 9,
+        "label": "Open Long List Sheet QA",
+        "index": 105,
+        "parentIndex": 10,
+        "enabled": true
+      },
+      {
+        "rect": {
+          "width": 374,
+          "x": 14,
+          "height": 38,
+          "y": 3202
+        },
+        "identifier": "qa-open-short-list-sheet",
+        "type": "Button",
+        "hittable": false,
+        "depth": 9,
+        "label": "Open Short List Sheet QA",
+        "index": 106,
+        "parentIndex": 10,
+        "enabled": true
+      },
+      {
+        "rect": {
+          "width": 374,
+          "x": 14,
+          "height": 38,
+          "y": 3250.666748046875
+        },
+        "identifier": "qa-open-list-sheet-60",
+        "type": "Button",
+        "hittable": false,
+        "depth": 9,
+        "label": "Open 60 Row List Sheet QA",
+        "index": 107,
+        "parentIndex": 10,
+        "enabled": true
+      },
+      {
+        "rect": {
+          "width": 374,
+          "x": 14,
+          "height": 38,
+          "y": 3299
+        },
+        "identifier": "qa-open-list-sheet-80",
+        "type": "Button",
+        "hittable": false,
+        "depth": 9,
+        "label": "Open 80 Row List Sheet QA",
+        "index": 108,
+        "parentIndex": 10,
+        "enabled": true
+      },
+      {
+        "rect": {
+          "width": 374,
+          "x": 14,
+          "height": 38,
+          "y": 3347.666748046875
+        },
+        "identifier": "qa-open-list-sheet-100",
+        "type": "Button",
+        "hittable": false,
+        "depth": 9,
+        "label": "Open 100 Row List Sheet QA",
+        "index": 109,
+        "parentIndex": 10,
+        "enabled": true
+      },
+      {
+        "label": "Open 120 Row List Sheet QA",
+        "rect": {
+          "width": 374,
+          "x": 14,
+          "height": 38,
+          "y": 3396
+        },
+        "identifier": "qa-open-list-sheet-120",
+        "hittable": false,
+        "depth": 9,
+        "enabled": true,
+        "index": 110,
+        "parentIndex": 10,
+        "type": "Button"
+      },
+      {
+        "label": "Open 140 Row List Sheet QA",
+        "rect": {
+          "width": 374,
+          "x": 14,
+          "height": 38,
+          "y": 3444.666748046875
+        },
+        "identifier": "qa-open-list-sheet-140",
+        "hittable": false,
+        "depth": 9,
+        "enabled": true,
+        "index": 111,
+        "parentIndex": 10,
+        "type": "Button"
+      },
+      {
+        "label": "Vertical scroll bar, 5 pages",
+        "value": "0%",
+        "rect": {
+          "width": 30,
+          "x": 369,
+          "height": 667,
+          "y": 124
+        },
+        "hittable": true,
+        "depth": 7,
+        "enabled": true,
+        "index": 112,
+        "parentIndex": 8,
+        "type": "Other"
+      },
+      {
+        "label": "Horizontal scroll bar, 1 page",
+        "value": "0%",
+        "rect": {
+          "width": 402,
+          "x": 0,
+          "height": 30,
+          "y": 758
+        },
+        "hittable": true,
+        "depth": 7,
+        "enabled": true,
+        "index": 113,
+        "parentIndex": 8,
+        "type": "Other"
+      },
+      {
+        "label": "Toolbar",
+        "rect": {
+          "width": 402,
+          "x": 0,
+          "height": 791,
+          "y": 0
+        },
+        "identifier": "Toolbar",
+        "hittable": true,
+        "depth": 4,
+        "enabled": true,
+        "index": 114,
+        "parentIndex": 5,
+        "type": "Toolbar"
+      },
+      {
+        "label": "Bottom Sheet",
+        "rect": {
+          "width": 402,
+          "x": 0,
+          "height": 874,
+          "y": 0
+        },
+        "depth": 3,
+        "hittable": true,
+        "enabled": true,
+        "index": 115,
+        "parentIndex": 4,
+        "type": "Other"
+      },
+      {
+        "label": "Bottom Sheet",
+        "rect": {
+          "width": 402,
+          "x": 0,
+          "height": 24,
+          "y": 874
+        },
+        "depth": 4,
+        "hittable": false,
+        "enabled": true,
+        "index": 116,
+        "parentIndex": 115,
+        "type": "Other"
+      },
+      {
+        "label": "Bottom sheet handle",
+        "rect": {
+          "width": 402,
+          "x": 0,
+          "height": 24,
+          "y": 874
+        },
+        "depth": 5,
+        "hittable": false,
+        "enabled": true,
+        "index": 117,
+        "parentIndex": 116,
+        "type": "Other"
+      },
+      {
+        "label": "home handler",
+        "rect": {
+          "width": 163.3333282470703,
+          "x": 230.6666717529297,
+          "height": 17.333335876464844,
+          "y": 66
+        },
+        "identifier": "tab-home-press-counters",
+        "hittable": true,
+        "depth": 3,
+        "enabled": true,
+        "index": 118,
+        "parentIndex": 4,
+        "type": "Other"
+      },
+      {
+        "label": "home handler",
+        "rect": {
+          "width": 71.66667175292969,
+          "x": 236.6666717529297,
+          "height": 13.333335876464844,
+          "y": 68
+        },
+        "depth": 4,
+        "hittable": true,
+        "enabled": true,
+        "index": 119,
+        "parentIndex": 118,
+        "type": "StaticText"
+      },
+      {
+        "label": "0",
+        "rect": {
+          "width": 7.666656494140625,
+          "x": 314.33333587646484,
+          "height": 13.333335876464844,
+          "y": 68
+        },
+        "identifier": "tab-home-handler-count",
+        "hittable": true,
+        "depth": 4,
+        "enabled": true,
+        "index": 120,
+        "parentIndex": 118,
+        "type": "StaticText"
+      },
+      {
+        "label": "0",
+        "rect": {
+          "width": 7.666656494140625,
+          "x": 314.33333587646484,
+          "height": 13.333335876464844,
+          "y": 68
+        },
+        "depth": 5,
+        "hittable": true,
+        "enabled": true,
+        "index": 121,
+        "parentIndex": 120,
+        "type": "StaticText"
+      },
+      {
+        "label": "tabPress",
+        "rect": {
+          "width": 46.333343505859375,
+          "x": 328.00000762939453,
+          "height": 13.333335876464844,
+          "y": 68
+        },
+        "depth": 4,
+        "hittable": true,
+        "enabled": true,
+        "index": 122,
+        "parentIndex": 118,
+        "type": "StaticText"
+      },
+      {
+        "label": "0",
+        "rect": {
+          "width": 7.666656494140625,
+          "x": 380.3333435058594,
+          "height": 13.333335876464844,
+          "y": 68
+        },
+        "identifier": "tab-home-tabpress-count",
+        "hittable": true,
+        "depth": 4,
+        "enabled": true,
+        "index": 123,
+        "parentIndex": 118,
+        "type": "StaticText"
+      },
+      {
+        "label": "0",
+        "rect": {
+          "width": 7.666656494140625,
+          "x": 380.3333435058594,
+          "height": 13.333335876464844,
+          "y": 68
+        },
+        "depth": 5,
+        "hittable": true,
+        "enabled": true,
+        "index": 124,
+        "parentIndex": 123,
+        "type": "StaticText"
+      },
+      {
+        "label": "Quick add",
+        "rect": {
+          "width": 42,
+          "x": 340,
+          "height": 42,
+          "y": 742
+        },
+        "depth": 3,
+        "hittable": true,
+        "enabled": true,
+        "index": 125,
+        "parentIndex": 4,
+        "type": "Other"
+      },
+      {
+        "label": "Quick add",
+        "rect": {
+          "width": 42,
+          "x": 340,
+          "height": 42,
+          "y": 742
+        },
+        "identifier": "quick-add-fab",
+        "hittable": true,
+        "depth": 4,
+        "enabled": true,
+        "index": 126,
+        "parentIndex": 125,
+        "type": "Button"
+      },
+      {
+        "rect": {
+          "width": 24,
+          "x": 349,
+          "height": 24,
+          "y": 751
+        },
+        "depth": 5,
+        "identifier": "phosphor-react-native-plus-undefined",
+        "hittable": true,
+        "enabled": true,
+        "index": 127,
+        "parentIndex": 126,
+        "type": "Other"
+      },
+      {
+        "label": "Home, tab, 1 of 4",
+        "rect": {
+          "width": 402,
+          "x": 0,
+          "height": 83,
+          "y": 791
+        },
+        "depth": 3,
+        "hittable": true,
+        "enabled": true,
+        "index": 128,
+        "parentIndex": 4,
+        "type": "Other"
+      },
+      {
+        "selected": true,
+        "label": "Home, tab, 1 of 4",
+        "rect": {
+          "width": 100.66666412353516,
+          "x": 0,
+          "height": 48.66668701171875,
+          "y": 791.3333333432674
+        },
+        "identifier": "tab-home",
+        "hittable": true,
+        "depth": 4,
+        "enabled": true,
+        "index": 129,
+        "parentIndex": 128,
+        "type": "Button"
+      },
+      {
+        "rect": {
+          "width": 25,
+          "x": 37.66666793823242,
+          "height": 25,
+          "y": 797.9999999701977
+        },
+        "depth": 5,
+        "identifier": "phosphor-react-native-house-fill",
+        "hittable": true,
+        "enabled": true,
+        "index": 130,
+        "parentIndex": 129,
+        "type": "Other"
+      },
+      {
+        "identifier": "tab-notifications",
+        "enabled": true,
+        "index": 131,
+        "rect": {
+          "x": 100.66666412353516,
+          "y": 791.3333333432674,
+          "width": 100.33333587646484,
+          "height": 48.66668701171875
+        },
+        "label": "Notifications, tab, 2 of 4",
+        "hittable": true,
+        "depth": 4,
+        "parentIndex": 128,
+        "type": "Button"
+      },
+      {
+        "identifier": "phosphor-react-native-bell-regular",
+        "enabled": true,
+        "index": 132,
+        "rect": {
+          "y": 797.9999999701977,
+          "width": 25,
+          "height": 25,
+          "x": 138.33333206176758
+        },
+        "hittable": true,
+        "depth": 5,
+        "parentIndex": 131,
+        "type": "Other"
+      },
+      {
+        "identifier": "tab-tasks",
+        "enabled": true,
+        "index": 133,
+        "rect": {
+          "x": 201,
+          "width": 100.66665649414062,
+          "y": 791.3333333432674,
+          "height": 48.66668701171875
+        },
+        "label": "Tasks, tab, 3 of 4",
+        "hittable": true,
+        "depth": 4,
+        "parentIndex": 128,
+        "type": "Button"
+      },
+      {
+        "identifier": "phosphor-react-native-check-square-regular",
+        "enabled": true,
+        "index": 134,
+        "rect": {
+          "x": 238.66666793823242,
+          "width": 24.999984741210938,
+          "y": 797.9999999701977,
+          "height": 25
+        },
+        "hittable": true,
+        "depth": 5,
+        "parentIndex": 133,
+        "type": "Other"
+      },
+      {
+        "identifier": "tab-profile",
+        "enabled": true,
+        "index": 135,
+        "rect": {
+          "x": 301.6666564941406,
+          "width": 100.33334350585938,
+          "y": 791.3333333432674,
+          "height": 48.66668701171875
+        },
+        "label": "Profile, tab, 4 of 4",
+        "hittable": true,
+        "depth": 4,
+        "parentIndex": 128,
+        "type": "Button"
+      },
+      {
+        "identifier": "phosphor-react-native-user-regular",
+        "enabled": true,
+        "index": 136,
+        "rect": {
+          "x": 339.33332443237305,
+          "width": 25,
+          "y": 797.9999999701977,
+          "height": 25
+        },
+        "hittable": true,
+        "depth": 5,
+        "parentIndex": 135,
+        "type": "Other"
+      },
+      {
+        "identifier": "Toolbar",
+        "enabled": true,
+        "index": 137,
+        "rect": {
+          "x": 0,
+          "width": 402,
+          "y": 0,
+          "height": 874
+        },
+        "label": "Toolbar",
+        "hittable": true,
+        "depth": 2,
+        "parentIndex": 2,
+        "type": "Toolbar"
+      }
+    ]
+  },
+  "v": 2
+}

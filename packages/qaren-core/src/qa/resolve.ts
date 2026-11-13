@@ -33,11 +33,14 @@ import {
   reachOf,
   touchOwnerAt,
   type TouchGap,
+  reactEntryHostsOf,
   reactOnlyFactsOf,
   scrollContainerType,
   semanticActionView,
   semanticDisabled,
   touchPolicy,
+  nativeTypeOf,
+  reactHintsInteractive,
   visibilityView,
 } from './screen.js';
 import {
@@ -486,6 +489,24 @@ function hostOutside(screen: Screen, inner?: string, outer?: string): boolean {
   return path !== undefined && !path.includes(wrapper);
 }
 
+// Positive proof from the ordinary capture that the React input read before a focus tap lies beneath the wrapper's own view.
+export function fillHostInside(screen: Screen, inputId: string, wrapper: Element): boolean {
+  const evidence = screen.reactHostEvidence;
+  const wrapperTestID = wrapper.testID;
+  if (!evidence?.complete || !wrapperTestID || wrapperTestID === inputId) return false;
+  const inputs = evidence.hosts.flatMap((host, i) =>
+    host.capabilities.fill && (host.testID === inputId || host.nativeID === inputId) ? [i] : [],
+  );
+  if (inputs.length !== 1) return false;
+  const input = inputs[0];
+  const wrappers = evidence.hosts.flatMap((host, i) =>
+    i !== input && host.testID === wrapperTestID ? [i] : [],
+  );
+  if (wrappers.length !== 1) return false;
+  const entry = reactEntryHostsOf(wrapper);
+  return entry?.host === wrappers[0] && entry.inputs.length === 1 && entry.inputs[0] === input;
+}
+
 // The one non-input element a quoted fill may tap before typing through the keyboard; undefined keeps the strict refusal.
 export function keyboardFallbackTarget(
   step: Step,
@@ -876,6 +897,8 @@ function frontOverlayFrames(
   const lineage = ancestorsOf(container);
   const frames: { element: Element; rect: NonNullable<NativeNode['rect']> }[] = [];
   const padding = 4 * (screen.pointScale ?? 1);
+  const listFrame = elementFrame(container);
+  const listClip = listFrame && clip(listFrame, elementViewport(container));
   for (const [i, other] of screen.elements.entries()) {
     if (
       i <= behind ||
@@ -897,9 +920,44 @@ function frontOverlayFrames(
       rect.x + rect.width + padding <= band.x
     )
       continue;
+    if (!touch && listClip && emptyLayer(other, rect, listClip, screen)) continue;
     frames.push({ element: other, rect });
   }
   return frames;
+}
+
+// For scroll-until, an iOS container holding the list's whole clip with no captured content over it is a layer, not a cover.
+function emptyLayer(
+  element: Element,
+  rect: NonNullable<NativeNode['rect']>,
+  listClip: NonNullable<NativeNode['rect']>,
+  screen: Screen,
+): boolean {
+  const type = nativeTypeOf(element);
+  if (
+    // A control is never a layer: by native type, or by any React hint of a press or a fill.
+    (type !== 'Other' && type !== 'Toolbar') ||
+    reactHintsInteractive(element) ||
+    touchPolicy(element) === 'opaque' ||
+    rect.x > listClip.x ||
+    rect.y > listClip.y ||
+    rect.x + rect.width < listClip.x + listClip.width ||
+    rect.y + rect.height < listClip.y + listClip.height
+  )
+    return false;
+  const descendants = screen.elements.filter((other) => ancestorsOf(other).includes(element));
+  if (!descendants.length) return type === 'Toolbar';
+  // Frames decide, not the off-screen flag, which follows a node's centre.
+  return descendants.every((other) => {
+    const frame = elementFrame(other);
+    return (
+      !!frame &&
+      (frame.x >= listClip.x + listClip.width ||
+        frame.x + frame.width <= listClip.x ||
+        frame.y >= listClip.y + listClip.height ||
+        frame.y + frame.height <= listClip.y)
+    );
+  });
 }
 
 function clearOfFrontOverlays(

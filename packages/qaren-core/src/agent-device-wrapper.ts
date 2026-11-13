@@ -1506,6 +1506,7 @@ export async function settleAfterMutationWithOutcome(
         settle: {
           method: outcome.method,
           settled: outcome.settled,
+          ...(outcome.probes !== undefined ? { probes: outcome.probes } : {}),
           ...(outcome.hierarchyChanged !== undefined
             ? { hierarchyChanged: outcome.hierarchyChanged }
             : {}),

@@ -102,6 +102,14 @@ export interface InterruptionReceipt {
   pressCentreY?: number;
   // The fixed class a dismissed screen was recognised as, when one applied.
   screenClass?: InterruptionScreenClass;
+  // A permission opt-in declined although it followed the plan's own tap.
+  afterPlannedPress?: true;
+}
+
+// One permission opt-in dismissal; a line repeats when one step declined two.
+export interface DeclinedOptIn {
+  line: number;
+  afterPlannedPress: boolean;
 }
 
 // The value-free announcement that a plan line begins; its row later carries the same operationId.
@@ -201,6 +209,7 @@ export interface Ledger {
   llmTurns: number;
   escapes: number;
   recoveries: number;
+  declinedOptIns?: DeclinedOptIn[];
   speed?: LedgerSpeed;
   failure?: LedgerFailure;
   recipe?: { slug: string; markdown: string } | { unsavable: string };

@@ -103,17 +103,25 @@ final class Query {
   }
 }
 final class XCUIApplication {
-  enum State { case runningForeground }
+  enum State { case runningForeground, runningBackground }
   let root: XCUIElementSnapshot
   let query = Query(), alerts = Query(), sheets = Query()
   var snapshotReads = 0
+  // One entry per state read; nil raises an exception, and an empty list stays foreground.
+  var states: [State?] = []
+  var onSnapshot: (Int) throws -> Void = { _ in }
   init(_ root: XCUIElementSnapshot) { self.root = root }
-  var state: State { reads.append("state"); return .runningForeground }
+  var state: State {
+    reads.append("state")
+    let next: State? = states.isEmpty ? .runningForeground : states.removeFirst()
+    if next == nil { RunnerObjCExceptionCatcher.failed = true }
+    return next ?? .runningForeground
+  }
   func descendants(matching type: XCUIElement.ElementType) -> Query {
     reads.append("descendants"); return query
   }
   func snapshot() throws -> XCUIElementSnapshot {
-    reads.append("root"); snapshotReads += 1; return root
+    reads.append("root"); snapshotReads += 1; try onSnapshot(snapshotReads); return root
   }
 }
 struct DataPayload {
@@ -128,6 +136,7 @@ final class Harness {
   let maxSnapshotElements = 600
   let currentSnapshotGeneration = 7
   var now = 1000.0
+  var finalizationDelay = 0.0
   let springboard = XCUIApplication(XCUIElementSnapshot())
   func blockingSystemAlertSnapshot() -> DataPayload? { nil }
   func withSystemModalDiagnostic(_ payload: DataPayload, app: XCUIApplication) -> DataPayload { payload }
@@ -150,7 +159,10 @@ ${section(source, '  private func presenceRead<', '  private func presenceLabelS
       enabled: snapshot.isEnabled, focused: nil, hittable: true, depth: depth, parentIndex: parentIndex,
       hiddenContentAbove: nil, hiddenContentBelow: nil)
   }
-${section(source, '  func snapshotPlatformPresence(', '  func retainSnapshotTargets(')}
+${section(source, '  func snapshotPlatformPresence(', '  func retainSnapshotTargets(').replace(
+  '    let ended = presenceUptimeMs()',
+  '    let ended = presenceUptimeMs() + finalizationDelay',
+)}
   func observe(_ descriptor: XCUIElementSnapshot, count: Int, app: XCUIApplication, diagnostic: Bool, deadline: Double) -> [String: Any] {
     let timing = PresenceCaptureTiming(started: now, now: { self.now })
     var reasons: [String] = []
@@ -260,6 +272,37 @@ for name in ["empty", "clipped", "ambiguous", "group-false", "group-nil", "group
   }
   try emit(["name": name, "complete": capture.complete, "observations": observations, "reads": reads,
     "samples": capture.diagnostics!.preparationSamples!, "quietMs": capture.diagnostics!.preparationQuietElapsedMs!])
+}
+// Preparation takes six root reads, so the seventh is revalidation's.
+for name in ["complete", "initial-ineligible", "initial-unavailable", "preparation-unavailable", "enumeration-exception", "final-ineligible", "final-unavailable", "revalidation-changed", "revalidation-unavailable", "revalidation-exception", "finalization-deadline", "harmless-then-changed"] {
+  reads = []
+  let h = Harness(), root = XCUIElementSnapshot(), window = XCUIElementSnapshot(), first = XCUIElementSnapshot()
+  root.elementType = .application; window.elementType = .window
+  window.frame = CGRect(x: 0, y: 0, width: 400, height: 800)
+  root.children = [window]; window.children = [first]
+  let app = XCUIApplication(root), live = XCUIElement(0)
+  app.query.elements = [live]
+  switch name {
+  case "initial-ineligible": app.states = [.runningBackground]
+  case "initial-unavailable": app.states = [nil]
+  case "preparation-unavailable": app.onSnapshot = { _ in throw Unavailable.read }
+  case "enumeration-exception": app.onSnapshot = { read in if read == 1 { RunnerObjCExceptionCatcher.outerFailed = true } }
+  case "final-ineligible": app.states = [.runningForeground, .runningBackground]
+  case "final-unavailable": app.states = [.runningForeground, nil]
+  case "revalidation-changed": app.onSnapshot = { read in if read == 7 { first.label += " " } }
+  case "revalidation-unavailable": app.onSnapshot = { read in if read == 7 { throw Unavailable.read } }
+  case "revalidation-exception": app.onSnapshot = { read in if read == 7 { RunnerObjCExceptionCatcher.failed = true } }
+  case "finalization-deadline": h.finalizationDelay = 20_000
+  case "harmless-then-changed":
+    live.hit = false
+    app.onSnapshot = { read in if read == 7 { first.label += " " } }
+  default: break
+  }
+  let capture = h.snapshotPlatformPresence(app: app, appId: "PRIVATE-app", presenceBudgetMs: 20_000).presenceCapture!
+  let diagnostics = try JSONSerialization.jsonObject(with: JSONEncoder().encode(capture.diagnostics!)) as! [String: Any]
+  try emit(["name": "decisive-" + name, "complete": capture.complete,
+    "failure": diagnostics["failure"] ?? NSNull(), "decisive": diagnostics["decisiveFailure"] ?? NSNull(),
+    "deadline": diagnostics["deadline"] ?? NSNull()])
 }
 for scenario in ["stable", "moving", "added"] {
   reads = []
@@ -472,4 +515,61 @@ precondition(decoded.unknownReason == nil)
       );
     });
   }
+  await t.test('each gate exit records the failure that left the capture incomplete', () => {
+    type Failure = {
+      phase: string;
+      reason: string;
+      mismatch?: { kind: string; index: number; fieldMask: number };
+    } | null;
+    const summary = (failure: Failure) =>
+      failure && {
+        phase: failure.phase,
+        reason: failure.reason,
+        ...(failure.mismatch
+          ? {
+              kind: failure.mismatch.kind,
+              index: failure.mismatch.index,
+              fieldMask: failure.mismatch.fieldMask,
+            }
+          : {}),
+      };
+    const changed = {
+      phase: 'revalidation',
+      reason: 'enumeration-changed',
+      kind: 'node',
+      index: 2,
+      fieldMask: 4,
+    };
+    for (const [name, decisive] of Object.entries({
+      complete: null,
+      'initial-ineligible': { phase: 'initial-eligibility', reason: 'ineligible' },
+      'initial-unavailable': { phase: 'initial-eligibility', reason: 'read-unavailable' },
+      'preparation-unavailable': { phase: 'preparation', reason: 'read-unavailable' },
+      'enumeration-exception': { phase: 'enumeration', reason: 'read-unavailable' },
+      'final-ineligible': { phase: 'final-eligibility', reason: 'ineligible' },
+      'final-unavailable': { phase: 'final-eligibility', reason: 'read-unavailable' },
+      'revalidation-changed': changed,
+      'revalidation-unavailable': { phase: 'revalidation', reason: 'read-unavailable' },
+      'revalidation-exception': { phase: 'revalidation', reason: 'read-unavailable' },
+      'finalization-deadline': { phase: 'finalization', reason: 'deadline' },
+      'harmless-then-changed': changed,
+    })) {
+      const row = rows.find((row) => row.name === `decisive-${name}`);
+      assert.equal(row.complete, decisive === null, name);
+      assert.deepEqual(summary(row.decisive), decisive, name);
+      // The first failure stays first-wins; in the long-list shape it is a harmless node read.
+      assert.deepEqual(
+        summary(row.failure),
+        name === 'harmless-then-changed'
+          ? { phase: 'observation', reason: 'read-unavailable' }
+          : decisive,
+        name,
+      );
+    }
+    assert.deepEqual(rows.find((row) => row.name === 'decisive-finalization-deadline').deadline, {
+      phase: 'finalization',
+      read: 'finalization',
+      edge: 'after',
+    });
+  });
 });

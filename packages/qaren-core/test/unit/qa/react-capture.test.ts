@@ -1,12 +1,18 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { inspect } from 'node:util';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { resolve } from 'node:path';
 import vm from 'node:vm';
 import { CDPClient } from '../../../dist/cdp-client.js';
 import { createComponentTreeHandler } from '../../../dist/handlers/component-tree.js';
 import { buildFiber, createSandbox } from '../helpers/inject-harness.js';
 import { captureQaReact, createQaReactCapture } from '../../../dist/qa/react-capture.js';
 import { captureScreen } from '../../../dist/qa/capture.js';
+import { parsePlan } from '../../../dist/qa/plan.js';
+import { loadBlock, readBlock } from '../../../dist/qa/blocks.js';
+import { modalCoverDiagnostic } from '../../../dist/qa/screen.js';
+import { runPlan } from '../../../dist/qa/walker.js';
 import {
   PrivateInputCaptureError,
   ReactCaptureIncomplete,
@@ -15,6 +21,7 @@ import { inputValues } from '../../../dist/qa/privacy.js';
 import type { NativeNode } from '../../../dist/qa/screen.js';
 import { attested, nativeCapture } from './platform-presence-fixtures.ts';
 import { startFakeCDP } from '../../helpers/fake-cdp-server.js';
+import { scriptedJudge, walker } from './judgment-fixtures.ts';
 
 const sentinel = 'PRIVATE_TEST_INPUT_7abf';
 const id = '1abcd';
@@ -50,14 +57,20 @@ const publicTree = () => ({
 const ready = () => ({ v: 1, id, state: 'ready', tree: JSON.stringify(publicTree()) });
 const start = () => ({ v: 1, id, state: 'pending' });
 
-function realProducer(props: Record<string, unknown>, allowLegacyTree = false) {
+function realProducer(
+  props: Record<string, unknown>,
+  allowLegacyTree = false,
+  onMeasure?: () => void,
+) {
   const fiber = Object.assign(
     buildFiber({
       hostType: 'RCTTextInput',
       props,
       stateNode: {
-        measureInWindow: (done: (...rect: number[]) => void) =>
-          setTimeout(() => done(0, 0, 100, 40), 35),
+        measureInWindow: (done: (...rect: number[]) => void) => {
+          onMeasure?.();
+          setTimeout(() => done(0, 0, 100, 40), 35);
+        },
       },
     }),
     { tag: 5 },
@@ -172,6 +185,138 @@ test('real producer and adapter interoperate through an in-memory CDP socket', a
     assert.deepEqual(Object.keys(sandbox), globalKeys);
     assert.equal(inspect(client, { depth: 8 }).includes(sentinel), false);
   }
+});
+
+test('Fill then an absent quoted Tap obtains modal proof without a presence read', async () => {
+  const producer = realProducer({ testID: 'field', editable: true });
+  const f = walker(
+    [],
+    scriptedJudge(() => assert.fail('quoted actions must be model-free')),
+  );
+  f.deps.platform = 'ios';
+  let keyboardVisible = false;
+  let targetVisible = false;
+  let value = '';
+  const modes: Array<{ presence: boolean; typography: boolean }> = [];
+  f.deps.captureScreen = async (options) => {
+    const presence = options?.platformPresence === true;
+    const typography = presence || options?.typography === true;
+    modes.push({ presence, typography });
+    const base = nativeEcho(true);
+    const nodes = base.nodes.map(({ presence: observed, ...node }) => ({
+      ...node,
+      ...(node.ref === '@field' ? { value } : {}),
+      ...(presence ? { presence: observed } : {}),
+    }));
+    if (targetVisible)
+      nodes.push({
+        ...nodes[1],
+        ref: '@submit',
+        index: nodes.length,
+        identifier: 'submit',
+        label: 'Continue',
+        type: 'Button',
+      });
+    const captured = await captureScreen({
+      appId: 'com.test',
+      requirePrivateInputs: true,
+      platformPresence: presence,
+      native: async () => ({
+        ...base,
+        nodes,
+        keyboardVisible,
+        presenceCapture: presence ? base.presenceCapture : undefined,
+        snapshotVerdict: { ...base.snapshotVerdict, nodeCount: nodes.length },
+      }),
+      react: () => captureQaReact(producer.client, typography),
+    });
+    assert.equal(modalCoverDiagnostic(captured)?.modalCount, typography ? 0 : undefined);
+    return captured;
+  };
+  f.deps.fill = async (ref, text, context) => {
+    context.authorize();
+    f.actions.push(`fill ${ref}`);
+    value = text;
+    keyboardVisible = true;
+    return { ok: true, proven: true };
+  };
+  f.deps.dismissKeyboard = async (context) => {
+    context.authorize();
+    f.actions.push('dismiss');
+    keyboardVisible = false;
+    targetVisible = true;
+    return 'js';
+  };
+  const result = await runPlan(
+    parsePlan('1. Fill "field" with "hello"\n2. Tap "submit"').blocks!,
+    f.deps,
+  );
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['fill @field', 'dismiss', 'press @submit']);
+  assert.equal(result.steps.at(-1)?.keyboardCleared, 'js');
+  assert.equal(
+    modes.some((mode) => mode.presence),
+    false,
+  );
+  assert.ok(modes.some((mode) => !mode.typography));
+  assert.ok(modes.some((mode) => mode.typography));
+});
+
+test('an ordinary resolved quoted Tap saves its block without asynchronous host measurement', async (t) => {
+  const root = mkdtempSync(resolve('.qa-resolved-tap-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  let measurements = 0;
+  const producer = realProducer({ testID: 'field', editable: true }, false, () => {
+    measurements += 1;
+    producer.removeInput();
+  });
+  const f = walker(
+    [],
+    scriptedJudge(() => assert.fail('quoted actions must be model-free')),
+  );
+  f.deps.platform = 'ios';
+  f.deps.dismissKeyboard = async () => assert.fail('the keyboard is hidden');
+  const modes: Array<{ presence: boolean; typography: boolean }> = [];
+  f.deps.captureScreen = async (options) => {
+    const presence = options?.platformPresence === true;
+    const typography = presence || options?.typography === true;
+    modes.push({ presence, typography });
+    const base = nativeCapture();
+    return captureScreen({
+      appId: 'com.test',
+      requirePrivateInputs: true,
+      platformPresence: presence,
+      native: async () => ({
+        ...base,
+        presenceCapture: presence ? base.presenceCapture : undefined,
+        nodes: base.nodes.map(({ presence: observed, ...node }) => ({
+          ...node,
+          ...(presence ? { presence: observed } : {}),
+        })),
+      }),
+      react: () => captureQaReact(producer.client, typography),
+    });
+  };
+  const [block] = parsePlan('1. Tap "save"').blocks!;
+  const result = await runPlan([block], f.deps, [], {
+    appRoot: root,
+    appId: 'com.test',
+    platform: 'ios',
+  });
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['press @e1']);
+  assert.deepEqual(result.blocksWritten, [block.slug]);
+  const saved = loadBlock(root, block.slug);
+  assert.ok(saved);
+  const stored = readBlock(saved);
+  assert.ok(!('invalid' in stored));
+  assert.deepEqual(stored.steps[0].selector, { id: 'save' });
+  assert.equal(measurements, 0);
+  assert.ok(modes.length > 0);
+  assert.equal(
+    modes.some((mode) => mode.typography || mode.presence),
+    false,
+  );
 });
 
 test('legacy whole-tree handler neither enters nor exposes the private capture channel', async (t) => {
@@ -326,6 +471,17 @@ test('legitimate switch booleans retain an empty private binding', async () => {
       react: async () => observation,
     });
     assert.deepEqual(inputValues(screen), []);
+  }
+});
+
+test('a private digest of more than 200 and at most 1000 entries is accepted', async () => {
+  const entry = { role: 'button', testID: 'row', capabilities: { press: true, fill: false } };
+  for (const length of [261, 1000]) {
+    const tree = publicTree();
+    const interactive = [...tree.interactive, ...Array.from({ length: length - 1 }, () => entry)];
+    const mock = mockClient([{ ...ready(), tree: JSON.stringify({ ...tree, interactive }) }]);
+    const observation = await captureQaReact(mock.client);
+    assert.equal(observation.interactive?.length, length);
   }
 });
 
@@ -625,6 +781,30 @@ test('the hidden digest fact survives capture and a malformed one refuses', asyn
   await assert.rejects(capture({ ...entry, hidden: 'yes' }), PrivateInputCaptureError);
 });
 
+test('the hostIndex digest fact survives capture and a malformed one refuses', async () => {
+  const hosts = [
+    { testID: 'wrap', role: 'button', roleSource: 'role', capabilities: { press: true } },
+    { testID: 'field', role: null, roleSource: 'none', capabilities: { fill: true } },
+  ];
+  const capture = (entry: Record<string, unknown>) =>
+    captureQaReact(
+      mockClient([
+        {
+          ...ready(),
+          tree: JSON.stringify({
+            ...publicTree(),
+            interactive: [entry],
+            hostEvidence: { complete: true, hosts },
+          }),
+        },
+      ]).client,
+    );
+  const entry = { role: 'button', testID: 'wrap', hostIndex: 0, inputHostIndices: [1] };
+  assert.deepEqual((await capture(entry)).interactive, [entry]);
+  for (const hostIndex of [-1, 2, 0.5, '0', null, true])
+    await assert.rejects(capture({ ...entry, hostIndex }), PrivateInputCaptureError);
+});
+
 test('a QA render-error observation survives capture without exporting private helper fields', async () => {
   const observation = await captureQaReact({
     async withPrivateHelperWorld(read) {
@@ -722,9 +902,9 @@ test('each consumer refusal site carries one fixed cause and integer counters', 
     ['missing interactive', readyWith({ label: sentinel }), 'tree-shape', {}],
     [
       'interactive cap',
-      readyWith(countedTree({ interactive: Array.from({ length: 201 }, () => entry) })),
+      readyWith(countedTree({ interactive: Array.from({ length: 1001 }, () => entry) })),
       'interactive-cap',
-      { ...treeCounters, interactive: 201 },
+      { ...treeCounters, interactive: 1001 },
     ],
     ['truncated', readyWith(countedTree({ truncated: true })), 'truncated', treeCounters],
     [

@@ -64,6 +64,8 @@ pub struct RunRequest {
     pub pr: Option<PrTarget>,
     // --hold / --no-hold; None leaves the decision to hold_on_fail.
     pub hold: Option<bool>,
+    // qaren check --record: record this walk under the same rules as qaren pr.
+    pub record: bool,
 }
 
 const HOLD_REASON: &str = "retained for inspection";
@@ -704,6 +706,7 @@ fn run_inner(
         runs_root: req.runs_root.clone(),
         native_cache_root: req.native_cache_root.clone(),
         native_store_entry: None,
+        plan_fingerprint: None,
         ios_observation: None,
         linkage_before_build: None,
         ios_generated_native: false,
@@ -1016,7 +1019,10 @@ fn run_inner(
         let mut video = None;
         // Taken before the spawn, so the trim offset can only cut later than the true admission frame.
         let recording_from = ctx.runner.now_epoch_ms();
-        if resolved_inputs.has_inputs()
+        let recording_requested = pr_state.is_some() || req.record;
+        if !recording_requested {
+            events::stage("recording", StageState::Skipped, None, None);
+        } else if resolved_inputs.has_inputs()
             && (config.video != record::VideoPolicy::NonStrict
                 || crate::redact::private_output_mode())
         {
@@ -1024,36 +1030,42 @@ fn run_inner(
             video = Some(VideoStatus::unavailable(
                 "runtime inputs withhold recording".to_string(),
             ));
-        } else if pr_state.is_some() {
-            if device
-                .android
-                .as_ref()
-                .is_some_and(|emulator| emulator.api_level < 34)
-            {
-                events::stage("recording", StageState::Skipped, None, None);
-                video = Some(VideoStatus::unavailable(
-                    "Android API <34 stops screen recording at 180 s".into(),
-                ));
-            } else {
-                events::stage("recording", StageState::Running, None, None);
-                let adb = ctx.record.resources.adb_path.clone();
-                let target = match &device.android {
-                    Some(emulator) => record::RecordTarget::Android {
-                        adb: adb.as_deref().expect("borrowed emulator adb path"),
-                        port: emulator.server_port,
-                        serial: &emulator.serial,
-                    },
-                    None => record::RecordTarget::Ios(&device.id),
-                };
-                if let Err(status) =
-                    record::start(ctx.runner, &mut ctx.record, &ctx.runs_root, target)
-                {
-                    events::stage("recording", StageState::Failed, None, None);
-                    video = Some(status);
-                }
-            }
-        } else {
+        } else if device
+            .android
+            .as_ref()
+            .is_some_and(|emulator| emulator.api_level < 34)
+        {
             events::stage("recording", StageState::Skipped, None, None);
+            video = Some(VideoStatus::unavailable(
+                "Android API <34 stops screen recording at 180 s".into(),
+            ));
+        } else {
+            events::stage("recording", StageState::Running, None, None);
+            let adb = ctx.record.resources.adb_path.clone();
+            let target = match &device.android {
+                Some(emulator) => record::RecordTarget::Android {
+                    adb: adb.as_deref().expect("borrowed emulator adb path"),
+                    port: emulator.server_port,
+                    serial: &emulator.serial,
+                },
+                None => record::RecordTarget::Ios(&device.id),
+            };
+            if let Err(status) = record::start(ctx.runner, &mut ctx.record, &ctx.runs_root, target)
+            {
+                events::stage("recording", StageState::Failed, None, None);
+                video = Some(status);
+            }
+        }
+        // Any exit after this point carries the check's video statement; the normal path replaces it.
+        if pr_state.is_none() {
+            let provisional = match &video {
+                _ if !req.record => {
+                    "not recorded; pass --record to qaren check to record this walk".to_string()
+                }
+                Some(status) => status.to_string(),
+                None => "unavailable(recording started; the run ended before it was finalized; the raw capture is kept in media/)".to_string(),
+            };
+            ctx.notes.push(("video".to_string(), provisional));
         }
         let recording_ready = ctx.runner.now_epoch_ms();
         if req.platform == Platform::Ios && resolved_inputs.has_inputs() {
@@ -1312,24 +1324,24 @@ fn run_inner(
         }
         let mut early_cleanup = Vec::new();
         let mut blocks = Vec::new();
-        if pr_state.is_some() {
-            if ctx.record.resources.recorder.is_some() {
-                let outcome = record::stop(ctx.runner, &mut ctx.record, &ctx.runs_root);
-                let state = if outcome.clean() {
-                    StageState::Passed
-                } else {
-                    StageState::Failed
-                };
-                if video.is_none() {
-                    events::stage("recording", state, None, None);
-                }
-                if !outcome.clean() && video.is_none() {
-                    video = Some(VideoStatus::unavailable(
-                        "the recorder did not stop cleanly".into(),
-                    ));
-                }
-                early_cleanup.push(("recorder".to_string(), outcome.render()));
+        if ctx.record.resources.recorder.is_some() {
+            let outcome = record::stop(ctx.runner, &mut ctx.record, &ctx.runs_root);
+            let state = if outcome.clean() {
+                StageState::Passed
+            } else {
+                StageState::Failed
+            };
+            if video.is_none() {
+                events::stage("recording", state, None, None);
             }
+            if !outcome.clean() && video.is_none() {
+                video = Some(VideoStatus::unavailable(
+                    "the recorder did not stop cleanly".into(),
+                ));
+            }
+            early_cleanup.push(("recorder".to_string(), outcome.render()));
+        }
+        if pr_state.is_some() {
             let refused;
             (blocks, refused) = worktree::copy_blocks(
                 ctx.runner,
@@ -1364,7 +1376,10 @@ fn run_inner(
         cleanup.splice(..0, early_cleanup);
         let t = ctx.mark("teardown", t);
         if let Some(udid) = runner_simulator {
-            if let Some(note) = springboard_crash_after(ctx.runner, &udid, runner_started_at) {
+            let wait_seconds = springboard_scan_wait_seconds(&outcome);
+            if let Some(note) =
+                springboard_crash_after(ctx.runner, &udid, runner_started_at, wait_seconds)
+            {
                 let at = timefmt::iso8601_utc(ctx.runner.now_epoch_ms());
                 ctx.record
                     .push_history(at, &format!("lane health: springboard_crash: {note}"));
@@ -1457,78 +1472,17 @@ fn run_inner(
         let mut published_video = None;
         let mut video_continuity = Vec::new();
         if let Some(pr) = &pr_state {
-            let raw = record::raw_capture(&run_dir.join("media"));
-            let video = video.unwrap_or_else(|| record::finalize(ctx.runner, &run_dir));
-            if video == VideoStatus::Available {
-                if let Some(bytes) = reclaim_raw_capture(&run_dir) {
-                    ctx.notes.push((
-                        "reclaimed".to_string(),
-                        format!(
-                            "media/{}: {bytes} bytes",
-                            raw.file_name().unwrap().to_string_lossy()
-                        ),
-                    ));
-                }
-            }
-            // The copy skips setup while preserving admission and pre-plan login boundaries.
-            let video = if video == VideoStatus::Available || outcome.ledger.publication_interrupted
-            {
-                let offset = outcome.ledger.admitted_at_ms.map(|admitted| {
-                    admitted
-                        .max(outcome.ledger.publish_from_ms.unwrap_or(admitted))
-                        .saturating_sub(recording_from)
-                        .max(outcome.first_step_start_ms.unwrap_or(0))
-                });
-                // Row t is relative to t0, taken after the recording started, so it can only cut before the true last-row frame.
-                let end = outcome.ledger.steps.iter().map(|s| s.t).max();
-                let video = record::publication_copy(
-                    ctx.runner,
-                    &run_dir,
-                    offset,
-                    end,
-                    outcome.ledger.publication_interrupted,
-                );
-                if video == VideoStatus::Available {
-                    if let Some(offset) = offset.filter(|_| req.platform == Platform::Ios) {
-                        if let Some(stalls) = record::detect_continuity(
-                            ctx.runner,
-                            &run_dir,
-                            &outcome.ledger,
-                            recording_from,
-                            recording_ready,
-                            offset,
-                            core_request.t0,
-                        ) {
-                            video_continuity = stalls;
-                            ctx.notes.push((
-                                "video_continuity".into(),
-                                if video_continuity.is_empty() {
-                                    "examined".into()
-                                } else {
-                                    video_continuity
-                                        .iter()
-                                        .map(record::VideoStall::receipt)
-                                        .collect::<Vec<_>>()
-                                        .join("; ")
-                                },
-                            ));
-                        }
-                    }
-                    if let Some((start, end)) = offset.zip(end).and_then(|(start, end)| {
-                        let admitted = outcome.ledger.admitted_at_ms?;
-                        Some((
-                            recording_from.checked_add(start)?.checked_sub(admitted)?,
-                            recording_from.checked_add(end)?.checked_sub(admitted)?,
-                        ))
-                    }) {
-                        ctx.notes
-                            .push(("video_window".into(), format!("start={start}; end={end}")));
-                    }
-                }
-                video
-            } else {
-                video
-            };
+            let (video, continuity) = finish_video(
+                &mut ctx,
+                &run_dir,
+                video,
+                &outcome,
+                req.platform,
+                recording_from,
+                recording_ready,
+                core_request.t0,
+            );
+            video_continuity = continuity;
             ctx.notes.push(("video".to_string(), video.to_string()));
             if let Some(code) = video.reason() {
                 ctx.notes.push(("videoReason".into(), code.as_str().into()));
@@ -1551,6 +1505,25 @@ fn run_inner(
                     .push(("pr_head_recheck".to_string(), f.detail.to_string())),
             }
             published_video = Some(video);
+        } else if req.record && ctx.runner.cancellation().is_none() {
+            // A cancelled run refuses the encoder's commands, so the provisional note stays.
+            let (video, _) = finish_video(
+                &mut ctx,
+                &run_dir,
+                video,
+                &outcome,
+                req.platform,
+                recording_from,
+                recording_ready,
+                core_request.t0,
+            );
+            check_video_notes(
+                &mut ctx.notes,
+                &run_dir,
+                &video,
+                config.video,
+                &outcome.ledger,
+            );
         }
 
         let report_path = match report::write(
@@ -1761,10 +1734,31 @@ fn run_inner(
 // A report lands up to 45 s after the crash; finding one is lane health and never changes the result.
 const SPRINGBOARD_SCAN_SECONDS: u64 = 60;
 
-fn springboard_crash_after(runner: &mut dyn Runner, udid: &str, since_ms: u64) -> Option<String> {
+fn springboard_scan_wait_seconds(outcome: &core::CoreOutcome) -> u64 {
+    if outcome.failure.is_some() || outcome.group_survived {
+        return SPRINGBOARD_SCAN_SECONDS;
+    }
+    match outcome.verdict {
+        Verdict::Pass => 0,
+        Verdict::Fail
+            if outcome.ledger.failure.as_ref().and_then(|f| f.kind)
+                == Some(core::FailureKind::Step) =>
+        {
+            0
+        }
+        _ => SPRINGBOARD_SCAN_SECONDS,
+    }
+}
+
+fn springboard_crash_after(
+    runner: &mut dyn Runner,
+    udid: &str,
+    since_ms: u64,
+    wait_seconds: u64,
+) -> Option<String> {
     let reports = Path::new(&runner.env_var("HOME")?).join("Library/Logs/DiagnosticReports");
     let since = std::time::UNIX_EPOCH + std::time::Duration::from_millis(since_ms);
-    for left in (0..=SPRINGBOARD_SCAN_SECONDS).rev() {
+    for left in (0..=wait_seconds).rev() {
         if let Some(facts) =
             ios::recent_crash_facts(&reports, ios::SPRINGBOARD_BUNDLE_ID, udid, since)
         {
@@ -1783,6 +1777,127 @@ fn springboard_crash_after(runner: &mut dyn Runner, udid: &str, since_ms: u64) -
         runner.sleep(std::time::Duration::from_secs(1));
     }
     None
+}
+
+// ⑨: encode, trim and the window notes, shared by pr and check --record.
+#[allow(clippy::too_many_arguments)]
+fn finish_video(
+    ctx: &mut Ctx,
+    run_dir: &Path,
+    video: Option<VideoStatus>,
+    outcome: &core::CoreOutcome,
+    platform: Platform,
+    recording_from: u64,
+    recording_ready: u64,
+    t0: u64,
+) -> (VideoStatus, Vec<record::VideoStall>) {
+    let mut continuity = Vec::new();
+    let raw = record::raw_capture(&run_dir.join("media"));
+    let video = video.unwrap_or_else(|| record::finalize(ctx.runner, run_dir));
+    if video == VideoStatus::Available {
+        if let Some(bytes) = reclaim_raw_capture(run_dir) {
+            ctx.notes.push((
+                "reclaimed".to_string(),
+                format!(
+                    "media/{}: {bytes} bytes",
+                    raw.file_name().unwrap().to_string_lossy()
+                ),
+            ));
+        }
+    }
+    // The copy skips setup while preserving admission and pre-plan login boundaries.
+    let video = if video == VideoStatus::Available || outcome.ledger.publication_interrupted {
+        let offset = outcome.ledger.admitted_at_ms.map(|admitted| {
+            admitted
+                .max(outcome.ledger.publish_from_ms.unwrap_or(admitted))
+                .saturating_sub(recording_from)
+                .max(outcome.first_step_start_ms.unwrap_or(0))
+        });
+        // Row t is relative to t0, taken after the recording started, so it can only cut before the true last-row frame.
+        let end = outcome.ledger.steps.iter().map(|s| s.t).max();
+        let video = record::publication_copy(
+            ctx.runner,
+            run_dir,
+            offset,
+            end,
+            outcome.ledger.publication_interrupted,
+        );
+        if video == VideoStatus::Available {
+            if let Some(offset) = offset.filter(|_| platform == Platform::Ios) {
+                if let Some(stalls) = record::detect_continuity(
+                    ctx.runner,
+                    run_dir,
+                    &outcome.ledger,
+                    recording_from,
+                    recording_ready,
+                    offset,
+                    t0,
+                ) {
+                    continuity = stalls;
+                    ctx.notes.push((
+                        "video_continuity".into(),
+                        if continuity.is_empty() {
+                            "examined".into()
+                        } else {
+                            continuity
+                                .iter()
+                                .map(record::VideoStall::receipt)
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        },
+                    ));
+                }
+            }
+            if let Some((start, end)) = offset.zip(end).and_then(|(start, end)| {
+                let admitted = outcome.ledger.admitted_at_ms?;
+                Some((
+                    recording_from.checked_add(start)?.checked_sub(admitted)?,
+                    recording_from.checked_add(end)?.checked_sub(admitted)?,
+                ))
+            }) {
+                ctx.notes
+                    .push(("video_window".into(), format!("start={start}; end={end}")));
+            }
+        }
+        video
+    } else {
+        video
+    };
+    (video, continuity)
+}
+
+// A check names only the trimmed copy, and the declared policy's privacy verdict for that file alone.
+fn check_video_notes(
+    notes: &mut Vec<(String, String)>,
+    run_dir: &Path,
+    video: &VideoStatus,
+    policy: record::VideoPolicy,
+    ledger: &core::Ledger,
+) {
+    notes.retain(|(key, _)| key != "video");
+    notes.push(("video".to_string(), video.to_string()));
+    let published = record::published_video_path(run_dir);
+    if let (VideoStatus::Available, Ok(file)) = (video, published.strip_prefix(run_dir)) {
+        if published.is_file() {
+            notes.push(("video_file".to_string(), file.display().to_string()));
+            let verdict = policy.publication(
+                &ledger.video_publication.clone().unwrap_or_default(),
+                ledger.non_strict_publication.as_ref(),
+            );
+            let name = serde_json::to_value(&verdict)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_string))
+                .unwrap_or_default();
+            let verdict = match verdict.withholding_reason() {
+                None => name,
+                Some(reason) => format!("{name}: {reason}; keep this file local"),
+            };
+            notes.push(("video_policy_verdict".to_string(), verdict));
+        }
+    }
+    if let Some(step) = record::video_next_step(video) {
+        notes.push(("video_next_step".to_string(), step.to_string()));
+    }
 }
 
 // The raw capture in this run's own directory is redundant once a playable video.mp4 replaces it.
@@ -2083,6 +2198,97 @@ mod block_start_tests {
     }
 
     #[test]
+    fn springboard_scan_stops_polling_when_cancelled() {
+        let home = home_with_reports("springboard-cancelled", &[]);
+        let mut runner = crate::exec::MockRunner::new();
+        runner
+            .environment
+            .insert("HOME".into(), home.display().to_string());
+        let start = runner.now_epoch_ms();
+        runner.cancel_at_ms = Some((start + 2_000, "cancelled".into()));
+        assert_eq!(springboard_crash_after(&mut runner, "AAAA", start, 60), None);
+        assert_eq!(runner.now_epoch_ms(), start + 2_000);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn springboard_scan_without_wait_does_not_advance_the_clock() {
+        let home = home_with_reports("springboard-no-wait", &[]);
+        let mut runner = crate::exec::MockRunner::new();
+        runner
+            .environment
+            .insert("HOME".into(), home.display().to_string());
+        let start = runner.now_epoch_ms();
+        assert_eq!(springboard_crash_after(&mut runner, "AAAA", start, 0), None);
+        assert_eq!(runner.now_epoch_ms(), start);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn springboard_scan_without_wait_finds_an_existing_report() {
+        let home = home_with_reports("springboard-no-wait-found", &["AAAA"]);
+        let mut runner = crate::exec::MockRunner::new();
+        runner
+            .environment
+            .insert("HOME".into(), home.display().to_string());
+        let start = runner.now_epoch_ms();
+        let note = springboard_crash_after(&mut runner, "AAAA", start, 0);
+        assert_eq!(
+            note.as_deref(),
+            Some("Observed a SpringBoard crash at 2026-02-02T02:40:01Z on this simulator (EXC_BAD_ACCESS); attribution to this run is unverified; the result stands")
+        );
+        assert_eq!(runner.now_epoch_ms(), start);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn springboard_scan_waits_only_for_abnormal_outcomes() {
+        let refused = Verdict::Refused {
+            code: "CDP_NOT_CONNECTED".into(),
+            message: "attach refused".into(),
+        };
+        let rows = [
+            (Verdict::Pass, false, false, false, 0),
+            (Verdict::Fail, true, false, false, 0),
+            (Verdict::Fail, false, false, false, 60),
+            (refused.clone(), false, false, false, 60),
+            (refused, true, false, false, 60),
+            (Verdict::Pass, false, true, false, 60),
+            (Verdict::Pass, false, false, true, 60),
+            (Verdict::Fail, true, true, false, 60),
+            (Verdict::Fail, true, false, true, 60),
+        ];
+        for (verdict, step_failure, failure, group_survived, expected) in rows {
+            let mut ledger = core::synthesized_ledger(&[], "FAIL", "failure");
+            if step_failure {
+                ledger.failure.as_mut().unwrap().kind = Some(core::FailureKind::Step);
+            }
+            let outcome = core::CoreOutcome {
+                pid: 1,
+                ledger,
+                verdict,
+                exit: None,
+                failure: failure.then(|| {
+                    Failure::new(
+                        "walk",
+                        FailureCode::CoreResultMissing,
+                        "no result line",
+                        "retry",
+                    )
+                }),
+                group_survived,
+                admitted: true,
+                first_step_start_ms: None,
+            };
+            assert_eq!(
+                springboard_scan_wait_seconds(&outcome),
+                expected,
+                "{outcome:?}"
+            );
+        }
+    }
+
+    #[test]
     fn springboard_report_after_teardown_is_not_attributed_to_this_run() {
         let udid = "AAAABBBB-1111-2222-3333-444455556666";
         let home = home_with_reports("springboard-found", &["FFFF", udid]);
@@ -2099,7 +2305,7 @@ mod block_start_tests {
             .set_times(std::fs::FileTimes::new().set_modified(report_time))
             .unwrap();
         runner.sleep(std::time::Duration::from_secs(92));
-        let note = springboard_crash_after(&mut runner, udid, start);
+        let note = springboard_crash_after(&mut runner, udid, start, 60);
         assert_eq!(
             note.as_deref(),
             Some("Observed a SpringBoard crash at 2026-02-02T02:40:01Z on this simulator (EXC_BAD_ACCESS); attribution to this run is unverified; the result stands")
@@ -2117,7 +2323,10 @@ mod block_start_tests {
             .insert("HOME".into(), home.display().to_string());
         let start = runner.now_epoch_ms();
         runner.sleep(std::time::Duration::from_secs(90));
-        assert_eq!(springboard_crash_after(&mut runner, "AAAA", start), None);
+        assert_eq!(
+            springboard_crash_after(&mut runner, "AAAA", start, 60),
+            None
+        );
         assert_eq!(runner.now_epoch_ms(), start + 150_000);
         let _ = std::fs::remove_dir_all(home);
     }

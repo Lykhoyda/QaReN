@@ -624,22 +624,51 @@ pub fn rm_spec(adb: &Path, port: u16, serial: &str, path: &Path) -> CmdSpec {
     )
 }
 
-// The runner's process and its instrumentation, in one ActivityManager dump.
-pub fn runner_processes_spec(adb: &Path, server_port: u16, serial: &str) -> CmdSpec {
+// The runner's process and its instrumentation, in one ActivityManager dump. `scale` multiplies
+// the 20 s budget; from Android 8 (API 26) dumpsys takes `-t`, so the service gets the same
+// budget instead of its own 10 s, after which it prints only a timeout banner.
+pub fn runner_processes_spec(
+    adb: &Path,
+    server_port: u16,
+    serial: &str,
+    scale: u64,
+    api_level: u32,
+) -> CmdSpec {
+    let budget = 20 * scale;
+    let service_timeout = budget.to_string();
+    let mut args = vec!["-s", serial, "shell", "dumpsys"];
+    if api_level >= 26 {
+        args.extend(["-t", service_timeout.as_str()]);
+    }
+    args.extend(["activity", "processes", RUNNER_PACKAGES[1]]);
     adb_client(
         "adb-dumpsys-runner-processes",
         adb,
         server_port,
-        &[
-            "-s",
-            serial,
-            "shell",
-            "dumpsys",
-            "activity",
-            "processes",
-            RUNNER_PACKAGES[1],
-        ],
-        20,
+        &args,
+        budget,
+    )
+}
+
+// dumpsys's own `*** SERVICE '<name>' DUMP TIMEOUT (<n>ms) EXPIRED ***`: the device answered
+// but the service did not finish, so whatever precedes it is not a complete dump.
+pub fn dump_timed_out(stdout: &str) -> bool {
+    stdout.lines().map(str::trim).any(|line| {
+        line.starts_with("*** SERVICE ")
+            && line.contains(" DUMP TIMEOUT")
+            && line.ends_with("EXPIRED ***")
+    })
+}
+
+// The cheapest round trip to the device's shell: an answer means slow, not gone. 40 s, because a
+// starved but live emulator was measured past 20 s; no answer in 40 s means stalled.
+pub fn shell_true_spec(adb: &Path, server_port: u16, serial: &str) -> CmdSpec {
+    adb_client(
+        "adb-shell-true",
+        adb,
+        server_port,
+        &["-s", serial, "shell", "true"],
+        40,
     )
 }
 
