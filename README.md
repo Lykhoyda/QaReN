@@ -30,7 +30,7 @@ agent. Follow updates on [X](https://x.com/qaren_agent).
 ## How it works
 
 Under the hood, QaReN is the `qaren` command-line tool and a plugin that teaches Claude
-Code, Codex and Cursor to drive it. `qaren check` borrows a booted iOS simulator, builds and
+Code, Codex and Cursor to drive it. `qaren check` borrows a device, builds and
 installs the app from your working tree, starts Metro, walks a plan on the device, writes
 evidence at the artifact paths in its receipt and cleans up owned resources. Failed iOS checks
 can keep the reached state for inspection; see the [iOS cleanup contract](packages/qaren-cli/README.md#ios-admission-and-cleanup).
