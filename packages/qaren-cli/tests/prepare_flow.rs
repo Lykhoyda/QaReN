@@ -44,6 +44,7 @@ fn host_samples_bracket_prepare_and_survive_a_pre_record_refusal() {
             .all(|c| c.label == "host-sample"));
         if !refused {
             let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
+            assert!(report.starts_with("# QaReN prepare: ready\n"));
             assert!(report.contains("Host at start: load 1.0 on 8 cores"));
             assert!(report.contains("At end: load 12.0 on 8 cores"));
         }

@@ -656,7 +656,8 @@ pub(crate) fn write_host(receipt: &mut crate::receipt::Receipt) -> std::io::Resu
         .append(true)
         .open(&path)?;
     if file.metadata()?.len() == 0 {
-        writeln!(file, "# QaReN {}: {:?}\n", receipt.verb, receipt.result)?;
+        let result = format!("{:?}", receipt.result).to_lowercase();
+        writeln!(file, "# QaReN {}: {result}\n", receipt.verb)?;
         if let Some(failure) = &receipt.failure {
             writeln!(file, "{}: {}\n", failure.code_str(), failure.detail)?;
         }

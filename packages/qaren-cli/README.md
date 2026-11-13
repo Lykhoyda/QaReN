@@ -647,9 +647,10 @@ exit code.
 
 ### Host samples in run reports
 
-`check`, `pr` and `prepare` receipts include `host.start` and `host.end`, even
-when the run is refused. Each sample contains `load_1m`, `cores`, `free_bytes`,
-`available_bytes`, `total_bytes`, `pressure` (`normal`, `warning` or `critical`)
+For runs that reach setup, `check`, `pr` and `prepare` receipts include
+`host.start` and `host.end`, even when refused; command-line errors and failures
+opening the state directory occur before sampling. Each sample contains
+`load_1m`, `cores`, `free_bytes`, `available_bytes`, `total_bytes`, `pressure` (`normal`, `warning` or `critical`)
 and `swap_used_bytes` when readable. Linux pressure follows the same available
 memory estimate as doctor; macOS preserves the system pressure level.
 Unreadable values are absent, never replaced with zero.

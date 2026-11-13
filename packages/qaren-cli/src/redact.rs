@@ -110,6 +110,12 @@ pub fn redact_secrets(raw: &str) -> String {
 pub fn durable_json<T: serde::Serialize>(value: &T) -> serde_json::Result<String> {
     let mut projected = serde_json::to_value(value)?;
     let mut media = Vec::new();
+    if let Some(value) = projected.get("host") {
+        if let Ok(host) = serde_json::from_value::<crate::host_capacity::RunSamples>(value.clone())
+        {
+            media.push(("/host".into(), serde_json::to_value(host)?));
+        }
+    }
     if let Some(value) = projected.get("mediaWithheld") {
         if let Ok(value) = serde_json::from_value::<crate::core::MediaWithheld>(value.clone()) {
             media.push(("/mediaWithheld".to_string(), serde_json::to_value(value)?));
@@ -650,6 +656,34 @@ mod tests {
         let text = durable_json(&leaky).unwrap();
         assert!(!text.contains("FAKEKEYBODY"), "{text}");
         assert!(text.contains("\"plain\""), "{text}");
+    }
+
+    #[test]
+    fn only_valid_typed_host_facts_bypass_input_masking() {
+        let inputs = std::sync::Arc::new(super::InputValues::from_values(vec![
+            "normal".into(),
+            "private-host-canary".into(),
+        ]));
+        super::with_input_scope(inputs, || {
+            let payload = serde_json::json!({
+                "host": {
+                    "start": { "pressure": "normal", "untrusted": "private-host-canary" },
+                    "end": { "pressure": "critical" }
+                },
+                "pressure": "normal"
+            });
+            let text = durable_json(&payload).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(json["host"]["start"]["pressure"], "normal");
+            assert_eq!(json["host"]["end"]["pressure"], "critical");
+            assert_ne!(json["pressure"], "normal");
+            assert!(!text.contains("private-host-canary"));
+            let mut invalid = payload;
+            invalid["host"]["start"]["pressure"] = "private-host-canary".into();
+            assert!(!durable_json(&invalid)
+                .unwrap()
+                .contains("private-host-canary"));
+        });
     }
 
     #[test]

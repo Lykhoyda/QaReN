@@ -170,6 +170,39 @@ fn f6_receipt_samples_cannot_hold_paths_or_process_names() {
 }
 
 #[test]
+fn f6_typed_host_facts_round_trip_when_private_inputs_match_enum_values_or_keys() {
+    let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_values(
+        [
+            "normal", "warning", "critical", "host", "start", "end", "cores", "free", "swap",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect(),
+    ));
+    qaren::redact::with_input_scope(inputs, || {
+        let (mut runner, req) = refusing();
+        let mut receipt = run(&mut runner, &req);
+        for pressure in [
+            qaren::host_capacity::Pressure::Normal,
+            qaren::host_capacity::Pressure::Warning,
+            qaren::host_capacity::Pressure::Critical,
+        ] {
+            let host = receipt.host.as_mut().unwrap();
+            host.start.pressure = Some(pressure);
+            host.end.pressure = Some(pressure);
+            let json = receipt.to_json();
+            let restored: qaren::receipt::Receipt = serde_json::from_str(&json).unwrap();
+            let host = restored.host.unwrap();
+            assert_eq!(host.start.pressure, Some(pressure));
+            assert_eq!(host.end.pressure, Some(pressure));
+            assert_eq!(host.start.cores, Some(8));
+            assert_eq!(host.start.free_bytes, Some(8u64 * 1024 * 1024 * 1024));
+            assert_eq!(host.end.swap_used_bytes, Some(1024u64 * 1024 * 1024));
+        }
+    });
+}
+
+#[test]
 fn f7_samples_bracket_every_command_including_teardown() {
     let (mut mock, req) = passing();
     let receipt = run(&mut mock, &req);
