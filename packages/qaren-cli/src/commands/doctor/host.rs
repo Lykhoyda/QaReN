@@ -1,7 +1,7 @@
 use super::{Check, Status};
 use crate::adapters::ios;
 use crate::exec::{CmdOutput, CmdSpec, Runner};
-use crate::host_capacity::{Cpu, Memory};
+use crate::host_capacity::{self, Cpu, Memory};
 use std::path::Path;
 use std::time::Duration;
 
@@ -36,11 +36,8 @@ pub(super) fn checks(runner: &mut dyn Runner, os: &str) -> Vec<Check> {
         )
     };
     let devices = device_row(sims.as_deref(), android.as_deref());
-    let (memory, cpu) = if os == "macos" {
-        macos(runner)
-    } else {
-        linux(runner)
-    };
+    let sample = host_capacity::sample(runner, os);
+    let (memory, cpu) = host_capacity::doctor_capacity(runner, os, &sample);
     vec![service, devices, memory_row(memory, os), cpu_row(cpu)]
 }
 
@@ -250,166 +247,6 @@ fn cpu_row(cpu: Option<Cpu>) -> Check {
     } else {
         Check::pass("host-load", detail)
     }
-}
-
-fn successful(output: &CmdOutput) -> Option<&str> {
-    output.ok().then_some(output.stdout.as_str())
-}
-
-fn field(text: &str, key: &str) -> Option<u64> {
-    text.lines().find_map(|line| {
-        let (name, value) = line.split_once(':')?;
-        (name == key)
-            .then(|| {
-                value
-                    .split_whitespace()
-                    .next()?
-                    .trim_end_matches('.')
-                    .parse()
-                    .ok()
-            })
-            .flatten()
-    })
-}
-
-fn loads(text: &str) -> Option<[f64; 3]> {
-    let mut values = text.split_whitespace().filter(|s| *s != "{" && *s != "}");
-    let mut load = [0.0; 3];
-    for value in &mut load {
-        *value = values
-            .next()?
-            .parse::<f64>()
-            .ok()
-            .filter(|v| v.is_finite() && *v >= 0.0)?;
-    }
-    Some(load)
-}
-
-fn macos(runner: &mut dyn Runner) -> (Option<Memory>, Option<Cpu>) {
-    let vm = probe(runner, "vm_stat", &[], 3);
-    let sys = probe(
-        runner,
-        "sysctl",
-        &[
-            "hw.logicalcpu",
-            "vm.loadavg",
-            "kern.memorystatus_vm_pressure_level",
-        ],
-        3,
-    );
-    let top = probe(runner, "top", &["-l", "2", "-s", "1", "-n", "0"], 5);
-    let memory = successful(&vm).and_then(|vm| {
-        let page = vm
-            .lines()
-            .next()?
-            .split("page size of ")
-            .nth(1)?
-            .split_whitespace()
-            .next()?
-            .parse::<u64>()
-            .ok()
-            .filter(|p| *p > 0)?;
-        let free = field(vm, "Pages free")?.checked_mul(page)?;
-        let available = field(vm, "Pages speculative")?
-            .checked_add(field(vm, "Pages inactive")?)?
-            .checked_mul(page)?
-            .checked_add(free)?;
-        let pressure =
-            successful(&sys).and_then(|s| match field(s, "kern.memorystatus_vm_pressure_level")? {
-                1 => Some(false),
-                2 | 4 => Some(true),
-                _ => None,
-            });
-        Some(Memory {
-            free,
-            available,
-            compressed: field(vm, "Pages occupied by compressor").and_then(|v| v.checked_mul(page)),
-            pressure,
-        })
-    });
-    let cpu = successful(&sys)
-        .zip(successful(&top))
-        .and_then(|(sys, top)| {
-            let load = loads(sys.lines().find_map(|l| l.strip_prefix("vm.loadavg:"))?)?;
-            let cores = usize::try_from(field(sys, "hw.logicalcpu")?)
-                .ok()
-                .filter(|c| *c > 0)?;
-            let line = top.lines().rfind(|l| l.starts_with("CPU usage:"))?;
-            let idle = line
-                .split(',')
-                .find_map(|s| s.trim().strip_suffix("% idle"))?
-                .parse::<f64>()
-                .ok()
-                .filter(|i| i.is_finite() && (0.0..=100.0).contains(i))?;
-            Some(Cpu { load, cores, idle })
-        });
-    (memory, cpu)
-}
-
-fn linux(runner: &mut dyn Runner) -> (Option<Memory>, Option<Cpu>) {
-    let mem = probe(runner, "cat", &["/proc/meminfo"], 3);
-    let load = probe(runner, "cat", &["/proc/loadavg"], 3);
-    let before = probe(runner, "cat", &["/proc/stat"], 3);
-    runner.sleep(Duration::from_secs(1));
-    let after = probe(runner, "cat", &["/proc/stat"], 3);
-    let memory = successful(&mem).and_then(|mem| {
-        let free = field(mem, "MemFree")?.checked_mul(1024)?;
-        let available = field(mem, "MemAvailable")?.checked_mul(1024)?;
-        let total = field(mem, "MemTotal")?.checked_mul(1024)?;
-        if free > total || available > total || total == 0 {
-            return None;
-        }
-        Some(Memory {
-            free,
-            available,
-            compressed: None,
-            pressure: Some(available < total / 10),
-        })
-    });
-    let cpu = successful(&before)
-        .zip(successful(&after))
-        .zip(successful(&load))
-        .and_then(|((before, after), load)| {
-            let counters = |text: &str| -> Option<(u64, u64)> {
-                let values = text
-                    .lines()
-                    .next()?
-                    .strip_prefix("cpu ")?
-                    .split_whitespace()
-                    .take(8)
-                    .map(str::parse::<u64>)
-                    .collect::<Result<Vec<_>, _>>()
-                    .ok()?;
-                if values.len() < 4 {
-                    return None;
-                }
-                Some((
-                    values.iter().try_fold(0u64, |sum, v| sum.checked_add(*v))?,
-                    values[3],
-                ))
-            };
-            let (total1, idle1) = counters(before)?;
-            let (total2, idle2) = counters(after)?;
-            let total = total2.checked_sub(total1).filter(|t| *t > 0)?;
-            let idle =
-                idle2.checked_sub(idle1).filter(|i| *i <= total)? as f64 * 100.0 / total as f64;
-            let cores = after
-                .lines()
-                .filter(|l| {
-                    l.strip_prefix("cpu")
-                        .is_some_and(|s| s.starts_with(|c: char| c.is_ascii_digit()))
-                })
-                .count();
-            if cores == 0 {
-                return None;
-            }
-            Some(Cpu {
-                load: loads(load)?,
-                cores,
-                idle,
-            })
-        });
-    (memory, cpu)
 }
 
 #[cfg(test)]
@@ -724,11 +561,9 @@ mod tests {
         runner.expect_run("cat /proc/meminfo", CmdOutput::success(mem));
         runner.expect_run(
             "cat /proc/loadavg",
-            CmdOutput::success("0.1 0.2 0.3 1/100 1\n"),
-        );
-        runner.expect_run(
-            "cat /proc/stat",
-            CmdOutput::success("cpu  100 0 0 100 0 0 0 0 99 0\ncpu0 1\ncpu1 1\n"),
+            CmdOutput::success(
+                "0.1 0.2 0.3 1/100 1\ncpu  100 0 0 100 0 0 0 0 99 0\ncpu0 1\ncpu1 1\n",
+            ),
         );
         runner.expect_run("cat /proc/stat", CmdOutput::success(after));
     }
@@ -766,7 +601,5 @@ mod tests {
         let rows = checks(&mut runner, "linux");
         assert_eq!(row(&rows, "host-memory").status, Status::Warn);
         assert_eq!(row(&rows, "host-load").status, Status::Warn);
-        assert!(loads("NaN 0 0").is_none());
-        assert!(loads("-1 0 0").is_none());
     }
 }

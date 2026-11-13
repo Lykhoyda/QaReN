@@ -138,7 +138,7 @@ fn exec_probe_accepts_preserved_groups_and_refuses_bootstrap_group_changes() {
                 runner.expect_run(hint, CmdOutput::failed(1, "unavailable"));
             }
         } else {
-            for hint in ["/proc/meminfo", "/proc/loadavg", "/proc/stat", "/proc/stat"] {
+            for hint in ["/proc/meminfo", "/proc/loadavg /proc/stat", "/proc/stat"] {
                 runner.expect_run(hint, CmdOutput::failed(1, "unavailable"));
             }
         }
