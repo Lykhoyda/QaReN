@@ -140,3 +140,59 @@ fn w6_queue_failure_uses_its_actual_code() {
         assert!(rendered.contains("RUN_CANCELLED after 2m05s"), "{rendered}");
     }
 }
+
+#[test]
+fn queue_plain_replays_batched_transitions_in_order() {
+    for final_state in ["running", "passed", "failed"] {
+        for batch_size in [1, 2, 8] {
+            let mut state = State::default();
+            let mut printed = PlainState::default();
+            let mut lines = Vec::new();
+            let events = [
+                ("running", "check-a", "native-build-ios"),
+                ("running", "check-a", "native-build-ios"),
+                ("running", "check-b", "native-build-ios"),
+                ("running", "check-a", "native-build-ios"),
+                ("passed", "check-a", "native-build-ios"),
+                ("running", "check-a", "native-build-ios"),
+                ("running", "check-a", "native-build-slot"),
+                (final_state, "check-b", "native-build-slot"),
+            ];
+            for batch in events
+                .iter()
+                .enumerate()
+                .collect::<Vec<_>>()
+                .chunks(batch_size)
+            {
+                for &(index, &(status, holder, lock)) in batch {
+                    state.fold(event(index as u64 + 1, status, json!(holder), json!(lock)));
+                }
+                lines.extend(plain(&state, &mut printed));
+                assert!(plain(&state, &mut printed).is_empty());
+            }
+            let queue: Vec<_> = lines
+                .iter()
+                .filter(|line| line.contains("Build queue"))
+                .map(String::as_str)
+                .collect();
+            let last = match final_state {
+                "running" => "Build queue: waiting for run check-b (native-build-slot, held 9 min)",
+                "passed" => "✓ Build queue  waited 2m05s",
+                _ => "✗ Build queue  RUN_CANCELLED after 2m05s",
+            };
+            assert_eq!(
+                queue,
+                [
+                    "Build queue: waiting for run check-a (native-build-ios, held 9 min)",
+                    "Build queue: waiting for run check-b (native-build-ios, held 9 min)",
+                    "Build queue: waiting for run check-a (native-build-ios, held 9 min)",
+                    "✓ Build queue  waited 2m05s",
+                    "Build queue: waiting for run check-a (native-build-ios, held 9 min)",
+                    "Build queue: waiting for run check-a (native-build-slot, held 9 min)",
+                    last,
+                ],
+                "{final_state}, batch size {batch_size}"
+            );
+        }
+    }
+}

@@ -141,7 +141,7 @@ struct State {
     verb: String,
     platform: String,
     stages: BTreeMap<String, Stage>,
-    queue_ends: Vec<Stage>,
+    queue_events: Vec<Stage>,
     rows: BTreeMap<u64, Step>,
     commands: Vec<String>,
     end: Option<Value>,
@@ -232,8 +232,8 @@ impl State {
                     hold_ms: if queue { p["holdMs"].as_u64() } else { None },
                     seq: e.seq,
                 };
-                if queue && stage.state != "running" {
-                    self.queue_ends.push(stage.clone());
+                if queue {
+                    self.queue_events.push(stage.clone());
                 }
                 self.stages.insert(name, stage);
             }
@@ -644,7 +644,7 @@ fn terminal_dimensions() -> Option<(u16, u16)> {
 struct PlainState {
     seen: HashSet<String>,
     queue_last: Option<(Option<String>, Option<String>)>,
-    queue_end_seq: u64,
+    queue_seq: u64,
 }
 
 fn queue_wait(stage: &Stage, timed: bool) -> String {
@@ -701,30 +701,23 @@ fn plain(s: &State, printed: &mut PlainState) -> Vec<String> {
         }
     }
     for stage in s
-        .queue_ends
+        .queue_events
         .iter()
-        .filter(|stage| stage.seq > printed.queue_end_seq)
+        .filter(|stage| stage.seq > printed.queue_seq)
     {
-        out.push(queue_line(stage));
-    }
-    if let Some(stage) = s
-        .queue_ends
-        .last()
-        .filter(|stage| stage.seq > printed.queue_end_seq)
-    {
-        printed.queue_end_seq = stage.seq;
-        printed.queue_last = None;
-    }
-    if let Some(stage) = s
-        .stages
-        .get("build_lock_wait")
-        .filter(|stage| stage.state == "running")
-    {
-        let pair = (stage.lock.clone(), stage.holder.clone());
-        if printed.queue_last.as_ref() != Some(&pair) {
-            out.push(format!("Build queue: {}", queue_wait(stage, false)));
-            printed.queue_last = Some(pair);
+        if stage.state == "running" {
+            let pair = (stage.lock.clone(), stage.holder.clone());
+            if printed.queue_last.as_ref() != Some(&pair) {
+                out.push(format!("Build queue: {}", queue_wait(stage, false)));
+                printed.queue_last = Some(pair);
+            }
+        } else {
+            out.push(queue_line(stage));
+            printed.queue_last = None;
         }
+    }
+    if let Some(stage) = s.queue_events.last() {
+        printed.queue_seq = stage.seq;
     }
     for (name, label) in STAGES {
         if name == "build_lock_wait" {
