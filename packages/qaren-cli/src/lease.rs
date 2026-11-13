@@ -201,7 +201,7 @@ pub fn claim_reclaiming_orphan(
     claim_reclaiming(runner, lock_root, name, holder, policy, false, None)
 }
 
-// The iOS native-build lock: an orphan is released only once its recorded build group is proven gone.
+// iOS build locks and the shared slot retain orphans until their recorded build group is proven gone.
 pub fn claim_reclaiming_build_orphan(
     runner: &mut dyn Runner,
     lock_root: &Path,

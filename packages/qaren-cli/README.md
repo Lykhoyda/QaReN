@@ -199,6 +199,8 @@ lease. `--latest` selects the newest `run.json` modification time. It shows
 explicit stages from preflight through cleanup, step outcomes and act/capture/Jev
 timings, recording, and the verdict with its expected check exit code.
 An unobserved stage stays unobserved; a skipped stage says “not needed” in full rows.
+The Build queue row appears only after contention; see the
+[build-slot waiting contract](#native-fingerprint-build-selection).
 TTY redraws read the current terminal size, keep every stage visible, and fit
 step rows into the remaining space with an omitted-row count. Unfinished rows
 take priority, followed by completed rows with the latest observed event sequence,
@@ -257,7 +259,8 @@ On a TTY, the view redraws every 250 ms; Ctrl-C exits only the viewer.
 The owner's identity is checked at most every two seconds and never after the
 end event, so a finished run's snapshot does not wait on a process probe.
 `--plain`, non-TTY stdout, `CI` or `NO_COLOR` prints each observed final stage
-and passed or failed step attempt once, without escape codes or stdin reads.
+and passed or failed step attempt once, without escape codes or stdin reads;
+build queue updates follow the [waiting contract](#native-fingerprint-build-selection).
 `--json` prints a single folded snapshot and exits without following the run;
 a live snapshot still performs the initial owner check.
 Step text and reasons never come from live events. They appear only after an
@@ -3293,8 +3296,9 @@ before the holder died or re-created by an orphaned build writing its output, do
 count. Before a native build or native suite is let past its start gate, its process
 group is recorded in the holder, as is a `qaren` process's own group when it leads
 one; that group must also have no live members, otherwise the refusal names the lock
-and the `pgrep -g` check to wait on. The iOS native-build lock additionally
-requires that group to have been recorded before the next claim releases it: its
+and the `pgrep -g` check to wait on. The iOS native-build lock and shared
+`native-build-slot` additionally
+require that group to have been recorded before the next claim releases it: its
 holder may have died after starting a build it had not yet recorded, so such an
 orphan is kept until an explicit `qaren cleanup <run-id>` for that run releases it. A `qaren` group whose leader pid now belongs to
 another process is not checked, since a reused pid proves its old group is gone. `qaren cleanup <run-id>` for a run with no
@@ -5464,6 +5468,10 @@ after readiness. A contended iOS claim waits, polling every second, within the
 same build budget (`deadlines.build_seconds`) that the prebuild, build,
 verification and publication then share; see the
 [deadline defaults and validation](src/scenario.rs).
+Build subprocess timeouts are capped to the remaining window, and no new
+build command starts after expiry. Teardown commands and their process-identity
+reads keep their own timeouts so they can stop the build and prove its group gone
+after expiry; unresolved cleanup retains ownership for `qaren cleanup`.
 A synchronous cache copy already in progress is not interrupted; its completion is checked against the window
 before publication. Output retirement
 and readiness run outside this window. Running that budget out while waiting is a refusal (`BUILD_CONTENDED`,
@@ -5484,9 +5492,9 @@ cannot observe its own process identity refuses `PREREQ_MISSING` before
 claiming. An unresolved release stops the run (`RUN_RECORD_UPDATE_FAILED`)
 and the lock stays recorded for `qaren cleanup`.
 Android claims before allocation, refuses a live holder at once and can adopt
-a provably dead holder's platform lock. The shared slot always uses the stricter
-orphan rule: the holder is dead, its group is absent, and its run records are
-gone. Otherwise only that run's cleanup releases it after group retirement;
+a provably dead holder's platform lock. The shared slot follows the stricter
+[orphaned-lock proof rules](#ios-admission-and-cleanup).
+Otherwise only that run's cleanup releases it after group retirement;
 an unproven spawn keeps it recorded. Reused builds never claim the slot.
 Private lock roots isolate their slots too; older versions, runner builds and
 source builds do not participate. An Expo log without a Gradle end line keeps
