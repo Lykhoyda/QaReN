@@ -689,10 +689,11 @@ for this runner directory stopped before removing that fence and any SQLite
 sidecars. Separate runner directories remain independent.
 
 A runner build is signed with the debug key of the Android user home that built
-it, so runner apps left on a device by rn-dev-agent 1.x, another host or another
-working home block the install (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`), as does a
-newer runner version (`INSTALL_FAILED_VERSION_DOWNGRADE`). Provisioning then
-replaces them once on the selected device: it confirms the runner is stopped,
+it. Runner apps left by rn-dev-agent 1.x, another host or another working home
+block the install when their signing key differs (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`),
+as does a newer runner version (`INSTALL_FAILED_VERSION_DOWNGRADE`). On physical
+Android devices and emulators, provisioning then replaces them once on the
+selected device: it confirms the runner is stopped,
 uninstalls `dev.lykhoyda.rndevagent.androidrunner` and
 `dev.lykhoyda.rndevagent.androidrunner.test`, proves both absent with
 `pm list packages`, installs again and writes `runner-apps-replaced
@@ -701,8 +702,9 @@ those two names, which hold no user data; the device lease is local to this
 host, so another host driving the same device at the same moment is not
 excluded and is unsupported. A surviving runner, an unproven removal or a
 second failed install refuses `DEVICE_UNAVAILABLE` with `subreason:
-runner-install-blocked`, adb's reason, and the manual removal as the next step,
-to take only if nothing else is using the device. The walk's advisory scan on the borrowed emulator refuses
+runner-install-blocked`, the original install reason and the failed replacement
+step's cause, and manual removal as the next step, to take only if nothing else
+is using the device. The walk's advisory scan on the borrowed emulator refuses
 `BUSY_FOREIGN_FLOW` with the process scan's message when another UIAutomator or
 agent-device process runs there (`adb -s <serial> shell ps -A`). The scan does
 not recognise every driver and fails open when `ps` cannot run, so borrow an

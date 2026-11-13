@@ -595,7 +595,7 @@ impl Failure {
             | "DEV_REDBOX_NO_SAFE_DISMISS"
             | "DEV_REDBOX_CLEARANCE_UNPROVEN" => "restart_app_from_plan_start",
             "DEV_REDBOX_ACTION_UNCERTAIN" => "inspect_app_error_before_rerun",
-            // The core already replaced the runner apps once; what is left is the user's call.
+            // Replacement could not complete; manual removal requires the user's device coordination.
             "RUNNER_INSTALL_BLOCKED" =>
                 "QaReN could not replace its own runner apps on the device (adb's reason is in the detail); only if nothing else is using the device, remove them with `adb -s <serial> uninstall dev.lykhoyda.rndevagent.androidrunner` and the same for `dev.lykhoyda.rndevagent.androidrunner.test`, then re-run",
             _ => "resolve the refusal, then re-run",

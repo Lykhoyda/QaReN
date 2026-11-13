@@ -553,11 +553,6 @@ function adbReason(error: unknown): string {
   );
 }
 
-/**
- * One bounded replacement of QaReN's own runner apps on `serial` after `block`: confirm the
- * runner stopped, uninstall exactly the two runner packages, prove them absent, install once
- * more. Anything else refuses RUNNER_INSTALL_BLOCKED with adb's reason and the step's cause.
- */
 async function replaceBlockedRunnerApps(
   serial: string,
   block: RunnerInstallBlock,
@@ -604,8 +599,7 @@ async function replaceBlockedRunnerApps(
       uninstallFailures.set(pkg, error);
     }
   }
-  // `pm list packages` filters by substring: only an exact line proves a package present, and
-  // only a list made of package lines proves the others absent.
+  // Substring filtering requires exact package lines and rejects non-package output.
   const listed = await step('the package list could not be read', async () => {
     const { stdout } = await execFileAsync(
       'adb',
