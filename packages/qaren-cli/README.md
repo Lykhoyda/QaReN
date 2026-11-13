@@ -647,8 +647,8 @@ exit code.
 
 ### Host samples in run reports
 
-For runs that reach setup, `check`, `pr` and `prepare` receipts include
-`host.start` and `host.end`, even when refused; command-line errors and failures
+`check`, `pr` and `prepare` receipts include `host.start` and `host.end`,
+including refusals before setup; command-line errors and failures
 opening the state directory occur before sampling. Each sample contains
 `load_1m`, `cores`, `free_bytes`, `available_bytes`, `total_bytes`, `pressure` (`normal`, `warning` or `critical`)
 and `swap_used_bytes` when readable. Linux pressure follows the same available
@@ -656,16 +656,17 @@ memory estimate as doctor; macOS preserves the system pressure level.
 Unreadable values are absent, never replaced with zero.
 
 The start sample precedes setup commands; the end sample follows teardown and
-any PR-worktree removal. Each sample uses two commands, each limited to three
-seconds, without doctor's CPU-idle sampling or its one-second wait. Missing or
-malformed statistics do not change the run's verdict. Cancellation can leave
-the end sample unavailable.
+any PR-worktree removal. On macOS and Linux, each sample uses two commands, each
+limited to three seconds, without doctor's CPU-idle sampling or its one-second
+wait. Other hosts have empty samples. Missing or malformed statistics do not
+change the run's verdict. Cancellation can leave the end sample unavailable.
 
-`report.md` includes one line with both samples, including free and available
-memory and swap in GiB; unreadable values say `unavailable`. A refusal also
+The local `report.md` includes one line with both samples, including free and
+available memory and swap in GiB; unreadable values say `unavailable`. A refusal also
 includes the end host state when load reaches the logical CPU count or memory
 is constrained. These are observations, not a diagnosis of the refusal's cause.
 Refusals before a run directory exists carry the samples in the receipt only.
+`qaren publish` does not include these samples in PR comments or descriptions.
 Sampling starts no device or service and introduces no cleanup resource.
 
 ### Android runner provisioning
