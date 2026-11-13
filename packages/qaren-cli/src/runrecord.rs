@@ -799,6 +799,23 @@ impl RunRecord {
         })
     }
 
+    pub(crate) fn require_android_cleanup_ownership(&self) -> Result<(), &'static str> {
+        if !self.holds_device_lease() {
+            return Err("the device lease is not held by this run");
+        }
+        if let Some(phone) = &self.resources.android_device {
+            let held = self.resources.usb_device.as_ref().is_some_and(|usb| {
+                usb.serial == phone.serial
+                    && crate::buildplan::read_holder(&usb.lock_dir)
+                        .is_some_and(|h| h.holder == usb.holder && h.run_id == self.run_id)
+            });
+            if !held {
+                return Err("the USB device claim is not held by this run");
+            }
+        }
+        Ok(())
+    }
+
     pub fn run_dir(runs_root: &Path, run_id: &str) -> PathBuf {
         runs_root.join(run_id)
     }

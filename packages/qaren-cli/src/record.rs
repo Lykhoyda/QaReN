@@ -493,8 +493,8 @@ fn stop_android(
     runs_root: &Path,
     recorder: &RecorderResource,
 ) -> Outcome {
-    if !record.holds_device_lease() {
-        return Outcome::Refused("the device lease is not held by this run".into());
+    if let Err(reason) = record.require_android_cleanup_ownership() {
+        return Outcome::Refused(reason.into());
     }
     let Some((adb, serial, port)) = record.resources.adb_endpoint() else {
         return Outcome::Unresolved("recorder adb endpoint is missing".into());

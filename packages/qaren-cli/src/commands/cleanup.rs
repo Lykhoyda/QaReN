@@ -1163,6 +1163,12 @@ pub(crate) fn release_runner_packages(
         };
         return Some(("android_runner_packages".to_string(), outcome));
     }
+    if let Err(reason) = record.require_android_cleanup_ownership() {
+        return Some((
+            "android_runner_packages".to_string(),
+            Outcome::Refused(reason.into()),
+        ));
+    }
     let adb = record.resources.adb_path.clone()?;
     let mut cleanup_runner = crate::exec::CleanupRunner(runner);
     let runner: &mut dyn Runner = &mut cleanup_runner;
@@ -2069,10 +2075,8 @@ pub(crate) fn release_borrowed_android(
             .map(|leg| (leg.to_string(), outcome.clone()))
             .collect::<Vec<_>>()
     };
-    if !record.holds_device_lease() {
-        return every(Outcome::Refused(
-            "the device lease is not held by this run".into(),
-        ));
+    if let Err(reason) = record.require_android_cleanup_ownership() {
+        return every(Outcome::Refused(reason.into()));
     }
     let (Some(adb), Some(serial)) = (
         record.resources.adb_path.clone(),

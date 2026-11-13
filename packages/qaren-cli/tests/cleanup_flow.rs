@@ -3139,6 +3139,95 @@ fn android_phone_cleanup_never_addresses_a_phone_whose_lease_or_serial_is_not_th
 }
 
 #[test]
+fn android_phone_cleanup_requires_its_usb_claim_even_while_holding_the_lease() {
+    for case in [
+        "absent",
+        "foreign holder",
+        "foreign run",
+        "unreadable",
+        "unrecorded",
+        "wrong serial",
+    ] {
+        for with_recorder in [false, true] {
+            let repo = common::temp_repo();
+            let mut record = phone_record(&repo);
+            let usb = record.resources.usb_device.as_ref().unwrap().clone();
+            let holder_path = usb.lock_dir.join("holder.json");
+            match case {
+                "absent" => std::fs::remove_dir_all(&usb.lock_dir).unwrap(),
+                "foreign holder" | "foreign run" => {
+                    let mut holder = qaren::buildplan::read_holder(&usb.lock_dir).unwrap();
+                    if case == "foreign holder" {
+                        holder.holder = "later-handoff".into();
+                    } else {
+                        holder.run_id = "later-handoff".into();
+                    }
+                    std::fs::write(&holder_path, serde_json::to_vec(&holder).unwrap()).unwrap();
+                }
+                "unreadable" => std::fs::write(&holder_path, "invalid json").unwrap(),
+                "unrecorded" => record.resources.usb_device = None,
+                "wrong serial" => {
+                    record.resources.usb_device.as_mut().unwrap().serial = "other-phone".into()
+                }
+                _ => unreachable!(),
+            }
+            let holder_before = std::fs::read(&holder_path).ok();
+            if with_recorder {
+                record.resources.recorder = Some(qaren::runrecord::RecorderResource {
+                    pid: None,
+                    birth: None,
+                    pulled_sha256: None,
+                    kind: qaren::runrecord::RecorderKind::AndroidEmulator,
+                    device: PHONE.into(),
+                    output: "/data/local/tmp/qaren-borrowed-run.mp4".into(),
+                });
+            }
+            let lease = record.resources.lease.as_ref().unwrap().clone();
+            record.save(&repo).unwrap();
+            let mut mock = borrowed_mock();
+            if with_recorder {
+                owner_gone(&mut mock);
+            }
+
+            let receipt = cleanup(&mut mock, &repo, "borrowed-run");
+
+            let label = format!("{case}, recorder={with_recorder}");
+            assert!(
+                adb_commands(&mock).is_empty(),
+                "{label}: {:?}",
+                adb_commands(&mock)
+            );
+            assert_eq!(
+                receipt.failure.as_ref().unwrap().code,
+                FailureCode::OwnershipUnproven,
+                "{label}"
+            );
+            for leg in ["adb_reverse", "android_runner", "android_runner_packages"]
+                .into_iter()
+                .chain(with_recorder.then_some("recorder"))
+            {
+                assert!(
+                    receipt.cleanup[leg].starts_with("refused:"),
+                    "{label}: {leg}"
+                );
+            }
+            assert!(lease.lock_dir.exists(), "{label}");
+            assert_eq!(std::fs::read(&holder_path).ok(), holder_before, "{label}");
+            assert_eq!(
+                RunRecord::load(&repo, "borrowed-run")
+                    .unwrap()
+                    .resources
+                    .recorder
+                    .is_some(),
+                with_recorder,
+                "{label}"
+            );
+            assert_eq!(mock.remaining(), 0, "{label}");
+        }
+    }
+}
+
+#[test]
 fn android_borrowed_cleanup_absent_reverse_is_absent() {
     let repo = common::temp_repo();
     let record = borrowed_record(&repo);
