@@ -36,6 +36,7 @@ import {
 import { stopAndroidRunner } from '../runners/qaren-android-runner-client.js';
 import {
   surfaceKeyboardGuard,
+  createSendTimingAccumulator,
   healKeyboardOccludedTap,
   dismissKeyboardWithParity,
   dismissalTier,
@@ -898,6 +899,8 @@ interface PressArgs {
   retryIfNoChange?: boolean;
   // iOS: tap only when the runner's live hit read proves the target hittable.
   requireLiveHit?: boolean;
+  // QA walker owns the settled dismissal/rebind after a proven uninvoked press.
+  deferKeyboardDismissal?: boolean;
 }
 
 // Story 04 (#385): thread a caller-supplied settle budget into runNative.
@@ -1049,6 +1052,7 @@ export function createDevicePressHandler(
           target ? { ref: target, identity } : undefined,
         ),
         args.qaContext,
+        args.deferKeyboardDismissal,
       );
     }
     if (!result.isError && args.waitForFocusMs && args.waitForFocusMs > 0) {
@@ -1406,6 +1410,16 @@ export async function performExactFill(
   client: CDPClient | null,
   tiers: ExactFillTiers,
 ): Promise<ToolResult> {
+  const timings = createSendTimingAccumulator();
+  return timings.finish(await exactFill(args, client, tiers, timings));
+}
+
+async function exactFill(
+  args: FillArgs,
+  client: CDPClient | null,
+  tiers: ExactFillTiers,
+  timings: ReturnType<typeof createSendTimingAccumulator>,
+): Promise<ToolResult> {
   const pathsTried: string[] = [];
   let mutationSeen: FillMutationDisposition = 'none';
 
@@ -1548,19 +1562,21 @@ export async function performExactFill(
   };
   const tNative = Date.now();
   const operationToken = randomUUID();
-  const primary = await runNative(
-    // A fill replaces the field's content; verification expects exactly args.text.
-    [
-      'fill',
-      binding.inputRef,
-      args.text,
-      '--clear-first',
-      ...(args.requireLiveHit ? [REQUIRE_LIVE_HIT_FLAG] : []),
-    ],
-    {
-      ...settleOpts(args),
-      exactTarget: { ...exactTarget, operationToken },
-    },
+  const primary = timings.observe(
+    await runNative(
+      // A fill replaces the field's content; verification expects exactly args.text.
+      [
+        'fill',
+        binding.inputRef,
+        args.text,
+        '--clear-first',
+        ...(args.requireLiveHit ? [REQUIRE_LIVE_HIT_FLAG] : []),
+      ],
+      {
+        ...settleOpts(args),
+        exactTarget: { ...exactTarget, operationToken },
+      },
+    ),
   );
   if (primary.isError) {
     const mutation = extractMutationDisposition(primary);
@@ -1697,6 +1713,7 @@ export async function readReactInputValue(
   focused: boolean;
   privateValue?: boolean;
   secure?: boolean;
+  disabled?: boolean;
   contentLength?: number;
   exact?: boolean;
   mismatch?: EntryMismatch;
@@ -1716,6 +1733,7 @@ export async function readReactInputValue(
       focused?: boolean;
       privateValue?: boolean;
       secure?: boolean;
+      disabled?: boolean;
       contentLength?: number;
       exact?: boolean;
       mismatch?: Record<string, unknown>;
@@ -1729,6 +1747,7 @@ export async function readReactInputValue(
       focused: parsed.focused === true,
       ...(parsed.privateValue === true ? { privateValue: true } : {}),
       ...(typeof parsed.secure === 'boolean' ? { secure: parsed.secure } : {}),
+      ...(typeof parsed.disabled === 'boolean' ? { disabled: parsed.disabled } : {}),
       ...(Number.isSafeInteger(parsed.contentLength) && parsed.contentLength! >= 0
         ? { contentLength: parsed.contentLength }
         : {}),
@@ -1805,7 +1824,7 @@ async function comparePrivateInput(
   client: CDPClient | null,
   testID: string | null,
   args: Pick<FillArgs, 'text' | 'qaContext' | 'qaTiming'>,
-  options: { beforeTyping?: true; requireFocused?: true } = {},
+  options: { beforeTyping?: true; requireFocused?: true; requireEnabled?: true } = {},
 ): Promise<{ verdict: ReactValueVerification; mismatch?: EntryMismatch }> {
   return measureTiming(
     options.beforeTyping ? undefined : args.qaTiming?.observe,
@@ -1826,6 +1845,7 @@ async function comparePrivateInput(
         });
         const eligible = (read: typeof state) =>
           read?.exact === true &&
+          (!options.requireEnabled || read.disabled === false) &&
           (!options.beforeTyping ||
             (read.controlled && read.secure !== true && (!options.requireFocused || read.focused)));
         if (eligible(state)) {
@@ -1854,6 +1874,28 @@ async function comparePrivateInput(
     ({ verdict }) =>
       verdict === 'exact' ? 'ok' : verdict === 'mismatch' ? 'failed' : 'unavailable',
   );
+}
+
+// Before focus, only two exact reads of an enabled controlled input can avoid the tap.
+export async function inputAlreadyHolds(
+  client: CDPClient | null,
+  testID: string,
+  text: string,
+  privateValue: boolean,
+  onPrivateInput?: () => void,
+): Promise<boolean> {
+  const comparison = await comparePrivateInput(
+    client,
+    testID,
+    { text },
+    {
+      beforeTyping: true,
+      requireEnabled: true,
+    },
+  );
+  if (comparison.verdict !== 'exact') return false;
+  if (privateValue) onPrivateInput?.();
+  return true;
 }
 
 // Fill ladder rung 3: the input's own change handler receives the whole value, then the same exact verification decides.
@@ -2016,14 +2058,16 @@ export async function performFocusedFill(
   client: CDPClient | null,
 ): Promise<ToolResult> {
   const rung = { cleared: false, alreadySet: false };
-  const result = await focusedFill(args, client, rung);
-  return withFillMethod(result, rung.cleared ? 'clear-type' : 'keyboard');
+  const timings = createSendTimingAccumulator({ settleDisabled: true });
+  const result = await focusedFill(args, client, rung, timings);
+  return timings.finish(withFillMethod(result, rung.cleared ? 'clear-type' : 'keyboard'));
 }
 
 async function focusedFill(
   args: FillArgs,
   client: CDPClient | null,
   rung: { cleared: boolean; alreadySet: boolean },
+  timings: ReturnType<typeof createSendTimingAccumulator>,
 ): Promise<ToolResult> {
   const pathsTried = ['focused'];
   if (getActiveSession()?.platform === 'android') {
@@ -2148,13 +2192,15 @@ async function focusedFill(
     }
     const type = async (text: string): Promise<ToolResult> => {
       const changed = awaiting;
-      const result = await runNative(['fill', args.ref, text], {
-        qaContext: args.qaContext,
-        qaTiming: args.qaTiming,
-        focusedType: true,
-        focusedProof: changed ? () => focusedProof(true) : focusedProof,
-        settle: { enabled: false },
-      });
+      const result = timings.observe(
+        await runNative(['fill', args.ref, text], {
+          qaContext: args.qaContext,
+          qaTiming: args.qaTiming,
+          focusedType: true,
+          focusedProof: changed ? () => focusedProof(true) : focusedProof,
+          settle: { enabled: false },
+        }),
+      );
       if (changed && result.isError && extractMutationDisposition(result) === 'none') {
         return failResult(
           changed === 'empty'

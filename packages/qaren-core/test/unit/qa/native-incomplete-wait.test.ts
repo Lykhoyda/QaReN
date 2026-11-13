@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parsePlan } from '../../../dist/qa/plan.js';
-import { CaptureDeadline, captureScreen } from '../../../dist/qa/capture.js';
+import { boundedCapture, CaptureDeadline, captureScreen } from '../../../dist/qa/capture.js';
 import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
 import {
   NativeSnapshotIncomplete,
@@ -10,11 +10,107 @@ import {
 import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { runPlan, WAIT_BUDGET_MS } from '../../../dist/qa/walker.js';
 import { element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
+import { nativeCapture } from './platform-presence-fixtures.ts';
+import type { TimingEvent } from '../../../dist/qa/timing.js';
 
 const causes = ['verdict=degraded', 'ref-map-not-updated', 'retry-deadline'];
 const incomplete = () => new NativeSnapshotIncomplete(121, causes);
 const toast = () => screen([element('@toast', 'Request failed', { kind: 'text' })]);
 const target = () => screen([element('@x', 'x', { testID: 'x' })]);
+
+for (const quoted of [true, false]) {
+  test(`an input-free first ${quoted ? 'quoted' : 'phrase'} Wait re-polls a dropped Home snapshot without weakening privacy admission`, async () => {
+    const f = walker(
+      [],
+      scriptedJudge(() => {
+        assert.equal(quoted, false, 'quoted waits do not need a model');
+        return { visibility_1: { type: 'noul', noul: 0.99 } };
+      }),
+    );
+    const privacy = new ObservedPrivacy();
+    const inputs = new RunInputs({}, [], privacy);
+    assert.equal(inputs.hasInputs, false);
+    f.deps.privacy = privacy;
+    const events: TimingEvent[] = [];
+    f.deps.timing = (event) => events.push(event);
+    const reads: number[] = [];
+    const budgets: number[] = [];
+    f.deps.captureScreen = (options) => {
+      assert.ok(options?.budgetMs !== undefined);
+      assert.equal(options.platformPresence === true, !quoted);
+      budgets.push(options.budgetMs);
+      return boundedCapture(options.budgetMs, () =>
+        captureScreen({
+          ...options,
+          requirePrivateInputs: true,
+          appId: 'com.test',
+          now: f.deps.now,
+          native: async (budget) => {
+            reads.push(f.deps.now());
+            const source = nativeCapture();
+            source.presenceCapture.appliedBudgetMs = budget;
+            source.nodes[1].label = 'Home';
+            source.nodes[1].identifier = 'home';
+            if (reads.length === 1) await f.deps.sleep(3_540);
+            return { ...source, normalizationDroppedNodes: reads.length === 1 ? 1 : 0 };
+          },
+          react: async () => ({
+            interactive: [],
+            verdict: { state: 'ok', path: 'interactive', complete: true },
+            hostEvidence: { hosts: [], complete: true },
+          }),
+        }),
+      );
+    };
+    const plan = parsePlan(quoted ? '1. Wait for "Home"' : '1. Wait for the Home button');
+    assert.ok(plan.blocks);
+    const result = await withInputs(inputs, () => runPlan(plan.blocks!, f.deps));
+    assert.equal(result.verdict, 'PASS', JSON.stringify(result));
+    assert.equal(result.steps.length, 1);
+    assert.deepEqual(reads, [0, 4_040]);
+    assert.deepEqual(budgets, quoted ? [15_000, 10_960] : [65_000, 60_960]);
+    assert.equal(
+      events.some((event) => event.stage === 'native-reread'),
+      false,
+    );
+    assert.deepEqual(f.actions, []);
+  });
+}
+
+test('a wait owns dropped-snapshot polling and preserves the cause and read count at its deadline', async () => {
+  const f = walker(
+    [],
+    scriptedJudge(() => assert.fail('literal wait is model-free')),
+  );
+  let reads = 0;
+  const budgets: number[] = [];
+  f.deps.captureScreen = (options) => {
+    assert.ok(options?.budgetMs !== undefined);
+    budgets.push(options.budgetMs);
+    return captureScreen({
+      ...options,
+      requirePrivateInputs: true,
+      now: f.deps.now,
+      native: async () => {
+        reads++;
+        return { ...nativeCapture(), normalizationDroppedNodes: 5 };
+      },
+      react: async () => ({}),
+    });
+  };
+  const result = await runPlan(parsePlan('1. Wait for "x"').blocks!, f.deps);
+  assert.equal(result.verdict, 'REFUSED');
+  assert.equal('code' in result && result.code, 'NATIVE_SNAPSHOT_INCOMPLETE');
+  assert.equal(reads, 30);
+  assert.equal(budgets[0], 15_000);
+  assert.equal(budgets.at(-1), 500);
+  assert.equal(f.deps.now(), WAIT_BUDGET_MS);
+  assert.equal(
+    result.failure?.seen,
+    'The native snapshot was incomplete (nodes=2; causes=dropped=5); read 30 times over 15000 ms.',
+  );
+  assert.deepEqual(f.actions, []);
+});
 
 test('T1: an always-incomplete native Wait uses its deadline and names the observation failure', async () => {
   const f = walker(

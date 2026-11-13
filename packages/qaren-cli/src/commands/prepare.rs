@@ -2354,6 +2354,7 @@ pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
     let fp = fingerprint::compute(ctx.runner, &repo_root, &project_root, platform)?
         .with_ios_workspace(ctx.record.scenario.build.ios_workspace.as_ref())
         .with_android_abi(phone_abi(ctx).as_deref());
+    record_fingerprint_timings(ctx, "plan", &fp);
     let state = buildplan::load_state(&repo_root, platform, &ctx.record.candidate.app_id);
     if let Some(compiler) = &fp.ios_compiler {
         ctx.ios_generated_native = !fp.native_dir_in_candidate;
@@ -2412,6 +2413,21 @@ pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
     let plan = buildplan::decide(&inputs, &state, store);
     ctx.plan_fingerprint = Some(fp);
     Ok(plan)
+}
+
+fn record_fingerprint_timings(ctx: &mut Ctx, prefix: &str, fp: &NativeFingerprint) {
+    let timings = &fp.timings;
+    for (part, ms) in [
+        ("total", Some(timings.total_ms)),
+        ("list", Some(timings.list_ms)),
+        ("expo", timings.expo_ms),
+        ("toolchain", Some(timings.toolchain_ms)),
+        ("hash", Some(timings.hash_ms)),
+    ] {
+        if let Some(ms) = ms {
+            ctx.timings.push((format!("{prefix}_fp_{part}"), ms));
+        }
+    }
 }
 
 fn cache_root_failure(reason: String) -> Failure {
@@ -2485,7 +2501,7 @@ fn fingerprint_notes(fp: &fingerprint::NativeFingerprint) -> Vec<(String, String
         ("fingerprint_parts".to_string(), parts),
         ("fingerprint_complete".to_string(), fp.complete.to_string()),
     ];
-    if let Some(ms) = fp.expo_fingerprint_ms {
+    if let Some(ms) = fp.timings.expo_ms {
         notes.push(("expo_fingerprint_ms".to_string(), ms.to_string()));
     }
     if let Some(reason) = &fp.expo_unavailable {
@@ -3931,8 +3947,9 @@ pub(crate) fn recheck_fingerprint(
     let mut fp = fingerprint::compute(ctx.runner, &repo_root, &project_root, platform)?
         .with_ios_workspace(ctx.record.scenario.build.ios_workspace.as_ref())
         .with_android_abi(abi.as_deref());
+    record_fingerprint_timings(ctx, "verify", &fp);
     if platform == "android" {
-        let planned = ctx.plan_fingerprint.as_ref().expect("fingerprint planned");
+        let planned = ctx.plan_fingerprint.clone().expect("fingerprint planned");
         if !planned.parts.contains_key("expo") {
             if fp.parts.get("rnfp") != planned.parts.get("rnfp") {
                 return Err(candidate_drift(
@@ -3941,13 +3958,14 @@ pub(crate) fn recheck_fingerprint(
                 ));
             }
             // Late evaluation cannot attest the build that already ran.
-            return Ok(planned.clone());
+            return Ok(planned);
         }
         if fp.expo_unavailable.is_some() {
             ensure_running(ctx.runner, "verify")?;
             fp = fingerprint::compute(ctx.runner, &repo_root, &project_root, platform)?
                 .with_ios_workspace(ctx.record.scenario.build.ios_workspace.as_ref())
                 .with_android_abi(abi.as_deref());
+            record_fingerprint_timings(ctx, "verify", &fp);
             if let Some(cause) = &fp.expo_unavailable {
                 return Err(Failure::new(
                     "verify",
@@ -6201,7 +6219,7 @@ mod launch_tests {
                 complete: true,
                 incompleteness: Vec::new(),
                 parts: Default::default(),
-                expo_fingerprint_ms: None,
+                timings: Default::default(),
                 expo_unavailable: None,
                 ios_compiler: None,
             };

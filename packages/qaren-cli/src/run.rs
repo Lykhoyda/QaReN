@@ -1428,7 +1428,10 @@ fn run_inner(
         cleanup.splice(..0, early_cleanup);
         let t = ctx.mark("teardown", t);
         if let Some(udid) = runner_simulator {
-            if let Some(note) = springboard_crash_after(ctx.runner, &udid, runner_started_at) {
+            let wait_seconds = springboard_scan_wait_seconds(&outcome);
+            if let Some(note) =
+                springboard_crash_after(ctx.runner, &udid, runner_started_at, wait_seconds)
+            {
                 let at = timefmt::iso8601_utc(ctx.runner.now_epoch_ms());
                 ctx.record
                     .push_history(at, &format!("lane health: springboard_crash: {note}"));
@@ -1782,10 +1785,31 @@ fn run_inner(
 // A report lands up to 45 s after the crash; finding one is lane health and never changes the result.
 const SPRINGBOARD_SCAN_SECONDS: u64 = 60;
 
-fn springboard_crash_after(runner: &mut dyn Runner, udid: &str, since_ms: u64) -> Option<String> {
+fn springboard_scan_wait_seconds(outcome: &core::CoreOutcome) -> u64 {
+    if outcome.failure.is_some() || outcome.group_survived {
+        return SPRINGBOARD_SCAN_SECONDS;
+    }
+    match outcome.verdict {
+        Verdict::Pass => 0,
+        Verdict::Fail
+            if outcome.ledger.failure.as_ref().and_then(|f| f.kind)
+                == Some(core::FailureKind::Step) =>
+        {
+            0
+        }
+        _ => SPRINGBOARD_SCAN_SECONDS,
+    }
+}
+
+fn springboard_crash_after(
+    runner: &mut dyn Runner,
+    udid: &str,
+    since_ms: u64,
+    wait_seconds: u64,
+) -> Option<String> {
     let reports = Path::new(&runner.env_var("HOME")?).join("Library/Logs/DiagnosticReports");
     let since = std::time::UNIX_EPOCH + std::time::Duration::from_millis(since_ms);
-    for left in (0..=SPRINGBOARD_SCAN_SECONDS).rev() {
+    for left in (0..=wait_seconds).rev() {
         if let Some(facts) =
             ios::recent_crash_facts(&reports, ios::SPRINGBOARD_BUNDLE_ID, udid, since)
         {
@@ -2231,6 +2255,97 @@ mod block_start_tests {
     }
 
     #[test]
+    fn springboard_scan_stops_polling_when_cancelled() {
+        let home = home_with_reports("springboard-cancelled", &[]);
+        let mut runner = crate::exec::MockRunner::new();
+        runner
+            .environment
+            .insert("HOME".into(), home.display().to_string());
+        let start = runner.now_epoch_ms();
+        runner.cancel_at_ms = Some((start + 2_000, "cancelled".into()));
+        assert_eq!(springboard_crash_after(&mut runner, "AAAA", start, 60), None);
+        assert_eq!(runner.now_epoch_ms(), start + 2_000);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn springboard_scan_without_wait_does_not_advance_the_clock() {
+        let home = home_with_reports("springboard-no-wait", &[]);
+        let mut runner = crate::exec::MockRunner::new();
+        runner
+            .environment
+            .insert("HOME".into(), home.display().to_string());
+        let start = runner.now_epoch_ms();
+        assert_eq!(springboard_crash_after(&mut runner, "AAAA", start, 0), None);
+        assert_eq!(runner.now_epoch_ms(), start);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn springboard_scan_without_wait_finds_an_existing_report() {
+        let home = home_with_reports("springboard-no-wait-found", &["AAAA"]);
+        let mut runner = crate::exec::MockRunner::new();
+        runner
+            .environment
+            .insert("HOME".into(), home.display().to_string());
+        let start = runner.now_epoch_ms();
+        let note = springboard_crash_after(&mut runner, "AAAA", start, 0);
+        assert_eq!(
+            note.as_deref(),
+            Some("Observed a SpringBoard crash at 2026-02-02T02:40:01Z on this simulator (EXC_BAD_ACCESS); attribution to this run is unverified; the result stands")
+        );
+        assert_eq!(runner.now_epoch_ms(), start);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn springboard_scan_waits_only_for_abnormal_outcomes() {
+        let refused = Verdict::Refused {
+            code: "CDP_NOT_CONNECTED".into(),
+            message: "attach refused".into(),
+        };
+        let rows = [
+            (Verdict::Pass, false, false, false, 0),
+            (Verdict::Fail, true, false, false, 0),
+            (Verdict::Fail, false, false, false, 60),
+            (refused.clone(), false, false, false, 60),
+            (refused, true, false, false, 60),
+            (Verdict::Pass, false, true, false, 60),
+            (Verdict::Pass, false, false, true, 60),
+            (Verdict::Fail, true, true, false, 60),
+            (Verdict::Fail, true, false, true, 60),
+        ];
+        for (verdict, step_failure, failure, group_survived, expected) in rows {
+            let mut ledger = core::synthesized_ledger(&[], "FAIL", "failure");
+            if step_failure {
+                ledger.failure.as_mut().unwrap().kind = Some(core::FailureKind::Step);
+            }
+            let outcome = core::CoreOutcome {
+                pid: 1,
+                ledger,
+                verdict,
+                exit: None,
+                failure: failure.then(|| {
+                    Failure::new(
+                        "walk",
+                        FailureCode::CoreResultMissing,
+                        "no result line",
+                        "retry",
+                    )
+                }),
+                group_survived,
+                admitted: true,
+                first_step_start_ms: None,
+            };
+            assert_eq!(
+                springboard_scan_wait_seconds(&outcome),
+                expected,
+                "{outcome:?}"
+            );
+        }
+    }
+
+    #[test]
     fn springboard_report_after_teardown_is_not_attributed_to_this_run() {
         let udid = "AAAABBBB-1111-2222-3333-444455556666";
         let home = home_with_reports("springboard-found", &["FFFF", udid]);
@@ -2247,7 +2362,7 @@ mod block_start_tests {
             .set_times(std::fs::FileTimes::new().set_modified(report_time))
             .unwrap();
         runner.sleep(std::time::Duration::from_secs(92));
-        let note = springboard_crash_after(&mut runner, udid, start);
+        let note = springboard_crash_after(&mut runner, udid, start, 60);
         assert_eq!(
             note.as_deref(),
             Some("Observed a SpringBoard crash at 2026-02-02T02:40:01Z on this simulator (EXC_BAD_ACCESS); attribution to this run is unverified; the result stands")
@@ -2265,7 +2380,10 @@ mod block_start_tests {
             .insert("HOME".into(), home.display().to_string());
         let start = runner.now_epoch_ms();
         runner.sleep(std::time::Duration::from_secs(90));
-        assert_eq!(springboard_crash_after(&mut runner, "AAAA", start), None);
+        assert_eq!(
+            springboard_crash_after(&mut runner, "AAAA", start, 60),
+            None
+        );
         assert_eq!(runner.now_epoch_ms(), start + 150_000);
         let _ = std::fs::remove_dir_all(home);
     }

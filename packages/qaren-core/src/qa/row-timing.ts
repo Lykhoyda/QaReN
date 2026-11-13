@@ -1,4 +1,4 @@
-import type { TimingEvent } from './timing.js';
+import { SEND_TIMING_FIELDS, type TimingEvent, type SendTiming } from './timing.js';
 
 // Only capture, resolve, act, post-capture and other durations partition the row window.
 export interface RowTiming {
@@ -8,6 +8,7 @@ export interface RowTiming {
   presenceMs?: number;
   settleMethod?: TimingEvent['method'] | 'mixed';
   settleMs?: number;
+  send?: SendTiming;
   preparationSamples?: number;
   preparationResets?: number;
   resolveMs: number;
@@ -38,6 +39,7 @@ interface Window {
   acted: boolean;
   settleMethod?: RowTiming['settleMethod'];
   settleMs?: number;
+  send?: SendTiming;
   preparationSamples?: number;
   preparationResets?: number;
 }
@@ -63,6 +65,13 @@ export function createRowTimer(startedAt: number): RowTimer {
   let window = emptyWindow();
   return {
     observe(event) {
+      if (event.edge === 'end' && event.stage === 'settle' && event.send) {
+        window.send ??= {};
+        for (const key of SEND_TIMING_FIELDS) {
+          const value = event.send[key];
+          if (value !== undefined) window.send[key] = (window.send[key] ?? 0) + value;
+        }
+      }
       if (event.stage === 'native-preparation' && event.edge === 'point') {
         if (event.count !== undefined)
           window.preparationSamples = (window.preparationSamples ?? 0) + event.count;
@@ -124,6 +133,7 @@ export function createRowTimer(startedAt: number): RowTimer {
         captureMs,
         nativeMs: Math.round(window.native),
         reactMs: Math.round(window.react),
+        ...(window.send ? { send: window.send } : {}),
         ...(window.presence !== undefined ? { presenceMs: Math.round(window.presence) } : {}),
         ...(window.settleMs !== undefined
           ? { settleMethod: window.settleMethod, settleMs: Math.round(window.settleMs) }

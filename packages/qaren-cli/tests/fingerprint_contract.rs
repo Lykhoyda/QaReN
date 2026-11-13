@@ -11,7 +11,7 @@ fn prior_fingerprint() -> NativeFingerprint {
         complete: true,
         incompleteness: vec![],
         parts: Default::default(),
-        expo_fingerprint_ms: None,
+        timings: Default::default(),
         expo_unavailable: None,
         ios_compiler: None,
     }
@@ -167,11 +167,83 @@ fn plugin_project(plugin: &str) -> std::path::PathBuf {
 
 const PLUGIN_FILES: &str = "app.json\0plugins/withX.js\0config/x.json\0";
 
+#[test]
+fn compute_reports_disjoint_duration_parts_without_changing_the_fingerprint() {
+    let root = plugin_project("module.exports = c => c;");
+    std::fs::write(
+        root.join("package.json"),
+        r#"{"dependencies":{"expo":"56.0.23"}}"#,
+    )
+    .unwrap();
+    let files = format!("{PLUGIN_FILES}package.json\0");
+    let mut fingerprints = Vec::new();
+    for (hint, list, expo, toolchain) in [
+        ("ls-files", 17, 0, 0),
+        ("fingerprint", 0, 34, 0),
+        ("xcodebuild -version", 0, 0, 17),
+        ("xcrun swift --version", 0, 0, 17),
+    ] {
+        let mut runner = MockRunner::new();
+        runner.advance_on = Some((hint.into(), 17));
+        runner.expect_run("ls-files", CmdOutput::success(&files));
+        common::script_expo_fingerprint(&mut runner, EXPO_H, XCODE);
+        let fp = compute(&mut runner, &root, &root, "ios").unwrap();
+        assert_eq!(runner.remaining(), 0);
+        assert_eq!(fp.timings.list_ms, list);
+        assert_eq!(fp.timings.expo_ms, Some(expo));
+        assert_eq!(fp.timings.toolchain_ms, toolchain);
+        assert!(
+            fp.timings.list_ms + expo + fp.timings.toolchain_ms + fp.timings.hash_ms
+                <= fp.timings.total_ms
+        );
+        assert_eq!(fp.timings.total_ms, list + expo + toolchain);
+        fingerprints.push(fp.value);
+    }
+    assert!(fingerprints.windows(2).all(|pair| pair[0] == pair[1]));
+    let mut android = MockRunner::new();
+    android.expect_run("ls-files", CmdOutput::success(&files));
+    let fp = compute(&mut android, &root, &root, "android").unwrap();
+    assert_eq!(fp.timings.expo_ms, None);
+    assert_eq!(android.remaining(), 0);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 fn fingerprint(root: &Path) -> NativeFingerprint {
     let mut runner = MockRunner::new();
     runner.expect_run("ls-files", CmdOutput::success(PLUGIN_FILES));
     common::script_xcode(&mut runner);
     compute(&mut runner, root, root, "ios").unwrap()
+}
+
+#[test]
+fn unbound_import_refusals_name_the_first_importing_file() {
+    for specifier in [
+        "fs",
+        "node:fs",
+        "child_process",
+        "node:unknown_builtin",
+        "@invalid",
+    ] {
+        for importer in ["plugins/withX.js", "config/imports.ts"] {
+            let source = format!("require({specifier:?});");
+            let direct = format!("require('../config/imports.ts'); {source}");
+            let root = plugin_project(if importer == "plugins/withX.js" {
+                &direct
+            } else {
+                "require('../config/imports.ts');"
+            });
+            std::fs::write(root.join("config/imports.ts"), &source).unwrap();
+            let fp = fingerprint(&root);
+            assert!(!fp.complete, "{specifier}");
+            let expected = if specifier == "@invalid" {
+                format!("package {specifier:?} imported by {importer} is not a resolvable package name; the input set is unprovably complete")
+            } else {
+                format!("Node built-in {specifier:?} imported by {importer} may read unbound inputs; the input set is unprovably complete")
+            };
+            assert_eq!(fp.incompleteness, vec![expected]);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
 }
 
 #[test]
@@ -1025,7 +1097,7 @@ fn static_config_without_expo_binds_the_xcode_version() {
     let root = plugin_project("module.exports = c => c;");
     let fp = fingerprint(&root);
     assert!(fp.complete, "{:?}", fp.incompleteness);
-    assert_eq!(fp.expo_fingerprint_ms, None);
+    assert_eq!(fp.timings.expo_ms, None);
     assert_eq!(fp.parts.keys().collect::<Vec<_>>(), ["rnfp", "toolchain"]);
     assert_ne!(fp.parts["rnfp"], fp.value);
     assert_eq!(
@@ -1066,7 +1138,7 @@ fn static_expo_config_binds_the_evaluated_native_inputs() {
         fp.value,
         "rnfp1:f5dfeed325ed9c3a20232ae15a6fb6edc278d9288b75ef2db9e838c990dd72cf"
     );
-    assert!(fp.expo_fingerprint_ms.is_some());
+    assert!(fp.timings.expo_ms.is_some());
     assert_eq!(
         matching_build(&root, &fp, "ios").decision,
         qaren::buildplan::BuildDecision::Reuse
@@ -1076,6 +1148,37 @@ fn static_expo_config_binds_the_evaluated_native_inputs() {
     });
     assert_eq!(fp.parts["rnfp"], changed.parts["rnfp"]);
     assert_ne!(fp.value, changed.value);
+}
+
+#[test]
+fn evaluated_expo_does_not_make_input_reading_imports_complete() {
+    for specifier in [
+        "node:fs",
+        "fs",
+        "fs/promises",
+        "child_process",
+        "os",
+        "crypto",
+        "http",
+    ] {
+        let root = plugin_project(&format!("require({specifier:?});"));
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"dependencies":{"expo":"56.0.23"}}"#,
+        )
+        .unwrap();
+        let files = format!("{PLUGIN_FILES}package.json\0");
+        let (fp, _) = dynamic_fingerprint(&root, &files, |m| {
+            common::script_expo_fingerprint(m, EXPO_H, XCODE)
+        });
+        assert!(fp.parts.contains_key("expo"));
+        assert!(!fp.complete, "{specifier}");
+        assert_ne!(
+            matching_build(&root, &fp, "ios").decision,
+            qaren::buildplan::BuildDecision::Reuse
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[test]
@@ -1103,7 +1206,7 @@ fn static_expo_fallback_stays_complete_and_can_reuse_its_native_identity() {
             .as_deref()
             .unwrap()
             .contains("does not resolve"));
-        assert!(fp.expo_fingerprint_ms.is_some());
+        assert!(fp.timings.expo_ms.is_some());
         assert_eq!(
             matching_build(&root, &fp, "ios").decision,
             qaren::buildplan::BuildDecision::Reuse
@@ -1115,7 +1218,7 @@ fn static_expo_fallback_stays_complete_and_can_reuse_its_native_identity() {
         );
         let android = compute(&mut runner, &root, &root, "android").unwrap();
         assert_eq!(android.parts.keys().collect::<Vec<_>>(), ["rnfp"]);
-        assert_eq!(android.expo_fingerprint_ms, None);
+        assert_eq!(android.timings.expo_ms, None);
     }
 }
 
@@ -1168,7 +1271,7 @@ fn android_static_expo_config_keeps_the_manifest_only_vector() {
     );
     assert_eq!(fp.parts["rnfp"], fp.value);
     assert_eq!(fp.parts.len(), 1);
-    assert_eq!(fp.expo_fingerprint_ms, None);
+    assert_eq!(fp.timings.expo_ms, None);
     assert!(!runner
         .calls
         .iter()
@@ -1190,7 +1293,7 @@ fn evaluated_dynamic_config_clears_only_its_own_incompleteness_and_reuses() {
     );
     assert_eq!(fp.parts["expo"], format!("expo:{EXPO_H}"));
     assert_ne!(fp.value, fp.parts["rnfp"]);
-    assert!(fp.expo_fingerprint_ms.is_some());
+    assert!(fp.timings.expo_ms.is_some());
     assert_eq!(
         runner.private_inputs.len(),
         4,
@@ -1275,7 +1378,7 @@ fn throwing_javascript_config_with_a_partial_expo_hash_cannot_reuse() {
         .iter()
         .any(|reason| reason.starts_with("app.config.js is a dynamic config")));
     assert_eq!(fp.parts.keys().collect::<Vec<_>>(), ["rnfp"]);
-    assert!(fp.expo_fingerprint_ms.is_some());
+    assert!(fp.timings.expo_ms.is_some());
     assert_eq!(runner.private_inputs.len(), 2);
     let plan = matching_build(&root, &fp, "ios");
     assert_eq!(plan.decision, qaren::buildplan::BuildDecision::Clean);
@@ -1504,7 +1607,7 @@ fn android_dynamic_config_binds_both_build_environments() {
         assert_eq!(fp.parts["expo"], format!("expo:{expo}"));
         assert_eq!(fp.parts["expo-ci"], format!("expo:{ci}"));
         assert_ne!(fp.value, fp.parts["rnfp"]);
-        assert_eq!(fp.expo_fingerprint_ms, Some(34));
+        assert_eq!(fp.timings.expo_ms, Some(34));
         fp
     };
     let base = evaluate(EXPO_H, EXPO_H);
