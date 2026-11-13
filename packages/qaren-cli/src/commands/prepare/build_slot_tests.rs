@@ -555,6 +555,11 @@ fn s10_s14_readiness_timeout_retains_slot_until_metro_retirement_is_proven() {
             "ps -A",
             CmdOutput::success(if retired { "1 1 S\n" } else { "6000 6000 S\n" }),
         );
+        if retired {
+            f.runner
+                .inner
+                .expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+        }
         let receipt = crate::commands::cleanup::cleanup(&mut f.runner, &f.root, "check-slot");
         assert_eq!(f.root.join("locks/native-build-slot").exists(), !retired);
         if !retired {
@@ -806,6 +811,9 @@ fn s14_cleanup_can_retry_slot_release_after_the_metro_record_is_retired() {
     ] {
         let mut f = fixture(&format!("release-retry-{name}"), Platform::Android);
         expo_script(&mut f, "compiling\n", true);
+        f.runner
+            .inner
+            .expect_run("ps -A", CmdOutput::success("1 1 S\n"));
         let mut ctx = f.ctx();
         build_and_ready(&mut ctx).unwrap();
         let slot = ctx
@@ -819,8 +827,7 @@ fn s14_cleanup_can_retry_slot_release_after_the_metro_record_is_retired() {
         let original = std::fs::read(slot.lock_dir.join("holder.json")).unwrap();
         std::fs::write(slot.lock_dir.join("holder.json"), "{").unwrap();
         let first =
-            crate::commands::cleanup::cleanup_build_slot(ctx.runner, &mut ctx.record, Some(6000))
-                .unwrap();
+            crate::commands::cleanup::cleanup_build_slot(ctx.runner, &mut ctx.record).unwrap();
         assert!(!first.clean());
         ctx.record.resources.metro = None;
         ctx.record.resources.adb_server = None;
@@ -858,7 +865,7 @@ fn s14_a_foreign_slot_is_never_reported_as_this_runs_retained_slot() {
     buildplan::save_json(&slot.lock_dir.join("holder.json"), &next).unwrap();
     ctx.record.resources.metro = None;
     let outcome =
-        crate::commands::cleanup::cleanup_build_slot(ctx.runner, &mut ctx.record, None).unwrap();
+        crate::commands::cleanup::cleanup_build_slot(ctx.runner, &mut ctx.record).unwrap();
     assert!(outcome.clean());
     assert_eq!(
         buildplan::read_holder(&slot.lock_dir).unwrap().run_id,
@@ -949,8 +956,7 @@ fn a_waiter_never_releases_another_homes_slot_with_the_same_run_id() {
             }
         );
         let outcome =
-            crate::commands::cleanup::cleanup_build_slot(ctx.runner, &mut ctx.record, None)
-                .unwrap();
+            crate::commands::cleanup::cleanup_build_slot(ctx.runner, &mut ctx.record).unwrap();
         assert!(
             dir.exists(),
             "a waiting run released the foreign build slot: {}",
@@ -1281,4 +1287,62 @@ fn review_s2_core_wait_releases_a_late_gradle_completion_before_teardown() {
         "core wait must release the slot before any teardown"
     );
     assert!(record.resources.metro.is_some());
+}
+
+#[test]
+fn cleanup_retains_expo_slot_until_all_descendants_are_absent() {
+    for (name, metro_inventory, inventory, released) in [
+        (
+            "absent",
+            CmdOutput::success("1 1 S\n"),
+            CmdOutput::success("1 1 S\n"),
+            true,
+        ),
+        (
+            "descendant",
+            CmdOutput::success("6001 6000 S\n"),
+            CmdOutput::success("6001 6000 S\n"),
+            false,
+        ),
+        (
+            "unknown",
+            CmdOutput::failed(1, ""),
+            CmdOutput::failed(1, ""),
+            false,
+        ),
+        (
+            "changed",
+            CmdOutput::success("1 1 S\n"),
+            CmdOutput::success("6001 6000 S\n"),
+            false,
+        ),
+    ] {
+        let mut f = fixture(&format!("dead-expo-leader-{name}"), Platform::Android);
+        expo_script(&mut f, "compiling\n", true);
+        let mut ctx = f.ctx();
+        build_and_ready(&mut ctx).unwrap();
+        ctx.record.resources.adb_server = None;
+        ctx.record.resources.adb_local_serial = None;
+        ctx.record.resources.adb_path = None;
+        ctx.save().unwrap();
+        f.runner
+            .inner
+            .expect_run("ps -p 6000 -o lstart=", CmdOutput::failed(1, ""));
+        f.runner.inner.expect_run("lsof", CmdOutput::failed(1, ""));
+        f.runner.inner.expect_run("ps -A", metro_inventory);
+        f.runner.inner.expect_run("ps -A", inventory);
+        let receipt = crate::commands::cleanup::cleanup(&mut f.runner, &f.root, "check-slot");
+        assert_eq!(
+            receipt.cleanup["metro"] == "absent",
+            matches!(name, "absent" | "changed")
+        );
+        assert_eq!(f.root.join("locks/native-build-slot").exists(), !released);
+        let stored = RunRecord::load(&f.root, "check-slot").unwrap();
+        assert_eq!(stored.resources.build_slot.is_some(), !released);
+        assert_eq!(
+            receipt.cleanup["build_slot"].contains("retained"),
+            !released
+        );
+        assert_eq!(f.runner.inner.remaining(), 0);
+    }
 }

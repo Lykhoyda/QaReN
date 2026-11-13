@@ -4550,8 +4550,7 @@ fn build_failure(ctx: &Ctx, detail: impl Into<String>) -> Failure {
 
 fn release_build_slot(ctx: &mut Ctx) -> Result<(), Failure> {
     let previous = ctx.record.resources.build_slot.clone();
-    let Some(outcome) = super::cleanup::cleanup_build_slot(ctx.runner, &mut ctx.record, None)
-    else {
+    let Some(outcome) = super::cleanup::cleanup_build_slot(ctx.runner, &mut ctx.record) else {
         return Ok(());
     };
     if !outcome.clean() {

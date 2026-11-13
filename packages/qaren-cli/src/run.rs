@@ -2323,10 +2323,7 @@ mod block_start_tests {
             .insert("HOME".into(), home.display().to_string());
         let start = runner.now_epoch_ms();
         runner.sleep(std::time::Duration::from_secs(90));
-        assert_eq!(
-            springboard_crash_after(&mut runner, "AAAA", start, 60),
-            None
-        );
+        assert_eq!(springboard_crash_after(&mut runner, "AAAA", start, 60), None);
         assert_eq!(runner.now_epoch_ms(), start + 150_000);
         let _ = std::fs::remove_dir_all(home);
     }
@@ -2636,7 +2633,6 @@ fn teardown(
     }
     // A signal during core cleanup still gets the normal teardown.
     let hold = hold && ctx.runner.cancellation().is_none();
-    let mut retired_metro = None;
     if let Some(m) = ctx.record.resources.metro.clone() {
         // Held Metro stays recorded, so qaren cleanup or the next run's reclaim stops it.
         let outcome = if hold {
@@ -2650,13 +2646,11 @@ fn teardown(
             )
         };
         if outcome.clean() {
-            retired_metro = Some(m.spawned.pgid);
             ctx.record.resources.metro = None;
         }
         outcomes.push(("metro".to_string(), outcome));
     }
-    if let Some(outcome) =
-        crate::commands::cleanup::cleanup_build_slot(ctx.runner, &mut ctx.record, retired_metro)
+    if let Some(outcome) = crate::commands::cleanup::cleanup_build_slot(ctx.runner, &mut ctx.record)
     {
         outcomes.push(("build_slot".into(), outcome));
     }

@@ -415,13 +415,7 @@ pub fn cleanup_with_policy(
         ));
     }
 
-    let retired_metro = record.resources.metro.as_ref().and_then(|metro| {
-        outcomes
-            .iter()
-            .any(|(leg, outcome)| leg == "metro" && outcome.clean())
-            .then_some(metro.spawned.pgid)
-    });
-    if let Some(outcome) = cleanup_build_slot(runner, &mut record, retired_metro) {
+    if let Some(outcome) = cleanup_build_slot(runner, &mut record) {
         outcomes.push(("build_slot".into(), outcome));
     }
 
@@ -827,7 +821,6 @@ pub fn cleanup_with_policy(
 pub(crate) fn cleanup_build_slot(
     runner: &mut dyn Runner,
     record: &mut RunRecord,
-    retired_metro: Option<i32>,
 ) -> Option<Outcome> {
     let slot = record.resources.build_slot.as_ref()?;
     let absent = matches!(std::fs::symlink_metadata(&slot.lock.lock_dir), Err(error) if error.kind() == std::io::ErrorKind::NotFound);
@@ -836,17 +829,14 @@ pub(crate) fn cleanup_build_slot(
     let outcome = if absent || foreign {
         Outcome::Absent
     } else {
-        let retired_metro = retired_metro.or_else(|| {
-            let crate::runrecord::BuildSlotWork::Metro { pgid } = slot.work else {
-                return None;
-            };
-            if pgid < 2 {
-                return None;
+        let retired_metro = match slot.work {
+            crate::runrecord::BuildSlotWork::Metro { pgid } if pgid >= 2 => {
+                let mut cleanup_runner = crate::exec::CleanupRunner(runner);
+                (metro::group_presence(&mut cleanup_runner, pgid) == metro::GroupPresence::Absent)
+                    .then_some(pgid)
             }
-            let mut cleanup_runner = crate::exec::CleanupRunner(runner);
-            (metro::group_presence(&mut cleanup_runner, pgid) == metro::GroupPresence::Absent)
-                .then_some(pgid)
-        });
+            _ => None,
+        };
         if record.resources.can_release_build_slot(retired_metro) {
             release_recorded_lock(&slot.lock, &record.run_id)
         } else {
