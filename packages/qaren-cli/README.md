@@ -608,7 +608,7 @@ one is only counted in the refusal's text.
 
 Before any build, selection reads `dumpsys power` and `dumpsys window policy`
 and refuses `device-locked` when a secure lock screen is showing. Just before
-the install it reads again: a sleeping device is woken once
+the install, and again before a retried install, it reads again: a sleeping device is woken once
 (`input keyevent KEYCODE_WAKEUP`), a showing keyguard dismissed once
 (`wm dismiss-keyguard`), and only the read back decides, because both commands
 exit 0 while a PIN or pattern stays; a keyguard still showing, or a device still
@@ -2891,7 +2891,10 @@ The second install gets at most 300 seconds, capped to the whole seconds left in
 the install/launch/readiness `build_seconds` window opened at reuse-path entry.
 For a fresh emulator build, that is a new window after Gradle, independent of
 the build's remaining time. With less than one second left, no second install
-starts. The recovery wait itself has its own 180-second limit.
+starts. The recovery wait itself has its own 180-second limit. On a borrowed
+device, the lock check runs again after the wait and before that budget check,
+because a device that stopped answering may have restarted locked; it can refuse
+`device-locked` before the second install.
 
 Missing verdicts can mean a dropped transport or a committed install whose
 acknowledgement was lost; three good probes do not prove the first install never

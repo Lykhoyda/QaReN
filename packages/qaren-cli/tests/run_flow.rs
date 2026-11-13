@@ -11575,7 +11575,8 @@ fn assert_android_install_recovery_success(first: CmdOutput) {
     let (req, mut mock) = android_install_recovery_fixture();
     mock.expect_run("install -r -d", first);
     script_package_manager_recovery(&mut mock);
-    // The lock was read before the first install; the retry does not read it again.
+    // The lock is read again before the retry; the launch does not read it a third time.
+    script_lock_read(&mut mock, POWER, WINDOW_POLICY);
     script_android_install_launch(&mut mock, 0);
     script_android_app_tick(&mut mock, CmdOutput::success("4242\n"));
     script_android_walk_release(&mut mock, false);
@@ -11601,6 +11602,60 @@ fn android_install_recovery_i1_continues_after_transport_failure() {
 #[test]
 fn android_install_recovery_i7_replaces_an_install_whose_acknowledgement_was_lost() {
     assert_android_install_recovery_success(CmdOutput::success("Performing Streamed Install\n"));
+}
+
+// The device stopped answering between the attempts and may have restarted: its lock is read again.
+#[test]
+fn android_install_recovery_reads_the_lock_again_before_the_retry() {
+    let asleep = POWER.replace("mWakefulness=Awake", "mWakefulness=Asleep");
+    let showing = WINDOW_POLICY.replace("      showing=false", "      showing=true");
+    // false: woken, the retry goes on. true: the keyguard stays, refused before the second install.
+    for still_locked in [false, true] {
+        let (req, mut mock) = android_install_recovery_fixture();
+        mock.expect_run("install -r -d", CmdOutput::failed(1, "transport failure"));
+        script_package_manager_recovery(&mut mock);
+        if still_locked {
+            script_lock_read(&mut mock, &asleep, &showing);
+            mock.expect_run("input keyevent KEYCODE_WAKEUP", CmdOutput::success(""));
+            mock.expect_run("wm dismiss-keyguard", CmdOutput::success(""));
+            script_lock_read(&mut mock, POWER, &showing);
+        } else {
+            script_lock_read(&mut mock, &asleep, WINDOW_POLICY);
+            mock.expect_run("input keyevent KEYCODE_WAKEUP", CmdOutput::success(""));
+            script_lock_read(&mut mock, POWER, WINDOW_POLICY);
+            script_android_install_launch(&mut mock, 0);
+            script_android_app_tick(&mut mock, CmdOutput::success("4242\n"));
+            script_android_walk_release(&mut mock, false);
+        }
+
+        let receipt = run(&mut mock, &req);
+
+        assert_eq!(mock.remaining(), 0, "{still_locked}");
+        let calls: Vec<String> = mock.calls.iter().map(|c| c.rendered()).collect();
+        let last_probe = calls
+            .iter()
+            .rposition(|c| c.contains("shell pm path android"))
+            .unwrap();
+        let wake = calls
+            .iter()
+            .position(|c| c.contains("KEYCODE_WAKEUP"))
+            .unwrap();
+        let installs: Vec<usize> = (0..calls.len())
+            .filter(|i| calls[*i].contains("install -r -d"))
+            .collect();
+        assert!(last_probe < wake, "{still_locked}: {calls:?}");
+        if still_locked {
+            let failure = receipt.failure.as_ref().unwrap();
+            assert_eq!(failure.code, FailureCode::DeviceUnavailable);
+            assert_eq!(failure.subreason.as_deref(), Some("device-locked"));
+            assert_eq!(installs.len(), 1, "{calls:?}");
+        } else {
+            assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+            assert_eq!(receipt.outcomes["install_attempts"], "2");
+            assert_eq!(installs.len(), 2, "{calls:?}");
+            assert!(wake < installs[1], "{calls:?}");
+        }
+    }
 }
 
 #[test]
@@ -11676,6 +11731,7 @@ fn android_install_recovery_i5_second_failure_names_both_attempts() {
         let (req, mut mock) = android_install_recovery_fixture();
         mock.expect_run("install -r -d", CmdOutput::failed(1, "first sentinel"));
         script_package_manager_recovery(&mut mock);
+        script_lock_read(&mut mock, POWER, WINDOW_POLICY);
         mock.expect_run(
             "install -r -d",
             CmdOutput {
@@ -11740,6 +11796,7 @@ fn android_install_recovery_requires_three_consecutive_successful_package_lines(
         mock.expect_run("shell pm path android", output);
     }
     script_package_manager_recovery(&mut mock);
+    script_lock_read(&mut mock, POWER, WINDOW_POLICY);
     script_android_install_launch(&mut mock, 0);
     script_android_app_tick(&mut mock, CmdOutput::success("4242\n"));
     script_android_walk_release(&mut mock, false);
@@ -11762,6 +11819,8 @@ fn android_install_recovery_caps_or_skips_the_retry_at_the_entry_window() {
         mock.advance_on = Some(("install -r -d".into(), first_ms));
         mock.expect_run("install -r -d", CmdOutput::failed(1, "first failure"));
         script_package_manager_recovery(&mut mock);
+        // The lock read comes before the budget check, so the branch without a retry takes it too.
+        script_lock_read(&mut mock, POWER, WINDOW_POLICY);
         if first_ms == 16_000 {
             mock.expect_run("install -r -d", CmdOutput::failed(1, "second failure"));
         }
@@ -11807,6 +11866,7 @@ fn android_install_recovery_records_success_before_cancellation() {
     let (req, mut mock) = android_install_recovery_fixture();
     mock.expect_run("install -r -d", CmdOutput::failed(1, "transport failure"));
     script_package_manager_recovery(&mut mock);
+    script_lock_read(&mut mock, POWER, WINDOW_POLICY);
     mock.expect_run("install -r -d", CmdOutput::success("Success\n"));
     mock.advance_on = Some(("install -r -d".into(), 1));
     mock.cancel_at_ms = Some((mock.now_epoch_ms() + 10_002, "received SIGTERM".into()));
@@ -11866,6 +11926,7 @@ fn android_check_install_failure_and_timeout_keep_verified_apk_and_release_only_
         script_lock_read(&mut mock, POWER, WINDOW_POLICY);
         mock.expect_run("install -r -d", installed.clone());
         script_package_manager_recovery(&mut mock);
+        script_lock_read(&mut mock, POWER, WINDOW_POLICY);
         mock.expect_run("install -r -d", installed);
 
         let receipt = run(&mut mock, &req);
@@ -11935,6 +11996,7 @@ fn android_check_install_over_another_signer_names_fresh_install_and_its_cost() 
         if retried {
             mock.expect_run("install -r -d", CmdOutput::failed(1, "transport failure"));
             script_package_manager_recovery(&mut mock);
+            script_lock_read(&mut mock, POWER, WINDOW_POLICY);
         }
         mock.expect_run("install -r -d", incompatible.clone());
 

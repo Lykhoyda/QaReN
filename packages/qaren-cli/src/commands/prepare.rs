@@ -3876,6 +3876,10 @@ fn install_cached_android_apk(
         ctx.runner.sleep(Duration::from_millis(pause));
     }
 
+    // The device stopped answering between the attempts and may have restarted: read its lock again.
+    if ctx.record.resources.borrowed_android().is_some() {
+        wake_and_unlock(ctx, adb, server_port, serial)?;
+    }
     ensure_running(ctx.runner, "build")?;
     let left = deadline.saturating_sub(ctx.runner.monotonic_ms());
     if left < 1000 {
