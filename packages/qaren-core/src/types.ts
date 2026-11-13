@@ -250,6 +250,7 @@ export type ToolErrorCode =
   | 'BUNDLE_IDENTITY_MISMATCH'
   | 'CDP_TARGET_AUTHORITY_MISMATCH'
   | 'RUNNER_OWNERSHIP_MISMATCH'
+  | 'RUNNER_INSTALL_BLOCKED' // runner apps from another signer or version could not be replaced
   | 'RUNNER_ADOPTION_REQUIRED'
   | 'ANDROID_API_UNSUPPORTED' // GH #741: device API below the pinned engine's minimum
   | 'EXACT_ANDROID_DEVICE_REQUIRED'

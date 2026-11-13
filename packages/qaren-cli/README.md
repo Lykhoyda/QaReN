@@ -712,11 +712,23 @@ or legacy empty-directory fence, prove all provisioning callers and writers
 for this runner directory stopped before removing that fence and any SQLite
 sidecars. Separate runner directories remain independent.
 
-A runner left
-on the emulator by rn-dev-agent 1.x is
-signed differently and cannot be replaced in place: uninstall
-`dev.lykhoyda.rndevagent.androidrunner` and `dev.lykhoyda.rndevagent.androidrunner.test`
-from that emulator first. The walk's advisory scan on the borrowed emulator refuses
+A runner build is signed with the debug key of the Android user home that built
+it. Runner apps left by rn-dev-agent 1.x, another host or another working home
+block the install when their signing key differs (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`),
+as does a newer runner version (`INSTALL_FAILED_VERSION_DOWNGRADE`). On physical
+Android devices and emulators, provisioning then replaces them once on the
+selected device: it confirms the runner is stopped,
+uninstalls `dev.lykhoyda.rndevagent.androidrunner` and
+`dev.lykhoyda.rndevagent.androidrunner.test`, proves both absent with
+`pm list packages`, installs again and writes `runner-apps-replaced
+reason=signature|downgrade` to `core.log`. It removes whatever is installed under
+those two names, which hold no user data; the device lease is local to this
+host, so another host driving the same device at the same moment is not
+excluded and is unsupported. A surviving runner, an unproven removal or a
+second failed install refuses `DEVICE_UNAVAILABLE` with `subreason:
+runner-install-blocked`, the original install reason and the failed replacement
+step's cause, and manual removal as the next step, to take only if nothing else
+is using the device. The walk's advisory scan on the borrowed emulator refuses
 `BUSY_FOREIGN_FLOW` with the process scan's message when another UIAutomator or
 agent-device process runs there (`adb -s <serial> shell ps -A`). The scan does
 not recognise every driver and fails open when `ps` cannot run, so borrow an

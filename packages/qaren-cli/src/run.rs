@@ -1419,8 +1419,9 @@ fn run_inner(
             ),
             Verdict::Refused { code, message } => (
                 ReceiptResult::Refused,
-                Some(boundary(&|| {
-                    Failure::new(
+                Some(boundary(&|| Failure {
+                    subreason: Failure::core_refusal_subreason(code),
+                    ..Failure::new(
                         "prove",
                         refusal_code(code),
                         format!("{code}: {message}"),
@@ -2046,6 +2047,7 @@ fn refusal_code(code: &str) -> FailureCode {
         "JEV_REQUEST_INVALID" => FailureCode::JevRequestInvalid,
         "JEV_UNREACHABLE" => FailureCode::JevUnreachable,
         "RUN_CANCELLED" => FailureCode::RunCancelled,
+        "RUNNER_INSTALL_BLOCKED" => FailureCode::DeviceUnavailable,
         code if code.starts_with("DEV_REDBOX_") => FailureCode::DevRedbox,
         _ => FailureCode::CoreRefused,
     }

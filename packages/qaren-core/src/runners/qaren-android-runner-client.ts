@@ -523,6 +523,108 @@ async function installedAndroidApkHash(
   }
 }
 
+const RUNNER_PACKAGES = [
+  'dev.lykhoyda.rndevagent.androidrunner',
+  'dev.lykhoyda.rndevagent.androidrunner.test',
+] as const;
+
+export type RunnerInstallBlock = 'signature' | 'downgrade';
+
+/** The install refusals a copy of the runner apps from another signer, or a newer one, causes. */
+export function runnerInstallBlock(text: string): RunnerInstallBlock | undefined {
+  if (text.includes('INSTALL_FAILED_UPDATE_INCOMPATIBLE')) return 'signature';
+  if (text.includes('INSTALL_FAILED_VERSION_DOWNGRADE')) return 'downgrade';
+  return undefined;
+}
+
+// adb may print its reason on stdout, which a failed command's message does not include.
+function adbFailureText(error: unknown): string {
+  const failure = error as { stdout?: unknown; stderr?: unknown } | undefined;
+  return [failure?.stdout, failure?.stderr, errMessage(error)]
+    .filter((part) => typeof part === 'string' || Buffer.isBuffer(part))
+    .map(String)
+    .join('\n');
+}
+
+function adbReason(error: unknown): string {
+  return (
+    /\b(?:INSTALL|DELETE)_FAILED_[A-Z_]+[^\n\]]*/.exec(adbFailureText(error))?.[0] ??
+    errMessage(error)
+  );
+}
+
+async function replaceBlockedRunnerApps(
+  serial: string,
+  block: RunnerInstallBlock,
+  blocked: unknown,
+  installPair: () => Promise<void>,
+  signal?: AbortSignal,
+): Promise<void> {
+  const refuse = (what: string, cause: unknown) =>
+    new Error(
+      `RUNNER_INSTALL_BLOCKED: QaReN's runner apps on the device block the install ` +
+        `(${block}: ${adbReason(blocked)}) and could not be replaced: ${what}`,
+      { cause },
+    );
+  const step = async <T>(what: string, run: () => Promise<T>): Promise<T> => {
+    try {
+      const result = await run();
+      throwIfCancelled(signal);
+      return result;
+    } catch (error) {
+      throwIfCancelled(signal);
+      if (isAbort(error)) throw error;
+      throw refuse(`${what}: ${adbReason(error)}`, error);
+    }
+  };
+
+  await step('the runner could not be confirmed stopped', () =>
+    reapMismatchedAndroidRunner({ deviceId: serial }, undefined, undefined, signal),
+  );
+  // A failed uninstall is judged by the readback below: a package already gone is absent.
+  const uninstallFailures = new Map<string, unknown>();
+  for (const pkg of RUNNER_PACKAGES) {
+    try {
+      await execFileAsync('adb', ['-s', serial, 'uninstall', pkg], {
+        timeout: ADB_INSTALL_TIMEOUT_MS,
+        signal,
+      });
+      throwIfCancelled(signal);
+    } catch (error) {
+      throwIfCancelled(signal);
+      if (isAbort(error)) throw error;
+      const failure = error as { killed?: unknown; signal?: unknown };
+      if (failure.killed === true || typeof failure.signal === 'string')
+        throw refuse(`adb uninstall ${pkg} did not finish: ${adbReason(error)}`, error);
+      uninstallFailures.set(pkg, error);
+    }
+  }
+  // Substring filtering requires exact package lines and rejects non-package output.
+  const listed = await step('the package list could not be read', async () => {
+    const { stdout } = await execFileAsync(
+      'adb',
+      ['-s', serial, 'shell', 'pm', 'list', 'packages', RUNNER_PACKAGES[0]],
+      { timeout: ADB_CLEANUP_TIMEOUT_MS, signal },
+    );
+    const lines = String(stdout)
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const unexpected = lines.find((line) => !/^package:\S+$/.test(line));
+    if (unexpected !== undefined) throw new Error(`unexpected output: ${unexpected}`);
+    return lines;
+  });
+  for (const pkg of RUNNER_PACKAGES) {
+    if (!listed.includes(`package:${pkg}`)) continue;
+    const failure = uninstallFailures.get(pkg);
+    throw refuse(
+      `${pkg} is still installed after adb uninstall${failure ? ` (${adbReason(failure)})` : ''}`,
+      failure ?? blocked,
+    );
+  }
+  await step('the one reinstall failed too', installPair);
+}
+
 async function ensureAndroidRunnerInstalled(
   deviceId?: string,
   opts: { forceReinstall?: boolean; signal?: AbortSignal } = {},
@@ -626,7 +728,7 @@ async function ensureAndroidRunnerInstalled(
       });
       if (action === 'reuse') return provenance;
 
-      try {
+      const installPair = async () => {
         await execFileAsync('adb', buildAdbInstallArgs(deviceId, artifacts.appApk), {
           timeout: ADB_INSTALL_TIMEOUT_MS,
           signal: opts.signal,
@@ -636,14 +738,25 @@ async function ensureAndroidRunnerInstalled(
           timeout: ADB_INSTALL_TIMEOUT_MS,
           signal: opts.signal,
         });
+      };
+      try {
+        await installPair();
       } catch (err) {
         throwIfCancelled(opts.signal);
         if (isAbort(err)) throw err;
-        throw new Error(
-          `qaren-android-runner APK install failed (adb install -r). Is the emulator/device online? ` +
-            `${err instanceof Error ? err.message : String(err)}`,
-          { cause: err },
-        );
+        const block = runnerInstallBlock(adbFailureText(err));
+        if (!block || !deviceId) {
+          throw new Error(
+            `qaren-android-runner APK install failed (adb install -r). Is the emulator/device online? ` +
+              `${err instanceof Error ? err.message : String(err)}`,
+            { cause: err },
+          );
+        }
+        await replaceBlockedRunnerApps(deviceId, block, err, installPair, opts.signal);
+        process.stderr.write(`qaren-core: runner-apps-replaced reason=${block}\n`);
+        pendingUpgradeNote = [pendingUpgradeNote, `runner-apps-replaced reason=${block}`]
+          .filter(Boolean)
+          .join('; ');
       }
       return provenance;
     },
@@ -890,6 +1003,7 @@ export async function reapMismatchedAndroidRunner(
   release?: (opts: { deviceId: string; includeLegacy?: boolean }) => Promise<{
     stoppedOwnRunner: boolean;
     forceStoppedPackages: string[];
+    warnings?: string[];
   }>,
   verify?: (
     state: { deviceId: string; hostPort?: number; devicePort?: number },
@@ -921,7 +1035,8 @@ export async function reapMismatchedAndroidRunner(
   );
   if (!receipt.stoppedOwnRunner || missingPackages.length > 0) {
     throw new Error(
-      `RUNNER_CLEANUP_UNCONFIRMED: stale Android runner cleanup failed for ${deviceId}`,
+      `RUNNER_CLEANUP_UNCONFIRMED: stale Android runner cleanup failed for ${deviceId}` +
+        (receipt.warnings?.length ? `: ${receipt.warnings.join('; ')}` : ''),
     );
   }
   const verifyReleased =
@@ -1609,7 +1724,8 @@ async function startAndroidRunnerAttempt(
 
   throwIfCancelled(opts._rebuildSignal);
   // Refresh the shipped-source build and select the installed pair by its bytes.
-  const provenance = await ensureAndroidRunnerInstalled(deviceId, {
+  // The resolved serial, so a runner-app replacement never targets an unnamed device.
+  const provenance = await ensureAndroidRunnerInstalled(serial, {
     forceReinstall,
     signal: opts._rebuildSignal,
   });
@@ -2249,6 +2365,7 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
         hint: 'The installed runner APK predates this plugin version. Rebuild + reinstall (command in the error), then retry.',
       });
     }
+    if (m.startsWith('RUNNER_INSTALL_BLOCKED')) return failResult(m, 'RUNNER_INSTALL_BLOCKED');
     // GH#243: a connection failure (runner just restarted after a flow, or can't bind
     // its port) must surface as a structured, retryable error — never a bare
     // "fetch failed". RUNNER_TIMEOUT (a wedged-but-bound instrument) is NOT a connection
@@ -2269,7 +2386,15 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
     if (args.qaContext) args.qaContext.invalidate();
     if (args.qaReadOnly) throw new QaDispatchError('ACTION_CONTEXT_CHANGED');
     await stopAndroidRunner(args.deviceId);
-    await startAndroidRunner(args.deviceId, args.bundleId);
+    try {
+      await startAndroidRunner(args.deviceId, args.bundleId);
+    } catch (err) {
+      throwIfCancelled();
+      if (isAbort(err)) throw err;
+      const m = errMessage(err);
+      if (m.startsWith('RUNNER_INSTALL_BLOCKED')) return failResult(m, 'RUNNER_INSTALL_BLOCKED');
+      throw err;
+    }
     ({ resp, recovery } = await postCommandWithRecovery(
       withKeyboardGuard(body, args.command, process.env) as Record<string, unknown>,
     ));
