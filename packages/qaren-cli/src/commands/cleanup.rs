@@ -358,15 +358,16 @@ pub fn cleanup_with_policy(
         .deps_cache
         .as_ref()
         .is_some_and(|r| r.reader || r.staging);
+    let guarded_build_slot = record.resources.build_slot.is_some();
     let owner = match (
-        producers || guarded_simulator || cache_owned,
+        producers || guarded_simulator || cache_owned || guarded_build_slot,
         &record.prepare,
     ) {
         (true, Some(prepare)) => Some(probe_pid_identity(runner, prepare)),
         _ => None,
     };
     if owner == Some(PidLiveness::AliveMatching)
-        || (guarded_simulator
+        || ((guarded_simulator || guarded_build_slot)
             && !matches!(owner, Some(PidLiveness::Dead | PidLiveness::AliveForeign)))
     {
         if had_runner {
@@ -381,6 +382,8 @@ pub fn cleanup_with_policy(
             vec![(
                 if guarded_simulator {
                     "simulator"
+                } else if guarded_build_slot {
+                    "build_slot"
                 } else {
                     "core"
                 }

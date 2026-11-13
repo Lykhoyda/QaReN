@@ -425,6 +425,10 @@ fn s7_cleanup_releases_a_retired_build_and_retains_unproven_spawn() {
             f.record.resources.begin_build().unwrap();
         }
         f.record.save(&f.root).unwrap();
+        f.runner.inner.expect_run(
+            &format!("ps -p {} -o lstart=", std::process::id()),
+            CmdOutput::success(""),
+        );
         let receipt = crate::commands::cleanup::cleanup(&mut f.runner, &f.root, "check-slot");
         assert_eq!(slot.exists(), pending);
         assert!(receipt.cleanup.contains_key("build_slot"));
@@ -545,6 +549,10 @@ fn s10_s14_readiness_timeout_retains_slot_until_metro_retirement_is_proven() {
         }
         ctx.save().unwrap();
         assert!(f.root.join("locks/native-build-slot").exists());
+        f.runner.inner.expect_run(
+            &format!("ps -p {} -o lstart=", std::process::id()),
+            CmdOutput::success(""),
+        );
         if retired {
             f.runner
                 .inner
@@ -835,6 +843,10 @@ fn s14_cleanup_can_retry_slot_release_after_the_metro_record_is_retired() {
         ctx.record.resources.adb_path = None;
         ctx.save().unwrap();
         std::fs::write(slot.lock_dir.join("holder.json"), original).unwrap();
+        f.runner.inner.expect_run(
+            &format!("ps -p {} -o lstart=", std::process::id()),
+            CmdOutput::success(""),
+        );
         f.runner.inner.expect_run("ps -A", inventory);
         let receipt = crate::commands::cleanup::cleanup(&mut f.runner, &f.root, "check-slot");
         assert_eq!(slot.lock_dir.exists(), !released);
@@ -1087,6 +1099,10 @@ fn c8_unresolved_release_never_exposes_either_private_token() {
     ctx.save().unwrap();
     let root = ctx.runs_root.clone();
     let receipt = finish_receipt(ctx, crate::receipt::ReceiptResult::Refused, Some(failure));
+    f.runner.inner.expect_run(
+        &format!("ps -p {} -o lstart=", std::process::id()),
+        CmdOutput::success(""),
+    );
     let cleanup = crate::commands::cleanup::cleanup(&mut f.runner, &root, "check-slot");
     let public = format!(
         "{}\n{notes}\n{}",
@@ -1113,10 +1129,14 @@ fn c2_cleanup_releases_the_owners_private_claim() {
         .lock
         .lock_dir
         .clone();
-    ctx.record.prepare = None;
     ctx.save().unwrap();
     let root = ctx.runs_root.clone();
-    let receipt = crate::commands::cleanup::cleanup(ctx.runner, &root, "check-slot");
+    drop(ctx);
+    f.runner.inner.expect_run(
+        &format!("ps -p {} -o lstart=", std::process::id()),
+        CmdOutput::success(""),
+    );
+    let receipt = crate::commands::cleanup::cleanup(&mut f.runner, &root, "check-slot");
     assert_eq!(receipt.cleanup["build_slot"], "removed");
     assert!(!dir.exists());
 }
@@ -1146,6 +1166,10 @@ fn c7_wait_timeout_foreign_release_and_cleanup_keep_tokens_private() {
     assert!(matches!(release, buildplan::ReleaseOutcome::Foreign(_)));
     let root = ctx.runs_root.clone();
     let receipt = ctx.fail(failure);
+    f.runner.inner.expect_run(
+        &format!("ps -p {} -o lstart=", std::process::id()),
+        CmdOutput::success(""),
+    );
     let cleanup = crate::commands::cleanup::cleanup(&mut f.runner, &root, "check-slot");
     crate::events::finish();
     let events = std::fs::read_to_string(path).unwrap();
@@ -1192,6 +1216,10 @@ fn review_s1_identity_capture_failure_can_release_only_a_proven_absent_group() {
         ctx.record.resources.adb_local_serial = None;
         ctx.record.resources.adb_path = None;
         ctx.save().unwrap();
+        f.runner.inner.expect_run(
+            &format!("ps -p {} -o lstart=", std::process::id()),
+            CmdOutput::success(""),
+        );
         f.runner.inner.expect_run("lsof", CmdOutput::failed(1, ""));
         f.runner.inner.expect_run("ps -A", inventory);
         let receipt = crate::commands::cleanup::cleanup(&mut f.runner, &f.root, "check-slot");
@@ -1325,6 +1353,10 @@ fn cleanup_retains_expo_slot_until_all_descendants_are_absent() {
         ctx.record.resources.adb_local_serial = None;
         ctx.record.resources.adb_path = None;
         ctx.save().unwrap();
+        f.runner.inner.expect_run(
+            &format!("ps -p {} -o lstart=", std::process::id()),
+            CmdOutput::success(""),
+        );
         f.runner
             .inner
             .expect_run("ps -p 6000 -o lstart=", CmdOutput::failed(1, ""));
@@ -1344,5 +1376,81 @@ fn cleanup_retains_expo_slot_until_all_descendants_are_absent() {
             !released
         );
         assert_eq!(f.runner.inner.remaining(), 0);
+    }
+}
+
+#[test]
+fn external_cleanup_requires_build_slot_owner_death_before_touching_resources() {
+    for platform in [Platform::Ios, Platform::Android] {
+        for work in ["finite", "pending", "metro"] {
+            for owner in ["alive", "unknown", "missing", "dead", "reused"] {
+                let mut f = fixture(
+                    &format!("cleanup-owner-{}-{work}-{owner}", platform_dir(platform)),
+                    platform,
+                );
+                let mut ctx = f.ctx();
+                claim_build_slot(&mut ctx).unwrap();
+                ctx.record.resources.build_slot.as_mut().unwrap().work = match work {
+                    "pending" => BuildSlotWork::MetroSpawnPending,
+                    "metro" => BuildSlotWork::Metro { pgid: 6000 },
+                    _ => BuildSlotWork::Finite,
+                };
+                if owner == "missing" {
+                    ctx.record.prepare = None;
+                }
+                ctx.save().unwrap();
+                let path = RunRecord::path(&ctx.runs_root, "check-slot");
+                let before = std::fs::read(&path).unwrap();
+                let slot = ctx
+                    .record
+                    .resources
+                    .build_slot
+                    .as_ref()
+                    .unwrap()
+                    .lock
+                    .lock_dir
+                    .clone();
+                let holder = std::fs::read(slot.join("holder.json")).unwrap();
+                drop(ctx);
+                if owner != "missing" {
+                    f.runner.inner.expect_run(
+                        &format!("ps -p {} -o lstart=", std::process::id()),
+                        match owner {
+                            "alive" => CmdOutput::success(BIRTH),
+                            "unknown" => CmdOutput::failed(1, "ps denied"),
+                            "reused" => CmdOutput::success("another birth"),
+                            _ => CmdOutput::success(""),
+                        },
+                    );
+                    if owner == "alive" {
+                        f.runner.inner.expect_run("stat=", CmdOutput::success("S"));
+                    }
+                }
+                let gone = matches!(owner, "dead" | "reused");
+                if gone && work == "metro" {
+                    f.runner
+                        .inner
+                        .expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+                }
+                let receipt =
+                    crate::commands::cleanup::cleanup(&mut f.runner, &f.root, "check-slot");
+                if gone {
+                    assert_eq!(slot.exists(), work == "pending");
+                    assert_ne!(receipt.result, crate::receipt::ReceiptResult::Refused);
+                } else {
+                    assert_eq!(receipt.result, crate::receipt::ReceiptResult::Refused);
+                    assert_eq!(std::fs::read(&path).unwrap(), before);
+                    assert_eq!(std::fs::read(slot.join("holder.json")).unwrap(), holder);
+                    assert!(receipt.cleanup["build_slot"].starts_with("refused"));
+                    assert!(f
+                        .runner
+                        .inner
+                        .calls
+                        .iter()
+                        .all(|call| call.label.starts_with("ps-")));
+                }
+                assert_eq!(f.runner.inner.remaining(), 0);
+            }
+        }
     }
 }
