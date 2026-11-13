@@ -36,6 +36,7 @@ import {
   dismissKeyboardForQa,
   dismissViaJs,
   readReactInputValue,
+  inputAlreadyHolds,
   entryMismatchOf,
 } from '../handlers/device-interact.js';
 import { captureQaScreenshot } from './screenshot.js';
@@ -957,6 +958,14 @@ async function openSession(
       ? {
           appProcess: {},
           reactFocused: (testID: string) => reactFocused(cdpClientOrNull(getClient), testID),
+          fillAlreadySet: (testID, text, privateValue, onPrivateInput) =>
+            inputAlreadyHolds(
+              cdpClientOrNull(getClient),
+              testID,
+              text,
+              privateValue,
+              onPrivateInput,
+            ),
           // RN_KEYBOARD_GUARD=0 turns off every QaReN keyboard clearance, this one included.
           ...(resolveKeyboardGuard(process.env)
             ? {

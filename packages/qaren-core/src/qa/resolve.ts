@@ -33,6 +33,7 @@ import {
   reachOf,
   touchOwnerAt,
   type TouchGap,
+  reactEntryHostsOf,
   reactOnlyFactsOf,
   scrollContainerType,
   semanticActionView,
@@ -486,6 +487,24 @@ function hostOutside(screen: Screen, inner?: string, outer?: string): boolean {
   if (input === undefined || wrapper === undefined) return false;
   const path = hostPath(evidence.typography, input);
   return path !== undefined && !path.includes(wrapper);
+}
+
+// Positive proof from the ordinary capture that the React input read before a focus tap lies beneath the wrapper's own view.
+export function fillHostInside(screen: Screen, inputId: string, wrapper: Element): boolean {
+  const evidence = screen.reactHostEvidence;
+  const wrapperTestID = wrapper.testID;
+  if (!evidence?.complete || !wrapperTestID || wrapperTestID === inputId) return false;
+  const inputs = evidence.hosts.flatMap((host, i) =>
+    host.capabilities.fill && (host.testID === inputId || host.nativeID === inputId) ? [i] : [],
+  );
+  if (inputs.length !== 1) return false;
+  const input = inputs[0];
+  const wrappers = evidence.hosts.flatMap((host, i) =>
+    i !== input && host.testID === wrapperTestID ? [i] : [],
+  );
+  if (wrappers.length !== 1) return false;
+  const entry = reactEntryHostsOf(wrapper);
+  return entry?.host === wrappers[0] && entry.inputs.length === 1 && entry.inputs[0] === input;
 }
 
 // The one non-input element a quoted fill may tap before typing through the keyboard; undefined keeps the strict refusal.

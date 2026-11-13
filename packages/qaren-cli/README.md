@@ -1283,9 +1283,8 @@ letter is still a mismatch. A screen change alone never verifies a fill. A quote
 iOS fill can use keyboard fallback when no observable native input resolves, or
 strict binding refuses `NO_TEXT_INPUT_TARGET` before any text mutation for a
 non-native-input target. Phrase fills and stored text selectors do not use
-this fallback; a stored testID replays through it exactly as the walk did, and
-the saved block stores the field's testID the focus proof used. Ambiguous targets
-and potentially mutated fills still fail.
+this fallback; a stored testID replays through it exactly as the walk did.
+Ambiguous targets and potentially mutated fills still fail.
 
 On iOS, if the bound field disappears after typing (for example, an auto-submitting
 code field), the runner skips its post-type attribute read and stops verification
@@ -1334,7 +1333,8 @@ placeholder. A separate same-label element does not establish forwarding.
 A wrapper echoing its hidden React input's identity counts as that one input
 for fallback, unless complete React ancestry places the input outside the wrapper.
 This does not collapse candidates for strict fills.
-The keyboard-down path requires proof that the keyboard is hidden before the
+The [already-set rules](#fill-ladder) can avoid the fallback focus tap. Otherwise,
+the keyboard-down path requires proof that the keyboard is hidden before the
 tap (with the [one-scroll occlusion recovery](#occluded-taps-and-focus)). Every
 binding after the tap, including refreshed strict bindings,
 must uniquely resolve the original testID or its proven wrapper-to-input
@@ -1352,8 +1352,8 @@ becoming natively observable resumes strict verification; otherwise a
 still-hidden keyboard refuses without typing.
 
 When the keyboard is already up, iOS fallback types only with positive React
-proof that the intended input is focused. With an eligible target, QaReN taps it,
-recaptures with the [settlement check](#occluded-taps-and-focus), rebinds the
+proof that the intended input is focused. With an eligible target that does not
+skip, QaReN taps it, recaptures with the [settlement check](#occluded-taps-and-focus), rebinds the
 same identity and then requires that proof. Without a target, it requires that
 no secure or disabled element carries the quoted
 testID and React reports that exact input focused. The guard and proof use the
@@ -1414,7 +1414,8 @@ field keeps the runner's mutation disposition. The [focused replacement tests](.
 cover these guards and mutation reporting.
 An unverified keyboard step records a passing row with reason `UNVERIFIED_FILL`,
 allowing later plan steps to continue; it does not establish the field's final
-value. Apart from that one replacement recovery and the ladder step below, failed keyboard typing is not retried. Before the fallback tap or
+value. Apart from that one replacement recovery and the ladder step below, failed
+keyboard typing is not retried. Before the pre-focus comparison, fallback tap or
 no-target typing dispatch, the value is protected under the
 [shared masking rules](#input-value-masking), and screenshots follow the
 [declared policy](#video-publication). For block persistence after fallback, see [Saved blocks](#saved-blocks).
@@ -1439,9 +1440,24 @@ shows it as `via <method>`:
 
 A secure field is never pre-read for skipping. Private values are compared inside the app;
 only comparison metadata leaves it. Unreadable, placeholder, formatted, case-only and unstable
-matches keep the existing typing path. Android and keyboard fallback without an observable input
-keep typing. An observable, controlled iOS input reached through fallback can skip after two
-exact comparisons that also prove focus.
+matches keep the existing typing path. Android keeps typing. A controlled iOS input
+reached through fallback can skip after two exact comparisons that also prove focus.
+
+Before a fallback focus tap, iOS can also skip when the plan names the input by its
+own testID. Complete React host evidence in the ordinary capture must prove there is
+exactly one fillable host carrying that ID as its testID or nativeID, neither hidden,
+disabled nor read-only. Exactly one other host must carry the observed tap target's
+testID, which differs from the input's. The target's own React entry must name that
+host as its own and list exactly that one input host beneath it; an input rendered
+through a portal does not count.
+The overlay probe and centre coverage checks still
+run first, including after a clearance scroll. Two exact in-app reads, 150 ms apart,
+must both report a controlled, non-secure, enabled input. Success records
+`already-set` without a tap, keyboard wait or further capture; the field keeps its
+focus state and no focus handler runs. A missing proof, failed comparison or
+non-abort read error keeps the tap-and-type path. See the
+[pre-focus regressions](../qaren-core/test/unit/qa/keyboard-fallback.test.ts).
+
 To require a change event even when the value already matches, add a trailing `(always retype)`,
 for example `Fill "name" with input NAME (secret) (always retype)`. It combines with
 `(any method)` in either order, case-insensitively. Behaviour labels must trail the line;
@@ -3338,7 +3354,7 @@ A step without a `testID` or label, a phrase wait, or a literal fill into a secu
 [keyboard fallback](#fill-verification-and-keyboard-fallback) leaves the block
 unsaved and the ledger says why without naming any value. A [runtime input](#runtime-inputs)
 fill can be saved in those private or fallback paths when it has a stored selector,
-which is the field's testID the focus proof used, even for a passing `UNVERIFIED_FILL`
+which is the bound field's testID, even for a passing `UNVERIFIED_FILL`
 row; the remaining persistence checks still apply. Planned fill literals
 also undergo the [shared masking rules](#input-value-masking), so a protected
 literal withholds a newly discovered or patched block even for an ordinary input.
