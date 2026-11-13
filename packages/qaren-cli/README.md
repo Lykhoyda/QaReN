@@ -1235,8 +1235,8 @@ keep their existing rules.
 
 A missing required capability refuses before dispatch; reopen the device session
 to rebuild the runner. A target hit point never authorizes a drag corridor:
-scroll-until drags retain every static overlay cut, including cuts caused by
-transparent containers. A zero or undersized band still refuses
+scroll-until drags retain the static cuts required by the
+[scroll-until overlay policy](#scroll-until-overlay-policy). A zero or undersized band still refuses
 `SCROLL_BAND_TOO_SMALL`. For scroll-until, the row's `scrollBand.status`
 distinguishes `no-geometry`, `overlay-cut` and `clear`. For plain-scroll band
 selection and refusals, see [the plain-scroll contract](#occluded-taps-and-focus).
@@ -1323,9 +1323,8 @@ letter is still a mismatch. A screen change alone never verifies a fill. A quote
 iOS fill can use keyboard fallback when no observable native input resolves, or
 strict binding refuses `NO_TEXT_INPUT_TARGET` before any text mutation for a
 non-native-input target. Phrase fills and stored text selectors do not use
-this fallback; a stored testID replays through it exactly as the walk did, and
-the saved block stores the field's testID the focus proof used. Ambiguous targets
-and potentially mutated fills still fail.
+this fallback; a stored testID replays through it exactly as the walk did.
+Ambiguous targets and potentially mutated fills still fail.
 
 On iOS, if the bound field disappears after typing (for example, an auto-submitting
 code field), the runner skips its post-type attribute read and stops verification
@@ -1374,7 +1373,8 @@ placeholder. A separate same-label element does not establish forwarding.
 A wrapper echoing its hidden React input's identity counts as that one input
 for fallback, unless complete React ancestry places the input outside the wrapper.
 This does not collapse candidates for strict fills.
-The keyboard-down path requires proof that the keyboard is hidden before the
+The [already-set rules](#fill-ladder) can avoid the fallback focus tap. Otherwise,
+the keyboard-down path requires proof that the keyboard is hidden before the
 tap (with the [one-scroll occlusion recovery](#occluded-taps-and-focus)). Every
 binding after the tap, including refreshed strict bindings,
 must uniquely resolve the original testID or its proven wrapper-to-input
@@ -1392,8 +1392,8 @@ becoming natively observable resumes strict verification; otherwise a
 still-hidden keyboard refuses without typing.
 
 When the keyboard is already up, iOS fallback types only with positive React
-proof that the intended input is focused. With an eligible target, QaReN taps it,
-recaptures with the [settlement check](#occluded-taps-and-focus), rebinds the
+proof that the intended input is focused. With an eligible target that does not
+skip, QaReN taps it, recaptures with the [settlement check](#occluded-taps-and-focus), rebinds the
 same identity and then requires that proof. Without a target, it requires that
 no secure or disabled element carries the quoted
 testID and React reports that exact input focused. The guard and proof use the
@@ -1454,7 +1454,8 @@ field keeps the runner's mutation disposition. The [focused replacement tests](.
 cover these guards and mutation reporting.
 An unverified keyboard step records a passing row with reason `UNVERIFIED_FILL`,
 allowing later plan steps to continue; it does not establish the field's final
-value. Apart from that one replacement recovery and the ladder step below, failed keyboard typing is not retried. Before the fallback tap or
+value. Apart from that one replacement recovery and the ladder step below, failed
+keyboard typing is not retried. Before the pre-focus comparison, fallback tap or
 no-target typing dispatch, the value is protected under the
 [shared masking rules](#input-value-masking), and screenshots follow the
 [declared policy](#video-publication). For block persistence after fallback, see [Saved blocks](#saved-blocks).
@@ -1479,9 +1480,24 @@ shows it as `via <method>`:
 
 A secure field is never pre-read for skipping. Private values are compared inside the app;
 only comparison metadata leaves it. Unreadable, placeholder, formatted, case-only and unstable
-matches keep the existing typing path. Android and keyboard fallback without an observable input
-keep typing. An observable, controlled iOS input reached through fallback can skip after two
-exact comparisons that also prove focus.
+matches keep the existing typing path. Android keeps typing. A controlled iOS input
+reached through fallback can skip after two exact comparisons that also prove focus.
+
+Before a fallback focus tap, iOS can also skip when the plan names the input by its
+own testID. Complete React host evidence in the ordinary capture must prove there is
+exactly one fillable host carrying that ID as its testID or nativeID, neither hidden,
+disabled nor read-only. Exactly one other host must carry the observed tap target's
+testID, which differs from the input's. The target's own React entry must name that
+host as its own and list exactly that one input host beneath it; an input rendered
+through a portal does not count.
+The overlay probe and centre coverage checks still
+run first, including after a clearance scroll. Two exact in-app reads, 150 ms apart,
+must both report a controlled, non-secure, enabled input. Success records
+`already-set` without a tap, keyboard wait or further capture; the field keeps its
+focus state and no focus handler runs. A missing proof, failed comparison or
+non-abort read error keeps the tap-and-type path. See the
+[pre-focus regressions](../qaren-core/test/unit/qa/keyboard-fallback.test.ts).
+
 To require a change event even when the value already matches, add a trailing `(always retype)`,
 for example `Fill "name" with input NAME (secret) (always retype)`. It combines with
 `(any method)` in either order, case-insensitively. Behaviour labels must trail the line;
@@ -1878,6 +1894,24 @@ remaining vertical span supplies the drag band; an exhausted span refuses
 `SCROLL_BAND_TOO_SMALL`. Padding uses four points, scaled by the captured Android
 display density when available. Without a scroll container, the centred window
 drag is retained.
+
+<a id="scroll-until-overlay-policy"></a>
+
+For scroll-until bands and target coverage on iOS, a later-drawn `Other` or
+`Toolbar` is ignored when its frame contains the list's whole clip, its React
+host is not proven touch-opaque, and React supplies no press/fill hint or matched
+interactive entry. A handlerless entry without a testID that supplies only a
+role on a label does not count as interactive. Every captured descendant must
+have a frame wholly outside the list's clip; touching an edge counts as outside,
+and the offscreen flag alone is insufficient. A childless `Toolbar` also qualifies,
+but a childless `Other` remains a potential dim layer. Controls, partial covers,
+touch-opaque hosts, and containers with overlapping or frameless descendants
+remain covers. This exception makes no live hit reads and does not change plain
+Scroll or Android.
+Quoted targets use the ordinary capture and benefit from this rule on iOS 27.2.
+Unquoted phrase targets retain their presence capture: a toolbar containing a
+childless full-size `Other` can still exhaust the band because that child cannot
+be distinguished structurally from a dim layer; support for that case is deferred.
 Quoted scroll-until uses the current ordinary capture for target visibility and
 geometry, with the [iOS inferred-overlay probe](#covered-target-recovery) governing
 completion under an inferred cover. Otherwise, a target whose tap point is covered
@@ -2130,8 +2164,8 @@ The privacy boundary is unchanged: an incomplete native snapshot is never walked
 or masked. A Wait re-reads on its normal poll cadence within its existing deadline;
 if a complete read recovers but the quoted target stays absent, the Wait retains
 `TARGET_NOT_FOUND` with the observed screen, even if a later recovery capture is
-incomplete. Tap,
-Fill, Check and Scroll still refuse immediately. React-side incomplete capture
+incomplete. Other steps refuse incomplete native evidence after any eligible capture
+retries described below. React-side incomplete capture
 and generic private-capture failures retain `PRIVATE_INPUT_CAPTURE_UNKNOWN`.
 
 A required private capture re-reads a canonical empty snapshot (`nodes=[]`,
@@ -2140,10 +2174,21 @@ or dropped nodes), a structurally valid incomplete version-2 snapshot on the
 platform-presence route with no truncation or dropped nodes, a consistent node
 count, a known matching generation and withheld keyboard state, or an iOS
 `RN_FAST_RUNNER_DOWN` failure marked as pending runner relaunch recovery, at
-500 ms intervals within the existing 6-second settle budget and remaining total
-capture budget. These conditions share one retry
-deadline; re-reads on both ordinary and platform-presence routes, including
-readiness probes and snapshot transport, stop waiting at that deadline.
+500 ms intervals until the earlier of six seconds after the first retryable result
+and 22 seconds after capture start. These conditions share one retry deadline.
+Re-reads on both ordinary and platform-presence routes, including readiness probes
+and snapshot transport, stop waiting at that deadline.
+A required private ordinary capture with no caller budget also re-reads a nonempty,
+untruncated snapshot whose only incomplete cause is `dropped=<n>`, within that shared
+deadline. Wait polls and platform-presence captures keep one native read for this
+cause. Each dropped-snapshot re-read emits a
+value-free `native-reread` point in `logs/core-diagnostics.jsonl`, with or without
+runtime inputs. Only a fresh complete read is admitted. Persistent drops refuse
+with their latest node count, dropped count and `retry-deadline`, including when an
+intervening empty read is followed by a read that exceeds the window.
+A truncated replacement or a degraded replacement outside the retry conditions
+above refuses with its own causes and no expiry marker. Native read exceptions
+keep their existing classification.
 After timeout containment relaunches the iOS reader, it waits for an `alive`
 probe with `PLATFORM_PRESENCE_V2` within the remaining `READY_TIMEOUT_MS`
 (30 seconds by default), shared with reader startup;
@@ -2172,9 +2217,9 @@ ordinary privacy admission or lift screenshot withholding. Semantic phrase-actio
 readbacks still require full platform presence and privacy admission.
 Only a fresh, complete snapshot can establish privacy or admit a newly arrived
 system alert; partial presence never authorizes actions, screenshots or model
-evidence. Malformed, truncated, dropped-node and other incomplete captures refuse
-at the capture boundary; Wait handles `NATIVE_SNAPSHOT_INCOMPLETE` as described
-above. The [capture implementation](../qaren-core/src/qa/capture.ts) owns
+evidence. Incomplete captures outside the retry conditions or still incomplete after
+their retry window refuse at the capture boundary; Wait handles
+`NATIVE_SNAPSHOT_INCOMPLETE` as described above. The [capture implementation](../qaren-core/src/qa/capture.ts) owns
 retry eligibility; [settle regressions](../qaren-core/test/unit/qa/private-empty-reread.test.ts)
 cover these boundaries.
 
@@ -3349,7 +3394,7 @@ A step without a `testID` or label, a phrase wait, or a literal fill into a secu
 [keyboard fallback](#fill-verification-and-keyboard-fallback) leaves the block
 unsaved and the ledger says why without naming any value. A [runtime input](#runtime-inputs)
 fill can be saved in those private or fallback paths when it has a stored selector,
-which is the field's testID the focus proof used, even for a passing `UNVERIFIED_FILL`
+which is the bound field's testID, even for a passing `UNVERIFIED_FILL`
 row; the remaining persistence checks still apply. Planned fill literals
 also undergo the [shared masking rules](#input-value-masking), so a protected
 literal withholds a newly discovered or patched block even for an ordinary input.

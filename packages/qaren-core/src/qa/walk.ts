@@ -36,6 +36,7 @@ import {
   dismissKeyboardForQa,
   dismissViaJs,
   readReactInputValue,
+  inputAlreadyHolds,
   entryMismatchOf,
 } from '../handlers/device-interact.js';
 import { captureQaScreenshot } from './screenshot.js';
@@ -80,6 +81,7 @@ import { createJev } from './jev.js';
 import { isRecord } from './questions.js';
 import {
   createTimingObserver,
+  INPUT_FREE_DIAGNOSTIC_STAGES,
   formatTimingEvent,
   observeDispatchPhases,
   observeTiming,
@@ -522,8 +524,7 @@ async function openSession(
       event = { ...event, line: currentLine };
     if (
       currentInputs()?.hasInputs ||
-      event.stage === 'manifest-probe' ||
-      event.stage === 'dev-client-relaunch'
+      INPUT_FREE_DIAGNOSTIC_STAGES.some((stage) => stage === event.stage)
     )
       diagnostic({ kind: 'metric', ...event });
     else process.stderr.write(redactApiKey(formatTimingEvent(event)));
@@ -958,6 +959,14 @@ async function openSession(
       ? {
           appProcess: {},
           reactFocused: (testID: string) => reactFocused(cdpClientOrNull(getClient), testID),
+          fillAlreadySet: (testID, text, privateValue, onPrivateInput) =>
+            inputAlreadyHolds(
+              cdpClientOrNull(getClient),
+              testID,
+              text,
+              privateValue,
+              onPrivateInput,
+            ),
           // RN_KEYBOARD_GUARD=0 turns off every QaReN keyboard clearance, this one included.
           ...(resolveKeyboardGuard(process.env)
             ? {

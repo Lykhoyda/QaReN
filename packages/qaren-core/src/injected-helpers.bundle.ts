@@ -1562,6 +1562,7 @@ export const INJECTED_HELPERS = `
       var iEnqueued = iQueue.length;
       var iEnqueueTruncated = false;
       var iPruned = 0;
+      var beyondPortal = new Set();
       // The agent-facing digest is a list to read; a private capture is bounded like its hosts.
       var iEntryCap = privateCapture ? ${PRIVATE_INPUT_LIMITS.maxHosts} : 200;
       while (iQueue.length > 0 && iScanned < iBudget && (Date.now() - iStart) < 3000 && (!typography || Date.now() < typography.deadline) && salient.length < iEntryCap) {
@@ -1591,6 +1592,7 @@ export const INJECTED_HELPERS = `
             var ancestor = inputAncestors[ai];
             if (!ancestor.inputHostIndices) ancestor.inputHostIndices = [];
             ancestor.inputHostIndices.push(hostIndex);
+            if (ai < (iframe.portalCut || 0)) { beyondPortal.add(ancestor); delete ancestor.hostIndex; }
           }
         }
         if (forwarded && itid && (forwarded.testID || forwarded.nativeID) !== itid) forwarded = null;
@@ -1629,6 +1631,7 @@ export const INJECTED_HELPERS = `
             if (!entry.handlerless) delete forwarded.handlerless;
             if (entry.disabled) forwarded.disabled = true;
             if (entry.hidden) forwarded.hidden = true;
+            if (hostIndex !== null && forwarded.hostIndex === undefined && !beyondPortal.has(forwarded)) forwarded.hostIndex = hostIndex;
           } else {
             salient.push(entry);
             forwarded = entry;
@@ -1639,6 +1642,7 @@ export const INJECTED_HELPERS = `
               && !HOST_KIND_LOOKUP[baseName] && !INTERACTIVE_NAMES[baseName] && !iprops.role && !iprops.accessibilityRole ? entry : null;
             if (wrapperCandidate || (!isHostFiber(ifiber) && (itid || entry.capabilities.fill))) inputAncestors = inputAncestors.concat([entry]);
             if (hostIndex !== null && hostEvidence.hosts[hostIndex].capabilities.fill === true) entry.inputHostIndices = [hostIndex];
+            if (hostIndex !== null) entry.hostIndex = hostIndex;
           }
         }
         var ich = ifiber.child;
@@ -1655,7 +1659,7 @@ export const INJECTED_HELPERS = `
         var childOrdinal = 0;
         while (ich) {
           if (typography && (++iEnqueued > iBudget || Date.now() >= typography.deadline)) { iEnqueueTruncated = true; break; }
-          iQueue.push({ fiber: ich, forwarded: nextForwarded, wrapperCandidate: wrapperCandidate, inputAncestors: inputAncestors, parentFiber: ifiber, parentHostIndex: parentHostIndex, textOwnerHostIndex: textOwnerHostIndex, rootIndex: iframe.rootIndex, animatedTypography: typographyRecord && typographyRecord.animated, hidden: hidden, orderPath: childOrderBase ? childOrderBase.concat([childOrdinal++]) : null });
+          iQueue.push({ fiber: ich, forwarded: nextForwarded, wrapperCandidate: wrapperCandidate, inputAncestors: inputAncestors, parentFiber: ifiber, parentHostIndex: parentHostIndex, textOwnerHostIndex: textOwnerHostIndex, portalCut: ifiber.tag === 4 ? inputAncestors.length : iframe.portalCut, rootIndex: iframe.rootIndex, animatedTypography: typographyRecord && typographyRecord.animated, hidden: hidden, orderPath: childOrderBase ? childOrderBase.concat([childOrdinal++]) : null });
           ich = ich.sibling;
         }
       }
@@ -3874,6 +3878,7 @@ export const INJECTED_HELPERS = `
         : undefined;
       return JSON.stringify({
         value: null, controlled: readable, focused: focused, secure: false,
+        disabled: !!textInputDesignationDisabled(props),
         privateValue: options.privateValue === true,
         contentLength: readable ? localValue.length : undefined,
         exact: exact,

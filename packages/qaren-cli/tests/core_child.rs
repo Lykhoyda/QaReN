@@ -2994,13 +2994,17 @@ fn media_diagnostics_reach_the_private_sink_with_unused_or_absent_inputs() {
 }
 
 #[test]
-fn manifest_probe_and_relaunch_timings_reach_the_run_receipt() {
+fn native_reread_probe_and_relaunch_timings_reach_the_run_receipt() {
     use qaren::redact::{with_input_scope, InputValues};
     use std::ffi::OsString;
     use std::sync::Arc;
     let verify = || {
         let repo = common::temp_repo();
         let events = [
+            serde_json::json!({
+                "kind": "metric", "stage": "native-reread", "edge": "point", "outcome": "ok",
+                "at": 500
+            }),
             serde_json::json!({
                 "kind": "metric", "stage": "manifest-probe", "edge": "end", "outcome": "failed",
                 "at": 10000, "ms": 10000, "count": 1, "method": "timeout"
@@ -3019,7 +3023,7 @@ fn manifest_probe_and_relaunch_timings_reach_the_run_receipt() {
             stdout.push_str(&envelope(i as u64 + 2, "diagnostic", &event.to_string()));
             stdout.push('\n');
         }
-        stdout.push_str(&envelope(5, "result", &pass_ledger(&[])));
+        stdout.push_str(&envelope(events.len() as u64 + 2, "result", &pass_ledger(&[])));
         stdout.push('\n');
         let mut mock = MockRunner::new();
         mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));

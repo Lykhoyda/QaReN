@@ -64,6 +64,7 @@ import {
   clearanceScroll,
   keyboardClearance,
   keyboardFallbackTarget,
+  fillHostInside,
   bindFillIdentity,
   bindDispatchIdentity,
   stepTarget,
@@ -297,6 +298,13 @@ export interface WalkerDeps {
     onPrivateInput?: () => void,
     alwaysRetype?: boolean,
   ): Promise<ActResult>;
+  // iOS only: two exact enabled React reads before a focus tap; no dispatch context.
+  fillAlreadySet?(
+    testID: string,
+    text: string,
+    privateValue: boolean,
+    onPrivateInput?: () => void,
+  ): Promise<boolean>;
   // iOS only: positive React proof that the input with this testID is focused.
   reactFocused?(testID: string): Promise<boolean>;
   // iOS only: hides a visible keyboard, native tier then JS tier; none when neither proved it hidden.
@@ -2342,7 +2350,7 @@ async function walkBlockScoped(
       'UNVERIFIED_FILL: set through the change handler; its final value could not be validated';
     return qualifier ? `${unverified}; ${qualifier}` : unverified;
   };
-  // Best effort: the field is not an observable native input, so only the tap and the keyboard prove anything.
+  // Without an observable native input, require React ancestry/value proof or focus and keyboard evidence.
   const keyboardFallback = async (
     item: Item & { kind: 'fill' },
     attempt: number,
@@ -2400,6 +2408,46 @@ async function walkBlockScoped(
       );
     if (overlay || !centreCovered(target.element, before.screen))
       try {
+        const hosts = before.screen.reactHostEvidence;
+        const inputs = hosts?.hosts.filter(
+          (host) =>
+            host.capabilities.fill &&
+            (host.testID === target.oracleTestID || host.nativeID === target.oracleTestID),
+        );
+        if (
+          !item.alwaysRetype &&
+          deps.fillAlreadySet &&
+          target.oracleTestID === item.target.quoted &&
+          hosts?.complete &&
+          inputs?.length === 1 &&
+          !inputs[0].hidden &&
+          !inputs[0].disabled &&
+          !inputs[0].readOnly &&
+          fillHostInside(before.screen, target.oracleTestID, target.element)
+        ) {
+          let alreadySet = false;
+          try {
+            alreadySet = await deps.fillAlreadySet(
+              target.oracleTestID,
+              fillText(item),
+              secretFill(item, target.element),
+              () => promoteFill(item, target.element.testID ?? target.oracleTestID),
+            );
+          } catch (error) {
+            if (isAbort(error)) throw error;
+          }
+          if (alreadySet) {
+            currentInputs()?.expectEcho(target.element.testID ?? target.oracleTestID, item.input);
+            fillMethod = 'already-set';
+            emit({
+              ...base(item, attempt),
+              ref: target.element.ref,
+              ...stored({ id: target.oracleTestID }),
+              outcome: 'pass',
+            });
+            return 'typed';
+          }
+        }
         tap = await mutate(item, before, 'press', (context) =>
           overlay
             ? deps.press(target.element.ref, context, { requireLiveHit: true })
