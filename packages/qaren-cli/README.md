@@ -2778,6 +2778,43 @@ app embeds gets the CocoaPods remedy.
 Other manifest and launch errors remain `BUILD_FAILED`; clean up retained
 resources before retrying those errors.
 
+Android APK installs issued directly by QaReN use `adb install -r -d` with a
+300-second first-attempt limit. This covers fresh builds for borrowed or tunnelled
+emulators and cached installs on emulators or USB devices. Fresh USB builds remain
+built and installed by `expo run:android` and do not use this recovery. If the
+first attempt fails or lacks `Success`, an `INSTALL_FAILED_` or
+`INSTALL_PARSE_FAILED_` verdict in either stdout or stderr is final. Otherwise,
+unless cancelled, QaReN waits for the package manager before retrying once.
+
+The recovery wait starts when the first install returns and lasts at most 180
+seconds. It requires three consecutive successful `pm path android` probes with
+a `package:` line. Each probe gets at most 30 seconds, capped to the wait's
+remaining whole seconds; five-second pauses are also capped to the remaining
+wait. Cancellation is checked before each probe and pause and after each probe.
+The second install gets at most 300 seconds, capped to the whole seconds left in
+the install/launch/readiness `build_seconds` window opened at reuse-path entry.
+For a fresh emulator build, that is a new window after Gradle, independent of
+the build's remaining time. With less than one second left, no second install
+starts. The recovery wait itself has its own 180-second limit.
+
+Missing verdicts can mean a dropped transport or a committed install whose
+acknowledgement was lost; three good probes do not prove the first install never
+committed. Replacing the same APK with `-r -d` permits this single retry. Recovery
+never restarts, reboots or wipes the emulator. Success after retry records
+`install_attempts=2` and `install_recovery_wait_ms`; the runner records both
+`adb-install` command events.
+
+Android recovery failures use `ARTIFACT_INSTALL_FAILED` with fixed detail text
+and no device output. A first-attempt verdict is `install-failed`. An exhausted
+recovery wait is also `install-failed`, stating that the first install failed,
+the package manager did not answer for 180 seconds, and no second install was
+tried. If the package manager answers but the preparation window is spent,
+`install-timeout` says no second install was tried. A failed second attempt is
+`install-failed` or `install-timeout`, stating that the install failed twice and
+the package manager answered between attempts. Cancellation remains `RUN_CANCELLED`;
+after an acknowledged retry install, QaReN saves its installation record for
+cleanup ownership proof before honoring cancellation.
+
 Cached dev-client verification and installation failures on either platform
 use `ARTIFACT_INSTALL_FAILED`. `failure.detail` carries `artifact-invalid`,
 `install-timeout`, or `install-failed`: only `artifact-invalid` advises
