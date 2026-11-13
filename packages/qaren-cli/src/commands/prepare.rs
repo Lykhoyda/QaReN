@@ -4903,7 +4903,9 @@ fn with_build_window<T>(
     ctx.manifest_warm = scoped.manifest_warm;
     ctx.lane_owned = scoped.lane_owned;
     ctx.build_deadline_ms = scoped.build_deadline_ms;
-    budget?;
+    if !matches!(&result, Err(failure) if failure.code == FailureCode::BuildContended) {
+        budget?;
+    }
     result
 }
 

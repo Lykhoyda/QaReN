@@ -707,6 +707,89 @@ fn a_clean_ios_build_refuses_before_building_when_its_volume_is_short_of_space()
 }
 
 #[test]
+fn an_ios_check_refuses_contention_when_its_build_window_expires_in_the_slot_queue() {
+    let (repo, app) = app_repo();
+    let config = app.join(".qaren/config.yaml");
+    let mut yaml = std::fs::read_to_string(&config).unwrap();
+    yaml.push_str("deadlines:\n  build_seconds: 30\n");
+    std::fs::write(config, yaml).unwrap();
+    let req = request(&repo, &app, 30);
+    let holder = qaren::buildplan::LockHolder {
+        holder: "foreign-build-token".into(),
+        run_id: "check-foreign".into(),
+        identity: Some(qaren::runrecord::PidIdentity {
+            pid: 4242,
+            started_at: LSTART.into(),
+            command: qaren::redact::OutputText::from_output("qaren check"),
+        }),
+        at: qaren::timefmt::iso8601_utc(1_770_000_000_000),
+        home: None,
+        qaren_home: Some(repo.join("foreign")),
+        group: Some(777),
+    };
+    assert!(matches!(
+        qaren::buildplan::claim_lock(
+            &mut qaren::exec::MockRunner::new(),
+            &req.lock_root,
+            "native-build-slot",
+            &holder,
+            qaren::buildplan::LockPolicy::Strict,
+        ),
+        qaren::buildplan::LockOutcome::Claimed { .. }
+    ));
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    common::script_ios_deps(&mut mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_clean_build_plan(&mut mock);
+    for _ in 0..30 {
+        mock.expect_run("ps -p 4242 -o lstart=", CmdOutput::success(LSTART));
+        mock.expect_run("ps -p 4242 -o stat=", CmdOutput::success("S"));
+        mock.expect_run("ps -A", CmdOutput::success("777 777 S\n"));
+    }
+    let platform_lock = req.lock_root.join("native-build-ios");
+    mock.observe = Some(Box::new(move |spec| {
+        if spec.rendered().contains("ps -p 4242") {
+            assert_eq!(
+                qaren::buildplan::read_holder(&platform_lock)
+                    .unwrap()
+                    .run_id,
+                run_id()
+            );
+        }
+    }));
+
+    let (receipt, events) = run_with_events(&mut mock, &req);
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Refused,
+        "{:?}",
+        receipt.failure
+    );
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::BuildContended);
+    assert_eq!(
+        receipt.recovery.as_ref().unwrap().reason,
+        qaren::failure::RecoveryReason::BudgetExhausted
+    );
+    for expected in ["native-build-slot", "check-foreign", "waited 30 s"] {
+        assert!(failure.detail.contains(expected), "{failure:?}");
+    }
+    assert!(stage_trail(&events).contains(&"build_lock_wait failed BUILD_CONTENDED".into()));
+    assert!(mock.spawned_logs.is_empty());
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert!(!req.lock_root.join("native-build-ios").exists());
+    assert_eq!(
+        qaren::buildplan::read_holder(&req.lock_root.join("native-build-slot"))
+            .unwrap()
+            .run_id,
+        "check-foreign"
+    );
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
 fn a_check_whose_candidate_moves_during_the_build_never_publishes_and_releases_the_lock() {
     let (repo, app) = app_repo();
     let req = request(&repo, &app, 30);

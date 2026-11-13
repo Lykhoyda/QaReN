@@ -5480,7 +5480,7 @@ its recorded build group still runs, and how long this run waited, for example
 `BUILD_CONTENDED: native-build-ios is held by run <id> (alive: yes; no build process for 9 min); waited 600 s of the budget. Next: wait for that run or re-run once later; if the holder is dead, run its qaren cleanup from its home (its resources only).`
 After 120 s of a live holder with no build group running the wait notes
 `holder_idle_after_build`; a live or unproven holder is never taken. Running
-the budget out after the claim is `BUILD_FAILED`. The receipt's `build_lock`
+the budget out inside the build window outside a lock wait is `BUILD_FAILED`. The receipt's `build_lock`
 keeps the last contended wait; `build_lock_waits` keeps both platform and slot
 observations in order. Each reports `lock`, `holder`, `waited_s`, `holder_alive`, `holder_build_process`,
 `hold_s`, `no_build_observed_s` and `observation` (`none`, `observed` or
