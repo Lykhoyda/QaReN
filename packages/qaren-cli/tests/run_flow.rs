@@ -11439,6 +11439,69 @@ fn android_check_waits_out_a_slow_first_app_process() {
 }
 
 #[test]
+fn android_phone_failed_readiness_repeat_cleanup_is_clean_and_silent() {
+    let (repo, app) = app_repo();
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    android_until_borrow(&repo, &mut mock);
+    script_phone_borrow(&mut mock, PHONE_BESIDE_OFFLINE_EMULATOR);
+    script_android_after_borrow(&mut mock, &repo);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    mock.expect_run("check-ignore -q android/", CmdOutput::success(""));
+    script_android_finite_build(&mut mock, PREBUILD, 5000, 0);
+    script_android_finite_build(&mut mock, GRADLE_ARM64, 5001, 0);
+    script_android_launch(&mut mock, 13);
+    script_metro_teardown(&mut mock, PHONE, None);
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+    mock.expect_run("reverse --remove tcp:8791", CmdOutput::success(""));
+    mock.expect_run("reverse --list", CmdOutput::success(""));
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Failed);
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::AppExitedAtLaunch
+    );
+    assert_eq!(receipt.cleanup["adb_reverse"], "removed");
+    assert_eq!(receipt.cleanup["usb_device_claim"], "removed");
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert_eq!(mock.remaining(), 0);
+    let saved = RunRecord::load(&req.runs_root, &receipt.run_id).unwrap();
+    assert_eq!(saved.phase, Phase::Failed);
+    assert_eq!(
+        saved.failure.as_ref().unwrap().code,
+        FailureCode::AppExitedAtLaunch
+    );
+    assert!(saved.resources.lease.is_none());
+    assert!(matches!(
+        saved.state(),
+        qaren::runrecord::RunState::Ended {
+            cleanup: qaren::runrecord::Cleanup::Clean,
+            ..
+        }
+    ));
+    let mut again = MockRunner::new();
+    again.expect_run(
+        &format!("ps -p {} -o lstart=", saved.prepare.as_ref().unwrap().pid),
+        CmdOutput::success(""),
+    );
+
+    let repeated = qaren::commands::cleanup::cleanup(&mut again, &req.runs_root, &receipt.run_id);
+
+    assert_eq!(
+        repeated.result,
+        ReceiptResult::Cleaned,
+        "{:?}",
+        repeated.cleanup
+    );
+    assert!(repeated.failure.is_none(), "{:?}", repeated.failure);
+    assert!(adb_calls(&again).is_empty(), "{:?}", adb_calls(&again));
+    assert_eq!(again.remaining(), 0);
+}
+
+#[test]
 fn android_check_fails_when_the_launched_app_never_shows_a_process() {
     let (repo, app) = app_repo();
     seed_cached_apk(&repo, &app);

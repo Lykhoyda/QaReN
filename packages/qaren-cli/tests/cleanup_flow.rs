@@ -3317,31 +3317,39 @@ fn android_borrowed_cleanup_refuses_without_the_runs_lease() {
     }
 }
 
-// Only phase Cleaned with no lease recorded (what the run's own release leaves) skips the device legs;
-// a lease still recorded, or any other phase, keeps the refusal.
 #[test]
-fn android_borrowed_repeat_cleanup_is_clean_only_for_a_cleaned_run_without_a_lease() {
+fn android_borrowed_repeat_cleanup_requires_completion_and_no_lease() {
     for phone in [false, true] {
         for case in [
             "cleaned",
             "cleaned with a foreign lease",
             "walking without a lease",
+            "failed with proven cleanup",
+            "failed without proven cleanup",
+            "failed with a foreign lease",
         ] {
+            if !phone && case.starts_with("failed") {
+                continue;
+            }
             let repo = common::temp_repo();
             let mut record = if phone {
                 phone_record(&repo)
             } else {
                 borrowed_record(&repo)
             };
-            if case == "cleaned with a foreign lease" {
+            if case.ends_with("a foreign lease") {
                 record.resources.lease.as_mut().unwrap().holder = "another-run-holder".to_string();
             } else {
                 qaren::lease::release(&record.resources.lease.take().unwrap());
             }
-            if case != "walking without a lease" {
+            if case.starts_with("failed") {
+                record.phase = Phase::Failed;
+                record.resources.android_cleanup_complete = case != "failed without proven cleanup";
+            } else if case != "walking without a lease" {
                 record.phase = Phase::Cleaned;
             }
-            if case == "cleaned" {
+            let completed = case == "cleaned" || case == "failed with proven cleanup";
+            if completed {
                 if let Some(claim) = &record.resources.usb_device {
                     std::fs::remove_dir_all(&claim.lock_dir).unwrap();
                 }
@@ -3358,7 +3366,7 @@ fn android_borrowed_repeat_cleanup_is_clean_only_for_a_cleaned_run_without_a_lea
                 adb_commands(&mock)
             );
             assert_eq!(mock.remaining(), 0, "{label}");
-            if case == "cleaned" {
+            if completed {
                 assert_eq!(
                     receipt.result,
                     ReceiptResult::Cleaned,

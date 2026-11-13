@@ -342,6 +342,8 @@ impl BorrowedIosStop {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Resources {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub android_cleanup_complete: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     build_process: Option<BuildProcess>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -778,6 +780,9 @@ impl RunRecord {
         let ended = |cleanup| RunState::Ended { walked, cleanup };
         match (self.phase, walked, self.held.as_ref()) {
             (Phase::Cleaned, _, _) => ended(Cleanup::Clean),
+            (Phase::Failed, _, _) if self.borrowed_android_cleanup_complete() => {
+                ended(Cleanup::Clean)
+            }
             (Phase::Failed, _, _) => ended(Cleanup::Owed),
             (Phase::Walking, _, Some(held)) => ended(Cleanup::Held(held)),
             (_, Some(_), _) => ended(Cleanup::Owed),
@@ -797,6 +802,13 @@ impl RunRecord {
             crate::buildplan::read_holder(&lease.lock_dir)
                 .is_some_and(|h| h.holder == lease.holder && h.run_id == self.run_id)
         })
+    }
+
+    pub(crate) fn borrowed_android_cleanup_complete(&self) -> bool {
+        self.resources.lease.is_none()
+            && (self.phase == Phase::Cleaned
+                || (self.resources.android_device.is_some()
+                    && self.resources.android_cleanup_complete))
     }
 
     pub(crate) fn require_android_cleanup_ownership(&self) -> Result<(), &'static str> {

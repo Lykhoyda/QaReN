@@ -2607,7 +2607,7 @@ fn finish_failed(
             .unwrap_or(failure)
     };
     events::close_running(StageState::Failed, Some(&failure.code_str()), &[]);
-    let (cleanup, _, _) = teardown(
+    let (cleanup, all_clean, _) = teardown(
         &mut ctx,
         node,
         runtime_dir,
@@ -2615,6 +2615,9 @@ fn finish_failed(
         retain_device_lease,
         false,
     );
+    if ctx.record.resources.android_device.is_some() && all_clean {
+        ctx.record.resources.android_cleanup_complete = true;
+    }
     let mut receipt = ctx.fail(failure);
     for (name, rendered) in cleanup {
         receipt.cleanup.insert(name, rendered);
