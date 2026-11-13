@@ -11478,7 +11478,7 @@ fn android_phone_failed_readiness_repeat_cleanup_is_clean_and_silent() {
     assert!(matches!(
         saved.state(),
         qaren::runrecord::RunState::Ended {
-            cleanup: qaren::runrecord::Cleanup::Clean,
+            cleanup: qaren::runrecord::Cleanup::Owed,
             ..
         }
     ));
@@ -11499,6 +11499,130 @@ fn android_phone_failed_readiness_repeat_cleanup_is_clean_and_silent() {
     assert!(repeated.failure.is_none(), "{:?}", repeated.failure);
     assert!(adb_calls(&again).is_empty(), "{:?}", adb_calls(&again));
     assert_eq!(again.remaining(), 0);
+}
+
+#[test]
+fn android_phone_pr_cleanup_keeps_device_proof_when_worktree_removal_fails() {
+    for external_release in [false, true] {
+        let (repo, app) = app_repo();
+        let mut req = android_request(&repo, &app);
+        req.pr = pr_request(&repo, &app).pr;
+        let wt = req.runs_root.join(run_id()).join("wt");
+        let mut runner = PrRunner {
+            inner: android_mock(),
+            app: app.clone(),
+            recorder_persisted_before_spawn: None,
+            fail_core_spawn: false,
+            planted_worktree_config: None,
+            worktree_config_planted: false,
+            fail_host_checkpoint: false,
+        };
+        let mock = &mut runner.inner;
+        script_android_pr_preflight(mock, &repo, &wt, 30, true);
+        mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+        mock.expect_run("ls-files", CmdOutput::success(""));
+        mock.expect_run("check-ignore -q android/", CmdOutput::success(""));
+        script_android_finite_build(mock, PREBUILD, 5000, 0);
+        script_android_finite_build(mock, GRADLE_ARM64, 5001, 0);
+        script_android_launch(mock, 13);
+        script_metro_teardown(mock, PHONE, None);
+        mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+        mock.expect_run("reverse --remove tcp:8791", CmdOutput::success(""));
+        mock.expect_run(
+            "reverse --list",
+            CmdOutput::success(if external_release {
+                "host-19 tcp:8791 tcp:8791\n"
+            } else {
+                ""
+            }),
+        );
+        mock.expect_run("du -sk", CmdOutput::success("4\n"));
+        mock.expect_run("worktree remove --force", CmdOutput::failed(1, "busy"));
+
+        let receipt = run(&mut runner, &req);
+
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Failed,
+            "{:?}",
+            receipt.failure
+        );
+        assert_eq!(
+            receipt.failure.as_ref().unwrap().code,
+            FailureCode::AppExitedAtLaunch
+        );
+        assert_eq!(runner.inner.remaining(), 0);
+        let saved = RunRecord::load(&req.runs_root, &receipt.run_id).unwrap();
+        assert_eq!(saved.resources.android_cleanup_complete, !external_release);
+        assert_eq!(saved.resources.lease.is_some(), external_release);
+        assert!(saved.resources.pr_worktree.is_some());
+        assert!(matches!(
+            saved.state(),
+            qaren::runrecord::RunState::Ended {
+                cleanup: qaren::runrecord::Cleanup::Owed,
+                ..
+            }
+        ));
+
+        if external_release {
+            runner.inner.expect_run("lstart=", CmdOutput::success(""));
+            runner.inner.expect_run("lstart=", CmdOutput::success(""));
+            runner
+                .inner
+                .expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+            runner
+                .inner
+                .expect_run("reverse --remove tcp:8791", CmdOutput::success(""));
+            runner
+                .inner
+                .expect_run("reverse --list", CmdOutput::success(""));
+            runner.inner.expect_run("du -sk", CmdOutput::success("4\n"));
+            runner
+                .inner
+                .expect_run("worktree remove --force", CmdOutput::failed(1, "busy"));
+            let partial =
+                qaren::commands::cleanup::cleanup(&mut runner, &req.runs_root, &receipt.run_id);
+            assert_eq!(
+                partial.result,
+                ReceiptResult::Failed,
+                "{:?}",
+                partial.cleanup
+            );
+            assert_eq!(partial.cleanup["device_lease"], "removed");
+            let saved = RunRecord::load(&req.runs_root, &receipt.run_id).unwrap();
+            assert!(saved.resources.android_cleanup_complete);
+            assert!(saved.resources.lease.is_none());
+            assert!(matches!(
+                saved.state(),
+                qaren::runrecord::RunState::Ended {
+                    cleanup: qaren::runrecord::Cleanup::Owed,
+                    ..
+                }
+            ));
+            assert_eq!(runner.inner.remaining(), 0);
+        }
+        let before = adb_calls(&runner.inner).len();
+        runner.inner.expect_run("lstart=", CmdOutput::success(""));
+        runner.inner.expect_run("lstart=", CmdOutput::success(""));
+        runner.inner.expect_run("du -sk", CmdOutput::success("4\n"));
+        runner
+            .inner
+            .expect_run("worktree remove --force", CmdOutput::success(""));
+
+        let repeated =
+            qaren::commands::cleanup::cleanup(&mut runner, &req.runs_root, &receipt.run_id);
+
+        assert_eq!(
+            repeated.result,
+            ReceiptResult::Cleaned,
+            "{:?}",
+            repeated.cleanup
+        );
+        assert!(repeated.failure.is_none());
+        assert_eq!(adb_calls(&runner.inner).len(), before);
+        assert!(!wt.exists());
+        assert_eq!(runner.inner.remaining(), 0);
+    }
 }
 
 #[test]
@@ -12145,7 +12269,13 @@ fn android_check_cancelled_before_reverse_leaves_an_existing_mapping() {
     assert!(record.resources.lease.is_none());
 }
 
-fn script_android_pr_preflight(mock: &mut MockRunner, repo: &Path, wt: &Path, api: u16) {
+fn script_android_pr_preflight(
+    mock: &mut MockRunner,
+    repo: &Path,
+    wt: &Path,
+    api: u16,
+    phone: bool,
+) {
     mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display()))); // invoking checkout
     mock.expect_run("gh pr view", pr_view_json(PR_HEAD));
@@ -12156,7 +12286,11 @@ fn script_android_pr_preflight(mock: &mut MockRunner, repo: &Path, wt: &Path, ap
     );
     mock.expect_run("update-ref -d", CmdOutput::success(""));
     script_plan(mock, repo);
-    script_borrow_api(mock, ONE_EMULATOR, EMULATOR, api);
+    if phone {
+        script_phone_borrow(mock, PHONE_BESIDE_OFFLINE_EMULATOR);
+    } else {
+        script_borrow_api(mock, ONE_EMULATOR, EMULATOR, api);
+    }
     mock.expect_run("worktree add --detach", CmdOutput::success(""));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", wt.display()))); // toplevel of the worktree
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", wt.display()))); // explicit worktree
@@ -12251,7 +12385,7 @@ fn android_pr_video_flow(api: u16, encodes: bool) {
         encodes,
     );
     let mock = &mut runner.0.inner;
-    script_android_pr_preflight(mock, &repo, &wt, api);
+    script_android_pr_preflight(mock, &repo, &wt, api, false);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
     mock.expect_run("ls-files", CmdOutput::success(""));
     mock.expect_run("check-ignore -q android/", CmdOutput::success(""));

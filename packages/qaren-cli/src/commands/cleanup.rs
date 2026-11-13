@@ -697,6 +697,9 @@ pub fn cleanup_with_policy(
         };
         if outcome.clean() {
             record.resources.lease = None;
+            if record.resources.android_device.is_some() {
+                record.resources.android_cleanup_complete = true;
+            }
         }
         outcomes.push(("device_lease".to_string(), outcome));
     }

@@ -780,9 +780,6 @@ impl RunRecord {
         let ended = |cleanup| RunState::Ended { walked, cleanup };
         match (self.phase, walked, self.held.as_ref()) {
             (Phase::Cleaned, _, _) => ended(Cleanup::Clean),
-            (Phase::Failed, _, _) if self.borrowed_android_cleanup_complete() => {
-                ended(Cleanup::Clean)
-            }
             (Phase::Failed, _, _) => ended(Cleanup::Owed),
             (Phase::Walking, _, Some(held)) => ended(Cleanup::Held(held)),
             (_, Some(_), _) => ended(Cleanup::Owed),
