@@ -420,6 +420,77 @@ fn confirmed_removal_of_unknown_run_is_refused_with_receipt() {
     assert_eq!(value["failure"]["code"], "RUN_RECORD_UNAVAILABLE");
 }
 
+// `doctor --json --device <device>` against a closed adb port, so no row reads this host's real
+// adb server; asserts there is no ios-lane row and returns (android-target row, exit code, port).
+fn doctor_android_target(device: &str) -> (serde_json::Value, Option<i32>, u16) {
+    let root = common::temp_repo();
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = closed.local_addr().unwrap().port();
+    drop(closed);
+    let config = root.join("config.yaml");
+    std::fs::write(&config, "appId: com.example.fixture\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_qaren"))
+        .args(["doctor", "--json", "--device", device, "--config"])
+        .arg(&config)
+        .current_dir(&root)
+        .env("HOME", root.join("home"))
+        .env("QAREN_HOME", root.join("home/.qaren"))
+        .env("ANDROID_ADB_SERVER_PORT", port.to_string())
+        .env_remove("ADB_SERVER_SOCKET")
+        .output()
+        .unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let rows = report["checks"].as_array().unwrap();
+    assert!(!rows.iter().any(|row| row["id"] == "ios-lane"), "{device}");
+    let target = rows
+        .iter()
+        .find(|row| row["id"] == "android-target")
+        .unwrap()
+        .clone();
+    std::fs::remove_dir_all(root).unwrap();
+    (target, output.status.code(), port)
+}
+
+#[test]
+fn doctor_device_sends_an_android_serial_to_the_android_target_row_only() {
+    let (target, code, port) = doctor_android_target("0A1B2C3D");
+    assert_eq!(target["status"], "fail");
+    assert!(target["detail"]
+        .as_str()
+        .unwrap()
+        .contains(&format!("no adb server answers on port {port}")));
+    assert_eq!(code, Some(1));
+    for args in [
+        vec!["doctor", "--device", "iPhone 15"],
+        vec!["doctor", "--device", "booted"],
+        vec!["doctor", "--device", "emulator-5554"],
+        vec!["doctor", "--device", "127.0.0.1:5555"],
+        vec!["prepare", "missing", "--device", "0A1B2C3D"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_qaren"))
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Android device serial"));
+    }
+}
+
+#[test]
+fn doctor_device_answers_a_wireless_adb_name_with_a_failed_android_target_row() {
+    let (target, code, _) = doctor_android_target("adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp");
+    assert_eq!(target["status"], "fail");
+    assert!(
+        target["detail"]
+            .as_str()
+            .unwrap()
+            .contains("is a wireless adb connection"),
+        "{target}"
+    );
+    assert_eq!(code, Some(1));
+}
+
 #[test]
 fn prepare_accepts_only_an_exact_device_and_boot_permission_from_the_check_lifecycle_flags() {
     let uuid = "1DC408C4-51DA-4C4F-ACA1-39881C916FDD";

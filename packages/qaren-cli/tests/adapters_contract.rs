@@ -1822,6 +1822,26 @@ fn adb_devices_lists_serial_state_pairs_without_the_header() {
         ]
     );
     assert!(android::parse_devices("List of devices attached\n\n").is_empty());
+    // adb's text for a device this account cannot open (R1); an unreadable serial prints as
+    // `????????????` (older adb) or `(no serial number)`, which has spaces; rows split at the tab.
+    let no_permissions = "0A1B2C3D\tno permissions (user in plugdev group; are your udev rules wrong?); see [http://developer.android.com/tools/device.html]\n\
+                          ????????????\tno permissions (missing udev rules? user is in the plugdev group); see [http://developer.android.com/tools/device.html]\n\
+                          (no serial number)\tno permissions (missing udev rules? user is in the plugdev group); see [http://developer.android.com/tools/device.html]\n\
+                          0A1B2C3E\tno\n\
+                          0A1B2C3F  unauthorized\n";
+    assert_eq!(
+        android::parse_devices(no_permissions),
+        vec![
+            ("0A1B2C3D".to_string(), "no permissions".to_string()),
+            ("????????????".to_string(), "no permissions".to_string()),
+            (
+                "(no serial number)".to_string(),
+                "no permissions".to_string()
+            ),
+            ("0A1B2C3E".to_string(), "no".to_string()),
+            ("0A1B2C3F".to_string(), "unauthorized".to_string()),
+        ]
+    );
     assert_eq!(
         android::parse_avd_name("Pixel_9_API_37\r\nOK\r\n").as_deref(),
         Some("Pixel_9_API_37")
@@ -1881,6 +1901,10 @@ fn gradle_assemble_is_finite_abi_limited_and_daemonless() {
 }
 
 fn one_reply_server(reply: Option<&'static [u8]>) -> u16 {
+    one_reply_to(b"000chost:version", reply)
+}
+
+fn one_reply_to(expected: &'static [u8; 16], reply: Option<&'static [u8]>) -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
@@ -1888,7 +1912,7 @@ fn one_reply_server(reply: Option<&'static [u8]>) -> u16 {
         let (mut stream, _) = listener.accept().unwrap();
         let mut request = [0u8; 16];
         stream.read_exact(&mut request).unwrap();
-        assert_eq!(&request, b"000chost:version");
+        assert_eq!(&request, expected);
         match reply {
             Some(bytes) => stream.write_all(bytes).unwrap(),
             None => std::thread::sleep(std::time::Duration::from_secs(3)),
@@ -1922,6 +1946,249 @@ fn adb_server_version_speaks_the_host_protocol_and_fails_closed() {
     let port = closed.local_addr().unwrap().port();
     drop(closed);
     assert!(android::server_version(port).is_err());
+}
+
+#[test]
+fn adb_server_devices_reads_the_list_through_the_host_protocol() {
+    let devices = |reply| android::server_devices(one_reply_to(b"000chost:devices", Some(reply)));
+    assert_eq!(devices(b"OKAY0000"), Ok(String::new()));
+    assert_eq!(
+        devices(b"OKAY002bemulator-5554\tdevice\n0A1B2C3D\tunauthorized\n"),
+        Ok("emulator-5554\tdevice\n0A1B2C3D\tunauthorized\n".to_string())
+    );
+    let refused = devices(b"FAIL0010device not found").unwrap_err();
+    assert!(refused.contains("device not found"), "{refused}");
+    for reply in [&b"OKAY002a0A1B2C3D"[..], b"OKAY00x0", b"HTTP/1.1 400"] {
+        let error = devices(reply).unwrap_err();
+        assert!(error.contains("127.0.0.1:"), "{error}");
+    }
+    // The version reply is 1 to 8 hex digits; a longer body is not an adb version.
+    assert!(android::server_version(one_reply_server(Some(b"OKAY0009000000029"))).is_err());
+    // A refusal keeps its message whatever the success cap.
+    let refused = android::server_version(one_reply_server(Some(b"FAIL0010device not found")));
+    assert!(refused.unwrap_err().contains("device not found"));
+    // ...within its own 1 KiB cap: a longer refusal is not adb.
+    let oversized = android::server_version(one_reply_server(Some(b"FAIL0401x"))).unwrap_err();
+    assert!(
+        oversized.contains("did not answer as an adb server"),
+        "{oversized}"
+    );
+}
+
+#[test]
+fn adb_server_query_bounds_the_whole_reply_not_each_read() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0u8; 16];
+        stream.read_exact(&mut request).unwrap();
+        let _ = stream.write_all(b"OKAY0010");
+        for _ in 0..16 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            if stream.write_all(b"x").is_err() {
+                return;
+            }
+        }
+    });
+    let started = std::time::Instant::now();
+    assert!(android::server_devices(port).is_err());
+    // The listener trickles for 4 s; the reply deadline is 1 s, with load margin.
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+}
+
+#[test]
+fn device_problems_name_the_cause_and_the_fix_for_the_host() {
+    let linux = android::device_problem("0A1B2C3D", "no permissions", true).unwrap();
+    assert_eq!(linux.0, "usb-no-permissions");
+    assert!(linux.1.contains("0A1B2C3D"), "{}", linux.1);
+    assert!(linux.2.contains("plugdev"), "{}", linux.2);
+    assert!(linux.2.contains("udev"), "{}", linux.2);
+    let other = android::device_problem("0A1B2C3D", "no permissions", false).unwrap();
+    assert_eq!(other.0, "usb-no-permissions");
+    assert!(!other.2.contains("plugdev"), "{}", other.2);
+    assert!(other.2.contains("replug"), "{}", other.2);
+    for linux in [true, false] {
+        assert_eq!(android::device_problem("0A1B2C3D", "device", linux), None);
+        let unauthorized = android::device_problem("0A1B2C3D", "unauthorized", linux).unwrap();
+        assert_eq!(unauthorized.0, "usb-unauthorized");
+        assert!(unauthorized.2.contains("Allow USB debugging"));
+        let offline = android::device_problem("0A1B2C3D", "offline", linux).unwrap();
+        assert_eq!(offline.0, "device-offline");
+        assert!(offline.2.contains("replug"));
+        let recovery = android::device_problem("0A1B2C3D", "recovery", linux).unwrap();
+        assert_eq!(recovery.0, "device-offline");
+        assert!(recovery.1.contains("recovery"), "{}", recovery.1);
+    }
+    // The placeholder adb prints for an unreadable serial is never shown as a serial.
+    let unreadable = android::device_problem("????????????", "no permissions", true).unwrap();
+    assert!(
+        unreadable
+            .1
+            .contains("an attached device whose serial adb cannot read"),
+        "{}",
+        unreadable.1
+    );
+    assert!(!unreadable.1.contains('?'), "{}", unreadable.1);
+    // An unknown state from the server is bounded before it reaches any text.
+    let garbage = android::device_problem("0A1B2C3D", &"x".repeat(5000), false).unwrap();
+    assert!(garbage.1.len() < 200, "{}", garbage.1);
+    let held = android::held_by_other_server("0A1B2C3D", 5147, 5037);
+    assert_eq!(held.0, "device-held-by-other-server");
+    assert!(
+        held.1.contains("5037") && held.1.contains("5147"),
+        "{}",
+        held.1
+    );
+    assert!(
+        held.2.contains("ANDROID_ADB_SERVER_PORT=5037"),
+        "{}",
+        held.2
+    );
+    let absent = android::not_attached("0A1B2C3D", 5147);
+    assert_eq!(absent.0, "device-not-attached");
+    assert!(absent.1.contains("0A1B2C3D") && absent.1.contains("5147"));
+}
+
+// Plan 7.5: one cause per phone on the run's port, and a phone another server has as `device` takes the held one.
+#[test]
+fn a_phone_gets_one_cause_and_a_held_phone_gets_the_held_one() {
+    const HELD: &str = "Android device 0A1B2C3D is attached to the adb server on port 5037, not to the one on port 5147";
+    let held = ["0A1B2C3D".to_string()];
+    let cause = |state: Option<&str>, port: u16, held: &[String]| {
+        android::device_cause("0A1B2C3D", state, port, held, true)
+            .map(|(subreason, detail, _)| (subreason, detail))
+    };
+    // Ready on the run's port: no cause, whatever the server on 5037 shows.
+    assert_eq!(cause(Some("device"), 5147, &held), None);
+    assert_eq!(cause(Some("device"), 5147, &[]), None);
+    for (state, own) in [
+        (Some("no permissions"), "usb-no-permissions"),
+        (Some("unauthorized"), "usb-unauthorized"),
+        (Some("offline"), "device-offline"),
+        (Some("recovery"), "device-offline"),
+        (None, "device-not-attached"),
+    ] {
+        // Not ready here while 5037 has it as `device`: the held cause replaces the state's own.
+        assert_eq!(
+            cause(state, 5147, &held),
+            Some(("device-held-by-other-server", HELD.to_string())),
+            "{state:?}"
+        );
+        // 5037 does not have it as `device` (another state, not listed, no server, a failed answer).
+        assert_eq!(cause(state, 5147, &[]).map(|c| c.0), Some(own), "{state:?}");
+        // The run's own port is 5037: never held.
+        assert_eq!(
+            cause(state, 5037, &held).map(|c| c.0),
+            Some(own),
+            "{state:?}"
+        );
+    }
+    assert_eq!(
+        cause(None, 5147, &[]).unwrap().1,
+        "no Android device with serial 0A1B2C3D is attached to the adb server on port 5147"
+    );
+}
+
+#[test]
+fn the_held_list_is_the_ready_usb_phones_on_5037_that_the_run_port_does_not_have_ready() {
+    // (5037's host:devices reply, or None for a server whose list cannot be read); no entry: no server.
+    let held = |port: u16, here: &str, default: Option<Option<&str>>| {
+        let mut runner = qaren::exec::MockRunner::new();
+        if let Some(listed) = default {
+            runner.adb_servers.push((5037, 41));
+            if let Some(listed) = listed {
+                runner.adb_devices.push((5037, listed.to_string()));
+            }
+        }
+        let held = android::held_on_default_server(&runner, port, &android::parse_devices(here));
+        assert!(runner.calls.is_empty(), "{:?}", runner.calls);
+        held
+    };
+    let default = "0A1B2C3D\tdevice\n0A1B2C3E\tdevice\n0A1B2C3F\tunauthorized\n0A1B2C40\toffline\n????????????\tdevice\nemulator-5554\tdevice\nadb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp\tdevice\n";
+    // Whether or not the run's port lists them: absent here, or listed here in any state but `device`.
+    assert_eq!(
+        held(5147, "", Some(Some(default))),
+        ["0A1B2C3D", "0A1B2C3E"]
+    );
+    assert_eq!(
+        held(
+            5147,
+            "0A1B2C3D\tno permissions\n0A1B2C3E\tdevice\n",
+            Some(Some(default))
+        ),
+        ["0A1B2C3D"]
+    );
+    // No server on 5037, a list it cannot give, or the run's own port being 5037: nobody holds it.
+    assert!(held(5147, "", None).is_empty());
+    assert!(held(5147, "", Some(None)).is_empty());
+    assert!(held(5037, "", Some(Some(default))).is_empty());
+}
+
+#[test]
+fn usb_serials_are_plain_and_never_emulator_or_endpoint_forms() {
+    // (serial, is_usb_serial, is_wireless_serial, is_physical_serial). The wireless names are
+    // built from adb's mDNS service types, not captured; `adb-0A1B2C3D` has no service type.
+    let table: &[(&str, bool, bool, Option<bool>)] = &[
+        ("0A1B2C3D", true, false, Some(true)),
+        ("R58M12ABCDE", true, false, Some(true)),
+        ("a.b_c-d", true, false, Some(true)),
+        ("adb-0A1B2C3D", true, false, Some(true)),
+        (
+            "adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp",
+            false,
+            true,
+            Some(false),
+        ),
+        (
+            "adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp.",
+            false,
+            true,
+            Some(false),
+        ),
+        ("adb-0A1B2C3D._adb._tcp", false, true, Some(false)),
+        ("????????????", false, false, Some(true)),
+        ("emulator-5554", false, false, Some(false)),
+        ("127.0.0.1:5555", false, false, Some(false)),
+        ("", false, false, None),
+        ("-s", false, false, None),
+        ("has space", false, false, None),
+    ];
+    for &(serial, usb, wireless, physical) in table {
+        assert_eq!(qaren::scenario::is_usb_serial(serial), usb, "{serial:?}");
+        assert_eq!(
+            qaren::scenario::is_wireless_serial(serial),
+            wireless,
+            "{serial:?}"
+        );
+        if let Some(physical) = physical {
+            assert_eq!(android::is_physical_serial(serial), physical, "{serial:?}");
+        }
+    }
+}
+
+#[test]
+fn a_wireless_adb_connection_is_named_and_never_used() {
+    let name = "adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp";
+    let refused = android::wireless_not_supported(name);
+    assert_eq!(refused.0, "wireless-not-supported");
+    assert!(refused.1.contains(name), "{}", refused.1);
+    assert!(refused.2.contains("USB cable"), "{}", refused.2);
+    let row = |serial: &str, state: &str| (serial.to_string(), state.to_string());
+    assert_eq!(
+        android::wireless_note(&[row("0A1B2C3D", "device"), row("emulator-5554", "device")]),
+        ""
+    );
+    assert_eq!(android::wireless_note(&[]), "");
+    assert_eq!(
+        android::wireless_note(&[
+            row("0A1B2C3D", "device"),
+            row(name, "device"),
+            row("adb-0A1B2C3E._adb._tcp", "offline"),
+        ]),
+        "; 2 wireless adb connection(s) listed and not used (USB cable only)"
+    );
 }
 
 #[test]

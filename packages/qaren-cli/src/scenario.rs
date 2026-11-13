@@ -54,6 +54,25 @@ pub fn is_emulator_serial(serial: &str) -> bool {
     })
 }
 
+// [A-Za-z0-9._-], not starting with -: the `????????????` adb prints for a serial it cannot read fails.
+fn is_plain_serial(serial: &str) -> bool {
+    !serial.is_empty()
+        && !serial.starts_with('-')
+        && serial
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+}
+
+// adb lists a wireless (mDNS) connection under its service name, which is otherwise a plain serial.
+pub fn is_wireless_serial(serial: &str) -> bool {
+    serial.contains("._adb-tls-connect._tcp") || serial.contains("._adb._tcp")
+}
+
+// A physical USB device serial that may be selected or passed to adb; never an emulator, a host:port endpoint or a wireless connection.
+pub fn is_usb_serial(serial: &str) -> bool {
+    is_plain_serial(serial) && !serial.starts_with("emulator-") && !is_wireless_serial(serial)
+}
+
 fn is_dev_client_scheme(scheme: &str) -> bool {
     let mut bytes = scheme.bytes();
     scheme.len() <= 128
@@ -616,21 +635,16 @@ impl Scenario {
             )
         };
         let serial = &usb.serial;
-        let serial_ok = !serial.is_empty()
-            && !serial.starts_with('-')
-            && serial
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-');
-        if !serial_ok {
+        if !is_plain_serial(serial) {
             return Err(invalid(format!(
                 "android_usb.serial {serial:?} must be a plain USB device serial ([A-Za-z0-9._-], not starting with -)"
             )));
         }
         // Emulator and loopback-tunnel serial forms belong to the farm path;
         // accepting them here would blur the two exclusive allocation paths.
-        if serial.starts_with("emulator-") || serial.contains(':') {
+        if !is_usb_serial(serial) {
             return Err(invalid(format!(
-                "android_usb.serial {serial:?} must name a physical USB device, not an emulator or loopback endpoint"
+                "android_usb.serial {serial:?} must name a physical USB device, not an emulator, loopback endpoint or wireless connection"
             )));
         }
         match (usb.adb_server_port, self.build.owner) {

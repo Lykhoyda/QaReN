@@ -17,7 +17,7 @@ owns the guided onboarding procedure; [Check a plan](#check-a-plan) covers manua
 ## Doctor
 
 ```sh
-qaren doctor [--json] [--config .qaren/config.yaml] [--device <simulator-UUID>]
+qaren doctor [--json] [--config .qaren/config.yaml] [--device <simulator-UUID | android-serial>]
 ```
 
 On macOS, `ios-toolchain-match` compares the selected Swift compiler with public
@@ -45,13 +45,16 @@ When an app config is valid, the five-second `watch-project` probe may establish
 the subsequent [cookie sync](#ios-simulator-lifecycle) writes a cookie in the resolved watch root and may leave it there on timeout.
 Doctor never starts a Watchman service, starts a device or resets a service. It does not run ADB
 or start an ADB server. In text and JSON output, Doctor never prints
-file contents, environment variable values, credentials or any other config value;
-it may name the configured iOS runtime and Android AVD. It also prints diagnostic
+file contents, credentials or unrelated config values;
+it may name the configured iOS runtime and Android AVD. Android device rows also
+report device serials, adb server ports, invalid adb server settings and server
+error replies. It also prints diagnostic
 paths, key names and environment variable names. It exits 1 when any row fails,
 0 otherwise, and 2 on a usage error. `--json` prints
 `{identity, checks: [{id, status, detail, fix?}], verdict}` and nothing else.
 
-`FAIL` means `qaren check` cannot run correctly on this host; `WARN` is anything
+`FAIL` means a host prerequisite or an explicitly selected device check failed;
+an `android-target` pass does not enable physical-device `check` runs. `WARN` is anything
 that can conflict with a session or is hygiene; `SKIP` means the check is not
 applicable or its subject was not assessed, as explained in the row's detail.
 
@@ -72,12 +75,14 @@ applicable or its subject was not assessed, as explained in the row's detail.
 | `host-load` | One-, five- and fifteen-minute load averages, logical CPU count and sampled CPU idle; warns about readiness deadlines under load |
 | `native-build-lock` | Read-only iOS [build-lock observation](#native-fingerprint-build-selection); never claims or reclaims the lock |
 | `android-sdk`, `android-avd` | When `android` is configured: `ANDROID_HOME`, an executable `adb` file (never run; its version is not checked), the emulator binary and the configured AVD via `emulator -list-avds` |
+| `android-devices` | When `android-sdk` passes or warns: the physical devices the running adb server lists, described [below](#android-device-rows); an unusable device warns, no answering server skips unless the default-server inventory finds a ready phone |
+| `android-target` | Only with `--device <android-serial>`: that device, read the same way; anything but ready fails |
 | `qaren-path` | The first `qaren` on `PATH` is this binary and the installed build; later copies warn, and so does a separate install that `PATH` runs instead (another `QAREN_HOME` or the other release or source-build line) |
 | `installed-build` | The runtime under `$QAREN_HOME/runtime/<version>/` and the runtime `check` would use (`QAREN_RUNTIME` when set) are complete; a binary outside it that `PATH` runs instead of an install fails |
 | `runtime-dirs` | Interrupted installs and other versions under `$QAREN_HOME/runtime/` |
 | `source-checkout` | From a QaReN checkout: its source version (`<version>-dev.<commit>`) matches this binary |
 | `config` | `.qaren/config.yaml` (or `--config`) loads and validates |
-| `ios-lane` | Only with `--device`: read-only check of that simulator against the [warm-lane contract](#warm-lane) |
+| `ios-lane` | Only with `--device <simulator-UUID>`: read-only check of that simulator against the [warm-lane contract](#warm-lane) |
 | `1x-claude-plugin`, `1x-codex-plugin` | The rn-dev-agent 1.x plugin, marketplace and caches in Claude Code, Codex and Cursor |
 | `1x-mcp` | A hand-registered 1.x MCP server in `~/.claude.json`, `.mcp.json`, `~/.cursor/mcp.json` or `$CODEX_HOME/config.toml` |
 | `1x-binaries`, `1x-home-dirs` | The 1.x npm bins on `PATH`; `~/.rn-dev-agent/`, `~/.cache/rn-dev-agent/`, `~/Library/Caches/rn-dev-agent/`, `~/Library/Application Support/rn-dev-agent/` (or `$XDG_STATE_HOME/rn-dev-agent/`) and `~/.claude/rn-agent/` |
@@ -122,6 +127,36 @@ attempt with a 30 s bound and no retries; a timeout warns in `pnpm-source` with
 the measured duration and `PNPM_PROBE_TIMED_OUT`, without recommending a different
 pnpm version. Host load alone never refuses `check`. Metro still must belong to
 the exact group QaReN started.
+
+### Android device rows
+
+`android-devices` requires Android configuration and an executable SDK `adb`
+file; `android-target` runs whenever an Android serial is selected,
+even without Android configuration. Select a plain serial containing only
+letters, digits, `.`, `_` or `-`, not starting with `-` or `emulator-`;
+`booted` and `host:port` endpoints are not accepted, and a simulator UUID
+selects `ios-lane` instead.
+
+`android-devices` and `android-target` ask the running adb server for its device
+list over the adb protocol, on the port `check` would borrow (`ADB_SERVER_SOCKET`,
+else `ANDROID_ADB_SERVER_PORT`, else 5037). They run no adb client and start no
+server. Every listed device that is not an emulator, a `host:port` endpoint or a wireless connection
+counts, including one whose serial adb cannot read; that one is described
+rather than named. A phone connected over wireless adb is not used:
+`android-devices` appends its count to pass texts without listing its name or warning
+about its state; `android-target` fails for a wireless name before querying any
+adb server. Wireless names contain `._adb-tls-connect._tcp` or `._adb._tcp`; attach
+the phone with a USB cable. For each device that is not ready the row gives the cause and
+the fix: `no permissions` (on Linux, the account lacks USB access: the
+`plugdev` group and the Android udev rules), `unauthorized` (USB debugging from
+this computer not yet accepted on the phone) or `offline`. When the run's server
+is not on 5037 and the server on 5037 lists a phone as ready that the run's
+server does not, the row names that server's port, even if the run's server is
+absent or its device list cannot be read; QaReN never stops it. That is then the
+phone's one cause, whatever the run's server lists it as. An
+unusable attached device makes `android-devices` warn rather than fail, so a
+phone left charging does not fail doctor; `--device <android-serial>` fails
+unless that device is ready. `check` does not yet run on a physical device.
 
 ### Host budget
 
@@ -5130,8 +5165,8 @@ its project caches there.
 
 `android_usb: { serial, adb_server_port }` is a separate, exclusive
 allocation path (exactly one of `android:` / `android_usb:` per scenario).
-The serial must be a plain physical-device serial — `emulator-*` and
-loopback forms are rejected at validation, so the farm path's
+The serial must be a plain physical-device serial — `emulator-*`, loopback
+forms and [wireless adb names](#android-device-rows) are rejected at validation, so the farm path's
 structural guarantees never weaken. At allocate time the device is claimed
 by an atomic host-level `usb-<serial>` lock in the
 [configured lock root](#ios-admission-and-cleanup); any

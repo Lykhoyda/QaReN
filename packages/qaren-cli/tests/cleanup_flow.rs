@@ -3260,6 +3260,9 @@ impl qaren::exec::Runner for RecorderRetirementRunner {
     fn adb_server_version(&self, port: u16) -> Result<u32, String> {
         self.mock.adb_server_version(port)
     }
+    fn adb_server_devices(&self, port: u16) -> Result<String, String> {
+        self.mock.adb_server_devices(port)
+    }
     fn spawn_group_unchecked(
         &mut self,
         spec: &qaren::exec::CmdSpec,
