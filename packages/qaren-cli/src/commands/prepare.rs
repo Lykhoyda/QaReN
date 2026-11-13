@@ -5107,7 +5107,12 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
             .as_mut()
             .expect("slot claimed")
             .work = BuildSlotWork::Finite;
-        let _ = release_build_slot(ctx);
+        if let Err(release_failure) = release_build_slot(ctx) {
+            ctx.notes.push((
+                "build_slot_release".into(),
+                release_failure.detail.to_string(),
+            ));
+        }
         return Err(failure);
     }
     let spawned = match ctx.runner.spawn_group(&spec, &build_log) {

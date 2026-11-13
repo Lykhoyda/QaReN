@@ -435,6 +435,10 @@ fn s7_cleanup_releases_a_retired_build_and_retains_unproven_spawn() {
 }
 
 fn expo_script(f: &mut Fixture, log: &str, ready: bool) {
+    expo_script_with_identity(f, log, ready, true);
+}
+
+fn expo_script_with_identity(f: &mut Fixture, log: &str, ready: bool, identity: bool) {
     f.record.resources.adb_server = Some(crate::runrecord::AdbServerResource {
         spawned: Spawned {
             pid: 7100,
@@ -454,13 +458,21 @@ fn expo_script(f: &mut Fixture, log: &str, ready: bool) {
         },
         log,
     );
-    f.runner
-        .inner
-        .expect_run("ps -p 6000 -o lstart=", CmdOutput::success(BIRTH));
+    f.runner.inner.expect_run(
+        "ps -p 6000 -o lstart=",
+        if identity {
+            CmdOutput::success(BIRTH)
+        } else {
+            CmdOutput::failed(1, "")
+        },
+    );
     f.runner.inner.expect_run(
         "ps -p 6000 -o command=",
         CmdOutput::success("expo run:android"),
     );
+    if !identity {
+        return;
+    }
     for _ in 0..if ready { 1 } else { 2 } {
         f.runner
             .inner
@@ -539,11 +551,10 @@ fn s10_s14_readiness_timeout_retains_slot_until_metro_retirement_is_proven() {
                 .expect_run("ps -p 6000 -o lstart=", CmdOutput::failed(1, ""));
         }
         f.runner.inner.expect_run("lsof", CmdOutput::failed(1, ""));
-        if retired {
-            f.runner
-                .inner
-                .expect_run("ps -A", CmdOutput::success("1 1 S\n"));
-        }
+        f.runner.inner.expect_run(
+            "ps -A",
+            CmdOutput::success(if retired { "1 1 S\n" } else { "6000 6000 S\n" }),
+        );
         let receipt = crate::commands::cleanup::cleanup(&mut f.runner, &f.root, "check-slot");
         assert_eq!(f.root.join("locks/native-build-slot").exists(), !retired);
         if !retired {
@@ -1148,4 +1159,126 @@ fn c7_wait_timeout_foreign_release_and_cleanup_keep_tokens_private() {
         }
     }
     assert!(dir.exists());
+}
+
+#[test]
+fn review_s1_identity_capture_failure_can_release_only_a_proven_absent_group() {
+    for (name, inventory, released) in [
+        ("absent", CmdOutput::success("1 1 S\n"), true),
+        ("present", CmdOutput::success("6000 6000 S\n"), false),
+        ("unknown", CmdOutput::failed(1, ""), false),
+    ] {
+        let mut f = fixture(&format!("identity-lost-{name}"), Platform::Android);
+        expo_script_with_identity(&mut f, "compiling\n", false, false);
+        let mut ctx = f.ctx();
+        let failure = build_and_ready(&mut ctx).unwrap_err();
+        assert_eq!(failure.code, FailureCode::BuildFailed);
+        assert!(failure.detail.contains("exited immediately"));
+        assert!(ctx
+            .record
+            .resources
+            .metro
+            .as_ref()
+            .unwrap()
+            .identity
+            .is_none());
+        ctx.record.resources.adb_server = None;
+        ctx.record.resources.adb_local_serial = None;
+        ctx.record.resources.adb_path = None;
+        ctx.save().unwrap();
+        f.runner.inner.expect_run("lsof", CmdOutput::failed(1, ""));
+        f.runner.inner.expect_run("ps -A", inventory);
+        let receipt = crate::commands::cleanup::cleanup(&mut f.runner, &f.root, "check-slot");
+        assert_eq!(f.root.join("locks/native-build-slot").exists(), !released);
+        assert_eq!(
+            receipt.cleanup["build_slot"].contains("retained"),
+            !released
+        );
+        assert_eq!(f.runner.inner.remaining(), 0);
+    }
+}
+
+#[test]
+fn review_s2_core_wait_releases_a_late_gradle_completion_before_teardown() {
+    let mut f = fixture("core-slot-poller", Platform::Android);
+    expo_script(&mut f, "compiling\n", true);
+    let mut ctx = f.ctx();
+    build_and_ready(&mut ctx).unwrap();
+    let slot = ctx
+        .record
+        .resources
+        .build_slot
+        .as_ref()
+        .unwrap()
+        .lock
+        .lock_dir
+        .clone();
+    let log = ctx.record.resources.metro.as_ref().unwrap().log.clone();
+    let run_dir = RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id);
+    let request = crate::core::CoreRequest {
+        run_id: ctx.record.run_id.clone(),
+        t0: ctx.runner.now_epoch_ms(),
+        walk_budget_ms: 60_000,
+        attach_budget_ms: 10_000,
+        plan: "1. Check app\n".into(),
+        prepared: json!({"hash":"fixture","blocks":[]}),
+        preflight_calls: vec![],
+        platform: "android".into(),
+        app_id: "com.example.app".into(),
+        app_root: ctx.runs_root.join("app"),
+        run_dir: run_dir.clone(),
+        lease: "fixture".into(),
+        login_block: None,
+        login_marker: None,
+        video_policy: Default::default(),
+        target: crate::core::CoreTarget {
+            device_id: "fixture-device".into(),
+            device_name: "fixture".into(),
+            metro_port: 8791,
+            metro_url_for_device: "http://127.0.0.1:8791".into(),
+            worktree: ctx.runs_root.join("app"),
+            metro_bundle_requests: None,
+            manifest_warm: None,
+            warm_lane: false,
+        },
+    };
+    let record = ctx.record.clone();
+    let stdout = format!(
+        "{}\n{}\n",
+        json!({"v":1,"runId":"check-slot","seq":2,"type":"resource","payload":{"kind":"runner_driver","pid":9001}}),
+        json!({"v":1,"runId":"check-slot","seq":3,"type":"result","payload":{"verdict":"PASS","path":"walk","blocks":[],"steps":[],"jev":{"calls":0,"medianMs":0},"llmTurns":0,"escapes":0,"recoveries":0}})
+    );
+    f.runner
+        .inner
+        .expect_spawn_piped("core-fixture", 9000, &stdout, Some(0));
+    let mut child = crate::core::spawn(
+        &mut f.runner,
+        &CmdSpec::new("core", "core-fixture", &[], 60),
+        &run_dir.join("logs/core.log"),
+        &request,
+    )
+    .unwrap();
+    child.watch_build_slot(&record);
+    let mut appended = false;
+    let outcome = crate::core::wait(
+        &mut f.runner,
+        child,
+        crate::core::Budgets {
+            walk_seconds: 60,
+            step_seconds: 10,
+        },
+        &mut |runner, _| {
+            assert!(slot.exists());
+            std::fs::write(&log, "compiling\nBUILD SUCCESSFUL in 3s\n").unwrap();
+            appended = true;
+            runner.sleep(Duration::from_millis(1000));
+        },
+    );
+    assert!(appended);
+    assert!(matches!(outcome.verdict, crate::core::Verdict::Pass));
+    assert!(
+        !slot.exists(),
+        "core wait must release the slot before any teardown"
+    );
+    assert!(record.resources.metro.is_some());
 }

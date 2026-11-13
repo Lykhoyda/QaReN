@@ -840,13 +840,7 @@ pub(crate) fn cleanup_build_slot(
             let crate::runrecord::BuildSlotWork::Metro { pgid } = slot.work else {
                 return None;
             };
-            if pgid < 2
-                || record
-                    .resources
-                    .metro
-                    .as_ref()
-                    .is_some_and(|metro| metro.spawned.pgid == pgid)
-            {
+            if pgid < 2 {
                 return None;
             }
             let mut cleanup_runner = crate::exec::CleanupRunner(runner);
