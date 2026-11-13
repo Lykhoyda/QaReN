@@ -164,6 +164,7 @@ fn fixture(name: &str, custody: Custody, booted_minutes_ago: Option<u64>) -> Fix
         terminal: None,
         held: None,
         build_lock: None,
+        build_lock_waits: Vec::new(),
         runtime_version: None,
     };
     let artifact = CachedArtifact {

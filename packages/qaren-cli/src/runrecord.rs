@@ -287,6 +287,21 @@ pub struct BuildLockResource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuildSlotResource {
+    #[serde(flatten)]
+    pub lock: BuildLockResource,
+    pub work: BuildSlotWork,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildSlotWork {
+    Finite,
+    MetroSpawnPending,
+    Metro { pgid: i32 },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum BuildProcess {
     SpawnPending,
@@ -346,6 +361,8 @@ pub struct Resources {
     pub android_emulator: Option<BorrowedEmulatorResource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_lock: Option<BuildLockResource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_slot: Option<BuildSlotResource>,
     // The per-home pool creation lock, persisted before the claim like build_lock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool_create_lock: Option<BuildLockResource>,
@@ -405,6 +422,14 @@ impl Resources {
 
     pub fn can_release_build_ownership(&self) -> bool {
         self.build_process.is_none()
+    }
+
+    pub(crate) fn can_release_build_slot(&self, retired_metro: Option<i32>) -> bool {
+        self.build_slot.as_ref().is_none_or(|slot| match slot.work {
+            BuildSlotWork::Finite => self.can_release_build_ownership(),
+            BuildSlotWork::MetroSpawnPending => false,
+            BuildSlotWork::Metro { pgid } => pgid >= 2 && retired_metro == Some(pgid),
+        })
     }
 
     pub fn begin_build(&mut self) -> Result<(), Failure> {
@@ -530,6 +555,7 @@ impl Resources {
             || self.adb_vendor_key.is_some()
             || self.usb_device.is_some()
             || self.build_lock.is_some()
+            || self.build_slot.is_some()
             || self.pool_create_lock.is_some()
             || self.lease.is_some()
             || self.core.is_some()
@@ -584,9 +610,11 @@ pub struct RunRecord {
     pub terminal: Option<TerminalResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<Held>,
-    // What this run saw of the native-build lock; ownership stays in resources.build_lock.
+    // The last contended native-build wait; ownership stays in the recorded resources.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_lock: Option<BuildLockObservation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub build_lock_waits: Vec<BuildLockObservation>,
     // The runtime version the installed artifact embeds and whether the resolver returned the pin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_version: Option<crate::expo_updates::RuntimeVersion>,
@@ -612,6 +640,8 @@ pub enum LockObservation {
 // Safe holder facts only: no home, lock path, token, PID or command.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildLockObservation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock: Option<String>,
     // The last contending run, absent when the claim was never contended.
     pub holder: Option<String>,
     pub waited_s: u64,

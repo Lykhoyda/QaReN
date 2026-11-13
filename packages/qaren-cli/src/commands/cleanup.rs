@@ -415,6 +415,16 @@ pub fn cleanup_with_policy(
         ));
     }
 
+    let retired_metro = record.resources.metro.as_ref().and_then(|metro| {
+        outcomes
+            .iter()
+            .any(|(leg, outcome)| leg == "metro" && outcome.clean())
+            .then_some(metro.spawned.pgid)
+    });
+    if let Some(outcome) = cleanup_build_slot(&mut record, retired_metro) {
+        outcomes.push(("build_slot".into(), outcome));
+    }
+
     if !record.resources.runner_drivers.is_empty() {
         let owner_gone = matches!(owner, Some(PidLiveness::Dead | PidLiveness::AliveForeign));
         let outcome = if owner_gone {
@@ -814,6 +824,25 @@ pub fn cleanup_with_policy(
     )
 }
 
+pub(crate) fn cleanup_build_slot(
+    record: &mut RunRecord,
+    retired_metro: Option<i32>,
+) -> Option<Outcome> {
+    let slot = record.resources.build_slot.as_ref()?;
+    let absent = matches!(std::fs::symlink_metadata(&slot.lock.lock_dir), Err(error) if error.kind() == std::io::ErrorKind::NotFound);
+    let outcome = if absent {
+        Outcome::Absent
+    } else if record.resources.can_release_build_slot(retired_metro) {
+        release_recorded_lock(&slot.lock, &record.run_id)
+    } else {
+        Outcome::Unresolved("build process cleanup is unproven; native-build-slot retained".into())
+    };
+    if outcome.clean() {
+        record.resources.build_slot = None;
+    }
+    Some(outcome)
+}
+
 fn release_recorded_lock(lock: &crate::runrecord::BuildLockResource, run_id: &str) -> Outcome {
     match crate::buildplan::release_lock(&lock.lock_dir, &lock.holder, run_id) {
         crate::buildplan::ReleaseOutcome::Removed => Outcome::Removed,
@@ -935,6 +964,7 @@ fn finish_cleanup(
     receipt.device = Some(super::device_identity(&record));
     receipt.build = record.build.clone();
     receipt.build_lock = record.build_lock.clone();
+    receipt.build_lock_waits = record.build_lock_waits.clone();
     receipt.core_cleanup = record.resources.core_cleanup.clone();
     receipt.fresh_install = record.resources.fresh_install.clone();
     receipt.lane = record.resources.lane.clone();
@@ -2385,6 +2415,7 @@ pub(crate) fn producers_quiescent(outcomes: &[(String, Outcome)]) -> bool {
             matches!(
                 name.as_str(),
                 "build_process"
+                    | "build_slot"
                     | "core"
                     | "metro"
                     | "recorder"

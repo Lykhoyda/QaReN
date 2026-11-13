@@ -20,6 +20,7 @@ pub mod host_capacity;
 pub mod ios_toolchain;
 pub mod lease;
 pub mod native;
+pub(crate) mod native_build_slot;
 pub mod native_suite;
 pub mod pool;
 pub mod process_observation;

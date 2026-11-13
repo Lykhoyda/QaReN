@@ -470,6 +470,9 @@ fn a_fresh_clone_reuses_another_clones_build_and_never_overwrites_the_store() {
         let mut mock = MockRunner::new();
         mock.sleep(std::time::Duration::from_secs(60 * index as u64));
         let reuse = case == "second";
+        if reuse {
+            std::fs::create_dir_all(req.lock_root.join("native-build-slot")).unwrap();
+        }
         script_preflight(&mut mock, &repo);
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
         if reuse {
@@ -504,6 +507,10 @@ fn a_fresh_clone_reuses_another_clones_build_and_never_overwrites_the_store() {
             receipt.failure
         );
         assert_eq!(mock.remaining(), 0, "{case}");
+        if reuse {
+            assert!(receipt.build_lock_waits.is_empty());
+            assert!(req.lock_root.join("native-build-slot").is_dir());
+        }
         let plan = receipt.build.unwrap();
         assert_eq!(
             plan.decision == BuildDecision::Reuse,
@@ -8254,7 +8261,7 @@ fn pr_runtime_input_recording_obeys_video_policy_and_secret_inventory() {
         (Some("non-strict"), true, true),
     ] {
         let records = policy == Some("non-strict") && non_secret && !unused;
-        let secret = "synthetic\"slot\\value";
+        let secret = "synthetic\"canarymaterial\\value";
         let (repo, app) = app_repo();
         let annotation = if non_secret { " (test-pii)" } else { "" };
         std::fs::write(
@@ -8354,12 +8361,12 @@ fn pr_runtime_input_recording_obeys_video_policy_and_secret_inventory() {
         for (path, bytes) in durable {
             let text = String::from_utf8_lossy(&bytes);
             assert!(
-                !text.contains("slot") && !text.contains(escaped),
+                !text.contains("canarymaterial") && !text.contains(escaped),
                 "{}",
                 path.display()
             );
         }
-        assert!(!receipt.to_json().contains("slot"));
+        assert!(!receipt.to_json().contains("canarymaterial"));
     }
 }
 

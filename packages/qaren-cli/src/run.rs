@@ -694,6 +694,7 @@ fn run_inner(
         terminal: None,
         held: None,
         build_lock: None,
+        build_lock_waits: Vec::new(),
         runtime_version: None,
     };
     if let Err(f) = record.save(&req.runs_root) {
@@ -1156,7 +1157,7 @@ fn run_inner(
         );
         events::stage("attach", StageState::Running, None, None);
         let runner_started_at = ctx.runner.now_epoch_ms();
-        let core_child = match core::spawn_private(
+        let mut core_child = match core::spawn_private(
             ctx.runner,
             &spec,
             &core_log,
@@ -1178,6 +1179,7 @@ fn run_inner(
             return finish_failed(ctx, f);
         }
         let mut driver_notes = Vec::new();
+        core_child.watch_build_slot(&ctx.record);
         let mut outcome = {
             let record = &mut ctx.record;
             let runs_root = &ctx.runs_root;
@@ -2634,6 +2636,7 @@ fn teardown(
     }
     // A signal during core cleanup still gets the normal teardown.
     let hold = hold && ctx.runner.cancellation().is_none();
+    let mut retired_metro = None;
     if let Some(m) = ctx.record.resources.metro.clone() {
         // Held Metro stays recorded, so qaren cleanup or the next run's reclaim stops it.
         let outcome = if hold {
@@ -2647,9 +2650,15 @@ fn teardown(
             )
         };
         if outcome.clean() {
+            retired_metro = Some(m.spawned.pgid);
             ctx.record.resources.metro = None;
         }
         outcomes.push(("metro".to_string(), outcome));
+    }
+    if let Some(outcome) =
+        crate::commands::cleanup::cleanup_build_slot(&mut ctx.record, retired_metro)
+    {
+        outcomes.push(("build_slot".into(), outcome));
     }
     if let Some(outcome) = crate::commands::cleanup::cleanup_runner_drivers(
         ctx.runner,

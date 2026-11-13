@@ -70,7 +70,7 @@ applicable or its subject was not assessed, as explained in the row's detail.
 | `watchman-volume-probe` | Candidate watch admission and [cookie sync](#ios-simulator-lifecycle); admission timeout, rejection or a confirmed cookie timeout fails, while unavailable or invalid responses warn |
 | `candidate-volume-speed` | A bounded small-file read sample on the candidate volume; warns about slow reads, with unknown results disclosed |
 | `host-load` | One-, five- and fifteen-minute load averages, logical CPU count and sampled CPU idle; warns about readiness deadlines under load |
-| `native-build-lock` | Read-only iOS [build-lock observation](#native-fingerprint-build-selection); never claims or reclaims the lock |
+| `native-build-lock` | Read-only iOS lock and shared [build-slot observation](#native-fingerprint-build-selection); never claims or reclaims a lock |
 | `android-sdk`, `android-avd` | When `android` is configured: `ANDROID_HOME`, an executable `adb` file (never run; its version is not checked), the emulator binary and the configured AVD via `emulator -list-avds` |
 | `qaren-path` | The first `qaren` on `PATH` is this binary and the installed build; later copies warn, and so does a separate install that `PATH` runs instead (another `QAREN_HOME` or the other release or source-build line) |
 | `installed-build` | The runtime under `$QAREN_HOME/runtime/<version>/` and the runtime `check` would use (`QAREN_RUNTIME` when set) are complete; a binary outside it that `PATH` runs instead of an install fails |
@@ -5436,7 +5436,22 @@ state. An ambiguous artifact (zero or several bundles) skips caching with a reco
 reason, never a guess. Only a saved state permits ownership rebinding.
 
 **Build serialization.** Native builds (incremental and clean) take a
-host-level `native-build-<platform>` lock. On iOS the lock covers only the
+host-level `native-build-<platform>` lock, followed by one shared
+`native-build-slot` immediately before each build command. This queues iOS
+and Android builds on the same machine. Finite builds release the slot only
+after their process group is proven gone. `expo run:android` releases it on
+a complete Gradle `BUILD SUCCESSFUL in …` or `BUILD FAILED in …` line in this
+run's build log, or after its Metro group is retired. App readiness,
+cancellation and timeout alone do not release it.
+
+The slot wait polls every second. On iOS it uses the remaining shared build
+budget; on Android it has one build budget of its own and leaves the existing
+build and readiness budgets unchanged. `qaren watch` shows a **Build queue**
+row with the holder, lock, held time and time waited. Plain output records
+each observed holder change and each completed wait. Queue events contain
+only the lock name, a validated run id and durations.
+
+On iOS the platform lock covers only the
 build: `prepare`, `check` and `pr` claim it after the device is allocated and
 release it once the artifact is verified, the pre-publication candidate and
 fingerprint checks pass and cache publication is persisted, before
@@ -5455,17 +5470,24 @@ its recorded build group still runs, and how long this run waited, for example
 After 120 s of a live holder with no build group running the wait notes
 `holder_idle_after_build`; a live or unproven holder is never taken. Running
 the budget out after the claim is `BUILD_FAILED`. The receipt's `build_lock`
-reports `holder`, `waited_s`, `holder_alive`, `holder_build_process`,
+keeps the last contended wait; `build_lock_waits` keeps both platform and slot
+observations in order. Each reports `lock`, `holder`, `waited_s`, `holder_alive`, `holder_build_process`,
 `hold_s`, `no_build_observed_s` and `observation` (`none`, `observed` or
 `unreadable`), never a home, lock path, token, PID or command, and failures on
 these paths carry a `recovery` object with the ordered recovery ladder and
 whether this run must clean up its own resources. `qaren doctor` reports the
-lock's current state as `native-build-lock` without claiming it. A run that
+platform lock and slot state as `native-build-lock` without claiming either. A run that
 cannot observe its own process identity refuses `PREREQ_MISSING` before
 claiming. An unresolved release stops the run (`RUN_RECORD_UPDATE_FAILED`)
 and the lock stays recorded for `qaren cleanup`.
 Android claims before allocation, refuses a live holder at once and can adopt
-a provably dead holder's lock. iOS recovery follows the
+a provably dead holder's platform lock. The shared slot always uses the stricter
+orphan rule: the holder is dead, its group is absent, and its run records are
+gone. Otherwise only that run's cleanup releases it after group retirement;
+an unproven spawn keeps it recorded. Reused builds never claim the slot.
+Private lock roots isolate their slots too; older versions, runner builds and
+source builds do not participate. An Expo log without a Gradle end line keeps
+the slot until the run's group is retired. iOS recovery follows the
 [cleanup and orphaned-lock proof rules](#ios-admission-and-cleanup).
 The lock is released after publication (iOS), after preparation (Android) or
 by cleanup, only when owned build authority is retired.
