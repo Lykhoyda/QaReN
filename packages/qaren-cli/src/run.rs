@@ -694,6 +694,7 @@ fn run_inner(
         terminal: None,
         held: None,
         build_lock: None,
+        build_lock_waits: Vec::new(),
         runtime_version: None,
     };
     if let Err(f) = record.save(&req.runs_root) {
@@ -1156,7 +1157,7 @@ fn run_inner(
         );
         events::stage("attach", StageState::Running, None, None);
         let runner_started_at = ctx.runner.now_epoch_ms();
-        let core_child = match core::spawn_private(
+        let mut core_child = match core::spawn_private(
             ctx.runner,
             &spec,
             &core_log,
@@ -1178,6 +1179,7 @@ fn run_inner(
             return finish_failed(ctx, f);
         }
         let mut driver_notes = Vec::new();
+        core_child.watch_build_slot(&ctx.record);
         let mut outcome = {
             let record = &mut ctx.record;
             let runs_root = &ctx.runs_root;
@@ -2321,10 +2323,7 @@ mod block_start_tests {
             .insert("HOME".into(), home.display().to_string());
         let start = runner.now_epoch_ms();
         runner.sleep(std::time::Duration::from_secs(90));
-        assert_eq!(
-            springboard_crash_after(&mut runner, "AAAA", start, 60),
-            None
-        );
+        assert_eq!(springboard_crash_after(&mut runner, "AAAA", start, 60), None);
         assert_eq!(runner.now_epoch_ms(), start + 150_000);
         let _ = std::fs::remove_dir_all(home);
     }
@@ -2650,6 +2649,10 @@ fn teardown(
             ctx.record.resources.metro = None;
         }
         outcomes.push(("metro".to_string(), outcome));
+    }
+    if let Some(outcome) = crate::commands::cleanup::cleanup_build_slot(ctx.runner, &mut ctx.record)
+    {
+        outcomes.push(("build_slot".into(), outcome));
     }
     if let Some(outcome) = crate::commands::cleanup::cleanup_runner_drivers(
         ctx.runner,

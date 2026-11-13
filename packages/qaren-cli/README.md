@@ -70,7 +70,7 @@ applicable or its subject was not assessed, as explained in the row's detail.
 | `watchman-volume-probe` | Candidate watch admission and [cookie sync](#ios-simulator-lifecycle); admission timeout, rejection or a confirmed cookie timeout fails, while unavailable or invalid responses warn |
 | `candidate-volume-speed` | A bounded small-file read sample on the candidate volume; warns about slow reads, with unknown results disclosed |
 | `host-load` | One-, five- and fifteen-minute load averages, logical CPU count and sampled CPU idle; warns about readiness deadlines under load |
-| `native-build-lock` | Read-only iOS [build-lock observation](#native-fingerprint-build-selection); never claims or reclaims the lock |
+| `native-build-lock` | Read-only iOS lock and shared [build-slot observation](#native-fingerprint-build-selection); never claims or reclaims a lock |
 | `android-sdk`, `android-avd` | When `android` is configured: `ANDROID_HOME`, an executable `adb` file (never run; its version is not checked), the emulator binary and the configured AVD via `emulator -list-avds` |
 | `qaren-path` | The first `qaren` on `PATH` is this binary and the installed build; later copies warn, and so does a separate install that `PATH` runs instead (another `QAREN_HOME` or the other release or source-build line) |
 | `installed-build` | The runtime under `$QAREN_HOME/runtime/<version>/` and the runtime `check` would use (`QAREN_RUNTIME` when set) are complete; a binary outside it that `PATH` runs instead of an install fails |
@@ -199,6 +199,8 @@ lease. `--latest` selects the newest `run.json` modification time. It shows
 explicit stages from preflight through cleanup, step outcomes and act/capture/Jev
 timings, recording, and the verdict with its expected check exit code.
 An unobserved stage stays unobserved; a skipped stage says “not needed” in full rows.
+The Build queue row appears only after contention; see the
+[build-slot waiting contract](#native-fingerprint-build-selection).
 TTY redraws read the current terminal size, keep every stage visible, and fit
 step rows into the remaining space with an omitted-row count. Unfinished rows
 take priority, followed by completed rows with the latest observed event sequence,
@@ -257,7 +259,8 @@ On a TTY, the view redraws every 250 ms; Ctrl-C exits only the viewer.
 The owner's identity is checked at most every two seconds and never after the
 end event, so a finished run's snapshot does not wait on a process probe.
 `--plain`, non-TTY stdout, `CI` or `NO_COLOR` prints each observed final stage
-and passed or failed step attempt once, without escape codes or stdin reads.
+and passed or failed step attempt once, without escape codes or stdin reads;
+build queue updates follow the [waiting contract](#native-fingerprint-build-selection).
 `--json` prints a single folded snapshot and exits without following the run;
 a live snapshot still performs the initial owner check.
 Step text and reasons never come from live events. They appear only after an
@@ -3293,8 +3296,9 @@ before the holder died or re-created by an orphaned build writing its output, do
 count. Before a native build or native suite is let past its start gate, its process
 group is recorded in the holder, as is a `qaren` process's own group when it leads
 one; that group must also have no live members, otherwise the refusal names the lock
-and the `pgrep -g` check to wait on. The iOS native-build lock additionally
-requires that group to have been recorded before the next claim releases it: its
+and the `pgrep -g` check to wait on. The iOS native-build lock and shared
+`native-build-slot` additionally
+require that group to have been recorded before the next claim releases it: its
 holder may have died after starting a build it had not yet recorded, so such an
 orphan is kept until an explicit `qaren cleanup <run-id>` for that run releases it. A `qaren` group whose leader pid now belongs to
 another process is not checked, since a reused pid proves its old group is gone. `qaren cleanup <run-id>` for a run with no
@@ -5436,7 +5440,26 @@ state. An ambiguous artifact (zero or several bundles) skips caching with a reco
 reason, never a guess. Only a saved state permits ownership rebinding.
 
 **Build serialization.** Native builds (incremental and clean) take a
-host-level `native-build-<platform>` lock. On iOS the lock covers only the
+host-level `native-build-<platform>` lock, followed by one shared
+`native-build-slot` immediately before each build command. This queues iOS
+and Android builds on the same machine. Finite builds release the slot only
+after their process group is proven gone. `expo run:android` releases it on
+a complete Gradle `BUILD SUCCESSFUL in …` or `BUILD FAILED in …` line in this
+run's build log, or after its entire Metro process group is proven absent.
+A dead group leader and a free Metro port do not prove group absence. App readiness,
+cancellation and timeout alone do not release it. The slot uses a private claim
+token saved before acquisition and reused through group recording and cleanup,
+so matching run ids in separate homes cannot release each other's slot. Public
+queue output shows only the run id.
+
+The slot wait polls every second. On iOS it uses the remaining shared build
+budget; on Android it has one build budget of its own and leaves the existing
+build and readiness budgets unchanged. `qaren watch` shows a **Build queue**
+row with the holder, lock, held time and time waited. Plain output records
+each observed holder change and each completed wait. Queue events contain
+only the lock name, a validated run id and durations.
+
+On iOS the platform lock covers only the
 build: `prepare`, `check` and `pr` claim it after the device is allocated and
 release it once the artifact is verified, the pre-publication candidate and
 fingerprint checks pass and cache publication is persisted, before
@@ -5446,6 +5469,10 @@ after readiness. A contended iOS claim waits, polling every second, within the
 same build budget (`deadlines.build_seconds`) that the prebuild, build,
 verification and publication then share; see the
 [deadline defaults and validation](src/scenario.rs).
+Build subprocess timeouts are capped to the remaining window, and no new
+build command starts after expiry. Teardown commands and their process-identity
+reads keep their own timeouts so they can stop the build and prove its group gone
+after expiry; unresolved cleanup retains ownership for `qaren cleanup`.
 A synchronous cache copy already in progress is not interrupted; its completion is checked against the window
 before publication. Output retirement
 and readiness run outside this window. Running that budget out while waiting is a refusal (`BUILD_CONTENDED`,
@@ -5454,18 +5481,26 @@ its recorded build group still runs, and how long this run waited, for example
 `BUILD_CONTENDED: native-build-ios is held by run <id> (alive: yes; no build process for 9 min); waited 600 s of the budget. Next: wait for that run or re-run once later; if the holder is dead, run its qaren cleanup from its home (its resources only).`
 After 120 s of a live holder with no build group running the wait notes
 `holder_idle_after_build`; a live or unproven holder is never taken. Running
-the budget out after the claim is `BUILD_FAILED`. The receipt's `build_lock`
-reports `holder`, `waited_s`, `holder_alive`, `holder_build_process`,
+the budget out inside the build window outside a lock wait is `BUILD_FAILED`. The receipt's `build_lock`
+keeps the last contended wait, or the latest claim observation if none contended;
+`build_lock_waits` keeps both platform and slot
+observations in order. Each reports `lock`, `holder`, `waited_s`, `holder_alive`, `holder_build_process`,
 `hold_s`, `no_build_observed_s` and `observation` (`none`, `observed` or
 `unreadable`), never a home, lock path, token, PID or command, and failures on
 these paths carry a `recovery` object with the ordered recovery ladder and
 whether this run must clean up its own resources. `qaren doctor` reports the
-lock's current state as `native-build-lock` without claiming it. A run that
+platform lock and slot state as `native-build-lock` without claiming either. A run that
 cannot observe its own process identity refuses `PREREQ_MISSING` before
 claiming. An unresolved release stops the run (`RUN_RECORD_UPDATE_FAILED`)
 and the lock stays recorded for `qaren cleanup`.
 Android claims before allocation, refuses a live holder at once and can adopt
-a provably dead holder's lock. iOS recovery follows the
+a provably dead holder's platform lock. The shared slot follows the stricter
+[orphaned-lock proof rules](#ios-admission-and-cleanup).
+Otherwise only that run's cleanup releases it after group retirement;
+an unproven spawn keeps it recorded. Reused builds never claim the slot.
+Private lock roots isolate their slots too; older versions, runner builds and
+source builds do not participate. An Expo log without a Gradle end line keeps
+the slot until the run's group is retired. iOS recovery follows the
 [cleanup and orphaned-lock proof rules](#ios-admission-and-cleanup).
 The lock is released after publication (iOS), after preparation (Android) or
 by cleanup, only when owned build authority is retired.

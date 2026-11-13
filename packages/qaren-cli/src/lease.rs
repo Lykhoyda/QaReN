@@ -48,10 +48,21 @@ pub fn lock_name(platform: Platform, device_id: &str) -> String {
     format!("device-{platform}-{safe}-{}", &digest[..8])
 }
 
-fn fresh_token(fallback_seed: &str) -> String {
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TOKEN_ENTROPY_UNAVAILABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(crate) fn fresh_token(fallback_seed: &str) -> String {
     let mut bytes = [0u8; 16];
     let read = std::fs::File::open("/dev/urandom")
         .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut bytes));
+    #[cfg(test)]
+    let read = if TOKEN_ENTROPY_UNAVAILABLE.with(|failed| failed.get()) {
+        Err(std::io::Error::other("entropy unavailable"))
+    } else {
+        read
+    };
     match read {
         Ok(()) => bytes.iter().map(|b| format!("{b:02x}")).collect(),
         Err(_) => sha256_hex(fallback_seed.as_bytes())[..32].to_string(),
@@ -190,7 +201,7 @@ pub fn claim_reclaiming_orphan(
     claim_reclaiming(runner, lock_root, name, holder, policy, false, None)
 }
 
-// The iOS native-build lock: an orphan is released only once its recorded build group is proven gone.
+// iOS build locks and the shared slot retain orphans until their recorded build group is proven gone.
 pub fn claim_reclaiming_build_orphan(
     runner: &mut dyn Runner,
     lock_root: &Path,

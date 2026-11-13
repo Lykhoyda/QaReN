@@ -21,7 +21,8 @@ neither a run ID nor `--latest` is a usage error.
 ## What it shows
 
 - Each stage from preflight through cleanup. A stage that was not needed says so; one that
-  was never observed stays unobserved.
+  was never observed stays unobserved. Build queue visibility follows the
+  [build-slot waiting contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#native-fingerprint-build-selection).
 - Each step's outcome and its act, capture and [Jev timings](../jev/#receipts-and-timings), including steps that ran during
   login recovery.
 - Recording, and the verdict with the exit code `qaren check` will return.
@@ -35,7 +36,7 @@ privacy-projected ledger. For what live events retain, see the CLI guide's
 | Mode            | Behaviour                                                                                 |
 | --------------- | ----------------------------------------------------------------------------------------- |
 | Terminal        | Redraws every 250 ms and fits the rows to the terminal size. Ctrl-C exits only the viewer. |
-| `--plain`       | Prints each final stage and each passed or failed step once, without escape codes.        |
+| `--plain`       | Prints final stages, passed or failed steps, and build queue updates without escape codes. |
 | `--json`        | Prints one snapshot of the run and exits without following it.                            |
 
 Output that is not a terminal, or `CI` or `NO_COLOR` in the environment, also selects plain

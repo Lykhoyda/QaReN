@@ -358,15 +358,16 @@ pub fn cleanup_with_policy(
         .deps_cache
         .as_ref()
         .is_some_and(|r| r.reader || r.staging);
+    let guarded_build_slot = record.resources.build_slot.is_some();
     let owner = match (
-        producers || guarded_simulator || cache_owned,
+        producers || guarded_simulator || cache_owned || guarded_build_slot,
         &record.prepare,
     ) {
         (true, Some(prepare)) => Some(probe_pid_identity(runner, prepare)),
         _ => None,
     };
     if owner == Some(PidLiveness::AliveMatching)
-        || (guarded_simulator
+        || ((guarded_simulator || guarded_build_slot)
             && !matches!(owner, Some(PidLiveness::Dead | PidLiveness::AliveForeign)))
     {
         if had_runner {
@@ -381,6 +382,8 @@ pub fn cleanup_with_policy(
             vec![(
                 if guarded_simulator {
                     "simulator"
+                } else if guarded_build_slot {
+                    "build_slot"
                 } else {
                     "core"
                 }
@@ -413,6 +416,10 @@ pub fn cleanup_with_policy(
             "metro".to_string(),
             cleanup_process_group(runner, m.identity.as_ref(), m.spawned.pgid, Some(m.port)),
         ));
+    }
+
+    if let Some(outcome) = cleanup_build_slot(runner, &mut record) {
+        outcomes.push(("build_slot".into(), outcome));
     }
 
     if !record.resources.runner_drivers.is_empty() {
@@ -814,8 +821,50 @@ pub fn cleanup_with_policy(
     )
 }
 
+pub(crate) fn cleanup_build_slot(
+    runner: &mut dyn Runner,
+    record: &mut RunRecord,
+) -> Option<Outcome> {
+    let slot = record.resources.build_slot.as_ref()?;
+    let absent = matches!(std::fs::symlink_metadata(&slot.lock.lock_dir), Err(error) if error.kind() == std::io::ErrorKind::NotFound);
+    let foreign = crate::buildplan::read_holder(&slot.lock.lock_dir)
+        .is_some_and(|held| held.holder != slot.lock.holder || held.run_id != record.run_id);
+    let outcome = if absent || foreign {
+        Outcome::Absent
+    } else {
+        let retired_metro = match slot.work {
+            crate::runrecord::BuildSlotWork::Metro { pgid } if pgid >= 2 => {
+                let mut cleanup_runner = crate::exec::CleanupRunner(runner);
+                (metro::group_presence(&mut cleanup_runner, pgid) == metro::GroupPresence::Absent)
+                    .then_some(pgid)
+            }
+            _ => None,
+        };
+        if record.resources.can_release_build_slot(retired_metro) {
+            release_recorded_lock(&slot.lock, &record.run_id)
+        } else {
+            Outcome::Unresolved(
+                "build process cleanup is unproven; native-build-slot retained".into(),
+            )
+        }
+    };
+    if outcome.clean() {
+        record.resources.build_slot = None;
+    }
+    Some(outcome)
+}
+
 fn release_recorded_lock(lock: &crate::runrecord::BuildLockResource, run_id: &str) -> Outcome {
-    match crate::buildplan::release_lock(&lock.lock_dir, &lock.holder, run_id) {
+    let outcome = if lock
+        .lock_dir
+        .file_name()
+        .is_some_and(|name| name == "native-build-slot")
+    {
+        crate::native_build_slot::release(lock, run_id)
+    } else {
+        crate::buildplan::release_lock(&lock.lock_dir, &lock.holder, run_id)
+    };
+    match outcome {
         crate::buildplan::ReleaseOutcome::Removed => Outcome::Removed,
         crate::buildplan::ReleaseOutcome::Absent => Outcome::Absent,
         // Foreign: this run never won the lock, or a later build adopted it after this run died (AdoptDead).
@@ -935,6 +984,7 @@ fn finish_cleanup(
     receipt.device = Some(super::device_identity(&record));
     receipt.build = record.build.clone();
     receipt.build_lock = record.build_lock.clone();
+    receipt.build_lock_waits = record.build_lock_waits.clone();
     receipt.core_cleanup = record.resources.core_cleanup.clone();
     receipt.fresh_install = record.resources.fresh_install.clone();
     receipt.lane = record.resources.lane.clone();
@@ -2385,6 +2435,7 @@ pub(crate) fn producers_quiescent(outcomes: &[(String, Outcome)]) -> bool {
             matches!(
                 name.as_str(),
                 "build_process"
+                    | "build_slot"
                     | "core"
                     | "metro"
                     | "recorder"
