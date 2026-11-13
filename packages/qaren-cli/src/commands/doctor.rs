@@ -558,7 +558,7 @@ pub fn held_note(lock_root: &Path, runs_root: &Path, udid: &str) -> Option<Strin
 
 const BUILD_LOCK_FIX: &str = "a check or prepare waits for it within its build budget; if the holder is dead, run its qaren cleanup from its home (its resources only)";
 
-// One read-only sample of the iOS native-build lock: never claims, reclaims or refuses.
+// Read-only samples of the iOS build lock and shared slot; never claims, reclaims or refuses.
 pub fn build_lock_row(runner: &mut dyn Runner, lock_root: Result<PathBuf, String>) -> Check {
     const ID: &str = "native-build-lock";
     let root = match lock_root {

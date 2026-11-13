@@ -5445,7 +5445,8 @@ host-level `native-build-<platform>` lock, followed by one shared
 and Android builds on the same machine. Finite builds release the slot only
 after their process group is proven gone. `expo run:android` releases it on
 a complete Gradle `BUILD SUCCESSFUL in …` or `BUILD FAILED in …` line in this
-run's build log, or after its Metro group is retired. App readiness,
+run's build log, or after its entire Metro process group is proven absent.
+A dead group leader and a free Metro port do not prove group absence. App readiness,
 cancellation and timeout alone do not release it. The slot uses a private claim
 token saved before acquisition and reused through group recording and cleanup,
 so matching run ids in separate homes cannot release each other's slot. Public
@@ -5481,7 +5482,8 @@ its recorded build group still runs, and how long this run waited, for example
 After 120 s of a live holder with no build group running the wait notes
 `holder_idle_after_build`; a live or unproven holder is never taken. Running
 the budget out inside the build window outside a lock wait is `BUILD_FAILED`. The receipt's `build_lock`
-keeps the last contended wait; `build_lock_waits` keeps both platform and slot
+keeps the last contended wait, or the latest claim observation if none contended;
+`build_lock_waits` keeps both platform and slot
 observations in order. Each reports `lock`, `holder`, `waited_s`, `holder_alive`, `holder_build_process`,
 `hold_s`, `no_build_observed_s` and `observation` (`none`, `observed` or
 `unreadable`), never a home, lock path, token, PID or command, and failures on
