@@ -837,7 +837,8 @@ async function openSession(
                 presenceBudgetMs,
                 options?.timing ? { now, observe: options.timing } : undefined,
               ),
-            react: () => captureReact(options?.platformPresence === true),
+            react: () =>
+              captureReact(options?.platformPresence === true || options?.typography === true),
           }),
         ),
       ),

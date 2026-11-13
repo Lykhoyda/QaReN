@@ -1241,6 +1241,56 @@ fn slot_failure_path_diagnostics_keep_only_ruled_fields() {
 }
 
 #[test]
+fn t6_dispatch_trace_reaches_private_diagnostics_with_closed_words() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    let repo = common::temp_repo();
+    let inputs = Arc::new(InputValues::from_entries([(
+        OsString::from("QAREN_INPUT_PASSWORD"),
+        OsString::from("synthetic-private-input"),
+    )]));
+    with_input_scope(inputs, || {
+        let expected = serde_json::json!({
+            "kind": "timing", "stage": "dispatch", "code": "COMPLETED",
+            "line": 1, "at": 10, "acquisitionMs": 2, "observationAgeMs": 8,
+            "action": "press", "ok": false, "nativeMutation": "none",
+            "resultCode": "KEYBOARD_DISMISS_FAILED"
+        });
+        let mut payloads = vec![expected.clone()];
+        for key in ["action", "resultCode"] {
+            let mut invalid = expected.clone();
+            invalid[key] = "private-synthetic-word".into();
+            payloads.push(invalid);
+        }
+        let mut stdout = String::new();
+        for (i, event) in payloads.iter().enumerate() {
+            stdout.push_str(&envelope(i as u64 + 2, "diagnostic", &event.to_string()));
+            stdout.push('\n');
+        }
+        stdout.push_str(&envelope(
+            payloads.len() as u64 + 2,
+            "result",
+            &pass_ledger(&[]),
+        ));
+        stdout.push('\n');
+        let mut mock = MockRunner::new();
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+        assert_eq!(
+            run_child(&mut mock, &repo.join("core.log")).verdict,
+            Verdict::Pass
+        );
+        let stored = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
+        let got: Vec<serde_json::Value> = stored
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(got, [expected]);
+        assert!(!stored.contains("private-synthetic-word"));
+    });
+}
+
+#[test]
 fn a_real_slot_child_keeps_raw_logs_withheld_while_retaining_structured_diagnostics() {
     use qaren::exec::RealRunner;
     use qaren::redact::{with_input_scope, InputValues};

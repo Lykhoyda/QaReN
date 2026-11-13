@@ -2651,6 +2651,24 @@ const liveHitRefused = (reason: string): ActResult => ({
   error: `LIVE_HIT_UNPROVEN: LIVE_HIT_UNPROVEN: ${reason}; the live hit read did not prove the target hittable and no tap was performed.`,
 });
 
+test('a live-hit press keeps its refusal path when the keyboard guard could not dismiss', async () => {
+  const f = liveHitFake({
+    ok: false,
+    proven: false,
+    mutation: 'none',
+    error: 'KEYBOARD_DISMISS_FAILED: native control could not hide the keyboard',
+  });
+  let dismissals = 0;
+  f.deps.dismissKeyboard = async () => {
+    dismissals++;
+    return 'js';
+  };
+  const outcome = await walkBlock(block('1. Tap "row-1"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.deepEqual(f.options, [{ requireLiveHit: true }]);
+  assert.equal(dismissals, 0);
+});
+
 for (const [name, result, shown] of [
   ['false', liveHitRefused('not-hittable'), 'not-hittable'],
   ['unavailable', liveHitRefused('deadline'), 'deadline'],

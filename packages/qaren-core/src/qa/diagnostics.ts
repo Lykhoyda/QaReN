@@ -42,6 +42,26 @@ export interface BlockOutcomeDiagnostic {
   outcome: BlockOutcome;
 }
 
+export const DISPATCH_ACTIONS = [
+  'press',
+  'fill',
+  'type',
+  'scroll',
+  'back',
+  'dialog',
+  'dismiss-keyboard',
+  'blur',
+] as const;
+export const DISPATCH_RESULT_CODES = [
+  'KEYBOARD_DISMISS_FAILED',
+  'FOCUS_TARGET_OCCLUDED',
+  'OUTSIDE_APP_WINDOW',
+  'NO_TEXT_INPUT_TARGET',
+  'TEXT_ENTRY_UNVERIFIED',
+  'RUN_CANCELLED',
+  'OTHER',
+] as const;
+
 const DISPATCH_CODES = [
   'ACCEPTED',
   'COMPLETED',
@@ -176,6 +196,12 @@ export function cleanDiagnostic(value: unknown): Record<string, unknown> | undef
     if (!number(key)) return undefined;
     event[key] = value[key];
   }
+  if (DISPATCH_ACTIONS.some((action) => action === value.action)) event.action = value.action;
+  if (typeof value.ok === 'boolean') event.ok = value.ok;
+  if (DISPATCH_RESULT_CODES.some((code) => code === value.resultCode))
+    event.resultCode = value.resultCode;
+  if (['none', 'observed', 'possible'].includes(value.nativeMutation as string))
+    event.nativeMutation = value.nativeMutation;
   const refusal = isRecord(value.refusalDiagnostic) ? value.refusalDiagnostic : {};
   if (REFUSAL_STAGES.some((stage) => stage === refusal.stage)) event.refusalStage = refusal.stage;
   if (typeof refusal.mutating === 'boolean') event.mutating = refusal.mutating;

@@ -861,6 +861,45 @@ rounded frame.
 
 ### Occluded taps and focus
 
+On iOS, a quoted Tap whose target is proven absent (`TARGET_NOT_FOUND` carrying
+`missing`) gets one keyboard-dismissal attempt before failing when the keyboard is
+visible, the app is in front, and React capture proves no presented modal. Only
+after an otherwise eligible absent-target refusal does QaReN request an extra
+capture with React typography for modal proof, then recheck target absence,
+keyboard visibility and the front surface before dismissing. This uses the keyboard
+guard's dismissal chain described below, without a native platform-presence read.
+QaReN takes fresh settled captures after dismissal and resolves the target
+again on the same attempt, acting on the resulting screen: blurring the field can
+validate or navigate in the app. This path records `keyboardCleared` only when the
+dismissal reports a successful tier and the settled capture explicitly reports
+`keyboardVisible: false`.
+The absent-target dismissal allowance survives recovery retries and is spent at
+most once per plan item; it also prevents another keyboard dismissal in that attempt.
+
+If the target is still absent, the failure adds “the keyboard was hidden and the
+target is still not found” when the fresh capture proves it hidden, or “the keyboard
+could not be hidden” otherwise. Authorization of the dismissal counts as dispatch;
+ordinary missing-target recovery still requires proof of a separate surface.
+This path does not run while the [launch-target wait](#step-recovery) is armed,
+after another keyboard dismissal in the attempt, or without proof that no modal is
+present. Disabled or otherwise ineligible targets, candidates all set aside,
+name mismatches, ambiguity, stored-selector replay misses, system dialogs, Fill
+and Android keep their existing paths. `RN_KEYBOARD_GUARD=0` disables this clearance.
+The [absent-target regression tests](../qaren-core/test/unit/qa/keyboard-absent-target.test.ts)
+cover these boundaries.
+
+For a resolved quoted iOS Tap, a runner `KEYBOARD_DISMISS_FAILED` refusal with
+`mutation: none` can use the same per-item allowance. QaReN dismisses the keyboard,
+settles the original target, and resolves again. A different identity or a frame
+that changes after settling refuses the Tap. The pixel baseline is taken again
+after dismissal so keyboard disappearance cannot count as the Tap's effect. A
+second refusal keeps the runner's reason and adds “the keyboard covers the target
+and could not be hidden”. Proactive row-choice clearance also spends this allowance,
+so a subsequent keyboard refusal fails without another dismissal. Live-hit presses,
+recovery and dialog presses,
+`KEYBOARD_RELAYOUT_REQUIRED`, and refusals without proof of no mutation retain
+their existing handling.
+
 Before an iOS tap or exact fill, the runner resolves the retained target by
 native type and identifier (or label when unidentified) in the same snapshot
 generation. A unique live match whose frame no longer approximately matches
@@ -998,8 +1037,9 @@ another resolution is not dispatched again and fails with its observed frames.
 When the runner instead refuses a sent tap or type because its retained target
 is gone or stale (`NO_TEXT_INPUT_TARGET`, `KEYBOARD_TARGET_STALE`, or an Android
 `exact-target-*` reason) and attests mutation `none`, the step fails as
-`TARGET_MOVED_BEFORE_DISPATCH` without retry or fallback; any other refusal
-after a send stays `ACTION_OUTCOME_UNCERTAIN`.
+`TARGET_MOVED_BEFORE_DISPATCH` without retry or fallback. Apart from the
+[quoted iOS Tap keyboard-refusal handoff](#occluded-taps-and-focus), any other
+refusal after a send stays `ACTION_OUTCOME_UNCERTAIN`.
 Resolution, frame comparison and hit testing share one 300 ms deadline.
 Missing retained identity, a generation mismatch, zero or ambiguous live
 matches, and failed or over-budget checks leave the check unavailable and
@@ -4062,6 +4102,26 @@ For runs using runtime inputs, see the [runtime-input diagnostics](#runtime-inpu
 for the retained event file and field limits. The `core.log` details below apply
 to runs without runtime inputs.
 
+Every walker dispatch timing event records its `action`. A `COMPLETED` event
+means the handler returned, not that it succeeded: `ok` records the returned
+boolean, `nativeMutation` retains a recognized mutation classification when
+provided, and a non-ok result adds `resultCode`. That code is the leading error
+code when allowlisted, or `OTHER`; error text is never copied into these fields.
+The [diagnostic allowlists](../qaren-core/src/qa/diagnostics.ts) own the action,
+mutation and result-code vocabulary. These fields survive the TypeScript and CLI
+cleaners into runtime-input runs' private `logs/core-diagnostics.jsonl` as well.
+They distinguish a non-ok press, keyboard dismissal and a successful retry in
+order without changing dispatch behavior, refusal diagnostics or ledger rows.
+
+For the [keyboard-refusal handoff](#occluded-taps-and-focus), read the dispatch
+`COMPLETED` events in order: `press` with `ok: false`,
+`resultCode: KEYBOARD_DISMISS_FAILED` and `nativeMutation: none`, then
+`dismiss-keyboard`, then `press` with its returned result. A repeated refusal
+ends after that third dispatch; the absent-target path starts with dismissal,
+without a preceding press. Dismissal's `ok: true` alone does not prove the
+keyboard disappeared: the separate `keyboard-clearance` note in `logs/core.log`
+must report `hidden: true` to establish that observation.
+
 Private `timing` events in `logs/core.log` may include `refusalDiagnostic` when
 an instrumented iOS dispatch boundary records the context's first refusal. This
 bounded, value-free record retains allowlisted refusal, native-response and
@@ -4100,7 +4160,8 @@ occlusion. Runtime-input suppression follows the contract above.
 The [walker cover result type](../qaren-core/src/qa/walker.ts) owns the fixed gap values.
 `no-native-presence` means the capture carried no native presence, so no React host
 could be tied to a native node. Quoted presses use ordinary captures without native
-presence or React typography. On iOS a covered press or Fill refusal with that gap takes the
+presence or React typography; the [absent-target keyboard clearance](#occluded-taps-and-focus)
+has a separate modal-proof capture. On iOS a covered press or Fill refusal with that gap takes the
 walker's one bounded platform-presence recapture, the same one a plain scroll uses for
 an unproven cover, and looks up the cover again on it, at most once per cover lookup.
 For covered targets, only refusals pay for that read (a presence capture can take
