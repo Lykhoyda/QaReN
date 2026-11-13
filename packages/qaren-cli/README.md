@@ -741,6 +741,30 @@ when its size reduction fails. Recording is
 best effort: a recorder, ffmpeg or trim problem never changes the verdict or the
 exit code.
 
+### Host samples in run reports
+
+`check`, `pr` and `prepare` receipts include `host.start` and `host.end`,
+including refusals before setup; command-line errors and failures
+opening the state directory occur before sampling. Each sample contains
+`load_1m`, `cores`, `free_bytes`, `available_bytes`, `total_bytes`, `pressure` (`normal`, `warning` or `critical`)
+and `swap_used_bytes` when readable. Linux pressure follows the same available
+memory estimate as doctor; macOS preserves the system pressure level.
+Unreadable values are absent, never replaced with zero.
+
+The start sample precedes setup commands; the end sample follows teardown and
+any PR-worktree removal. On macOS and Linux, each sample uses two commands, each
+limited to three seconds, without doctor's CPU-idle sampling or its one-second
+wait. Other hosts have empty samples. Missing or malformed statistics do not
+change the run's verdict. Cancellation can leave the end sample unavailable.
+
+The local `report.md` includes one line with both samples, including free and
+available memory and swap in GiB; unreadable values say `unavailable`. A refusal also
+includes the end host state when load reaches the logical CPU count or memory
+is constrained. These are observations, not a diagnosis of the refusal's cause.
+Refusals before a run directory exists carry the samples in the receipt only.
+`qaren publish` does not include these samples in PR comments or descriptions.
+Sampling starts no device or service and introduces no cleanup resource.
+
 ### Android runner provisioning
 
 The Android runner uses the runtime's shipped source; no published runner APK
@@ -784,11 +808,23 @@ or legacy empty-directory fence, prove all provisioning callers and writers
 for this runner directory stopped before removing that fence and any SQLite
 sidecars. Separate runner directories remain independent.
 
-A runner left
-on the device by rn-dev-agent 1.x is
-signed differently and cannot be replaced in place: uninstall
-`dev.lykhoyda.rndevagent.androidrunner` and `dev.lykhoyda.rndevagent.androidrunner.test`
-from that device first. The walk's advisory scan on the borrowed device refuses
+A runner build is signed with the debug key of the Android user home that built
+it. Runner apps left by rn-dev-agent 1.x, another host or another working home
+block the install when their signing key differs (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`),
+as does a newer runner version (`INSTALL_FAILED_VERSION_DOWNGRADE`). On physical
+Android devices and emulators, provisioning then replaces them once on the
+selected device: it confirms the runner is stopped,
+uninstalls `dev.lykhoyda.rndevagent.androidrunner` and
+`dev.lykhoyda.rndevagent.androidrunner.test`, proves both absent with
+`pm list packages`, installs again and writes `runner-apps-replaced
+reason=signature|downgrade` to `core.log`. It removes whatever is installed under
+those two names, which hold no user data; the device lease is local to this
+host, so another host driving the same device at the same moment is not
+excluded and is unsupported. A surviving runner, an unproven removal or a
+second failed install refuses `DEVICE_UNAVAILABLE` with `subreason:
+runner-install-blocked`, the original install reason and the failed replacement
+step's cause, and manual removal as the next step, to take only if nothing else
+is using the device. The walk's advisory scan on the borrowed device refuses
 `BUSY_FOREIGN_FLOW` with the process scan's message when another UIAutomator or
 agent-device process runs there (`adb -s <serial> shell ps -A`). The scan does
 not recognise every driver and fails open when `ps` cannot run, so borrow a
@@ -2837,6 +2873,43 @@ matching simulator crash report, never its paths; only a missing framework the
 app embeds gets the CocoaPods remedy.
 Other manifest and launch errors remain `BUILD_FAILED`; clean up retained
 resources before retrying those errors.
+
+Android APK installs issued directly by QaReN use `adb install -r -d` with a
+300-second first-attempt limit. This covers fresh builds for borrowed or tunnelled
+emulators and cached installs on emulators or USB devices. Fresh USB builds remain
+built and installed by `expo run:android` and do not use this recovery. If the
+first attempt fails or lacks `Success`, an `INSTALL_FAILED_` or
+`INSTALL_PARSE_FAILED_` verdict in either stdout or stderr is final. Otherwise,
+unless cancelled, QaReN waits for the package manager before retrying once.
+
+The recovery wait starts when the first install returns and lasts at most 180
+seconds. It requires three consecutive successful `pm path android` probes with
+a `package:` line. Each probe gets at most 30 seconds, capped to the wait's
+remaining whole seconds; five-second pauses are also capped to the remaining
+wait. Cancellation is checked before each probe and pause and after each probe.
+The second install gets at most 300 seconds, capped to the whole seconds left in
+the install/launch/readiness `build_seconds` window opened at reuse-path entry.
+For a fresh emulator build, that is a new window after Gradle, independent of
+the build's remaining time. With less than one second left, no second install
+starts. The recovery wait itself has its own 180-second limit.
+
+Missing verdicts can mean a dropped transport or a committed install whose
+acknowledgement was lost; three good probes do not prove the first install never
+committed. Replacing the same APK with `-r -d` permits this single retry. Recovery
+never restarts, reboots or wipes the emulator. Success after retry records
+`install_attempts=2` and `install_recovery_wait_ms`; the runner records both
+`adb-install` command events.
+
+Android recovery failures use `ARTIFACT_INSTALL_FAILED` with fixed detail text
+and no device output. A first-attempt verdict is `install-failed`. An exhausted
+recovery wait is also `install-failed`, stating that the first install failed,
+the package manager did not answer for 180 seconds, and no second install was
+tried. If the package manager answers but the preparation window is spent,
+`install-timeout` says no second install was tried. A failed second attempt is
+`install-failed` or `install-timeout`, stating that the install failed twice and
+the package manager answered between attempts. Cancellation remains `RUN_CANCELLED`;
+after an acknowledged retry install, QaReN saves its installation record for
+cleanup ownership proof before honoring cancellation.
 
 Cached dev-client verification and installation failures on either platform
 use `ARTIFACT_INSTALL_FAILED`. `failure.detail` carries `artifact-invalid`,

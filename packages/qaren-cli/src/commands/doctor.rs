@@ -2459,7 +2459,7 @@ mod tests {
                 runner.expect_run(command, CmdOutput::failed(1, "unavailable"));
             }
         } else {
-            for command in ["/proc/meminfo", "/proc/loadavg", "/proc/stat", "/proc/stat"] {
+            for command in ["/proc/meminfo", "/proc/loadavg /proc/stat", "/proc/stat"] {
                 runner.expect_run(command, CmdOutput::failed(1, "unavailable"));
             }
         }
@@ -3236,6 +3236,7 @@ mod tests {
         assert_eq!(runner.remaining(), 0);
         assert!(runner.spawned_logs.is_empty());
         assert!(runner.calls.iter().all(|call| call.label == "doctor-host"
+            || call.label == "host-sample"
             || call.label == "expo-module-resolve"
             || call.label == "candidate-volume-sample"
             || call.program == "df"

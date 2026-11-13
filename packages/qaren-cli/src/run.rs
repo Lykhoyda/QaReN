@@ -233,6 +233,7 @@ pub fn run(runner: &mut dyn Runner, req: &RunRequest) -> Receipt {
 
 fn run_scoped(runner: &mut dyn Runner, req: &RunRequest) -> Receipt {
     let started_ms = runner.now_epoch_ms();
+    let host_start = crate::host_capacity::sample(runner, std::env::consts::OS);
     let mut preflight_jev = None;
     // A PR worktree created before the run record owns it; removed here if the run never got that far.
     let mut unowned_worktree = None;
@@ -282,6 +283,7 @@ fn run_scoped(runner: &mut dyn Runner, req: &RunRequest) -> Receipt {
         receipt.outcomes.entry(name).or_insert(note);
     }
     receipt.preflight_jev = preflight_jev;
+    crate::commands::finish_host(runner, &mut receipt, host_start);
     receipt
 }
 
@@ -1469,8 +1471,9 @@ fn run_inner(
             ),
             Verdict::Refused { code, message } => (
                 ReceiptResult::Refused,
-                Some(boundary(&|| {
-                    Failure::new(
+                Some(boundary(&|| Failure {
+                    subreason: Failure::core_refusal_subreason(code),
+                    ..Failure::new(
                         "prove",
                         refusal_code(code),
                         format!("{code}: {message}"),
@@ -2103,6 +2106,7 @@ fn refusal_code(code: &str) -> FailureCode {
         "JEV_REQUEST_INVALID" => FailureCode::JevRequestInvalid,
         "JEV_UNREACHABLE" => FailureCode::JevUnreachable,
         "RUN_CANCELLED" => FailureCode::RunCancelled,
+        "RUNNER_INSTALL_BLOCKED" => FailureCode::DeviceUnavailable,
         code if code.starts_with("DEV_REDBOX_") => FailureCode::DevRedbox,
         _ => FailureCode::CoreRefused,
     }

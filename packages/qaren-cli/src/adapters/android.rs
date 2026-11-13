@@ -1101,13 +1101,19 @@ pub fn runner_forward_remains(stdout: &str, serial: &str) -> bool {
     runner_forward_lines(stdout, serial).next().is_some()
 }
 
-pub fn pm_path_spec(adb: &Path, server_port: u16, serial: &str, app_id: &str) -> CmdSpec {
+pub fn pm_path_spec(
+    adb: &Path,
+    server_port: u16,
+    serial: &str,
+    app_id: &str,
+    budget_seconds: u64,
+) -> CmdSpec {
     adb_client(
         "adb-pm-path",
         adb,
         server_port,
         &["-s", serial, "shell", "pm", "path", app_id],
-        30,
+        budget_seconds,
     )
 }
 

@@ -219,7 +219,7 @@ fn adb_commands_pin_the_serial_and_private_server() {
     let adb = Path::new("/sdk/platform-tools/adb");
     for spec in [
         android::adb_get_state_spec(adb, 15037, "127.0.0.1:5555"),
-        android::pm_path_spec(adb, 15037, "127.0.0.1:5555", "com.rndevagent.testapp"),
+        android::pm_path_spec(adb, 15037, "127.0.0.1:5555", "com.rndevagent.testapp", 30),
         android::pidof_spec(adb, 15037, "127.0.0.1:5555", "com.rndevagent.testapp"),
     ] {
         assert_eq!(spec.args[0], "-s", "{} must pin -s", spec.label);

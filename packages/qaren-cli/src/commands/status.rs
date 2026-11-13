@@ -588,6 +588,7 @@ fn probe_device_and_app(
         server_port,
         serial,
         &record.candidate.app_id,
+        30,
     ));
     outcomes.push((
         "app_installed".to_string(),
@@ -679,6 +680,7 @@ fn probe_usb(runner: &mut dyn Runner, record: &RunRecord, outcomes: &mut Vec<(St
         server_port,
         &serial,
         &record.candidate.app_id,
+        30,
     ));
     outcomes.push((
         "app_installed".to_string(),

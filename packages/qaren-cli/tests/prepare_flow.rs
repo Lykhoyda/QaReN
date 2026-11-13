@@ -10,6 +10,47 @@ use qaren::runrecord::{Phase, RunRecord};
 const UDID: &str = "AAAABBBB-1111-2222-3333-444455556666";
 const LSTART: &str = "Wed Aug 12 16:01:00 2026";
 
+#[test]
+fn host_samples_bracket_prepare_and_survive_a_pre_record_refusal() {
+    for refused in [false, true] {
+        let repo = common::temp_repo();
+        let yaml = ios_scenario_yaml(8791);
+        let yaml = if refused {
+            yaml.replace("  dev_client_scheme: rndatest\n", "")
+        } else {
+            yaml
+        };
+        let scenario = write_scenario(&repo, &yaml);
+        let mut inner = MockRunner::new();
+        if !refused {
+            script_ios_prepare(&mut inner, &repo, CmdOutput::success(""));
+        }
+        let mut runner = common::host::HostRunner::new(inner);
+        let receipt = prepare(&mut runner, &prepare_args(&scenario, false, None));
+        assert_eq!(
+            receipt.result,
+            if refused {
+                ReceiptResult::Refused
+            } else {
+                ReceiptResult::Ready
+            }
+        );
+        let host = receipt.host.as_ref().unwrap();
+        assert_eq!(host.start.load_1m, Some(1.0));
+        assert_eq!(host.end.load_1m, Some(12.0));
+        assert!(runner.calls[..2].iter().all(|c| c.label == "host-sample"));
+        assert!(runner.calls[runner.calls.len() - 2..]
+            .iter()
+            .all(|c| c.label == "host-sample"));
+        if !refused {
+            let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
+            assert!(report.starts_with("# QaReN prepare: ready\n"));
+            assert!(report.contains("Host at start: load 1.0 on 8 cores"));
+            assert!(report.contains("At end: load 12.0 on 8 cores"));
+        }
+    }
+}
+
 fn free_port() -> CmdOutput {
     CmdOutput {
         exit_code: Some(1),

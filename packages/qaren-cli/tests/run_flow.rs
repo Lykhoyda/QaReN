@@ -1,6 +1,8 @@
 #[path = "run_flow/android_dynamic_config.rs"]
 mod android_dynamic_config;
 mod common;
+#[path = "run_flow/host_numbers.rs"]
+mod host_numbers;
 use common::IosBuildRunner as MockRunner;
 
 use qaren::core::Budgets;
@@ -3436,6 +3438,51 @@ fn an_old_node_refuses_at_preflight() {
 }
 
 #[test]
+fn a_blocked_runner_install_is_a_device_refusal_with_its_cause_and_next_step() {
+    // Session-open refuses during admission, so no `admitted` line precedes the result; the
+    // mapping does not depend on the platform.
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    script_provision(&mut mock);
+    script_drift_status(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    let refusal = serde_json::json!({
+        "verdict": "REFUSED",
+        "code": "RUNNER_INSTALL_BLOCKED",
+        "message": "QaReN's runner apps on the device block the install (signature: INSTALL_FAILED_UPDATE_INCOMPATIBLE) and could not be replaced: the one reinstall failed too: INSTALL_FAILED_UPDATE_INCOMPATIBLE"
+    });
+    mock.expect_spawn_piped(
+        "walk.js",
+        9000,
+        &format!("{}\n", envelope(2, "result", &refusal.to_string())),
+        Some(4),
+    );
+    script_core_identity(&mut mock);
+    script_teardown(&mut mock);
+
+    let receipt = run(&mut mock, &request(&repo, &app, 30));
+
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::DeviceUnavailable);
+    assert_eq!(failure.subreason.as_deref(), Some("runner-install-blocked"));
+    assert!(
+        failure
+            .detail
+            .starts_with("RUNNER_INSTALL_BLOCKED: QaReN's runner apps on the device block the install (signature: INSTALL_FAILED_UPDATE_INCOMPATIBLE)"),
+        "{}",
+        failure.detail
+    );
+    assert_eq!(
+        failure.next_action,
+        "QaReN could not replace its own runner apps on the device (adb's reason is in the detail); only if nothing else is using the device, remove them with `adb -s <serial> uninstall dev.lykhoyda.rndevagent.androidrunner` and the same for `dev.lykhoyda.rndevagent.androidrunner.test`, then re-run"
+    );
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
 fn a_child_refusal_is_a_typed_refusal_with_the_child_code() {
     for admitted in [false, true] {
         let (repo, app) = app_repo();
@@ -6623,6 +6670,9 @@ struct LeaseObservedRunner {
 
 impl LeaseObservedRunner {
     fn observe(&mut self, spec: &CmdSpec) {
+        if spec.label == "host-sample" {
+            return;
+        }
         if spec.label != "fresh-install-admission" && self.wire.is_none() {
             return;
         }
@@ -11499,6 +11549,294 @@ fn android_teardown_retries_a_slow_runner_read_and_releases_the_lease() {
     assert_ne!(record.phase, Phase::Walking);
 }
 
+// Recovery contracts exercise check's install, receipt and teardown path through the scripted runner.
+fn android_install_recovery_fixture() -> (RunRequest, MockRunner) {
+    let (repo, app) = app_repo();
+    seed_cached_apk(&repo, &app);
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_lock_read(&mut mock, POWER, WINDOW_POLICY);
+    (req, mock)
+}
+
+fn script_package_manager_recovery(mock: &mut MockRunner) {
+    for _ in 0..3 {
+        mock.expect_run(
+            "shell pm path android",
+            CmdOutput::success("package:/system/framework/framework-res.apk\n"),
+        );
+    }
+}
+
+fn assert_android_install_recovery_success(first: CmdOutput) {
+    let (req, mut mock) = android_install_recovery_fixture();
+    mock.expect_run("install -r -d", first);
+    script_package_manager_recovery(&mut mock);
+    // The lock was read before the first install; the retry does not read it again.
+    script_android_install_launch(&mut mock, 0);
+    script_android_app_tick(&mut mock, CmdOutput::success("4242\n"));
+    script_android_walk_release(&mut mock, false);
+    let receipt = run(&mut mock, &req);
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(receipt.outcomes["install_attempts"], "2");
+    assert_eq!(receipt.outcomes["install_recovery_wait_ms"], "10000");
+    assert_eq!(
+        mock.calls
+            .iter()
+            .filter(|c| c.label == "adb-install")
+            .count(),
+        2
+    );
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn android_install_recovery_i1_continues_after_transport_failure() {
+    assert_android_install_recovery_success(CmdOutput::failed(1, "transport sentinel"));
+}
+
+#[test]
+fn android_install_recovery_i7_replaces_an_install_whose_acknowledgement_was_lost() {
+    assert_android_install_recovery_success(CmdOutput::success("Performing Streamed Install\n"));
+}
+
+#[test]
+fn android_install_recovery_i2_and_i3_package_manager_verdicts_are_terminal() {
+    for output in [
+        CmdOutput {
+            exit_code: Some(1),
+            stdout: "Failure [INSTALL_FAILED_INSUFFICIENT_STORAGE] private sentinel".into(),
+            ..Default::default()
+        },
+        CmdOutput::failed(
+            1,
+            "Failure [INSTALL_PARSE_FAILED_NO_CERTIFICATES] private sentinel",
+        ),
+    ] {
+        let (req, mut mock) = android_install_recovery_fixture();
+        mock.expect_run("install -r -d", output);
+        let receipt = run(&mut mock, &req);
+        let failure = receipt.failure.unwrap();
+        assert_eq!(failure.code, FailureCode::ArtifactInstallFailed);
+        assert!(failure.detail.contains("(install-failed):"));
+        assert!(!failure.detail.contains("sentinel"));
+        assert!(!mock.calls.iter().any(|c| c.label == "adb-pm-path"));
+        assert_eq!(
+            mock.calls
+                .iter()
+                .filter(|c| c.label == "adb-install")
+                .count(),
+            1
+        );
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn android_install_recovery_i4_cuts_a_blocked_probe_at_the_wait_deadline() {
+    let (req, mut mock) = android_install_recovery_fixture();
+    mock.expect_run("install -r -d", CmdOutput::failed(1, "transport sentinel"));
+    // The scripted runner holds each probe until its timeout. The last probe must
+    // be cut after 5s, rather than running its normal 30s past the 180s deadline.
+    mock.timeouts = [30_000, 30_000, 30_000, 30_000, 30_000, 5_000]
+        .map(|ms| ("adb-pm-path".into(), ms))
+        .into();
+    let before = mock.now_epoch_ms();
+    let receipt = run(&mut mock, &req);
+    assert_eq!(mock.now_epoch_ms() - before, 180_000);
+    let failure = receipt.failure.unwrap();
+    assert_eq!(failure.code, FailureCode::ArtifactInstallFailed);
+    assert!(failure.detail.contains("(install-failed): the first install failed; the device's package manager did not answer for 180 s; no second install was tried"), "{failure:?}");
+    assert!(!failure.detail.contains("sentinel"));
+    assert_eq!(
+        mock.calls
+            .iter()
+            .filter(|c| c.label == "adb-install")
+            .count(),
+        1
+    );
+    assert_eq!(
+        mock.calls
+            .iter()
+            .filter(|c| c.label == "adb-pm-path")
+            .map(|c| c.timeout_seconds)
+            .collect::<Vec<_>>(),
+        [30, 30, 30, 30, 30, 5]
+    );
+    assert!(mock.timeouts.is_empty());
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn android_install_recovery_i5_second_failure_names_both_attempts() {
+    for timed_out in [false, true] {
+        let (req, mut mock) = android_install_recovery_fixture();
+        mock.expect_run("install -r -d", CmdOutput::failed(1, "first sentinel"));
+        script_package_manager_recovery(&mut mock);
+        mock.expect_run(
+            "install -r -d",
+            CmdOutput {
+                timed_out,
+                ..CmdOutput::failed(1, "second sentinel")
+            },
+        );
+        let receipt = run(&mut mock, &req);
+        let failure = receipt.failure.unwrap();
+        assert_eq!(failure.code, FailureCode::ArtifactInstallFailed);
+        let cause = if timed_out {
+            "install-timeout"
+        } else {
+            "install-failed"
+        };
+        assert!(failure.detail.contains(&format!("({cause}): the install failed twice; the package manager answered between the attempts")), "{failure:?}");
+        assert!(!failure.detail.contains("sentinel"));
+        assert_eq!(
+            mock.calls
+                .iter()
+                .filter(|c| c.label == "adb-install")
+                .count(),
+            2
+        );
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn android_install_recovery_i6_cancellation_during_a_probe_ends_the_run() {
+    let (req, mut mock) = android_install_recovery_fixture();
+    mock.expect_run("install -r -d", CmdOutput::failed(1, "transport sentinel"));
+    mock.timeouts = [("adb-pm-path".into(), 30_000)].into();
+    mock.cancel_after = Some(("shell pm path android".into(), "received SIGTERM".into()));
+    let before = mock.now_epoch_ms();
+    let receipt = run(&mut mock, &req);
+    assert_eq!(receipt.failure.unwrap().code, FailureCode::RunCancelled);
+    assert_eq!(mock.now_epoch_ms() - before, 30_000);
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert_eq!(
+        mock.calls
+            .iter()
+            .filter(|c| c.label == "adb-install")
+            .count(),
+        1
+    );
+    assert!(mock.timeouts.is_empty());
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn android_install_recovery_requires_three_consecutive_successful_package_lines() {
+    let (req, mut mock) = android_install_recovery_fixture();
+    mock.expect_run("install -r -d", CmdOutput::failed(1, "transport failure"));
+    for output in [
+        CmdOutput::success("package:/system/framework/framework-res.apk\n"),
+        CmdOutput::success("package:/system/framework/framework-res.apk\n"),
+        CmdOutput::failed(1, "package:/system/framework/framework-res.apk\n"),
+        CmdOutput::success("package:/system/framework/framework-res.apk\n"),
+        CmdOutput::success("no package line\n"),
+    ] {
+        mock.expect_run("shell pm path android", output);
+    }
+    script_package_manager_recovery(&mut mock);
+    script_android_install_launch(&mut mock, 0);
+    script_android_app_tick(&mut mock, CmdOutput::success("4242\n"));
+    script_android_walk_release(&mut mock, false);
+    let receipt = run(&mut mock, &req);
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(receipt.outcomes["install_recovery_wait_ms"], "35000");
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn android_install_recovery_caps_or_skips_the_retry_at_the_entry_window() {
+    for first_ms in [16_000, 21_000] {
+        let (req, mut mock) = android_install_recovery_fixture();
+        let config = std::fs::read_to_string(&req.config_path).unwrap();
+        std::fs::write(
+            &req.config_path,
+            format!("{config}\ndeadlines:\n  build_seconds: 30\n"),
+        )
+        .unwrap();
+        mock.advance_on = Some(("install -r -d".into(), first_ms));
+        mock.expect_run("install -r -d", CmdOutput::failed(1, "first failure"));
+        script_package_manager_recovery(&mut mock);
+        if first_ms == 16_000 {
+            mock.expect_run("install -r -d", CmdOutput::failed(1, "second failure"));
+        }
+        let receipt = run(&mut mock, &req);
+        assert_eq!(
+            receipt.failure.as_ref().unwrap().code,
+            FailureCode::ArtifactInstallFailed
+        );
+        let installs: Vec<_> = mock
+            .calls
+            .iter()
+            .filter(|c| c.label == "adb-install")
+            .collect();
+        assert_eq!(installs[0].timeout_seconds, 300);
+        if first_ms == 16_000 {
+            assert_eq!(installs.len(), 2);
+            assert_eq!(installs[1].timeout_seconds, 4);
+        } else {
+            assert_eq!(installs.len(), 1);
+            assert!(receipt
+                .failure
+                .unwrap()
+                .detail
+                .contains("no second install was tried"));
+        }
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn android_install_recovery_does_not_probe_after_cancellation_at_the_first_install() {
+    let (req, mut mock) = android_install_recovery_fixture();
+    mock.expect_run("install -r -d", CmdOutput::failed(1, "transport failure"));
+    mock.cancel_after = Some(("install -r -d".into(), "received SIGTERM".into()));
+    let receipt = run(&mut mock, &req);
+    assert_eq!(receipt.failure.unwrap().code, FailureCode::RunCancelled);
+    assert!(!mock.calls.iter().any(|c| c.label == "adb-pm-path"));
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn android_install_recovery_records_success_before_cancellation() {
+    let (req, mut mock) = android_install_recovery_fixture();
+    mock.expect_run("install -r -d", CmdOutput::failed(1, "transport failure"));
+    script_package_manager_recovery(&mut mock);
+    mock.expect_run("install -r -d", CmdOutput::success("Success\n"));
+    mock.advance_on = Some(("install -r -d".into(), 1));
+    mock.cancel_at_ms = Some((mock.now_epoch_ms() + 10_002, "received SIGTERM".into()));
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.failure.unwrap().code, FailureCode::RunCancelled);
+    assert_eq!(receipt.outcomes["install_attempts"], "2");
+    assert_eq!(receipt.outcomes["install_recovery_wait_ms"], "10000");
+    assert_eq!(
+        mock.calls
+            .iter()
+            .filter(|c| c.label == "adb-install")
+            .count(),
+        2
+    );
+    assert!(!adb_calls(&mock).iter().any(|c| c.contains("reverse")));
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert_eq!(mock.remaining(), 0);
+    let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+    let install = record.resources.app_install.as_ref().unwrap();
+    assert_eq!(install.app_id, record.candidate.app_id);
+    assert_eq!(install.serial, EMULATOR);
+    assert_eq!(install.via, "adb-install");
+    let artifact = record.build.as_ref().unwrap().artifact.as_ref().unwrap();
+    assert_eq!(install.artifact.sha256, artifact.sha256);
+    assert_eq!(record.resources.adb_reverse_port, None);
+    assert!(record.resources.lease.is_none());
+}
+
 #[test]
 fn android_check_install_failure_and_timeout_keep_verified_apk_and_release_only_the_lease() {
     for (label, installed) in [
@@ -11526,6 +11864,8 @@ fn android_check_install_failure_and_timeout_keep_verified_apk_and_release_only_
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
         mock.expect_run("ls-files", CmdOutput::success(""));
         script_lock_read(&mut mock, POWER, WINDOW_POLICY);
+        mock.expect_run("install -r -d", installed.clone());
+        script_package_manager_recovery(&mut mock);
         mock.expect_run("install -r -d", installed);
 
         let receipt = run(&mut mock, &req);
@@ -11585,32 +11925,31 @@ fn android_check_install_failure_and_timeout_keep_verified_apk_and_release_only_
 
 #[test]
 fn android_check_install_over_another_signer_names_fresh_install_and_its_cost() {
-    let (repo, app) = app_repo();
-    seed_cached_apk(&repo, &app);
-    let req = android_request(&repo, &app);
-    let mut mock = android_mock();
-    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
-    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
-    mock.expect_run("ls-files", CmdOutput::success(""));
-    script_lock_read(&mut mock, POWER, WINDOW_POLICY);
-    mock.expect_run(
-        "install -r -d",
-        CmdOutput::failed(
-            1,
-            "adb: failed to install app-debug.apk: Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package com.rndevagent.testapp signatures do not match newer version; ignoring!]",
-        ),
+    let incompatible = CmdOutput::failed(
+        1,
+        "adb: failed to install app-debug.apk: Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package com.rndevagent.testapp signatures do not match newer version; ignoring!]",
     );
+    // The other signer answers the first install, or the retry after a lost transport.
+    for retried in [false, true] {
+        let (req, mut mock) = android_install_recovery_fixture();
+        if retried {
+            mock.expect_run("install -r -d", CmdOutput::failed(1, "transport failure"));
+            script_package_manager_recovery(&mut mock);
+        }
+        mock.expect_run("install -r -d", incompatible.clone());
 
-    let receipt = run(&mut mock, &req);
+        let receipt = run(&mut mock, &req);
 
-    let failure = receipt.failure.unwrap();
-    assert_eq!(failure.code, FailureCode::ArtifactInstallFailed);
-    assert_eq!(
-        failure.next_action.to_string(),
-        "the device already has com.rndevagent.testapp from another signer; re-run with --fresh-install to replace it (this deletes that app's data on the device)"
-    );
-    assert!(adb_calls(&mock).iter().all(|c| !c.contains("uninstall")));
-    assert_eq!(mock.remaining(), 0);
+        let failure = receipt.failure.unwrap();
+        assert_eq!(failure.code, FailureCode::ArtifactInstallFailed, "{retried}");
+        assert_eq!(
+            failure.next_action.to_string(),
+            "the device already has com.rndevagent.testapp from another signer; re-run with --fresh-install to replace it (this deletes that app's data on the device)",
+            "{retried}"
+        );
+        assert!(adb_calls(&mock).iter().all(|c| !c.contains("uninstall")));
+        assert_eq!(mock.remaining(), 0, "{retried}");
+    }
 }
 
 #[test]

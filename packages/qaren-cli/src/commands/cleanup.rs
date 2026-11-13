@@ -1407,7 +1407,7 @@ fn remove_app_install(
         );
     }
 
-    let path_before = runner.run(&android::pm_path_spec(adb, port, serial, app_id));
+    let path_before = runner.run(&android::pm_path_spec(adb, port, serial, app_id, 30));
     if path_before.timed_out || path_before.exit_code.is_none() {
         return (
             Outcome::Unresolved(format!("pm path: {}", path_before.summary())),
@@ -1498,7 +1498,7 @@ fn remove_app_install(
 
     let at = timefmt::iso8601_utc(runner.now_epoch_ms());
     let uninstall = runner.run(&android::uninstall_spec(adb, port, serial, app_id));
-    let path_after = runner.run(&android::pm_path_spec(adb, port, serial, app_id));
+    let path_after = runner.run(&android::pm_path_spec(adb, port, serial, app_id, 30));
     let list_after = runner.run(&android::pm_list_packages_spec(adb, port, serial, app_id));
     let reported_success = uninstall.ok() && uninstall.stdout.contains("Success");
     let outcome = match (

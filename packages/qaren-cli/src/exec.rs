@@ -1222,6 +1222,15 @@ impl Runner for MockRunner {
             .ok_or_else(|| "connection refused".to_string())
     }
     fn execute(&mut self, spec: &CmdSpec, _interruptible: bool) -> CmdOutput {
+        // Unscripted diagnostics stay unavailable in fixtures for unrelated run behavior.
+        if spec.label == "host-sample"
+            && !self
+                .script
+                .front()
+                .is_some_and(|e| spec.rendered().contains(&e.program_hint))
+        {
+            return CmdOutput::failed(1, "host sample not scripted");
+        }
         self.calls.push(spec.clone());
         if spec.label == "adb-start-server" {
             self.adb_servers.extend(self.adb_server_after_start.take());

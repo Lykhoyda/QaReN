@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+pub mod host;
+
 use qaren::candidate::Candidate;
 use qaren::exec::{CmdOutput, MockRunner};
 use qaren::runrecord::{Phase, PidIdentity, RunRecord, RUN_SCHEMA};

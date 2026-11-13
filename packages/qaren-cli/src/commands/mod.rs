@@ -122,6 +122,31 @@ pub fn metro_identity(record: &RunRecord) -> Option<MetroIdentity> {
     })
 }
 
+pub(crate) fn finish_host(
+    runner: &mut dyn crate::exec::Runner,
+    receipt: &mut Receipt,
+    start: crate::host_capacity::Sample,
+) {
+    let end = crate::host_capacity::sample(runner, std::env::consts::OS);
+    if end.constrained() {
+        if let Some(failure) = receipt.failure.as_mut().filter(|f| f.code.is_refusal()) {
+            failure.detail = crate::redact::OutputText::from_output(&format!(
+                "{}; the host was under load: {}",
+                failure.detail,
+                end.summary()
+            ));
+        }
+    }
+    receipt.host = Some(crate::host_capacity::RunSamples { start, end });
+    if let Err(error) = crate::report::write_host(receipt) {
+        receipt.outcomes.insert(
+            "host_report".into(),
+            format!("host summary could not be written: {error}"),
+        );
+    }
+    receipt.commands_executed = runner.commands_executed();
+}
+
 pub fn attach_artifacts(receipt: &mut Receipt, runs_root: &Path, record: &RunRecord) {
     let run_dir = RunRecord::run_dir(runs_root, &record.run_id);
     receipt
