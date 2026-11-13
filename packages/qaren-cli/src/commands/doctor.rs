@@ -2305,7 +2305,7 @@ mod tests {
                 runner.expect_run(command, CmdOutput::failed(1, "unavailable"));
             }
         } else {
-            for command in ["/proc/meminfo", "/proc/loadavg", "/proc/stat", "/proc/stat"] {
+            for command in ["/proc/meminfo", "/proc/loadavg /proc/stat", "/proc/stat"] {
                 runner.expect_run(command, CmdOutput::failed(1, "unavailable"));
             }
         }
