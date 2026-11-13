@@ -339,6 +339,14 @@ fn prepare_validated(
             "remove android_emulator from the scenario; prepare allocates through `android:` or `android_usb:`",
         ));
     }
+    if scenario.android_device.is_some() {
+        return Err(Failure::new(
+            "validate",
+            FailureCode::ScenarioInvalid,
+            "android_device is set only by qaren check and qaren pr",
+            "remove android_device from the scenario; prepare allocates through `android:` or `android_usb:`",
+        ));
+    }
     let borrowed = borrowed_udid(&scenario, args)?;
     let pool_mode = scenario.platform == Platform::Ios
         && scenario.build.owner == BuildOwner::Cli
@@ -2345,7 +2353,8 @@ pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
     let repo_root = ctx.record.candidate.repo_root.clone();
     let project_root = ctx.record.candidate.project_root.clone();
     let fp = fingerprint::compute(ctx.runner, &repo_root, &project_root, platform)?
-        .with_ios_workspace(ctx.record.scenario.build.ios_workspace.as_ref());
+        .with_ios_workspace(ctx.record.scenario.build.ios_workspace.as_ref())
+        .with_android_abi(phone_abi(ctx).as_deref());
     record_fingerprint_timings(ctx, "plan", &fp);
     let state = buildplan::load_state(&repo_root, platform, &ctx.record.candidate.app_id);
     if let Some(compiler) = &fp.ios_compiler {
@@ -2891,7 +2900,11 @@ pub(crate) fn release_build_lock(ctx: &mut Ctx) {
     }
 }
 
-fn claim_usb_device(ctx: &mut Ctx, lock_root: &Path, serial: &str) -> Result<(), Failure> {
+pub(crate) fn claim_usb_device(
+    ctx: &mut Ctx,
+    lock_root: &Path,
+    serial: &str,
+) -> Result<(), Failure> {
     let holder = lock_holder_for(ctx);
     let lock_name = android::usb_lock_name(serial);
     let lock_dir = buildplan::lock_dir(lock_root, &lock_name);
@@ -3399,6 +3412,10 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
         Platform::Android => {
             let (adb, serial, server_port) =
                 ctx.record.resources.adb_endpoint().expect("allocated");
+            // The selection read can be half an hour old after a cold build: read again here.
+            if ctx.record.resources.borrowed_android().is_some() {
+                wake_and_unlock(ctx, &adb, server_port, &serial)?;
+            }
             install_cached_android_apk(ctx, &artifact, &adb, server_port, &serial, deadline)?;
             ctx.record.resources.app_install = Some(AppInstallResource {
                 app_id: ctx.record.candidate.app_id.clone(),
@@ -3413,7 +3430,7 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
             // may exist on the device.
             ctx.record.resources.adb_reverse_port = Some(metro_port);
             ctx.save()?;
-            let borrowed = ctx.record.resources.android_emulator.is_some();
+            let borrowed = ctx.record.resources.borrowed_android().is_some();
             let reverse = if borrowed {
                 android::adb_reverse_no_rebind_spec(&adb, server_port, &serial, metro_port)
             } else {
@@ -3804,12 +3821,13 @@ fn install_cached_android_apk(
         .iter()
         .any(|text| text.contains("INSTALL_FAILED_") || text.contains("INSTALL_PARSE_FAILED_"))
     {
-        return Err(artifact_install_failure(
+        let failure = artifact_install_failure(
             &ctx.record.run_id,
             artifact,
             "the device's package manager refused the install".into(),
             ArtifactInstallFailure::InstallFailed,
-        ));
+        );
+        return Err(other_signer_hint(ctx, failure, &first));
     }
 
     let wait_deadline = wait_started.saturating_add(180_000);
@@ -3858,6 +3876,10 @@ fn install_cached_android_apk(
         ctx.runner.sleep(Duration::from_millis(pause));
     }
 
+    // The device stopped answering between the attempts and may have restarted: read its lock again.
+    if ctx.record.resources.borrowed_android().is_some() {
+        wake_and_unlock(ctx, adb, server_port, serial)?;
+    }
     ensure_running(ctx.runner, "build")?;
     let left = deadline.saturating_sub(ctx.runner.monotonic_ms());
     if left < 1000 {
@@ -3874,7 +3896,7 @@ fn install_cached_android_apk(
     let second = ctx.runner.run(&retry);
     if !second.ok() || !second.stdout.contains("Success") {
         ensure_running(ctx.runner, "build")?;
-        return Err(artifact_install_failure(
+        let failure = artifact_install_failure(
             &ctx.record.run_id,
             artifact,
             "the install failed twice; the package manager answered between the attempts".into(),
@@ -3883,7 +3905,8 @@ fn install_cached_android_apk(
             } else {
                 ArtifactInstallFailure::InstallFailed
             },
-        ));
+        );
+        return Err(other_signer_hint(ctx, failure, &second));
     }
     ctx.notes.push(("install_attempts".into(), "2".into()));
     ctx.notes.push((
@@ -3891,6 +3914,21 @@ fn install_cached_android_apk(
         recovery_wait_ms.to_string(),
     ));
     Ok(())
+}
+
+// check and pr only: prepare rejects --fresh-install, so its text stays.
+fn other_signer_hint(ctx: &Ctx, mut failure: Failure, install: &crate::exec::CmdOutput) -> Failure {
+    if ctx.record.resources.borrowed_android().is_some()
+        && [&install.stdout, &install.stderr]
+            .iter()
+            .any(|out| out.contains("INSTALL_FAILED_UPDATE_INCOMPATIBLE"))
+    {
+        failure.next_action = crate::redact::OutputText::from_output(&format!(
+            "the device already has {} from another signer; re-run with --fresh-install to replace it (this deletes that app's data on the device)",
+            ctx.record.candidate.app_id
+        ));
+    }
+    failure
 }
 
 fn installed_bundle_matches(ctx: &mut Ctx, udid: &str, artifact: &CachedArtifact) -> bool {
@@ -3951,6 +3989,55 @@ fn artifact_install_failure(
     )
 }
 
+fn wake_and_unlock(ctx: &mut Ctx, adb: &Path, port: u16, serial: &str) -> Result<(), Failure> {
+    ensure_running(ctx.runner, "build")?;
+    let mut state = android::read_lock_state(ctx.runner, adb, port, serial);
+    let wake = state.awake != Some(true);
+    let dismiss = state.showing == Some(true);
+    if wake {
+        ctx.runner.run(&android::wake_spec(adb, port, serial));
+    }
+    if dismiss {
+        ctx.runner
+            .run(&android::dismiss_keyguard_spec(adb, port, serial));
+    }
+    if wake || dismiss {
+        state = android::read_lock_state(ctx.runner, adb, port, serial);
+    }
+    let sent = match (wake, dismiss) {
+        (true, true) => "woke the device once and dismissed its keyguard once",
+        (true, false) => "woke the device once",
+        (false, true) => "dismissed the keyguard once",
+        (false, false) => "",
+    };
+    if state.showing == Some(true) || state.awake == Some(false) {
+        return Err(crate::run::device_refusal(android::device_locked(
+            serial,
+            &state,
+            &format!("QaReN {sent} and read this back"),
+        )));
+    }
+    let note = match sent {
+        "" if state.unknown() => "unknown before install; proceeding",
+        "" => return Ok(()),
+        sent => sent,
+    };
+    ctx.notes.push((
+        "device_lock".into(),
+        format!("{note} ({})", state.describe()),
+    ));
+    Ok(())
+}
+
+// Only a phone's ABI enters the fingerprint, so no emulator user rebuilds.
+fn phone_abi(ctx: &Ctx) -> Option<String> {
+    ctx.record
+        .resources
+        .borrowed_android()
+        .filter(|borrowed| borrowed.physical)
+        .map(|phone| phone.abi)
+}
+
 pub(crate) fn recheck_fingerprint(
     ctx: &mut Ctx,
     plan: &BuildPlan,
@@ -3958,8 +4045,10 @@ pub(crate) fn recheck_fingerprint(
     let platform = platform_dir(ctx.record.scenario.platform);
     let repo_root = ctx.record.candidate.repo_root.clone();
     let project_root = ctx.record.candidate.project_root.clone();
+    let abi = phone_abi(ctx);
     let mut fp = fingerprint::compute(ctx.runner, &repo_root, &project_root, platform)?
-        .with_ios_workspace(ctx.record.scenario.build.ios_workspace.as_ref());
+        .with_ios_workspace(ctx.record.scenario.build.ios_workspace.as_ref())
+        .with_android_abi(abi.as_deref());
     record_fingerprint_timings(ctx, "verify", &fp);
     if platform == "android" {
         let planned = ctx.plan_fingerprint.clone().expect("fingerprint planned");
@@ -3976,7 +4065,8 @@ pub(crate) fn recheck_fingerprint(
         if fp.expo_unavailable.is_some() {
             ensure_running(ctx.runner, "verify")?;
             fp = fingerprint::compute(ctx.runner, &repo_root, &project_root, platform)?
-                .with_ios_workspace(ctx.record.scenario.build.ios_workspace.as_ref());
+                .with_ios_workspace(ctx.record.scenario.build.ios_workspace.as_ref())
+                .with_android_abi(abi.as_deref());
             record_fingerprint_timings(ctx, "verify", &fp);
             if let Some(cause) = &fp.expo_unavailable {
                 return Err(Failure::new(
@@ -4938,7 +5028,7 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
     let spec = match ctx.record.scenario.platform {
         Platform::Ios => unreachable!("iOS builds run under build_ios_locked"),
         Platform::Android => {
-            if let Some(emulator) = ctx.record.resources.android_emulator.clone() {
+            if let Some(emulator) = ctx.record.resources.borrowed_android() {
                 if !project_root.join("android").is_dir() {
                     // Keep the slash so dir-only ignore patterns protect against mid-run candidate drift.
                     let ignored = ctx.runner.run(&CmdSpec::new(

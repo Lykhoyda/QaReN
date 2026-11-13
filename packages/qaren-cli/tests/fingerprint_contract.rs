@@ -48,6 +48,19 @@ fn workspace_hash_uses_domain_separated_typed_json_bytes() {
 }
 
 #[test]
+fn a_phone_abi_changes_the_fingerprint_and_an_emulator_keeps_it() {
+    let prior = prior_fingerprint();
+    // An emulator passes no ABI: its fingerprint, and so its cache, is exactly today's.
+    assert_eq!(prior.clone().with_android_abi(None), prior);
+    let arm = prior.clone().with_android_abi(Some("arm64-v8a"));
+    let x86 = prior.clone().with_android_abi(Some("x86_64"));
+    assert_ne!(arm.value, prior.value);
+    assert_ne!(arm.value, x86.value);
+    assert_eq!(arm, prior.clone().with_android_abi(Some("arm64-v8a")));
+    assert!(arm.value.starts_with("rnfp1:"));
+}
+
+#[test]
 fn workspace_scheme_backend_and_prior_inputs_each_change_the_hash() {
     let prior = prior_fingerprint();
     let spec = IosWorkspaceBuild {

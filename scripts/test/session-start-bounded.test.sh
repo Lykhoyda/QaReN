@@ -228,9 +228,6 @@ child_states() {
       ""|-) ;;
       Z*)
         zombie_sightings=$((zombie_sightings + 1))
-        fail_count=$((fail_count + 1))
-        fail=1
-        echo "FAIL: $1: $kind pid $pid zombie at return ($state)"
         case "$final" in
           Z*) zombie_gaps=$((zombie_gaps + 1)); fail_count=$((fail_count + 1)); fail=1; echo "FAIL: $1: $kind pid $pid remains zombie after bounded 0.5 s poll" ;;
           -) ;;

@@ -572,8 +572,8 @@ impl std::io::Write for BuildStart {
                 record.run_id
             );
         }
-        // The borrowed-emulator arm: prebuild generates the Gradle project, Gradle writes the debug APK.
-        if record.scenario.android_emulator.is_some() {
+        // The borrowed arm: prebuild generates the Gradle project, Gradle writes the debug APK.
+        if record.scenario.android_emulator.is_some() || record.scenario.android_device.is_some() {
             let android = record.candidate.project_root.join("android");
             match self.label.as_str() {
                 "expo-prebuild" => {
@@ -626,8 +626,14 @@ impl qaren::exec::Runner for IosBuildRunner {
     fn env_var(&self, name: &str) -> Option<String> {
         self.inner.env_var(name)
     }
+    fn adb_server_absent(&self, port: u16) -> bool {
+        self.inner.adb_server_absent(port)
+    }
     fn adb_server_version(&self, port: u16) -> Result<u32, String> {
         self.inner.adb_server_version(port)
+    }
+    fn adb_server_devices(&self, port: u16) -> Result<String, String> {
+        self.inner.adb_server_devices(port)
     }
     fn execute(&mut self, spec: &qaren::exec::CmdSpec, interruptible: bool) -> CmdOutput {
         if let Some(observe) = self.observe.as_mut() {

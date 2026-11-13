@@ -1,7 +1,7 @@
 # qaren — plan-based React Native QA CLI
 
 `qaren check` owns a QA run against the current app worktree: it leases a
-borrowed iOS simulator or Android emulator, prepares the app and Metro,
+borrowed iOS simulator, Android emulator or USB Android phone, prepares the app and Metro,
 starts the TypeScript screen child, walks a Markdown plan, writes evidence,
 and cleans up owned resources under the [iOS admission and cleanup contract](#ios-admission-and-cleanup).
 This file is the CLI reference; the product introduction and the agent path are in the [root README](../../README.md).
@@ -17,7 +17,7 @@ owns the guided onboarding procedure; [Check a plan](#check-a-plan) covers manua
 ## Doctor
 
 ```sh
-qaren doctor [--json] [--config .qaren/config.yaml] [--device <simulator-UUID>]
+qaren doctor [--json] [--config .qaren/config.yaml] [--device <simulator-UUID | android-serial>]
 ```
 
 On macOS, `ios-toolchain-match` compares the selected Swift compiler with public
@@ -45,13 +45,16 @@ When an app config is valid, the five-second `watch-project` probe may establish
 the subsequent [cookie sync](#ios-simulator-lifecycle) writes a cookie in the resolved watch root and may leave it there on timeout.
 Doctor never starts a Watchman service, starts a device or resets a service. It does not run ADB
 or start an ADB server. In text and JSON output, Doctor never prints
-file contents, environment variable values, credentials or any other config value;
-it may name the configured iOS runtime and Android AVD. It also prints diagnostic
+file contents, credentials or unrelated config values;
+it may name the configured iOS runtime and Android AVD. Android device rows also
+report device serials, adb server ports, invalid adb server settings and server
+error replies. It also prints diagnostic
 paths, key names and environment variable names. It exits 1 when any row fails,
 0 otherwise, and 2 on a usage error. `--json` prints
 `{identity, checks: [{id, status, detail, fix?}], verdict}` and nothing else.
 
-`FAIL` means `qaren check` cannot run correctly on this host; `WARN` is anything
+`FAIL` means a host prerequisite or an explicitly selected device check failed.
+`WARN` is anything
 that can conflict with a session or is hygiene; `SKIP` means the check is not
 applicable or its subject was not assessed, as explained in the row's detail.
 
@@ -72,12 +75,14 @@ applicable or its subject was not assessed, as explained in the row's detail.
 | `host-load` | One-, five- and fifteen-minute load averages, logical CPU count and sampled CPU idle; warns about readiness deadlines under load |
 | `native-build-lock` | Read-only iOS [build-lock observation](#native-fingerprint-build-selection); never claims or reclaims the lock |
 | `android-sdk`, `android-avd` | When `android` is configured: `ANDROID_HOME`, an executable `adb` file (never run; its version is not checked), the emulator binary and the configured AVD via `emulator -list-avds` |
+| `android-devices` | When `android-sdk` passes or warns: the physical devices the running adb server lists, described [below](#android-device-rows); an unusable device warns, no answering server skips unless the default-server inventory finds a ready phone |
+| `android-target` | Only with `--device <android-serial>`: that device, read the same way; anything but ready fails |
 | `qaren-path` | The first `qaren` on `PATH` is this binary and the installed build; later copies warn, and so does a separate install that `PATH` runs instead (another `QAREN_HOME` or the other release or source-build line) |
 | `installed-build` | The runtime under `$QAREN_HOME/runtime/<version>/` and the runtime `check` would use (`QAREN_RUNTIME` when set) are complete; a binary outside it that `PATH` runs instead of an install fails |
 | `runtime-dirs` | Interrupted installs and other versions under `$QAREN_HOME/runtime/` |
 | `source-checkout` | From a QaReN checkout: its source version (`<version>-dev.<commit>`) matches this binary |
 | `config` | `.qaren/config.yaml` (or `--config`) loads and validates |
-| `ios-lane` | Only with `--device`: read-only check of that simulator against the [warm-lane contract](#warm-lane) |
+| `ios-lane` | Only with `--device <simulator-UUID>`: read-only check of that simulator against the [warm-lane contract](#warm-lane) |
 | `1x-claude-plugin`, `1x-codex-plugin` | The rn-dev-agent 1.x plugin, marketplace and caches in Claude Code, Codex and Cursor |
 | `1x-mcp` | A hand-registered 1.x MCP server in `~/.claude.json`, `.mcp.json`, `~/.cursor/mcp.json` or `$CODEX_HOME/config.toml` |
 | `1x-binaries`, `1x-home-dirs` | The 1.x npm bins on `PATH`; `~/.rn-dev-agent/`, `~/.cache/rn-dev-agent/`, `~/Library/Caches/rn-dev-agent/`, `~/Library/Application Support/rn-dev-agent/` (or `$XDG_STATE_HOME/rn-dev-agent/`) and `~/.claude/rn-agent/` |
@@ -122,6 +127,37 @@ attempt with a 30 s bound and no retries; a timeout warns in `pnpm-source` with
 the measured duration and `PNPM_PROBE_TIMED_OUT`, without recommending a different
 pnpm version. Host load alone never refuses `check`. Metro still must belong to
 the exact group QaReN started.
+
+### Android device rows
+
+`android-devices` requires Android configuration and an executable SDK `adb`
+file; `android-target` runs whenever an Android serial is selected,
+even without Android configuration. Select a plain serial containing only
+letters, digits, `.`, `_` or `-`, not starting with `-` or `emulator-`;
+`booted` and `host:port` endpoints are not accepted, and a simulator UUID
+selects `ios-lane` instead.
+
+`android-devices` and `android-target` ask the running adb server for its device
+list over the adb protocol, on the port `check` would borrow (`ADB_SERVER_SOCKET`,
+else `ANDROID_ADB_SERVER_PORT`, else 5037). They run no adb client and start no
+server. Every listed device that is not an emulator, a `host:port` endpoint or a wireless connection
+counts, including one whose serial adb cannot read; that one is described
+rather than named. A phone connected over wireless adb is not used:
+`android-devices` appends its count to pass texts without listing its name or warning
+about its state; `android-target` fails for a wireless name before querying any
+adb server. Wireless names contain `._adb-tls-connect._tcp` or `._adb._tcp`; attach
+the phone with a USB cable. For each device that is not ready the row gives the cause and
+the fix: `no permissions` (on Linux, the account lacks USB access: the
+`plugdev` group and the Android udev rules), `unauthorized` (USB debugging from
+this computer not yet accepted on the phone) or `offline`. When the run's server
+is not on 5037 and the server on 5037 lists a phone as ready that the run's
+server does not, the row names that server's port, even if the run's server is
+absent or its device list cannot be read; QaReN never stops it. That is then the
+phone's one cause, whatever the run's server lists it as. An
+unusable attached device makes `android-devices` warn rather than fail, so a
+phone left charging does not fail doctor; `--device <android-serial>` fails
+unless that device is ready. `check` and `pr` refuse the same causes with the
+same texts when they select a phone.
 
 ### Host budget
 
@@ -216,7 +252,7 @@ does not end the command. Ending it reveals any earlier command still running,
 or clears the label when none remain.
 Preflight and dependencies pass when their work completes; verify runs after
 every build decision, including reuse. Reuse skips prebuild and native compile.
-On iOS and on a borrowed Android emulator, native compile (including any
+On iOS and on a borrowed Android device, native compile (including any
 prebuild of an absent native directory) ends before install/launch/ready.
 On iOS, install/launch/ready streams its substages in order: `install_cached`,
 `metro_ready`, `dev_client_manifest`, `dev_menu_defaults`, `app_launch` and
@@ -529,44 +565,100 @@ package manager keeps its own configuration: QaReN does not rewrite it or
 validate credentials. Output withholding does not contain what
 those processes can write themselves or send over the network.
 
-`--platform android` borrows one booted emulator on the host's already running
-adb server: `ADB_SERVER_SOCKET` (loopback only), else `ANDROID_ADB_SERVER_PORT`,
-else 5037. `qaren` asks that server for its version over the adb protocol and
-issues no server start or stop command: with no server answering it refuses
-`DEVICE_UNAVAILABLE`, and so it does when `adb version` under `ANDROID_HOME`
-differs from the server's, because a client of another version would restart the
-server. This admission check does not continuously monitor the server; another
+`--platform android` borrows one booted emulator, or one physical USB phone, on
+the host's adb server: `ADB_SERVER_SOCKET` (loopback only), else
+`ANDROID_ADB_SERVER_PORT`, else 5037. `qaren` reads `adb version` under
+`ANDROID_HOME`, then asks that server for its version over the adb protocol.
+Only when the port refuses the connection (nothing listens) do `check` and `pr`
+run `adb start-server` once through that endpoint and probe again: a server
+that now answers is used, left running, and named in the receipt's `adb_server`
+outcome; one that still does not answer refuses `DEVICE_UNAVAILABLE` with
+`subreason` `adb-server-not-started`, giving what the command reported. A probe
+that times out or gets a malformed reply starts nothing and refuses. `qaren`
+does not restart a server it finds and never stops one; doctor, status and
+cleanup never start one. A client whose version differs from the server's
+refuses `DEVICE_UNAVAILABLE`, because it would restart the server. This
+admission check does not continuously monitor the server; another
 tool restarting it mid-run is outside `qaren`'s control. If it exits during the
 build or walk, a subsequent adb call can start a new server. Status and cleanup
-recheck compatibility as described below. Automatic selection counts only emulators in adb's
-`device` state whose `sys.boot_completed` is `1`, ignoring those still booting.
-Exactly one must qualify; otherwise selection refuses `DEVICE_UNAVAILABLE`
-(exit 4). With several boot-completed emulators, `--device emulator-NNNN`
-chooses one; an explicitly selected emulator still booting refuses without
-waiting or switching devices. Physical devices are not supported.
+recheck compatibility as described below.
+
+An emulator in adb's `device` state is eligible. While one is, automatic
+selection counts only eligible emulators whose `sys.boot_completed` is `1`, and
+exactly one must qualify; a phone is never picked then, and the refusal counts
+the physical devices also attached. With no eligible emulator, the one attached
+phone in `device` state that has finished booting is chosen; several refuse
+`several-devices` and list their serials. `--device` names an emulator
+(`emulator-NNNN`) or a phone by serial; an explicitly selected device still
+booting refuses without waiting or switching devices. A phone that cannot be
+used refuses `DEVICE_UNAVAILABLE` (exit 4) with the `subreason` and fix the
+[Android device rows](#android-device-rows) give: `usb-no-permissions`,
+`usb-unauthorized`, `device-offline`, `device-not-attached` for a named phone
+that is not listed, and `device-held-by-other-server` when the run uses another
+port and the server on 5037 lists the phone as `device`. That is then the
+phone's one cause, whatever the run's server lists it as; with no `--device` and
+nothing else to report, it replaces "no booted emulator". An offline or unlisted
+phone is re-read up to five times, 2 s apart, before its refusal, and only then
+is 5037 asked. When the run has just started the server and names no
+`--device`, a list with no device in `device` state is re-read the same way
+before "no booted emulator". A device whose serial adb cannot read is described, never
+selected or addressed. A wireless adb connection is never used: `--device` with
+its name refuses `wireless-not-supported` before any adb command, and a listed
+one is only counted in the refusal's text.
+
+Before any build, selection reads `dumpsys power` and `dumpsys window policy`
+and refuses `device-locked` when a secure lock screen is showing. Just before
+the install, and again before a retried install, it reads again: a sleeping device is woken once
+(`input keyevent KEYCODE_WAKEUP`), a showing keyguard dismissed once
+(`wm dismiss-keyguard`), and only the read back decides, because both commands
+exit 0 while a PIN or pattern stays; a keyguard still showing, or a device still
+asleep, refuses `device-locked`. An emulator gets the same two reads. A state
+these reads cannot tell proceeds with a `device_lock` note. QaReN never enters
+a credential and never sends a sleep, lock or settings command, and does not
+keep the screen on: for unattended runs, turn on Stay awake in Developer options
+and leave the phone unlocked, or use a test phone without a secure lock. The
+one-time steps a person does are accepting "Allow USB debugging" on the phone
+and, on Linux, an administrator's udev rule for the account whose server opens it.
+
+A phone run also takes the `usb-<serial>` claim that `prepare`'s `android_usb:`
+route and its handoff take, so the two never drive one phone: a held claim
+refuses `DEVICE_CLAIM_CONTENDED`. Its record names the phone under
+`android_device` (serial and sanitized model) instead of `android_emulator`.
+This build reads every older record; an older build refuses a phone run's
+record `RUN_RECORD_INVALID`, so clean up a phone run with a build that supports
+phones. Prefer a dedicated test phone: the app under test is installed or
+replaced and stays installed, `--fresh-install` deletes its data, and
+notifications can appear in screenshots.
 See [iOS simulator lifecycle](#ios-simulator-lifecycle) for power options and
 [Fresh install](#fresh-install) for app reset.
 `ANDROID_HOME` must name
 the SDK whose `platform-tools/adb` reaches that server. The build is a Gradle
-`:app:assembleDebug` limited to the emulator's ABI, preceded by
-`expo prebuild --platform android --clean` when `android/` is absent. An absent
+`:app:assembleDebug` limited to the device's ABI, preceded by
+`expo prebuild --platform android --clean` when `android/` is absent. A phone's
+ABI is part of the native build fingerprint, so a cached build for another ABI
+is rebuilt rather than installed; an emulator build is never reused on a phone,
+even with the same ABI. Emulator fingerprints are unchanged. An absent
 `android/` must be git-ignored: one git would track would change the candidate's
 native inputs mid-run, so the build fails with `BUILD_FAILED` before generating
 it. Add `android/` to `.gitignore`, or generate and commit it before the run.
 The APK is installed with `adb -s <serial>`, and a fingerprint-matched cached APK is reused
-the same way. The run keeps the app and the emulator.
+the same way. The run keeps the app and the device. An install refused with
+`INSTALL_FAILED_UPDATE_INCOMPATIBLE` means the device holds the app from another
+signer; the next step names `--fresh-install`, which deletes that app's data.
 
-The Metro reverse is created with `adb reverse --no-rebind`: when the emulator
+The Metro reverse is created with `adb reverse --no-rebind`: when the device
 already maps that port, the run refuses `DEVICE_BUSY` before the walk and
 leaves the mapping alone. Teardown, and `qaren cleanup <run-id>` after a crash
-or `SIGKILL`, release what the run put on the emulator, and only while the run
+or `SIGKILL`, release what the run put on the device, and only while the run
 still holds the device lease; otherwise those legs are refused and no adb
-command runs. Before the release sequence, the borrowed server must answer with
+command runs. A run whose own teardown released them and then its lease is saved
+`Cleaned`, so a later `qaren cleanup <run-id>` reports it cleaned without
+addressing the device; a lease still recorded keeps the refusal. Before the release sequence, the borrowed server must answer with
 the version of the recorded `adb`; a missing or incompatible server leaves the
 release unresolved. The `adb_reverse` leg verifies a successful removal with
 `reverse --list`; adb's explicit listener-not-found response counts as `absent`.
 The `android_runner` leg requires proven core and runner-driver shutdown, then
-removes the runner's forwards on the selected emulator, force-stops both runner
+removes the runner's forwards on the selected device, force-stops both runner
 packages, and verifies absence through `forward --list` and the runner package's
 entry in `dumpsys activity processes`; output that is not a recognised processes
 dump leaves the leg unresolved. The runner port and packages are defined in
@@ -579,7 +671,7 @@ using the original, twice and three times the original command budget. From
 API 26 the runner-process read passes that budget to `dumpsys -t`, so the service
 is not cut at its own 10 seconds; output carrying dumpsys's
 `DUMP TIMEOUT ... EXPIRED` banner counts as a timeout, never as a dump. Before
-each retry, the selected emulator must answer `adb shell true` within 40 seconds;
+each retry, the selected device must answer `adb shell true` within 40 seconds;
 a failed or timed-out probe stops retries for that command. Non-timeout command
 failures are not retried. Probes and retries share a 240-second extra allowance
 across the release sequence; a retry starts only if that allowance covers both
@@ -593,11 +685,15 @@ with the reads that follow them; successful absence verification is still
 required to release the lease.
 
 A walk that never started a runner reads as `absent`; a run that never reached
-the walk needs no runner release. An unproven leg keeps the lease, so a later
+the walk needs no runner release. On a phone, once that leg proves the runner
+stopped, the `android_runner_packages` leg uninstalls both runner packages and
+proves them absent with `pm list packages` (they are QaReN's own and hold no
+user data; emulators keep them), then `usb_device_claim` releases the claim.
+An unproven leg keeps the claim and the lease, so a later
 `qaren cleanup <run-id>` can finish. Cleanup preserves the adb server, installed
-app and running emulator: `--remove-app` on a borrowed emulator refuses
+app and running device: `--remove-app` on a borrowed Android device refuses
 `APP_REMOVAL_NOT_CONFIRMED` (uninstall the app yourself), and `qaren status`
-probes the emulator only through the borrowed adb server, rechecking compatibility
+probes the device only through the borrowed adb server, rechecking compatibility
 before device probes and reporting them as inconclusive if that check fails.
 
 ### Record a check
@@ -728,11 +824,11 @@ excluded and is unsupported. A surviving runner, an unproven removal or a
 second failed install refuses `DEVICE_UNAVAILABLE` with `subreason:
 runner-install-blocked`, the original install reason and the failed replacement
 step's cause, and manual removal as the next step, to take only if nothing else
-is using the device. The walk's advisory scan on the borrowed emulator refuses
+is using the device. The walk's advisory scan on the borrowed device refuses
 `BUSY_FOREIGN_FLOW` with the process scan's message when another UIAutomator or
 agent-device process runs there (`adb -s <serial> shell ps -A`). The scan does
-not recognise every driver and fails open when `ps` cannot run, so borrow an
-emulator no other automation uses. The separate [fresh-install admission](#fresh-install)
+not recognise every driver and fails open when `ps` cannot run, so borrow a
+device no other automation uses. The separate [fresh-install admission](#fresh-install)
 must succeed before app reset.
 
 Plans contain a `## QA` section, named `###` blocks, numbered actions and
@@ -2541,7 +2637,7 @@ borrowed server. A matching UIAutomator, agent-device, Maestro or instrumentatio
 process refuses `DEVICE_BUSY`, excluding QaReN's own runner package. A scan
 error, timeout or empty output refuses `FRESH_INSTALL_ADMISSION_UNKNOWN`.
 Both refusals occur before uninstall. This flow never boots, wipes or restarts
-the emulator. For refusal diagnostics and recovery on either platform, and iOS
+the device. For refusal diagnostics and recovery on either platform, and iOS
 admission rules, see [iOS admission and cleanup](#ios-admission-and-cleanup).
 
 ### iOS simulator lifecycle
@@ -2735,7 +2831,7 @@ features. Unset `EXPO_OFFLINE` to restore the offline default.
 This default applies to Metro-only starts; fresh Android preparation through
 `expo run:android` retains its inherited Expo environment.
 
-The readiness margin only gates launch. Borrowed-emulator builds and cached Android preparation retain
+The readiness margin only gates launch. Borrowed-device Android builds and cached Android preparation retain
 one manifest answer under the dev client's 10-second timeout. Fresh Android
 scenario-based `prepare` keeps launch and Metro under `expo run:android` and does not perform
 this warmup.
@@ -2779,9 +2875,10 @@ Other manifest and launch errors remain `BUILD_FAILED`; clean up retained
 resources before retrying those errors.
 
 Android APK installs issued directly by QaReN use `adb install -r -d` with a
-300-second first-attempt limit. This covers fresh builds for borrowed or tunnelled
-emulators and cached installs on emulators or USB devices. Fresh USB builds remain
-built and installed by `expo run:android` and do not use this recovery. If the
+300-second first-attempt limit. This covers fresh builds for borrowed Android
+devices or tunnelled emulators and cached installs on emulators or USB devices.
+Fresh scenario-based `prepare` builds through `android_usb:` remain built and
+installed by `expo run:android` and do not use this recovery. If the
 first attempt fails or lacks `Success`, an `INSTALL_FAILED_` or
 `INSTALL_PARSE_FAILED_` verdict in either stdout or stderr is final. Otherwise,
 unless cancelled, QaReN waits for the package manager before retrying once.
@@ -2793,14 +2890,17 @@ remaining whole seconds; five-second pauses are also capped to the remaining
 wait. Cancellation is checked before each probe and pause and after each probe.
 The second install gets at most 300 seconds, capped to the whole seconds left in
 the install/launch/readiness `build_seconds` window opened at reuse-path entry.
-For a fresh emulator build, that is a new window after Gradle, independent of
+For a fresh borrowed-device build, that is a new window after Gradle, independent of
 the build's remaining time. With less than one second left, no second install
-starts. The recovery wait itself has its own 180-second limit.
+starts. The recovery wait itself has its own 180-second limit. On a borrowed
+device, the lock check runs again after the wait and before that budget check,
+because a device that stopped answering may have restarted locked; it can refuse
+`device-locked` before the second install.
 
 Missing verdicts can mean a dropped transport or a committed install whose
 acknowledgement was lost; three good probes do not prove the first install never
 committed. Replacing the same APK with `-r -d` permits this single retry. Recovery
-never restarts, reboots or wipes the emulator. Success after retry records
+never restarts, reboots or wipes the device. Success after retry records
 `install_attempts=2` and `install_recovery_wait_ms`; the runner records both
 `adb-install` command events.
 
@@ -4653,7 +4753,7 @@ a per-run local ref rather than shared `FETCH_HEAD`, so concurrent PR runs
 verify their own fetched commits.
 
 On iOS the simulator screen is recorded from just before the walk to just after
-it. On Android, `pr` [borrows a booted emulator like `check`](#check-a-plan).
+it. On Android, `pr` follows the [Android run contract](#check-a-plan).
 API 34 or newer records one continuous MP4 with `screenrecord --time-limit 0`,
 including walks longer than 180 seconds. API 33 and older still run the walk,
 but skip recording with the explicit video-unavailable reason that Android
@@ -4703,7 +4803,7 @@ the receipt's `cleanup.recorder` reports that final outcome. If shutdown remains
 unresolved, recover with `qaren cleanup <run-id>`; iOS follows the
 [iOS admission and cleanup contract](#ios-admission-and-cleanup).
 
-Android recorder cleanup requires the run's device lease, its recorded emulator
+Android recorder cleanup requires the run's device lease, its recorded device
 endpoint and a compatible borrowed adb server. It signals only the device
 recorder matching the per-run output path, first with INT, then with KILL if
 needed; a KILL fallback is recorded as abnormal media finalization. Cleanup
@@ -5203,8 +5303,8 @@ its project caches there.
 
 `android_usb: { serial, adb_server_port }` is a separate, exclusive
 allocation path (exactly one of `android:` / `android_usb:` per scenario).
-The serial must be a plain physical-device serial — `emulator-*` and
-loopback forms are rejected at validation, so the farm path's
+The serial must be a plain physical-device serial — `emulator-*`, loopback
+forms and [wireless adb names](#android-device-rows) are rejected at validation, so the farm path's
 structural guarantees never weaken. At allocate time the device is claimed
 by an atomic host-level `usb-<serial>` lock in the
 [configured lock root](#ios-admission-and-cleanup); any
@@ -5356,10 +5456,11 @@ above. Resolution and each evaluation have a 120 s command timeout. Both must
 succeed to bind `rnfp`, `expo` and `expo-ci` in the `qaren-expo-native-android/1`
 composite and clear the dynamic-config incompleteness. Other incompleteness
 still forbids reuse. If either evaluation is unavailable, neither Expo part is
-bound. The value stays the native-input manifest hash, with both the
-dynamic-config and unavailable-evaluation incompleteness reasons. Rebuild evidence
+bound. Before device-specific binding, the value stays the native-input manifest
+hash, with both the dynamic-config and unavailable-evaluation incompleteness reasons. Rebuild evidence
 records `Expo fingerprint unavailable: <cause>` with the closed cause. Static
-Android configs run no evaluation and retain their existing fingerprint value.
+Android configs run no Expo evaluation; device-specific fingerprint binding
+follows the [Android run contract](#check-a-plan).
 Android does not bind JDK, SDK or NDK identity.
 
 A previously recorded Android build with a dynamic config and no Expo parts
@@ -5467,7 +5568,7 @@ holds the cached APK, kept under this worktree's `.qaren/native-cache/artifacts/
    Committed native directories keep incremental builds for changed or
    incomplete fingerprints. iOS follows the
    [CLI-owned build routes](#cli-owned-ios-build-routes); borrowed Android
-   emulators follow [Check a plan](#check-a-plan), while scenario-based Android
+   devices follow [Check a plan](#check-a-plan), while scenario-based Android
    `prepare` recompiles with `expo run:android` over the existing Gradle caches.
 3. **Clean** — `build.strategy: clean` always bypasses reuse. Otherwise, mandatory
    whenever compatibility is unprovable and no verified
@@ -5574,8 +5675,8 @@ simulator can be borrowed instead; see
   `ADB_SERVER_SOCKET`; the Mac's global adb server is never used. Serials are
   validated against the loopback-tunnel form before any adb call; farm output
   naming a non `emulator-*` serial is rejected at parse time. A physical
-  phone is reachable only through the separate `android_usb` adapter, which
-  requires its exact serial in the scenario, an exclusive uncontended claim
+  phone in scenario-based `prepare` is reachable only through the separate
+  `android_usb` adapter, which requires its exact serial in the scenario, an exclusive uncontended claim
   lock, and its own run-scoped `--one-device` server — the two adapters
   never blend (a scenario naming both is invalid).
   `adb connect`/`disconnect` name their endpoint positionally — `-s` is not
@@ -5642,7 +5743,7 @@ simulator can be borrowed instead; see
   `app_install` leg, executed before Android resource teardown while the
   lease, tunnel and private adb server are still alive, and only on the
   leased Android emulator route
-  (USB, iOS, borrowed emulators and records without a farm lease are refused before any cleanup
+  (USB, iOS, borrowed Android devices and records without a farm lease are refused before any cleanup
   command runs; CLI git-root discovery precedes record loading). It requires
   `--confirm-remove-app <run-id>/<remote-serial>/<app-id>`
   naming exactly the loaded record's run id, recorded `emulator-*` serial

@@ -4310,6 +4310,10 @@ fn android_mock() -> MockRunner {
     mock
 }
 
+fn script_borrow(mock: &mut MockRunner, devices: &str, serial: &str) {
+    script_borrow_api(mock, devices, serial, 37);
+}
+
 fn script_borrow_api(mock: &mut MockRunner, devices: &str, serial: &str, api: u16) {
     mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
     mock.expect_run("adb devices", CmdOutput::success(devices));
@@ -4326,6 +4330,17 @@ fn script_borrow_api(mock: &mut MockRunner, devices: &str, serial: &str, api: u1
         &format!("-s {serial} emu avd name"),
         CmdOutput::success("Pixel_9_API_37\r\nOK\r\n"),
     );
+    script_lock_read(mock, POWER, WINDOW_POLICY);
+}
+
+// `dumpsys power` and `dumpsys window policy` in the Android 11 layout, awake with the keyguard hidden.
+const POWER: &str = include_str!("fixtures/android-dumpsys-power.txt");
+const WINDOW_POLICY: &str = include_str!("fixtures/android-window-policy.txt");
+
+// The two reads of the lock check, at selection and again just before the install.
+fn script_lock_read(mock: &mut MockRunner, power: &str, window: &str) {
+    mock.expect_run("shell dumpsys power", CmdOutput::success(power));
+    mock.expect_run("shell dumpsys window policy", CmdOutput::success(window));
 }
 
 // Node, plan preflight, the borrow, candidate, prereqs, disk and self identity, then the Metro port after the lease.
@@ -4356,6 +4371,11 @@ fn script_android_preflight_api(
     mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
     script_plan_requiring(mock, repo, required, non_secret);
     script_borrow_api(mock, devices, serial, api);
+    script_android_after_borrow(mock, repo);
+}
+
+// Candidate, prereqs, disk and self identity, then the Metro port after the lease.
+fn script_android_after_borrow(mock: &mut MockRunner, repo: &Path) {
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
@@ -4384,6 +4404,38 @@ fn adb_calls(mock: &MockRunner) -> Vec<String> {
         .collect()
 }
 
+// A second `qaren cleanup` of a borrowed run that cleaned itself reports clean and touches no device.
+fn assert_a_repeat_cleanup_is_clean_and_silent(runs_root: &Path, run_id: &str) {
+    let record = RunRecord::load(runs_root, run_id).unwrap();
+    assert_eq!(record.phase, Phase::Cleaned);
+    assert!(record.resources.lease.is_none());
+    let mut again = MockRunner::new();
+    // A phone record makes cleanup prove its owner gone first; an emulator record no longer needs to.
+    if record.resources.android_device.is_some() {
+        let owner_pid = record.prepare.as_ref().unwrap().pid;
+        again.expect_run(
+            &format!("ps -p {owner_pid} -o lstart="),
+            CmdOutput::success(""),
+        );
+    }
+
+    let receipt = qaren::commands::cleanup::cleanup(&mut again, runs_root, run_id);
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Cleaned,
+        "{:?}",
+        receipt.cleanup
+    );
+    assert!(receipt.failure.is_none(), "{:?}", receipt.failure);
+    assert!(adb_calls(&again).is_empty(), "{:?}", adb_calls(&again));
+    assert_eq!(again.remaining(), 0);
+    assert_eq!(
+        RunRecord::load(runs_root, run_id).unwrap().phase,
+        Phase::Cleaned
+    );
+}
+
 fn no_ios_or_expo_android_build(mock: &MockRunner) {
     for call in &mock.calls {
         let rendered = call.rendered();
@@ -4407,6 +4459,11 @@ fn script_android_launch_walk_release(mock: &mut MockRunner, runner_running: boo
 
 // Install, reverse, Metro and the deeplink, then `no_pid_ticks` readiness ticks without the app process.
 fn script_android_launch(mock: &mut MockRunner, no_pid_ticks: usize) {
+    script_lock_read(mock, POWER, WINDOW_POLICY);
+    script_android_install_launch(mock, no_pid_ticks);
+}
+
+fn script_android_install_launch(mock: &mut MockRunner, no_pid_ticks: usize) {
     mock.expect_run(
         "install -r -d",
         CmdOutput::success("Performing Streamed Install\nSuccess\n"),
@@ -4529,6 +4586,13 @@ fn android_check_does_not_cache_an_apk_replaced_after_install() {
     assert_eq!(installed.sha256, qaren::candidate::sha256_hex(b"built apk"));
     assert_eq!(std::fs::read(&installed.path).unwrap(), b"replacement apk");
     assert!(receipt.outcomes["artifact_cache"].contains("differs from the verified build"));
+    // An emulator run's record keeps today's shape: no phone key, and no lock note on an awake emulator.
+    let raw = std::fs::read_to_string(
+        RunRecord::run_dir(&req.runs_root, &receipt.run_id).join("run.json"),
+    )
+    .unwrap();
+    assert!(raw.contains("android_emulator") && !raw.contains("android_device"));
+    assert!(!receipt.outcomes.contains_key("device_lock"));
     assert!(!qaren::buildplan::state_path(&repo, "android", "com.rndevagent.testapp").exists());
     let artifacts = qaren::buildplan::cache_dir(&repo).join("artifacts/android");
     for bucket in std::fs::read_dir(artifacts).unwrap() {
@@ -4740,6 +4804,7 @@ fn android_check_prebuild_failure_is_build_failed() {
         .filter(|c| {
             !c.contains("getprop")
                 && !c.contains("emu avd name")
+                && !c.contains("shell dumpsys")
                 && c != "devices"
                 && c != "version"
         })
@@ -5072,6 +5137,7 @@ fn android_check_reuse_installs_the_cached_apk_by_serial() {
         (EMULATOR, "adb-install")
     );
     assert!(record.resources.runner_host.is_none());
+    assert_a_repeat_cleanup_is_clean_and_silent(&req.runs_root, &run_id());
 }
 
 #[test]
@@ -5149,6 +5215,7 @@ fn android_check_auto_selects_the_only_boot_completed_emulator() {
         "-s emulator-5556 emu avd name",
         CmdOutput::success("Pixel_9_API_37\r\nOK\r\n"),
     );
+    script_lock_read(&mut mock, POWER, WINDOW_POLICY);
     // Stop right after the borrow: the candidate read refuses, proving which emulator was taken.
     mock.expect_run("git", CmdOutput::failed(128, "not a git repository"));
     let receipt = run(&mut mock, &req);
@@ -5207,44 +5274,62 @@ fn android_check_refuses_an_unreadable_adb_client_version() {
 }
 
 #[test]
-fn android_check_refuses_when_no_adb_server_listens() {
+fn android_check_starts_a_missing_adb_server_once_and_refuses_when_it_still_does_not_answer() {
     let (repo, app) = app_repo();
     let req = android_request(&repo, &app);
     let mut mock = MockRunner::new();
     mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
     script_plan(&mut mock, &repo);
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+    mock.expect_run(
+        "adb start-server",
+        CmdOutput::failed(1, "could not install *smartsocket* listener"),
+    );
     let receipt = run(&mut mock, &req);
     let failure = receipt.failure.unwrap();
     assert_eq!(failure.code, FailureCode::DeviceUnavailable);
     assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(failure.subreason.as_deref(), Some("adb-server-not-started"));
+    for said in [
+        "ran `adb start-server` once",
+        "could not install *smartsocket* listener",
+        "the port still does not answer",
+    ] {
+        assert!(failure.detail.contains(said), "{said}: {}", failure.detail);
+    }
     assert!(
-        failure
-            .detail
-            .contains("no adb server is running on port 5037"),
+        failure.next_action.contains("ADB_SERVER_SOCKET=tcp:5037 "),
         "{}",
-        failure.detail
+        failure.next_action
     );
-    assert!(adb_calls(&mock).is_empty());
+    assert_eq!(adb_calls(&mock), ["version", "start-server"]);
+    let start = mock
+        .calls
+        .iter()
+        .find(|c| c.label == "adb-start-server")
+        .unwrap();
+    // The bare port: adb passes this to the server it launches as `-L`, which rejects a host.
+    assert_eq!(
+        start
+            .env
+            .iter()
+            .filter(|(name, _)| name == "ADB_SERVER_SOCKET")
+            .collect::<Vec<_>>(),
+        [&("ADB_SERVER_SOCKET".to_string(), "tcp:5037".to_string())]
+    );
+    assert!(!receipt.outcomes.contains_key("adb_server"));
     assert_eq!(mock.remaining(), 0);
     assert!(!req.lock_root.exists());
 }
 
 #[test]
 fn android_check_refuses_unborrowable_devices_without_a_lease() {
-    for (case, devices, boot_completed, detail) in [
-        (
-            "booting",
-            ONE_EMULATOR,
-            Some(""),
-            "emulator-5554 has not finished booting",
-        ),
-        (
-            "physical_only",
-            "List of devices attached\n0A1B2C3D\tdevice\nemulator-5556\toffline\n",
-            None,
-            "no booted emulator; 1 other device(s) ignored: physical devices are not supported in this release",
-        ),
-    ] {
+    for (case, devices, boot_completed, detail) in [(
+        "booting",
+        ONE_EMULATOR,
+        Some(""),
+        "emulator-5554 has not finished booting",
+    )] {
         let (repo, app) = app_repo();
         let req = android_request(&repo, &app);
         let mut mock = android_mock();
@@ -5259,7 +5344,11 @@ fn android_check_refuses_unborrowable_devices_without_a_lease() {
         let failure = receipt.failure.unwrap();
         assert_eq!(failure.code, FailureCode::DeviceUnavailable, "{case}");
         assert_eq!(receipt.result, ReceiptResult::Refused);
-        assert!(failure.detail.starts_with(detail), "{case}: {}", failure.detail);
+        assert!(
+            failure.detail.starts_with(detail),
+            "{case}: {}",
+            failure.detail
+        );
         assert_eq!(mock.remaining(), 0, "{case}");
         assert!(!req.lock_root.exists(), "{case}");
     }
@@ -5285,6 +5374,826 @@ fn android_check_refuses_a_remote_adb_socket() {
     );
     assert!(adb_calls(&mock).is_empty());
     assert!(!req.lock_root.exists());
+}
+
+const PHONE: &str = "0A1B2C3D";
+const PHONE_BESIDE_OFFLINE_EMULATOR: &str =
+    "List of devices attached\n0A1B2C3D\tdevice\nemulator-5556\toffline\n";
+const GRADLE_ARM64: &str =
+    "./gradlew :app:assembleDebug -PreactNativeArchitectures=arm64-v8a --no-daemon --console=plain";
+
+// A phone with a screen lock configured but unlocked: the keyguard is secure and hidden.
+fn secure_hidden() -> String {
+    WINDOW_POLICY.replace("      secure=false", "      secure=true")
+}
+
+fn script_phone_facts(mock: &mut MockRunner) {
+    mock.expect_run(
+        &format!("-s {PHONE} shell getprop sys.boot_completed"),
+        CmdOutput::success("1\n"),
+    );
+    mock.expect_run(
+        &format!("-s {PHONE} shell getprop ro.build.version.sdk"),
+        CmdOutput::success("30\n"),
+    );
+    mock.expect_run(
+        "getprop ro.product.cpu.abi",
+        CmdOutput::success("arm64-v8a\n"),
+    );
+    mock.expect_run(
+        "getprop ro.product.model",
+        CmdOutput::success("Test Phone 5\n"),
+    );
+    script_lock_read(mock, POWER, &secure_hidden());
+}
+
+fn script_phone_borrow(mock: &mut MockRunner, devices: &str) {
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+    mock.expect_run("adb devices", CmdOutput::success(devices));
+    script_phone_facts(mock);
+}
+
+fn android_until_borrow(repo: &Path, mock: &mut MockRunner) {
+    mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
+    script_plan(mock, repo);
+}
+
+// Stop right after the borrow: the candidate read refuses, proving the borrow passed.
+fn stop_after_borrow(mock: &mut MockRunner) {
+    mock.expect_run("git", CmdOutput::failed(128, "not a git repository"));
+}
+
+fn the_two_runner_packages_are_removed(mock: &mut MockRunner) {
+    for package in qaren::adapters::android::RUNNER_PACKAGES {
+        mock.expect_run(
+            &format!("uninstall {package}"),
+            CmdOutput::success("Success\n"),
+        );
+        mock.expect_run(
+            &format!("pm list packages {package}"),
+            CmdOutput::success(""),
+        );
+    }
+}
+
+#[test]
+fn android_check_borrows_the_only_ready_phone_and_leaves_only_the_app_behind() {
+    let (repo, app) = app_repo();
+    // An emulator-ABI cache from an earlier run: the phone's ABI is in its fingerprint, so it rebuilds.
+    seed_cached_apk(&repo, &app);
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    android_until_borrow(&repo, &mut mock);
+    script_phone_borrow(&mut mock, PHONE_BESIDE_OFFLINE_EMULATOR);
+    script_android_after_borrow(&mut mock, &repo);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    mock.expect_run("check-ignore -q android/", CmdOutput::success(""));
+    script_android_finite_build(&mut mock, PREBUILD, 5000, 0);
+    script_android_finite_build(&mut mock, GRADLE_ARM64, 5001, 0);
+    script_android_launch(&mut mock, 0);
+    script_android_app_tick(&mut mock, CmdOutput::success("4242\n"));
+    script_android_walk_release(&mut mock, false);
+    the_two_runner_packages_are_removed(&mut mock);
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(
+        receipt.device.as_ref().unwrap().usb_serial.as_deref(),
+        Some(PHONE)
+    );
+    for (leg, outcome) in [
+        ("adb_reverse", "removed"),
+        ("android_runner", "absent"),
+        ("android_runner_packages", "removed"),
+        ("usb_device_claim", "removed"),
+        ("device_lease", "removed"),
+    ] {
+        assert_eq!(receipt.cleanup[leg], outcome, "{leg}");
+    }
+    let record = RunRecord::load(&req.runs_root, &receipt.run_id).unwrap();
+    let phone = record.scenario.android_device.as_ref().unwrap();
+    assert_eq!(
+        (phone.serial.as_str(), phone.model.as_str()),
+        (PHONE, "Test_Phone_5")
+    );
+    assert!(record.scenario.android_emulator.is_none());
+    let borrowed = record.resources.borrowed_android().unwrap();
+    assert!(borrowed.physical);
+    assert_eq!(
+        (borrowed.api_level, borrowed.abi.as_str()),
+        (30, "arm64-v8a")
+    );
+    assert!(record.resources.lease.is_none());
+    let claim = record.resources.usb_device.as_ref().unwrap();
+    assert!(!claim.lock_dir.exists());
+    let adb = adb_calls(&mock);
+    assert!(adb.iter().all(|c| !c.contains(" emu ")), "{adb:?}");
+    assert!(adb.iter().all(|c| !c.contains("emulator-5556")), "{adb:?}");
+    // The app under test stays; nothing is erased, reset, slept or locked.
+    for never in [
+        "uninstall com.rndevagent.testapp",
+        "KEYCODE_SLEEP",
+        "settings put",
+        "reboot",
+    ] {
+        assert!(adb.iter().all(|c| !c.contains(never)), "{never}: {adb:?}");
+    }
+    assert!(!receipt.outcomes.contains_key("adb_server"));
+    assert_a_repeat_cleanup_is_clean_and_silent(&req.runs_root, &receipt.run_id);
+}
+
+#[test]
+fn android_check_prefers_a_ready_emulator_and_names_an_attached_phone_in_its_refusals() {
+    const WITH_PHONE: &str = "List of devices attached\nemulator-5554\tdevice\n0A1B2C3D\tdevice\n";
+    let (repo, app) = app_repo();
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    android_until_borrow(&repo, &mut mock);
+    script_borrow(&mut mock, WITH_PHONE, EMULATOR);
+    stop_after_borrow(&mut mock);
+    let receipt = run(&mut mock, &req);
+    assert_ne!(
+        receipt.failure.as_ref().map(|f| f.code),
+        Some(FailureCode::DeviceUnavailable)
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert!(adb_calls(&mock).iter().all(|c| !c.contains(PHONE)));
+
+    // A named emulator that is not there keeps today's refusal, with the new tail.
+    let (repo, app) = app_repo();
+    let mut req = android_request(&repo, &app);
+    req.device = Some("emulator-5556".into());
+    let mut mock = android_mock();
+    android_until_borrow(&repo, &mut mock);
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+    mock.expect_run("adb devices", CmdOutput::success(WITH_PHONE));
+    let failure = run(&mut mock, &req).failure.unwrap();
+    assert_eq!(
+        failure.detail.to_string(),
+        "emulator-5556 is not a booted emulator on the adb server at port 5037 (1 booted; 1 physical device(s) also attached; pass --device <serial> to use one)"
+    );
+    assert_eq!(failure.subreason, None);
+}
+
+#[test]
+fn android_check_phone_refusals_name_the_cause_and_take_no_lease() {
+    const UNAUTHORIZED: &str = "List of devices attached\n0A1B2C3D\tunauthorized\n";
+    // The probe's line, with the serial replaced; adb words the parenthesis by group membership.
+    const NO_PERMISSIONS: &str = "List of devices attached\n????????????\tno permissions (missing udev rules? user is in the plugdev group); see [http://developer.android.com/tools/device.html]\n";
+    const TWO_PHONES: &str = "List of devices attached\n0A1B2C3D\tdevice\n9Z8Y7X6W\tdevice\n";
+    const PHONE_AND_BOOTING_EMULATOR: &str =
+        "List of devices attached\n0A1B2C3D\tdevice\nemulator-5554\tdevice\n";
+    type Script = fn(&mut MockRunner);
+    let cases: [(&str, &str, Script, Option<&str>, &str); 6] = [
+        (
+            "unauthorized",
+            UNAUTHORIZED,
+            |_| {},
+            Some("usb-unauthorized"),
+            "accept 'Allow USB debugging'",
+        ),
+        (
+            "no permissions, unreadable serial",
+            NO_PERMISSIONS,
+            |_| {},
+            Some("usb-no-permissions"),
+            "",
+        ),
+        (
+            "two ready phones",
+            TWO_PHONES,
+            |mock| {
+                mock.expect_run(
+                    "-s 0A1B2C3D shell getprop sys.boot_completed",
+                    CmdOutput::success("1\n"),
+                );
+                mock.expect_run(
+                    "-s 9Z8Y7X6W shell getprop sys.boot_completed",
+                    CmdOutput::success("1\n"),
+                );
+            },
+            Some("several-devices"),
+            "pass --device <serial>: 0A1B2C3D, 9Z8Y7X6W",
+        ),
+        (
+            "phone still booting",
+            "List of devices attached\n0A1B2C3D\tdevice\n",
+            |mock| {
+                mock.expect_run(
+                    "-s 0A1B2C3D shell getprop sys.boot_completed",
+                    CmdOutput::success("\n"),
+                );
+            },
+            None,
+            "wait for the device to finish booting",
+        ),
+        (
+            "booting emulator beside a phone: the emulator decides",
+            PHONE_AND_BOOTING_EMULATOR,
+            |mock| {
+                mock.expect_run(
+                    "-s emulator-5554 shell getprop sys.boot_completed",
+                    CmdOutput::success("\n"),
+                );
+            },
+            None,
+            "wait for the emulator to finish booting",
+        ),
+        (
+            "secure lock screen showing",
+            "List of devices attached\n0A1B2C3D\tdevice\n",
+            |mock| {
+                mock.expect_run(
+                    "-s 0A1B2C3D shell getprop sys.boot_completed",
+                    CmdOutput::success("1\n"),
+                );
+                mock.expect_run("getprop ro.build.version.sdk", CmdOutput::success("30\n"));
+                mock.expect_run(
+                    "getprop ro.product.cpu.abi",
+                    CmdOutput::success("arm64-v8a\n"),
+                );
+                mock.expect_run(
+                    "getprop ro.product.model",
+                    CmdOutput::success("Test Phone 5\n"),
+                );
+                let showing = secure_hidden().replace("      showing=false", "      showing=true");
+                script_lock_read(mock, POWER, &showing);
+            },
+            Some("device-locked"),
+            "unlock the device",
+        ),
+    ];
+    for (case, devices, script, subreason, next) in cases {
+        let (repo, app) = app_repo();
+        let req = android_request(&repo, &app);
+        let mut mock = android_mock();
+        android_until_borrow(&repo, &mut mock);
+        mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+        mock.expect_run("adb devices", CmdOutput::success(devices));
+        script(&mut mock);
+        let receipt = run(&mut mock, &req);
+        let failure = receipt.failure.unwrap();
+        assert_eq!(failure.code, FailureCode::DeviceUnavailable, "{case}");
+        assert_eq!(failure.subreason.as_deref(), subreason, "{case}");
+        assert!(
+            failure.next_action.contains(next),
+            "{case}: {}",
+            failure.next_action
+        );
+        assert_eq!(mock.remaining(), 0, "{case}");
+        assert!(!req.lock_root.exists(), "{case}");
+        // Selection only reads: the placeholder serial is never addressed, and nothing wakes or dismisses.
+        let adb = adb_calls(&mock);
+        assert!(adb.iter().all(|c| !c.contains('?')), "{case}: {adb:?}");
+        assert!(
+            adb.iter()
+                .all(|c| !c.contains("keyevent") && !c.contains("dismiss-keyguard")),
+            "{case}: {adb:?}"
+        );
+    }
+    let (repo, app) = app_repo();
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    android_until_borrow(&repo, &mut mock);
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+    mock.expect_run("adb devices", CmdOutput::success(NO_PERMISSIONS));
+    let failure = run(&mut mock, &req).failure.unwrap();
+    assert!(
+        failure
+            .detail
+            .contains("an attached device whose serial adb cannot read")
+            && failure.detail.contains("no USB permission"),
+        "{}",
+        failure.detail
+    );
+}
+
+#[test]
+fn android_check_rereads_a_named_phone_that_is_still_connecting() {
+    let (repo, app) = app_repo();
+    let mut req = android_request(&repo, &app);
+    req.device = Some(PHONE.into());
+    let mut mock = android_mock();
+    android_until_borrow(&repo, &mut mock);
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+    for state in ["offline", "offline", "device"] {
+        mock.expect_run(
+            "adb devices",
+            CmdOutput::success(&format!("List of devices attached\n{PHONE}\t{state}\n")),
+        );
+    }
+    script_phone_facts(&mut mock);
+    stop_after_borrow(&mut mock);
+    let started = mock.now_epoch_ms();
+    let receipt = run(&mut mock, &req);
+    assert_ne!(
+        receipt.failure.as_ref().map(|f| f.code),
+        Some(FailureCode::DeviceUnavailable),
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert!(mock.now_epoch_ms() - started >= 4_000);
+}
+
+#[test]
+fn android_check_names_an_absent_phone_or_the_server_that_holds_it_after_five_rereads() {
+    const EMPTY: &str = "List of devices attached\n\n";
+    // (the run's port, what 5037 lists as `device`): only this phone there makes it held.
+    for (port, on_default) in [(5037, None), (5038, Some(PHONE)), (5038, Some("9Z8Y7X6W"))] {
+        let held_on_default = on_default == Some(PHONE);
+        let (repo, app) = app_repo();
+        let mut req = android_request(&repo, &app);
+        req.device = Some(PHONE.into());
+        let mut mock = MockRunner::new();
+        if port != 5037 {
+            mock.environment
+                .insert("ANDROID_ADB_SERVER_PORT".into(), port.to_string());
+            mock.adb_devices
+                .push((5037, format!("{}\tdevice\n", on_default.unwrap())));
+        }
+        mock.adb_servers.push((port, 41));
+        android_until_borrow(&repo, &mut mock);
+        mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+        for _ in 0..6 {
+            mock.expect_run("adb devices", CmdOutput::success(EMPTY));
+        }
+        let failure = run(&mut mock, &req).failure.unwrap();
+        assert_eq!(mock.remaining(), 0, "{port} {on_default:?}");
+        if held_on_default {
+            assert_eq!(
+                failure.subreason.as_deref(),
+                Some("device-held-by-other-server")
+            );
+            assert!(failure
+                .detail
+                .contains("adb server on port 5037, not to the one on port 5038"));
+            assert!(failure.next_action.contains("ANDROID_ADB_SERVER_PORT=5037"));
+        } else {
+            assert_eq!(failure.subreason.as_deref(), Some("device-not-attached"));
+            assert!(failure.next_action.contains("attach the phone over USB"));
+        }
+        // The refusal says what QaReN already tried.
+        assert!(
+            failure
+                .detail
+                .contains("QaReN re-read the device list 5 times, 2 s apart"),
+            "{}",
+            failure.detail
+        );
+        assert!(!req.lock_root.exists());
+    }
+}
+
+// The run's server on 5038 while the server on 5037 lists `default` (raw host:devices rows).
+fn held_mock(default: &str) -> MockRunner {
+    let mut mock = MockRunner::new();
+    mock.environment
+        .insert("ANDROID_ADB_SERVER_PORT".into(), "5038".into());
+    mock.adb_servers.push((5038, 41));
+    mock.adb_devices.push((5037, default.to_string()));
+    mock
+}
+
+// Plan section 7.5: a phone the server on 5037 has as `device` has that one cause here, whatever it
+// lists as here; states that refuse at once take it at once.
+#[test]
+fn android_check_gives_a_phone_another_server_holds_one_cause_whatever_it_lists_as_here() {
+    const HELD: &str = "adb server on port 5037, not to the one on port 5038";
+    let no_permissions = |serial: &str| {
+        format!("{serial}\tno permissions (missing udev rules? user is in the plugdev group); see [http://developer.android.com/tools/device.html]\n")
+    };
+    let on_default = format!("{PHONE}\tdevice\n");
+    // (case, --device, the run's rows, 5037's rows, the expected sub-reason)
+    let cases = [
+        (
+            "named, no permissions here",
+            Some(PHONE),
+            no_permissions(PHONE),
+            on_default.clone(),
+            "device-held-by-other-server",
+        ),
+        (
+            "named, unauthorized here",
+            Some(PHONE),
+            format!("{PHONE}\tunauthorized\n"),
+            on_default.clone(),
+            "device-held-by-other-server",
+        ),
+        (
+            "alone, no permissions here",
+            None,
+            no_permissions(PHONE),
+            on_default.clone(),
+            "device-held-by-other-server",
+        ),
+        (
+            "nothing listed here",
+            None,
+            String::new(),
+            on_default.clone(),
+            "device-held-by-other-server",
+        ),
+        (
+            "two with causes here: the first listed decides",
+            None,
+            format!("{PHONE}\tunauthorized\n{}", no_permissions("9Z8Y7X6W")),
+            "9Z8Y7X6W\tdevice\n".to_string(),
+            "usb-unauthorized",
+        ),
+    ];
+    for (case, device, here, default, subreason) in cases {
+        let (repo, app) = app_repo();
+        let mut req = android_request(&repo, &app);
+        req.device = device.map(String::from);
+        let mut mock = held_mock(&default);
+        android_until_borrow(&repo, &mut mock);
+        mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+        // One read: none of these is re-read.
+        mock.expect_run(
+            "adb devices",
+            CmdOutput::success(&format!("List of devices attached\n{here}\n")),
+        );
+
+        let failure = run(&mut mock, &req).failure.unwrap();
+
+        assert_eq!(failure.code, FailureCode::DeviceUnavailable, "{case}");
+        assert_eq!(failure.subreason.as_deref(), Some(subreason), "{case}");
+        let held = subreason == "device-held-by-other-server";
+        assert_eq!(
+            failure.detail.contains(HELD),
+            held,
+            "{case}: {}",
+            failure.detail
+        );
+        assert!(failure.detail.contains(PHONE), "{case}: {}", failure.detail);
+        assert!(
+            !failure.detail.contains("re-read") && !failure.detail.contains("no booted emulator"),
+            "{case}: {}",
+            failure.detail
+        );
+        assert_eq!(mock.remaining(), 0, "{case}");
+        assert!(!req.lock_root.exists(), "{case}");
+    }
+
+    // A phone ready here is selected; another one held on 5037 changes nothing.
+    let (repo, app) = app_repo();
+    let req = android_request(&repo, &app);
+    let mut mock = held_mock("9Z8Y7X6W\tdevice\n");
+    android_until_borrow(&repo, &mut mock);
+    script_phone_borrow(
+        &mut mock,
+        &format!(
+            "List of devices attached\n{PHONE}\tdevice\n{}",
+            no_permissions("9Z8Y7X6W")
+        ),
+    );
+    stop_after_borrow(&mut mock);
+    let receipt = run(&mut mock, &req);
+    assert_ne!(
+        receipt.failure.as_ref().map(|f| f.code),
+        Some(FailureCode::DeviceUnavailable),
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert!(adb_calls(&mock).iter().all(|c| !c.contains("9Z8Y7X6W")));
+}
+
+#[test]
+fn android_check_starts_a_missing_adb_server_once_and_says_so_on_every_receipt() {
+    // (case, environment, resolved port, what start-server reports, devices after the start)
+    let cases = [
+        (
+            "default port, run proceeds",
+            vec![],
+            5037,
+            CmdOutput::success(""),
+            ONE_EMULATOR,
+        ),
+        (
+            "start reports a failure but the server answers",
+            vec![],
+            5037,
+            CmdOutput::failed(1, "daemon not running; starting now"),
+            ONE_EMULATOR,
+        ),
+        (
+            "ADB_SERVER_SOCKET wins over ANDROID_ADB_SERVER_PORT, then selection refuses",
+            vec![
+                ("ADB_SERVER_SOCKET", "tcp:127.0.0.1:5199"),
+                ("ANDROID_ADB_SERVER_PORT", "5300"),
+            ],
+            5199,
+            CmdOutput::success(""),
+            "List of devices attached\n\n",
+        ),
+    ];
+    for (case, env, port, started, devices) in cases {
+        let (repo, app) = app_repo();
+        let req = android_request(&repo, &app);
+        let mut mock = MockRunner::new();
+        for (name, value) in env {
+            mock.environment.insert(name.into(), value.into());
+        }
+        mock.adb_server_after_start = Some((port, 41));
+        android_until_borrow(&repo, &mut mock);
+        mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+        mock.expect_run("adb start-server", started);
+        if devices == ONE_EMULATOR {
+            mock.expect_run("adb devices", CmdOutput::success(devices));
+            mock.expect_run("getprop sys.boot_completed", CmdOutput::success("1\n"));
+            mock.expect_run("getprop ro.build.version.sdk", CmdOutput::success("37\n"));
+            mock.expect_run("getprop ro.product.cpu.abi", CmdOutput::success("x86_64\n"));
+            mock.expect_run(
+                "emu avd name",
+                CmdOutput::success("Pixel_9_API_37\r\nOK\r\n"),
+            );
+            script_lock_read(&mut mock, POWER, WINDOW_POLICY);
+            // A failure after the borrow and before the run record exists.
+            stop_after_borrow(&mut mock);
+        } else {
+            // The server just started: an empty list is re-read 5 times, then refused as before.
+            for _ in 0..6 {
+                mock.expect_run("adb devices", CmdOutput::success(devices));
+            }
+        }
+        let started_ms = mock.now_epoch_ms();
+        let receipt = run(&mut mock, &req);
+        assert_eq!(mock.remaining(), 0, "{case}");
+        if devices != ONE_EMULATOR {
+            let failure = receipt.failure.as_ref().unwrap();
+            assert_eq!(failure.detail.as_str(), "no booted emulator", "{case}");
+            assert!(mock.now_epoch_ms() - started_ms >= 10_000, "{case}");
+        }
+        assert_eq!(
+            receipt.outcomes["adb_server"],
+            format!("started the adb server on port {port} because none was running; it is left running"),
+            "{case}"
+        );
+        let starts: Vec<_> = mock
+            .calls
+            .iter()
+            .filter(|c| c.label == "adb-start-server")
+            .collect();
+        assert_eq!(starts.len(), 1, "{case}");
+        assert!(
+            starts[0]
+                .env
+                .contains(&("ADB_SERVER_SOCKET".into(), format!("tcp:{port}"))),
+            "{case}"
+        );
+        assert_eq!(
+            adb_calls(&mock).iter().filter(|c| *c == "version").count(),
+            1,
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn android_check_starts_no_server_when_one_answers_or_the_probe_cannot_tell() {
+    // An inconclusive probe (a timeout, not a refused connect) refuses as before and starts nothing.
+    let (repo, app) = app_repo();
+    let req = android_request(&repo, &app);
+    let mut mock = MockRunner::new();
+    mock.adb_inconclusive.push(5037);
+    android_until_borrow(&repo, &mut mock);
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+    let failure = run(&mut mock, &req).failure.unwrap();
+    assert!(failure
+        .detail
+        .contains("no adb server is running on port 5037"));
+    assert_eq!(adb_calls(&mock), ["version"]);
+
+    // An unreadable client starts nothing: it is read before the probe.
+    let (repo, app) = app_repo();
+    let req = android_request(&repo, &app);
+    let mut mock = MockRunner::new();
+    android_until_borrow(&repo, &mut mock);
+    mock.expect_run("adb version", CmdOutput::success("not adb\n"));
+    let receipt = run(&mut mock, &req);
+    assert_eq!(receipt.failure.unwrap().code, FailureCode::PrereqMissing);
+    assert_eq!(adb_calls(&mock), ["version"]);
+    assert!(!receipt.outcomes.contains_key("adb_server"));
+}
+
+#[test]
+fn android_check_rereads_an_empty_list_from_the_server_it_just_started() {
+    let (repo, app) = app_repo();
+    let req = android_request(&repo, &app);
+    let mut mock = MockRunner::new();
+    mock.adb_server_after_start = Some((5037, 41));
+    android_until_borrow(&repo, &mut mock);
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+    mock.expect_run("adb start-server", CmdOutput::success(""));
+    mock.expect_run(
+        "adb devices",
+        CmdOutput::success("List of devices attached\n\n"),
+    );
+    mock.expect_run(
+        "adb devices",
+        CmdOutput::success(&format!("List of devices attached\n{PHONE}\tdevice\n")),
+    );
+    // The phone's own reads prove it was selected.
+    script_phone_facts(&mut mock);
+    stop_after_borrow(&mut mock);
+    let started = mock.now_epoch_ms();
+    let receipt = run(&mut mock, &req);
+    assert_ne!(
+        receipt.failure.as_ref().map(|f| f.code),
+        Some(FailureCode::DeviceUnavailable),
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert!(receipt.outcomes["adb_server"].starts_with("started the adb server on port 5037"));
+    assert!(mock.now_epoch_ms() - started >= 2_000);
+}
+
+#[test]
+fn android_pr_starts_a_missing_adb_server_the_same_way() {
+    let (repo, app) = app_repo();
+    let mut req = android_request(&repo, &app);
+    req.pr = pr_request(&repo, &app).pr;
+    let mut mock = MockRunner::new();
+    mock.adb_server_after_start = Some((5037, 41));
+    mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
+    mock.expect_run("gh pr view", pr_view_json(PR_HEAD));
+    mock.expect_run("fetch origin pull/12/head", CmdOutput::success(""));
+    mock.expect_run(
+        "rev-parse refs/qaren/pr/",
+        CmdOutput::success(&format!("{PR_HEAD}\n")),
+    );
+    mock.expect_run("update-ref -d", CmdOutput::success(""));
+    script_plan(&mut mock, &repo);
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+    mock.expect_run("adb start-server", CmdOutput::success(""));
+    for _ in 0..6 {
+        mock.expect_run(
+            "adb devices",
+            CmdOutput::success("List of devices attached\n\n"),
+        );
+    }
+    let receipt = run(&mut mock, &req);
+    assert_eq!(receipt.verb, "pr");
+    assert_eq!(
+        receipt.failure.unwrap().code,
+        FailureCode::DeviceUnavailable
+    );
+    assert!(receipt.outcomes["adb_server"].starts_with("started the adb server on port 5037"));
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn android_check_on_a_phone_another_route_claims_refuses_before_touching_it() {
+    let (repo, app) = app_repo();
+    let req = android_request(&repo, &app);
+    let lock_dir = req.lock_root.join(format!("usb-{PHONE}"));
+    std::fs::create_dir_all(&lock_dir).unwrap();
+    std::fs::write(
+        lock_dir.join("holder.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "holder": "qaren-other-run",
+            "run_id": "other-run",
+            "at": "2026-08-01T00:00:00Z"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut mock = android_mock();
+    android_until_borrow(&repo, &mut mock);
+    script_phone_borrow(&mut mock, PHONE_BESIDE_OFFLINE_EMULATOR);
+    script_android_after_borrow(&mut mock, &repo);
+
+    let receipt = run(&mut mock, &req);
+
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::DeviceClaimContended);
+    assert!(
+        failure.detail.contains("held for run other-run"),
+        "{}",
+        failure.detail
+    );
+    assert_eq!(mock.remaining(), 0);
+    // Only the selection's reads reached the phone.
+    let adb = adb_calls(&mock);
+    assert_eq!(adb.len(), 8, "{adb:?}");
+    assert!(
+        adb.iter()
+            .all(|c| ["version", "devices", "getprop", "dumpsys"]
+                .iter()
+                .any(|read| c.contains(read))),
+        "{adb:?}"
+    );
+    assert!(lock_dir.join("holder.json").is_file());
+    assert_eq!(receipt.cleanup["usb_device_claim"], "absent");
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+}
+
+#[test]
+fn android_check_wakes_and_dismisses_a_swipe_keyguard_once_and_decides_on_the_read_back() {
+    let asleep = POWER.replace("mWakefulness=Awake", "mWakefulness=Asleep");
+    let showing = WINDOW_POLICY.replace("      showing=false", "      showing=true");
+    let secure_showing = secure_hidden().replace("      showing=false", "      showing=true");
+    let unknown_power = "POWER MANAGER (dumpsys power)\n".to_string();
+    let cases = [
+        (
+            "unknown wakefulness gets one wake and a readback",
+            (unknown_power.clone(), WINDOW_POLICY.to_string()),
+            Some((unknown_power, WINDOW_POLICY.to_string())),
+            true,
+        ),
+        (
+            "swipe keyguard on a sleeping emulator",
+            (asleep.clone(), showing.clone()),
+            Some((POWER.to_string(), WINDOW_POLICY.to_string())),
+            true,
+        ),
+        (
+            "secure keyguard stays after wake and dismiss",
+            (asleep.clone(), secure_showing.clone()),
+            Some((POWER.to_string(), secure_showing.clone())),
+            false,
+        ),
+        (
+            "keyguard block missing: unknown proceeds",
+            (
+                POWER.to_string(),
+                "WINDOW MANAGER POLICY STATE (dumpsys window policy)\n".to_string(),
+            ),
+            None,
+            true,
+        ),
+    ];
+    for (case, (power, window), read_back, passes) in cases {
+        let (repo, app) = app_repo();
+        seed_cached_apk(&repo, &app);
+        let req = android_request(&repo, &app);
+        let mut mock = android_mock();
+        script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+        mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+        mock.expect_run("ls-files", CmdOutput::success(""));
+        script_lock_read(&mut mock, &power, &window);
+        if let Some((read_power, read_window)) = &read_back {
+            mock.expect_run("input keyevent KEYCODE_WAKEUP", CmdOutput::success(""));
+            if window.contains("      showing=true") {
+                mock.expect_run("wm dismiss-keyguard", CmdOutput::success(""));
+            }
+            script_lock_read(&mut mock, read_power, read_window);
+        }
+        if passes {
+            script_android_install_launch(&mut mock, 0);
+            script_android_app_tick(&mut mock, CmdOutput::success("4242\n"));
+            script_android_walk_release(&mut mock, false);
+        }
+
+        let receipt = run(&mut mock, &req);
+
+        assert_eq!(mock.remaining(), 0, "{case}");
+        if passes {
+            assert_eq!(
+                receipt.result,
+                ReceiptResult::Pass,
+                "{case}: {:?}",
+                receipt.failure
+            );
+            assert!(receipt.outcomes.contains_key("device_lock"), "{case}");
+        } else {
+            let failure = receipt.failure.as_ref().unwrap();
+            assert_eq!(
+                failure.subreason.as_deref(),
+                Some("device-locked"),
+                "{case}"
+            );
+            for said in [
+                "showing=true secure=true",
+                "QaReN woke the device once and dismissed its keyguard once and read this back",
+            ] {
+                assert!(failure.detail.contains(said), "{case}: {}", failure.detail);
+            }
+            assert!(
+                adb_calls(&mock).iter().all(|c| !c.contains("install -r")),
+                "{case}"
+            );
+            assert_eq!(receipt.cleanup["device_lease"], "removed", "{case}");
+        }
+        let adb = adb_calls(&mock);
+        assert!(
+            adb.iter().filter(|c| c.contains("KEYCODE_WAKEUP")).count()
+                == usize::from(read_back.is_some()),
+            "{case}"
+        );
+        assert!(
+            adb.iter()
+                .all(|c| !c.contains("KEYCODE_SLEEP") && !c.contains("settings put")),
+            "{case}"
+        );
+    }
 }
 
 fn script_android_admission(mock: &mut MockRunner, status: &str) {
@@ -8043,8 +8952,14 @@ impl PrRunner {
 }
 
 impl Runner for PrRunner {
+    fn adb_server_absent(&self, port: u16) -> bool {
+        self.inner.adb_server_absent(port)
+    }
     fn adb_server_version(&self, port: u16) -> Result<u32, String> {
         self.inner.adb_server_version(port)
+    }
+    fn adb_server_devices(&self, port: u16) -> Result<String, String> {
+        self.inner.adb_server_devices(port)
     }
     fn env_var(&self, name: &str) -> Option<String> {
         self.inner.env_var(name)
@@ -9445,8 +10360,14 @@ fn a_cancel_during_the_git_probes_claims_nothing_and_runs_nothing_after_it() {
 struct Encoding(PrRunner, Option<u64>, u64, bool);
 
 impl Runner for Encoding {
+    fn adb_server_absent(&self, port: u16) -> bool {
+        self.0.adb_server_absent(port)
+    }
     fn adb_server_version(&self, port: u16) -> Result<u32, String> {
         self.0.adb_server_version(port)
+    }
+    fn adb_server_devices(&self, port: u16) -> Result<String, String> {
+        self.0.adb_server_devices(port)
     }
     fn env_var(&self, name: &str) -> Option<String> {
         self.0.env_var(name)
@@ -10637,6 +11558,7 @@ fn android_install_recovery_fixture() -> (RunRequest, MockRunner) {
     script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
     mock.expect_run("ls-files", CmdOutput::success(""));
+    script_lock_read(&mut mock, POWER, WINDOW_POLICY);
     (req, mock)
 }
 
@@ -10653,7 +11575,11 @@ fn assert_android_install_recovery_success(first: CmdOutput) {
     let (req, mut mock) = android_install_recovery_fixture();
     mock.expect_run("install -r -d", first);
     script_package_manager_recovery(&mut mock);
-    script_android_launch_walk_teardown(&mut mock);
+    // The lock is read again before the retry; the launch does not read it a third time.
+    script_lock_read(&mut mock, POWER, WINDOW_POLICY);
+    script_android_install_launch(&mut mock, 0);
+    script_android_app_tick(&mut mock, CmdOutput::success("4242\n"));
+    script_android_walk_release(&mut mock, false);
     let receipt = run(&mut mock, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     assert_eq!(receipt.outcomes["install_attempts"], "2");
@@ -10676,6 +11602,60 @@ fn android_install_recovery_i1_continues_after_transport_failure() {
 #[test]
 fn android_install_recovery_i7_replaces_an_install_whose_acknowledgement_was_lost() {
     assert_android_install_recovery_success(CmdOutput::success("Performing Streamed Install\n"));
+}
+
+// The device stopped answering between the attempts and may have restarted: its lock is read again.
+#[test]
+fn android_install_recovery_reads_the_lock_again_before_the_retry() {
+    let asleep = POWER.replace("mWakefulness=Awake", "mWakefulness=Asleep");
+    let showing = WINDOW_POLICY.replace("      showing=false", "      showing=true");
+    // false: woken, the retry goes on. true: the keyguard stays, refused before the second install.
+    for still_locked in [false, true] {
+        let (req, mut mock) = android_install_recovery_fixture();
+        mock.expect_run("install -r -d", CmdOutput::failed(1, "transport failure"));
+        script_package_manager_recovery(&mut mock);
+        if still_locked {
+            script_lock_read(&mut mock, &asleep, &showing);
+            mock.expect_run("input keyevent KEYCODE_WAKEUP", CmdOutput::success(""));
+            mock.expect_run("wm dismiss-keyguard", CmdOutput::success(""));
+            script_lock_read(&mut mock, POWER, &showing);
+        } else {
+            script_lock_read(&mut mock, &asleep, WINDOW_POLICY);
+            mock.expect_run("input keyevent KEYCODE_WAKEUP", CmdOutput::success(""));
+            script_lock_read(&mut mock, POWER, WINDOW_POLICY);
+            script_android_install_launch(&mut mock, 0);
+            script_android_app_tick(&mut mock, CmdOutput::success("4242\n"));
+            script_android_walk_release(&mut mock, false);
+        }
+
+        let receipt = run(&mut mock, &req);
+
+        assert_eq!(mock.remaining(), 0, "{still_locked}");
+        let calls: Vec<String> = mock.calls.iter().map(|c| c.rendered()).collect();
+        let last_probe = calls
+            .iter()
+            .rposition(|c| c.contains("shell pm path android"))
+            .unwrap();
+        let wake = calls
+            .iter()
+            .position(|c| c.contains("KEYCODE_WAKEUP"))
+            .unwrap();
+        let installs: Vec<usize> = (0..calls.len())
+            .filter(|i| calls[*i].contains("install -r -d"))
+            .collect();
+        assert!(last_probe < wake, "{still_locked}: {calls:?}");
+        if still_locked {
+            let failure = receipt.failure.as_ref().unwrap();
+            assert_eq!(failure.code, FailureCode::DeviceUnavailable);
+            assert_eq!(failure.subreason.as_deref(), Some("device-locked"));
+            assert_eq!(installs.len(), 1, "{calls:?}");
+        } else {
+            assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+            assert_eq!(receipt.outcomes["install_attempts"], "2");
+            assert_eq!(installs.len(), 2, "{calls:?}");
+            assert!(wake < installs[1], "{calls:?}");
+        }
+    }
 }
 
 #[test]
@@ -10751,6 +11731,7 @@ fn android_install_recovery_i5_second_failure_names_both_attempts() {
         let (req, mut mock) = android_install_recovery_fixture();
         mock.expect_run("install -r -d", CmdOutput::failed(1, "first sentinel"));
         script_package_manager_recovery(&mut mock);
+        script_lock_read(&mut mock, POWER, WINDOW_POLICY);
         mock.expect_run(
             "install -r -d",
             CmdOutput {
@@ -10815,7 +11796,10 @@ fn android_install_recovery_requires_three_consecutive_successful_package_lines(
         mock.expect_run("shell pm path android", output);
     }
     script_package_manager_recovery(&mut mock);
-    script_android_launch_walk_teardown(&mut mock);
+    script_lock_read(&mut mock, POWER, WINDOW_POLICY);
+    script_android_install_launch(&mut mock, 0);
+    script_android_app_tick(&mut mock, CmdOutput::success("4242\n"));
+    script_android_walk_release(&mut mock, false);
     let receipt = run(&mut mock, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     assert_eq!(receipt.outcomes["install_recovery_wait_ms"], "35000");
@@ -10835,6 +11819,8 @@ fn android_install_recovery_caps_or_skips_the_retry_at_the_entry_window() {
         mock.advance_on = Some(("install -r -d".into(), first_ms));
         mock.expect_run("install -r -d", CmdOutput::failed(1, "first failure"));
         script_package_manager_recovery(&mut mock);
+        // The lock read comes before the budget check, so the branch without a retry takes it too.
+        script_lock_read(&mut mock, POWER, WINDOW_POLICY);
         if first_ms == 16_000 {
             mock.expect_run("install -r -d", CmdOutput::failed(1, "second failure"));
         }
@@ -10880,6 +11866,7 @@ fn android_install_recovery_records_success_before_cancellation() {
     let (req, mut mock) = android_install_recovery_fixture();
     mock.expect_run("install -r -d", CmdOutput::failed(1, "transport failure"));
     script_package_manager_recovery(&mut mock);
+    script_lock_read(&mut mock, POWER, WINDOW_POLICY);
     mock.expect_run("install -r -d", CmdOutput::success("Success\n"));
     mock.advance_on = Some(("install -r -d".into(), 1));
     mock.cancel_at_ms = Some((mock.now_epoch_ms() + 10_002, "received SIGTERM".into()));
@@ -10936,8 +11923,10 @@ fn android_check_install_failure_and_timeout_keep_verified_apk_and_release_only_
         script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
         mock.expect_run("ls-files", CmdOutput::success(""));
+        script_lock_read(&mut mock, POWER, WINDOW_POLICY);
         mock.expect_run("install -r -d", installed.clone());
         script_package_manager_recovery(&mut mock);
+        script_lock_read(&mut mock, POWER, WINDOW_POLICY);
         mock.expect_run("install -r -d", installed);
 
         let receipt = run(&mut mock, &req);
@@ -10996,6 +11985,36 @@ fn android_check_install_failure_and_timeout_keep_verified_apk_and_release_only_
 }
 
 #[test]
+fn android_check_install_over_another_signer_names_fresh_install_and_its_cost() {
+    let incompatible = CmdOutput::failed(
+        1,
+        "adb: failed to install app-debug.apk: Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package com.rndevagent.testapp signatures do not match newer version; ignoring!]",
+    );
+    // The other signer answers the first install, or the retry after a lost transport.
+    for retried in [false, true] {
+        let (req, mut mock) = android_install_recovery_fixture();
+        if retried {
+            mock.expect_run("install -r -d", CmdOutput::failed(1, "transport failure"));
+            script_package_manager_recovery(&mut mock);
+            script_lock_read(&mut mock, POWER, WINDOW_POLICY);
+        }
+        mock.expect_run("install -r -d", incompatible.clone());
+
+        let receipt = run(&mut mock, &req);
+
+        let failure = receipt.failure.unwrap();
+        assert_eq!(failure.code, FailureCode::ArtifactInstallFailed, "{retried}");
+        assert_eq!(
+            failure.next_action.to_string(),
+            "the device already has com.rndevagent.testapp from another signer; re-run with --fresh-install to replace it (this deletes that app's data on the device)",
+            "{retried}"
+        );
+        assert!(adb_calls(&mock).iter().all(|c| !c.contains("uninstall")));
+        assert_eq!(mock.remaining(), 0, "{retried}");
+    }
+}
+
+#[test]
 fn android_check_refuses_a_metro_port_already_reversed_on_the_emulator() {
     let (repo, app) = app_repo();
     seed_cached_apk(&repo, &app);
@@ -11004,6 +12023,7 @@ fn android_check_refuses_a_metro_port_already_reversed_on_the_emulator() {
     script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
     mock.expect_run("ls-files", CmdOutput::success(""));
+    script_lock_read(&mut mock, POWER, WINDOW_POLICY);
     mock.expect_run(
         "install -r -d",
         CmdOutput::success("Performing Streamed Install\nSuccess\n"),
@@ -11039,6 +12059,7 @@ fn android_check_cancelled_before_reverse_leaves_an_existing_mapping() {
     script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
     mock.expect_run("ls-files", CmdOutput::success(""));
+    script_lock_read(&mut mock, POWER, WINDOW_POLICY);
     mock.expect_run(
         "install -r -d",
         CmdOutput::success("Performing Streamed Install\nSuccess\n"),
@@ -11092,6 +12113,7 @@ fn script_android_pr_preflight(mock: &mut MockRunner, repo: &Path, wt: &Path, ap
 }
 
 fn script_android_pr_ready(mock: &mut MockRunner) {
+    script_lock_read(mock, POWER, WINDOW_POLICY);
     mock.expect_run(
         "install -r -d",
         CmdOutput::success("Performing Streamed Install\nSuccess\n"),
@@ -12272,6 +13294,134 @@ fn pr_dependency_cache_publishes_only_after_pre_walk_candidate_verification() {
         );
         std::fs::remove_dir_all(repo).unwrap();
     }
+}
+
+// Built from adb's mDNS service types, not captured.
+const WIRELESS: [&str; 3] = [
+    "adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp",
+    "adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp.",
+    "adb-0A1B2C3D._adb._tcp",
+];
+
+// Plan step 8.1-13: a named wireless connection is refused before ANDROID_HOME, any adb command,
+// server probe or start, and the lease.
+#[test]
+fn android_check_refuses_a_named_wireless_connection_before_touching_adb() {
+    for serial in WIRELESS {
+        for android_home in [true, false] {
+            let (repo, app) = app_repo();
+            let mut req = android_request(&repo, &app);
+            req.device = Some(serial.to_string());
+            if !android_home {
+                req.android_home = None;
+            }
+            // No adb server: a probe would start one, and the start is a recorded adb command.
+            let mut mock = MockRunner::new();
+            android_until_borrow(&repo, &mut mock);
+
+            let receipt = run(&mut mock, &req);
+
+            let failure = receipt.failure.as_ref().unwrap();
+            assert_eq!(failure.code, FailureCode::DeviceUnavailable, "{serial}");
+            assert_eq!(failure.subreason.as_deref(), Some("wireless-not-supported"));
+            assert!(failure.detail.contains(serial), "{}", failure.detail);
+            assert!(
+                failure.next_action.contains("USB cable"),
+                "{}",
+                failure.next_action
+            );
+            assert!(adb_calls(&mock).is_empty(), "{:?}", adb_calls(&mock));
+            assert_eq!(mock.remaining(), 0, "{serial}");
+            assert!(!receipt.outcomes.contains_key("adb_server"));
+            assert!(!req.lock_root.exists());
+        }
+    }
+}
+
+// Plan step 8.1-13: a listed wireless connection is counted in the refusal's tail and never
+// selected or addressed.
+#[test]
+fn android_check_never_selects_or_addresses_a_listed_wireless_connection() {
+    let wireless = WIRELESS[0];
+    let borrows = |devices: &str, script: fn(&mut MockRunner, &str)| {
+        let (repo, app) = app_repo();
+        let req = android_request(&repo, &app);
+        let mut mock = android_mock();
+        android_until_borrow(&repo, &mut mock);
+        script(&mut mock, devices);
+        stop_after_borrow(&mut mock);
+        let receipt = run(&mut mock, &req);
+        assert_ne!(
+            receipt.failure.as_ref().map(|f| f.code),
+            Some(FailureCode::DeviceUnavailable),
+            "{:?}",
+            receipt.failure
+        );
+        assert_eq!(mock.remaining(), 0);
+        assert!(adb_calls(&mock).iter().all(|c| !c.contains(wireless)));
+    };
+    // Beside a cable phone, the cable phone is selected; beside a ready emulator, the emulator.
+    borrows(
+        &format!("List of devices attached\n{wireless}\tdevice\n{PHONE}\tdevice\n"),
+        script_phone_borrow,
+    );
+    borrows(
+        &format!("List of devices attached\nemulator-5554\tdevice\n{wireless}\tdevice\n"),
+        |mock, devices| script_borrow(mock, devices, EMULATOR),
+    );
+
+    let refused = |devices: String, boot_reads: usize| {
+        let (repo, app) = app_repo();
+        let req = android_request(&repo, &app);
+        let mut mock = android_mock();
+        android_until_borrow(&repo, &mut mock);
+        mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+        mock.expect_run("adb devices", CmdOutput::success(&devices));
+        for _ in 0..boot_reads {
+            mock.expect_run("getprop sys.boot_completed", CmdOutput::success("1\n"));
+        }
+        let failure = run(&mut mock, &req).failure.unwrap();
+        assert_eq!(failure.code, FailureCode::DeviceUnavailable);
+        assert_eq!(failure.subreason, None);
+        assert_eq!(mock.remaining(), 0);
+        assert!(adb_calls(&mock).iter().all(|c| !c.contains(wireless)));
+        assert!(!req.lock_root.exists());
+        failure
+    };
+    const TAIL: &str = "; 1 wireless adb connection(s) listed and not used (USB cable only)";
+    // Alone, in either state: not a phone, so the emulator refusal names it and advises the cable.
+    for state in ["device", "offline"] {
+        let failure = refused(
+            format!("List of devices attached\n{wireless}\t{state}\n"),
+            0,
+        );
+        assert_eq!(
+            failure.detail,
+            format!("no booted emulator{TAIL}"),
+            "{state}"
+        );
+        assert_eq!(
+            failure.next_action,
+            "attach the phone with a USB cable, or boot an emulator, then re-run"
+        );
+        for word in ["pass --device", "cannot read", "replug", wireless] {
+            assert!(!failure.detail.contains(word), "{state}: {word}");
+            assert!(!failure.next_action.contains(word), "{state}: {word}");
+        }
+    }
+    // Two booted emulators: today's refusal, with the wireless clause in its tail.
+    let failure = refused(
+        format!("List of devices attached\nemulator-5554\tdevice\nemulator-5556\tdevice\n{wireless}\tdevice\n"),
+        2,
+    );
+    assert_eq!(
+        failure.detail,
+        format!("2 booted emulators; qaren check borrows exactly one{TAIL}")
+    );
+    assert_eq!(
+        failure.next_action,
+        "pass --device emulator-NNNN, or shut down the emulators you are not testing on"
+    );
 }
 
 // A recorded check's tools: the recorder writes its raw capture and each successful encode writes its output.

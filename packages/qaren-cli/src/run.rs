@@ -21,12 +21,13 @@ use crate::record::{self, VideoStatus};
 use crate::redact::OutputText;
 use crate::report::{self, ReportInput};
 use crate::runrecord::{
-    capture_pid_identity, BorrowedEmulatorResource, FinalVerification, IosSimResource, Phase,
-    PrWorktreeResource, Resources, RunRecord, TerminalResult, RUN_SCHEMA,
+    capture_pid_identity, BorrowedAndroid, BorrowedDeviceResource, BorrowedEmulatorResource,
+    FinalVerification, IosSimResource, Phase, PrWorktreeResource, Resources, RunRecord,
+    TerminalResult, RUN_SCHEMA,
 };
 use crate::scenario::{
-    is_emulator_serial, AndroidEmulatorSpec, BuildSpec, CandidateSpec, DepsSpec, IosSpec,
-    MetroSpec, Platform, Scenario, SCENARIO_SCHEMA,
+    is_emulator_serial, is_usb_serial, is_wireless_serial, AndroidDeviceSpec, AndroidEmulatorSpec,
+    BuildSpec, CandidateSpec, DepsSpec, IosSpec, MetroSpec, Platform, Scenario, SCENARIO_SCHEMA,
 };
 use crate::timefmt;
 use crate::worktree;
@@ -154,12 +155,15 @@ struct PrState {
 
 struct Device {
     id: String,
+    // The AVD name of an emulator, the sanitized model of a phone, the simulator name on iOS.
     name: String,
     ios: Option<(String, String)>,
-    android: Option<BorrowedEmulatorResource>,
+    android: Option<BorrowedAndroid>,
     needs_boot: bool,
     // Wall-clock time the inventory showed the simulator Booted.
     booted_at_ms: Option<u64>,
+    // Set when the selection's lock read could not tell; the run proceeds and says so.
+    lock_note: Option<String>,
 }
 
 fn platform_str(platform: Platform) -> &'static str {
@@ -233,12 +237,15 @@ fn run_scoped(runner: &mut dyn Runner, req: &RunRequest) -> Receipt {
     let mut preflight_jev = None;
     // A PR worktree created before the run record owns it; removed here if the run never got that far.
     let mut unowned_worktree = None;
+    // The port of an adb server this run started; every receipt says so, refusals included.
+    let mut adb_server_started = None;
     let mut receipt = match run_inner(
         runner,
         req,
         started_ms,
         &mut preflight_jev,
         &mut unowned_worktree,
+        &mut adb_server_started,
     ) {
         Ok(receipt) => receipt,
         Err(failure) => {
@@ -271,6 +278,10 @@ fn run_scoped(runner: &mut dyn Runner, req: &RunRequest) -> Receipt {
             .insert("pr_worktree".to_string(), outcome.render());
         receipt.commands_executed = runner.commands_executed();
     }
+    if let Some(port) = adb_server_started {
+        let (name, note) = adb_server_note(port);
+        receipt.outcomes.entry(name).or_insert(note);
+    }
     receipt.preflight_jev = preflight_jev;
     crate::commands::finish_host(runner, &mut receipt, host_start);
     receipt
@@ -300,6 +311,7 @@ fn run_inner(
     started_ms: u64,
     preflight_jev: &mut Option<core::JevRollup>,
     unowned_worktree: &mut Option<(PathBuf, PathBuf)>,
+    adb_server_started: &mut Option<u16>,
 ) -> Result<Receipt, Failure> {
     events::stage("preflight", StageState::Running, None, None);
     validate_boot_device(
@@ -472,10 +484,11 @@ fn run_inner(
         req.shutdown_device_on_exit,
         req.android_home.as_deref(),
         config.deadlines.device_boot_seconds,
+        adb_server_started,
     )?;
-    let android_env = device.android.as_ref().map(|emulator| core::AndroidEnv {
-        serial: emulator.serial.clone(),
-        server_port: emulator.server_port,
+    let android_env = device.android.as_ref().map(|borrowed| core::AndroidEnv {
+        serial: borrowed.serial.clone(),
+        server_port: borrowed.server_port,
         platform_tools: android::adb_path(req.android_home.as_deref().unwrap_or_default())
             .parent()
             .expect("adb lives in platform-tools")
@@ -660,14 +673,37 @@ fn run_inner(
             owned_by_run: false,
             booted_proven_at: device.booted_at_ms.map(timefmt::iso8601_utc),
         });
-    if let Some(emulator) = &device.android {
+    if let Some(borrowed) = &device.android {
         let home = req
             .android_home
             .as_deref()
             .expect("resolved with ANDROID_HOME");
         resources.adb_path = Some(android::adb_path(home));
-        resources.adb_local_serial = Some(emulator.serial.clone());
-        resources.android_emulator = Some(emulator.clone());
+        resources.adb_local_serial = Some(borrowed.serial.clone());
+        let BorrowedAndroid {
+            serial,
+            server_port,
+            api_level,
+            abi,
+            physical,
+        } = borrowed.clone();
+        if physical {
+            resources.android_device = Some(BorrowedDeviceResource {
+                serial,
+                model: device.name.clone(),
+                server_port,
+                api_level,
+                abi,
+            });
+        } else {
+            resources.android_emulator = Some(BorrowedEmulatorResource {
+                serial,
+                avd: device.name.clone(),
+                server_port,
+                api_level,
+                abi,
+            });
+        }
     }
     resources.pr_worktree = unowned_worktree
         .as_ref()
@@ -715,10 +751,19 @@ fn run_inner(
         record,
         started_ms,
         timings: Vec::new(),
-        notes: vec![
+        notes: [
             ("video_policy".into(), config.video.as_str().into()),
             ("video_policy_source".into(), video_policy_source.clone()),
-        ],
+        ]
+        .into_iter()
+        .chain(adb_server_started.map(adb_server_note))
+        .chain(
+            device
+                .lock_note
+                .clone()
+                .map(|note| ("device_lock".to_string(), note)),
+        )
+        .collect(),
         verb: verb(req),
         bundle_requests_at_launch: None,
         manifest_warm: None,
@@ -757,6 +802,12 @@ fn run_inner(
                 lease::orphan_note(&lease.lock_dir, run_id),
             ));
         }
+        // The `usb-<serial>` claim `prepare android_usb` and handoff take, so the two routes exclude each other.
+        if let Some(phone) = device.android.as_ref().filter(|a| a.physical) {
+            if let Err(f) = prepare::claim_usb_device(&mut ctx, &req.lock_root, &phone.serial) {
+                return finish_failed(ctx, f);
+            }
+        }
         let t = ctx.mark("preflight", started_ms);
         events::stage("preflight", StageState::Passed, None, None);
         events::stage("deps", StageState::Running, None, None);
@@ -773,6 +824,7 @@ fn run_inner(
                 req.shutdown_device_on_exit,
                 req.android_home.as_deref(),
                 ctx.record.scenario.deadlines.device_boot_seconds,
+                &mut None,
             ) {
                 Ok(refreshed) => refreshed,
                 Err(f) => return finish_failed(ctx, f),
@@ -1035,7 +1087,7 @@ fn run_inner(
         } else if device
             .android
             .as_ref()
-            .is_some_and(|emulator| emulator.api_level < 34)
+            .is_some_and(|borrowed| borrowed.api_level < 34)
         {
             events::stage("recording", StageState::Skipped, None, None);
             video = Some(VideoStatus::unavailable(
@@ -1045,10 +1097,10 @@ fn run_inner(
             events::stage("recording", StageState::Running, None, None);
             let adb = ctx.record.resources.adb_path.clone();
             let target = match &device.android {
-                Some(emulator) => record::RecordTarget::Android {
-                    adb: adb.as_deref().expect("borrowed emulator adb path"),
-                    port: emulator.server_port,
-                    serial: &emulator.serial,
+                Some(borrowed) => record::RecordTarget::Android {
+                    adb: adb.as_deref().expect("borrowed device adb path"),
+                    port: borrowed.server_port,
+                    serial: &borrowed.serial,
                 },
                 None => record::RecordTarget::Ios(&device.id),
             };
@@ -1946,6 +1998,13 @@ fn identity_values(device: &Device, metro_port: u16, resources: &Resources) -> V
             emulator.server_port.to_string(),
         ]);
     }
+    if let Some(phone) = &resources.android_device {
+        values.extend([
+            phone.serial.clone(),
+            phone.model.clone(),
+            phone.server_port.to_string(),
+        ]);
+    }
     values.retain(|value| !value.is_empty());
     values.sort();
     values.dedup();
@@ -2366,7 +2425,9 @@ pub(crate) fn reset_app(
     android: Option<&core::AndroidEnv>,
 ) -> Result<(), Failure> {
     ensure_running(ctx.runner, "fresh_install")?;
-    let device = if android.is_some() {
+    let device = if ctx.record.resources.android_device.is_some() {
+        "device"
+    } else if android.is_some() {
         "emulator"
     } else {
         "simulator"
@@ -2696,6 +2757,19 @@ fn teardown(
         ctx.runner,
         &ctx.record,
     ));
+    outcomes.extend(crate::commands::cleanup::release_runner_packages(
+        ctx.runner,
+        &ctx.record,
+        &outcomes,
+    ));
+    // A held or retained lease keeps the phone's claim with it; `qaren cleanup` releases both.
+    if !hold && !retain_device_lease {
+        crate::commands::cleanup::release_usb_claim(
+            &ctx.record,
+            &mut outcomes,
+            crate::commands::cleanup::BORROWED_PHONE_LEGS,
+        );
+    }
     if let Some(lease) = ctx.record.resources.lease.clone() {
         let unclean = unclean_legs(&outcomes);
         let outcome = if retain_device_lease {
@@ -2948,6 +3022,7 @@ mod device_tests {
                     false,
                     None,
                     40,
+                    &mut None,
                 )
                 .unwrap();
                 assert_eq!(device.id, udid);
@@ -2968,9 +3043,10 @@ fn resolve_device(
     shutdown_device_on_exit: bool,
     android_home: Option<&str>,
     device_boot_seconds: u64,
+    adb_server_started: &mut Option<u16>,
 ) -> Result<Device, Failure> {
     match platform {
-        Platform::Android => borrow_emulator(runner, device, android_home),
+        Platform::Android => borrow_android(runner, device, android_home, adb_server_started),
         Platform::Ios => {
             let strict_inventory = select_from_inventory || shutdown_device_on_exit;
             let deadline = runner
@@ -2993,6 +3069,7 @@ fn resolve_device(
                 android: None,
                 needs_boot: sim.state == ios::SimState::Shutdown,
                 booted_at_ms: (sim.state == ios::SimState::Booted).then_some(observed_ms),
+                lock_note: None,
             };
             if strict_inventory {
                 return device
@@ -3051,15 +3128,36 @@ fn resolve_device(
     }
 }
 
-// Borrowing requires an existing server without claiming its process lifecycle.
-fn borrow_emulator(
+pub(crate) fn device_refusal((subreason, detail, next): android::DeviceProblem) -> Failure {
+    let mut failure = Failure::new("device", FailureCode::DeviceUnavailable, detail, next);
+    failure.subreason = Some(subreason.to_string());
+    failure
+}
+
+fn adb_server_note(port: u16) -> (String, String) {
+    (
+        "adb_server".to_string(),
+        format!(
+            "started the adb server on port {port} because none was running; it is left running"
+        ),
+    )
+}
+
+// Borrowing never stops or restarts a server; it starts one, once, only when none answers.
+fn borrow_android(
     runner: &mut dyn Runner,
     device: Option<&str>,
     android_home: Option<&str>,
+    adb_server_started: &mut Option<u16>,
 ) -> Result<Device, Failure> {
+    if let Some(wanted) = device.filter(|d| is_wireless_serial(d)) {
+        return Err(device_refusal(android::wireless_not_supported(wanted)));
+    }
     let unavailable = |detail: String, next: &str| {
         Failure::new("device", FailureCode::DeviceUnavailable, detail, next)
     };
+    // A named phone gets "device" wording; emulator runs keep theirs.
+    let named_phone = device.is_some_and(is_usb_serial);
     let adb = android_home
         .map(android::adb_path)
         .filter(|adb| adb.is_file())
@@ -3068,7 +3166,11 @@ fn borrow_emulator(
                 "device",
                 FailureCode::PrereqMissing,
                 "ANDROID_HOME is unset or has no platform-tools/adb",
-                "export ANDROID_HOME to the Android SDK your emulator runs from, then re-run",
+                if named_phone {
+                    "export ANDROID_HOME to the Android SDK whose adb your device is attached through, then re-run"
+                } else {
+                    "export ANDROID_HOME to the Android SDK your emulator runs from, then re-run"
+                },
             )
         })?;
     let port = android::borrowed_server_port(
@@ -3078,15 +3180,14 @@ fn borrow_emulator(
     .map_err(|detail| {
         unavailable(
             detail,
-            "point ADB_SERVER_SOCKET at the local adb server your emulator uses, then re-run",
+            if named_phone {
+                "point ADB_SERVER_SOCKET at the local adb server your device is attached to, then re-run"
+            } else {
+                "point ADB_SERVER_SOCKET at the local adb server your emulator uses, then re-run"
+            },
         )
     })?;
-    let Ok(server) = runner.adb_server_version(port) else {
-        return Err(unavailable(
-            format!("no adb server is running on port {port}; start your emulator first"),
-            "boot the emulator (which starts its adb server), then re-run",
-        ));
-    };
+    // Read before the probe, so nothing slow sits between a refused probe and the start.
     // A client of another version would kill the borrowed server and start its own.
     let client = runner.run(&android::client_version_spec(&adb));
     let Some(client) = client
@@ -3101,6 +3202,42 @@ fn borrow_emulator(
             "check the platform-tools under ANDROID_HOME, then re-run",
         ));
     };
+    let server = match runner.adb_server_version(port) {
+        Ok(server) => server,
+        // Only a refused connect proves nothing listens; a server that answers is never started over.
+        Err(_) if runner.adb_server_absent(port) => {
+            // shortcut: a server of another version that starts listening in the few milliseconds between the refused probe and adb's own connect would be restarted by adb itself; launch the server directly (adb -L tcp:<port> server) if that ever happens.
+            let started = runner.run(&android::start_server_spec(&adb, port));
+            match runner.adb_server_version(port) {
+                Ok(server) => {
+                    *adb_server_started = Some(port);
+                    server
+                }
+                Err(probe) => {
+                    let command = if started.ok() {
+                        "it exited 0".to_string()
+                    } else {
+                        started.summary()
+                    };
+                    return Err(device_refusal(android::server_not_started(
+                        &adb, port, &command, &probe,
+                    )));
+                }
+            }
+        }
+        Err(_) if named_phone => {
+            return Err(unavailable(
+                format!("no adb server answers on port {port}, and the probe could not tell whether one is starting"),
+                "check the adb server on that port, then re-run",
+            ))
+        }
+        Err(_) => {
+            return Err(unavailable(
+                format!("no adb server is running on port {port}; start your emulator first"),
+                "boot the emulator (which starts its adb server), then re-run",
+            ))
+        }
+    };
     if client != server {
         return Err(unavailable(
             format!(
@@ -3110,105 +3247,54 @@ fn borrow_emulator(
             "use the same platform-tools as the running adb server, then re-run",
         ));
     }
-    let listed = runner.run(&android::devices_spec(&adb, port));
-    if !listed.ok() {
-        return Err(unavailable(
-            format!("adb devices failed: {}", listed.summary()),
-            "check the adb server, then re-run",
-        ));
-    }
-    let attached = android::parse_devices(&listed.stdout);
-    let emulators: Vec<&str> = attached
-        .iter()
-        .filter(|(serial, state)| state == "device" && is_emulator_serial(serial))
-        .map(|(serial, _)| serial.as_str())
-        .collect();
-    let physical = attached
-        .iter()
-        .filter(|(serial, _)| !serial.starts_with("emulator-"))
-        .count();
-    let ignored = if physical == 0 {
-        String::new()
-    } else {
-        format!("; {physical} other device(s) ignored: physical devices are not supported in this release")
-    };
-    let mut boot_completed = |serial: &str| {
-        let output = runner.run(&android::getprop_spec(
-            &adb,
-            port,
-            serial,
-            "sys.boot_completed",
-        ));
-        if output.ok() {
-            Ok(output.stdout.trim() == "1")
-        } else {
-            Err(unavailable(
-                format!(
-                    "cannot read sys.boot_completed of {serial}: {}",
-                    output.summary()
-                ),
-                "check that the emulator is responsive, then re-run",
-            ))
+    let mut rereads = 0;
+    let (serial, physical) = loop {
+        let listed = runner.run(&android::devices_spec(&adb, port));
+        if !listed.ok() {
+            return Err(unavailable(
+                format!("adb devices failed: {}", listed.summary()),
+                "check the adb server, then re-run",
+            ));
+        }
+        let attached = android::parse_devices(&listed.stdout);
+        let settled = rereads == 5;
+        // A server this run just started may not list a ready device yet: "no booted emulator" waits too.
+        let starting = adb_server_started.is_some()
+            && device.is_none()
+            && !attached.iter().any(|(_, state)| state == "device");
+        match select_android(runner, &adb, port, device, &attached, settled) {
+            // A phone still connecting lists as offline, or not at all, for a moment.
+            Err(f)
+                if !settled
+                    && (matches!(
+                        f.subreason.as_deref(),
+                        Some("device-offline" | "device-not-attached")
+                    ) || (starting && f.subreason.is_none())) =>
+            {
+                rereads += 1;
+                runner.sleep(std::time::Duration::from_secs(2));
+            }
+            Err(mut f)
+                if settled
+                    && matches!(
+                        f.subreason.as_deref(),
+                        Some(
+                            "device-offline"
+                                | "device-not-attached"
+                                | "device-held-by-other-server"
+                        )
+                    ) =>
+            {
+                f.detail = OutputText::from_output(&format!(
+                    "{} (QaReN re-read the device list {rereads} times, 2 s apart)",
+                    f.detail
+                ));
+                return Err(f);
+            }
+            other => break other?,
         }
     };
-    let not_booted = |serials: &[&str]| {
-        unavailable(
-            format!(
-                "{} has not finished booting (sys.boot_completed is not 1)",
-                serials.join(", ")
-            ),
-            "wait for the emulator to finish booting, then re-run",
-        )
-    };
-    let serial = match device {
-        Some(wanted) => {
-            let serial = emulators
-                .iter()
-                .find(|serial| **serial == wanted)
-                .copied()
-                .ok_or_else(|| {
-                    unavailable(
-                        format!(
-                            "{wanted} is not a booted emulator on the adb server at port {port} ({} booted{ignored})",
-                            emulators.len()
-                        ),
-                        "boot the emulator named by --device, then re-run",
-                    )
-                })?;
-            if !boot_completed(serial)? {
-                return Err(not_booted(&[serial]));
-            }
-            serial
-        }
-        None => {
-            let mut ready = Vec::new();
-            for serial in &emulators {
-                if boot_completed(serial)? {
-                    ready.push(*serial);
-                }
-            }
-            match ready.as_slice() {
-                [one] => *one,
-                [] if !emulators.is_empty() => return Err(not_booted(&emulators)),
-                [] => {
-                    return Err(unavailable(
-                        format!("no booted emulator{ignored}"),
-                        "boot the emulator to walk on, then re-run",
-                    ))
-                }
-                many => {
-                    return Err(unavailable(
-                        format!(
-                            "{} booted emulators; qaren check borrows exactly one{ignored}",
-                            many.len()
-                        ),
-                        "pass --device emulator-NNNN, or shut down the emulators you are not testing on",
-                    ))
-                }
-            }
-        }
-    }
-    .to_string();
+    let kind = if physical { "device" } else { "emulator" };
     let mut read = |spec: CmdSpec, what: &str| {
         let output = runner.run(&spec);
         if output.ok() {
@@ -3216,14 +3302,18 @@ fn borrow_emulator(
         } else {
             Err(unavailable(
                 format!("cannot read {what} of {serial}: {}", output.summary()),
-                "check that the emulator is responsive, then re-run",
+                &format!("check that the {kind} is responsive, then re-run"),
             ))
         }
     };
     let malformed = |what: &str| {
         unavailable(
             format!("{serial} reported an unreadable {what}"),
-            "check the emulator image, then re-run",
+            if physical {
+                "check the device's Android build, then re-run"
+            } else {
+                "check the emulator image, then re-run"
+            },
         )
     };
     let api_level = read(
@@ -3243,25 +3333,224 @@ fn borrow_emulator(
     {
         return Err(malformed("ro.product.cpu.abi"));
     }
-    let avd = android::parse_avd_name(&read(
-        android::avd_name_spec(&adb, port, &serial),
-        "the AVD name",
-    )?)
-    .ok_or_else(|| malformed("AVD name"))?;
+    // A phone has no `emu` console: its record name is the sanitized model.
+    let name = if physical {
+        let model = android::sanitize_model(&read(
+            android::getprop_spec(&adb, port, &serial, "ro.product.model"),
+            "ro.product.model",
+        )?);
+        if model.is_empty() {
+            return Err(malformed("ro.product.model"));
+        }
+        model
+    } else {
+        android::parse_avd_name(&read(
+            android::avd_name_spec(&adb, port, &serial),
+            "the AVD name",
+        )?)
+        .ok_or_else(|| malformed("AVD name"))?
+    };
+    // Read only, before the lease: a showing secure lock cannot be recovered, so stop before any build.
+    let lock = android::read_lock_state(runner, &adb, port, &serial);
+    if lock.secure_lock_showing() {
+        return Err(device_refusal(android::device_locked(
+            &serial,
+            &lock,
+            "a secure lock is never dismissed by QaReN, so nothing was sent and nothing was built",
+        )));
+    }
     Ok(Device {
         id: serial.clone(),
-        name: avd.clone(),
+        name,
         ios: None,
-        android: Some(BorrowedEmulatorResource {
+        android: Some(BorrowedAndroid {
             serial,
-            avd,
             server_port: port,
             api_level,
             abi,
+            physical,
         }),
         needs_boot: false,
         booted_at_ms: None,
+        lock_note: lock
+            .unknown()
+            .then(|| format!("unknown at selection ({}); proceeding", lock.describe())),
     })
+}
+
+// A phone's one cause on the run's port (None when it is `device` there). An offline or absent phone
+// is re-read first: only once `settled`, and at once for any other state, may 5037 having it decide.
+fn phone_cause(
+    runner: &dyn Runner,
+    port: u16,
+    attached: &[(String, String)],
+    serial: &str,
+    state: Option<&str>,
+    settled: bool,
+) -> Option<android::DeviceProblem> {
+    let linux = cfg!(target_os = "linux");
+    let own = android::device_cause(serial, state, port, &[], linux)?;
+    if !settled && matches!(own.0, "device-offline" | "device-not-attached") {
+        return Some(own);
+    }
+    let held = android::held_on_default_server(runner, port, attached);
+    android::device_cause(serial, state, port, &held, linux)
+}
+
+// An eligible emulator (state `device`) wins as before phones were borrowed; a phone is taken
+// when --device names it, or when no emulator is eligible and it is the only ready phone.
+fn select_android(
+    runner: &mut dyn Runner,
+    adb: &Path,
+    port: u16,
+    device: Option<&str>,
+    attached: &[(String, String)],
+    settled: bool,
+) -> Result<(String, bool), Failure> {
+    let unavailable = |detail: String, next: &str| {
+        Failure::new("device", FailureCode::DeviceUnavailable, detail, next)
+    };
+    let emulators: Vec<&str> = attached
+        .iter()
+        .filter(|(serial, state)| state == "device" && is_emulator_serial(serial))
+        .map(|(serial, _)| serial.as_str())
+        .collect();
+    let physical: Vec<&(String, String)> = attached
+        .iter()
+        .filter(|(serial, _)| android::is_physical_serial(serial))
+        .collect();
+    let wireless = android::wireless_note(attached);
+    let also = if physical.is_empty() {
+        wireless.clone()
+    } else {
+        format!(
+            "; {} physical device(s) also attached; pass --device <serial> to use one{wireless}",
+            physical.len()
+        )
+    };
+    let boot_completed = |runner: &mut dyn Runner, serial: &str, kind: &str| {
+        let output = runner.run(&android::getprop_spec(
+            adb,
+            port,
+            serial,
+            "sys.boot_completed",
+        ));
+        if output.ok() {
+            Ok(output.stdout.trim() == "1")
+        } else {
+            Err(unavailable(
+                format!(
+                    "cannot read sys.boot_completed of {serial}: {}",
+                    output.summary()
+                ),
+                &format!("check that the {kind} is responsive, then re-run"),
+            ))
+        }
+    };
+    let not_booted = |serials: &[&str], kind: &str| {
+        unavailable(
+            format!(
+                "{} has not finished booting (sys.boot_completed is not 1)",
+                serials.join(", ")
+            ),
+            &format!("wait for the {kind} to finish booting, then re-run"),
+        )
+    };
+    match device {
+        Some(wanted) if is_usb_serial(wanted) => {
+            let state = attached
+                .iter()
+                .find(|(serial, _)| serial == wanted)
+                .map(|(_, state)| state.as_str());
+            if let Some(problem) = phone_cause(runner, port, attached, wanted, state, settled) {
+                return Err(device_refusal(problem));
+            }
+            if !boot_completed(runner, wanted, "device")? {
+                return Err(not_booted(&[wanted], "device"));
+            }
+            Ok((wanted.to_string(), true))
+        }
+        Some(wanted) => {
+            let serial = emulators
+                .iter()
+                .find(|serial| **serial == wanted)
+                .copied()
+                .ok_or_else(|| {
+                    unavailable(
+                        format!(
+                            "{wanted} is not a booted emulator on the adb server at port {port} ({} booted{also})",
+                            emulators.len()
+                        ),
+                        "boot the emulator named by --device, then re-run",
+                    )
+                })?;
+            if !boot_completed(runner, serial, "emulator")? {
+                return Err(not_booted(&[serial], "emulator"));
+            }
+            Ok((serial.to_string(), false))
+        }
+        None if !emulators.is_empty() => {
+            let mut ready = Vec::new();
+            for serial in &emulators {
+                if boot_completed(runner, serial, "emulator")? {
+                    ready.push(*serial);
+                }
+            }
+            match ready.as_slice() {
+                [one] => Ok((one.to_string(), false)),
+                [] => Err(not_booted(&emulators, "emulator")),
+                many => Err(unavailable(
+                    format!(
+                        "{} booted emulators; qaren check borrows exactly one{also}",
+                        many.len()
+                    ),
+                    "pass --device emulator-NNNN, or shut down the emulators you are not testing on",
+                )),
+            }
+        }
+        None => {
+            // No eligible emulator: the physical rows decide, in listed order. An unreadable serial is
+            // reported through its state and never selected or addressed.
+            let mut ready = Vec::new();
+            // The first row that is not ready and has a cause: a state here, or `device` still booting.
+            let mut first = None;
+            for (serial, state) in &physical {
+                let usable = state == "device" && is_usb_serial(serial);
+                if usable && boot_completed(runner, serial, "device")? {
+                    ready.push(serial.as_str());
+                } else if first.is_none() && (usable || state != "device") {
+                    first = Some((serial.as_str(), state.as_str()));
+                }
+            }
+            match ready.as_slice() {
+                [one] => Ok((one.to_string(), true)),
+                // Nothing ready: only now may the server on 5037 decide a cause.
+                [] => Err(match first {
+                    Some((serial, "device")) => not_booted(&[serial], "device"),
+                    Some((serial, state)) => device_refusal(
+                        phone_cause(runner, port, attached, serial, Some(state), settled)
+                            .expect("a row not `device` here has a cause"),
+                    ),
+                    None => match android::held_on_default_server(runner, port, attached).first() {
+                        Some(held) => device_refusal(android::held_by_other_server(
+                            held,
+                            port,
+                            android::DEFAULT_ADB_PORT,
+                        )),
+                        None => unavailable(
+                            format!("no booted emulator{also}"),
+                            if wireless.is_empty() {
+                                "boot the emulator to walk on, then re-run"
+                            } else {
+                                "attach the phone with a USB cable, or boot an emulator, then re-run"
+                            },
+                        ),
+                    },
+                }),
+                many => Err(device_refusal(android::several_devices(many))),
+            }
+        }
+    }
 }
 
 fn locate_worktree(
@@ -3346,10 +3635,22 @@ fn build_scenario(
         }),
         android: None,
         android_usb: None,
-        android_emulator: device.android.as_ref().map(|emulator| AndroidEmulatorSpec {
-            serial: emulator.serial.clone(),
-            avd: emulator.avd.clone(),
-        }),
+        android_emulator: device
+            .android
+            .as_ref()
+            .filter(|borrowed| !borrowed.physical)
+            .map(|emulator| AndroidEmulatorSpec {
+                serial: emulator.serial.clone(),
+                avd: device.name.clone(),
+            }),
+        android_device: device
+            .android
+            .as_ref()
+            .filter(|borrowed| borrowed.physical)
+            .map(|phone| AndroidDeviceSpec {
+                serial: phone.serial.clone(),
+                model: device.name.clone(),
+            }),
         build: BuildSpec {
             ios_workspace: config
                 .ios
