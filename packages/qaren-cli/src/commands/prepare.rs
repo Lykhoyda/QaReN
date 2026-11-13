@@ -297,11 +297,10 @@ pub(crate) fn finish_receipt(ctx: Ctx, result: ReceiptResult, failure: Option<Fa
 
 pub fn prepare(runner: &mut dyn Runner, args: &PrepareArgs) -> Receipt {
     let started_ms = runner.now_epoch_ms();
-    match prepare_validated(runner, args, started_ms) {
+    let host_start = crate::host_capacity::sample(runner, std::env::consts::OS);
+    let mut receipt = match prepare_validated(runner, args, started_ms) {
         Ok(receipt) => receipt,
         Err(failure) => {
-            // Contention and missing-authorization outcomes are refusals, not
-            // failures: nothing broke, qaren declined to proceed.
             let result = if failure.code.is_refusal() {
                 ReceiptResult::Refused
             } else {
@@ -319,7 +318,9 @@ pub fn prepare(runner: &mut dyn Runner, args: &PrepareArgs) -> Receipt {
             receipt.commands_executed = runner.commands_executed();
             receipt
         }
-    }
+    };
+    super::finish_host(runner, &mut receipt, host_start);
+    receipt
 }
 
 // Failures before a run record exists come back as Err; everything after is

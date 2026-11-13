@@ -3,6 +3,17 @@ mod common;
 use std::path::Path;
 use std::process::Command;
 
+fn assert_only_host_probes(receipt: &serde_json::Value) {
+    let count = if matches!(std::env::consts::OS, "macos" | "linux") {
+        4
+    } else {
+        0
+    };
+    assert_eq!(receipt["commands_executed"], count);
+    assert!(receipt["host"]["start"].is_object());
+    assert!(receipt["host"]["end"].is_object());
+}
+
 // Bounded integration coverage: the real binary against the checked-in iOS
 // scenario in --dry-run mode. Requires the host toolchain (git/pnpm/xcrun)
 // but never allocates a device, port, or run record.
@@ -51,7 +62,7 @@ fn dry_run_against_checked_in_ios_scenario_emits_parseable_receipt() {
         "refused" => {
             assert_eq!(output.status.code(), Some(4));
             assert_eq!(value["failure"]["code"], "DEV_CLIENT_SCHEME_REQUIRED");
-            assert_eq!(value["commands_executed"], 0);
+            assert_only_host_probes(&value);
         }
         "planned" => {
             assert!(output.status.success());
@@ -139,7 +150,7 @@ fn fresh_install_is_check_only_and_opt_in() {
             .unwrap();
         assert_eq!(output.status.code(), Some(1));
         let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(receipt["commands_executed"], 0);
+        assert_only_host_probes(&receipt);
     }
 }
 
@@ -216,7 +227,7 @@ fn boot_device_usage_requires_check_ios_and_an_exact_device_uuid() {
             .unwrap();
         assert_eq!(output.status.code(), Some(1));
         let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(receipt["commands_executed"], 0);
+        assert_only_host_probes(&receipt);
     }
     let output = Command::new(env!("CARGO_BIN_EXE_qaren"))
         .arg("--help")
@@ -334,7 +345,7 @@ fn restart_device_and_shutdown_device_on_exit_require_check_or_pr_ios_exact_uuid
                 .unwrap();
             assert_eq!(output.status.code(), Some(1), "{check_args:?}");
             let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-            assert_eq!(receipt["commands_executed"], 0);
+            assert_only_host_probes(&receipt);
 
             let mut pr_args = vec![
                 "pr",
@@ -353,7 +364,7 @@ fn restart_device_and_shutdown_device_on_exit_require_check_or_pr_ios_exact_uuid
                 .unwrap();
             assert_eq!(output.status.code(), Some(1), "{pr_args:?}");
             let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-            assert_eq!(receipt["commands_executed"], 0);
+            assert_only_host_probes(&receipt);
         }
     }
 }
@@ -448,7 +459,7 @@ fn prepare_accepts_only_an_exact_device_and_boot_permission_from_the_check_lifec
         assert_ne!(output.status.code(), Some(2), "{args:?}");
         let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(receipt["verb"], "prepare");
-        assert_eq!(receipt["commands_executed"], 0);
+        assert_only_host_probes(&receipt);
     }
     for args in [
         vec!["prepare", "missing", "--device", "booted"],

@@ -1,6 +1,8 @@
 #[path = "run_flow/android_dynamic_config.rs"]
 mod android_dynamic_config;
 mod common;
+#[path = "run_flow/host_numbers.rs"]
+mod host_numbers;
 use common::IosBuildRunner as MockRunner;
 
 use qaren::core::Budgets;
@@ -5714,6 +5716,9 @@ struct LeaseObservedRunner {
 
 impl LeaseObservedRunner {
     fn observe(&mut self, spec: &CmdSpec) {
+        if spec.label == "host-sample" {
+            return;
+        }
         if spec.label != "fresh-install-admission" && self.wire.is_none() {
             return;
         }

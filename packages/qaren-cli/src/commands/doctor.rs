@@ -3082,6 +3082,7 @@ mod tests {
         assert_eq!(runner.remaining(), 0);
         assert!(runner.spawned_logs.is_empty());
         assert!(runner.calls.iter().all(|call| call.label == "doctor-host"
+            || call.label == "host-sample"
             || call.label == "expo-module-resolve"
             || call.label == "candidate-volume-sample"
             || call.program == "df"

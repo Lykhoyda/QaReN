@@ -102,6 +102,8 @@ pub struct Receipt {
     pub phase: String,
     pub emitted_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<crate::host_capacity::RunSamples>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scenario: Option<ScenarioIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate: Option<Candidate>,
@@ -175,6 +177,7 @@ impl Receipt {
             result,
             phase: phase.to_string(),
             emitted_at,
+            host: None,
             scenario: None,
             candidate: None,
             device: None,
