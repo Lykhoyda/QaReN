@@ -73,6 +73,19 @@ impl Runner for TestRunner {
         )
         .is_some_and(|h| h.run_id == "check-slot");
         if self.spawn_error {
+            if self.fault == Some("spawn-release") {
+                std::fs::write(
+                    log.parent()
+                        .unwrap()
+                        .parent()
+                        .unwrap()
+                        .parent()
+                        .unwrap()
+                        .join("locks/native-build-slot/holder.json"),
+                    "{",
+                )
+                .unwrap();
+            }
             return Err(std::io::Error::other("injected spawn failure"));
         }
         match self.fault {
@@ -771,4 +784,368 @@ fn s12_expo_spawn_save_and_group_faults_keep_only_unproven_ownership() {
             ));
         }
     }
+}
+
+#[test]
+fn s14_cleanup_can_retry_slot_release_after_the_metro_record_is_retired() {
+    for (name, inventory, released) in [
+        ("absent", CmdOutput::success("1 1 S\n"), true),
+        ("present", CmdOutput::success("6000 6000 S\n"), false),
+        ("unknown", CmdOutput::failed(1, ""), false),
+    ] {
+        let mut f = fixture(&format!("release-retry-{name}"), Platform::Android);
+        expo_script(&mut f, "compiling\n", true);
+        let mut ctx = f.ctx();
+        build_and_ready(&mut ctx).unwrap();
+        let slot = ctx
+            .record
+            .resources
+            .build_slot
+            .as_ref()
+            .unwrap()
+            .lock
+            .clone();
+        let original = std::fs::read(slot.lock_dir.join("holder.json")).unwrap();
+        std::fs::write(slot.lock_dir.join("holder.json"), "{").unwrap();
+        let first =
+            crate::commands::cleanup::cleanup_build_slot(ctx.runner, &mut ctx.record, Some(6000))
+                .unwrap();
+        assert!(!first.clean());
+        ctx.record.resources.metro = None;
+        ctx.record.resources.adb_server = None;
+        ctx.record.resources.adb_local_serial = None;
+        ctx.record.resources.adb_path = None;
+        ctx.save().unwrap();
+        std::fs::write(slot.lock_dir.join("holder.json"), original).unwrap();
+        f.runner.inner.expect_run("ps -A", inventory);
+        let receipt = crate::commands::cleanup::cleanup(&mut f.runner, &f.root, "check-slot");
+        assert_eq!(slot.lock_dir.exists(), !released);
+        assert_eq!(
+            receipt.cleanup["build_slot"].contains("retained"),
+            !released
+        );
+    }
+}
+
+#[test]
+fn s14_a_foreign_slot_is_never_reported_as_this_runs_retained_slot() {
+    let mut f = fixture("foreign-after-completion", Platform::Android);
+    expo_script(&mut f, "compiling\n", true);
+    let mut ctx = f.ctx();
+    build_and_ready(&mut ctx).unwrap();
+    let slot = ctx
+        .record
+        .resources
+        .build_slot
+        .as_ref()
+        .unwrap()
+        .lock
+        .clone();
+    let mut next = buildplan::read_holder(&slot.lock_dir).unwrap();
+    next.run_id = "check-next".into();
+    next.holder = "next-holder".into();
+    buildplan::save_json(&slot.lock_dir.join("holder.json"), &next).unwrap();
+    ctx.record.resources.metro = None;
+    let outcome =
+        crate::commands::cleanup::cleanup_build_slot(ctx.runner, &mut ctx.record, None).unwrap();
+    assert!(outcome.clean());
+    assert_eq!(
+        buildplan::read_holder(&slot.lock_dir).unwrap().run_id,
+        "check-next"
+    );
+    assert!(ctx.record.resources.build_slot.is_none());
+}
+
+#[test]
+fn s9_repeated_release_errors_add_only_one_readiness_note() {
+    let mut f = fixture("release-notes", Platform::Android);
+    expo_script(&mut f, "compiling\n", true);
+    let mut ctx = f.ctx();
+    build_and_ready(&mut ctx).unwrap();
+    let slot = ctx
+        .record
+        .resources
+        .build_slot
+        .as_ref()
+        .unwrap()
+        .lock
+        .clone();
+    let log = ctx.record.resources.metro.as_ref().unwrap().log.clone();
+    std::fs::write(slot.lock_dir.join("holder.json"), "{").unwrap();
+    std::fs::write(log, "BUILD SUCCESSFUL in 12s\n").unwrap();
+    f.record = ctx.record.clone();
+    for _ in 0..2 {
+        f.runner
+            .inner
+            .expect_run("ps -p 6000 -o lstart=", CmdOutput::success(BIRTH));
+        f.runner
+            .inner
+            .expect_run("ps -p 6000 -o stat=", CmdOutput::success("S"));
+        f.runner.inner.expect_run("lsof", CmdOutput::failed(1, ""));
+    }
+    let mut ctx = f.ctx();
+    assert!(wait_ready(&mut ctx).is_err());
+    assert_eq!(
+        ctx.notes
+            .iter()
+            .filter(|(key, _)| key == "build_slot")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn s12_a_failed_slot_release_does_not_hide_the_expo_spawn_failure() {
+    let mut f = fixture("spawn-and-release", Platform::Android);
+    expo_script(&mut f, "", true);
+    f.runner.spawn_error = true;
+    f.runner.fault = Some("spawn-release");
+    let mut ctx = f.ctx();
+    let failure = build_and_ready(&mut ctx).unwrap_err();
+    assert_eq!(failure.code, FailureCode::BuildFailed);
+    assert!(failure.detail.contains("injected spawn failure"));
+    assert!(ctx.notes.iter().any(|(key, _)| key == "build_slot_release"));
+}
+
+fn colliding_foreign_slot(f: &mut Fixture) -> PathBuf {
+    let dir = f.foreign_slot();
+    let mut held = buildplan::read_holder(&dir).unwrap();
+    held.run_id = f.record.run_id.clone();
+    held.holder = android::holder(&held.run_id);
+    buildplan::save_json(&dir.join("holder.json"), &held).unwrap();
+    dir
+}
+
+#[test]
+fn a_waiter_never_releases_another_homes_slot_with_the_same_run_id() {
+    for cancelled in [false, true] {
+        let mut f = fixture(&format!("same-run-id-{cancelled}"), Platform::Android);
+        let dir = colliding_foreign_slot(&mut f);
+        for _ in 0..3 {
+            f.live_poll();
+        }
+        if cancelled {
+            f.runner.inner.cancel_after = Some(("ps -A".into(), "cancelled".into()));
+        }
+        let mut ctx = f.ctx();
+        let failure = claim_build_slot(&mut ctx).unwrap_err();
+        assert_eq!(
+            failure.code,
+            if cancelled {
+                FailureCode::RunCancelled
+            } else {
+                FailureCode::BuildContended
+            }
+        );
+        let outcome =
+            crate::commands::cleanup::cleanup_build_slot(ctx.runner, &mut ctx.record, None)
+                .unwrap();
+        assert!(
+            dir.exists(),
+            "a waiting run released the foreign build slot: {}",
+            outcome.render()
+        );
+        assert_eq!(
+            buildplan::read_holder(&dir).unwrap().identity.unwrap().pid,
+            4242
+        );
+        ctx.save().unwrap();
+        let root = ctx.runs_root.clone();
+        let _receipt = crate::commands::cleanup::cleanup(ctx.runner, &root, "check-slot");
+        assert!(dir.exists());
+    }
+}
+
+#[test]
+fn c3_a_waiter_cannot_record_a_group_in_a_foreign_slot() {
+    let mut f = fixture("foreign-group", Platform::Android);
+    let dir = colliding_foreign_slot(&mut f);
+    f.runner.inner.cancel_at_ms = Some((0, "cancel before claim".into()));
+    let mut ctx = f.ctx();
+    assert!(claim_build_slot(&mut ctx).is_err());
+    let slot = ctx.record.resources.build_slot.as_ref().unwrap();
+    assert!(
+        buildplan::record_holder_group(&dir, &slot.lock.holder, &ctx.record.run_id, 999).is_err()
+    );
+    assert_eq!(buildplan::read_holder(&dir).unwrap().group, Some(777));
+}
+
+#[test]
+fn c4_orphan_recovery_uses_the_holders_home_with_a_colliding_run_id() {
+    for records in [false, true] {
+        let mut f = fixture(&format!("orphan-collision-{records}"), Platform::Android);
+        let dir = colliding_foreign_slot(&mut f);
+        if records {
+            let path = f.root.join("foreign/runs/check-slot");
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("run.json"), "{}").unwrap();
+        }
+        for _ in 0..if records { 3 } else { 1 } {
+            f.runner
+                .inner
+                .expect_run("ps -p 4242 -o lstart=", CmdOutput::failed(1, ""));
+            f.runner
+                .inner
+                .expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+        }
+        let mut ctx = f.ctx();
+        assert_eq!(claim_build_slot(&mut ctx).is_ok(), !records);
+        let held = buildplan::read_holder(&dir).unwrap();
+        assert_eq!(held.identity.unwrap().pid == 4242, records);
+    }
+}
+
+#[test]
+fn c5_the_real_claim_saves_one_private_token_and_reuses_it_after_interruption() {
+    let mut f = fixture("persisted-token", Platform::Android);
+    f.runner.inner.cancel_at_ms = Some((0, "interrupted before claim".into()));
+    let mut ctx = f.ctx();
+    assert!(claim_build_slot(&mut ctx).is_err());
+    let stored = RunRecord::load(&ctx.runs_root, &ctx.record.run_id).unwrap();
+    let lock = stored.resources.build_slot.as_ref().unwrap().lock.clone();
+    assert!(!lock.lock_dir.exists());
+    assert!(
+        lock.holder.starts_with("qaren-check-slot-"),
+        "{}",
+        lock.holder
+    );
+    f.record = stored;
+    f.runner.inner.cancel_at_ms = None;
+    let mut ctx = f.ctx();
+    claim_build_slot(&mut ctx).unwrap();
+    assert_eq!(
+        ctx.record
+            .resources
+            .build_slot
+            .as_ref()
+            .unwrap()
+            .lock
+            .holder,
+        lock.holder
+    );
+    assert_eq!(
+        buildplan::read_holder(&lock.lock_dir).unwrap().holder,
+        lock.holder
+    );
+    release_build_slot(&mut ctx).unwrap();
+    assert!(!lock.lock_dir.exists());
+}
+
+#[test]
+fn c6_same_run_ids_in_two_homes_get_different_tokens() {
+    for no_entropy in [false, true] {
+        crate::lease::TOKEN_ENTROPY_UNAVAILABLE.with(|failed| failed.set(no_entropy));
+        let mut a = fixture(&format!("identity-home-a-{no_entropy}"), Platform::Android);
+        let mut b = fixture(&format!("identity-home-b-{no_entropy}"), Platform::Android);
+        let mut ca = a.ctx();
+        let mut cb = b.ctx();
+        claim_build_slot(&mut ca).unwrap();
+        claim_build_slot(&mut cb).unwrap();
+        crate::lease::TOKEN_ENTROPY_UNAVAILABLE.with(|failed| failed.set(false));
+        assert_ne!(
+            ca.record.resources.build_slot.unwrap().lock.holder,
+            cb.record.resources.build_slot.unwrap().lock.holder
+        );
+    }
+}
+
+#[test]
+fn c8_unresolved_release_never_exposes_either_private_token() {
+    let mut f = fixture("release-race", Platform::Android);
+    let mut ctx = f.ctx();
+    claim_build_slot(&mut ctx).unwrap();
+    let slot = ctx.record.resources.build_slot.as_ref().unwrap().clone();
+    let own = slot.lock.holder.clone();
+    let foreign = "private-foreign-token-that-must-not-escape";
+    crate::buildplan::RELEASE_RECHECK.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |isolated, leaf| {
+            let mut held = buildplan::read_holder(isolated).unwrap();
+            held.holder = foreign.into();
+            buildplan::save_json(&isolated.join("holder.json"), &held).unwrap();
+            std::fs::create_dir(leaf).unwrap();
+        }))
+    });
+    let failure = release_build_slot(&mut ctx).unwrap_err();
+    let notes = format!("{:?}", ctx.notes);
+    ctx.save().unwrap();
+    let root = ctx.runs_root.clone();
+    let receipt = finish_receipt(ctx, crate::receipt::ReceiptResult::Refused, Some(failure));
+    let cleanup = crate::commands::cleanup::cleanup(&mut f.runner, &root, "check-slot");
+    let public = format!(
+        "{}\n{notes}\n{}",
+        serde_json::to_string(&receipt).unwrap(),
+        serde_json::to_string(&cleanup).unwrap()
+    );
+    for token in [own.as_str(), foreign] {
+        assert!(!public.contains(token), "token escaped: {public}");
+    }
+    assert!(public.contains("native-build-slot"));
+}
+
+#[test]
+fn c2_cleanup_releases_the_owners_private_claim() {
+    let mut f = fixture("private-owner-cleanup", Platform::Android);
+    let mut ctx = f.ctx();
+    claim_build_slot(&mut ctx).unwrap();
+    let dir = ctx
+        .record
+        .resources
+        .build_slot
+        .as_ref()
+        .unwrap()
+        .lock
+        .lock_dir
+        .clone();
+    ctx.record.prepare = None;
+    ctx.save().unwrap();
+    let root = ctx.runs_root.clone();
+    let receipt = crate::commands::cleanup::cleanup(ctx.runner, &root, "check-slot");
+    assert_eq!(receipt.cleanup["build_slot"], "removed");
+    assert!(!dir.exists());
+}
+
+#[test]
+fn c7_wait_timeout_foreign_release_and_cleanup_keep_tokens_private() {
+    let mut f = fixture("privacy-wait", Platform::Android);
+    let dir = colliding_foreign_slot(&mut f);
+    let foreign = buildplan::read_holder(&dir).unwrap().holder;
+    for _ in 0..3 {
+        f.live_poll();
+    }
+    let path = f.root.join("events.jsonl");
+    crate::events::init();
+    crate::events::attach(&path);
+    let mut ctx = f.ctx();
+    let failure = claim_build_slot(&mut ctx).unwrap_err();
+    let lock = ctx
+        .record
+        .resources
+        .build_slot
+        .as_ref()
+        .unwrap()
+        .lock
+        .clone();
+    let release = crate::native_build_slot::release(&lock, &ctx.record.run_id);
+    assert!(matches!(release, buildplan::ReleaseOutcome::Foreign(_)));
+    let root = ctx.runs_root.clone();
+    let receipt = ctx.fail(failure);
+    let cleanup = crate::commands::cleanup::cleanup(&mut f.runner, &root, "check-slot");
+    crate::events::finish();
+    let events = std::fs::read_to_string(path).unwrap();
+    let watch = crate::watch::test_public_outputs(&events);
+    let public = format!(
+        "{events}\n{watch}\n{:?}\n{}\n{}",
+        release,
+        serde_json::to_string(&receipt).unwrap(),
+        serde_json::to_string(&cleanup).unwrap()
+    );
+    for token in [lock.holder.as_str(), foreign.as_str()] {
+        assert!(!public.contains(token), "private token in output: {public}");
+        for log in &f.runner.inner.spawned_logs {
+            assert!(!std::fs::read_to_string(log)
+                .unwrap_or_default()
+                .contains(token));
+        }
+    }
+    assert!(dir.exists());
 }

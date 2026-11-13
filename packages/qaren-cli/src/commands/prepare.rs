@@ -2662,17 +2662,33 @@ fn claim_waiting_build_lock(
         )
         .with_recovery(RecoveryReason::IdentityUnavailable));
     }
-    let lock = BuildLockResource {
-        lock_dir: buildplan::lock_dir(lock_root, name),
-        holder: holder.holder.clone(),
-    };
     if slot {
-        ctx.record.resources.build_slot = Some(BuildSlotResource {
-            lock,
-            work: BuildSlotWork::Finite,
-        });
+        if let Some(slot) = &ctx.record.resources.build_slot {
+            holder.holder = slot.lock.holder.clone();
+        } else {
+            let identity = holder.identity.as_ref().expect("identity checked");
+            let nonce = crate::lease::fresh_token(&format!(
+                "{}\0{}\0{}\0{}\0{}",
+                ctx.record.run_id,
+                ctx.runs_root.display(),
+                identity.pid,
+                ctx.runner.now_epoch_ms(),
+                identity.started_at,
+            ));
+            holder.holder = format!("qaren-{}-{nonce}", ctx.record.run_id);
+            ctx.record.resources.build_slot = Some(BuildSlotResource {
+                lock: BuildLockResource {
+                    lock_dir: buildplan::lock_dir(lock_root, name),
+                    holder: holder.holder.clone(),
+                },
+                work: BuildSlotWork::Finite,
+            });
+        }
     } else {
-        ctx.record.resources.build_lock = Some(lock);
+        ctx.record.resources.build_lock = Some(BuildLockResource {
+            lock_dir: buildplan::lock_dir(lock_root, name),
+            holder: holder.holder.clone(),
+        });
     }
     ctx.save()
         .map_err(|f| f.with_recovery(RecoveryReason::PersistenceFailed))?;
@@ -2731,7 +2747,11 @@ fn claim_waiting_build_lock(
                 return Err(Failure::new(
                     "plan",
                     FailureCode::RunRecordUpdateFailed,
-                    format!("cannot operate the build serialization lock: {detail}"),
+                    if slot {
+                        crate::native_build_slot::public_detail("cannot claim", &ctx.record.run_id)
+                    } else {
+                        format!("cannot operate the build serialization lock: {detail}")
+                    },
                     buildplan::LOCK_ROOT_ADVICE,
                 ));
             }
@@ -4530,7 +4550,8 @@ fn build_failure(ctx: &Ctx, detail: impl Into<String>) -> Failure {
 
 fn release_build_slot(ctx: &mut Ctx) -> Result<(), Failure> {
     let previous = ctx.record.resources.build_slot.clone();
-    let Some(outcome) = super::cleanup::cleanup_build_slot(&mut ctx.record, None) else {
+    let Some(outcome) = super::cleanup::cleanup_build_slot(ctx.runner, &mut ctx.record, None)
+    else {
         return Ok(());
     };
     if !outcome.clean() {
@@ -5098,7 +5119,10 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
                 .as_mut()
                 .expect("slot claimed")
                 .work = BuildSlotWork::Finite;
-            release_build_slot(ctx)?;
+            if let Err(failure) = release_build_slot(ctx) {
+                ctx.notes
+                    .push(("build_slot_release".into(), failure.detail.to_string()));
+            }
             return Err(build_failure(
                 ctx,
                 format!("cannot spawn {}: {error}", spec.rendered()),
@@ -5199,6 +5223,7 @@ fn wait_ready_until(
     let metro_resource = ctx.record.resources.metro.clone().expect("metro spawned");
     let identity = metro_resource.identity.clone().expect("identity captured");
     let mut build_completion = crate::native_build_slot::GradleCompletion::for_run(&ctx.record);
+    let mut slot_release_error = None;
     loop {
         if let Some(completion) = build_completion.as_mut() {
             match completion.poll() {
@@ -5209,10 +5234,13 @@ fn wait_ready_until(
                 }
                 Ok(false) => {}
                 Err(detail) => {
-                    ctx.notes.push((
-                        "build_slot".into(),
-                        format!("native-build-slot retained: {detail}"),
-                    ));
+                    if slot_release_error.as_ref() != Some(&detail) {
+                        ctx.notes.push((
+                            "build_slot".into(),
+                            format!("native-build-slot retained: {detail}"),
+                        ));
+                        slot_release_error = Some(detail);
+                    }
                 }
             }
         }

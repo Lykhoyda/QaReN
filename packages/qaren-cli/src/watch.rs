@@ -935,6 +935,22 @@ pub fn watch(root: &Path, mut args: WatchArgs) -> u8 {
 }
 
 #[cfg(test)]
+pub(crate) fn test_public_outputs(events: &str) -> String {
+    let mut state = State::default();
+    for line in events.lines() {
+        if let Some(input) = parse_event(line) {
+            state.fold(input);
+        }
+    }
+    format!(
+        "{:?}\n{:?}\n{}",
+        frame(&state, 120, 100),
+        plain(&state, &mut PlainState::default()),
+        snapshot(&state)
+    )
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;

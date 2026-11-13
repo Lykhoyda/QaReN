@@ -421,7 +421,7 @@ pub fn cleanup_with_policy(
             .any(|(leg, outcome)| leg == "metro" && outcome.clean())
             .then_some(metro.spawned.pgid)
     });
-    if let Some(outcome) = cleanup_build_slot(&mut record, retired_metro) {
+    if let Some(outcome) = cleanup_build_slot(runner, &mut record, retired_metro) {
         outcomes.push(("build_slot".into(), outcome));
     }
 
@@ -825,17 +825,41 @@ pub fn cleanup_with_policy(
 }
 
 pub(crate) fn cleanup_build_slot(
+    runner: &mut dyn Runner,
     record: &mut RunRecord,
     retired_metro: Option<i32>,
 ) -> Option<Outcome> {
     let slot = record.resources.build_slot.as_ref()?;
     let absent = matches!(std::fs::symlink_metadata(&slot.lock.lock_dir), Err(error) if error.kind() == std::io::ErrorKind::NotFound);
-    let outcome = if absent {
+    let foreign = crate::buildplan::read_holder(&slot.lock.lock_dir)
+        .is_some_and(|held| held.holder != slot.lock.holder || held.run_id != record.run_id);
+    let outcome = if absent || foreign {
         Outcome::Absent
-    } else if record.resources.can_release_build_slot(retired_metro) {
-        release_recorded_lock(&slot.lock, &record.run_id)
     } else {
-        Outcome::Unresolved("build process cleanup is unproven; native-build-slot retained".into())
+        let retired_metro = retired_metro.or_else(|| {
+            let crate::runrecord::BuildSlotWork::Metro { pgid } = slot.work else {
+                return None;
+            };
+            if pgid < 2
+                || record
+                    .resources
+                    .metro
+                    .as_ref()
+                    .is_some_and(|metro| metro.spawned.pgid == pgid)
+            {
+                return None;
+            }
+            let mut cleanup_runner = crate::exec::CleanupRunner(runner);
+            (metro::group_presence(&mut cleanup_runner, pgid) == metro::GroupPresence::Absent)
+                .then_some(pgid)
+        });
+        if record.resources.can_release_build_slot(retired_metro) {
+            release_recorded_lock(&slot.lock, &record.run_id)
+        } else {
+            Outcome::Unresolved(
+                "build process cleanup is unproven; native-build-slot retained".into(),
+            )
+        }
     };
     if outcome.clean() {
         record.resources.build_slot = None;
@@ -844,7 +868,16 @@ pub(crate) fn cleanup_build_slot(
 }
 
 fn release_recorded_lock(lock: &crate::runrecord::BuildLockResource, run_id: &str) -> Outcome {
-    match crate::buildplan::release_lock(&lock.lock_dir, &lock.holder, run_id) {
+    let outcome = if lock
+        .lock_dir
+        .file_name()
+        .is_some_and(|name| name == "native-build-slot")
+    {
+        crate::native_build_slot::release(lock, run_id)
+    } else {
+        crate::buildplan::release_lock(&lock.lock_dir, &lock.holder, run_id)
+    };
+    match outcome {
         crate::buildplan::ReleaseOutcome::Removed => Outcome::Removed,
         crate::buildplan::ReleaseOutcome::Absent => Outcome::Absent,
         // Foreign: this run never won the lock, or a later build adopted it after this run died (AdoptDead).

@@ -1,4 +1,4 @@
-use crate::buildplan::{release_lock, ReleaseOutcome};
+use crate::buildplan::ReleaseOutcome;
 use crate::runrecord::{BuildSlotResource, BuildSlotWork, RunRecord};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
@@ -74,11 +74,7 @@ impl GradleCompletion {
         if !self.completed {
             return Ok(false);
         }
-        match release_lock(
-            &self.slot.lock.lock_dir,
-            &self.slot.lock.holder,
-            &self.run_id,
-        ) {
+        match release(&self.slot.lock, &self.run_id) {
             ReleaseOutcome::Removed | ReleaseOutcome::Absent | ReleaseOutcome::Foreign(_) => {
                 Ok(true)
             }
@@ -96,4 +92,28 @@ fn gradle_end_line(bytes: &[u8]) -> bool {
                     .is_some_and(|duration| !duration.trim().is_empty())
             })
     })
+}
+
+pub(crate) fn public_detail(action: &str, run_id: &str) -> String {
+    let run_id = if crate::runrecord::validate_run_id(run_id).is_ok() {
+        run_id
+    } else {
+        "unknown"
+    };
+    format!("{action} native-build-slot for run {run_id}; ownership or filesystem state could not be proven; claim retained")
+}
+
+pub(crate) fn release(lock: &crate::runrecord::BuildLockResource, run_id: &str) -> ReleaseOutcome {
+    match crate::buildplan::release_lock(&lock.lock_dir, &lock.holder, run_id) {
+        ReleaseOutcome::Foreign(_) => {
+            ReleaseOutcome::Foreign(public_detail("foreign claim at", run_id))
+        }
+        ReleaseOutcome::Refused(_) => {
+            ReleaseOutcome::Refused(public_detail("cannot release", run_id))
+        }
+        ReleaseOutcome::Unresolved(_) => {
+            ReleaseOutcome::Unresolved(public_detail("release unresolved for", run_id))
+        }
+        outcome => outcome,
+    }
 }

@@ -5442,7 +5442,10 @@ and Android builds on the same machine. Finite builds release the slot only
 after their process group is proven gone. `expo run:android` releases it on
 a complete Gradle `BUILD SUCCESSFUL in …` or `BUILD FAILED in …` line in this
 run's build log, or after its Metro group is retired. App readiness,
-cancellation and timeout alone do not release it.
+cancellation and timeout alone do not release it. The slot uses a private claim
+token saved before acquisition and reused through group recording and cleanup,
+so matching run ids in separate homes cannot release each other's slot. Public
+queue output shows only the run id.
 
 The slot wait polls every second. On iOS it uses the remaining shared build
 budget; on Android it has one build budget of its own and leaves the existing

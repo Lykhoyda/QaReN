@@ -2323,10 +2323,7 @@ mod block_start_tests {
             .insert("HOME".into(), home.display().to_string());
         let start = runner.now_epoch_ms();
         runner.sleep(std::time::Duration::from_secs(90));
-        assert_eq!(
-            springboard_crash_after(&mut runner, "AAAA", start, 60),
-            None
-        );
+        assert_eq!(springboard_crash_after(&mut runner, "AAAA", start, 60), None);
         assert_eq!(runner.now_epoch_ms(), start + 150_000);
         let _ = std::fs::remove_dir_all(home);
     }
@@ -2656,7 +2653,7 @@ fn teardown(
         outcomes.push(("metro".to_string(), outcome));
     }
     if let Some(outcome) =
-        crate::commands::cleanup::cleanup_build_slot(&mut ctx.record, retired_metro)
+        crate::commands::cleanup::cleanup_build_slot(ctx.runner, &mut ctx.record, retired_metro)
     {
         outcomes.push(("build_slot".into(), outcome));
     }
