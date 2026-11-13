@@ -4113,6 +4113,15 @@ cleaners into runtime-input runs' private `logs/core-diagnostics.jsonl` as well.
 They distinguish a non-ok press, keyboard dismissal and a successful retry in
 order without changing dispatch behavior, refusal diagnostics or ledger rows.
 
+For the [keyboard-refusal handoff](#occluded-taps-and-focus), read the dispatch
+`COMPLETED` events in order: `press` with `ok: false`,
+`resultCode: KEYBOARD_DISMISS_FAILED` and `nativeMutation: none`, then
+`dismiss-keyboard`, then `press` with its returned result. A repeated refusal
+ends after that third dispatch; the absent-target path starts with dismissal,
+without a preceding press. Dismissal's `ok: true` alone does not prove the
+keyboard disappeared: the separate `keyboard-clearance` note in `logs/core.log`
+must report `hidden: true` to establish that observation.
+
 Private `timing` events in `logs/core.log` may include `refusalDiagnostic` when
 an instrumented iOS dispatch boundary records the context's first refusal. This
 bounded, value-free record retains allowlisted refusal, native-response and
