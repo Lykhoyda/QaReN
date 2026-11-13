@@ -5869,10 +5869,19 @@ fn android_check_starts_a_missing_adb_server_once_and_says_so_on_every_receipt()
             // A failure after the borrow and before the run record exists.
             stop_after_borrow(&mut mock);
         } else {
-            mock.expect_run("adb devices", CmdOutput::success(devices));
+            // The server just started: an empty list is re-read 5 times, then refused as before.
+            for _ in 0..6 {
+                mock.expect_run("adb devices", CmdOutput::success(devices));
+            }
         }
+        let started_ms = mock.now_epoch_ms();
         let receipt = run(&mut mock, &req);
         assert_eq!(mock.remaining(), 0, "{case}");
+        if devices != ONE_EMULATOR {
+            let failure = receipt.failure.as_ref().unwrap();
+            assert_eq!(failure.detail.as_str(), "no booted emulator", "{case}");
+            assert!(mock.now_epoch_ms() - started_ms >= 10_000, "{case}");
+        }
         assert_eq!(
             receipt.outcomes["adb_server"],
             format!("started the adb server on port {port} because none was running; it is left running"),
@@ -5926,6 +5935,39 @@ fn android_check_starts_no_server_when_one_answers_or_the_probe_cannot_tell() {
 }
 
 #[test]
+fn android_check_rereads_an_empty_list_from_the_server_it_just_started() {
+    let (repo, app) = app_repo();
+    let req = android_request(&repo, &app);
+    let mut mock = MockRunner::new();
+    mock.adb_server_after_start = Some((5037, 41));
+    android_until_borrow(&repo, &mut mock);
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+    mock.expect_run("adb start-server", CmdOutput::success(""));
+    mock.expect_run(
+        "adb devices",
+        CmdOutput::success("List of devices attached\n\n"),
+    );
+    mock.expect_run(
+        "adb devices",
+        CmdOutput::success(&format!("List of devices attached\n{PHONE}\tdevice\n")),
+    );
+    // The phone's own reads prove it was selected.
+    script_phone_facts(&mut mock);
+    stop_after_borrow(&mut mock);
+    let started = mock.now_epoch_ms();
+    let receipt = run(&mut mock, &req);
+    assert_ne!(
+        receipt.failure.as_ref().map(|f| f.code),
+        Some(FailureCode::DeviceUnavailable),
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert!(receipt.outcomes["adb_server"].starts_with("started the adb server on port 5037"));
+    assert!(mock.now_epoch_ms() - started >= 2_000);
+}
+
+#[test]
 fn android_pr_starts_a_missing_adb_server_the_same_way() {
     let (repo, app) = app_repo();
     let mut req = android_request(&repo, &app);
@@ -5944,10 +5986,12 @@ fn android_pr_starts_a_missing_adb_server_the_same_way() {
     script_plan(&mut mock, &repo);
     mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
     mock.expect_run("adb start-server", CmdOutput::success(""));
-    mock.expect_run(
-        "adb devices",
-        CmdOutput::success("List of devices attached\n\n"),
-    );
+    for _ in 0..6 {
+        mock.expect_run(
+            "adb devices",
+            CmdOutput::success("List of devices attached\n\n"),
+        );
+    }
     let receipt = run(&mut mock, &req);
     assert_eq!(receipt.verb, "pr");
     assert_eq!(

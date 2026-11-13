@@ -3254,14 +3254,18 @@ fn borrow_android(
         }
         let attached = android::parse_devices(&listed.stdout);
         let settled = rereads == 5;
+        // A server this run just started may not list a ready device yet: "no booted emulator" waits too.
+        let starting = adb_server_started.is_some()
+            && device.is_none()
+            && !attached.iter().any(|(_, state)| state == "device");
         match select_android(runner, &adb, port, device, &attached, settled) {
             // A phone still connecting lists as offline, or not at all, for a moment.
             Err(f)
                 if !settled
-                    && matches!(
+                    && (matches!(
                         f.subreason.as_deref(),
                         Some("device-offline" | "device-not-attached")
-                    ) =>
+                    ) || (starting && f.subreason.is_none())) =>
             {
                 rereads += 1;
                 runner.sleep(std::time::Duration::from_secs(2));

@@ -599,7 +599,9 @@ port and the server on 5037 lists the phone as `device`. That is then the
 phone's one cause, whatever the run's server lists it as; with no `--device` and
 nothing else to report, it replaces "no booted emulator". An offline or unlisted
 phone is re-read up to five times, 2 s apart, before its refusal, and only then
-is 5037 asked. A device whose serial adb cannot read is described, never
+is 5037 asked. When the run has just started the server and names no
+`--device`, a list with no device in `device` state is re-read the same way
+before "no booted emulator". A device whose serial adb cannot read is described, never
 selected or addressed. A wireless adb connection is never used: `--device` with
 its name refuses `wireless-not-supported` before any adb command, and a listed
 one is only counted in the refusal's text.
