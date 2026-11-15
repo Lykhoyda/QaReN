@@ -215,6 +215,7 @@ pub fn doctor(
         xcode(Some(&compiler)),
         ios_toolchain_match(runner, &app_root, cfg!(target_os = "macos").then_some(compiler)),
         ios_runtimes(runner, ios_runtime.as_deref()),
+        ios_simulator_log(),
         node_check(runner, configured_node.as_deref()),
         tool(
             runner,
@@ -655,6 +656,37 @@ fn build_lock_named_row(
                 .map_or("unknown".to_string(), crate::lease::rough_duration),
         ),
         BUILD_LOCK_FIX,
+    )
+}
+
+fn ios_simulator_log() -> Check {
+    Check::pass(
+        "ios-simulator-log",
+        "policy: a pooled simulator's system log store (var/db/diagnostics under its data directory) is removed after each run's shutdown and again before reuse; the receipt's simulator_log leg says what happened; a --new simulator is deleted; a simulator QaReN did not create keeps its log",
+    )
+}
+
+// Read only: where a simulator QaReN did not create keeps its system log; nothing is removed.
+pub fn lane_log_row(runner: &mut dyn Runner, udid: &str) -> Check {
+    let list = runner.run(&ios::list_devices_spec());
+    // Only a checked path without a quote goes into the printed shell command.
+    let store = list
+        .ok()
+        .then(|| ios::parse_sim_data_path(&list.stdout, udid))
+        .flatten()
+        .and_then(|data| ios::log_store_path(&data, udid).ok())
+        .filter(|store| !store.to_string_lossy().contains(['\'', '"']));
+    let fix = match store {
+        Some(store) => format!(
+            "when nothing uses it: run xcrun simctl shutdown {udid}, confirm Shutdown in xcrun simctl list devices, then rm -rf '{}' (it is recreated at the next boot)",
+            store.display()
+        ),
+        None => "find its data directory with xcrun simctl list -j devices (dataPath); with the simulator shut down, remove var/db/diagnostics under it".to_string(),
+    };
+    Check::warn(
+        "ios-lane-log",
+        format!("simulator {udid} keeps typed and displayed field text in its system log; QaReN never removes the log of a simulator it did not create"),
+        fix,
     )
 }
 
@@ -2808,6 +2840,24 @@ mod tests {
     }
 
     #[test]
+    fn the_simulator_log_policy_row_follows_the_runtimes_and_names_no_simulator() {
+        let s = Scratch::new("simulator-log");
+        let mut runner = MockRunner::new();
+        script_toolchain(&mut runner, Some("v24.1.0\n"), RUNTIMES);
+        let report = run_doctor(&mut runner, &s, &s.0, None);
+        let policy = row(&report, "ios-simulator-log");
+        assert_eq!(policy.status, Status::Pass);
+        assert_eq!(
+            policy.detail,
+            "policy: a pooled simulator's system log store (var/db/diagnostics under its data directory) is removed after each run's shutdown and again before reuse; the receipt's simulator_log leg says what happened; a --new simulator is deleted; a simulator QaReN did not create keeps its log"
+        );
+        assert!(policy.fix.is_none());
+        let ids: Vec<&str> = report.checks.iter().map(|c| c.id).collect();
+        let at = ids.iter().position(|id| *id == "ios-simulator-log").unwrap();
+        assert_eq!(ids[at - 1], "ios-runtime", "{ids:?}");
+    }
+
+    #[test]
     fn disk_warns_below_a_clean_ios_build_and_names_the_tight_volume() {
         let s = Scratch::new("disk");
         let home = s.dir("home");
@@ -3158,7 +3208,7 @@ mod tests {
                 "pass"
             }
         );
-        assert_eq!(parsed["checks"].as_array().unwrap().len(), 36);
+        assert_eq!(parsed["checks"].as_array().unwrap().len(), 37);
     }
 
     #[test]
@@ -3961,6 +4011,80 @@ mod lane_row_tests {
         runner.expect_run("defaults export", CmdOutput::failed(149, "not booted"));
         let row = lane_row(&mut runner, Path::new("/home"), UDID);
         assert_eq!(row.status, Status::Warn);
+    }
+
+    fn log_list(data: &Path) -> CmdOutput {
+        CmdOutput::success(
+            &serde_json::json!({"devices": {"com.apple.CoreSimulator.SimRuntime.iOS-26-5": [
+                {"udid": UDID, "dataPath": data.to_str().unwrap()}
+            ]}})
+            .to_string(),
+        )
+    }
+
+    fn log_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "qaren-doctor-lane-log-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root.canonicalize().unwrap()
+    }
+
+    const DETAIL: &str = "simulator AAAABBBB-1111-2222-3333-444455556666 keeps typed and displayed field text in its system log; QaReN never removes the log of a simulator it did not create";
+    const GENERIC_FIX: &str = "find its data directory with xcrun simctl list -j devices (dataPath); with the simulator shut down, remove var/db/diagnostics under it";
+
+    #[test]
+    fn lane_log_row_prints_the_checked_store_path_and_changes_nothing() {
+        let root = log_root("canonical");
+        let data = root.join("CoreSimulator/Devices").join(UDID).join("data");
+        std::fs::create_dir_all(data.join("var/db/diagnostics")).unwrap();
+        let mut runner = MockRunner::new();
+        runner.expect_run("simctl list devices -j", log_list(&data));
+        let row = lane_log_row(&mut runner, UDID);
+        assert_eq!(row.id, "ios-lane-log");
+        assert_eq!(row.status, Status::Warn);
+        assert_eq!(row.detail, DETAIL);
+        assert_eq!(
+            row.fix.as_deref(),
+            Some(format!(
+                "when nothing uses it: run xcrun simctl shutdown {UDID}, confirm Shutdown in xcrun simctl list devices, then rm -rf '{}' (it is recreated at the next boot)",
+                data.join("var/db/diagnostics").display()
+            ).as_str())
+        );
+        assert!(data.join("var/db/diagnostics").is_dir());
+        assert_eq!(runner.calls.len(), 1);
+        assert_eq!(runner.remaining(), 0);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn lane_log_row_without_a_checked_path_gives_the_generic_fix() {
+        let quoted = log_root("quote").join("it's");
+        let quoted_data = quoted.join("CoreSimulator/Devices").join(UDID).join("data");
+        std::fs::create_dir_all(&quoted_data).unwrap();
+        let outside = log_root("outside").join("data");
+        std::fs::create_dir_all(&outside).unwrap();
+        for list in [
+            log_list(&quoted_data),
+            log_list(&outside),
+            CmdOutput {
+                exit_code: Some(1),
+                ..log_list(&outside)
+            },
+        ] {
+            let mut runner = MockRunner::new();
+            runner.expect_run("simctl list devices -j", list);
+            let row = lane_log_row(&mut runner, UDID);
+            assert_eq!(row.status, Status::Warn);
+            assert_eq!(row.detail, DETAIL);
+            assert_eq!(row.fix.as_deref(), Some(GENERIC_FIX));
+            assert!(!row.fix.as_deref().unwrap().contains("rm "));
+            assert_eq!(runner.remaining(), 0);
+        }
+        assert!(quoted_data.is_dir());
+        assert!(outside.is_dir());
     }
 }
 

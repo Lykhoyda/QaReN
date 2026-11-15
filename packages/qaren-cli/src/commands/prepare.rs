@@ -454,7 +454,7 @@ fn prepare_validated(
                 Some((sim, reclaimed)) => {
                     if let Some(earlier) = reclaimed {
                         dry_outcome = Some(format!(
-                            "would reuse {} after reclaiming run {earlier} through its cleanup",
+                            "would reuse {} after reclaiming run {earlier} through its cleanup, if its log store can be cleared",
                             sim.udid
                         ));
                     }
@@ -550,6 +550,7 @@ fn prepare_validated(
     let runtime_dir = crate::run::default_runtime_dir();
     let mut resources = crate::runrecord::Resources::default();
     let mut recovered = None;
+    let mut log_skipped = Vec::new();
     let mut pool_claimed = false;
     let mut pool_create = false;
     let custody = match (&selected, &pool_scan) {
@@ -572,6 +573,7 @@ fn prepare_validated(
             identity.clone(),
             (&node, &runtime_dir),
             &mut recovered,
+            &mut log_skipped,
         ) {
             Ok(PoolClaim::Claimed(lease, sim)) => {
                 pool_claimed = true;
@@ -608,6 +610,7 @@ fn prepare_validated(
     if let Some((lease, sim)) = custody {
         resources.lease = Some(lease);
         resources.device_borrowed = true;
+        resources.pool_member = pool_claimed;
         resources.ios_simulator = Some(IosSimResource {
             udid: sim.udid.clone(),
             name: sim.name.clone(),
@@ -672,6 +675,11 @@ fn prepare_validated(
     let t = ctx.mark("validate", started_ms);
     if let Some(earlier) = recovered {
         ctx.notes.push(("recovered_run".to_string(), earlier));
+    }
+    // Its own key: a later device_pool note (reused, created or fresh) would overwrite it.
+    if !log_skipped.is_empty() {
+        ctx.notes
+            .push(("device_pool_log_skipped".to_string(), log_skipped.join("; ")));
     }
     if let Some(orphan) = ctx.record.resources.lease.as_ref().and_then(|l| {
         l.released_orphan
@@ -1447,6 +1455,7 @@ fn claim_pool_member(
     identity: Option<crate::runrecord::PidIdentity>,
     runtime_context: (&Path, &Path),
     recovered: &mut Option<String>,
+    log_skipped: &mut Vec<String>,
 ) -> Result<PoolClaim, Failure> {
     let mut occupied = Vec::new();
     for (member, _) in &scan.candidates {
@@ -1509,8 +1518,21 @@ fn claim_pool_member(
             }
         };
         let skipped = match pool::proven(member, &inventory, spec) {
+            // Proven Shutdown under the lease: the store goes before any boot, or the member is passed over.
             Some(sim) if sim.state == ios::SimState::Shutdown => {
-                return Ok(PoolClaim::Claimed(lease, sim))
+                let detail = match ios::parse_sim_data_path(&inventory, udid)
+                    .map(|data| super::cleanup::remove_simulator_log_store(&data, udid))
+                {
+                    Some(super::cleanup::Outcome::Removed | super::cleanup::Outcome::Absent) => {
+                        return Ok(PoolClaim::Claimed(lease, sim))
+                    }
+                    Some(outcome) => outcome.render(),
+                    None => "simctl list did not name its data path".to_string(),
+                };
+                let skipped =
+                    format!("{udid}: its log store could not be removed before reuse ({detail})");
+                log_skipped.push(skipped.clone());
+                skipped
             }
             // Up without QaReN custody: a person, another lock root or a run that left it booted.
             Some(_) => format!(
@@ -1690,6 +1712,7 @@ fn enroll_pool_member(
     )?;
     let prev = ctx.record.resources.borrowed_ios_stop();
     ctx.record.resources.device_borrowed = true;
+    ctx.record.resources.pool_member = true;
     let armed = ctx
         .record
         .resources
@@ -1697,6 +1720,7 @@ fn enroll_pool_member(
         .and_then(|_| ctx.save());
     if let Err(f) = armed {
         ctx.record.resources.device_borrowed = false;
+        ctx.record.resources.pool_member = false;
         ctx.record.resources.revert_borrowed_ios_stop(prev);
         return Err(f);
     }
@@ -5772,7 +5796,10 @@ fn dry_run_receipt(
                 receipt.outcomes.insert(
                     "device_pool".to_string(),
                     match borrowed {
-                        Some(sim) => format!("would reuse {}", sim.udid),
+                        // The dry run removes nothing; the claim skips the member if its store stays.
+                        Some(sim) => {
+                            format!("would reuse {} if its log store can be cleared", sim.udid)
+                        }
                         None => format!("would create {sim_name}"),
                     },
                 );
