@@ -5648,17 +5648,18 @@ argument) it appends a marker line beside itself and execs the real
 cap only when that marker exists, and says `uncapped` otherwise. The directory
 is removed as soon as the build command ends. When the core count or memory
 cannot be read, or `xcodebuild` does not resolve, no cap is applied; the lower
-priority still is. A worker setting in the user's own `GRADLE_OPTS` wins and
-the rest of their `GRADLE_OPTS` is kept; otherwise `build.jobs` in
-`.qaren/config.yaml` replaces the machine's number, and
-`build.priority: normal` drops `nice`.
+priority still is. A `-Dorg.gradle.workers.max=` argument in the user's own
+`GRADLE_OPTS` wins over `build.jobs`, which wins over the machine's number.
+The user's `GRADLE_OPTS` text is kept verbatim. `build.priority: normal`
+drops `nice`.
 
 On an Apple-silicon Mac (the machine's `sysctl -n hw.optional.arm64` is `1`)
 both iOS build routes get `EXCLUDED_ARCHS=x86_64` in their environment, so the
 simulator build compiles arm64 only. An environment value is the weakest
 source, so a project's own architecture settings still win. It is left out
-when the user's environment already sets `EXCLUDED_ARCHS`, `ARCHS` or
-`ONLY_ACTIVE_ARCH`, and when `.qaren/config.yaml` has `build.arch: all`, which
+when any of `EXCLUDED_ARCHS`, `ARCHS` or `ONLY_ACTIVE_ARCH` is present in the
+user's environment, to any value (including empty), and when
+`.qaren/config.yaml` has `build.arch: all`, which
 an app with an x86_64-only simulator dependency needs.
 
 The receipt's `outcomes` record what each build got as

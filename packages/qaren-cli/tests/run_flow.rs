@@ -18,6 +18,57 @@ const UDID: &str = "1DC408C4-51DA-4C4F-ACA1-39881C916FDD";
 const LSTART: &str = "Wed Aug 12 16:01:00 2026";
 const TEST_KEY: &str = "hermetic-typesafe-key";
 
+fn assert_finite_build_priority(build: &CmdSpec, increment: i32) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let parent_nice = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
+    let mut child = Command::new(&build.program)
+        .args(&build.args[..5])
+        .args([
+            "/bin/sh",
+            "-c",
+            "/bin/ps -o ni= -p $$; printf '%s\\0' \"$@\"",
+            "priority-probe",
+        ])
+        .args(&build.args[5..])
+        .args(["argument with spaces", "literal 'quote' $value"])
+        .current_dir(build.cwd.as_ref().unwrap())
+        .envs(build.env.iter().cloned())
+        .env("PATH", "/usr/bin:/bin")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"start\n").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty());
+    let mut fields = output.stderr.splitn(2, |b| *b == b'\n');
+    let nice = fields.next().unwrap();
+    let args = fields.next().unwrap();
+    assert_eq!(
+        std::str::from_utf8(nice)
+            .unwrap()
+            .trim()
+            .parse::<i32>()
+            .unwrap(),
+        parent_nice + increment,
+        "the build policy requires one priority adjustment, or none for normal"
+    );
+    let expected = build.args[5..]
+        .iter()
+        .map(String::as_str)
+        .chain(["argument with spaces", "literal 'quote' $value"])
+        .flat_map(|arg| arg.bytes().chain([0]))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        args, expected,
+        "the build gate must forward every argument intact"
+    );
+}
+
 fn probe_json() -> serde_json::Value {
     serde_json::json!({"calls":1,"medianMs":12,"inputTokens":10,"callDetails":[{
         "scope":"preflight","questionIds":["preflight"],"inputTokens":10,"ms":12,"outcome":"ok","status":200
@@ -237,7 +288,7 @@ fn workspace_check_uses_a_gated_finite_build_and_persists_the_verified_artifact(
         .find(|c| c.label == "xcodebuild-ios")
         .unwrap();
     assert_eq!(build.program, "/bin/bash");
-    assert!(build.args[3].ends_with("exec nice -n 10 \"$@\" >&2"));
+    assert_finite_build_priority(build, 10);
     assert_eq!(build.args[5], "xcrun");
     assert!(!build.args.iter().any(|a| a == "-jobs"));
     assert_eq!(
@@ -302,8 +353,7 @@ fn workspace_build_honours_configured_jobs_and_normal_priority() {
         .iter()
         .find(|c| c.label == "xcodebuild-ios")
         .unwrap();
-    assert!(build.args[3].ends_with("; exec \"$@\" >&2"));
-    assert!(!build.args.iter().any(|a| a == "nice"));
+    assert_finite_build_priority(build, 0);
     let jobs = build.args.iter().position(|a| a == "-jobs").unwrap();
     assert_eq!(build.args[jobs + 1], "3");
     assert_eq!(
@@ -2776,7 +2826,7 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
         build.timeout_seconds,
         qaren::scenario::Deadlines::default().build_seconds
     );
-    assert!(build.args[3].ends_with("exec nice -n 10 \"$@\" >&2"));
+    assert_finite_build_priority(build, 10);
     assert!(build.env.contains(&("BASH_ENV".into(), "/dev/null".into())));
     assert!(build.env.contains(&("TYPESAFE_API_KEY".into(), "".into())));
     assert_eq!(receipt.run_id, run_id());
@@ -4829,10 +4879,8 @@ fn android_check_prebuilds_an_absent_android_dir_before_gradle() {
         Some(app.canonicalize().unwrap().join("android").as_path())
     );
     assert!(gradle.env.contains(&("CI".to_string(), "1".to_string())));
-    // Each build goes through nice exactly once: from the finite build gate, not from its spec.
     for build in [prebuild, gradle] {
-        assert!(build.args[3].ends_with("; exec nice -n 10 \"$@\" >&2"));
-        assert_eq!(build.args.iter().filter(|a| a.contains("nice")).count(), 1);
+        assert_finite_build_priority(build, 10);
     }
     assert_eq!(gradle.args[5], "./gradlew");
     assert!(gradle.env.contains(&(
@@ -7861,7 +7909,10 @@ fn shutdown_device_on_exit_arms_after_admission_and_stops_simulator_before_relea
             },
             "{mode} {end_state}"
         );
-        assert_eq!(receipt.cleanup["simulator_log"], "kept", "{mode} {end_state}");
+        assert_eq!(
+            receipt.cleanup["simulator_log"], "kept",
+            "{mode} {end_state}"
+        );
         assert_eq!(receipt.cleanup["device_lease"], "removed");
         assert_eq!(runner.mock.remaining(), 0, "{mode} {end_state}");
         assert_subsequence(

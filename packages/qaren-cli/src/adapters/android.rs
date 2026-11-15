@@ -265,9 +265,38 @@ pub fn parse_avd_name(stdout: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-// A substring, so a quoted setting counts too; a false match only leaves the build uncapped.
 pub fn user_sets_gradle_workers(user: Option<&str>) -> bool {
-    user.is_some_and(|u| u.contains("-Dorg.gradle.workers.max="))
+    let Some(user) = user else {
+        return false;
+    };
+    let mut args = Vec::new();
+    let mut arg = String::new();
+    let mut quote = None;
+    let mut chars = user.chars();
+    while let Some(ch) = chars.next() {
+        match (quote, ch) {
+            (None, '\'' | '"') => quote = Some(ch),
+            (Some('\''), '\'') | (Some('"'), '"') => quote = None,
+            (None | Some('"'), '\\') => {
+                let Some(next) = chars.next() else {
+                    return false;
+                };
+                if quote == Some('"') && !matches!(next, '$' | '`' | '"' | '\\' | '\n') {
+                    arg.push('\\');
+                }
+                if next != '\n' {
+                    arg.push(next);
+                }
+            }
+            (None, ' ' | '\t' | '\n') => args.push(std::mem::take(&mut arg)),
+            _ => arg.push(ch),
+        }
+    }
+    args.push(arg);
+    quote.is_none()
+        && args
+            .iter()
+            .any(|arg| arg.starts_with("-Dorg.gradle.workers.max="))
 }
 
 // GRADLE_OPTS for a build: the user's own value, plus the worker cap unless they set one, plus no daemon when asked.
@@ -278,8 +307,7 @@ pub fn gradle_opts(
 ) -> Option<String> {
     // The user's text stays verbatim: gradlew parses its quoting.
     let mut opts: Vec<String> = user
-        .map(str::trim)
-        .filter(|u| !u.is_empty())
+        .filter(|u| !u.trim().is_empty())
         .map(str::to_string)
         .into_iter()
         .collect();

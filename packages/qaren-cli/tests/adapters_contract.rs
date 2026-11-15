@@ -316,6 +316,43 @@ fn expo_android_build_runs_niced_with_capped_daemonless_gradle() {
 #[test]
 fn gradle_opts_respect_the_users_worker_setting_and_keep_their_other_options() {
     let four = NonZeroU32::new(4);
+    for (user, sets_workers) in [
+        ("-Dnote=-Dorg.gradle.workers.max=32", false),
+        ("\"-Dorg.gradle.workers.max=12\"", true),
+        ("'-Dorg.gradle.workers.max=12'", true),
+        ("-Dorg.gradle.workers.\\max=12", true),
+        ("-Dorg.gradle.workers.max\\=12", true),
+        ("-Dorg.gradle.workers.ma\"x\"=12", true),
+        ("-Dorg.gradle.workers.\\\nmax=12", true),
+        ("\"-Dorg.gradle.workers.\\max=12\"", false),
+        ("-Dnote=hello\\ -Dorg.gradle.workers.max=32", false),
+        ("'-Dnote=hello -Dorg.gradle.workers.max=32'", false),
+        ("\"-Dnote=hello -Dorg.gradle.workers.max=32\"", false),
+        ("  -Xmx2g  ", false),
+        ("-Xmx2g\t'-Dorg.gradle.workers.max=12'\n", true),
+        ("'-Dorg.gradle.workers.max=12", false),
+        ("\"-Dorg.gradle.workers.max=12", false),
+        ("-Dorg.gradle.workers.max=12\\", false),
+    ] {
+        assert_eq!(
+            android::user_sets_gradle_workers(Some(user)),
+            sets_workers,
+            "{user}"
+        );
+        for no_daemon in [false, true] {
+            let mut expected = user.to_string();
+            if !sets_workers {
+                expected.push_str(" -Dorg.gradle.workers.max=4");
+            }
+            if no_daemon {
+                expected.push_str(" -Dorg.gradle.daemon=false");
+            }
+            assert_eq!(
+                android::gradle_opts(Some(user), four, no_daemon),
+                Some(expected)
+            );
+        }
+    }
     assert_eq!(
         android::gradle_opts(Some("-Xmx2g"), four, false).as_deref(),
         Some("-Xmx2g -Dorg.gradle.workers.max=4")
@@ -667,25 +704,30 @@ fn expo_ios_build_gets_the_wrapper_only_with_a_cap_and_a_resolvable_xcodebuild()
     )
     .unwrap();
     std::fs::copy(preferred.join("xcodebuild"), root.join("xcodebuild")).unwrap();
-    for (case, entry) in [
-        preferred.to_str().unwrap(),
-        "preferred's/xcode bin",
-        "",
-    ]
-    .into_iter()
-    .enumerate()
+    for (case, entry) in [preferred.to_str().unwrap(), "preferred's/xcode bin", ""]
+        .into_iter()
+        .enumerate()
     {
         let path = format!("{entry}:{}", bin.display());
         let build_dir = root.join(format!("ios-build-resolved-{case}"));
         std::fs::create_dir(&build_dir).unwrap();
         let mut spec = ios::build_spec(&root, &build_dir, 60, None, None, false);
-        assert!(ios::cap_expo_jobs(&mut spec, &build_dir, Some(&path), NonZeroU32::new(4)).unwrap());
+        assert!(
+            ios::cap_expo_jobs(&mut spec, &build_dir, Some(&path), NonZeroU32::new(4)).unwrap()
+        );
         let dir = build_dir.join(ios::JOBS_WRAPPER_DIR);
         assert!(spec
             .env
             .contains(&("PATH".to_string(), format!("{}:{path}", dir.display()))));
         let output = std::process::Command::new("/bin/sh")
-            .args(["-c", "exec xcodebuild \"$@\"", "sh", "-destination", "id=1", "My App"])
+            .args([
+                "-c",
+                "exec xcodebuild \"$@\"",
+                "sh",
+                "-destination",
+                "id=1",
+                "My App",
+            ])
             .current_dir(&root)
             .envs(spec.env.iter().cloned())
             .output()
