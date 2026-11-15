@@ -2529,14 +2529,15 @@ fn lock_holder_for(ctx: &mut Ctx) -> LockHolder {
 
 pub(crate) fn claim_build_lock(ctx: &mut Ctx, lock_root: &Path) -> Result<(), Failure> {
     ensure_running(ctx.runner, "build")?;
-    wait_for_host_memory(ctx)?;
+    let mut memory_remaining_ms = crate::host_capacity::MEMORY_WAIT_MS;
+    wait_for_host_memory(ctx, &mut memory_remaining_ms)?;
     let name = format!(
         "native-build-{}",
         platform_dir(ctx.record.scenario.platform)
     );
     let holder = lock_holder_for(ctx);
     if ctx.record.scenario.platform == Platform::Ios {
-        return claim_ios_build_lock(ctx, lock_root, &name, holder);
+        return claim_ios_build_lock(ctx, lock_root, &name, holder, &mut memory_remaining_ms);
     }
     // Persisted before the claim so an interrupted prepare leaves the intent
     // discoverable; a foreign holder at cleanup time proves the claim never
@@ -2599,15 +2600,17 @@ const LOCK_POLL_MS: u64 = 1000;
 const LOCK_PROGRESS_MS: u64 = 5000;
 const HOLDER_IDLE_ADVISORY_MS: u64 = 120_000;
 
-// Runs before any build lock is claimed and before the build budget starts, so waiting never spends it.
-fn wait_for_host_memory(ctx: &mut Ctx) -> Result<(), Failure> {
+fn wait_for_host_memory(ctx: &mut Ctx, remaining_ms: &mut u64) -> Result<(), Failure> {
     use crate::host_capacity::{Pressure, Sample, MEMORY_POLL_MS, MEMORY_WAIT_MS};
     let os = ctx.runner.host_os();
     let mut host = crate::host_capacity::sample(ctx.runner, os);
     if host.memory_unread() {
         ctx.notes.push((
             "host_wait".into(),
-            "host memory state unavailable before the build; did not wait".into(),
+            format!(
+                "host memory state unavailable before the build; waited {} s in total",
+                (MEMORY_WAIT_MS - *remaining_ms) / 1000
+            ),
         ));
         return Ok(());
     }
@@ -2620,7 +2623,8 @@ fn wait_for_host_memory(ctx: &mut Ctx) -> Result<(), Failure> {
     };
     let start = ctx.runner.monotonic_ms();
     let mut waited = 0;
-    let mut next_poll = MEMORY_POLL_MS;
+    let allowance_ms = *remaining_ms;
+    let mut next_poll = MEMORY_POLL_MS.min(allowance_ms);
     let mut fresh = true;
     let mut wanted = (host.pressure.is_some(), host.available_bytes.is_some());
     crate::progress::started("host-wait", false);
@@ -2629,7 +2633,7 @@ fn wait_for_host_memory(ctx: &mut Ctx) -> Result<(), Failure> {
         crate::events::stage("host_wait", state, code, Some(waited));
         crate::progress::finished("host-wait", state == StageState::Passed);
     };
-    while host.memory_constrained() && waited < MEMORY_WAIT_MS {
+    while host.memory_constrained() && waited < allowance_ms {
         // One-second sleeps, checked after the last one too, so a cancellation leaves the wait at once.
         loop {
             if let Err(f) = ensure_running(ctx.runner, "host_wait") {
@@ -2643,15 +2647,16 @@ fn wait_for_host_memory(ctx: &mut Ctx) -> Result<(), Failure> {
                 .sleep(Duration::from_millis(LOCK_POLL_MS.min(next_poll - waited)));
             waited = ctx.runner.monotonic_ms().saturating_sub(start);
         }
-        next_poll = next_poll.saturating_add(MEMORY_POLL_MS);
+        next_poll = next_poll.saturating_add(MEMORY_POLL_MS).min(allowance_ms);
         let next = crate::host_capacity::sample(ctx.runner, os);
         wanted.0 |= next.pressure.is_some();
         wanted.1 |= next.available_bytes.is_some();
-        fresh = (!wanted.0 || next.pressure.is_some())
-            && (!wanted.1 || next.available_bytes.is_some());
+        fresh =
+            (!wanted.0 || next.pressure.is_some()) && (!wanted.1 || next.available_bytes.is_some());
         if fresh {
             host = next;
         }
+        waited = ctx.runner.monotonic_ms().saturating_sub(start);
         crate::events::stage(
             "host_wait",
             StageState::Running,
@@ -2659,7 +2664,8 @@ fn wait_for_host_memory(ctx: &mut Ctx) -> Result<(), Failure> {
             Some(waited),
         );
     }
-    let seconds = waited / 1000;
+    *remaining_ms = remaining_ms.saturating_sub(waited);
+    let seconds = (MEMORY_WAIT_MS - *remaining_ms) / 1000;
     if !host.memory_constrained() {
         end(StageState::Passed, None, waited);
         ctx.notes.push((
@@ -2704,6 +2710,7 @@ fn claim_ios_build_lock(
     lock_root: &Path,
     name: &str,
     mut holder: LockHolder,
+    memory_remaining_ms: &mut u64,
 ) -> Result<(), Failure> {
     if holder.identity.is_none() {
         return Err(Failure::new(
@@ -2742,13 +2749,12 @@ fn claim_ios_build_lock(
             return Err(wait.refusal(name, ctx.record.scenario.deadlines.build_seconds));
         }
         if wait.waiting {
-            let memory_start = ctx.runner.monotonic_ms();
-            if let Err(f) = wait_for_host_memory(ctx) {
+            let memory_before_ms = *memory_remaining_ms;
+            if let Err(f) = wait_for_host_memory(ctx, memory_remaining_ms) {
                 wait.finish(ctx, start, StageState::Failed);
                 return Err(f);
             }
-            deadline = deadline
-                .saturating_add(ctx.runner.monotonic_ms().saturating_sub(memory_start));
+            deadline = deadline.saturating_add(memory_before_ms - *memory_remaining_ms);
             ctx.build_deadline_ms = Some(deadline);
         }
         holder.at = timefmt::iso8601_utc(ctx.runner.now_epoch_ms());

@@ -401,14 +401,18 @@ fn newly_observed_memory_signals_cannot_disappear_to_report_recovery() {
     }
 }
 
-fn release_contended_lock_on_memory_recheck(runner: &mut HostRunner, req: &RunRequest) {
+fn release_contended_lock_on_memory_recheck(
+    runner: &mut HostRunner,
+    req: &RunRequest,
+    release_at_sample: usize,
+) {
     let lock = req.lock_root.join("native-build-ios");
     std::fs::create_dir_all(&lock).unwrap();
     let mut samples = 0;
     runner.inner.observe = Some(Box::new(move |spec| {
         if spec.label == "host-sample" && spec.program == "sysctl" {
             samples += 1;
-            if samples == 3 {
+            if samples == release_at_sample {
                 std::fs::remove_dir_all(&lock).unwrap();
             }
         }
@@ -418,10 +422,18 @@ fn release_contended_lock_on_memory_recheck(runner: &mut HostRunner, req: &RunRe
 #[test]
 fn critical_memory_after_lock_contention_refuses_without_building() {
     let (mut runner, req) = stopping_before_the_build(&[OK, CRITICAL]);
-    release_contended_lock_on_memory_recheck(&mut runner, &req);
+    release_contended_lock_on_memory_recheck(&mut runner, &req, 3);
     let receipt = run(&mut runner, &req);
-    assert_eq!(receipt.result, ReceiptResult::Refused, "{:?}", receipt.failure);
-    assert_eq!(receipt.failure.unwrap().code, FailureCode::HostUnderPressure);
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Refused,
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(
+        receipt.failure.unwrap().code,
+        FailureCode::HostUnderPressure
+    );
     assert_no_build_lock(&runner, &req);
     assert_eq!(runner.inner.remaining(), 0);
 }
@@ -435,7 +447,7 @@ fn memory_wait_after_lock_contention_preserves_remaining_build_budget() {
         format!("{config}\ndeadlines:\n  build_seconds: 30\n"),
     )
     .unwrap();
-    release_contended_lock_on_memory_recheck(&mut runner, &req);
+    release_contended_lock_on_memory_recheck(&mut runner, &req, 3);
     let receipt = run(&mut runner, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     assert!(receipt.outcomes["host_wait"].contains("waited 600 s"));
@@ -445,5 +457,57 @@ fn memory_wait_after_lock_contention_preserves_remaining_build_budget() {
         .find(|c| c.label == "expo-run-ios")
         .unwrap();
     assert_eq!(build.timeout_seconds, 29);
+    assert_eq!(runner.inner.remaining(), 0);
+}
+
+#[test]
+fn two_lock_retries_share_one_ten_minute_memory_allowance() {
+    let (mut baseline, req) = building(&[OK]);
+    let baseline = run(&mut baseline, &req);
+    assert_eq!(baseline.result, ReceiptResult::Pass);
+    for memory in [vec![WARNING], vec![OK, WARNING], vec![WARNING, OK, WARNING]] {
+        let (mut runner, req) = building(&memory);
+        let config = std::fs::read_to_string(&req.config_path).unwrap();
+        std::fs::write(
+            &req.config_path,
+            format!("{config}\ndeadlines:\n  build_seconds: 30\n"),
+        )
+        .unwrap();
+        release_contended_lock_on_memory_recheck(&mut runner, &req, 124);
+        let receipt = run(&mut runner, &req);
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+        assert_eq!(
+            receipt.timings_ms["total"],
+            baseline.timings_ms["total"] + 602_000
+        );
+        assert!(receipt.outcomes["host_wait"].contains("waited 600 s"));
+        let build = runner
+            .calls
+            .iter()
+            .find(|c| c.label == "expo-run-ios")
+            .unwrap();
+        assert_eq!(build.timeout_seconds, 28);
+        assert_eq!(runner.inner.remaining(), 0);
+    }
+}
+
+#[test]
+fn critical_revalidation_refuses_after_the_memory_allowance_is_spent() {
+    let mut memory = vec![WARNING; 121];
+    memory.push(CRITICAL);
+    let (mut runner, req) = stopping_before_the_build(&memory);
+    release_contended_lock_on_memory_recheck(&mut runner, &req, 123);
+    let receipt = run(&mut runner, &req);
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Refused,
+        "{:?}",
+        receipt.failure
+    );
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::HostUnderPressure);
+    assert!(failure.detail.to_string().contains("waited 600 s"));
+    assert_eq!(runner.samples(), 124);
+    assert_no_build_lock(&runner, &req);
     assert_eq!(runner.inner.remaining(), 0);
 }
