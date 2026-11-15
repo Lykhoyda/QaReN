@@ -5346,7 +5346,8 @@ async function walkBlockScoped(
                   before,
                   fallback,
                   !!scrolled || !!withheldDrag,
-                  withheldDrag && stayedCovered(item.target.phrase, withheldDrag),
+                  withheldDrag &&
+                    `${stayedCovered(item.target.phrase, withheldDrag)}${await coverText(item)}`,
                 );
                 if (result === 'typed') {
                   typedUnverified = true;

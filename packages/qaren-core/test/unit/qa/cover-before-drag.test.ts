@@ -764,35 +764,52 @@ test('T8(c): a covered centre outside the inferred-overlay case on the retry rea
   assert.doesNotMatch(r.reason, /after (one|a) scroll/);
 });
 
-test('T8(e): a fill whose retry finds no text input: the keyboard fallback sends no drag', async () => {
-  // A field React lists as a text input whose native node is a plain view: the runner refuses to type.
-  const wrapper = (views: View[]) =>
-    views.map((v) => (v.id === 'go' ? { ...v, type: 'Other' } : v));
-  const r = await walk({
-    views: wrapper(sheeted()),
-    kind: 'fill',
-    edit: (screen) => {
-      const field = screen.elements.find((e) => e.testID === 'go');
-      if (field) field.kind = 'input';
-    },
-    dispatches: [
-      OCCLUDED,
-      { ok: false, proven: false, mutation: 'none', error: 'NO_TEXT_INPUT_TARGET: refused' },
-      OCCLUDED,
-    ],
-    setup: (deps) => {
-      deps.typeFocused = async () => assert.fail('nothing is typed under the cover');
-    },
+for (const noTap of [false, true]) {
+  test(`T8(e): a fill whose retry finds no text input: the keyboard fallback sends no drag (${noTap ? 'no tap' : 'covered tap'})`, async () => {
+    // A field React lists as a text input whose native node is a plain view: the runner refuses to type.
+    const wrapper = (views: View[]) =>
+      views.map((v) => (v.id === 'go' ? { ...v, type: 'Other' } : v));
+    let fills = 0;
+    const r = await walk({
+      views: wrapper(sheeted()),
+      retry: (dispatched) => wrapper(noTap && dispatched === 2 ? inferred() : sheeted()),
+      kind: 'fill',
+      edit: (screen) => {
+        const field = screen.elements.find((e) => e.testID === 'go');
+        if (field) field.kind = 'input';
+        if (noTap && fills === 2) {
+          screen.keyboardVisible = true;
+        }
+      },
+      dispatches: [
+        OCCLUDED,
+        { ok: false, proven: false, mutation: 'none', error: 'NO_TEXT_INPUT_TARGET: refused' },
+        OCCLUDED,
+      ],
+      setup: (deps) => {
+        const fill = deps.fill;
+        deps.fill = async (...args) => {
+          fills += 1;
+          return fill(...args);
+        };
+        deps.reactFocused = async () => false;
+        deps.typeFocused = async () => assert.fail('nothing is typed under the cover');
+      },
+    });
+    assert.equal(r.result.verdict, 'FAIL');
+    assert.deepEqual(scrolls(r.acts), [], r.log.join(','));
+    assert.deepEqual(r.acts, noTap ? ['fill @e2', 'fill @e2'] : ['fill @e2', 'fill @e2', 'press @e2']);
+    assert.ok(
+      r.reason.includes('"go" stayed covered; it is in no scroll area, so nothing was scrolled'),
+      r.reason,
+    );
+    assert.match(
+      r.reason,
+      noTap ? /covered by other at 0,690,402,110/ : /covered by other at 0,437,402,437/,
+    );
+    assert.doesNotMatch(r.reason, /after (one|a) scroll/);
   });
-  assert.equal(r.result.verdict, 'FAIL');
-  assert.deepEqual(scrolls(r.acts), [], r.log.join(','));
-  assert.deepEqual(r.acts, ['fill @e2', 'fill @e2', 'press @e2']);
-  assert.ok(
-    r.reason.includes('"go" stayed covered; it is in no scroll area, so nothing was scrolled'),
-    r.reason,
-  );
-  assert.doesNotMatch(r.reason, /after (one|a) scroll/);
-});
+}
 
 test('T8(f): a target with a label and no test id: one press, the withheld reason', async () => {
   const unnamed = sheeted().map((v) => (v.id === 'go' ? { ...v, id: '' } : v));
