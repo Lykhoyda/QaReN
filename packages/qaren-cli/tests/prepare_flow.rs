@@ -2966,11 +2966,23 @@ fn android_prepare_happy_path_leases_tunnels_and_pins_serial() {
         CmdOutput::success("device\n"),
     );
     // The worker cap comes from the machine: 18 cores and 24 GiB give 8.
-    mock.expect_run("vm_stat", CmdOutput::success(""));
-    mock.expect_run(
-        "sysctl",
-        CmdOutput::success("hw.logicalcpu: 18\nhw.memsize: 25769803776\n"),
-    );
+    if cfg!(target_os = "linux") {
+        mock.expect_run(
+            "cat /proc/meminfo",
+            CmdOutput::success("MemTotal: 25165824 kB\n"),
+        );
+        let cpus: String = (0..18).map(|n| format!("cpu{n} 1\n")).collect();
+        mock.expect_run(
+            "cat /proc/loadavg /proc/stat",
+            CmdOutput::success(&format!("0.1 0.2 0.3 1/100 1\ncpu 1 0 0 1\n{cpus}")),
+        );
+    } else {
+        mock.expect_run("vm_stat", CmdOutput::success(""));
+        mock.expect_run(
+            "sysctl",
+            CmdOutput::success("hw.logicalcpu: 18\nhw.memsize: 25769803776\n"),
+        );
+    }
     mock.expect_spawn(
         "expo run:android",
         Spawned {

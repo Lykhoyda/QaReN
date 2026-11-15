@@ -5178,10 +5178,13 @@ fn build_ios(ctx: &mut Ctx) -> Result<(), Failure> {
     let built = run_finite_build(ctx, &build);
     if wrapped {
         applied = ios::expo_jobs_applied(&output, &applied);
-        if let Err(error) = std::fs::remove_dir_all(output.join(ios::JOBS_WRAPPER_DIR)) {
-            ctx.notes
-                .push(("xcodebuild_wrapper".into(), format!("not removed: {error}")));
-        }
+    }
+    // Also after a partly written wrapper, so output retirement finds only the app.
+    match std::fs::remove_dir_all(output.join(ios::JOBS_WRAPPER_DIR)) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => ctx
+            .notes
+            .push(("xcodebuild_wrapper".into(), format!("not removed: {error}"))),
+        _ => {}
     }
     let arch = match arm64 {
         Ok(()) => "arm64".to_string(),
