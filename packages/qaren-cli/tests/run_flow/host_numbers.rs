@@ -102,12 +102,13 @@ fn f3_unreadable_probes_are_absent_and_do_not_change_the_verdict() {
             report.contains("Host at start: unavailable. At end: unavailable."),
             "{report}"
         );
+        // Start, the pre-build memory check, end.
         assert_eq!(
             mock.calls
                 .iter()
                 .filter(|c| c.label == "host-sample")
                 .count(),
-            4
+            6
         );
         assert!(mock
             .calls
@@ -212,9 +213,21 @@ fn f7_samples_bracket_every_command_including_teardown() {
     assert!(mock.calls[mock.calls.len() - 2..]
         .iter()
         .all(|c| c.label == "host-sample"));
-    assert!(mock.calls[2..mock.calls.len() - 2]
+    // Between them, only the pre-build memory check, before the build command.
+    let middle = &mock.calls[2..mock.calls.len() - 2];
+    let samples: Vec<_> = middle
         .iter()
-        .all(|c| c.label != "host-sample"));
+        .enumerate()
+        .filter(|(_, c)| c.label == "host-sample")
+        .map(|(i, _)| i)
+        .collect();
+    let build = middle
+        .iter()
+        .position(|c| c.label == "expo-run-ios")
+        .unwrap();
+    assert_eq!(samples.len(), 2, "{samples:?}");
+    assert_eq!(samples[1], samples[0] + 1);
+    assert!(samples[1] < build);
     let host = host_json(&receipt);
     assert_ne!(host["start"], host["end"]);
 }

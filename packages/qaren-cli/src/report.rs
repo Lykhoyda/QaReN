@@ -663,6 +663,9 @@ pub(crate) fn write_host(receipt: &mut crate::receipt::Receipt) -> std::io::Resu
         }
     }
     writeln!(file, "\n{}", host.report_line())?;
+    if let Some(wait) = receipt.outcomes.get("host_wait") {
+        writeln!(file, "Host memory before the build: {wait}.")?;
+    }
     receipt.artifacts.insert("report".into(), path);
     Ok(())
 }

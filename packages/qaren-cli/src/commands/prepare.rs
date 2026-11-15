@@ -297,7 +297,8 @@ pub(crate) fn finish_receipt(ctx: Ctx, result: ReceiptResult, failure: Option<Fa
 
 pub fn prepare(runner: &mut dyn Runner, args: &PrepareArgs) -> Receipt {
     let started_ms = runner.now_epoch_ms();
-    let host_start = crate::host_capacity::sample(runner, std::env::consts::OS);
+    let os = runner.host_os();
+    let host_start = crate::host_capacity::sample(runner, os);
     let mut receipt = match prepare_validated(runner, args, started_ms) {
         Ok(receipt) => receipt,
         Err(failure) => {
@@ -2528,6 +2529,7 @@ fn lock_holder_for(ctx: &mut Ctx) -> LockHolder {
 
 pub(crate) fn claim_build_lock(ctx: &mut Ctx, lock_root: &Path) -> Result<(), Failure> {
     ensure_running(ctx.runner, "build")?;
+    wait_for_host_memory(ctx)?;
     let name = format!(
         "native-build-{}",
         platform_dir(ctx.record.scenario.platform)
@@ -2596,6 +2598,101 @@ pub(crate) fn claim_build_lock(ctx: &mut Ctx, lock_root: &Path) -> Result<(), Fa
 const LOCK_POLL_MS: u64 = 1000;
 const LOCK_PROGRESS_MS: u64 = 5000;
 const HOLDER_IDLE_ADVISORY_MS: u64 = 120_000;
+
+// Runs before any build lock is claimed and before the build budget starts, so waiting never spends it.
+fn wait_for_host_memory(ctx: &mut Ctx) -> Result<(), Failure> {
+    use crate::host_capacity::{Pressure, Sample, MEMORY_POLL_MS, MEMORY_WAIT_MS};
+    let os = ctx.runner.host_os();
+    let mut host = crate::host_capacity::sample(ctx.runner, os);
+    if host.memory_unread() {
+        ctx.notes.push((
+            "host_wait".into(),
+            "host memory state unavailable before the build; did not wait".into(),
+        ));
+        return Ok(());
+    }
+    if !host.memory_constrained() {
+        return Ok(());
+    }
+    let code = |host: &Sample| match host.pressure {
+        Some(Pressure::Critical) => "memory_critical",
+        _ => "memory_low",
+    };
+    let start = ctx.runner.monotonic_ms();
+    let mut waited = 0;
+    let mut next_poll = MEMORY_POLL_MS;
+    let mut fresh = true;
+    crate::progress::started("host-wait", false);
+    crate::events::stage("host_wait", StageState::Running, Some(code(&host)), None);
+    let end = |state: StageState, code: Option<&str>, waited: u64| {
+        crate::events::stage("host_wait", state, code, Some(waited));
+        crate::progress::finished("host-wait", state == StageState::Passed);
+    };
+    while host.memory_constrained() && waited < MEMORY_WAIT_MS {
+        // One-second sleeps, checked after the last one too, so a cancellation leaves the wait at once.
+        loop {
+            if let Err(f) = ensure_running(ctx.runner, "host_wait") {
+                end(StageState::Failed, Some("RUN_CANCELLED"), waited);
+                return Err(f.with_recovery(RecoveryReason::RunCancelled));
+            }
+            if waited >= next_poll {
+                break;
+            }
+            ctx.runner
+                .sleep(Duration::from_millis(LOCK_POLL_MS.min(next_poll - waited)));
+            waited = ctx.runner.monotonic_ms().saturating_sub(start);
+        }
+        next_poll = next_poll.saturating_add(MEMORY_POLL_MS);
+        // A probe an overloaded host timed out is no sign memory came back: keep the last reading.
+        let next = crate::host_capacity::sample(ctx.runner, os);
+        fresh = !next.memory_unread();
+        if fresh {
+            host = next;
+        }
+        crate::events::stage(
+            "host_wait",
+            StageState::Running,
+            Some(code(&host)),
+            Some(waited),
+        );
+    }
+    let seconds = waited / 1000;
+    if !host.memory_constrained() {
+        end(StageState::Passed, None, waited);
+        ctx.notes.push((
+            "host_wait".into(),
+            format!(
+                "waited {seconds} s for host memory before the build; recovered: {}",
+                host.summary()
+            ),
+        ));
+        return Ok(());
+    }
+    // Only a readable critical reading at the end refuses; an unavailable one never does.
+    if fresh && host.pressure == Some(Pressure::Critical) {
+        end(StageState::Failed, Some("HOST_UNDER_PRESSURE"), waited);
+        // Resources may already be owned, so the receipt's next action can become cleanup; the detail keeps the remedy.
+        return Err(Failure::new(
+            "host_wait",
+            FailureCode::HostUnderPressure,
+            format!(
+                "host memory stayed constrained before the native build and its last reading was critical pressure ({}); waited {seconds} s, claimed no build lock and started no build; re-run once memory pressure clears",
+                host.summary()
+            ),
+            "re-run once host memory pressure clears",
+        ));
+    }
+    end(StageState::Passed, Some(code(&host)), waited);
+    ctx.notes.push((
+        "host_wait".into(),
+        format!(
+            "waited {seconds} s for host memory before the build; still constrained, built with the full build budget: {}{}",
+            host.summary(),
+            if fresh { "" } else { "; last reading unavailable" }
+        ),
+    ));
+    Ok(())
+}
 
 // Bounded wait for the iOS build lock within the build window. A live or unproven holder is
 // never taken; a dead one is reclaimed only through the group-proven orphan rule.

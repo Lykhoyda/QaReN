@@ -39,6 +39,7 @@ pub enum FailureCode {
     DepsNotPrewarmed,
     NativeInputUnreadable,
     BuildContended,
+    HostUnderPressure,
     DeviceClaimContended,
     DeviceUnavailable,
     DeviceNotBooted,
@@ -103,6 +104,7 @@ impl FailureCode {
                 | FailureCode::DeviceNotBooted
                 | FailureCode::LaneNotWarm
                 | FailureCode::BuildContended
+                | FailureCode::HostUnderPressure
                 | FailureCode::OwnershipUnproven
                 | FailureCode::HandoffNotPending
                 | FailureCode::HandoffEvidenceMissing

@@ -669,6 +669,31 @@ Refusals before a run directory exists carry the samples in the receipt only.
 `qaren publish` does not include these samples in PR comments or descriptions.
 Sampling starts no device or service and introduces no cleanup resource.
 
+### Waiting for memory before a native build
+
+Before a native build claims its build lock, `check`, `pr` and `prepare` take
+one more sample. A run that reuses its build takes none. Memory is constrained when
+pressure is `warning` or `critical`, or less than 4 GiB is available; load
+alone never makes a run wait or refuse. A constrained host waits in the
+`host_wait` stage (code `memory_low` or `memory_critical`), polling every
+5 s for up to 10 minutes. `check` shows the wait as `host-wait` in its live
+progress. The wait runs before the build budget starts, so a run can take up to 10
+minutes longer, but it keeps the full `deadlines.build_seconds` for the build.
+When memory recovers the build goes on. When memory is still constrained
+but not critical after 10 minutes, the build goes on with its full budget.
+Memory still constrained after 10 minutes, with a readable final reading of `critical`
+pressure (macOS level 4), refuses `HOST_UNDER_PRESSURE` (exit 4). The refusal names load, available memory,
+pressure, swap and the time waited. No build lock is claimed and no build
+starts; the run's normal teardown releases what it acquired before the wait,
+such as its device lease. Linux has no critical level, so a Linux host
+waits but never refuses. An unreadable first sample never waits or refuses;
+an unreadable sample during the wait keeps the last reading and waits on, and
+an unreadable final reading goes on to the build instead of refusing. An
+unreadable first sample, a wait that recovered and a wait that went on
+constrained each leave a `host_wait` note in the receipt's `outcomes` and a
+line in `report.md`; the refusal's numbers are in its `failure.detail`. The stage event carries no host
+numbers. `qaren watch` does not list this stage yet.
+
 ### Android runner provisioning
 
 The Android runner uses the runtime's shipped source; no published runner APK
@@ -5509,7 +5534,8 @@ state. An ambiguous artifact (zero or several bundles) skips caching with a reco
 reason, never a guess. Only a saved state permits ownership rebinding.
 
 **Build serialization.** Native builds (incremental and clean) take a
-host-level `native-build-<platform>` lock. On iOS the lock covers only the
+host-level `native-build-<platform>` lock, after the
+[memory wait](#waiting-for-memory-before-a-native-build) and outside its time. On iOS the lock covers only the
 build: `prepare`, `check` and `pr` claim it after the device is allocated and
 release it once the artifact is verified, the pre-publication candidate and
 fingerprint checks pass and cache publication is persisted, before

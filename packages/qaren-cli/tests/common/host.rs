@@ -10,6 +10,14 @@ pub struct HostRunner {
     pub malformed: bool,
     pub timeout: bool,
     pub low_end_memory: bool,
+    // (macOS pressure level, free KiB) for each sample after the start; the last one repeats; level 0 fails.
+    pub memory: Vec<(u8, u64)>,
+    pub os: Option<&'static str>,
+    // Every sample, including those taken during a wait, proves no build lock is held or recorded.
+    pub lock_root: Option<std::path::PathBuf>,
+    pub runs_root: Option<std::path::PathBuf>,
+    // The scripted clock at each sample.
+    pub sampled_at: Vec<u64>,
     probes: usize,
 }
 
@@ -22,8 +30,21 @@ impl HostRunner {
             malformed: false,
             timeout: false,
             low_end_memory: false,
+            memory: Vec::new(),
+            os: None,
+            lock_root: None,
+            runs_root: None,
+            sampled_at: Vec::new(),
             probes: 0,
         }
+    }
+
+    pub fn samples(&self) -> usize {
+        self.calls
+            .iter()
+            .filter(|c| c.label == "host-sample")
+            .count()
+            / 2
     }
 }
 
@@ -39,13 +60,44 @@ impl Runner for HostRunner {
         if spec.label != "host-sample" {
             return self.inner.execute(spec, interruptible);
         }
-        let at_end = self.probes >= 2;
+        if let Some(Ok(dir)) = self.lock_root.as_ref().map(std::fs::read_dir) {
+            let held: Vec<_> = dir
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|name| name.starts_with("native-build"))
+                .collect();
+            assert!(held.is_empty(), "host sampled while holding {held:?}");
+        }
+        if let Some(Ok(dir)) = self.runs_root.as_ref().map(std::fs::read_dir) {
+            for run in dir.filter_map(|e| e.ok()) {
+                let id = run.file_name().to_string_lossy().into_owned();
+                if let Ok(record) =
+                    qaren::runrecord::RunRecord::load(self.runs_root.as_ref().unwrap(), &id)
+                {
+                    assert!(
+                        record.resources.build_lock.is_none(),
+                        "host sampled while {id} records a build-lock intent"
+                    );
+                }
+            }
+        }
+        if self.probes % 2 == 0 {
+            self.sampled_at.push(self.inner.now_epoch_ms());
+        }
+        let index = self.probes / 2;
+        let at_end = index >= 1;
         let load = if at_end { self.end_load } else { 1.0 };
-        let free_kib = if at_end && self.low_end_memory {
-            2 * 1024 * 1024
-        } else {
-            8 * 1024 * 1024
-        };
+        let scripted = (at_end && !self.memory.is_empty())
+            .then(|| self.memory[(index - 1).min(self.memory.len() - 1)]);
+        let level = scripted.map_or(1, |(level, _)| level);
+        let free_kib = scripted.map_or(
+            if at_end && self.low_end_memory {
+                2 * 1024 * 1024
+            } else {
+                8 * 1024 * 1024
+            },
+            |(_, kib)| kib,
+        );
         self.probes += 1;
         if self.timeout {
             return CmdOutput {
@@ -53,12 +105,12 @@ impl Runner for HostRunner {
                 ..Default::default()
             };
         }
-        if self.malformed {
+        if self.malformed || level == 0 {
             return CmdOutput::success("/private/probe-canary process-canary NaN garbage");
         }
         let text = match spec.program.as_str() {
             "vm_stat" => format!("Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: {}.\nPages inactive: 0.\nPages speculative: 0.\nPages occupied by compressor: 0.\n/private/probe-canary process-canary\n", free_kib / 16),
-            "sysctl" => format!("hw.logicalcpu: 8\nvm.loadavg: {{ {load} 2.0 3.0 }}\nkern.memorystatus_vm_pressure_level: 1\nhw.memsize: 25769803776\nvm.swapusage: total = 2048.00M used = 1024.00M free = 1024.00M (encrypted)\n"),
+            "sysctl" => format!("hw.logicalcpu: 8\nvm.loadavg: {{ {load} 2.0 3.0 }}\nkern.memorystatus_vm_pressure_level: {level}\nhw.memsize: 25769803776\nvm.swapusage: total = 2048.00M used = 1024.00M free = 1024.00M (encrypted)\n"),
             "cat" if spec.args[0] == "/proc/meminfo" => format!("MemTotal: 25165824 kB\nMemFree: {free_kib} kB\nMemAvailable: {free_kib} kB\nSwapTotal: 2097152 kB\nSwapFree: 1048576 kB\n/private/probe-canary process-canary\n"),
             "cat" => format!("{load} 2.0 3.0 1/100 123\ncpu 1 0 1 98 0 0 0 0\n{}", (0..8).map(|i| format!("cpu{i} 1 0 1 98 0 0 0 0\n")).collect::<String>()),
             _ => panic!("unexpected host probe {}", spec.rendered()),
@@ -94,6 +146,9 @@ impl Runner for HostRunner {
     }
     fn commands_executed(&self) -> u64 {
         self.inner.commands_executed() + self.probes as u64
+    }
+    fn host_os(&self) -> &'static str {
+        self.os.unwrap_or(std::env::consts::OS)
     }
     fn cancellation(&self) -> Option<String> {
         self.inner.cancellation()

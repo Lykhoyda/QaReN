@@ -5,6 +5,9 @@ use std::time::Duration;
 
 const GIB: u64 = 1024 * 1024 * 1024;
 pub const LANE_HEADROOM: u64 = 4 * GIB;
+// Before a native build: how long a host short of memory may wait, and how often it is read.
+pub const MEMORY_WAIT_MS: u64 = 600_000;
+pub const MEMORY_POLL_MS: u64 = 5_000;
 
 pub struct Memory {
     pub free: u64,
@@ -72,10 +75,19 @@ impl Sample {
         self.load_1m
             .zip(self.cores)
             .is_some_and(|(load, cores)| load >= cores as f64)
-            || matches!(self.pressure, Some(Pressure::Warning | Pressure::Critical))
+            || self.memory_constrained()
+    }
+
+    // Memory alone: load is recorded but never holds back a build.
+    pub fn memory_constrained(&self) -> bool {
+        matches!(self.pressure, Some(Pressure::Warning | Pressure::Critical))
             || self
                 .available_bytes
                 .is_some_and(|bytes| bytes < LANE_HEADROOM)
+    }
+
+    pub fn memory_unread(&self) -> bool {
+        self.pressure.is_none() && self.available_bytes.is_none()
     }
 
     pub fn summary(&self) -> String {
@@ -513,6 +525,33 @@ mod tests {
         assert!(!sample.constrained());
         sample.cores = Some(8);
         assert!(sample.constrained());
+    }
+
+    #[test]
+    fn only_memory_decides_whether_a_build_waits() {
+        let mut sample = Sample {
+            load_1m: Some(54.0),
+            cores: Some(18),
+            ..Sample::default()
+        };
+        assert!(sample.constrained());
+        assert!(!sample.memory_constrained());
+        assert!(sample.memory_unread());
+        sample.available_bytes = Some(LANE_HEADROOM);
+        assert!(!sample.memory_constrained());
+        assert!(!sample.memory_unread());
+        sample.available_bytes = Some(LANE_HEADROOM - 1);
+        assert!(sample.memory_constrained());
+        sample.available_bytes = None;
+        for (pressure, constrained) in [
+            (Pressure::Normal, false),
+            (Pressure::Warning, true),
+            (Pressure::Critical, true),
+        ] {
+            sample.pressure = Some(pressure);
+            assert_eq!(sample.memory_constrained(), constrained);
+            assert!(!sample.memory_unread());
+        }
     }
 
     #[test]

@@ -127,9 +127,13 @@ pub(crate) fn finish_host(
     receipt: &mut Receipt,
     start: crate::host_capacity::Sample,
 ) {
-    let end = crate::host_capacity::sample(runner, std::env::consts::OS);
+    let os = runner.host_os();
+    let end = crate::host_capacity::sample(runner, os);
     if end.constrained() {
-        if let Some(failure) = receipt.failure.as_mut().filter(|f| f.code.is_refusal()) {
+        // A memory refusal already names the host numbers it waited on.
+        if let Some(failure) = receipt.failure.as_mut().filter(|f| {
+            f.code.is_refusal() && f.code != crate::failure::FailureCode::HostUnderPressure
+        }) {
             failure.detail = crate::redact::OutputText::from_output(&format!(
                 "{}; the host was under load: {}",
                 failure.detail,

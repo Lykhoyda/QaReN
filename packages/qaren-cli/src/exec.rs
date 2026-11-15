@@ -323,6 +323,10 @@ pub trait Runner {
         self.now_epoch_ms()
     }
     fn commands_executed(&self) -> u64;
+    // The host whose probes the run reads; fixtures override it to script another host.
+    fn host_os(&self) -> &'static str {
+        std::env::consts::OS
+    }
     // Why the run must stop now: a caught signal or a vanished caller.
     fn cancellation(&self) -> Option<String> {
         None
