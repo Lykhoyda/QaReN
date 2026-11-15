@@ -7308,6 +7308,36 @@ fn pool_at_cap_falls_back_past_a_member_whose_log_store_cannot_be_removed() {
     );
     assert_log_skip(&repo, &receipt, "file");
     assert_never_booted(&mock, SKIPPED);
+
+    // The next claim tries the skipped member's store again; repaired, it is removed and the member claimed.
+    let store = sim_data(&repo, SKIPPED).join("var/db/diagnostics");
+    std::fs::remove_file(&store).unwrap();
+    std::fs::create_dir_all(store.join("Persist")).unwrap();
+    std::fs::write(store.join("Persist/0.tracev3"), "dummy").unwrap();
+    std::fs::remove_dir_all(RunRecord::run_dir(&repo, &receipt.run_id)).unwrap();
+    let skipped = skip_inventory(&repo, "file", &[(SKIPPED, POOL_NAME, "Shutdown")]);
+    let mut retry = MockRunner::new();
+    script_validation(&mut retry, &repo, IOS_TOOLS);
+    retry.expect_run("simctl list devices -j", skipped.clone());
+    retry.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
+    retry.expect_run("ps", CmdOutput::success("qaren prepare\n"));
+    retry.expect_run("simctl list devices -j", skipped.clone()); // under the lease
+    retry.expect_run("lsof", free_port());
+    retry.expect_run("simctl list devices -j", skipped);
+    retry.expect_run(
+        "fresh-install-preflight.js",
+        admission_for(SKIPPED, "busy"),
+    );
+
+    let again = prepare(&mut retry, &pool_args(&scenario_path));
+
+    assert_eq!(again.result, ReceiptResult::Refused, "{}", again.to_json());
+    assert_eq!(retry.remaining(), 0);
+    assert!(!again.outcomes.contains_key("device_pool_log_skipped"));
+    let record = RunRecord::load(&repo, &again.run_id).unwrap();
+    assert_eq!(record.resources.ios_simulator.as_ref().unwrap().udid, SKIPPED);
+    assert!(record.resources.pool_member);
+    assert!(!store.exists());
 }
 
 #[test]
