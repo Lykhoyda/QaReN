@@ -157,6 +157,7 @@ import {
   placeholderPairingGap,
   type TargetMissDiagnostic,
 } from './target-miss.js';
+import { hiddenFromAccessibility, hiddenTextClause, type HiddenText } from './hidden-text.js';
 import {
   type MediaLatch,
   concealsScreen,
@@ -845,6 +846,8 @@ async function walkBlockScoped(
   const captured = new WeakMap<Screen, { at: number; id: number }>();
   // The newest observation that passed admission, recovery's captures included.
   let newest: Screen | undefined;
+  // The newest admitted observation of the current line only; `newest` outlives the line.
+  let lineRead: Screen | undefined;
   let dispatchedOn = 0;
   let recoveries = 0;
   let metadataOnly = false;
@@ -934,6 +937,8 @@ async function walkBlockScoped(
       presence: Number(platformPresence),
     });
     let admitted = false;
+    // A capture that admission rejects leaves no older read of the line to speak for it.
+    lineRead = undefined;
     try {
       try {
         const deadline = step?.kind === 'wait' ? itemDeadline : undefined;
@@ -1030,6 +1035,7 @@ async function walkBlockScoped(
         });
       admitted = true;
       newest = latest;
+      lineRead = latest;
       metadataOnly = false;
       emitCaptureDiagnostics(latest);
       const observation = { screen: latest, timing, id, platformPresence };
@@ -1842,6 +1848,22 @@ async function walkBlockScoped(
           const detail = `; placeholder pairing was unavailable because React coverage on this screen is ${pairingGap}; target the field by test id`;
           reason = typeof reason === 'string' ? reason + detail : [...segments(reason), detail];
         }
+        // Only this line's newest read speaks for its target: an earlier line's read never does.
+        const hidden =
+          deps.platform === 'ios' &&
+          (item.kind === 'press' || item.kind === 'wait') &&
+          target.quoted !== undefined &&
+          lineRead &&
+          (lineRead === screen
+            ? diagnostic.reason
+            : targetMissDiagnostic(target, lineRead, item.line, false, privacy, item.kind)
+                .reason) === 'absent'
+            ? hiddenFromAccessibility(target, lineRead, 'exact')
+            : undefined;
+        if (hidden) {
+          const detail = hiddenTextClause(hidden, target.quoted!, privacy);
+          reason = typeof reason === 'string' ? reason + detail : [...segments(reason), detail];
+        }
         const seen = captured.get(last);
         if (seen && targetCode) {
           const lastReason =
@@ -1882,7 +1904,15 @@ async function walkBlockScoped(
                       .reverse()
                       .find((earlier) => earlier.kind === 'wait')?.line,
                   )
-                : missSuggestion(subreason, target, last, now, item.line, item.kind),
+                : missSuggestion(
+                    subreason,
+                    target,
+                    last,
+                    now,
+                    item.line,
+                    item.kind,
+                    deps.platform === 'ios',
+                  ),
             subreason,
           };
         }
@@ -3637,6 +3667,7 @@ async function walkBlockScoped(
     let pixelBaselineTaken = false;
     // This allowance survives recovery retries of the item.
     let itemKeyboardAttempted = false;
+    lineRead = undefined;
     let pixelBaseline:
       | { target: NonNullable<ReturnType<typeof pixelTarget>>; crop: PixelCrop }
       | undefined;
@@ -3724,7 +3755,27 @@ async function walkBlockScoped(
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
           }
-          const checkFailure = failed(item, 1, reason, before.screen, shot);
+          let hidden: HiddenText | undefined;
+          try {
+            // A literal check matches screen text by containing it, never an identifier.
+            hidden =
+              deps.platform === 'ios' && item.literal && decision.check === 'fail' && lineRead
+                ? hiddenFromAccessibility(
+                    { quoted: item.text, phrase: item.text, exact: 'text' },
+                    lineRead,
+                    'contains',
+                  )
+                : undefined;
+          } catch {
+            // Diagnostics cannot change the check's outcome.
+          }
+          const checkFailure = failed(
+            item,
+            1,
+            hidden ? reason + hiddenTextClause(hidden, item.text, privacy) : reason,
+            before.screen,
+            shot,
+          );
           return decision.check === 'fail' ? judged(checkFailure, before.screen) : checkFailure;
         }
 
