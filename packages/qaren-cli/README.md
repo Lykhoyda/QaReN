@@ -740,7 +740,8 @@ remaining build budget.
 Memory still constrained after 10 minutes, with a readable final reading of `critical`
 pressure (macOS level 4), refuses `HOST_UNDER_PRESSURE` (exit 4). The refusal names load, available memory,
 pressure, swap and the time waited, and says to re-run once pressure clears.
-No build slot is claimed and no build starts. A run that already holds
+The pending command claims no build slot and does not start; earlier build
+commands in the run may already have completed. A run that already holds
 resources, such as an iOS device, names `qaren cleanup` as its next action,
 as for any other refusal after allocation. Linux has no critical level, so a Linux host
 waits but never refuses. An unreadable first sample never waits or refuses.
