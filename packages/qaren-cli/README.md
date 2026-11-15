@@ -1255,8 +1255,7 @@ the existing explicit tap path and remain subject to trusted clipping and native
 identity guards. An explicit key press performs its normal action, not guaranteed
 keyboard dismissal; QA must freshly prove the keyboard hidden and the intended
 screen preserved before treating the press as clearance. Ordinary covered content
-uses the same recovery as a native occlusion refusal.
-The walker handles this refusal with one directional scroll toward the centre
+uses one directional scroll toward the centre
 of the target's visible clip band: its trusted clipping viewport cut off 48 pt
 above the top of an observed keyboard unless the keyboard is proven hidden, and between
 sticky overlays. A touchable, non-text element at least half the clip's width,
@@ -1267,8 +1266,34 @@ the list, such as a screen's rows under a sheet, never counts; for a target in n
 list, nothing listed before its window counts, such as the app screen behind a modal. A target at
 or below that band's centre scrolls down; one above it scrolls up. Sticky overlays
 can narrow the band even without a keyboard or when the clip is entirely above it.
+
+After an iOS Tap or Fill returns `FOCUS_TARGET_OCCLUDED` with mutation `none`
+and the keyboard is proven hidden, the walker checks the cover before sending
+that recovery drag. If native presence is missing, it takes one bounded presence
+recapture within the remaining step deadline. It rebinds the target on that
+observation and uses its list geometry, band and direction for the drag. When
+the cover check proves no view takes the touch (`none`) or the touch reaches
+the target's own lineage (`reaches-target`), the existing clearance band remains
+eligible, including the window band for a target without a list.
+Otherwise, the target must belong to the selected scroll container, and the
+drag band must avoid both the named cover and every captured hittable non-text
+view outside that container's ancestry and content, regardless of capture order.
+Even a background view overlapping the band withholds the drag. Direction moves
+the target toward the admitted band's centre.
+
+No own list, no free band, or a late or incomplete proof read withholds the drag.
+The walker takes a settled capture and keeps the one retry, with no subsequent
+scroll of any origin for that attempt. If it still refuses before a successful
+fallback tap, the reason explains why nothing was scrolled and includes the
+[cover diagnostic](#clearance-diagnostics), including on terminal Fill fallback
+refusals. A successful retry needs no drag. The
+[cover-before-drag regressions](../qaren-core/test/unit/qa/cover-before-drag.test.ts)
+pin these cases. Visible or unknown keyboards, the initial keyboard-fallback
+wrapper tap path, pre-dispatch clearance, plain Scroll, Scroll until and Android
+retain their existing admission rules; this check adds no wait for a cover to pass.
+
 On iOS, capture order is not paint order. When a press target still resolves
-after that one scroll, or after the scroll was refused with nothing moved (for
+after that one scroll, after a withheld drag, or after the scroll was refused with nothing moved (for
 example `SCROLL_BAND_TOO_SMALL` on a band only a few points tall), and its centre
 is still past the inferred band but inside its clip with the keyboard proven
 hidden, the walker sends the
@@ -1279,7 +1304,7 @@ the captured centre. If native element activation is unavailable, it refuses
 `LIVE_HIT_UNPROVEN` with no tap and never falls back to coordinates.
 A false read, a moved target, or an unavailable read (expired snapshot, no identity, absent or ambiguous match, a
 read that threw or ran out of time) refuses `LIVE_HIT_UNPROVEN` with no tap, and the step fails
-with “stayed off screen after one scroll” and the inferred band cutter described
+with “stayed off screen after one scroll” (or the withheld-drag reason) and the inferred band cutter described
 under [clearance diagnostics](#clearance-diagnostics). The scroll
 that ran before the refusal remains a performed action. Press behavior is unchanged.
 
@@ -4259,7 +4284,7 @@ diagnostic collection and sink failures preserve the refusal.
 <a id="clearance-diagnostics"></a>
 
 When a press or fill target's centre remains covered after the one-scroll
-allowance, a private `timing` event with code `CENTRE_COVERED` includes the
+allowance or a withheld recovery drag, a private `timing` event with code `CENTRE_COVERED` includes the
 observation ordinal and `clearanceDiagnostic`. It records the viewport, keyboard or
 overlay predicate branch, boolean coverage facts, the scroll's origin and requested
 direction, and whether the target centre changed. For an overlay branch, the
@@ -4287,9 +4312,11 @@ presence or React typography; the [absent-target keyboard clearance](#occluded-t
 has a separate modal-proof capture. On iOS a covered press or Fill refusal with that gap takes the
 walker's one bounded platform-presence recapture, the same one a plain scroll uses for
 an unproven cover, and looks up the cover again on it, at most once per cover lookup.
-For covered targets, only refusals pay for that read (a presence capture can take
-tens of seconds on device); it never adds a refusal or
-grants a dispatch. An incomplete read leaves the cover unproven
+For covered targets, only native dispatch refusals or terminal step refusals pay
+for that read (a presence capture can take tens of seconds on device). Before
+an eligible post-refusal drag, it supplies the current geometry and can withhold
+the drag under the [recovery contract](#covered-target-recovery); terminal diagnostic
+reads grant no further dispatch. An incomplete read leaves the cover unproven
 (`presence-recapture-incomplete`), and a target the recapture cannot find again leaves
 `target-not-recaptured`.
 In `clearanceDiagnostic`, unread or unavailable facts
