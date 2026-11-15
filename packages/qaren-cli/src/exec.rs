@@ -385,8 +385,8 @@ impl Runner for DeadlineRunner<'_> {
     }
     // Non-interruptible commands are teardown and identity reads (CleanupRunner): an expired window must never block them.
     fn execute(&mut self, spec: &CmdSpec, interruptible: bool) -> CmdOutput {
-        if !interruptible {
-            return self.inner.execute(spec, false);
+        if !interruptible || spec.label == "host-sample" {
+            return self.inner.execute(spec, interruptible);
         }
         match self.capped(spec) {
             Some(spec) => self.inner.execute(&spec, interruptible),
@@ -1342,6 +1342,37 @@ impl Runner for MockRunner {
 #[cfg(test)]
 mod deadline_tests {
     use super::*;
+
+    #[test]
+    fn host_memory_probes_keep_timeouts_and_cancellation_after_build_expiry() {
+        let mut inner = MockRunner::new();
+        inner.expect_run("vm_stat", CmdOutput::success("Pages free: 2097152."));
+        inner.expect_run(
+            "sysctl",
+            CmdOutput::success("kern.memorystatus_vm_pressure_level: 4"),
+        );
+        let mut runner = DeadlineRunner {
+            inner: &mut inner,
+            deadline_ms: 0,
+        };
+        let sample = crate::host_capacity::sample(&mut runner, "macos");
+        assert_eq!(
+            sample.pressure,
+            Some(crate::host_capacity::Pressure::Critical)
+        );
+        assert!(sample.memory_constrained());
+        assert_eq!(inner.remaining(), 0);
+        assert!(inner.calls.iter().all(|call| call.timeout_seconds == 3));
+        let calls = inner.calls.len();
+        inner.cancel_at_ms = Some((0, "cancelled".into()));
+        let mut runner = DeadlineRunner {
+            inner: &mut inner,
+            deadline_ms: 0,
+        };
+        let sample = crate::host_capacity::sample(&mut runner, "macos");
+        assert!(sample.memory_unread());
+        assert_eq!(inner.calls.len(), calls);
+    }
 
     #[test]
     fn admission_retry_child_stays_within_the_original_allowance() {

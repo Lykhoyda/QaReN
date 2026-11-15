@@ -76,7 +76,9 @@ fn d1_low_memory_that_recovers_after_three_polls_waits_then_builds() {
     let (receipt, events) = run_with_events(&mut runner, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     let trail = stage_trail(&events);
-    let wait = trail.iter().position(|s| s == "host_wait running memory_low");
+    let wait = trail
+        .iter()
+        .position(|s| s == "host_wait running memory_low");
     let passed = trail.iter().position(|s| s == "host_wait passed");
     let build = trail.iter().position(|s| s == "native_build running");
     assert!(
@@ -97,7 +99,12 @@ fn d1_low_memory_that_recovers_after_three_polls_waits_then_builds() {
 fn d2_critical_pressure_for_the_whole_window_refuses_with_the_numbers_and_no_build() {
     let (mut runner, req) = stopping_before_the_build(&[CRITICAL]);
     let (receipt, events) = run_with_events(&mut runner, &req);
-    assert_eq!(receipt.result, ReceiptResult::Refused, "{:?}", receipt.failure);
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Refused,
+        "{:?}",
+        receipt.failure
+    );
     let failure = receipt.failure.as_ref().unwrap();
     assert_eq!(failure.code, FailureCode::HostUnderPressure);
     assert_eq!(failure.phase, "host_wait");
@@ -163,7 +170,10 @@ fn d8_a_ten_minute_wait_leaves_the_whole_build_budget() {
         .unwrap();
         let receipt = run(&mut runner, &req);
         assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
-        assert_eq!(receipt.outcomes.contains_key("host_wait"), memory == WARNING);
+        assert_eq!(
+            receipt.outcomes.contains_key("host_wait"),
+            memory == WARNING
+        );
         let build = runner
             .calls
             .iter()
@@ -653,7 +663,7 @@ fn a_contended_lock_wait_on_a_healthy_host_samples_memory_at_most_every_five_sec
 }
 
 #[test]
-fn a_memory_wait_in_the_ios_build_slot_queue_leaves_the_build_budget_whole() {
+fn host_memory_wait_in_the_ios_build_slot_queue_leaves_the_build_budget_whole() {
     let (mut baseline, req) = building(&[OK]);
     assert_eq!(run(&mut baseline, &req).result, ReceiptResult::Pass);
     let admission_at = baseline.sampled_at[1];
@@ -671,6 +681,7 @@ fn a_memory_wait_in_the_ios_build_slot_queue_leaves_the_build_budget_whole() {
     let receipt = run(&mut runner, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     assert!(receipt.outcomes["host_wait"].contains("waited 600 s"));
+    assert!(!receipt.outcomes["host_wait"].contains("last reading unavailable"));
     let build = runner
         .calls
         .iter()

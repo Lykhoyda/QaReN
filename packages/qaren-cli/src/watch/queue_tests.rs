@@ -202,8 +202,10 @@ fn host_wait(seq: u64, state: &str, code: &str, ms: Option<u64>) -> Input {
     if let Some(ms) = ms {
         payload["ms"] = ms.into();
     }
-    parse_event(&json!({"v":1,"seq":seq,"at":seq * 5000,"event":"stage","payload":payload}).to_string())
-        .unwrap()
+    parse_event(
+        &json!({"v":1,"seq":seq,"at":seq * 5000,"event":"stage","payload":payload}).to_string(),
+    )
+    .unwrap()
 }
 
 #[test]
@@ -240,4 +242,48 @@ fn host_memory_wait_is_shown_only_when_it_happened() {
         .unwrap();
     assert_eq!(wait["state"], "passed");
     assert_eq!(wait["ms"], 150_000);
+}
+
+#[test]
+fn host_memory_plain_replays_successive_waits_in_each_batch() {
+    for batch_size in [1, 2, 6] {
+        let mut state = State::default();
+        let mut printed = PlainState::default();
+        let mut lines = Vec::new();
+        let events = [
+            ("running", "memory_low"),
+            ("running", "memory_low"),
+            ("passed", "memory_low"),
+            ("running", "memory_critical"),
+            ("running", "memory_critical"),
+            ("failed", "HOST_UNDER_PRESSURE"),
+        ];
+        for batch in events
+            .iter()
+            .enumerate()
+            .collect::<Vec<_>>()
+            .chunks(batch_size)
+        {
+            for &(index, &(status, code)) in batch {
+                state.fold(host_wait(index as u64 + 1, status, code, Some(5000)));
+            }
+            lines.extend(plain(&state, &mut printed));
+            assert!(plain(&state, &mut printed).is_empty());
+        }
+        let memory: Vec<_> = lines
+            .iter()
+            .filter(|line| line.contains("Host memory"))
+            .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect();
+        assert_eq!(
+            memory,
+            [
+                "Host memory: waiting (memory_low)",
+                "✓ Host memory memory_low 5.0s",
+                "Host memory: waiting (memory_critical)",
+                "✗ Host memory HOST_UNDER_PRESSURE 5.0s",
+            ],
+            "batch size {batch_size}"
+        );
+    }
 }

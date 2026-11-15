@@ -145,6 +145,7 @@ struct State {
     platform: String,
     stages: BTreeMap<String, Stage>,
     queue_events: Vec<Stage>,
+    host_wait_events: Vec<Stage>,
     rows: BTreeMap<u64, Step>,
     commands: Vec<String>,
     end: Option<Value>,
@@ -237,6 +238,9 @@ impl State {
                 };
                 if queue {
                     self.queue_events.push(stage.clone());
+                }
+                if name == "host_wait" {
+                    self.host_wait_events.push(stage.clone());
                 }
                 self.stages.insert(name, stage);
             }
@@ -417,6 +421,11 @@ fn stage_line(s: &State, name: &str, label: &str) -> String {
     let Some(stage) = s.stages.get(name) else {
         return format!("· {label}");
     };
+    rendered_stage(s, stage, label)
+}
+
+fn rendered_stage(s: &State, stage: &Stage, label: &str) -> String {
+    let name = stage.name.as_str();
     if name == "build_lock_wait" {
         return queue_line(stage);
     }
@@ -658,6 +667,8 @@ struct PlainState {
     seen: HashSet<String>,
     queue_last: Option<(Option<String>, Option<String>)>,
     queue_seq: u64,
+    host_wait_seq: u64,
+    host_wait_running: bool,
 }
 
 fn queue_wait(stage: &Stage, timed: bool) -> String {
@@ -732,17 +743,29 @@ fn plain(s: &State, printed: &mut PlainState) -> Vec<String> {
     if let Some(stage) = s.queue_events.last() {
         printed.queue_seq = stage.seq;
     }
-    // An append-only log shows the memory wait when it starts, not only when it ends.
-    if let Some(wait) = s.stages.get("host_wait").filter(|st| st.state == "running") {
-        if printed.seen.insert("host_wait:waiting".into()) {
-            out.push(format!(
-                "Host memory: waiting ({})",
-                wait.code.as_deref().unwrap_or("memory")
-            ));
+    for wait in s
+        .host_wait_events
+        .iter()
+        .filter(|stage| stage.seq > printed.host_wait_seq)
+    {
+        if wait.state == "running" {
+            if !printed.host_wait_running {
+                out.push(format!(
+                    "Host memory: waiting ({})",
+                    wait.code.as_deref().unwrap_or("memory")
+                ));
+            }
+            printed.host_wait_running = true;
+        } else {
+            out.push(rendered_stage(s, wait, "Host memory"));
+            printed.host_wait_running = false;
         }
     }
+    if let Some(wait) = s.host_wait_events.last() {
+        printed.host_wait_seq = wait.seq;
+    }
     for (name, label) in STAGES {
-        if name == "build_lock_wait" {
+        if matches!(name, "build_lock_wait" | "host_wait") {
             continue;
         }
         if s.stages.get(name).is_some_and(|st| st.state != "running")
