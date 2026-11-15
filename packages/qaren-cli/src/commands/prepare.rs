@@ -82,6 +82,8 @@ pub(crate) struct Ctx<'a> {
     pub(crate) build_deadline_ms: Option<u64>,
     // The compile limit learned from this machine's earlier builds, read once per run.
     pub(crate) build_limit: Option<crate::build_timings::Limit>,
+    // Memory-wait time this build admission has spent of its one 10-minute allowance.
+    pub(crate) host_wait_ms: u64,
 }
 
 impl<'a> Ctx<'a> {
@@ -303,7 +305,8 @@ pub(crate) fn finish_receipt(ctx: Ctx, result: ReceiptResult, failure: Option<Fa
 
 pub fn prepare(runner: &mut dyn Runner, args: &PrepareArgs) -> Receipt {
     let started_ms = runner.now_epoch_ms();
-    let host_start = crate::host_capacity::sample(runner, std::env::consts::OS);
+    let os = runner.host_os();
+    let host_start = crate::host_capacity::sample(runner, os);
     let helpers = crate::device_helpers::scan(runner, std::env::consts::OS);
     let mut receipt = match prepare_validated(runner, args, started_ms) {
         Ok(receipt) => receipt,
@@ -674,6 +677,7 @@ fn prepare_validated(
         lane_owned: scenario.platform == Platform::Ios,
         build_deadline_ms: None,
         build_limit: None,
+        host_wait_ms: 0,
     };
     let t = ctx.mark("validate", started_ms);
     if let Some(earlier) = recovered {
@@ -681,8 +685,10 @@ fn prepare_validated(
     }
     // Its own key: a later device_pool note (reused, created or fresh) would overwrite it.
     if !log_skipped.is_empty() {
-        ctx.notes
-            .push(("device_pool_log_skipped".to_string(), log_skipped.join("; ")));
+        ctx.notes.push((
+            "device_pool_log_skipped".to_string(),
+            log_skipped.join("; "),
+        ));
     }
     if let Some(orphan) = ctx.record.resources.lease.as_ref().and_then(|l| {
         l.released_orphan
@@ -2562,6 +2568,7 @@ fn lock_holder_for(ctx: &mut Ctx) -> LockHolder {
 
 pub(crate) fn claim_build_lock(ctx: &mut Ctx, lock_root: &Path) -> Result<(), Failure> {
     ensure_running(ctx.runner, "build")?;
+    wait_for_host_memory(ctx)?;
     let name = format!(
         "native-build-{}",
         platform_dir(ctx.record.scenario.platform)
@@ -2631,6 +2638,124 @@ const LOCK_POLL_MS: u64 = 1000;
 const LOCK_PROGRESS_MS: u64 = 5000;
 const HOLDER_IDLE_ADVISORY_MS: u64 = 120_000;
 
+// Uses and spends this build admission's one memory allowance (`ctx.host_wait_ms`), outside the build budget.
+fn wait_for_host_memory(ctx: &mut Ctx) -> Result<(), Failure> {
+    use crate::host_capacity::{Pressure, Sample, MEMORY_POLL_MS, MEMORY_WAIT_MS};
+    let start = ctx.runner.monotonic_ms();
+    let previous_ms = ctx.host_wait_ms;
+    let allowance_ms = MEMORY_WAIT_MS.saturating_sub(previous_ms);
+    let os = ctx.runner.host_os();
+    let mut host = crate::host_capacity::sample(ctx.runner, os);
+    let mut waited = ctx.runner.monotonic_ms().saturating_sub(start);
+    ctx.host_wait_ms = previous_ms.saturating_add(waited);
+    if host.memory_unread() {
+        ctx.notes.push((
+            "host_wait".into(),
+            format!(
+                "host memory state unavailable before the build; waited {} s in total",
+                ctx.host_wait_ms / 1000
+            ),
+        ));
+        return Ok(());
+    }
+    if !host.memory_constrained() {
+        if previous_ms > 0 {
+            ctx.notes.push((
+                "host_wait".into(),
+                format!(
+                    "waited {} s for host memory before the build; recovered: {}",
+                    ctx.host_wait_ms / 1000,
+                    host.summary()
+                ),
+            ));
+        }
+        return Ok(());
+    }
+    let code = |host: &Sample| match host.pressure {
+        Some(Pressure::Critical) => "memory_critical",
+        _ => "memory_low",
+    };
+    let mut next_poll = MEMORY_POLL_MS.min(allowance_ms);
+    let mut fresh = true;
+    let mut wanted = (host.pressure.is_some(), host.available_bytes.is_some());
+    crate::progress::started("host-wait", false);
+    crate::events::stage("host_wait", StageState::Running, Some(code(&host)), None);
+    let end = |state: StageState, code: Option<&str>, waited: u64| {
+        crate::events::stage("host_wait", state, code, Some(waited));
+        crate::progress::finished("host-wait", state == StageState::Passed);
+    };
+    while host.memory_constrained() && waited < allowance_ms {
+        // One-second sleeps, checked after the last one too, so a cancellation leaves the wait at once.
+        loop {
+            if let Err(f) = ensure_running(ctx.runner, "host_wait") {
+                ctx.host_wait_ms = previous_ms.saturating_add(waited);
+                end(StageState::Failed, Some("RUN_CANCELLED"), waited);
+                return Err(f.with_recovery(RecoveryReason::RunCancelled));
+            }
+            if waited >= next_poll {
+                break;
+            }
+            ctx.runner
+                .sleep(Duration::from_millis(LOCK_POLL_MS.min(next_poll - waited)));
+            waited = ctx.runner.monotonic_ms().saturating_sub(start);
+        }
+        next_poll = next_poll.saturating_add(MEMORY_POLL_MS).min(allowance_ms);
+        // A final sample can overrun the allowance by at most 6 s (two 3 s probes).
+        let next = crate::host_capacity::sample(ctx.runner, os);
+        wanted.0 |= next.pressure.is_some();
+        wanted.1 |= next.available_bytes.is_some();
+        fresh =
+            (!wanted.0 || next.pressure.is_some()) && (!wanted.1 || next.available_bytes.is_some());
+        if fresh {
+            host = next;
+        }
+        waited = ctx.runner.monotonic_ms().saturating_sub(start);
+        crate::events::stage(
+            "host_wait",
+            StageState::Running,
+            Some(code(&host)),
+            Some(waited),
+        );
+    }
+    ctx.host_wait_ms = previous_ms.saturating_add(waited);
+    let seconds = ctx.host_wait_ms / 1000;
+    if !host.memory_constrained() {
+        end(StageState::Passed, None, waited);
+        ctx.notes.push((
+            "host_wait".into(),
+            format!(
+                "waited {seconds} s for host memory before the build; recovered: {}",
+                host.summary()
+            ),
+        ));
+        return Ok(());
+    }
+    // Only a complete critical reading at the end refuses; an incomplete one never does.
+    if fresh && host.pressure == Some(Pressure::Critical) {
+        end(StageState::Failed, Some("HOST_UNDER_PRESSURE"), waited);
+        // Resources may already be owned, so the receipt's next action can become cleanup; the detail keeps the remedy.
+        return Err(Failure::new(
+            "host_wait",
+            FailureCode::HostUnderPressure,
+            format!(
+                "host memory stayed constrained before the native build and its last reading was critical pressure ({}); waited {seconds} s, claimed no build slot and started no build; re-run once memory pressure clears",
+                host.summary()
+            ),
+            "re-run once host memory pressure clears",
+        ));
+    }
+    end(StageState::Passed, Some(code(&host)), waited);
+    ctx.notes.push((
+        "host_wait".into(),
+        format!(
+            "waited {seconds} s for host memory before the build; still constrained, built with the full build budget: {}{}",
+            host.summary(),
+            if fresh { "" } else { "; last reading unavailable" }
+        ),
+    ));
+    Ok(())
+}
+
 fn claim_ios_build_lock(
     ctx: &mut Ctx,
     lock_root: &Path,
@@ -2689,7 +2814,7 @@ fn claim_waiting_build_lock(
     lock_root: &Path,
     name: &str,
     mut holder: LockHolder,
-    deadline: u64,
+    mut deadline: u64,
     slot: bool,
 ) -> Result<(), Failure> {
     if holder.identity.is_none() {
@@ -2737,6 +2862,7 @@ fn claim_waiting_build_lock(
         deadline_ms: Some(deadline),
         ..Default::default()
     };
+    let mut memory_checked_ms: Option<u64> = None;
     loop {
         if let Err(f) = ensure_running(ctx.runner, "build_lock_wait") {
             wait.finish(ctx, start, StageState::Failed, Some("RUN_CANCELLED"));
@@ -2746,6 +2872,29 @@ fn claim_waiting_build_lock(
         if ctx.runner.monotonic_ms() >= deadline {
             wait.finish(ctx, start, StageState::Failed, Some("BUILD_CONTENDED"));
             return Err(wait.refusal(name, ctx.record.scenario.deadlines.build_seconds));
+        }
+        // A queued build rechecks memory at most every poll interval, within the one allowance.
+        let recheck_due = memory_checked_ms.is_none_or(|at| {
+            ctx.runner.monotonic_ms().saturating_sub(at) >= crate::host_capacity::MEMORY_POLL_MS
+        });
+        if wait.waiting && recheck_due && ctx.host_wait_ms < crate::host_capacity::MEMORY_WAIT_MS {
+            let memory_before_ms = ctx.host_wait_ms;
+            let result = wait_for_host_memory(ctx);
+            memory_checked_ms = Some(ctx.runner.monotonic_ms());
+            // The memory wait stays outside the budget: move this wait's deadline, the iOS
+            // build window it may run inside, and the shared iOS deadline; Android's slot keeps its own.
+            let used = ctx.host_wait_ms - memory_before_ms;
+            deadline = deadline.saturating_add(used);
+            wait.deadline_ms = Some(deadline);
+            ctx.runner.extend_deadline(used);
+            // The build window has its own end (the slot wait has its own bound): move it by the same time.
+            ctx.build_deadline_ms = ctx
+                .build_deadline_ms
+                .map(|window| window.saturating_add(used));
+            if let Err(f) = result {
+                wait.finish(ctx, start, StageState::Failed, Some(&f.code_str()));
+                return Err(f);
+            }
         }
         holder.at = timefmt::iso8601_utc(ctx.runner.now_epoch_ms());
         let (outcome, orphan) = crate::lease::claim_reclaiming_build_orphan(
@@ -5291,6 +5440,7 @@ fn with_build_window<T>(
         lane_owned: ctx.lane_owned,
         build_deadline_ms: ctx.build_deadline_ms,
         build_limit: ctx.build_limit.take(),
+        host_wait_ms: ctx.host_wait_ms,
     };
     let result = operation(&mut scoped);
     let budget = ensure_build_budget(&mut scoped);
@@ -5306,6 +5456,7 @@ fn with_build_window<T>(
     ctx.lane_owned = scoped.lane_owned;
     ctx.build_deadline_ms = scoped.build_deadline_ms;
     ctx.build_limit = scoped.build_limit;
+    ctx.host_wait_ms = scoped.host_wait_ms;
     // A cut for time keeps its own facts and log lines over the generic budget failure.
     if !matches!(&result, Err(failure) if failure.code == FailureCode::BuildContended || failure.limit.is_some())
     {
@@ -6892,6 +7043,7 @@ mod launch_tests {
                 lane_owned: false,
                 build_deadline_ms: None,
                 build_limit: None,
+                host_wait_ms: 0,
             };
             ctx.save().unwrap();
             let fp = NativeFingerprint {

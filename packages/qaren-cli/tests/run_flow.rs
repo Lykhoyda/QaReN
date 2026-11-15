@@ -1,6 +1,8 @@
 #[path = "run_flow/android_dynamic_config.rs"]
 mod android_dynamic_config;
 mod common;
+#[path = "run_flow/host_memory_wait.rs"]
+mod host_memory_wait;
 #[path = "run_flow/host_numbers.rs"]
 mod host_numbers;
 use common::IosBuildRunner as MockRunner;

@@ -209,6 +209,7 @@ impl Fixture {
             lane_owned: false,
             build_deadline_ms: None,
             build_limit: None,
+            host_wait_ms: 0,
         }
     }
 
