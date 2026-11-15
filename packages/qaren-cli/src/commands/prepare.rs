@@ -3615,6 +3615,8 @@ fn restart_metro_on_all_interfaces(
     first: &MetroResource,
     listeners: &metro::Listeners,
 ) -> Result<(), Failure> {
+    // Recorded first, so a restart that cannot stop or start a Metro still names why it was tried.
+    ctx.record.metro_bind = Some(MetroBind::V6Only);
     let stopped = super::cleanup::cleanup_process_group(
         ctx.runner,
         first.identity.as_ref(),
@@ -3622,7 +3624,6 @@ fn restart_metro_on_all_interfaces(
         Some(first.port),
     );
     if !stopped.clean() {
-        ctx.record.metro_bind = Some(MetroBind::V6Only);
         ctx.save()?;
         return Err(ipv6_only_refusal(
             first.port,

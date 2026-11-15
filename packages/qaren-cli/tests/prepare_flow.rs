@@ -1728,6 +1728,33 @@ fn ios_metro_restart_cancelled_after_the_second_start_cleans_the_second_metro() 
     assert!(record.resources.metro.is_none());
 }
 
+// R10: a second start that cannot spawn fails the build and still records why the restart was tried.
+#[test]
+fn ios_metro_restart_that_cannot_spawn_keeps_the_ipv6_only_finding() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+    common::script_metro_bind_ipv6_only(&mut mock, 8791);
+    script_metro_group_stop(&mut mock, LSTART, "6001", "6000");
+    mock.expect_run(
+        "pnpm config get node-options",
+        CmdOutput::success("undefined\n"),
+    );
+    mock.expect_spawn_failure("expo start", "pnpm not found");
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::BuildFailed, "{}", receipt.to_json());
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(receipt.metro_bind, Some(MetroBind::V6Only));
+    assert!(!receipt.outcomes.contains_key("metro_bind_recovery"));
+    let record = RunRecord::load(scenario.parent().unwrap(), &receipt.run_id).unwrap();
+    assert!(record.resources.metro.is_none());
+    assert_eq!(record.metro_bind, Some(MetroBind::V6Only));
+}
+
 // R11: one restart only; a second [::1]-only finding refuses and names the restart.
 #[test]
 fn ios_metro_still_answering_only_on_ipv6_after_the_restart_is_refused_naming_it() {

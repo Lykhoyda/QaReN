@@ -283,6 +283,14 @@ fn workspace_check_uses_a_gated_finite_build_and_persists_the_verified_artifact(
 
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     assert_eq!(mock.remaining(), 0);
+    // A passing check carries the wait's bound address into its receipt, where the report reads it.
+    assert_eq!(
+        receipt.metro_bind,
+        Some(qaren::runrecord::MetroBind::V4)
+    );
+    assert!(std::fs::read_to_string(&receipt.artifacts["report"])
+        .unwrap()
+        .contains("Host at start"));
     assert_direct_ios_launch(&mock);
     let build = mock
         .calls
