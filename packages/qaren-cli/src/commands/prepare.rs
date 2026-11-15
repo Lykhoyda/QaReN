@@ -15,8 +15,9 @@ use crate::receipt::{Receipt, ReceiptResult};
 use crate::redact::redact_secrets;
 use crate::runrecord::{
     capture_pid_identity, probe_pid_identity, AppInstallResource, BuildLockObservation,
-    BuildLockResource, Cleanup, FarmResource, IosSimResource, LockObservation, MetroResource,
-    Phase, PidLiveness, RunRecord, RunState, TunnelResource, UsbDeviceResource, RUN_SCHEMA,
+    BuildLockResource, Cleanup, FarmResource, IosSimResource, LockObservation, MetroBind,
+    MetroResource, Phase, PidLiveness, RunRecord, RunState, TunnelResource, UsbDeviceResource,
+    RUN_SCHEMA,
 };
 use crate::scenario::{BuildOwner, BuildStrategy, DepsPolicy, IosSpec, Platform, Scenario};
 use crate::timefmt;
@@ -151,6 +152,7 @@ impl<'a> Ctx<'a> {
             let next = if matches!(
                 failure.code,
                 FailureCode::ManifestNotWarm
+                    | FailureCode::MetroBindIpv6Only
                     | FailureCode::WatchmanVolumeStalled
                     | FailureCode::CandidateUnavailable
                     | FailureCode::DeviceNotBooted
@@ -265,6 +267,7 @@ pub(crate) fn finish_receipt(ctx: Ctx, result: ReceiptResult, failure: Option<Fa
     receipt.lane = ctx.record.resources.lane.clone();
     receipt.build_lock = ctx.record.build_lock.clone();
     receipt.runtime_version = ctx.record.runtime_version.clone();
+    receipt.metro_bind = ctx.record.metro_bind;
     for (name, value) in &ctx.notes {
         receipt.outcomes.insert(name.clone(), value.clone());
     }
@@ -635,6 +638,7 @@ fn prepare_validated(
         held: None,
         build_lock: None,
         runtime_version: None,
+        metro_bind: None,
     };
     if let Err(f) = record.save(&args.runs_root) {
         return Err(match &record.resources.lease {
@@ -3248,17 +3252,43 @@ fn wait_metro_responding(ctx: &mut Ctx) -> Result<(), Failure> {
             .with_evidence(vec![super::log_tail(&metro_resource.log, 25)]));
         }
         let port_output = ctx.runner.run(&metro::port_owner_spec(metro_resource.port));
-        let port_ours = match metro::parse_port_owner(&port_output) {
-            metro::PortOwners::Owned(pid) => {
-                metro::pgid_of(ctx.runner, pid) == Some(metro_resource.spawned.pgid)
+        let owner = match metro::parse_port_owner(&port_output) {
+            metro::PortOwners::Owned(pid)
+                if metro::pgid_of(ctx.runner, pid) == Some(metro_resource.spawned.pgid) =>
+            {
+                Some(pid)
             }
-            _ => false,
+            _ => None,
         };
-        if port_ours && metro::metro_responding(ctx.runner, metro_resource.port) {
-            ensure_running(ctx.runner, "build")?;
-            return Ok(());
+        if let Some(owner) = owner {
+            if ctx.record.scenario.platform != Platform::Ios {
+                if metro::metro_responding(ctx.runner, metro_resource.port) {
+                    ensure_running(ctx.runner, "build")?;
+                    return Ok(());
+                }
+            } else {
+                let (seen, class) =
+                    metro::observe_bind(ctx.runner, metro_resource.port, Some(owner));
+                match class {
+                    metro::BindClass::V4 => {
+                        ctx.record.metro_bind = Some(MetroBind::V4);
+                        ctx.save()?;
+                        ensure_running(ctx.runner, "build")?;
+                        return Ok(());
+                    }
+                    metro::BindClass::V6Only => {
+                        ctx.record.metro_bind = Some(MetroBind::V6Only);
+                        ctx.save()?;
+                        return Err(ipv6_only_refusal(metro_resource.port, &seen.listeners));
+                    }
+                    metro::BindClass::Pending | metro::BindClass::Inconclusive => {}
+                }
+            }
         }
         if ctx.runner.monotonic_ms() >= deadline {
+            if ctx.record.scenario.platform == Platform::Ios {
+                ctx.record.metro_bind = Some(MetroBind::Inconclusive);
+            }
             return Err(Failure::new(
                 "build",
                 FailureCode::ReadyDeadlineExceeded,
@@ -3275,6 +3305,19 @@ fn wait_metro_responding(ctx: &mut Ctx) -> Result<(), Failure> {
         }
         ctx.runner.sleep(Duration::from_secs(2));
     }
+}
+
+// The listener forms carry only loopback forms, `*` and `other`, never another address.
+fn ipv6_only_refusal(port: u16, listeners: &metro::Listeners) -> Failure {
+    Failure::new(
+        "build",
+        FailureCode::MetroBindIpv6Only,
+        format!(
+            "Metro answered on [::1]:{port} and never on 127.0.0.1:{port}, which QaReN and the dev client use; listeners seen: {}; no restart was tried",
+            metro::listener_forms(listeners, port)
+        ),
+        "check whether the project sets Node's DNS result order (its Metro configuration, NODE_OPTIONS, or a pnpm node-options setting), then run again",
+    )
 }
 
 const IOS_SUBSTAGES: [&str; 6] = [
@@ -6166,6 +6209,7 @@ mod launch_tests {
                 held: None,
                 build_lock: None,
                 runtime_version: None,
+                metro_bind: None,
             };
             let run_dir = RunRecord::run_dir(&root, &record.run_id);
             let output = run_dir.join("ios-build");

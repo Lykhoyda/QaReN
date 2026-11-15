@@ -5,7 +5,7 @@ use qaren::commands::prepare::{prepare, PrepareArgs};
 use qaren::exec::{CmdOutput, Spawned};
 use qaren::failure::FailureCode;
 use qaren::receipt::ReceiptResult;
-use qaren::runrecord::{Phase, RunRecord};
+use qaren::runrecord::{MetroBind, Phase, RunRecord};
 
 const UDID: &str = "AAAABBBB-1111-2222-3333-444455556666";
 const LSTART: &str = "Wed Aug 12 16:01:00 2026";
@@ -1377,17 +1377,210 @@ fn script_ios_prepare_before_request_probe_reading(
     repo: &std::path::Path,
     read_artifact: impl FnOnce(&mut MockRunner),
 ) {
+    script_ios_prepare_until_metro_owned(mock, repo, read_artifact);
+    common::script_metro_bind_ready(mock);
+}
+
+// Through the first turn's proof that QaReN's Metro owns the port, before the bind observation.
+fn script_ios_prepare_until_metro_owned(
+    mock: &mut MockRunner,
+    repo: &std::path::Path,
+    read_artifact: impl FnOnce(&mut MockRunner),
+) {
     script_ios_prepare_reading_artifact(mock, repo, read_artifact);
     mock.expect_run(
         "simctl list devices -j",
         CmdOutput::success(&common::sim_inventory(common::CREATED_UDID, "Booted")),
     );
     mock.expect_run("simctl install", CmdOutput::success(""));
+    script_metro_turn_owned(mock);
+}
+
+// One wait turn's liveness and port-owner proof.
+fn script_metro_turn_owned(mock: &mut MockRunner) {
     mock.expect_run("ps", CmdOutput::success(LSTART));
     mock.expect_run("ps", CmdOutput::success("S"));
-    mock.expect_run("lsof", CmdOutput::success("6001"));
+    mock.expect_run("-tiTCP:8791", CmdOutput::success("6001"));
     mock.expect_run("ps", CmdOutput::success("6000"));
-    mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+}
+
+// Everything after the Metro wait of a ready iOS prepare.
+fn script_ios_prepare_after_metro_ready(mock: &mut MockRunner) {
+    mock.expect_run("qaren-request-probe", CmdOutput::success(""));
+    mock.expect_run("expo-platform", CmdOutput::success(""));
+    mock.expect_run("expo-platform", CmdOutput::success(""));
+    common::script_devmenu_defaults(mock, CmdOutput::success(""));
+    common::script_ios_launch(mock);
+    script_ios_readiness(mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(mock);
+}
+
+// Each wait turn that reaches the bind observation sends one IPv6 probe.
+fn wait_turns(mock: &MockRunner) -> usize {
+    mock.calls
+        .iter()
+        .filter(|c| c.rendered().contains(common::V6_PROBE))
+        .count()
+}
+
+// R4: a Metro that answers on [::1] only is refused in the turn that sees it, not at the build deadline.
+#[test]
+fn ios_metro_answering_only_on_ipv6_is_refused_in_one_turn_with_its_cause() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+    common::script_metro_bind_ipv6_only(&mut mock, 8791);
+    common::script_ios_metro_cleanup(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    let json = receipt.to_json();
+    assert!(json.contains("\"METRO_BIND_IPV6_ONLY\""), "{json}");
+    // Refused is exit 4.
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(wait_turns(&mock), 1);
+    let failure = receipt.failure.as_ref().unwrap();
+    let detail = failure.detail.to_string();
+    assert!(
+        detail.starts_with(
+            "Metro answered on [::1]:8791 and never on 127.0.0.1:8791, which QaReN and the dev client use"
+        ),
+        "{detail}"
+    );
+    assert!(
+        detail.contains("listeners seen: pid 6001 [::1]:8791"),
+        "{detail}"
+    );
+    assert!(detail.ends_with("no restart was tried"), "{detail}");
+    assert_eq!(
+        failure.next_action.to_string(),
+        format!(
+            "qaren cleanup {} --json; then check whether the project sets Node's DNS result order (its Metro configuration, NODE_OPTIONS, or a pnpm node-options setting), then run again",
+            receipt.run_id
+        )
+    );
+    assert_eq!(receipt.metro_bind, Some(MetroBind::V6Only));
+    // The bound address outlives the Metro resource that the refusal's cleanup cleared.
+    let record = RunRecord::load(scenario.parent().unwrap(), &receipt.run_id).unwrap();
+    assert!(record.resources.metro.is_none());
+    assert_eq!(record.metro_bind, Some(MetroBind::V6Only));
+    assert!(!mock.calls.iter().any(|c| c.label == "metro-manifest"));
+}
+
+// R5: the dual-stack race: IPv4 times out, IPv6 answers, IPv4 answers on the next look.
+#[test]
+fn ios_metro_whose_ipv4_side_answers_on_the_second_look_is_ready() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+    mock.expect_run(
+        common::LISTEN_READ,
+        common::listening(&[(6001, "[::1]:8791")]),
+    );
+    mock.expect_run(common::V4_PROBE, common::probe_timed_out());
+    mock.expect_run(common::V6_PROBE, common::packager_running());
+    mock.expect_run(common::V4_PROBE, common::packager_running());
+    script_ios_prepare_after_metro_ready(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(receipt.metro_bind, Some(MetroBind::V4));
+    assert_eq!(mock.remaining(), 0);
+}
+
+// R6: the listener's pid changes between the reads: no refusal; the next turn agrees and IPv4 answers.
+#[test]
+fn ios_metro_whose_listener_changes_between_reads_is_not_refused() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+    mock.expect_run(
+        common::LISTEN_READ,
+        common::listening(&[(6001, "[::1]:8791")]),
+    );
+    mock.expect_run(common::V4_PROBE, common::connection_refused());
+    mock.expect_run(common::V6_PROBE, common::packager_running());
+    mock.expect_run(common::V4_PROBE, common::connection_refused());
+    mock.expect_run(common::V4_PROBE, common::connection_refused());
+    mock.expect_run(
+        common::LISTEN_READ,
+        common::listening(&[(6002, "[::1]:8791")]),
+    );
+    script_metro_turn_owned(&mut mock);
+    mock.expect_run(
+        common::LISTEN_READ,
+        common::listening(&[(6001, "[::1]:8791"), (6001, "127.0.0.1:8791")]),
+    );
+    mock.expect_run(common::V4_PROBE, common::packager_running());
+    mock.expect_run(common::V6_PROBE, common::packager_running());
+    script_ios_prepare_after_metro_ready(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(wait_turns(&mock), 2);
+    assert_eq!(mock.remaining(), 0);
+}
+
+// G1: both addresses answer: ready, with exactly today's later commands.
+// G2: listening but not yet ready, then ready: no refusal.
+#[test]
+fn ios_metro_that_is_still_starting_or_answers_on_both_addresses_is_ready() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+    mock.expect_run(
+        common::LISTEN_READ,
+        common::listening(&[(6001, "127.0.0.1:8791")]),
+    );
+    mock.expect_run(
+        common::V4_PROBE,
+        CmdOutput {
+            stdout: "\n000".into(),
+            ..CmdOutput::failed(52, "")
+        },
+    );
+    mock.expect_run(common::V6_PROBE, common::connection_refused());
+    script_metro_turn_owned(&mut mock);
+    mock.expect_run(
+        common::LISTEN_READ,
+        common::listening(&[(6001, "127.0.0.1:8791"), (6001, "[::1]:8791")]),
+    );
+    mock.expect_run(common::V4_PROBE, common::packager_running());
+    mock.expect_run(common::V6_PROBE, common::packager_running());
+    script_ios_prepare_after_metro_ready(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(wait_turns(&mock), 2);
+    // R7: a ready run records where Metro answered.
+    assert_eq!(receipt.metro_bind, Some(MetroBind::V4));
+    let record = RunRecord::load(scenario.parent().unwrap(), &receipt.run_id).unwrap();
+    assert_eq!(record.metro_bind, Some(MetroBind::V4));
+    assert_eq!(mock.remaining(), 0);
 }
 
 fn script_volume_sample(mock: &mut MockRunner, slow: bool) {
@@ -5504,7 +5697,7 @@ fn script_borrowed_after_plan(mock: &mut MockRunner, before_install: &str) {
     mock.expect_run("ps", CmdOutput::success("S"));
     mock.expect_run("lsof", CmdOutput::success("6001"));
     mock.expect_run("ps", CmdOutput::success("6000"));
-    mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    common::script_metro_bind_ready(mock);
     mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));

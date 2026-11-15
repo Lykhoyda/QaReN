@@ -9,6 +9,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 mod host;
+mod metro_bind;
 mod watchman;
 
 use crate::VERSION;
@@ -304,6 +305,10 @@ pub fn doctor(
             "no configured candidate; no files sampled",
         )
     });
+    checks.push(metro_bind::check(
+        runner,
+        config.as_ref().map(|c| c.metro_port),
+    ));
 
     let build = exe
         .as_deref()
@@ -2318,6 +2323,16 @@ mod tests {
             crate::volume::HELPER_ARG,
             CmdOutput::failed(1, "unavailable"),
         );
+        runner.expect_run("lsof -nP -iTCP:", CmdOutput::failed(1, ""));
+        for url in ["http://127.0.0.1:", "http://[::1]:"] {
+            runner.expect_run(
+                url,
+                CmdOutput {
+                    stdout: "\n000".into(),
+                    ..CmdOutput::failed(7, "")
+                },
+            );
+        }
     }
 
     #[test]
@@ -3115,7 +3130,7 @@ mod tests {
                 "pass"
             }
         );
-        assert_eq!(parsed["checks"].as_array().unwrap().len(), 34);
+        assert_eq!(parsed["checks"].as_array().unwrap().len(), 35);
     }
 
     #[test]
