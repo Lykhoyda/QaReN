@@ -5,18 +5,28 @@ pub fn expo_online(runner: &dyn Runner) -> bool {
     runner.env_var("EXPO_OFFLINE").as_deref() == Some("0")
 }
 
-// The iOS simulator reaches Metro on 127.0.0.1, so iOS binds to loopback; Android keeps its adb-reverse path.
+// Where a Metro start listens. The iOS simulator reaches Metro on 127.0.0.1, so iOS binds to loopback;
+// Android keeps expo's default and its adb-reverse path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Listen {
+    Loopback,
+    Default,
+    // The one restart after a [::1]-only start: every interface, so no `localhost` resolution is involved,
+    // with the manifest's host pinned to the 127.0.0.1 that the app and probes use.
+    AllPinned,
+}
+
 pub fn start_spec(
     project_root: &Path,
     port: u16,
-    localhost: bool,
+    listen: Listen,
     online: bool,
     preload: Option<&Path>,
     node_options: Option<&str>,
 ) -> CmdSpec {
     let port = port.to_string();
     let mut args = vec!["exec", "expo", "start", "--port", &port];
-    if localhost {
+    if listen == Listen::Loopback {
         args.push("--localhost");
     }
     let spec = CmdSpec::new("expo-start", "pnpm", &args, 0)
@@ -26,7 +36,7 @@ pub fn start_spec(
         .env("EXPO_OFFLINE", if online { "0" } else { "1" })
         // Metro logs each request on receipt here, before any dependency-graph wait; the drain counts bundle requests.
         .env("DEBUG", crate::exec::log::METRO_REQUEST_LOG);
-    if !localhost {
+    if listen == Listen::Default {
         return spec;
     }
     // Node resolves `localhost` to ::1 first, so --localhost alone listens on IPv6 while every probe and the app use 127.0.0.1.
@@ -35,7 +45,11 @@ pub fn start_spec(
         .env("NODE_OPTIONS", &options)
         .env("npm_config_node_options", &options);
     // pnpm workspace nodeOptions overrides the environment unless supplied on its command line.
-    spec.args.insert(0, format!("--config.node-options={options}"));
+    spec.args
+        .insert(0, format!("--config.node-options={options}"));
+    if listen == Listen::AllPinned {
+        spec = spec.env("REACT_NATIVE_PACKAGER_HOSTNAME", "127.0.0.1");
+    }
     spec
 }
 

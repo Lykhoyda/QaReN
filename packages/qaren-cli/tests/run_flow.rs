@@ -10781,7 +10781,24 @@ fn assert_ipv6_only_refusal(receipt: &qaren::receipt::Receipt) {
     );
 }
 
-// R4 on check: refused in the wait turn that sees it; the cleanup command still comes first.
+// The Metro group survives both signals, so its stop cannot be proven.
+fn script_metro_stop_unresolved(mock: &mut MockRunner) {
+    mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
+    mock.expect_run("ps", CmdOutput::success("S\n"));
+    mock.expect_run("lsof", CmdOutput::success("6001\n"));
+    mock.expect_run("ps", CmdOutput::success("6000\n"));
+    mock.expect_run("lstart=", CmdOutput::success(LSTART));
+    mock.expect_run("stat=", CmdOutput::success("S"));
+    mock.expect_run("/bin/kill", CmdOutput::success(""));
+    mock.expect_run("lstart=", CmdOutput::success(LSTART));
+    mock.expect_run("stat=", CmdOutput::success("S"));
+    mock.expect_run("/bin/kill", CmdOutput::success(""));
+    mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
+    mock.expect_run("ps", CmdOutput::success("S\n"));
+}
+
+// R4 and R12 on check: an [::1]-only Metro that the restart cannot stop is refused in the wait turn that sees it,
+// with no second start; the record keeps it for the cleanup, whose command still comes first.
 #[test]
 fn check_refuses_an_ipv6_only_metro_with_cleanup_first_then_the_dns_order_step() {
     for unresolved in [false, true] {
@@ -10791,20 +10808,9 @@ fn check_refuses_an_ipv6_only_metro_with_cleanup_first_then_the_dns_order_step()
         common::script_ios_deps(&mut mock);
         script_candidate_until_metro_owned(&mut mock, &"b".repeat(40), UNTRACKED_PLAN);
         common::script_metro_bind_ipv6_only(&mut mock, 8791);
+        script_metro_stop_unresolved(&mut mock);
         if unresolved {
-            // The Metro group survives both signals, so cleanup cannot be proven.
-            mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
-            mock.expect_run("ps", CmdOutput::success("S\n"));
-            mock.expect_run("lsof", CmdOutput::success("6001\n"));
-            mock.expect_run("ps", CmdOutput::success("6000\n"));
-            mock.expect_run("lstart=", CmdOutput::success(LSTART));
-            mock.expect_run("stat=", CmdOutput::success("S"));
-            mock.expect_run("/bin/kill", CmdOutput::success(""));
-            mock.expect_run("lstart=", CmdOutput::success(LSTART));
-            mock.expect_run("stat=", CmdOutput::success("S"));
-            mock.expect_run("/bin/kill", CmdOutput::success(""));
-            mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
-            mock.expect_run("ps", CmdOutput::success("S\n"));
+            script_metro_stop_unresolved(&mut mock);
         } else {
             script_pr_teardown_resources(&mut mock, false);
         }
@@ -10813,11 +10819,27 @@ fn check_refuses_an_ipv6_only_metro_with_cleanup_first_then_the_dns_order_step()
 
         assert_ipv6_only_refusal(&receipt);
         assert_eq!(mock.remaining(), 0, "unresolved={unresolved}");
+        assert!(receipt
+            .failure
+            .as_ref()
+            .unwrap()
+            .detail
+            .to_string()
+            .ends_with("the first Metro could not be stopped"));
+        assert_eq!(
+            labels(&mock).iter().filter(|l| *l == "expo-start").count(),
+            1
+        );
         assert_eq!(
             receipt.cleanup["metro"] == "removed",
             !unresolved,
             "{:?}",
             receipt.cleanup
+        );
+        let record = RunRecord::load(&repo.join("runs"), &receipt.run_id).unwrap();
+        assert_eq!(
+            record.resources.metro.as_ref().map(|m| m.spawned.pid),
+            unresolved.then_some(6000)
         );
         assert!(!labels(&mock)
             .iter()
@@ -10844,6 +10866,7 @@ fn pr_refuses_an_ipv6_only_metro_with_cleanup_first_then_the_dns_order_step() {
     common::script_ios_deps(mock);
     script_candidate_until_metro_owned(mock, PR_HEAD, "");
     common::script_metro_bind_ipv6_only(mock, 8791);
+    script_metro_stop_unresolved(mock);
     script_pr_teardown_resources(mock, false);
     mock.expect_run("du -sk", CmdOutput::success("4\n"));
     mock.expect_run("worktree remove --force", CmdOutput::success(""));
@@ -10912,6 +10935,19 @@ fn android_check_waits_out_a_slow_first_app_process() {
 
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     assert_eq!(mock.remaining(), 0);
+    // G4: Android starts expo's default once and never restarts it.
+    let starts: Vec<_> = mock
+        .calls
+        .iter()
+        .filter(|c| c.label == "expo-start")
+        .collect();
+    assert_eq!(starts.len(), 1);
+    assert!(!starts[0].args.iter().any(|a| a == "--localhost"));
+    assert!(!starts[0]
+        .env
+        .iter()
+        .any(|(k, _)| k == "REACT_NATIVE_PACKAGER_HOSTNAME"));
+    assert!(!receipt.outcomes.contains_key("metro_bind_recovery"));
 }
 
 #[test]

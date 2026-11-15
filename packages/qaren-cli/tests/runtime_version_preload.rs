@@ -155,7 +155,14 @@ mw("ios").then(value => console.log(JSON.stringify({{ value, options: process.en
     std::fs::set_permissions(&expo, std::fs::Permissions::from_mode(0o755)).unwrap();
     pin(&fx, r#"{"platform":"ios","value":"abc123"}"#);
     let preload = write_preload(&fx.run_dir, &fx.app).unwrap();
-    let spec = metro::start_spec(&fx.app, 8791, true, false, Some(&preload), Some(base.trim()));
+    let spec = metro::start_spec(
+        &fx.app,
+        8791,
+        metro::Listen::Loopback,
+        false,
+        Some(&preload),
+        Some(base.trim()),
+    );
     let output = Command::new(&spec.program)
         .args(&spec.args)
         .envs(spec.env.iter().cloned())

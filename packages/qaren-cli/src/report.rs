@@ -669,6 +669,12 @@ pub(crate) fn write_host(
     if let Some(wait) = receipt.outcomes.get("host_wait") {
         writeln!(file, "Host memory before the build: {wait}.")?;
     }
+    if receipt.metro_bind == Some(crate::runrecord::MetroBind::V4AfterRestart) {
+        writeln!(
+            file,
+            "\nMetro was restarted once and listens on all network interfaces for this run."
+        )?;
+    }
     if let Some(line) = helpers {
         writeln!(file, "\n{line}")?;
     }
