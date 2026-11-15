@@ -4,12 +4,16 @@ use std::path::Path;
 use std::process::Command;
 
 fn assert_only_host_probes(receipt: &serde_json::Value) {
-    let count = if matches!(std::env::consts::OS, "macos" | "linux") {
-        4
+    // Two host samples at each end and one device-helper scan at the start, plus one package-file
+    // read per folder of a helper-named process this host happens to run.
+    if matches!(std::env::consts::OS, "macos" | "linux") {
+        assert!(
+            receipt["commands_executed"].as_u64().unwrap() >= 5,
+            "{receipt}"
+        );
     } else {
-        0
-    };
-    assert_eq!(receipt["commands_executed"], count);
+        assert_eq!(receipt["commands_executed"], 0);
+    }
     assert!(receipt["host"]["start"].is_object());
     assert!(receipt["host"]["end"].is_object());
 }

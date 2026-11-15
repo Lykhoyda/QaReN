@@ -234,6 +234,7 @@ pub fn run(runner: &mut dyn Runner, req: &RunRequest) -> Receipt {
 fn run_scoped(runner: &mut dyn Runner, req: &RunRequest) -> Receipt {
     let started_ms = runner.now_epoch_ms();
     let host_start = crate::host_capacity::sample(runner, std::env::consts::OS);
+    let helpers = crate::device_helpers::scan(runner, std::env::consts::OS);
     let mut preflight_jev = None;
     // A PR worktree created before the run record owns it; removed here if the run never got that far.
     let mut unowned_worktree = None;
@@ -283,7 +284,7 @@ fn run_scoped(runner: &mut dyn Runner, req: &RunRequest) -> Receipt {
         receipt.outcomes.entry(name).or_insert(note);
     }
     receipt.preflight_jev = preflight_jev;
-    crate::commands::finish_host(runner, &mut receipt, host_start);
+    crate::commands::finish_host(runner, &mut receipt, host_start, &helpers);
     receipt
 }
 
@@ -732,7 +733,9 @@ fn run_inner(
         terminal: None,
         held: None,
         build_lock: None,
+        build_lock_waits: Vec::new(),
         runtime_version: None,
+        metro_bind: None,
     };
     if let Err(f) = record.save(&req.runs_root) {
         return Err(lease::release_or_annotate(&lease, f));
@@ -1210,7 +1213,7 @@ fn run_inner(
         );
         events::stage("attach", StageState::Running, None, None);
         let runner_started_at = ctx.runner.now_epoch_ms();
-        let core_child = match core::spawn_private(
+        let mut core_child = match core::spawn_private(
             ctx.runner,
             &spec,
             &core_log,
@@ -1232,6 +1235,7 @@ fn run_inner(
             return finish_failed(ctx, f);
         }
         let mut driver_notes = Vec::new();
+        core_child.watch_build_slot(&ctx.record);
         let mut outcome = {
             let record = &mut ctx.record;
             let runs_root = &ctx.runs_root;
@@ -2713,6 +2717,10 @@ fn teardown(
         }
         outcomes.push(("metro".to_string(), outcome));
     }
+    if let Some(outcome) = crate::commands::cleanup::cleanup_build_slot(ctx.runner, &mut ctx.record)
+    {
+        outcomes.push(("build_slot".into(), outcome));
+    }
     if let Some(outcome) = crate::commands::cleanup::cleanup_runner_drivers(
         ctx.runner,
         &mut ctx.record,
@@ -3772,7 +3780,10 @@ pub(crate) fn cleanup_first(cleanup: &str, failure: &Failure) -> String {
     if failure.suggestion.is_some()
         || failure.repeat.is_some()
         || failure.subreason.as_deref() == Some(PREVIOUS_PLAN_PRESS)
-        || failure.code == FailureCode::CandidateUnavailable
+        || matches!(
+            failure.code,
+            FailureCode::CandidateUnavailable | FailureCode::MetroBindIpv6Only
+        )
     {
         format!("{cleanup}; then {}", failure.next_action.as_str())
     } else {
@@ -4544,6 +4555,16 @@ mod last_screen_tests {
         assert_eq!(
             cleanup_first(cleanup, &unavailable),
             format!("{cleanup}; then {}", unavailable.next_action.as_str())
+        );
+        let ipv6_only = Failure::new(
+            "build",
+            FailureCode::MetroBindIpv6Only,
+            "Metro answered on [::1]:8081",
+            "check the DNS order",
+        );
+        assert_eq!(
+            cleanup_first(cleanup, &ipv6_only),
+            format!("{cleanup}; then check the DNS order")
         );
     }
 

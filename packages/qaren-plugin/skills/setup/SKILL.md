@@ -25,7 +25,7 @@ Present `ios-toolchain-match` warnings before building.
 `RCT_USE_PREBUILT_RNCORE` are inherited. Native source/precompiled switches take
 effect at pod installation; changing an export does not change existing Pods.
 Follow the returned action and obtain approval before regenerating native files.
-Present `host-memory`, `host-devices`, `simulator-service` and `host-load` warnings
+Present `host-memory`, `host-devices`, `device-helpers`, `simulator-service` and `host-load` warnings
 with their next steps before the smoke run; use the conservative lane recommendation
 in the [host budget](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#host-budget).
 If memory or CPU is constrained, recommend fewer concurrent lanes and closing

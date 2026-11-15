@@ -472,6 +472,9 @@ fn a_fresh_clone_reuses_another_clones_build_and_never_overwrites_the_store() {
         let mut mock = MockRunner::new();
         mock.sleep(std::time::Duration::from_secs(60 * index as u64));
         let reuse = case == "second";
+        if reuse {
+            std::fs::create_dir_all(req.lock_root.join("native-build-slot")).unwrap();
+        }
         script_preflight(&mut mock, &repo);
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
         if reuse {
@@ -506,6 +509,10 @@ fn a_fresh_clone_reuses_another_clones_build_and_never_overwrites_the_store() {
             receipt.failure
         );
         assert_eq!(mock.remaining(), 0, "{case}");
+        if reuse {
+            assert!(receipt.build_lock_waits.is_empty());
+            assert!(req.lock_root.join("native-build-slot").is_dir());
+        }
         let plan = receipt.build.unwrap();
         assert_eq!(
             plan.decision == BuildDecision::Reuse,
@@ -698,6 +705,89 @@ fn a_clean_ios_build_refuses_before_building_when_its_volume_is_short_of_space()
         .iter()
         .any(|c| c.rendered().contains("expo prebuild") || c.rendered().contains("expo start")));
     assert!(!req.lock_root.join("native-build-ios").exists());
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn an_ios_check_refuses_contention_when_its_build_window_expires_in_the_slot_queue() {
+    let (repo, app) = app_repo();
+    let config = app.join(".qaren/config.yaml");
+    let mut yaml = std::fs::read_to_string(&config).unwrap();
+    yaml.push_str("deadlines:\n  build_seconds: 30\n");
+    std::fs::write(config, yaml).unwrap();
+    let req = request(&repo, &app, 30);
+    let holder = qaren::buildplan::LockHolder {
+        holder: "foreign-build-token".into(),
+        run_id: "check-foreign".into(),
+        identity: Some(qaren::runrecord::PidIdentity {
+            pid: 4242,
+            started_at: LSTART.into(),
+            command: qaren::redact::OutputText::from_output("qaren check"),
+        }),
+        at: qaren::timefmt::iso8601_utc(1_770_000_000_000),
+        home: None,
+        qaren_home: Some(repo.join("foreign")),
+        group: Some(777),
+    };
+    assert!(matches!(
+        qaren::buildplan::claim_lock(
+            &mut qaren::exec::MockRunner::new(),
+            &req.lock_root,
+            "native-build-slot",
+            &holder,
+            qaren::buildplan::LockPolicy::Strict,
+        ),
+        qaren::buildplan::LockOutcome::Claimed { .. }
+    ));
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    common::script_ios_deps(&mut mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_clean_build_plan(&mut mock);
+    for _ in 0..30 {
+        mock.expect_run("ps -p 4242 -o lstart=", CmdOutput::success(LSTART));
+        mock.expect_run("ps -p 4242 -o stat=", CmdOutput::success("S"));
+        mock.expect_run("ps -A", CmdOutput::success("777 777 S\n"));
+    }
+    let platform_lock = req.lock_root.join("native-build-ios");
+    mock.observe = Some(Box::new(move |spec| {
+        if spec.rendered().contains("ps -p 4242") {
+            assert_eq!(
+                qaren::buildplan::read_holder(&platform_lock)
+                    .unwrap()
+                    .run_id,
+                run_id()
+            );
+        }
+    }));
+
+    let (receipt, events) = run_with_events(&mut mock, &req);
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Refused,
+        "{:?}",
+        receipt.failure
+    );
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::BuildContended);
+    assert_eq!(
+        receipt.recovery.as_ref().unwrap().reason,
+        qaren::failure::RecoveryReason::BudgetExhausted
+    );
+    for expected in ["native-build-slot", "check-foreign", "waited 30 s"] {
+        assert!(failure.detail.contains(expected), "{failure:?}");
+    }
+    assert!(stage_trail(&events).contains(&"build_lock_wait failed BUILD_CONTENDED".into()));
+    assert!(mock.spawned_logs.is_empty());
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert!(!req.lock_root.join("native-build-ios").exists());
+    assert_eq!(
+        qaren::buildplan::read_holder(&req.lock_root.join("native-build-slot"))
+            .unwrap()
+            .run_id,
+        "check-foreign"
+    );
     assert_eq!(mock.remaining(), 0);
 }
 
@@ -1661,7 +1751,8 @@ fn script_check_inventory(mock: &mut qaren::exec::MockRunner) {
     );
 }
 
-fn script_check_install_and_launch(mock: &mut qaren::exec::MockRunner) {
+// Install, Metro start and the first wait turn's proof that the port is ours, before the bind observation.
+fn script_check_install_until_metro_owned(mock: &mut qaren::exec::MockRunner) {
     common::script_ios_app_verification(mock);
     common::script_ios_metro_spawn(mock);
     script_check_inventory(mock);
@@ -1670,7 +1761,22 @@ fn script_check_install_and_launch(mock: &mut qaren::exec::MockRunner) {
     mock.expect_run("ps", CmdOutput::success("S"));
     mock.expect_run("lsof", CmdOutput::success("6001"));
     mock.expect_run("ps", CmdOutput::success("6000"));
-    mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+}
+
+// A cold candidate's build, then its Metro wait, whose bind observation the caller scripts.
+fn script_candidate_until_metro_owned(mock: &mut MockRunner, head: &str, status: &str) {
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_clean_build_plan(mock);
+    common::script_finite_ios_build_only(mock, "expo run:ios");
+    mock.expect_run("rev-parse HEAD", CmdOutput::success(head));
+    mock.expect_run("--porcelain", CmdOutput::success(status));
+    script_fingerprint_recheck(mock, "");
+    script_check_install_until_metro_owned(mock);
+}
+
+fn script_check_install_and_launch(mock: &mut qaren::exec::MockRunner) {
+    script_check_install_until_metro_owned(mock);
+    common::script_metro_bind_ready(mock);
     mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
@@ -7033,7 +7139,12 @@ fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_l
             mock.expect_run("ps", CmdOutput::success("S"));
             mock.expect_run("lsof", CmdOutput::success("6001"));
             mock.expect_run("ps", CmdOutput::success("6000"));
-            mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+            // The Metro wait observes the bind; the later readiness probe does not.
+            if launch {
+                common::script_metro_bind_ready(&mut mock);
+            } else {
+                mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+            }
             if launch {
                 mock.expect_run("qaren-request-probe", CmdOutput::success(""));
                 mock.expect_run("expo-platform", CmdOutput::success(""));
@@ -9219,7 +9330,7 @@ fn pr_runtime_input_recording_obeys_video_policy_and_secret_inventory() {
         (Some("non-strict"), true, true),
     ] {
         let records = policy == Some("non-strict") && non_secret && !unused;
-        let secret = "synthetic\"slot\\value";
+        let secret = "synthetic\"canarymaterial\\value";
         let (repo, app) = app_repo();
         let annotation = if non_secret { " (test-pii)" } else { "" };
         std::fs::write(
@@ -9319,12 +9430,12 @@ fn pr_runtime_input_recording_obeys_video_policy_and_secret_inventory() {
         for (path, bytes) in durable {
             let text = String::from_utf8_lossy(&bytes);
             assert!(
-                !text.contains("slot") && !text.contains(escaped),
+                !text.contains("canarymaterial") && !text.contains(escaped),
                 "{}",
                 path.display()
             );
         }
-        assert!(!receipt.to_json().contains("slot"));
+        assert!(!receipt.to_json().contains("canarymaterial"));
     }
 }
 
@@ -11242,7 +11353,7 @@ fn a_cancel_during_a_cached_ios_install_names_the_substage() {
             mock.expect_run("ps", CmdOutput::success("S"));
             mock.expect_run("lsof", CmdOutput::success("6001"));
             mock.expect_run("ps", CmdOutput::success("6000"));
-            mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+            common::script_metro_bind_ready(&mut mock);
             mock.expect_run("qaren-request-probe", CmdOutput::success(""));
             mock.expect_run("expo-platform", CmdOutput::success(""));
         }
@@ -11329,7 +11440,7 @@ fn check_fails_fast_when_the_launched_ios_app_exits_and_names_the_missing_framew
     mock.expect_run("ps", CmdOutput::success("S"));
     mock.expect_run("lsof", CmdOutput::success("6001"));
     mock.expect_run("ps", CmdOutput::success("6000"));
-    mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    common::script_metro_bind_ready(&mut mock);
     mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
@@ -11376,6 +11487,105 @@ fn check_fails_fast_when_the_launched_ios_app_exits_and_names_the_missing_framew
     assert_eq!(mock.remaining(), 0);
 }
 
+const DNS_ORDER_STEP: &str = "check whether the project sets Node's DNS result order (its Metro configuration, NODE_OPTIONS, or a pnpm node-options setting), then run again";
+
+fn assert_ipv6_only_refusal(receipt: &qaren::receipt::Receipt) {
+    let json = receipt.to_json();
+    assert!(json.contains("\"METRO_BIND_IPV6_ONLY\""), "{json}");
+    assert_eq!(receipt.result, ReceiptResult::Refused, "{json}");
+    let failure = receipt.failure.as_ref().unwrap();
+    assert!(
+        failure
+            .detail
+            .to_string()
+            .contains("Metro answered on [::1]:8791 and never on 127.0.0.1:8791"),
+        "{json}"
+    );
+    let next = format!(
+        "qaren cleanup {} --json; then {DNS_ORDER_STEP}",
+        receipt.run_id
+    );
+    assert_eq!(failure.next_action.to_string(), next);
+    assert_eq!(receipt.next_action, next);
+    assert_eq!(
+        receipt.metro_bind,
+        Some(qaren::runrecord::MetroBind::V6Only)
+    );
+}
+
+// R4 on check: refused in the wait turn that sees it; the cleanup command still comes first.
+#[test]
+fn check_refuses_an_ipv6_only_metro_with_cleanup_first_then_the_dns_order_step() {
+    for unresolved in [false, true] {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        script_preflight(&mut mock, &repo);
+        common::script_ios_deps(&mut mock);
+        script_candidate_until_metro_owned(&mut mock, &"b".repeat(40), UNTRACKED_PLAN);
+        common::script_metro_bind_ipv6_only(&mut mock, 8791);
+        if unresolved {
+            // The Metro group survives both signals, so cleanup cannot be proven.
+            mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
+            mock.expect_run("ps", CmdOutput::success("S\n"));
+            mock.expect_run("lsof", CmdOutput::success("6001\n"));
+            mock.expect_run("ps", CmdOutput::success("6000\n"));
+            mock.expect_run("lstart=", CmdOutput::success(LSTART));
+            mock.expect_run("stat=", CmdOutput::success("S"));
+            mock.expect_run("/bin/kill", CmdOutput::success(""));
+            mock.expect_run("lstart=", CmdOutput::success(LSTART));
+            mock.expect_run("stat=", CmdOutput::success("S"));
+            mock.expect_run("/bin/kill", CmdOutput::success(""));
+            mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
+            mock.expect_run("ps", CmdOutput::success("S\n"));
+        } else {
+            script_pr_teardown_resources(&mut mock, false);
+        }
+
+        let receipt = run(&mut mock, &request(&repo, &app, 30));
+
+        assert_ipv6_only_refusal(&receipt);
+        assert_eq!(mock.remaining(), 0, "unresolved={unresolved}");
+        assert_eq!(
+            receipt.cleanup["metro"] == "removed",
+            !unresolved,
+            "{:?}",
+            receipt.cleanup
+        );
+        assert!(!labels(&mock)
+            .iter()
+            .any(|l| l == "metro-manifest" || l == "core-walk"));
+    }
+}
+
+// R4 on pr: the same refusal and next step.
+#[test]
+fn pr_refuses_an_ipv6_only_metro_with_cleanup_first_then_the_dns_order_step() {
+    let (repo, app) = app_repo();
+    let wt = repo.join("runs").join(run_id()).join("wt");
+    let mut runner = PrRunner {
+        inner: MockRunner::new(),
+        app: app.clone(),
+        recorder_persisted_before_spawn: None,
+        fail_core_spawn: false,
+        planted_worktree_config: None,
+        worktree_config_planted: false,
+        fail_host_checkpoint: false,
+    };
+    let mock = &mut runner.inner;
+    script_pr_preflight(mock, &repo, &wt);
+    common::script_ios_deps(mock);
+    script_candidate_until_metro_owned(mock, PR_HEAD, "");
+    common::script_metro_bind_ipv6_only(mock, 8791);
+    script_pr_teardown_resources(mock, false);
+    mock.expect_run("du -sk", CmdOutput::success("4\n"));
+    mock.expect_run("worktree remove --force", CmdOutput::success(""));
+
+    let receipt = run(&mut runner, &pr_request(&repo, &app));
+
+    assert_ipv6_only_refusal(&receipt);
+    assert_eq!(runner.inner.remaining(), 0);
+}
+
 // Metro answers on the second poll, so the scripted clock advances inside reuse readiness.
 fn script_warm_launch_after_one_metro_retry(mock: &mut MockRunner) {
     common::script_ios_app_verification(mock);
@@ -11399,13 +11609,11 @@ fn script_warm_launch_after_one_metro_retry(mock: &mut MockRunner) {
         mock.expect_run("ps", CmdOutput::success("S"));
         mock.expect_run("lsof", CmdOutput::success("6001"));
         mock.expect_run("ps", CmdOutput::success("6000"));
-        mock.expect_run(
-            "curl",
-            match responding {
-                true => CmdOutput::success("packager-status:running"),
-                false => CmdOutput::failed(7, ""),
-            },
-        );
+        if responding {
+            common::script_metro_bind_ready(mock);
+        } else {
+            common::script_metro_bind_not_ready(mock);
+        }
     }
     mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
