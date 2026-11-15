@@ -664,7 +664,8 @@ change the run's verdict. Cancellation can leave the end sample unavailable.
 The local `report.md` includes one line with both samples, including free and
 available memory and swap in GiB; unreadable values say `unavailable`. A refusal also
 includes the end host state when load reaches the logical CPU count or memory
-is constrained. These are observations, not a diagnosis of the refusal's cause.
+is constrained, except `HOST_UNDER_PRESSURE`, which already names its admission
+reading. These end samples are observations, not a diagnosis of the refusal's cause.
 Refusals before a run directory exists carry the samples in the receipt only.
 `qaren publish` does not include these samples in PR comments or descriptions.
 Sampling starts no device or service and introduces no cleanup resource.
@@ -672,15 +673,23 @@ Sampling starts no device or service and introduces no cleanup resource.
 ### Waiting for memory before a native build
 
 Before a native build claims its build lock, `check`, `pr` and `prepare` take
-one more sample. A run that reuses its build takes none. Memory is constrained when
+an admission sample. A run that reuses its build takes no admission sample.
+Memory is constrained when
 pressure is `warning` or `critical`, or less than 4 GiB is available; load
 alone never makes a run wait or refuse. A constrained host waits in the
 `host_wait` stage (code `memory_low` or `memory_critical`), polling every
-5 s for up to 10 minutes. `check` shows the wait as `host-wait` in its live
-progress. The wait runs before the build budget starts, so a run can take up to 10
-minutes longer, but it keeps the full `deadlines.build_seconds` for the build.
+5 s with one 10-minute allowance per build admission, including probe time.
+The final sample can overrun that allowance by up to 6 s (two 3 s probes).
+`check` shows the wait as `host-wait` in its live progress.
+The initial admission runs before the build budget starts. After iOS lock
+contention, admission is rechecked before each claim retry while allowance
+remains; these checks share the same allowance, and their actual duration is
+excluded from the build budget. Once the allowance is spent, retries take no
+further admission samples. Lock contention itself still consumes
+`deadlines.build_seconds`.
 When memory recovers the build goes on. When memory is still constrained
-but not critical after 10 minutes, the build goes on with its full budget.
+but not critical when the allowance is spent, the build goes on with its
+remaining build budget.
 Memory still constrained after 10 minutes, with a readable final reading of `critical`
 pressure (macOS level 4), refuses `HOST_UNDER_PRESSURE` (exit 4). The refusal names load, available memory,
 pressure, swap and the time waited, and says to re-run once pressure clears.
@@ -688,10 +697,10 @@ No build lock is claimed and no build starts. A run that already holds
 resources, such as an iOS device, names `qaren cleanup` as its next action,
 as for any other refusal after allocation. Linux has no critical level, so a Linux host
 waits but never refuses. An unreadable first sample never waits or refuses.
-During the wait, a reading counts only when it reads every memory value the
-first one had: a probe that fails or times out there keeps the last full
-reading and the wait goes on, within the same 10 minutes, because a timed-out
-probe on a constrained host is a sign of that load. An incomplete final reading
+During each wait, a reading counts only when it reads every memory signal
+(pressure and available bytes) observed so far in that wait, including newly
+readable signals. A probe that fails or times out keeps the last full
+reading and the wait goes on within the remaining allowance. An incomplete final reading
 goes on to the build instead of refusing. An
 unreadable first sample, a wait that recovered and a wait that went on
 constrained each leave a `host_wait` note in the receipt's `outcomes` and a
@@ -5538,8 +5547,8 @@ state. An ambiguous artifact (zero or several bundles) skips caching with a reco
 reason, never a guess. Only a saved state permits ownership rebinding.
 
 **Build serialization.** Native builds (incremental and clean) take a
-host-level `native-build-<platform>` lock, after the
-[memory wait](#waiting-for-memory-before-a-native-build) and outside its time. On iOS the lock covers only the
+host-level `native-build-<platform>` lock, subject to
+[memory admission](#waiting-for-memory-before-a-native-build). On iOS the lock covers only the
 build: `prepare`, `check` and `pr` claim it after the device is allocated and
 release it once the artifact is verified, the pre-publication candidate and
 fingerprint checks pass and cache publication is persisted, before
