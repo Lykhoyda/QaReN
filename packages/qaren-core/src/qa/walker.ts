@@ -2422,20 +2422,29 @@ async function walkBlockScoped(
   > => {
     const quoted = item.target.quoted!;
     secretFill(item, target.element);
-    const nothingTyped = (reason: string, screen: Screen, targetCode?: string): WalkOutcome =>
-      failed(
+    let tapped = false;
+    const refuse = async (
+      reason: string,
+      screen: Screen,
+      targetCode?: string,
+      nothingTyped = true,
+    ): Promise<WalkOutcome> => {
+      if (withheld && !tapped)
+        reason = `${reason ? `${reason}; ` : ''}${withheld}${(await cover?.()) ?? ''}`;
+      return failed(
         item,
         attempt,
-        `${reason}; nothing was typed`,
+        nothingTyped ? `${reason}; nothing was typed` : reason,
         screen,
         undefined,
         undefined,
         false,
         targetCode,
       );
+    };
     const proofMode = before.screen.keyboardVisible === true && deps.reactFocused !== undefined;
     if (before.screen.keyboardVisible !== false && !proofMode)
-      return nothingTyped(
+      return refuse(
         before.screen.keyboardVisible
           ? `the keyboard is already up before tapping "${quoted}"`
           : `the keyboard state before tapping "${quoted}" is unknown`,
@@ -2453,7 +2462,7 @@ async function walkBlockScoped(
     const overlay =
       deps.platform === 'ios' && inferredOverlayCoverage(target.element, before.screen);
     if (overlay && (await probeOverlay(item, before, target.element)) !== 'hittable')
-      return nothingTyped(
+      return refuse(
         `"${quoted}" ${INFERRED_FILL_UNAVAILABLE}${cutterText(overlay)}`,
         before.screen,
         'TARGET_NOT_FOUND',
@@ -2505,14 +2514,15 @@ async function walkBlockScoped(
             ? deps.press(target.element.ref, context, { requireLiveHit: true })
             : deps.press(target.element.ref, context),
         );
+        if (tap.ok) tapped = true;
       } catch (error) {
         if (isAbort(error)) throw error;
         if (error instanceof EvidenceExpired)
-          return nothingTyped(`the evidence expired before tapping "${quoted}"`, before.screen);
+          return refuse(`the evidence expired before tapping "${quoted}"`, before.screen);
         throw error;
       }
     if (overlay && tap && !tap.ok)
-      return nothingTyped(
+      return refuse(
         `${tap.error ?? 'LIVE_HIT_UNPROVEN'}${cutterText(overlay)}`,
         before.screen,
         'TARGET_NOT_FOUND',
@@ -2522,11 +2532,9 @@ async function walkBlockScoped(
       (!tap.ok && tap.mutation === 'none' && tap.error?.startsWith('FOCUS_TARGET_OCCLUDED:'))
     ) {
       if (scrolled)
-        return nothingTyped(
+        return refuse(
           withheld
-            ? tap
-              ? `${tap.error}; ${withheld}${(await cover?.()) ?? ''}`
-              : `${withheld}${(await cover?.()) ?? ''}`
+            ? (tap?.error ?? '')
             : tap
               ? `${tap.error}; "${quoted}" stayed off screen after one scroll`
               : `"${quoted}" stayed off screen after one scroll: its centre is past the visible area or under the keyboard`,
@@ -2549,7 +2557,7 @@ async function walkBlockScoped(
         target.element,
       );
       if (!scroll.ok || !('ref' in rebound))
-        return nothingTyped(
+        return refuse(
           'TARGET_NOT_FOUND: the refused wrapper stayed off screen after one scroll',
           afterScroll.screen,
           'TARGET_NOT_FOUND',
@@ -2563,7 +2571,7 @@ async function walkBlockScoped(
       );
     }
     if (!tap.ok)
-      return nothingTyped(
+      return refuse(
         `${tap.error ?? 'the tap was not dispatched'}; tapping "${quoted}" failed`,
         before.screen,
         tap.ambiguous ? 'TARGET_AMBIGUOUS' : undefined,
@@ -2617,10 +2625,10 @@ async function walkBlockScoped(
               error instanceof QaDispatchError
             )
               throw error;
-            return nothingTyped(`tapping "${quoted}" raised no keyboard`, after.screen);
+            return refuse(`tapping "${quoted}" raised no keyboard`, after.screen);
           }
           if (!blurred)
-            return nothingTyped(
+            return refuse(
               `tapping "${quoted}" raised no keyboard; the focused field could not be blurred`,
               after.screen,
             );
@@ -2632,7 +2640,7 @@ async function walkBlockScoped(
             target.element,
           );
           if (!('ref' in rebound))
-            return nothingTyped(
+            return refuse(
               'TARGET_NOT_FOUND: the focused field no longer resolves uniquely after blur',
               after.screen,
               'TARGET_NOT_FOUND',
@@ -2640,7 +2648,7 @@ async function walkBlockScoped(
           const retryOverlay =
             deps.platform === 'ios' && inferredOverlayCoverage(rebound.element, after.screen);
           if (retryOverlay && (await probeOverlay(item, after, rebound.element)) !== 'hittable')
-            return nothingTyped(
+            return refuse(
               `"${quoted}" ${INFERRED_FILL_UNAVAILABLE}${cutterText(retryOverlay)}`,
               after.screen,
               'TARGET_NOT_FOUND',
@@ -2650,8 +2658,9 @@ async function walkBlockScoped(
               ? deps.press(rebound.ref, context, { requireLiveHit: true })
               : deps.press(rebound.ref, context),
           );
+          if (retap.ok) tapped = true;
           if (!retap.ok)
-            return nothingTyped(
+            return refuse(
               `${retap.error ?? 'the tap was not dispatched'}; tapping "${quoted}" failed`,
               after.screen,
               retap.ambiguous ? 'TARGET_AMBIGUOUS' : undefined,
@@ -2671,7 +2680,7 @@ async function walkBlockScoped(
     if (binding?.kind === 'strict')
       return { ...binding.strict, observation: after, identity: target.oracleTestID, scrolled };
     if (after.screen.keyboardVisible !== true)
-      return nothingTyped(
+      return refuse(
         refocused
           ? 'focus was reported after the first tap and the keyboard stayed hidden after a blur and a second tap'
           : `tapping "${quoted}" raised no keyboard`,
@@ -2679,13 +2688,9 @@ async function walkBlockScoped(
       );
     const again = binding?.kind === 'fallback' ? binding.fallback : undefined;
     if (!again)
-      return nothingTyped(
-        `the tap on "${quoted}" changed the screen`,
-        after.screen,
-        'TARGET_NOT_FOUND',
-      );
+      return refuse(`the tap on "${quoted}" changed the screen`, after.screen, 'TARGET_NOT_FOUND');
     if (proofMode && !(await focusProven('tap', again.oracleTestID)))
-      return nothingTyped(
+      return refuse(
         `the keyboard was already up and focus on "${quoted}" is not proven`,
         after.screen,
       );
@@ -2707,10 +2712,7 @@ async function walkBlockScoped(
     } catch (error) {
       if (isAbort(error)) throw error;
       if (error instanceof EvidenceExpired)
-        return nothingTyped(
-          `the evidence expired before typing after tapping "${quoted}"`,
-          after.screen,
-        );
+        return refuse(`the evidence expired before typing after tapping "${quoted}"`, after.screen);
       throw error;
     }
     fillMethod = entry.method ?? 'keyboard';
@@ -2722,12 +2724,11 @@ async function walkBlockScoped(
         (screen) => bindFillIdentity(item, screen, again.oracleTestID) !== undefined,
       )) ?? entry;
     if (!entry.ok)
-      return failed(
-        item,
-        attempt,
+      return refuse(
         `${entry.error ?? 'typing was not dispatched'}; typing after tapping "${quoted}" was not retried`,
         after.screen,
         undefined,
+        false,
       );
     await capture(item);
     const reason =

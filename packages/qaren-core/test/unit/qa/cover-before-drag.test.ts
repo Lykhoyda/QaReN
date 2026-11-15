@@ -819,7 +819,10 @@ for (const noTap of [false, true]) {
     });
     assert.equal(r.result.verdict, 'FAIL');
     assert.deepEqual(scrolls(r.acts), [], r.log.join(','));
-    assert.deepEqual(r.acts, noTap ? ['fill @e2', 'fill @e2'] : ['fill @e2', 'fill @e2', 'press @e2']);
+    assert.deepEqual(
+      r.acts,
+      noTap ? ['fill @e2', 'fill @e2'] : ['fill @e2', 'fill @e2', 'press @e2'],
+    );
     if (!noTap) {
       const retryFill = r.log.indexOf('fill @e2', r.log.indexOf('fill @e2') + 1);
       const fallbackPress = r.log.indexOf('press @e2');
@@ -834,6 +837,89 @@ for (const noTap of [false, true]) {
       noTap ? /covered by other at 0,690,402,110/ : /covered by other at 0,437,402,437/,
     );
     assert.doesNotMatch(r.reason, /after (one|a) scroll/);
+  });
+}
+
+for (const outcome of ['probe-refused', 'press-refused', 'tap-landed'] as const) {
+  test(`T8(e): withheld Fill fallback keeps terminal cover evidence (${outcome})`, async () => {
+    const wrapper = (views: View[]) =>
+      views.map((v) => (v.id === 'go' ? { ...v, type: 'Other' } : v));
+    let fills = 0;
+    const events: string[] = [];
+    const r = await walk({
+      views: wrapper(sheeted()),
+      retry: () =>
+        wrapper(
+          fills < 2
+            ? sheeted()
+            : [list(), target(), { id: 'qa-sheet', type: 'Other', rect: SHEET }],
+        ),
+      kind: 'fill',
+      edit: (screen) => {
+        byId(screen, 'go').kind = 'input';
+      },
+      dispatches: [
+        OCCLUDED,
+        { ok: false, proven: false, mutation: 'none', error: 'NO_TEXT_INPUT_TARGET: refused' },
+        outcome === 'tap-landed'
+          ? { ok: true, proven: false }
+          : {
+              ok: false,
+              proven: false,
+              mutation: 'none',
+              error: 'LIVE_HIT_UNPROVEN: not-hittable; no tap was performed.',
+            },
+      ],
+      setup: (deps) => {
+        const captureScreen = deps.captureScreen;
+        deps.captureScreen = async (...args) => {
+          const screen = await captureScreen(...args);
+          events.push(args[0]?.platformPresence ? 'presence' : 'capture');
+          return screen;
+        };
+        const fill = deps.fill;
+        deps.fill = async (...args) => {
+          fills += 1;
+          return fill(...args);
+        };
+        const press = deps.press;
+        deps.press = async (...args) => {
+          events.push('press');
+          return press(...args);
+        };
+        deps.hitProbe = async () => {
+          events.push('probe');
+          return outcome === 'probe-refused' ? 'not-hittable' : 'hittable';
+        };
+        deps.typeFocused = async () => assert.fail('nothing is typed without a keyboard');
+      },
+    });
+    assert.equal(r.result.verdict, 'FAIL');
+    assert.deepEqual(scrolls(r.acts), [], r.log.join(','));
+    assert.equal(fills, 2);
+    const probe = events.indexOf('probe');
+    assert.ok(probe > 0, events.join(','));
+    assert.equal(events[probe - 1], 'capture');
+    if (outcome === 'probe-refused') {
+      assert.equal(events.includes('press'), false);
+      assert.deepEqual(r.acts, ['fill @e2', 'fill @e2']);
+    } else {
+      assert.equal(events[probe + 1], 'press');
+      assert.deepEqual(r.acts, ['fill @e2', 'fill @e2', 'press @e3 live']);
+    }
+    if (outcome === 'tap-landed') {
+      assert.match(r.reason, /tapping "go" raised no keyboard/);
+      assert.doesNotMatch(r.reason, /stayed covered|nothing was scrolled|covered by/);
+    } else {
+      assert.equal(
+        r.reason.split('"go" stayed covered; it is in no scroll area, so nothing was scrolled')
+          .length - 1,
+        1,
+        r.reason,
+      );
+      assert.equal(r.reason.split('covered by other at 0,437,402,437').length - 1, 1, r.reason);
+      assert.doesNotMatch(r.reason, /after (one|a) scroll/);
+    }
   });
 }
 
