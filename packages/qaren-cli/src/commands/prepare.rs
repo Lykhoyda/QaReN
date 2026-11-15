@@ -4764,6 +4764,51 @@ fn run_finite_build(ctx: &mut Ctx, spec: &CmdSpec, work: BuildWork) -> Result<()
     result.and(released)
 }
 
+// The worker cap of a build whose command line QaReN controls, and how the receipt names it.
+fn build_jobs(ctx: &mut Ctx) -> (Option<std::num::NonZeroU32>, String) {
+    if let Some(jobs) = ctx.record.scenario.build.jobs {
+        return (Some(jobs), format!("{jobs} (build.jobs)"));
+    }
+    let host = crate::host_capacity::build_sample(ctx.runner, std::env::consts::OS);
+    match (
+        crate::host_capacity::build_jobs(host.cores, host.total_bytes),
+        host.cores,
+        host.total_bytes,
+    ) {
+        (Some(jobs), Some(cores), Some(bytes)) => (
+            Some(jobs),
+            format!("{jobs} (machine: {cores} cores, {} GiB)", bytes >> 30),
+        ),
+        _ => (None, "uncapped (machine size unknown)".into()),
+    }
+}
+
+fn gradle_build_opts(ctx: &mut Ctx, no_daemon: bool) -> (Option<String>, String) {
+    let user = ctx.runner.env_var("GRADLE_OPTS");
+    let (jobs, mut applied) = build_jobs(ctx);
+    if jobs.is_some() {
+        // Appended last, so it wins over a worker value in the user's own GRADLE_OPTS for this build.
+        applied
+            .push_str(", set as org.gradle.workers.max over any value in the user's GRADLE_OPTS");
+    }
+    (
+        android::gradle_opts(user.as_deref(), jobs, no_daemon),
+        applied,
+    )
+}
+
+fn note_build_policy(ctx: &mut Ctx, label: &str, jobs: &str) {
+    let priority = if ctx.record.scenario.build.niced() {
+        "nice 10"
+    } else {
+        "normal"
+    };
+    ctx.notes.push((
+        format!("build_policy:{label}"),
+        format!("priority {priority}; jobs {jobs}"),
+    ));
+}
+
 fn run_finite_build_command(
     ctx: &mut Ctx,
     spec: &CmdSpec,
@@ -4776,13 +4821,19 @@ fn run_finite_build_command(
     let log = RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id)
         .join("logs")
         .join(format!("{}.log", spec.label));
+    // nice execs the build, so the recorded process and group stay the build's own.
+    let exec = if ctx.record.scenario.build.niced() {
+        "exec nice -n 10 \"$@\" >&2"
+    } else {
+        "exec \"$@\" >&2"
+    };
     let mut gated = spec.clone();
     gated.program = "/bin/bash".into();
     gated.args = vec![
         "--noprofile".into(),
         "--norc".into(),
         "-c".into(),
-        "IFS= read -r start && [ \"$start\" = start ] || exit 4; exec \"$@\" >&2".into(),
+        format!("IFS= read -r start && [ \"$start\" = start ] || exit 4; {exec}"),
         "qaren-build".into(),
         spec.program.clone(),
     ];
@@ -5289,13 +5340,51 @@ fn build_ios(ctx: &mut Ctx) -> Result<(), Failure> {
     let output = RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id).join("ios-build");
     std::fs::create_dir(&output)
         .map_err(|_| build_failure(ctx, "cannot exclusively create iOS build output directory"))?;
-    let build = ios::build_spec(
+    let workspace = ctx.record.scenario.build.ios_workspace.clone();
+    let (jobs, mut applied) = build_jobs(ctx);
+    let arch_all = ctx.record.scenario.build.arch == Some(crate::scenario::BuildArch::All);
+    let user_env = ctx.runner.env_names();
+    let arm64 = ios::arm64_only(
+        arch_all,
+        |name| user_env.iter().any(|set| set == name),
+        || crate::host_capacity::apple_silicon_answer(ctx.runner),
+    );
+    let mut build = ios::build_spec(
         &project_root,
         &output,
         build_work_seconds_left(ctx),
-        ctx.record.scenario.build.ios_workspace.as_ref(),
+        workspace.as_ref(),
+        jobs,
+        arm64.is_ok(),
     );
-    run_finite_build(ctx, &build, BuildWork::Compile)?;
+    let mut wrapped = false;
+    if workspace.is_none() && jobs.is_some() {
+        let path = ctx.runner.env_var("PATH");
+        match ios::cap_expo_jobs(&mut build, &output, path.as_deref(), jobs) {
+            Ok(true) => wrapped = true,
+            Ok(false) => applied = "uncapped (xcodebuild not found on PATH)".into(),
+            Err(error) => {
+                applied = format!("uncapped (the xcodebuild wrapper could not be written: {error})")
+            }
+        }
+    }
+    let built = run_finite_build(ctx, &build, BuildWork::Compile);
+    if wrapped {
+        applied = ios::expo_jobs_applied(&output, &applied);
+    }
+    // Also after a partly written wrapper, so output retirement finds only the app.
+    match std::fs::remove_dir_all(output.join(ios::JOBS_WRAPPER_DIR)) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => ctx
+            .notes
+            .push(("xcodebuild_wrapper".into(), format!("not removed: {error}"))),
+        _ => {}
+    }
+    let arch = match arm64 {
+        Ok(()) => "arm64".to_string(),
+        Err(why) => format!("all ({why})"),
+    };
+    note_build_policy(ctx, &build.label, &format!("{applied}; arch {arch}"));
+    built?;
     ensure_build_budget(ctx)?;
     if ctx.record.scenario.build.ios_workspace.is_some() {
         let built =
@@ -5455,11 +5544,15 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
                 }
                 learn_build_limit(ctx);
                 let compile = build_work_seconds_left(ctx);
-                run_finite_build(
-                    ctx,
-                    &android::gradle_assemble_spec(&project_root, &emulator.abi, compile),
-                    BuildWork::Compile,
-                )?;
+                let (gradle_opts, applied) = gradle_build_opts(ctx, false);
+                let gradle = android::gradle_assemble_spec(
+                    &project_root,
+                    &emulator.abi,
+                    compile,
+                    gradle_opts.as_deref(),
+                );
+                note_build_policy(ctx, &gradle.label, &applied);
+                run_finite_build(ctx, &gradle, BuildWork::Compile)?;
                 let (path, kind) =
                     locate_built_apk(&project_root).map_err(|e| build_failure(ctx, e))?;
                 let sha256 = buildplan::hash_artifact(&path).map_err(|e| build_failure(ctx, e))?;
@@ -5477,7 +5570,18 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
                 .resources
                 .adb_endpoint()
                 .expect("android allocated");
-            android::build_spec(&project_root, &serial, server_port, port, deadline)
+            let (gradle_opts, applied) = gradle_build_opts(ctx, true);
+            let spec = android::build_spec(
+                &project_root,
+                &serial,
+                server_port,
+                port,
+                deadline,
+                ctx.record.scenario.build.niced(),
+                gradle_opts.as_deref(),
+            );
+            note_build_policy(ctx, &spec.label, &applied);
+            spec
         }
     };
     let build_log = RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id)
@@ -6059,6 +6163,8 @@ fn dry_run_receipt(
                 Path::new("<run_dir>/ios-build"),
                 deadlines.build_seconds,
                 scenario.build.ios_workspace.as_ref(),
+                None,
+                false,
             ));
             planned.push(ios::install_app_spec(
                 udid,
@@ -6094,6 +6200,8 @@ fn dry_run_receipt(
                 usb_adb_server_port,
                 port,
                 deadlines.build_seconds,
+                false,
+                None,
             ));
         }
         Platform::Android => {
@@ -6134,6 +6242,8 @@ fn dry_run_receipt(
                 android_spec.adb_server_port,
                 port,
                 deadlines.build_seconds,
+                false,
+                None,
             ));
         }
     }
