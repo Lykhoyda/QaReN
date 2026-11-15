@@ -3129,7 +3129,7 @@ fn android_prepare_happy_path_leases_tunnels_and_pins_serial() {
     )));
     assert_eq!(
         receipt.outcomes["build_policy:expo-run-android"],
-        "priority nice 10; jobs 8 (machine: 18 cores, 24 GiB)"
+        "priority nice 10; jobs 8 (machine: 18 cores, 24 GiB), set as org.gradle.workers.max over any value in the user's GRADLE_OPTS"
     );
 }
 

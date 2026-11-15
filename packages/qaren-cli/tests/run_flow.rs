@@ -4889,7 +4889,7 @@ fn android_check_prebuilds_an_absent_android_dir_before_gradle() {
     )));
     assert_eq!(
         receipt.outcomes["build_policy:gradle-assemble"],
-        "priority nice 10; jobs 3 (build.jobs)"
+        "priority nice 10; jobs 3 (build.jobs), set as org.gradle.workers.max over any value in the user's GRADLE_OPTS"
     );
     assert!(!mock
         .calls

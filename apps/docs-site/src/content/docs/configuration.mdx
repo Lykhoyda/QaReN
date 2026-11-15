@@ -91,9 +91,9 @@ precedence, architecture exceptions and receipt evidence, see the
 
 | Key        | Type                | Default            | Meaning                                                                 |
 | ---------- | ------------------- | ------------------ | ----------------------------------------------------------------------- |
-| `jobs`     | positive integer    | from the machine   | The worker cap for Gradle and `xcodebuild`.                             |
+| `jobs`     | positive integer    | from the machine   | The worker cap for Gradle and `xcodebuild`. QaReN sets `org.gradle.workers.max` for its builds, overriding a value for it in your own `GRADLE_OPTS` for QaReN builds only. If you set a lower number there, QaReN builds use QaReN's number, possibly more workers, until you set `jobs`; use `jobs` to choose the number. |
 | `priority` | `low` or `normal`   | `low`              | `normal` runs builds without `nice`.                                    |
-| `arch`     | `all`               | leave out x86_64 on Apple silicon | `all` turns QaReN's x86_64 exclusion off, for an app with an x86_64-only simulator dependency. |
+| `arch`     | `all`               | leave out x86_64 on Apple silicon | `all` turns QaReN's x86_64 exclusion off, for an app with an x86_64-only simulator dependency. QaReN also leaves it off when `EXCLUDED_ARCHS`, `ARCHS` or `ONLY_ACTIVE_ARCH` is present in your environment, to any value. |
 
 ```yaml
 build:

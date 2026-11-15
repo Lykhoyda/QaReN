@@ -5650,9 +5650,14 @@ the directory when the build command ends, recording any removal failure.
 `build.jobs` overrides the machine's number and works even when the core count
 or memory cannot be read; without it, an unreadable machine size leaves builds
 uncapped. The Expo iOS route is also uncapped if `xcodebuild` does not resolve
-or the wrapper cannot be written. Lower priority still applies. QaReN appends
-the worker cap after the user's `GRADLE_OPTS`, so it overrides any existing
-`-Dorg.gradle.workers.max=` while keeping the user's other options verbatim.
+or the wrapper cannot be written. Lower priority still applies. QaReN sets
+`org.gradle.workers.max` for its own builds: it appends the cap after the
+user's `GRADLE_OPTS`, so a value for that property in the user's own
+`GRADLE_OPTS` is overridden for QaReN builds only, and the user's other options
+are kept verbatim. A user who set a lower worker number there gets QaReN's
+number in QaReN builds, possibly more workers, until they set `build.jobs`.
+`build.jobs` is the way to choose the number; the receipt
+says the cap was set over any value in the user's `GRADLE_OPTS`.
 `build.priority: normal` drops `nice`.
 
 On an Apple-silicon Mac (the machine's `sysctl -n hw.optional.arm64` is `1`)

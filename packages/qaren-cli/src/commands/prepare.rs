@@ -4768,7 +4768,12 @@ fn build_jobs(ctx: &mut Ctx) -> (Option<std::num::NonZeroU32>, String) {
 
 fn gradle_build_opts(ctx: &mut Ctx, no_daemon: bool) -> (Option<String>, String) {
     let user = ctx.runner.env_var("GRADLE_OPTS");
-    let (jobs, applied) = build_jobs(ctx);
+    let (jobs, mut applied) = build_jobs(ctx);
+    if jobs.is_some() {
+        // Appended last, so it wins over a worker value in the user's own GRADLE_OPTS for this build.
+        applied
+            .push_str(", set as org.gradle.workers.max over any value in the user's GRADLE_OPTS");
+    }
     (
         android::gradle_opts(user.as_deref(), jobs, no_daemon),
         applied,
