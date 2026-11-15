@@ -3882,10 +3882,17 @@ React hosts outside the one mounted `Modal` are not gaps while every associated 
 sits inside it, so a full-screen promo over a mounted screen still counts as one control.
 Check-first, wait-first and tap/fill-first plans behind a presented full-screen promo
 recover under these guards and retry the step once. Before scrolling for a
-React-only tap or fill target while a decline control is on screen, an ordinary
-capture gets one bounded presence recapture within the step's remaining budget. When it proves the target is behind
-the presented `Modal`, recovery runs instead of scrolling the promo. A recapture that
-runs out of time or returns incomplete evidence leaves the cover unproven, and the
+React-only tap or fill target, an ordinary capture gets one bounded presence
+recapture within the step's remaining budget: on iOS before the target's one drag
+unless a system dialog is in front, elsewhere only while a decline control is on screen. When it proves the target is behind
+the presented `Modal`, recovery runs instead of scrolling the promo. On iOS the drag
+then goes only toward a target that read places below or above an on-screen scroll
+container that is also its scroll-until container, inside the part of that container
+that nothing drawn in front covers; a target inside the visible area, with no matching
+scroll container, with no exposed scroll band or with no readable place refuses `TARGET_NOT_FOUND`
+("is known to React but has no element on the visible screen", with the reason and
+"nothing was scrolled"), and so does a recapture that runs out of time or returns
+incomplete evidence. These refusals run no recovery. Elsewhere such a recapture leaves the cover unproven, and the
 step continues as it would have without it; it never adds a refusal of its own.
 If the ordinary observation expired during that read, it is refreshed before
 continuing, with the modal cover still unproven.
