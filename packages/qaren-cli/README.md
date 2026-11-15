@@ -735,7 +735,8 @@ same allowance, and their actual duration is excluded from the build budget,
 including the iOS build window the slot is claimed in. Once the allowance is
 spent, a queued build takes no further samples. A recheck in the slot queue
 keeps the platform lock, as the slot wait itself does. Lock contention itself
-still consumes `deadlines.build_seconds`.
+still counts against each wait's own `deadlines.build_seconds` bound; the
+platform lock wait is outside the build window and the slot wait inside it.
 When memory recovers the build goes on. When memory is still constrained
 but not critical when the allowance is spent, the build goes on with its
 remaining build budget.
