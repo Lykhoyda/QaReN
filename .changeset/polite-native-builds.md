@@ -2,4 +2,4 @@
 "qaren": patch
 ---
 
-Run native builds at lower CPU priority with a worker cap sized from the machine, also on the default `expo run:ios` path, and compile iOS simulator builds for arm64 only on Apple silicon, overridable through `build.jobs`, `build.priority` and `build.arch` in `.qaren/config.yaml` and recorded per build in the receipt.
+Lower native app build CPU priority, apply machine-sized worker caps including through a wrapper for Expo iOS builds, and request arm64-only iOS simulator builds on Apple silicon, with configurable overrides and receipt evidence.

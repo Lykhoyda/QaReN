@@ -5627,13 +5627,14 @@ row with the holder, lock, held time and time waited. Plain output records
 each observed holder change and each completed wait. Queue events contain
 only the lock name, a validated run id and durations.
 
-**Build priority and worker cap.** Every native build runs under `nice -n 10`:
+**Build priority and worker cap.** By default, native app builds run under `nice -n 10`:
 finite builds (`expo prebuild`, `expo run:ios`, the workspace `xcodebuild`,
 direct Gradle) through the build gate's `exec`, so the recorded process and
 group stay the build's own, and `expo run:android` through its own command,
 so its Metro runs niced too. Builds whose command line QaReN controls get one
 worker cap, `max(2, min(cores × 3 / 4, (total GiB − 8) / 2))` from the
-machine's core count and memory: `-Dorg.gradle.workers.max` in `GRADLE_OPTS`
+machine's core count and memory (integer division, with memory below 8 GiB
+treated as zero before the two-worker minimum): `-Dorg.gradle.workers.max` in `GRADLE_OPTS`
 on both Android paths, and `-jobs` on the workspace `xcodebuild` line.
 `expo run:android` also gets `-Dorg.gradle.daemon=false`; direct Gradle
 already passes `--no-daemon`. The default `expo run:ios` path gets the same
@@ -5658,11 +5659,13 @@ are kept verbatim. A user who set a lower worker number there gets QaReN's
 number in QaReN builds, possibly more workers, until they set `build.jobs`.
 `build.jobs` is the way to choose the number; the receipt
 says the cap was set over any value in the user's `GRADLE_OPTS`.
-`build.priority: normal` drops `nice`.
+`build.priority: normal` drops `nice`. These settings belong under `build`
+in `.qaren/config.yaml` for `check` and `pr`, or under `build` in the scenario
+for CLI-owned `prepare` builds; they do not control cooperative handoff builds.
 
 On an Apple-silicon Mac (the machine's `sysctl -n hw.optional.arm64` is `1`)
-both iOS build routes get `EXCLUDED_ARCHS=x86_64` in their environment, so the
-simulator build compiles arm64 only. An environment value is the weakest
+both iOS build routes get `EXCLUDED_ARCHS=x86_64` in their environment to
+request an arm64-only simulator build. An environment value is the weakest
 source, so a project's own architecture settings still win. It is left out
 when any of `EXCLUDED_ARCHS`, `ARCHS` or `ONLY_ACTIVE_ARCH` is present in the
 user's environment, to any value (including empty), and when
@@ -5677,7 +5680,8 @@ The dry-run command list shows the bare build commands. Nothing new is
 refused: a busy machine still builds, slower. `nice` does not bound memory,
 `-jobs` bounds build operations rather than compiler processes one for one,
 and whether the Gradle cap also bounds CMake and Ninja compile jobs is not
-established.
+established. The reduction in concurrent compilers and the slowdown on a quiet
+machine have not yet been measured.
 
 On iOS the platform lock covers only the
 build: `prepare`, `check` and `pr` claim it after the device is allocated and
