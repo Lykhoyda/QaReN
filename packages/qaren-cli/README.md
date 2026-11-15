@@ -152,8 +152,8 @@ the `simulator-service` row separately reports simulator inventory failures belo
 
 An Android emulator starts helper processes that can keep running, sometimes at
 several cores' worth of CPU, after the emulator itself has exited. The
-`device-helpers` row reads the same process list as `host-devices` (pid, parent
-pid, owner, CPU, state, start time, name and command line) and looks at
+`device-helpers` row on macOS and Linux reads the same process list as
+`host-devices` (pid, parent pid, owner, CPU, state, start time, name and command line) and looks at
 `netsimd` and `crashpad_handler` processes whose command line starts with an
 absolute path to the helper. A helper is reported when no emulator is running
 or starting, or when it uses more than 100% CPU. Any `qemu-system-*` or
@@ -179,9 +179,10 @@ sample; Linux computes idle from two `/proc/stat` samples one second apart, excl
 guest counters from the total and treating I/O wait as busy. Historical five- and
 fifteen-minute load is reported without independently triggering a warning.
 
-Host commands have three-second budgets, except `top` and the simulator inventory
-which have five seconds each; subprocess termination can add up to five seconds
-per timeout. Missing, malformed or timed-out host statistics warn with a manual
+Host commands have three-second budgets, except helper package-file reads
+(two seconds), `top` and the simulator inventory (five seconds each);
+subprocess termination can add up to five seconds per timeout. Missing, malformed
+or timed-out host statistics warn with a manual
 next step. Doctor makes one simulator inventory read and reports measured latency
 for every simulator-service diagnosis, using the shared
 [inventory validity rule](#ios-simulator-lifecycle). An unreadable response warns;
@@ -694,8 +695,8 @@ Refusals before a run directory exists carry the samples in the receipt only.
 `qaren publish` does not include these samples in PR comments or descriptions.
 Sampling starts no device or service and introduces no cleanup resource.
 
-Right after the start sample, the run reads the process list once (three-second
-limit) for the [emulator helper processes](#emulator-helper-processes) doctor
+Right after the start sample on macOS and Linux, the run reads the process list
+once (three-second limit) for the [emulator helper processes](#emulator-helper-processes) doctor
 reports, plus one package-file read per candidate helper folder. Each finding is
 listed in the receipt's `device_helpers` as its
 executable name and pid only, and `report.md` gains one line naming each with
