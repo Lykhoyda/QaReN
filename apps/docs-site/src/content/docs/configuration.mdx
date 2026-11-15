@@ -35,6 +35,7 @@ loginMarker:
 | `depsCache` | boolean | `true` | Dependency reuse for `pr`; see the [cache contract and cold-run switch](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#test-a-pull-request). |
 | `ios`             | object           | —       | iOS settings, below.                                                                          |
 | `android`         | object           | —       | Android settings, below.                                                                      |
+| `build`           | object           | See below | Native build priority and worker cap; see [build](#build).                                  |
 | `deadlines`       | object           | See below | Preparation budgets; see [deadlines](#deadlines).                                           |
 
 `loginBlock` and `loginMarker` are set together. `loginBlock` must be an action slug: it
@@ -81,6 +82,27 @@ ready for Xcode.
 
 `check` and `pr` on Android borrow an emulator that is already booted; see
 [Check a plan](../check/#android).
+
+## build
+
+By default every native build runs at lower CPU priority (`nice -n 10`), and
+builds whose command line QaReN controls get a worker cap computed from the
+machine's cores and memory. The default `expo run:ios` build is not capped.
+
+| Key        | Type                | Default            | Meaning                                                                 |
+| ---------- | ------------------- | ------------------ | ----------------------------------------------------------------------- |
+| `jobs`     | positive integer    | from the machine   | The worker cap for Gradle and the workspace `xcodebuild` line.          |
+| `priority` | `low` or `normal`   | `low`              | `normal` runs builds without `nice`.                                    |
+
+A worker setting in your own `GRADLE_OPTS` wins over `jobs`. The receipt
+records what each build got; see the
+[build priority and worker cap contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#native-fingerprint-build-selection).
+
+```yaml
+build:
+  jobs: 4
+  priority: normal
+```
 
 ## deadlines
 

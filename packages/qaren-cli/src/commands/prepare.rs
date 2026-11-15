@@ -4747,6 +4747,51 @@ fn run_finite_build(ctx: &mut Ctx, spec: &CmdSpec) -> Result<(), Failure> {
     result.and(released)
 }
 
+// The worker cap of a build whose command line QaReN controls, and how the receipt names it.
+fn build_jobs(ctx: &mut Ctx) -> (Option<std::num::NonZeroU32>, String) {
+    if let Some(jobs) = ctx.record.scenario.build.jobs {
+        return (Some(jobs), format!("{jobs} (build.jobs)"));
+    }
+    let host = crate::host_capacity::sample(ctx.runner, std::env::consts::OS);
+    match (
+        crate::host_capacity::build_jobs(host.cores, host.total_bytes),
+        host.cores,
+        host.total_bytes,
+    ) {
+        (Some(jobs), Some(cores), Some(bytes)) => (
+            Some(jobs),
+            format!("{jobs} (machine: {cores} cores, {} GiB)", bytes >> 30),
+        ),
+        _ => (None, "uncapped (machine size unknown)".into()),
+    }
+}
+
+// The user's own worker setting wins over build.jobs and the machine's number.
+fn gradle_build_opts(ctx: &mut Ctx, no_daemon: bool) -> (Option<String>, String) {
+    let user = ctx.runner.env_var("GRADLE_OPTS");
+    let (jobs, applied) = if android::user_sets_gradle_workers(user.as_deref()) {
+        (None, "set by the user's GRADLE_OPTS".into())
+    } else {
+        build_jobs(ctx)
+    };
+    (
+        android::gradle_opts(user.as_deref(), jobs, no_daemon),
+        applied,
+    )
+}
+
+fn note_build_policy(ctx: &mut Ctx, label: &str, jobs: &str) {
+    let priority = if ctx.record.scenario.build.niced() {
+        "nice 10"
+    } else {
+        "normal"
+    };
+    ctx.notes.push((
+        format!("build_policy:{label}"),
+        format!("priority {priority}; jobs {jobs}"),
+    ));
+}
+
 fn run_finite_build_command(
     ctx: &mut Ctx,
     spec: &CmdSpec,
@@ -4758,13 +4803,19 @@ fn run_finite_build_command(
     let log = RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id)
         .join("logs")
         .join(format!("{}.log", spec.label));
+    // nice execs the build, so the recorded process and group stay the build's own.
+    let exec = if ctx.record.scenario.build.niced() {
+        "exec nice -n 10 \"$@\" >&2"
+    } else {
+        "exec \"$@\" >&2"
+    };
     let mut gated = spec.clone();
     gated.program = "/bin/bash".into();
     gated.args = vec![
         "--noprofile".into(),
         "--norc".into(),
         "-c".into(),
-        "IFS= read -r start && [ \"$start\" = start ] || exit 4; exec \"$@\" >&2".into(),
+        format!("IFS= read -r start && [ \"$start\" = start ] || exit 4; {exec}"),
         "qaren-build".into(),
         spec.program.clone(),
     ];
@@ -5096,12 +5147,22 @@ fn build_ios(ctx: &mut Ctx) -> Result<(), Failure> {
     let output = RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id).join("ios-build");
     std::fs::create_dir(&output)
         .map_err(|_| build_failure(ctx, "cannot exclusively create iOS build output directory"))?;
+    let (jobs, applied) = if ctx.record.scenario.build.ios_workspace.is_some() {
+        build_jobs(ctx)
+    } else {
+        (
+            None,
+            "uncapped (expo run:ios starts xcodebuild itself)".to_string(),
+        )
+    };
     let build = ios::build_spec(
         &project_root,
         &output,
         build_seconds_left(ctx),
         ctx.record.scenario.build.ios_workspace.as_ref(),
+        jobs,
     );
+    note_build_policy(ctx, &build.label, &applied);
     run_finite_build(ctx, &build)?;
     ensure_build_budget(ctx)?;
     if ctx.record.scenario.build.ios_workspace.is_some() {
@@ -5227,10 +5288,15 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
                         ),
                     ));
                 }
-                run_finite_build(
-                    ctx,
-                    &android::gradle_assemble_spec(&project_root, &emulator.abi, deadline),
-                )?;
+                let (gradle_opts, applied) = gradle_build_opts(ctx, false);
+                let gradle = android::gradle_assemble_spec(
+                    &project_root,
+                    &emulator.abi,
+                    deadline,
+                    gradle_opts.as_deref(),
+                );
+                note_build_policy(ctx, &gradle.label, &applied);
+                run_finite_build(ctx, &gradle)?;
                 let (path, kind) =
                     locate_built_apk(&project_root).map_err(|e| build_failure(ctx, e))?;
                 let sha256 = buildplan::hash_artifact(&path).map_err(|e| build_failure(ctx, e))?;
@@ -5248,7 +5314,18 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
                 .resources
                 .adb_endpoint()
                 .expect("android allocated");
-            android::build_spec(&project_root, &serial, server_port, port, deadline)
+            let (gradle_opts, applied) = gradle_build_opts(ctx, true);
+            let spec = android::build_spec(
+                &project_root,
+                &serial,
+                server_port,
+                port,
+                deadline,
+                ctx.record.scenario.build.niced(),
+                gradle_opts.as_deref(),
+            );
+            note_build_policy(ctx, &spec.label, &applied);
+            spec
         }
     };
     let build_log = RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id)
@@ -5830,6 +5907,7 @@ fn dry_run_receipt(
                 Path::new("<run_dir>/ios-build"),
                 deadlines.build_seconds,
                 scenario.build.ios_workspace.as_ref(),
+                None,
             ));
             planned.push(ios::install_app_spec(
                 udid,
@@ -5865,6 +5943,8 @@ fn dry_run_receipt(
                 usb_adb_server_port,
                 port,
                 deadlines.build_seconds,
+                false,
+                None,
             ));
         }
         Platform::Android => {
@@ -5905,6 +5985,8 @@ fn dry_run_receipt(
                 android_spec.adb_server_port,
                 port,
                 deadlines.build_seconds,
+                false,
+                None,
             ));
         }
     }

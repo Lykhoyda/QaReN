@@ -237,7 +237,13 @@ fn workspace_check_uses_a_gated_finite_build_and_persists_the_verified_artifact(
         .find(|c| c.label == "xcodebuild-ios")
         .unwrap();
     assert_eq!(build.program, "/bin/bash");
-    assert!(build.args[3].ends_with("exec \"$@\" >&2"));
+    assert!(build.args[3].ends_with("exec nice -n 10 \"$@\" >&2"));
+    assert_eq!(build.args[5], "xcrun");
+    assert!(!build.args.iter().any(|a| a == "-jobs"));
+    assert_eq!(
+        receipt.outcomes["build_policy:xcodebuild-ios"],
+        "priority nice 10; jobs uncapped (machine size unknown)"
+    );
     assert_eq!(mock.piped_stdin_text(0), "start\n");
     assert!(build.args.iter().any(|a| a == "Native Debug"));
     assert!(!labels(&mock)
@@ -264,6 +270,46 @@ fn workspace_check_uses_a_gated_finite_build_and_persists_the_verified_artifact(
         assert_eq!(std::fs::read_to_string(path).unwrap(), "keep");
     }
     assert_eq!(receipt.cleanup["device_lease"], "removed");
+}
+
+#[test]
+fn workspace_build_honours_configured_jobs_and_normal_priority() {
+    let (repo, app) = app_repo();
+    common::write_ios_workspace(&app, "ios/Native.xcworkspace");
+    configure_workspace(&app, "ios/Native.xcworkspace", "Native");
+    let config = app.join(".qaren/config.yaml");
+    let yaml = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(
+        &config,
+        format!("{yaml}build:\n  jobs: 3\n  priority: normal\n"),
+    )
+    .unwrap();
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    script_provision_build(&mut mock, "xcodebuild", common::IOS_NATIVE_FILES);
+    script_drift_status(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+    script_core_identity(&mut mock);
+    script_teardown(&mut mock);
+
+    let receipt = run(&mut mock, &request(&repo, &app, 30));
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    let build = mock
+        .calls
+        .iter()
+        .find(|c| c.label == "xcodebuild-ios")
+        .unwrap();
+    assert!(build.args[3].ends_with("; exec \"$@\" >&2"));
+    assert!(!build.args.iter().any(|a| a == "nice"));
+    let jobs = build.args.iter().position(|a| a == "-jobs").unwrap();
+    assert_eq!(build.args[jobs + 1], "3");
+    assert_eq!(
+        receipt.outcomes["build_policy:xcodebuild-ios"],
+        "priority normal; jobs 3 (build.jobs)"
+    );
 }
 
 #[test]
@@ -1124,6 +1170,10 @@ fn failed_spawn_retirement_save_or_interruption_retains_pending_and_both_locks()
                 assert_eq!(receipt.result, ReceiptResult::Failed);
                 assert!(receipt.cleanup["build_process"].starts_with("unresolved"));
                 assert!(receipt.cleanup["device_lease"].starts_with("unresolved"));
+                assert_eq!(
+                    receipt.outcomes["build_policy:expo-run-ios"],
+                    "priority nice 10; jobs uncapped (expo run:ios starts xcodebuild itself)"
+                );
             }
         }
         let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
@@ -2660,7 +2710,7 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
         build.timeout_seconds,
         qaren::scenario::Deadlines::default().build_seconds
     );
-    assert!(build.args[3].ends_with("exec \"$@\" >&2"));
+    assert!(build.args[3].ends_with("exec nice -n 10 \"$@\" >&2"));
     assert!(build.env.contains(&("BASH_ENV".into(), "/dev/null".into())));
     assert!(build.env.contains(&("TYPESAFE_API_KEY".into(), "".into())));
     assert_eq!(receipt.run_id, run_id());
@@ -4661,10 +4711,12 @@ fn android_check_prebuilds_an_absent_android_dir_before_gradle() {
     req.config_path = repo.join("operator-config.yaml");
     std::fs::write(
         &req.config_path,
-        format!("{config}registryAuthEnv: [PRIVATE_REGISTRY_TOKEN]\n"),
+        format!("{config}registryAuthEnv: [PRIVATE_REGISTRY_TOKEN]\nbuild:\n  jobs: 3\n"),
     )
     .unwrap();
     let mut mock = android_mock();
+    mock.environment
+        .insert("GRADLE_OPTS".into(), "-Xmx2g".into());
     script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
     mock.expect_run("ls-files", CmdOutput::success(""));
@@ -4711,6 +4763,20 @@ fn android_check_prebuilds_an_absent_android_dir_before_gradle() {
         Some(app.canonicalize().unwrap().join("android").as_path())
     );
     assert!(gradle.env.contains(&("CI".to_string(), "1".to_string())));
+    // Each build goes through nice exactly once: from the finite build gate, not from its spec.
+    for build in [prebuild, gradle] {
+        assert!(build.args[3].ends_with("; exec nice -n 10 \"$@\" >&2"));
+        assert_eq!(build.args.iter().filter(|a| a.contains("nice")).count(), 1);
+    }
+    assert_eq!(gradle.args[5], "./gradlew");
+    assert!(gradle.env.contains(&(
+        "GRADLE_OPTS".to_string(),
+        "-Xmx2g -Dorg.gradle.workers.max=3".to_string()
+    )));
+    assert_eq!(
+        receipt.outcomes["build_policy:gradle-assemble"],
+        "priority nice 10; jobs 3 (build.jobs)"
+    );
     assert!(!mock
         .calls
         .iter()

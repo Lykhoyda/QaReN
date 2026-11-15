@@ -1,5 +1,7 @@
 use crate::failure::{Failure, FailureCode};
-use crate::scenario::{require_launch_scheme, BuildOwner, Deadlines, IosWorkspaceBuild, Platform};
+use crate::scenario::{
+    require_launch_scheme, BuildOwner, BuildPriority, Deadlines, IosWorkspaceBuild, Platform,
+};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -40,9 +42,21 @@ pub struct CheckConfig {
     pub proof_in_description: Option<bool>,
     #[serde(default)]
     pub deps_cache: Option<bool>,
+    #[serde(default)]
+    pub build: BuildConfig,
     // Nested keys stay snake_case; this block does not inherit camelCase.
     #[serde(default)]
     pub deadlines: Deadlines,
+}
+
+// Overrides for how hard a native build may use the machine.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildConfig {
+    #[serde(default)]
+    pub jobs: Option<std::num::NonZeroU32>,
+    #[serde(default)]
+    pub priority: Option<BuildPriority>,
 }
 
 fn declared_video_policy<'de, D: serde::Deserializer<'de>>(
@@ -126,7 +140,7 @@ impl CheckConfig {
                 "config",
                 FailureCode::ScenarioInvalid,
                 format!("{} does not parse as check configuration", path.display()),
-                "fix .qaren/config.yaml (video must be strict or non-strict; keys: video, appId, packageManager, metroPort, ios, android, nodePath, devClientScheme, loginBlock, loginMarker, savePlans, proofInDescription, depsCache, registryAuthEnv, deadlines)",
+                "fix .qaren/config.yaml (video must be strict or non-strict; keys: video, appId, packageManager, metroPort, ios, android, nodePath, devClientScheme, loginBlock, loginMarker, savePlans, proofInDescription, depsCache, registryAuthEnv, build (jobs: a positive number, priority: low or normal), deadlines)",
             )
         })?;
         config.validate(path)?;

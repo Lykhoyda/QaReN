@@ -5627,6 +5627,29 @@ row with the holder, lock, held time and time waited. Plain output records
 each observed holder change and each completed wait. Queue events contain
 only the lock name, a validated run id and durations.
 
+**Build priority and worker cap.** Every native build runs under `nice -n 10`:
+finite builds (`expo prebuild`, `expo run:ios`, the workspace `xcodebuild`,
+direct Gradle) through the build gate's `exec`, so the recorded process and
+group stay the build's own, and `expo run:android` through its own command,
+so its Metro runs niced too. Builds whose command line QaReN controls get one
+worker cap, `max(2, min(cores × 3 / 4, (total GiB − 8) / 2))` from the
+machine's core count and memory: `-Dorg.gradle.workers.max` in `GRADLE_OPTS`
+on both Android paths, and `-jobs` on the workspace `xcodebuild` line.
+`expo run:android` also gets `-Dorg.gradle.daemon=false`; direct Gradle
+already passes `--no-daemon`. The default `expo run:ios` path is not capped:
+Expo starts `xcodebuild` itself. When the core count or memory cannot be
+read, no cap is applied; the lower priority still is. A worker setting in
+the user's own `GRADLE_OPTS` wins and the rest of their `GRADLE_OPTS` is
+kept; otherwise `build.jobs` in `.qaren/config.yaml` replaces the machine's
+number, and `build.priority: normal` drops `nice`. The receipt's `outcomes`
+record what each build got as `build_policy:<command label>`, for example
+`priority nice 10; jobs 8 (machine: 18 cores, 24 GiB)` or
+`priority nice 10; jobs uncapped (expo run:ios starts xcodebuild itself)`.
+The dry-run command list shows the bare build commands. Nothing new is
+refused: a busy machine still builds, slower. `nice` does not bound memory,
+and whether the Gradle cap also bounds CMake and Ninja compile jobs is not
+established.
+
 On iOS the platform lock covers only the
 build: `prepare`, `check` and `pr` claim it after the device is allocated and
 release it once the artifact is verified, the pre-publication candidate and

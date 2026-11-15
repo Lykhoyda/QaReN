@@ -137,6 +137,14 @@ impl RunSamples {
     }
 }
 
+// A native build's worker cap: three quarters of the cores, and 2 GiB per worker beyond 8 GiB left to the rest of the machine.
+pub fn build_jobs(cores: Option<usize>, total_bytes: Option<u64>) -> Option<std::num::NonZeroU32> {
+    let by_cores = u64::try_from(cores?).ok()?.saturating_mul(3) / 4;
+    let by_memory = (total_bytes? / GIB).saturating_sub(8) / 2;
+    let jobs = by_cores.min(by_memory).max(2);
+    std::num::NonZeroU32::new(u32::try_from(jobs).unwrap_or(u32::MAX))
+}
+
 fn probe(runner: &mut dyn Runner, program: &str, args: &[&str]) -> CmdOutput {
     runner.run(
         &CmdSpec::new("host-sample", program, args, 3)
@@ -383,6 +391,26 @@ mod tests {
 
     const VM: &str = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: 65536.\nPages speculative: 65536.\nPages inactive: 131072.\nPages occupied by compressor: 1.\n";
     const SYS: &str = "hw.logicalcpu: 8\nvm.loadavg: { 1.0 2.0 3.0 }\nhw.memsize: 25769803776\nkern.memorystatus_vm_pressure_level: 4\nvm.swapusage: total = 2048.00M used = 1024.00M free = 1024.00M (encrypted)\n";
+
+    #[test]
+    fn build_jobs_follow_cores_and_memory_and_never_drop_under_two() {
+        // (cores, hw.memsize bytes) as macOS reports them.
+        for (cores, bytes, jobs) in [
+            (18, 25_769_803_776, 8),
+            (10, 17_179_869_184, 4),
+            (16, 68_719_476_736, 12),
+            (8, 8_589_934_592, 2),
+            (4, 4_294_967_296, 2),
+        ] {
+            assert_eq!(
+                build_jobs(Some(cores), Some(bytes)),
+                std::num::NonZeroU32::new(jobs),
+                "{cores} cores, {bytes} bytes"
+            );
+        }
+        assert_eq!(build_jobs(None, Some(25_769_803_776)), None);
+        assert_eq!(build_jobs(Some(18), None), None);
+    }
 
     #[test]
     fn mac_samples_preserve_pressure_levels_and_memory_size_without_idle_probe() {

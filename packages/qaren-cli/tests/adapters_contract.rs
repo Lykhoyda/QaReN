@@ -2,6 +2,7 @@ mod common;
 
 use qaren::adapters::{android, ios, metro};
 use qaren::exec::CmdOutput;
+use std::num::NonZeroU32;
 use std::path::Path;
 
 #[test]
@@ -281,6 +282,76 @@ fn tunneled_serial_allowlist() {
 }
 
 #[test]
+fn expo_android_build_runs_niced_with_capped_daemonless_gradle() {
+    let opts = android::gradle_opts(None, NonZeroU32::new(4), true);
+    let spec = android::build_spec(
+        Path::new("/repo/test-app"),
+        "127.0.0.1:5555",
+        15037,
+        8792,
+        2400,
+        true,
+        opts.as_deref(),
+    );
+    assert_eq!(spec.program, "nice");
+    assert_eq!(
+        spec.args,
+        [
+            "-n",
+            "10",
+            "pnpm",
+            "exec",
+            "expo",
+            "run:android",
+            "--port",
+            "8792"
+        ]
+    );
+    assert!(spec.env.contains(&(
+        "GRADLE_OPTS".to_string(),
+        "-Dorg.gradle.workers.max=4 -Dorg.gradle.daemon=false".to_string()
+    )));
+}
+
+#[test]
+fn gradle_opts_respect_the_users_worker_setting_and_keep_their_other_options() {
+    let four = NonZeroU32::new(4);
+    assert_eq!(
+        android::gradle_opts(Some("-Xmx2g"), four, false).as_deref(),
+        Some("-Xmx2g -Dorg.gradle.workers.max=4")
+    );
+    assert_eq!(
+        android::gradle_opts(Some("-Dorg.gradle.workers.max=12 -Xmx2g"), four, false).as_deref(),
+        Some("-Dorg.gradle.workers.max=12 -Xmx2g")
+    );
+    assert_eq!(
+        android::gradle_opts(Some("-Dorg.gradle.workers.max=12"), four, true).as_deref(),
+        Some("-Dorg.gradle.workers.max=12 -Dorg.gradle.daemon=false")
+    );
+    assert_eq!(
+        android::gradle_opts(Some("\"-Dorg.gradle.workers.max=12\""), four, false).as_deref(),
+        Some("\"-Dorg.gradle.workers.max=12\"")
+    );
+    assert_eq!(android::gradle_opts(None, None, false), None);
+    assert_eq!(
+        android::gradle_opts(Some("-Xmx2g"), None, false).as_deref(),
+        Some("-Xmx2g")
+    );
+    let direct = android::gradle_assemble_spec(
+        Path::new("/w/test-app"),
+        "arm64-v8a",
+        2400,
+        android::gradle_opts(Some("-Xmx2g"), four, false).as_deref(),
+    );
+    // nice comes from the finite build gate, never from the spec as well.
+    assert_eq!(direct.program, "./gradlew");
+    assert!(direct.env.contains(&(
+        "GRADLE_OPTS".to_string(),
+        "-Xmx2g -Dorg.gradle.workers.max=4".to_string()
+    )));
+}
+
+#[test]
 fn android_build_command_pins_device_port_and_serial_env() {
     let spec = android::build_spec(
         Path::new("/repo/test-app"),
@@ -288,8 +359,11 @@ fn android_build_command_pins_device_port_and_serial_env() {
         15037,
         8792,
         2400,
+        false,
+        None,
     );
     assert_eq!(spec.program, "pnpm");
+    assert!(!spec.env.iter().any(|(k, _)| k == "GRADLE_OPTS"));
     assert_eq!(
         spec.args,
         vec!["exec", "expo", "run:android", "--port", "8792"]
@@ -418,6 +492,7 @@ fn ios_build_command_is_finite_generic_and_writes_only_to_the_run_output() {
         Path::new("/runs/check/ios-build"),
         2400,
         None,
+        NonZeroU32::new(8),
     );
     assert_eq!(
         spec.args,
@@ -438,6 +513,30 @@ fn ios_build_command_is_finite_generic_and_writes_only_to_the_run_output() {
 }
 
 #[test]
+fn explicit_workspace_build_carries_the_job_cap_before_its_build_settings() {
+    let workspace = qaren::scenario::IosWorkspaceBuild {
+        workspace: "ios/App.xcworkspace".into(),
+        scheme: "App".into(),
+    };
+    let spec = ios::build_spec(
+        Path::new("/repo/app"),
+        Path::new("/runs/x/ios-build"),
+        1234,
+        Some(&workspace),
+        NonZeroU32::new(8),
+    );
+    let jobs = spec.args.iter().position(|a| a == "-jobs").unwrap();
+    assert_eq!(spec.args[jobs + 1], "8");
+    let first_setting = spec
+        .args
+        .iter()
+        .position(|a| a == "CODE_SIGNING_ALLOWED=YES")
+        .unwrap();
+    assert!(jobs < first_setting);
+    assert_eq!(spec.args.iter().filter(|a| *a == "-jobs").count(), 1);
+}
+
+#[test]
 fn explicit_ios_workspace_build_is_finite_generic_and_preserves_literal_names() {
     let workspace = qaren::scenario::IosWorkspaceBuild {
         workspace: "ios/Native Projects/Unrelated App.xcworkspace".into(),
@@ -448,6 +547,7 @@ fn explicit_ios_workspace_build_is_finite_generic_and_preserves_literal_names() 
         Path::new("/runs/check one/ios-build"),
         1234,
         Some(&workspace),
+        None,
     );
     assert_eq!(spec.program, "xcrun");
     assert_eq!(
@@ -475,6 +575,7 @@ fn explicit_ios_workspace_build_is_finite_generic_and_preserves_literal_names() 
             "build"
         ]
     );
+    assert!(!spec.args.iter().any(|a| a == "-jobs"));
     assert_eq!(spec.cwd.as_deref(), Some(Path::new("/repo/My Project")));
     assert_eq!(spec.timeout_seconds, 1234);
     assert_eq!(
@@ -1751,7 +1852,7 @@ fn an_unset_variable_wins_over_the_spec_and_the_parent_environment() {
 #[test]
 fn expo_fingerprint_evaluates_config_in_the_ios_build_environment() {
     let root = Path::new("/repo/app");
-    let build = ios::build_spec(root, Path::new("/runs/x/out"), 1800, None);
+    let build = ios::build_spec(root, Path::new("/runs/x/out"), 1800, None, None);
     let fingerprint =
         qaren::fingerprint::expo_fingerprint_spec("expo-fingerprint", root, &["cli.js"]);
     assert_eq!(fingerprint.program, build.program);
@@ -1860,8 +1961,9 @@ fn borrowed_emulator_reads_go_through_the_borrowed_server_and_pin_the_serial() {
 
 #[test]
 fn gradle_assemble_is_finite_abi_limited_and_daemonless() {
-    let spec = android::gradle_assemble_spec(Path::new("/w/test-app"), "arm64-v8a", 2400);
+    let spec = android::gradle_assemble_spec(Path::new("/w/test-app"), "arm64-v8a", 2400, None);
     assert_eq!(spec.program, "./gradlew");
+    assert!(!spec.env.iter().any(|(k, _)| k == "GRADLE_OPTS"));
     assert_eq!(
         spec.args,
         [

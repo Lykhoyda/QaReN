@@ -1090,10 +1090,11 @@ pub fn build_spec(
     output: &Path,
     deadline_seconds: u64,
     workspace: Option<&IosWorkspaceBuild>,
+    jobs: Option<std::num::NonZeroU32>,
 ) -> CmdSpec {
     if let Some(workspace) = workspace {
         let derived_data = workspace_derived_data(output);
-        return CmdSpec::new(
+        let mut spec = CmdSpec::new(
             "xcodebuild-ios",
             "xcrun",
             &[
@@ -1125,6 +1126,11 @@ pub fn build_spec(
         .env_remove("CI")
         .env("EXPO_NO_TELEMETRY", "1")
         .env("RCT_NO_LAUNCH_PACKAGER", "1");
+        if let Some(jobs) = jobs {
+            spec.args
+                .splice(1..1, ["-jobs".to_string(), jobs.to_string()]);
+        }
+        return spec;
     }
     CmdSpec::new(
         "expo-run-ios",

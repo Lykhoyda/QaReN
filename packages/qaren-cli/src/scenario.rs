@@ -139,6 +139,25 @@ pub struct BuildSpec {
     pub owner: BuildOwner,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ios_workspace: Option<IosWorkspaceBuild>,
+    // Unset: native builds run at nice 10 with a worker cap computed from the machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jobs: Option<std::num::NonZeroU32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<BuildPriority>,
+}
+
+impl BuildSpec {
+    pub fn niced(&self) -> bool {
+        self.priority != Some(BuildPriority::Normal)
+    }
+}
+
+// CPU priority of a native build: low runs it under nice 10, normal as the user would.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BuildPriority {
+    Low,
+    Normal,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -205,6 +224,8 @@ impl Default for BuildSpec {
             strategy: BuildStrategy::Auto,
             owner: BuildOwner::Cli,
             ios_workspace: None,
+            jobs: None,
+            priority: None,
         }
     }
 }
