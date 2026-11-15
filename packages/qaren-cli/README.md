@@ -895,6 +895,29 @@ The refusal lists
 each candidate without its label or value: kind, testID or `no-id`, and the
 rounded frame.
 
+### Text hidden from accessibility on iOS
+
+When a quoted Tap target is absent and interruption recovery takes no action,
+QaReN can resolve one exact hidden text or hidden child's testID to its containing
+button. The same admitted read must prove one hidden host, its nearest non-hidden
+pressable with its own unique testID, and one associated native button that is
+enabled, hittable and on screen; the hidden host's frame must fit inside the
+button's frame. QaReN rebinds that button on the next read before pressing it.
+An executed press spends the fallback's one-tap allowance for that line, and a
+passing step stores the button's testID rather than the hidden child's identity.
+A press still needs the usual verification; dispatch alone does not pass the step.
+
+Without that proof, QaReN does not tap through the hidden text. When the current
+line's latest admitted read proves the hidden text, a failed Tap, quoted Wait or
+literal check explains that the app hides it from accessibility. When known, the
+failure identifies its containing button by frame and testID and suggests the
+button's own label or testID, or adding an `accessibilityLabel` in the app.
+Hidden text alone never makes a Wait or literal check pass. This fallback does
+not support Android or a testID button inside a popup; a button with neither a
+label nor a testID still needs an app change. The
+[hidden-text walker tests](../qaren-core/test/unit/qa/hidden-text-walker.test.ts)
+cover the tap and failure behavior.
+
 ### Occluded taps and focus
 
 On iOS, a quoted Tap whose target is proven absent (`TARGET_NOT_FOUND` carrying
@@ -1871,7 +1894,8 @@ reported not visible to the user or was outside the viewport;
 explanation prefers hidden literal text, then a visible `other` node, then a
 hidden `other` node. The explanation repeats only the plan's literal, never
 the rest of the node's label. An absent match or uncertain literal evidence
-adds no near-miss explanation.
+adds no node-label near-miss explanation. For iOS text omitted from accessibility,
+see [hidden-text diagnostics](#text-hidden-from-accessibility-on-ios).
 
 The [native geometry model](../qaren-core/src/qa/native-presence.ts) clips nodes
 on both axes against the Application screen and trusted Window, ScrollView,
