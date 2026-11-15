@@ -1,5 +1,6 @@
 use super::{Check, Status};
 use crate::adapters::ios;
+use crate::device_helpers;
 use crate::exec::{CmdOutput, CmdSpec, Runner};
 use crate::host_capacity::{self, Cpu, Memory};
 use std::path::Path;
@@ -25,8 +26,14 @@ pub(super) fn checks(runner: &mut dyn Runner, os: &str) -> Vec<Check> {
             "host probes support macOS and Linux",
         )];
     }
-    let processes = probe(runner, "ps", &["-axww", "-o", "stat=,ucomm=,args="], 3);
+    let processes = probe(
+        runner,
+        "ps",
+        &["-axww", "-o", device_helpers::PROCESS_COLUMNS],
+        3,
+    );
     let android = processes.ok().then(|| android_emulators(&processes.stdout));
+    let helpers = helper_row(&processes);
     let (service, sims) = if os == "macos" {
         simulator_service(runner, &processes)
     } else {
@@ -38,7 +45,49 @@ pub(super) fn checks(runner: &mut dyn Runner, os: &str) -> Vec<Check> {
     let devices = device_row(sims.as_deref(), android.as_deref());
     let sample = host_capacity::sample(runner, os);
     let (memory, cpu) = host_capacity::doctor_capacity(runner, os, &sample);
-    vec![service, devices, memory_row(memory, os), cpu_row(cpu)]
+    vec![
+        service,
+        devices,
+        helpers,
+        memory_row(memory, os),
+        cpu_row(cpu),
+    ]
+}
+
+fn helper_row(processes: &CmdOutput) -> Check {
+    if !processes.ok() {
+        return Check::warn(
+            "device-helpers",
+            "process list unavailable; emulator helper processes unknown",
+            "restore the process list probe and re-run doctor",
+        );
+    }
+    let Some(found) = device_helpers::findings(&processes.stdout) else {
+        return Check::warn(
+            "device-helpers",
+            "process list unreadable; emulator helper processes unknown",
+            "restore the process list probe and re-run doctor",
+        );
+    };
+    if found.is_empty() {
+        return Check::pass(
+            "device-helpers",
+            "no Android emulator helper outlives its emulator or runs above 100% CPU",
+        );
+    }
+    let detail: Vec<_> = found.iter().map(|f| f.describe()).collect();
+    let commands: Vec<_> = found
+        .iter()
+        .map(|f| format!("`{}`", f.stop_command()))
+        .collect();
+    Check::warn(
+        "device-helpers",
+        detail.join("; "),
+        format!(
+            "QaReN did not start these and stops nothing; stop each one: {}",
+            commands.join(", ")
+        ),
+    )
 }
 
 fn simulator_service(
@@ -150,15 +199,7 @@ fn simulator_devices(value: &serde_json::Value) -> Option<Vec<String>> {
 
 fn android_emulators(text: &str) -> Vec<String> {
     text.lines()
-        .filter_map(|line| {
-            let words: Vec<_> = line.split_whitespace().collect();
-            let executable = *words.get(1)?;
-            if !executable.starts_with("qemu-system-") {
-                return None;
-            }
-            let avd = words.windows(2).find(|pair| pair[0] == "-avd")?[1];
-            Some(avd.to_string())
-        })
+        .filter_map(|line| Some(device_helpers::emulator_avd(line)?.to_string()))
         .collect()
 }
 
@@ -271,10 +312,7 @@ mod tests {
         sys: &str,
         top: &str,
     ) {
-        runner.expect_run(
-            "ps -axww -o stat=,ucomm=,args=",
-            CmdOutput::success(processes),
-        );
+        runner.expect_run("ps -axww -o stat=,ucomm=,", CmdOutput::success(processes));
         runner.expect_run("simctl list devices -j", inventory);
         runner.expect_run("vm_stat", CmdOutput::success(vm));
         runner.expect_run("sysctl", CmdOutput::success(sys));
@@ -389,7 +427,7 @@ mod tests {
     #[test]
     fn mac_reports_both_platforms_and_uses_the_second_idle_sample() {
         let mut runner = MockRunner::new();
-        script_mac(&mut runner, "S qemu-system-aar /sdk/qemu-system-aarch64 -avd Pixel\nS emulator /sdk/emulator -avd Pixel\nS qemu-system-x86 /usr/bin/qemu-system-x86_64 -drive server.img\n", inventory(), VM, SYS, "CPU usage: 90% user, 5% sys, 5% idle\nCPU usage: 2% user, 3% sys, 95% idle\n");
+        script_mac(&mut runner, "S qemu-system-aar 900 1 40.0 /sdk/qemu-system-aarch64 -avd Pixel\nS emulator 899 1 0.1 /sdk/emulator -avd Pixel\nS qemu-system-x86 901 1 0.0 /usr/bin/qemu-system-x86_64 -drive server.img\n", inventory(), VM, SYS, "CPU usage: 90% user, 5% sys, 5% idle\nCPU usage: 2% user, 3% sys, 95% idle\n");
         let rows = checks(&mut runner, "macos");
         assert!(rows.iter().all(|r| r.status == Status::Pass), "{rows:?}");
         assert!(row(&rows, "host-devices")
@@ -411,6 +449,70 @@ mod tests {
             .calls
             .iter()
             .all(|s| s.cwd.as_deref() == Some(Path::new("/"))));
+    }
+
+    const IDLE: &str = "CPU usage: 2% user, 3% sys, 95% idle\n";
+    const EMULATOR: &str = "S qemu-system-aar 900 1 40.0 /Volumes/External SSD/Android/sdk/emulator/qemu/darwin-aarch64/qemu-system-aarch64 -avd Pixel\n";
+
+    fn helper_row(processes: &str) -> Check {
+        let mut runner = MockRunner::new();
+        script_mac(&mut runner, processes, inventory(), VM, SYS, IDLE);
+        let rows = checks(&mut runner, "macos");
+        assert_eq!(runner.remaining(), 0);
+        assert!(runner.calls.iter().all(|c| c.program != "kill"));
+        row(&rows, "device-helpers").clone()
+    }
+
+    #[test]
+    fn e1_helpers_without_their_emulator_warn_and_are_named_with_their_stop_command() {
+        let check = helper_row("S netsimd 4242 1 0.5 /Volumes/External SSD/Android/sdk/emulator/netsimd --token=private-canary\nS crashpad_handler 4243 1 0.0 /Volumes/External SSD/Android/sdk/emulator/crashpad_handler --database=/tmp/x\nS crashpad_handle 4244 1 0.0 /Applications/Google Chrome.app/Contents/Frameworks/crashpad_handler\nS qemu-system-x86 4245 1 0.0 /usr/bin/qemu-system-x86_64 -drive server.img\n");
+        assert_eq!(check.status, Status::Warn, "{check:?}");
+        assert!(
+            check.detail.contains("netsimd (pid 4242, 0.5% CPU)"),
+            "{}",
+            check.detail
+        );
+        assert!(check
+            .detail
+            .contains("crashpad_handler (pid 4243, 0.0% CPU)"));
+        assert!(check.detail.contains("emulator is not running"));
+        let fix = check.fix.unwrap();
+        assert!(
+            fix.contains("kill 4242") && fix.contains("kill 4243"),
+            "{fix}"
+        );
+        for text in [&check.detail, &fix] {
+            assert!(!text.contains("4244") && !text.contains("4245"), "{text}");
+            assert!(!text.contains("Volumes") && !text.contains("private-canary"));
+        }
+    }
+
+    #[test]
+    fn same_named_processes_outside_the_emulator_folder_are_not_reported() {
+        let check = helper_row("S crashpad_handler 4244 1 0.0 /Applications/Other App.app/Contents/Frameworks/crashpad_handler --database=/x/emulator/y\nS netsimd 4247 1 960.0 /opt/tools/netsimd\nS netsimd 4248 1 960.0 /sdk/emulator/qemu/darwin-aarch64/netsimd\n");
+        assert_eq!(check.status, Status::Pass, "{check:?}");
+    }
+
+    #[test]
+    fn e2_helpers_beside_their_running_emulator_at_low_cpu_pass() {
+        let check = helper_row(&format!("{EMULATOR}S netsimd 4242 900 12.5 /Volumes/External SSD/Android/sdk/emulator/netsimd\nS crashpad_handle 4243 900 0.1 /Volumes/External SSD/Android/sdk/emulator/crashpad_handler\n"));
+        assert_eq!(check.status, Status::Pass, "{check:?}");
+        assert!(check.fix.is_none());
+    }
+
+    #[test]
+    fn e3_a_helper_of_a_running_emulator_above_100_percent_cpu_warns() {
+        let check = helper_row(&format!("{EMULATOR}S netsimd 4242 900 960.0 /Volumes/External SSD/Android/sdk/emulator/netsimd\nS netsimd 4246 900 100.0 /Volumes/External SSD/Android/sdk/emulator/netsimd\n"));
+        assert_eq!(check.status, Status::Warn, "{check:?}");
+        assert!(
+            check.detail.contains("netsimd (pid 4242, 960.0% CPU)"),
+            "{}",
+            check.detail
+        );
+        assert!(check.detail.contains("above 100% CPU"));
+        assert!(!check.detail.contains("emulator is not running"));
+        assert!(!check.detail.contains("4246"), "{}", check.detail);
+        assert!(check.fix.unwrap().contains("kill 4242"));
     }
 
     #[test]

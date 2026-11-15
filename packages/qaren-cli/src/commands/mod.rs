@@ -126,8 +126,10 @@ pub(crate) fn finish_host(
     runner: &mut dyn crate::exec::Runner,
     receipt: &mut Receipt,
     start: crate::host_capacity::Sample,
+    helpers: &[crate::device_helpers::Finding],
 ) {
     let end = crate::host_capacity::sample(runner, std::env::consts::OS);
+    receipt.device_helpers = helpers.iter().map(|f| f.note()).collect();
     if end.constrained() {
         if let Some(failure) = receipt.failure.as_mut().filter(|f| f.code.is_refusal()) {
             failure.detail = crate::redact::OutputText::from_output(&format!(
@@ -138,7 +140,9 @@ pub(crate) fn finish_host(
         }
     }
     receipt.host = Some(crate::host_capacity::RunSamples { start, end });
-    if let Err(error) = crate::report::write_host(receipt) {
+    if let Err(error) =
+        crate::report::write_host(receipt, crate::device_helpers::report_line(helpers))
+    {
         receipt.outcomes.insert(
             "host_report".into(),
             format!("host summary could not be written: {error}"),

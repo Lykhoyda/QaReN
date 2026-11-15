@@ -4,8 +4,9 @@ use std::path::Path;
 use std::process::Command;
 
 fn assert_only_host_probes(receipt: &serde_json::Value) {
+    // Two host samples at each end and one device-helper scan at the start.
     let count = if matches!(std::env::consts::OS, "macos" | "linux") {
-        4
+        5
     } else {
         0
     };

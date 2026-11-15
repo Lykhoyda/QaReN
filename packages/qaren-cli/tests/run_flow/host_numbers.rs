@@ -219,6 +219,70 @@ fn f7_samples_bracket_every_command_including_teardown() {
     assert_ne!(host["start"], host["end"]);
 }
 
+const HELPERS: &str = "S netsimd 4242 1 960.0 /private/helper-canary/emulator/netsimd --token=secret-canary\nS crashpad_handle 4243 1 0.0 /Applications/Chrome.app/crashpad_handler\n";
+
+#[test]
+fn e4_run_start_helper_scan_notes_executable_name_and_pid_only() {
+    let (mut mock, req) = passing();
+    mock.processes = Some(HELPERS.into());
+    let receipt = run(&mut mock, &req);
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    let text = receipt.to_json();
+    let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        json["device_helpers"],
+        serde_json::json!([{ "name": "netsimd", "pid": 4242 }]),
+        "{text}"
+    );
+    assert!(!text.contains("canary") && !text.contains("4243"), "{text}");
+    let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
+    let lines: Vec<_> = report
+        .lines()
+        .filter(|l| l.contains("netsimd (pid 4242"))
+        .collect();
+    assert_eq!(lines.len(), 1, "{report}");
+    assert!(lines[0].contains("kill 4242"), "{report}");
+    assert!(
+        !report.contains("canary") && !report.contains("4243"),
+        "{report}"
+    );
+    let scans: Vec<_> = mock
+        .calls
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.label == "device-helpers")
+        .map(|(index, c)| (index, c.timeout_seconds))
+        .collect();
+    assert_eq!(
+        scans,
+        vec![(2, 3)],
+        "one scan, right after the start sample"
+    );
+
+    let (mut mock, req) = refusing();
+    mock.processes = Some(HELPERS.into());
+    let receipt = run(&mut mock, &req);
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    let json: serde_json::Value = serde_json::from_str(&receipt.to_json()).unwrap();
+    assert_eq!(
+        json["device_helpers"],
+        serde_json::json!([{ "name": "netsimd", "pid": 4242 }])
+    );
+}
+
+#[test]
+fn e4_a_clean_or_unreadable_process_list_adds_no_note() {
+    for processes in [Some(String::new()), None] {
+        let (mut mock, req) = passing();
+        mock.processes = processes;
+        let receipt = run(&mut mock, &req);
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+        assert!(!receipt.to_json().contains("device_helpers"));
+        let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
+        assert!(!report.contains("helper"), "{report}");
+    }
+}
+
 #[test]
 fn pr_refusal_samples_bracket_the_github_commands() {
     let (repo, app) = app_repo();
@@ -245,5 +309,6 @@ fn pr_refusal_samples_bracket_the_github_commands() {
     assert!(runner.calls[runner.calls.len() - 2..]
         .iter()
         .all(|c| c.label == "host-sample"));
-    assert_eq!(runner.calls.len(), 8);
+    assert_eq!(runner.calls[2].label, "device-helpers");
+    assert_eq!(runner.calls.len(), 9);
 }

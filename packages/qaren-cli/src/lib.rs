@@ -8,6 +8,7 @@ pub mod commands;
 pub mod config;
 pub mod core;
 pub mod deps_cache;
+pub mod device_helpers;
 pub mod events;
 pub mod exec;
 pub mod expo_updates;
