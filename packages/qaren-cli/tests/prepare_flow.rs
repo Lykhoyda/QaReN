@@ -27,7 +27,7 @@ fn host_samples_bracket_prepare_and_survive_a_pre_record_refusal() {
         }
         let mut runner = common::host::HostRunner::new(inner);
         runner.processes = Some(
-            "  4242     1   501 960.0 S    Sun Nov 15 01:02:03 2026 netsimd /sdk/emulator/netsimd\n"
+            "  4242 960.0 S    netsimd /sdk/emulator/netsimd\n"
                 .into(),
         );
         let receipt = prepare(&mut runner, &prepare_args(&scenario, false, None));

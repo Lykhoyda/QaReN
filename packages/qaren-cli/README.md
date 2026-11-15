@@ -153,7 +153,7 @@ the `simulator-service` row separately reports simulator inventory failures belo
 An Android emulator starts helper processes that can keep running, sometimes at
 several cores' worth of CPU, after the emulator itself has exited. The
 `device-helpers` row on macOS and Linux reads the same process list as
-`host-devices` (pid, parent pid, owner, CPU, state, start time, name and command line) and looks at
+`host-devices` (pid, CPU, state, name and command line) and looks at
 `netsimd` and `crashpad_handler` processes whose command line starts with an
 absolute path to the helper. A helper is reported when no emulator is running
 or starting, or when it uses more than 100% CPU. Any `qemu-system-*` or

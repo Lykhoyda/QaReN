@@ -6,9 +6,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 /// `ps -o` columns: the doctor process list and the run-start scan read the same shape.
-pub const PROCESS_COLUMNS: &str = "pid=,ppid=,uid=,pcpu=,stat=,lstart=,ucomm=,args=";
-// pid, ppid, uid, pcpu, stat and the five words of `lstart`; the name is the next word.
-const FIXED_WORDS: usize = 10;
+pub const PROCESS_COLUMNS: &str = "pid=,pcpu=,stat=,ucomm=,args=";
+const FIXED_WORDS: usize = 3;
 const HOT_CPU: f64 = 100.0;
 // Bounds the scan when other processes name many folders: at most this many 2 s package reads.
 const MAX_PACKAGE_READS: usize = 4;
@@ -42,10 +41,6 @@ pub struct Note {
 pub struct Finding {
     pub name: HelperName,
     pub pid: u32,
-    pub ppid: u32,
-    // Signed: macOS prints the `nobody` user as -2.
-    pub uid: i64,
-    pub started: String,
     pub cpu: f64,
     pub emulator_gone: bool,
 }
@@ -94,11 +89,8 @@ impl Finding {
 /// One row of a `PROCESS_COLUMNS` listing.
 pub struct Process<'a> {
     pub pid: u32,
-    pub ppid: u32,
-    pub uid: i64,
     pub cpu: f64,
     pub stat: &'a str,
-    pub started: String,
     pub ucomm: &'a str,
     pub args: &'a str,
 }
@@ -171,14 +163,11 @@ fn process(line: &str) -> Option<Process<'_>> {
     }
     Some(Process {
         pid: words[0].parse().ok()?,
-        ppid: words[1].parse().ok()?,
-        uid: words[2].parse().ok()?,
-        cpu: words[3]
+        cpu: words[1]
             .parse()
             .ok()
             .filter(|v: &f64| v.is_finite() && *v >= 0.0)?,
-        stat: words[4],
-        started: words[5..FIXED_WORDS].join(" "),
+        stat: words[2],
         ucomm: words[FIXED_WORDS],
         args: after_columns(line, FIXED_WORDS + 1),
     })
@@ -236,9 +225,6 @@ pub fn findings(runner: &mut dyn Runner, label: &str, text: &str) -> Option<Scan
         let finding = Finding {
             name,
             pid: row.pid,
-            ppid: row.ppid,
-            uid: row.uid,
-            started: row.started.clone(),
             cpu: row.cpu,
             emulator_gone,
         };
@@ -307,15 +293,8 @@ pub fn report_line(scan: &Scan) -> Option<String> {
 
 /// One `PROCESS_COLUMNS` line, for fixtures.
 #[cfg(test)]
-pub(crate) fn ps_line(
-    pid: i64,
-    ppid: i64,
-    cpu: &str,
-    stat: &str,
-    ucomm: &str,
-    args: &str,
-) -> String {
-    format!("{pid:>6} {ppid:>6}   501 {cpu:>5} {stat:<4} Sun Nov 15 01:02:03 2026 {ucomm} {args}\n")
+pub(crate) fn ps_line(pid: i64, cpu: &str, stat: &str, ucomm: &str, args: &str) -> String {
+    format!("{pid:>6} {cpu:>5} {stat:<4} {ucomm} {args}\n")
 }
 
 #[cfg(test)]
@@ -326,15 +305,8 @@ mod tests {
     const SDK: &str = "/Volumes/External SSD/Android/sdk/emulator";
     const PACKAGE: &str = "Pkg.Desc=Android Emulator\nPkg.Path=emulator\nPkg.Revision=37.2.13\n";
 
-    fn netsimd(pid: i64, ppid: i64, cpu: &str) -> String {
-        ps_line(
-            pid,
-            ppid,
-            cpu,
-            "S",
-            "netsimd",
-            &format!("{SDK}/netsimd --flag"),
-        )
+    fn netsimd(pid: i64, cpu: &str) -> String {
+        ps_line(pid, cpu, "S", "netsimd", &format!("{SDK}/netsimd --flag"))
     }
 
     fn package(runner: &mut MockRunner, folder: &str, output: CmdOutput) {
@@ -357,13 +329,12 @@ mod tests {
         package(&mut runner, SDK, CmdOutput::success(PACKAGE));
         let crash = ps_line(
             4243,
-            1,
             "0.0",
             "S",
             "crashpad_handle",
             &format!("{SDK}/crashpad_handler --database=/x"),
         );
-        let scan = scan_text(&mut runner, &format!("{}{crash}", netsimd(4242, 1, "0.5"))).unwrap();
+        let scan = scan_text(&mut runner, &format!("{}{crash}", netsimd(4242, "0.5"))).unwrap();
         assert!(scan.complete);
         let names: Vec<_> = scan.helpers.iter().map(|f| (f.name, f.pid)).collect();
         assert_eq!(
@@ -384,7 +355,7 @@ mod tests {
         ] {
             let mut runner = MockRunner::new();
             package(&mut runner, SDK, answer);
-            let scan = scan_text(&mut runner, &netsimd(4242, 1, "960.0")).unwrap();
+            let scan = scan_text(&mut runner, &netsimd(4242, "960.0")).unwrap();
             assert!(scan.helpers.is_empty());
         }
     }
@@ -392,12 +363,12 @@ mod tests {
     #[test]
     fn same_named_programs_of_other_apps_are_never_read_or_reported() {
         let text = [
-            ps_line(4244, 1, "0.0", "S", "crashpad_handle", "/Applications/Other App.app/Contents/Frameworks/crashpad_handler --database=/x/emulator/y"),
-            ps_line(4245, 1, "960.0", "S", "netsimd", "netsimd -s"),
-            ps_line(4246, 1, "960.0", "S", "vim", &format!("/usr/bin/vim {SDK}/netsimd")),
-            ps_line(4247, 1, "960.0", "S", "netsimd", &format!("{SDK}/netsimdx")),
-            ps_line(0, 1, "960.0", "S", "netsimd", &format!("{SDK}/netsimd")),
-            ps_line(1, 0, "960.0", "S", "netsimd", &format!("{SDK}/netsimd")),
+            ps_line(4244, "0.0", "S", "crashpad_handle", "/Applications/Other App.app/Contents/Frameworks/crashpad_handler --database=/x/emulator/y"),
+            ps_line(4245, "960.0", "S", "netsimd", "netsimd -s"),
+            ps_line(4246, "960.0", "S", "vim", &format!("/usr/bin/vim {SDK}/netsimd")),
+            ps_line(4247, "960.0", "S", "netsimd", &format!("{SDK}/netsimdx")),
+            ps_line(0, "960.0", "S", "netsimd", &format!("{SDK}/netsimd")),
+            ps_line(1, "960.0", "S", "netsimd", &format!("{SDK}/netsimd")),
         ]
         .concat();
         let mut runner = MockRunner::new();
@@ -418,7 +389,6 @@ mod tests {
         package(&mut runner, folder, CmdOutput::success(PACKAGE));
         let text = ps_line(
             4242,
-            1,
             "0.0",
             "S",
             "netsimd",
@@ -433,16 +403,14 @@ mod tests {
         for alive in [
             ps_line(
                 900,
-                1,
                 "40.0",
                 "S",
                 "qemu-system-aar",
                 &format!("{SDK}/qemu/darwin-aarch64/qemu-system-aarch64 -avd Pixel"),
             ),
-            ps_line(900, 1, "40.0", "Z", "qemu-system-x86", "(qemu-system-x86)"),
+            ps_line(900, "40.0", "Z", "qemu-system-x86", "(qemu-system-x86)"),
             ps_line(
                 899,
-                1,
                 "0.1",
                 "S",
                 "emulator",
@@ -450,7 +418,6 @@ mod tests {
             ),
             ps_line(
                 899,
-                1,
                 "0.1",
                 "S",
                 "emulator-headless",
@@ -458,25 +425,23 @@ mod tests {
             ),
             ps_line(
                 898,
-                1,
                 "0.1",
                 "S",
                 "qemu-system-aar",
                 "/Users/other/sdk/emulator/qemu/qemu-system-aarch64 -avd Theirs",
-            )
-            .replace("   501 ", "   502 "),
+            ),
         ] {
             let mut runner = MockRunner::new();
             let scan =
-                scan_text(&mut runner, &format!("{alive}{}", netsimd(4242, 1, "12.5"))).unwrap();
+                scan_text(&mut runner, &format!("{alive}{}", netsimd(4242, "12.5"))).unwrap();
             assert!(scan.helpers.is_empty(), "{alive}");
         }
         let mut runner = MockRunner::new();
         package(&mut runner, SDK, CmdOutput::success(PACKAGE));
         let hot = format!(
             "{}{}",
-            ps_line(899, 1, "0.1", "S", "emulator", "/sdk/emulator/emulator"),
-            netsimd(4242, 1, "960.0")
+            ps_line(899, "0.1", "S", "emulator", "/sdk/emulator/emulator"),
+            netsimd(4242, "960.0")
         );
         let scan = scan_text(&mut runner, &hot).unwrap();
         assert_eq!(scan.helpers.len(), 1);
@@ -486,30 +451,27 @@ mod tests {
     #[test]
     fn an_unreadable_line_marks_the_list_incomplete_and_found_helpers_stay_listed() {
         for bad in [
-            "   77     1   501  1.0 S\n".to_string(),
-            ps_line(77, 1, "NaN", "S", "x", "/x"),
-            ps_line(77, 1, "-1.0", "S", "x", "/x"),
-            ps_line(77, 1, "1.0", "S", "x", "/x").replace("   501 ", "  user "),
+            "   77  1.0 S\n".to_string(),
+            ps_line(77, "NaN", "S", "x", "/x"),
+            ps_line(77, "-1.0", "S", "x", "/x"),
+            ps_line(77, "1.0", "S", "x", "/x").replace("77", "invalid"),
         ] {
             let mut runner = MockRunner::new();
             package(&mut runner, SDK, CmdOutput::success(PACKAGE));
-            let scan =
-                scan_text(&mut runner, &format!("{bad}{}", netsimd(4242, 1, "0.5"))).unwrap();
+            let scan = scan_text(&mut runner, &format!("{bad}{}", netsimd(4242, "0.5"))).unwrap();
             assert!(!scan.complete, "{bad}");
             assert_eq!(scan.helpers.len(), 1);
             assert!(report_line(&scan)
                 .unwrap()
                 .contains("a running emulator may be hidden"));
         }
-        // macOS prints the `nobody` user as -2 (seen on 15 Nov for `distnoted`).
-        let nobody = ps_line(632, 1, "0.0", "S", "distnoted", "/usr/sbin/distnoted agent")
-            .replace("   501 ", "    -2 ");
+        let valid = "   632   0.0 S distnoted /usr/sbin/distnoted agent\n";
         let mut runner = MockRunner::new();
         package(&mut runner, SDK, CmdOutput::success(PACKAGE));
-        let scan = scan_text(&mut runner, &format!("{nobody}{}", netsimd(4242, 1, "0.5"))).unwrap();
+        let scan = scan_text(&mut runner, &format!("{valid}{}", netsimd(4242, "0.5"))).unwrap();
         assert!(scan.complete);
         assert!(!report_line(&scan).unwrap().contains("may be hidden"));
-        for text in ["", "\n", "   77     1   501  1.0 S\n"] {
+        for text in ["", "\n", "   77  1.0 S\n"] {
             assert!(
                 findings(&mut MockRunner::new(), "device-helpers", text).is_none(),
                 "{text:?}"
@@ -518,15 +480,14 @@ mod tests {
     }
 
     #[test]
-    fn one_package_read_per_folder_and_owner_parent_and_start_time_are_kept() {
+    fn one_package_read_per_folder_and_reporting_fields_are_kept() {
         let mut runner = MockRunner::new();
         package(&mut runner, SDK, CmdOutput::success(PACKAGE));
-        let text = format!("{}{}", netsimd(4242, 1, "960.0"), netsimd(4250, 1, "0.0"));
+        let text = format!("{}{}", netsimd(4242, "960.0"), netsimd(4250, "0.0"));
         let scan = scan_text(&mut runner, &text).unwrap();
         assert_eq!(runner.calls.len(), 1);
         let first = &scan.helpers[0];
-        assert_eq!((first.pid, first.ppid, first.uid), (4242, 1, 501));
-        assert_eq!(first.started, "Sun Nov 15 01:02:03 2026");
+        assert_eq!(first.pid, 4242);
         assert!(first.emulator_gone && first.hot());
         assert_eq!(
             first.describe(),
@@ -543,7 +504,6 @@ mod tests {
             let folder = format!("/fake{n}/emulator");
             text.push_str(&ps_line(
                 5000 + n,
-                1,
                 "0.0",
                 "S",
                 "netsimd",
@@ -598,19 +558,17 @@ mod tests {
         let mut runner = MockRunner::new();
         let alive = ps_line(
             900,
-            1,
             "40.0",
             "S",
             "qemu-system-aar",
             "/sdk/emulator/qemu/qemu-system-aarch64 -avd Pixel",
         );
-        assert!(scan_text(
-            &mut runner,
-            &format!("{alive}{}", netsimd(4242, 900, "1.0"))
-        )
-        .unwrap()
-        .helpers
-        .is_empty());
+        assert!(
+            scan_text(&mut runner, &format!("{alive}{}", netsimd(4242, "1.0")))
+                .unwrap()
+                .helpers
+                .is_empty()
+        );
         let mut runner = MockRunner::new();
         assert!(scan(&mut runner, "windows").helpers.is_empty());
         assert!(runner.calls.is_empty());

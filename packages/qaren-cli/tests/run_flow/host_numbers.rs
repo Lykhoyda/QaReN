@@ -219,7 +219,7 @@ fn f7_samples_bracket_every_command_including_teardown() {
     assert_ne!(host["start"], host["end"]);
 }
 
-const HELPERS: &str = "  4242     1   501 960.0 S    Sun Nov 15 01:02:03 2026 netsimd /private/helper-canary/emulator/netsimd --token=secret-canary\n  4243     1   501   0.0 S    Sun Nov 15 01:02:03 2026 crashpad_handle /Applications/Chrome.app/crashpad_handler\n";
+const HELPERS: &str = "  4242 960.0 S    netsimd /private/helper-canary/emulator/netsimd --token=secret-canary\n  4243   0.0 S    crashpad_handle /Applications/Chrome.app/crashpad_handler\n";
 
 #[test]
 fn e4_run_start_helper_scan_notes_executable_name_and_pid_only() {

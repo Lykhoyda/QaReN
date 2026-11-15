@@ -322,7 +322,7 @@ mod tests {
         top: &str,
     ) {
         runner.expect_run(
-            "ps -axww -o pid=,ppid=,uid=,pcpu=,stat=,lstart=,ucomm=,args=",
+            "ps -axww -o pid=,pcpu=,stat=,ucomm=,args=",
             CmdOutput::success(processes),
         );
         runner.expect_run("simctl list devices -j", inventory);
@@ -429,7 +429,7 @@ mod tests {
     fn unreadable_inventory_with_a_stuck_simulator_keeps_the_service_fix() {
         let mut runner = MockRunner::new();
         runner.expect_run("simctl list", CmdOutput::success("{}"));
-        let text = ps(77, 1, "0.0", "U", "launchd_sim", &format!("/runtime/launchd_sim /Users/example/Library/Developer/CoreSimulator/Devices/{UDID}/data"));
+        let text = ps(77, "0.0", "U", "launchd_sim", &format!("/runtime/launchd_sim /Users/example/Library/Developer/CoreSimulator/Devices/{UDID}/data"));
         let processes = device_helpers::parse(&text);
         let (service, _) = simulator_service(&mut runner, processes.as_ref());
         assert_eq!(service.status, Status::Warn);
@@ -443,16 +443,14 @@ mod tests {
         let processes = [
             ps(
                 900,
-                1,
                 "40.0",
                 "S",
                 "qemu-system-aar",
                 "/sdk/qemu-system-aarch64 -avd Pixel",
             ),
-            ps(899, 1, "0.1", "S", "emulator", "/sdk/emulator -avd Pixel"),
+            ps(899, "0.1", "S", "emulator", "/sdk/emulator -avd Pixel"),
             ps(
                 901,
-                1,
                 "0.0",
                 "S",
                 "qemu-system-x86",
@@ -498,7 +496,6 @@ mod tests {
     fn emulator() -> String {
         ps(
             900,
-            1,
             "40.0",
             "S",
             "qemu-system-aar",
@@ -506,10 +503,9 @@ mod tests {
         )
     }
 
-    fn helper(pid: i64, ppid: i64, cpu: &str, ucomm: &str, file: &str) -> String {
+    fn helper(pid: i64, cpu: &str, ucomm: &str, file: &str) -> String {
         ps(
             pid,
-            ppid,
             cpu,
             "S",
             ucomm,
@@ -542,11 +538,10 @@ mod tests {
     #[test]
     fn e1_helpers_without_their_emulator_warn_and_are_named_with_their_stop_command() {
         let processes = [
-            helper(4242, 1, "0.5", "netsimd", "netsimd"),
-            helper(4243, 1, "0.0", "crashpad_handler", "crashpad_handler"),
+            helper(4242, "0.5", "netsimd", "netsimd"),
+            helper(4243, "0.0", "crashpad_handler", "crashpad_handler"),
             ps(
                 4245,
-                1,
                 "0.0",
                 "S",
                 "vim",
@@ -583,14 +578,13 @@ mod tests {
         let processes = [
             ps(
                 4244,
-                1,
                 "0.0",
                 "S",
                 "crashpad_handle",
                 &format!("{other}/crashpad_handler --database=/x/emulator/y"),
             ),
-            ps(4247, 1, "960.0", "S", "netsimd", "/opt/tools/netsimd"),
-            ps(4248, 1, "960.0", "S", "netsimd", "netsimd -s"),
+            ps(4247, "960.0", "S", "netsimd", "/opt/tools/netsimd"),
+            ps(4248, "960.0", "S", "netsimd", "netsimd -s"),
         ]
         .concat();
         let check = helper_row(
@@ -611,8 +605,8 @@ mod tests {
     fn e2_helpers_beside_their_running_emulator_at_low_cpu_pass() {
         let processes = [
             emulator(),
-            helper(4242, 900, "12.5", "netsimd", "netsimd"),
-            helper(4243, 900, "0.1", "crashpad_handle", "crashpad_handler"),
+            helper(4242, "12.5", "netsimd", "netsimd"),
+            helper(4243, "0.1", "crashpad_handle", "crashpad_handler"),
         ]
         .concat();
         let check = helper_row(&processes, &[]);
@@ -624,8 +618,8 @@ mod tests {
     fn e3_a_helper_of_a_running_emulator_above_100_percent_cpu_warns() {
         let processes = [
             emulator(),
-            helper(4242, 900, "960.0", "netsimd", "netsimd"),
-            helper(4246, 900, "100.0", "netsimd", "netsimd"),
+            helper(4242, "960.0", "netsimd", "netsimd"),
+            helper(4246, "100.0", "netsimd", "netsimd"),
         ]
         .concat();
         let check = helper_row(&processes, &[(SDK, CmdOutput::success(PACKAGE))]);
@@ -643,7 +637,7 @@ mod tests {
 
     #[test]
     fn an_incomplete_process_list_warns_even_without_a_helper() {
-        let processes = format!("{}   77     1   501  1.0 S\n", emulator());
+        let processes = format!("{}   77  1.0 S\n", emulator());
         let check = helper_row(&processes, &[]);
         assert_eq!(check.status, Status::Warn, "{check:?}");
         assert!(check.detail.contains("process list incomplete"));
@@ -657,7 +651,6 @@ mod tests {
             let processes = [
                 ps(
                     900,
-                    1,
                     "40.0",
                     "S",
                     executable,
@@ -665,7 +658,6 @@ mod tests {
                 ),
                 ps(
                     899,
-                    1,
                     "0.1",
                     "S",
                     "emulator",
@@ -673,7 +665,6 @@ mod tests {
                 ),
                 ps(
                     901,
-                    1,
                     "0.0",
                     "S",
                     "qemu-system-x86",
@@ -681,7 +672,6 @@ mod tests {
                 ),
                 ps(
                     902,
-                    1,
                     "0.0",
                     "S",
                     "sh",
@@ -709,7 +699,6 @@ mod tests {
             &mut runner,
             &ps(
                 900,
-                1,
                 "40.0",
                 "S",
                 "qemu-system-aar",
@@ -747,7 +736,6 @@ mod tests {
             let mut runner = MockRunner::new();
             let processes = ps(
                 77,
-                1,
                 "0.0",
                 state,
                 process_name,
@@ -789,7 +777,7 @@ mod tests {
     fn a_failing_simctl_without_a_timeout_names_its_error_and_the_xcode_fix() {
         for processes in [
             String::new(),
-            ps(77, 1, "0.0", "U", "launchd_sim", &format!("/runtime/launchd_sim /Users/example/Library/Developer/CoreSimulator/Devices/{UDID}/data")),
+            ps(77, "0.0", "U", "launchd_sim", &format!("/runtime/launchd_sim /Users/example/Library/Developer/CoreSimulator/Devices/{UDID}/data")),
         ] {
             let mut runner = MockRunner::new();
             script_mac(
@@ -850,7 +838,6 @@ mod tests {
             "ps",
             CmdOutput::success(&ps(
                 900,
-                1,
                 "40.0",
                 "S",
                 "qemu-system-x86",
