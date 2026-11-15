@@ -511,3 +511,81 @@ fn critical_revalidation_refuses_after_the_memory_allowance_is_spent() {
     assert_no_build_lock(&runner, &req);
     assert_eq!(runner.inner.remaining(), 0);
 }
+
+#[test]
+fn slow_admission_probes_and_final_overrun_leave_the_build_budget_intact() {
+    let (mut baseline, req) = building(&[OK]);
+    let baseline = run(&mut baseline, &req);
+    assert_eq!(baseline.result, ReceiptResult::Pass);
+    let (mut runner, req) = building(&[OK, WARNING]);
+    let config = std::fs::read_to_string(&req.config_path).unwrap();
+    std::fs::write(
+        &req.config_path,
+        format!("{config}\ndeadlines:\n  build_seconds: 30\n"),
+    )
+    .unwrap();
+    runner.sample_probe_ms = vec![(0, 0); 123];
+    runner.sample_probe_ms[1] = (1_000, 1_000);
+    runner.sample_probe_ms[2] = (1_000, 1_000);
+    runner.sample_probe_ms[122] = (3_000, 2_000);
+    release_contended_lock_on_memory_recheck(&mut runner, &req, 3);
+    let receipt = run(&mut runner, &req);
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(
+        receipt.timings_ms["total"],
+        baseline.timings_ms["total"] + 606_000
+    );
+    assert!(receipt.outcomes["host_wait"].contains("waited 605 s"));
+    let build = runner
+        .calls
+        .iter()
+        .find(|c| c.label == "expo-run-ios")
+        .unwrap();
+    assert_eq!(build.timeout_seconds, 29);
+    assert_eq!(runner.inner.remaining(), 0);
+}
+
+#[test]
+fn slow_first_sample_counts_toward_recovery_and_unavailable_notes() {
+    for (memory, seconds) in [(vec![LOW, OK], 7), (vec![UNREAD], 2)] {
+        let (mut runner, req) = building(&memory);
+        runner.sample_probe_ms = vec![(0, 0), (1_000, 1_000), (1_000, 1_000)];
+        let receipt = run(&mut runner, &req);
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+        let note = &receipt.outcomes["host_wait"];
+        assert!(note.contains(&format!("waited {seconds} s")), "{note}");
+        let build = runner
+            .calls
+            .iter()
+            .find(|c| c.label == "expo-run-ios")
+            .unwrap();
+        assert_eq!(build.timeout_seconds, 2_400);
+        assert_eq!(runner.inner.remaining(), 0);
+    }
+}
+
+#[test]
+fn slow_healthy_and_unreadable_rechecks_preserve_the_build_budget() {
+    for memory in [OK, UNREAD] {
+        let (mut runner, req) = building(&[OK, memory]);
+        let config = std::fs::read_to_string(&req.config_path).unwrap();
+        std::fs::write(
+            &req.config_path,
+            format!("{config}\ndeadlines:\n  build_seconds: 30\n"),
+        )
+        .unwrap();
+        runner.sample_probe_ms = vec![(0, 0), (1_000, 1_000), (3_000, 2_000)];
+        release_contended_lock_on_memory_recheck(&mut runner, &req, 3);
+        let receipt = run(&mut runner, &req);
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+        let note = &receipt.outcomes["host_wait"];
+        assert!(note.contains("waited 7 s"), "{note}");
+        let build = runner
+            .calls
+            .iter()
+            .find(|c| c.label == "expo-run-ios")
+            .unwrap();
+        assert_eq!(build.timeout_seconds, 29);
+        assert_eq!(runner.inner.remaining(), 0);
+    }
+}

@@ -17,6 +17,7 @@ pub struct HostRunner {
     pub runs_root: Option<std::path::PathBuf>,
     // The scripted clock at each sample.
     pub sampled_at: Vec<u64>,
+    pub sample_probe_ms: Vec<(u64, u64)>,
     probes: usize,
 }
 
@@ -33,6 +34,7 @@ impl HostRunner {
             os: None,
             runs_root: None,
             sampled_at: Vec::new(),
+            sample_probe_ms: Vec::new(),
             probes: 0,
         }
     }
@@ -81,6 +83,14 @@ impl Runner for HostRunner {
             self.sampled_at.push(self.inner.now_epoch_ms());
         }
         let index = self.probes / 2;
+        if let Some(&(first_ms, second_ms)) = self.sample_probe_ms.get(index) {
+            self.inner
+                .sleep(Duration::from_millis(if self.probes % 2 == 0 {
+                    first_ms
+                } else {
+                    second_ms
+                }));
+        }
         let at_end = index >= 1;
         let load = if at_end { self.end_load } else { 1.0 };
         let scripted = (at_end && !self.memory.is_empty())
