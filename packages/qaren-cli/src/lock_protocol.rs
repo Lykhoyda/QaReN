@@ -997,6 +997,11 @@ fn publish_claim(
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static RELEASE_RECHECK: std::cell::RefCell<Option<Box<dyn FnOnce(&Path, &Path)>>> = const { std::cell::RefCell::new(None) };
+}
+
 fn take_leaf(
     root: &OpenDir,
     name: &OsStr,
@@ -1033,6 +1038,14 @@ fn take_leaf(
             holder: None,
             path: moved.canonical,
         };
+    }
+    #[cfg(test)]
+    if purpose == "release" {
+        RELEASE_RECHECK.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().take() {
+                hook(&moved.canonical, &root.canonical.join(name));
+            }
+        });
     }
     let isolated = read_owned_holder(&moved, euid);
     if isolated.as_ref().is_some_and(&same) {
