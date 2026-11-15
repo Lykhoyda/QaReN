@@ -166,6 +166,7 @@ fn fixture(name: &str, custody: Custody, booted_minutes_ago: Option<u64>) -> Fix
         build_lock: None,
         build_lock_waits: Vec::new(),
         runtime_version: None,
+        metro_bind: None,
     };
     let artifact = CachedArtifact {
         sha256: "a".repeat(64),

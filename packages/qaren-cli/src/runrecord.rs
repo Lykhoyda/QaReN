@@ -621,6 +621,19 @@ pub struct RunRecord {
     // The runtime version the installed artifact embeds and whether the resolver returned the pin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_version: Option<crate::expo_updates::RuntimeVersion>,
+    // Where QaReN's iOS Metro answered; kept when resources.metro is cleared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metro_bind: Option<MetroBind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MetroBind {
+    #[serde(rename = "127.0.0.1")]
+    V4,
+    #[serde(rename = "[::1]-only")]
+    V6Only,
+    #[serde(rename = "inconclusive")]
+    Inconclusive,
 }
 
 // A failed walk's resources kept in the reached state until qaren cleanup or a reclaim by the next run on the device.

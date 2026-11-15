@@ -699,6 +699,7 @@ fn run_inner(
         build_lock: None,
         build_lock_waits: Vec::new(),
         runtime_version: None,
+        metro_bind: None,
     };
     if let Err(f) = record.save(&req.runs_root) {
         return Err(lease::release_or_annotate(&lease, f));
@@ -3483,7 +3484,10 @@ pub(crate) fn cleanup_first(cleanup: &str, failure: &Failure) -> String {
     if failure.suggestion.is_some()
         || failure.repeat.is_some()
         || failure.subreason.as_deref() == Some(PREVIOUS_PLAN_PRESS)
-        || failure.code == FailureCode::CandidateUnavailable
+        || matches!(
+            failure.code,
+            FailureCode::CandidateUnavailable | FailureCode::MetroBindIpv6Only
+        )
     {
         format!("{cleanup}; then {}", failure.next_action.as_str())
     } else {
@@ -4255,6 +4259,16 @@ mod last_screen_tests {
         assert_eq!(
             cleanup_first(cleanup, &unavailable),
             format!("{cleanup}; then {}", unavailable.next_action.as_str())
+        );
+        let ipv6_only = Failure::new(
+            "build",
+            FailureCode::MetroBindIpv6Only,
+            "Metro answered on [::1]:8081",
+            "check the DNS order",
+        );
+        assert_eq!(
+            cleanup_first(cleanup, &ipv6_only),
+            format!("{cleanup}; then check the DNS order")
         );
     }
 

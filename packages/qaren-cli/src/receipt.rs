@@ -132,6 +132,8 @@ pub struct Receipt {
     pub build_lock_waits: Vec<crate::runrecord::BuildLockObservation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_version: Option<crate::expo_updates::RuntimeVersion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metro_bind: Option<crate::runrecord::MetroBind>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub cleanup: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -204,6 +206,7 @@ impl Receipt {
             build_lock: None,
             build_lock_waits: Vec::new(),
             runtime_version: None,
+            metro_bind: None,
             cleanup: BTreeMap::new(),
             cleanup_details: None,
             core_cleanup: None,
