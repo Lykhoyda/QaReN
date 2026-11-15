@@ -126,10 +126,10 @@ pub(crate) fn finish_host(
     runner: &mut dyn crate::exec::Runner,
     receipt: &mut Receipt,
     start: crate::host_capacity::Sample,
-    helpers: &[crate::device_helpers::Finding],
+    helpers: &crate::device_helpers::Scan,
 ) {
     let end = crate::host_capacity::sample(runner, std::env::consts::OS);
-    receipt.device_helpers = helpers.iter().map(|f| f.note()).collect();
+    receipt.device_helpers = helpers.helpers.iter().map(|f| f.note()).collect();
     if end.constrained() {
         if let Some(failure) = receipt.failure.as_mut().filter(|f| f.code.is_refusal()) {
             failure.detail = crate::redact::OutputText::from_output(&format!(

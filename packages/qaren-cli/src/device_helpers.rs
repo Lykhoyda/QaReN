@@ -39,7 +39,8 @@ pub struct Finding {
     pub name: HelperName,
     pub pid: u32,
     pub ppid: u32,
-    pub uid: u32,
+    // Signed: macOS prints the `nobody` user as -2.
+    pub uid: i64,
     pub started: String,
     pub cpu: f64,
     pub emulator_gone: bool,
@@ -90,7 +91,7 @@ impl Finding {
 pub struct Process<'a> {
     pub pid: u32,
     pub ppid: u32,
-    pub uid: u32,
+    pub uid: i64,
     pub cpu: f64,
     pub stat: &'a str,
     pub started: String,
@@ -247,10 +248,14 @@ pub fn findings(runner: &mut dyn Runner, label: &str, text: &str) -> Option<Scan
     })
 }
 
-/// One bounded process-list read at run start; an unreadable list finds nothing.
-pub fn scan(runner: &mut dyn Runner, os: &str) -> Vec<Finding> {
+/// One bounded process-list read at run start; an unavailable or unreadable list finds nothing.
+pub fn scan(runner: &mut dyn Runner, os: &str) -> Scan {
+    let nothing = Scan {
+        helpers: Vec::new(),
+        complete: true,
+    };
     if !matches!(os, "macos" | "linux") {
-        return Vec::new();
+        return nothing;
     }
     let output = runner.run(
         &CmdSpec::new("device-helpers", "ps", &["-axww", "-o", PROCESS_COLUMNS], 3)
@@ -258,20 +263,26 @@ pub fn scan(runner: &mut dyn Runner, os: &str) -> Vec<Finding> {
             .env("LC_ALL", "C"),
     );
     if !output.ok() {
-        return Vec::new();
+        return nothing;
     }
-    findings(runner, "device-helpers", &output.stdout).map_or_else(Vec::new, |scan| scan.helpers)
+    findings(runner, "device-helpers", &output.stdout).unwrap_or(nothing)
 }
 
 /// The report line for run-start findings, or None when there are none.
-pub fn report_line(found: &[Finding]) -> Option<String> {
-    (!found.is_empty()).then(|| {
-        let each: Vec<_> = found
+pub fn report_line(scan: &Scan) -> Option<String> {
+    (!scan.helpers.is_empty()).then(|| {
+        let each: Vec<_> = scan
+            .helpers
             .iter()
             .map(|f| format!("{}; stop it with `{}`", f.describe(), f.stop_command()))
             .collect();
+        let incomplete = if scan.complete {
+            ""
+        } else {
+            " The process list had an unreadable line, so a running emulator may be hidden."
+        };
         format!(
-            "Android emulator helpers at start (QaReN did not start them): {}.",
+            "Android emulator helpers at start (QaReN did not start them): {}.{incomplete}",
             each.join("; ")
         )
     })
@@ -469,7 +480,18 @@ mod tests {
                 scan_text(&mut runner, &format!("{bad}{}", netsimd(4242, 1, "0.5"))).unwrap();
             assert!(!scan.complete, "{bad}");
             assert_eq!(scan.helpers.len(), 1);
+            assert!(report_line(&scan)
+                .unwrap()
+                .contains("a running emulator may be hidden"));
         }
+        // macOS prints the `nobody` user as -2 (seen on 15 Nov for `distnoted`).
+        let nobody = ps_line(632, 1, "0.0", "S", "distnoted", "/usr/sbin/distnoted agent")
+            .replace("   501 ", "    -2 ");
+        let mut runner = MockRunner::new();
+        package(&mut runner, SDK, CmdOutput::success(PACKAGE));
+        let scan = scan_text(&mut runner, &format!("{nobody}{}", netsimd(4242, 1, "0.5"))).unwrap();
+        assert!(scan.complete);
+        assert!(!report_line(&scan).unwrap().contains("may be hidden"));
         for text in ["", "\n", "   77     1   501  1.0 S\n"] {
             assert!(
                 findings(&mut MockRunner::new(), "device-helpers", text).is_none(),
@@ -515,7 +537,7 @@ mod tests {
         .helpers
         .is_empty());
         let mut runner = MockRunner::new();
-        assert!(scan(&mut runner, "windows").is_empty());
+        assert!(scan(&mut runner, "windows").helpers.is_empty());
         assert!(runner.calls.is_empty());
     }
 }
