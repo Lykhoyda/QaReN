@@ -3318,6 +3318,82 @@ fn android_borrowed_cleanup_refuses_without_the_runs_lease() {
 }
 
 #[test]
+fn android_phone_cleanup_recovers_interrupted_claim_releases_without_device_commands() {
+    for released in ["neither", "usb", "both"] {
+        let repo = common::temp_repo();
+        let mut record = phone_record(&repo);
+        record.resources.core = None;
+        record.resources.android_cleanup_complete = true;
+        record.phase = Phase::Failed;
+        let lease = record.resources.lease.as_ref().unwrap().clone();
+        let usb = record.resources.usb_device.as_ref().unwrap().clone();
+        record.save(&repo).unwrap();
+        if released != "neither" {
+            std::fs::remove_dir_all(&usb.lock_dir).unwrap();
+        }
+        if released == "both" {
+            qaren::lease::release(&lease);
+        }
+        let mut mock = MockRunner::new();
+        owner_gone(&mut mock);
+
+        let receipt = cleanup(&mut mock, &repo, "borrowed-run");
+
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Cleaned,
+            "{released}: {:?}",
+            receipt.cleanup
+        );
+        assert!(adb_commands(&mock).is_empty(), "{released}");
+        assert!(!lease.lock_dir.exists(), "{released}");
+        assert!(!usb.lock_dir.exists(), "{released}");
+        let saved = RunRecord::load(&repo, "borrowed-run").unwrap();
+        assert!(saved.resources.android_cleanup_complete);
+        assert!(saved.resources.lease.is_none());
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn android_phone_cleanup_retains_claims_when_completion_cannot_be_saved() {
+    let repo = common::temp_repo();
+    let mut record = phone_record(&repo);
+    record.resources.core = None;
+    let lease = record.resources.lease.as_ref().unwrap().clone();
+    let usb = record.resources.usb_device.as_ref().unwrap().clone();
+    record.save(&repo).unwrap();
+    let blocked_save = RunRecord::run_dir(&repo, "borrowed-run")
+        .join(format!(".run.json.tmp.{}", std::process::id()));
+    std::fs::create_dir(&blocked_save).unwrap();
+    let mut mock = MockRunner::new();
+    mock.adb_servers.push((5037, 41));
+    owner_gone(&mut mock);
+    script_phone_reverse_and_stopped_runner(&mut mock);
+    for package in qaren::adapters::android::RUNNER_PACKAGES {
+        mock.expect_run(
+            &format!("-s {PHONE} uninstall {package}"),
+            CmdOutput::success("Success\n"),
+        );
+        mock.expect_run(
+            &format!("-s {PHONE} shell pm list packages {package}"),
+            CmdOutput::success(""),
+        );
+    }
+
+    let receipt = cleanup(&mut mock, &repo, "borrowed-run");
+
+    assert_ne!(receipt.result, ReceiptResult::Cleaned);
+    assert!(receipt.cleanup["usb_device_claim"].contains("could not be persisted"));
+    assert!(lease.lock_dir.exists());
+    assert!(usb.lock_dir.exists());
+    let saved = RunRecord::load(&repo, "borrowed-run").unwrap();
+    assert!(!saved.resources.android_cleanup_complete);
+    assert!(saved.resources.lease.is_some());
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
 fn android_borrowed_repeat_cleanup_requires_completion_and_no_lease() {
     for phone in [false, true] {
         for case in [
@@ -3344,7 +3420,7 @@ fn android_borrowed_repeat_cleanup_requires_completion_and_no_lease() {
             }
             if case.starts_with("failed") {
                 record.phase = Phase::Failed;
-                record.resources.android_cleanup_complete = case != "failed without proven cleanup";
+                record.resources.android_cleanup_complete = case == "failed with proven cleanup";
             } else if case != "walking without a lease" {
                 record.phase = Phase::Cleaned;
             }

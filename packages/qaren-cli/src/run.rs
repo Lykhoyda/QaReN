@@ -2384,10 +2384,7 @@ mod block_start_tests {
             .insert("HOME".into(), home.display().to_string());
         let start = runner.now_epoch_ms();
         runner.sleep(std::time::Duration::from_secs(90));
-        assert_eq!(
-            springboard_crash_after(&mut runner, "AAAA", start, 60),
-            None
-        );
+        assert_eq!(springboard_crash_after(&mut runner, "AAAA", start, 60), None);
         assert_eq!(runner.now_epoch_ms(), start + 150_000);
         let _ = std::fs::remove_dir_all(home);
     }
@@ -2764,10 +2761,10 @@ fn teardown(
     ));
     // A held or retained lease keeps the phone's claim with it; `qaren cleanup` releases both.
     if !hold && !retain_device_lease {
-        crate::commands::cleanup::release_usb_claim(
-            &ctx.record,
+        crate::commands::cleanup::release_borrowed_phone_claim(
+            &mut ctx.record,
+            &ctx.runs_root,
             &mut outcomes,
-            crate::commands::cleanup::BORROWED_PHONE_LEGS,
         );
     }
     if let Some(lease) = ctx.record.resources.lease.clone() {
@@ -2783,9 +2780,6 @@ fn teardown(
             let outcome = release_lease_outcome(lease::release(&lease));
             if outcome.clean() {
                 ctx.record.resources.lease = None;
-                if ctx.record.resources.android_device.is_some() {
-                    ctx.record.resources.android_cleanup_complete = true;
-                }
             }
             outcome
         } else {

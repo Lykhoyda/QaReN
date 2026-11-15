@@ -802,10 +802,8 @@ impl RunRecord {
     }
 
     pub(crate) fn borrowed_android_cleanup_complete(&self) -> bool {
-        self.resources.lease.is_none()
-            && (self.phase == Phase::Cleaned
-                || (self.resources.android_device.is_some()
-                    && self.resources.android_cleanup_complete))
+        (self.resources.lease.is_none() && self.phase == Phase::Cleaned)
+            || (self.resources.android_device.is_some() && self.resources.android_cleanup_complete)
     }
 
     pub(crate) fn require_android_cleanup_ownership(&self) -> Result<(), &'static str> {

@@ -504,7 +504,7 @@ pub fn cleanup_with_policy(
         Platform::Android if record.resources.borrowed_android().is_some() => {
             outcomes.extend(release_borrowed_android(runner, &record));
             outcomes.extend(release_runner_packages(runner, &record, &outcomes));
-            release_usb_claim(&record, &mut outcomes, BORROWED_PHONE_LEGS);
+            release_borrowed_phone_claim(&mut record, runs_root, &mut outcomes);
         }
         Platform::Android => {
             let server = record.resources.adb_server.clone();
@@ -697,9 +697,6 @@ pub fn cleanup_with_policy(
         };
         if outcome.clean() {
             record.resources.lease = None;
-            if record.resources.android_device.is_some() {
-                record.resources.android_cleanup_complete = true;
-            }
         }
         outcomes.push(("device_lease".to_string(), outcome));
     }
@@ -1095,6 +1092,46 @@ pub(crate) const BORROWED_PHONE_LEGS: &[&str] = &[
     "metro",
     "core",
 ];
+
+pub(crate) fn release_borrowed_phone_claim(
+    record: &mut RunRecord,
+    runs_root: &Path,
+    outcomes: &mut Vec<(String, Outcome)>,
+) {
+    if record.resources.android_device.is_none() {
+        return;
+    }
+    if !record.resources.can_release_build_ownership()
+        || outcomes.iter().any(|(_, outcome)| !outcome.clean())
+    {
+        let reason = "resources that can still address the device are not proven gone; retaining the exclusive claim".into();
+        let outcome = if outcomes
+            .iter()
+            .any(|(_, o)| matches!(o, Outcome::Refused(_)))
+        {
+            Outcome::Refused(reason)
+        } else {
+            Outcome::Unresolved(reason)
+        };
+        outcomes.push(("usb_device_claim".into(), outcome));
+        return;
+    }
+    if !record.resources.android_cleanup_complete {
+        record.resources.android_cleanup_complete = true;
+        if let Err(failure) = record.save(runs_root) {
+            record.resources.android_cleanup_complete = false;
+            outcomes.push((
+                "usb_device_claim".into(),
+                Outcome::Unresolved(format!(
+                    "device cleanup completion could not be persisted; claims retained: {}",
+                    failure.detail
+                )),
+            ));
+            return;
+        }
+    }
+    release_usb_claim(record, outcomes, BORROWED_PHONE_LEGS);
+}
 
 // The exclusive device claim is released last, and only once every resource
 // capable of addressing the device (for the private-server route: reverse
