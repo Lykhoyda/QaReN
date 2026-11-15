@@ -2724,7 +2724,7 @@ pub(crate) fn cleanup_process_group(
 }
 
 // The log leg of a borrowed simulator whose stop did not complete: only a pool member's store is QaReN's.
-pub(crate) fn retained_log_outcome(pool_member: bool) -> Outcome {
+fn retained_log_outcome(pool_member: bool) -> Outcome {
     if pool_member {
         Outcome::Unresolved("log store retained with the simulator".into())
     } else {
