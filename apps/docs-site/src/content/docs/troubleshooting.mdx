@@ -24,6 +24,7 @@ Refusals exit `4` and mean the run could not start or could not decide; failures
 | `PNPM_PROBE_TIMED_OUT` | The pnpm exec probe timed out on every attempt within the dependency-install budget; the launcher was not judged | Re-run when the machine is less loaded, or run `qaren doctor`; `failure.detail` lists the attempts |
 | `GITHUB_AUTH_UNAVAILABLE` | PR lookup could not use GitHub authentication | Follow the [GitHub authentication contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#test-a-pull-request) |
 | `DISK_BUDGET_EXCEEDED`     | Under 1 GiB free for the run storage root or the app, or under about 10 GiB for a clean iOS build | Free space on the volume `failure.detail` names, then re-run                                |
+| `HOST_UNDER_PRESSURE`      | Native build refused by [host memory admission](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#waiting-for-memory-before-a-native-build) | Re-run once memory pressure clears; see `failure.detail` |
 
 ## Development target admission
 

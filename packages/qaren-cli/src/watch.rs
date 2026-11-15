@@ -11,10 +11,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(test)]
 mod queue_tests;
 
-const STAGES: [(&str, &str); 12] = [
+const STAGES: [(&str, &str); 13] = [
     ("preflight", "Preflight"),
     ("deps", "Dependencies"),
     ("build_decision", "Build decision"),
+    ("host_wait", "Host memory"),
     ("build_lock_wait", "Build queue"),
     ("prebuild", "Prebuild"),
     ("native_build", "Native compile"),
@@ -25,6 +26,8 @@ const STAGES: [(&str, &str); 12] = [
     ("recording", "Recording"),
     ("cleanup", "Cleanup"),
 ];
+// Waits listed only when a run had them, so runs without one render as before.
+const OPTIONAL: [&str; 2] = ["host_wait", "build_lock_wait"];
 
 pub enum Target {
     RunId(String),
@@ -142,6 +145,7 @@ struct State {
     platform: String,
     stages: BTreeMap<String, Stage>,
     queue_events: Vec<Stage>,
+    host_wait_events: Vec<Stage>,
     rows: BTreeMap<u64, Step>,
     commands: Vec<String>,
     end: Option<Value>,
@@ -234,6 +238,9 @@ impl State {
                 };
                 if queue {
                     self.queue_events.push(stage.clone());
+                }
+                if name == "host_wait" {
+                    self.host_wait_events.push(stage.clone());
                 }
                 self.stages.insert(name, stage);
             }
@@ -415,6 +422,11 @@ fn stage_line(s: &State, name: &str, label: &str) -> String {
     let Some(stage) = s.stages.get(name) else {
         return format!("· {label}");
     };
+    rendered_stage(s, stage, label)
+}
+
+fn rendered_stage(s: &State, stage: &Stage, label: &str) -> String {
+    let name = stage.name.as_str();
     if name == "build_lock_wait" {
         return queue_line(stage);
     }
@@ -429,6 +441,16 @@ fn stage_line(s: &State, name: &str, label: &str) -> String {
     let mut details = Vec::new();
     match stage.state.as_str() {
         "skipped" => details.push("not needed".to_string()),
+        // Its running event repeats every poll with the time waited, so count from that.
+        "running" if name == "host_wait" => details.push(format!(
+            "waiting {} ({})",
+            duration(
+                stage
+                    .ms
+                    .unwrap_or_else(|| s.now_ms.saturating_sub(stage.began))
+            ),
+            stage.code.as_deref().unwrap_or("memory")
+        )),
         "running" => details.push(format!(
             "running {}",
             duration(s.now_ms.saturating_sub(stage.began))
@@ -546,7 +568,7 @@ fn frame(s: &State, width: u16, height: u16) -> Vec<String> {
     lines.extend(
         STAGES
             .iter()
-            .filter(|(n, _)| *n != "build_lock_wait" || s.stages.contains_key(*n))
+            .filter(|(n, _)| !OPTIONAL.contains(n) || s.stages.contains_key(*n))
             .map(|(n, l)| {
                 if compact {
                     format!(
@@ -646,6 +668,8 @@ struct PlainState {
     seen: HashSet<String>,
     queue_last: Option<(Option<String>, Option<String>)>,
     queue_seq: u64,
+    host_wait_seq: u64,
+    host_wait_running: bool,
 }
 
 fn queue_wait(stage: &Stage, timed: bool) -> String {
@@ -720,8 +744,29 @@ fn plain(s: &State, printed: &mut PlainState) -> Vec<String> {
     if let Some(stage) = s.queue_events.last() {
         printed.queue_seq = stage.seq;
     }
+    for wait in s
+        .host_wait_events
+        .iter()
+        .filter(|stage| stage.seq > printed.host_wait_seq)
+    {
+        if wait.state == "running" {
+            if !printed.host_wait_running {
+                out.push(format!(
+                    "Host memory: waiting ({})",
+                    wait.code.as_deref().unwrap_or("memory")
+                ));
+            }
+            printed.host_wait_running = true;
+        } else {
+            out.push(rendered_stage(s, wait, "Host memory"));
+            printed.host_wait_running = false;
+        }
+    }
+    if let Some(wait) = s.host_wait_events.last() {
+        printed.host_wait_seq = wait.seq;
+    }
     for (name, label) in STAGES {
-        if name == "build_lock_wait" {
+        if matches!(name, "build_lock_wait" | "host_wait") {
             continue;
         }
         if s.stages.get(name).is_some_and(|st| st.state != "running")
@@ -755,7 +800,7 @@ fn plain(s: &State, printed: &mut PlainState) -> Vec<String> {
 fn snapshot(s: &State) -> Value {
     json!({"runId": s.run_id, "verb": s.verb, "platform": s.platform,
         "state": match s.status() { Status::Live => "live", Status::Finished => "finished", Status::Incomplete => "incomplete" },
-        "stages": STAGES.iter().filter(|(n, _)| *n != "build_lock_wait" || s.stages.contains_key(*n)).map(|(n, _)| s.stages.get(*n).map_or_else(|| json!({"name": n, "state": "unobserved"}), |stage| serde_json::to_value(stage).unwrap_or(Value::Null))).collect::<Vec<_>>(),
+        "stages": STAGES.iter().filter(|(n, _)| !OPTIONAL.contains(n) || s.stages.contains_key(*n)).map(|(n, _)| s.stages.get(*n).map_or_else(|| json!({"name": n, "state": "unobserved"}), |stage| serde_json::to_value(stage).unwrap_or(Value::Null))).collect::<Vec<_>>(),
         "steps": s.rows.values().collect::<Vec<_>>(), "end": s.end})
 }
 
@@ -1415,7 +1460,7 @@ mod tests {
         );
         for (_, label) in STAGES
             .into_iter()
-            .filter(|(name, _)| *name != "build_lock_wait")
+            .filter(|(name, _)| !OPTIONAL.contains(name))
         {
             assert!(lines.iter().any(|l| l.contains(label)));
         }
@@ -1453,7 +1498,7 @@ mod tests {
                 assert!(lines.len() < height as usize);
                 for (_, label) in STAGES
                     .into_iter()
-                    .filter(|(name, _)| *name != "build_lock_wait")
+                    .filter(|(name, _)| !OPTIONAL.contains(name))
                 {
                     assert!(lines.iter().any(|line| line.contains(label)));
                 }

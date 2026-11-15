@@ -266,7 +266,9 @@ explicit stages from preflight through cleanup, step outcomes and act/capture/Je
 timings, recording, and the verdict with its expected check exit code.
 An unobserved stage stays unobserved; a skipped stage says “not needed” in full rows.
 The Build queue row appears only after contention; see the
-[build-slot waiting contract](#native-fingerprint-build-selection).
+[build-slot waiting contract](#native-fingerprint-build-selection). The Host memory
+row appears only when the run waited for memory; see
+[waiting for memory](#waiting-for-memory-before-a-native-build).
 TTY redraws read the current terminal size, keep every stage visible, and fit
 step rows into the remaining space with an omitted-row count. Unfinished rows
 take priority, followed by completed rows with the latest observed event sequence,
@@ -798,7 +800,8 @@ change the run's verdict. Cancellation can leave the end sample unavailable.
 The local `report.md` includes one line with both samples, including free and
 available memory and swap in GiB; unreadable values say `unavailable`. A refusal also
 includes the end host state when load reaches the logical CPU count or memory
-is constrained. These are observations, not a diagnosis of the refusal's cause.
+is constrained, except `HOST_UNDER_PRESSURE`, which already names its admission
+reading. These end samples are observations, not a diagnosis of the refusal's cause.
 Refusals before a run directory exists carry the samples in the receipt only.
 `qaren publish` does not include these samples in PR comments or descriptions.
 Sampling starts no device or service and introduces no cleanup resource.
@@ -814,6 +817,49 @@ line. An unavailable or wholly unreadable process list produces no findings;
 a partially readable list can still report helpers, with a warning that a running
 emulator may be hidden. These observations never change the verdict. The run stops
 nothing.
+
+### Waiting for memory before a native build
+
+Before a native build claims its build lock, `check`, `pr` and `prepare` take
+an admission sample. A run that reuses its build takes no admission sample.
+Memory is constrained when
+pressure is `warning` or `critical`, or less than 4 GiB is available; load
+alone never makes a run wait or refuse. A constrained host waits in the
+`host_wait` stage (code `memory_low` or `memory_critical`), polling every
+5 s with one 10-minute allowance per build admission, including probe time.
+The final sample can overrun that allowance by up to 6 s (two 3 s probes).
+`check` shows the wait as `host-wait` in its live progress.
+The initial admission runs before the build budget starts. A build queued
+behind the platform lock or the machine slot (`native-build-slot`) rechecks
+memory at most every 5 s while the allowance remains; these checks share the
+same allowance, and their actual duration is excluded from the build budget,
+including the iOS build window the slot is claimed in. Once the allowance is
+spent, a queued build takes no further samples. A recheck in the slot queue
+keeps the platform lock, as the slot wait itself does. Lock contention itself
+still consumes `deadlines.build_seconds`.
+When memory recovers the build goes on. When memory is still constrained
+but not critical when the allowance is spent, the build goes on with its
+remaining build budget.
+Memory still constrained after 10 minutes, with a readable final reading of `critical`
+pressure (macOS level 4), refuses `HOST_UNDER_PRESSURE` (exit 4). The refusal names load, available memory,
+pressure, swap and the time waited, and says to re-run once pressure clears.
+The pending command claims no build slot and does not start; earlier build
+commands in the run may already have completed. A run that already holds
+resources, such as an iOS device, names `qaren cleanup` as its next action,
+as for any other refusal after allocation. Linux has no critical level, so a Linux host
+waits but never refuses. An unreadable first sample never waits or refuses.
+During each wait, a reading counts only when it reads every memory signal
+(pressure and available bytes) observed so far in that wait, including newly
+readable signals. A probe that fails or times out keeps the last full
+reading and the wait goes on within the remaining allowance. An incomplete final reading
+goes on to the build instead of refusing. An
+unreadable first sample, a wait that recovered and a wait that went on
+constrained each leave a `host_wait` note in the receipt's `outcomes` and a
+line in `report.md`; the refusal's numbers are in its `failure.detail`. The stage event carries no host
+numbers. `qaren watch` shows a **Host memory** row only for a run that waited:
+`waiting <time> (<code>)` while it runs, timed from the event, then the
+outcome; plain output prints `Host memory: waiting (<code>)` when the wait
+starts and the outcome when it ends.
 
 ### Android runner provisioning
 
@@ -5741,7 +5787,8 @@ state. An ambiguous artifact (zero or several bundles) skips caching with a reco
 reason, never a guess. Only a saved state permits ownership rebinding.
 
 **Build serialization.** Native builds (incremental and clean) take a
-host-level `native-build-<platform>` lock, followed by one shared
+host-level `native-build-<platform>` lock, subject to
+[memory admission](#waiting-for-memory-before-a-native-build), followed by one shared
 `native-build-slot` immediately before each build command. This queues iOS
 and Android builds on the same machine. Finite builds release the slot only
 after their process group is proven gone. `expo run:android` releases it on
