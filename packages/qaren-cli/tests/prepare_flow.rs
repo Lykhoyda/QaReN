@@ -1602,6 +1602,14 @@ fn metro_logs(mock: &MockRunner) -> Vec<String> {
         .collect()
 }
 
+fn assert_metro_restart_disclosure(receipt: &qaren::receipt::Receipt, ending: &str) {
+    let expected =
+        format!("Metro was restarted once on all network interfaces during this run{ending}.");
+    assert_eq!(receipt.outcomes["metro_bind_recovery"], expected);
+    let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
+    assert!(report.lines().any(|line| line == expected), "{report}");
+}
+
 const HOSTNAME_PIN: (&str, &str) = ("REACT_NATIVE_PACKAGER_HOSTNAME", "127.0.0.1");
 
 // R10: the first [::1]-only finding stops QaReN's Metro, starts it once on all interfaces, and the wait goes on with the second.
@@ -1633,10 +1641,7 @@ fn ios_metro_answering_only_on_ipv6_is_restarted_once_on_all_interfaces_and_the_
     assert!(receipt
         .to_json()
         .contains("\"metro_bind\": \"127.0.0.1 after restart on all interfaces\""));
-    assert_eq!(
-        receipt.outcomes["metro_bind_recovery"],
-        "restarted-all-interfaces"
-    );
+    assert_metro_restart_disclosure(&receipt, "");
     let starts = expo_starts(&mock);
     assert_eq!(starts.len(), 2);
     assert!(starts[0].args.iter().any(|a| a == "--localhost"));
@@ -1663,13 +1668,6 @@ fn ios_metro_answering_only_on_ipv6_is_restarted_once_on_all_interfaces_and_the_
     assert_eq!(metro.identity.as_ref().unwrap().started_at, RESTART_LSTART);
     assert!(metro.log.ends_with("logs/metro-restart.log"));
     assert_eq!(record.metro_bind, Some(MetroBind::V4AfterRestart));
-    let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
-    assert!(
-        report.contains(
-            "Metro was restarted once and listens on all network interfaces for this run."
-        ),
-        "{report}"
-    );
 }
 
 // R10: a run cancelled between the first Metro's stop and the second start starts no second Metro.
@@ -1711,6 +1709,7 @@ fn ios_metro_restart_cancelled_after_the_second_start_cleans_the_second_metro() 
     mock.cancel_after = Some(("-p 7000".into(), "received SIGTERM".into()));
 
     let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+    assert_metro_restart_disclosure(&receipt, " and has been stopped");
 
     assert_eq!(
         receipt.failure.as_ref().unwrap().code,
@@ -1726,6 +1725,83 @@ fn ios_metro_restart_cancelled_after_the_second_start_cleans_the_second_metro() 
         .any(|c| c.program == "/bin/kill" && names_pid(c, "7000")));
     let record = RunRecord::load(scenario.parent().unwrap(), &receipt.run_id).unwrap();
     assert!(record.resources.metro.is_none());
+}
+
+#[test]
+fn ios_metro_restart_discloses_identity_failure_and_exit_before_readiness() {
+    for identity_captured in [false, true] {
+        let repo = common::temp_repo();
+        let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+        let mut mock = MockRunner::new();
+        script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+        common::script_metro_bind_ipv6_only(&mut mock, 8791);
+        script_metro_group_stop(&mut mock, LSTART, "6001", "6000");
+        if identity_captured {
+            script_metro_restart_spawn(&mut mock);
+            mock.expect_run("ps", CmdOutput::failed(1, ""));
+            mock.expect_run("ps", CmdOutput::failed(1, ""));
+        } else {
+            mock.expect_run(
+                "pnpm config get node-options",
+                CmdOutput::success("undefined\n"),
+            );
+            mock.expect_spawn(
+                "expo start",
+                Spawned {
+                    pid: 7000,
+                    pgid: 7000,
+                },
+            );
+            mock.expect_run("ps", CmdOutput::failed(1, ""));
+            mock.expect_run("ps", CmdOutput::failed(1, ""));
+        }
+        mock.expect_run("lsof", CmdOutput::failed(1, ""));
+        if identity_captured {
+            mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+        }
+
+        let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+        assert_eq!(
+            receipt.failure.as_ref().unwrap().code,
+            FailureCode::BuildFailed
+        );
+        assert_eq!(receipt.metro_bind, Some(MetroBind::V6Only));
+        assert_metro_restart_disclosure(
+            &receipt,
+            if identity_captured {
+                " and has been stopped"
+            } else {
+                " and could not be confirmed stopped"
+            },
+        );
+        assert_eq!(mock.remaining(), 0);
+        assert_eq!(expo_starts(&mock).len(), 2);
+        assert_eq!(receipt.metro.is_some(), !identity_captured);
+    }
+}
+
+#[test]
+fn ios_metro_restart_discloses_unresolved_cleanup_after_cancellation() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+    common::script_metro_bind_ipv6_only(&mut mock, 8791);
+    script_metro_group_stop(&mut mock, LSTART, "6001", "6000");
+    script_metro_restart_spawn(&mut mock);
+    script_metro_group_stop_unresolved(&mut mock, RESTART_LSTART, "7001", "7000");
+    mock.cancel_after = Some(("-p 7000".into(), "received SIGTERM".into()));
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::RunCancelled
+    );
+    assert_metro_restart_disclosure(&receipt, " and could not be confirmed stopped");
+    assert_eq!(mock.remaining(), 0);
+    assert!(receipt.metro.is_some());
 }
 
 // R10: a second start that cannot spawn fails the build and still records why the restart was tried.
@@ -1746,7 +1822,12 @@ fn ios_metro_restart_that_cannot_spawn_keeps_the_ipv6_only_finding() {
     let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
 
     let failure = receipt.failure.as_ref().unwrap();
-    assert_eq!(failure.code, FailureCode::BuildFailed, "{}", receipt.to_json());
+    assert_eq!(
+        failure.code,
+        FailureCode::BuildFailed,
+        "{}",
+        receipt.to_json()
+    );
     assert_eq!(mock.remaining(), 0);
     assert_eq!(receipt.metro_bind, Some(MetroBind::V6Only));
     assert!(!receipt.outcomes.contains_key("metro_bind_recovery"));
@@ -1770,6 +1851,7 @@ fn ios_metro_still_answering_only_on_ipv6_after_the_restart_is_refused_naming_it
     script_metro_group_stop(&mut mock, RESTART_LSTART, "7001", "7000");
 
     let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+    assert_metro_restart_disclosure(&receipt, " and has been stopped");
 
     assert_eq!(
         receipt.result,
@@ -1863,6 +1945,7 @@ fn ios_metro_restart_does_not_extend_the_build_deadline() {
     mock.advance_on = Some(("-- -6000".into(), (2_400_000 - 4_800) / 2));
 
     let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+    assert_metro_restart_disclosure(&receipt, " and has been stopped");
 
     assert_eq!(
         receipt.failure.as_ref().unwrap().code,
@@ -1901,6 +1984,7 @@ fn ios_metro_restart_ending_past_the_deadline_fails_in_that_turn_and_leaves_no_m
     mock.advance_on = Some(("-- -6000".into(), 1_200_000));
 
     let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+    assert_metro_restart_disclosure(&receipt, " and has been stopped");
 
     assert_eq!(
         receipt.failure.as_ref().unwrap().code,

@@ -3491,6 +3491,12 @@ fn spawn_metro_only(ctx: &mut Ctx, listen: metro::Listen) -> Result<(), Failure>
             "check pnpm/expo availability, run qaren cleanup, then retry prepare",
         )
     })?;
+    if listen == metro::Listen::AllPinned {
+        ctx.notes.push((
+            "metro_bind_recovery".into(),
+            "restarted-all-interfaces".into(),
+        ));
+    }
     let identity = capture_pid_identity(ctx.runner, spawned.pid);
     ctx.record.resources.metro = Some(MetroResource {
         port,
@@ -3634,12 +3640,7 @@ fn restart_metro_on_all_interfaces(
     ctx.record.resources.metro = None;
     ctx.save()?;
     ensure_running(ctx.runner, "build")?;
-    spawn_metro_only(ctx, metro::Listen::AllPinned)?;
-    ctx.notes.push((
-        "metro_bind_recovery".into(),
-        "restarted-all-interfaces".into(),
-    ));
-    Ok(())
+    spawn_metro_only(ctx, metro::Listen::AllPinned)
 }
 
 // The listener forms carry only loopback forms, `*` and `other`, never another address.
