@@ -2711,8 +2711,8 @@ names possible per-request fingerprint recomputation first and suggests a
 fixed development `runtimeVersion`, or your own dev server from a scratch
 copy with the resolved string. Early watcher refusals keep their own cause.
 
-Before starting iOS Metro, QaReN asks pnpm for its effective `node-options`,
-including workspace, user and global configuration and pnpm's interpolation
+QaReN starts iOS Metro with `--localhost`. Before startup, it asks pnpm for its
+effective `node-options`, including workspace, user and global configuration and pnpm's interpolation
 and escaping. It composes that value (or inherited `NODE_OPTIONS` when unset)
 with IPv4-first DNS and a quoted `--require` of the preload, then passes the
 result through both `NODE_OPTIONS` and `npm_config_node_options` and pnpm's
