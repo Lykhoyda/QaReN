@@ -70,6 +70,7 @@ applicable or its subject was not assessed, as explained in the row's detail.
 | `watchman-health` | A read-only, five-second watch-list probe without starting Watchman |
 | `watchman-volume-probe` | Candidate watch admission and [cookie sync](#ios-simulator-lifecycle); admission timeout, rejection or a confirmed cookie timeout fails, while unavailable or invalid responses warn |
 | `candidate-volume-speed` | A bounded small-file read sample on the candidate volume; warns about slow reads, with unknown results disclosed |
+| `metro-bind` | With a configured candidate: who listens on its `metroPort` and whether `/status` answers on `127.0.0.1` and `[::1]`; passes on `127.0.0.1`, fails when a Metro answers on `[::1]` only, warns for another service or a read that failed or answered nothing, and skips when nothing listens or no candidate is configured |
 | `host-load` | One-, five- and fifteen-minute load averages, logical CPU count and sampled CPU idle; warns about readiness deadlines under load |
 | `native-build-lock` | Read-only iOS lock and shared [build-slot observation](#native-fingerprint-build-selection); never claims or reclaims a lock |
 | `android-sdk`, `android-avd` | When `android` is configured: `ANDROID_HOME`, an executable `adb` file (never run; its version is not checked), the emulator binary and the configured AVD via `emulator -list-avds` |
@@ -2755,8 +2756,8 @@ names possible per-request fingerprint recomputation first and suggests a
 fixed development `runtimeVersion`, or your own dev server from a scratch
 copy with the resolved string. Early watcher refusals keep their own cause.
 
-Before starting iOS Metro, QaReN asks pnpm for its effective `node-options`,
-including workspace, user and global configuration and pnpm's interpolation
+QaReN starts iOS Metro with `--localhost`. Before startup, it asks pnpm for its
+effective `node-options`, including workspace, user and global configuration and pnpm's interpolation
 and escaping. It composes that value (or inherited `NODE_OPTIONS` when unset)
 with IPv4-first DNS and a quoted `--require` of the preload, then passes the
 result through both `NODE_OPTIONS` and `npm_config_node_options` and pnpm's
@@ -2769,6 +2770,23 @@ is left, it uses inherited
 `NODE_OPTIONS` and records a value-free fallback note; cancellation still
 prevents startup.
 A native-side configuration override is not visible in the artifact.
+
+The iOS Metro wait does not trust how `localhost` resolves. Once the port's
+listener is proven to be in QaReN's Metro group, each turn reads the port's
+listeners (`lsof -nP -iTCP:<port> -sTCP:LISTEN`) and probes `/status` on
+`127.0.0.1` and `[::1]` without a proxy. A successful probe requires a 2xx
+response with body `packager-status:running`; Metro is ready when `127.0.0.1`
+passes that probe. When only `[::1]` answers, the listener is QaReN's on `[::1]` with no
+`127.0.0.1` or wildcard listener, `127.0.0.1` stays refused or silent on two
+more looks one second apart, and the listener is unchanged, the run refuses
+`METRO_BIND_IPV6_ONLY` in that turn instead of waiting out the build deadline.
+The detail names the listener forms seen (only `127.0.0.1`, `[::1]`, `*` and
+`other`, never another address) and that no restart was tried; the next step is
+the cleanup command, then a check of the project's Node DNS result order.
+Anything less consistent keeps waiting. The run record and receipt carry
+`metro_bind`: `127.0.0.1`, `[::1]-only`, or `inconclusive` when the deadline
+passed; it survives Metro's cleanup and `status` prints it. Android keeps its
+single `127.0.0.1` probe.
 
 A request-handler timeout after `/status` responds names startup or a
 stalled watcher as possible causes; steady answers near 30 seconds also name a
@@ -3493,9 +3511,8 @@ use normal teardown. For eligible failed iOS checks, precedence is:
 | `QAREN_HOLD_ON_FAIL=1` or unset | Hold |
 
 A held Metro keeps its port; another run using that port refuses `METRO_PORT_OCCUPIED`.
-iOS runs start Metro with `--localhost` and the Node options described in the
-[launch readiness contract](#ios-simulator-lifecycle), so a held Metro listens only on
-`127.0.0.1`, where the readiness probes and simulator reach it; Android runs keep
+For iOS Metro startup options, verified loopback readiness and bind refusals, see
+the [launch readiness contract](#ios-simulator-lifecycle); Android runs keep
 their `adb reverse` path.
 
 The iOS runner's XCTest result bundles under `Logs/Test` in both its local
