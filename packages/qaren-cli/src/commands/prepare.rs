@@ -2622,6 +2622,7 @@ fn wait_for_host_memory(ctx: &mut Ctx) -> Result<(), Failure> {
     let mut waited = 0;
     let mut next_poll = MEMORY_POLL_MS;
     let mut fresh = true;
+    let wanted = (host.pressure.is_some(), host.available_bytes.is_some());
     crate::progress::started("host-wait", false);
     crate::events::stage("host_wait", StageState::Running, Some(code(&host)), None);
     let end = |state: StageState, code: Option<&str>, waited: u64| {
@@ -2643,9 +2644,11 @@ fn wait_for_host_memory(ctx: &mut Ctx) -> Result<(), Failure> {
             waited = ctx.runner.monotonic_ms().saturating_sub(start);
         }
         next_poll = next_poll.saturating_add(MEMORY_POLL_MS);
-        // A probe an overloaded host timed out is no sign memory came back: keep the last reading.
+        // A probe an overloaded host timed out is no sign memory came back: a poll counts only
+        // with every memory signal the first reading had; otherwise keep the last full reading.
         let next = crate::host_capacity::sample(ctx.runner, os);
-        fresh = !next.memory_unread();
+        fresh = (!wanted.0 || next.pressure.is_some())
+            && (!wanted.1 || next.available_bytes.is_some());
         if fresh {
             host = next;
         }
@@ -2668,7 +2671,7 @@ fn wait_for_host_memory(ctx: &mut Ctx) -> Result<(), Failure> {
         ));
         return Ok(());
     }
-    // Only a readable critical reading at the end refuses; an unavailable one never does.
+    // Only a complete critical reading at the end refuses; an incomplete one never does.
     if fresh && host.pressure == Some(Pressure::Critical) {
         end(StageState::Failed, Some("HOST_UNDER_PRESSURE"), waited);
         // Resources may already be owned, so the receipt's next action can become cleanup; the detail keeps the remedy.

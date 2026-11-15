@@ -260,6 +260,42 @@ fn d6_an_unreadable_host_never_waits_or_refuses_and_says_so() {
 }
 
 const UNREAD: (u8, u64) = (0, 0);
+// One of the two probes fails: no pressure level, or no available memory.
+const NO_PRESSURE: (u8, u64) = (0, 8 * 1024 * 1024);
+const NO_AVAILABLE: (u8, u64) = (1, 0);
+
+#[test]
+fn d6_a_poll_without_the_pressure_reading_keeps_waiting() {
+    // Critical pressure with plenty available: without the pressure level a poll would look recovered.
+    let (mut runner, req) = building(&[CRITICAL, NO_PRESSURE, NO_PRESSURE, OK]);
+    let receipt = run(&mut runner, &req);
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    let note = &receipt.outcomes["host_wait"];
+    assert!(note.contains("waited 15 s"), "{note}");
+    assert!(note.contains("recovered"), "{note}");
+    assert!(note.contains("pressure normal"), "{note}");
+}
+
+#[test]
+fn d6_a_poll_without_the_available_memory_keeps_waiting() {
+    // Low memory at normal pressure: without available memory a poll would look recovered.
+    let (mut runner, req) = building(&[LOW, NO_AVAILABLE, NO_AVAILABLE, OK]);
+    let receipt = run(&mut runner, &req);
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    let note = &receipt.outcomes["host_wait"];
+    assert!(note.contains("waited 15 s"), "{note}");
+    assert!(note.contains("8.0 GiB available"), "{note}");
+}
+
+#[test]
+fn d6_an_incomplete_final_poll_builds_instead_of_refusing() {
+    let (mut runner, req) = building(&[CRITICAL, NO_PRESSURE]);
+    let receipt = run(&mut runner, &req);
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    let note = &receipt.outcomes["host_wait"];
+    assert!(note.contains("waited 600 s"), "{note}");
+    assert!(note.contains("last reading unavailable"), "{note}");
+}
 
 #[test]
 fn d6_a_critical_reading_never_refuses_once_the_probes_fail() {

@@ -683,12 +683,16 @@ When memory recovers the build goes on. When memory is still constrained
 but not critical after 10 minutes, the build goes on with its full budget.
 Memory still constrained after 10 minutes, with a readable final reading of `critical`
 pressure (macOS level 4), refuses `HOST_UNDER_PRESSURE` (exit 4). The refusal names load, available memory,
-pressure, swap and the time waited. No build lock is claimed and no build
-starts; the run's normal teardown releases what it acquired before the wait,
-such as its device lease. Linux has no critical level, so a Linux host
-waits but never refuses. An unreadable first sample never waits or refuses;
-an unreadable sample during the wait keeps the last reading and waits on, and
-an unreadable final reading goes on to the build instead of refusing. An
+pressure, swap and the time waited, and says to re-run once pressure clears.
+No build lock is claimed and no build starts. A run that already holds
+resources, such as an iOS device, names `qaren cleanup` as its next action,
+as for any other refusal after allocation. Linux has no critical level, so a Linux host
+waits but never refuses. An unreadable first sample never waits or refuses.
+During the wait, a reading counts only when it reads every memory value the
+first one had: a probe that fails or times out there keeps the last full
+reading and the wait goes on, within the same 10 minutes, because a timed-out
+probe on a constrained host is a sign of that load. An incomplete final reading
+goes on to the build instead of refusing. An
 unreadable first sample, a wait that recovered and a wait that went on
 constrained each leave a `host_wait` note in the receipt's `outcomes` and a
 line in `report.md`; the refusal's numbers are in its `failure.detail`. The stage event carries no host

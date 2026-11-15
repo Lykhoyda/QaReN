@@ -10,7 +10,8 @@ pub struct HostRunner {
     pub malformed: bool,
     pub timeout: bool,
     pub low_end_memory: bool,
-    // (macOS pressure level, free KiB) for each sample after the start; the last one repeats; level 0 fails.
+    // (macOS pressure level, free KiB) for each sample after the start; the last one repeats.
+    // Level 0 fails the sysctl probe and 0 KiB fails the vm_stat probe.
     pub memory: Vec<(u8, u64)>,
     pub os: Option<&'static str>,
     // Every sample, including those taken during a wait, proves no build lock is held or recorded.
@@ -105,7 +106,12 @@ impl Runner for HostRunner {
                 ..Default::default()
             };
         }
-        if self.malformed || level == 0 {
+        let probe_fails = match spec.program.as_str() {
+            "sysctl" => level == 0,
+            "vm_stat" => free_kib == 0,
+            _ => false,
+        };
+        if self.malformed || probe_fails {
             return CmdOutput::success("/private/probe-canary process-canary NaN garbage");
         }
         let text = match spec.program.as_str() {
