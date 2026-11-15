@@ -605,6 +605,7 @@ impl Fixture {
             manifest_warm: None,
             lane_owned: false,
             build_deadline_ms: None,
+            build_limit: None,
         }
     }
     fn foreign_slot(&mut self) -> PathBuf {
@@ -1637,4 +1638,69 @@ fn b10_prebuild_keeps_its_own_limit_and_names_what_it_was_given() {
         // Prebuild has no progress rule: it never reads the line count.
         assert_eq!(f.runner.inner.scripted_log_lines.len(), 11);
     }
+}
+
+fn seed_timings(f: &Fixture, platform: &str, app_id: &str, work_s: u64) {
+    crate::build_timings::append(
+        &crate::build_timings::path(&f.root, platform, app_id).unwrap(),
+        crate::build_timings::Sample {
+            work_s,
+            at: "2026-11-15T00:00:00Z".into(),
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn l6_a_learned_limit_leaves_the_slot_wait_and_prebuild_on_the_configured_limit() {
+    let mut f = fixture("learned-slot", Platform::Ios);
+    seed_timings(&f, "ios", "com.example.app", 30);
+    f.foreign_slot();
+    for _ in 0..3 {
+        f.live_poll();
+    }
+    let mut ctx = f.ctx();
+    learn_build_limit(&mut ctx);
+    assert_eq!(build_limit_seconds(&ctx), 45);
+    // The compile itself would get the learned ceiling; the slot wait still ends after 3 s.
+    let spec = compile_spec(&ctx);
+    assert_eq!(spec.timeout_seconds, 135);
+    let failure = run_finite_build(&mut ctx, &spec, BuildWork::Compile).unwrap_err();
+    assert_eq!(failure.code, FailureCode::BuildContended);
+    assert!(failure.detail.contains("waited 3 s"), "{failure:?}");
+    drop(ctx);
+    let mut f = fixture("learned-prebuild", Platform::Ios);
+    seed_timings(&f, "ios", "com.example.app", 30);
+    finite_script(&mut f, None);
+    let mut ctx = f.ctx();
+    learn_build_limit(&mut ctx);
+    ctx.build_deadline_ms = Some(ctx.runner.monotonic_ms() + 9_000_000);
+    let spec = CmdSpec::new("expo-prebuild", "compiler", &[], build_seconds_left(&ctx));
+    let failure = run_finite_build(&mut ctx, &spec, BuildWork::Prebuild).unwrap_err();
+    let limit = failure.limit.as_deref().unwrap();
+    assert_eq!((limit.elapsed_s, limit.limit_s), (3, 3));
+    assert!(!limit.learned);
+}
+
+#[test]
+fn g3_a_learned_limit_is_per_platform_and_per_app() {
+    let mut f = fixture("per-platform", Platform::Ios);
+    seed_timings(&f, "ios", "com.example.app", 30);
+    let mut ctx = f.ctx();
+    learn_build_limit(&mut ctx);
+    assert_eq!(build_limit_seconds(&ctx), 45);
+    assert!(ctx.notes.iter().any(|(k, v)| k == "build_limit_learned"
+        && v == "limit 45 s, learned from 1 earlier builds on this machine (configured 3 s)"));
+    drop(ctx);
+    f.record.scenario.platform = Platform::Android;
+    let mut ctx = f.ctx();
+    learn_build_limit(&mut ctx);
+    assert_eq!(build_limit_seconds(&ctx), 3);
+    drop(ctx);
+    f.record.scenario.platform = Platform::Ios;
+    f.record.candidate.app_id = "com.example.other".into();
+    let mut ctx = f.ctx();
+    learn_build_limit(&mut ctx);
+    assert_eq!(build_limit_seconds(&ctx), 3);
+    assert!(ctx.notes.is_empty());
 }

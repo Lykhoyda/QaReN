@@ -5655,7 +5655,14 @@ succeeded, run again; after a `window` end first set `deadlines.build_seconds`
 to `next_limit_s`, or, when the window was already 7200 s and `next_limit_s`
 is absent, build the app with the project's own tools. A passing compile
 records `native_build` in `timings_ms` and the `build_next_limit` outcome, and
-`build_limit` when it went past its limit. See the
+`build_limit` when it went past its limit. Each passing compile's time is kept
+per machine, platform and app in `<runs root>/build-timings/<platform>/<app id>.json`
+(the last five, replaced whole); the next run's compile limit is the larger of
+`build_seconds` and 1.5 times the longest of them, at most 7200 s, noted as
+`build_limit_learned` and as `limit.learned` on a cut. The lock wait, the slot
+wait and prebuild keep `build_seconds`. A missing or unreadable record means
+`build_seconds`; `build_next_limit` is a forecast, since another run may replace
+the record first. See the
 [deadline defaults and validation](src/scenario.rs).
 Build subprocess timeouts are capped to the remaining window, and no new
 build command starts after expiry. Teardown commands and their process-identity

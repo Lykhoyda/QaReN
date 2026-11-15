@@ -208,6 +208,7 @@ impl Fixture {
             manifest_warm: None,
             lane_owned: false,
             build_deadline_ms: None,
+            build_limit: None,
         }
     }
 

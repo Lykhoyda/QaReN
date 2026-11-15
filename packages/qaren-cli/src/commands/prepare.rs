@@ -80,6 +80,8 @@ pub(crate) struct Ctx<'a> {
     pub(crate) lane_owned: bool,
     // Monotonic end of the iOS build window, set when the lock is claimed: prebuild, the slot wait, build, verification and publication share it.
     pub(crate) build_deadline_ms: Option<u64>,
+    // The compile limit learned from this machine's earlier builds, read once per run.
+    pub(crate) build_limit: Option<crate::build_timings::Limit>,
 }
 
 impl<'a> Ctx<'a> {
@@ -671,6 +673,7 @@ fn prepare_validated(
         manifest_warm: None,
         lane_owned: scenario.platform == Platform::Ios,
         build_deadline_ms: None,
+        build_limit: None,
     };
     let t = ctx.mark("validate", started_ms);
     if let Some(earlier) = recovered {
@@ -2642,6 +2645,7 @@ fn claim_ios_build_lock(
             .saturating_mul(1000),
     );
     claim_waiting_build_lock(ctx, lock_root, name, holder, deadline, false)?;
+    learn_build_limit(ctx);
     // Waiting for the lock is not work: the window starts at the claim.
     let window = build_ceiling_seconds(build_limit_seconds(ctx));
     ctx.build_deadline_ms = Some(
@@ -4982,6 +4986,11 @@ fn run_finite_build_command(
                     LimitEnd::Window => (window_s < BUILD_CEILING_S).then_some(window_s),
                     LimitEnd::NoProgress | LimitEnd::CommandLimit => Some(limit_s),
                 },
+                learned: compile
+                    && ctx
+                        .build_limit
+                        .as_ref()
+                        .is_some_and(crate::build_timings::Limit::learned),
             };
             let given = if spec.timeout_seconds < ctx.record.scenario.deadlines.build_seconds {
                 "what was left of the build window".to_string()
@@ -5065,10 +5074,66 @@ fn run_finite_build_command(
                 ),
             ));
         }
+        // A forecast: the next run reads the record again, and another run may replace it first.
+        let next = match build_timings_path(ctx) {
+            Some(path) => {
+                let sample = crate::build_timings::Sample {
+                    work_s: work_ms.div_ceil(1000),
+                    at: timefmt::iso8601_utc(ctx.runner.now_epoch_ms()),
+                };
+                let samples = crate::build_timings::append(&path, sample).unwrap_or_else(
+                    |(samples, kind)| {
+                        ctx.notes.push((
+                            "build_timings".into(),
+                            format!("this build's time could not be recorded: {kind}"),
+                        ));
+                        samples
+                    },
+                );
+                crate::build_timings::learned_limit(
+                    ctx.record.scenario.deadlines.build_seconds,
+                    &samples,
+                )
+            }
+            None => limit_s,
+        };
         ctx.notes
-            .push(("build_next_limit".into(), format!("{limit_s} s")));
+            .push(("build_next_limit".into(), format!("{next} s")));
     }
     Ok(())
+}
+
+fn build_timings_path(ctx: &Ctx) -> Option<PathBuf> {
+    crate::build_timings::path(
+        &ctx.runs_root,
+        platform_dir(ctx.record.scenario.platform),
+        &ctx.record.candidate.app_id,
+    )
+}
+
+// Reads this machine's earlier compile times once per run, before the limit is first used.
+fn learn_build_limit(ctx: &mut Ctx) {
+    if ctx.build_limit.is_some() {
+        return;
+    }
+    let configured = ctx.record.scenario.deadlines.build_seconds;
+    let limit = crate::build_timings::limit(build_timings_path(ctx).as_deref(), configured);
+    if let Some(reason) = &limit.unreadable {
+        ctx.notes.push((
+            "build_timings".into(),
+            format!("earlier build times were not used ({reason}); the configured limit of {configured} s applies"),
+        ));
+    }
+    if limit.learned() {
+        ctx.notes.push((
+            "build_limit_learned".into(),
+            format!(
+                "limit {} s, learned from {} earlier builds on this machine (configured {configured} s)",
+                limit.limit_s, limit.samples
+            ),
+        ));
+    }
+    ctx.build_limit = Some(limit);
 }
 
 fn inspect_interface_failure(
@@ -5174,6 +5239,7 @@ fn with_build_window<T>(
         manifest_warm: ctx.manifest_warm.take(),
         lane_owned: ctx.lane_owned,
         build_deadline_ms: ctx.build_deadline_ms,
+        build_limit: ctx.build_limit.take(),
     };
     let result = operation(&mut scoped);
     let budget = ensure_build_budget(&mut scoped);
@@ -5188,6 +5254,7 @@ fn with_build_window<T>(
     ctx.manifest_warm = scoped.manifest_warm;
     ctx.lane_owned = scoped.lane_owned;
     ctx.build_deadline_ms = scoped.build_deadline_ms;
+    ctx.build_limit = scoped.build_limit;
     // A cut for time keeps its own facts and log lines over the generic budget failure.
     if !matches!(&result, Err(failure) if failure.code == FailureCode::BuildContended || failure.limit.is_some())
     {
@@ -5263,7 +5330,11 @@ const BUILD_CEILING_S: u64 = 7200;
 
 // The limit of compilation; the lock wait, the slot wait and prebuild read build_seconds directly.
 pub(crate) fn build_limit_seconds(ctx: &Ctx) -> u64 {
-    ctx.record.scenario.deadlines.build_seconds
+    ctx.build_limit
+        .as_ref()
+        .map_or(ctx.record.scenario.deadlines.build_seconds, |limit| {
+            limit.limit_s
+        })
 }
 
 pub(crate) fn build_ceiling_seconds(limit: u64) -> u64 {
@@ -5382,6 +5453,7 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
                         ),
                     ));
                 }
+                learn_build_limit(ctx);
                 let compile = build_work_seconds_left(ctx);
                 run_finite_build(
                     ctx,
@@ -6709,6 +6781,7 @@ mod launch_tests {
                 manifest_warm: None,
                 lane_owned: false,
                 build_deadline_ms: None,
+                build_limit: None,
             };
             ctx.save().unwrap();
             let fp = NativeFingerprint {

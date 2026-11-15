@@ -8825,7 +8825,17 @@ fn timed_out_ios_build(
     build_seconds: Option<u64>,
     counts: std::collections::VecDeque<Option<u64>>,
 ) -> (qaren::receipt::Receipt, std::path::PathBuf) {
+    timed_out_ios_build_seeded(build_seconds, counts, |_| {})
+}
+
+// `seed` prepares the machine's runs root (the repo here) before the run.
+fn timed_out_ios_build_seeded(
+    build_seconds: Option<u64>,
+    counts: std::collections::VecDeque<Option<u64>>,
+    seed: impl FnOnce(&std::path::Path),
+) -> (qaren::receipt::Receipt, std::path::PathBuf) {
     let repo = common::temp_repo();
+    seed(&repo);
     let deadlines = build_seconds
         .map(|s| format!("deadlines:\n  build_seconds: {s}\n"))
         .unwrap_or_default();
@@ -8889,7 +8899,8 @@ fn b1_a_build_past_its_limit_that_keeps_writing_passes() {
         receipt.outcomes["build_limit"],
         "limit 2400 s; the build took 3300 s and went on because it kept producing output; window 7200 s"
     );
-    assert_eq!(receipt.outcomes["build_next_limit"], "2400 s");
+    // The forecast after this build's sample: 1.5 times 3300 s.
+    assert_eq!(receipt.outcomes["build_next_limit"], "4950 s");
 }
 
 #[test]
@@ -9031,4 +9042,123 @@ fn b5_a_build_that_always_writes_ends_with_its_window() {
         .unwrap()
         .next_action
         .contains("set deadlines.build_seconds to 1800, then run again"));
+}
+
+// AI-471 slice 2: the build's duration is recorded per machine and raises the next limit.
+
+fn timings_file(runs_root: &std::path::Path) -> std::path::PathBuf {
+    qaren::build_timings::path(runs_root, "ios", "com.rndevagent.testapp").unwrap()
+}
+
+fn seed_timings(runs_root: &std::path::Path, work_s: &[u64]) {
+    for &work_s in work_s {
+        qaren::build_timings::append(
+            &timings_file(runs_root),
+            qaren::build_timings::Sample {
+                work_s,
+                at: "2026-11-15T00:00:00Z".into(),
+            },
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn l1_l3_a_passing_build_is_recorded_and_the_next_run_uses_the_learned_limit() {
+    let first = common::temp_repo();
+    let scenario = write_scenario(&first, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_ready_with_build(&mut mock, &first, |m| {
+        common::script_finite_ios_build_exiting_after(m, "expo run:ios", 3_000_000)
+    });
+    mock.scripted_log_lines = growing(3100);
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{:?}",
+        receipt.failure
+    );
+    let samples = qaren::build_timings::read(&timings_file(&first)).unwrap();
+    assert_eq!(samples.iter().map(|s| s.work_s).collect::<Vec<_>>(), [3000]);
+    assert_eq!(receipt.outcomes["build_next_limit"], "4500 s");
+    // Second run on the same machine: a build that stands still is cut at the learned 4500 s.
+    let recorded = std::fs::read(timings_file(&first)).unwrap();
+    let (receipt, _repo) = timed_out_ios_build_seeded(None, Default::default(), |root| {
+        std::fs::create_dir_all(timings_file(root).parent().unwrap()).unwrap();
+        std::fs::write(timings_file(root), &recorded).unwrap();
+    });
+    let limit = limit_of(&receipt);
+    assert_eq!(limit.ended_by, qaren::failure::LimitEnd::NoProgress);
+    assert_eq!((limit.elapsed_s, limit.limit_s), (4500, 4500));
+    assert!(limit.learned);
+    assert_eq!(limit.next_limit_s, Some(4500));
+    assert_eq!(
+        receipt.outcomes["build_limit_learned"],
+        "limit 4500 s, learned from 1 earlier builds on this machine (configured 2400 s)"
+    );
+}
+
+#[test]
+fn l4_a_cut_with_a_learned_limit_names_the_next_limit_by_its_end() {
+    // Learned 6000 s: the window is the 7200 s maximum, so no setting helps.
+    let (receipt, _repo) =
+        timed_out_ios_build_seeded(None, growing(7300), |root| seed_timings(root, &[4000]));
+    let limit = limit_of(&receipt);
+    assert_eq!(
+        (limit.ended_by, limit.elapsed_s),
+        (qaren::failure::LimitEnd::Window, 7200)
+    );
+    assert!(limit.learned);
+    assert_eq!(limit.next_limit_s, None);
+    // Learned 1200 s over a configured 600 s: the window just used (3600 s) is the next limit.
+    let (receipt, _repo) =
+        timed_out_ios_build_seeded(Some(600), growing(3700), |root| seed_timings(root, &[800]));
+    let limit = limit_of(&receipt);
+    assert_eq!(
+        (limit.ended_by, limit.elapsed_s),
+        (qaren::failure::LimitEnd::Window, 3600)
+    );
+    assert_eq!((limit.limit_s, limit.next_limit_s), (1200, Some(3600)));
+    assert!(limit.learned);
+}
+
+#[test]
+fn l5_a_corrupt_record_leaves_the_configured_limit_and_a_note() {
+    let (receipt, _repo) = timed_out_ios_build_seeded(None, Default::default(), |root| {
+        std::fs::create_dir_all(timings_file(root).parent().unwrap()).unwrap();
+        std::fs::write(timings_file(root), "{half").unwrap();
+    });
+    let limit = limit_of(&receipt);
+    assert_eq!((limit.elapsed_s, limit.limit_s), (2400, 2400));
+    assert!(!limit.learned);
+    assert_eq!(
+        receipt.outcomes["build_timings"],
+        "earlier build times were not used (not a build timings record); the configured limit of 2400 s applies"
+    );
+}
+
+#[test]
+fn l6_a_learned_limit_leaves_the_lock_wait_on_the_configured_limit() {
+    let repo = common::temp_repo();
+    let scenario_path = write_scenario(
+        &repo,
+        &format!(
+            "{}deadlines:\n  build_seconds: 150\n",
+            ios_scenario_yaml(8791)
+        ),
+    );
+    seed_timings(&repo, &[1000]);
+    seed_build_holder(&repo);
+    let mut mock = MockRunner::new();
+    script_ios_prepare_to_claim(&mut mock, &repo);
+    script_live_idle_holder_polls(&mut mock, 150);
+    let receipt = prepare(&mut mock, &prepare_args(&scenario_path, false, None));
+    assert_eq!(mock.remaining(), 0);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::BuildContended);
+    assert!(failure
+        .next_action
+        .to_string()
+        .contains("waited 150 s of the budget"));
 }

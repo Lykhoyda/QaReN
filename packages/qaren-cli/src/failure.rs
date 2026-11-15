@@ -232,6 +232,9 @@ pub struct LimitFacts {
     // Absent when no setting can help: the window was already the 7200 s maximum.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_limit_s: Option<u64>,
+    // The limit was raised from this machine's earlier builds.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub learned: bool,
 }
 
 impl LimitFacts {
