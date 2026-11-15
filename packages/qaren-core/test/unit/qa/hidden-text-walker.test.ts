@@ -417,6 +417,29 @@ for (const [name, first] of [
   });
 }
 
+test('B4: a hidden-text press refused as covered gets one clearance drag and one re-press, then fails naming both', async () => {
+  // Where the cover-before-drag check meets the fallback: a refusal keeps the fallback's authority,
+  // the covered branch proves the cover and drags once, and its once-only re-press is the last.
+  const f = bravo({
+    acts: [refused('FOCUS_TARGET_OCCLUDED: covered'), refused('FOCUS_TARGET_OCCLUDED: covered')],
+  });
+  const { outcome, reason } = await walk('1. Tap "Bravo plan"', f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.deepEqual(f.actions, ['press @e12', 'scroll', 'press @e12']);
+  assert.deepEqual(f.handoffs, ['refused', 'refused']);
+  assert.match(
+    reason,
+    /^FOCUS_TARGET_OCCLUDED: covered; "Bravo plan" stayed off screen after one scroll/,
+  );
+  assert.ok(reason.includes(BRAVO_CLAUSE), reason);
+  assert.ok(
+    reason.endsWith(
+      '; its button "qa-hidden-card-b" was not tapped: the runner refused the press: FOCUS_TARGET_OCCLUDED: covered',
+    ),
+    reason,
+  );
+});
+
 test('B4: an executed tap that changes nothing is never repeated by the inner retry', async () => {
   const f = bravo();
   const { outcome, reason } = await walk('1. Tap "Bravo plan"', f.deps);
