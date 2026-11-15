@@ -2,6 +2,7 @@ mod common;
 
 use qaren::adapters::{android, ios, metro};
 use qaren::exec::CmdOutput;
+use std::num::NonZeroU32;
 use std::path::Path;
 
 #[test]
@@ -281,6 +282,80 @@ fn tunneled_serial_allowlist() {
 }
 
 #[test]
+fn expo_android_build_runs_niced_with_capped_daemonless_gradle() {
+    let opts = android::gradle_opts(None, NonZeroU32::new(4), true);
+    let spec = android::build_spec(
+        Path::new("/repo/test-app"),
+        "127.0.0.1:5555",
+        15037,
+        8792,
+        2400,
+        true,
+        opts.as_deref(),
+    );
+    assert_eq!(spec.program, "nice");
+    assert_eq!(
+        spec.args,
+        [
+            "-n",
+            "10",
+            "pnpm",
+            "exec",
+            "expo",
+            "run:android",
+            "--port",
+            "8792"
+        ]
+    );
+    assert!(spec.env.contains(&(
+        "GRADLE_OPTS".to_string(),
+        "-Dorg.gradle.workers.max=4 -Dorg.gradle.daemon=false".to_string()
+    )));
+}
+
+#[test]
+fn gradle_opts_apply_the_requested_cap_and_keep_other_options() {
+    let four = NonZeroU32::new(4);
+    for user in [
+        "-Xmx2g",
+        "-Dorg.gradle.workers.max=32 -Xmx2g",
+        "'-Dorg.gradle.workers.max=32'",
+        "-Dnote=-Dorg.gradle.workers.max=32",
+        "'-Dnote=hello -Dorg.gradle.workers.max=32'",
+    ] {
+        for no_daemon in [false, true] {
+            let opts = android::gradle_opts(Some(user), four, no_daemon).unwrap();
+            eprintln!("GRADLE_OPTS: {opts}");
+            let output = std::process::Command::new("/bin/sh")
+                .args(["-c", "eval \"set -- $GRADLE_OPTS\"; printf '%s\\n' \"$@\""])
+                .env("GRADLE_OPTS", opts)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            let text = String::from_utf8(output.stdout).unwrap();
+            let args = text.lines().collect::<Vec<_>>();
+            // JVM -D properties use the last value; the requested build cap must win.
+            assert_eq!(
+                args.iter()
+                    .rev()
+                    .find_map(|arg| arg.strip_prefix("-Dorg.gradle.workers.max=")),
+                Some("4"),
+                "{user}"
+            );
+            assert_eq!(args.contains(&"-Dorg.gradle.daemon=false"), no_daemon);
+            if user.contains("-Xmx2g") {
+                assert!(args.contains(&"-Xmx2g"));
+            }
+        }
+    }
+    assert_eq!(android::gradle_opts(None, None, false), None);
+    assert_eq!(
+        android::gradle_opts(Some("-Xmx2g"), None, false).as_deref(),
+        Some("-Xmx2g")
+    );
+}
+
+#[test]
 fn android_build_command_pins_device_port_and_serial_env() {
     let spec = android::build_spec(
         Path::new("/repo/test-app"),
@@ -288,8 +363,11 @@ fn android_build_command_pins_device_port_and_serial_env() {
         15037,
         8792,
         2400,
+        false,
+        None,
     );
     assert_eq!(spec.program, "pnpm");
+    assert!(!spec.env.iter().any(|(k, _)| k == "GRADLE_OPTS"));
     assert_eq!(
         spec.args,
         vec!["exec", "expo", "run:android", "--port", "8792"]
@@ -418,6 +496,8 @@ fn ios_build_command_is_finite_generic_and_writes_only_to_the_run_output() {
         Path::new("/runs/check/ios-build"),
         2400,
         None,
+        NonZeroU32::new(8),
+        false,
     );
     assert_eq!(
         spec.args,
@@ -437,6 +517,222 @@ fn ios_build_command_is_finite_generic_and_writes_only_to_the_run_output() {
     assert_eq!(spec.timeout_seconds, 2400);
 }
 
+// U1: one architecture only on an Apple-silicon answer, with no user or config exception.
+#[test]
+fn ios_builds_compile_arm64_only_on_apple_silicon_unless_told_otherwise() {
+    let unset = |_: &str| false;
+    fn answer(a: Option<&str>) -> impl FnOnce() -> Option<String> {
+        let a = a.map(String::from);
+        move || a
+    }
+    assert_eq!(ios::arm64_only(false, unset, answer(Some("1\n"))), Ok(()));
+    for other in [Some("0"), Some(""), Some("yes"), None] {
+        assert_eq!(
+            ios::arm64_only(false, unset, answer(other)),
+            Err("not Apple silicon"),
+            "{other:?}"
+        );
+    }
+    for name in ["EXCLUDED_ARCHS", "ARCHS", "ONLY_ACTIVE_ARCH"] {
+        assert_eq!(
+            ios::arm64_only(false, |n| n == name, answer(Some("1"))),
+            Err("set in the user's environment"),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        ios::arm64_only(true, unset, answer(Some("1"))),
+        Err("build.arch: all")
+    );
+    let workspace = qaren::scenario::IosWorkspaceBuild {
+        workspace: "ios/App.xcworkspace".into(),
+        scheme: "App".into(),
+    };
+    let excluded = ("EXCLUDED_ARCHS".to_string(), "x86_64".to_string());
+    for route in [None, Some(&workspace)] {
+        let root = Path::new("/repo/app");
+        let out = Path::new("/runs/x/ios-build");
+        assert!(ios::build_spec(root, out, 60, route, None, true)
+            .env
+            .contains(&excluded));
+        assert!(!ios::build_spec(root, out, 60, route, None, false)
+            .env
+            .iter()
+            .any(|(k, _)| k == "EXCLUDED_ARCHS"));
+    }
+}
+
+fn fake_xcodebuild(root: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = root.join("xcode bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let real = bin.join("xcodebuild");
+    std::fs::write(&real, "#!/bin/sh\nprintf '%s\\n' \"$$\" \"$@\"\n").unwrap();
+    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+// U2 and U4: the wrapper caps build invocations once, passes the rest through, keeps its process id and marks only real caps.
+#[test]
+fn xcodebuild_wrapper_caps_only_build_invocations_in_its_own_process() {
+    let root = common::temp_repo();
+    let bin = fake_xcodebuild(&root);
+    let build_dir = root.join("ios-build");
+    std::fs::create_dir(&build_dir).unwrap();
+    let mut spec = ios::build_spec(&root, &build_dir, 60, None, None, false);
+    let path = format!("/nonexistent:{}:/usr/bin", bin.display());
+    assert!(ios::cap_expo_jobs(&mut spec, &build_dir, Some(&path), NonZeroU32::new(4)).unwrap());
+    let wrapper = build_dir.join(ios::JOBS_WRAPPER_DIR).join("xcodebuild");
+    let run = |args: &[&str]| {
+        let child = std::process::Command::new(&wrapper)
+            .args(args)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let out = child.wait_with_output().unwrap();
+        let text = String::from_utf8(out.stdout).unwrap();
+        let mut lines = text.lines();
+        assert_eq!(
+            lines.next(),
+            Some(pid.to_string().as_str()),
+            "the wrapper execs: one process"
+        );
+        lines.map(str::to_string).collect::<Vec<_>>()
+    };
+    let untouched: [&[&str]; 5] = [
+        &[
+            "-showdestinations",
+            "-json",
+            "-destination",
+            "generic/platform=iOS Simulator",
+        ],
+        &["-version"],
+        &["-list", "-json"],
+        &["-showBuildSettings", "-destination", "id=1"],
+        &["-jobs", "2", "-destination", "id=1", "build"],
+    ];
+    for args in untouched {
+        assert_eq!(run(args), args);
+    }
+    assert_eq!(
+        ios::expo_jobs_applied(&build_dir, "4 (build.jobs)"),
+        "uncapped (the xcodebuild wrapper did not run)"
+    );
+    // Each argument arrives whole, spaces included.
+    assert_eq!(
+        run(&[
+            "-workspace",
+            "My App.xcworkspace",
+            "-destination",
+            "generic/platform=iOS Simulator",
+            "build"
+        ]),
+        [
+            "-jobs",
+            "4",
+            "-workspace",
+            "My App.xcworkspace",
+            "-destination",
+            "generic/platform=iOS Simulator",
+            "build"
+        ]
+    );
+    assert_eq!(
+        ios::expo_jobs_applied(&build_dir, "4 (build.jobs)"),
+        "4 (build.jobs)"
+    );
+}
+
+#[test]
+fn expo_ios_build_gets_the_wrapper_only_with_a_cap_and_a_resolvable_xcodebuild() {
+    let root = common::temp_repo();
+    let bin = fake_xcodebuild(&root);
+    let path = format!("relative/dir:{}", bin.display());
+    for (case, (jobs, path)) in [
+        (None, Some(path.as_str())),
+        (NonZeroU32::new(4), Some("/nonexistent:/also-missing")),
+        (NonZeroU32::new(4), None),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let build_dir = root.join(format!("ios-build-{case}"));
+        std::fs::create_dir(&build_dir).unwrap();
+        let mut spec = ios::build_spec(&root, &build_dir, 60, None, None, false);
+        assert!(!ios::cap_expo_jobs(&mut spec, &build_dir, path, jobs).unwrap());
+        assert!(!spec.env.iter().any(|(k, _)| k == "PATH"));
+        assert!(!build_dir.join(ios::JOBS_WRAPPER_DIR).exists());
+    }
+    let preferred = fake_xcodebuild(&root.join("preferred's"));
+    std::fs::write(
+        preferred.join("xcodebuild"),
+        "#!/bin/sh\nprintf '%s\\n' preferred \"$@\"\n",
+    )
+    .unwrap();
+    std::fs::copy(preferred.join("xcodebuild"), root.join("xcodebuild")).unwrap();
+    for (case, entry) in [preferred.to_str().unwrap(), "preferred's/xcode bin", ""]
+        .into_iter()
+        .enumerate()
+    {
+        let path = format!("{entry}:{}", bin.display());
+        let build_dir = root.join(format!("ios-build-resolved-{case}"));
+        std::fs::create_dir(&build_dir).unwrap();
+        let mut spec = ios::build_spec(&root, &build_dir, 60, None, None, false);
+        assert!(
+            ios::cap_expo_jobs(&mut spec, &build_dir, Some(&path), NonZeroU32::new(4)).unwrap()
+        );
+        let dir = build_dir.join(ios::JOBS_WRAPPER_DIR);
+        assert!(spec
+            .env
+            .contains(&("PATH".to_string(), format!("{}:{path}", dir.display()))));
+        let output = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                "exec xcodebuild \"$@\"",
+                "sh",
+                "-destination",
+                "id=1",
+                "My App",
+            ])
+            .current_dir(&root)
+            .envs(spec.env.iter().cloned())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "preferred\n-jobs\n4\n-destination\nid=1\nMy App\n",
+            "the first executable on the original PATH must receive intact arguments"
+        );
+    }
+}
+
+#[test]
+fn explicit_workspace_build_carries_the_job_cap_before_its_build_settings() {
+    let workspace = qaren::scenario::IosWorkspaceBuild {
+        workspace: "ios/App.xcworkspace".into(),
+        scheme: "App".into(),
+    };
+    let spec = ios::build_spec(
+        Path::new("/repo/app"),
+        Path::new("/runs/x/ios-build"),
+        1234,
+        Some(&workspace),
+        NonZeroU32::new(8),
+        false,
+    );
+    let jobs = spec.args.iter().position(|a| a == "-jobs").unwrap();
+    assert_eq!(spec.args[jobs + 1], "8");
+    let first_setting = spec
+        .args
+        .iter()
+        .position(|a| a == "CODE_SIGNING_ALLOWED=YES")
+        .unwrap();
+    assert!(jobs < first_setting);
+    assert_eq!(spec.args.iter().filter(|a| *a == "-jobs").count(), 1);
+}
+
 #[test]
 fn explicit_ios_workspace_build_is_finite_generic_and_preserves_literal_names() {
     let workspace = qaren::scenario::IosWorkspaceBuild {
@@ -448,6 +744,8 @@ fn explicit_ios_workspace_build_is_finite_generic_and_preserves_literal_names() 
         Path::new("/runs/check one/ios-build"),
         1234,
         Some(&workspace),
+        None,
+        false,
     );
     assert_eq!(spec.program, "xcrun");
     assert_eq!(
@@ -475,6 +773,7 @@ fn explicit_ios_workspace_build_is_finite_generic_and_preserves_literal_names() 
             "build"
         ]
     );
+    assert!(!spec.args.iter().any(|a| a == "-jobs"));
     assert_eq!(spec.cwd.as_deref(), Some(Path::new("/repo/My Project")));
     assert_eq!(spec.timeout_seconds, 1234);
     assert_eq!(
@@ -1751,7 +2050,7 @@ fn an_unset_variable_wins_over_the_spec_and_the_parent_environment() {
 #[test]
 fn expo_fingerprint_evaluates_config_in_the_ios_build_environment() {
     let root = Path::new("/repo/app");
-    let build = ios::build_spec(root, Path::new("/runs/x/out"), 1800, None);
+    let build = ios::build_spec(root, Path::new("/runs/x/out"), 1800, None, None, false);
     let fingerprint =
         qaren::fingerprint::expo_fingerprint_spec("expo-fingerprint", root, &["cli.js"]);
     assert_eq!(fingerprint.program, build.program);
@@ -1860,8 +2159,9 @@ fn borrowed_emulator_reads_go_through_the_borrowed_server_and_pin_the_serial() {
 
 #[test]
 fn gradle_assemble_is_finite_abi_limited_and_daemonless() {
-    let spec = android::gradle_assemble_spec(Path::new("/w/test-app"), "arm64-v8a", 2400);
+    let spec = android::gradle_assemble_spec(Path::new("/w/test-app"), "arm64-v8a", 2400, None);
     assert_eq!(spec.program, "./gradlew");
+    assert!(!spec.env.iter().any(|(k, _)| k == "GRADLE_OPTS"));
     assert_eq!(
         spec.args,
         [

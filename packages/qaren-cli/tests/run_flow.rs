@@ -18,6 +18,57 @@ const UDID: &str = "1DC408C4-51DA-4C4F-ACA1-39881C916FDD";
 const LSTART: &str = "Wed Aug 12 16:01:00 2026";
 const TEST_KEY: &str = "hermetic-typesafe-key";
 
+fn assert_finite_build_priority(build: &CmdSpec, increment: i32) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let parent_nice = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
+    let mut child = Command::new(&build.program)
+        .args(&build.args[..5])
+        .args([
+            "/bin/sh",
+            "-c",
+            "/bin/ps -o ni= -p $$; printf '%s\\0' \"$@\"",
+            "priority-probe",
+        ])
+        .args(&build.args[5..])
+        .args(["argument with spaces", "literal 'quote' $value"])
+        .current_dir(build.cwd.as_ref().unwrap())
+        .envs(build.env.iter().cloned())
+        .env("PATH", "/usr/bin:/bin")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"start\n").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty());
+    let mut fields = output.stderr.splitn(2, |b| *b == b'\n');
+    let nice = fields.next().unwrap();
+    let args = fields.next().unwrap();
+    assert_eq!(
+        std::str::from_utf8(nice)
+            .unwrap()
+            .trim()
+            .parse::<i32>()
+            .unwrap(),
+        parent_nice + increment,
+        "the build policy requires one priority adjustment, or none for normal"
+    );
+    let expected = build.args[5..]
+        .iter()
+        .map(String::as_str)
+        .chain(["argument with spaces", "literal 'quote' $value"])
+        .flat_map(|arg| arg.bytes().chain([0]))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        args, expected,
+        "the build gate must forward every argument intact"
+    );
+}
+
 fn probe_json() -> serde_json::Value {
     serde_json::json!({"calls":1,"medianMs":12,"inputTokens":10,"callDetails":[{
         "scope":"preflight","questionIds":["preflight"],"inputTokens":10,"ms":12,"outcome":"ok","status":200
@@ -237,7 +288,13 @@ fn workspace_check_uses_a_gated_finite_build_and_persists_the_verified_artifact(
         .find(|c| c.label == "xcodebuild-ios")
         .unwrap();
     assert_eq!(build.program, "/bin/bash");
-    assert!(build.args[3].ends_with("exec \"$@\" >&2"));
+    assert_finite_build_priority(build, 10);
+    assert_eq!(build.args[5], "xcrun");
+    assert!(!build.args.iter().any(|a| a == "-jobs"));
+    assert_eq!(
+        receipt.outcomes["build_policy:xcodebuild-ios"],
+        "priority nice 10; jobs uncapped (machine size unknown); arch all (not Apple silicon)"
+    );
     assert_eq!(mock.piped_stdin_text(0), "start\n");
     assert!(build.args.iter().any(|a| a == "Native Debug"));
     assert!(!labels(&mock)
@@ -264,6 +321,45 @@ fn workspace_check_uses_a_gated_finite_build_and_persists_the_verified_artifact(
         assert_eq!(std::fs::read_to_string(path).unwrap(), "keep");
     }
     assert_eq!(receipt.cleanup["device_lease"], "removed");
+}
+
+#[test]
+fn workspace_build_honours_configured_jobs_and_normal_priority() {
+    let (repo, app) = app_repo();
+    common::write_ios_workspace(&app, "ios/Native.xcworkspace");
+    configure_workspace(&app, "ios/Native.xcworkspace", "Native");
+    let config = app.join(".qaren/config.yaml");
+    let yaml = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(
+        &config,
+        format!("{yaml}build:\n  jobs: 3\n  priority: normal\n"),
+    )
+    .unwrap();
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    script_provision_build(&mut mock, "xcodebuild", common::IOS_NATIVE_FILES);
+    script_drift_status(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+    script_core_identity(&mut mock);
+    script_teardown(&mut mock);
+
+    let receipt = run(&mut mock, &request(&repo, &app, 30));
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    let build = mock
+        .calls
+        .iter()
+        .find(|c| c.label == "xcodebuild-ios")
+        .unwrap();
+    assert_finite_build_priority(build, 0);
+    let jobs = build.args.iter().position(|a| a == "-jobs").unwrap();
+    assert_eq!(build.args[jobs + 1], "3");
+    assert_eq!(
+        receipt.outcomes["build_policy:xcodebuild-ios"],
+        "priority normal; jobs 3 (build.jobs); arch all (not Apple silicon)"
+    );
 }
 
 #[test]
@@ -1124,6 +1220,10 @@ fn failed_spawn_retirement_save_or_interruption_retains_pending_and_both_locks()
                 assert_eq!(receipt.result, ReceiptResult::Failed);
                 assert!(receipt.cleanup["build_process"].starts_with("unresolved"));
                 assert!(receipt.cleanup["device_lease"].starts_with("unresolved"));
+                assert_eq!(
+                    receipt.outcomes["build_policy:expo-run-ios"],
+                    "priority nice 10; jobs uncapped (machine size unknown); arch all (not Apple silicon)"
+                );
             }
         }
         let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
@@ -2627,6 +2727,72 @@ fn an_unreadable_candidate_after_the_walk_is_a_verify_refusal_whatever_the_walk_
     }
 }
 
+// U3/U4 through a run: the default expo run:ios build compiles arm64 only on Apple silicon
+// and finds the job-capping xcodebuild first on its PATH; the mock never runs the wrapper,
+// so the receipt reports the cap as missing, and the wrapper leaves with the build.
+#[test]
+fn default_ios_build_narrows_to_arm64_and_routes_xcodebuild_through_the_job_cap() {
+    use std::os::unix::fs::PermissionsExt;
+    let (repo, app) = app_repo();
+    let config = app.join(".qaren/config.yaml");
+    let yaml = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(&config, format!("{yaml}build:\n  jobs: 3\n")).unwrap();
+    let bin = repo.join("xcode-bin");
+    std::fs::create_dir(&bin).unwrap();
+    std::fs::write(bin.join("xcodebuild"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(
+        bin.join("xcodebuild"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let mut mock = MockRunner::new();
+    mock.environment
+        .insert("PATH".into(), bin.to_string_lossy().into_owned());
+    script_preflight(&mut mock, &repo);
+    common::script_ios_deps(&mut mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_clean_build_plan(&mut mock);
+    mock.expect_run("hw.optional.arm64", CmdOutput::success("1\n"));
+    script_check_build_with(&mut mock, "expo run:ios", |m| {
+        m.expect_run("rev-parse HEAD", CmdOutput::success(&"b".repeat(40)));
+        m.expect_run("--porcelain", CmdOutput::success(UNTRACKED_PLAN));
+        script_fingerprint_recheck(m, "")
+    });
+    script_ready_recheck(&mut mock, "");
+    script_drift_status(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+    script_core_identity(&mut mock);
+    script_teardown(&mut mock);
+
+    let receipt = run(&mut mock, &request(&repo, &app, 30));
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    let build = mock
+        .calls
+        .iter()
+        .find(|c| c.label == "expo-run-ios")
+        .unwrap();
+    assert!(build
+        .env
+        .contains(&("EXCLUDED_ARCHS".to_string(), "x86_64".to_string())));
+    let wrapper_dir = repo
+        .join("runs")
+        .join(run_id())
+        .join("ios-build")
+        .join(qaren::adapters::ios::JOBS_WRAPPER_DIR);
+    assert!(build.env.contains(&(
+        "PATH".to_string(),
+        format!("{}:{}", wrapper_dir.display(), bin.display())
+    )));
+    assert!(!wrapper_dir.exists());
+    assert_eq!(
+        receipt.outcomes["build_policy:expo-run-ios"],
+        "priority nice 10; jobs uncapped (the xcodebuild wrapper did not run); arch arm64"
+    );
+}
+
 #[test]
 fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
     let (repo, app) = app_repo();
@@ -2660,7 +2826,7 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
         build.timeout_seconds,
         qaren::scenario::Deadlines::default().build_seconds
     );
-    assert!(build.args[3].ends_with("exec \"$@\" >&2"));
+    assert_finite_build_priority(build, 10);
     assert!(build.env.contains(&("BASH_ENV".into(), "/dev/null".into())));
     assert!(build.env.contains(&("TYPESAFE_API_KEY".into(), "".into())));
     assert_eq!(receipt.run_id, run_id());
@@ -4661,10 +4827,12 @@ fn android_check_prebuilds_an_absent_android_dir_before_gradle() {
     req.config_path = repo.join("operator-config.yaml");
     std::fs::write(
         &req.config_path,
-        format!("{config}registryAuthEnv: [PRIVATE_REGISTRY_TOKEN]\n"),
+        format!("{config}registryAuthEnv: [PRIVATE_REGISTRY_TOKEN]\nbuild:\n  jobs: 3\n"),
     )
     .unwrap();
     let mut mock = android_mock();
+    mock.environment
+        .insert("GRADLE_OPTS".into(), "-Xmx2g -Dorg.gradle.workers.max=32".into());
     script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
     mock.expect_run("ls-files", CmdOutput::success(""));
@@ -4711,6 +4879,18 @@ fn android_check_prebuilds_an_absent_android_dir_before_gradle() {
         Some(app.canonicalize().unwrap().join("android").as_path())
     );
     assert!(gradle.env.contains(&("CI".to_string(), "1".to_string())));
+    for build in [prebuild, gradle] {
+        assert_finite_build_priority(build, 10);
+    }
+    assert_eq!(gradle.args[5], "./gradlew");
+    assert!(gradle.env.contains(&(
+        "GRADLE_OPTS".to_string(),
+        "-Xmx2g -Dorg.gradle.workers.max=32 -Dorg.gradle.workers.max=3".to_string()
+    )));
+    assert_eq!(
+        receipt.outcomes["build_policy:gradle-assemble"],
+        "priority nice 10; jobs 3 (build.jobs), set as org.gradle.workers.max over any value in the user's GRADLE_OPTS"
+    );
     assert!(!mock
         .calls
         .iter()
@@ -7729,7 +7909,10 @@ fn shutdown_device_on_exit_arms_after_admission_and_stops_simulator_before_relea
             },
             "{mode} {end_state}"
         );
-        assert_eq!(receipt.cleanup["simulator_log"], "kept", "{mode} {end_state}");
+        assert_eq!(
+            receipt.cleanup["simulator_log"], "kept",
+            "{mode} {end_state}"
+        );
         assert_eq!(receipt.cleanup["device_lease"], "removed");
         assert_eq!(runner.mock.remaining(), 0, "{mode} {end_state}");
         assert_subsequence(
