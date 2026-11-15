@@ -425,6 +425,9 @@ pub struct Resources {
     // A borrowed device is never deleted; iOS simulator stop requires an explicit bounded intent.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub device_borrowed: bool,
+    // Set only by the pool paths: QaReN owns this simulator's system log store.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pool_member: bool,
     #[serde(default, skip_serializing_if = "BorrowedIosStop::is_not_armed")]
     borrowed_ios_stop: BorrowedIosStop,
 }
@@ -1147,4 +1150,21 @@ pub enum RunnerPresence {
     Absent,
     Foreign,
     Unknown,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pool_member_defaults_false_and_round_trips() {
+        let old: Resources = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&old).unwrap().get("pool_member"), None);
+        let pooled: Resources =
+            serde_json::from_value(serde_json::json!({"pool_member": true})).unwrap();
+        assert_eq!(
+            serde_json::to_value(&pooled).unwrap()["pool_member"],
+            serde_json::json!(true)
+        );
+    }
 }

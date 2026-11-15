@@ -1128,7 +1128,7 @@ fn run_inner(
         if req.platform == Platform::Ios && resolved_inputs.has_inputs() {
             ctx.notes.push((
                 "platform_log".to_string(),
-                "the simulator system log may record displayed field text; see Runtime inputs"
+                "typed and displayed field text is recorded in the simulator system log; the simulator_log cleanup leg says whether QaReN removed it; a simulator QaReN did not create keeps its log, and qaren doctor --device <udid> prints the command that clears it"
                     .to_string(),
             ));
         }
@@ -2740,11 +2740,13 @@ fn teardown(
     }
     prepare::release_build_lock(ctx);
     if ctx.record.resources.ios_simulator.is_some() {
-        let outcome = if hold {
-            match ctx.record.resources.borrowed_ios_stop() {
+        // check and pr only borrow the simulator, so its log store is always kept.
+        let (outcome, log) = if hold {
+            let outcome = match ctx.record.resources.borrowed_ios_stop() {
                 crate::runrecord::BorrowedIosStop::Pending => held.clone(),
                 _ => Outcome::Kept,
-            }
+            };
+            (outcome, Some(Outcome::Kept))
         } else {
             crate::commands::cleanup::cleanup_borrowed_ios(
                 ctx.runner,
@@ -2756,6 +2758,9 @@ fn teardown(
             )
         };
         outcomes.push(("simulator".to_string(), outcome));
+        if let Some(log) = log {
+            outcomes.push(("simulator_log".to_string(), log));
+        }
     }
     // Released while the lease is still this run's; an unclean leg below retains it.
     outcomes.extend(crate::commands::cleanup::release_borrowed_android(

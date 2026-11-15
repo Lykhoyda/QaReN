@@ -298,6 +298,55 @@ pub fn list_devices_spec() -> CmdSpec {
     )
 }
 
+// The simulator's data directory as `simctl list -j` names it; an empty string is no path.
+pub fn parse_sim_data_path(list_json: &str, udid: &str) -> Option<PathBuf> {
+    serde_json::from_str::<serde_json::Value>(list_json)
+        .ok()?
+        .get("devices")?
+        .as_object()?
+        .values()
+        .filter_map(|v| v.as_array())
+        .flatten()
+        .find(|device| device["udid"].as_str() == Some(udid))?["dataPath"]
+        .as_str()
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+}
+
+// The simulator's system log store under its checked data directory, or why it is refused.
+pub fn log_store_path(data_path: &Path, udid: &str) -> Result<PathBuf, String> {
+    if !data_path.is_absolute() {
+        return Err(format!("{} is not absolute", data_path.display()));
+    }
+    let data = std::fs::canonicalize(data_path)
+        .map_err(|e| format!("{} cannot be resolved: {e}", data_path.display()))?;
+    let mut tail = data.components().rev().map(|c| c.as_os_str().to_str());
+    let owned = tail.next() == Some(Some("data"))
+        && tail.next().flatten().is_some_and(|name| name.eq_ignore_ascii_case(udid))
+        && tail.next() == Some(Some("Devices"))
+        && tail.next() == Some(Some("CoreSimulator"));
+    if !owned {
+        return Err(format!(
+            "{} does not end with CoreSimulator/Devices/{udid}/data",
+            data.display()
+        ));
+    }
+    let mut component = data.clone();
+    for part in ["var", "db", "diagnostics"] {
+        component.push(part);
+        match std::fs::symlink_metadata(&component) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(format!("{} is a symlink", component.display()))
+            }
+            Ok(_) => {}
+            // The store may be absent; nothing below a missing component can exist.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(e) => return Err(format!("{} cannot be read: {e}", component.display())),
+        }
+    }
+    Ok(data.join("var/db/diagnostics"))
+}
+
 // One bounded `simctl list` read of a device-budget inventory proof.
 pub const INVENTORY_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -1652,6 +1701,97 @@ esac
             let [symbols, _] = probes(&image, &path, mode);
             assert!(!runner.run_private(&symbols, &[]).clean(), "{mode}");
             let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+#[cfg(test)]
+mod log_store_tests {
+    use super::*;
+
+    const UDID: &str = "1DC408C4-51DA-4C4F-ACA1-39881C916FDD";
+
+    fn temp_root(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "qaren-log-store-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::canonicalize(&dir).unwrap()
+    }
+
+    fn data_dir(root: &Path, udid: &str) -> PathBuf {
+        let data = root.join("CoreSimulator/Devices").join(udid).join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        data
+    }
+
+    fn inventory(device: serde_json::Value) -> String {
+        serde_json::json!({"devices": {"com.apple.CoreSimulator.SimRuntime.iOS-26-5": [
+            {"udid": "76709EFC-0104-4A66-8908-F4F85A76F025", "dataPath": "/other/data"},
+            device
+        ]}})
+        .to_string()
+    }
+
+    #[test]
+    fn parse_sim_data_path_reads_the_named_simulator_only() {
+        let list = inventory(serde_json::json!({"udid": UDID, "dataPath": "/sims/data"}));
+        assert_eq!(
+            parse_sim_data_path(&list, UDID),
+            Some(PathBuf::from("/sims/data"))
+        );
+        for device in [
+            serde_json::json!({"udid": UDID}),
+            serde_json::json!({"udid": UDID, "dataPath": ""}),
+            serde_json::json!({"udid": UDID, "dataPath": 7}),
+        ] {
+            assert_eq!(parse_sim_data_path(&inventory(device.clone()), UDID), None, "{device}");
+        }
+        assert_eq!(parse_sim_data_path("not json", UDID), None);
+    }
+
+    #[test]
+    fn log_store_path_accepts_only_this_simulators_canonical_data_directory() {
+        let root = temp_root("path");
+        let data = data_dir(&root, UDID);
+        assert_eq!(
+            log_store_path(&data, UDID),
+            Ok(data.join("var/db/diagnostics"))
+        );
+        assert_eq!(
+            log_store_path(&data, &UDID.to_ascii_lowercase()),
+            Ok(data.join("var/db/diagnostics"))
+        );
+        let other = data_dir(&root, "76709EFC-0104-4A66-8908-F4F85A76F025");
+        assert!(log_store_path(&other, UDID).is_err());
+        assert!(log_store_path(Path::new("/x/data"), UDID).is_err());
+        assert!(log_store_path(Path::new("CoreSimulator/Devices/x/data"), UDID).is_err());
+        let elsewhere = root.join("elsewhere/data");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let link_parent = root.join("links/CoreSimulator/Devices").join(UDID);
+        std::fs::create_dir_all(&link_parent).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, link_parent.join("data")).unwrap();
+        assert!(log_store_path(&link_parent.join("data"), UDID).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn log_store_path_refuses_a_symlinked_store_component() {
+        for component in ["var", "var/db", "var/db/diagnostics"] {
+            let root = temp_root("link");
+            let data = data_dir(&root, UDID);
+            let outside = root.join("outside");
+            std::fs::create_dir_all(&outside).unwrap();
+            let link = data.join(component);
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            assert!(log_store_path(&data, UDID).is_err(), "{component}");
+            std::fs::remove_dir_all(&root).unwrap();
         }
     }
 }

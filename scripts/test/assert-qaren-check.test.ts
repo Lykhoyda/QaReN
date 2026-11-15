@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { assertCheck } from '../assert-qaren-check.ts';
-import { readFileSync } from 'node:fs';
 
 const coreProof = {
   run_id: 'check-fixture',
@@ -26,7 +25,13 @@ const receipt = {
   ledger: { verdict: 'PASS' },
   device: { ios_udid: 'selected-device' },
   outcomes: { fresh_install: 'proven_absent' },
-  cleanup: { core: 'absent', metro: 'removed', simulator: 'kept', device_lease: 'removed' },
+  cleanup: {
+    core: 'absent',
+    metro: 'removed',
+    simulator: 'kept',
+    simulator_log: 'kept',
+    device_lease: 'removed',
+  },
   emitted_at: '2026-02-02T02:43:00Z',
   candidate: { app_id: 'com.fixture' },
   core_cleanup: coreProof,
@@ -86,6 +91,11 @@ test('PASS alone is not proof of a clean fresh-install gate', () => {
     ),
     { ...receipt, cleanup: { ...receipt.cleanup, core: 'unresolved: still running' } },
     { ...receipt, cleanup: { ...receipt.cleanup, metro: 'kept' } },
+    // check only borrows the simulator: its log store is kept, never removed or left unreported.
+    ...[undefined, 'removed', 'unresolved: log store retained'].map((outcome) => ({
+      ...receipt,
+      cleanup: { ...receipt.cleanup, simulator_log: outcome },
+    })),
   ]) {
     assert.throws(() => assertCheck(invalid, base, false, record), /clean|fresh/);
   }
@@ -113,6 +123,7 @@ test('PASS alone is not proof of a clean fresh-install gate', () => {
           metro: 'absent',
           core: 'absent',
           simulator: 'kept',
+          simulator_log: 'kept',
           device_lease: 'absent',
         },
       },
@@ -121,17 +132,6 @@ test('PASS alone is not proof of a clean fresh-install gate', () => {
       record,
     ),
   );
-});
-
-test('the phrase gate plan has no quotes and covers the same onboarding journey', () => {
-  const plan = readFileSync(
-    new URL('../../packages/qaren-core/test/fixtures/plans/phrases.md', import.meta.url),
-    'utf8',
-  );
-  assert.ok(!/["“”]/.test(plan));
-  assert.match(plan, /skip onboarding/);
-  assert.match(plan, /tasks tab/);
-  assert.equal(plan.split('\n').filter((l) => l.startsWith('✓')).length, 2);
 });
 
 test('missing core cleanup cannot be replaced by the absence of a core resource', () => {

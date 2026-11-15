@@ -85,6 +85,8 @@ applicable or its subject was not assessed, as explained in the row's detail.
 | `source-checkout` | From a QaReN checkout: its source version (`<version>-dev.<commit>`) matches this binary |
 | `config` | `.qaren/config.yaml` (or `--config`) loads and validates |
 | `ios-lane` | Only with `--device <simulator-UUID>`: read-only check of that simulator against the [warm-lane contract](#warm-lane) |
+| `ios-simulator-log` | Reports the [simulator system-log policy](#ios-admission-and-cleanup); this policy row does not inspect or clear a log |
+| `ios-lane-log` | Only with `--device <simulator-UUID>`: warns that this simulator keeps typed field text in its system log, with the command that clears its checked log store; it removes nothing |
 | `1x-claude-plugin`, `1x-codex-plugin` | The rn-dev-agent 1.x plugin, marketplace and caches in Claude Code, Codex and Cursor |
 | `1x-mcp` | A hand-registered 1.x MCP server in `~/.claude.json`, `.mcp.json`, `~/.cursor/mcp.json` or `$CODEX_HOME/config.toml` |
 | `1x-binaries`, `1x-home-dirs` | The 1.x npm bins on `PATH`; `~/.rn-dev-agent/`, `~/.cache/rn-dev-agent/`, `~/Library/Caches/rn-dev-agent/`, `~/Library/Application Support/rn-dev-agent/` (or `$XDG_STATE_HOME/rn-dev-agent/`) and `~/.claude/rn-agent/` |
@@ -3582,6 +3584,25 @@ activity log records the text of fields it queries, including typed values.
 `Build/Products` is preserved for warm launches. If the core is hard-killed,
 bundles can remain on disk until the next runner launch performs this cleanup.
 
+Apple's test automation logs the value of a field it reads or types into,
+including a private `Fill` value, and the simulator's own system log records it
+unredacted (measured on iOS 26.5). That log store is
+`var/db/diagnostics` under the simulator's data directory, which QaReN reads
+from `dataPath` in `xcrun simctl list -j devices`, and checks before removing
+anything. For pool claim and cleanup removal, including retry and lease
+retention when removal fails, see the [iOS simulator pool](#ios-simulator-pool).
+Every run on a pooled or borrowed simulator gets a `simulator_log` cleanup
+leg in its receipt saying what happened. `removed` means the store was deleted;
+`absent` means it was already absent or its cleanup had completed; `kept`
+means no removal was attempted (including a pooled run that never armed its
+stop); `refused` or `unresolved` means removal was not proven. Temporary
+simulators, including `--new`, have no separate log leg: their `simulator`
+cleanup leg reports deletion of the whole simulator instead.
+Every `check`, `pr` and `prepare --device` run borrows its simulator and keeps
+its log (`simulator_log: kept`), even if QaReN originally created that simulator.
+`qaren doctor --device <udid>` prints guidance for clearing the borrowed
+simulator's log; it removes nothing.
+
 ### Saved blocks
 
 Each `###` block in a saved plan maps to `.qaren/actions/<slug>.yaml` (existing
@@ -5202,7 +5223,13 @@ one, pass it with `--device`.
   the pool is at its cap, each skip reason, including the
   `xcrun simctl shutdown <UUID>` hint, appears in the `device_pool` `fresh:`
   note.
-- **Reset.** A claimed member is booted after dependencies, strict
+- **Reset.** Under the lease, while the member is still proven Shutdown, the
+  claim removes its system log store before any boot. A member whose store
+  cannot be removed (no `dataPath`, a path that fails the check, or a failed
+  removal) is skipped for that run: its lease is released and the run goes on
+  with the next member, a new member or a temporary simulator, and the
+  `device_pool_log_skipped` note names the member and why. The next claim
+  tries it again. A claimed member is booted after dependencies, strict
   foreign-driver admission and a durable pending stop, and is then reset:
   the app is uninstalled and proven absent, which clears its container and
   privacy grants, then `simctl keychain <UUID> reset` runs. An uninstall or
@@ -5225,7 +5252,11 @@ one, pass it with `--device`.
   cleanup. prepare never waits for a device.
 - **Return.** `qaren cleanup <run-id>` stops the run's processes, shuts the
   member down after strict admission with an exact readback, keeps it and
-  releases the lease last. QaReN never deletes a pool member; delete one with
+  releases the lease last. After the proven shutdown and before the lease is
+  released, it reads the inventory again and removes the member's system log
+  store (`simulator_log`). If that read does not prove Shutdown or name the
+  data path, or the removal fails, the stop stays pending and the lease stays
+  held until a later `qaren cleanup <run-id>` succeeds. QaReN never deletes a pool member; delete one with
   `xcrun simctl delete <UUID>` when no run holds it, and the next scan drops
   its record. A creation that crashed before the stop was armed is an owned
   temporary: cleanup deletes it by UUID and name and releases the lock.
@@ -5238,7 +5269,8 @@ one, pass it with `--device`.
 - **`--dry-run`** names the member it would claim and the reset commands, the
   `simctl create qaren-pool-<run-id>` it would run, or, at the cap, the
   temporary `simctl create qaren-<run-id>` with the `fresh:` reason, and
-  claims, writes and prunes nothing. A member whose dead holder's run never reached `ready` is
+  claims, writes and prunes nothing. Reuse is conditional on clearing the
+  member's log store during the real claim. A member whose dead holder's run never reached `ready` is
   reported as reused after reclaiming that run; a Booted one counts only if
   that run armed its stop, since cleanup shuts down nothing else.
 - **Unproven process identity.** When `ps` cannot prove this prepare's own

@@ -2698,6 +2698,7 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
         Some("absent")
     );
     assert_eq!(receipt.cleanup["simulator"], "kept");
+    assert_eq!(receipt.cleanup["simulator_log"], "kept");
     assert_eq!(receipt.cleanup["device_lease"], "removed");
     assert_eq!(receipt.outcomes["candidate_drift"], "none");
     assert!(!receipt.outcomes.contains_key("pnpm-group-probe_attempt_1"));
@@ -3727,6 +3728,8 @@ fn a_failed_ios_check_holds_metro_the_simulator_and_the_lease_for_inspection() {
     let end = events.iter().find(|e| e["event"] == "end").unwrap();
     assert_eq!(end["payload"]["held"], true);
     assert_eq!(end["payload"]["cleanup"]["metro"], "held");
+    assert_eq!(receipt.cleanup["simulator_log"], "kept");
+    assert_eq!(end["payload"]["cleanup"]["simulator_log"], "kept");
 }
 
 #[test]
@@ -8635,6 +8638,7 @@ fn shutdown_device_on_exit_arms_after_admission_and_stops_simulator_before_relea
             },
             "{mode} {end_state}"
         );
+        assert_eq!(receipt.cleanup["simulator_log"], "kept", "{mode} {end_state}");
         assert_eq!(receipt.cleanup["device_lease"], "removed");
         assert_eq!(runner.mock.remaining(), 0, "{mode} {end_state}");
         assert_subsequence(
@@ -9397,7 +9401,7 @@ fn pr_runtime_input_recording_obeys_video_policy_and_secret_inventory() {
         assert!(receipt.outcomes["video"].starts_with("unavailable("));
         assert_eq!(
             receipt.outcomes["platform_log"],
-            "the simulator system log may record displayed field text; see Runtime inputs"
+            "typed and displayed field text is recorded in the simulator system log; the simulator_log cleanup leg says whether QaReN removed it; a simulator QaReN did not create keeps its log, and qaren doctor --device <udid> prints the command that clears it"
         );
         assert_eq!(
             events

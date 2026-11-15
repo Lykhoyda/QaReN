@@ -17,7 +17,7 @@ pub const EVENTS_VERSION: u32 = 1;
 const QUEUE: usize = 1024;
 const BEFORE_ATTACH: usize = 256;
 const DRAIN: Duration = Duration::from_millis(500);
-const CLEANUP_KEYS: [&str; 11] = [
+const CLEANUP_KEYS: [&str; 12] = [
     "build_process",
     "core",
     "metro",
@@ -25,6 +25,7 @@ const CLEANUP_KEYS: [&str; 11] = [
     "runner_host",
     "recorder",
     "simulator",
+    "simulator_log",
     "device_lease",
     "pr_worktree",
     "adb_reverse",
@@ -970,6 +971,7 @@ mod tests {
             "unresolved: pgid 9 at /Users/canary/x".into(),
         );
         r.cleanup.insert("recorder".into(), "canary-weird".into());
+        r.cleanup.insert("simulator_log".into(), "kept".into());
         r.cleanup.insert("canary_key".into(), "removed".into());
         r.failure = Some(Failure::new(
             "build",
@@ -984,7 +986,7 @@ mod tests {
         let end = &lines(&path)[0].payload;
         assert_eq!(
             end["cleanup"],
-            json!({"core": "unresolved", "metro": "removed", "recorder": "other"})
+            json!({"core": "unresolved", "metro": "removed", "recorder": "other", "simulator_log": "kept"})
         );
         assert_eq!(end["failureCode"], "BUILD_FAILED");
         assert_eq!(end["failurePhase"], "build");
