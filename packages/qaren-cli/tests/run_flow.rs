@@ -4832,7 +4832,7 @@ fn android_check_prebuilds_an_absent_android_dir_before_gradle() {
     .unwrap();
     let mut mock = android_mock();
     mock.environment
-        .insert("GRADLE_OPTS".into(), "-Xmx2g".into());
+        .insert("GRADLE_OPTS".into(), "-Xmx2g -Dorg.gradle.workers.max=32".into());
     script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
     mock.expect_run("ls-files", CmdOutput::success(""));
@@ -4885,7 +4885,7 @@ fn android_check_prebuilds_an_absent_android_dir_before_gradle() {
     assert_eq!(gradle.args[5], "./gradlew");
     assert!(gradle.env.contains(&(
         "GRADLE_OPTS".to_string(),
-        "-Xmx2g -Dorg.gradle.workers.max=3".to_string()
+        "-Xmx2g -Dorg.gradle.workers.max=32 -Dorg.gradle.workers.max=3".to_string()
     )));
     assert_eq!(
         receipt.outcomes["build_policy:gradle-assemble"],

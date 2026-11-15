@@ -314,78 +314,45 @@ fn expo_android_build_runs_niced_with_capped_daemonless_gradle() {
 }
 
 #[test]
-fn gradle_opts_respect_the_users_worker_setting_and_keep_their_other_options() {
+fn gradle_opts_apply_the_requested_cap_and_keep_other_options() {
     let four = NonZeroU32::new(4);
-    for (user, sets_workers) in [
-        ("-Dnote=-Dorg.gradle.workers.max=32", false),
-        ("\"-Dorg.gradle.workers.max=12\"", true),
-        ("'-Dorg.gradle.workers.max=12'", true),
-        ("-Dorg.gradle.workers.\\max=12", true),
-        ("-Dorg.gradle.workers.max\\=12", true),
-        ("-Dorg.gradle.workers.ma\"x\"=12", true),
-        ("-Dorg.gradle.workers.\\\nmax=12", true),
-        ("\"-Dorg.gradle.workers.\\max=12\"", false),
-        ("-Dnote=hello\\ -Dorg.gradle.workers.max=32", false),
-        ("'-Dnote=hello -Dorg.gradle.workers.max=32'", false),
-        ("\"-Dnote=hello -Dorg.gradle.workers.max=32\"", false),
-        ("  -Xmx2g  ", false),
-        ("-Xmx2g\t'-Dorg.gradle.workers.max=12'\n", true),
-        ("'-Dorg.gradle.workers.max=12", false),
-        ("\"-Dorg.gradle.workers.max=12", false),
-        ("-Dorg.gradle.workers.max=12\\", false),
+    for user in [
+        "-Xmx2g",
+        "-Dorg.gradle.workers.max=32 -Xmx2g",
+        "'-Dorg.gradle.workers.max=32'",
+        "-Dnote=-Dorg.gradle.workers.max=32",
+        "'-Dnote=hello -Dorg.gradle.workers.max=32'",
     ] {
-        assert_eq!(
-            android::user_sets_gradle_workers(Some(user)),
-            sets_workers,
-            "{user}"
-        );
         for no_daemon in [false, true] {
-            let mut expected = user.to_string();
-            if !sets_workers {
-                expected.push_str(" -Dorg.gradle.workers.max=4");
-            }
-            if no_daemon {
-                expected.push_str(" -Dorg.gradle.daemon=false");
-            }
+            let opts = android::gradle_opts(Some(user), four, no_daemon).unwrap();
+            eprintln!("GRADLE_OPTS: {opts}");
+            let output = std::process::Command::new("/bin/sh")
+                .args(["-c", "eval \"set -- $GRADLE_OPTS\"; printf '%s\\n' \"$@\""])
+                .env("GRADLE_OPTS", opts)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            let text = String::from_utf8(output.stdout).unwrap();
+            let args = text.lines().collect::<Vec<_>>();
+            // JVM -D properties use the last value; the requested build cap must win.
             assert_eq!(
-                android::gradle_opts(Some(user), four, no_daemon),
-                Some(expected)
+                args.iter()
+                    .rev()
+                    .find_map(|arg| arg.strip_prefix("-Dorg.gradle.workers.max=")),
+                Some("4"),
+                "{user}"
             );
+            assert_eq!(args.contains(&"-Dorg.gradle.daemon=false"), no_daemon);
+            if user.contains("-Xmx2g") {
+                assert!(args.contains(&"-Xmx2g"));
+            }
         }
     }
-    assert_eq!(
-        android::gradle_opts(Some("-Xmx2g"), four, false).as_deref(),
-        Some("-Xmx2g -Dorg.gradle.workers.max=4")
-    );
-    assert_eq!(
-        android::gradle_opts(Some("-Dorg.gradle.workers.max=12 -Xmx2g"), four, false).as_deref(),
-        Some("-Dorg.gradle.workers.max=12 -Xmx2g")
-    );
-    assert_eq!(
-        android::gradle_opts(Some("-Dorg.gradle.workers.max=12"), four, true).as_deref(),
-        Some("-Dorg.gradle.workers.max=12 -Dorg.gradle.daemon=false")
-    );
-    assert_eq!(
-        android::gradle_opts(Some("\"-Dorg.gradle.workers.max=12\""), four, false).as_deref(),
-        Some("\"-Dorg.gradle.workers.max=12\"")
-    );
     assert_eq!(android::gradle_opts(None, None, false), None);
     assert_eq!(
         android::gradle_opts(Some("-Xmx2g"), None, false).as_deref(),
         Some("-Xmx2g")
     );
-    let direct = android::gradle_assemble_spec(
-        Path::new("/w/test-app"),
-        "arm64-v8a",
-        2400,
-        android::gradle_opts(Some("-Xmx2g"), four, false).as_deref(),
-    );
-    // nice comes from the finite build gate, never from the spec as well.
-    assert_eq!(direct.program, "./gradlew");
-    assert!(direct.env.contains(&(
-        "GRADLE_OPTS".to_string(),
-        "-Xmx2g -Dorg.gradle.workers.max=4".to_string()
-    )));
 }
 
 #[test]

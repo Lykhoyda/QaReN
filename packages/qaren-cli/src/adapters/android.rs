@@ -265,41 +265,7 @@ pub fn parse_avd_name(stdout: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-pub fn user_sets_gradle_workers(user: Option<&str>) -> bool {
-    let Some(user) = user else {
-        return false;
-    };
-    let mut args = Vec::new();
-    let mut arg = String::new();
-    let mut quote = None;
-    let mut chars = user.chars();
-    while let Some(ch) = chars.next() {
-        match (quote, ch) {
-            (None, '\'' | '"') => quote = Some(ch),
-            (Some('\''), '\'') | (Some('"'), '"') => quote = None,
-            (None | Some('"'), '\\') => {
-                let Some(next) = chars.next() else {
-                    return false;
-                };
-                if quote == Some('"') && !matches!(next, '$' | '`' | '"' | '\\' | '\n') {
-                    arg.push('\\');
-                }
-                if next != '\n' {
-                    arg.push(next);
-                }
-            }
-            (None, ' ' | '\t' | '\n') => args.push(std::mem::take(&mut arg)),
-            _ => arg.push(ch),
-        }
-    }
-    args.push(arg);
-    quote.is_none()
-        && args
-            .iter()
-            .any(|arg| arg.starts_with("-Dorg.gradle.workers.max="))
-}
-
-// GRADLE_OPTS for a build: the user's own value, plus the worker cap unless they set one, plus no daemon when asked.
+// Preserve user options, then apply QaReN's worker cap and daemon policy.
 pub fn gradle_opts(
     user: Option<&str>,
     jobs: Option<std::num::NonZeroU32>,
@@ -311,7 +277,7 @@ pub fn gradle_opts(
         .map(str::to_string)
         .into_iter()
         .collect();
-    if let Some(jobs) = jobs.filter(|_| !user_sets_gradle_workers(user)) {
+    if let Some(jobs) = jobs {
         opts.push(format!("-Dorg.gradle.workers.max={jobs}"));
     }
     if no_daemon {

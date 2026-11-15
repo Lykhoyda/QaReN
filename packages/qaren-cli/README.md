@@ -5645,13 +5645,15 @@ first on that one command's `PATH`. For a build invocation (one with
 argument) it appends a marker line beside itself and execs the real
 `xcodebuild` (the absolute path the unchanged `PATH` resolved to) with
 `-jobs <n>`; anything else is passed through unchanged. The receipt claims the
-cap only when that marker exists, and says `uncapped` otherwise. The directory
-is removed as soon as the build command ends. When the core count or memory
-cannot be read, or `xcodebuild` does not resolve, no cap is applied; the lower
-priority still is. A `-Dorg.gradle.workers.max=` argument in the user's own
-`GRADLE_OPTS` wins over `build.jobs`, which wins over the machine's number.
-The user's `GRADLE_OPTS` text is kept verbatim. `build.priority: normal`
-drops `nice`.
+cap only when that marker exists, and says `uncapped` otherwise. QaReN removes
+the directory when the build command ends, recording any removal failure.
+`build.jobs` overrides the machine's number and works even when the core count
+or memory cannot be read; without it, an unreadable machine size leaves builds
+uncapped. The Expo iOS route is also uncapped if `xcodebuild` does not resolve
+or the wrapper cannot be written. Lower priority still applies. QaReN appends
+the worker cap after the user's `GRADLE_OPTS`, so it overrides any existing
+`-Dorg.gradle.workers.max=` while keeping the user's other options verbatim.
+`build.priority: normal` drops `nice`.
 
 On an Apple-silicon Mac (the machine's `sysctl -n hw.optional.arm64` is `1`)
 both iOS build routes get `EXCLUDED_ARCHS=x86_64` in their environment, so the

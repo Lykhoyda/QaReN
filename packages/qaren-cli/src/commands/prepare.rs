@@ -4766,14 +4766,9 @@ fn build_jobs(ctx: &mut Ctx) -> (Option<std::num::NonZeroU32>, String) {
     }
 }
 
-// The user's own worker setting wins over build.jobs and the machine's number.
 fn gradle_build_opts(ctx: &mut Ctx, no_daemon: bool) -> (Option<String>, String) {
     let user = ctx.runner.env_var("GRADLE_OPTS");
-    let (jobs, applied) = if android::user_sets_gradle_workers(user.as_deref()) {
-        (None, "set by the user's GRADLE_OPTS".into())
-    } else {
-        build_jobs(ctx)
-    };
+    let (jobs, applied) = build_jobs(ctx);
     (
         android::gradle_opts(user.as_deref(), jobs, no_daemon),
         applied,

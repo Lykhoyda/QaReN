@@ -85,25 +85,15 @@ ready for Xcode.
 
 ## build
 
-By default every native build runs at lower CPU priority (`nice -n 10`) and
-gets a worker cap computed from the machine's cores and memory when that can
-be read and applied; the receipt says `uncapped` when it was not. On an
-Apple-silicon Mac, QaReN also asks iOS simulator builds to leave out x86_64
-(`EXCLUDED_ARCHS=x86_64` in the build's environment); your own environment
-and the project's architecture settings still take precedence. If any of
-`EXCLUDED_ARCHS`, `ARCHS` or `ONLY_ACTIVE_ARCH` is present in your environment,
-to any value (including empty), QaReN adds no `EXCLUDED_ARCHS`.
+Native build controls are optional. For how they are applied, environment
+precedence, architecture exceptions and receipt evidence, see the
+[build priority and worker cap contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#native-fingerprint-build-selection).
 
 | Key        | Type                | Default            | Meaning                                                                 |
 | ---------- | ------------------- | ------------------ | ----------------------------------------------------------------------- |
 | `jobs`     | positive integer    | from the machine   | The worker cap for Gradle and `xcodebuild`.                             |
 | `priority` | `low` or `normal`   | `low`              | `normal` runs builds without `nice`.                                    |
 | `arch`     | `all`               | leave out x86_64 on Apple silicon | `all` turns QaReN's x86_64 exclusion off, for an app with an x86_64-only simulator dependency. |
-
-A `-Dorg.gradle.workers.max=` argument in your own `GRADLE_OPTS` wins over
-`build.jobs`, which wins over the machine's number. Your `GRADLE_OPTS` text
-is kept verbatim. The receipt records what each build got; see the
-[build priority and worker cap contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#native-fingerprint-build-selection).
 
 ```yaml
 build:
