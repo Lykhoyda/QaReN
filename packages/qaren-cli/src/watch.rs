@@ -8,10 +8,14 @@ use std::io::{IsTerminal, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const STAGES: [(&str, &str); 11] = [
+#[cfg(test)]
+mod queue_tests;
+
+const STAGES: [(&str, &str); 12] = [
     ("preflight", "Preflight"),
     ("deps", "Dependencies"),
     ("build_decision", "Build decision"),
+    ("build_lock_wait", "Build queue"),
     ("prebuild", "Prebuild"),
     ("native_build", "Native compile"),
     ("install_launch_ready", "Install·launch·ready"),
@@ -92,7 +96,8 @@ fn parse_event(line: &str) -> Option<Input> {
     .then_some(Input::Event(envelope))
 }
 
-#[derive(Default, Serialize)]
+#[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Stage {
     name: String,
     state: String,
@@ -102,6 +107,14 @@ struct Stage {
     ms: Option<u64>,
     #[serde(skip)]
     began: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lock: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    holder: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hold_ms: Option<u64>,
+    #[serde(skip)]
+    seq: u64,
 }
 
 #[derive(Serialize)]
@@ -128,6 +141,7 @@ struct State {
     verb: String,
     platform: String,
     stages: BTreeMap<String, Stage>,
+    queue_events: Vec<Stage>,
     rows: BTreeMap<u64, Step>,
     commands: Vec<String>,
     end: Option<Value>,
@@ -192,16 +206,36 @@ impl State {
                 } else {
                     old.map_or(e.at, |s| s.began)
                 };
-                self.stages.insert(
-                    name.clone(),
-                    Stage {
-                        name,
-                        state,
-                        code: p["code"].as_str().map(term_safe),
-                        ms: p["ms"].as_u64(),
-                        began,
-                    },
-                );
+                let queue = name == "build_lock_wait";
+                let stage = Stage {
+                    name: name.clone(),
+                    state,
+                    code: p["code"].as_str().map(term_safe),
+                    ms: p["ms"].as_u64(),
+                    began,
+                    lock: p["lock"]
+                        .as_str()
+                        .filter(|name| {
+                            queue
+                                && matches!(
+                                    *name,
+                                    "native-build-ios"
+                                        | "native-build-android"
+                                        | "native-build-slot"
+                                )
+                        })
+                        .map(str::to_owned),
+                    holder: p["holder"]
+                        .as_str()
+                        .filter(|id| queue && id.len() <= 64 && validate_run_id(id).is_ok())
+                        .map(str::to_owned),
+                    hold_ms: if queue { p["holdMs"].as_u64() } else { None },
+                    seq: e.seq,
+                };
+                if queue {
+                    self.queue_events.push(stage.clone());
+                }
+                self.stages.insert(name, stage);
             }
             "step" => {
                 let Some(line) = p["line"].as_u64().filter(|l| *l > 0) else {
@@ -380,6 +414,9 @@ fn stage_line(s: &State, name: &str, label: &str) -> String {
     let Some(stage) = s.stages.get(name) else {
         return format!("· {label}");
     };
+    if name == "build_lock_wait" {
+        return queue_line(stage);
+    }
     let label = if name == "build_decision" {
         stage
             .code
@@ -505,19 +542,24 @@ fn frame(s: &State, width: u16, height: u16) -> Vec<String> {
         "STAGES".into(),
     ];
     let compact = width < 64 || height < 22;
-    lines.extend(STAGES.iter().map(|(n, l)| {
-        if compact {
-            format!(
-                "{} {l} {}",
-                mark(s.stages.get(*n).map_or("", |st| st.state.as_str())),
-                s.stages
-                    .get(*n)
-                    .map_or("unobserved", |st| st.state.as_str())
-            )
-        } else {
-            stage_line(s, n, l)
-        }
-    }));
+    lines.extend(
+        STAGES
+            .iter()
+            .filter(|(n, _)| *n != "build_lock_wait" || s.stages.contains_key(*n))
+            .map(|(n, l)| {
+                if compact {
+                    format!(
+                        "{} {l} {}",
+                        mark(s.stages.get(*n).map_or("", |st| st.state.as_str())),
+                        s.stages
+                            .get(*n)
+                            .map_or("unobserved", |st| st.state.as_str())
+                    )
+                } else {
+                    stage_line(s, n, l)
+                }
+            }),
+    );
     let (passed, failed) = s.counts();
     lines.push(format!(
         "STEPS  {} lines  ✓{passed}  ✗{failed}",
@@ -598,15 +640,59 @@ fn terminal_dimensions() -> Option<(u16, u16)> {
     None
 }
 
-fn plain(s: &State, printed: &mut HashSet<String>) -> Vec<String> {
+#[derive(Default)]
+struct PlainState {
+    seen: HashSet<String>,
+    queue_last: Option<(Option<String>, Option<String>)>,
+    queue_seq: u64,
+}
+
+fn queue_wait(stage: &Stage, timed: bool) -> String {
+    let time = if timed {
+        format!(" {}", queue_duration(stage.ms.unwrap_or(0)))
+    } else {
+        String::new()
+    };
+    let lock = stage.lock.as_deref().unwrap_or("lock unknown");
+    match &stage.holder {
+        Some(holder) => {
+            let held = stage
+                .hold_ms
+                .map(|ms| format!(", held {}", crate::lease::rough_duration(ms / 1000)))
+                .unwrap_or_default();
+            format!("waiting{time} for run {holder} ({lock}{held})")
+        }
+        None => format!("waiting{time} ({lock}, holder unknown)"),
+    }
+}
+
+fn queue_duration(ms: u64) -> String {
+    let s = ms / 1000;
+    format!("{}m{:02}s", s / 60, s % 60)
+}
+
+fn queue_line(stage: &Stage) -> String {
+    let detail = match stage.state.as_str() {
+        "running" => queue_wait(stage, true),
+        "passed" => format!("waited {}", queue_duration(stage.ms.unwrap_or(0))),
+        _ => format!(
+            "{} after {}",
+            stage.code.as_deref().unwrap_or("unknown failure"),
+            queue_duration(stage.ms.unwrap_or(0))
+        ),
+    };
+    format!("{} Build queue  {detail}", mark(&stage.state))
+}
+
+fn plain(s: &State, printed: &mut PlainState) -> Vec<String> {
     let mut out = Vec::new();
-    if printed.insert("header".into()) {
+    if printed.seen.insert("header".into()) {
         out.push(header(s));
     }
     for step in s.rows.values() {
         let key = format!("row:{}:{}", step.operation_id, step.attempt);
         let text_key = format!("text:{}:{}", step.operation_id, step.attempt);
-        if printed.contains(&key) && step.text.is_some() && printed.insert(text_key) {
+        if printed.seen.contains(&key) && step.text.is_some() && printed.seen.insert(text_key) {
             out.push(format!(
                 "        line {}: {}",
                 step.line,
@@ -614,25 +700,51 @@ fn plain(s: &State, printed: &mut HashSet<String>) -> Vec<String> {
             ));
         }
     }
+    for stage in s
+        .queue_events
+        .iter()
+        .filter(|stage| stage.seq > printed.queue_seq)
+    {
+        if stage.state == "running" {
+            let pair = (stage.lock.clone(), stage.holder.clone());
+            if printed.queue_last.as_ref() != Some(&pair) {
+                out.push(format!("Build queue: {}", queue_wait(stage, false)));
+                printed.queue_last = Some(pair);
+            }
+        } else {
+            out.push(queue_line(stage));
+            printed.queue_last = None;
+        }
+    }
+    if let Some(stage) = s.queue_events.last() {
+        printed.queue_seq = stage.seq;
+    }
     for (name, label) in STAGES {
+        if name == "build_lock_wait" {
+            continue;
+        }
         if s.stages.get(name).is_some_and(|st| st.state != "running")
-            && printed.insert(format!("stage:{name}"))
+            && printed.seen.insert(format!("stage:{name}"))
         {
             out.push(stage_line(s, name, label));
         }
     }
     for step in s.rows.values() {
         if matches!(step.outcome.as_str(), "pass" | "fail")
-            && printed.insert(format!("row:{}:{}", step.operation_id, step.attempt))
+            && printed
+                .seen
+                .insert(format!("row:{}:{}", step.operation_id, step.attempt))
         {
             out.push(format!("  {}", step_line(step)));
             if step.text.is_some() {
-                printed.insert(format!("text:{}:{}", step.operation_id, step.attempt));
+                printed
+                    .seen
+                    .insert(format!("text:{}:{}", step.operation_id, step.attempt));
             }
         }
     }
     if let Some(last) = verdict(s) {
-        if printed.insert("verdict".into()) {
+        if printed.seen.insert("verdict".into()) {
             out.push(last);
         }
     }
@@ -642,7 +754,7 @@ fn plain(s: &State, printed: &mut HashSet<String>) -> Vec<String> {
 fn snapshot(s: &State) -> Value {
     json!({"runId": s.run_id, "verb": s.verb, "platform": s.platform,
         "state": match s.status() { Status::Live => "live", Status::Finished => "finished", Status::Incomplete => "incomplete" },
-        "stages": STAGES.iter().map(|(n, _)| s.stages.get(*n).map_or_else(|| json!({"name": n, "state": "unobserved"}), |stage| serde_json::to_value(stage).unwrap_or(Value::Null))).collect::<Vec<_>>(),
+        "stages": STAGES.iter().filter(|(n, _)| *n != "build_lock_wait" || s.stages.contains_key(*n)).map(|(n, _)| s.stages.get(*n).map_or_else(|| json!({"name": n, "state": "unobserved"}), |stage| serde_json::to_value(stage).unwrap_or(Value::Null))).collect::<Vec<_>>(),
         "steps": s.rows.values().collect::<Vec<_>>(), "end": s.end})
 }
 
@@ -708,7 +820,7 @@ fn follow(
         run_id: id,
         ..State::default()
     };
-    let mut printed = HashSet::new();
+    let mut printed = PlainState::default();
     let record_path = dir.join("run.json");
     let mut record_mtime = None;
     let mut record: Option<RunRecord> = None;
@@ -812,6 +924,22 @@ pub fn watch(root: &Path, mut args: WatchArgs) -> u8 {
         &mut |r| r.is_none_or(owner_alive),
         Duration::from_millis(250),
         Duration::from_secs(2),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn test_public_outputs(events: &str) -> String {
+    let mut state = State::default();
+    for line in events.lines() {
+        if let Some(input) = parse_event(line) {
+            state.fold(input);
+        }
+    }
+    format!(
+        "{:?}\n{:?}\n{}",
+        frame(&state, 120, 100),
+        plain(&state, &mut PlainState::default()),
+        snapshot(&state)
     )
 }
 
@@ -1090,7 +1218,7 @@ mod tests {
         assert_eq!(state.rows.len(), 5);
         assert_eq!(state.counts(), (5, 0));
         assert_eq!(state.rows[&5].attempt, 2);
-        let mut printed = HashSet::new();
+        let mut printed = PlainState::default();
         let live_plain = plain(&state, &mut printed);
         assert_eq!(
             live_plain.iter().filter(|l| l.starts_with("  ✓")).count(),
@@ -1144,7 +1272,7 @@ mod tests {
         assert!(frame(&state, 200, 100)
             .iter()
             .any(|line| line.contains("2/2 passed")));
-        let mut printed = HashSet::new();
+        let mut printed = PlainState::default();
         let output = plain(&state, &mut printed);
         assert_eq!(
             output.iter().filter(|line| line.starts_with("  ✓")).count(),
@@ -1159,7 +1287,7 @@ mod tests {
         for outcome in ["pass", "fail"] {
             let retry = row(2, 3, 2, "retry", "exact", [1, 1, 0]);
             let mut state = folded(&[row(1, 3, 1, "retry", "exact", [1, 1, 0]), retry.clone()]);
-            let mut printed = HashSet::new();
+            let mut printed = PlainState::default();
             assert!(!plain(&state, &mut printed)
                 .iter()
                 .any(|line| line.starts_with("  ")));
@@ -1284,7 +1412,10 @@ mod tests {
             lines.iter().any(|l| l.contains("   40  action")),
             "{lines:#?}"
         );
-        for (_, label) in STAGES {
+        for (_, label) in STAGES
+            .into_iter()
+            .filter(|(name, _)| *name != "build_lock_wait")
+        {
             assert!(lines.iter().any(|l| l.contains(label)));
         }
         assert_eq!(snapshot(&state)["steps"].as_array().unwrap().len(), 40);
@@ -1319,7 +1450,10 @@ mod tests {
                 );
                 assert!(lines.contains(&format!("{} rows omitted", 7 - retained)));
                 assert!(lines.len() < height as usize);
-                for (_, label) in STAGES {
+                for (_, label) in STAGES
+                    .into_iter()
+                    .filter(|(name, _)| *name != "build_lock_wait")
+                {
                     assert!(lines.iter().any(|line| line.contains(label)));
                 }
             }
@@ -1334,7 +1468,7 @@ mod tests {
                         "resolveMs": 0, "jevMs": 0, "actMs": 0,
                         "postCaptureMs": 0, "otherMs": 0, "total": 0}})
             );
-            let plain = plain(&state, &mut HashSet::new());
+            let plain = plain(&state, &mut PlainState::default());
             assert!(plain.contains(&format!("  {}", step_line(&state.rows[&1]))));
             assert_eq!(
                 plain.iter().filter(|line| line.starts_with("  ")).count(),
@@ -1364,8 +1498,8 @@ mod tests {
     fn finished_view_takes_text_only_from_the_ledger() {
         let mut lines = reuse_check_live();
         let live = folded(&lines);
-        let rendered =
-            frame(&live, 200, 100).join("\n") + &plain(&live, &mut HashSet::new()).join("\n");
+        let rendered = frame(&live, 200, 100).join("\n")
+            + &plain(&live, &mut PlainState::default()).join("\n");
         assert!(
             !rendered.contains("Tasks") && !rendered.contains("Email"),
             "{rendered}"
@@ -1403,7 +1537,7 @@ mod tests {
     #[test]
     fn plain_prints_each_final_item_once_without_escapes() {
         let mut lines = reuse_check_live();
-        let mut printed = HashSet::new();
+        let mut printed = PlainState::default();
         let first = plain(&folded(&lines[..8]), &mut printed);
         assert_eq!(
             first,
@@ -1453,7 +1587,7 @@ mod tests {
         finish(&mut lines, "fail", Some("PLAN_STEP_FAILED"));
         let mut done = folded(&lines);
         done.apply_ledger(&ledger());
-        let out = plain(&done, &mut HashSet::new());
+        let out = plain(&done, &mut PlainState::default());
         assert!(out.contains(&"  ✓     3  action    exact                  1.1s     0.6s        —  Tap \"Tasks\"".to_string()), "{out:#?}");
         assert!(!out.iter().any(|l| l.starts_with("        line")));
     }
@@ -1633,7 +1767,7 @@ mod tests {
                 .any(|l| l.starts_with("▶     7  action    running")),
             "{rendered:#?}"
         );
-        assert!(!plain(&live, &mut HashSet::new())
+        assert!(!plain(&live, &mut PlainState::default())
             .iter()
             .any(|l| l.contains("running")));
         let steps = snapshot(&live)["steps"].clone();

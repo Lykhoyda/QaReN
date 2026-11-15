@@ -1185,7 +1185,7 @@ impl Runner for MockRunner {
     }
     fn execute(&mut self, spec: &CmdSpec, _interruptible: bool) -> CmdOutput {
         // Unscripted diagnostics stay unavailable in fixtures for unrelated run behavior.
-        if spec.label == "host-sample"
+        if matches!(spec.label.as_str(), "host-sample" | "device-helpers")
             && !self
                 .script
                 .front()

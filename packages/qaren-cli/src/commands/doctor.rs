@@ -563,7 +563,7 @@ pub fn held_note(lock_root: &Path, runs_root: &Path, udid: &str) -> Option<Strin
 
 const BUILD_LOCK_FIX: &str = "a check or prepare waits for it within its build budget; if the holder is dead, run its qaren cleanup from its home (its resources only)";
 
-// One read-only sample of the iOS native-build lock: never claims, reclaims or refuses.
+// Read-only samples of the iOS build lock and shared slot; never claims, reclaims or refuses.
 pub fn build_lock_row(runner: &mut dyn Runner, lock_root: Result<PathBuf, String>) -> Check {
     const ID: &str = "native-build-lock";
     let root = match lock_root {
@@ -581,18 +581,46 @@ pub fn build_lock_row(runner: &mut dyn Runner, lock_root: Result<PathBuf, String
     } else {
         "private"
     };
-    let dir = crate::buildplan::lock_dir(&root, "native-build-ios");
+    let rows: Vec<_> = ["native-build-ios", "native-build-slot"]
+        .into_iter()
+        .map(|name| build_lock_named_row(runner, &root, namespace, name))
+        .collect();
+    if rows.iter().all(|row| row.status == Status::Pass) {
+        Check::pass(
+            ID,
+            rows.iter()
+                .map(|row| row.detail.as_str())
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    } else {
+        Check::warn(
+            ID,
+            rows.iter()
+                .map(|row| row.detail.as_str())
+                .collect::<Vec<_>>()
+                .join("; "),
+            BUILD_LOCK_FIX,
+        )
+    }
+}
+
+fn build_lock_named_row(
+    runner: &mut dyn Runner,
+    root: &Path,
+    namespace: &str,
+    name: &str,
+) -> Check {
+    const ID: &str = "native-build-lock";
+    let dir = crate::buildplan::lock_dir(root, name);
     match std::fs::symlink_metadata(&dir) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Check::pass(
-                ID,
-                format!("native-build-ios is free ({namespace} namespace)"),
-            );
+            return Check::pass(ID, format!("{name} is free ({namespace} namespace)"));
         }
         Err(e) => {
             return Check::warn(
                 ID,
-                format!("native-build-ios state is unknown: {e} ({namespace} namespace)"),
+                format!("{name} state is unknown: {e} ({namespace} namespace)"),
                 BUILD_LOCK_FIX,
             );
         }
@@ -601,7 +629,7 @@ pub fn build_lock_row(runner: &mut dyn Runner, lock_root: Result<PathBuf, String
     let Some(held) = crate::buildplan::read_holder(&dir) else {
         return Check::warn(
             ID,
-            format!("native-build-ios is held; its holder is unreadable ({namespace} namespace)"),
+            format!("{name} is held; its holder is unreadable ({namespace} namespace)"),
             BUILD_LOCK_FIX,
         );
     };
@@ -619,7 +647,7 @@ pub fn build_lock_row(runner: &mut dyn Runner, lock_root: Result<PathBuf, String
     Check::warn(
         ID,
         format!(
-            "native-build-ios is held by run {run_id} (alive: {}; build process now: {}; held {}) ({namespace} namespace)",
+            "{name} is held by run {run_id} (alive: {}; build process now: {}; held {}) ({namespace} namespace)",
             crate::lease::yes_no(facts.alive),
             crate::lease::yes_no(facts.build_process),
             facts
@@ -3130,7 +3158,7 @@ mod tests {
                 "pass"
             }
         );
-        assert_eq!(parsed["checks"].as_array().unwrap().len(), 35);
+        assert_eq!(parsed["checks"].as_array().unwrap().len(), 36);
     }
 
     #[test]
@@ -3985,7 +4013,7 @@ mod build_lock_row_tests {
         assert_eq!(held.status, Status::Warn);
         assert_eq!(
             held.detail,
-            "native-build-ios is held by run holder-run (alive: yes; build process now: no; held 9 min) (private namespace)"
+            "native-build-ios is held by run holder-run (alive: yes; build process now: no; held 9 min) (private namespace); native-build-slot is free (private namespace)"
         );
         assert_eq!(
             crate::buildplan::read_holder(&root.join("native-build-ios"))

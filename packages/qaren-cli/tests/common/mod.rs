@@ -215,6 +215,7 @@ pub fn base_record(
         terminal: None,
         held: None,
         build_lock: None,
+        build_lock_waits: Vec::new(),
         runtime_version: None,
         metro_bind: None,
     }
