@@ -20,6 +20,7 @@ pub enum FailureCode {
     PnpmProcessGroupUnsupported,
     PnpmProbeTimedOut,
     MetroPortOccupied,
+    MetroBindIpv6Only,
     ManifestNotWarm,
     WatchmanVolumeStalled,
     RunAlreadyExists,
@@ -95,6 +96,7 @@ impl FailureCode {
                 | FailureCode::CandidateUnavailable
                 | FailureCode::DepsNotPrewarmed
                 | FailureCode::ManifestNotWarm
+                | FailureCode::MetroBindIpv6Only
                 | FailureCode::WatchmanVolumeStalled
                 | FailureCode::PnpmProcessGroupUnsupported
                 | FailureCode::PnpmProbeTimedOut

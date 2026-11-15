@@ -146,6 +146,39 @@ fn cleaned_run_reports_cleaned_without_probes() {
     assert!(mock.calls.is_empty());
 }
 
+// R7: the bound address outlives the Metro resource, an older record without it loads, and status prints it.
+#[test]
+fn status_prints_the_recorded_metro_bind_after_metro_is_cleared() {
+    let repo = common::temp_repo();
+    let record = common::base_record(
+        &repo,
+        &common::ios_scenario_yaml(8791),
+        "run-bind",
+        Phase::Cleaned,
+    );
+    assert!(record.resources.metro.is_none());
+    record.save(&repo).unwrap();
+    let path = RunRecord::run_dir(&repo, "run-bind").join("run.json");
+    let old = std::fs::read_to_string(&path).unwrap();
+    assert!(!old.contains("metro_bind"));
+    assert!(RunRecord::load(&repo, "run-bind").is_ok());
+    let mut json: serde_json::Value = serde_json::from_str(&old).unwrap();
+    json["metro_bind"] = "127.0.0.1".into();
+    std::fs::write(&path, json.to_string()).unwrap();
+
+    let reloaded = RunRecord::load(&repo, "run-bind").unwrap();
+    reloaded.save(&repo).unwrap();
+    assert!(std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("\"metro_bind\": \"127.0.0.1\""));
+    let mut mock = MockRunner::new();
+    let receipt = status(&mut mock, &repo, "run-bind");
+    assert_eq!(receipt.result, ReceiptResult::Cleaned);
+    assert_eq!(receipt.metro_bind, Some(qaren::runrecord::MetroBind::V4));
+    assert!(receipt.to_json().contains("\"metro_bind\": \"127.0.0.1\""));
+    assert!(mock.calls.is_empty());
+}
+
 #[test]
 fn failed_run_echoes_recorded_failure() {
     let repo = common::temp_repo();

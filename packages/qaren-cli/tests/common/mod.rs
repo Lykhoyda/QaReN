@@ -217,6 +217,7 @@ pub fn base_record(
         build_lock: None,
         build_lock_waits: Vec::new(),
         runtime_version: None,
+        metro_bind: None,
     }
 }
 
@@ -403,6 +404,67 @@ pub fn script_ios_metro_cleanup(mock: &mut MockRunner) {
     mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
 }
 
+// Hints only the bind observation's commands contain: the listener read and the two `/status` probes.
+pub const LISTEN_READ: &str = "-nP -iTCP:";
+pub const V4_PROBE: &str = "%{http_code} http://127.0.0.1:";
+pub const V6_PROBE: &str = "-g http://[::1]:";
+
+// `lsof -nP -iTCP:<port> -sTCP:LISTEN` with one row per (pid, NAME), as measured on macOS.
+pub fn listening(rows: &[(i32, &str)]) -> CmdOutput {
+    let mut out =
+        String::from("COMMAND   PID USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME\n");
+    for (pid, name) in rows {
+        out.push_str(&format!(
+            "node    {pid} user   21u  IPv4 0x1d2e3f4a5b6c7d8e      0t0  TCP {name} (LISTEN)\n"
+        ));
+    }
+    CmdOutput::success(&out)
+}
+
+// curl -w '\n%{http_code}' appends the status code on its own line.
+pub fn packager_running() -> CmdOutput {
+    CmdOutput::success("packager-status:running\n200")
+}
+
+pub fn connection_refused() -> CmdOutput {
+    CmdOutput {
+        stdout: "\n000".into(),
+        ..CmdOutput::failed(7, "")
+    }
+}
+
+pub fn probe_timed_out() -> CmdOutput {
+    CmdOutput {
+        stdout: "\n000".into(),
+        ..CmdOutput::failed(28, "")
+    }
+}
+
+// One turn of the iOS wait once the port is ours: QaReN's Metro answers on 127.0.0.1 only.
+pub fn script_metro_bind_ready(mock: &mut MockRunner) {
+    mock.expect_run(LISTEN_READ, listening(&[(6001, "127.0.0.1:8791")]));
+    mock.expect_run(V4_PROBE, packager_running());
+    mock.expect_run(V6_PROBE, connection_refused());
+}
+
+// A wait turn whose Metro holds the port but answers on neither address yet.
+pub fn script_metro_bind_not_ready(mock: &mut MockRunner) {
+    mock.expect_run(LISTEN_READ, listening(&[(6001, "127.0.0.1:8791")]));
+    mock.expect_run(V4_PROBE, connection_refused());
+    mock.expect_run(V6_PROBE, connection_refused());
+}
+
+// Metro answers on [::1] only: the turn's reads, two more IPv4 looks and the last listener read.
+pub fn script_metro_bind_ipv6_only(mock: &mut MockRunner, port: u16) {
+    let v6 = format!("[::1]:{port}");
+    mock.expect_run(LISTEN_READ, listening(&[(6001, &v6)]));
+    mock.expect_run(V4_PROBE, connection_refused());
+    mock.expect_run(V6_PROBE, packager_running());
+    mock.expect_run(V4_PROBE, connection_refused());
+    mock.expect_run(V4_PROBE, probe_timed_out());
+    mock.expect_run(LISTEN_READ, listening(&[(6001, &v6)]));
+}
+
 pub fn script_ios_metro_wait_and_launch(mock: &mut MockRunner, defaults: CmdOutput) {
     script_ios_metro_wait_and_launch_with(mock, defaults, script_ios_launch);
 }
@@ -423,7 +485,7 @@ pub fn script_ios_metro_wait_and_launch_with(
     mock.expect_run("ps", CmdOutput::success("S"));
     mock.expect_run("lsof", CmdOutput::success("6001"));
     mock.expect_run("ps", CmdOutput::success("6000"));
-    mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    script_metro_bind_ready(mock);
     mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
