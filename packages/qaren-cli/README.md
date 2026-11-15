@@ -2812,9 +2812,13 @@ through the same process-group stop that cleanup uses, then starts it once more
 without `--localhost`, with the same Node options and preload and with
 `REACT_NATIVE_PACKAGER_HOSTNAME=127.0.0.1`. The restarted Metro listens on all
 network interfaces for that run, as every Android run's Metro does. It logs to
-`logs/metro-restart.log`; the first log is kept. The receipt notes
-`metro_bind_recovery=restarted-all-interfaces`, and the wait goes on under the
-same build deadline. A restart that ends past the deadline fails
+`logs/metro-restart.log`; the first log is kept. Once the replacement process
+spawns, the receipt's `outcomes.metro_bind_recovery` and the report say
+"Metro was restarted once on all network interfaces during this run", even if
+the run fails before readiness or process identity capture. The notice also
+says whether Metro has been stopped or could not be confirmed stopped; a
+successful prepare that keeps Metro running has no stop qualifier. The wait
+goes on under the same build deadline. A restart that ends past the deadline fails
 `READY_DEADLINE_EXCEEDED` in that turn. A second `[::1]`-only finding, or a
 first Metro whose stop is not proven, refuses `METRO_BIND_IPV6_ONLY` in that
 turn: in the second case nothing else starts, and the record keeps that Metro
@@ -2824,8 +2828,7 @@ restarted its Metro once on all interfaces" or "the first Metro could not be
 stopped". The next step is the cleanup command, then a check of the project's
 Node DNS result order. Anything less consistent keeps waiting. The run record
 and receipt carry `metro_bind`: `127.0.0.1`, `127.0.0.1 after restart on all
-interfaces` (the report then says "Metro was restarted once and listens on all
-network interfaces for this run."), `[::1]-only`, or `inconclusive` when the
+interfaces`, `[::1]-only`, or `inconclusive` when the
 deadline passed; it survives Metro's cleanup and `status` prints it. Android
 keeps its single `127.0.0.1` probe and never restarts.
 
