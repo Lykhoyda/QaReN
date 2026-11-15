@@ -1601,7 +1601,6 @@ export function reactOnlyTarget(target: Target, screen: Screen): Element | undef
 export function reactOnlyViewport(element: Element): {
   where: 'inside' | 'below' | 'above' | 'unknown';
   container?: Element;
-  bounds?: NativeNode['rect'];
 } {
   const facts = reactOnlyFactsOf(element);
   const chain = facts?.nativeAncestor
@@ -1614,7 +1613,7 @@ export function reactOnlyViewport(element: Element): {
   const bounds = own && clip(own, elementViewport(frame!));
   const rect = facts?.rect;
   if (!rect || !bounds || rect.width <= 0 || rect.height <= 0)
-    return { where: 'unknown', container, bounds };
+    return { where: 'unknown', container };
   const where =
     rect.y >= bounds.y + bounds.height
       ? 'below'
@@ -1626,7 +1625,7 @@ export function reactOnlyViewport(element: Element): {
             rect.x + rect.width <= bounds.x + bounds.width
           ? 'inside'
           : 'unknown';
-  return { where, container, bounds };
+  return { where, container };
 }
 
 // Identifiers, kinds and frames only, as describeCandidate prints; never a label, placeholder or value.

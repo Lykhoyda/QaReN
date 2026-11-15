@@ -9,6 +9,7 @@ import type {
   ReactHostEvidence,
   Screen,
 } from '../../../dist/qa/screen.js';
+import { scrollUntilBand } from '../../../dist/qa/resolve.js';
 import { targetBehindInterruption } from '../../../dist/qa/recover.js';
 import { CaptureDeadline } from '../../../dist/qa/capture.js';
 import { runPlan } from '../../../dist/qa/walker.js';
@@ -95,6 +96,8 @@ interface List {
   decline?: boolean;
   // A system dialog in front of the app.
   dialog?: boolean;
+  cover?: Rect;
+  siblingContainer?: boolean;
 }
 
 const WINDOW: Rect = { x: 0, y: 0, width: 402, height: 874 };
@@ -136,6 +139,25 @@ function list(presence: boolean, l: List = {}): Screen {
       label: 'Cancel',
       hittable: true,
       rect: { x: 16, y: 800, width: 370, height: 44 },
+    });
+  if (l.cover)
+    nodes.push({
+      ref: '@cover',
+      index: nodes.length,
+      parentIndex: 0,
+      type: 'Other',
+      identifier: 'app-sheet',
+      hittable: true,
+      rect: l.cover,
+    });
+  if (l.siblingContainer)
+    nodes.push({
+      ref: '@other-scroll',
+      index: nodes.length,
+      parentIndex: 0,
+      type: 'ScrollView',
+      identifier: 'other-scroll',
+      rect: SCROLL,
     });
   const host: ReactHostEvidence = {
     complete: true,
@@ -237,7 +259,10 @@ test('K2: a React-only target below its scroll container drags down inside its v
   const r = await tap([{ targetY: 900 }, { nativeTarget: true }]);
   assert.equal(r.result.verdict, 'PASS', seen(r));
   assert.deepEqual(r.actions, ['scroll down', 'press @far']);
-  assert.deepEqual(r.scrolls[0].band, CLIPPED);
+  assert.deepEqual(
+    r.scrolls[0].band,
+    scrollUntilBand({ phrase: 'far-btn', quoted: 'far-btn' }, list(true)),
+  );
   // One presence read before the one drag.
   assert.deepEqual(r.modes.slice(0, 2), [false, true]);
   assert.equal(r.modes.filter(Boolean).length, 1);
@@ -247,8 +272,51 @@ test('K2: a React-only target above its scroll container drags up inside its vis
   const r = await tap([{ targetY: 20 }, { nativeTarget: true }]);
   assert.equal(r.result.verdict, 'PASS', seen(r));
   assert.deepEqual(r.actions, ['scroll up', 'press @far']);
-  assert.deepEqual(r.scrolls[0].band, CLIPPED);
+  assert.deepEqual(
+    r.scrolls[0].band,
+    scrollUntilBand({ phrase: 'far-btn', quoted: 'far-btn' }, list(true)),
+  );
 });
+
+for (const [targetY, direction] of [
+  [20, 'up'],
+  [900, 'down'],
+] as const) {
+  test(`K2b: a full app cover refuses the ${direction} drag`, async () => {
+    const r = await tap([{ targetY, cover: CLIPPED }]);
+    assert.equal(r.result.verdict, 'FAIL');
+    assert.ok(
+      seen(r).includes(
+        '"far-btn" is known to React but has no element on the visible screen; no part of its scroll area is free of what lies in front, so nothing was scrolled',
+      ),
+      seen(r),
+    );
+    assert.deepEqual(r.actions, []);
+    assert.deepEqual(r.modes, [false, true]);
+    assert.equal(r.result.recoveries, 0);
+  });
+
+  test(`K2b: a lower-half app cover confines the ${direction} drag to the free part`, async () => {
+    const shape = { targetY, cover: { ...CLIPPED, y: 487, height: 387 } };
+    const r = await tap([shape, { nativeTarget: true }]);
+    assert.equal(r.result.verdict, 'PASS', seen(r));
+    assert.deepEqual(r.actions, [`scroll ${direction}`, 'press @far']);
+    const band = r.scrolls[0].band;
+    assert.deepEqual(band, { x: 0, y: 100, width: 402, height: 383 });
+    assert.deepEqual(
+      band,
+      scrollUntilBand({ phrase: 'far-btn', quoted: 'far-btn' }, list(true, shape)),
+    );
+  });
+
+  test(`K2b: a mismatched scroll container refuses the ${direction} drag`, async () => {
+    const r = await tap([{ targetY, siblingContainer: true }]);
+    assert.equal(r.result.verdict, 'FAIL');
+    assert.match(seen(r), /no scroll area on screen holds it, so nothing was scrolled/);
+    assert.deepEqual(r.actions, []);
+    assert.deepEqual(r.modes, [false, true]);
+  });
+}
 
 for (const [name, shape, text] of [
   [
@@ -344,7 +412,10 @@ test('K5: a target still React-only after its one drag gets no second read and n
   const r = await tap([{ targetY: 900 }]);
   assert.equal(r.result.verdict, 'FAIL');
   assert.deepEqual(r.actions, ['scroll down']);
-  assert.deepEqual(r.scrolls[0].band, CLIPPED);
+  assert.deepEqual(
+    r.scrolls[0].band,
+    scrollUntilBand({ phrase: 'far-btn', quoted: 'far-btn' }, list(true)),
+  );
   assert.equal(r.modes.filter(Boolean).length, 1);
   assert.match(seen(r), /"far-btn" stayed off screen after one scroll/);
 });

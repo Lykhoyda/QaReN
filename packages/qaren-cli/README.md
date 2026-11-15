@@ -3844,8 +3844,9 @@ recapture within the step's remaining budget: on iOS before the target's one dra
 unless a system dialog is in front, elsewhere only while a decline control is on screen. When it proves the target is behind
 the presented `Modal`, recovery runs instead of scrolling the promo. On iOS the drag
 then goes only toward a target that read places below or above an on-screen scroll
-container, inside that container's visible part; a target inside the visible area,
-with no scroll container or with no readable place refuses `TARGET_NOT_FOUND`
+container that is also its scroll-until container, inside the part of that container
+that nothing drawn in front covers; a target inside the visible area, with no matching
+scroll container, with no exposed scroll band or with no readable place refuses `TARGET_NOT_FOUND`
 ("is known to React but has no element on the visible screen", with the reason and
 "nothing was scrolled"), and so does a recapture that runs out of time or returns
 incomplete evidence. These refusals run no recovery. Elsewhere such a recapture leaves the cover unproven, and the

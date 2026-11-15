@@ -4609,14 +4609,17 @@ async function walkBlockScoped(
                     });
                     break;
                   }
-                  // The presence read placed the target: drag only toward it inside its own scroll container.
                   const view =
                     placeFirst && before.platformPresence
                       ? reactOnlyViewport(reactOnly)
                       : undefined;
                   if (
                     view &&
-                    !(view.container && (view.where === 'below' || view.where === 'above'))
+                    !(
+                      view.container &&
+                      (view.where === 'below' || view.where === 'above') &&
+                      scrollUntilContainer(item.target, before.screen) === view.container
+                    )
                   ) {
                     outcome = failed(
                       item,
@@ -4640,9 +4643,22 @@ async function walkBlockScoped(
                     clearance ??
                     (resolution.element && keyboardClearance(resolution.element, before.screen));
                   const band = view
-                    ? view.bounds
+                    ? bandFor(item, item.target, before.screen)
                     : (within ??
                       (resolution.element && clearanceBand(resolution.element, before.screen)));
+                  if (view && (!band || band.width <= 0 || band.height <= 0)) {
+                    outcome = failed(
+                      item,
+                      attempt,
+                      `"${item.target.phrase}" ${REACT_ONLY_UNSEEN}; no part of its scroll area is free of what lies in front, so nothing was scrolled`,
+                      before.screen,
+                      await shoot(item),
+                      undefined,
+                      false,
+                      'TARGET_NOT_FOUND',
+                    );
+                    break;
+                  }
                   clearance = undefined;
                   within = undefined;
                   scrollOrigin ??= 'offscreen-resolution';
