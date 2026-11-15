@@ -1538,6 +1538,27 @@ fn ios_metro_whose_listener_changes_between_reads_is_not_refused() {
     assert_eq!(mock.remaining(), 0);
 }
 
+// G2: a Metro that exits while it is still pending keeps today's exit detection, not a bind refusal.
+#[test]
+fn ios_metro_that_exits_while_pending_fails_as_metro_exited() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+    common::script_metro_bind_not_ready(&mut mock);
+    mock.expect_run("ps", CmdOutput::failed(1, ""));
+    common::script_ios_metro_cleanup(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::BuildFailed);
+    assert!(failure.detail.to_string().starts_with("metro exited"));
+    assert_eq!(receipt.metro_bind, None);
+    assert_eq!(wait_turns(&mock), 1);
+    assert_eq!(mock.remaining(), 0);
+}
+
 // A Metro that never answers keeps today's deadline refusal and records the bind as inconclusive.
 #[test]
 fn ios_metro_that_never_answers_reaches_the_deadline_with_an_inconclusive_bind() {
