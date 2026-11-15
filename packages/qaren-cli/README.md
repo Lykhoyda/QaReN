@@ -651,9 +651,14 @@ already maps that port, the run refuses `DEVICE_BUSY` before the walk and
 leaves the mapping alone. Teardown, and `qaren cleanup <run-id>` after a crash
 or `SIGKILL`, release what the run put on the device, and only while the run
 still holds the device lease; otherwise those legs are refused and no adb
-command runs. A run whose own teardown released them and then its lease is saved
-`Cleaned`, so a later `qaren cleanup <run-id>` reports it cleaned without
-addressing the device; a lease still recorded keeps the refusal. Before the release sequence, the borrowed server must answer with
+command runs. On a phone, device commands also require the run's matching USB
+claim. Proven phone cleanup is persisted before releasing its claims,
+independently of the overall run phase: failed readiness or remaining host
+cleanup does not discard that proof. A later `qaren cleanup <run-id>` skips
+device commands and retries remaining host cleanup, reporting `cleaned` only
+when every obligation is resolved. Borrowed runs already saved `Cleaned` with
+no recorded lease also skip device release; without either proof, ownership
+is still required. Before the release sequence, the borrowed server must answer with
 the version of the recorded `adb`; a missing or incompatible server leaves the
 release unresolved. The `adb_reverse` leg verifies a successful removal with
 `reverse --list`; adb's explicit listener-not-found response counts as `absent`.
