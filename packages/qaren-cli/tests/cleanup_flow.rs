@@ -3985,6 +3985,435 @@ fn borrowed_ios_stop_in_cleanup_enforces_owner_lease_quiescence_admission_and_id
     }
 }
 
+// A simulator data directory holding a dummy log store and one sibling that must survive.
+fn log_store_fixture(repo: &std::path::Path) -> std::path::PathBuf {
+    let data = repo
+        .join("CoreSimulator/Devices")
+        .join(BORROWED_IOS_UDID)
+        .join("data");
+    for file in [
+        "var/db/diagnostics/Persist/0.tracev3",
+        "var/db/uuidtext/00/x",
+    ] {
+        let path = data.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "dummy").unwrap();
+    }
+    data
+}
+
+fn inventory_with_data(state: &str, data: Option<&std::path::Path>) -> String {
+    let mut inventory: serde_json::Value =
+        serde_json::from_str(&borrowed_ios_inventory(state)).unwrap();
+    if let Some(data) = data {
+        inventory["devices"][BORROWED_IOS_RUNTIME][0]["dataPath"] = data.to_str().unwrap().into();
+    }
+    inventory.to_string()
+}
+
+fn pool_ios_record(repo: &std::path::Path) -> RunRecord {
+    let mut record = borrowed_ios_record(repo);
+    record.resources.pool_member = true;
+    record.resources.arm_borrowed_ios_stop().unwrap();
+    record
+}
+
+fn stored_stop(repo: &std::path::Path) -> qaren::runrecord::BorrowedIosStop {
+    RunRecord::load(repo, "borrowed-ios-run")
+        .unwrap()
+        .resources
+        .borrowed_ios_stop()
+}
+
+fn cleanup_pool(mock: &mut MockRunner, repo: &std::path::Path) -> qaren::receipt::Receipt {
+    qaren::commands::cleanup::cleanup_with_runtime(
+        mock,
+        repo,
+        "borrowed-ios-run",
+        None,
+        Some((
+            std::path::Path::new("/usr/local/bin/node"),
+            std::path::Path::new("/runtime"),
+        )),
+    )
+}
+
+// Admission, then the shutdown's own reads: Booted, shutdown, Shutdown; or Shutdown alone.
+fn script_pool_shutdown(mock: &mut MockRunner, booted: bool, data: &std::path::Path) {
+    script_borrowed_ios_admission(mock, "clear");
+    if booted {
+        mock.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&inventory_with_data("Booted", Some(data))),
+        );
+        mock.expect_run(
+            &format!("simctl shutdown {BORROWED_IOS_UDID}"),
+            CmdOutput::success(""),
+        );
+    }
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&inventory_with_data("Shutdown", Some(data))),
+    );
+}
+
+#[test]
+fn pool_member_cleanup_removes_its_log_store_after_the_proven_shutdown() {
+    for booted in [true, false] {
+        let repo = common::temp_repo();
+        let data = log_store_fixture(&repo);
+        let record = pool_ios_record(&repo);
+        let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+        record.save(&repo).unwrap();
+        let mut mock = MockRunner::new();
+        owner_gone(&mut mock);
+        script_pool_shutdown(&mut mock, booted, &data);
+        mock.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&inventory_with_data("Shutdown", Some(&data))),
+        );
+        let receipt = cleanup_pool(&mut mock, &repo);
+        assert_eq!(receipt.result, ReceiptResult::Cleaned, "{booted}: {:?}", receipt.cleanup);
+        assert_eq!(
+            receipt.cleanup["simulator"],
+            if booted { "removed" } else { "absent" }
+        );
+        assert_eq!(receipt.cleanup["simulator_log"], "removed");
+        assert_eq!(receipt.cleanup["device_lease"], "removed");
+        assert!(!lock.exists());
+        assert!(!data.join("var/db/diagnostics").exists());
+        assert!(data.join("var/db/uuidtext/00/x").is_file());
+        assert_eq!(
+            stored_stop(&repo),
+            qaren::runrecord::BorrowedIosStop::Completed
+        );
+        assert_eq!(
+            mock.calls
+                .iter()
+                .filter(|c| c.label == "simctl-shutdown")
+                .count(),
+            usize::from(booted)
+        );
+        assert_eq!(mock.remaining(), 0, "{booted}");
+    }
+}
+
+#[test]
+fn pool_member_log_store_removal_failure_keeps_the_stop_pending_until_a_retry_removes_it() {
+    let repo = common::temp_repo();
+    let data = log_store_fixture(&repo);
+    let store = data.join("var/db/diagnostics");
+    std::fs::remove_dir_all(&store).unwrap();
+    std::fs::write(&store, "dummy").unwrap();
+    let record = pool_ios_record(&repo);
+    let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+    record.save(&repo).unwrap();
+    let mut mock = MockRunner::new();
+    owner_gone(&mut mock);
+    script_pool_shutdown(&mut mock, true, &data);
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&inventory_with_data("Shutdown", Some(&data))),
+    );
+    let receipt = cleanup_pool(&mut mock, &repo);
+    assert_eq!(receipt.result, ReceiptResult::Failed);
+    assert_eq!(
+        receipt.cleanup["simulator"],
+        "unresolved: simulator shut down but its log store was not removed; stop stays pending"
+    );
+    assert!(
+        receipt.cleanup["simulator_log"]
+            .starts_with("unresolved: simulator log store could not be removed: "),
+        "{}",
+        receipt.cleanup["simulator_log"]
+    );
+    assert!(receipt.cleanup["device_lease"].starts_with("unresolved: retained:"));
+    assert!(lock.exists());
+    assert_eq!(stored_stop(&repo), qaren::runrecord::BorrowedIosStop::Pending);
+    assert_eq!(mock.remaining(), 0);
+
+    std::fs::remove_file(&store).unwrap();
+    std::fs::create_dir_all(store.join("Persist")).unwrap();
+    std::fs::write(store.join("Persist/0.tracev3"), "dummy").unwrap();
+    let mut retry = MockRunner::new();
+    owner_gone(&mut retry);
+    script_pool_shutdown(&mut retry, false, &data);
+    retry.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&inventory_with_data("Shutdown", Some(&data))),
+    );
+    let recovered = cleanup_pool(&mut retry, &repo);
+    assert_eq!(recovered.result, ReceiptResult::Cleaned, "{:?}", recovered.cleanup);
+    assert_eq!(recovered.cleanup["simulator"], "absent");
+    assert_eq!(recovered.cleanup["simulator_log"], "removed");
+    assert_eq!(recovered.cleanup["device_lease"], "removed");
+    assert!(!lock.exists());
+    assert!(!store.exists());
+    assert_eq!(retry.remaining(), 0);
+}
+
+#[test]
+fn pool_member_log_store_is_kept_unless_the_last_read_proves_shutdown_and_names_its_path() {
+    for case in ["booted_again", "list_failed", "no_data_path"] {
+        let repo = common::temp_repo();
+        let data = log_store_fixture(&repo);
+        let record = pool_ios_record(&repo);
+        let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+        record.save(&repo).unwrap();
+        let mut mock = MockRunner::new();
+        owner_gone(&mut mock);
+        script_pool_shutdown(&mut mock, case == "booted_again", &data);
+        let last = match case {
+            "booted_again" => CmdOutput::success(&inventory_with_data("Booted", Some(&data))),
+            "list_failed" => CmdOutput {
+                exit_code: Some(1),
+                stdout: inventory_with_data("Shutdown", Some(&data)),
+                ..Default::default()
+            },
+            "no_data_path" => CmdOutput::success(&inventory_with_data("Shutdown", None)),
+            _ => unreachable!(),
+        };
+        mock.expect_run("simctl list devices -j", last);
+        let receipt = cleanup_pool(&mut mock, &repo);
+        assert_eq!(receipt.result, ReceiptResult::Failed, "{case}");
+        assert_eq!(
+            receipt.cleanup["simulator"],
+            if case == "no_data_path" {
+                "unresolved: simctl list did not name the simulator's data path; log store retained"
+            } else {
+                "unresolved: simulator not proven Shutdown before log store removal; simulator retained"
+            },
+            "{case}"
+        );
+        assert_eq!(
+            receipt.cleanup["simulator_log"], "unresolved: log store retained",
+            "{case}"
+        );
+        assert!(data.join("var/db/diagnostics/Persist/0.tracev3").is_file(), "{case}");
+        assert!(lock.exists(), "{case}");
+        assert_eq!(
+            stored_stop(&repo),
+            qaren::runrecord::BorrowedIosStop::Pending,
+            "{case}"
+        );
+        assert_eq!(mock.remaining(), 0, "{case}");
+    }
+}
+
+#[test]
+fn pool_member_log_leg_covers_a_completed_stop_a_failed_save_and_an_unarmed_stop() {
+    // A completed stop cleaned up again touches nothing.
+    {
+        let repo = common::temp_repo();
+        let data = log_store_fixture(&repo);
+        let mut record = pool_ios_record(&repo);
+        record
+            .resources
+            .complete_borrowed_ios_stop(BORROWED_IOS_UDID)
+            .unwrap();
+        record.save(&repo).unwrap();
+        let mut mock = MockRunner::new();
+        owner_gone(&mut mock);
+        let receipt = cleanup_pool(&mut mock, &repo);
+        assert_eq!(receipt.result, ReceiptResult::Cleaned);
+        assert_eq!(receipt.cleanup["simulator"], "absent");
+        assert_eq!(receipt.cleanup["simulator_log"], "absent");
+        assert!(data.join("var/db/diagnostics/Persist/0.tracev3").is_file());
+        assert!(!mock.calls.iter().any(|c| c.label.starts_with("simctl")));
+        assert_eq!(mock.remaining(), 0);
+    }
+    // A failed save after the removal: the store is gone, the stop and the lease stay.
+    {
+        let repo = common::temp_repo();
+        let data = log_store_fixture(&repo);
+        let record = pool_ios_record(&repo);
+        let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+        record.save(&repo).unwrap();
+        let blocked_save = RunRecord::run_dir(&repo, "borrowed-ios-run")
+            .join(format!(".run.json.tmp.{}", std::process::id()));
+        std::fs::create_dir(&blocked_save).unwrap();
+        let mut mock = MockRunner::new();
+        owner_gone(&mut mock);
+        script_pool_shutdown(&mut mock, false, &data);
+        mock.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&inventory_with_data("Shutdown", Some(&data))),
+        );
+        let receipt = cleanup_pool(&mut mock, &repo);
+        assert_eq!(receipt.result, ReceiptResult::Failed);
+        assert!(
+            receipt.cleanup["simulator"]
+                .starts_with("unresolved: simulator stop completed but the run record could not be persisted"),
+            "{}",
+            receipt.cleanup["simulator"]
+        );
+        assert_eq!(receipt.cleanup["simulator_log"], "removed");
+        assert!(lock.exists());
+        assert!(!data.join("var/db/diagnostics").exists());
+        assert_eq!(mock.remaining(), 0);
+        std::fs::remove_dir(&blocked_save).unwrap();
+    }
+    // A prepare that failed before arming its stop never booted the member.
+    {
+        let repo = common::temp_repo();
+        let data = log_store_fixture(&repo);
+        let mut record = borrowed_ios_record(&repo);
+        record.resources.pool_member = true;
+        record.save(&repo).unwrap();
+        let mut mock = MockRunner::new();
+        owner_gone(&mut mock);
+        let receipt = cleanup_pool(&mut mock, &repo);
+        assert_eq!(receipt.result, ReceiptResult::Cleaned);
+        assert_eq!(receipt.cleanup["simulator"], "kept");
+        assert_eq!(receipt.cleanup["simulator_log"], "kept");
+        assert!(data.join("var/db/diagnostics/Persist/0.tracev3").is_file());
+        assert!(!mock.calls.iter().any(|c| c.label.starts_with("simctl")));
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn early_and_guarded_cleanup_returns_carry_a_log_leg_without_touching_the_store() {
+    // The run's owner is alive or unproven: no command, no save.
+    for (pool, owner_case) in [
+        (true, "alive"),
+        (true, "unknown_ps"),
+        (false, "alive"),
+        (false, "unknown_ps"),
+    ] {
+        let repo = common::temp_repo();
+        let data = log_store_fixture(&repo);
+        let mut record = borrowed_ios_record(&repo);
+        record.resources.pool_member = pool;
+        record.resources.arm_borrowed_ios_stop().unwrap();
+        record.save(&repo).unwrap();
+        let before = std::fs::read(RunRecord::path(&repo, "borrowed-ios-run")).unwrap();
+        let mut mock = MockRunner::new();
+        if owner_case == "alive" {
+            mock.expect_run(
+                "ps -p 999 -o lstart=",
+                CmdOutput::success("Wed Aug 12 15:00:00 2026\n"),
+            );
+            mock.expect_run("ps -p 999 -o stat=", CmdOutput::success("S\n"));
+        } else {
+            mock.expect_run("ps -p 999 -o lstart=", CmdOutput::failed(1, "ps denied"));
+        }
+        let receipt = cleanup_pool(&mut mock, &repo);
+        assert_eq!(receipt.result, ReceiptResult::Refused, "{pool} {owner_case}");
+        assert_eq!(
+            receipt.cleanup["simulator_log"],
+            if pool {
+                "unresolved: log store retained with the simulator"
+            } else {
+                "kept"
+            },
+            "{pool} {owner_case}"
+        );
+        assert_eq!(
+            std::fs::read(RunRecord::path(&repo, "borrowed-ios-run")).unwrap(),
+            before,
+            "{pool} {owner_case}"
+        );
+        assert!(data.join("var/db/diagnostics/Persist/0.tracev3").is_file());
+        assert!(!mock.calls.iter().any(|c| c.label.starts_with("simctl")));
+        assert_eq!(mock.remaining(), 0, "{pool} {owner_case}");
+    }
+    // Every guard before the shutdown leaves a pool member's store with the simulator.
+    for guard in ["lease_not_held", "recorder_unproven", "identity_mismatch"] {
+        let repo = common::temp_repo();
+        let data = log_store_fixture(&repo);
+        let mut record = pool_ios_record(&repo);
+        match guard {
+            "lease_not_held" => {
+                std::fs::remove_dir_all(&record.resources.lease.as_ref().unwrap().lock_dir)
+                    .unwrap();
+            }
+            "recorder_unproven" => {
+                record.resources.recorder = Some(qaren::runrecord::RecorderResource {
+                    pid: None,
+                    birth: None,
+                    pulled_sha256: None,
+                    kind: qaren::runrecord::RecorderKind::IosSimulator,
+                    device: BORROWED_IOS_UDID.into(),
+                    output: repo.join("clip.mov"),
+                });
+            }
+            // A non-canonical identity with an armed stop is refused at load; this is the next identity guard.
+            "identity_mismatch" => {
+                record.scenario.ios.as_mut().unwrap().runtime =
+                    "com.apple.CoreSimulator.SimRuntime.iOS-26-4".into();
+            }
+            _ => unreachable!(),
+        }
+        record.save(&repo).unwrap();
+        let mut mock = MockRunner::new();
+        owner_gone(&mut mock);
+        let receipt = cleanup_pool(&mut mock, &repo);
+        let simulator = receipt.cleanup.get("simulator").cloned().unwrap_or_default();
+        assert!(
+            simulator.starts_with("refused:") || simulator.starts_with("unresolved:"),
+            "{guard}: {:?} {:?}",
+            receipt.cleanup,
+            receipt.failure
+        );
+        assert_eq!(
+            receipt.cleanup["simulator_log"], "unresolved: log store retained with the simulator",
+            "{guard}"
+        );
+        assert!(data.join("var/db/diagnostics/Persist/0.tracev3").is_file(), "{guard}");
+        assert!(!mock.calls.iter().any(|c| c.label.starts_with("simctl")), "{guard}");
+        assert_eq!(stored_stop(&repo), qaren::runrecord::BorrowedIosStop::Pending, "{guard}");
+        assert_eq!(mock.remaining(), 0, "{guard}");
+    }
+}
+
+#[test]
+fn a_borrowed_simulators_log_store_is_never_touched() {
+    // --device with no stop armed.
+    {
+        let repo = common::temp_repo();
+        let data = log_store_fixture(&repo);
+        let record = borrowed_ios_record(&repo);
+        record.save(&repo).unwrap();
+        let mut mock = MockRunner::new();
+        owner_gone(&mut mock);
+        let receipt = cleanup_pool(&mut mock, &repo);
+        assert_eq!(receipt.result, ReceiptResult::Cleaned);
+        assert_eq!(receipt.cleanup["simulator"], "kept");
+        assert_eq!(receipt.cleanup["simulator_log"], "kept");
+        assert!(data.join("var/db/diagnostics/Persist/0.tracev3").is_file());
+        assert_eq!(mock.remaining(), 0);
+    }
+    // A pending stop on a record without pool_member (--shutdown-device-on-exit, or an old record).
+    {
+        let repo = common::temp_repo();
+        let data = log_store_fixture(&repo);
+        let mut record = borrowed_ios_record(&repo);
+        record.resources.arm_borrowed_ios_stop().unwrap();
+        record.save(&repo).unwrap();
+        let stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(RunRecord::path(&repo, "borrowed-ios-run")).unwrap())
+                .unwrap();
+        assert!(stored["resources"].get("pool_member").is_none());
+        let mut mock = MockRunner::new();
+        owner_gone(&mut mock);
+        script_pool_shutdown(&mut mock, true, &data);
+        let receipt = cleanup_pool(&mut mock, &repo);
+        assert_eq!(receipt.result, ReceiptResult::Cleaned, "{:?}", receipt.cleanup);
+        assert_eq!(receipt.cleanup["simulator"], "removed");
+        assert_eq!(receipt.cleanup["simulator_log"], "kept");
+        assert!(data.join("var/db/diagnostics/Persist/0.tracev3").is_file());
+        assert_eq!(
+            mock.calls
+                .iter()
+                .filter(|c| c.label == "simctl-list")
+                .count(),
+            2
+        );
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
 #[test]
 fn crashed_pool_creation_deletes_the_owned_simulator_and_releases_the_creation_lock() {
     let repo = common::temp_repo();

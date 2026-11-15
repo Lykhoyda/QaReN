@@ -435,6 +435,9 @@ fn main_inner(args: Vec<String>) -> ExitCode {
                 row.detail.push_str(&note);
             }
             report.checks.push(row);
+            report
+                .checks
+                .push(doctor::lane_log_row(&mut runner, udid));
         }
         print!(
             "{}",

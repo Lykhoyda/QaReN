@@ -284,6 +284,7 @@ impl State {
                     "runner_host",
                     "recorder",
                     "simulator",
+                    "simulator_log",
                     "device_lease",
                     "pr_worktree",
                     "adb_reverse",
@@ -1358,6 +1359,24 @@ mod tests {
                 .sum();
             assert!(cells < 80, "{line}");
         }
+    }
+
+    #[test]
+    fn the_simulator_log_leg_reaches_the_watch_summary() {
+        let mut lines = reuse_check_live();
+        let n = lines.len() as u64;
+        lines.push(line(
+            n + 1,
+            102_000,
+            "end",
+            json!({"result": "pass", "phase": "cleaned", "expectedExit": 0, "droppedEvents": 0,
+                "cleanup": {"simulator": "kept", "simulator_log": "unresolved"}}),
+        ));
+        let state = folded(&lines);
+        assert_eq!(
+            state.end.as_ref().unwrap()["cleanup"]["simulator_log"],
+            "unresolved"
+        );
     }
 
     #[test]
