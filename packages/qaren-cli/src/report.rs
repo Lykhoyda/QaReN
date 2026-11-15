@@ -666,6 +666,9 @@ pub(crate) fn write_host(
         }
     }
     writeln!(file, "\n{}", host.report_line())?;
+    if let Some(wait) = receipt.outcomes.get("host_wait") {
+        writeln!(file, "Host memory before the build: {wait}.")?;
+    }
     if let Some(line) = helpers {
         writeln!(file, "\n{line}")?;
     }
