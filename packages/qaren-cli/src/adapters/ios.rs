@@ -298,6 +298,55 @@ pub fn list_devices_spec() -> CmdSpec {
     )
 }
 
+// The simulator's data directory as `simctl list -j` names it; an empty string is no path.
+pub fn parse_sim_data_path(list_json: &str, udid: &str) -> Option<PathBuf> {
+    serde_json::from_str::<serde_json::Value>(list_json)
+        .ok()?
+        .get("devices")?
+        .as_object()?
+        .values()
+        .filter_map(|v| v.as_array())
+        .flatten()
+        .find(|device| device["udid"].as_str() == Some(udid))?["dataPath"]
+        .as_str()
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+}
+
+// The simulator's system log store under its checked data directory, or why it is refused.
+pub fn log_store_path(data_path: &Path, udid: &str) -> Result<PathBuf, String> {
+    if !data_path.is_absolute() {
+        return Err(format!("{} is not absolute", data_path.display()));
+    }
+    let data = std::fs::canonicalize(data_path)
+        .map_err(|e| format!("{} cannot be resolved: {e}", data_path.display()))?;
+    let mut tail = data.components().rev().map(|c| c.as_os_str().to_str());
+    let owned = tail.next() == Some(Some("data"))
+        && tail.next().flatten().is_some_and(|name| name.eq_ignore_ascii_case(udid))
+        && tail.next() == Some(Some("Devices"))
+        && tail.next() == Some(Some("CoreSimulator"));
+    if !owned {
+        return Err(format!(
+            "{} does not end with CoreSimulator/Devices/{udid}/data",
+            data.display()
+        ));
+    }
+    let mut component = data.clone();
+    for part in ["var", "db", "diagnostics"] {
+        component.push(part);
+        match std::fs::symlink_metadata(&component) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(format!("{} is a symlink", component.display()))
+            }
+            Ok(_) => {}
+            // The store may be absent; nothing below a missing component can exist.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(e) => return Err(format!("{} cannot be read: {e}", component.display())),
+        }
+    }
+    Ok(data.join("var/db/diagnostics"))
+}
+
 // One bounded `simctl list` read of a device-budget inventory proof.
 pub const INVENTORY_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -1041,10 +1090,28 @@ pub fn build_spec(
     output: &Path,
     deadline_seconds: u64,
     workspace: Option<&IosWorkspaceBuild>,
+    jobs: Option<std::num::NonZeroU32>,
+    arm64_only: bool,
+) -> CmdSpec {
+    let spec = route_spec(project_root, output, deadline_seconds, workspace, jobs);
+    // An environment value, so a project's own architecture settings still win.
+    if arm64_only {
+        spec.env("EXCLUDED_ARCHS", "x86_64")
+    } else {
+        spec
+    }
+}
+
+fn route_spec(
+    project_root: &Path,
+    output: &Path,
+    deadline_seconds: u64,
+    workspace: Option<&IosWorkspaceBuild>,
+    jobs: Option<std::num::NonZeroU32>,
 ) -> CmdSpec {
     if let Some(workspace) = workspace {
         let derived_data = workspace_derived_data(output);
-        return CmdSpec::new(
+        let mut spec = CmdSpec::new(
             "xcodebuild-ios",
             "xcrun",
             &[
@@ -1076,6 +1143,11 @@ pub fn build_spec(
         .env_remove("CI")
         .env("EXPO_NO_TELEMETRY", "1")
         .env("RCT_NO_LAUNCH_PACKAGER", "1");
+        if let Some(jobs) = jobs {
+            spec.args
+                .splice(1..1, ["-jobs".to_string(), jobs.to_string()]);
+        }
+        return spec;
     }
     CmdSpec::new(
         "expo-run-ios",
@@ -1095,6 +1167,107 @@ pub fn build_spec(
     .cwd(project_root)
     .env_remove("CI")
     .env("EXPO_NO_TELEMETRY", "1")
+}
+
+// Ok: a simulator build compiles arm64 only (EXCLUDED_ARCHS=x86_64); Err: why it keeps every architecture.
+pub fn arm64_only(
+    arch_all: bool,
+    user_env_has: impl Fn(&str) -> bool,
+    apple_silicon_answer: impl FnOnce() -> Option<String>,
+) -> Result<(), &'static str> {
+    if arch_all {
+        return Err("build.arch: all");
+    }
+    if ["EXCLUDED_ARCHS", "ARCHS", "ONLY_ACTIVE_ARCH"]
+        .into_iter()
+        .any(user_env_has)
+    {
+        return Err("set in the user's environment");
+    }
+    match apple_silicon_answer().as_deref().map(str::trim) {
+        Some("1") => Ok(()),
+        _ => Err("not Apple silicon"),
+    }
+}
+
+// Inside the run's build directory; removed as soon as the build command ends.
+pub const JOBS_WRAPPER_DIR: &str = ".qaren-xcodebuild";
+const JOBS_MARKER: &str = "capped";
+
+// PATH order as a lookup from `cwd` sees it: an empty or relative entry is relative to the command's directory.
+fn on_path(path: &str, cwd: &Path, name: &str) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    path.split(':')
+        .map(|dir| cwd.join(dir).join(name))
+        .find(|candidate| {
+            std::fs::metadata(candidate)
+                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        })
+}
+
+fn sh_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+// Expo starts xcodebuild by name with a fixed argument list, so the job cap
+// reaches it as an xcodebuild found first on the expo command's PATH. It caps
+// build invocations only and records each one in a marker the receipt reads.
+// False, spec unchanged: no cap, or xcodebuild does not resolve on PATH.
+pub fn cap_expo_jobs(
+    spec: &mut CmdSpec,
+    build_dir: &Path,
+    path: Option<&str>,
+    jobs: Option<std::num::NonZeroU32>,
+) -> std::io::Result<bool> {
+    use std::io::Write;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let (Some(jobs), Some(path), Some(cwd)) = (jobs, path, spec.cwd.clone()) else {
+        return Ok(false);
+    };
+    let dir = build_dir.join(JOBS_WRAPPER_DIR);
+    let (Some(real), Some(dir_text)) = (on_path(path, &cwd, "xcodebuild"), dir.to_str()) else {
+        return Ok(false);
+    };
+    let Some(real) = real.to_str().map(sh_quote) else {
+        return Ok(false);
+    };
+    let marker = sh_quote(&format!("{dir_text}/{JOBS_MARKER}"));
+    let script = format!(
+        r#"#!/bin/sh
+# Written by QaReN for one expo run:ios build: caps xcodebuild's concurrent build operations.
+build=0
+for arg in "$@"; do
+  case "$arg" in
+    -show*|-list*|-version*|-json*|-jobs*) build=0; break ;;
+    -destination) build=1 ;;
+  esac
+done
+if [ "$build" = 1 ]; then
+  printf 'jobs {jobs}\n' >> {marker}
+  exec {real} -jobs {jobs} "$@"
+fi
+exec {real} "$@"
+"#
+    );
+    std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o700)
+        .open(dir.join("xcodebuild"))?
+        .write_all(script.as_bytes())?;
+    *spec = spec.clone().env("PATH", &format!("{dir_text}:{path}"));
+    Ok(true)
+}
+
+// What the receipt may claim for a wrapped build: the cap only when the wrapper ran a build invocation.
+pub fn expo_jobs_applied(build_dir: &Path, applied: &str) -> String {
+    let marker = build_dir.join(JOBS_WRAPPER_DIR).join(JOBS_MARKER);
+    if std::fs::read_to_string(marker).is_ok_and(|text| !text.trim().is_empty()) {
+        applied.to_string()
+    } else {
+        "uncapped (the xcodebuild wrapper did not run)".to_string()
+    }
 }
 
 pub fn built_app(output: &Path) -> Result<std::path::PathBuf, String> {
@@ -1652,6 +1825,97 @@ esac
             let [symbols, _] = probes(&image, &path, mode);
             assert!(!runner.run_private(&symbols, &[]).clean(), "{mode}");
             let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+#[cfg(test)]
+mod log_store_tests {
+    use super::*;
+
+    const UDID: &str = "1DC408C4-51DA-4C4F-ACA1-39881C916FDD";
+
+    fn temp_root(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "qaren-log-store-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::canonicalize(&dir).unwrap()
+    }
+
+    fn data_dir(root: &Path, udid: &str) -> PathBuf {
+        let data = root.join("CoreSimulator/Devices").join(udid).join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        data
+    }
+
+    fn inventory(device: serde_json::Value) -> String {
+        serde_json::json!({"devices": {"com.apple.CoreSimulator.SimRuntime.iOS-26-5": [
+            {"udid": "76709EFC-0104-4A66-8908-F4F85A76F025", "dataPath": "/other/data"},
+            device
+        ]}})
+        .to_string()
+    }
+
+    #[test]
+    fn parse_sim_data_path_reads_the_named_simulator_only() {
+        let list = inventory(serde_json::json!({"udid": UDID, "dataPath": "/sims/data"}));
+        assert_eq!(
+            parse_sim_data_path(&list, UDID),
+            Some(PathBuf::from("/sims/data"))
+        );
+        for device in [
+            serde_json::json!({"udid": UDID}),
+            serde_json::json!({"udid": UDID, "dataPath": ""}),
+            serde_json::json!({"udid": UDID, "dataPath": 7}),
+        ] {
+            assert_eq!(parse_sim_data_path(&inventory(device.clone()), UDID), None, "{device}");
+        }
+        assert_eq!(parse_sim_data_path("not json", UDID), None);
+    }
+
+    #[test]
+    fn log_store_path_accepts_only_this_simulators_canonical_data_directory() {
+        let root = temp_root("path");
+        let data = data_dir(&root, UDID);
+        assert_eq!(
+            log_store_path(&data, UDID),
+            Ok(data.join("var/db/diagnostics"))
+        );
+        assert_eq!(
+            log_store_path(&data, &UDID.to_ascii_lowercase()),
+            Ok(data.join("var/db/diagnostics"))
+        );
+        let other = data_dir(&root, "76709EFC-0104-4A66-8908-F4F85A76F025");
+        assert!(log_store_path(&other, UDID).is_err());
+        assert!(log_store_path(Path::new("/x/data"), UDID).is_err());
+        assert!(log_store_path(Path::new("CoreSimulator/Devices/x/data"), UDID).is_err());
+        let elsewhere = root.join("elsewhere/data");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let link_parent = root.join("links/CoreSimulator/Devices").join(UDID);
+        std::fs::create_dir_all(&link_parent).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, link_parent.join("data")).unwrap();
+        assert!(log_store_path(&link_parent.join("data"), UDID).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn log_store_path_refuses_a_symlinked_store_component() {
+        for component in ["var", "var/db", "var/db/diagnostics"] {
+            let root = temp_root("link");
+            let data = data_dir(&root, UDID);
+            let outside = root.join("outside");
+            std::fs::create_dir_all(&outside).unwrap();
+            let link = data.join(component);
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            assert!(log_store_path(&data, UDID).is_err(), "{component}");
+            std::fs::remove_dir_all(&root).unwrap();
         }
     }
 }

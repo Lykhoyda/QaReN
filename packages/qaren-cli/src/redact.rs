@@ -116,6 +116,12 @@ pub fn durable_json<T: serde::Serialize>(value: &T) -> serde_json::Result<String
             media.push(("/host".into(), serde_json::to_value(host)?));
         }
     }
+    if let Some(value) = projected.get("device_helpers") {
+        if let Ok(notes) = serde_json::from_value::<Vec<crate::device_helpers::Note>>(value.clone())
+        {
+            media.push(("/device_helpers".into(), serde_json::to_value(notes)?));
+        }
+    }
     if let Some(value) = projected.get("mediaWithheld") {
         if let Ok(value) = serde_json::from_value::<crate::core::MediaWithheld>(value.clone()) {
             media.push(("/mediaWithheld".to_string(), serde_json::to_value(value)?));
@@ -683,6 +689,31 @@ mod tests {
             assert!(!durable_json(&invalid)
                 .unwrap()
                 .contains("private-host-canary"));
+        });
+    }
+
+    #[test]
+    fn only_valid_typed_device_helper_notes_bypass_input_masking() {
+        let inputs = std::sync::Arc::new(super::InputValues::from_values(vec![
+            "netsimd".into(),
+            "private-helper-canary".into(),
+        ]));
+        super::with_input_scope(inputs, || {
+            let payload = serde_json::json!({
+                "device_helpers": [{ "name": "netsimd", "pid": 4242 }],
+                "name": "netsimd"
+            });
+            let json: serde_json::Value =
+                serde_json::from_str(&durable_json(&payload).unwrap()).unwrap();
+            assert_eq!(json["device_helpers"][0]["name"], "netsimd");
+            assert_eq!(json["device_helpers"][0]["pid"], 4242);
+            assert_ne!(json["name"], "netsimd");
+            let invalid = serde_json::json!({
+                "device_helpers": [{ "name": "private-helper-canary", "pid": 4242 }]
+            });
+            assert!(!durable_json(&invalid)
+                .unwrap()
+                .contains("private-helper-canary"));
         });
     }
 

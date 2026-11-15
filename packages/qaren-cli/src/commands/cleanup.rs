@@ -358,37 +358,39 @@ pub fn cleanup_with_policy(
         .deps_cache
         .as_ref()
         .is_some_and(|r| r.reader || r.staging);
+    let guarded_build_slot = record.resources.build_slot.is_some();
     let owner = match (
-        producers || guarded_simulator || cache_owned,
+        producers || guarded_simulator || cache_owned || guarded_build_slot,
         &record.prepare,
     ) {
         (true, Some(prepare)) => Some(probe_pid_identity(runner, prepare)),
         _ => None,
     };
     if owner == Some(PidLiveness::AliveMatching)
-        || (guarded_simulator
+        || ((guarded_simulator || guarded_build_slot)
             && !matches!(owner, Some(PidLiveness::Dead | PidLiveness::AliveForeign)))
     {
         if had_runner {
             mark_runner_reason(&mut record, crate::failure::RecoveryReason::OwnerUnproven);
         }
-        return finish_cleanup(
-            runner,
-            runs_root,
-            run_id,
-            remove_app,
-            &mut record,
-            vec![(
-                if guarded_simulator {
-                    "simulator"
-                } else {
-                    "core"
-                }
-                .to_string(),
-                owner_refusal(),
-            )],
-            false,
-        );
+        let mut legs = vec![(
+            if guarded_simulator {
+                "simulator"
+            } else if guarded_build_slot {
+                "build_slot"
+            } else {
+                "core"
+            }
+            .to_string(),
+            owner_refusal(),
+        )];
+        if record.resources.device_borrowed && record.resources.ios_simulator.is_some() {
+            legs.push((
+                "simulator_log".to_string(),
+                retained_log_outcome(record.resources.pool_member),
+            ));
+        }
+        return finish_cleanup(runner, runs_root, run_id, remove_app, &mut record, legs, false);
     }
 
     let mut outcomes: Vec<(String, Outcome)> = Vec::new();
@@ -413,6 +415,10 @@ pub fn cleanup_with_policy(
             "metro".to_string(),
             cleanup_process_group(runner, m.identity.as_ref(), m.spawned.pgid, Some(m.port)),
         ));
+    }
+
+    if let Some(outcome) = cleanup_build_slot(runner, &mut record) {
+        outcomes.push(("build_slot".into(), outcome));
     }
 
     if !record.resources.runner_drivers.is_empty() {
@@ -463,7 +469,8 @@ pub fn cleanup_with_policy(
     match record.scenario.platform {
         Platform::Ios => {
             if let Some(sim) = record.resources.ios_simulator.clone() {
-                let outcome = if record.resources.device_borrowed {
+                // A --new simulator is deleted whole, so it has no log leg.
+                let (outcome, log) = if record.resources.device_borrowed {
                     cleanup_borrowed_ios(
                         runner,
                         &mut record,
@@ -492,9 +499,15 @@ pub fn cleanup_with_policy(
                     } else {
                         None
                     };
-                    cleanup_simulator(runner, &sim.udid, &sim.name, destruction_refusal)
+                    (
+                        cleanup_simulator(runner, &sim.udid, &sim.name, destruction_refusal),
+                        None,
+                    )
                 };
                 outcomes.push(("simulator".to_string(), outcome));
+                if let Some(log) = log {
+                    outcomes.push(("simulator_log".to_string(), log));
+                }
             }
         }
         // A borrowed emulator has no owned server, tunnel or claim; the lease release below still gates on its legs.
@@ -814,8 +827,50 @@ pub fn cleanup_with_policy(
     )
 }
 
+pub(crate) fn cleanup_build_slot(
+    runner: &mut dyn Runner,
+    record: &mut RunRecord,
+) -> Option<Outcome> {
+    let slot = record.resources.build_slot.as_ref()?;
+    let absent = matches!(std::fs::symlink_metadata(&slot.lock.lock_dir), Err(error) if error.kind() == std::io::ErrorKind::NotFound);
+    let foreign = crate::buildplan::read_holder(&slot.lock.lock_dir)
+        .is_some_and(|held| held.holder != slot.lock.holder || held.run_id != record.run_id);
+    let outcome = if absent || foreign {
+        Outcome::Absent
+    } else {
+        let retired_metro = match slot.work {
+            crate::runrecord::BuildSlotWork::Metro { pgid } if pgid >= 2 => {
+                let mut cleanup_runner = crate::exec::CleanupRunner(runner);
+                (metro::group_presence(&mut cleanup_runner, pgid) == metro::GroupPresence::Absent)
+                    .then_some(pgid)
+            }
+            _ => None,
+        };
+        if record.resources.can_release_build_slot(retired_metro) {
+            release_recorded_lock(&slot.lock, &record.run_id)
+        } else {
+            Outcome::Unresolved(
+                "build process cleanup is unproven; native-build-slot retained".into(),
+            )
+        }
+    };
+    if outcome.clean() {
+        record.resources.build_slot = None;
+    }
+    Some(outcome)
+}
+
 fn release_recorded_lock(lock: &crate::runrecord::BuildLockResource, run_id: &str) -> Outcome {
-    match crate::buildplan::release_lock(&lock.lock_dir, &lock.holder, run_id) {
+    let outcome = if lock
+        .lock_dir
+        .file_name()
+        .is_some_and(|name| name == "native-build-slot")
+    {
+        crate::native_build_slot::release(lock, run_id)
+    } else {
+        crate::buildplan::release_lock(&lock.lock_dir, &lock.holder, run_id)
+    };
+    match outcome {
         crate::buildplan::ReleaseOutcome::Removed => Outcome::Removed,
         crate::buildplan::ReleaseOutcome::Absent => Outcome::Absent,
         // Foreign: this run never won the lock, or a later build adopted it after this run died (AdoptDead).
@@ -935,6 +990,7 @@ fn finish_cleanup(
     receipt.device = Some(super::device_identity(&record));
     receipt.build = record.build.clone();
     receipt.build_lock = record.build_lock.clone();
+    receipt.build_lock_waits = record.build_lock_waits.clone();
     receipt.core_cleanup = record.resources.core_cleanup.clone();
     receipt.fresh_install = record.resources.fresh_install.clone();
     receipt.lane = record.resources.lane.clone();
@@ -2385,6 +2441,7 @@ pub(crate) fn producers_quiescent(outcomes: &[(String, Outcome)]) -> bool {
             matches!(
                 name.as_str(),
                 "build_process"
+                    | "build_slot"
                     | "core"
                     | "metro"
                     | "recorder"
@@ -2717,6 +2774,16 @@ pub(crate) fn cleanup_process_group(
     }
 }
 
+// The log leg of a borrowed simulator whose stop did not complete: only a pool member's store is QaReN's.
+fn retained_log_outcome(pool_member: bool) -> Outcome {
+    if pool_member {
+        Outcome::Unresolved("log store retained with the simulator".into())
+    } else {
+        Outcome::Kept
+    }
+}
+
+// The simulator outcome and its system log outcome; a pool member's store goes only after a proven Shutdown.
 pub(crate) fn cleanup_borrowed_ios(
     runner: &mut dyn Runner,
     record: &mut RunRecord,
@@ -2724,29 +2791,130 @@ pub(crate) fn cleanup_borrowed_ios(
     outcomes: &[(String, Outcome)],
     external_owner_alive: bool,
     runtime_context: Option<(&Path, &Path)>,
-) -> Outcome {
+) -> (Outcome, Option<Outcome>) {
     let mut cleanup_runner = crate::exec::CleanupRunner(runner);
     let runner: &mut dyn Runner = &mut cleanup_runner;
+    let pool_member = record.resources.pool_member;
     match record.resources.borrowed_ios_stop() {
-        crate::runrecord::BorrowedIosStop::NotArmed => return Outcome::Kept,
-        crate::runrecord::BorrowedIosStop::Completed => return Outcome::Absent,
+        // An unarmed pool member was never booted by this run, and its claim already removed the store.
+        crate::runrecord::BorrowedIosStop::NotArmed => return (Outcome::Kept, Some(Outcome::Kept)),
+        crate::runrecord::BorrowedIosStop::Completed => {
+            let log = if pool_member {
+                Outcome::Absent
+            } else {
+                Outcome::Kept
+            };
+            return (Outcome::Absent, Some(log));
+        }
         crate::runrecord::BorrowedIosStop::Pending => {}
     }
+    let (sim, outcome) = match shut_down_borrowed_ios(
+        runner,
+        record,
+        outcomes,
+        external_owner_alive,
+        runtime_context,
+    ) {
+        Ok(done) => done,
+        Err(outcome) => return (outcome, Some(retained_log_outcome(pool_member))),
+    };
+    let log = if pool_member {
+        let retained = || Some(Outcome::Unresolved("log store retained".into()));
+        let list = runner.run(&ios::list_devices_spec());
+        if !list.ok()
+            || !ios::parse_selected_sim(&list.stdout, &sim.udid)
+                .is_some_and(|s| s.state == ios::SimState::Shutdown)
+        {
+            return (
+                Outcome::Unresolved(
+                    "simulator not proven Shutdown before log store removal; simulator retained"
+                        .into(),
+                ),
+                retained(),
+            );
+        }
+        let Some(data_path) = ios::parse_sim_data_path(&list.stdout, &sim.udid) else {
+            return (
+                Outcome::Unresolved(
+                    "simctl list did not name the simulator's data path; log store retained"
+                        .into(),
+                ),
+                retained(),
+            );
+        };
+        let log = remove_simulator_log_store(&data_path, &sim.udid);
+        // The stop stays pending, so the next cleanup returns through AlreadyShutdown and retries.
+        if !matches!(log, Outcome::Removed | Outcome::Absent) {
+            return (
+                Outcome::Unresolved(
+                    "simulator shut down but its log store was not removed; stop stays pending"
+                        .into(),
+                ),
+                Some(log),
+            );
+        }
+        log
+    } else {
+        Outcome::Kept
+    };
+    let prev = record.resources.borrowed_ios_stop();
+    if record
+        .resources
+        .complete_borrowed_ios_stop(&sim.udid)
+        .is_err()
+    {
+        return (
+            Outcome::Unresolved(
+                "simulator stop completion transition is invalid; simulator stop state retained"
+                    .into(),
+            ),
+            Some(log),
+        );
+    }
+    if let Err(failure) = record.save(runs_root) {
+        record.resources.revert_borrowed_ios_stop(prev);
+        return (
+            Outcome::Unresolved(format!(
+                "simulator stop completed but the run record could not be persisted: {}",
+                failure.detail
+            )),
+            Some(log),
+        );
+    }
+    (outcome, Some(log))
+}
+
+// Every guard, then the proven shutdown; Err is the simulator outcome when the stop cannot proceed.
+fn shut_down_borrowed_ios(
+    runner: &mut dyn Runner,
+    record: &RunRecord,
+    outcomes: &[(String, Outcome)],
+    external_owner_alive: bool,
+    runtime_context: Option<(&Path, &Path)>,
+) -> Result<(crate::runrecord::IosSimResource, Outcome), Outcome> {
     if external_owner_alive {
-        return Outcome::Refused("the run's qaren process is alive or unproven gone".into());
+        return Err(Outcome::Refused(
+            "the run's qaren process is alive or unproven gone".into(),
+        ));
     }
     if !record.holds_device_lease() {
-        return Outcome::Refused("the device lease is not held by this run".into());
+        return Err(Outcome::Refused(
+            "the device lease is not held by this run".into(),
+        ));
     }
     if !record.resources.can_release_build_ownership() {
-        return Outcome::Unresolved("build process cleanup is unproven; simulator retained".into());
+        return Err(Outcome::Unresolved(
+            "build process cleanup is unproven; simulator retained".into(),
+        ));
     }
     if !producers_quiescent(outcomes)
         || record.resources.core.is_some()
         || !record.resources.runner_drivers.is_empty()
         || record.resources.recorder.is_some()
     {
-        return Outcome::Unresolved("producer cleanup is unproven; simulator retained".into());
+        return Err(Outcome::Unresolved(
+            "producer cleanup is unproven; simulator retained".into(),
+        ));
     }
     let Some(sim) = record
         .resources
@@ -2754,9 +2922,9 @@ pub(crate) fn cleanup_borrowed_ios(
         .clone()
         .filter(crate::runrecord::Resources::ios_simulator_canonical)
     else {
-        return Outcome::Refused(
+        return Err(Outcome::Refused(
             "recorded simulator resource is missing or lacks canonical identity".into(),
-        );
+        ));
     };
     if record
         .scenario
@@ -2764,15 +2932,15 @@ pub(crate) fn cleanup_borrowed_ios(
         .as_ref()
         .is_some_and(|spec| spec.device_type != sim.device_type || spec.runtime != sim.runtime)
     {
-        return Outcome::Refused(
+        return Err(Outcome::Refused(
             "recorded simulator resource does not match scenario runtime or device type".into(),
-        );
+        ));
     }
     if !record.candidate.project_root.is_dir() {
-        return Outcome::Unresolved(
+        return Err(Outcome::Unresolved(
             "candidate working directory is unavailable for strict foreign-driver admission; simulator retained"
                 .into(),
-        );
+        ));
     }
     let default_ctx;
     let resolved_ctx = match runtime_context {
@@ -2788,10 +2956,10 @@ pub(crate) fn cleanup_borrowed_ios(
     let Some((node, runtime_dir)) =
         resolved_ctx.filter(|(n, r)| !n.as_os_str().is_empty() && !r.as_os_str().is_empty())
     else {
-        return Outcome::Unresolved(
+        return Err(Outcome::Unresolved(
             "CLI runtime context is unavailable for strict foreign-driver admission; simulator retained"
                 .into(),
-        );
+        ));
     };
     if let Err(failure) = crate::core::fresh_install_admission(
         runner,
@@ -2802,10 +2970,10 @@ pub(crate) fn cleanup_borrowed_ios(
         None,
         None,
     ) {
-        return Outcome::Unresolved(format!(
+        return Err(Outcome::Unresolved(format!(
             "strict foreign-driver admission did not clear simulator stop: {}",
             failure.detail
-        ));
+        )));
     }
     let outcome = match ios::shutdown_selected_sim(
         runner,
@@ -2831,26 +2999,27 @@ pub(crate) fn cleanup_borrowed_ios(
         ),
     };
     if !matches!(outcome, Outcome::Removed | Outcome::Absent) {
-        return outcome;
+        return Err(outcome);
     }
-    let prev = record.resources.borrowed_ios_stop();
-    if record
-        .resources
-        .complete_borrowed_ios_stop(&sim.udid)
-        .is_err()
-    {
-        return Outcome::Unresolved(
-            "simulator stop completion transition is invalid; simulator stop state retained".into(),
-        );
+    Ok((sim, outcome))
+}
+
+// File system only: the system log store under one simulator's checked data directory.
+pub(crate) fn remove_simulator_log_store(data_path: &Path, udid: &str) -> Outcome {
+    let store = match ios::log_store_path(data_path, udid) {
+        Ok(store) => store,
+        Err(reason) => {
+            return Outcome::Refused(format!(
+                "simulator data path is not this simulator's data directory ({reason}); log store retained"
+            ))
+        }
+    };
+    // remove_dir_all unlinks a symlink inside the store and never follows it.
+    match std::fs::remove_dir_all(&store) {
+        Ok(()) => Outcome::Removed,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Outcome::Absent,
+        Err(e) => Outcome::Unresolved(format!("simulator log store could not be removed: {e}")),
     }
-    if let Err(failure) = record.save(runs_root) {
-        record.resources.revert_borrowed_ios_stop(prev);
-        return Outcome::Unresolved(format!(
-            "simulator stop completed but the run record could not be persisted: {}",
-            failure.detail
-        ));
-    }
-    outcome
 }
 
 fn cleanup_simulator(
@@ -2903,18 +3072,7 @@ fn cleanup_simulator(
             return Outcome::Unresolved(format!("simctl shutdown failed: {}", shutdown.summary()));
         }
     }
-    let data_path = serde_json::from_str::<serde_json::Value>(&list.stdout)
-        .ok()
-        .and_then(|list| {
-            list["devices"].as_object().and_then(|devices| {
-                devices
-                    .values()
-                    .filter_map(|v| v.as_array())
-                    .flatten()
-                    .find(|device| device["udid"].as_str() == Some(&resolved_udid))
-                    .and_then(|device| device["dataPath"].as_str().map(std::path::PathBuf::from))
-            })
-        });
+    let data_path = ios::parse_sim_data_path(&list.stdout, &resolved_udid);
     let bytes = data_path
         .as_deref()
         .filter(|path| path.is_absolute())
@@ -3191,5 +3349,99 @@ mod integrity_tests {
             assert_eq!(outcome.render(), "removed (reclaimed 12288 bytes)");
             assert_eq!(runner.remaining(), 0);
         }
+    }
+
+    const LOG_UDID: &str = "1DC408C4-51DA-4C4F-ACA1-39881C916FDD";
+
+    fn log_fixture(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "qaren-log-removal-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let data = root.join("CoreSimulator/Devices").join(LOG_UDID).join("data");
+        for (file, body) in [
+            ("var/db/diagnostics/Persist/0.tracev3", "dummy-trace"),
+            ("var/db/diagnostics/version.plist", "dummy-version"),
+            ("var/db/uuidtext/00/x", "dummy-uuidtext"),
+            ("Library/Preferences/Logging/x.plist", "dummy-pref"),
+        ] {
+            let path = data.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        }
+        (root, data)
+    }
+
+    #[test]
+    fn simulator_log_store_removal_touches_only_the_checked_store() {
+        let (root, data) = log_fixture("store");
+        assert_eq!(remove_simulator_log_store(&data, LOG_UDID), Outcome::Removed);
+        assert!(!data.join("var/db/diagnostics").exists());
+        assert!(data.join("var/db/uuidtext/00/x").is_file());
+        assert!(data.join("Library/Preferences/Logging/x.plist").is_file());
+        assert_eq!(remove_simulator_log_store(&data, LOG_UDID), Outcome::Absent);
+        std::fs::remove_dir_all(data.join("var/db")).unwrap();
+        assert_eq!(remove_simulator_log_store(&data, LOG_UDID), Outcome::Absent);
+
+        let elsewhere = root.join("elsewhere/data");
+        std::fs::create_dir_all(elsewhere.join("var/db/diagnostics")).unwrap();
+        for (path, udid) in [
+            (std::path::Path::new("CoreSimulator/Devices/x/data"), LOG_UDID),
+            (elsewhere.as_path(), LOG_UDID),
+            (data.as_path(), "76709EFC-0104-4A66-8908-F4F85A76F025"),
+        ] {
+            let outcome = remove_simulator_log_store(path, udid);
+            assert!(
+                matches!(&outcome, Outcome::Refused(r) if r.starts_with("simulator data path is not this simulator's data directory (") && r.ends_with("); log store retained")),
+                "{}: {outcome:?}",
+                path.display()
+            );
+        }
+        assert!(elsewhere.join("var/db/diagnostics").is_dir());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn simulator_log_store_removal_never_follows_a_link() {
+        let (root, data) = log_fixture("links");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(outside.join("diagnostics")).unwrap();
+        std::fs::write(outside.join("sentinel"), "dummy").unwrap();
+        std::fs::remove_dir_all(data.join("var/db")).unwrap();
+        std::os::unix::fs::symlink(&outside, data.join("var/db")).unwrap();
+        assert!(matches!(
+            remove_simulator_log_store(&data, LOG_UDID),
+            Outcome::Refused(_)
+        ));
+        assert!(outside.join("sentinel").is_file());
+        assert!(outside.join("diagnostics").is_dir());
+        std::fs::remove_dir_all(&root).unwrap();
+
+        let (root, data) = log_fixture("inner");
+        let target = root.join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("sentinel"), "dummy").unwrap();
+        std::os::unix::fs::symlink(&target, data.join("var/db/diagnostics/Persist/link")).unwrap();
+        assert_eq!(remove_simulator_log_store(&data, LOG_UDID), Outcome::Removed);
+        assert!(target.join("sentinel").is_file());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn simulator_log_store_that_cannot_be_removed_is_unresolved() {
+        let (root, data) = log_fixture("file");
+        std::fs::remove_dir_all(data.join("var/db/diagnostics")).unwrap();
+        std::fs::write(data.join("var/db/diagnostics"), "dummy").unwrap();
+        let outcome = remove_simulator_log_store(&data, LOG_UDID);
+        assert!(
+            matches!(&outcome, Outcome::Unresolved(r) if r.starts_with("simulator log store could not be removed: ")),
+            "{outcome:?}"
+        );
+        assert!(data.join("var/db/diagnostics").is_file());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

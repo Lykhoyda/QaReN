@@ -88,8 +88,11 @@ export function assertCheck(
     !removedOrAbsent(r.cleanup.metro) ||
     !removedOrAbsent(r.cleanup.core) ||
     r.cleanup.simulator !== 'kept' ||
+    // check borrows the simulator, so its system log store is kept, never removed.
+    r.cleanup.simulator_log !== 'kept' ||
     Object.entries(r.cleanup).some(
-      ([name, value]) => name !== 'simulator' && !removedOrAbsent(value),
+      ([name, value]) =>
+        name !== 'simulator' && name !== 'simulator_log' && !removedOrAbsent(value),
     ) ||
     record?.schema !== 'qaren-run/1' ||
     record.run_id !== r.run_id ||
