@@ -1,7 +1,7 @@
 import { hostPath } from './host-association.js';
 import type { Target } from './plan.js';
 import { MASK, type ObservedPrivacy } from './privacy.js';
-import type { Screen } from './screen.js';
+import { associatedHostOf, semanticDisabled, type Element, type Screen } from './screen.js';
 import { MISS_TEXT } from './target-miss.js';
 
 type Rect = { x: number; y: number; width: number; height: number };
@@ -68,7 +68,47 @@ export function hiddenFromAccessibility(
   };
 }
 
+// Layout sums such as 161.66666793823242 + 90 can differ from a child's edge in the last bits.
+const EDGE = 0.01;
+
+const within = (inner: Rect, outer: Rect) =>
+  inner.x >= outer.x - EDGE &&
+  inner.y >= outer.y - EDGE &&
+  inner.x + inner.width <= outer.x + outer.width + EDGE &&
+  inner.y + inner.height <= outer.y + outer.height + EDGE;
+
+// The native button a quoted Tap may press for a hidden text, only when this one read proves every link.
+export function hiddenTextButton(target: Target, screen: Screen): Element | undefined {
+  const found = hiddenFromAccessibility(target, screen, 'exact');
+  const button = found?.hosts.length === 1 ? found.button : undefined;
+  const evidence = screen.reactHostEvidence;
+  if (!found || !button?.testID || !evidence?.typography) return;
+  // Hidden hosts count too: a repeated test id names no single button.
+  if (evidence.hosts.filter((host) => host.testID === button.testID).length !== 1) return;
+  const associated = screen.elements.filter((e) => associatedHostOf(e) === button.host);
+  const [element] = associated;
+  if (
+    associated.length !== 1 ||
+    element.ref.startsWith('react:') ||
+    element.kind !== 'button' ||
+    !element.hittable ||
+    element.offscreen ||
+    semanticDisabled(element)
+  )
+    return;
+  // Both rects are React's, in window points; a native frame lives in another space.
+  const text = evidence.typography.nodes[found.hosts[0]]?.rect;
+  return text && button.rect && within(text, button.rect) ? element : undefined;
+}
+
 const point = (n: number) => String(Math.round(n * 10) / 10);
+
+// A button's test id for output, quoted; as in failure.screen, one holding any private value is masked whole.
+export function buttonId(testID: string, privacy: ObservedPrivacy): string {
+  return privacy.redactIdentifier(testID) === testID
+    ? `"${testID.slice(0, MISS_TEXT).replace(/[\uD800-\uDFFF]/gu, '�')}"`
+    : MASK;
+}
 
 // The failure clause for a quoted target only hidden text carries; it holds no app text but the button's id.
 export function hiddenTextClause(
@@ -91,13 +131,7 @@ export function hiddenTextClause(
     return single
       ? `; ${literal} exists only inside a view the app hides from accessibility, so no element carries it`
       : `; ${lead}, so no element carries it`;
-  // As in failure.screen, an identifier holding any private value is masked whole.
-  const id =
-    button.testID === undefined
-      ? undefined
-      : privacy.redactIdentifier(button.testID) === button.testID
-        ? `"${shown(button.testID)}"`
-        : MASK;
+  const id = button.testID === undefined ? undefined : buttonId(button.testID, privacy);
   const inside = `; ${lead}${single ? '' : ','} inside a button that hides its children from accessibility`;
   const at = button.rect
     ? ` (the button at ${[button.rect.x, button.rect.y, button.rect.width, button.rect.height].map(point).join(',')}${id ? `, testID ${id}` : ''})`

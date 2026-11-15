@@ -135,7 +135,8 @@ test('H4: a literal check on a hidden text, or on a part of one, names it; a Tap
 });
 
 // The promo's presence read also holds a hidden text "Fine print" under Home's target button.
-function promoWithHiddenText(request?: { platformPresence?: boolean }): Screen {
+// With `underClose` the text sits under the promo's own Close (host 6, testID qa-promo-close).
+function promoWithHiddenText(request?: { platformPresence?: boolean }, underClose = false): Screen {
   const screen = modalOverHome({ ordinary: !request?.platformPresence });
   const evidence = screen.reactHostEvidence!;
   const typography = evidence.typography!;
@@ -154,10 +155,10 @@ function promoWithHiddenText(request?: { platformPresence?: boolean }): Screen {
           ...typography.nodes,
           {
             hostIndex: index,
-            parentHostIndex: 3,
+            parentHostIndex: underClose ? 6 : 3,
             rootIndex: 0,
             hostType: 'RCTText',
-            rect: { x: 30, y: 210, width: 100, height: 20 },
+            rect: { x: 30, y: underClose ? 790 : 210, width: 100, height: 20 },
             text: {
               kind: 'block',
               content: 'Fine print',
@@ -178,8 +179,6 @@ for (const line of ['1. Tap "Fine print"', '✓ "Fine print"']) {
       () => (promoUp ? promoWithHiddenText() : homeAfterPromo()),
       () => (promoUp ? promoWithHiddenText({ platformPresence: true }) : homeAfterPromo()),
     );
-    const rows: Parameters<WalkerDeps['row']>[0][] = [];
-    f.deps.row = (row) => rows.push(row);
     f.deps.press = async (ref) => {
       f.actions.push(`press ${ref}`);
       if (ref === '@close') promoUp = false;
@@ -189,7 +188,10 @@ for (const line of ['1. Tap "Fine print"', '✓ "Fine print"']) {
     assert.equal(outcome.block.outcome, 'fail');
     assert.deepEqual(f.actions, ['press @close']);
     assert.doesNotMatch(seen, /hides|hidden from accessibility/);
-    for (const row of rows)
+    assert.ok(
+      outcome.rows.some((row) => /dismissed an app screen with Close/.test(row.reason ?? '')),
+    );
+    for (const row of outcome.rows)
       assert.doesNotMatch(row.reason ?? '', /hides|hidden from accessibility/);
     assert.notEqual(outcome.failure?.suggestion, ADVICE);
   });
@@ -287,4 +289,215 @@ test("H5: a visible disabled element named by the target keeps today's text desp
   const { reason, outcome } = await walk('1. Tap "Charlie plan"', f.deps);
   assert.equal(outcome.failure?.subreason, 'present-but-unavailable');
   assert.doesNotMatch(reason, /hides its children|hidden from accessibility/);
+});
+
+// Slice 2: a Tap on Bravo's hidden text taps Bravo's own button, qa-hidden-card-b (@e12 in ordinary reads).
+const BRAVO_PASS =
+  'resolved through text hidden from accessibility; tapped its button "qa-hidden-card-b"';
+const BRAVO_CLAUSE =
+  '; "Bravo plan" is inside a button that hides its children from accessibility and has no accessibilityLabel (the button at 14,262,374,90, testID "qa-hidden-card-b"), so no element carries it. Give the button an accessibilityLabel, or target "qa-hidden-card-b"';
+const NO_CHANGE =
+  '; its button "qa-hidden-card-b" was tapped once through that text and the tap showed no change';
+
+function withResult(screen: Screen, result: string): Screen {
+  const swap = (text: string) => (text === 'Result: none' ? result : text);
+  return {
+    ...screen,
+    elements: screen.elements.map((e) =>
+      e.label === 'Result: none' ? { ...e, label: result } : e,
+    ),
+    visibleText: screen.visibleText.map(swap),
+    ...(screen.paintedText ? { paintedText: screen.paintedText.map(swap) } : {}),
+  };
+}
+
+type Act = Awaited<ReturnType<WalkerDeps['press']>>;
+const executed: Act = { ok: true, proven: false, executed: true };
+const refused = (error: string): Act => ({
+  ok: false,
+  proven: false,
+  executed: false,
+  mutation: 'none',
+  error,
+});
+
+// The card screen; a tap the runner executes on Bravo changes "Result: none" when `changes` is set.
+function bravo(
+  options: {
+    changes?: boolean;
+    acts?: Act[];
+    ordinary?: (tapped: boolean, presenceSeen: boolean) => Screen | undefined;
+    presence?: (tapped: boolean) => Screen | undefined;
+  } = {},
+) {
+  const ordinary = hiddenCard('p1-obs21-ordinary');
+  const presence = hiddenCard('p5-obs22-presence');
+  let tapped = false;
+  let presenceSeen = false;
+  const shown = (screen: Screen) =>
+    tapped && options.changes ? withResult(screen, 'Result: B') : screen;
+  const f = device(
+    () => options.ordinary?.(tapped, presenceSeen) ?? shown(ordinary),
+    () => {
+      presenceSeen = true;
+      return options.presence?.(tapped) ?? shown(presence);
+    },
+  );
+  const acts = [...(options.acts ?? [])];
+  const handoffs: string[] = [];
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    const act = ref === '@e12' ? (acts.shift() ?? executed) : executed;
+    if (ref === '@e12') handoffs.push(act.mutation === 'none' ? 'refused' : 'executed');
+    if (ref === '@e12' && act.mutation !== 'none') tapped = true;
+    return act;
+  };
+  const rows: Parameters<WalkerDeps['row']>[0][] = [];
+  f.deps.row = (row) => rows.push(row);
+  return { ...f, handoffs, rows };
+}
+
+test('B3: a Tap on the hidden text taps the button that has a test id, once, and passes', async () => {
+  const f = bravo({ changes: true });
+  const { outcome } = await walk('1. Tap "Bravo plan"', f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(f.actions, ['press @e12']);
+  const pass = outcome.rows.at(-1)!;
+  assert.equal(pass.outcome, 'pass');
+  assert.equal(pass.attempt, 1);
+  assert.equal(pass.resolvedBy, 'exact');
+  assert.equal(pass.reason, BRAVO_PASS);
+  assert.deepEqual(pass.selector, { id: 'qa-hidden-card-b' });
+  assert.deepEqual(f.modes, ['ordinary', 'presence', 'ordinary', 'ordinary']);
+});
+
+test('B4: a bound press that no longer resolves ends the step without recovery or a second fallback', async () => {
+  const card = hiddenCard('p1-obs21-ordinary');
+  const withoutBravo = {
+    ...card,
+    elements: card.elements.filter((e) => e.testID !== 'qa-hidden-card-b'),
+  };
+  const f = bravo({ ordinary: (_, presenceSeen) => (presenceSeen ? withoutBravo : undefined) });
+  const { outcome, reason } = await walk('1. Tap "Bravo plan"', f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(
+    reason,
+    'TARGET_NOT_FOUND: "Bravo plan" is text hidden from accessibility; its button "qa-hidden-card-b" no longer resolved uniquely to an eligible button on the next read, so nothing was tapped',
+  );
+  assert.deepEqual(f.actions, []);
+  assert.deepEqual(f.modes, ['ordinary', 'presence', 'ordinary']);
+});
+
+test('B4: a press the runner refuses each time is never counted as a tap', async () => {
+  const f = bravo({
+    acts: [refused('RUNNER_REFUSED: test'), refused('RUNNER_REFUSED: test')],
+  });
+  const { outcome, reason } = await walk('1. Tap "Bravo plan"', f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.deepEqual(f.handoffs, ['refused', 'refused']);
+  assert.match(
+    reason,
+    /; its button "qa-hidden-card-b" was not tapped: the runner refused the press: RUNNER_REFUSED: test/,
+  );
+  assert.doesNotMatch(reason, /was tapped once/);
+  assert.ok(f.modes.length <= 8, f.modes.join());
+});
+
+for (const [name, first] of [
+  ['FOCUS_TARGET_OCCLUDED', refused('FOCUS_TARGET_OCCLUDED: covered')],
+  ['KEYBOARD_DISMISS_FAILED', refused('KEYBOARD_DISMISS_FAILED: kept')],
+] as const) {
+  test(`B4: after a ${name} refusal the existing once-only retry may hand over again, and one executed tap ends it`, async () => {
+    const f = bravo({ acts: [first, executed] });
+    f.deps.dismissKeyboard = async () => 'js';
+    const { outcome, reason } = await walk('1. Tap "Bravo plan"', f.deps);
+    assert.equal(outcome.block.outcome, 'fail');
+    assert.deepEqual(f.handoffs, ['refused', 'executed']);
+    assert.ok(reason.includes(NO_CHANGE), reason);
+  });
+}
+
+test('B4: an executed tap that changes nothing is never repeated by the inner retry', async () => {
+  const f = bravo();
+  const { outcome, reason } = await walk('1. Tap "Bravo plan"', f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.deepEqual(f.actions, ['press @e12']);
+  assert.match(reason, /^TARGET_NOT_FOUND: /);
+  assert.ok(reason.includes(BRAVO_CLAUSE), reason);
+  assert.ok(reason.endsWith(NO_CHANGE), reason);
+  assert.ok(f.modes.length <= 8, f.modes.join());
+});
+
+test('B4: an executed tap that changes nothing is never repeated after an outer recovery pass', async () => {
+  let promoUp = false;
+  const f = bravo({
+    presence: (tapped) => {
+      if (tapped && promoUp === false) promoUp = true;
+      return promoUp ? modalOverHome() : undefined;
+    },
+    ordinary: () => (promoUp ? modalOverHome({ ordinary: true }) : undefined),
+  });
+  const press = f.deps.press;
+  f.deps.press = async (ref, context) => {
+    if (ref === '@close') {
+      f.actions.push(`press ${ref}`);
+      promoUp = false;
+      return executed;
+    }
+    return press(ref, context);
+  };
+  const { outcome } = await walk('1. Tap "Bravo plan"', f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(f.actions.filter((a) => a === 'press @e12').length, 1, f.actions.join());
+  assert.ok(f.actions.includes('press @close'), f.actions.join());
+});
+
+test('B4: a Wait and a literal check on the hidden text fail with the cause and never tap', async () => {
+  const waited = bravo();
+  const wait = await walk('1. Wait for "Bravo plan" to appear', waited.deps);
+  assert.ok(wait.reason.endsWith(`; target visibility: absent${BRAVO_CLAUSE}`), wait.reason);
+  const checked = bravo();
+  const check = await walk('✓ "Bravo plan"', checked.deps);
+  assert.ok(check.reason.endsWith(BRAVO_CLAUSE), check.reason);
+  assert.deepEqual([...waited.actions, ...checked.actions], []);
+});
+
+test("B4: Android and a described Tap keep today's failure", async () => {
+  const android = bravo();
+  android.deps.platform = 'android';
+  const tap = await walk('1. Tap "Bravo plan"', android.deps);
+  assert.equal(
+    tap.reason,
+    'TARGET_NOT_FOUND: no eligible element labelled or identified "Bravo plan" is on screen',
+  );
+  assert.deepEqual(android.actions, []);
+  const described = bravo();
+  const outcome = await walk('1. Tap the Bravo card', described.deps);
+  assert.equal(outcome.outcome.block.outcome, 'fail');
+  assert.deepEqual(described.actions, []);
+  assert.doesNotMatch(outcome.seen, /hidden from accessibility/);
+});
+
+test('B5: the recovery dismisses a surface before any hidden-text button is pressed', async () => {
+  let promoUp = true;
+  const f = device(
+    () => (promoUp ? promoWithHiddenText({}, true) : homeAfterPromo()),
+    () => (promoUp ? promoWithHiddenText({ platformPresence: true }, true) : homeAfterPromo()),
+  );
+  const rows: Parameters<WalkerDeps['row']>[0][] = [];
+  f.deps.row = (row) => rows.push(row);
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    if (ref === '@close') promoUp = false;
+    return executed;
+  };
+  const { outcome } = await walk('1. Tap "Fine print"', f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.deepEqual(f.actions, ['press @close']);
+  const reasons = outcome.rows.map((row) => row.reason ?? '');
+  assert.ok(
+    reasons.some((reason) => /dismissed an app screen with Close/.test(reason)),
+    reasons.join(' | '),
+  );
+  for (const reason of reasons) assert.doesNotMatch(reason, /resolved through text hidden/);
 });
