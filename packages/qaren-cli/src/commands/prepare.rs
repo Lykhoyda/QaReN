@@ -4752,7 +4752,7 @@ fn build_jobs(ctx: &mut Ctx) -> (Option<std::num::NonZeroU32>, String) {
     if let Some(jobs) = ctx.record.scenario.build.jobs {
         return (Some(jobs), format!("{jobs} (build.jobs)"));
     }
-    let host = crate::host_capacity::sample(ctx.runner, std::env::consts::OS);
+    let host = crate::host_capacity::build_sample(ctx.runner, std::env::consts::OS);
     match (
         crate::host_capacity::build_jobs(host.cores, host.total_bytes),
         host.cores,
@@ -5147,23 +5147,48 @@ fn build_ios(ctx: &mut Ctx) -> Result<(), Failure> {
     let output = RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id).join("ios-build");
     std::fs::create_dir(&output)
         .map_err(|_| build_failure(ctx, "cannot exclusively create iOS build output directory"))?;
-    let (jobs, applied) = if ctx.record.scenario.build.ios_workspace.is_some() {
-        build_jobs(ctx)
-    } else {
-        (
-            None,
-            "uncapped (expo run:ios starts xcodebuild itself)".to_string(),
-        )
-    };
-    let build = ios::build_spec(
+    let workspace = ctx.record.scenario.build.ios_workspace.clone();
+    let (jobs, mut applied) = build_jobs(ctx);
+    let arch_all = ctx.record.scenario.build.arch == Some(crate::scenario::BuildArch::All);
+    let user_env = ctx.runner.env_names();
+    let arm64 = ios::arm64_only(
+        arch_all,
+        |name| user_env.iter().any(|set| set == name),
+        || crate::host_capacity::apple_silicon_answer(ctx.runner),
+    );
+    let mut build = ios::build_spec(
         &project_root,
         &output,
         build_seconds_left(ctx),
-        ctx.record.scenario.build.ios_workspace.as_ref(),
+        workspace.as_ref(),
         jobs,
+        arm64.is_ok(),
     );
-    note_build_policy(ctx, &build.label, &applied);
-    run_finite_build(ctx, &build)?;
+    let mut wrapped = false;
+    if workspace.is_none() && jobs.is_some() {
+        let path = ctx.runner.env_var("PATH");
+        match ios::cap_expo_jobs(&mut build, &output, path.as_deref(), jobs) {
+            Ok(true) => wrapped = true,
+            Ok(false) => applied = "uncapped (xcodebuild not found on PATH)".into(),
+            Err(error) => {
+                applied = format!("uncapped (the xcodebuild wrapper could not be written: {error})")
+            }
+        }
+    }
+    let built = run_finite_build(ctx, &build);
+    if wrapped {
+        applied = ios::expo_jobs_applied(&output, &applied);
+        if let Err(error) = std::fs::remove_dir_all(output.join(ios::JOBS_WRAPPER_DIR)) {
+            ctx.notes
+                .push(("xcodebuild_wrapper".into(), format!("not removed: {error}")));
+        }
+    }
+    let arch = match arm64 {
+        Ok(()) => "arm64".to_string(),
+        Err(why) => format!("all ({why})"),
+    };
+    note_build_policy(ctx, &build.label, &format!("{applied}; arch {arch}"));
+    built?;
     ensure_build_budget(ctx)?;
     if ctx.record.scenario.build.ios_workspace.is_some() {
         let built =
@@ -5908,6 +5933,7 @@ fn dry_run_receipt(
                 deadlines.build_seconds,
                 scenario.build.ios_workspace.as_ref(),
                 None,
+                false,
             ));
             planned.push(ios::install_app_spec(
                 udid,

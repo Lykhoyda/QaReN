@@ -1091,6 +1091,23 @@ pub fn build_spec(
     deadline_seconds: u64,
     workspace: Option<&IosWorkspaceBuild>,
     jobs: Option<std::num::NonZeroU32>,
+    arm64_only: bool,
+) -> CmdSpec {
+    let spec = route_spec(project_root, output, deadline_seconds, workspace, jobs);
+    // An environment value, so a project's own architecture settings still win.
+    if arm64_only {
+        spec.env("EXCLUDED_ARCHS", "x86_64")
+    } else {
+        spec
+    }
+}
+
+fn route_spec(
+    project_root: &Path,
+    output: &Path,
+    deadline_seconds: u64,
+    workspace: Option<&IosWorkspaceBuild>,
+    jobs: Option<std::num::NonZeroU32>,
 ) -> CmdSpec {
     if let Some(workspace) = workspace {
         let derived_data = workspace_derived_data(output);
@@ -1150,6 +1167,107 @@ pub fn build_spec(
     .cwd(project_root)
     .env_remove("CI")
     .env("EXPO_NO_TELEMETRY", "1")
+}
+
+// Ok: a simulator build compiles arm64 only (EXCLUDED_ARCHS=x86_64); Err: why it keeps every architecture.
+pub fn arm64_only(
+    arch_all: bool,
+    user_env_has: impl Fn(&str) -> bool,
+    apple_silicon_answer: impl FnOnce() -> Option<String>,
+) -> Result<(), &'static str> {
+    if arch_all {
+        return Err("build.arch: all");
+    }
+    if ["EXCLUDED_ARCHS", "ARCHS", "ONLY_ACTIVE_ARCH"]
+        .into_iter()
+        .any(user_env_has)
+    {
+        return Err("set in the user's environment");
+    }
+    match apple_silicon_answer().as_deref().map(str::trim) {
+        Some("1") => Ok(()),
+        _ => Err("not Apple silicon"),
+    }
+}
+
+// Inside the run's build directory; removed as soon as the build command ends.
+pub const JOBS_WRAPPER_DIR: &str = ".qaren-xcodebuild";
+const JOBS_MARKER: &str = "capped";
+
+// PATH order as a lookup from `cwd` sees it: an empty or relative entry is relative to the command's directory.
+fn on_path(path: &str, cwd: &Path, name: &str) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    path.split(':')
+        .map(|dir| cwd.join(dir).join(name))
+        .find(|candidate| {
+            std::fs::metadata(candidate)
+                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        })
+}
+
+fn sh_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+// Expo starts xcodebuild by name with a fixed argument list, so the job cap
+// reaches it as an xcodebuild found first on the expo command's PATH. It caps
+// build invocations only and records each one in a marker the receipt reads.
+// False, spec unchanged: no cap, or xcodebuild does not resolve on PATH.
+pub fn cap_expo_jobs(
+    spec: &mut CmdSpec,
+    build_dir: &Path,
+    path: Option<&str>,
+    jobs: Option<std::num::NonZeroU32>,
+) -> std::io::Result<bool> {
+    use std::io::Write;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let (Some(jobs), Some(path), Some(cwd)) = (jobs, path, spec.cwd.clone()) else {
+        return Ok(false);
+    };
+    let dir = build_dir.join(JOBS_WRAPPER_DIR);
+    let (Some(real), Some(dir_text)) = (on_path(path, &cwd, "xcodebuild"), dir.to_str()) else {
+        return Ok(false);
+    };
+    let Some(real) = real.to_str().map(sh_quote) else {
+        return Ok(false);
+    };
+    let marker = sh_quote(&format!("{dir_text}/{JOBS_MARKER}"));
+    let script = format!(
+        r#"#!/bin/sh
+# Written by QaReN for one expo run:ios build: caps xcodebuild's concurrent build operations.
+build=0
+for arg in "$@"; do
+  case "$arg" in
+    -show*|-list*|-version*|-json*|-jobs*) build=0; break ;;
+    -destination) build=1 ;;
+  esac
+done
+if [ "$build" = 1 ]; then
+  printf 'jobs {jobs}\n' >> {marker}
+  exec {real} -jobs {jobs} "$@"
+fi
+exec {real} "$@"
+"#
+    );
+    std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o700)
+        .open(dir.join("xcodebuild"))?
+        .write_all(script.as_bytes())?;
+    *spec = spec.clone().env("PATH", &format!("{dir_text}:{path}"));
+    Ok(true)
+}
+
+// What the receipt may claim for a wrapped build: the cap only when the wrapper ran a build invocation.
+pub fn expo_jobs_applied(build_dir: &Path, applied: &str) -> String {
+    let marker = build_dir.join(JOBS_WRAPPER_DIR).join(JOBS_MARKER);
+    if std::fs::read_to_string(marker).is_ok_and(|text| !text.trim().is_empty()) {
+        applied.to_string()
+    } else {
+        "uncapped (the xcodebuild wrapper did not run)".to_string()
+    }
 }
 
 pub fn built_app(output: &Path) -> Result<std::path::PathBuf, String> {

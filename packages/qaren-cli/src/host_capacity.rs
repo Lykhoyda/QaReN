@@ -145,9 +145,18 @@ pub fn build_jobs(cores: Option<usize>, total_bytes: Option<u64>) -> Option<std:
     std::num::NonZeroU32::new(u32::try_from(jobs).unwrap_or(u32::MAX))
 }
 
-fn probe(runner: &mut dyn Runner, program: &str, args: &[&str]) -> CmdOutput {
+// The machine's own answer, not the architecture this binary was built for: an x64 qaren can run on Apple silicon.
+pub fn apple_silicon_answer(runner: &mut dyn Runner) -> Option<String> {
+    let output = probe(runner, BUILD_PROBE, "sysctl", &["-n", "hw.optional.arm64"]);
+    successful(&output).map(str::to_string)
+}
+
+// Build-time reads keep their own label: `host-sample` brackets the run only.
+pub const BUILD_PROBE: &str = "build-host";
+
+fn probe(runner: &mut dyn Runner, label: &str, program: &str, args: &[&str]) -> CmdOutput {
     runner.run(
-        &CmdSpec::new("host-sample", program, args, 3)
+        &CmdSpec::new(label, program, args, 3)
             .cwd(Path::new("/"))
             .env("LC_ALL", "C"),
     )
@@ -236,12 +245,22 @@ fn swap_bytes(text: &str) -> Option<u64> {
 }
 
 pub fn sample(runner: &mut dyn Runner, os: &str) -> Sample {
+    sample_as(runner, os, "host-sample")
+}
+
+// The machine's size read just before a build, for its worker cap.
+pub fn build_sample(runner: &mut dyn Runner, os: &str) -> Sample {
+    sample_as(runner, os, BUILD_PROBE)
+}
+
+fn sample_as(runner: &mut dyn Runner, os: &str, label: &str) -> Sample {
     let mut sample = Sample::default();
     match os {
         "macos" => {
-            let vm = probe(runner, "vm_stat", &[]);
+            let vm = probe(runner, label, "vm_stat", &[]);
             let sys = probe(
                 runner,
+                label,
                 "sysctl",
                 &[
                     "hw.logicalcpu",
@@ -293,8 +312,8 @@ pub fn sample(runner: &mut dyn Runner, os: &str) -> Sample {
             }
         }
         "linux" => {
-            let mem = probe(runner, "cat", &["/proc/meminfo"]);
-            let cpu = probe(runner, "cat", &["/proc/loadavg", "/proc/stat"]);
+            let mem = probe(runner, label, "cat", &["/proc/meminfo"]);
+            let cpu = probe(runner, label, "cat", &["/proc/loadavg", "/proc/stat"]);
             if let Some(mem) = successful(&mem) {
                 let bytes = |key| field(mem, key).and_then(|v| v.checked_mul(1024));
                 sample.total_bytes = bytes("MemTotal").filter(|v| *v > 0);

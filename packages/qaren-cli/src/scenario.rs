@@ -144,6 +144,16 @@ pub struct BuildSpec {
     pub jobs: Option<std::num::NonZeroU32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<BuildPriority>,
+    // Unset: an iOS simulator build on Apple silicon compiles arm64 only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arch: Option<BuildArch>,
+}
+
+// `all` keeps every simulator architecture, for apps whose dependencies lack an arm64 simulator slice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BuildArch {
+    All,
 }
 
 impl BuildSpec {
@@ -226,6 +236,7 @@ impl Default for BuildSpec {
             ios_workspace: None,
             jobs: None,
             priority: None,
+            arch: None,
         }
     }
 }

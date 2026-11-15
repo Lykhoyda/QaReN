@@ -3368,6 +3368,7 @@ fn build_scenario(
                 .and_then(|ios| ios.build.clone()),
             jobs: config.build.jobs,
             priority: config.build.priority,
+            arch: config.build.arch,
             ..BuildSpec::default()
         },
         deps: DepsSpec {

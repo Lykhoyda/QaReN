@@ -5636,17 +5636,38 @@ worker cap, `max(2, min(cores × 3 / 4, (total GiB − 8) / 2))` from the
 machine's core count and memory: `-Dorg.gradle.workers.max` in `GRADLE_OPTS`
 on both Android paths, and `-jobs` on the workspace `xcodebuild` line.
 `expo run:android` also gets `-Dorg.gradle.daemon=false`; direct Gradle
-already passes `--no-daemon`. The default `expo run:ios` path is not capped:
-Expo starts `xcodebuild` itself. When the core count or memory cannot be
-read, no cap is applied; the lower priority still is. A worker setting in
-the user's own `GRADLE_OPTS` wins and the rest of their `GRADLE_OPTS` is
-kept; otherwise `build.jobs` in `.qaren/config.yaml` replaces the machine's
-number, and `build.priority: normal` drops `nice`. The receipt's `outcomes`
-record what each build got as `build_policy:<command label>`, for example
-`priority nice 10; jobs 8 (machine: 18 cores, 24 GiB)` or
-`priority nice 10; jobs uncapped (expo run:ios starts xcodebuild itself)`.
+already passes `--no-daemon`. The default `expo run:ios` path gets the same
+cap through a wrapper: Expo starts `xcodebuild` by name with a fixed argument
+list, so QaReN writes a short `sh` script named `xcodebuild` into
+`ios-build/.qaren-xcodebuild/` in the run directory and puts that directory
+first on that one command's `PATH`. For a build invocation (one with
+`-destination` and no `-show…`, `-list…`, `-version…`, `-json…` or `-jobs…`
+argument) it appends a marker line beside itself and execs the real
+`xcodebuild` (the absolute path the unchanged `PATH` resolved to) with
+`-jobs <n>`; anything else is passed through unchanged. The receipt claims the
+cap only when that marker exists, and says `uncapped` otherwise. The directory
+is removed as soon as the build command ends. When the core count or memory
+cannot be read, or `xcodebuild` does not resolve, no cap is applied; the lower
+priority still is. A worker setting in the user's own `GRADLE_OPTS` wins and
+the rest of their `GRADLE_OPTS` is kept; otherwise `build.jobs` in
+`.qaren/config.yaml` replaces the machine's number, and
+`build.priority: normal` drops `nice`.
+
+On an Apple-silicon Mac (the machine's `sysctl -n hw.optional.arm64` is `1`)
+both iOS build routes get `EXCLUDED_ARCHS=x86_64` in their environment, so the
+simulator build compiles arm64 only. An environment value is the weakest
+source, so a project's own architecture settings still win. It is left out
+when the user's environment already sets `EXCLUDED_ARCHS`, `ARCHS` or
+`ONLY_ACTIVE_ARCH`, and when `.qaren/config.yaml` has `build.arch: all`, which
+an app with an x86_64-only simulator dependency needs.
+
+The receipt's `outcomes` record what each build got as
+`build_policy:<command label>`, for example
+`priority nice 10; jobs 8 (machine: 18 cores, 24 GiB); arch arm64` or
+`priority nice 10; jobs uncapped (the xcodebuild wrapper did not run); arch all (build.arch: all)`.
 The dry-run command list shows the bare build commands. Nothing new is
 refused: a busy machine still builds, slower. `nice` does not bound memory,
+`-jobs` bounds build operations rather than compiler processes one for one,
 and whether the Gradle cap also bounds CMake and Ninja compile jobs is not
 established.
 

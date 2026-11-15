@@ -1,6 +1,7 @@
 use crate::failure::{Failure, FailureCode};
 use crate::scenario::{
-    require_launch_scheme, BuildOwner, BuildPriority, Deadlines, IosWorkspaceBuild, Platform,
+    require_launch_scheme, BuildArch, BuildOwner, BuildPriority, Deadlines, IosWorkspaceBuild,
+    Platform,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -57,6 +58,8 @@ pub struct BuildConfig {
     pub jobs: Option<std::num::NonZeroU32>,
     #[serde(default)]
     pub priority: Option<BuildPriority>,
+    #[serde(default)]
+    pub arch: Option<BuildArch>,
 }
 
 fn declared_video_policy<'de, D: serde::Deserializer<'de>>(
@@ -140,7 +143,7 @@ impl CheckConfig {
                 "config",
                 FailureCode::ScenarioInvalid,
                 format!("{} does not parse as check configuration", path.display()),
-                "fix .qaren/config.yaml (video must be strict or non-strict; keys: video, appId, packageManager, metroPort, ios, android, nodePath, devClientScheme, loginBlock, loginMarker, savePlans, proofInDescription, depsCache, registryAuthEnv, build (jobs: a positive number, priority: low or normal), deadlines)",
+                "fix .qaren/config.yaml (video must be strict or non-strict; keys: video, appId, packageManager, metroPort, ios, android, nodePath, devClientScheme, loginBlock, loginMarker, savePlans, proofInDescription, depsCache, registryAuthEnv, build (jobs: a positive number, priority: low or normal, arch: all), deadlines)",
             )
         })?;
         config.validate(path)?;

@@ -85,14 +85,18 @@ ready for Xcode.
 
 ## build
 
-By default every native build runs at lower CPU priority (`nice -n 10`), and
-builds whose command line QaReN controls get a worker cap computed from the
-machine's cores and memory. The default `expo run:ios` build is not capped.
+By default every native build runs at lower CPU priority (`nice -n 10`) and
+gets a worker cap computed from the machine's cores and memory when that can
+be read and applied; the receipt says `uncapped` when it was not. On an
+Apple-silicon Mac, QaReN also asks iOS simulator builds to leave out x86_64
+(`EXCLUDED_ARCHS=x86_64` in the build's environment); your own environment
+and the project's architecture settings still take precedence.
 
 | Key        | Type                | Default            | Meaning                                                                 |
 | ---------- | ------------------- | ------------------ | ----------------------------------------------------------------------- |
-| `jobs`     | positive integer    | from the machine   | The worker cap for Gradle and the workspace `xcodebuild` line.          |
+| `jobs`     | positive integer    | from the machine   | The worker cap for Gradle and `xcodebuild`.                             |
 | `priority` | `low` or `normal`   | `low`              | `normal` runs builds without `nice`.                                    |
+| `arch`     | `all`               | leave out x86_64 on Apple silicon | `all` turns QaReN's x86_64 exclusion off, for an app with an x86_64-only simulator dependency. |
 
 A worker setting in your own `GRADLE_OPTS` wins over `jobs`. The receipt
 records what each build got; see the

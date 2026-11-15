@@ -127,7 +127,11 @@ fn build_jobs_and_priority_load_and_refuse_values_that_cannot_apply() {
     assert_eq!(config.build.priority, Some(BuildPriority::Normal));
     let config = load(&config_yaml("build:\n  priority: low\n")).unwrap();
     assert_eq!(config.build.priority, Some(BuildPriority::Low));
+    assert_eq!(config.build.arch, None);
+    let config = load(&config_yaml("build:\n  arch: all\n")).unwrap();
+    assert_eq!(config.build.arch, Some(qaren::scenario::BuildArch::All));
     for block in [
+        "build:\n  arch: arm64\n",
         "build:\n  jobs: 0\n",
         "build:\n  jobs: -2\n",
         "build:\n  priority: high\n",

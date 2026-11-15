@@ -242,7 +242,7 @@ fn workspace_check_uses_a_gated_finite_build_and_persists_the_verified_artifact(
     assert!(!build.args.iter().any(|a| a == "-jobs"));
     assert_eq!(
         receipt.outcomes["build_policy:xcodebuild-ios"],
-        "priority nice 10; jobs uncapped (machine size unknown)"
+        "priority nice 10; jobs uncapped (machine size unknown); arch all (not Apple silicon)"
     );
     assert_eq!(mock.piped_stdin_text(0), "start\n");
     assert!(build.args.iter().any(|a| a == "Native Debug"));
@@ -308,7 +308,7 @@ fn workspace_build_honours_configured_jobs_and_normal_priority() {
     assert_eq!(build.args[jobs + 1], "3");
     assert_eq!(
         receipt.outcomes["build_policy:xcodebuild-ios"],
-        "priority normal; jobs 3 (build.jobs)"
+        "priority normal; jobs 3 (build.jobs); arch all (not Apple silicon)"
     );
 }
 
@@ -1172,7 +1172,7 @@ fn failed_spawn_retirement_save_or_interruption_retains_pending_and_both_locks()
                 assert!(receipt.cleanup["device_lease"].starts_with("unresolved"));
                 assert_eq!(
                     receipt.outcomes["build_policy:expo-run-ios"],
-                    "priority nice 10; jobs uncapped (expo run:ios starts xcodebuild itself)"
+                    "priority nice 10; jobs uncapped (machine size unknown); arch all (not Apple silicon)"
                 );
             }
         }
@@ -2675,6 +2675,72 @@ fn an_unreadable_candidate_after_the_walk_is_a_verify_refusal_whatever_the_walk_
             assert!(!text.contains(CANARY), "{label}: private value leaked");
         }
     }
+}
+
+// U3/U4 through a run: the default expo run:ios build compiles arm64 only on Apple silicon
+// and finds the job-capping xcodebuild first on its PATH; the mock never runs the wrapper,
+// so the receipt reports the cap as missing, and the wrapper leaves with the build.
+#[test]
+fn default_ios_build_narrows_to_arm64_and_routes_xcodebuild_through_the_job_cap() {
+    use std::os::unix::fs::PermissionsExt;
+    let (repo, app) = app_repo();
+    let config = app.join(".qaren/config.yaml");
+    let yaml = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(&config, format!("{yaml}build:\n  jobs: 3\n")).unwrap();
+    let bin = repo.join("xcode-bin");
+    std::fs::create_dir(&bin).unwrap();
+    std::fs::write(bin.join("xcodebuild"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(
+        bin.join("xcodebuild"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let mut mock = MockRunner::new();
+    mock.environment
+        .insert("PATH".into(), bin.to_string_lossy().into_owned());
+    script_preflight(&mut mock, &repo);
+    common::script_ios_deps(&mut mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_clean_build_plan(&mut mock);
+    mock.expect_run("hw.optional.arm64", CmdOutput::success("1\n"));
+    script_check_build_with(&mut mock, "expo run:ios", |m| {
+        m.expect_run("rev-parse HEAD", CmdOutput::success(&"b".repeat(40)));
+        m.expect_run("--porcelain", CmdOutput::success(UNTRACKED_PLAN));
+        script_fingerprint_recheck(m, "")
+    });
+    script_ready_recheck(&mut mock, "");
+    script_drift_status(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+    script_core_identity(&mut mock);
+    script_teardown(&mut mock);
+
+    let receipt = run(&mut mock, &request(&repo, &app, 30));
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    let build = mock
+        .calls
+        .iter()
+        .find(|c| c.label == "expo-run-ios")
+        .unwrap();
+    assert!(build
+        .env
+        .contains(&("EXCLUDED_ARCHS".to_string(), "x86_64".to_string())));
+    let wrapper_dir = repo
+        .join("runs")
+        .join(run_id())
+        .join("ios-build")
+        .join(qaren::adapters::ios::JOBS_WRAPPER_DIR);
+    assert!(build.env.contains(&(
+        "PATH".to_string(),
+        format!("{}:{}", wrapper_dir.display(), bin.display())
+    )));
+    assert!(!wrapper_dir.exists());
+    assert_eq!(
+        receipt.outcomes["build_policy:expo-run-ios"],
+        "priority nice 10; jobs uncapped (the xcodebuild wrapper did not run); arch arm64"
+    );
 }
 
 #[test]
