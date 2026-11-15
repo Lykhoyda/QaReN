@@ -45,8 +45,7 @@ pub fn start_spec(
         .env("NODE_OPTIONS", &options)
         .env("npm_config_node_options", &options);
     // pnpm workspace nodeOptions overrides the environment unless supplied on its command line.
-    spec.args
-        .insert(0, format!("--config.node-options={options}"));
+    spec.args.insert(0, format!("--config.node-options={options}"));
     if listen == Listen::AllPinned {
         spec = spec.env("REACT_NATIVE_PACKAGER_HOSTNAME", "127.0.0.1");
     }
