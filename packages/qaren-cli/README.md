@@ -699,11 +699,14 @@ Sampling starts no device or service and introduces no cleanup resource.
 Right after the start sample on macOS and Linux, the run reads the process list
 once (three-second limit) for the [emulator helper processes](#emulator-helper-processes) doctor
 reports, plus one package-file read per candidate helper folder. Each finding is
-listed in the receipt's `device_helpers` as its
-executable name and pid only, and `report.md` gains one line naming each with
-its CPU share, why it was reported and its `kill <pid>` command. A clean,
-unavailable or unreadable process list adds nothing and never changes the
-verdict. The run stops nothing.
+listed in the receipt's `device_helpers` array with only `name` (`netsimd` or
+`crashpad_handler`) and `pid`, and `report.md` gains one line listing all findings
+with each helper's CPU share, why it was reported and its `kill <pid>` command.
+With no findings, the receipt omits `device_helpers` and the report adds no helper
+line. An unavailable or wholly unreadable process list produces no findings;
+a partially readable list can still report helpers, with a warning that a running
+emulator may be hidden. These observations never change the verdict. The run stops
+nothing.
 
 ### Android runner provisioning
 
