@@ -14,8 +14,6 @@ pub struct HostRunner {
     // Level 0 fails the sysctl probe and 0 KiB fails the vm_stat probe.
     pub memory: Vec<(u8, u64)>,
     pub os: Option<&'static str>,
-    // Every sample, including those taken during a wait, proves no build lock is held or recorded.
-    pub lock_root: Option<std::path::PathBuf>,
     pub runs_root: Option<std::path::PathBuf>,
     // The scripted clock at each sample.
     pub sampled_at: Vec<u64>,
@@ -33,7 +31,6 @@ impl HostRunner {
             low_end_memory: false,
             memory: Vec::new(),
             os: None,
-            lock_root: None,
             runs_root: None,
             sampled_at: Vec::new(),
             probes: 0,
@@ -61,13 +58,8 @@ impl Runner for HostRunner {
         if spec.label != "host-sample" {
             return self.inner.execute(spec, interruptible);
         }
-        if let Some(Ok(dir)) = self.lock_root.as_ref().map(std::fs::read_dir) {
-            let held: Vec<_> = dir
-                .filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .filter(|name| name.starts_with("native-build"))
-                .collect();
-            assert!(held.is_empty(), "host sampled while holding {held:?}");
+        if let Some(observe) = &mut self.inner.observe {
+            observe(spec);
         }
         if let Some(Ok(dir)) = self.runs_root.as_ref().map(std::fs::read_dir) {
             for run in dir.filter_map(|e| e.ok()) {
@@ -76,8 +68,11 @@ impl Runner for HostRunner {
                     qaren::runrecord::RunRecord::load(self.runs_root.as_ref().unwrap(), &id)
                 {
                     assert!(
-                        record.resources.build_lock.is_none(),
-                        "host sampled while {id} records a build-lock intent"
+                        record.resources.build_lock.as_ref().is_none_or(|lock| {
+                            qaren::buildplan::read_holder(&lock.lock_dir)
+                                .is_none_or(|held| held.run_id != id)
+                        }),
+                        "host sampled while {id} holds the build lock"
                     );
                 }
             }

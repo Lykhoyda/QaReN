@@ -13,7 +13,6 @@ fn host(mock: MockRunner, memory: &[(u8, u64)], req: &RunRequest) -> HostRunner 
     let mut runner = HostRunner::new(mock);
     runner.os = Some("macos");
     runner.memory = memory.to_vec();
-    runner.lock_root = Some(req.lock_root.clone());
     runner.runs_root = Some(req.runs_root.clone());
     runner
 }
@@ -384,4 +383,67 @@ fn d7_a_run_that_reuses_its_build_takes_no_preflight() {
             assert!(!receipt.outcomes.contains_key("host_wait"));
         }
     }
+}
+
+#[test]
+fn newly_observed_memory_signals_cannot_disappear_to_report_recovery() {
+    for memory in [
+        vec![(0, LOW.1), CRITICAL, NO_PRESSURE, OK],
+        vec![(4, 0), LOW, NO_AVAILABLE, OK],
+    ] {
+        let (mut runner, req) = building(&memory);
+        let receipt = run(&mut runner, &req);
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+        let note = &receipt.outcomes["host_wait"];
+        assert!(note.contains("waited 15 s"), "{note}");
+        assert!(note.contains("recovered"), "{note}");
+        assert_eq!(runner.inner.remaining(), 0);
+    }
+}
+
+fn release_contended_lock_on_memory_recheck(runner: &mut HostRunner, req: &RunRequest) {
+    let lock = req.lock_root.join("native-build-ios");
+    std::fs::create_dir_all(&lock).unwrap();
+    let mut samples = 0;
+    runner.inner.observe = Some(Box::new(move |spec| {
+        if spec.label == "host-sample" && spec.program == "sysctl" {
+            samples += 1;
+            if samples == 3 {
+                std::fs::remove_dir_all(&lock).unwrap();
+            }
+        }
+    }));
+}
+
+#[test]
+fn critical_memory_after_lock_contention_refuses_without_building() {
+    let (mut runner, req) = stopping_before_the_build(&[OK, CRITICAL]);
+    release_contended_lock_on_memory_recheck(&mut runner, &req);
+    let receipt = run(&mut runner, &req);
+    assert_eq!(receipt.result, ReceiptResult::Refused, "{:?}", receipt.failure);
+    assert_eq!(receipt.failure.unwrap().code, FailureCode::HostUnderPressure);
+    assert_no_build_lock(&runner, &req);
+    assert_eq!(runner.inner.remaining(), 0);
+}
+
+#[test]
+fn memory_wait_after_lock_contention_preserves_remaining_build_budget() {
+    let (mut runner, req) = building(&[OK, WARNING]);
+    let config = std::fs::read_to_string(&req.config_path).unwrap();
+    std::fs::write(
+        &req.config_path,
+        format!("{config}\ndeadlines:\n  build_seconds: 30\n"),
+    )
+    .unwrap();
+    release_contended_lock_on_memory_recheck(&mut runner, &req);
+    let receipt = run(&mut runner, &req);
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert!(receipt.outcomes["host_wait"].contains("waited 600 s"));
+    let build = runner
+        .calls
+        .iter()
+        .find(|c| c.label == "expo-run-ios")
+        .unwrap();
+    assert_eq!(build.timeout_seconds, 29);
+    assert_eq!(runner.inner.remaining(), 0);
 }

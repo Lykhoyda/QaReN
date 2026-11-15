@@ -2622,7 +2622,7 @@ fn wait_for_host_memory(ctx: &mut Ctx) -> Result<(), Failure> {
     let mut waited = 0;
     let mut next_poll = MEMORY_POLL_MS;
     let mut fresh = true;
-    let wanted = (host.pressure.is_some(), host.available_bytes.is_some());
+    let mut wanted = (host.pressure.is_some(), host.available_bytes.is_some());
     crate::progress::started("host-wait", false);
     crate::events::stage("host_wait", StageState::Running, Some(code(&host)), None);
     let end = |state: StageState, code: Option<&str>, waited: u64| {
@@ -2644,9 +2644,9 @@ fn wait_for_host_memory(ctx: &mut Ctx) -> Result<(), Failure> {
             waited = ctx.runner.monotonic_ms().saturating_sub(start);
         }
         next_poll = next_poll.saturating_add(MEMORY_POLL_MS);
-        // A probe an overloaded host timed out is no sign memory came back: a poll counts only
-        // with every memory signal the first reading had; otherwise keep the last full reading.
         let next = crate::host_capacity::sample(ctx.runner, os);
+        wanted.0 |= next.pressure.is_some();
+        wanted.1 |= next.available_bytes.is_some();
         fresh = (!wanted.0 || next.pressure.is_some())
             && (!wanted.1 || next.available_bytes.is_some());
         if fresh {
@@ -2722,7 +2722,7 @@ fn claim_ios_build_lock(
     ctx.save()
         .map_err(|f| f.with_recovery(RecoveryReason::PersistenceFailed))?;
     let start = ctx.runner.monotonic_ms();
-    let deadline = start.saturating_add(
+    let mut deadline = start.saturating_add(
         ctx.record
             .scenario
             .deadlines
@@ -2740,6 +2740,16 @@ fn claim_ios_build_lock(
         if wait.waiting && ctx.runner.monotonic_ms() >= deadline {
             wait.finish(ctx, start, StageState::Failed);
             return Err(wait.refusal(name, ctx.record.scenario.deadlines.build_seconds));
+        }
+        if wait.waiting {
+            let memory_start = ctx.runner.monotonic_ms();
+            if let Err(f) = wait_for_host_memory(ctx) {
+                wait.finish(ctx, start, StageState::Failed);
+                return Err(f);
+            }
+            deadline = deadline
+                .saturating_add(ctx.runner.monotonic_ms().saturating_sub(memory_start));
+            ctx.build_deadline_ms = Some(deadline);
         }
         holder.at = timefmt::iso8601_utc(ctx.runner.now_epoch_ms());
         let (outcome, orphan) = crate::lease::claim_reclaiming_build_orphan(
