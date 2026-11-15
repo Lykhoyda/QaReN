@@ -10,6 +10,8 @@ pub struct HostRunner {
     pub malformed: bool,
     pub timeout: bool,
     pub low_end_memory: bool,
+    // The process list the run-start helper scan reads; None leaves the scan to the inner mock.
+    pub processes: Option<String>,
     probes: usize,
 }
 
@@ -22,6 +24,7 @@ impl HostRunner {
             malformed: false,
             timeout: false,
             low_end_memory: false,
+            processes: None,
             probes: 0,
         }
     }
@@ -36,6 +39,16 @@ impl Runner for HostRunner {
     }
     fn execute(&mut self, spec: &CmdSpec, interruptible: bool) -> CmdOutput {
         self.calls.push(spec.clone());
+        if let (true, Some(text)) = (spec.label == "device-helpers", &self.processes) {
+            // The process list, then each helper folder's SDK package file.
+            return match spec.program.as_str() {
+                "/bin/sh" if spec.rendered().ends_with("/emulator/source.properties") => {
+                    CmdOutput::success("Pkg.Path=emulator\n")
+                }
+                "/bin/sh" => CmdOutput::failed(1, ""),
+                _ => CmdOutput::success(text),
+            };
+        }
         if spec.label != "host-sample" {
             return self.inner.execute(spec, interruptible);
         }

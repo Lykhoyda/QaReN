@@ -230,6 +230,7 @@ pub fn run(runner: &mut dyn Runner, req: &RunRequest) -> Receipt {
 fn run_scoped(runner: &mut dyn Runner, req: &RunRequest) -> Receipt {
     let started_ms = runner.now_epoch_ms();
     let host_start = crate::host_capacity::sample(runner, std::env::consts::OS);
+    let helpers = crate::device_helpers::scan(runner, std::env::consts::OS);
     let mut preflight_jev = None;
     // A PR worktree created before the run record owns it; removed here if the run never got that far.
     let mut unowned_worktree = None;
@@ -272,7 +273,7 @@ fn run_scoped(runner: &mut dyn Runner, req: &RunRequest) -> Receipt {
         receipt.commands_executed = runner.commands_executed();
     }
     receipt.preflight_jev = preflight_jev;
-    crate::commands::finish_host(runner, &mut receipt, host_start);
+    crate::commands::finish_host(runner, &mut receipt, host_start, &helpers);
     receipt
 }
 

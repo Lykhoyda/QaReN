@@ -300,6 +300,7 @@ pub(crate) fn finish_receipt(ctx: Ctx, result: ReceiptResult, failure: Option<Fa
 pub fn prepare(runner: &mut dyn Runner, args: &PrepareArgs) -> Receipt {
     let started_ms = runner.now_epoch_ms();
     let host_start = crate::host_capacity::sample(runner, std::env::consts::OS);
+    let helpers = crate::device_helpers::scan(runner, std::env::consts::OS);
     let mut receipt = match prepare_validated(runner, args, started_ms) {
         Ok(receipt) => receipt,
         Err(failure) => {
@@ -321,7 +322,7 @@ pub fn prepare(runner: &mut dyn Runner, args: &PrepareArgs) -> Receipt {
             receipt
         }
     };
-    super::finish_host(runner, &mut receipt, host_start);
+    super::finish_host(runner, &mut receipt, host_start, &helpers);
     receipt
 }
 

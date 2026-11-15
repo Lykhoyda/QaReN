@@ -103,6 +103,8 @@ pub struct Receipt {
     pub emitted_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<crate::host_capacity::RunSamples>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub device_helpers: Vec<crate::device_helpers::Note>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scenario: Option<ScenarioIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -180,6 +182,7 @@ impl Receipt {
             phase: phase.to_string(),
             emitted_at,
             host: None,
+            device_helpers: Vec::new(),
             scenario: None,
             candidate: None,
             device: None,

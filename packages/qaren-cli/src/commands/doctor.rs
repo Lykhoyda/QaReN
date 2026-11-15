@@ -3143,7 +3143,7 @@ mod tests {
                 "pass"
             }
         );
-        assert_eq!(parsed["checks"].as_array().unwrap().len(), 34);
+        assert_eq!(parsed["checks"].as_array().unwrap().len(), 35);
     }
 
     #[test]
