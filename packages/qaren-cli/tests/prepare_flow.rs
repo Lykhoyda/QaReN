@@ -1538,6 +1538,29 @@ fn ios_metro_whose_listener_changes_between_reads_is_not_refused() {
     assert_eq!(mock.remaining(), 0);
 }
 
+// A Metro that never answers keeps today's deadline refusal and records the bind as inconclusive.
+#[test]
+fn ios_metro_that_never_answers_reaches_the_deadline_with_an_inconclusive_bind() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+    common::script_metro_bind_not_ready(&mut mock);
+    mock.advance_on = Some((common::V6_PROBE.into(), 2_400_000));
+    common::script_ios_metro_cleanup(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::ReadyDeadlineExceeded
+    );
+    assert_eq!(receipt.metro_bind, Some(MetroBind::Inconclusive));
+    let record = RunRecord::load(scenario.parent().unwrap(), &receipt.run_id).unwrap();
+    assert_eq!(record.metro_bind, Some(MetroBind::Inconclusive));
+    assert_eq!(mock.remaining(), 0);
+}
+
 // G1: both addresses answer: ready, with exactly today's later commands.
 // G2: listening but not yet ready, then ready: no refusal.
 #[test]
