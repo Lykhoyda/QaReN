@@ -690,3 +690,54 @@ fn host_memory_wait_in_the_ios_build_slot_queue_leaves_the_build_budget_whole() 
     assert_eq!(build.timeout_seconds, 28);
     assert_eq!(runner.inner.remaining(), 0);
 }
+
+#[test]
+fn host_memory_slot_wait_preserves_refusal_and_cancellation() {
+    let (mut baseline, req) = building(&[OK]);
+    assert_eq!(run(&mut baseline, &req).result, ReceiptResult::Pass);
+    let admission_at = baseline.sampled_at[1];
+    for cancelled in [false, true] {
+        let (mut runner, req) = stopping_before_the_build(&[OK, CRITICAL]);
+        let config = std::fs::read_to_string(&req.config_path).unwrap();
+        std::fs::write(
+            &req.config_path,
+            format!("{config}\ndeadlines:\n  build_seconds: 30\n"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(req.lock_root.join("native-build-slot")).unwrap();
+        if cancelled {
+            runner.inner.cancel_at_ms = Some((admission_at + 302_500, "SIGTERM".into()));
+        }
+        let (receipt, events) = run_with_events(&mut runner, &req);
+        let failure = receipt.failure.as_ref().unwrap();
+        let expected = if cancelled {
+            FailureCode::RunCancelled
+        } else {
+            FailureCode::HostUnderPressure
+        };
+        assert_eq!(failure.code, expected, "{failure:?}");
+        if !cancelled {
+            assert_eq!(receipt.result, ReceiptResult::Refused);
+            assert!(failure.code.is_refusal());
+            assert_eq!(failure.phase, "host_wait");
+        }
+        assert_eq!(
+            waits(&events).last().unwrap(),
+            &format!(
+                "host_wait failed {}",
+                if cancelled {
+                    "RUN_CANCELLED"
+                } else {
+                    "HOST_UNDER_PRESSURE"
+                }
+            )
+        );
+        assert!(!runner
+            .calls
+            .iter()
+            .any(|call| matches!(call.label.as_str(), "expo-prebuild" | "expo-run-ios")));
+        let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+        assert!(record.resources.build_lock.is_none());
+        assert_eq!(runner.inner.remaining(), 0);
+    }
+}

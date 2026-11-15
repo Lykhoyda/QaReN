@@ -2656,6 +2656,7 @@ fn wait_for_host_memory(ctx: &mut Ctx) -> Result<(), Failure> {
         // One-second sleeps, checked after the last one too, so a cancellation leaves the wait at once.
         loop {
             if let Err(f) = ensure_running(ctx.runner, "host_wait") {
+                ctx.host_wait_ms = previous_ms.saturating_add(waited);
                 end(StageState::Failed, Some("RUN_CANCELLED"), waited);
                 return Err(f.with_recovery(RecoveryReason::RunCancelled));
             }
@@ -2837,13 +2838,9 @@ fn claim_waiting_build_lock(
         let recheck_due = memory_checked_ms.is_none_or(|at| {
             ctx.runner.monotonic_ms().saturating_sub(at) >= crate::host_capacity::MEMORY_POLL_MS
         });
-        if wait.waiting && recheck_due && ctx.host_wait_ms < crate::host_capacity::MEMORY_WAIT_MS
-        {
+        if wait.waiting && recheck_due && ctx.host_wait_ms < crate::host_capacity::MEMORY_WAIT_MS {
             let memory_before_ms = ctx.host_wait_ms;
-            if let Err(f) = wait_for_host_memory(ctx) {
-                wait.finish(ctx, start, StageState::Failed, Some(&f.code_str()));
-                return Err(f);
-            }
+            let result = wait_for_host_memory(ctx);
             memory_checked_ms = Some(ctx.runner.monotonic_ms());
             // The memory wait stays outside the budget: move this wait's deadline, the iOS
             // build window it may run inside, and the shared iOS deadline; Android's slot keeps its own.
@@ -2853,6 +2850,10 @@ fn claim_waiting_build_lock(
             ctx.runner.extend_deadline(used);
             if ctx.build_deadline_ms.is_some() {
                 ctx.build_deadline_ms = Some(deadline);
+            }
+            if let Err(f) = result {
+                wait.finish(ctx, start, StageState::Failed, Some(&f.code_str()));
+                return Err(f);
             }
         }
         holder.at = timefmt::iso8601_utc(ctx.runner.now_epoch_ms());
