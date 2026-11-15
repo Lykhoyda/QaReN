@@ -126,9 +126,11 @@ pub(crate) fn finish_host(
     runner: &mut dyn crate::exec::Runner,
     receipt: &mut Receipt,
     start: crate::host_capacity::Sample,
+    helpers: &crate::device_helpers::Scan,
 ) {
     let os = runner.host_os();
     let end = crate::host_capacity::sample(runner, os);
+    receipt.device_helpers = helpers.helpers.iter().map(|f| f.note()).collect();
     if end.constrained() {
         // A memory refusal already names the host numbers it waited on.
         if let Some(failure) = receipt.failure.as_mut().filter(|f| {
@@ -142,7 +144,9 @@ pub(crate) fn finish_host(
         }
     }
     receipt.host = Some(crate::host_capacity::RunSamples { start, end });
-    if let Err(error) = crate::report::write_host(receipt) {
+    if let Err(error) =
+        crate::report::write_host(receipt, crate::device_helpers::report_line(helpers))
+    {
         receipt.outcomes.insert(
             "host_report".into(),
             format!("host summary could not be written: {error}"),

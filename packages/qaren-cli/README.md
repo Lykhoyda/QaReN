@@ -64,13 +64,14 @@ applicable or its subject was not assessed, as explained in the row's detail.
 | `corepack`, `cocoapods` | `corepack` and `pod` run (warnings) |
 | `disk` | The volumes holding the current directory and your home have the roughly 10 GiB free a clean iOS build needs (warning) |
 | `host-memory`, `host-devices` | Free memory, memory pressure, booted simulators and running Android emulators; conservative concurrent lane headroom on macOS and Linux |
+| `device-helpers` | Android emulator helper processes whose emulator is gone or that run above 100% CPU, each with the command that stops it; [warns and stops nothing](#emulator-helper-processes) |
 | `simulator-service` | A five-second `simctl list devices -j` probe on macOS; attributable uninterruptible simulator process evidence when unresponsive |
 | `expo-offline` | Metro-only Expo commands start offline by default; warns when `EXPO_OFFLINE=0` enables account lookups |
 | `watchman-health` | A read-only, five-second watch-list probe without starting Watchman |
 | `watchman-volume-probe` | Candidate watch admission and [cookie sync](#ios-simulator-lifecycle); admission timeout, rejection or a confirmed cookie timeout fails, while unavailable or invalid responses warn |
 | `candidate-volume-speed` | A bounded small-file read sample on the candidate volume; warns about slow reads, with unknown results disclosed |
 | `host-load` | One-, five- and fifteen-minute load averages, logical CPU count and sampled CPU idle; warns about readiness deadlines under load |
-| `native-build-lock` | Read-only iOS [build-lock observation](#native-fingerprint-build-selection); never claims or reclaims the lock |
+| `native-build-lock` | Read-only iOS lock and shared [build-slot observation](#native-fingerprint-build-selection); never claims or reclaims a lock |
 | `android-sdk`, `android-avd` | When `android` is configured: `ANDROID_HOME`, an executable `adb` file (never run; its version is not checked), the emulator binary and the configured AVD via `emulator -list-avds` |
 | `qaren-path` | The first `qaren` on `PATH` is this binary and the installed build; later copies warn, and so does a separate install that `PATH` runs instead (another `QAREN_HOME` or the other release or source-build line) |
 | `installed-build` | The runtime under `$QAREN_HOME/runtime/<version>/` and the runtime `check` would use (`QAREN_RUNTIME` when set) are complete; a binary outside it that `PATH` runs instead of an install fails |
@@ -147,6 +148,31 @@ remote emulator hosts are outside this inventory. A failed inventory probe makes
 `host-devices` report unknown and warn instead of treating it as zero devices;
 the `simulator-service` row separately reports simulator inventory failures below.
 
+#### Emulator helper processes
+
+An Android emulator starts helper processes that can keep running, sometimes at
+several cores' worth of CPU, after the emulator itself has exited. The
+`device-helpers` row on macOS and Linux reads the same process list as
+`host-devices` (pid, CPU, state, name and command line) and looks at
+`netsimd` and `crashpad_handler` processes whose command line starts with an
+absolute path to the helper. A helper is reported when no emulator is running
+or starting, or when it uses more than 100% CPU. Any `qemu-system-*` or
+`emulator*` process of any user, in any state, counts as a running emulator.
+Before naming a helper, doctor reads the first 4 KiB of `source.properties` in
+the helper's folder when it is a regular file (two-second limit, once per
+folder, at most four folders per scan; later folders stay unproven); only the SDK's
+emulator package, with the line `Pkg.Path=emulator`, proves it. Another app's
+program with the same name, or a folder whose package file cannot be read, is
+never reported.
+
+Each helper is named by executable, pid and CPU share, with the `kill <pid>`
+command that stops it. One `netsimd` can serve several emulators, so a helper
+cannot be tied to its own emulator: while any emulator runs or starts, every
+helper counts as served by it, and the row says so. QaReN started none of these
+processes, so the row warns and stops nothing. An unavailable or unreadable
+process list warns as unknown; a list with an unreadable line warns that it may
+hide a running emulator.
+
 Load warns when the one-minute load is at least the logical CPU count or sampled
 CPU idle is below 10%: readiness deadlines may expire, so use fewer concurrent
 lanes and wait for CPU-heavy work to finish. macOS uses the second one-second `top`
@@ -154,9 +180,10 @@ sample; Linux computes idle from two `/proc/stat` samples one second apart, excl
 guest counters from the total and treating I/O wait as busy. Historical five- and
 fifteen-minute load is reported without independently triggering a warning.
 
-Host commands have three-second budgets, except `top` and the simulator inventory
-which have five seconds each; subprocess termination can add up to five seconds
-per timeout. Missing, malformed or timed-out host statistics warn with a manual
+Host commands have three-second budgets, except helper package-file reads
+(two seconds), `top` and the simulator inventory (five seconds each);
+subprocess termination can add up to five seconds per timeout. Missing, malformed
+or timed-out host statistics warn with a manual
 next step. Doctor makes one simulator inventory read and reports measured latency
 for every simulator-service diagnosis, using the shared
 [inventory validity rule](#ios-simulator-lifecycle). An unreadable response warns;
@@ -199,6 +226,8 @@ lease. `--latest` selects the newest `run.json` modification time. It shows
 explicit stages from preflight through cleanup, step outcomes and act/capture/Jev
 timings, recording, and the verdict with its expected check exit code.
 An unobserved stage stays unobserved; a skipped stage says “not needed” in full rows.
+The Build queue row appears only after contention; see the
+[build-slot waiting contract](#native-fingerprint-build-selection).
 TTY redraws read the current terminal size, keep every stage visible, and fit
 step rows into the remaining space with an omitted-row count. Unfinished rows
 take priority, followed by completed rows with the latest observed event sequence,
@@ -257,7 +286,8 @@ On a TTY, the view redraws every 250 ms; Ctrl-C exits only the viewer.
 The owner's identity is checked at most every two seconds and never after the
 end event, so a finished run's snapshot does not wait on a process probe.
 `--plain`, non-TTY stdout, `CI` or `NO_COLOR` prints each observed final stage
-and passed or failed step attempt once, without escape codes or stdin reads.
+and passed or failed step attempt once, without escape codes or stdin reads;
+build queue updates follow the [waiting contract](#native-fingerprint-build-selection).
 `--json` prints a single folded snapshot and exits without following the run;
 a live snapshot still performs the initial owner check.
 Step text and reasons never come from live events. They appear only after an
@@ -669,6 +699,18 @@ reading. These end samples are observations, not a diagnosis of the refusal's ca
 Refusals before a run directory exists carry the samples in the receipt only.
 `qaren publish` does not include these samples in PR comments or descriptions.
 Sampling starts no device or service and introduces no cleanup resource.
+
+Right after the start sample on macOS and Linux, the run reads the process list
+once (three-second limit) for the [emulator helper processes](#emulator-helper-processes) doctor
+reports, plus one package-file read per candidate helper folder. Each finding is
+listed in the receipt's `device_helpers` array with only `name` (`netsimd` or
+`crashpad_handler`) and `pid`, and `report.md` gains one line listing all findings
+with each helper's CPU share, why it was reported and its `kill <pid>` command.
+With no findings, the receipt omits `device_helpers` and the report adds no helper
+line. An unavailable or wholly unreadable process list produces no findings;
+a partially readable list can still report helpers, with a warning that a running
+emulator may be hidden. These observations never change the verdict. The run stops
+nothing.
 
 ### Waiting for memory before a native build
 
@@ -3404,8 +3446,9 @@ before the holder died or re-created by an orphaned build writing its output, do
 count. Before a native build or native suite is let past its start gate, its process
 group is recorded in the holder, as is a `qaren` process's own group when it leads
 one; that group must also have no live members, otherwise the refusal names the lock
-and the `pgrep -g` check to wait on. The iOS native-build lock additionally
-requires that group to have been recorded before the next claim releases it: its
+and the `pgrep -g` check to wait on. The iOS native-build lock and shared
+`native-build-slot` additionally
+require that group to have been recorded before the next claim releases it: its
 holder may have died after starting a build it had not yet recorded, so such an
 orphan is kept until an explicit `qaren cleanup <run-id>` for that run releases it. A `qaren` group whose leader pid now belongs to
 another process is not checked, since a reused pid proves its old group is gone. `qaren cleanup <run-id>` for a run with no
@@ -3877,10 +3920,17 @@ React hosts outside the one mounted `Modal` are not gaps while every associated 
 sits inside it, so a full-screen promo over a mounted screen still counts as one control.
 Check-first, wait-first and tap/fill-first plans behind a presented full-screen promo
 recover under these guards and retry the step once. Before scrolling for a
-React-only tap or fill target while a decline control is on screen, an ordinary
-capture gets one bounded presence recapture within the step's remaining budget. When it proves the target is behind
-the presented `Modal`, recovery runs instead of scrolling the promo. A recapture that
-runs out of time or returns incomplete evidence leaves the cover unproven, and the
+React-only tap or fill target, an ordinary capture gets one bounded presence
+recapture within the step's remaining budget: on iOS before the target's one drag
+unless a system dialog is in front, elsewhere only while a decline control is on screen. When it proves the target is behind
+the presented `Modal`, recovery runs instead of scrolling the promo. On iOS the drag
+then goes only toward a target that read places below or above an on-screen scroll
+container that is also its scroll-until container, inside the part of that container
+that nothing drawn in front covers; a target inside the visible area, with no matching
+scroll container, with no exposed scroll band or with no readable place refuses `TARGET_NOT_FOUND`
+("is known to React but has no element on the visible screen", with the reason and
+"nothing was scrolled"), and so does a recapture that runs out of time or returns
+incomplete evidence. These refusals run no recovery. Elsewhere such a recapture leaves the cover unproven, and the
 step continues as it would have without it; it never adds a refusal of its own.
 If the ordinary observation expired during that read, it is refreshed before
 continuing, with the modal cover still unproven.
@@ -5548,7 +5598,26 @@ reason, never a guess. Only a saved state permits ownership rebinding.
 
 **Build serialization.** Native builds (incremental and clean) take a
 host-level `native-build-<platform>` lock, subject to
-[memory admission](#waiting-for-memory-before-a-native-build). On iOS the lock covers only the
+[memory admission](#waiting-for-memory-before-a-native-build), followed by one shared
+`native-build-slot` immediately before each build command. This queues iOS
+and Android builds on the same machine. Finite builds release the slot only
+after their process group is proven gone. `expo run:android` releases it on
+a complete Gradle `BUILD SUCCESSFUL in …` or `BUILD FAILED in …` line in this
+run's build log, or after its entire Metro process group is proven absent.
+A dead group leader and a free Metro port do not prove group absence. App readiness,
+cancellation and timeout alone do not release it. The slot uses a private claim
+token saved before acquisition and reused through group recording and cleanup,
+so matching run ids in separate homes cannot release each other's slot. Public
+queue output shows only the run id.
+
+The slot wait polls every second. On iOS it uses the remaining shared build
+budget; on Android it has one build budget of its own and leaves the existing
+build and readiness budgets unchanged. `qaren watch` shows a **Build queue**
+row with the holder, lock, held time and time waited. Plain output records
+each observed holder change and each completed wait. Queue events contain
+only the lock name, a validated run id and durations.
+
+On iOS the platform lock covers only the
 build: `prepare`, `check` and `pr` claim it after the device is allocated and
 release it once the artifact is verified, the pre-publication candidate and
 fingerprint checks pass and cache publication is persisted, before
@@ -5558,6 +5627,10 @@ after readiness. A contended iOS claim waits, polling every second, within the
 same build budget (`deadlines.build_seconds`) that the prebuild, build,
 verification and publication then share; see the
 [deadline defaults and validation](src/scenario.rs).
+Build subprocess timeouts are capped to the remaining window, and no new
+build command starts after expiry. Teardown commands and their process-identity
+reads keep their own timeouts so they can stop the build and prove its group gone
+after expiry; unresolved cleanup retains ownership for `qaren cleanup`.
 A synchronous cache copy already in progress is not interrupted; its completion is checked against the window
 before publication. Output retirement
 and readiness run outside this window. Running that budget out while waiting is a refusal (`BUILD_CONTENDED`,
@@ -5566,18 +5639,26 @@ its recorded build group still runs, and how long this run waited, for example
 `BUILD_CONTENDED: native-build-ios is held by run <id> (alive: yes; no build process for 9 min); waited 600 s of the budget. Next: wait for that run or re-run once later; if the holder is dead, run its qaren cleanup from its home (its resources only).`
 After 120 s of a live holder with no build group running the wait notes
 `holder_idle_after_build`; a live or unproven holder is never taken. Running
-the budget out after the claim is `BUILD_FAILED`. The receipt's `build_lock`
-reports `holder`, `waited_s`, `holder_alive`, `holder_build_process`,
+the budget out inside the build window outside a lock wait is `BUILD_FAILED`. The receipt's `build_lock`
+keeps the last contended wait, or the latest claim observation if none contended;
+`build_lock_waits` keeps both platform and slot
+observations in order. Each reports `lock`, `holder`, `waited_s`, `holder_alive`, `holder_build_process`,
 `hold_s`, `no_build_observed_s` and `observation` (`none`, `observed` or
 `unreadable`), never a home, lock path, token, PID or command, and failures on
 these paths carry a `recovery` object with the ordered recovery ladder and
 whether this run must clean up its own resources. `qaren doctor` reports the
-lock's current state as `native-build-lock` without claiming it. A run that
+platform lock and slot state as `native-build-lock` without claiming either. A run that
 cannot observe its own process identity refuses `PREREQ_MISSING` before
 claiming. An unresolved release stops the run (`RUN_RECORD_UPDATE_FAILED`)
 and the lock stays recorded for `qaren cleanup`.
 Android claims before allocation, refuses a live holder at once and can adopt
-a provably dead holder's lock. iOS recovery follows the
+a provably dead holder's platform lock. The shared slot follows the stricter
+[orphaned-lock proof rules](#ios-admission-and-cleanup).
+Otherwise only that run's cleanup releases it after group retirement;
+an unproven spawn keeps it recorded. Reused builds never claim the slot.
+Private lock roots isolate their slots too; older versions, runner builds and
+source builds do not participate. An Expo log without a Gradle end line keeps
+the slot until the run's group is retired. iOS recovery follows the
 [cleanup and orphaned-lock proof rules](#ios-admission-and-cleanup).
 The lock is released after publication (iOS), after preparation (Android) or
 by cleanup, only when owned build authority is retired.

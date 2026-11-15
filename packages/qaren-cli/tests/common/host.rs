@@ -19,6 +19,8 @@ pub struct HostRunner {
     pub sampled_at: Vec<u64>,
     pub sample_probe_ms: Vec<(u64, u64)>,
     pub release_lock_at: Option<(std::path::PathBuf, u64)>,
+    // The process list the run-start helper scan reads; None leaves the scan to the inner mock.
+    pub processes: Option<String>,
     probes: usize,
 }
 
@@ -37,6 +39,7 @@ impl HostRunner {
             sampled_at: Vec::new(),
             sample_probe_ms: Vec::new(),
             release_lock_at: None,
+            processes: None,
             probes: 0,
         }
     }
@@ -59,6 +62,16 @@ impl Runner for HostRunner {
     }
     fn execute(&mut self, spec: &CmdSpec, interruptible: bool) -> CmdOutput {
         self.calls.push(spec.clone());
+        if let (true, Some(text)) = (spec.label == "device-helpers", &self.processes) {
+            // The process list, then each helper folder's SDK package file.
+            return match spec.program.as_str() {
+                "/bin/sh" if spec.rendered().ends_with("/emulator/source.properties") => {
+                    CmdOutput::success("Pkg.Path=emulator\n")
+                }
+                "/bin/sh" => CmdOutput::failed(1, ""),
+                _ => CmdOutput::success(text),
+            };
+        }
         if spec.label != "host-sample" {
             return self.inner.execute(spec, interruptible);
         }

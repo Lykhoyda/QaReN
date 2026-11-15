@@ -639,7 +639,10 @@ pub fn write(run_dir: &Path, input: &ReportInput<'_>) -> Result<PathBuf, Failure
     Ok(path)
 }
 
-pub(crate) fn write_host(receipt: &mut crate::receipt::Receipt) -> std::io::Result<()> {
+pub(crate) fn write_host(
+    receipt: &mut crate::receipt::Receipt,
+    helpers: Option<String>,
+) -> std::io::Result<()> {
     use std::io::Write;
     let Some(host) = receipt.host.as_ref() else {
         return Ok(());
@@ -665,6 +668,9 @@ pub(crate) fn write_host(receipt: &mut crate::receipt::Receipt) -> std::io::Resu
     writeln!(file, "\n{}", host.report_line())?;
     if let Some(wait) = receipt.outcomes.get("host_wait") {
         writeln!(file, "Host memory before the build: {wait}.")?;
+    }
+    if let Some(line) = helpers {
+        writeln!(file, "\n{line}")?;
     }
     receipt.artifacts.insert("report".into(), path);
     Ok(())

@@ -26,6 +26,10 @@ fn host_samples_bracket_prepare_and_survive_a_pre_record_refusal() {
             script_ios_prepare(&mut inner, &repo, CmdOutput::success(""));
         }
         let mut runner = common::host::HostRunner::new(inner);
+        runner.processes = Some(
+            "  4242 960.0 S    netsimd /sdk/emulator/netsimd\n"
+                .into(),
+        );
         let receipt = prepare(&mut runner, &prepare_args(&scenario, false, None));
         assert_eq!(
             receipt.result,
@@ -38,6 +42,14 @@ fn host_samples_bracket_prepare_and_survive_a_pre_record_refusal() {
         let host = receipt.host.as_ref().unwrap();
         assert_eq!(host.start.load_1m, Some(1.0));
         assert_eq!(host.end.load_1m, Some(12.0));
+        assert_eq!(
+            receipt.device_helpers,
+            vec![qaren::device_helpers::Note {
+                name: qaren::device_helpers::HelperName::Netsimd,
+                pid: 4242,
+            }]
+        );
+        assert_eq!(runner.calls[2].label, "device-helpers");
         assert!(runner.calls[..2].iter().all(|c| c.label == "host-sample"));
         assert!(runner.calls[runner.calls.len() - 2..]
             .iter()
@@ -47,6 +59,7 @@ fn host_samples_bracket_prepare_and_survive_a_pre_record_refusal() {
             assert!(report.starts_with("# QaReN prepare: ready\n"));
             assert!(report.contains("Host at start: load 1.0 on 8 cores"));
             assert!(report.contains("At end: load 12.0 on 8 cores"));
+            assert!(report.contains("netsimd (pid 4242, 960.0% CPU)"));
         }
     }
 }

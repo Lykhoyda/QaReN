@@ -103,6 +103,8 @@ pub struct Receipt {
     pub emitted_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<crate::host_capacity::RunSamples>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub device_helpers: Vec<crate::device_helpers::Note>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scenario: Option<ScenarioIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -126,6 +128,8 @@ pub struct Receipt {
     pub recovery: Option<crate::failure::Recovery>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_lock: Option<crate::runrecord::BuildLockObservation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub build_lock_waits: Vec<crate::runrecord::BuildLockObservation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_version: Option<crate::expo_updates::RuntimeVersion>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -178,6 +182,7 @@ impl Receipt {
             phase: phase.to_string(),
             emitted_at,
             host: None,
+            device_helpers: Vec::new(),
             scenario: None,
             candidate: None,
             device: None,
@@ -197,6 +202,7 @@ impl Receipt {
             failure: None,
             recovery: None,
             build_lock: None,
+            build_lock_waits: Vec::new(),
             runtime_version: None,
             cleanup: BTreeMap::new(),
             cleanup_details: None,

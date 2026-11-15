@@ -1,5 +1,6 @@
 use super::{Check, Status};
 use crate::adapters::ios;
+use crate::device_helpers;
 use crate::exec::{CmdOutput, CmdSpec, Runner};
 use crate::host_capacity::{self, Cpu, Memory};
 use std::path::Path;
@@ -25,10 +26,20 @@ pub(super) fn checks(runner: &mut dyn Runner, os: &str) -> Vec<Check> {
             "host probes support macOS and Linux",
         )];
     }
-    let processes = probe(runner, "ps", &["-axww", "-o", "stat=,ucomm=,args="], 3);
-    let android = processes.ok().then(|| android_emulators(&processes.stdout));
+    let processes = probe(
+        runner,
+        "ps",
+        &["-axww", "-o", device_helpers::PROCESS_COLUMNS],
+        3,
+    );
+    let list = processes
+        .ok()
+        .then(|| device_helpers::parse(&processes.stdout))
+        .flatten();
+    let android = list.as_ref().map(android_emulators);
+    let helpers = helper_row(runner, &processes);
     let (service, sims) = if os == "macos" {
-        simulator_service(runner, &processes)
+        simulator_service(runner, list.as_ref())
     } else {
         (
             Check::skip("simulator-service", "iOS simulators require macOS"),
@@ -38,12 +49,63 @@ pub(super) fn checks(runner: &mut dyn Runner, os: &str) -> Vec<Check> {
     let devices = device_row(sims.as_deref(), android.as_deref());
     let sample = host_capacity::sample(runner, os);
     let (memory, cpu) = host_capacity::doctor_capacity(runner, os, &sample);
-    vec![service, devices, memory_row(memory, os), cpu_row(cpu)]
+    vec![
+        service,
+        devices,
+        helpers,
+        memory_row(memory, os),
+        cpu_row(cpu),
+    ]
+}
+
+const HELPER_LIMIT: &str = "while any emulator runs or starts, every helper counts as served by it";
+
+fn helper_row(runner: &mut dyn Runner, processes: &CmdOutput) -> Check {
+    let scan = processes
+        .ok()
+        .then(|| device_helpers::findings(runner, "doctor-host", &processes.stdout))
+        .flatten();
+    let Some(scan) = scan else {
+        return Check::warn(
+            "device-helpers",
+            "process list unavailable or unreadable; emulator helper processes unknown",
+            "restore the process list probe and re-run doctor",
+        );
+    };
+    let mut detail: Vec<_> = scan.helpers.iter().map(|f| f.describe()).collect();
+    if !scan.complete {
+        detail
+            .push("process list incomplete: an unreadable line may hide a running emulator".into());
+    }
+    if detail.is_empty() {
+        return Check::pass(
+            "device-helpers",
+            format!("no Android emulator helper left behind or above 100% CPU; {HELPER_LIMIT}"),
+        );
+    }
+    let commands: Vec<_> = scan
+        .helpers
+        .iter()
+        .map(|f| format!("`{}`", f.stop_command()))
+        .collect();
+    let fix = if commands.is_empty() {
+        "re-run doctor once the process list reads in full".to_string()
+    } else {
+        format!(
+            "QaReN did not start these and stops nothing; stop each one: {}",
+            commands.join(", ")
+        )
+    };
+    Check::warn(
+        "device-helpers",
+        format!("{}; {HELPER_LIMIT}", detail.join("; ")),
+        fix,
+    )
 }
 
 fn simulator_service(
     runner: &mut dyn Runner,
-    processes: &CmdOutput,
+    processes: Option<&device_helpers::ProcessList>,
 ) -> (Check, Option<Vec<String>>) {
     let inventory = ios::read_inventory(
         runner,
@@ -96,11 +158,7 @@ fn simulator_service(
     let timed_out = unavailable.as_ref().is_some_and(|unavailable| {
         matches!(unavailable.last, ios::InventoryReadLast::TimedOut { .. })
     });
-    let stuck = if processes.ok() {
-        stuck_simulators(&processes.stdout)
-    } else {
-        Vec::new()
-    };
+    let stuck = processes.map_or_else(Vec::new, stuck_simulators);
     let evidence = if stuck.is_empty() {
         "affected device unknown; no attributable uninterruptible launchd_sim observed".to_string()
     } else {
@@ -148,29 +206,20 @@ fn simulator_devices(value: &serde_json::Value) -> Option<Vec<String>> {
     Some(devices)
 }
 
-fn android_emulators(text: &str) -> Vec<String> {
-    text.lines()
-        .filter_map(|line| {
-            let words: Vec<_> = line.split_whitespace().collect();
-            let executable = *words.get(1)?;
-            if !executable.starts_with("qemu-system-") {
-                return None;
-            }
-            let avd = words.windows(2).find(|pair| pair[0] == "-avd")?[1];
-            Some(avd.to_string())
-        })
+fn android_emulators(list: &device_helpers::ProcessList) -> Vec<String> {
+    list.rows
+        .iter()
+        .filter_map(|row| Some(row.emulator_avd()?.to_string()))
         .collect()
 }
 
-fn stuck_simulators(text: &str) -> Vec<String> {
+fn stuck_simulators(list: &device_helpers::ProcessList) -> Vec<String> {
     let mut devices = Vec::new();
-    for line in text.lines() {
-        let mut words = line.split_whitespace();
-        let Some(state) = words.next() else { continue };
-        if !state.starts_with('U') || words.next() != Some("launchd_sim") {
+    for row in &list.rows {
+        if !row.stat.starts_with('U') || row.ucomm != "launchd_sim" {
             continue;
         }
-        for path in line.split_whitespace() {
+        for path in row.args.split_whitespace() {
             if let Some(udid) = path
                 .split("/CoreSimulator/Devices/")
                 .nth(1)
@@ -252,6 +301,7 @@ fn cpu_row(cpu: Option<Cpu>) -> Check {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::device_helpers::ps_line as ps;
     use crate::exec::MockRunner;
 
     const UDID: &str = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE";
@@ -272,7 +322,7 @@ mod tests {
         top: &str,
     ) {
         runner.expect_run(
-            "ps -axww -o stat=,ucomm=,args=",
+            "ps -axww -o pid=,pcpu=,stat=,ucomm=,args=",
             CmdOutput::success(processes),
         );
         runner.expect_run("simctl list devices -j", inventory);
@@ -292,7 +342,7 @@ mod tests {
         let mut runner = MockRunner::new();
         runner.advance_on = Some(("simctl list".into(), 1200));
         runner.expect_run("simctl list", inventory());
-        let (service, devices) = simulator_service(&mut runner, &CmdOutput::success(""));
+        let (service, devices) = simulator_service(&mut runner, None);
         assert_eq!(service.status, Status::Pass);
         assert!(service.detail.contains("latency 1200 ms"));
         assert_eq!(devices.unwrap(), vec![format!("iPhone ({UDID})")]);
@@ -342,7 +392,7 @@ mod tests {
             let mut runner = MockRunner::new();
             runner.advance_on = Some(("simctl list".into(), 4321));
             runner.expect_run("simctl list", output);
-            let (service, devices) = simulator_service(&mut runner, &CmdOutput::success(""));
+            let (service, devices) = simulator_service(&mut runner, None);
             assert_eq!(service.status, status);
             assert_eq!(service.fix.as_deref(), Some(fix));
             assert!(service.detail.contains(diagnosis));
@@ -365,7 +415,7 @@ mod tests {
         ] {
             let mut runner = MockRunner::new();
             runner.expect_run("simctl list", output);
-            let (service, devices) = simulator_service(&mut runner, &CmdOutput::success(""));
+            let (service, devices) = simulator_service(&mut runner, None);
             assert_eq!(service.status, Status::Warn);
             assert!(service.detail.contains("unreadable inventory"));
             assert!(!service.detail.contains("warning-canary"));
@@ -379,8 +429,9 @@ mod tests {
     fn unreadable_inventory_with_a_stuck_simulator_keeps_the_service_fix() {
         let mut runner = MockRunner::new();
         runner.expect_run("simctl list", CmdOutput::success("{}"));
-        let processes = CmdOutput::success(&format!("U launchd_sim /runtime/launchd_sim /Users/example/Library/Developer/CoreSimulator/Devices/{UDID}/data\n"));
-        let (service, _) = simulator_service(&mut runner, &processes);
+        let text = ps(77, "0.0", "U", "launchd_sim", &format!("/runtime/launchd_sim /Users/example/Library/Developer/CoreSimulator/Devices/{UDID}/data"));
+        let processes = device_helpers::parse(&text);
+        let (service, _) = simulator_service(&mut runner, processes.as_ref());
         assert_eq!(service.status, Status::Warn);
         assert!(service.detail.contains("unreadable inventory"));
         assert_eq!(service.fix.as_deref(), Some(SERVICE_FIX));
@@ -389,7 +440,32 @@ mod tests {
     #[test]
     fn mac_reports_both_platforms_and_uses_the_second_idle_sample() {
         let mut runner = MockRunner::new();
-        script_mac(&mut runner, "S qemu-system-aar /sdk/qemu-system-aarch64 -avd Pixel\nS emulator /sdk/emulator -avd Pixel\nS qemu-system-x86 /usr/bin/qemu-system-x86_64 -drive server.img\n", inventory(), VM, SYS, "CPU usage: 90% user, 5% sys, 5% idle\nCPU usage: 2% user, 3% sys, 95% idle\n");
+        let processes = [
+            ps(
+                900,
+                "40.0",
+                "S",
+                "qemu-system-aar",
+                "/sdk/qemu-system-aarch64 -avd Pixel",
+            ),
+            ps(899, "0.1", "S", "emulator", "/sdk/emulator -avd Pixel"),
+            ps(
+                901,
+                "0.0",
+                "S",
+                "qemu-system-x86",
+                "/usr/bin/qemu-system-x86_64 -drive server.img",
+            ),
+        ]
+        .concat();
+        script_mac(
+            &mut runner,
+            &processes,
+            inventory(),
+            VM,
+            SYS,
+            "CPU usage: 90% user, 5% sys, 5% idle\nCPU usage: 2% user, 3% sys, 95% idle\n",
+        );
         let rows = checks(&mut runner, "macos");
         assert!(rows.iter().all(|r| r.status == Status::Pass), "{rows:?}");
         assert!(row(&rows, "host-devices")
@@ -413,18 +489,197 @@ mod tests {
             .all(|s| s.cwd.as_deref() == Some(Path::new("/"))));
     }
 
+    const IDLE: &str = "CPU usage: 2% user, 3% sys, 95% idle\n";
+    const SDK: &str = "/Volumes/External SSD/Android/sdk/emulator";
+    const PACKAGE: &str = "Pkg.Desc=Android Emulator\nPkg.Path=emulator\n";
+
+    fn emulator() -> String {
+        ps(
+            900,
+            "40.0",
+            "S",
+            "qemu-system-aar",
+            &format!("{SDK}/qemu/darwin-aarch64/qemu-system-aarch64 -avd Pixel"),
+        )
+    }
+
+    fn helper(pid: i64, cpu: &str, ucomm: &str, file: &str) -> String {
+        ps(
+            pid,
+            cpu,
+            "S",
+            ucomm,
+            &format!("{SDK}/{file} --token=private-canary"),
+        )
+    }
+
+    // Doctor's process list, then one package-file answer per folder read, then the other probes.
+    fn helper_row(processes: &str, packages: &[(&str, CmdOutput)]) -> Check {
+        let mut runner = MockRunner::new();
+        runner.expect_run("ps -axww", CmdOutput::success(processes));
+        for (folder, answer) in packages {
+            runner.expect_run(&format!("\" sh {folder}/source.properties"), answer.clone());
+        }
+        runner.expect_run("simctl list devices -j", inventory());
+        runner.expect_run("vm_stat", CmdOutput::success(VM));
+        runner.expect_run("sysctl", CmdOutput::success(SYS));
+        runner.expect_run("top -l 2 -s 1 -n 0", CmdOutput::success(IDLE));
+        let rows = checks(&mut runner, "macos");
+        assert_eq!(runner.remaining(), 0);
+        assert!(runner.calls.iter().all(|c| c.program != "kill"));
+        assert!(runner
+            .calls
+            .iter()
+            .filter(|c| c.program == "/bin/sh")
+            .all(|c| c.label == "doctor-host" && c.timeout_seconds == 2));
+        row(&rows, "device-helpers").clone()
+    }
+
+    #[test]
+    fn e1_helpers_without_their_emulator_warn_and_are_named_with_their_stop_command() {
+        let processes = [
+            helper(4242, "0.5", "netsimd", "netsimd"),
+            helper(4243, "0.0", "crashpad_handler", "crashpad_handler"),
+            ps(
+                4245,
+                "0.0",
+                "S",
+                "vim",
+                &format!("/usr/bin/vim {SDK}/netsimd"),
+            ),
+        ]
+        .concat();
+        let check = helper_row(&processes, &[(SDK, CmdOutput::success(PACKAGE))]);
+        assert_eq!(check.status, Status::Warn, "{check:?}");
+        assert!(
+            check.detail.contains("netsimd (pid 4242, 0.5% CPU)"),
+            "{}",
+            check.detail
+        );
+        assert!(check
+            .detail
+            .contains("crashpad_handler (pid 4243, 0.0% CPU)"));
+        assert!(check.detail.contains("emulator is not running"));
+        assert!(check.detail.contains("every helper counts as served"));
+        let fix = check.fix.unwrap();
+        assert!(
+            fix.contains("kill 4242") && fix.contains("kill 4243"),
+            "{fix}"
+        );
+        for text in [&check.detail, &fix] {
+            assert!(!text.contains("4245"), "{text}");
+            assert!(!text.contains("Volumes") && !text.contains("private-canary"));
+        }
+    }
+
+    #[test]
+    fn same_named_processes_outside_the_emulator_package_are_not_reported() {
+        let other = "/Applications/Other App.app/Contents/Frameworks";
+        let processes = [
+            ps(
+                4244,
+                "0.0",
+                "S",
+                "crashpad_handle",
+                &format!("{other}/crashpad_handler --database=/x/emulator/y"),
+            ),
+            ps(4247, "960.0", "S", "netsimd", "/opt/tools/netsimd"),
+            ps(4248, "960.0", "S", "netsimd", "netsimd -s"),
+        ]
+        .concat();
+        let check = helper_row(
+            &processes,
+            &[
+                (other, CmdOutput::failed(1, "No such file or directory")),
+                (
+                    "/opt/tools",
+                    CmdOutput::success("Pkg.Path=platform-tools\n"),
+                ),
+            ],
+        );
+        assert_eq!(check.status, Status::Pass, "{check:?}");
+        assert!(check.detail.contains("every helper counts as served"));
+    }
+
+    #[test]
+    fn e2_helpers_beside_their_running_emulator_at_low_cpu_pass() {
+        let processes = [
+            emulator(),
+            helper(4242, "12.5", "netsimd", "netsimd"),
+            helper(4243, "0.1", "crashpad_handle", "crashpad_handler"),
+        ]
+        .concat();
+        let check = helper_row(&processes, &[]);
+        assert_eq!(check.status, Status::Pass, "{check:?}");
+        assert!(check.fix.is_none());
+    }
+
+    #[test]
+    fn e3_a_helper_of_a_running_emulator_above_100_percent_cpu_warns() {
+        let processes = [
+            emulator(),
+            helper(4242, "960.0", "netsimd", "netsimd"),
+            helper(4246, "100.0", "netsimd", "netsimd"),
+        ]
+        .concat();
+        let check = helper_row(&processes, &[(SDK, CmdOutput::success(PACKAGE))]);
+        assert_eq!(check.status, Status::Warn, "{check:?}");
+        assert!(
+            check.detail.contains("netsimd (pid 4242, 960.0% CPU)"),
+            "{}",
+            check.detail
+        );
+        assert!(check.detail.contains("above 100% CPU"));
+        assert!(!check.detail.contains("emulator is not running"));
+        assert!(!check.detail.contains("4246"), "{}", check.detail);
+        assert!(check.fix.unwrap().contains("kill 4242"));
+    }
+
+    #[test]
+    fn an_incomplete_process_list_warns_even_without_a_helper() {
+        let processes = format!("{}   77  1.0 S\n", emulator());
+        let check = helper_row(&processes, &[]);
+        assert_eq!(check.status, Status::Warn, "{check:?}");
+        assert!(check.detail.contains("process list incomplete"));
+        assert!(check.fix.unwrap().contains("re-run doctor"));
+    }
+
     #[test]
     fn emulator_inventory_handles_sdk_paths_with_spaces() {
         for executable in ["qemu-system-aarch64", "qemu-system-aar"] {
             let mut runner = MockRunner::new();
-            script_mac(
-                &mut runner,
-                &format!("S {executable} /Volumes/External SSD/Android/sdk/emulator/qemu/darwin-aarch64/qemu-system-aarch64 -avd Pixel\nS emulator /Volumes/External SSD/Android/sdk/emulator/emulator -avd Pixel\nS qemu-system-x86 /usr/bin/qemu-system-x86_64 -drive server.img\nS sh /bin/sh -c /sdk/qemu-system-aarch64 -avd Other\n"),
-                inventory(),
-                VM,
-                SYS,
-                "CPU usage: 2% user, 3% sys, 95% idle\n",
-            );
+            let processes = [
+                ps(
+                    900,
+                    "40.0",
+                    "S",
+                    executable,
+                    &format!("{SDK}/qemu/darwin-aarch64/qemu-system-aarch64 -avd Pixel"),
+                ),
+                ps(
+                    899,
+                    "0.1",
+                    "S",
+                    "emulator",
+                    &format!("{SDK}/emulator -avd Pixel"),
+                ),
+                ps(
+                    901,
+                    "0.0",
+                    "S",
+                    "qemu-system-x86",
+                    "/usr/bin/qemu-system-x86_64 -drive server.img",
+                ),
+                ps(
+                    902,
+                    "0.0",
+                    "S",
+                    "sh",
+                    "/bin/sh -c /sdk/qemu-system-aarch64 -avd Other",
+                ),
+            ]
+            .concat();
+            script_mac(&mut runner, &processes, inventory(), VM, SYS, IDLE);
             let rows = checks(&mut runner, "macos");
             let devices = row(&rows, "host-devices");
             assert_eq!(devices.status, Status::Pass);
@@ -442,7 +697,13 @@ mod tests {
         let mut runner = MockRunner::new();
         script_mac(
             &mut runner,
-            "S qemu-system-aar /sdk/qemu-system-aarch64 -avd Pixel\n",
+            &ps(
+                900,
+                "40.0",
+                "S",
+                "qemu-system-aar",
+                "/sdk/qemu-system-aarch64 -avd Pixel",
+            ),
             inventory(),
             &VM.replace("655360", "11072"),
             &SYS.replace("1.0 2.0 3.0", "94.0 100.0 120.0")
@@ -473,7 +734,26 @@ mod tests {
             ("U", "sh", "/runtime/launchd_sim", Status::Warn),
         ] {
             let mut runner = MockRunner::new();
-            script_mac(&mut runner, &format!("{state} {process_name} {argv0} /Users/example/Library/Developer/CoreSimulator/Devices/{UDID}/data\n"), CmdOutput { timed_out: true, ..Default::default() }, VM, SYS, "CPU usage: 2% user, 3% sys, 95% idle\n");
+            let processes = ps(
+                77,
+                "0.0",
+                state,
+                process_name,
+                &format!(
+                    "{argv0} /Users/example/Library/Developer/CoreSimulator/Devices/{UDID}/data"
+                ),
+            );
+            script_mac(
+                &mut runner,
+                &processes,
+                CmdOutput {
+                    timed_out: true,
+                    ..Default::default()
+                },
+                VM,
+                SYS,
+                IDLE,
+            );
             let rows = checks(&mut runner, "macos");
             let service = row(&rows, "simulator-service");
             assert_eq!(service.status, expected);
@@ -497,7 +777,7 @@ mod tests {
     fn a_failing_simctl_without_a_timeout_names_its_error_and_the_xcode_fix() {
         for processes in [
             String::new(),
-            format!("U launchd_sim /runtime/launchd_sim /Users/example/Library/Developer/CoreSimulator/Devices/{UDID}/data\n"),
+            ps(77, "0.0", "U", "launchd_sim", &format!("/runtime/launchd_sim /Users/example/Library/Developer/CoreSimulator/Devices/{UDID}/data")),
         ] {
             let mut runner = MockRunner::new();
             script_mac(
@@ -556,7 +836,13 @@ mod tests {
     fn script_linux(runner: &mut MockRunner, mem: &str, after: &str) {
         runner.expect_run(
             "ps",
-            CmdOutput::success("S qemu-system-x86 /sdk/qemu-system-x86_64 -avd Pixel\n"),
+            CmdOutput::success(&ps(
+                900,
+                "40.0",
+                "S",
+                "qemu-system-x86",
+                "/sdk/qemu-system-x86_64 -avd Pixel",
+            )),
         );
         runner.expect_run("cat /proc/meminfo", CmdOutput::success(mem));
         runner.expect_run(

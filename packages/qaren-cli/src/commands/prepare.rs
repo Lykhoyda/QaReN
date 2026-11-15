@@ -15,8 +15,9 @@ use crate::receipt::{Receipt, ReceiptResult};
 use crate::redact::redact_secrets;
 use crate::runrecord::{
     capture_pid_identity, probe_pid_identity, AppInstallResource, BuildLockObservation,
-    BuildLockResource, Cleanup, FarmResource, IosSimResource, LockObservation, MetroResource,
-    Phase, PidLiveness, RunRecord, RunState, TunnelResource, UsbDeviceResource, RUN_SCHEMA,
+    BuildLockResource, BuildSlotResource, BuildSlotWork, Cleanup, FarmResource, IosSimResource,
+    LockObservation, MetroResource, Phase, PidLiveness, RunRecord, RunState, TunnelResource,
+    UsbDeviceResource, RUN_SCHEMA,
 };
 use crate::scenario::{BuildOwner, BuildStrategy, DepsPolicy, IosSpec, Platform, Scenario};
 use crate::timefmt;
@@ -79,6 +80,8 @@ pub(crate) struct Ctx<'a> {
     pub(crate) lane_owned: bool,
     // Monotonic end of the iOS build window: lock wait, prebuild, build, verification and publication share it.
     pub(crate) build_deadline_ms: Option<u64>,
+    // Memory-wait time this build admission has spent of its one 10-minute allowance.
+    pub(crate) host_wait_ms: u64,
 }
 
 impl<'a> Ctx<'a> {
@@ -264,6 +267,7 @@ pub(crate) fn finish_receipt(ctx: Ctx, result: ReceiptResult, failure: Option<Fa
     receipt.fresh_install = ctx.record.resources.fresh_install.clone();
     receipt.lane = ctx.record.resources.lane.clone();
     receipt.build_lock = ctx.record.build_lock.clone();
+    receipt.build_lock_waits = ctx.record.build_lock_waits.clone();
     receipt.runtime_version = ctx.record.runtime_version.clone();
     for (name, value) in &ctx.notes {
         receipt.outcomes.insert(name.clone(), value.clone());
@@ -299,6 +303,7 @@ pub fn prepare(runner: &mut dyn Runner, args: &PrepareArgs) -> Receipt {
     let started_ms = runner.now_epoch_ms();
     let os = runner.host_os();
     let host_start = crate::host_capacity::sample(runner, os);
+    let helpers = crate::device_helpers::scan(runner, std::env::consts::OS);
     let mut receipt = match prepare_validated(runner, args, started_ms) {
         Ok(receipt) => receipt,
         Err(failure) => {
@@ -320,7 +325,7 @@ pub fn prepare(runner: &mut dyn Runner, args: &PrepareArgs) -> Receipt {
             receipt
         }
     };
-    super::finish_host(runner, &mut receipt, host_start);
+    super::finish_host(runner, &mut receipt, host_start, &helpers);
     receipt
 }
 
@@ -635,6 +640,7 @@ fn prepare_validated(
         terminal: None,
         held: None,
         build_lock: None,
+        build_lock_waits: Vec::new(),
         runtime_version: None,
     };
     if let Err(f) = record.save(&args.runs_root) {
@@ -662,6 +668,7 @@ fn prepare_validated(
         manifest_warm: None,
         lane_owned: scenario.platform == Platform::Ios,
         build_deadline_ms: None,
+        host_wait_ms: 0,
     };
     let t = ctx.mark("validate", started_ms);
     if let Some(earlier) = recovered {
@@ -2529,15 +2536,14 @@ fn lock_holder_for(ctx: &mut Ctx) -> LockHolder {
 
 pub(crate) fn claim_build_lock(ctx: &mut Ctx, lock_root: &Path) -> Result<(), Failure> {
     ensure_running(ctx.runner, "build")?;
-    let mut memory_waited_ms = 0;
-    wait_for_host_memory(ctx, &mut memory_waited_ms)?;
+    wait_for_host_memory(ctx)?;
     let name = format!(
         "native-build-{}",
         platform_dir(ctx.record.scenario.platform)
     );
     let holder = lock_holder_for(ctx);
     if ctx.record.scenario.platform == Platform::Ios {
-        return claim_ios_build_lock(ctx, lock_root, &name, holder, &mut memory_waited_ms);
+        return claim_ios_build_lock(ctx, lock_root, &name, holder);
     }
     // Persisted before the claim so an interrupted prepare leaves the intent
     // discoverable; a foreign holder at cleanup time proves the claim never
@@ -2600,21 +2606,22 @@ const LOCK_POLL_MS: u64 = 1000;
 const LOCK_PROGRESS_MS: u64 = 5000;
 const HOLDER_IDLE_ADVISORY_MS: u64 = 120_000;
 
-fn wait_for_host_memory(ctx: &mut Ctx, total_waited_ms: &mut u64) -> Result<(), Failure> {
+// Uses and spends this build admission's one memory allowance (`ctx.host_wait_ms`), outside the build budget.
+fn wait_for_host_memory(ctx: &mut Ctx) -> Result<(), Failure> {
     use crate::host_capacity::{Pressure, Sample, MEMORY_POLL_MS, MEMORY_WAIT_MS};
     let start = ctx.runner.monotonic_ms();
-    let previous_ms = *total_waited_ms;
+    let previous_ms = ctx.host_wait_ms;
     let allowance_ms = MEMORY_WAIT_MS.saturating_sub(previous_ms);
     let os = ctx.runner.host_os();
     let mut host = crate::host_capacity::sample(ctx.runner, os);
     let mut waited = ctx.runner.monotonic_ms().saturating_sub(start);
-    *total_waited_ms = previous_ms.saturating_add(waited);
+    ctx.host_wait_ms = previous_ms.saturating_add(waited);
     if host.memory_unread() {
         ctx.notes.push((
             "host_wait".into(),
             format!(
                 "host memory state unavailable before the build; waited {} s in total",
-                *total_waited_ms / 1000
+                ctx.host_wait_ms / 1000
             ),
         ));
         return Ok(());
@@ -2625,7 +2632,7 @@ fn wait_for_host_memory(ctx: &mut Ctx, total_waited_ms: &mut u64) -> Result<(), 
                 "host_wait".into(),
                 format!(
                     "waited {} s for host memory before the build; recovered: {}",
-                    *total_waited_ms / 1000,
+                    ctx.host_wait_ms / 1000,
                     host.summary()
                 ),
             ));
@@ -2677,8 +2684,8 @@ fn wait_for_host_memory(ctx: &mut Ctx, total_waited_ms: &mut u64) -> Result<(), 
             Some(waited),
         );
     }
-    *total_waited_ms = previous_ms.saturating_add(waited);
-    let seconds = *total_waited_ms / 1000;
+    ctx.host_wait_ms = previous_ms.saturating_add(waited);
+    let seconds = ctx.host_wait_ms / 1000;
     if !host.memory_constrained() {
         end(StageState::Passed, None, waited);
         ctx.notes.push((
@@ -2716,14 +2723,59 @@ fn wait_for_host_memory(ctx: &mut Ctx, total_waited_ms: &mut u64) -> Result<(), 
     Ok(())
 }
 
-// Bounded wait for the iOS build lock within the build window. A live or unproven holder is
-// never taken; a dead one is reclaimed only through the group-proven orphan rule.
 fn claim_ios_build_lock(
     ctx: &mut Ctx,
     lock_root: &Path,
     name: &str,
+    holder: LockHolder,
+) -> Result<(), Failure> {
+    let deadline = ctx.runner.monotonic_ms().saturating_add(
+        ctx.record
+            .scenario
+            .deadlines
+            .build_seconds
+            .saturating_mul(1000),
+    );
+    ctx.build_deadline_ms = Some(deadline);
+    claim_waiting_build_lock(ctx, lock_root, name, holder, deadline, false)
+}
+
+fn claim_build_slot(ctx: &mut Ctx) -> Result<(), Failure> {
+    let lock_root = ctx
+        .record
+        .resources
+        .build_lock
+        .as_ref()
+        .and_then(|lock| lock.lock_dir.parent())
+        .map(Path::to_path_buf)
+        .ok_or_else(|| {
+            Failure::new(
+                "build",
+                FailureCode::RunRecordInvalid,
+                "a native build needs its platform lock before the machine slot",
+                "retain the run for cleanup",
+            )
+        })?;
+    let deadline = ctx.build_deadline_ms.unwrap_or_else(|| {
+        ctx.runner.monotonic_ms().saturating_add(
+            ctx.record
+                .scenario
+                .deadlines
+                .build_seconds
+                .saturating_mul(1000),
+        )
+    });
+    let holder = lock_holder_for(ctx);
+    claim_waiting_build_lock(ctx, &lock_root, "native-build-slot", holder, deadline, true)
+}
+
+fn claim_waiting_build_lock(
+    ctx: &mut Ctx,
+    lock_root: &Path,
+    name: &str,
     mut holder: LockHolder,
-    memory_waited_ms: &mut u64,
+    mut deadline: u64,
+    slot: bool,
 ) -> Result<(), Failure> {
     if holder.identity.is_none() {
         return Err(Failure::new(
@@ -2734,41 +2786,65 @@ fn claim_ios_build_lock(
         )
         .with_recovery(RecoveryReason::IdentityUnavailable));
     }
-    // Persisted before the claim so an interrupted prepare leaves the intent discoverable.
-    ctx.record.resources.build_lock = Some(BuildLockResource {
-        lock_dir: buildplan::lock_dir(lock_root, name),
-        holder: holder.holder.clone(),
-    });
+    if slot {
+        if let Some(slot) = &ctx.record.resources.build_slot {
+            holder.holder = slot.lock.holder.clone();
+        } else {
+            let identity = holder.identity.as_ref().expect("identity checked");
+            let nonce = crate::lease::fresh_token(&format!(
+                "{}\0{}\0{}\0{}\0{}",
+                ctx.record.run_id,
+                ctx.runs_root.display(),
+                identity.pid,
+                ctx.runner.now_epoch_ms(),
+                identity.started_at,
+            ));
+            holder.holder = format!("qaren-{}-{nonce}", ctx.record.run_id);
+            ctx.record.resources.build_slot = Some(BuildSlotResource {
+                lock: BuildLockResource {
+                    lock_dir: buildplan::lock_dir(lock_root, name),
+                    holder: holder.holder.clone(),
+                },
+                work: BuildSlotWork::Finite,
+            });
+        }
+    } else {
+        ctx.record.resources.build_lock = Some(BuildLockResource {
+            lock_dir: buildplan::lock_dir(lock_root, name),
+            holder: holder.holder.clone(),
+        });
+    }
     ctx.save()
         .map_err(|f| f.with_recovery(RecoveryReason::PersistenceFailed))?;
     let start = ctx.runner.monotonic_ms();
-    let mut deadline = start.saturating_add(
-        ctx.record
-            .scenario
-            .deadlines
-            .build_seconds
-            .saturating_mul(1000),
-    );
-    ctx.build_deadline_ms = Some(deadline);
-    let mut wait = LockWait::default();
+    let mut wait = LockWait {
+        name: name.into(),
+        deadline_ms: Some(deadline),
+        ..Default::default()
+    };
     loop {
         if let Err(f) = ensure_running(ctx.runner, "build_lock_wait") {
-            wait.finish(ctx, start, StageState::Failed);
+            wait.finish(ctx, start, StageState::Failed, Some("RUN_CANCELLED"));
             return Err(f.with_recovery(RecoveryReason::RunCancelled));
         }
         // Budget expiry before the claim starts no new work.
-        if wait.waiting && ctx.runner.monotonic_ms() >= deadline {
-            wait.finish(ctx, start, StageState::Failed);
+        if ctx.runner.monotonic_ms() >= deadline {
+            wait.finish(ctx, start, StageState::Failed, Some("BUILD_CONTENDED"));
             return Err(wait.refusal(name, ctx.record.scenario.deadlines.build_seconds));
         }
-        if wait.waiting && *memory_waited_ms < crate::host_capacity::MEMORY_WAIT_MS {
-            let memory_before_ms = *memory_waited_ms;
-            if let Err(f) = wait_for_host_memory(ctx, memory_waited_ms) {
-                wait.finish(ctx, start, StageState::Failed);
+        if wait.waiting && ctx.host_wait_ms < crate::host_capacity::MEMORY_WAIT_MS {
+            let memory_before_ms = ctx.host_wait_ms;
+            if let Err(f) = wait_for_host_memory(ctx) {
+                wait.finish(ctx, start, StageState::Failed, Some(&f.code_str()));
                 return Err(f);
             }
-            deadline = deadline.saturating_add(*memory_waited_ms - memory_before_ms);
-            ctx.build_deadline_ms = Some(deadline);
+            // The memory wait stays outside the budget; Android's slot keeps its own deadline.
+            let used = ctx.host_wait_ms - memory_before_ms;
+            deadline = deadline.saturating_add(used);
+            wait.deadline_ms = Some(deadline);
+            if ctx.build_deadline_ms.is_some() {
+                ctx.build_deadline_ms = Some(deadline);
+            }
         }
         holder.at = timefmt::iso8601_utc(ctx.runner.now_epoch_ms());
         let (outcome, orphan) = crate::lease::claim_reclaiming_build_orphan(
@@ -2786,7 +2862,7 @@ fn claim_ios_build_lock(
                         crate::lease::orphan_note(&buildplan::lock_dir(lock_root, name), &run_id),
                     ));
                 }
-                wait.finish(ctx, start, StageState::Passed);
+                wait.finish(ctx, start, StageState::Passed, None);
                 return Ok(());
             }
             LockOutcome::Contended {
@@ -2800,11 +2876,20 @@ fn claim_ios_build_lock(
                     .sleep(Duration::from_millis(LOCK_POLL_MS.min(remaining)));
             }
             LockOutcome::Error(detail) => {
-                wait.finish(ctx, start, StageState::Failed);
+                wait.finish(
+                    ctx,
+                    start,
+                    StageState::Failed,
+                    Some("RUN_RECORD_UPDATE_FAILED"),
+                );
                 return Err(Failure::new(
                     "plan",
                     FailureCode::RunRecordUpdateFailed,
-                    format!("cannot operate the build serialization lock: {detail}"),
+                    if slot {
+                        crate::native_build_slot::public_detail("cannot claim", &ctx.record.run_id)
+                    } else {
+                        format!("cannot operate the build serialization lock: {detail}")
+                    },
                     buildplan::LOCK_ROOT_ADVICE,
                 ));
             }
@@ -2814,6 +2899,8 @@ fn claim_ios_build_lock(
 
 #[derive(Default)]
 struct LockWait {
+    name: String,
+    deadline_ms: Option<u64>,
     observed: BuildLockObservation,
     waiting: bool,
     holder_token: Option<String>,
@@ -2833,7 +2920,7 @@ impl LockWait {
         let token = existing.map(|held| held.holder.clone());
         let transition = self.waiting && token != self.holder_token;
         let facts = existing.map(|held| {
-            crate::lease::holder_facts_until(ctx.runner, held, liveness, ctx.build_deadline_ms)
+            crate::lease::holder_facts_until(ctx.runner, held, liveness, self.deadline_ms)
         });
         let alive = facts.and_then(|f| f.alive);
         let build_process = facts.and_then(|f| f.build_process);
@@ -2848,6 +2935,7 @@ impl LockWait {
             self.idle_since_ms = None;
         }
         self.observed = BuildLockObservation {
+            lock: Some(self.name.clone()),
             holder: existing
                 .map(|held| held.run_id.clone())
                 .filter(|run_id| crate::runrecord::validate_run_id(run_id).is_ok()),
@@ -2880,14 +2968,23 @@ impl LockWait {
         if !self.waiting {
             self.waiting = true;
             crate::progress::started("build-lock-wait", false);
-            crate::events::stage("build_lock_wait", StageState::Running, Some(code), None);
-            self.reported_ms = now;
-        } else if transition || idle || now.saturating_sub(self.reported_ms) >= LOCK_PROGRESS_MS {
-            crate::events::stage(
-                "build_lock_wait",
+            crate::events::build_lock_wait(
                 StageState::Running,
                 Some(code),
                 Some(now.saturating_sub(start)),
+                &self.name,
+                self.observed.holder.as_deref(),
+                self.observed.hold_s.map(|s| s.saturating_mul(1000)),
+            );
+            self.reported_ms = now;
+        } else if transition || idle || now.saturating_sub(self.reported_ms) >= LOCK_PROGRESS_MS {
+            crate::events::build_lock_wait(
+                StageState::Running,
+                Some(code),
+                Some(now.saturating_sub(start)),
+                &self.name,
+                self.observed.holder.as_deref(),
+                self.observed.hold_s.map(|s| s.saturating_mul(1000)),
             );
             self.reported_ms = now;
         }
@@ -2906,12 +3003,29 @@ impl LockWait {
         ctx.record.build_lock = Some(self.observed.clone());
     }
 
-    fn finish(&mut self, ctx: &mut Ctx, start: u64, state: StageState) {
+    fn finish(&mut self, ctx: &mut Ctx, start: u64, state: StageState, code: Option<&str>) {
         let elapsed = ctx.runner.monotonic_ms().saturating_sub(start);
+        self.observed.lock = Some(self.name.clone());
         self.observed.waited_s = elapsed / 1000;
-        ctx.record.build_lock = Some(self.observed.clone());
+        ctx.record.build_lock_waits.push(self.observed.clone());
+        if self.waiting
+            || ctx
+                .record
+                .build_lock
+                .as_ref()
+                .is_none_or(|seen| seen.observation == LockObservation::None)
+        {
+            ctx.record.build_lock = Some(self.observed.clone());
+        }
         if self.waiting {
-            crate::events::stage("build_lock_wait", state, None, Some(elapsed));
+            crate::events::build_lock_wait(
+                state,
+                code,
+                Some(elapsed),
+                &self.name,
+                self.observed.holder.as_deref(),
+                self.observed.hold_s.map(|s| s.saturating_mul(1000)),
+            );
             crate::progress::finished("build-lock-wait", state == StageState::Passed);
         }
     }
@@ -4665,7 +4779,49 @@ fn build_failure(ctx: &Ctx, detail: impl Into<String>) -> Failure {
     )
 }
 
+fn release_build_slot(ctx: &mut Ctx) -> Result<(), Failure> {
+    let previous = ctx.record.resources.build_slot.clone();
+    let Some(outcome) = super::cleanup::cleanup_build_slot(ctx.runner, &mut ctx.record) else {
+        return Ok(());
+    };
+    if !outcome.clean() {
+        return Err(Failure::new(
+            "build",
+            FailureCode::RunRecordUpdateFailed,
+            format!("native-build-slot retained: {}", outcome.render()),
+            format!(
+                "qaren cleanup {} --json retains unproven build ownership",
+                ctx.record.run_id
+            ),
+        ));
+    }
+    if let Err(failure) = ctx.save() {
+        ctx.record.resources.build_slot = previous;
+        return Err(failure);
+    }
+    Ok(())
+}
+
 fn run_finite_build(ctx: &mut Ctx, spec: &CmdSpec) -> Result<(), Failure> {
+    claim_build_slot(ctx)?;
+    let mut cleanup_attempted = false;
+    let result = run_finite_build_command(ctx, spec, &mut cleanup_attempted);
+    if result.is_err() && !cleanup_attempted {
+        let _ = super::cleanup::cleanup_build(ctx.runner, &mut ctx.record, &ctx.runs_root);
+    }
+    let released = release_build_slot(ctx);
+    if let Err(failure) = &released {
+        ctx.notes
+            .push(("build_slot_release".into(), failure.detail.to_string()));
+    }
+    result.and(released)
+}
+
+fn run_finite_build_command(
+    ctx: &mut Ctx,
+    spec: &CmdSpec,
+    cleanup_attempted: &mut bool,
+) -> Result<(), Failure> {
     ensure_running(ctx.runner, "build")?;
     use crate::runrecord::BuildCompletionEvidence;
     use std::io::Write;
@@ -4688,7 +4844,12 @@ fn run_finite_build(ctx: &mut Ctx, spec: &CmdSpec) -> Result<(), Failure> {
         .env("TYPESAFE_API_KEY", "");
     ctx.record.resources.begin_build()?;
     ctx.record.phase = Phase::Building;
-    ctx.save()?;
+    if let Err(failure) = ctx.save() {
+        ctx.record
+            .resources
+            .finish_build(BuildCompletionEvidence::NotSpawned)?;
+        return Err(failure);
+    }
     if let Err(failure) = ensure_running(ctx.runner, "build") {
         ctx.record
             .resources
@@ -4717,15 +4878,26 @@ fn run_finite_build(ctx: &mut Ctx, spec: &CmdSpec) -> Result<(), Failure> {
         .resources
         .record_build_spawned(child.pid, identity)?;
     ctx.save()?;
-    let grouped = match ctx.record.resources.build_lock.as_ref() {
-        Some(lock) => buildplan::record_holder_group(
-            &lock.lock_dir,
-            &lock.holder,
-            &ctx.record.run_id,
-            child.pid,
-        ),
-        None => Ok(()),
-    };
+    let grouped = ctx
+        .record
+        .resources
+        .build_lock
+        .iter()
+        .chain(
+            ctx.record
+                .resources
+                .build_slot
+                .iter()
+                .map(|slot| &slot.lock),
+        )
+        .try_for_each(|lock| {
+            buildplan::record_holder_group(
+                &lock.lock_dir,
+                &lock.holder,
+                &ctx.record.run_id,
+                child.pid,
+            )
+        });
     if let Err(detail) = &grouped {
         ctx.notes
             .push(("build_lock_group".to_string(), detail.clone()));
@@ -4767,6 +4939,7 @@ fn run_finite_build(ctx: &mut Ctx, spec: &CmdSpec) -> Result<(), Failure> {
             }
         }
     }
+    *cleanup_attempted = true;
     let mut outcome = super::cleanup::cleanup_build(ctx.runner, &mut ctx.record, &ctx.runs_root)
         .expect("build recorded");
     if !outcome.clean() && exit.is_none() && matches!(child.handle.try_wait(), Ok(Some(_))) {
@@ -4947,6 +5120,7 @@ fn with_build_window<T>(
         manifest_warm: ctx.manifest_warm.take(),
         lane_owned: ctx.lane_owned,
         build_deadline_ms: ctx.build_deadline_ms,
+        host_wait_ms: ctx.host_wait_ms,
     };
     let result = operation(&mut scoped);
     let budget = ensure_build_budget(&mut scoped);
@@ -4961,7 +5135,10 @@ fn with_build_window<T>(
     ctx.manifest_warm = scoped.manifest_warm;
     ctx.lane_owned = scoped.lane_owned;
     ctx.build_deadline_ms = scoped.build_deadline_ms;
-    budget?;
+    ctx.host_wait_ms = scoped.host_wait_ms;
+    if !matches!(&result, Err(failure) if failure.code == FailureCode::BuildContended) {
+        budget?;
+    }
     result
 }
 
@@ -5150,14 +5327,53 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
         .join("logs")
         .join("build.log");
     ensure_running(ctx.runner, "build")?;
-    let spawned = ctx.runner.spawn_group(&spec, &build_log).map_err(|e| {
-        Failure::new(
-            "build",
-            FailureCode::BuildFailed,
-            format!("cannot spawn {}: {e}", spec.rendered()),
-            "check pnpm/expo availability, run qaren cleanup, then retry prepare",
-        )
-    })?;
+    claim_build_slot(ctx)?;
+    ctx.record
+        .resources
+        .build_slot
+        .as_mut()
+        .expect("slot claimed")
+        .work = BuildSlotWork::MetroSpawnPending;
+    if let Err(failure) = ctx.save() {
+        ctx.record
+            .resources
+            .build_slot
+            .as_mut()
+            .expect("slot claimed")
+            .work = BuildSlotWork::Finite;
+        if let Err(release_failure) = release_build_slot(ctx) {
+            ctx.notes.push((
+                "build_slot_release".into(),
+                release_failure.detail.to_string(),
+            ));
+        }
+        return Err(failure);
+    }
+    let spawned = match ctx.runner.spawn_group(&spec, &build_log) {
+        Ok(spawned) => spawned,
+        Err(error) => {
+            ctx.record
+                .resources
+                .build_slot
+                .as_mut()
+                .expect("slot claimed")
+                .work = BuildSlotWork::Finite;
+            if let Err(failure) = release_build_slot(ctx) {
+                ctx.notes
+                    .push(("build_slot_release".into(), failure.detail.to_string()));
+            }
+            return Err(build_failure(
+                ctx,
+                format!("cannot spawn {}: {error}", spec.rendered()),
+            ));
+        }
+    };
+    ctx.record
+        .resources
+        .build_slot
+        .as_mut()
+        .expect("slot claimed")
+        .work = BuildSlotWork::Metro { pgid: spawned.pgid };
     let identity = capture_pid_identity(ctx.runner, spawned.pid);
     ctx.record.resources.metro = Some(MetroResource {
         port,
@@ -5168,6 +5384,30 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
     });
     ctx.record.phase = Phase::Building;
     ctx.save()?;
+    let slot = ctx
+        .record
+        .resources
+        .build_slot
+        .as_ref()
+        .expect("slot claimed");
+    buildplan::record_holder_group(
+        &slot.lock.lock_dir,
+        &slot.lock.holder,
+        &ctx.record.run_id,
+        ctx.record
+            .resources
+            .metro
+            .as_ref()
+            .expect("metro recorded")
+            .spawned
+            .pgid,
+    )
+    .map_err(|detail| {
+        build_failure(
+            ctx,
+            format!("cannot record the native-build-slot group: {detail}"),
+        )
+    })?;
     if identity.is_none() {
         return Err(Failure::new(
             "build",
@@ -5221,7 +5461,28 @@ fn wait_ready_until(
 ) -> Result<(), Failure> {
     let metro_resource = ctx.record.resources.metro.clone().expect("metro spawned");
     let identity = metro_resource.identity.clone().expect("identity captured");
+    let mut build_completion = crate::native_build_slot::GradleCompletion::for_run(&ctx.record);
+    let mut slot_release_error = None;
     loop {
+        if let Some(completion) = build_completion.as_mut() {
+            match completion.poll() {
+                Ok(true) => {
+                    ctx.record.resources.build_slot = None;
+                    ctx.save()?;
+                    build_completion = None;
+                }
+                Ok(false) => {}
+                Err(detail) => {
+                    if slot_release_error.as_ref() != Some(&detail) {
+                        ctx.notes.push((
+                            "build_slot".into(),
+                            format!("native-build-slot retained: {detail}"),
+                        ));
+                        slot_release_error = Some(detail);
+                    }
+                }
+            }
+        }
         ensure_running(ctx.runner, "build")?;
         if probe_pid_identity(ctx.runner, &identity) == PidLiveness::Dead {
             return Err(Failure::new(
@@ -6170,6 +6431,9 @@ fn launch_failure(
 mod install_proof_tests;
 
 #[cfg(test)]
+mod build_slot_tests;
+
+#[cfg(test)]
 mod launch_tests {
     use super::*;
     use crate::exec::CmdOutput;
@@ -6294,6 +6558,7 @@ mod launch_tests {
                 terminal: None,
                 held: None,
                 build_lock: None,
+                build_lock_waits: Vec::new(),
                 runtime_version: None,
             };
             let run_dir = RunRecord::run_dir(&root, &record.run_id);
@@ -6355,6 +6620,7 @@ mod launch_tests {
                 manifest_warm: None,
                 lane_owned: false,
                 build_deadline_ms: None,
+                host_wait_ms: 0,
             };
             ctx.save().unwrap();
             let fp = NativeFingerprint {

@@ -60,6 +60,7 @@ impl Fixture {
             manifest_warm: None,
             lane_owned: false,
             build_deadline_ms: None,
+            host_wait_ms: 0,
         }
     }
     fn modules(&self) {
