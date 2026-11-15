@@ -188,6 +188,7 @@ interface PresenceRead {
 interface Scenario {
   // `views` answers every read until the first refusal is proven; `retry` answers the later reads.
   views: View[];
+  proofViews?: View[];
   retry?: View[] | ((dispatched: number, read: number) => View[]);
   kind?: 'press' | 'fill';
   step?: string;
@@ -217,6 +218,7 @@ async function walk(s: Scenario) {
   let dispatched = 0;
   let retryReads = 0;
   const viewsNow = (presence: boolean) => {
+    if (presence && dispatched === 1 && s.proofViews) return s.proofViews;
     // The proof of the first refusal reads the screen that refused it.
     if (!s.retry || dispatched === 0 || (presence && dispatched === 1)) return s.views;
     retryReads += 1;
@@ -409,6 +411,58 @@ for (const kind of ['press', 'fill'] as const) {
       /"go" stayed off screen after one scroll; covered by other at 100,690,200,110/,
     );
   });
+
+  test(`proof geometry: a shrinking list bounds the drag (${kind})`, async () => {
+    const r = await walk({
+      views: typed(barred()),
+      proofViews: typed([{ ...list(), rect: { ...LIST, height: 300 } }, ...barred().slice(1)]),
+      retry: cleared,
+      kind,
+      dispatches: [OCCLUDED, { ok: true, proven: true }],
+    });
+    assert.equal(r.result.verdict, 'PASS', r.reason);
+    assert.deepEqual(scrolls(r.acts), ['scroll down']);
+    const band = r.bands[0]!;
+    assert.ok(band.y >= 100 && band.y + band.height <= 400, JSON.stringify(band));
+  });
+
+  test(`proof geometry: a moved target changes the drag direction (${kind})`, async () => {
+    const r = await walk({
+      views: typed(barred()),
+      proofViews: typed([
+        list(),
+        target(type, { ...IN_LIST, y: 150 }),
+        { id: 'qa-bar', type: 'Other', rect: { ...BAR, y: 140, height: 60 } },
+      ]),
+      retry: cleared,
+      kind,
+      dispatches: [OCCLUDED, { ok: true, proven: true }],
+    });
+    assert.equal(r.result.verdict, 'PASS', r.reason);
+    assert.deepEqual(scrolls(r.acts), ['scroll up']);
+    assert.ok(r.bands[0]!.y >= 200, JSON.stringify(r.bands));
+  });
+
+  for (const [name, proofViews] of [
+    ['target missing', [list(), { id: 'qa-bar', type: 'Other', rect: BAR }]],
+    ['target no longer in a list', [list(), target(type, IN_LIST, null), ...barred().slice(2)]],
+    [
+      'new foreign view behind the list',
+      [
+        { id: 'qa-backdrop', type: 'Other', rect: FULL },
+        list(),
+        target(type, IN_LIST, 1),
+        ...barred().slice(2),
+      ],
+    ],
+  ] as const) {
+    test(`proof geometry: ${name} withholds the drag (${kind})`, async () => {
+      const r = await walk({ views: typed(barred()), proofViews: typed([...proofViews]), kind });
+      assert.equal(r.result.verdict, 'FAIL');
+      assert.deepEqual(scrolls(r.acts), [], r.log.join(','));
+      assert.equal(dispatches(r.acts).length, 2, r.log.join(','));
+    });
+  }
 
   for (const [name, views, text, precondition] of [
     [

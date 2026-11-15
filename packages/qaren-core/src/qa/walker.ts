@@ -1655,7 +1655,7 @@ async function walkBlockScoped(
   const proveCover = async (
     item: Exclude<Item, { kind: 'check' }>,
     until?: number,
-  ): Promise<void> => {
+  ): Promise<Observation | undefined> => {
     const target = coverTargets.get(item.line);
     coverTargets.delete(item.line);
     if (deps.platform !== 'ios' || !target || coverGaps.get(item.line) !== 'no-native-presence')
@@ -1677,6 +1677,7 @@ async function walkBlockScoped(
         ? coverOwner(matches[0], proven.screen)
         : { gap: 'target-not-recaptured' },
     );
+    return proven;
   };
   // After a proven cover check of a covered iOS refusal: the band of its one clearance drag, or why no
   // drag may be sent. Only a read proving nothing else takes the touch keeps today's band.
@@ -5270,14 +5271,20 @@ async function walkBlockScoped(
                   break;
                 }
                 refusedIdentity = element;
-                // On iOS with the keyboard proven hidden, the cover is proven before any drag is chosen.
                 let clearing: { band: NativeNode['rect'] } | WithheldDrag | undefined;
                 if (deps.platform === 'ios' && before.screen.keyboardVisible === false) {
-                  await proveCover(
+                  const proven = await proveCover(
                     item,
                     Math.min(itemDeadline ?? Infinity, deps.now() + NATIVE_PRESENCE_BUDGET_MS),
                   );
-                  clearing = clearanceAfterProof(item, element, before.screen);
+                  if (proven) {
+                    before = proven;
+                    const target = element;
+                    const matches = before.screen.elements.filter((e) => sameIdentity(e, target));
+                    if (matches.length === 1) element = matches[0];
+                    else clearing = 'no-scroll-area';
+                  }
+                  clearing ??= clearanceAfterProof(item, element, before.screen);
                   if (typeof clearing === 'string') {
                     withheldDrag = clearing;
                     before = await settledCapture(item);
