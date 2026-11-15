@@ -152,15 +152,25 @@ the `simulator-service` row separately reports simulator inventory failures belo
 
 An Android emulator starts helper processes that can keep running, sometimes at
 several cores' worth of CPU, after the emulator itself has exited. The
-`device-helpers` row reads the same process list as `host-devices`, with pid,
-parent pid and CPU columns, and names `netsimd` and `crashpad_handler`
-processes whose executable sits directly in an SDK `emulator` folder; other
-apps' programs with the same name are ignored. A helper is reported when no
-local emulator (`qemu-system-*` with `-avd`) is running, or when it uses more
-than 100% CPU. Each is named by executable, pid and CPU share, with the
-`kill <pid>` command that stops it. While any emulator runs, every helper counts
-as served by it. QaReN started none of these processes, so the row warns and
-stops nothing. An unavailable or unreadable process list warns as unknown.
+`device-helpers` row reads the same process list as `host-devices` (pid, parent
+pid, owner, CPU, state, start time, name and command line) and looks at
+`netsimd` and `crashpad_handler` processes whose command line starts with an
+absolute path to the helper. A helper is reported when no emulator is running
+or starting, or when it uses more than 100% CPU. Any `qemu-system-*` or
+`emulator*` process of any user, in any state, counts as a running emulator.
+Before naming a helper, doctor reads the first 4 KiB of `source.properties` in
+the helper's folder (two-second limit, once per folder); only the SDK's
+emulator package, with the line `Pkg.Path=emulator`, proves it. Another app's
+program with the same name, or a folder whose package file cannot be read, is
+never reported.
+
+Each helper is named by executable, pid and CPU share, with the `kill <pid>`
+command that stops it. One `netsimd` can serve several emulators, so a helper
+cannot be tied to its own emulator: while any emulator runs or starts, every
+helper counts as served by it, and the row says so. QaReN started none of these
+processes, so the row warns and stops nothing. An unavailable or unreadable
+process list warns as unknown; a list with an unreadable line warns that it may
+hide a running emulator.
 
 Load warns when the one-minute load is at least the logical CPU count or sampled
 CPU idle is below 10%: readiness deadlines may expire, so use fewer concurrent
@@ -686,7 +696,8 @@ Sampling starts no device or service and introduces no cleanup resource.
 
 Right after the start sample, the run reads the process list once (three-second
 limit) for the [emulator helper processes](#emulator-helper-processes) doctor
-reports. Each finding is listed in the receipt's `device_helpers` as its
+reports, plus one package-file read per candidate helper folder. Each finding is
+listed in the receipt's `device_helpers` as its
 executable name and pid only, and `report.md` gains one line naming each with
 its CPU share, why it was reported and its `kill <pid>` command. A clean,
 unavailable or unreadable process list adds nothing and never changes the

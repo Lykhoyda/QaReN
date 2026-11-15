@@ -219,7 +219,7 @@ fn f7_samples_bracket_every_command_including_teardown() {
     assert_ne!(host["start"], host["end"]);
 }
 
-const HELPERS: &str = "S netsimd 4242 1 960.0 /private/helper-canary/emulator/netsimd --token=secret-canary\nS crashpad_handle 4243 1 0.0 /Applications/Chrome.app/crashpad_handler\n";
+const HELPERS: &str = "  4242     1   501 960.0 S    Sun Nov 15 01:02:03 2026 netsimd /private/helper-canary/emulator/netsimd --token=secret-canary\n  4243     1   501   0.0 S    Sun Nov 15 01:02:03 2026 crashpad_handle /Applications/Chrome.app/crashpad_handler\n";
 
 #[test]
 fn e4_run_start_helper_scan_notes_executable_name_and_pid_only() {
@@ -251,12 +251,12 @@ fn e4_run_start_helper_scan_notes_executable_name_and_pid_only() {
         .iter()
         .enumerate()
         .filter(|(_, c)| c.label == "device-helpers")
-        .map(|(index, c)| (index, c.timeout_seconds))
+        .map(|(index, c)| (index, c.program.as_str(), c.timeout_seconds))
         .collect();
     assert_eq!(
         scans,
-        vec![(2, 3)],
-        "one scan, right after the start sample"
+        vec![(2, "ps", 3), (3, "head", 2), (4, "head", 2)],
+        "one scan right after the start sample, then one package read per helper folder"
     );
 
     let (mut mock, req) = refusing();

@@ -2,10 +2,13 @@
 //! of them and, here, only reads the process list.
 use crate::exec::{CmdSpec, Runner};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 
 /// `ps -o` columns: the doctor process list and the run-start scan read the same shape.
-pub const PROCESS_COLUMNS: &str = "stat=,ucomm=,pid=,ppid=,pcpu=,args=";
+pub const PROCESS_COLUMNS: &str = "pid=,ppid=,uid=,pcpu=,stat=,lstart=,ucomm=,args=";
+// pid, ppid, uid, pcpu, stat and the five words of `lstart`; the name is the next word.
+const FIXED_WORDS: usize = 10;
 const HOT_CPU: f64 = 100.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,8 +39,17 @@ pub struct Finding {
     pub name: HelperName,
     pub pid: u32,
     pub ppid: u32,
+    pub uid: u32,
+    pub started: String,
     pub cpu: f64,
     pub emulator_gone: bool,
+}
+
+/// What one listing found, and whether every line of it could be read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Scan {
+    pub helpers: Vec<Finding>,
+    pub complete: bool,
 }
 
 impl Finding {
@@ -74,87 +86,165 @@ impl Finding {
     }
 }
 
-/// The AVD of a local Android emulator process line (`qemu-system-*` with `-avd`).
-pub fn emulator_avd(line: &str) -> Option<&str> {
-    let words: Vec<_> = line.split_whitespace().collect();
-    if !words.get(1)?.starts_with("qemu-system-") {
-        return None;
+/// One row of a `PROCESS_COLUMNS` listing.
+pub struct Process<'a> {
+    pub pid: u32,
+    pub ppid: u32,
+    pub uid: u32,
+    pub cpu: f64,
+    pub stat: &'a str,
+    pub started: String,
+    pub ucomm: &'a str,
+    pub args: &'a str,
+}
+
+impl Process<'_> {
+    /// The AVD of a local Android emulator process (`qemu-system-*` with `-avd`).
+    pub fn emulator_avd(&self) -> Option<&str> {
+        if !self.ucomm.starts_with("qemu-system-") {
+            return None;
+        }
+        let words: Vec<_> = self.args.split_whitespace().collect();
+        Some(words.windows(2).find(|pair| pair[0] == "-avd")?[1])
     }
-    Some(words.windows(2).find(|pair| pair[0] == "-avd")?[1])
+
+    // Running or starting, of any user and in any state; a look-alike name errs on the safe side.
+    fn is_emulator(&self) -> bool {
+        self.ucomm.starts_with("qemu-system-") || self.ucomm.starts_with("emulator")
+    }
+
+    /// The helper's name and the folder its executable sits in.
+    fn helper(&self) -> Option<(HelperName, &str)> {
+        // `ucomm` may be cut to 15 characters.
+        let name = if self.ucomm == "netsimd" {
+            HelperName::Netsimd
+        } else if self.ucomm.starts_with("crashpad_handle") {
+            HelperName::CrashpadHandler
+        } else {
+            return None;
+        };
+        if self.pid <= 1 || !self.args.starts_with('/') {
+            return None;
+        }
+        // Cut at the first `/<name>` that ends a word: SDK paths may hold spaces or the name.
+        let file = format!("/{}", name.as_str());
+        let at = self
+            .args
+            .match_indices(&file)
+            .map(|(at, _)| at)
+            .find(|&at| {
+                self.args[at + file.len()..]
+                    .chars()
+                    .next()
+                    .is_none_or(char::is_whitespace)
+            })?;
+        Some((name, &self.args[..at]))
+    }
+}
+
+pub struct ProcessList<'a> {
+    pub rows: Vec<Process<'a>>,
+    /// False when a line could not be read: it may hide an emulator.
+    pub complete: bool,
 }
 
 /// Text after the first `skip` whitespace-separated columns, keeping spaces inside it.
-fn after_columns(line: &str, skip: usize) -> Option<&str> {
+fn after_columns(line: &str, skip: usize) -> &str {
     let mut rest = line.trim_start();
     for _ in 0..skip {
-        rest = rest.split_once(char::is_whitespace)?.1.trim_start();
+        rest = rest
+            .split_once(char::is_whitespace)
+            .map_or("", |(_, tail)| tail.trim_start());
     }
-    Some(rest)
+    rest
 }
 
-fn helper_name(ucomm: &str, args: &str) -> Option<HelperName> {
-    // `ucomm` may be cut to 15 characters.
-    let name = if ucomm == "netsimd" {
-        HelperName::Netsimd
-    } else if ucomm.starts_with("crashpad_handle") {
-        HelperName::CrashpadHandler
-    } else {
+fn process(line: &str) -> Option<Process<'_>> {
+    let words: Vec<_> = line.split_whitespace().take(FIXED_WORDS + 1).collect();
+    if words.len() <= FIXED_WORDS {
         return None;
-    };
-    // Other apps ship same-named programs: only the SDK's emulator folder itself holds the helper.
-    let (folder, rest) = args.split_once(name.as_str())?;
-    (folder.ends_with("/emulator/") && rest.chars().next().is_none_or(char::is_whitespace))
-        .then_some(name)
-}
-
-struct Row<'a> {
-    ucomm: &'a str,
-    pid: u32,
-    ppid: u32,
-    cpu: f64,
-    args: &'a str,
-}
-
-fn row(line: &str) -> Option<Row<'_>> {
-    let words: Vec<_> = line.split_whitespace().take(5).collect();
-    let [_, ucomm, pid, ppid, cpu] = words[..] else {
-        return None;
-    };
-    Some(Row {
-        ucomm,
-        pid: pid.parse().ok()?,
-        ppid: ppid.parse().ok()?,
-        cpu: cpu
+    }
+    Some(Process {
+        pid: words[0].parse().ok()?,
+        ppid: words[1].parse().ok()?,
+        uid: words[2].parse().ok()?,
+        cpu: words[3]
             .parse()
             .ok()
             .filter(|v: &f64| v.is_finite() && *v >= 0.0)?,
-        args: after_columns(line, 5).filter(|args| !args.is_empty())?,
+        stat: words[4],
+        started: words[5..FIXED_WORDS].join(" "),
+        ucomm: words[FIXED_WORDS],
+        args: after_columns(line, FIXED_WORDS + 1),
     })
 }
 
-/// Helpers in a `PROCESS_COLUMNS` listing whose emulator is gone or that run above 100% CPU;
-/// None when no line of the listing reads as a process.
-pub fn findings(text: &str) -> Option<Vec<Finding>> {
-    let rows: Vec<_> = text.lines().filter_map(row).collect();
-    if rows.is_empty() {
-        return None;
+/// Reads a `PROCESS_COLUMNS` listing; None when no line reads as a process.
+pub fn parse(text: &str) -> Option<ProcessList<'_>> {
+    let mut complete = true;
+    let rows: Vec<_> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| {
+            let row = process(line);
+            complete &= row.is_some();
+            row
+        })
+        .collect();
+    (!rows.is_empty()).then_some(ProcessList { rows, complete })
+}
+
+// Other apps ship same-named programs: only the SDK's own emulator package holds the helpers.
+fn emulator_package(runner: &mut dyn Runner, label: &str, folder: &str) -> bool {
+    let path = format!("{folder}/source.properties");
+    let output = runner.run(
+        &CmdSpec::new(label, "head", &["-c", "4096", path.as_str()], 2)
+            .cwd(Path::new("/"))
+            .env("LC_ALL", "C"),
+    );
+    output.ok()
+        && output
+            .stdout
+            .lines()
+            .any(|line| line.trim() == "Pkg.Path=emulator")
+}
+
+/// Helpers in a `PROCESS_COLUMNS` listing whose emulator is gone or that run above 100% CPU.
+/// Reads each candidate folder's package file once, under `label`. None when no line reads.
+pub fn findings(runner: &mut dyn Runner, label: &str, text: &str) -> Option<Scan> {
+    let list = parse(text)?;
+    // Stated limit: one netsimd may serve several emulators, so no helper can be tied to its own;
+    // while any emulator runs or starts, every helper counts as served.
+    let emulator_gone = !list.rows.iter().any(Process::is_emulator);
+    let mut packages: HashMap<&str, bool> = HashMap::new();
+    let mut helpers = Vec::new();
+    for row in &list.rows {
+        let Some((name, folder)) = row.helper() else {
+            continue;
+        };
+        let finding = Finding {
+            name,
+            pid: row.pid,
+            ppid: row.ppid,
+            uid: row.uid,
+            started: row.started.clone(),
+            cpu: row.cpu,
+            emulator_gone,
+        };
+        if !(finding.emulator_gone || finding.hot()) {
+            continue;
+        }
+        let proven = *packages
+            .entry(folder)
+            .or_insert_with(|| emulator_package(runner, label, folder));
+        if proven {
+            helpers.push(finding);
+        }
     }
-    // shortcut: any running emulator counts as every helper's own; match each helper to its emulator before the stop step relies on it.
-    let emulator_gone = !text.lines().any(|line| emulator_avd(line).is_some());
-    Some(
-        rows.into_iter()
-            .filter_map(|row| {
-                let finding = Finding {
-                    name: helper_name(row.ucomm, row.args)?,
-                    pid: row.pid,
-                    ppid: row.ppid,
-                    cpu: row.cpu,
-                    emulator_gone,
-                };
-                (finding.emulator_gone || finding.hot()).then_some(finding)
-            })
-            .collect(),
-    )
+    Some(Scan {
+        helpers,
+        complete: list.complete,
+    })
 }
 
 /// One bounded process-list read at run start; an unreadable list finds nothing.
@@ -167,11 +257,10 @@ pub fn scan(runner: &mut dyn Runner, os: &str) -> Vec<Finding> {
             .cwd(Path::new("/"))
             .env("LC_ALL", "C"),
     );
-    output
-        .ok()
-        .then(|| findings(&output.stdout))
-        .flatten()
-        .unwrap_or_default()
+    if !output.ok() {
+        return Vec::new();
+    }
+    findings(runner, "device-helpers", &output.stdout).map_or_else(Vec::new, |scan| scan.helpers)
 }
 
 /// The report line for run-start findings, or None when there are none.
@@ -188,51 +277,244 @@ pub fn report_line(found: &[Finding]) -> Option<String> {
     })
 }
 
+/// One `PROCESS_COLUMNS` line, for fixtures.
+#[cfg(test)]
+pub(crate) fn ps_line(
+    pid: i64,
+    ppid: i64,
+    cpu: &str,
+    stat: &str,
+    ucomm: &str,
+    args: &str,
+) -> String {
+    format!("{pid:>6} {ppid:>6}   501 {cpu:>5} {stat:<4} Sun Nov 15 01:02:03 2026 {ucomm} {args}\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exec::{CmdOutput, MockRunner};
 
-    #[test]
-    fn listings_without_a_readable_process_are_unreadable_not_clean() {
-        for text in [
-            "",
-            "S netsimd /sdk/emulator/netsimd\n",
-            "S netsimd x 1 9.0 /sdk/emulator/netsimd\n",
-            "S netsimd 4242 1 NaN /sdk/emulator/netsimd\n",
-            "S netsimd 4242 1 -1.0 /sdk/emulator/netsimd\n",
-            "S netsimd 4242 1 9.0\n",
-        ] {
-            assert_eq!(findings(text), None, "{text:?}");
-        }
+    const SDK: &str = "/Volumes/External SSD/Android/sdk/emulator";
+    const PACKAGE: &str = "Pkg.Desc=Android Emulator\nPkg.Path=emulator\nPkg.Revision=37.2.13\n";
+
+    fn netsimd(pid: i64, ppid: i64, cpu: &str) -> String {
+        ps_line(
+            pid,
+            ppid,
+            cpu,
+            "S",
+            "netsimd",
+            &format!("{SDK}/netsimd --flag"),
+        )
+    }
+
+    fn package(runner: &mut MockRunner, folder: &str, output: CmdOutput) {
+        runner.expect_run(&format!("head -c 4096 {folder}/source.properties"), output);
+    }
+
+    fn scan_text(runner: &mut MockRunner, text: &str) -> Option<Scan> {
+        let scan = findings(runner, "device-helpers", text);
+        assert_eq!(runner.remaining(), 0, "unread package answers");
+        assert!(runner
+            .calls
+            .iter()
+            .all(|c| c.label == "device-helpers" && c.program == "head" && c.timeout_seconds == 2));
+        scan
     }
 
     #[test]
-    fn only_the_helper_executable_in_the_emulator_folder_counts() {
-        for text in [
-            "S crashpad_handle 4243 1 0.0 /sdk/emulator/other --crashpad_handler\n",
-            "S crashpad_handle 4243 1 0.0 /sdk/emulator/crashpad_handlerx\n",
-            "S netsimd 4243 1 0.0 /sdk/notemulator/netsimd\n",
-        ] {
-            assert_eq!(findings(text), Some(Vec::new()), "{text}");
-        }
-    }
-
-    #[test]
-    fn a_hot_helper_without_its_emulator_carries_both_facts() {
-        let found = findings("  S   netsimd    4242     1  960.0 /sdk/emulator/netsimd\n").unwrap();
-        assert_eq!(found.len(), 1);
-        assert!(found[0].emulator_gone && found[0].hot());
-        assert_eq!(found[0].ppid, 1);
+    fn only_a_folder_holding_the_sdk_emulator_package_makes_a_helper() {
+        let mut runner = MockRunner::new();
+        package(&mut runner, SDK, CmdOutput::success(PACKAGE));
+        let crash = ps_line(
+            4243,
+            1,
+            "0.0",
+            "S",
+            "crashpad_handle",
+            &format!("{SDK}/crashpad_handler --database=/x"),
+        );
+        let scan = scan_text(&mut runner, &format!("{}{crash}", netsimd(4242, 1, "0.5"))).unwrap();
+        assert!(scan.complete);
+        let names: Vec<_> = scan.helpers.iter().map(|f| (f.name, f.pid)).collect();
         assert_eq!(
-            found[0].describe(),
+            names,
+            vec![
+                (HelperName::Netsimd, 4242),
+                (HelperName::CrashpadHandler, 4243)
+            ]
+        );
+
+        for answer in [
+            CmdOutput::success("Pkg.Desc=Something else\nPkg.Path=platform-tools\n"),
+            CmdOutput::failed(1, "No such file or directory"),
+            CmdOutput {
+                timed_out: true,
+                ..Default::default()
+            },
+        ] {
+            let mut runner = MockRunner::new();
+            package(&mut runner, SDK, answer);
+            let scan = scan_text(&mut runner, &netsimd(4242, 1, "960.0")).unwrap();
+            assert!(scan.helpers.is_empty());
+        }
+    }
+
+    #[test]
+    fn same_named_programs_of_other_apps_are_never_read_or_reported() {
+        let text = [
+            ps_line(4244, 1, "0.0", "S", "crashpad_handle", "/Applications/Other App.app/Contents/Frameworks/crashpad_handler --database=/x/emulator/y"),
+            ps_line(4245, 1, "960.0", "S", "netsimd", "netsimd -s"),
+            ps_line(4246, 1, "960.0", "S", "vim", &format!("/usr/bin/vim {SDK}/netsimd")),
+            ps_line(4247, 1, "960.0", "S", "netsimd", &format!("{SDK}/netsimdx")),
+            ps_line(0, 1, "960.0", "S", "netsimd", &format!("{SDK}/netsimd")),
+            ps_line(1, 0, "960.0", "S", "netsimd", &format!("{SDK}/netsimd")),
+        ]
+        .concat();
+        let mut runner = MockRunner::new();
+        package(
+            &mut runner,
+            "/Applications/Other App.app/Contents/Frameworks",
+            CmdOutput::failed(1, "No such file"),
+        );
+        let scan = scan_text(&mut runner, &text).unwrap();
+        assert!(scan.complete);
+        assert!(scan.helpers.is_empty());
+    }
+
+    #[test]
+    fn an_sdk_path_holding_the_helper_name_or_a_space_is_recognised() {
+        let folder = "/tmp/netsimd-repro/sdk/emulator";
+        let mut runner = MockRunner::new();
+        package(&mut runner, folder, CmdOutput::success(PACKAGE));
+        let text = ps_line(
+            4242,
+            1,
+            "0.0",
+            "S",
+            "netsimd",
+            &format!("{folder}/netsimd --crashpad_handler"),
+        );
+        let scan = scan_text(&mut runner, &text).unwrap();
+        assert_eq!(scan.helpers.len(), 1);
+    }
+
+    #[test]
+    fn a_starting_emulator_or_any_users_emulator_serves_every_helper() {
+        for alive in [
+            ps_line(
+                900,
+                1,
+                "40.0",
+                "S",
+                "qemu-system-aar",
+                &format!("{SDK}/qemu/darwin-aarch64/qemu-system-aarch64 -avd Pixel"),
+            ),
+            ps_line(900, 1, "40.0", "Z", "qemu-system-x86", "(qemu-system-x86)"),
+            ps_line(
+                899,
+                1,
+                "0.1",
+                "S",
+                "emulator",
+                &format!("{SDK}/emulator -avd Pixel"),
+            ),
+            ps_line(
+                899,
+                1,
+                "0.1",
+                "S",
+                "emulator-headless",
+                &format!("{SDK}/emulator-headless -avd Pixel"),
+            ),
+            ps_line(
+                898,
+                1,
+                "0.1",
+                "S",
+                "qemu-system-aar",
+                "/Users/other/sdk/emulator/qemu/qemu-system-aarch64 -avd Theirs",
+            )
+            .replace("   501 ", "   502 "),
+        ] {
+            let mut runner = MockRunner::new();
+            let scan =
+                scan_text(&mut runner, &format!("{alive}{}", netsimd(4242, 1, "12.5"))).unwrap();
+            assert!(scan.helpers.is_empty(), "{alive}");
+        }
+        let mut runner = MockRunner::new();
+        package(&mut runner, SDK, CmdOutput::success(PACKAGE));
+        let hot = format!(
+            "{}{}",
+            ps_line(899, 1, "0.1", "S", "emulator", "/sdk/emulator/emulator"),
+            netsimd(4242, 1, "960.0")
+        );
+        let scan = scan_text(&mut runner, &hot).unwrap();
+        assert_eq!(scan.helpers.len(), 1);
+        assert!(!scan.helpers[0].emulator_gone && scan.helpers[0].hot());
+    }
+
+    #[test]
+    fn an_unreadable_line_marks_the_list_incomplete_and_found_helpers_stay_listed() {
+        for bad in [
+            "   77     1   501  1.0 S\n".to_string(),
+            ps_line(77, 1, "NaN", "S", "x", "/x"),
+            ps_line(77, 1, "-1.0", "S", "x", "/x"),
+            ps_line(77, 1, "1.0", "S", "x", "/x").replace("   501 ", "  user "),
+        ] {
+            let mut runner = MockRunner::new();
+            package(&mut runner, SDK, CmdOutput::success(PACKAGE));
+            let scan =
+                scan_text(&mut runner, &format!("{bad}{}", netsimd(4242, 1, "0.5"))).unwrap();
+            assert!(!scan.complete, "{bad}");
+            assert_eq!(scan.helpers.len(), 1);
+        }
+        for text in ["", "\n", "   77     1   501  1.0 S\n"] {
+            assert!(
+                findings(&mut MockRunner::new(), "device-helpers", text).is_none(),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn one_package_read_per_folder_and_owner_parent_and_start_time_are_kept() {
+        let mut runner = MockRunner::new();
+        package(&mut runner, SDK, CmdOutput::success(PACKAGE));
+        let text = format!("{}{}", netsimd(4242, 1, "960.0"), netsimd(4250, 1, "0.0"));
+        let scan = scan_text(&mut runner, &text).unwrap();
+        assert_eq!(runner.calls.len(), 1);
+        let first = &scan.helpers[0];
+        assert_eq!((first.pid, first.ppid, first.uid), (4242, 1, 501));
+        assert_eq!(first.started, "Sun Nov 15 01:02:03 2026");
+        assert!(first.emulator_gone && first.hot());
+        assert_eq!(
+            first.describe(),
             "netsimd (pid 4242, 960.0% CPU): its emulator is not running, above 100% CPU"
         );
-        assert_eq!(found[0].stop_command(), "kill 4242");
+        assert_eq!(first.stop_command(), "kill 4242");
     }
 
     #[test]
-    fn unsupported_hosts_do_not_read_the_process_list() {
-        let mut runner = crate::exec::MockRunner::new();
+    fn healthy_helpers_and_unsupported_hosts_cost_no_package_read() {
+        let mut runner = MockRunner::new();
+        let alive = ps_line(
+            900,
+            1,
+            "40.0",
+            "S",
+            "qemu-system-aar",
+            "/sdk/emulator/qemu/qemu-system-aarch64 -avd Pixel",
+        );
+        assert!(scan_text(
+            &mut runner,
+            &format!("{alive}{}", netsimd(4242, 900, "1.0"))
+        )
+        .unwrap()
+        .helpers
+        .is_empty());
+        let mut runner = MockRunner::new();
         assert!(scan(&mut runner, "windows").is_empty());
         assert!(runner.calls.is_empty());
     }

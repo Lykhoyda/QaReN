@@ -40,7 +40,14 @@ impl Runner for HostRunner {
     fn execute(&mut self, spec: &CmdSpec, interruptible: bool) -> CmdOutput {
         self.calls.push(spec.clone());
         if let (true, Some(text)) = (spec.label == "device-helpers", &self.processes) {
-            return CmdOutput::success(text);
+            // The process list, then each helper folder's SDK package file.
+            return match spec.program.as_str() {
+                "head" if spec.rendered().contains("/emulator/source.properties") => {
+                    CmdOutput::success("Pkg.Path=emulator\n")
+                }
+                "head" => CmdOutput::failed(1, "No such file or directory"),
+                _ => CmdOutput::success(text),
+            };
         }
         if spec.label != "host-sample" {
             return self.inner.execute(spec, interruptible);
