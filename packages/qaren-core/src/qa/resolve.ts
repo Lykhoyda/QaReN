@@ -886,6 +886,31 @@ export function clearanceBand(
   return bottom > top ? { ...viewport, y: top, height: bottom - top } : undefined;
 }
 
+// Whether any touchable view outside the list overlaps the band, whatever its list order: a backdrop
+// listed before the list counts, so a harmless background view beside the list counts too.
+export function foreignOnBand(
+  container: Element,
+  band: NonNullable<NativeNode['rect']>,
+  screen: Screen,
+): boolean {
+  const lineage = ancestorsOf(container);
+  return screen.elements.some((other) => {
+    if (
+      other === container ||
+      other.offscreen ||
+      !other.hittable ||
+      other.kind === 'text' ||
+      isWindow(other) ||
+      lineage.includes(other) ||
+      ancestorsOf(other).includes(container)
+    )
+      return false;
+    const rect = elementFrame(other);
+    const shared = rect && clip(rect, band);
+    return !!shared && shared.width > 0 && shared.height > 0;
+  });
+}
+
 // A drag (`touch`) passes through overlays whose React host is proven pointer-transparent.
 function frontOverlayFrames(
   container: Element,

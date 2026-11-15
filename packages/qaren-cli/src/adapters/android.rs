@@ -662,9 +662,42 @@ pub fn server_not_started(adb: &Path, port: u16, command: &str, probe: &str) -> 
     )
 }
 
+// Preserve user options, then apply QaReN's worker cap and daemon policy.
+pub fn gradle_opts(
+    user: Option<&str>,
+    jobs: Option<std::num::NonZeroU32>,
+    no_daemon: bool,
+) -> Option<String> {
+    // The user's text stays verbatim: gradlew parses its quoting.
+    let mut opts: Vec<String> = user
+        .filter(|u| !u.trim().is_empty())
+        .map(str::to_string)
+        .into_iter()
+        .collect();
+    if let Some(jobs) = jobs {
+        opts.push(format!("-Dorg.gradle.workers.max={jobs}"));
+    }
+    if no_daemon {
+        opts.push("-Dorg.gradle.daemon=false".into());
+    }
+    (!opts.is_empty()).then(|| opts.join(" "))
+}
+
+fn with_gradle_opts(spec: CmdSpec, gradle_opts: Option<&str>) -> CmdSpec {
+    match gradle_opts {
+        Some(opts) => spec.env("GRADLE_OPTS", opts),
+        None => spec,
+    }
+}
+
 // --no-daemon so no Gradle JVM outlives the run's build group; ANDROID_HOME is inherited.
-pub fn gradle_assemble_spec(project_root: &Path, abi: &str, deadline_seconds: u64) -> CmdSpec {
-    CmdSpec::new(
+pub fn gradle_assemble_spec(
+    project_root: &Path,
+    abi: &str,
+    deadline_seconds: u64,
+    gradle_opts: Option<&str>,
+) -> CmdSpec {
+    let spec = CmdSpec::new(
         "gradle-assemble",
         "./gradlew",
         &[
@@ -677,7 +710,8 @@ pub fn gradle_assemble_spec(project_root: &Path, abi: &str, deadline_seconds: u6
     )
     .cwd(&project_root.join("android"))
     .env("CI", "1")
-    .env("EXPO_NO_TELEMETRY", "1")
+    .env("EXPO_NO_TELEMETRY", "1");
+    with_gradle_opts(spec, gradle_opts)
 }
 
 pub fn server_socket(server_port: u16) -> String {
@@ -1194,25 +1228,32 @@ pub fn pidof_spec(adb: &Path, server_port: u16, serial: &str, app_id: &str) -> C
 // No --device flag: expo matches it against device *names*, not serials. The
 // run-owned adb server is started with --one-device <serial>, so the leased
 // endpoint is the only device expo can ever see; ANDROID_SERIAL pins every
-// direct adb invocation on top of that.
+// direct adb invocation on top of that. Not a finite build, so a niced build
+// carries nice itself; Metro then runs at that priority too.
 pub fn build_spec(
     project_root: &Path,
     serial: &str,
     server_port: u16,
     port: u16,
     deadline_seconds: u64,
+    niced: bool,
+    gradle_opts: Option<&str>,
 ) -> CmdSpec {
-    CmdSpec::new(
-        "expo-run-android",
-        "pnpm",
-        &["exec", "expo", "run:android", "--port", &port.to_string()],
-        deadline_seconds,
-    )
+    let port = port.to_string();
+    let expo = ["exec", "expo", "run:android", "--port", &port];
+    let spec = if niced {
+        let mut args = vec!["-n", "10", "pnpm"];
+        args.extend(expo);
+        CmdSpec::new("expo-run-android", "nice", &args, deadline_seconds)
+    } else {
+        CmdSpec::new("expo-run-android", "pnpm", &expo, deadline_seconds)
+    }
     .cwd(project_root)
     .env("CI", "1")
     .env("EXPO_NO_TELEMETRY", "1")
     .env("ANDROID_SERIAL", serial)
-    .env("ADB_SERVER_SOCKET", &server_socket(server_port))
+    .env("ADB_SERVER_SOCKET", &server_socket(server_port));
+    with_gradle_opts(spec, gradle_opts)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -168,6 +168,35 @@ pub struct BuildSpec {
     pub owner: BuildOwner,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ios_workspace: Option<IosWorkspaceBuild>,
+    // Unset: native builds run at nice 10 with a worker cap computed from the machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jobs: Option<std::num::NonZeroU32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<BuildPriority>,
+    // Unset: an iOS simulator build on Apple silicon compiles arm64 only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arch: Option<BuildArch>,
+}
+
+// `all` keeps every simulator architecture, for apps whose dependencies lack an arm64 simulator slice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BuildArch {
+    All,
+}
+
+impl BuildSpec {
+    pub fn niced(&self) -> bool {
+        self.priority != Some(BuildPriority::Normal)
+    }
+}
+
+// CPU priority of a native build: low runs it under nice 10, normal as the user would.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BuildPriority {
+    Low,
+    Normal,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -234,6 +263,9 @@ impl Default for BuildSpec {
             strategy: BuildStrategy::Auto,
             owner: BuildOwner::Cli,
             ios_workspace: None,
+            jobs: None,
+            priority: None,
+            arch: None,
         }
     }
 }

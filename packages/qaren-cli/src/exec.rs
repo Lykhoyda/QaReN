@@ -1223,11 +1223,13 @@ impl Runner for MockRunner {
     }
     fn execute(&mut self, spec: &CmdSpec, _interruptible: bool) -> CmdOutput {
         // Unscripted diagnostics stay unavailable in fixtures for unrelated run behavior.
-        if matches!(spec.label.as_str(), "host-sample" | "device-helpers")
-            && !self
-                .script
-                .front()
-                .is_some_and(|e| spec.rendered().contains(&e.program_hint))
+        if matches!(
+            spec.label.as_str(),
+            "host-sample" | "device-helpers" | crate::host_capacity::BUILD_PROBE
+        ) && !self
+            .script
+            .front()
+            .is_some_and(|e| spec.rendered().contains(&e.program_hint))
         {
             return CmdOutput::failed(1, "host sample not scripted");
         }

@@ -2965,6 +2965,24 @@ fn android_prepare_happy_path_leases_tunnels_and_pins_serial() {
         "-s 127.0.0.1:5555 get-state",
         CmdOutput::success("device\n"),
     );
+    // The worker cap comes from the machine: 18 cores and 24 GiB give 8.
+    if cfg!(target_os = "linux") {
+        mock.expect_run(
+            "cat /proc/meminfo",
+            CmdOutput::success("MemTotal: 25165824 kB\n"),
+        );
+        let cpus: String = (0..18).map(|n| format!("cpu{n} 1\n")).collect();
+        mock.expect_run(
+            "cat /proc/loadavg /proc/stat",
+            CmdOutput::success(&format!("0.1 0.2 0.3 1/100 1\ncpu 1 0 0 1\n{cpus}")),
+        );
+    } else {
+        mock.expect_run("vm_stat", CmdOutput::success(""));
+        mock.expect_run(
+            "sysctl",
+            CmdOutput::success("hw.logicalcpu: 18\nhw.memsize: 25769803776\n"),
+        );
+    }
     mock.expect_spawn(
         "expo run:android",
         Spawned {
@@ -3101,6 +3119,18 @@ fn android_prepare_happy_path_leases_tunnels_and_pins_serial() {
         "the build must route adb through the run-owned server"
     );
     assert!(build.args.contains(&"8792".to_string()));
+    // Not a finite build: the spec itself carries nice, once, and Expo's Gradle keeps no daemon.
+    assert_eq!(build.program, "nice");
+    assert_eq!(build.args[..3], ["-n", "10", "pnpm"]);
+    assert_eq!(build.args.iter().filter(|a| *a == "nice").count(), 0);
+    assert!(build.env.contains(&(
+        "GRADLE_OPTS".to_string(),
+        "-Dorg.gradle.workers.max=8 -Dorg.gradle.daemon=false".to_string()
+    )));
+    assert_eq!(
+        receipt.outcomes["build_policy:expo-run-android"],
+        "priority nice 10; jobs 8 (machine: 18 cores, 24 GiB), set as org.gradle.workers.max over any value in the user's GRADLE_OPTS"
+    );
 }
 
 #[test]
