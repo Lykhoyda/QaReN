@@ -5633,9 +5633,29 @@ release it once the artifact is verified, the pre-publication candidate and
 fingerprint checks pass and cache publication is persisted, before
 [run-owned output retirement](#cli-owned-ios-build-routes); Metro, install,
 launch and readiness run afterwards, and the final drift checks still run
-after readiness. A contended iOS claim waits, polling every second, within the
-same build budget (`deadlines.build_seconds`) that the prebuild, build,
-verification and publication then share; see the
+after readiness. A contended iOS claim waits, polling every second, for at most
+`deadlines.build_seconds`; waiting for the lock is not build time. The build
+window starts when the lock is claimed and lasts three times `build_seconds`,
+at most 7200 s; prebuild, the build-slot wait (bounded by `build_seconds` from
+its own start), the build, verification and publication share it. Prebuild keeps
+`build_seconds` as its own bound. The compile step (the iOS build, and the
+Android Gradle build on a borrowed emulator, whose ceiling of three times the
+limit counts from the command's start) changes nothing up to the limit; past it
+the build goes on while its log drain counts new output lines (a value-free
+count kept beside the log, also when the output is withheld) within the idle
+window, a quarter of the limit, at least 300 s and at most 600 s. It ends by
+`no_progress` (no new line for the idle window), by `window` (the window ran
+out), or, for prebuild, by `command_limit`. A build that produces no output is
+cut at the limit when the limit is 300 s or more; below that it is cut at three
+times the limit, at most 300 s. Such a cut stays `BUILD_FAILED` and carries a
+`limit` block (`phase`, `setting`, `limit_s`, `window_s`, `idle_s`,
+`elapsed_s`, `ended_by`, `last_progress_age_s`, `next_limit_s`) and the
+`build_time_limit` recovery: after this run's own `qaren cleanup` has
+succeeded, run again; after a `window` end first set `deadlines.build_seconds`
+to `next_limit_s`, or, when the window was already 7200 s and `next_limit_s`
+is absent, build the app with the project's own tools. A passing compile
+records `native_build` in `timings_ms` and the `build_next_limit` outcome, and
+`build_limit` when it went past its limit. See the
 [deadline defaults and validation](src/scenario.rs).
 Build subprocess timeouts are capped to the remaining window, and no new
 build command starts after expiry. Teardown commands and their process-identity
@@ -5649,7 +5669,8 @@ its recorded build group still runs, and how long this run waited, for example
 `BUILD_CONTENDED: native-build-ios is held by run <id> (alive: yes; no build process for 9 min); waited 600 s of the budget. Next: wait for that run or re-run once later; if the holder is dead, run its qaren cleanup from its home (its resources only).`
 After 120 s of a live holder with no build group running the wait notes
 `holder_idle_after_build`; a live or unproven holder is never taken. Running
-the budget out inside the build window outside a lock wait is `BUILD_FAILED`. The receipt's `build_lock`
+the window out at verification or publication is `BUILD_FAILED` with the
+`build_budget_exhausted` recovery. The receipt's `build_lock`
 keeps the last contended wait, or the latest claim observation if none contended;
 `build_lock_waits` keeps both platform and slot
 observations in order. Each reports `lock`, `holder`, `waited_s`, `holder_alive`, `holder_build_process`,
