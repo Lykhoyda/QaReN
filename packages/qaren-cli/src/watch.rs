@@ -11,10 +11,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(test)]
 mod queue_tests;
 
-const STAGES: [(&str, &str); 12] = [
+const STAGES: [(&str, &str); 13] = [
     ("preflight", "Preflight"),
     ("deps", "Dependencies"),
     ("build_decision", "Build decision"),
+    ("host_wait", "Host memory"),
     ("build_lock_wait", "Build queue"),
     ("prebuild", "Prebuild"),
     ("native_build", "Native compile"),
@@ -25,6 +26,8 @@ const STAGES: [(&str, &str); 12] = [
     ("recording", "Recording"),
     ("cleanup", "Cleanup"),
 ];
+// Waits listed only when a run had them, so runs without one render as before.
+const OPTIONAL: [&str; 2] = ["host_wait", "build_lock_wait"];
 
 pub enum Target {
     RunId(String),
@@ -428,6 +431,16 @@ fn stage_line(s: &State, name: &str, label: &str) -> String {
     let mut details = Vec::new();
     match stage.state.as_str() {
         "skipped" => details.push("not needed".to_string()),
+        // Its running event repeats every poll with the time waited, so count from that.
+        "running" if name == "host_wait" => details.push(format!(
+            "waiting {} ({})",
+            duration(
+                stage
+                    .ms
+                    .unwrap_or_else(|| s.now_ms.saturating_sub(stage.began))
+            ),
+            stage.code.as_deref().unwrap_or("memory")
+        )),
         "running" => details.push(format!(
             "running {}",
             duration(s.now_ms.saturating_sub(stage.began))
@@ -545,7 +558,7 @@ fn frame(s: &State, width: u16, height: u16) -> Vec<String> {
     lines.extend(
         STAGES
             .iter()
-            .filter(|(n, _)| *n != "build_lock_wait" || s.stages.contains_key(*n))
+            .filter(|(n, _)| !OPTIONAL.contains(n) || s.stages.contains_key(*n))
             .map(|(n, l)| {
                 if compact {
                     format!(
@@ -719,6 +732,15 @@ fn plain(s: &State, printed: &mut PlainState) -> Vec<String> {
     if let Some(stage) = s.queue_events.last() {
         printed.queue_seq = stage.seq;
     }
+    // An append-only log shows the memory wait when it starts, not only when it ends.
+    if let Some(wait) = s.stages.get("host_wait").filter(|st| st.state == "running") {
+        if printed.seen.insert("host_wait:waiting".into()) {
+            out.push(format!(
+                "Host memory: waiting ({})",
+                wait.code.as_deref().unwrap_or("memory")
+            ));
+        }
+    }
     for (name, label) in STAGES {
         if name == "build_lock_wait" {
             continue;
@@ -754,7 +776,7 @@ fn plain(s: &State, printed: &mut PlainState) -> Vec<String> {
 fn snapshot(s: &State) -> Value {
     json!({"runId": s.run_id, "verb": s.verb, "platform": s.platform,
         "state": match s.status() { Status::Live => "live", Status::Finished => "finished", Status::Incomplete => "incomplete" },
-        "stages": STAGES.iter().filter(|(n, _)| *n != "build_lock_wait" || s.stages.contains_key(*n)).map(|(n, _)| s.stages.get(*n).map_or_else(|| json!({"name": n, "state": "unobserved"}), |stage| serde_json::to_value(stage).unwrap_or(Value::Null))).collect::<Vec<_>>(),
+        "stages": STAGES.iter().filter(|(n, _)| !OPTIONAL.contains(n) || s.stages.contains_key(*n)).map(|(n, _)| s.stages.get(*n).map_or_else(|| json!({"name": n, "state": "unobserved"}), |stage| serde_json::to_value(stage).unwrap_or(Value::Null))).collect::<Vec<_>>(),
         "steps": s.rows.values().collect::<Vec<_>>(), "end": s.end})
 }
 
@@ -1414,7 +1436,7 @@ mod tests {
         );
         for (_, label) in STAGES
             .into_iter()
-            .filter(|(name, _)| *name != "build_lock_wait")
+            .filter(|(name, _)| !OPTIONAL.contains(name))
         {
             assert!(lines.iter().any(|l| l.contains(label)));
         }
@@ -1452,7 +1474,7 @@ mod tests {
                 assert!(lines.len() < height as usize);
                 for (_, label) in STAGES
                     .into_iter()
-                    .filter(|(name, _)| *name != "build_lock_wait")
+                    .filter(|(name, _)| !OPTIONAL.contains(name))
                 {
                     assert!(lines.iter().any(|line| line.contains(label)));
                 }

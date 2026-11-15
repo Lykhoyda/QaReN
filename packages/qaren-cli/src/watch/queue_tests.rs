@@ -196,3 +196,48 @@ fn queue_plain_replays_batched_transitions_in_order() {
         }
     }
 }
+
+fn host_wait(seq: u64, state: &str, code: &str, ms: Option<u64>) -> Input {
+    let mut payload = json!({"name":"host_wait","state":state,"code":code});
+    if let Some(ms) = ms {
+        payload["ms"] = ms.into();
+    }
+    parse_event(&json!({"v":1,"seq":seq,"at":seq * 5000,"event":"stage","payload":payload}).to_string())
+        .unwrap()
+}
+
+#[test]
+fn host_memory_wait_is_shown_only_when_it_happened() {
+    let state = State::default();
+    assert!(!frame(&state, 140, 40).join("\n").contains("Host memory"));
+    assert!(!snapshot(&state).to_string().contains("host_wait"));
+
+    let mut state = State::default();
+    let mut printed = Default::default();
+    state.fold(host_wait(1, "running", "memory_low", None));
+    state.fold(host_wait(25, "running", "memory_low", Some(120_000)));
+    // The re-sent running event carries the time waited; the row must not restart at each one.
+    let rendered = frame(&state, 140, 40).join("\n");
+    assert!(rendered.contains("Host memory"), "{rendered}");
+    assert!(rendered.contains("waiting 2:00 (memory_low)"), "{rendered}");
+    let waiting = plain(&state, &mut printed).join("\n");
+    assert!(
+        waiting.contains("Host memory: waiting (memory_low)"),
+        "{waiting}"
+    );
+    state.fold(host_wait(30, "running", "memory_low", Some(145_000)));
+    assert!(plain(&state, &mut printed).is_empty());
+    state.fold(host_wait(31, "passed", "memory_low", Some(150_000)));
+    let lines = plain(&state, &mut printed).join("\n");
+    assert!(lines.contains("Host memory"), "{lines}");
+    assert!(lines.contains("memory_low"), "{lines}");
+    let snap = snapshot(&state);
+    let wait = snap["stages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "host_wait")
+        .unwrap();
+    assert_eq!(wait["state"], "passed");
+    assert_eq!(wait["ms"], 150_000);
+}

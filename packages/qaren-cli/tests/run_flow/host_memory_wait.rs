@@ -628,3 +628,54 @@ fn slow_probes_stop_after_one_allowance_despite_repeated_lock_contention() {
         assert_eq!(runner.inner.remaining(), 0);
     }
 }
+
+#[test]
+fn a_contended_lock_wait_on_a_healthy_host_samples_memory_at_most_every_five_seconds() {
+    let (mut baseline, req) = building(&[OK]);
+    assert_eq!(run(&mut baseline, &req).result, ReceiptResult::Pass);
+    let admission_at = baseline.sampled_at[1];
+    for (lock, seconds) in [("native-build-ios", 60), ("native-build-slot", 60)] {
+        let (mut runner, req) = building(&[OK]);
+        let path = req.lock_root.join(lock);
+        std::fs::create_dir_all(&path).unwrap();
+        runner.release_lock_at = Some((path, admission_at + seconds * 1000));
+        let receipt = run(&mut runner, &req);
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+        // Start, admission and end, plus the checks taken while queued.
+        let queued = runner.samples() - 3;
+        assert!(
+            queued as u64 <= seconds / 5 + 1,
+            "{lock}: {queued} samples in a {seconds} s wait"
+        );
+        assert!(!receipt.outcomes.contains_key("host_wait"));
+        assert_eq!(runner.inner.remaining(), 0);
+    }
+}
+
+#[test]
+fn a_memory_wait_in_the_ios_build_slot_queue_leaves_the_build_budget_whole() {
+    let (mut baseline, req) = building(&[OK]);
+    assert_eq!(run(&mut baseline, &req).result, ReceiptResult::Pass);
+    let admission_at = baseline.sampled_at[1];
+    let (mut runner, req) = building(&[OK, WARNING]);
+    let config = std::fs::read_to_string(&req.config_path).unwrap();
+    std::fs::write(
+        &req.config_path,
+        format!("{config}\ndeadlines:\n  build_seconds: 30\n"),
+    )
+    .unwrap();
+    // The slot is claimed inside the iOS build window; its memory wait must move that window too.
+    let slot = req.lock_root.join("native-build-slot");
+    std::fs::create_dir_all(&slot).unwrap();
+    runner.release_lock_at = Some((slot, admission_at + 602_000));
+    let receipt = run(&mut runner, &req);
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert!(receipt.outcomes["host_wait"].contains("waited 600 s"));
+    let build = runner
+        .calls
+        .iter()
+        .find(|c| c.label == "expo-run-ios")
+        .unwrap();
+    assert_eq!(build.timeout_seconds, 28);
+    assert_eq!(runner.inner.remaining(), 0);
+}

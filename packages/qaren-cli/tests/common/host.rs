@@ -84,12 +84,23 @@ impl Runner for HostRunner {
                 if let Ok(record) =
                     qaren::runrecord::RunRecord::load(self.runs_root.as_ref().unwrap(), &id)
                 {
+                    let holds = |dir: &Path| {
+                        qaren::buildplan::read_holder(dir).is_some_and(|held| held.run_id == id)
+                    };
+                    let slot = record.resources.build_slot.as_ref();
                     assert!(
-                        record.resources.build_lock.as_ref().is_none_or(|lock| {
-                            qaren::buildplan::read_holder(&lock.lock_dir)
-                                .is_none_or(|held| held.run_id != id)
-                        }),
-                        "host sampled while {id} holds the build lock"
+                        slot.is_none_or(|slot| !holds(&slot.lock.lock_dir)),
+                        "host sampled while {id} holds the build slot"
+                    );
+                    // The platform lock is held only while queued for the slot, the lock order.
+                    assert!(
+                        slot.is_some()
+                            || record
+                                .resources
+                                .build_lock
+                                .as_ref()
+                                .is_none_or(|lock| !holds(&lock.lock_dir)),
+                        "host sampled while {id} holds the build lock outside the slot queue"
                     );
                 }
             }

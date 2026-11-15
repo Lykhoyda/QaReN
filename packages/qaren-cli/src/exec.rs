@@ -327,6 +327,8 @@ pub trait Runner {
     fn host_os(&self) -> &'static str {
         std::env::consts::OS
     }
+    // Moves a wrapping build window's end, so time spent outside the budget is not charged to it.
+    fn extend_deadline(&mut self, _ms: u64) {}
     // Why the run must stop now: a caught signal or a vanished caller.
     fn cancellation(&self) -> Option<String> {
         None
@@ -365,6 +367,13 @@ impl DeadlineRunner<'_> {
 }
 
 impl Runner for DeadlineRunner<'_> {
+    fn host_os(&self) -> &'static str {
+        self.inner.host_os()
+    }
+    fn extend_deadline(&mut self, ms: u64) {
+        self.deadline_ms = self.deadline_ms.saturating_add(ms);
+        self.inner.extend_deadline(ms);
+    }
     fn env_var(&self, name: &str) -> Option<String> {
         self.inner.env_var(name)
     }
@@ -436,6 +445,9 @@ impl Runner for DeadlineRunner<'_> {
 pub(crate) struct CleanupRunner<'a>(pub(crate) &'a mut dyn Runner);
 
 impl Runner for CleanupRunner<'_> {
+    fn host_os(&self) -> &'static str {
+        self.0.host_os()
+    }
     fn env_var(&self, name: &str) -> Option<String> {
         self.0.env_var(name)
     }

@@ -227,7 +227,9 @@ explicit stages from preflight through cleanup, step outcomes and act/capture/Je
 timings, recording, and the verdict with its expected check exit code.
 An unobserved stage stays unobserved; a skipped stage says “not needed” in full rows.
 The Build queue row appears only after contention; see the
-[build-slot waiting contract](#native-fingerprint-build-selection).
+[build-slot waiting contract](#native-fingerprint-build-selection). The Host memory
+row appears only when the run waited for memory; see
+[waiting for memory](#waiting-for-memory-before-a-native-build).
 TTY redraws read the current terminal size, keep every stage visible, and fit
 step rows into the remaining space with an omitted-row count. Unfinished rows
 take priority, followed by completed rows with the latest observed event sequence,
@@ -723,19 +725,21 @@ alone never makes a run wait or refuse. A constrained host waits in the
 5 s with one 10-minute allowance per build admission, including probe time.
 The final sample can overrun that allowance by up to 6 s (two 3 s probes).
 `check` shows the wait as `host-wait` in its live progress.
-The initial admission runs before the build budget starts. After iOS lock
-contention, admission is rechecked before each claim retry while allowance
-remains; these checks share the same allowance, and their actual duration is
-excluded from the build budget. Once the allowance is spent, retries take no
-further admission samples. Lock contention itself still consumes
-`deadlines.build_seconds`.
+The initial admission runs before the build budget starts. A build queued
+behind the platform lock or the machine slot (`native-build-slot`) rechecks
+memory at most every 5 s while the allowance remains; these checks share the
+same allowance, and their actual duration is excluded from the build budget,
+including the iOS build window the slot is claimed in. Once the allowance is
+spent, a queued build takes no further samples. A recheck in the slot queue
+keeps the platform lock, as the slot wait itself does. Lock contention itself
+still consumes `deadlines.build_seconds`.
 When memory recovers the build goes on. When memory is still constrained
 but not critical when the allowance is spent, the build goes on with its
 remaining build budget.
 Memory still constrained after 10 minutes, with a readable final reading of `critical`
 pressure (macOS level 4), refuses `HOST_UNDER_PRESSURE` (exit 4). The refusal names load, available memory,
 pressure, swap and the time waited, and says to re-run once pressure clears.
-No build lock is claimed and no build starts. A run that already holds
+No build slot is claimed and no build starts. A run that already holds
 resources, such as an iOS device, names `qaren cleanup` as its next action,
 as for any other refusal after allocation. Linux has no critical level, so a Linux host
 waits but never refuses. An unreadable first sample never waits or refuses.
@@ -747,7 +751,10 @@ goes on to the build instead of refusing. An
 unreadable first sample, a wait that recovered and a wait that went on
 constrained each leave a `host_wait` note in the receipt's `outcomes` and a
 line in `report.md`; the refusal's numbers are in its `failure.detail`. The stage event carries no host
-numbers. `qaren watch` does not list this stage yet.
+numbers. `qaren watch` shows a **Host memory** row only for a run that waited:
+`waiting <time> (<code>)` while it runs, timed from the event, then the
+outcome; plain output prints `Host memory: waiting (<code>)` when the wait
+starts and the outcome when it ends.
 
 ### Android runner provisioning
 

@@ -2705,7 +2705,7 @@ fn wait_for_host_memory(ctx: &mut Ctx) -> Result<(), Failure> {
             "host_wait",
             FailureCode::HostUnderPressure,
             format!(
-                "host memory stayed constrained before the native build and its last reading was critical pressure ({}); waited {seconds} s, claimed no build lock and started no build; re-run once memory pressure clears",
+                "host memory stayed constrained before the native build and its last reading was critical pressure ({}); waited {seconds} s, claimed no build slot and started no build; re-run once memory pressure clears",
                 host.summary()
             ),
             "re-run once host memory pressure clears",
@@ -2822,6 +2822,7 @@ fn claim_waiting_build_lock(
         deadline_ms: Some(deadline),
         ..Default::default()
     };
+    let mut memory_checked_ms: Option<u64> = None;
     loop {
         if let Err(f) = ensure_running(ctx.runner, "build_lock_wait") {
             wait.finish(ctx, start, StageState::Failed, Some("RUN_CANCELLED"));
@@ -2832,16 +2833,24 @@ fn claim_waiting_build_lock(
             wait.finish(ctx, start, StageState::Failed, Some("BUILD_CONTENDED"));
             return Err(wait.refusal(name, ctx.record.scenario.deadlines.build_seconds));
         }
-        if wait.waiting && ctx.host_wait_ms < crate::host_capacity::MEMORY_WAIT_MS {
+        // A queued build rechecks memory at most every poll interval, within the one allowance.
+        let recheck_due = memory_checked_ms.is_none_or(|at| {
+            ctx.runner.monotonic_ms().saturating_sub(at) >= crate::host_capacity::MEMORY_POLL_MS
+        });
+        if wait.waiting && recheck_due && ctx.host_wait_ms < crate::host_capacity::MEMORY_WAIT_MS
+        {
             let memory_before_ms = ctx.host_wait_ms;
             if let Err(f) = wait_for_host_memory(ctx) {
                 wait.finish(ctx, start, StageState::Failed, Some(&f.code_str()));
                 return Err(f);
             }
-            // The memory wait stays outside the budget; Android's slot keeps its own deadline.
+            memory_checked_ms = Some(ctx.runner.monotonic_ms());
+            // The memory wait stays outside the budget: move this wait's deadline, the iOS
+            // build window it may run inside, and the shared iOS deadline; Android's slot keeps its own.
             let used = ctx.host_wait_ms - memory_before_ms;
             deadline = deadline.saturating_add(used);
             wait.deadline_ms = Some(deadline);
+            ctx.runner.extend_deadline(used);
             if ctx.build_deadline_ms.is_some() {
                 ctx.build_deadline_ms = Some(deadline);
             }
