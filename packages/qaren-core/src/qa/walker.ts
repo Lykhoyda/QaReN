@@ -408,6 +408,7 @@ const ITEM_DEADLINE_EXCEEDED = 'VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED';
 const KEYBOARD_DISMISSED = '; the keyboard was dismissed before this tap';
 const OFF_SCREEN_AFTER_SCROLL =
   'stayed off screen after one scroll: its centre is past the visible area or under the keyboard';
+const REACT_ONLY_UNSEEN = 'is known to React but has no element on the visible screen';
 const INFERRED_FILL_UNAVAILABLE =
   'has no proven hit point under the inferred overlay; no clearance scroll was attempted';
 
@@ -4506,12 +4507,20 @@ async function walkBlockScoped(
                   resolution = result;
                 } else resolution = decided;
                 if ('scroll' in resolution) {
-                  // Only a visible decline hints at an interruption worth one presence read before scrolling.
+                  const reactOnly = reactOnlyTarget(item.target, before.screen);
+                  // On iOS a target known only through React is never dragged before a presence read places it;
+                  // a system dialog in front keeps its own refusal below.
+                  const placeFirst =
+                    deps.platform === 'ios' && !!reactOnly && before.screen.front !== 'dialog';
+                  const declineVisible = before.screen.elements.some(
+                    (e) => !e.offscreen && isDeclineLabel(e.label),
+                  );
+                  // Elsewhere only a visible decline hints at an interruption worth one presence read.
+                  // A placed target is read again whenever an ordinary read replaced the presence read.
                   if (
-                    !scrollPresenceRead &&
                     !before.platformPresence &&
-                    before.screen.elements.some((e) => !e.offscreen && isDeclineLabel(e.label)) &&
-                    reactOnlyTarget(item.target, before.screen)
+                    reactOnly &&
+                    (placeFirst ? !scrolled : !scrollPresenceRead && declineVisible)
                   ) {
                     scrollPresenceRead = true;
                     const proven = await presenceRecapture(
@@ -4522,11 +4531,25 @@ async function walkBlockScoped(
                       before = proven;
                       continue;
                     }
-                    interruptionWithheld = {
-                      item,
-                      clause:
-                        '; a decline control was visible, but the presence read for it was late or incomplete',
-                    };
+                    if (declineVisible)
+                      interruptionWithheld = {
+                        item,
+                        clause:
+                          '; a decline control was visible, but the presence read for it was late or incomplete',
+                      };
+                    if (placeFirst) {
+                      outcome = failed(
+                        item,
+                        attempt,
+                        `"${item.target.phrase}" ${REACT_ONLY_UNSEEN}; the read that would place it was late or incomplete, so nothing was scrolled`,
+                        before.screen,
+                        await shoot(item),
+                        undefined,
+                        false,
+                        'TARGET_NOT_FOUND',
+                      );
+                      break;
+                    }
                     if (!observationUsable(before.timing, deps.now())) {
                       before = await captureBeforeDispatch();
                       continue;
@@ -4586,22 +4609,55 @@ async function walkBlockScoped(
                     });
                     break;
                   }
+                  // The presence read placed the target: drag only toward it inside its own scroll container.
+                  const view =
+                    placeFirst && before.platformPresence
+                      ? reactOnlyViewport(reactOnly)
+                      : undefined;
+                  if (
+                    view &&
+                    !(view.container && (view.where === 'below' || view.where === 'above'))
+                  ) {
+                    outcome = failed(
+                      item,
+                      attempt,
+                      `"${item.target.phrase}" ${REACT_ONLY_UNSEEN}; ${
+                        view.where === 'inside'
+                          ? 'it lies inside the visible part of its scroll area and is not exposed there, so scrolling cannot help and nothing was scrolled'
+                          : view.where === 'unknown'
+                            ? 'its place could not be read, so nothing was scrolled'
+                            : 'no scroll area on screen holds it, so nothing was scrolled'
+                      }`,
+                      before.screen,
+                      await shoot(item),
+                      undefined,
+                      false,
+                      'TARGET_NOT_FOUND',
+                    );
+                    break;
+                  }
                   const distance =
                     clearance ??
                     (resolution.element && keyboardClearance(resolution.element, before.screen));
-                  const band =
-                    within ??
-                    (resolution.element && clearanceBand(resolution.element, before.screen));
+                  const band = view
+                    ? view.bounds
+                    : (within ??
+                      (resolution.element && clearanceBand(resolution.element, before.screen)));
                   clearance = undefined;
                   within = undefined;
                   scrollOrigin ??= 'offscreen-resolution';
-                  scrollDirection = resolution.scroll;
+                  const direction = view
+                    ? view.where === 'below'
+                      ? 'down'
+                      : 'up'
+                    : resolution.scroll;
+                  scrollDirection = direction;
                   if (before.screen.front === 'dialog') throw dialogInFront(item.target.phrase);
                   const preScroll = before;
                   const gaps = (screen: Screen) =>
                     (item.kind === 'fill' ? screen.fillGapCount : screen.pressGapCount) ?? 0;
                   const result = await mutate(item, before, 'scroll', (context) =>
-                    deps.scroll(resolution.scroll, context, distance, band),
+                    deps.scroll(direction, context, distance, band),
                   );
                   scrolled += 1;
                   scrollNeedsReadback = !result.ok && !result.proven;
