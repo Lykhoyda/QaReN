@@ -463,8 +463,9 @@ fn memory_wait_after_lock_contention_preserves_remaining_build_budget() {
 #[test]
 fn two_lock_retries_share_one_ten_minute_memory_allowance() {
     let (mut baseline, req) = building(&[OK]);
-    let baseline = run(&mut baseline, &req);
-    assert_eq!(baseline.result, ReceiptResult::Pass);
+    let baseline_receipt = run(&mut baseline, &req);
+    assert_eq!(baseline_receipt.result, ReceiptResult::Pass);
+    let admission_at = baseline.sampled_at[1];
     for memory in [vec![WARNING], vec![OK, WARNING], vec![WARNING, OK, WARNING]] {
         let (mut runner, req) = building(&memory);
         let config = std::fs::read_to_string(&req.config_path).unwrap();
@@ -473,12 +474,14 @@ fn two_lock_retries_share_one_ten_minute_memory_allowance() {
             format!("{config}\ndeadlines:\n  build_seconds: 30\n"),
         )
         .unwrap();
-        release_contended_lock_on_memory_recheck(&mut runner, &req, 124);
+        let lock = req.lock_root.join("native-build-ios");
+        std::fs::create_dir_all(&lock).unwrap();
+        runner.release_lock_at = Some((lock, admission_at + 602_000));
         let receipt = run(&mut runner, &req);
         assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
         assert_eq!(
             receipt.timings_ms["total"],
-            baseline.timings_ms["total"] + 602_000
+            baseline_receipt.timings_ms["total"] + 602_000
         );
         assert!(receipt.outcomes["host_wait"].contains("waited 600 s"));
         let build = runner
@@ -492,11 +495,10 @@ fn two_lock_retries_share_one_ten_minute_memory_allowance() {
 }
 
 #[test]
-fn critical_revalidation_refuses_after_the_memory_allowance_is_spent() {
-    let mut memory = vec![WARNING; 121];
+fn critical_final_poll_refuses_when_the_memory_allowance_is_spent() {
+    let mut memory = vec![WARNING; 120];
     memory.push(CRITICAL);
     let (mut runner, req) = stopping_before_the_build(&memory);
-    release_contended_lock_on_memory_recheck(&mut runner, &req, 123);
     let receipt = run(&mut runner, &req);
     assert_eq!(
         receipt.result,
@@ -507,7 +509,7 @@ fn critical_revalidation_refuses_after_the_memory_allowance_is_spent() {
     let failure = receipt.failure.as_ref().unwrap();
     assert_eq!(failure.code, FailureCode::HostUnderPressure);
     assert!(failure.detail.to_string().contains("waited 600 s"));
-    assert_eq!(runner.samples(), 124);
+    assert_eq!(runner.samples(), 123);
     assert_no_build_lock(&runner, &req);
     assert_eq!(runner.inner.remaining(), 0);
 }
@@ -586,6 +588,43 @@ fn slow_healthy_and_unreadable_rechecks_preserve_the_build_budget() {
             .find(|c| c.label == "expo-run-ios")
             .unwrap();
         assert_eq!(build.timeout_seconds, 29);
+        assert_eq!(runner.inner.remaining(), 0);
+    }
+}
+
+#[test]
+fn slow_probes_stop_after_one_allowance_despite_repeated_lock_contention() {
+    let (mut baseline, req) = building(&[OK]);
+    baseline.sample_probe_ms = vec![(3_000, 2_000); 256];
+    let baseline_receipt = run(&mut baseline, &req);
+    assert_eq!(baseline_receipt.result, ReceiptResult::Pass);
+    let admission_at = baseline.sampled_at[1];
+    for memory in [vec![WARNING], vec![OK, WARNING]] {
+        let (mut runner, req) = building(&memory);
+        let config = std::fs::read_to_string(&req.config_path).unwrap();
+        std::fs::write(
+            &req.config_path,
+            format!("{config}\ndeadlines:\n  build_seconds: 30\n"),
+        )
+        .unwrap();
+        runner.sample_probe_ms = vec![(3_000, 2_000); 256];
+        let lock = req.lock_root.join("native-build-ios");
+        std::fs::create_dir_all(&lock).unwrap();
+        runner.release_lock_at = Some((lock, admission_at + 604_000));
+        let receipt = run(&mut runner, &req);
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+        assert_eq!(runner.samples() - 2, 120);
+        assert!(receipt.outcomes["host_wait"].contains("waited 600 s"));
+        assert_eq!(
+            receipt.timings_ms["total"],
+            baseline_receipt.timings_ms["total"] + 599_000
+        );
+        let build = runner
+            .calls
+            .iter()
+            .find(|c| c.label == "expo-run-ios")
+            .unwrap();
+        assert_eq!(build.timeout_seconds, 26);
         assert_eq!(runner.inner.remaining(), 0);
     }
 }

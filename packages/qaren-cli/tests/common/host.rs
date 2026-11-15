@@ -18,6 +18,7 @@ pub struct HostRunner {
     // The scripted clock at each sample.
     pub sampled_at: Vec<u64>,
     pub sample_probe_ms: Vec<(u64, u64)>,
+    pub release_lock_at: Option<(std::path::PathBuf, u64)>,
     probes: usize,
 }
 
@@ -35,6 +36,7 @@ impl HostRunner {
             runs_root: None,
             sampled_at: Vec::new(),
             sample_probe_ms: Vec::new(),
+            release_lock_at: None,
             probes: 0,
         }
     }
@@ -150,7 +152,15 @@ impl Runner for HostRunner {
         self.inner.spawn_piped_unchecked(spec, path)
     }
     fn sleep(&mut self, duration: Duration) {
-        self.inner.sleep(duration)
+        self.inner.sleep(duration);
+        if self
+            .release_lock_at
+            .as_ref()
+            .is_some_and(|(_, at)| self.inner.now_epoch_ms() >= *at)
+        {
+            let (lock, _) = self.release_lock_at.take().unwrap();
+            std::fs::remove_dir_all(lock).unwrap();
+        }
     }
     fn now_epoch_ms(&self) -> u64 {
         self.inner.now_epoch_ms()

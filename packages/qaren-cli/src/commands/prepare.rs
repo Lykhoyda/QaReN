@@ -2761,7 +2761,7 @@ fn claim_ios_build_lock(
             wait.finish(ctx, start, StageState::Failed);
             return Err(wait.refusal(name, ctx.record.scenario.deadlines.build_seconds));
         }
-        if wait.waiting {
+        if wait.waiting && *memory_waited_ms < crate::host_capacity::MEMORY_WAIT_MS {
             let memory_before_ms = *memory_waited_ms;
             if let Err(f) = wait_for_host_memory(ctx, memory_waited_ms) {
                 wait.finish(ctx, start, StageState::Failed);
