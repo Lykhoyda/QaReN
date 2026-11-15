@@ -10,6 +10,10 @@ pub const PROCESS_COLUMNS: &str = "pid=,ppid=,uid=,pcpu=,stat=,lstart=,ucomm=,ar
 // pid, ppid, uid, pcpu, stat and the five words of `lstart`; the name is the next word.
 const FIXED_WORDS: usize = 10;
 const HOT_CPU: f64 = 100.0;
+// Bounds the scan when other processes name many folders: at most this many 2 s package reads.
+const MAX_PACKAGE_READS: usize = 4;
+// Only a regular file is read, so a FIFO or device named source.properties cannot block the read.
+const PACKAGE_READ: &str = "test -f \"$1\" && exec head -c 4096 \"$1\"";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -198,10 +202,16 @@ pub fn parse(text: &str) -> Option<ProcessList<'_>> {
 // Other apps ship same-named programs: only the SDK's own emulator package holds the helpers.
 fn emulator_package(runner: &mut dyn Runner, label: &str, folder: &str) -> bool {
     let path = format!("{folder}/source.properties");
+    // The path is a positional argument, never shell text.
     let output = runner.run(
-        &CmdSpec::new(label, "head", &["-c", "4096", path.as_str()], 2)
-            .cwd(Path::new("/"))
-            .env("LC_ALL", "C"),
+        &CmdSpec::new(
+            label,
+            "/bin/sh",
+            &["-c", PACKAGE_READ, "sh", path.as_str()],
+            2,
+        )
+        .cwd(Path::new("/"))
+        .env("LC_ALL", "C"),
     );
     output.ok()
         && output
@@ -235,9 +245,16 @@ pub fn findings(runner: &mut dyn Runner, label: &str, text: &str) -> Option<Scan
         if !(finding.emulator_gone || finding.hot()) {
             continue;
         }
-        let proven = *packages
-            .entry(folder)
-            .or_insert_with(|| emulator_package(runner, label, folder));
+        let proven = match packages.get(folder) {
+            Some(proven) => *proven,
+            // Folders past the cap stay unproven and are not named.
+            None if packages.len() >= MAX_PACKAGE_READS => false,
+            None => {
+                let proven = emulator_package(runner, label, folder);
+                packages.insert(folder, proven);
+                proven
+            }
+        };
         if proven {
             helpers.push(finding);
         }
@@ -321,16 +338,16 @@ mod tests {
     }
 
     fn package(runner: &mut MockRunner, folder: &str, output: CmdOutput) {
-        runner.expect_run(&format!("head -c 4096 {folder}/source.properties"), output);
+        runner.expect_run(&format!("\" sh {folder}/source.properties"), output);
     }
 
     fn scan_text(runner: &mut MockRunner, text: &str) -> Option<Scan> {
         let scan = findings(runner, "device-helpers", text);
         assert_eq!(runner.remaining(), 0, "unread package answers");
-        assert!(runner
-            .calls
-            .iter()
-            .all(|c| c.label == "device-helpers" && c.program == "head" && c.timeout_seconds == 2));
+        assert!(runner.calls.iter().all(|c| c.label == "device-helpers"
+            && c.program == "/bin/sh"
+            && c.args[..3] == ["-c", PACKAGE_READ, "sh"]
+            && c.timeout_seconds == 2));
         scan
     }
 
@@ -516,6 +533,64 @@ mod tests {
             "netsimd (pid 4242, 960.0% CPU): its emulator is not running, above 100% CPU"
         );
         assert_eq!(first.stop_command(), "kill 4242");
+    }
+
+    #[test]
+    fn package_reads_stop_at_the_cap_and_later_folders_are_not_named() {
+        let mut runner = MockRunner::new();
+        let mut text = String::new();
+        for n in 0..6 {
+            let folder = format!("/fake{n}/emulator");
+            text.push_str(&ps_line(
+                5000 + n,
+                1,
+                "0.0",
+                "S",
+                "netsimd",
+                &format!("{folder}/netsimd"),
+            ));
+            if n < 4 {
+                package(&mut runner, &folder, CmdOutput::success(PACKAGE));
+            }
+        }
+        let scan = scan_text(&mut runner, &text).unwrap();
+        assert_eq!(runner.calls.len(), 4);
+        let pids: Vec<_> = scan.helpers.iter().map(|f| f.pid).collect();
+        assert_eq!(pids, vec![5000, 5001, 5002, 5003]);
+    }
+
+    #[test]
+    fn the_real_package_read_proves_a_regular_file_and_never_waits_on_a_fifo() {
+        let root = std::env::temp_dir().join(format!("qaren-helper-pkg-{}", std::process::id()));
+        let sdk = root.join("sdk $(touch shell-ran)/emulator");
+        let fifo = root.join("fifo/emulator");
+        std::fs::create_dir_all(&sdk).unwrap();
+        std::fs::create_dir_all(&fifo).unwrap();
+        std::fs::write(sdk.join("source.properties"), PACKAGE).unwrap();
+        let fifo_file =
+            std::ffi::CString::new(fifo.join("source.properties").to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo_file.as_ptr(), 0o600) }, 0);
+        let mut runner = crate::exec::RealRunner::new();
+
+        assert!(emulator_package(
+            &mut runner,
+            "device-helpers",
+            sdk.to_str().unwrap()
+        ));
+        assert!(!root.join("shell-ran").exists() && !Path::new("/shell-ran").exists());
+        let started = std::time::Instant::now();
+        assert!(!emulator_package(
+            &mut runner,
+            "device-helpers",
+            fifo.to_str().unwrap()
+        ));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert!(!emulator_package(
+            &mut runner,
+            "device-helpers",
+            root.join("missing").to_str().unwrap()
+        ));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

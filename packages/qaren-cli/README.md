@@ -159,7 +159,8 @@ absolute path to the helper. A helper is reported when no emulator is running
 or starting, or when it uses more than 100% CPU. Any `qemu-system-*` or
 `emulator*` process of any user, in any state, counts as a running emulator.
 Before naming a helper, doctor reads the first 4 KiB of `source.properties` in
-the helper's folder (two-second limit, once per folder); only the SDK's
+the helper's folder when it is a regular file (two-second limit, once per
+folder, at most four folders per scan; later folders stay unproven); only the SDK's
 emulator package, with the line `Pkg.Path=emulator`, proves it. Another app's
 program with the same name, or a folder whose package file cannot be read, is
 never reported.

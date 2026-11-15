@@ -522,10 +522,7 @@ mod tests {
         let mut runner = MockRunner::new();
         runner.expect_run("ps -axww", CmdOutput::success(processes));
         for (folder, answer) in packages {
-            runner.expect_run(
-                &format!("head -c 4096 {folder}/source.properties"),
-                answer.clone(),
-            );
+            runner.expect_run(&format!("\" sh {folder}/source.properties"), answer.clone());
         }
         runner.expect_run("simctl list devices -j", inventory());
         runner.expect_run("vm_stat", CmdOutput::success(VM));
@@ -537,7 +534,7 @@ mod tests {
         assert!(runner
             .calls
             .iter()
-            .filter(|c| c.program == "head")
+            .filter(|c| c.program == "/bin/sh")
             .all(|c| c.label == "doctor-host" && c.timeout_seconds == 2));
         row(&rows, "device-helpers").clone()
     }

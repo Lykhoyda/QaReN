@@ -255,7 +255,7 @@ fn e4_run_start_helper_scan_notes_executable_name_and_pid_only() {
         .collect();
     assert_eq!(
         scans,
-        vec![(2, "ps", 3), (3, "head", 2), (4, "head", 2)],
+        vec![(2, "ps", 3), (3, "/bin/sh", 2), (4, "/bin/sh", 2)],
         "one scan right after the start sample, then one package read per helper folder"
     );
 

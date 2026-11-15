@@ -42,10 +42,10 @@ impl Runner for HostRunner {
         if let (true, Some(text)) = (spec.label == "device-helpers", &self.processes) {
             // The process list, then each helper folder's SDK package file.
             return match spec.program.as_str() {
-                "head" if spec.rendered().contains("/emulator/source.properties") => {
+                "/bin/sh" if spec.rendered().ends_with("/emulator/source.properties") => {
                     CmdOutput::success("Pkg.Path=emulator\n")
                 }
-                "head" => CmdOutput::failed(1, "No such file or directory"),
+                "/bin/sh" => CmdOutput::failed(1, ""),
                 _ => CmdOutput::success(text),
             };
         }
