@@ -5620,9 +5620,9 @@ token saved before acquisition and reused through group recording and cleanup,
 so matching run ids in separate homes cannot release each other's slot. Public
 queue output shows only the run id.
 
-The slot wait polls every second. On iOS it uses the remaining shared build
-budget; on Android it has one build budget of its own and leaves the existing
-build and readiness budgets unchanged. `qaren watch` shows a **Build queue**
+The slot wait polls every second and has one `deadlines.build_seconds` budget
+from its own start. On iOS the wait also consumes the shared build window
+described below. `qaren watch` shows a **Build queue**
 row with the holder, lock, held time and time waited. Plain output records
 each observed holder change and each completed wait. Queue events contain
 only the lock name, a validated run id and durations.
@@ -5635,8 +5635,9 @@ fingerprint checks pass and cache publication is persisted, before
 launch and readiness run afterwards, and the final drift checks still run
 after readiness. A contended iOS claim waits, polling every second, for at most
 `deadlines.build_seconds`; waiting for the lock is not build time. The build
-window starts when the lock is claimed and lasts three times `build_seconds`,
-at most 7200 s; prebuild, the build-slot wait (bounded by `build_seconds` from
+window starts when the lock is claimed and lasts three times the effective
+compile limit (learned as described below), at most 7200 s; prebuild, the
+build-slot wait (bounded by `build_seconds` from
 its own start), the build, verification and publication share it. Prebuild keeps
 `build_seconds` as its own bound. The compile step (the iOS build, and the
 Android Gradle build on a borrowed emulator, whose ceiling of three times the
@@ -5646,10 +5647,12 @@ count kept beside the log, also when the output is withheld) within the idle
 window, a quarter of the limit, at least 300 s and at most 600 s. It ends by
 `no_progress` (no new line for the idle window), by `window` (the window ran
 out), or, for prebuild, by `command_limit`. A build that produces no output is
-cut at the limit when the limit is 300 s or more; below that it is cut at three
-times the limit, at most 300 s. Such a cut stays `BUILD_FAILED` and carries a
+cut at the limit when the limit is 300 s or more; below that it is cut at the
+earlier of 300 s or three times the limit. The remaining iOS build window can
+stop compilation earlier. Such a cut stays `BUILD_FAILED` and carries a
 `limit` block (`phase`, `setting`, `limit_s`, `window_s`, `idle_s`,
-`elapsed_s`, `ended_by`, `last_progress_age_s`, `next_limit_s`) and the
+`elapsed_s`, `ended_by`, `last_progress_age_s`, `next_limit_s`, and `learned`
+when the limit was raised) and the
 `build_time_limit` recovery: after this run's own `qaren cleanup` has
 succeeded, run again; after a `window` end first set `deadlines.build_seconds`
 to `next_limit_s`, or, when the window was already 7200 s and `next_limit_s`

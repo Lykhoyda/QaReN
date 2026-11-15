@@ -101,10 +101,6 @@ waiting and patient recovery, see the authoritative
 For platform-lock and shared build-slot waiting, the iOS build window,
 publication and cleanup boundaries, and Android wait budgets, follow the
 [build serialization contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#native-fingerprint-build-selection).
-Waiting for the build lock is not build time. A native build that keeps
-producing output goes on past `build_seconds`, up to three times it (at most
-7200 s); a build that stands still is stopped, and the failure names the limit,
-the time, the last output and the next limit.
 On iOS, install, launch and readiness share a fresh `build_seconds` window,
 and Metro startup has a separate one.
 
