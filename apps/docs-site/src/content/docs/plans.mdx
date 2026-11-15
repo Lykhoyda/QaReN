@@ -147,13 +147,10 @@ There is no `no longer` form or heading-level declaration.
   For log and media handling and the value-free events retained
   in `logs/core-diagnostics.jsonl`, see the CLI guide's
   [runtime-input diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs).
-- The iOS simulator's own system log records text the app displays and the text Apple's
-  test automation types, including a filled field's value, unredacted. QaReN removes the log
-  store of its own pooled simulators after each run and before reuse (the receipt's
-  `simulator_log` leg says so) and deletes `--new` simulators. A simulator you pass with
-  `--device`, and every `check` or `pr` run, keeps its log: `qaren doctor --device <udid>`
-  prints the command that clears it. The runner's XCTest result bundles are removed after
-  every runner session.
+- For iOS simulator system-log exposure, the `simulator_log` cleanup outcome,
+  borrowed-device clearing guidance and XCTest result-bundle handling, follow
+  the CLI guide's
+  [iOS admission and cleanup](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup).
 - For masking input echoes on later screens, optional echo declarations and privacy
   refusals before hashing, follow the CLI guide's
   [runtime-input hash protections](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs).
