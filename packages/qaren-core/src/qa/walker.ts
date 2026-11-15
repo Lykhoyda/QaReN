@@ -1685,11 +1685,11 @@ async function walkBlockScoped(
     item: Exclude<Item, { kind: 'check' }> & { kind: 'press' | 'fill' },
     element: Element,
     screen: Screen,
-  ): { band: NativeNode['rect'] } | WithheldDrag => {
+  ): { band: NativeNode['rect']; direction: 'up' | 'down' } | WithheldDrag => {
     const cover = targetRows.get(item.line)?.coveredBy;
     const gap = coverGaps.get(item.line);
     if (!cover && (gap === 'none' || gap === 'reaches-target'))
-      return { band: clearanceBand(element, screen) };
+      return { band: clearanceBand(element, screen), direction: clearanceScroll(element, screen) };
     if (gap === 'presence-recapture-incomplete') return 'read-late';
     const container = ancestorsOf(element).find(isScrollContainer);
     if (!container || scrollUntilContainer(item.target, screen) !== container)
@@ -1697,13 +1697,18 @@ async function walkBlockScoped(
     const band = bandFor(item, item.target, screen);
     const shared = band && cover && clip(band, cover.frame);
     const onCover = !!shared && shared.width > 0 && shared.height > 0;
+    const frame = elementFrame(element);
     return !band ||
       band.width <= 0 ||
       band.height <= 0 ||
       onCover ||
       foreignOnBand(container, band, screen)
       ? 'no-free-part'
-      : { band };
+      : {
+          band,
+          direction:
+            !frame || frame.y + frame.height / 2 >= band.y + band.height / 2 ? 'down' : 'up',
+        };
   };
   // A covered refusal that emits no other decision diagnostic still says why its cover was or was not
   // named; a line whose cover was never looked up emits nothing.
@@ -2403,6 +2408,7 @@ async function walkBlockScoped(
     scrolled = false,
     // Why a clearance drag was withheld: no drag is sent, and a refusal says this instead.
     withheld?: string,
+    cover?: () => Promise<string>,
   ): Promise<
     | WalkOutcome
     | {
@@ -2519,8 +2525,8 @@ async function walkBlockScoped(
         return nothingTyped(
           withheld
             ? tap
-              ? `${tap.error}; ${withheld}`
-              : withheld
+              ? `${tap.error}; ${withheld}${(await cover?.()) ?? ''}`
+              : `${withheld}${(await cover?.()) ?? ''}`
             : tap
               ? `${tap.error}; "${quoted}" stayed off screen after one scroll`
               : `"${quoted}" stayed off screen after one scroll: its centre is past the visible area or under the keyboard`,
@@ -5271,7 +5277,7 @@ async function walkBlockScoped(
                   break;
                 }
                 refusedIdentity = element;
-                let clearing: { band: NativeNode['rect'] } | WithheldDrag | undefined;
+                let clearing: ReturnType<typeof clearanceAfterProof> | undefined;
                 if (deps.platform === 'ios' && before.screen.keyboardVisible === false) {
                   const proven = await proveCover(
                     item,
@@ -5292,7 +5298,10 @@ async function walkBlockScoped(
                     continue;
                   }
                 }
-                occluded = clearanceScroll(element, before.screen);
+                occluded =
+                  typeof clearing === 'object'
+                    ? clearing.direction
+                    : clearanceScroll(element, before.screen);
                 within =
                   typeof clearing === 'object'
                     ? clearing.band
@@ -5346,8 +5355,8 @@ async function walkBlockScoped(
                   before,
                   fallback,
                   !!scrolled || !!withheldDrag,
-                  withheldDrag &&
-                    `${stayedCovered(item.target.phrase, withheldDrag)}${await coverText(item)}`,
+                  withheldDrag && stayedCovered(item.target.phrase, withheldDrag),
+                  () => coverText(item),
                 );
                 if (result === 'typed') {
                   typedUnverified = true;

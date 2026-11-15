@@ -401,6 +401,27 @@ for (const kind of ['press', 'fill'] as const) {
     assert.ok(r.log.indexOf('presence') < r.log.indexOf('scroll down'), r.log.join(','));
   });
 
+  test(`a lower free band moves the covered target down into it (${kind})`, async () => {
+    const views = typed([
+      list(),
+      target(type, { ...IN_LIST, y: 526 }),
+      { id: 'qa-bar', type: 'Other', rect: { x: 100, y: 250, width: 200, height: 350 } },
+    ]);
+    const ordinary = await capture(views, { presence: false });
+    assert.equal(centreCovered(byId(ordinary, 'go'), ordinary), false);
+    const r = await walk({
+      views,
+      retry: cleared,
+      kind,
+      dispatches: [OCCLUDED, { ok: true, proven: true }],
+    });
+    assert.equal(r.result.verdict, 'PASS', r.reason);
+    assert.deepEqual(scrolls(r.acts), ['scroll up']);
+    assert.equal(dispatches(r.acts).length, 2);
+    const band = r.bands[0]!;
+    assert.ok(band.y >= 600 && band.y + band.height <= 800, JSON.stringify(band));
+  });
+
   test(`T8: after an allowed drag a second refusal keeps today's text (${kind})`, async () => {
     const r = await walk({ views: typed(barred()), kind });
     assert.equal(r.result.verdict, 'FAIL');
@@ -799,6 +820,11 @@ for (const noTap of [false, true]) {
     assert.equal(r.result.verdict, 'FAIL');
     assert.deepEqual(scrolls(r.acts), [], r.log.join(','));
     assert.deepEqual(r.acts, noTap ? ['fill @e2', 'fill @e2'] : ['fill @e2', 'fill @e2', 'press @e2']);
+    if (!noTap) {
+      const retryFill = r.log.indexOf('fill @e2', r.log.indexOf('fill @e2') + 1);
+      const fallbackPress = r.log.indexOf('press @e2');
+      assert.deepEqual(r.log.slice(retryFill + 1, fallbackPress + 1), ['capture', 'press @e2']);
+    }
     assert.ok(
       r.reason.includes('"go" stayed covered; it is in no scroll area, so nothing was scrolled'),
       r.reason,
