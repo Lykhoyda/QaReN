@@ -640,7 +640,6 @@ fn xcodebuild_wrapper_caps_only_build_invocations_in_its_own_process() {
     );
 }
 
-// U3: PATH starts with the wrapper only when the cap is known and xcodebuild resolves; the wrapper names that absolute path.
 #[test]
 fn expo_ios_build_gets_the_wrapper_only_with_a_cap_and_a_resolvable_xcodebuild() {
     let root = common::temp_repo();
@@ -661,16 +660,43 @@ fn expo_ios_build_gets_the_wrapper_only_with_a_cap_and_a_resolvable_xcodebuild()
         assert!(!spec.env.iter().any(|(k, _)| k == "PATH"));
         assert!(!build_dir.join(ios::JOBS_WRAPPER_DIR).exists());
     }
-    let build_dir = root.join("ios-build");
-    std::fs::create_dir(&build_dir).unwrap();
-    let mut spec = ios::build_spec(&root, &build_dir, 60, None, None, false);
-    assert!(ios::cap_expo_jobs(&mut spec, &build_dir, Some(&path), NonZeroU32::new(4)).unwrap());
-    let dir = build_dir.join(ios::JOBS_WRAPPER_DIR);
-    assert!(spec
-        .env
-        .contains(&("PATH".to_string(), format!("{}:{path}", dir.display()))));
-    let script = std::fs::read_to_string(dir.join("xcodebuild")).unwrap();
-    assert!(script.contains(&format!("'{}'", bin.join("xcodebuild").display())));
+    let preferred = fake_xcodebuild(&root.join("preferred's"));
+    std::fs::write(
+        preferred.join("xcodebuild"),
+        "#!/bin/sh\nprintf '%s\\n' preferred \"$@\"\n",
+    )
+    .unwrap();
+    std::fs::copy(preferred.join("xcodebuild"), root.join("xcodebuild")).unwrap();
+    for (case, entry) in [
+        preferred.to_str().unwrap(),
+        "preferred's/xcode bin",
+        "",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let path = format!("{entry}:{}", bin.display());
+        let build_dir = root.join(format!("ios-build-resolved-{case}"));
+        std::fs::create_dir(&build_dir).unwrap();
+        let mut spec = ios::build_spec(&root, &build_dir, 60, None, None, false);
+        assert!(ios::cap_expo_jobs(&mut spec, &build_dir, Some(&path), NonZeroU32::new(4)).unwrap());
+        let dir = build_dir.join(ios::JOBS_WRAPPER_DIR);
+        assert!(spec
+            .env
+            .contains(&("PATH".to_string(), format!("{}:{path}", dir.display()))));
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", "exec xcodebuild \"$@\"", "sh", "-destination", "id=1", "My App"])
+            .current_dir(&root)
+            .envs(spec.env.iter().cloned())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "preferred\n-jobs\n4\n-destination\nid=1\nMy App\n",
+            "the first executable on the original PATH must receive intact arguments"
+        );
+    }
 }
 
 #[test]
