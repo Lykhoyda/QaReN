@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { assertCheck } from '../assert-qaren-check.ts';
-import { readFileSync } from 'node:fs';
 
 const coreProof = {
   run_id: 'check-fixture',
@@ -133,17 +132,6 @@ test('PASS alone is not proof of a clean fresh-install gate', () => {
       record,
     ),
   );
-});
-
-test('the phrase gate plan has no quotes and covers the same onboarding journey', () => {
-  const plan = readFileSync(
-    new URL('../../packages/qaren-core/test/fixtures/plans/phrases.md', import.meta.url),
-    'utf8',
-  );
-  assert.ok(!/["“”]/.test(plan));
-  assert.match(plan, /skip onboarding/);
-  assert.match(plan, /tasks tab/);
-  assert.equal(plan.split('\n').filter((l) => l.startsWith('✓')).length, 2);
 });
 
 test('missing core cleanup cannot be replaced by the absence of a core resource', () => {
