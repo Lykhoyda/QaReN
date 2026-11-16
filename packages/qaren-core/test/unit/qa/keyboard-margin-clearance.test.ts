@@ -40,6 +40,7 @@ interface Shape {
   overlay?: Rect;
   // The target inside a scroll area (implied by an overlay).
   list?: boolean;
+  listRect?: Rect;
   type?: string;
   target?: boolean;
 }
@@ -49,6 +50,7 @@ function screen({
   rect = EDGE,
   overlay,
   list = !!overlay,
+  listRect = { x: 0, y: 100, width: 400, height: 700 },
   type = 'Button',
   target = true,
 }: Shape = {}): Screen {
@@ -67,7 +69,7 @@ function screen({
             ref: '@list',
             type: 'ScrollView',
             parentIndex: 1,
-            rect: { x: 0, y: 100, width: 400, height: 700 },
+            rect: listRect,
           },
         ]
       : []),
@@ -511,6 +513,29 @@ for (const list of [false, true]) {
     );
     assert.deepEqual(dispatched(f), ['scroll', 'dismiss-keyboard', 'press']);
     assert.equal(outcome.rows.at(-1)?.keyboardCleared, 'js');
+  });
+}
+
+for (const keyboard of [true, false]) {
+  test(`a refused short-band drag with the keyboard ${keyboard ? 'visible clears it and presses' : 'hidden keeps the refusal'}`, async () => {
+    const before = screen({
+      rect: keyboard ? UNDER : { ...UNDER, y: 820 },
+      list: true,
+      keyboard,
+      listRect: { x: 0, y: 410, width: 400, height: 390 },
+    });
+    const f = device(before);
+    f.deps.scroll = async () => {
+      f.calls.push('scroll');
+      return { ok: false, mutation: 'none', error: 'SCROLL_BAND_TOO_SMALL' };
+    };
+    const outcome = await walkBlock(tap(), f.deps);
+    assert.equal(outcome.block.outcome, keyboard ? 'pass' : 'fail', seen(outcome));
+    assert.equal(count(f, 'scroll'), 1);
+    assert.equal(count(f, 'dismiss'), keyboard ? 1 : 0);
+    assert.equal(count(f, 'press'), keyboard ? 1 : 0);
+    if (keyboard) assert.deepEqual(dispatched(f), ['scroll', 'dismiss-keyboard', 'press']);
+    else assert.match(seen(outcome), /SCROLL_BAND_TOO_SMALL/);
   });
 }
 

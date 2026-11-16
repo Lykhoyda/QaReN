@@ -4803,13 +4803,17 @@ async function walkBlockScoped(
                   )
                     throw new EvidenceExpired(false);
                   const clearing = scrollOrigin === 'centre-covered' ? clearanceCoverage : null;
-                  // A refused clearance drag moved nothing; an inferred iOS overlay still goes to the live hit read.
                   if (
                     !result.ok &&
                     result.mutation === 'none' &&
                     item.kind === 'press' &&
                     deps.platform === 'ios' &&
-                    inferredOverlay(clearing)
+                    (inferredOverlay(clearing) ||
+                      (deps.dismissKeyboard &&
+                        before.screen.keyboardVisible === true &&
+                        insideKeyboard(clearing) &&
+                        !itemKeyboardAttempted &&
+                        !keyboardAttempted))
                   ) {
                     scrollNeedsReadback = false;
                     continue;
