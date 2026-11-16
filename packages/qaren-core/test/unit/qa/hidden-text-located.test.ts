@@ -472,10 +472,10 @@ test('fully visible unnamed buttons need proven presence and a resolved centre h
   }
 });
 
-test('a partially clipped hittable button still needs its one scroll before pressing', async () => {
-  const run = await walkList({ offset: 205 }, { offset: 105 });
+test('a partially clipped observed hittable button with a clear centre is pressed without scrolling', async () => {
+  const run = await walkList({ offset: 205 }, undefined);
   assert.equal(run.outcome.block.outcome, 'pass', run.reason);
-  assert.equal(run.scrolls.length, 1, run.log.join());
+  assert.deepEqual(run.scrolls, []);
   assert.equal(run.presses.length, 1, run.log.join());
   pressedFromLastRead(run.log);
 });

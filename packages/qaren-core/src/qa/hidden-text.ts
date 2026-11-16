@@ -91,6 +91,7 @@ function provenButton(
   button: NonNullable<HiddenText['button']>,
   screen: Screen,
   tied: (element: Element) => boolean,
+  // Locating only: the element may be cut off, off screen or not hittable.
   located = false,
 ): Element | undefined {
   const typography = screen.reactHostEvidence?.typography;
@@ -131,6 +132,8 @@ export function hiddenTextUnnamedButton(target: Target, screen: Screen): Element
   );
 }
 
+// The weaker answer allows one scroll, never a tap, only with a cause this read shows:
+// cut off by its clip, or the centre hit test landing on a host outside the button.
 export function hiddenTextUnnamedLocated(
   target: Target,
   screen: Screen,

@@ -877,6 +877,7 @@ export function unnamedFrameMatches(
       )
     )
       continue;
+    // Anything painted over the centre takes the tap; React's hit test there must reach the button for a proof.
     const hit = hitAt(cx, cy);
     const reached = typeof hit === 'number' && !!hostPath(snapshot, hit)?.includes(host.hostIndex);
     const covered = typeof hit === 'number' && !reached;
@@ -892,7 +893,7 @@ export function unnamedFrameMatches(
         cx + transform.x >= clip.x + clip.width ||
         cy + transform.y < clip.y ||
         cy + transform.y >= clip.y + clip.height);
-    const proven = reached && !cutOff && presence.nodes[i]?.status === 'observed';
+    const proven = reached && presence.nodes[i]?.status === 'observed';
     if (!proven && !cutOff && !covered) continue;
     matches.set(i, { host: host.hostIndex, proven, cutOff, covered });
   }
