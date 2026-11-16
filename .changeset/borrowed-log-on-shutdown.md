@@ -2,4 +2,4 @@
 "qaren": patch
 ---
 
-`--shutdown-device-on-exit` now also removes the system log store of a simulator QaReN did not create, after the proven shutdown, so text typed during the run does not stay in that simulator's log. The store holds the log entries of every app on the simulator. A removal that fails keeps the stop pending for the next `qaren cleanup`; runs without the flag, and pending stops recorded by an older QaReN, keep the log as before. `qaren doctor`, the receipt note and the usage text say so.
+With `--shutdown-device-on-exit`, a `check` or `pr` on an iOS simulator QaReN did not create now also removes that simulator's system log store, which holds typed field text and the log entries of every app on it, after the proven shutdown, retrying at the next `qaren cleanup` if the removal fails, while borrowed simulators without the flag keep their log as before.

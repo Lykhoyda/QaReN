@@ -4666,6 +4666,61 @@ fn a_completed_borrowed_stop_reports_its_recorded_log_leg_without_a_new_removal(
     }
 }
 
+// Every save fails while `blocked` exists; the first clock read after the store is gone lifts it,
+// so the completion save fails and the cleanup's final save writes the reverted record.
+struct LiftBlockAfterRemoval {
+    mock: MockRunner,
+    blocked: std::path::PathBuf,
+    store: std::path::PathBuf,
+}
+
+impl Runner for LiftBlockAfterRemoval {
+    fn env_var(&self, name: &str) -> Option<String> {
+        self.mock.env_var(name)
+    }
+    fn execute(
+        &mut self,
+        spec: &qaren::exec::CmdSpec,
+        interruptible: bool,
+    ) -> CmdOutput {
+        self.mock.execute(spec, interruptible)
+    }
+    fn execute_private(
+        &mut self,
+        spec: &qaren::exec::CmdSpec,
+        input: &[u8],
+        interruptible: bool,
+    ) -> qaren::exec::PrivateOutput {
+        self.mock.execute_private(spec, input, interruptible)
+    }
+    fn spawn_group_unchecked(
+        &mut self,
+        spec: &qaren::exec::CmdSpec,
+        log: &std::path::Path,
+    ) -> std::io::Result<Spawned> {
+        self.mock.spawn_group_unchecked(spec, log)
+    }
+    fn spawn_piped_unchecked(
+        &mut self,
+        spec: &qaren::exec::CmdSpec,
+        log: &std::path::Path,
+    ) -> std::io::Result<qaren::exec::PipedChild> {
+        self.mock.spawn_piped_unchecked(spec, log)
+    }
+    fn sleep(&mut self, d: std::time::Duration) {
+        self.mock.sleep(d)
+    }
+    fn now_epoch_ms(&self) -> u64 {
+        if !self.store.exists() && self.blocked.exists() {
+            std::fs::remove_dir(&self.blocked).unwrap();
+        }
+        self.mock.now_epoch_ms()
+    }
+    fn commands_executed(&self) -> u64 {
+        self.mock.commands_executed()
+    }
+}
+
 #[test]
 fn a_failed_save_after_a_requested_removal_reverts_the_record_and_the_retry_completes_it() {
     let repo = common::temp_repo();
@@ -4683,7 +4738,21 @@ fn a_failed_save_after_a_requested_removal_reverts_the_record_and_the_retry_comp
         "simctl list devices -j",
         CmdOutput::success(&inventory_with_data("Shutdown", Some(&data))),
     );
-    let receipt = cleanup_pool(&mut mock, &repo);
+    let mut runner = LiftBlockAfterRemoval {
+        mock,
+        blocked: blocked_save.clone(),
+        store: data.join("var/db/diagnostics"),
+    };
+    let receipt = qaren::commands::cleanup::cleanup_with_runtime(
+        &mut runner,
+        &repo,
+        "borrowed-ios-run",
+        None,
+        Some((
+            std::path::Path::new("/usr/local/bin/node"),
+            std::path::Path::new("/runtime"),
+        )),
+    );
     assert_eq!(receipt.result, ReceiptResult::Failed);
     assert!(
         receipt.cleanup["simulator"]
@@ -4694,8 +4763,9 @@ fn a_failed_save_after_a_requested_removal_reverts_the_record_and_the_retry_comp
     assert_eq!(receipt.cleanup["simulator_log"], "removed");
     assert!(lock.exists());
     assert!(!data.join("var/db/diagnostics").exists());
-    assert_eq!(mock.remaining(), 0);
-    std::fs::remove_dir(&blocked_save).unwrap();
+    assert_eq!(runner.mock.remaining(), 0);
+    // The cleanup's final save landed after the block was lifted: the stored record is the reverted one.
+    assert!(!blocked_save.exists());
     assert_eq!(stored_stop(&repo), qaren::runrecord::BorrowedIosStop::Pending);
     assert!(!stored_log_cleared(&repo));
 
