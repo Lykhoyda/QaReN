@@ -50,7 +50,14 @@ test('N1: device P1 ordinary read proves no unnamed button', () => {
 });
 
 type Rect = { x: number; y: number; width: number; height: number };
-type Row = [Partial<ReactHostObservation>, number | null, string, Rect | undefined, string?];
+// The fifth field is a block of text, or `{ inline }`: a span inside the text host it names.
+type Row = [
+  Partial<ReactHostObservation>,
+  number | null,
+  string,
+  Rect | undefined,
+  (string | { inline: number })?,
+];
 type Presence = { status: 'observed' | 'unknown'; labelSource: 'direct' | 'none' };
 
 const plain = { role: null, roleSource: 'none' as const, capabilities: {} };
@@ -73,6 +80,8 @@ function card(
     extra?: Array<[NativeNode, Presence?]>;
     presence?: Presence;
     authoredLabel?: 'present' | 'absent' | 'unknown';
+    // The ordinary read: no React evidence and no presence.
+    ordinary?: boolean;
   } = {},
 ): Screen {
   const ox = options.origin ?? 0;
@@ -109,6 +118,8 @@ function card(
     [{ ...plain, hidden: true }, 2, 'RCTText', TITLE, 'Plan'],
   ];
   const rows = options.rows ? options.rows(base) : base;
+  if (options.ordinary)
+    return join(nodes, [{ role: 'button' }], 'app', { native: 'complete', react: 'complete' });
   return join(
     nodes,
     [{ role: 'button' }],
@@ -132,14 +143,17 @@ function card(
             accessible: 'true',
             authoredLabel: hostIndex === 1 ? (options.authoredLabel ?? 'absent') : 'absent',
           },
-          text: text
-            ? {
-                kind: 'block',
-                content: text,
-                runs: [{ start: 0, end: text.length, fontSize: 17 }],
-                scaling: { allowFontScaling: true, maxFontSizeMultiplier: 0 },
-              }
-            : { kind: 'none' },
+          text:
+            typeof text === 'object'
+              ? { kind: 'inline', ownerHostIndex: text.inline }
+              : text
+                ? {
+                    kind: 'block',
+                    content: text,
+                    runs: [{ start: 0, end: text.length, fontSize: 17 }],
+                    scaling: { allowFontScaling: true, maxFontSizeMultiplier: 0 },
+                  }
+                : { kind: 'none' },
         })),
       },
     },
@@ -371,7 +385,8 @@ test('N2: among equal unnamed cards each hidden title proves its own card', () =
   assert.equal(hiddenTextUnnamedButton(quoted('Lima'), equalCards(false)), undefined);
 });
 
-test('N3: a Tap on the second card of equal unnamed cards presses that card only', async () => {
+// Walks one plan line on an iOS device whose reads come from `read`; every press is proven.
+async function walkOn(line: string, read: (presence: boolean) => Screen) {
   const log: string[] = [];
   let clock = 0;
   const done = { ok: true, proven: true, executed: true } as const;
@@ -379,7 +394,7 @@ test('N3: a Tap on the second card of equal unnamed cards presses that card only
     platform: 'ios',
     async captureScreen(request) {
       log.push(request?.platformPresence ? 'presence' : 'ordinary');
-      return equalCards(!!request?.platformPresence);
+      return read(!!request?.platformPresence);
     },
     async press(ref) {
       log.push(`press ${ref}`);
@@ -409,14 +424,66 @@ test('N3: a Tap on the second card of equal unnamed cards presses that card only
     },
     row() {},
   };
-  const outcome = await walkBlock(parsePlan('1. Tap "Lima"').blocks![0], deps);
+  const outcome = await walkBlock(parsePlan(line).blocks![0], deps);
+  return { outcome, presses: log.filter((entry) => entry.startsWith('press')) };
+}
+
+test('N3: a Tap on the second card of equal unnamed cards presses that card only', async () => {
+  const { outcome, presses } = await walkOn('1. Tap "Lima"', equalCards);
   assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
-  assert.deepEqual(
-    log.filter((entry) => entry.startsWith('press')),
-    ['press @card1'],
-  );
+  assert.deepEqual(presses, ['press @card1']);
   assert.equal(
     outcome.rows.at(-1)?.reason,
     'resolved through text hidden from accessibility; tapped the unnamed button at 14,362,374,90',
+  );
+});
+
+// A pressable inline span (a nested Text with onPress) is never measured; `under` 0 is the screen
+// root, 1 the card's button host.
+const link =
+  (under: 0 | 1, rect: Rect) =>
+  (r: Row[]): Row[] => [
+    ...r,
+    [{ ...plain, hidden: under === 1 }, under, 'RCTText', rect, 'See terms'],
+    [
+      { ...pressable(), hidden: under === 1 },
+      r.length,
+      'RCTVirtualText',
+      undefined,
+      { inline: r.length },
+    ],
+  ];
+const OUTSIDE = link(0, { x: 14, y: 600, width: 200, height: 20 });
+const INSIDE = link(1, { x: 28, y: 320, width: 200, height: 20 });
+
+test('N2: an unmeasured pressable inline text elsewhere on screen does not stop the unnamed press', async () => {
+  const screen = card({ rows: OUTSIDE });
+  assert.equal(hiddenTextUnnamedButton(quoted('Plan'), screen), native(screen));
+  const { outcome, presses } = await walkOn('1. Tap "Plan"', (presence) =>
+    card({ rows: OUTSIDE, ordinary: !presence }),
+  );
+  assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
+  assert.deepEqual(presses, ['press @card']);
+});
+
+test('N2: an unmeasured pressable inline text in a sibling overlay over the card declines it', () => {
+  const overlay = card({ rows: link(0, { x: 28, y: 300, width: 200, height: 20 }) });
+  assert.equal(hiddenTextUnnamedButton(quoted('Plan'), overlay), undefined);
+});
+
+test('N2: an unmeasured pressable inline text inside the card declines it with the usual refusal', async () => {
+  assert.equal(hiddenTextUnnamedButton(quoted('Plan'), card({ rows: INSIDE })), undefined);
+  const { outcome, presses } = await walkOn('1. Tap "Plan"', (presence) =>
+    card({ rows: INSIDE, ordinary: !presence }),
+  );
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.deepEqual(presses, []);
+  const seen = [outcome.failure?.seen ?? '']
+    .flat()
+    .map((part) => (typeof part === 'string' ? part : ''))
+    .join('');
+  assert.match(
+    seen,
+    /"Plan" is inside a button that hides its children from accessibility and has no accessibilityLabel \(the button at 14,262,374,90\), so no element carries it/,
   );
 });

@@ -775,9 +775,32 @@ export function unnamedFrameMatches(
   const pressable = snapshot.nodes.filter(
     (host) => evidence.hosts[host.hostIndex]?.capabilities.press,
   );
-  // An unmeasured pressable could share the frame unseen.
-  if (pressable.some((host) => !host.rect && !evidence.hosts[host.hostIndex].hidden))
+  // An unmeasured pressable could share the frame unseen. Inline text is never measured: it is exempt,
+  // but one inside a button, or in a text whose measured frame overlaps it, could take that button's
+  // tap, so it declines that button.
+  const inline = (host: HostTypography['nodes'][number]) =>
+    host.hostType === 'RCTVirtualText' && host.text.kind === 'inline';
+  const mayTake = (
+    link: HostTypography['nodes'][number],
+    button: HostTypography['nodes'][number],
+  ) => {
+    const owner =
+      link.text.kind === 'inline' ? snapshot.nodes[link.text.ownerHostIndex]?.rect : undefined;
+    const rect = button.rect;
+    return (
+      !!hostPath(snapshot, link.hostIndex)?.includes(button.hostIndex) ||
+      !owner ||
+      !rect ||
+      (owner.x < rect.x + rect.width &&
+        rect.x < owner.x + owner.width &&
+        owner.y < rect.y + rect.height &&
+        rect.y < owner.y + owner.height)
+    );
+  };
+  const unmeasured = pressable.filter((host) => !host.rect);
+  if (unmeasured.some((host) => !inline(host) && !evidence.hosts[host.hostIndex].hidden))
     return matches;
+  const links = unmeasured.filter(inline);
   const duplicates = duplicateNodes(nodes, presence);
   const refs = new Map<string, number>();
   for (const node of nodes) refs.set(node.ref, (refs.get(node.ref) ?? 0) + 1);
@@ -802,6 +825,7 @@ export function unnamedFrameMatches(
   for (const host of pressable) {
     const facts = evidence.hosts[host.hostIndex];
     if (facts.hidden || facts.testID) continue;
+    if (links.some((link) => mayTake(link, host))) continue;
     const found = unnamed.filter(
       ({ i, transform }) =>
         compatible(host.hostType, nodes[i].type) && sameFrame(host.rect, nodes[i].rect, transform),
