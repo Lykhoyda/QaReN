@@ -5,13 +5,16 @@ import type { NativePresence } from '../../../dist/qa/native-presence.js';
 // Real iOS reads of the Test App's hidden-children card screen: the exact join() arguments the device
 // produced. Alpha, Bravo (testID qa-hidden-card-b) and Echo (in a popup) are buttons with no label whose
 // texts are hidden from accessibility; Charlie has an authored label; Delta's texts are not hidden.
+// The g5 reads are the unnamed-cards list after a scroll, its second card (Lima) cut off by the list.
 export type HiddenCardRead =
   | 'p1-obs21-ordinary'
   | 'p1-obs22-presence'
   | 'p2-obs38-presence'
   | 'p3-obs22-presence'
   | 'p5-obs22-presence'
-  | 'p9-obs27-presence';
+  | 'p9-obs27-presence'
+  | 'g5-obs25-ordinary'
+  | 'g5-obs27-presence';
 
 // `edit` changes the device's join arguments before the join, as a changed screen would.
 export function hiddenCard(

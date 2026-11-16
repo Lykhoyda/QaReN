@@ -626,7 +626,7 @@ export function bindFillIdentity(
   return fallback ? { kind: 'fallback', fallback } : undefined;
 }
 
-function scrollTo(element: Element): { scroll: 'up' | 'down'; element: Element } {
+export function scrollTo(element: Element): { scroll: 'up' | 'down'; element: Element } {
   const frame = elementFrame(element);
   return {
     element,

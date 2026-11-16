@@ -43,6 +43,7 @@ import {
   alertPressEffect,
   insideAlert,
   elementFrame,
+  elementViewport,
   applicationFrame,
   isNativeInput,
   describe,
@@ -67,6 +68,7 @@ import {
   clearanceBand,
   clearanceScroll,
   keyboardClearance,
+  scrollTo,
   keyboardFallbackTarget,
   fillHostInside,
   bindFillIdentity,
@@ -1749,6 +1751,28 @@ async function walkBlockScoped(
   };
   // The one clearance drag for a located unnamed button, from its own scroll container: hidden words
   // name no element, so the step's target cannot place the band. The free-ground checks stay.
+  // A located card whose centre lies outside its clip takes the offscreen scroll a named target gets on
+  // the same screen: the clearance band, toward the clip, with no free-ground check. A drag is not a tap,
+  // and the strict proof still guards the press on the next read.
+  const offscreenClearance = (
+    element: Element,
+    screen: Screen,
+  ):
+    | { band: NonNullable<NativeNode['rect']>; direction: 'up' | 'down'; distance?: number }
+    | undefined => {
+    const frame = elementFrame(element);
+    const clip = elementViewport(element);
+    const band = clearanceBand(element, screen);
+    if (!frame || !clip || !band) return undefined;
+    const centre = frame.y + frame.height / 2;
+    if (centre >= clip.y && centre < clip.y + clip.height) return undefined;
+    const distance = keyboardClearance(element, screen);
+    return {
+      band,
+      direction: scrollTo(element).scroll,
+      ...(distance !== undefined ? { distance } : {}),
+    };
+  };
   const locatedClearance = (
     element: Element,
     screen: Screen,
@@ -4621,23 +4645,28 @@ async function walkBlockScoped(
                     : undefined;
                 if (hiddenStop && hiddenTap) {
                   hiddenTap.frame = frameText(elementFrame(hiddenStop.element)!);
-                  const clearing =
-                    hiddenTap.scrolled || scrolled || withheldDrag
-                      ? undefined
-                      : locatedClearance(hiddenStop.element, before.screen, hiddenStop.cover);
+                  const spent = hiddenTap.scrolled || scrolled || withheldDrag;
+                  const offscreen = spent
+                    ? undefined
+                    : offscreenClearance(hiddenStop.element, before.screen);
+                  const clearing = spent
+                    ? undefined
+                    : (offscreen && { ...offscreen, trimmedBy: [], withheld: undefined }) ||
+                      locatedClearance(hiddenStop.element, before.screen, hiddenStop.cover);
                   if (clearing?.direction && clearing.band) {
                     occluded = clearing.direction;
                     within = clearing.band;
                     clearance = clearing.distance;
-                    scrollOrigin = 'centre-covered';
+                    scrollOrigin = offscreen ? 'offscreen-resolution' : 'centre-covered';
                   } else hiddenStop.withheld = clearing?.withheld;
-                  // Value-free: causes, a container's presence, frames and the withheld kind only.
+                  // Value-free: causes, the path, a container's presence, frames and the withheld kind only.
                   deps.note?.(
                     `located-clearance ${JSON.stringify({
                       line: item.line,
                       located: true,
                       cutOff: hiddenStop.cutOff,
                       covered: hiddenStop.covered,
+                      path: spent ? null : offscreen ? 'offscreen' : 'covered',
                       container: !!ancestorsOf(hiddenStop.element).find(isScrollContainer),
                       band: clearing?.band ?? null,
                       direction: clearing?.direction ?? null,

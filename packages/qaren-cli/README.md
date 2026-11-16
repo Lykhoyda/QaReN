@@ -1031,15 +1031,19 @@ native button is cut off by its scroll area or off screen within its clip, or
 that something is drawn over its centre, the button is only located.
 Unknown presence or a failed hit test alone does not
 locate it. That allows a scroll, never a tap.
-QaReN sends the step's one clearance scroll from the button's own scroll area
-under the usual free-ground checks. A view outside the list that crosses the top
-or bottom edge of that area, such as a fixed row reaching a few points into it,
-is trimmed off first, and so is whatever covers the button's centre, including
-text or a non-hittable view hidden from accessibility. These trims use the
-original band edges in one pass, so the drag starts and ends on free ground.
-A view across the middle of the area or across
-both its edges, or an area left lower than 50 points, still withholds the
-scroll. It then takes a settled full read and proves
+QaReN then sends the step's one clearance scroll from the button's own scroll
+area. When the button's centre lies outside that area, the button gets the same
+scroll a named element in that place gets: toward the area, within its visible
+part, with no free-ground check. This holds even when something is also drawn
+over the centre. A drag is not a tap, and the full proof still guards the press.
+When the centre lies inside the area but something is drawn over it, the scroll
+runs under the usual free-ground checks. A view outside the list that crosses
+the top or bottom edge of that area, such as a fixed row reaching a few points
+into it, is trimmed off first, and so is whatever covers the button's centre,
+including text or a non-hittable view hidden from accessibility. These trims use
+the original band edges in one pass, so the drag starts and ends on free ground.
+A view across the middle of the area or across both its edges, or an area left
+lower than 50 points, still withholds the scroll. After the scroll, QaReN takes a settled full read and proves
 the button again; only then does it press, once. A step gets one such scroll,
 including across recovery passes, and a runner refusal of the press after it
 ends the step. When the button is still not proven, or no scroll is allowed,
@@ -1048,8 +1052,8 @@ by its scroll area, or its centre under another element, with "after one
 scroll" when the scroll was sent, or why no scroll was sent (no scroll area
 holds it, or no part of its scroll area is free). The app change comes second.
 The run log records each such decision as a value-free `located-clearance` note:
-whether the button was located, the cause, whether a scroll area holds it, the
-band and direction of the drag, the trimming views by kind and frame (including
+whether the button was located, the cause, the path taken (offscreen or
+covered), whether a scroll area holds it, the band and direction of the drag, the trimming views by kind and frame (including
 cuts from the shared clearance check), and why it was withheld. A card that
 needs two scrolls is refused, so the plan adds a scroll step before the Tap.
 
