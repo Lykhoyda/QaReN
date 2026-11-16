@@ -78,6 +78,12 @@ import {
   scrollTargetCovered,
   scrollUntilContainer,
   foreignOnBand,
+  foreignViewOnBand,
+  groundWitnesses,
+  plainLayersOn,
+  scrollUntilStartBand,
+  type CoveredBy,
+  type GroundProof,
   scrollUntilDirection,
   targetEvidence,
   aggregateTargetVisible,
@@ -99,6 +105,7 @@ import {
 } from './resolve.js';
 import { literalEvidence, type LiteralNearMiss } from './evidence.js';
 import { scrollMotion } from './scroll-motion.js';
+import { scrollBandTooSmall } from '../domain/scroll-gesture.js';
 import { scrollNavigationChange } from './scroll-navigation.js';
 import { applyContainmentFallback, exactIdentities, focusIdentityOf } from './identity.js';
 import {
@@ -420,6 +427,8 @@ const KEYBOARD_DISMISSED = '; the keyboard was dismissed before this tap';
 const OFF_SCREEN_AFTER_SCROLL =
   'stayed off screen after one scroll: its centre is past the visible area or under the keyboard';
 const REACT_ONLY_UNSEEN = 'is known to React but has no element on the visible screen';
+// A witness's hit read starts only with this much of its observation's life left.
+const WITNESS_READ_RESERVE_MS = 300;
 // Why the one clearance drag after a covered iOS refusal was withheld.
 type WithheldDrag = 'no-scroll-area' | 'no-free-part' | 'read-late';
 const WITHHELD_DRAG: Record<WithheldDrag, string> = {
@@ -1633,6 +1642,7 @@ async function walkBlockScoped(
     return operationId;
   };
   const scrollBands = new Map<number, LedgerRow['scrollBand']>();
+  const groundProofs = new Map<number, GroundProof>();
   const bandFor = (item: Item, target: Target, screen: Screen) =>
     scrollUntilBand(target, screen, (receipt) => scrollBands.set(item.line, receipt));
   const overlayRows = new Map<number, { observation: number; checks: OverlayHitReceipt[] }>();
@@ -1695,36 +1705,103 @@ async function walkBlockScoped(
     );
     return proven;
   };
+  // A list's band that release 2.2.1 finds taken may be taken only by plain layers: empty views holding
+  // the whole band. It is free when one named element of the list, wholly inside the band without them,
+  // reads natively hittable now. Only on a presence read with no keyboard shown; anything solid, and
+  // every read that proves nothing, keeps the refusal. The outcome is recorded either way.
+  const proveGround = async (
+    item: Exclude<Item, { kind: 'check' }> & { kind: 'press' | 'fill' },
+    observation: Observation,
+    container: Element,
+    target: Element | undefined,
+    cover: CoveredBy | undefined,
+  ): Promise<NativeNode['rect']> => {
+    const screen = observation.screen;
+    if (
+      deps.platform !== 'ios' ||
+      !observation.platformPresence ||
+      screen.keyboardVisible !== false
+    )
+      return undefined;
+    const settle = (proof: GroundProof): undefined => {
+      groundProofs.set(item.line, proof);
+      return undefined;
+    };
+    const solid = (view: Element | undefined): undefined => {
+      const frame = view && elementFrame(view);
+      if (view && frame)
+        return settle({ status: 'solid-view', ref: view.ref, kind: view.kind, frame });
+      return settle(
+        cover
+          ? { status: 'solid-view', ref: cover.ref, kind: cover.kind, frame: cover.frame }
+          : { status: 'band-too-small' },
+      );
+    };
+    const start = scrollUntilStartBand(item.target, screen);
+    if (!start) return undefined;
+    const plain = plainLayersOn(container, start, screen);
+    if (!plain.length) return solid(foreignViewOnBand(container, start, screen));
+    const leaveOut = new Set(plain);
+    const band = scrollUntilBand(item.target, screen, undefined, leaveOut);
+    if (!band || scrollBandTooSmall(band)) return settle({ status: 'band-too-small' });
+    const onCover = cover && clip(band, cover.frame);
+    if (onCover && onCover.width > 0 && onCover.height > 0) return solid(undefined);
+    const foreign = foreignViewOnBand(container, band, screen, leaveOut);
+    if (foreign) return solid(foreign);
+    const witnesses = groundWitnesses(container, band, screen, target);
+    if (!witnesses.length) return settle({ status: 'no-witness' });
+    let notHittable = 0;
+    for (const witness of witnesses) {
+      // A read that would outlive the observation never starts.
+      if (observationDeadline(observation.timing) - deps.now() < WITNESS_READ_RESERVE_MS) break;
+      const read = await readHit(item, observation, witness);
+      if (read === 'hittable') {
+        groundProofs.set(item.line, { status: 'proven', ref: witness.ref, kind: witness.kind });
+        return band;
+      }
+      if (read === 'not-hittable') notHittable += 1;
+    }
+    return settle(
+      notHittable
+        ? { status: 'witness-not-hittable', count: notHittable }
+        : { status: 'witness-unavailable' },
+    );
+  };
   // After a proven cover check of a covered iOS refusal: the band of its one clearance drag, or why no
   // drag may be sent. Only a read proving nothing else takes the touch keeps today's band.
-  const clearanceAfterProof = (
+  const clearanceAfterProof = async (
     item: Exclude<Item, { kind: 'check' }> & { kind: 'press' | 'fill' },
     element: Element,
-    screen: Screen,
-  ): { band: NativeNode['rect']; direction: 'up' | 'down' } | WithheldDrag => {
+    observation: Observation,
+  ): Promise<{ band: NativeNode['rect']; direction: 'up' | 'down' } | WithheldDrag> => {
+    const screen = observation.screen;
     const cover = targetRows.get(item.line)?.coveredBy;
     const gap = coverGaps.get(item.line);
-    if (!cover && (gap === 'none' || gap === 'reaches-target'))
+    if (!cover && (gap === 'none' || gap === 'reaches-target')) {
+      groundProofs.set(item.line, { status: 'not-needed' });
       return { band: clearanceBand(element, screen), direction: clearanceScroll(element, screen) };
+    }
     if (gap === 'presence-recapture-incomplete') return 'read-late';
     const container = ancestorsOf(element).find(isScrollContainer);
     if (!container || scrollUntilContainer(item.target, screen) !== container)
       return 'no-scroll-area';
-    const band = bandFor(item, item.target, screen);
-    const shared = band && cover && clip(band, cover.frame);
+    const today = bandFor(item, item.target, screen);
+    const shared = today && cover && clip(today, cover.frame);
     const onCover = !!shared && shared.width > 0 && shared.height > 0;
+    const free =
+      !!today &&
+      today.width > 0 &&
+      today.height > 0 &&
+      !onCover &&
+      !foreignOnBand(container, today, screen);
+    if (free) groundProofs.set(item.line, { status: 'not-needed' });
+    const band = free ? today : await proveGround(item, observation, container, element, cover);
+    if (!band) return 'no-free-part';
     const frame = elementFrame(element);
-    return !band ||
-      band.width <= 0 ||
-      band.height <= 0 ||
-      onCover ||
-      foreignOnBand(container, band, screen)
-      ? 'no-free-part'
-      : {
-          band,
-          direction:
-            !frame || frame.y + frame.height / 2 >= band.y + band.height / 2 ? 'down' : 'up',
-        };
+    return {
+      band,
+      direction: !frame || frame.y + frame.height / 2 >= band.y + band.height / 2 ? 'down' : 'up',
+    };
   };
   // A covered refusal that emits no other decision diagnostic still says why its cover was or was not
   // named; a line whose cover was never looked up emits nothing.
@@ -1766,6 +1843,8 @@ async function walkBlockScoped(
       };
     const scrollBand = scrollBands.get(row.line);
     if (scrollBand) row = { ...row, scrollBand };
+    const groundProof = groundProofs.get(row.line);
+    if (groundProof) row = { ...row, groundProof };
     const interruption = interruptions.get(row.line);
     // A veto on an earlier attempt says nothing about a pass; a dismissal explains it.
     if (interruption && (row.outcome !== 'pass' || interruption.outcome === 'dismissed'))
@@ -3757,6 +3836,7 @@ async function walkBlockScoped(
       interruptionWithheld = undefined;
       overlayRows.delete(item.line);
       scrollBands.delete(item.line);
+      groundProofs.delete(item.line);
       targetRows.delete(item.line);
       line = item.line;
       // Support blocks walk without recovery and never spend it; a login replay re-arms it for this retry.
@@ -4376,6 +4456,7 @@ async function walkBlockScoped(
           pressNeedsReadback = false;
           overlayRows.delete(item.line);
           scrollBands.delete(item.line);
+          groundProofs.delete(item.line);
           let plainBand: PlainScrollBand | undefined;
           const { coveredBy: _previousCover, ...selectionFacts } = targetRows.get(item.line) ?? {};
           targetRows.set(item.line, selectionFacts);
@@ -4815,10 +4896,21 @@ async function walkBlockScoped(
                   const distance =
                     clearance ??
                     (resolution.element && keyboardClearance(resolution.element, before.screen));
-                  const band = view
+                  let band = view
                     ? bandFor(item, item.target, before.screen)
                     : (within ??
                       (resolution.element && clearanceBand(resolution.element, before.screen)));
+                  if (view && (!band || band.width <= 0 || band.height <= 0))
+                    band =
+                      view.container &&
+                      (await proveGround(
+                        item,
+                        before,
+                        view.container,
+                        resolution.element,
+                        undefined,
+                      ));
+                  else if (view) groundProofs.set(item.line, { status: 'not-needed' });
                   if (view && (!band || band.width <= 0 || band.height <= 0)) {
                     outcome = failed(
                       item,
@@ -5372,7 +5464,7 @@ async function walkBlockScoped(
                   break;
                 }
                 refusedIdentity = element;
-                let clearing: ReturnType<typeof clearanceAfterProof> | undefined;
+                let clearing: Awaited<ReturnType<typeof clearanceAfterProof>> | undefined;
                 if (deps.platform === 'ios' && before.screen.keyboardVisible === false) {
                   const proven = await proveCover(
                     item,
@@ -5385,7 +5477,7 @@ async function walkBlockScoped(
                     if (matches.length === 1) element = matches[0];
                     else clearing = 'no-scroll-area';
                   }
-                  clearing ??= clearanceAfterProof(item, element, before.screen);
+                  clearing ??= await clearanceAfterProof(item, element, before);
                   if (typeof clearing === 'string') {
                     withheldDrag = clearing;
                     before = await settledCapture(item);
@@ -6140,6 +6232,7 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     ...(row.devError ? { devError: row.devError } : {}),
     ...(row.scrollDetail ? { scrollDetail: row.scrollDetail } : {}),
     ...(row.scrollBand ? { scrollBand: row.scrollBand } : {}),
+    ...(row.groundProof ? { groundProof: row.groundProof } : {}),
     ...(row.interruption ? { interruption: row.interruption } : {}),
     ...(row.overlayChecks ? { overlayChecks: row.overlayChecks } : {}),
     ...(row.collapsed ? { collapsed: row.collapsed } : {}),

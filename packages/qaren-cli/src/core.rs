@@ -503,6 +503,12 @@ pub struct Row {
         skip_serializing_if = "Option::is_none",
         deserialize_with = "passive"
     )]
+    pub ground_proof: Option<GroundProof>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
     pub implicit_wait_ms: Option<u64>,
     #[serde(
         default,
@@ -774,6 +780,30 @@ pub struct BandCut {
     pub edge: BandEdge,
     pub before: BandEdges,
     pub after: BandEdges,
+}
+
+// Whether a clearance drag across plain layers was proven by a native witness, or why not.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum GroundProof {
+    NotNeeded,
+    BandTooSmall,
+    NoWitness,
+    WitnessUnavailable,
+    Proven {
+        #[serde(rename = "ref", deserialize_with = "native_capture_ref")]
+        reference: String,
+        kind: CarrierKind,
+    },
+    SolidView {
+        #[serde(rename = "ref", deserialize_with = "native_capture_ref")]
+        reference: String,
+        kind: CarrierKind,
+        frame: DialogRect,
+    },
+    WitnessNotHittable {
+        count: u8,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

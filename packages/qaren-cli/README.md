@@ -1354,6 +1354,28 @@ view outside that container's ancestry and content, regardless of capture order.
 Even a background view overlapping the band withholds the drag. Direction moves
 the target toward the admitted band's centre.
 
+A real screen holds empty full-screen views outside the list (screens lower in
+the stack, navigation containers, a second window), and these alone can leave no
+free band. On a presence read with the keyboard proven hidden, the walker then
+sets aside *plain layers*: views of native type `Other`, not windows, outside
+the list's ancestry and content, whose frame holds the whole starting band and
+under which every view is again such a view. Anything else stays solid and keeps
+today's band and refusal with no further read. Without the plain layers, the
+remaining band must host a drag and overlap neither the named cover nor any
+other view outside the list. Then up to four named elements of the list lying
+wholly inside that band (identifiable by the runner, not of kind `other`, rows
+of this list rather than a nested one, apart from the target's lineage),
+nearest its centre first, each get one read-only `hitProbe`, started only with
+at least 300 ms of the observation left. The first `hittable` answer sends the
+drag on that band; `not-hittable`, `moved` or `unavailable` proves nothing. The
+same proof applies when a Tap or Fill target known only to React finds its
+list's band taken. The step row's `groundProof` records `not-needed`, `proven`
+(witness ref and kind), `solid-view` (ref, kind and frame), `band-too-small`,
+`no-witness`, `witness-not-hittable` (count) or `witness-unavailable`. A list
+with no named element in the band keeps the refusal. The
+[free-ground regressions](../qaren-core/test/unit/qa/free-ground-walker.test.ts)
+pin these cases.
+
 No own list, no free band, or a late or incomplete proof read withholds the drag.
 The walker takes a settled capture and keeps the one retry, with no subsequent
 scroll of any origin for that attempt. If it still refuses before a successful
