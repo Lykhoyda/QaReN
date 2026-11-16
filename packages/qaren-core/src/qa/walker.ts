@@ -4365,7 +4365,7 @@ async function walkBlockScoped(
             failed(
               item,
               attempt,
-              'keyboard clearance: the target moved out of reach after the keyboard was hidden; nothing was scrolled after it',
+              `keyboard clearance: the target moved out of reach after the keyboard was hidden; nothing was scrolled after it${await coverText(item)}`,
               before.screen,
               await shoot(item),
               ref,
@@ -4803,6 +4803,7 @@ async function walkBlockScoped(
                   )
                     throw new EvidenceExpired(false);
                   const clearing = scrollOrigin === 'centre-covered' ? clearanceCoverage : null;
+                  // A refused clearance drag moved nothing; an inferred iOS overlay goes to the live hit read, a keyboard to its clearance.
                   if (
                     !result.ok &&
                     result.mutation === 'none' &&
@@ -4965,6 +4966,15 @@ async function walkBlockScoped(
               recordCover(item.line, cover);
               if (cover && element) coverTargets.set(item.line, element);
               else coverTargets.delete(item.line);
+              if (
+                keyboardClearedOnStep &&
+                item.kind === 'press' &&
+                ((cover && 'owner' in cover) ||
+                  (overlay && element && !probeIdentifiable(element, before.screen)))
+              ) {
+                outcome = await marginScrollRefusal();
+                break;
+              }
               // List order is not paint order: an inferred overlay alone never refuses an iOS press.
               if (
                 item.kind === 'fill' &&
@@ -4993,7 +5003,7 @@ async function walkBlockScoped(
                 }
                 strictFillFocus = true;
               } else if (
-                (scrolled || withheldDrag) &&
+                (scrolled || withheldDrag || keyboardClearedOnStep) &&
                 overlay &&
                 item.kind === 'press' &&
                 deps.platform === 'ios'
@@ -5317,7 +5327,7 @@ async function walkBlockScoped(
                 outcome = failed(
                   item,
                   attempt,
-                  `${scrollError ? `${scrollError}; ` : ''}${withheldDrag ? stayedCovered(item.target.phrase, withheldDrag) : `"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}`}${await coverText(item)}${cutterText(liveHit)}; the live hit read refused the press (${liveHitRefusal(act.error)}); no tap was performed`,
+                  `${scrollError ? `${scrollError}; ` : ''}${withheldDrag ? stayedCovered(item.target.phrase, withheldDrag) : `"${item.target.phrase}" ${keyboardClearedOnStep && !scrolled ? 'stayed covered after keyboard clearance' : OFF_SCREEN_AFTER_SCROLL}`}${await coverText(item)}${cutterText(liveHit)}; the live hit read refused the press (${liveHitRefusal(act.error)}); no tap was performed`,
                   before.screen,
                   await shoot(item),
                   ref,

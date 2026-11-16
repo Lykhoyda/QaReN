@@ -452,27 +452,15 @@ for (const [name, recaptured] of [
   });
 }
 
-for (const [name, after] of [
-  ['below the viewport', screen({ keyboard: false, rect: { ...FOOTER, y: 820 } })],
-  [
-    'behind an overlay',
-    screen({
-      keyboard: false,
-      rect: FOOTER,
-      overlay: { x: 0, y: 700, width: 400, height: 100 },
-    }),
-  ],
-] as const) {
-  test(`blur moves the target ${name}: refuse without scrolling or pressing`, async () => {
-    const f = device(screen(), after);
-    const outcome = await walkBlock(tap(), f.deps);
-    assert.equal(outcome.block.outcome, 'fail', seen(outcome));
-    assert.equal(count(f, 'dismiss'), 1);
-    assert.equal(count(f, 'scroll'), 0);
-    assert.equal(count(f, 'press'), 0);
-    assert.match(seen(outcome), /keyboard clearance.*moved out of reach.*keyboard was hidden/);
-  });
-}
+test('blur moves the target below the viewport: refuse without scrolling or pressing', async () => {
+  const f = device(screen(), screen({ keyboard: false, rect: { ...FOOTER, y: 820 } }));
+  const outcome = await walkBlock(tap(), f.deps);
+  assert.equal(outcome.block.outcome, 'fail', seen(outcome));
+  assert.equal(count(f, 'dismiss'), 1);
+  assert.equal(count(f, 'scroll'), 0);
+  assert.equal(count(f, 'press'), 0);
+  assert.match(seen(outcome), /keyboard clearance.*moved out of reach.*keyboard was hidden/);
+});
 
 test('native occlusion after margin clearance refuses without a recovery scroll', async () => {
   const f = device();
@@ -582,24 +570,65 @@ test('V4: with the clearance already spent on this step, the covered refusal nam
   assert.match(seen(outcome), /already used on this step/);
 });
 
-test('V5: an overlay inferred after the covered clearance takes the live-hit-strict press', async () => {
-  const bar = { x: 0, y: 700, width: 400, height: 100 };
-  const f = device(
-    screen({ rect: UNDER, list: true }),
-    screen({ keyboard: false, rect: FOOTER, overlay: bar }),
-  );
-  const options: unknown[] = [];
-  const press = f.deps.press;
-  f.deps.press = async (ref, context, opts) => {
-    options.push(opts);
-    return press(ref, context, opts);
-  };
-  const outcome = await walkBlock(tap(), f.deps);
-  assert.equal(outcome.block.outcome, 'pass', seen(outcome));
-  assert.equal(count(f, 'scroll'), 1);
-  assert.equal(count(f, 'dismiss'), 1);
-  assert.deepEqual(options, [{ requireLiveHit: true }]);
-});
+for (const rect of [EDGE, UNDER]) {
+  for (const hittable of [true, false]) {
+    test(`${rect === EDGE ? 'margin' : 'covered'} clearance with an inferred overlay: live hit ${hittable ? 'proves' : 'refuses'} the press`, async () => {
+      const bar = { x: 0, y: 700, width: 400, height: 100 };
+      const f = device(
+        screen({ rect, list: true }),
+        screen({ keyboard: false, rect: FOOTER, overlay: bar }),
+      );
+      const options: unknown[] = [];
+      const press = f.deps.press;
+      f.deps.press = async (ref, context, opts) => {
+        options.push(opts);
+        return hittable
+          ? press(ref, context, opts)
+          : { ok: false, mutation: 'none', error: 'LIVE_HIT_UNPROVEN: covered' };
+      };
+      const outcome = await walkBlock(tap(), f.deps);
+      assert.equal(outcome.block.outcome, hittable ? 'pass' : 'fail', seen(outcome));
+      assert.equal(count(f, 'scroll'), rect === UNDER ? 1 : 0);
+      assert.equal(count(f, 'dismiss'), 1);
+      assert.equal(count(f, 'press'), hittable ? 1 : 0);
+      assert.deepEqual(options, [{ requireLiveHit: true }]);
+      if (!hittable)
+        assert.match(seen(outcome), /live hit read refused the press.*no tap was performed/);
+    });
+  }
+
+  test(`${rect === EDGE ? 'margin' : 'covered'} clearance with a named cover refuses without pressing`, async () => {
+    const after = await hitTested({ x: 0, y: 700, width: 400, height: 100 }, false);
+    const target = after.elements.find((element) => element.testID === 'submit')!;
+    const cover = coverOwner(target, after);
+    assert.ok('owner' in cover);
+    assert.equal(cover.owner.testID, 'bar');
+    const f = device(screen({ rect, list: true }), after);
+    const outcome = await walkBlock(tap(), f.deps);
+    assert.equal(outcome.block.outcome, 'fail', seen(outcome));
+    assert.equal(count(f, 'dismiss'), 1);
+    assert.equal(count(f, 'scroll'), rect === UNDER ? 1 : 0);
+    assert.equal(count(f, 'press'), 0);
+    assert.match(seen(outcome), /covered by .* at 0,700,400,100/);
+  });
+
+  test(`${rect === EDGE ? 'margin' : 'covered'} clearance cannot press a target that loses its label and testID`, async () => {
+    const after = screen({
+      keyboard: false,
+      rect: FOOTER,
+      overlay: { x: 0, y: 700, width: 400, height: 100 },
+    });
+    const target = after.elements.find((element) => element.testID === 'submit')!;
+    delete target.testID;
+    delete target.label;
+    const f = device(screen({ rect, list: true }), after);
+    const outcome = await walkBlock(tap(), f.deps);
+    assert.equal(outcome.block.outcome, 'fail', seen(outcome));
+    assert.equal(count(f, 'dismiss'), 1);
+    assert.equal(count(f, 'scroll'), rect === UNDER ? 1 : 0);
+    assert.equal(count(f, 'press'), 0);
+  });
+}
 
 test('V5: a target moved below its viewport by the covered clearance refuses with no second scroll', async () => {
   const f = device(
