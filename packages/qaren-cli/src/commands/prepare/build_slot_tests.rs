@@ -1,6 +1,7 @@
 use super::*;
 use crate::exec::{CmdOutput, MockRunner, PipedChild, Spawned};
 use serde_json::json;
+use std::collections::VecDeque;
 
 const BIRTH: &str = "Wed Aug 12 10:00:00 2026";
 
@@ -115,6 +116,9 @@ impl Runner for TestRunner {
             _ => {}
         }
         self.inner.spawn_group_unchecked(spec, log)
+    }
+    fn log_lines(&mut self, log: &Path) -> Option<u64> {
+        self.inner.log_lines(log)
     }
     fn sleep(&mut self, duration: Duration) {
         self.inner.sleep(duration);
@@ -234,7 +238,8 @@ fn s1_s2_waiting_build_starts_after_the_foreign_slot_is_released() {
         finite_script(&mut f, Some(0));
         assert!(run_finite_build(
             &mut f.ctx(),
-            &CmdSpec::new("native-compile", "compiler", &[], 3)
+            &CmdSpec::new("native-compile", "compiler", &[], 3),
+            BuildWork::Compile
         )
         .is_ok());
         assert!(f.runner.saw_slot);
@@ -257,6 +262,7 @@ fn s4_proven_orphan_is_reclaimed_and_named() {
     run_finite_build(
         &mut ctx,
         &CmdSpec::new("native-compile", "compiler", &[], 3),
+        BuildWork::Compile,
     )
     .unwrap();
     assert!(ctx
@@ -284,6 +290,7 @@ fn s8_s13_finished_failed_cancelled_or_expired_build_releases_only_its_slot() {
         let result = run_finite_build(
             &mut ctx,
             &CmdSpec::new("native-compile", "compiler", &[], 3),
+            BuildWork::Compile,
         );
         assert_eq!(result.is_ok(), name == "pass");
         assert!(f.runner.saw_slot);
@@ -298,7 +305,8 @@ fn s12_a_build_that_cannot_spawn_releases_the_slot() {
     f.runner.spawn_error = true;
     assert!(run_finite_build(
         &mut f.ctx(),
-        &CmdSpec::new("native-compile", "compiler", &[], 3)
+        &CmdSpec::new("native-compile", "compiler", &[], 3),
+        BuildWork::Compile
     )
     .is_err());
     assert!(f.runner.saw_slot);
@@ -313,7 +321,8 @@ fn s12_save_and_group_record_faults_never_open_the_build_gate() {
         f.runner.fault = Some(fault);
         assert!(run_finite_build(
             &mut f.ctx(),
-            &CmdSpec::new("native-compile", "compiler", &[], 3)
+            &CmdSpec::new("native-compile", "compiler", &[], 3),
+            BuildWork::Compile
         )
         .is_err());
         assert!(f.runner.saw_slot);
@@ -596,6 +605,8 @@ impl Fixture {
             manifest_warm: None,
             lane_owned: false,
             build_deadline_ms: None,
+            build_limit: None,
+            host_wait_ms: 0,
         }
     }
     fn foreign_slot(&mut self) -> PathBuf {
@@ -648,6 +659,7 @@ fn s1_s2_s3_both_platforms_wait_and_refuse_without_starting_a_build() {
         let failure = run_finite_build(
             &mut f.ctx(),
             &CmdSpec::new("native-compile", "compiler", &[], 3),
+            BuildWork::Compile,
         )
         .unwrap_err();
         assert_eq!(failure.code, FailureCode::BuildContended);
@@ -669,43 +681,53 @@ fn s1_s2_s3_both_platforms_wait_and_refuse_without_starting_a_build() {
 }
 
 #[test]
-fn s11_slot_does_not_restart_the_ios_build_window() {
+fn s11_b8_slot_wait_keeps_its_own_bound_when_the_window_has_less_left() {
     let mut f = fixture("shared-budget", Platform::Ios);
     f.foreign_slot();
-    f.live_poll();
+    for _ in 0..3 {
+        f.live_poll();
+    }
     let mut ctx = f.ctx();
     ctx.build_deadline_ms = Some(ctx.runner.monotonic_ms() + 1000);
     let failure = run_finite_build(
         &mut ctx,
         &CmdSpec::new("native-compile", "compiler", &[], 3),
+        BuildWork::Compile,
     )
     .unwrap_err();
+    // The slot's refusal after its full limit of waiting, not the window's.
     assert_eq!(failure.code, FailureCode::BuildContended);
-    assert!(failure.detail.contains("waited 1 s"));
+    assert!(failure.detail.contains("waited 3 s"), "{failure:?}");
+    assert!(failure.limit.is_none());
 }
 
 #[test]
-fn s11_two_lock_waits_share_one_budget_and_both_reach_the_receipt() {
+fn s11_lock_and_slot_waits_each_keep_their_own_bound_and_both_reach_the_receipt() {
     let mut f = fixture("two-waits", Platform::Ios);
     let slot = f.foreign_slot();
     let platform = f.root.join("locks/native-build-ios");
     let held = buildplan::read_holder(&slot).unwrap();
     buildplan::save_json(&platform.join("holder.json"), &held).unwrap();
-    for _ in 0..3 {
+    for _ in 0..4 {
         f.live_poll();
     }
     f.runner.release_on_sleep = Some(platform);
     let mut ctx = f.ctx();
     let root = ctx.runs_root.join("locks");
     let start = ctx.runner.monotonic_ms();
+    assert_eq!(ctx.build_deadline_ms, None);
     claim_build_lock(&mut ctx, &root).unwrap();
+    // B2: the window starts at the claim (after 1 s of waiting) and is three times the limit.
+    assert_eq!(ctx.build_deadline_ms, Some(start + 1000 + 9000));
     let failure = run_finite_build(
         &mut ctx,
         &CmdSpec::new("native-compile", "compiler", &[], 3),
+        BuildWork::Compile,
     )
     .unwrap_err();
     assert_eq!(failure.code, FailureCode::BuildContended);
-    assert_eq!(ctx.runner.monotonic_ms() - start, 3000);
+    // Waiting for the lock (1 s) is not work; the slot then waits its own 3 s.
+    assert_eq!(ctx.runner.monotonic_ms() - start, 4000);
     let receipt = finish_receipt(ctx, crate::receipt::ReceiptResult::Refused, Some(failure));
     assert_eq!(receipt.build_lock_waits.len(), 2);
     assert_eq!(
@@ -717,7 +739,7 @@ fn s11_two_lock_waits_share_one_budget_and_both_reach_the_receipt() {
         receipt.build_lock_waits[1].lock.as_deref(),
         Some("native-build-slot")
     );
-    assert_eq!(receipt.build_lock_waits[1].waited_s, 2);
+    assert_eq!(receipt.build_lock_waits[1].waited_s, 3);
     assert!(f.runner.inner.spawned_logs.is_empty());
 }
 
@@ -779,6 +801,7 @@ fn s5_slot_never_reclaims_dead_holder_with_a_live_group_or_records() {
         let failure = run_finite_build(
             &mut f.ctx(),
             &CmdSpec::new("native-compile", "compiler", &[], 3),
+            BuildWork::Compile,
         )
         .unwrap_err();
         assert_eq!(failure.code, FailureCode::BuildContended);
@@ -1453,4 +1476,232 @@ fn external_cleanup_requires_build_slot_owner_death_before_touching_resources() 
             }
         }
     }
+}
+
+// AI-471: the build's own clock, through the same finite runner.
+
+fn growing(reads: u64) -> VecDeque<Option<u64>> {
+    (0..=reads).map(Some).collect()
+}
+
+fn compile_spec(ctx: &Ctx) -> CmdSpec {
+    CmdSpec::new(
+        "native-compile",
+        "compiler",
+        &[],
+        build_work_seconds_left(ctx),
+    )
+}
+
+fn timed_out(f: &mut Fixture, limit: u64, counts: VecDeque<Option<u64>>) -> (Failure, u64) {
+    f.record.scenario.deadlines.build_seconds = limit;
+    finite_script(f, None);
+    f.runner.inner.scripted_log_lines = counts;
+    let mut ctx = f.ctx();
+    let start = ctx.runner.monotonic_ms();
+    let spec = compile_spec(&ctx);
+    let failure = run_finite_build(&mut ctx, &spec, BuildWork::Compile).unwrap_err();
+    (failure, start)
+}
+
+#[test]
+fn b3_idle_window_and_ceiling_numbers() {
+    for (limit, idle) in [
+        (30, 300),
+        (1200, 300),
+        (1600, 400),
+        (2400, 600),
+        (7200, 600),
+    ] {
+        assert_eq!(build_idle_seconds(limit), idle, "limit {limit}");
+    }
+    for (limit, ceiling) in [
+        (30, 90),
+        (600, 1800),
+        (2400, 7200),
+        (5000, 7200),
+        (7200, 7200),
+    ] {
+        assert_eq!(build_ceiling_seconds(limit), ceiling, "limit {limit}");
+    }
+}
+
+#[test]
+fn b9_android_gradle_past_its_limit_passes_while_it_writes() {
+    let mut f = fixture("android-long", Platform::Android);
+    f.record.scenario.deadlines.build_seconds = 2400;
+    f.runner
+        .inner
+        .expect_spawn_piped_exiting_after("compiler", 5000, 0, 3_300_000);
+    f.runner
+        .inner
+        .expect_run("ps -p 5000 -o lstart=", CmdOutput::success(BIRTH));
+    f.runner
+        .inner
+        .expect_run("ps -p 5000 -o command=", CmdOutput::success("compiler"));
+    f.runner
+        .inner
+        .expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    f.runner.inner.scripted_log_lines = growing(3400);
+    let mut ctx = f.ctx();
+    let spec = compile_spec(&ctx);
+    assert_eq!(spec.timeout_seconds, 7200);
+    run_finite_build(&mut ctx, &spec, BuildWork::Compile).unwrap();
+    let took = ctx
+        .timings
+        .iter()
+        .find(|(k, _)| k == "native_build")
+        .unwrap()
+        .1;
+    assert!((3_300_000..3_300_200).contains(&took), "{took}");
+    assert!(ctx
+        .notes
+        .iter()
+        .any(|(k, v)| k == "build_limit" && v.starts_with("limit 2400 s; the build took 3300 s")));
+}
+
+#[test]
+fn b9_android_gradle_that_stands_still_is_cut_one_idle_window_after_its_last_line() {
+    let mut f = fixture("android-still", Platform::Android);
+    let (failure, _) = timed_out(&mut f, 2400, growing(2000));
+    let limit = failure.limit.as_deref().unwrap();
+    assert_eq!(limit.ended_by, LimitEnd::NoProgress);
+    assert_eq!(limit.elapsed_s, 2600);
+    assert_eq!(limit.last_progress_age_s, Some(600));
+    assert_eq!(limit.next_limit_s, Some(2400));
+    assert_eq!(
+        failure.build_recovery().unwrap().reason,
+        RecoveryReason::BuildTimeLimit
+    );
+}
+
+#[test]
+fn b10_android_compile_that_always_writes_ends_at_its_ceiling() {
+    let mut f = fixture("android-ceiling", Platform::Android);
+    let (failure, _) = timed_out(&mut f, 2400, growing(7300));
+    let limit = failure.limit.as_deref().unwrap();
+    assert_eq!(limit.ended_by, LimitEnd::Window);
+    assert_eq!((limit.elapsed_s, limit.window_s), (7200, 7200));
+    assert_eq!(limit.next_limit_s, None);
+    assert!(failure.next_action.contains("project's own tools"));
+}
+
+#[test]
+fn b10_a_smaller_count_is_a_new_baseline_and_growth_after_it_counts() {
+    let mut f = fixture("baseline", Platform::Android);
+    let mut counts = growing(100);
+    counts.extend(std::iter::repeat_n(Some(5), 100));
+    counts.extend(std::iter::repeat_n(None, 199));
+    counts.push_back(Some(6));
+    let (failure, _) = timed_out(&mut f, 600, counts);
+    let limit = failure.limit.as_deref().unwrap();
+    // 6 after the new baseline of 5 is growth at 400 s: alive to 400 + 300, not cut at 600.
+    assert_eq!(
+        (limit.ended_by, limit.elapsed_s),
+        (LimitEnd::NoProgress, 700)
+    );
+}
+
+#[test]
+fn b10_a_count_file_that_appears_late_counts_as_growth_once() {
+    let mut f = fixture("late-count", Platform::Android);
+    let mut counts: VecDeque<_> = std::iter::repeat_n(None, 60).collect();
+    counts.extend(std::iter::repeat_n(Some(40), 400));
+    let (failure, _) = timed_out(&mut f, 300, counts);
+    let limit = failure.limit.as_deref().unwrap();
+    assert_eq!(
+        (limit.ended_by, limit.elapsed_s),
+        (LimitEnd::NoProgress, 360)
+    );
+    assert_eq!(limit.last_progress_age_s, Some(300));
+}
+
+#[test]
+fn b10_prebuild_keeps_its_own_limit_and_names_what_it_was_given() {
+    for (left_ms, elapsed, given) in [
+        (9_000_000, 3, "the limit of 3 s"),
+        (1000, 1, "what was left of the build window"),
+    ] {
+        let mut f = fixture(&format!("prebuild-{elapsed}"), Platform::Ios);
+        finite_script(&mut f, None);
+        f.runner.inner.scripted_log_lines = growing(10);
+        let mut ctx = f.ctx();
+        ctx.build_deadline_ms = Some(ctx.runner.monotonic_ms() + left_ms);
+        let spec = CmdSpec::new("expo-prebuild", "compiler", &[], build_seconds_left(&ctx));
+        let failure = run_finite_build(&mut ctx, &spec, BuildWork::Prebuild).unwrap_err();
+        let limit = failure.limit.as_deref().unwrap();
+        assert_eq!(limit.phase, "prebuild");
+        assert_eq!(limit.ended_by, LimitEnd::CommandLimit);
+        assert_eq!((limit.elapsed_s, limit.limit_s), (elapsed, elapsed));
+        assert_eq!((limit.idle_s, limit.last_progress_age_s), (None, None));
+        assert!(failure.detail.contains(given), "{failure:?}");
+        assert!(!ctx.timings.iter().any(|(k, _)| k == "native_build"));
+        // Prebuild has no progress rule: it never reads the line count.
+        assert_eq!(f.runner.inner.scripted_log_lines.len(), 11);
+    }
+}
+
+fn seed_timings(f: &Fixture, platform: &str, app_id: &str, work_s: u64) {
+    crate::build_timings::append(
+        &crate::build_timings::path(&f.root, platform, app_id).unwrap(),
+        crate::build_timings::Sample {
+            work_s,
+            at: "2026-11-15T00:00:00Z".into(),
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn l6_a_learned_limit_leaves_the_slot_wait_and_prebuild_on_the_configured_limit() {
+    let mut f = fixture("learned-slot", Platform::Ios);
+    seed_timings(&f, "ios", "com.example.app", 30);
+    f.foreign_slot();
+    for _ in 0..3 {
+        f.live_poll();
+    }
+    let mut ctx = f.ctx();
+    learn_build_limit(&mut ctx);
+    assert_eq!(build_limit_seconds(&ctx), 45);
+    // The compile itself would get the learned ceiling; the slot wait still ends after 3 s.
+    let spec = compile_spec(&ctx);
+    assert_eq!(spec.timeout_seconds, 135);
+    let failure = run_finite_build(&mut ctx, &spec, BuildWork::Compile).unwrap_err();
+    assert_eq!(failure.code, FailureCode::BuildContended);
+    assert!(failure.detail.contains("waited 3 s"), "{failure:?}");
+    drop(ctx);
+    let mut f = fixture("learned-prebuild", Platform::Ios);
+    seed_timings(&f, "ios", "com.example.app", 30);
+    finite_script(&mut f, None);
+    let mut ctx = f.ctx();
+    learn_build_limit(&mut ctx);
+    ctx.build_deadline_ms = Some(ctx.runner.monotonic_ms() + 9_000_000);
+    let spec = CmdSpec::new("expo-prebuild", "compiler", &[], build_seconds_left(&ctx));
+    let failure = run_finite_build(&mut ctx, &spec, BuildWork::Prebuild).unwrap_err();
+    let limit = failure.limit.as_deref().unwrap();
+    assert_eq!((limit.elapsed_s, limit.limit_s), (3, 3));
+    assert!(!limit.learned);
+}
+
+#[test]
+fn g3_a_learned_limit_is_per_platform_and_per_app() {
+    let mut f = fixture("per-platform", Platform::Ios);
+    seed_timings(&f, "ios", "com.example.app", 30);
+    let mut ctx = f.ctx();
+    learn_build_limit(&mut ctx);
+    assert_eq!(build_limit_seconds(&ctx), 45);
+    assert!(ctx.notes.iter().any(|(k, v)| k == "build_limit_learned"
+        && v == "limit 45 s, learned from 1 earlier builds on this machine (configured 3 s)"));
+    drop(ctx);
+    f.record.scenario.platform = Platform::Android;
+    let mut ctx = f.ctx();
+    learn_build_limit(&mut ctx);
+    assert_eq!(build_limit_seconds(&ctx), 3);
+    drop(ctx);
+    f.record.scenario.platform = Platform::Ios;
+    f.record.candidate.app_id = "com.example.other".into();
+    let mut ctx = f.ctx();
+    learn_build_limit(&mut ctx);
+    assert_eq!(build_limit_seconds(&ctx), 3);
+    assert!(ctx.notes.is_empty());
 }

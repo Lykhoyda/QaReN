@@ -1,5 +1,6 @@
 pub mod actions;
 pub mod adapters;
+pub mod build_timings;
 pub mod buildplan;
 pub mod cancel;
 pub mod candidate;

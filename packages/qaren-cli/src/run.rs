@@ -229,7 +229,8 @@ pub fn run(runner: &mut dyn Runner, req: &RunRequest) -> Receipt {
 
 fn run_scoped(runner: &mut dyn Runner, req: &RunRequest) -> Receipt {
     let started_ms = runner.now_epoch_ms();
-    let host_start = crate::host_capacity::sample(runner, std::env::consts::OS);
+    let os = runner.host_os();
+    let host_start = crate::host_capacity::sample(runner, os);
     let helpers = crate::device_helpers::scan(runner, std::env::consts::OS);
     let mut preflight_jev = None;
     // A PR worktree created before the run record owns it; removed here if the run never got that far.
@@ -728,6 +729,8 @@ fn run_inner(
         lane_owned: req.platform == Platform::Ios
             && (req.boot_device || req.restart_device || req.fresh_install),
         build_deadline_ms: None,
+        build_limit: None,
+        host_wait_ms: 0,
     };
     // Returning a receipt prevents ? from escaping this resource-owning scope.
     let held = move |mut ctx: Ctx<'_>| -> Receipt {

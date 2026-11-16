@@ -1,0 +1,27 @@
+import { AndroidConfig, type ConfigPlugin, withAndroidManifest } from 'expo/config-plugins';
+
+type AndroidManifest = AndroidConfig.Manifest.AndroidManifest;
+
+// Android counterpart of ios.infoPlist.EXDevMenuIsOnboardingFinished in app.json:
+// expo-dev-menu reads these meta-data values as its SharedPreferences defaults.
+export const ANDROID_DEV_MENU_DEFAULTS = {
+  EXDevMenuIsOnboardingFinished: 'true',
+  EXDevMenuShowsAtLaunch: 'false',
+  EXDevMenuShowFloatingActionButton: 'false',
+} as const;
+
+export function addAndroidDevMenuDefaults(manifest: AndroidManifest): AndroidManifest {
+  const application = AndroidConfig.Manifest.getMainApplicationOrThrow(manifest);
+  for (const [name, value] of Object.entries(ANDROID_DEV_MENU_DEFAULTS)) {
+    AndroidConfig.Manifest.addMetaDataItemToMainApplication(application, name, value);
+  }
+  return manifest;
+}
+
+const withAndroidDevMenuDefaults: ConfigPlugin = (config) =>
+  withAndroidManifest(config, (manifestConfig) => {
+    manifestConfig.modResults = addAndroidDevMenuDefaults(manifestConfig.modResults);
+    return manifestConfig;
+  });
+
+export default withAndroidDevMenuDefaults;

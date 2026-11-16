@@ -44,6 +44,9 @@ impl Runner for Hooked {
     fn sleep(&mut self, duration: Duration) {
         self.inner.sleep(duration)
     }
+    fn log_lines(&mut self, log: &Path) -> Option<u64> {
+        self.inner.log_lines(log)
+    }
     fn now_epoch_ms(&self) -> u64 {
         self.inner.now_epoch_ms()
     }
@@ -205,6 +208,8 @@ impl Fixture {
             manifest_warm: None,
             lane_owned: false,
             build_deadline_ms: None,
+            build_limit: None,
+            host_wait_ms: 0,
         }
     }
 

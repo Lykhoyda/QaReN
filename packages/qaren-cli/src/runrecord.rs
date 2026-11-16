@@ -634,6 +634,8 @@ pub enum MetroBind {
     V6Only,
     #[serde(rename = "inconclusive")]
     Inconclusive,
+    #[serde(rename = "127.0.0.1 after restart on all interfaces")]
+    V4AfterRestart,
 }
 
 // A failed walk's resources kept in the reached state until qaren cleanup or a reclaim by the next run on the device.

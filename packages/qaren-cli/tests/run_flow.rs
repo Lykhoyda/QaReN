@@ -1,6 +1,8 @@
 #[path = "run_flow/android_dynamic_config.rs"]
 mod android_dynamic_config;
 mod common;
+#[path = "run_flow/host_memory_wait.rs"]
+mod host_memory_wait;
 #[path = "run_flow/host_numbers.rs"]
 mod host_numbers;
 use common::IosBuildRunner as MockRunner;
@@ -281,6 +283,14 @@ fn workspace_check_uses_a_gated_finite_build_and_persists_the_verified_artifact(
 
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     assert_eq!(mock.remaining(), 0);
+    // A passing check carries the wait's bound address into its receipt, where the report reads it.
+    assert_eq!(
+        receipt.metro_bind,
+        Some(qaren::runrecord::MetroBind::V4)
+    );
+    assert!(std::fs::read_to_string(&receipt.artifacts["report"])
+        .unwrap()
+        .contains("Host at start"));
     assert_direct_ios_launch(&mock);
     let build = mock
         .calls
@@ -805,7 +815,7 @@ fn a_clean_ios_build_refuses_before_building_when_its_volume_is_short_of_space()
 }
 
 #[test]
-fn an_ios_check_refuses_contention_when_its_build_window_expires_in_the_slot_queue() {
+fn an_ios_check_refuses_contention_when_its_slot_wait_expires() {
     let (repo, app) = app_repo();
     let config = app.join(".qaren/config.yaml");
     let mut yaml = std::fs::read_to_string(&config).unwrap();
@@ -923,6 +933,45 @@ fn a_check_whose_candidate_moves_during_the_build_never_publishes_and_releases_t
         "no machine-store record was published"
     );
     assert!(record.resources.build_lock.is_none());
+    assert!(!req.lock_root.join("native-build-ios").exists());
+    assert_eq!(mock.remaining(), 0);
+}
+
+// AI-471 B6: a build cut for time reaches the check receipt with its limit and log lines.
+#[test]
+fn b6_a_check_whose_build_stands_still_reports_what_ran_out() {
+    let (repo, app) = app_repo();
+    let req = request(&repo, &app, 30);
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    common::script_ios_deps(&mut mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_clean_build_plan(&mut mock);
+    mock.expect_spawn_piped("expo run:ios", 5000, "", None);
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:00:00 2026"));
+    mock.expect_run("ps", CmdOutput::success("qaren-build"));
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Failed);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::BuildFailed);
+    let limit = failure
+        .limit
+        .as_deref()
+        .expect("limit facts reach the receipt");
+    assert_eq!(limit.ended_by, qaren::failure::LimitEnd::NoProgress);
+    assert_eq!(limit.elapsed_s, 2400);
+    assert!(failure
+        .detail
+        .to_string()
+        .starts_with("the native build was stopped after 2400 s"));
+    assert_eq!(failure.evidence.len(), 1);
+    assert_eq!(
+        failure.build_recovery().unwrap().reason,
+        qaren::failure::RecoveryReason::BuildTimeLimit
+    );
     assert!(!req.lock_root.join("native-build-ios").exists());
     assert_eq!(mock.remaining(), 0);
 }
@@ -2824,7 +2873,7 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
     assert_eq!(build.program, "/bin/bash");
     assert_eq!(
         build.timeout_seconds,
-        qaren::scenario::Deadlines::default().build_seconds
+        (qaren::scenario::Deadlines::default().build_seconds * 3).min(7200)
     );
     assert_finite_build_priority(build, 10);
     assert!(build.env.contains(&("BASH_ENV".into(), "/dev/null".into())));
@@ -6128,6 +6177,9 @@ impl Runner for LeaseObservedRunner {
     fn sleep(&mut self, duration: std::time::Duration) {
         self.mock.sleep(duration);
     }
+    fn log_lines(&mut self, log: &std::path::Path) -> Option<u64> {
+        self.mock.log_lines(log)
+    }
     fn now_epoch_ms(&self) -> u64 {
         self.mock.now_epoch_ms()
     }
@@ -7429,6 +7481,9 @@ fn external_cleanup_refuses_a_live_restart_only_run_during_dependency_install() 
         fn sleep(&mut self, duration: std::time::Duration) {
             self.mock.sleep(duration)
         }
+        fn log_lines(&mut self, log: &std::path::Path) -> Option<u64> {
+            self.mock.log_lines(log)
+        }
         fn now_epoch_ms(&self) -> u64 {
             self.mock.now_epoch_ms()
         }
@@ -8074,6 +8129,9 @@ fn shutdown_device_on_exit_keeps_simulator_when_cancelled_before_arm_and_stops_i
         fn sleep(&mut self, d: std::time::Duration) {
             self.0.sleep(d)
         }
+        fn log_lines(&mut self, log: &std::path::Path) -> Option<u64> {
+            self.0.log_lines(log)
+        }
         fn now_epoch_ms(&self) -> u64 {
             self.0.now_epoch_ms()
         }
@@ -8432,6 +8490,9 @@ impl Runner for PrRunner {
     }
     fn sleep(&mut self, d: std::time::Duration) {
         self.inner.sleep(d)
+    }
+    fn log_lines(&mut self, log: &std::path::Path) -> Option<u64> {
+        self.inner.log_lines(log)
     }
     fn now_epoch_ms(&self) -> u64 {
         self.inner.now_epoch_ms()
@@ -9805,6 +9866,9 @@ impl Runner for Encoding {
     fn sleep(&mut self, d: std::time::Duration) {
         self.0.sleep(d)
     }
+    fn log_lines(&mut self, log: &std::path::Path) -> Option<u64> {
+        self.0.log_lines(log)
+    }
     fn now_epoch_ms(&self) -> u64 {
         self.0.now_epoch_ms()
     }
@@ -10199,6 +10263,9 @@ impl<T: Runner> Runner for CancelAfterRunSave<T> {
     }
     fn sleep(&mut self, d: std::time::Duration) {
         self.0.sleep(d)
+    }
+    fn log_lines(&mut self, log: &std::path::Path) -> Option<u64> {
+        self.0.log_lines(log)
     }
     fn now_epoch_ms(&self) -> u64 {
         self.0.now_epoch_ms()
@@ -10779,7 +10846,24 @@ fn assert_ipv6_only_refusal(receipt: &qaren::receipt::Receipt) {
     );
 }
 
-// R4 on check: refused in the wait turn that sees it; the cleanup command still comes first.
+// The Metro group survives both signals, so its stop cannot be proven.
+fn script_metro_stop_unresolved(mock: &mut MockRunner) {
+    mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
+    mock.expect_run("ps", CmdOutput::success("S\n"));
+    mock.expect_run("lsof", CmdOutput::success("6001\n"));
+    mock.expect_run("ps", CmdOutput::success("6000\n"));
+    mock.expect_run("lstart=", CmdOutput::success(LSTART));
+    mock.expect_run("stat=", CmdOutput::success("S"));
+    mock.expect_run("/bin/kill", CmdOutput::success(""));
+    mock.expect_run("lstart=", CmdOutput::success(LSTART));
+    mock.expect_run("stat=", CmdOutput::success("S"));
+    mock.expect_run("/bin/kill", CmdOutput::success(""));
+    mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
+    mock.expect_run("ps", CmdOutput::success("S\n"));
+}
+
+// R4 and R12 on check: an [::1]-only Metro that the restart cannot stop is refused in the wait turn that sees it,
+// with no second start; the record keeps it for the cleanup, whose command still comes first.
 #[test]
 fn check_refuses_an_ipv6_only_metro_with_cleanup_first_then_the_dns_order_step() {
     for unresolved in [false, true] {
@@ -10789,20 +10873,9 @@ fn check_refuses_an_ipv6_only_metro_with_cleanup_first_then_the_dns_order_step()
         common::script_ios_deps(&mut mock);
         script_candidate_until_metro_owned(&mut mock, &"b".repeat(40), UNTRACKED_PLAN);
         common::script_metro_bind_ipv6_only(&mut mock, 8791);
+        script_metro_stop_unresolved(&mut mock);
         if unresolved {
-            // The Metro group survives both signals, so cleanup cannot be proven.
-            mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
-            mock.expect_run("ps", CmdOutput::success("S\n"));
-            mock.expect_run("lsof", CmdOutput::success("6001\n"));
-            mock.expect_run("ps", CmdOutput::success("6000\n"));
-            mock.expect_run("lstart=", CmdOutput::success(LSTART));
-            mock.expect_run("stat=", CmdOutput::success("S"));
-            mock.expect_run("/bin/kill", CmdOutput::success(""));
-            mock.expect_run("lstart=", CmdOutput::success(LSTART));
-            mock.expect_run("stat=", CmdOutput::success("S"));
-            mock.expect_run("/bin/kill", CmdOutput::success(""));
-            mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
-            mock.expect_run("ps", CmdOutput::success("S\n"));
+            script_metro_stop_unresolved(&mut mock);
         } else {
             script_pr_teardown_resources(&mut mock, false);
         }
@@ -10811,11 +10884,27 @@ fn check_refuses_an_ipv6_only_metro_with_cleanup_first_then_the_dns_order_step()
 
         assert_ipv6_only_refusal(&receipt);
         assert_eq!(mock.remaining(), 0, "unresolved={unresolved}");
+        assert!(receipt
+            .failure
+            .as_ref()
+            .unwrap()
+            .detail
+            .to_string()
+            .ends_with("the first Metro could not be stopped"));
+        assert_eq!(
+            labels(&mock).iter().filter(|l| *l == "expo-start").count(),
+            1
+        );
         assert_eq!(
             receipt.cleanup["metro"] == "removed",
             !unresolved,
             "{:?}",
             receipt.cleanup
+        );
+        let record = RunRecord::load(&repo.join("runs"), &receipt.run_id).unwrap();
+        assert_eq!(
+            record.resources.metro.as_ref().map(|m| m.spawned.pid),
+            unresolved.then_some(6000)
         );
         assert!(!labels(&mock)
             .iter()
@@ -10842,6 +10931,7 @@ fn pr_refuses_an_ipv6_only_metro_with_cleanup_first_then_the_dns_order_step() {
     common::script_ios_deps(mock);
     script_candidate_until_metro_owned(mock, PR_HEAD, "");
     common::script_metro_bind_ipv6_only(mock, 8791);
+    script_metro_stop_unresolved(mock);
     script_pr_teardown_resources(mock, false);
     mock.expect_run("du -sk", CmdOutput::success("4\n"));
     mock.expect_run("worktree remove --force", CmdOutput::success(""));
@@ -10910,6 +11000,19 @@ fn android_check_waits_out_a_slow_first_app_process() {
 
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     assert_eq!(mock.remaining(), 0);
+    // G4: Android starts expo's default once and never restarts it.
+    let starts: Vec<_> = mock
+        .calls
+        .iter()
+        .filter(|c| c.label == "expo-start")
+        .collect();
+    assert_eq!(starts.len(), 1);
+    assert!(!starts[0].args.iter().any(|a| a == "--localhost"));
+    assert!(!starts[0]
+        .env
+        .iter()
+        .any(|(k, _)| k == "REACT_NATIVE_PACKAGER_HOSTNAME"));
+    assert!(!receipt.outcomes.contains_key("metro_bind_recovery"));
 }
 
 #[test]
@@ -11806,6 +11909,71 @@ fn script_pr_pass(mock: &mut MockRunner, repo: &Path, wt: &Path) {
     );
 }
 
+// AI-471 B6: a build cut for time reaches the pr receipt with its limit and log lines.
+#[test]
+fn b6_a_pr_run_whose_build_stands_still_reports_what_ran_out() {
+    let (repo, app) = app_repo();
+    let req = pr_request(&repo, &app);
+    let wt = repo.join("runs").join(run_id()).join("wt");
+    let mut runner = PrRunner {
+        inner: MockRunner::new(),
+        app: app.clone(),
+        recorder_persisted_before_spawn: None,
+        fail_core_spawn: false,
+        planted_worktree_config: None,
+        worktree_config_planted: false,
+        fail_host_checkpoint: false,
+    };
+    script_pr_preflight(&mut runner.inner, &repo, &wt);
+    common::script_ios_deps(&mut runner.inner);
+    runner.inner.expect_run("ls-files", CmdOutput::success(""));
+    script_clean_build_plan(&mut runner.inner);
+    runner
+        .inner
+        .expect_spawn_piped("expo run:ios", 5000, "", None);
+    runner
+        .inner
+        .expect_run("ps", CmdOutput::success("Wed Aug 12 16:00:00 2026"));
+    runner
+        .inner
+        .expect_run("ps", CmdOutput::success("qaren-build"));
+    runner
+        .inner
+        .expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    runner.inner.expect_run("du -sk", CmdOutput::success("4\n"));
+    runner
+        .inner
+        .expect_run("worktree remove --force", CmdOutput::success(""));
+    runner
+        .inner
+        .expect_run("which ffmpeg", CmdOutput::failed(1, ""));
+    runner.inner.expect_run(
+        "gh pr view https://github.com/o/r/pull/12",
+        pr_view_json(PR_HEAD),
+    );
+
+    let receipt = run(&mut runner, &req);
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Failed,
+        "{:?}",
+        receipt.failure
+    );
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::BuildFailed);
+    let limit = failure
+        .limit
+        .as_deref()
+        .expect("limit facts reach the receipt");
+    assert_eq!(limit.ended_by, qaren::failure::LimitEnd::NoProgress);
+    assert!(failure
+        .detail
+        .to_string()
+        .starts_with("the native build was stopped after 2400 s"));
+    assert_eq!(failure.evidence.len(), 1);
+}
+
 #[test]
 fn pr_interruption_receipt_uses_effective_policy_and_records_the_first_signal() {
     let (repo, app) = app_repo();
@@ -11904,7 +12072,11 @@ fn check_persists_configured_deadlines_and_uses_them_as_command_budgets() {
         assert_effective_deadlines(&record, &case, &raw);
         assert_eq!(record.scenario_path, req.config_path);
         assert_eq!(command_timeout(&mock, "pnpm-install"), case.deps);
-        assert_eq!(command_timeout(&mock, "expo-run-ios"), case.build);
+        // The compile's timeout is the build window: three times the limit, at most 7200 s.
+        assert_eq!(
+            command_timeout(&mock, "expo-run-ios"),
+            (case.build * 3).min(7200)
+        );
         assert_eq!(command_timeout(&mock, "simctl-bootstatus"), case.boot);
     }
 }
@@ -11940,7 +12112,10 @@ fn pr_uses_the_operator_config_deadlines_not_the_worktree_config() {
         assert_effective_deadlines(&record, &case, &raw);
         assert_eq!(record.scenario_path, app.join(".qaren/config.yaml"));
         assert_eq!(command_timeout(&runner.inner, "pnpm-install"), case.deps);
-        assert_eq!(command_timeout(&runner.inner, "expo-run-ios"), case.build);
+        assert_eq!(
+            command_timeout(&runner.inner, "expo-run-ios"),
+            (case.build * 3).min(7200)
+        );
     }
 }
 
@@ -11970,7 +12145,11 @@ fn android_check_uses_configured_deadlines_for_dependency_install_and_build() {
     assert_effective_deadlines(&record, &case, &raw);
     assert_eq!(command_timeout(&mock, "pnpm-install"), case.deps);
     assert_eq!(command_timeout(&mock, "expo-prebuild"), case.build);
-    assert_eq!(command_timeout(&mock, "gradle-assemble"), case.build);
+    // Compilation runs to its ceiling while it progresses; prebuild keeps the limit.
+    assert_eq!(
+        command_timeout(&mock, "gradle-assemble"),
+        (case.build * 3).min(7200)
+    );
 }
 
 #[test]
@@ -12706,6 +12885,9 @@ impl Runner for RecordedCheck {
     }
     fn sleep(&mut self, d: std::time::Duration) {
         self.0.sleep(d)
+    }
+    fn log_lines(&mut self, log: &std::path::Path) -> Option<u64> {
+        self.0.log_lines(log)
     }
     fn now_epoch_ms(&self) -> u64 {
         self.0.now_epoch_ms()

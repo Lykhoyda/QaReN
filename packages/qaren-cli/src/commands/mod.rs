@@ -128,10 +128,14 @@ pub(crate) fn finish_host(
     start: crate::host_capacity::Sample,
     helpers: &crate::device_helpers::Scan,
 ) {
-    let end = crate::host_capacity::sample(runner, std::env::consts::OS);
+    let os = runner.host_os();
+    let end = crate::host_capacity::sample(runner, os);
     receipt.device_helpers = helpers.helpers.iter().map(|f| f.note()).collect();
     if end.constrained() {
-        if let Some(failure) = receipt.failure.as_mut().filter(|f| f.code.is_refusal()) {
+        // A memory refusal already names the host numbers it waited on.
+        if let Some(failure) = receipt.failure.as_mut().filter(|f| {
+            f.code.is_refusal() && f.code != crate::failure::FailureCode::HostUnderPressure
+        }) {
             failure.detail = crate::redact::OutputText::from_output(&format!(
                 "{}; the host was under load: {}",
                 failure.detail,
@@ -140,6 +144,15 @@ pub(crate) fn finish_host(
         }
     }
     receipt.host = Some(crate::host_capacity::RunSamples { start, end });
+    if let Some(notice) = receipt.outcomes.get_mut("metro_bind_recovery") {
+        let ending = match receipt.cleanup.get("metro").map(String::as_str) {
+            Some("removed" | "absent") => " and has been stopped",
+            None if receipt.failure.is_none() && receipt.metro.is_some() => "",
+            _ => " and could not be confirmed stopped",
+        };
+        *notice =
+            format!("Metro was restarted once on all network interfaces during this run{ending}.");
+    }
     if let Err(error) =
         crate::report::write_host(receipt, crate::device_helpers::report_line(helpers))
     {

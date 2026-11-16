@@ -24,6 +24,7 @@ Refusals exit `4` and mean the run could not start or could not decide; failures
 | `PNPM_PROBE_TIMED_OUT` | The pnpm exec probe timed out on every attempt within the dependency-install budget; the launcher was not judged | Re-run when the machine is less loaded, or run `qaren doctor`; `failure.detail` lists the attempts |
 | `GITHUB_AUTH_UNAVAILABLE` | PR lookup could not use GitHub authentication | Follow the [GitHub authentication contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#test-a-pull-request) |
 | `DISK_BUDGET_EXCEEDED`     | Under 1 GiB free for the run storage root or the app, or under about 10 GiB for a clean iOS build | Free space on the volume `failure.detail` names, then re-run                                |
+| `HOST_UNDER_PRESSURE`      | Native build refused by [host memory admission](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#waiting-for-memory-before-a-native-build) | Re-run once memory pressure clears; see `failure.detail` |
 
 ## Development target admission
 
@@ -57,7 +58,7 @@ and [iOS admission diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/p
 | `ARTIFACT_INSTALL_FAILED` | Dev-client artifact verification or installation failed | Follow `next_action`; see the [dev-client installation recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan) |
 | `APP_EXITED_AT_LAUNCH` | The launched app exited before it became ready; on iOS the detail cites the simulator crash report | Follow `next_action`, which for a missing app-embedded framework is a CocoaPods reinstall; see the [launch readiness contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle) |
 | `WATCHMAN_VOLUME_STALLED` | Watchman reported a cookie-sync timeout | Follow `next_action`; see the [launch readiness contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle) for bounds, diagnostics and recovery |
-| `METRO_BIND_IPV6_ONLY` | iOS Metro answered only on IPv6 loopback | Follow `next_action`; see the [Metro bind and launch readiness contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle) for detection and recovery |
+| `METRO_BIND_IPV6_ONLY` | iOS Metro answered only on IPv6 loopback, and QaReN's one automatic restart did not help or could not stop the first Metro | Follow `next_action`; see the [Metro bind and launch readiness contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle) for detection and recovery |
 | `MANIFEST_NOT_WARM` | Dev-client manifest warm-up refused before launch; an unpinned `fingerprint` runtimeVersion policy can cause per-request fingerprint recomputation | Follow `next_action`; see the [launch readiness contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle) for pin states, bounds and recovery |
 | `LANE_NOT_WARM` | The owned simulator failed the [warm-lane contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#warm-lane) | Follow `next_action` and `failure.detail`; use the linked contract for settings, first-screen requirements and doctor diagnostics |
 

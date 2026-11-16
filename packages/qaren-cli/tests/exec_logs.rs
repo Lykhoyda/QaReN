@@ -444,6 +444,172 @@ fn helper_log(chunks: &[Vec<u8>]) -> String {
     stored
 }
 
+// The drain helper with a line count: (stored log, count file text).
+fn counted_helper_log(
+    chunks: &[&[u8]],
+    withhold: bool,
+    writable: bool,
+) -> (String, Option<String>) {
+    counted_helper_log_with(chunks, withhold, writable, |_| {})
+}
+
+// `live` runs after the first chunk, while the helper's input is still open.
+fn counted_helper_log_with(
+    chunks: &[&[u8]],
+    withhold: bool,
+    writable: bool,
+    live: impl FnOnce(&Path),
+) -> (String, Option<String>) {
+    let mut live = Some(live);
+    let dir = common::temp_repo();
+    let path = dir.join("build.log");
+    std::fs::write(&path, "earlier command\n").unwrap();
+    let count = if writable {
+        qaren::exec::log::line_count_path(&path)
+    } else {
+        dir.join("missing").join("build.lines")
+    };
+    let log = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    let (input, mut output) = UnixStream::pair().unwrap();
+    let (control, helper_control) = UnixStream::pair().unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_qaren"));
+    command
+        .arg(qaren::exec::log::HELPER_ARG)
+        .arg(qaren::exec::log::LINE_COUNT_ARG)
+        .arg(&count);
+    if withhold {
+        command.arg(qaren::exec::log::WITHHOLD_ARG);
+    }
+    let mut helper = HelperGuard(
+        command
+            .env_clear()
+            .stdin(Stdio::from(OwnedFd::from(input)))
+            .stdout(Stdio::from(OwnedFd::from(helper_control)))
+            .stderr(Stdio::from(log))
+            .spawn()
+            .unwrap(),
+    );
+    for chunk in chunks {
+        output.write_all(chunk).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        if let Some(live) = live.take() {
+            live(&count);
+        }
+    }
+    drop(output);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = helper.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "log helper did not exit at EOF");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    drop(control);
+    assert!(status.success());
+    let stored = std::fs::read_to_string(&path).unwrap();
+    let counted = std::fs::read_to_string(&count).ok();
+    assert!(!dir.join("missing").exists());
+    std::fs::remove_dir_all(dir).unwrap();
+    (stored, counted)
+}
+
+#[test]
+fn b10_the_drain_counts_lines_while_the_output_is_withheld_from_the_start() {
+    let (stored, count) = counted_helper_log(
+        &[b"one\n", b"two\r", b"three\r\n", b"\n", b"tail"],
+        true,
+        true,
+    );
+    assert_eq!(stored, "earlier command\n[private output withheld]\n");
+    // one, two (CR), three (CR; its LF is a lone delimiter), the blank line no, the unterminated tail yes.
+    assert_eq!(count.as_deref(), Some("4\n"));
+}
+
+#[test]
+fn b10_the_drain_keeps_counting_after_a_mid_stream_withhold() {
+    let (stored, count) = counted_helper_log(
+        &[b"one\n", b"a private key appeared\n", b"two\n", b"three\n"],
+        false,
+        true,
+    );
+    assert!(stored.contains(PRIVATE_KEY_WITHHELD), "{stored}");
+    assert!(!stored.contains("two"));
+    assert_eq!(count.as_deref(), Some("4\n"));
+}
+
+#[test]
+fn b10_an_oversized_line_counts_once_and_its_placeholder_never() {
+    let long = vec![b'x'; 70_000];
+    let (stored, count) = counted_helper_log(&[&long, b"\n", b"next\n"], false, true);
+    assert!(stored.contains("[oversized log line withheld]"));
+    assert_eq!(count.as_deref(), Some("2\n"));
+}
+
+#[test]
+fn b10_an_empty_end_of_stream_adds_nothing_and_the_file_holds_digits_only() {
+    let (_, count) = counted_helper_log(&[b"only\n"], false, true);
+    let count = count.unwrap();
+    assert_eq!(count, "1\n");
+    assert!(count.trim_end().bytes().all(|b| b.is_ascii_digit()));
+}
+
+#[test]
+fn b10_the_count_is_published_while_the_build_still_runs() {
+    let (_, count) = counted_helper_log_with(&[b"one\n", b"two\n"], true, true, |count| {
+        until(|| std::fs::read_to_string(count).ok().as_deref() == Some("1\n"));
+    });
+    assert_eq!(count.as_deref(), Some("2\n"));
+}
+
+#[test]
+fn b10_a_failed_update_removes_a_published_count() {
+    let (stored, count) =
+        counted_helper_log_with(&[b"one\n", b"two\n", b"three\n"], false, true, |count| {
+            until(|| std::fs::read_to_string(count).ok().as_deref() == Some("1\n"));
+            let mut partial = count.as_os_str().to_owned();
+            partial.push(".partial");
+            std::fs::create_dir(partial).unwrap();
+        });
+    // A count that may lag must not stay readable: absent means unknown.
+    assert_eq!(count, None);
+    assert!(stored.ends_with("one\ntwo\nthree\n"), "{stored}");
+}
+
+#[test]
+fn b10_a_failed_count_write_leaves_no_count_and_the_log_still_drains() {
+    let (stored, count) = counted_helper_log(&[b"one\n", b"two\n"], false, false);
+    assert_eq!(count, None);
+    assert!(stored.ends_with("one\ntwo\n"), "{stored}");
+}
+
+#[test]
+fn b10_both_streams_of_a_withheld_build_child_count() {
+    let dir = common::temp_repo();
+    let log = dir.join("expo-prebuild.log");
+    let spec = CmdSpec::new(
+        "expo-prebuild",
+        "/bin/sh",
+        &["-c", "printf 'out\\n'; printf 'err\\n' >&2; : > done"],
+        5,
+    )
+    .cwd(&dir)
+    .registry_auth_env(&["NPM_TOKEN".to_string()]);
+    let mut runner = RealRunner::with_log_executable(env!("CARGO_BIN_EXE_qaren").into());
+    let mut child = runner.spawn_piped(&spec, &log).unwrap();
+    drop(child.stdin);
+    until(|| matches!(child.handle.try_wait(), Ok(Some(_))));
+    until(|| qaren::exec::log::read_line_count(&log) == Some(2));
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap(),
+        "[private output withheld]\n"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn the_log_helper_withholds_a_mention_split_across_writes_or_oversized_lines() {
     let body = format!("{FAKE_BODY}\n").into_bytes();

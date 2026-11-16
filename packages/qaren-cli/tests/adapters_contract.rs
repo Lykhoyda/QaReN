@@ -1925,15 +1925,23 @@ fn app_removal_parsers_are_strict() {
 
 #[test]
 fn metro_never_passes_ci_into_app_config_evaluation() {
-    let spec = metro::start_spec(Path::new("/repo/app"), 8791, true, false, None, None);
+    let spec = metro::start_spec(
+        Path::new("/repo/app"),
+        8791,
+        metro::Listen::Loopback,
+        false,
+        None,
+        None,
+    );
     assert_eq!(spec.unset, ["CI"]);
     assert!(!spec.env.iter().any(|(k, _)| k == "CI"));
 }
 
 #[test]
 fn ios_metro_binds_to_loopback_and_android_metro_keeps_its_reverse_path() {
-    let ios = metro::start_spec(Path::new("/repo/app"), 8791, true, false, None, None);
-    let android = metro::start_spec(Path::new("/repo/app"), 8791, false, false, None, None);
+    let root = Path::new("/repo/app");
+    let ios = metro::start_spec(root, 8791, metro::Listen::Loopback, false, None, None);
+    let android = metro::start_spec(root, 8791, metro::Listen::Default, false, None, None);
     assert_eq!(
         ios.args,
         [
@@ -1992,7 +2000,14 @@ fn a_configured_pnpm_node_options_is_composed_and_passed_both_ways() {
         Some("--max-old-space-size=4096"),
         Some(r#"--require "./setup.cjs""#),
     ] {
-        let spec = metro::start_spec(root, 8791, true, false, Some(preload), base);
+        let spec = metro::start_spec(
+            root,
+            8791,
+            metro::Listen::Loopback,
+            false,
+            Some(preload),
+            base,
+        );
         let expected = match base {
             None => "--dns-result-order=ipv4first --require \"/runs/a b/runtime-version-pin.cjs\"".to_string(),
             Some(base) => format!("{base} --dns-result-order=ipv4first --require \"/runs/a b/runtime-version-pin.cjs\""),
@@ -2001,16 +2016,95 @@ fn a_configured_pnpm_node_options_is_composed_and_passed_both_ways() {
             assert!(spec.env.contains(&(key.into(), expected.clone())));
         }
     }
-    let android = metro::start_spec(root, 8791, false, false, None, None);
+    let android = metro::start_spec(root, 8791, metro::Listen::Default, false, None, None);
     assert!(!android
         .env
         .iter()
         .any(|(key, _)| key == "npm_config_node_options" || key == "NODE_OPTIONS"));
 }
 
+// R9: the restart's start drops --localhost but keeps every option of the loopback start and pins the advertised host.
+#[test]
+fn the_all_interfaces_start_keeps_the_loopback_options_and_pins_the_advertised_host() {
+    let root = Path::new("/repo/app");
+    let preload = Path::new("/runs/r/runtime-version-pin.cjs");
+    let base = Some("--max-old-space-size=4096");
+    let loopback = metro::start_spec(
+        root,
+        8791,
+        metro::Listen::Loopback,
+        true,
+        Some(preload),
+        base,
+    );
+    let pinned = metro::start_spec(
+        root,
+        8791,
+        metro::Listen::AllPinned,
+        true,
+        Some(preload),
+        base,
+    );
+    let options = "--max-old-space-size=4096 --dns-result-order=ipv4first --require \"/runs/r/runtime-version-pin.cjs\"";
+    assert_eq!(
+        pinned.args,
+        [
+            format!("--config.node-options={options}").as_str(),
+            "exec",
+            "expo",
+            "start",
+            "--port",
+            "8791"
+        ]
+    );
+    assert_eq!(pinned.args[..], loopback.args[..loopback.args.len() - 1]);
+    assert_eq!(
+        loopback.args.last().map(String::as_str),
+        Some("--localhost")
+    );
+    for key in ["NODE_OPTIONS", "npm_config_node_options"] {
+        assert!(pinned.env.contains(&(key.into(), options.into())), "{key}");
+    }
+    let hostname = (
+        "REACT_NATIVE_PACKAGER_HOSTNAME".to_string(),
+        "127.0.0.1".to_string(),
+    );
+    assert!(pinned.env.contains(&hostname));
+    // Apart from the pinned host, the environment is the loopback start's.
+    let mut without_host = pinned.env.clone();
+    without_host.retain(|entry| entry != &hostname);
+    assert_eq!(without_host, loopback.env);
+    assert_eq!(pinned.unset, loopback.unset);
+    assert_eq!(pinned.cwd, loopback.cwd);
+    assert!(!loopback
+        .env
+        .iter()
+        .any(|(k, _)| k == "REACT_NATIVE_PACKAGER_HOSTNAME"));
+    let default = metro::start_spec(
+        root,
+        8791,
+        metro::Listen::Default,
+        true,
+        Some(preload),
+        base,
+    );
+    assert_eq!(default.args, ["exec", "expo", "start", "--port", "8791"]);
+    assert!(!default
+        .env
+        .iter()
+        .any(|(k, _)| k == "REACT_NATIVE_PACKAGER_HOSTNAME" || k == "NODE_OPTIONS"));
+}
+
 #[test]
 fn metro_logs_each_request_on_receipt_to_the_drained_stderr() {
-    let spec = metro::start_spec(Path::new("/repo/app"), 8791, true, false, None, None);
+    let spec = metro::start_spec(
+        Path::new("/repo/app"),
+        8791,
+        metro::Listen::Loopback,
+        false,
+        None,
+        None,
+    );
     assert!(spec.env.contains(&(
         "DEBUG".to_string(),
         qaren::exec::log::METRO_REQUEST_LOG.to_string()
@@ -2409,9 +2503,12 @@ fn expo_is_offline_by_default_and_online_requires_an_explicit_override() {
         runner.environment.clear();
         runner.environment.insert(name.into(), value.into());
         assert_eq!(metro::expo_online(&runner), online);
-        for localhost in [false, true] {
-            let spec =
-                metro::start_spec(Path::new("/repo/app"), 8791, localhost, online, None, None);
+        for listen in [
+            metro::Listen::Default,
+            metro::Listen::Loopback,
+            metro::Listen::AllPinned,
+        ] {
+            let spec = metro::start_spec(Path::new("/repo/app"), 8791, listen, online, None, None);
             assert!(spec
                 .env
                 .contains(&("EXPO_OFFLINE".into(), if online { "0" } else { "1" }.into())));

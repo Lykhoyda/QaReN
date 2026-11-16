@@ -230,7 +230,9 @@ explicit stages from preflight through cleanup, step outcomes and act/capture/Je
 timings, recording, and the verdict with its expected check exit code.
 An unobserved stage stays unobserved; a skipped stage says “not needed” in full rows.
 The Build queue row appears only after contention; see the
-[build-slot waiting contract](#native-fingerprint-build-selection).
+[build-slot waiting contract](#native-fingerprint-build-selection). The Host memory
+row appears only when the run waited for memory; see
+[waiting for memory](#waiting-for-memory-before-a-native-build).
 TTY redraws read the current terminal size, keep every stage visible, and fit
 step rows into the remaining space with an omitted-row count. Unfinished rows
 take priority, followed by completed rows with the latest observed event sequence,
@@ -697,7 +699,8 @@ change the run's verdict. Cancellation can leave the end sample unavailable.
 The local `report.md` includes one line with both samples, including free and
 available memory and swap in GiB; unreadable values say `unavailable`. A refusal also
 includes the end host state when load reaches the logical CPU count or memory
-is constrained. These are observations, not a diagnosis of the refusal's cause.
+is constrained, except `HOST_UNDER_PRESSURE`, which already names its admission
+reading. These end samples are observations, not a diagnosis of the refusal's cause.
 Refusals before a run directory exists carry the samples in the receipt only.
 `qaren publish` does not include these samples in PR comments or descriptions.
 Sampling starts no device or service and introduces no cleanup resource.
@@ -713,6 +716,50 @@ line. An unavailable or wholly unreadable process list produces no findings;
 a partially readable list can still report helpers, with a warning that a running
 emulator may be hidden. These observations never change the verdict. The run stops
 nothing.
+
+### Waiting for memory before a native build
+
+Before a native build claims its build lock, `check`, `pr` and `prepare` take
+an admission sample. A run that reuses its build takes no admission sample.
+Memory is constrained when
+pressure is `warning` or `critical`, or less than 4 GiB is available; load
+alone never makes a run wait or refuse. A constrained host waits in the
+`host_wait` stage (code `memory_low` or `memory_critical`), polling every
+5 s with one 10-minute allowance per build admission, including probe time.
+The final sample can overrun that allowance by up to 6 s (two 3 s probes).
+`check` shows the wait as `host-wait` in its live progress.
+The initial admission runs before the build budget starts. A build queued
+behind the platform lock or the machine slot (`native-build-slot`) rechecks
+memory at most every 5 s while the allowance remains; these checks share the
+same allowance, and their actual duration is excluded from the build budget,
+including the iOS build window the slot is claimed in. Once the allowance is
+spent, a queued build takes no further samples. A recheck in the slot queue
+keeps the platform lock, as the slot wait itself does. Lock contention itself
+still counts against each wait's own `deadlines.build_seconds` bound; the
+platform lock wait is outside the build window and the slot wait inside it.
+When memory recovers the build goes on. When memory is still constrained
+but not critical when the allowance is spent, the build goes on with its
+remaining build budget.
+Memory still constrained after 10 minutes, with a readable final reading of `critical`
+pressure (macOS level 4), refuses `HOST_UNDER_PRESSURE` (exit 4). The refusal names load, available memory,
+pressure, swap and the time waited, and says to re-run once pressure clears.
+The pending command claims no build slot and does not start; earlier build
+commands in the run may already have completed. A run that already holds
+resources, such as an iOS device, names `qaren cleanup` as its next action,
+as for any other refusal after allocation. Linux has no critical level, so a Linux host
+waits but never refuses. An unreadable first sample never waits or refuses.
+During each wait, a reading counts only when it reads every memory signal
+(pressure and available bytes) observed so far in that wait, including newly
+readable signals. A probe that fails or times out keeps the last full
+reading and the wait goes on within the remaining allowance. An incomplete final reading
+goes on to the build instead of refusing. An
+unreadable first sample, a wait that recovered and a wait that went on
+constrained each leave a `host_wait` note in the receipt's `outcomes` and a
+line in `report.md`; the refusal's numbers are in its `failure.detail`. The stage event carries no host
+numbers. `qaren watch` shows a **Host memory** row only for a run that waited:
+`waiting <time> (<code>)` while it runs, timed from the event, then the
+outcome; plain output prints `Host memory: waiting (<code>)` when the wait
+starts and the outcome when it ends.
 
 ### Android runner provisioning
 
@@ -2838,15 +2885,31 @@ listeners (`lsof -nP -iTCP:<port> -sTCP:LISTEN`) and probes `/status` on
 response with body `packager-status:running`; Metro is ready when `127.0.0.1`
 passes that probe. When only `[::1]` answers, the listener is QaReN's on `[::1]` with no
 `127.0.0.1` or wildcard listener, `127.0.0.1` stays refused or silent on two
-more looks one second apart, and the listener is unchanged, the run refuses
-`METRO_BIND_IPV6_ONLY` in that turn instead of waiting out the build deadline.
-The detail names the listener forms seen (only `127.0.0.1`, `[::1]`, `*` and
-`other`, never another address) and that no restart was tried; the next step is
-the cleanup command, then a check of the project's Node DNS result order.
-Anything less consistent keeps waiting. The run record and receipt carry
-`metro_bind`: `127.0.0.1`, `[::1]-only`, or `inconclusive` when the deadline
-passed; it survives Metro's cleanup and `status` prints it. Android keeps its
-single `127.0.0.1` probe.
+more looks one second apart, and the listener is unchanged, the Metro is
+`[::1]`-only. The first time an iOS run sees that, QaReN stops its Metro
+through the same process-group stop that cleanup uses, then starts it once more
+without `--localhost`, with the same Node options and preload and with
+`REACT_NATIVE_PACKAGER_HOSTNAME=127.0.0.1`. The restarted Metro listens on all
+network interfaces for that run, as every Android run's Metro does. It logs to
+`logs/metro-restart.log`; the first log is kept. Once the replacement process
+spawns, the receipt's `outcomes.metro_bind_recovery` and the report say
+"Metro was restarted once on all network interfaces during this run", even if
+the run fails before readiness or process identity capture. The notice also
+says whether Metro has been stopped or could not be confirmed stopped; a
+successful prepare that keeps Metro running has no stop qualifier. The wait
+goes on under the same build deadline. A restart that ends past the deadline fails
+`READY_DEADLINE_EXCEEDED` in that turn. A second `[::1]`-only finding, or a
+first Metro whose stop is not proven, refuses `METRO_BIND_IPV6_ONLY` in that
+turn: in the second case nothing else starts, and the record keeps that Metro
+for cleanup. The detail names the listener forms seen (only `127.0.0.1`,
+`[::1]`, `*` and `other`, never another address) and what was tried: "QaReN
+restarted its Metro once on all interfaces" or "the first Metro could not be
+stopped". The next step is the cleanup command, then a check of the project's
+Node DNS result order. Anything less consistent keeps waiting. The run record
+and receipt carry `metro_bind`: `127.0.0.1`, `127.0.0.1 after restart on all
+interfaces`, `[::1]-only`, or `inconclusive` when the
+deadline passed; it survives Metro's cleanup and `status` prints it. Android
+keeps its single `127.0.0.1` probe and never restarts.
 
 A request-handler timeout after `/status` responds names startup or a
 stalled watcher as possible causes; steady answers near 30 seconds also name a
@@ -5478,6 +5541,20 @@ dynamic or template-literal arguments, escaped literals and other unsupported
 syntax make the fingerprint **incomplete**, forbidding cached reuse (visible
 in decision evidence). Unresolvable local refs and `workspace:` dependencies
 in any of those sections also make it incomplete.
+
+The import and ambient `process` scans ignore comments, quoted-string content
+and template text when the scanner can identify them confidently; expressions
+inside `${…}` remain code. Strings and template text inside bracket expressions
+remain scanned to preserve computed-key detection, as does string content or a
+template-text segment exactly equal to `require`, `import` or `process`.
+Text later executed through `eval` or `new Function` is not scanned as code.
+If the scanner encounters a non-comment `/` (including division), `<` (including
+JSX), `#!`, `-->`, a raw line break in a quoted string or an unterminated
+comment, string, template or placeholder, the whole file uses the previous
+unmasked scan. U+2028/U+2029 or a carriage return without a following line feed
+anywhere in the file also trigger that fallback. Code-site line numbers are
+preserved.
+
 On iOS the value also binds the selected Xcode (`xcodebuild -version`), so a
 build is never reused across Xcode versions, and an unavailable Xcode makes the
 fingerprint incomplete.
@@ -5713,7 +5790,8 @@ state. An ambiguous artifact (zero or several bundles) skips caching with a reco
 reason, never a guess. Only a saved state permits ownership rebinding.
 
 **Build serialization.** Native builds (incremental and clean) take a
-host-level `native-build-<platform>` lock, followed by one shared
+host-level `native-build-<platform>` lock, subject to
+[memory admission](#waiting-for-memory-before-a-native-build), followed by one shared
 `native-build-slot` immediately before each build command. This queues iOS
 and Android builds on the same machine. Finite builds release the slot only
 after their process group is proven gone. `expo run:android` releases it on
@@ -5725,9 +5803,9 @@ token saved before acquisition and reused through group recording and cleanup,
 so matching run ids in separate homes cannot release each other's slot. Public
 queue output shows only the run id.
 
-The slot wait polls every second. On iOS it uses the remaining shared build
-budget; on Android it has one build budget of its own and leaves the existing
-build and readiness budgets unchanged. `qaren watch` shows a **Build queue**
+The slot wait polls every second and has one `deadlines.build_seconds` budget
+from its own start. On iOS the wait also consumes the shared build window
+described below. `qaren watch` shows a **Build queue**
 row with the holder, lock, held time and time waited. Plain output records
 each observed holder change and each completed wait. Queue events contain
 only the lock name, a validated run id and durations.
@@ -5794,9 +5872,39 @@ release it once the artifact is verified, the pre-publication candidate and
 fingerprint checks pass and cache publication is persisted, before
 [run-owned output retirement](#cli-owned-ios-build-routes); Metro, install,
 launch and readiness run afterwards, and the final drift checks still run
-after readiness. A contended iOS claim waits, polling every second, within the
-same build budget (`deadlines.build_seconds`) that the prebuild, build,
-verification and publication then share; see the
+after readiness. A contended iOS claim waits, polling every second, for at most
+`deadlines.build_seconds`; waiting for the lock is not build time. The build
+window starts when the lock is claimed and lasts three times the effective
+compile limit (learned as described below), at most 7200 s; prebuild, the
+build-slot wait (bounded by `build_seconds` from
+its own start), the build, verification and publication share it. Prebuild keeps
+`build_seconds` as its own bound. The compile step (the iOS build, and the
+Android Gradle build on a borrowed emulator, whose ceiling of three times the
+limit counts from the command's start) changes nothing up to the limit; past it
+the build goes on while its log drain counts new output lines (a value-free
+count kept beside the log, also when the output is withheld) within the idle
+window, a quarter of the limit, at least 300 s and at most 600 s. It ends by
+`no_progress` (no new line for the idle window), by `window` (the window ran
+out), or, for prebuild, by `command_limit`. A build that produces no output is
+cut at the limit when the limit is 300 s or more; below that it is cut at the
+earlier of 300 s or three times the limit. The remaining iOS build window can
+stop compilation earlier. Such a cut stays `BUILD_FAILED` and carries a
+`limit` block (`phase`, `setting`, `limit_s`, `window_s`, `idle_s`,
+`elapsed_s`, `ended_by`, `last_progress_age_s`, `next_limit_s`, and `learned`
+when the limit was raised) and the
+`build_time_limit` recovery: after this run's own `qaren cleanup` has
+succeeded, run again; after a `window` end first set `deadlines.build_seconds`
+to `next_limit_s`, or, when the window was already 7200 s and `next_limit_s`
+is absent, build the app with the project's own tools. A passing compile
+records `native_build` in `timings_ms` and the `build_next_limit` outcome, and
+`build_limit` when it went past its limit. Each passing compile's time is kept
+per machine, platform and app in `<runs root>/build-timings/<platform>/<app id>.json`
+(the last five, replaced whole); the next run's compile limit is the larger of
+`build_seconds` and 1.5 times the longest of them, at most 7200 s, noted as
+`build_limit_learned` and as `limit.learned` on a cut. The lock wait, the slot
+wait and prebuild keep `build_seconds`. A missing or unreadable record means
+`build_seconds`; `build_next_limit` is a forecast, since another run may replace
+the record first. See the
 [deadline defaults and validation](src/scenario.rs).
 Build subprocess timeouts are capped to the remaining window, and no new
 build command starts after expiry. Teardown commands and their process-identity
@@ -5810,7 +5918,8 @@ its recorded build group still runs, and how long this run waited, for example
 `BUILD_CONTENDED: native-build-ios is held by run <id> (alive: yes; no build process for 9 min); waited 600 s of the budget. Next: wait for that run or re-run once later; if the holder is dead, run its qaren cleanup from its home (its resources only).`
 After 120 s of a live holder with no build group running the wait notes
 `holder_idle_after_build`; a live or unproven holder is never taken. Running
-the budget out inside the build window outside a lock wait is `BUILD_FAILED`. The receipt's `build_lock`
+the window out at verification or publication is `BUILD_FAILED` with the
+`build_budget_exhausted` recovery. The receipt's `build_lock`
 keeps the last contended wait, or the latest claim observation if none contended;
 `build_lock_waits` keeps both platform and slot
 observations in order. Each reports `lock`, `holder`, `waited_s`, `holder_alive`, `holder_build_process`,
