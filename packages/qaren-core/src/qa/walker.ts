@@ -1762,10 +1762,23 @@ async function walkBlockScoped(
   } => {
     const container = ancestorsOf(element).find(isScrollContainer);
     if (!container) return { band: null, trimmedBy: [], withheld: 'no-scroll-area' };
-    const full = clearanceBand(element, screen);
+    const trimmedBy: { kind: string; frame: NonNullable<NativeNode['rect']> }[] = [];
+    const recordTrim = (kind: string, rect: NonNullable<NativeNode['rect']>) => {
+      if (
+        !trimmedBy.some(
+          ({ frame }) =>
+            frame.x === rect.x &&
+            frame.y === rect.y &&
+            frame.width === rect.width &&
+            frame.height === rect.height,
+        )
+      )
+        trimmedBy.push({ kind, frame: rect });
+    };
+    const full = clearanceBand(element, screen, ({ kind, frame }) => recordTrim(kind, frame));
     const frame = elementFrame(element);
     if (!full || !frame || full.width <= 0 || full.height <= 0)
-      return { band: full ?? null, trimmedBy: [], withheld: 'no-free-part' };
+      return { band: full ?? null, trimmedBy, withheld: 'no-free-part' };
     // In one pass against the band's own edges, whatever the list order: a counted foreign view or the
     // cover across the top or bottom edge trims it, one across both withholds, and one across the
     // middle withholds through the unchanged checks below.
@@ -1786,29 +1799,17 @@ async function walkBlockScoped(
     ];
     const [top, bottom] = [full.y, full.y + full.height];
     let [from, to] = [top, bottom];
-    const trimmedBy: { kind: string; frame: NonNullable<NativeNode['rect']> }[] = [];
     for (const { kind, rect } of edges) {
       const [start, end] = [rect.y, rect.y + rect.height];
       if (end <= top || start >= bottom) continue;
-      if (start <= top && end >= bottom)
-        return {
-          band: full,
-          trimmedBy: [...trimmedBy, { kind, frame: rect }],
-          withheld: 'no-free-part',
-        };
+      if (start <= top && end >= bottom) {
+        recordTrim(kind, rect);
+        return { band: full, trimmedBy, withheld: 'no-free-part' };
+      }
       if (start > top && end < bottom) continue;
       if (start <= top) from = Math.max(from, end);
       else to = Math.min(to, start);
-      if (
-        !trimmedBy.some(
-          ({ frame }) =>
-            frame.x === rect.x &&
-            frame.y === rect.y &&
-            frame.width === rect.width &&
-            frame.height === rect.height,
-        )
-      )
-        trimmedBy.push({ kind, frame: rect });
+      recordTrim(kind, rect);
     }
     const band = { ...full, y: from, height: to - from };
     // A band too low for a drag is refused here: the scroll handler must never refuse it after the fact.

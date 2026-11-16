@@ -419,7 +419,7 @@ test('Q5: when a scroll is not allowed nothing is scrolled or pressed, and the c
   );
   assert.ok(
     withheld.notes.includes(
-      'located-clearance {"line":1,"located":true,"cutOff":true,"covered":true,"container":true,"band":{"x":0,"y":120,"width":402,"height":580},"direction":null,"trimmedBy":[],"withheld":"no-free-part"}',
+      'located-clearance {"line":1,"located":true,"cutOff":true,"covered":true,"container":true,"band":{"x":0,"y":120,"width":402,"height":580},"direction":null,"trimmedBy":[{"kind":"other","frame":{"x":0,"y":60,"width":402,"height":60}}],"withheld":"no-free-part"}',
     ),
     withheld.notes.join('\n'),
   );
@@ -707,6 +707,38 @@ test('Q9c: two fixed rows stacked above the list, both reaching into it: the ban
   assert.deepEqual(run.scrolls, ['scroll up'], run.log.join());
   assert.deepEqual(run.bands, [{ x: 0, y: 232, width: 402, height: 608 }]);
   assert.equal(run.presses.length, 1, run.log.join());
+});
+
+test('located-clearance records shared top cuts and local bottom trims without changing the drag', async () => {
+  const header = { x: 0, y: 60, width: 402, height: 60 };
+  const footer = { x: 0, y: 650, width: 402, height: 100 };
+  const shape: ListOptions = {
+    ...CUT,
+    extraBefore: [{ ref: '@footer', type: 'Other', parentIndex: 1, hittable: true, rect: footer }],
+  };
+  const run = await walkList(shape, { offset: 159, extraBefore: shape.extraBefore });
+  assert.equal(run.outcome.block.outcome, 'pass', run.reason);
+  assert.deepEqual(run.scrolls, ['scroll up'], run.log.join());
+  assert.deepEqual(run.bands, [{ x: 0, y: 120, width: 402, height: 530 }]);
+  assert.deepEqual(run.distances, [299]);
+  assert.equal(run.presses.length, 1, run.log.join());
+  pressedFromLastRead(run.log);
+  const note = run.notes.find((note) => note.startsWith('located-clearance '));
+  assert.ok(note);
+  assert.deepEqual(JSON.parse(note.slice('located-clearance '.length)), {
+    line: 1,
+    located: true,
+    cutOff: true,
+    covered: true,
+    container: true,
+    band: { x: 0, y: 120, width: 402, height: 530 },
+    direction: 'up',
+    trimmedBy: [
+      { kind: 'other', frame: header },
+      { kind: 'other', frame: footer },
+    ],
+    withheld: null,
+  });
 });
 
 test('Q9d: a view across the whole band, or a band trimmed below 50 pt, withholds the scroll and names no free part', async () => {
