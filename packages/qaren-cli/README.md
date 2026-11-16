@@ -977,9 +977,12 @@ nothing is tapped. The runner cannot re-check an unnamed element at the moment o
 the tap, so the proof on that read stands in for it. A passing step stores no
 selector, so its block is reported not saved and later runs walk the step afresh.
 
-When everything holds except that the native button is cut off by its scroll
-area or off screen within its clip, or that something is drawn over its centre,
-the button is only located. Unknown presence or a failed hit test alone does not
+Partial clipping alone does not prevent a press: an observed, hittable button
+whose centre is clear and on screen can still be proven and pressed without a
+scroll. When the press proof fails but everything else holds except that the
+native button is cut off by its scroll area or off screen within its clip, or
+that something is drawn over its centre, the button is only located.
+Unknown presence or a failed hit test alone does not
 locate it. That allows a scroll, never a tap.
 QaReN sends the step's one clearance scroll from the button's own scroll area
 under the usual free-ground checks. It then takes a settled full read and proves
