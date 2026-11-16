@@ -4425,7 +4425,6 @@ async function walkBlockScoped(
           const next = block.items[block.items.indexOf(item) + 1];
           if (
             attempt > 1 &&
-            !(hiddenTap?.act && !hiddenTap.element) &&
             item.kind !== 'dialog' &&
             before.screen.front === 'dialog' &&
             next?.kind === 'dialog'

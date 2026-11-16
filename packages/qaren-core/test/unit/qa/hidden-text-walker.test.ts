@@ -682,6 +682,40 @@ for (const [title, fixture, clause] of [
   });
 }
 
+for (const [title, fixture] of [
+  ['Alpha plan', alpha],
+  ['Bravo plan', bravo],
+] as const) {
+  test(`a delayed system dialog verifies the hidden-text tap on "${title}" without another press`, async () => {
+    const f = fixture();
+    const capture = f.deps.captureScreen;
+    let readsAfterTap = 0;
+    let answered = false;
+    f.deps.captureScreen = async (request) => {
+      const screen = await capture(request);
+      if (answered || !f.handoffs.includes('executed') || ++readsAfterTap === 1)
+        return screen;
+      return { ...screen, front: 'dialog' };
+    };
+    f.deps.dialog = async (action) => {
+      f.actions.push(`dialog ${action}`);
+      answered = true;
+      return { ok: true, proven: true, executed: true };
+    };
+    const { outcome } = await walk(`1. Tap "${title}"\n2. Accept the dialog`, f.deps);
+    assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
+    assert.deepEqual(f.actions, [
+      title === 'Alpha plan' ? 'press @e25' : 'press @e12',
+      'dialog accept',
+    ]);
+    assert.ok(
+      outcome.rows.some(
+        (row) => row.outcome === 'pass' && row.reason?.includes('the next step owns it'),
+      ),
+    );
+  });
+}
+
 test('N4: an executed tap that changes nothing is never repeated after an outer recovery pass', async () => {
   let promoUp = false;
   const f = alpha();
