@@ -425,10 +425,9 @@ for (const incomplete of [false, true]) {
   });
 }
 
-for (const [name, recaptured, presses] of [
-  ['above the margin', screen({ rect: ABOVE }), 1],
-  ['keyboard hidden', screen({ keyboard: false, rect: FOOTER }), 1],
-  ['target gone', screen({ target: false }), 0],
+for (const [name, recaptured] of [
+  ['above the margin', screen({ rect: ABOVE })],
+  ['keyboard hidden', screen({ keyboard: false, rect: FOOTER })],
 ] as const) {
   test(`a slow presence read rechecks eligibility: ${name}`, async () => {
     const f = device();
@@ -441,12 +440,47 @@ for (const [name, recaptured, presses] of [
       return recaptured;
     };
     const outcome = await walkBlock(tap(), f.deps);
-    assert.equal(outcome.block.outcome, presses ? 'pass' : 'fail', seen(outcome));
+    assert.equal(outcome.block.outcome, 'pass', seen(outcome));
     assert.equal(count(f, 'dismiss'), 0);
     assert.equal(count(f, 'scroll'), 0);
-    assert.equal(count(f, 'press'), presses);
+    assert.equal(count(f, 'press'), 1);
   });
 }
+
+for (const [name, after] of [
+  ['below the viewport', screen({ keyboard: false, rect: { ...FOOTER, y: 820 } })],
+  [
+    'behind an overlay',
+    screen({
+      keyboard: false,
+      rect: FOOTER,
+      overlay: { x: 0, y: 700, width: 400, height: 100 },
+    }),
+  ],
+] as const) {
+  test(`blur moves the target ${name}: refuse without scrolling or pressing`, async () => {
+    const f = device(screen(), after);
+    const outcome = await walkBlock(tap(), f.deps);
+    assert.equal(outcome.block.outcome, 'fail', seen(outcome));
+    assert.equal(count(f, 'dismiss'), 1);
+    assert.equal(count(f, 'scroll'), 0);
+    assert.equal(count(f, 'press'), 0);
+    assert.match(seen(outcome), /keyboard clearance.*moved out of reach.*keyboard was hidden/);
+  });
+}
+
+test('native occlusion after margin clearance refuses without a recovery scroll', async () => {
+  const f = device();
+  f.deps.press = async (_ref, context) => {
+    context.authorize();
+    return { ok: false, mutation: 'none', error: 'FOCUS_TARGET_OCCLUDED: covered' };
+  };
+  const outcome = await walkBlock(tap(), f.deps);
+  assert.equal(outcome.block.outcome, 'fail', seen(outcome));
+  assert.equal(count(f, 'dismiss'), 1);
+  assert.equal(count(f, 'scroll'), 0);
+  assert.match(seen(outcome), /keyboard clearance.*moved out of reach.*keyboard was hidden/);
+});
 
 test('T3: centre 60 pt above the keyboard is pressed plainly, with no clearance', async () => {
   const f = device(screen({ rect: ABOVE }));
