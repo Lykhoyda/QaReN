@@ -203,6 +203,20 @@ test('N2: each missing proof gives nothing', () => {
       card({ rows: (r) => [...r, [pressable(), 0, 'RCTView', CARD]] }),
     ],
     [
+      'a hidden pressable inside the card covering its centre',
+      card({
+        rows: (r) => [
+          ...r,
+          [
+            { ...pressable(), hidden: true },
+            1,
+            'RCTView',
+            { x: 150, y: 280, width: 100, height: 60 },
+          ],
+        ],
+      }),
+    ],
+    [
       'a hidden press-capable host with the same frame',
       card({ rows: (r) => [...r, [{ ...pressable(), hidden: true }, 0, 'RCTView', CARD]] }),
     ],
@@ -293,6 +307,16 @@ test('N2: each missing proof gives nothing', () => {
   const offscreen = card();
   native(offscreen).offscreen = true;
   assert.equal(hiddenTextUnnamedButton(quoted('Plan'), offscreen), undefined, 'off screen');
+});
+
+test('N2: a pressable inside the card away from its centre keeps the proof', () => {
+  const screen = card({
+    rows: (r) => [
+      ...r,
+      [{ ...pressable(), hidden: true }, 1, 'RCTView', { x: 300, y: 270, width: 80, height: 20 }],
+    ],
+  });
+  assert.equal(hiddenTextUnnamedButton(quoted('Plan'), screen), native(screen));
 });
 
 test('N2: a second window with no unnamed button at that frame keeps the proof', () => {

@@ -839,6 +839,22 @@ export function unnamedFrameMatches(
       pressable.some((other) => other !== host && sameFrame(other.rect, nodes[i].rect, transform))
     )
       continue;
+    // The tap lands on the centre; a pressable inside the button there, hidden or not, would take it.
+    const { x, y, width, height } = host.rect!;
+    const [cx, cy] = [x + width / 2, y + height / 2];
+    if (
+      pressable.some(
+        (other) =>
+          other !== host &&
+          !!other.rect &&
+          !!hostPath(snapshot, other.hostIndex)?.includes(host.hostIndex) &&
+          other.rect.x <= cx &&
+          cx <= other.rect.x + other.rect.width &&
+          other.rect.y <= cy &&
+          cy <= other.rect.y + other.rect.height,
+      )
+    )
+      continue;
     matches.set(i, host.hostIndex);
   }
   return matches;
