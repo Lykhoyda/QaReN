@@ -953,11 +953,13 @@ if the text becomes accessible. A passing step stores the button's testID rather
 than the hidden child's identity.
 A press still needs the usual verification; dispatch alone does not pass the step.
 
-When the button has neither a label nor a testID, its frame is the only tie. The
+When the button has neither a label nor a testID, only the hidden text's exact
+words can name it, not a hidden child's testID; its frame is the only tie. The
 read must hold exactly one native button whose frame equals the button host's
 frame, and that button must have no label and no identifier and must be observed
-by the read. Every native node at that frame is counted, whether or not its
-presence was proven. Every window is counted, each under its own origin. No other pressable host may have that frame.
+by the read. Every native button at that frame is counted, including labelled or
+identified buttons and those whose presence was not proven. Every window is
+counted, each under its own origin. No other pressable host may have that frame.
 Every non-hidden pressable host must have a measured frame, except inline text
 spans, which are never measured. An unmeasured pressable inline span inside the
 button, in text whose frame overlaps it, or without a measured containing text
