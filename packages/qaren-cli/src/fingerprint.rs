@@ -1472,6 +1472,15 @@ mod tests {
         }
     }
 
+    #[test]
+    fn bracket_contained_prose_keeps_import_and_process_findings() {
+        let source = "const notes = ['require import process']; module.exports = c => c;";
+        let result = masked(source);
+        assert_eq!(result, unmasked(source));
+        assert!(!result.0.unparseable.is_empty());
+        assert!(result.1);
+    }
+
     const PROCESS: &[(&str, bool)] = &[
         ("// process\nmodule.exports = 1;", false),
         ("const a = 'reads process here';", false),
