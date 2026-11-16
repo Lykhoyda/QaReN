@@ -820,13 +820,22 @@ export function unnamedFrameMatches(
     const facts = evidence.hosts[host.hostIndex];
     if (facts.hidden || facts.testID) continue;
     if (links.some((link) => mayTake(link, host))) continue;
-    const found = candidates.filter(
-      ({ i, transform }) =>
-        compatible(host.hostType, nodes[i].type) && sameFrame(host.rect, nodes[i].rect, transform),
+    const atFrame = candidates.filter(({ i, transform }) =>
+      sameFrame(host.rect, nodes[i].rect, transform),
     );
+    const found = atFrame.filter(({ i }) => nodes[i].type === 'Button');
     if (found.length !== 1) continue;
     const [{ i, transform }] = found;
-    // Every node at the frame was counted, unproven presence included; only then must the one be proven.
+    const path = nativePath(nodes, i);
+    if (
+      atFrame.some(
+        ({ i: other }) =>
+          nodes[other].type !== 'Button' &&
+          compatible(host.hostType, nodes[other].type) &&
+          !path.includes(other),
+      )
+    )
+      continue;
     const node = nodes[i];
     if (
       node.identifier ||

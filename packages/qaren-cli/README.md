@@ -959,12 +959,15 @@ read must hold exactly one native button whose frame equals the button host's
 frame, and that button must have no label and no identifier and must be observed
 by the read. Every native button at that frame is counted, including labelled or
 identified buttons and those whose presence was not proven. Every window is
-counted, each under its own origin. No other pressable host may have that frame,
+counted, each under its own origin. A compatible non-button native node at that
+frame is accepted only when it is an ancestor of the button in the native tree;
+a sibling or a node in another window stops the press.
+No other pressable host may have that frame,
 and no pressable inside the button, hidden or not, may cover its centre, where
 the tap lands. React's own hit test at that centre must also reach the button,
 so nothing painted over it, and no sibling of unknown paint order, takes the
 tap.
-Every non-hidden pressable host must have a measured frame, except inline text
+Every pressable host must have a measured frame, except inline text
 spans, which are never measured. An unmeasured pressable inline span inside the
 button, in text whose frame overlaps it, or without a measured containing text
 also stops the press. That press has no identity to find again, so QaReN takes a

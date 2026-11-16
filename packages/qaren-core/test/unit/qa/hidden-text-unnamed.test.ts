@@ -178,6 +178,35 @@ test('N2: the hand-built unnamed card proves its button', () => {
   assert.equal(hiddenTextUnnamedButton(quoted('Plan'), screen), native(screen));
 });
 
+test('N2: same-frame native wrappers are accepted only as button ancestors', () => {
+  for (const type of ['Other', 'Cell']) {
+    const wrapped = card({
+      native: { ref: '@wrapper', type },
+      extra: [[twin(CARD, { ref: '@card', parentIndex: 2 })]],
+    });
+    assert.ok(native(wrapped), type);
+    assert.equal(hiddenTextUnnamedButton(quoted('Plan'), wrapped), native(wrapped), type);
+
+    const sibling = card({ extra: [[twin(CARD, { type })]] });
+    assert.equal(hiddenTextUnnamedButton(quoted('Plan'), sibling), undefined, type);
+
+    const otherWindow = card({
+      extra: [
+        [
+          {
+            ref: '@window2',
+            type: 'Window',
+            parentIndex: 0,
+            rect: { x: 0, y: 0, width: 402, height: 874 },
+          },
+        ],
+        [twin(CARD, { type, parentIndex: 3 })],
+      ],
+    });
+    assert.equal(hiddenTextUnnamedButton(quoted('Plan'), otherWindow), undefined, type);
+  }
+});
+
 test('N2: accessibility-hidden siblings still block the unnamed centre tap', () => {
   const centre = { x: 150, y: 280, width: 100, height: 60 };
   const overlays: Row[] = [
