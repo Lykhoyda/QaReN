@@ -1,0 +1,61 @@
+import { type ConfigPlugin, IOSConfig } from 'expo/config-plugins';
+
+// Inline, not a sibling module or file read: Expo's plugin loader cannot resolve a sibling .ts, and a Node built-in breaks the build fingerprint.
+export const QA_NATIVE_RED_BOX_VIEW_SOURCE = `#if DEBUG
+
+#import <React/RCTRedBox.h>
+#import <React/RCTView.h>
+#import <React/RCTViewManager.h>
+
+@interface QANativeRedBoxView : RCTView
+@property (nonatomic, strong) RCTRedBox *redBox;
+@property (nonatomic, assign) BOOL raised;
+@end
+
+@implementation QANativeRedBoxView
+
+- (void)layoutSubviews
+{
+  [super layoutSubviews];
+  if (self.raised || self.window == nil || CGRectIsEmpty(self.bounds)) return;
+  self.raised = YES;
+  [self.redBox showErrorMessage:@"QA native view manager: first layout error" withStack:@[]];
+}
+
+- (void)didMoveToWindow
+{
+  [super didMoveToWindow];
+  if (self.window != nil) [self setNeedsLayout];
+}
+
+@end
+
+@interface QANativeRedBoxViewManager : RCTViewManager
+@end
+
+@implementation QANativeRedBoxViewManager
+
+@synthesize moduleRegistry = _moduleRegistry;
+
+RCT_EXPORT_MODULE(QANativeRedBoxView)
+
+- (UIView *)view
+{
+  QANativeRedBoxView *view = [QANativeRedBoxView new];
+  view.redBox = [self.moduleRegistry moduleForName:"RedBox"];
+  return view;
+}
+
+@end
+
+#endif
+`;
+
+const withIosNativeRedBox: ConfigPlugin = (config) =>
+  IOSConfig.XcodeProjectFile.withBuildSourceFile(config, {
+    filePath: 'QANativeRedBoxView.m',
+    contents: QA_NATIVE_RED_BOX_VIEW_SOURCE,
+    overwrite: true,
+  });
+
+export default withIosNativeRedBox;

@@ -1,0 +1,33 @@
+import { type ConfigPlugin, withPodfile } from 'expo/config-plugins';
+
+const POD_MINIMUM = `
+    installer.pods_project.targets.each do |pod_target|
+      pod_target.build_configurations.each do |configuration|
+        minimum = configuration.build_settings['IPHONEOS_DEPLOYMENT_TARGET']
+        if minimum && Gem::Version.new(minimum) < Gem::Version.new('15.0')
+          configuration.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+        end
+      end
+    end
+`;
+
+export function addXcode27PodMinimum(contents: string): string {
+  const postInstall = /^    react_native_post_install\([\s\S]*?^    \)\r?\n/gm;
+  const matches = [...contents.matchAll(postInstall)];
+  if (matches.length !== 1) {
+    throw new Error('Cannot locate React Native post-install in the iOS Podfile');
+  }
+  if (contents.includes(POD_MINIMUM)) return contents;
+  if (contents.includes('installer.pods_project.targets.each do |pod_target|')) {
+    throw new Error('Unexpected existing Pod deployment minimum hook');
+  }
+  return contents.replace(postInstall, `$&${POD_MINIMUM}`);
+}
+
+const withXcode27PodMinimum: ConfigPlugin = (config) =>
+  withPodfile(config, (podfile) => {
+    podfile.modResults.contents = addXcode27PodMinimum(podfile.modResults.contents);
+    return podfile;
+  });
+
+export default withXcode27PodMinimum;
