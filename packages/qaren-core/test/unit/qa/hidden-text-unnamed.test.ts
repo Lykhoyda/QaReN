@@ -178,6 +178,28 @@ test('N2: the hand-built unnamed card proves its button', () => {
   assert.equal(hiddenTextUnnamedButton(quoted('Plan'), screen), native(screen));
 });
 
+test('N2: accessibility-hidden siblings still block the unnamed centre tap', () => {
+  const centre = { x: 150, y: 280, width: 100, height: 60 };
+  const overlays: Row[] = [
+    [{ ...plain, hidden: true }, 0, 'RCTView', centre],
+    [{ ...pressable(), hidden: true }, 0, 'RCTView', centre],
+    [{ ...pressable(), hidden: true }, 0, 'RCTView', undefined],
+  ];
+  for (const overlay of overlays) {
+    const screen = card({ rows: (r) => [...r, overlay] });
+    assert.equal(hiddenTextUnnamedButton(quoted('Plan'), screen), undefined);
+  }
+});
+
+test('N2: an accessibility-hidden sibling allows the tap through pointerEvents or paint order', () => {
+  for (const override of [{ pointerEvents: 'none' as const }, { order: -1 }]) {
+    const screen = card({
+      rows: (r) => [...r, [{ ...plain, hidden: true, ...override }, 0, 'RCTView', CARD]],
+    });
+    assert.equal(hiddenTextUnnamedButton(quoted('Plan'), screen), native(screen));
+  }
+});
+
 test('N2: each missing proof gives nothing', () => {
   const cases: Array<[string, Screen]> = [
     ['two unnamed native buttons with the same frame', card({ extra: [[twin()]] })],

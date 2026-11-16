@@ -796,8 +796,7 @@ export function unnamedFrameMatches(
     );
   };
   const unmeasured = pressable.filter((host) => !host.rect);
-  if (unmeasured.some((host) => !inline(host) && !evidence.hosts[host.hostIndex].hidden))
-    return matches;
+  if (unmeasured.some((host) => !inline(host))) return matches;
   const links = unmeasured.filter(inline);
   // React rects are window points, the space the centre is taken in.
   const hitAt = reactHitTest(evidence, (rect) => rect);
