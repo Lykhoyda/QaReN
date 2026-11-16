@@ -893,8 +893,17 @@ export function foreignOnBand(
   band: NonNullable<NativeNode['rect']>,
   screen: Screen,
 ): boolean {
+  return foreignNodesOnBand(container, band, screen).length > 0;
+}
+
+// The touchable views outside the list that overlap the band.
+export function foreignNodesOnBand(
+  container: Element,
+  band: NonNullable<NativeNode['rect']>,
+  screen: Screen,
+): Element[] {
   const lineage = ancestorsOf(container);
-  return screen.elements.some((other) => {
+  return screen.elements.filter((other) => {
     if (
       other === container ||
       other.offscreen ||

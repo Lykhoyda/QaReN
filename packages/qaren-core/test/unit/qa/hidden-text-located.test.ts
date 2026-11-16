@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { computeScrollFromDirection } from '../../../dist/domain/scroll-gesture.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { walkBlock, type WalkerDeps } from '../../../dist/qa/walker.js';
 import {
@@ -40,6 +41,14 @@ interface ListOptions {
   limaDisabled?: boolean;
   limaAbsent?: boolean;
   titleOutside?: boolean;
+  // The list's clip, when not LIST.
+  listRect?: Rect;
+  // The fixed row precedes the list in the native element order, as a layout sibling above it.
+  rowFirst?: boolean;
+  // React paints the fixed row before the list, so the list is drawn over it.
+  rowUnder?: boolean;
+  // Window children listed before the list, after the fixed row when that comes first.
+  extraBefore?: NativeNode[];
 }
 
 const card = (k: number, offset: number): Rect => ({
@@ -51,6 +60,17 @@ const card = (k: number, offset: number): Rect => ({
 
 function list(o: ListOptions, presence = true): Screen {
   const row = o.row ?? { x: 0, y: 60, width: 402, height: 60 };
+  const listRect = o.listRect ?? LIST;
+  const rowNode: NativeNode = {
+    ref: '@row',
+    type: 'Other',
+    parentIndex: 1,
+    hittable: true,
+    label: 'Header',
+    rect: row,
+  };
+  const before = [...(o.rowFirst ? [rowNode] : []), ...(o.extraBefore ?? [])];
+  const listIndex = 2 + before.length;
   const nodes: NativeNode[] = [
     { ref: '@app', type: 'Application', rect: { x: 0, y: 0, width: 402, height: 874 } },
     {
@@ -59,16 +79,17 @@ function list(o: ListOptions, presence = true): Screen {
       parentIndex: 0,
       rect: { x: 0, y: 0, width: 402, height: 874 },
     },
-    { ref: '@list', type: o.noList ? 'Other' : 'ScrollView', parentIndex: 1, rect: LIST },
+    ...before,
+    { ref: '@list', type: o.noList ? 'Other' : 'ScrollView', parentIndex: 1, rect: listRect },
     ...TITLES.map((_, k) => ({
       ref: `@card${k}`,
       type: 'Button',
-      parentIndex: o.noList ? 1 : 2,
+      parentIndex: o.noList ? 1 : listIndex,
       hittable: k === 1 ? (o.lima?.hittable ?? true) : true,
       ...(k === 1 && o.limaDisabled ? { enabled: false } : {}),
       rect: card(k, o.offset),
     })),
-    { ref: '@row', type: 'Other', parentIndex: 1, hittable: true, label: 'Header', rect: row },
+    ...(o.rowFirst ? [] : [rowNode]),
     ...(o.bar
       ? [
           {
@@ -82,13 +103,21 @@ function list(o: ListOptions, presence = true): Screen {
         ]
       : []),
     ...(o.twinButton
-      ? [{ ref: '@twin', type: 'Button', parentIndex: 2, hittable: true, rect: card(1, o.offset) }]
+      ? [
+          {
+            ref: '@twin',
+            type: 'Button',
+            parentIndex: listIndex,
+            hittable: true,
+            rect: card(1, o.offset),
+          },
+        ]
       : []),
     ...(o.extraNodes ?? []),
   ].filter((node) => !(o.limaAbsent && node.ref === '@card1'));
   const rows: Row[] = [
     [plain, null, 'RCTRootView', { x: 0, y: 0, width: 402, height: 874 }],
-    [plain, 0, 'RCTScrollView', LIST],
+    [plain, 0, 'RCTScrollView', listRect],
     ...TITLES.flatMap((title, k): Row[] => {
       const c = card(k, o.offset);
       return [
@@ -102,7 +131,7 @@ function list(o: ListOptions, presence = true): Screen {
         ],
       ];
     }),
-    [plain, 0, 'RCTView', row],
+    [o.rowUnder ? { ...plain, order: -1 } : plain, 0, 'RCTView', row],
     ...(o.extraRows ?? []),
   ];
   if (!presence)
@@ -183,6 +212,8 @@ async function walkList(
 ) {
   const log: string[] = [];
   const bands: unknown[] = [];
+  const distances: unknown[] = [];
+  const notes: string[] = [];
   let state = start;
   let clock = 0;
   const acts = [...(options.acts ?? [])];
@@ -208,9 +239,10 @@ async function walkList(
     async fill() {
       throw new Error('unexpected fill');
     },
-    async scroll(direction, _context, _distance, band) {
+    async scroll(direction, _context, distance, band) {
       log.push(`scroll ${direction}`);
       bands.push(band);
+      distances.push(distance);
       if (after) state = after;
       return options.scrollResult ?? { ok: true, proven: false, executed: true };
     },
@@ -240,6 +272,7 @@ async function walkList(
       clock += ms;
     },
     row() {},
+    note: (message) => notes.push(message),
   };
   const outcome = await walkBlock(parsePlan(options.line ?? '1. Tap "Lima"').blocks![0], deps);
   const seen = [outcome.failure?.seen ?? '']
@@ -252,6 +285,8 @@ async function walkList(
     presses: log.filter((entry) => entry.startsWith('press')),
     scrolls: log.filter((entry) => entry.startsWith('scroll')),
     bands,
+    distances,
+    notes,
     reason: seen.split('; last observed on screen: ')[0],
   };
 }
@@ -375,9 +410,18 @@ test('Q5: when a scroll is not allowed nothing is scrolled or pressed, and the c
   const withheld = await walkList({ ...CUT, bar: true }, { offset: 159 });
   assert.deepEqual(withheld.scrolls, [], withheld.log.join());
   assert.deepEqual(withheld.presses, []);
+  // A bar across the middle of the band is never trimmed away: the free-ground rule still withholds.
   assert.ok(
-    withheld.reason.startsWith(`TARGET_NOT_FOUND: ${CUT_OFF('14,41,374,90')}`),
+    withheld.reason.startsWith(
+      'TARGET_NOT_FOUND: "Lima" is text hidden from accessibility; its unnamed button at 14,41,374,90 is cut off by its scroll area, and no part of its scroll area is free of what lies in front or behind, so nothing was tapped',
+    ),
     withheld.reason,
+  );
+  assert.ok(
+    withheld.notes.includes(
+      'located-clearance {"line":1,"located":true,"cutOff":true,"covered":true,"container":true,"band":null,"direction":null,"trimmedBy":[],"withheld":"no-free-part"}',
+    ),
+    withheld.notes.join('\n'),
   );
   const unheld = await walkList({ ...CUT, noList: true }, { offset: 159 });
   assert.deepEqual(unheld.scrolls, [], unheld.log.join());
@@ -478,4 +522,140 @@ test('a partially clipped observed hittable button with a clear centre is presse
   assert.deepEqual(run.scrolls, []);
   assert.equal(run.presses.length, 1, run.log.join());
   pressedFromLastRead(run.log);
+});
+
+// Row G5 on the device: fixed rows above the list, listed before it, end at 230, 5.33 pt inside the
+// list's clip (224.67 to 840). Lima at 14,170.7,374,90 is hittable, 54 pt above the clip, its centre
+// (215.7) under the rows.
+const ROWS: Rect = { x: 0, y: 120, width: 402, height: 110 };
+const G5: ListOptions = {
+  offset: 129.3,
+  listRect: { x: 0, y: 224.67, width: 402, height: 615.33 },
+  row: ROWS,
+  rowFirst: true,
+};
+const FREE_BAND = { x: 0, y: 230, width: 402, height: 610 };
+
+// Listed before the list either way; React paints the rows before it or over it.
+for (const rowUnder of [true, false])
+  test(`Q9: fixed rows reaching into the clip's top edge (painted ${rowUnder ? 'before the list' : 'over it'}) are trimmed off the band: one drag on free ground, then one press`, async () => {
+    const run = await walkList({ ...G5, rowUnder }, { ...G5, rowUnder, offset: -100 });
+    assert.equal(run.outcome.block.outcome, 'pass', run.reason);
+    assert.deepEqual(run.scrolls, ['scroll up'], run.log.join());
+    assert.deepEqual(run.bands, [FREE_BAND]);
+    // The runner's drag runs from the band's own geometry: both ends lie in it, never on the rows.
+    const drag = computeScrollFromDirection(
+      'up',
+      0.6,
+      run.bands[0] as typeof FREE_BAND,
+      run.distances[0] as number,
+    )!;
+    for (const y of [drag.y1, drag.y2]) {
+      assert.ok(y > FREE_BAND.y && y < FREE_BAND.y + FREE_BAND.height, `${y}`);
+      assert.ok(y >= ROWS.y + ROWS.height, `${y}`);
+    }
+    assert.equal(run.presses.length, 1, run.log.join());
+    pressedFromLastRead(run.log);
+    assert.ok(
+      run.notes.includes(
+        `located-clearance {"line":1,"located":true,"cutOff":true,"covered":${!rowUnder},"container":true,"band":${JSON.stringify(FREE_BAND)},"direction":"up","trimmedBy":[{"kind":"other","frame":${JSON.stringify(ROWS)}}],"withheld":null}`,
+      ),
+      run.notes.join('\n'),
+    );
+  });
+
+// The cover at the centre is a caption text the free-ground count leaves out, not hittable, reaching
+// into the band's top edge: the cover gets the same edge rule.
+const CAPTION: Rect = { x: 0, y: 190, width: 402, height: 40 };
+const CAPTIONED: ListOptions = {
+  ...G5,
+  row: { x: 0, y: 20, width: 402, height: 20 },
+  extraBefore: [
+    {
+      ref: '@caption',
+      type: 'StaticText',
+      parentIndex: 1,
+      identifier: 'qa-caption',
+      label: 'Caption',
+      rect: CAPTION,
+    },
+  ],
+  extraRows: [[{ ...plain, testID: 'qa-caption' }, 0, 'RCTText', CAPTION, 'Caption']],
+};
+
+test('Q9b: a text cover reaching into the band top is trimmed off like a counted view: one drag, one press', async () => {
+  const run = await walkList(CAPTIONED, { ...CAPTIONED, offset: -100 });
+  assert.equal(run.outcome.block.outcome, 'pass', run.reason);
+  assert.deepEqual(run.scrolls, ['scroll up'], run.log.join());
+  assert.deepEqual(run.bands, [FREE_BAND]);
+  assert.equal(run.presses.length, 1, run.log.join());
+  pressedFromLastRead(run.log);
+  assert.ok(
+    run.notes.some((note) =>
+      note.includes(`"trimmedBy":[{"kind":"text","frame":${JSON.stringify(CAPTION)}}]`),
+    ),
+    run.notes.join('\n'),
+  );
+});
+
+test('Q9c: two fixed rows stacked above the list, both reaching into it: the band starts under the lower', async () => {
+  const stacked: ListOptions = {
+    ...G5,
+    row: { x: 0, y: 120, width: 402, height: 107 },
+    extraBefore: [
+      {
+        ref: '@row2',
+        type: 'Other',
+        parentIndex: 1,
+        hittable: true,
+        label: 'Second',
+        rect: { x: 0, y: 150, width: 402, height: 82 },
+      },
+    ],
+  };
+  const run = await walkList(stacked, { ...stacked, offset: -100 });
+  assert.equal(run.outcome.block.outcome, 'pass', run.reason);
+  assert.deepEqual(run.scrolls, ['scroll up'], run.log.join());
+  assert.deepEqual(run.bands, [{ x: 0, y: 232, width: 402, height: 608 }]);
+  assert.equal(run.presses.length, 1, run.log.join());
+});
+
+test('Q9d: a view across the whole band, or a band trimmed below 50 pt, withholds the scroll and names no free part', async () => {
+  const cases: Array<[string, Rect]> = [
+    ['a view across both edges', { x: 0, y: 200, width: 402, height: 700 }],
+    // With the rows trimming the top to 230, a footer from 279 leaves a 49 pt band.
+    ['a 49 pt band', { x: 0, y: 279, width: 402, height: 700 }],
+  ];
+  for (const [name, rect] of cases) {
+    const shape: ListOptions = {
+      ...G5,
+      extraBefore: [{ ref: '@sheet', type: 'Other', parentIndex: 1, hittable: true, rect }],
+    };
+    const run = await walkList(shape, { ...shape, offset: -100 });
+    assert.equal(run.outcome.block.outcome, 'fail', name);
+    assert.deepEqual(run.scrolls, [], `${name}: ${run.log.join()}`);
+    assert.deepEqual(run.presses, [], name);
+    assert.ok(
+      run.reason.startsWith(
+        'TARGET_NOT_FOUND: "Lima" is text hidden from accessibility; its unnamed button at 14,170.7,374,90 is cut off by its scroll area, and no part of its scroll area is free of what lies in front or behind, so nothing was tapped',
+      ),
+      `${name}: ${run.reason}`,
+    );
+  }
+});
+
+// Row G5c on the device: after three scrolls the first card is at 14,-627.3,374,90, wholly above its clip.
+test('G5c: a card wholly above its clip is located from geometry, scrolled once, and refused after one scroll', async () => {
+  const G5C: ListOptions = { ...G5, offset: 827.3 };
+  const run = await walkList(G5C, G5C, { line: '1. Tap "Kilo"' });
+  assert.equal(run.outcome.block.outcome, 'fail');
+  assert.deepEqual(run.scrolls, ['scroll up'], run.log.join());
+  assert.deepEqual(run.bands, [FREE_BAND]);
+  assert.deepEqual(run.presses, []);
+  assert.ok(
+    run.reason.startsWith(
+      'TARGET_NOT_FOUND: "Kilo" is text hidden from accessibility; its unnamed button at 14,-627.3,374,90 is cut off by its scroll area after one scroll, so nothing was tapped',
+    ),
+    run.reason,
+  );
 });

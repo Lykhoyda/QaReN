@@ -32,6 +32,7 @@ import {
   withEchoScope,
 } from './inputs.js';
 import { isAbort, cancellationSignal, withDeadline } from '../domain/cancellation.js';
+import { MIN_SCROLL_BAND_HEIGHT } from '../domain/scroll-gesture.js';
 import { fillLabels, type Block, type Item, type Target } from './plan.js';
 import {
   type Element,
@@ -78,6 +79,7 @@ import {
   scrollTargetCovered,
   scrollUntilContainer,
   foreignOnBand,
+  foreignNodesOnBand,
   scrollUntilDirection,
   targetEvidence,
   aggregateTargetVisible,
@@ -1750,19 +1752,64 @@ async function walkBlockScoped(
   const locatedClearance = (
     element: Element,
     screen: Screen,
-  ): { band: NativeNode['rect']; direction: 'up' | 'down' } | WithheldDrag => {
+  ):
+    | {
+        band: NonNullable<NativeNode['rect']>;
+        direction: 'up' | 'down';
+        distance?: number;
+        trimmedBy: { kind: string; frame: NonNullable<NativeNode['rect']> }[];
+      }
+    | WithheldDrag => {
     const container = ancestorsOf(element).find(isScrollContainer);
     if (!container) return 'no-scroll-area';
-    const band = clearanceBand(element, screen);
+    const full = clearanceBand(element, screen);
+    const frame = elementFrame(element);
+    if (!full || !frame || full.width <= 0 || full.height <= 0) return 'no-free-part';
+    // In one pass against the band's own edges, whatever the list order: a counted foreign view or the
+    // cover across the top or bottom edge trims it, one across both withholds, and one across the
+    // middle withholds through the unchanged checks below.
     const cover = coverOwner(element, screen);
-    const shared = band && 'owner' in cover && clip(band, cover.frame);
-    return !band ||
-      band.width <= 0 ||
-      band.height <= 0 ||
+    const onFull = 'owner' in cover ? clip(full, cover.frame) : undefined;
+    const edges = [
+      ...foreignNodesOnBand(container, full, screen).map((node) => ({
+        node,
+        rect: elementFrame(node)!,
+      })),
+      ...('owner' in cover && onFull && onFull.width > 0 && onFull.height > 0
+        ? [{ node: cover.owner, rect: cover.frame }]
+        : []),
+    ];
+    const [top, bottom] = [full.y, full.y + full.height];
+    let [from, to] = [top, bottom];
+    const trimmedBy: { kind: string; frame: NonNullable<NativeNode['rect']> }[] = [];
+    for (const { node, rect } of edges) {
+      const [start, end] = [rect.y, rect.y + rect.height];
+      if (end <= top || start >= bottom) continue;
+      if (start <= top && end >= bottom) return 'no-free-part';
+      if (start > top && end < bottom) continue;
+      if (start <= top) from = Math.max(from, end);
+      else to = Math.min(to, start);
+      trimmedBy.push({ kind: node.kind, frame: rect });
+    }
+    const band = { ...full, y: from, height: to - from };
+    const shared = 'owner' in cover && clip(band, cover.frame);
+    // A band too low for a drag is refused here: the scroll handler must never refuse it after the fact.
+    if (
+      band.height < MIN_SCROLL_BAND_HEIGHT ||
       (!!shared && shared.width > 0 && shared.height > 0) ||
       foreignOnBand(container, band, screen)
-      ? 'no-free-part'
-      : { band, direction: clearanceScroll(element, screen) };
+    )
+      return 'no-free-part';
+    // Toward the middle of the trimmed band; a centre outside it travels exactly there.
+    const centre = frame.y + frame.height / 2;
+    const middle = band.y + band.height / 2;
+    const outside = centre < band.y || centre >= band.y + band.height;
+    return {
+      band,
+      direction: centre >= middle ? 'down' : 'up',
+      ...(outside ? { distance: Math.abs(centre - middle) } : {}),
+      trimmedBy,
+    };
   };
   // A covered refusal that emits no other decision diagnostic still says why its cover was or was not
   // named; a line whose cover was never looked up emits nothing.
@@ -4559,10 +4606,28 @@ async function walkBlockScoped(
                   if (typeof clearing === 'object') {
                     occluded = clearing.direction;
                     within = clearing.band;
-                    clearance = keyboardClearance(hiddenStop.element, before.screen);
+                    clearance = clearing.distance;
                     scrollOrigin = 'centre-covered';
                   } else hiddenStop.withheld = clearing;
-                }
+                  // Value-free: causes, a container's presence, frames and the withheld kind only.
+                  deps.note?.(
+                    `located-clearance ${JSON.stringify({
+                      line: item.line,
+                      located: true,
+                      cutOff: hiddenStop.cutOff,
+                      covered: hiddenStop.covered,
+                      container: !!ancestorsOf(hiddenStop.element).find(isScrollContainer),
+                      band: typeof clearing === 'object' ? clearing.band : null,
+                      direction: typeof clearing === 'object' ? clearing.direction : null,
+                      trimmedBy: typeof clearing === 'object' ? clearing.trimmedBy : [],
+                      withheld:
+                        typeof clearing === 'object' ? null : (clearing ?? 'one-scroll-spent'),
+                    })}`,
+                  );
+                } else if (unnamedArmed() && !unnamed)
+                  deps.note?.(
+                    `located-clearance ${JSON.stringify({ line: item.line, located: false })}`,
+                  );
                 const decision = unnamedArmed()
                   ? {
                       resolvedBy,
@@ -4707,7 +4772,9 @@ async function walkBlockScoped(
                     const unheld =
                       hiddenStop?.withheld === 'no-scroll-area'
                         ? ', and no scroll area holds it'
-                        : '';
+                        : hiddenStop?.withheld === 'no-free-part'
+                          ? `, and ${WITHHELD_DRAG['no-free-part']}`
+                          : '';
                     const stop = hiddenStop?.cutOff
                       ? `its unnamed button at ${hiddenTap.frame} is cut off by its scroll area${after}${unheld}, so nothing was tapped. Scroll it fully into view before this step, or give the button an accessibilityLabel`
                       : hiddenStop?.covered
