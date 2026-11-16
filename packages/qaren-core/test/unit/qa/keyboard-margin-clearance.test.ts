@@ -569,6 +569,36 @@ test('T4: with the clearance already spent on this step, the refusal names the m
   assert.match(seen(outcome), /already used on this step/);
 });
 
+test('dialog recovery after margin clearance preserves the step-wide scroll prohibition', async () => {
+  const f = device();
+  const capture = f.deps.captureScreen;
+  let afterDismissCaptures = 0;
+  f.deps.captureScreen = async (options) => {
+    if (count(f, 'dismiss') && !f.calls.includes('dialog') && ++afterDismissCaptures >= 3)
+      f.show({ ...screen({ keyboard: false, target: false }), front: 'dialog' });
+    return capture(options);
+  };
+  const press = f.deps.press;
+  f.deps.press = async (ref, context, options) => {
+    await f.deps.sleep(11_000);
+    return press(ref, context, options);
+  };
+  const dialog = f.deps.dialog;
+  f.deps.dialog = async (action, context) => {
+    const act = await dialog(action, context);
+    f.show(screen({ keyboard: false, rect: { ...FOOTER, y: 820 } }));
+    return act;
+  };
+  const outcome = await walkBlock(tap(), f.deps);
+  assert.equal(outcome.block.outcome, 'fail', JSON.stringify({ calls: f.calls, outcome }));
+  assert.ok(outcome.rows.some((row) => row.outcome === 'retry'), JSON.stringify(f.calls));
+  assert.equal(count(f, 'dialog'), 1);
+  assert.equal(count(f, 'dismiss'), 1);
+  assert.equal(count(f, 'scroll'), 0);
+  assert.equal(count(f, 'press'), 0);
+  assert.match(seen(outcome), /keyboard clearance.*moved out of reach.*keyboard was hidden/);
+});
+
 test('T5: a Fill with its centre in the margin keeps the clearance scroll', async () => {
   const f = device(screen({ type: 'TextField' }));
   const outcome = await walkBlock(parsePlan('1. Fill "submit" with "1"\n').blocks![0], f.deps);

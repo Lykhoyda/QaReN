@@ -3696,6 +3696,7 @@ async function walkBlockScoped(
     let pixelBaselineTaken = false;
     // This allowance survives recovery retries of the item.
     let itemKeyboardAttempted = false;
+    let keyboardMarginClearance = false;
     let pixelBaseline:
       | { target: NonNullable<ReturnType<typeof pixelTarget>>; crop: PixelCrop }
       | undefined;
@@ -4269,7 +4270,6 @@ async function walkBlockScoped(
         let scrollRefused = false;
         let settledFrame: string | undefined;
         let keyboardAttempted = false;
-        let keyboardMarginClearance = false;
         const centreChanged = (current: Element | undefined): boolean | null => {
           const originalFrame = refusedIdentity && elementFrame(refusedIdentity);
           const currentFrame = current && elementFrame(current);
