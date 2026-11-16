@@ -1758,11 +1758,28 @@ async function walkBlockScoped(
     element: Element,
     screen: Screen,
   ):
-    | { band: NonNullable<NativeNode['rect']>; direction: 'up' | 'down'; distance?: number }
+    | {
+        band: NonNullable<NativeNode['rect']>;
+        direction: 'up' | 'down';
+        distance?: number;
+        trimmedBy: { kind: string; frame: NonNullable<NativeNode['rect']> }[];
+      }
     | undefined => {
     const frame = elementFrame(element);
     const clip = elementViewport(element);
-    const band = clearanceBand(element, screen);
+    const trimmedBy: { kind: string; frame: NonNullable<NativeNode['rect']> }[] = [];
+    const band = clearanceBand(element, screen, ({ kind, frame }) => {
+      if (
+        !trimmedBy.some(
+          (cut) =>
+            cut.frame.x === frame.x &&
+            cut.frame.y === frame.y &&
+            cut.frame.width === frame.width &&
+            cut.frame.height === frame.height,
+        )
+      )
+        trimmedBy.push({ kind, frame });
+    });
     if (!frame || !clip || !band) return undefined;
     const centre = frame.y + frame.height / 2;
     if (centre >= clip.y && centre < clip.y + clip.height) return undefined;
@@ -1770,6 +1787,7 @@ async function walkBlockScoped(
     return {
       band,
       direction: scrollTo(element).scroll,
+      trimmedBy,
       ...(distance !== undefined ? { distance } : {}),
     };
   };
@@ -4651,7 +4669,7 @@ async function walkBlockScoped(
                     : offscreenClearance(hiddenStop.element, before.screen);
                   const clearing = spent
                     ? undefined
-                    : (offscreen && { ...offscreen, trimmedBy: [], withheld: undefined }) ||
+                    : (offscreen && { ...offscreen, withheld: undefined }) ||
                       locatedClearance(hiddenStop.element, before.screen, hiddenStop.cover);
                   if (clearing?.direction && clearing.band) {
                     occluded = clearing.direction;

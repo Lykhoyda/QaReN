@@ -357,6 +357,27 @@ test('Q1: a cut-off unnamed button is scrolled once, proven again on a presence 
   ]);
 });
 
+test('Q1: the offscreen decision records the header cut while scrolling and pressing once', async () => {
+  const run = await walkList(CUT, { offset: 159 });
+  assert.equal(run.outcome.block.outcome, 'pass', run.reason);
+  assert.deepEqual(locatedNote(run.notes), {
+    line: 1,
+    located: true,
+    cutOff: true,
+    covered: true,
+    path: 'offscreen',
+    container: true,
+    band: { x: 0, y: 120, width: 402, height: 580 },
+    direction: 'up',
+    trimmedBy: [{ kind: 'other', frame: { x: 0, y: 60, width: 402, height: 60 } }],
+    withheld: null,
+  });
+  assert.deepEqual(run.bands, [{ x: 0, y: 120, width: 402, height: 580 }]);
+  assert.deepEqual(run.scrolls, ['scroll up']);
+  assert.deepEqual(run.presses, ['press @card1-4']);
+  pressedFromLastRead(run.log);
+});
+
 test('Q2: when the one scroll does not bring the button clear nothing is pressed and the cause is named', async () => {
   const run = await walkList(CUT, CUT);
   assert.equal(run.outcome.block.outcome, 'fail');
