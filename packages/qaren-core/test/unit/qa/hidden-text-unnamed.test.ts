@@ -181,6 +181,14 @@ test('N2: each missing proof gives nothing', () => {
   const cases: Array<[string, Screen]> = [
     ['two unnamed native buttons with the same frame', card({ extra: [[twin()]] })],
     [
+      'a labelled native button at the same frame',
+      card({ extra: [[twin(CARD, { label: 'Plan' })]] }),
+    ],
+    [
+      'an identified native button at the same frame',
+      card({ extra: [[twin(CARD, { identifier: 'card' })]] }),
+    ],
+    [
       'two press-capable hosts with the same frame',
       card({ rows: (r) => [...r, [pressable(), 0, 'RCTView', CARD]] }),
     ],

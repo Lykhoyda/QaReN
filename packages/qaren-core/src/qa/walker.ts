@@ -4377,8 +4377,6 @@ async function walkBlockScoped(
             : capture(item);
         const maxAttempts = recovered.has(item) || opts.singleAttempt ? 1 : 2;
         for (let attempt = 1; attempt <= maxAttempts && !outcome; attempt += 1) {
-          // An executed fallback press authorizes no further press: the step resolves its own target.
-          if (hiddenTap && !hiddenTap.element) refusedIdentity = undefined;
           interruptionWithheld = undefined;
           currentAttempt = attempt;
           pressAct = undefined;
@@ -4427,6 +4425,7 @@ async function walkBlockScoped(
           const next = block.items[block.items.indexOf(item) + 1];
           if (
             attempt > 1 &&
+            !(hiddenTap?.act && !hiddenTap.element) &&
             item.kind !== 'dialog' &&
             before.screen.front === 'dialog' &&
             next?.kind === 'dialog'
@@ -4500,6 +4499,11 @@ async function walkBlockScoped(
           let act: ActResult;
           for (;;) {
             try {
+              if (item.kind === 'press' && hiddenTap?.act && !hiddenTap.element)
+                throw new ResolutionError({
+                  refuse: 'TARGET_NOT_FOUND',
+                  reason: `"${item.target.quoted}" did not change the screen after one tap`,
+                });
               usable(before, item);
               if (item.kind === 'press' || item.kind === 'fill') {
                 if (item.target.quoted === undefined) resolvedBy = 'jev';

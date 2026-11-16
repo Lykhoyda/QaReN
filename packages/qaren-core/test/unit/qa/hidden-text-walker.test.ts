@@ -645,6 +645,43 @@ test('N4: an executed tap that changes nothing is never repeated by the inner re
   assert.ok(f.log.length <= 9, f.log.join());
 });
 
+for (const [title, fixture, clause] of [
+  ['Alpha plan', alpha, ALPHA_NO_CHANGE],
+  ['Bravo plan', bravo, NO_CHANGE],
+] as const) {
+  test(`one executed hidden-text tap stays spent when "${title}" becomes accessible before retry`, async () => {
+    const f = fixture();
+    const capture = f.deps.captureScreen;
+    let readsAfterTap = 0;
+    f.deps.captureScreen = async (request) => {
+      const screen = await capture(request);
+      if (!f.handoffs.includes('executed') || ++readsAfterTap === 1) return screen;
+      return {
+        ...screen,
+        elements: [
+          ...screen.elements,
+          {
+            ref: '@visible-title',
+            kind: 'button',
+            label: title,
+            hittable: true,
+            disabled: false,
+            secure: false,
+            offscreen: false,
+          },
+        ],
+        visibleText: [...screen.visibleText, title],
+      };
+    };
+    const { outcome, reason } = await walk(`1. Tap "${title}"`, f.deps);
+    assert.ok(readsAfterTap > 1);
+    assert.equal(outcome.block.outcome, 'fail');
+    assert.equal(f.actions.filter((action) => action.startsWith('press ')).length, 1);
+    assert.ok(reason.endsWith(clause), reason);
+    assert.ok(outcome.rows.every((row) => row.selector === undefined));
+  });
+}
+
 test('N4: an executed tap that changes nothing is never repeated after an outer recovery pass', async () => {
   let promoUp = false;
   const f = alpha();

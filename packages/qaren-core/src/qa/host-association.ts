@@ -804,7 +804,7 @@ export function unnamedFrameMatches(
   const duplicates = duplicateNodes(nodes, presence);
   const refs = new Map<string, number>();
   for (const node of nodes) refs.set(node.ref, (refs.get(node.ref) ?? 0) + 1);
-  const unnamed = nodes.flatMap((node, i) => {
+  const candidates = nodes.flatMap((node, i) => {
     const windowIndex = nativeWindowIndex(nodes, i);
     const window = windowIndex === undefined ? undefined : nodes[windowIndex].rect;
     if (
@@ -815,9 +815,7 @@ export function unnamedFrameMatches(
       presence.nodes[i]?.status !== 'observed' ||
       !node.ref?.trim() ||
       refs.get(node.ref) !== 1 ||
-      duplicates.has(i) ||
-      node.identifier ||
-      node.label
+      duplicates.has(i)
     )
       return [];
     return [{ i, transform: { scale: 1, x: window.x, y: window.y, tolerance: 0 } }];
@@ -826,12 +824,13 @@ export function unnamedFrameMatches(
     const facts = evidence.hosts[host.hostIndex];
     if (facts.hidden || facts.testID) continue;
     if (links.some((link) => mayTake(link, host))) continue;
-    const found = unnamed.filter(
+    const found = candidates.filter(
       ({ i, transform }) =>
         compatible(host.hostType, nodes[i].type) && sameFrame(host.rect, nodes[i].rect, transform),
     );
     if (found.length !== 1) continue;
     const [{ i, transform }] = found;
+    if (nodes[i].identifier || nodes[i].label) continue;
     if (
       pressable.some((other) => other !== host && sameFrame(other.rect, nodes[i].rect, transform))
     )

@@ -953,9 +953,9 @@ passing step stores the button's testID rather than the hidden child's identity.
 A press still needs the usual verification; dispatch alone does not pass the step.
 
 When the button has neither a label nor a testID, its frame is the only tie. The
-read must hold exactly one native button with no label and no identifier whose
-frame equals the button host's frame. Every window is counted, each under its own
-origin. No other pressable host may have that frame, and every pressable host that
+read must hold exactly one native button whose frame equals the button host's
+frame, and that button must have no label and no identifier. Every window is counted,
+each under its own origin. No other pressable host may have that frame, and every pressable host that
 is not hidden must have a measured frame. Pressable inline text spans are never
 measured; one inside the button, or in a text whose frame overlaps it, also
 stops the press. That press has no identity to find
