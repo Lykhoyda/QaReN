@@ -1354,6 +1354,8 @@ view outside that container's ancestry and content, regardless of capture order.
 Even a background view overlapping the band withholds the drag. Direction moves
 the target toward the admitted band's centre.
 
+<a id="free-ground-proof"></a>
+
 A real screen holds empty full-screen views outside the list (screens lower in
 the stack, navigation containers, a second window), and these alone can leave no
 free band. On a presence read with the keyboard proven hidden, the walker then
@@ -4078,7 +4080,8 @@ unless a system dialog is in front, elsewhere only while a decline control is on
 the presented `Modal`, recovery runs instead of scrolling the promo. On iOS the drag
 then goes only toward a target that read places below or above an on-screen scroll
 container that is also its scroll-until container, inside the part of that container
-that nothing drawn in front covers; a target inside the visible area, with no matching
+that nothing drawn in front covers, or on a band a [free-ground proof](#free-ground-proof)
+admits; a target inside the visible area, with no matching
 scroll container, with no exposed scroll band or with no readable place refuses `TARGET_NOT_FOUND`
 ("is known to React but has no element on the visible screen", with the reason and
 "nothing was scrolled"), and so does a recapture that runs out of time or returns
