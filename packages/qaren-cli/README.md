@@ -4449,7 +4449,7 @@ diagnostic collection and sink failures preserve the refusal.
 <a id="clearance-diagnostics"></a>
 
 When a press or fill target's centre remains covered after the one-scroll
-allowance or a withheld recovery drag, a private `timing` event with code `CENTRE_COVERED` includes the
+allowance, a withheld recovery drag or an unsuccessful keyboard clearance, a private `timing` event with code `CENTRE_COVERED` includes the
 observation ordinal and `clearanceDiagnostic`. It records the viewport, keyboard or
 overlay predicate branch, boolean coverage facts, the scroll's origin and requested
 direction, and whether the target centre changed. For an overlay branch, the
@@ -4477,8 +4477,10 @@ presence or React typography; the [absent-target keyboard clearance](#occluded-t
 has a separate modal-proof capture. On iOS a covered press or Fill refusal with that gap takes the
 walker's one bounded platform-presence recapture, the same one a plain scroll uses for
 an unproven cover, and looks up the cover again on it, at most once per cover lookup.
-For covered targets, only native dispatch refusals or terminal step refusals pay
-for that read (a presence capture can take tens of seconds on device). Before
+For covered targets, native dispatch refusals or terminal step refusals pay
+for that read, with the pre-clearance exception described in
+[covered-target recovery](#covered-target-recovery) (a presence capture can take
+tens of seconds on device). Before
 an eligible post-refusal drag, it supplies the current geometry and can withhold
 the drag under the [recovery contract](#covered-target-recovery); terminal diagnostic
 reads grant no further dispatch. An incomplete read leaves the cover unproven
