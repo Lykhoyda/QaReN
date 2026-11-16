@@ -1,0 +1,38 @@
+import { CodeGenerator, type ConfigPlugin, withAppBuildGradle } from 'expo/config-plugins';
+
+// Expo Dev Launcher (SDK 56) calls java.time APIs, but the generated template omits
+// desugaring while declaring minSdk 24 — without this, startup hard-crashes below API 26.
+const DESUGAR_CONFIG = `android {
+    compileOptions {
+        coreLibraryDesugaringEnabled true
+    }
+}
+
+dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+}`;
+
+export function addAndroidCoreLibraryDesugaring(contents: string): string {
+  return CodeGenerator.mergeContents({
+    src: contents,
+    newSrc: DESUGAR_CONFIG,
+    tag: 'rn-dev-agent-core-library-desugaring',
+    anchor: /^dependencies\s*\{$/,
+    offset: 0,
+    comment: '//',
+  }).contents;
+}
+
+const withAndroidCoreLibraryDesugaring: ConfigPlugin = (config) =>
+  withAppBuildGradle(config, (gradleConfig) => {
+    if (gradleConfig.modResults.language !== 'groovy') {
+      throw new Error('Core library desugaring requires an Android Groovy build.gradle');
+    }
+
+    gradleConfig.modResults.contents = addAndroidCoreLibraryDesugaring(
+      gradleConfig.modResults.contents,
+    );
+    return gradleConfig;
+  });
+
+export default withAndroidCoreLibraryDesugaring;

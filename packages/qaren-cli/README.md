@@ -5487,6 +5487,20 @@ dynamic or template-literal arguments, escaped literals and other unsupported
 syntax make the fingerprint **incomplete**, forbidding cached reuse (visible
 in decision evidence). Unresolvable local refs and `workspace:` dependencies
 in any of those sections also make it incomplete.
+
+The import and ambient `process` scans ignore comments, quoted-string content
+and template text when the scanner can identify them confidently; expressions
+inside `${…}` remain code. Strings and template text inside bracket expressions
+remain scanned to preserve computed-key detection, as does string content or a
+template-text segment exactly equal to `require`, `import` or `process`.
+Text later executed through `eval` or `new Function` is not scanned as code.
+If the scanner encounters a non-comment `/` (including division), `<` (including
+JSX), `#!`, `-->`, a raw line break in a quoted string or an unterminated
+comment, string, template or placeholder, the whole file uses the previous
+unmasked scan. U+2028/U+2029 or a carriage return without a following line feed
+anywhere in the file also trigger that fallback. Code-site line numbers are
+preserved.
+
 On iOS the value also binds the selected Xcode (`xcodebuild -version`), so a
 build is never reused across Xcode versions, and an unavailable Xcode makes the
 fingerprint incomplete.
