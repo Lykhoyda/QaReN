@@ -8,7 +8,8 @@ import {
   type ReactHostObservation,
   type Screen,
 } from '../../../dist/qa/screen.js';
-import type { Target } from '../../../dist/qa/plan.js';
+import { parsePlan, type Target } from '../../../dist/qa/plan.js';
+import { walkBlock, type WalkerDeps } from '../../../dist/qa/walker.js';
 import { hiddenCard } from './ios-hidden-card-captures.ts';
 
 const quoted = (text: string): Target => ({ quoted: text, phrase: text });
@@ -28,8 +29,11 @@ test('N1: device reads tie the hidden text to the one unnamed native button by i
   assert.equal(hiddenTextUnnamedButton(quoted('Bravo plan'), alpha), undefined);
   assert.equal(hiddenTextUnnamedButton(quoted('36 EUR'), alpha), undefined);
   assert.equal(hiddenTextButton(quoted('Alpha plan'), alpha), undefined);
-  const echo = hiddenTextUnnamedButton(quoted('Echo plan'), hiddenCard('p9-obs27-presence'));
+  const popup = hiddenCard('p9-obs27-presence');
+  const echo = hiddenTextUnnamedButton(quoted('Echo plan'), popup);
   assert.equal(echo?.ref, '@e11');
+  // Alpha sits behind the popup: its native button is not on this read, so nothing proves it.
+  assert.equal(hiddenTextUnnamedButton(quoted('Alpha plan'), popup), undefined);
   assert.deepEqual(echo && elementFrame(echo), {
     x: 14,
     y: 87.66666412353516,
@@ -283,4 +287,136 @@ test("N2: frames are compared under each window's transform, never as raw number
   assert.equal(hiddenTextUnnamedButton(quoted('Plan'), shifted), native(shifted));
   const raw = card({ origin: 30, native: { rect: CARD } });
   assert.equal(hiddenTextUnnamedButton(quoted('Plan'), raw), undefined);
+});
+
+// Three unnamed cards of equal size in a list, each with its own hidden title; `presence` false gives
+// the ordinary read, which carries no React evidence.
+const TITLES = ['Kilo', 'Lima', 'Mike'];
+function equalCards(presence = true): Screen {
+  const at = (k: number): Rect => ({ ...CARD, y: 262 + 100 * k });
+  const nodes: NativeNode[] = [
+    { ref: '@app', type: 'Application', rect: { x: 0, y: 0, width: 402, height: 874 } },
+    {
+      ref: '@window',
+      type: 'Window',
+      parentIndex: 0,
+      rect: { x: 0, y: 0, width: 402, height: 874 },
+    },
+    ...TITLES.map((_, k) => ({
+      ref: `@card${k}`,
+      type: 'Button',
+      parentIndex: 1,
+      hittable: true,
+      rect: at(k),
+    })),
+  ];
+  const rows: Row[] = [
+    [plain, null, 'RCTRootView', { x: 0, y: 0, width: 402, height: 874 }],
+    ...TITLES.flatMap((title, k): Row[] => [
+      [pressable(), 0, 'RCTView', at(k)],
+      [{ ...plain, hidden: true }, 1 + 2 * k, 'RCTText', { ...TITLE, y: at(k).y + 24 }, title],
+    ]),
+  ];
+  return join(
+    nodes,
+    TITLES.map(() => ({ role: 'button' })),
+    'app',
+    { native: 'complete', react: 'complete' },
+    presence
+      ? {
+          complete: true,
+          hosts: rows.map(([host]) => ({ ...plain, ...host })),
+          typography: {
+            version: 1,
+            complete: true,
+            durationMs: 1,
+            coordinateSpace: 'window-points',
+            nodes: rows.map(([, parentHostIndex, hostType, rect, text], hostIndex) => ({
+              hostIndex,
+              parentHostIndex,
+              rootIndex: 0,
+              hostType,
+              ...(rect ? { rect } : {}),
+              accessibility: { accessible: 'true', authoredLabel: 'absent' },
+              text: text
+                ? {
+                    kind: 'block',
+                    content: text,
+                    runs: [{ start: 0, end: text.length, fontSize: 17 }],
+                    scaling: { allowFontScaling: true, maxFontSizeMultiplier: 0 },
+                  }
+                : { kind: 'none' },
+            })),
+          },
+        }
+      : undefined,
+    presence
+      ? {
+          source: 'xcui-live',
+          nodes: nodes.map((_, i) => ({
+            status: 'observed',
+            labelSource: i < 2 ? 'direct' : 'none',
+          })),
+        }
+      : undefined,
+    'complete',
+  );
+}
+
+test('N2: among equal unnamed cards each hidden title proves its own card', () => {
+  const screen = equalCards();
+  TITLES.forEach((title, k) =>
+    assert.equal(hiddenTextUnnamedButton(quoted(title), screen)?.ref, `@card${k}`, title),
+  );
+  assert.equal(hiddenTextUnnamedButton(quoted('Lima'), equalCards(false)), undefined);
+});
+
+test('N3: a Tap on the second card of equal unnamed cards presses that card only', async () => {
+  const log: string[] = [];
+  let clock = 0;
+  const done = { ok: true, proven: true, executed: true } as const;
+  const deps: WalkerDeps = {
+    platform: 'ios',
+    async captureScreen(request) {
+      log.push(request?.platformPresence ? 'presence' : 'ordinary');
+      return equalCards(!!request?.platformPresence);
+    },
+    async press(ref) {
+      log.push(`press ${ref}`);
+      return done;
+    },
+    async fill() {
+      throw new Error('unexpected fill');
+    },
+    async scroll() {
+      throw new Error('unexpected scroll');
+    },
+    async back() {
+      throw new Error('unexpected back');
+    },
+    async dialog() {
+      throw new Error('unexpected dialog');
+    },
+    async hideDevMenu() {
+      return { ok: true, proven: true };
+    },
+    async screenshot(name) {
+      return name;
+    },
+    now: () => (clock += 100),
+    async sleep(ms) {
+      clock += ms;
+    },
+    row() {},
+  };
+  const outcome = await walkBlock(parsePlan('1. Tap "Lima"').blocks![0], deps);
+  assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
+  assert.deepEqual(
+    log.filter((entry) => entry.startsWith('press')),
+    ['press @card1'],
+  );
+  assert.equal(
+    outcome.rows.at(-1)?.reason,
+    'resolved through text hidden from accessibility; tapped the unnamed button at 14,362,374,90',
+  );
 });

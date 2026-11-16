@@ -4466,9 +4466,9 @@ async function walkBlockScoped(
               dismissal.via = await deps.dismissKeyboard!(context);
               return { ok: true, proven: false };
             });
-            // An unnamed button has no identity to settle; the next presence read proves it afresh.
+            // An unnamed button has no identity to settle on: the screen settles, then its last read proves it.
             const settled = unnamedArmed()
-              ? { observation: await captureBeforeDispatch() }
+              ? { observation: await settledCapture(item) }
               : await settledTarget(item, target, { nativeOnly: true });
             if ('frames' in settled) {
               outcome = failed(
