@@ -1749,11 +1749,7 @@ async function walkBlockScoped(
             !frame || frame.y + frame.height / 2 >= band.y + band.height / 2 ? 'down' : 'up',
         };
   };
-  // The one clearance drag for a located unnamed button, from its own scroll container: hidden words
-  // name no element, so the step's target cannot place the band. The free-ground checks stay.
-  // A located card whose centre lies outside its clip takes the offscreen scroll a named target gets on
-  // the same screen: the clearance band, toward the clip, with no free-ground check. A drag is not a tap,
-  // and the strict proof still guards the press on the next read.
+  // Match named offscreen scrolling without a free-ground check; the next read must still prove the press.
   const offscreenClearance = (
     element: Element,
     screen: Screen,

@@ -1039,8 +1039,9 @@ over the centre. A drag is not a tap, and the full proof still guards the press.
 When the centre lies inside the area but something is drawn over it, the scroll
 runs under the usual free-ground checks. A view outside the list that crosses
 the top or bottom edge of that area, such as a fixed row reaching a few points
-into it, is trimmed off first, and so is whatever covers the button's centre,
-including text or a non-hittable view hidden from accessibility. These trims use
+into it, is trimmed off first. Both the proof's React touch owner at the centre
+and any separately associated native cover count, including text or a
+non-hittable view hidden from accessibility. These trims use
 the original band edges in one pass, so the drag starts and ends on free ground.
 A view across the middle of the area or across both its edges, or an area left
 lower than 50 points, still withholds the scroll. After the scroll, QaReN takes a settled full read and proves
