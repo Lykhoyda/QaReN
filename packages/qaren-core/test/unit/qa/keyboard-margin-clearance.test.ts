@@ -328,10 +328,7 @@ test('a label-only button in the margin clears the keyboard and presses without 
     for (const element of value.elements) delete element.testID;
     return value;
   };
-  const f = device(
-    labelOnly(screen()),
-    labelOnly(screen({ keyboard: false, rect: FOOTER })),
-  );
+  const f = device(labelOnly(screen()), labelOnly(screen({ keyboard: false, rect: FOOTER })));
   const outcome = await walkBlock(parsePlan('1. Tap "Continue"\n').blocks![0], f.deps);
   assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
   assert.equal(count(f, 'dismiss'), 1);
