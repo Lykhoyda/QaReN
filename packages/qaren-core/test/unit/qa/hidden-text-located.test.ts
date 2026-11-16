@@ -419,7 +419,7 @@ test('Q5: when a scroll is not allowed nothing is scrolled or pressed, and the c
   );
   assert.ok(
     withheld.notes.includes(
-      'located-clearance {"line":1,"located":true,"cutOff":true,"covered":true,"container":true,"band":null,"direction":null,"trimmedBy":[],"withheld":"no-free-part"}',
+      'located-clearance {"line":1,"located":true,"cutOff":true,"covered":true,"container":true,"band":{"x":0,"y":120,"width":402,"height":580},"direction":null,"trimmedBy":[],"withheld":"no-free-part"}',
     ),
     withheld.notes.join('\n'),
   );
@@ -598,6 +598,58 @@ test('Q9b: a text cover reaching into the band top is trimmed off like a counted
   );
 });
 
+for (const hidden of [false, true]) {
+  const caption = (rect: Rect): ListOptions => ({
+    ...CAPTIONED,
+    extraBefore: CAPTIONED.extraBefore!.map(({ identifier: _, ...node }) => ({ ...node, rect })),
+    extraRows: [[{ ...plain, hidden }, 0, 'RCTText', rect, 'Caption']],
+  });
+
+  test(`Q9b: a text cover without an identifier (accessibility hidden: ${hidden}) trims the top edge`, async () => {
+    const shape = caption(CAPTION);
+    const run = await walkList(shape, { ...shape, offset: -100 });
+    assert.equal(run.outcome.block.outcome, 'pass', run.reason);
+    assert.deepEqual(run.scrolls, ['scroll up'], run.log.join());
+    assert.deepEqual(run.bands, [FREE_BAND]);
+    assert.equal(run.presses.length, 1, run.log.join());
+    pressedFromLastRead(run.log);
+    assert.ok(
+      run.notes.some((note) =>
+        note.includes(`"trimmedBy":[{"kind":"react-cover","frame":${JSON.stringify(CAPTION)}}]`),
+      ),
+      run.notes.join('\n'),
+    );
+  });
+
+  test(`Q9b: a text cover without an identifier (accessibility hidden: ${hidden}) across the middle withholds`, async () => {
+    const rect = { x: 0, y: 470, width: 402, height: 60 };
+    const shape = { ...caption(rect), offset: -155 };
+    const run = await walkList(shape, { ...shape, offset: -100 });
+    assert.equal(run.outcome.block.outcome, 'fail', run.reason);
+    assert.deepEqual(run.scrolls, [], run.log.join());
+    assert.deepEqual(run.presses, []);
+    assert.ok(
+      run.reason.startsWith(
+        'TARGET_NOT_FOUND: "Lima" is text hidden from accessibility; the centre of its unnamed button at 14,455,374,90 is under another element, and no part of its scroll area is free of what lies in front or behind, so nothing was tapped',
+      ),
+      run.reason,
+    );
+    const note = run.notes.find((note) => note.startsWith('located-clearance '));
+    assert.ok(note);
+    assert.deepEqual(JSON.parse(note.slice('located-clearance '.length)), {
+      line: 1,
+      located: true,
+      cutOff: false,
+      covered: true,
+      container: true,
+      band: G5.listRect,
+      direction: null,
+      trimmedBy: [],
+      withheld: 'no-free-part',
+    });
+  });
+}
+
 test('Q9c: two fixed rows stacked above the list, both reaching into it: the band starts under the lower', async () => {
   const stacked: ListOptions = {
     ...G5,
@@ -640,6 +692,26 @@ test('Q9d: a view across the whole band, or a band trimmed below 50 pt, withhold
         'TARGET_NOT_FOUND: "Lima" is text hidden from accessibility; its unnamed button at 14,170.7,374,90 is cut off by its scroll area, and no part of its scroll area is free of what lies in front or behind, so nothing was tapped',
       ),
       `${name}: ${run.reason}`,
+    );
+    const note = run.notes.find((note) => note.startsWith('located-clearance '));
+    assert.ok(note, name);
+    assert.deepEqual(
+      JSON.parse(note.slice('located-clearance '.length)),
+      {
+        line: 1,
+        located: true,
+        cutOff: true,
+        covered: true,
+        container: true,
+        band: name === 'a 49 pt band' ? { x: 0, y: 230, width: 402, height: 49 } : G5.listRect,
+        direction: null,
+        trimmedBy: [
+          { kind: 'other', frame: ROWS },
+          { kind: 'other', frame: rect },
+        ],
+        withheld: 'no-free-part',
+      },
+      name,
     );
   }
 });

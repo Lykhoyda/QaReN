@@ -137,7 +137,7 @@ export function hiddenTextUnnamedButton(target: Target, screen: Screen): Element
 export function hiddenTextUnnamedLocated(
   target: Target,
   screen: Screen,
-): { element: Element; cutOff: boolean; covered: boolean } | undefined {
+): { element: Element; cutOff: boolean; covered: boolean; cover?: Rect } | undefined {
   const tie = unnamedTie(target, screen);
   const element =
     tie &&
@@ -151,7 +151,7 @@ export function hiddenTextUnnamedLocated(
   if (!element) return;
   const match = frameLocatedOf(element);
   if (!match || (!match.cutOff && !match.covered)) return;
-  return { element, cutOff: match.cutOff, covered: match.covered };
+  return { element, cutOff: match.cutOff, covered: match.covered, cover: match.cover };
 }
 
 // One hidden text with these exact words inside a pressable host that has neither test id nor label.

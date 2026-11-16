@@ -767,6 +767,7 @@ export interface FrameMatch {
   proven: boolean;
   cutOff: boolean;
   covered: boolean;
+  cover?: Rect;
 }
 
 // Frame-only ties require one native button across all windows and one pressable host.
@@ -895,7 +896,14 @@ export function unnamedFrameMatches(
         cy + transform.y >= clip.y + clip.height);
     const proven = reached && presence.nodes[i]?.status === 'observed';
     if (!proven && !cutOff && !covered) continue;
-    matches.set(i, { host: host.hostIndex, proven, cutOff, covered });
+    const cover = covered && typeof hit === 'number' ? snapshot.nodes[hit]?.rect : undefined;
+    matches.set(i, {
+      host: host.hostIndex,
+      proven,
+      cutOff,
+      covered,
+      ...(cover ? { cover: { ...cover, x: cover.x + transform.x, y: cover.y + transform.y } } : {}),
+    });
   }
   return matches;
 }

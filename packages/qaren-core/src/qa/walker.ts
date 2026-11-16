@@ -1752,54 +1752,70 @@ async function walkBlockScoped(
   const locatedClearance = (
     element: Element,
     screen: Screen,
-  ):
-    | {
-        band: NonNullable<NativeNode['rect']>;
-        direction: 'up' | 'down';
-        distance?: number;
-        trimmedBy: { kind: string; frame: NonNullable<NativeNode['rect']> }[];
-      }
-    | WithheldDrag => {
+    reactCover?: NonNullable<NativeNode['rect']>,
+  ): {
+    band: NonNullable<NativeNode['rect']> | null;
+    direction?: 'up' | 'down';
+    distance?: number;
+    trimmedBy: { kind: string; frame: NonNullable<NativeNode['rect']> }[];
+    withheld?: WithheldDrag;
+  } => {
     const container = ancestorsOf(element).find(isScrollContainer);
-    if (!container) return 'no-scroll-area';
+    if (!container) return { band: null, trimmedBy: [], withheld: 'no-scroll-area' };
     const full = clearanceBand(element, screen);
     const frame = elementFrame(element);
-    if (!full || !frame || full.width <= 0 || full.height <= 0) return 'no-free-part';
+    if (!full || !frame || full.width <= 0 || full.height <= 0)
+      return { band: full ?? null, trimmedBy: [], withheld: 'no-free-part' };
     // In one pass against the band's own edges, whatever the list order: a counted foreign view or the
     // cover across the top or bottom edge trims it, one across both withholds, and one across the
     // middle withholds through the unchanged checks below.
     const cover = coverOwner(element, screen);
-    const onFull = 'owner' in cover ? clip(full, cover.frame) : undefined;
+    const coverFrame = 'owner' in cover ? cover.frame : reactCover;
+    const onFull = coverFrame ? clip(full, coverFrame) : undefined;
     const edges = [
       ...foreignNodesOnBand(container, full, screen).map((node) => ({
-        node,
+        kind: node.kind,
         rect: elementFrame(node)!,
       })),
-      ...('owner' in cover && onFull && onFull.width > 0 && onFull.height > 0
-        ? [{ node: cover.owner, rect: cover.frame }]
+      ...(coverFrame && onFull && onFull.width > 0 && onFull.height > 0
+        ? [{ kind: 'owner' in cover ? cover.owner.kind : 'react-cover', rect: coverFrame }]
         : []),
     ];
     const [top, bottom] = [full.y, full.y + full.height];
     let [from, to] = [top, bottom];
     const trimmedBy: { kind: string; frame: NonNullable<NativeNode['rect']> }[] = [];
-    for (const { node, rect } of edges) {
+    for (const { kind, rect } of edges) {
       const [start, end] = [rect.y, rect.y + rect.height];
       if (end <= top || start >= bottom) continue;
-      if (start <= top && end >= bottom) return 'no-free-part';
+      if (start <= top && end >= bottom)
+        return {
+          band: full,
+          trimmedBy: [...trimmedBy, { kind, frame: rect }],
+          withheld: 'no-free-part',
+        };
       if (start > top && end < bottom) continue;
       if (start <= top) from = Math.max(from, end);
       else to = Math.min(to, start);
-      trimmedBy.push({ kind: node.kind, frame: rect });
+      if (
+        !trimmedBy.some(
+          ({ frame }) =>
+            frame.x === rect.x &&
+            frame.y === rect.y &&
+            frame.width === rect.width &&
+            frame.height === rect.height,
+        )
+      )
+        trimmedBy.push({ kind, frame: rect });
     }
     const band = { ...full, y: from, height: to - from };
-    const shared = 'owner' in cover && clip(band, cover.frame);
+    const shared = coverFrame && clip(band, coverFrame);
     // A band too low for a drag is refused here: the scroll handler must never refuse it after the fact.
     if (
       band.height < MIN_SCROLL_BAND_HEIGHT ||
       (!!shared && shared.width > 0 && shared.height > 0) ||
       foreignOnBand(container, band, screen)
     )
-      return 'no-free-part';
+      return { band, trimmedBy, withheld: 'no-free-part' };
     // Toward the middle of the trimmed band; a centre outside it travels exactly there.
     const centre = frame.y + frame.height / 2;
     const middle = band.y + band.height / 2;
@@ -4602,13 +4618,13 @@ async function walkBlockScoped(
                   const clearing =
                     hiddenTap.scrolled || scrolled || withheldDrag
                       ? undefined
-                      : locatedClearance(hiddenStop.element, before.screen);
-                  if (typeof clearing === 'object') {
+                      : locatedClearance(hiddenStop.element, before.screen, hiddenStop.cover);
+                  if (clearing?.direction && clearing.band) {
                     occluded = clearing.direction;
                     within = clearing.band;
                     clearance = clearing.distance;
                     scrollOrigin = 'centre-covered';
-                  } else hiddenStop.withheld = clearing;
+                  } else hiddenStop.withheld = clearing?.withheld;
                   // Value-free: causes, a container's presence, frames and the withheld kind only.
                   deps.note?.(
                     `located-clearance ${JSON.stringify({
@@ -4617,11 +4633,10 @@ async function walkBlockScoped(
                       cutOff: hiddenStop.cutOff,
                       covered: hiddenStop.covered,
                       container: !!ancestorsOf(hiddenStop.element).find(isScrollContainer),
-                      band: typeof clearing === 'object' ? clearing.band : null,
-                      direction: typeof clearing === 'object' ? clearing.direction : null,
-                      trimmedBy: typeof clearing === 'object' ? clearing.trimmedBy : [],
-                      withheld:
-                        typeof clearing === 'object' ? null : (clearing ?? 'one-scroll-spent'),
+                      band: clearing?.band ?? null,
+                      direction: clearing?.direction ?? null,
+                      trimmedBy: clearing?.trimmedBy ?? [],
+                      withheld: clearing ? (clearing.withheld ?? null) : 'one-scroll-spent',
                     })}`,
                   );
                 } else if (unnamedArmed() && !unnamed)
