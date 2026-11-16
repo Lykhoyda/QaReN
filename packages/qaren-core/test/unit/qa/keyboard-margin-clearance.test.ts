@@ -2,7 +2,7 @@
 // it, hides the keyboard once and presses; it never sends the clearance scroll.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { captureScreen } from '../../../dist/qa/capture.js';
+import { AppProcessGoneError, captureScreen } from '../../../dist/qa/capture.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { coverOwner } from '../../../dist/qa/resolve.js';
 import {
@@ -410,6 +410,27 @@ test('T2b: a late presence recapture still clears the keyboard, then presses onc
   assert.equal(count(f, 'dismiss'), 1);
   assert.equal(count(f, 'scroll'), 0);
   assert.equal(count(f, 'press'), 1);
+});
+
+test('an app restart seen by the presence recapture ends the step before any keyboard clearance', async () => {
+  const f = device();
+  const modes = modeAware(f);
+  const capture = f.deps.captureScreen;
+  f.deps.captureScreen = async (options) => {
+    // From the presence recapture on, the app's process is gone.
+    if (options?.platformPresence || modes.some(Boolean)) {
+      if (options?.platformPresence) modes.push(true);
+      throw new AppProcessGoneError();
+    }
+    return capture(options);
+  };
+  const outcome = await walkBlock(tap(), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(modes.filter(Boolean).length, 1, JSON.stringify(modes));
+  assert.equal(count(f, 'dismiss'), 0, JSON.stringify(f.calls));
+  assert.equal(count(f, 'press'), 0);
+  assert.equal(count(f, 'scroll'), 0);
+  assert.match(seen(outcome), /APP_PROCESS_CHANGED/);
 });
 
 for (const incomplete of [false, true]) {

@@ -5112,11 +5112,11 @@ async function walkBlockScoped(
                       item,
                       Math.min(itemDeadline ?? Infinity, deps.now() + NATIVE_PRESENCE_BUDGET_MS),
                     );
-                    if (proven || !observationUsable(before.timing, deps.now())) {
-                      before = proven ?? (await captureBeforeDispatch());
-                      initial = undefined;
-                      continue;
-                    }
+                    // A recapture that yields nothing may have swallowed a veto (an app restart, a
+                    // development error); a fresh ordinary capture raises it before any clearance.
+                    before = proven ?? (await captureBeforeDispatch());
+                    initial = undefined;
+                    continue;
                   }
                   let why = 'the keyboard clearance was already used on this step';
                   if (unusedClearance) {
