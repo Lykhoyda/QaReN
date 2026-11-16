@@ -46,14 +46,6 @@ async function waitForChildClose(child: ChildProcess | null): Promise<void> {
   await once(child, 'close');
 }
 
-async function assertProcessExited(pid: number): Promise<void> {
-  const deadline = Date.now() + 5_000;
-  while (alive(pid) && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  assert.equal(alive(pid), false, `descendant ${pid} must exit after group cleanup`);
-}
-
 test('managed executor removes process-group descendants after timeout', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'rn-584-group-'));
   const pidFile = join(dir, 'child.pid');
@@ -74,7 +66,7 @@ test('managed executor removes process-group descendants after timeout', async (
     const result = await pending;
     assert.equal(result.timedOut, true);
     assert.equal(result.cleanupProven, true);
-    await assertProcessExited(childPid);
+    assert.equal(alive(childPid), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
