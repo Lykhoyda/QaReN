@@ -287,6 +287,21 @@ pub struct BuildLockResource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuildSlotResource {
+    #[serde(flatten)]
+    pub lock: BuildLockResource,
+    pub work: BuildSlotWork,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildSlotWork {
+    Finite,
+    MetroSpawnPending,
+    Metro { pgid: i32 },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum BuildProcess {
     SpawnPending,
@@ -346,6 +361,8 @@ pub struct Resources {
     pub android_emulator: Option<BorrowedEmulatorResource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_lock: Option<BuildLockResource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_slot: Option<BuildSlotResource>,
     // The per-home pool creation lock, persisted before the claim like build_lock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool_create_lock: Option<BuildLockResource>,
@@ -384,6 +401,9 @@ pub struct Resources {
     // A borrowed device is never deleted; iOS simulator stop requires an explicit bounded intent.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub device_borrowed: bool,
+    // Set only by the pool paths: QaReN owns this simulator's system log store.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pool_member: bool,
     #[serde(default, skip_serializing_if = "BorrowedIosStop::is_not_armed")]
     borrowed_ios_stop: BorrowedIosStop,
 }
@@ -405,6 +425,14 @@ impl Resources {
 
     pub fn can_release_build_ownership(&self) -> bool {
         self.build_process.is_none()
+    }
+
+    pub(crate) fn can_release_build_slot(&self, retired_metro: Option<i32>) -> bool {
+        self.build_slot.as_ref().is_none_or(|slot| match slot.work {
+            BuildSlotWork::Finite => self.can_release_build_ownership(),
+            BuildSlotWork::MetroSpawnPending => false,
+            BuildSlotWork::Metro { pgid } => pgid >= 2 && retired_metro == Some(pgid),
+        })
     }
 
     pub fn begin_build(&mut self) -> Result<(), Failure> {
@@ -530,6 +558,7 @@ impl Resources {
             || self.adb_vendor_key.is_some()
             || self.usb_device.is_some()
             || self.build_lock.is_some()
+            || self.build_slot.is_some()
             || self.pool_create_lock.is_some()
             || self.lease.is_some()
             || self.core.is_some()
@@ -584,12 +613,29 @@ pub struct RunRecord {
     pub terminal: Option<TerminalResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<Held>,
-    // What this run saw of the native-build lock; ownership stays in resources.build_lock.
+    // The last contended native-build wait; ownership stays in the recorded resources.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_lock: Option<BuildLockObservation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub build_lock_waits: Vec<BuildLockObservation>,
     // The runtime version the installed artifact embeds and whether the resolver returned the pin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_version: Option<crate::expo_updates::RuntimeVersion>,
+    // Where QaReN's iOS Metro answered; kept when resources.metro is cleared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metro_bind: Option<MetroBind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MetroBind {
+    #[serde(rename = "127.0.0.1")]
+    V4,
+    #[serde(rename = "[::1]-only")]
+    V6Only,
+    #[serde(rename = "inconclusive")]
+    Inconclusive,
+    #[serde(rename = "127.0.0.1 after restart on all interfaces")]
+    V4AfterRestart,
 }
 
 // A failed walk's resources kept in the reached state until qaren cleanup or a reclaim by the next run on the device.
@@ -612,6 +658,8 @@ pub enum LockObservation {
 // Safe holder facts only: no home, lock path, token, PID or command.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildLockObservation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock: Option<String>,
     // The last contending run, absent when the claim was never contended.
     pub holder: Option<String>,
     pub waited_s: u64,
@@ -1039,4 +1087,21 @@ pub enum RunnerPresence {
     Absent,
     Foreign,
     Unknown,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pool_member_defaults_false_and_round_trips() {
+        let old: Resources = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(serde_json::to_value(&old).unwrap().get("pool_member"), None);
+        let pooled: Resources =
+            serde_json::from_value(serde_json::json!({"pool_member": true})).unwrap();
+        assert_eq!(
+            serde_json::to_value(&pooled).unwrap()["pool_member"],
+            serde_json::json!(true)
+        );
+    }
 }

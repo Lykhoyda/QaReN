@@ -6,6 +6,15 @@ use std::path::Path;
 
 pub const FINGERPRINT_VERSION: &str = "rnfp1";
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct FingerprintTimings {
+    pub total_ms: u64,
+    pub list_ms: u64,
+    pub expo_ms: Option<u64>,
+    pub toolchain_ms: u64,
+    pub hash_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeFingerprint {
     pub value: String,
@@ -16,7 +25,7 @@ pub struct NativeFingerprint {
     pub incompleteness: Vec<String>,
     // Hash-only evidence: rnfp, iOS toolchain, and evaluated Expo inputs.
     pub parts: BTreeMap<String, String>,
-    pub expo_fingerprint_ms: Option<u64>,
+    pub timings: FingerprintTimings,
     // The closed-template cause when the app's Expo fingerprint could not be computed.
     pub expo_unavailable: Option<String>,
     pub ios_compiler: Option<crate::ios_toolchain::CompilerIdentity>,
@@ -111,7 +120,8 @@ fn uses_expo(project_root: &Path) -> bool {
 struct ReferencedInputs {
     files: BTreeSet<String>,
     modules: Vec<String>,
-    packages: BTreeSet<String>,
+    // Specifier to its first importing file, for diagnostics only.
+    packages: BTreeMap<String, String>,
     incompleteness: Vec<String>,
 }
 
@@ -145,7 +155,9 @@ fn referenced_paths(app_json: &str, project_root: &Path) -> ReferencedInputs {
                             .to_string(),
                     );
                 } else {
-                    out.packages.insert(reference.to_string());
+                    out.packages
+                        .entry(reference.to_string())
+                        .or_insert_with(|| "app.json".to_string());
                 }
             }
         }
@@ -185,7 +197,136 @@ struct Specifiers {
     unparseable: Vec<String>,
 }
 
-fn import_specifiers(source: &str) -> Specifiers {
+// The bytes JavaScript reads as code. Any doubt (see `not_code_walk`) makes
+// every byte code, which is the unmasked scan.
+fn code_mask(source: &str) -> Vec<bool> {
+    not_code_walk(source).unwrap_or_else(|| vec![true; source.len()])
+}
+
+// Masks comments, quoted string content and template text; a template
+// placeholder `${…}` is code. Gives up (None) on anything it cannot place
+// for certain: any `/` that does not open a comment (regular expression or
+// division), any `<` (JSX, type assertion, HTML-like comment), `#!`, `-->`,
+// U+2028/U+2029, a CR without LF, a raw line break in a quoted string, and
+// anything unterminated. Inside `[…]`, strings stay code (computed keys), as
+// does any string or template text that is exactly `require`, `import` or
+// `process`.
+fn not_code_walk(source: &str) -> Option<Vec<bool>> {
+    let b = source.as_bytes();
+    if source.contains(['\u{2028}', '\u{2029}'])
+        || b.iter()
+            .enumerate()
+            .any(|(i, &c)| c == b'\r' && b.get(i + 1) != Some(&b'\n'))
+    {
+        return None;
+    }
+    let mut code = vec![true; b.len()];
+    let text = |code: &mut [bool], start: usize, end: usize, brackets: usize| {
+        if brackets == 0 && !matches!(&source[start..end], "require" | "import" | "process") {
+            code[start..end].fill(false);
+        }
+    };
+    // Open braces inside each enclosing placeholder, innermost last.
+    let mut placeholders: Vec<usize> = Vec::new();
+    let mut brackets = 0usize;
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'/' if b.get(i + 1) == Some(&b'/') => {
+                let end = b[i..]
+                    .iter()
+                    .position(|&c| c == b'\n' || c == b'\r')
+                    .map_or(b.len(), |n| i + n);
+                code[i..end].fill(false);
+                i = end;
+                continue;
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                let end = source[i + 2..].find("*/")? + i + 4;
+                code[i..end].fill(false);
+                i = end;
+                continue;
+            }
+            b'/' | b'<' => return None,
+            b'#' if b.get(i + 1) == Some(&b'!') => return None,
+            b'-' if b[i..].starts_with(b"-->") => return None,
+            b'[' => brackets += 1,
+            b']' => brackets = brackets.saturating_sub(1),
+            b'{' => {
+                if let Some(open) = placeholders.last_mut() {
+                    *open += 1;
+                }
+            }
+            b'}' => match placeholders.last_mut() {
+                Some(0) => {
+                    placeholders.pop();
+                    let (end, next) = template_text(b, i + 1, &mut placeholders)?;
+                    text(&mut code, i + 1, end, brackets);
+                    i = next;
+                    continue;
+                }
+                Some(open) => *open -= 1,
+                None => {}
+            },
+            quote @ (b'\'' | b'"') => {
+                let mut j = i + 1;
+                loop {
+                    match *b.get(j)? {
+                        c if c == quote => break,
+                        b'\\' if b.get(j + 1) == Some(&b'\r') && b.get(j + 2) == Some(&b'\n') => {
+                            j += 3
+                        }
+                        b'\\' => j += 2,
+                        b'\n' | b'\r' => return None,
+                        _ => j += 1,
+                    }
+                }
+                text(&mut code, i + 1, j, brackets);
+                i = j + 1;
+                continue;
+            }
+            b'`' => {
+                let (end, next) = template_text(b, i + 1, &mut placeholders)?;
+                text(&mut code, i + 1, end, brackets);
+                i = next;
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    placeholders.is_empty().then_some(code)
+}
+
+// Template text from `start` up to its closing backtick or the next `${`:
+// returns where the text ends and the index just past that delimiter, and
+// opens a placeholder for `${`.
+fn template_text(b: &[u8], start: usize, placeholders: &mut Vec<usize>) -> Option<(usize, usize)> {
+    let mut j = start;
+    loop {
+        match *b.get(j)? {
+            b'`' => return Some((j, j + 1)),
+            b'$' if b.get(j + 1) == Some(&b'{') => {
+                placeholders.push(0);
+                return Some((j, j + 2));
+            }
+            b'\\' => j += 2,
+            _ => j += 1,
+        }
+    }
+}
+
+fn uses_process(source: &str, code: &[bool]) -> bool {
+    let bytes = source.as_bytes();
+    let identifier = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
+    source.match_indices("process").any(|(at, _)| {
+        code[at]
+            && (at == 0 || !identifier(bytes[at - 1]))
+            && !bytes.get(at + 7).is_some_and(|&b| identifier(b))
+    })
+}
+
+fn scan_imports(source: &str, code: &[bool]) -> Specifiers {
     let mut out = Specifiers::default();
     let bytes = source.as_bytes();
     let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
@@ -207,7 +348,10 @@ fn import_specifiers(source: &str) -> Specifiers {
     for keyword in ["require", "import", "from"] {
         for (at, _) in source.match_indices(keyword) {
             let end = at + keyword.len();
-            if (at > 0 && ident(bytes[at - 1])) || bytes.get(end).is_some_and(|&b| ident(b)) {
+            if !code[at]
+                || (at > 0 && ident(bytes[at - 1]))
+                || bytes.get(end).is_some_and(|&b| ident(b))
+            {
                 continue;
             }
             let next = skip_ws(end);
@@ -235,16 +379,20 @@ fn import_specifiers(source: &str) -> Specifiers {
                     // Import and re-export `from` always takes a string literal; anything else is prose.
                 } else {
                     let static_import = keyword == "import"
-                        && source[next..].find("from").is_some_and(|offset| {
-                            let binding = &source[next..next + offset];
-                            !binding.trim().is_empty()
-                                && binding.bytes().all(|b| {
-                                    ident(b)
-                                        || b.is_ascii_whitespace()
-                                        || matches!(b, b'{' | b'}' | b',' | b'*')
-                                })
-                                && literal(skip_ws(next + offset + 4)).is_some()
-                        });
+                        && source[next..]
+                            .match_indices("from")
+                            .map(|(offset, _)| offset)
+                            .find(|&offset| code[next + offset])
+                            .is_some_and(|offset| {
+                                let binding = &source[next..next + offset];
+                                !binding.trim().is_empty()
+                                    && binding.bytes().all(|b| {
+                                        ident(b)
+                                            || b.is_ascii_whitespace()
+                                            || matches!(b, b'{' | b'}' | b',' | b'*')
+                                    })
+                                    && literal(skip_ws(next + offset + 4)).is_some()
+                            });
                     if !static_import {
                         out.unparseable.push(format!(
                             "{keyword} at line {}",
@@ -290,7 +438,7 @@ fn trace_local_imports(
     project_root: &Path,
     seeds: Vec<String>,
     inputs: &mut BTreeSet<String>,
-    packages: &mut BTreeSet<String>,
+    packages: &mut BTreeMap<String, String>,
     incompleteness: &mut Vec<String>,
 ) {
     let mut worklist = seeds;
@@ -328,18 +476,14 @@ fn trace_local_imports(
             }
             continue;
         }
-        let bytes = source.as_bytes();
-        let identifier = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
-        if source.match_indices("process").any(|(at, _)| {
-            (at == 0 || !identifier(bytes[at - 1]))
-                && !bytes.get(at + 7).is_some_and(|&b| identifier(b))
-        }) {
+        let code = code_mask(&source);
+        if uses_process(&source, &code) {
             incompleteness.push(format!(
                 "local module {rel} uses process; ambient inputs are unbound"
             ));
         }
         let base_dir = rel.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
-        let specifiers = import_specifiers(&source);
+        let specifiers = scan_imports(&source, &code);
         if specifiers
             .found
             .iter()
@@ -362,7 +506,7 @@ fn trace_local_imports(
         }
         for specifier in specifiers.found {
             if !specifier.starts_with('.') {
-                packages.insert(specifier);
+                packages.entry(specifier).or_insert_with(|| rel.clone());
                 continue;
             }
             let Some(normalized) = normalize_rel(base_dir, &specifier) else {
@@ -426,12 +570,12 @@ const PURE_NODE_BUILTINS: &[&str] = &[
 fn package_manifest(
     project_root: &Path,
     repo_root: &Path,
-    packages: &BTreeSet<String>,
+    packages: &BTreeMap<String, String>,
     manifest: &mut Vec<(String, String)>,
     incompleteness: &mut Vec<String>,
 ) {
     let mut versions: BTreeMap<String, String> = BTreeMap::new();
-    for specifier in packages {
+    for (specifier, importer) in packages {
         let builtin = specifier.strip_prefix("node:").unwrap_or(specifier);
         let root = builtin.split('/').next().unwrap_or(builtin);
         if PURE_NODE_BUILTINS.contains(&root) {
@@ -439,7 +583,7 @@ fn package_manifest(
         }
         if specifier.starts_with("node:") || NODE_BUILTINS.contains(&root) {
             incompleteness.push(format!(
-                "Node built-in {specifier:?} may read unbound inputs; the input set is unprovably complete"
+                "Node built-in {specifier:?} imported by {importer} may read unbound inputs; the input set is unprovably complete"
             ));
             continue;
         }
@@ -455,7 +599,7 @@ fn package_manifest(
             });
         if !valid {
             incompleteness.push(format!(
-                "package {specifier:?} is not a resolvable package name; the input set is unprovably complete"
+                "package {specifier:?} imported by {importer} is not a resolvable package name; the input set is unprovably complete"
             ));
             continue;
         }
@@ -730,6 +874,7 @@ pub fn compute(
     project_root: &Path,
     platform_dir: &str,
 ) -> Result<NativeFingerprint, Failure> {
+    let started = runner.monotonic_ms();
     let Ok(project_rel_path) = project_root.strip_prefix(repo_root) else {
         return Err(Failure::new(
             "plan",
@@ -797,8 +942,9 @@ pub fn compute(
         }
     }
     let mut incompleteness = Vec::new();
+    let list_ms = runner.monotonic_ms().saturating_sub(started);
     let mut dep_manifest: Vec<(String, String)> = Vec::new();
-    let mut packages: BTreeSet<String> = BTreeSet::new();
+    let mut packages: BTreeMap<String, String> = BTreeMap::new();
     let mut evaluated: Option<String> = None;
     let mut evaluated_ci: Option<String> = None;
     let mut expo_fingerprint_ms = None;
@@ -834,6 +980,7 @@ pub fn compute(
         }
     }
     // Failed dynamic-config evaluation already forbids reuse; static Expo fallback still binds Xcode.
+    let toolchain_started = runner.monotonic_ms();
     let ios_compiler = (platform_dir == "ios"
         && (dynamic_config.is_none() || expo_unavailable.is_none()))
     .then(|| crate::ios_toolchain::CompilerIdentity::collect(runner));
@@ -849,6 +996,8 @@ pub fn compute(
             "toolchain identity unavailable ({reason}); reuse across an unknown Xcode is unprovable"
         ));
     }
+    let toolchain_ms = runner.monotonic_ms().saturating_sub(toolchain_started);
+    let hash_started = runner.monotonic_ms();
     if inputs.contains("app.json") {
         match std::fs::read_to_string(project_root.join("app.json")) {
             Ok(app_json) => {
@@ -981,6 +1130,7 @@ pub fn compute(
             _ => rnfp,
         },
     };
+    let finished = runner.monotonic_ms();
     Ok(NativeFingerprint {
         value,
         file_count,
@@ -988,7 +1138,13 @@ pub fn compute(
         complete: incompleteness.is_empty(),
         incompleteness,
         parts,
-        expo_fingerprint_ms,
+        timings: FingerprintTimings {
+            total_ms: finished.saturating_sub(started),
+            list_ms,
+            expo_ms: expo_fingerprint_ms,
+            toolchain_ms,
+            hash_ms: finished.saturating_sub(hash_started),
+        },
         expo_unavailable,
         ios_compiler,
     })
@@ -1224,13 +1380,340 @@ mod tests {
             const z = await import('./z.json');
             import pkg from 'expo-build-properties';
         "#;
-        let specs = import_specifiers(source);
+        let specs = masked(source).0;
         assert!(specs.unparseable.is_empty(), "{specs:?}");
         let specs = specs.found;
         assert!(specs.contains(&"./helper".to_string()));
         assert!(specs.contains(&"../lib/y".to_string()));
         assert!(specs.contains(&"./z.json".to_string()));
         assert!(specs.contains(&"expo-build-properties".to_string()));
+    }
+
+    fn specs(found: &[&str], unparseable: &[&str]) -> Specifiers {
+        Specifiers {
+            found: found.iter().map(|s| s.to_string()).collect(),
+            unparseable: unparseable.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    // The scan before the mask: every byte is code.
+    fn unmasked(source: &str) -> (Specifiers, bool) {
+        let code = vec![true; source.len()];
+        (scan_imports(source, &code), uses_process(source, &code))
+    }
+
+    fn masked(source: &str) -> (Specifiers, bool) {
+        let code = code_mask(source);
+        (scan_imports(source, &code), uses_process(source, &code))
+    }
+
+    const RED_BOX_PLUGIN: &str =
+        include_str!("../tests/fixtures/test-app-90a8b0fd/withIosNativeRedBox.ts.txt");
+
+    #[test]
+    fn s1_objective_c_imports_in_a_template_are_not_import_sites() {
+        assert_eq!(
+            masked(RED_BOX_PLUGIN),
+            (specs(&["expo/config-plugins"], &[]), false)
+        );
+    }
+
+    const PROSE: &[&str] = &[
+        "const a = 'require import process';",
+        "const a = \"require import process\";",
+        "// require import process\nmodule.exports = 1;",
+        "/* require import process */ module.exports = 1;",
+        "const a = `require import process`;",
+        "// import x from 'pkg'\nmodule.exports = 1;",
+    ];
+
+    #[test]
+    fn s2_words_in_strings_comments_and_template_text_are_not_sites() {
+        for source in PROSE {
+            assert_eq!(masked(source), (specs(&[], &[]), false), "{source:?}");
+        }
+    }
+
+    const PLACEHOLDERS: &[(&str, &[&str], &[&str])] = &[
+        ("`a ${require('./x')} b`", &["./x"], &[]),
+        ("`${require(name)}`", &[], &["require(…) at line 1"]),
+        (
+            "`${ `in ${'}'} t` + '}' /* } */ } after ${require('./y')}`\nrequire('./z');",
+            &["./y", "./z"],
+            &[],
+        ),
+        ("`${ {a: 1}.a // }\n } ${require('./y')}`", &["./y"], &[]),
+    ];
+
+    #[test]
+    fn s3_template_placeholders_are_code() {
+        for (source, found, unparseable) in PLACEHOLDERS {
+            assert_eq!(masked(source).0, specs(found, unparseable), "{source:?}");
+        }
+    }
+
+    const COMPUTED: &[&str] = &[
+        "globalThis['process'].env.X;",
+        "module[\"require\"]('./y');",
+        "x['import'];",
+        "globalThis[`process`].env.X;",
+        "globalThis['process '.trim()].env.X;",
+        "globalThis[`${''}process`].env.X;",
+        "Reflect.get(globalThis, 'process').env.X;",
+        "Reflect.get(globalThis, `process`).env.X;",
+    ];
+
+    #[test]
+    fn s4_computed_access_stays_flagged_as_today() {
+        for source in COMPUTED {
+            let today = unmasked(source);
+            assert!(today.1 || !today.0.unparseable.is_empty(), "{source:?}");
+            assert_eq!(masked(source), today, "{source:?}");
+        }
+    }
+
+    #[test]
+    fn bracket_contained_prose_keeps_import_and_process_findings() {
+        let source = "const notes = ['require import process']; module.exports = c => c;";
+        let result = masked(source);
+        assert_eq!(result, unmasked(source));
+        assert!(!result.0.unparseable.is_empty());
+        assert!(result.1);
+    }
+
+    const PROCESS: &[(&str, bool)] = &[
+        ("// process\nmodule.exports = 1;", false),
+        ("const a = 'reads process here';", false),
+        ("const a = `reads process here`;", false),
+        ("module.exports = process.env.X;", true),
+        ("module.exports = `${process.env.X}`;", true),
+    ];
+
+    #[test]
+    fn s5_process_counts_only_in_code() {
+        for (source, uses) in PROCESS {
+            assert_eq!(masked(source).1, *uses, "{source:?}");
+        }
+    }
+
+    // Each source holds a construct the walk cannot place for certain, then a
+    // real `require('./x')` that a wrong guess would hide.
+    const DOUBT: &[&str] = &[
+        "const r = /'/; require('./x');",
+        "const v = <div>don't {require('./x')}</div>;",
+        "const a = 'x\ny'; require('./x');",
+        "`abc require('./x')",
+        "/* abc require('./x')",
+        "\"abc require('./x')",
+        "0 + /'/; require('./x'); 0 + /'/;",
+        "0 - /'/; require('./x'); 0 + /'/;",
+        "0 * /'/; require('./x'); 0 + /'/;",
+        "0 % /'/; require('./x'); 0 + /'/;",
+        "0 < /'/; require('./x'); 0 + /'/;",
+        "0 > /'/; require('./x'); 0 + /'/;",
+        "0 ^ /'/; require('./x'); 0 + /'/;",
+        "~ /'/; require('./x'); 0 + /'/;",
+        "typeof /'/; require('./x'); 0 + /'/;",
+        "void /'/; require('./x'); 0 + /'/;",
+        "delete /'/; require('./x'); 0 + /'/;",
+        "switch(0){case /'/:break;} require('./x'); 0 + /'/;",
+        "function f(){throw /'/;} require('./x'); 0 + /'/;",
+        "function* f(){yield /'/;} require('./x'); 0 + /'/;",
+        "async function f(){await /'/;} require('./x'); 0 + /'/;",
+        "0 in /'/; require('./x'); 0 + /'/;",
+        "for(const x of /'/.source){} require('./x'); 0 + /'/;",
+        "function f(){0 instanceof /'/;} require('./x'); 0 + /'/;",
+        "if(false){}else /'/; require('./x'); 0 + /'/;",
+        "do /'/;while(false); require('./x'); 0 + /'/;",
+        "export default /'/; require('./x'); 0 + /'/;",
+        "if(false) /'/; require('./x'); 0 + /'/;",
+        "while(false) /'/; require('./x'); 0 + /'/;",
+        "for(;false;) /'/; require('./x'); 0 + /'/;",
+        "const v=()=> <div>'{require('./x')}'</div>;",
+        "const v=<_X>'{require('./x')}'</_X>;",
+        "const v=<$x>'{require('./x')}'</$x>;",
+        "const v=< div>'{require('./x')}'</ div>;",
+        "const a=<{}> /'/; require('./x'); 0 + /'/;",
+        "#!node `\nrequire('./x');\n// `",
+        "<!-- `\nrequire('./x');\n// `",
+        "x\n--> `\nrequire('./x');\n// `",
+        "//x\u{2028}require('./x')",
+        "//x\u{2029}require('./x')",
+        "// x\rrequire('./x')",
+        "const a = 'x\ry'; require('./x');",
+        "const a = 'x\r\ny'; require('./x');",
+        "\u{a0}/'/; require('./x'); 0 + /'/;",
+        "\u{feff}/'/; require('./x'); 0 + /'/;",
+    ];
+
+    #[test]
+    fn s6_doubt_keeps_todays_result_exactly() {
+        for source in DOUBT {
+            assert_eq!(not_code_walk(source), None, "{source:?}");
+            assert_eq!(masked(source), unmasked(source), "{source:?}");
+            assert_eq!(masked(source).0, specs(&["./x"], &[]), "{source:?}");
+        }
+    }
+
+    #[test]
+    fn s7_code_site_line_numbers_are_unchanged() {
+        let source = "// require\n/* import\n process */\nconst s = 'require';\nconst t = `import`;\nrequire(name);\n";
+        assert_eq!(
+            masked(source).0,
+            specs(
+                &[],
+                &[
+                    "require at line 4",
+                    "require(…) at line 6",
+                    "import at line 5"
+                ]
+            )
+        );
+        assert_eq!(unmasked(source).0.unparseable[2], "require(…) at line 6");
+    }
+
+    const ESCAPES: &[(&str, &[&str])] = &[
+        (r"const a = 'it\'s require'; require('./x');", &["./x"]),
+        (
+            r"const a = `a \` import \${import} b`; require('./y');",
+            &["./y"],
+        ),
+        ("const a = 'x \\\nimport y'; require('./z');", &["./z"]),
+        ("const a = 'x \\\r\nimport y'; require('./z');", &["./z"]),
+        (r"const a = 'x\\'; require('./w');", &["./w"]),
+    ];
+
+    #[test]
+    fn s9_strings_and_templates_end_where_javascript_ends_them() {
+        for (source, found) in ESCAPES {
+            assert_eq!(masked(source), (specs(found, &[]), false), "{source:?}");
+        }
+    }
+
+    // Every tracked JS/TS file, the pinned Test App plugins and the rows above.
+    // The masked scan may report nothing the unmasked scan did not, and every
+    // byte the walk calls not-code must be a comment, string content or
+    // template text per the TypeScript parser.
+    #[test]
+    fn s8_mask_only_drops_findings_typescript_reads_as_not_code() {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let repo = manifest.join("../..");
+        let listed = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["ls-files", "-z", "--"])
+            .args([
+                "*.js", "*.mjs", "*.cjs", "*.jsx", "*.ts", "*.mts", "*.cts", "*.tsx",
+            ])
+            .output()
+            .unwrap();
+        assert!(listed.status.success());
+        let mut corpus: Vec<(String, String)> = String::from_utf8(listed.stdout)
+            .unwrap()
+            .split('\0')
+            .filter(|rel| !rel.is_empty())
+            // A file that is not UTF-8 is never scanned: reading it already refuses.
+            .filter_map(|rel| {
+                Some((
+                    rel.to_string(),
+                    std::fs::read_to_string(repo.join(rel)).ok()?,
+                ))
+            })
+            .collect();
+        let repo_files = corpus.len();
+        assert!(repo_files > 500, "{repo_files} repository files");
+        let fixtures = manifest.join("tests/fixtures/test-app-90a8b0fd");
+        for entry in std::fs::read_dir(&fixtures).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_str().unwrap();
+            let name = format!("test-app/{}", name.strip_suffix(".txt").unwrap());
+            corpus.push((name, std::fs::read_to_string(&path).unwrap()));
+        }
+        let rows = PROSE
+            .iter()
+            .chain(COMPUTED)
+            .chain(DOUBT)
+            .copied()
+            .chain(PLACEHOLDERS.iter().map(|row| row.0))
+            .chain(PROCESS.iter().map(|row| row.0))
+            .chain(ESCAPES.iter().map(|row| row.0))
+            .chain([RED_BOX_PLUGIN]);
+        corpus.extend(
+            rows.enumerate()
+                .map(|(i, s)| (format!("row-{i}.ts"), s.to_string())),
+        );
+
+        let dir = std::env::temp_dir().join(format!("qaren-fp-oracle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut list = String::new();
+        for (i, (name, text)) in corpus.iter().enumerate() {
+            let ext = name.rsplit_once('.').unwrap().1;
+            let path = dir.join(format!("{i}.{ext}"));
+            std::fs::write(&path, text).unwrap();
+            list.push_str(&format!("{}\n", path.display()));
+        }
+        std::fs::write(dir.join("list"), list).unwrap();
+        let oracle = std::process::Command::new("node")
+            .arg(manifest.join("tests/fixtures/not-code-oracle.mts"))
+            .arg(dir.join("list"))
+            .output()
+            .expect("node runs the TypeScript oracle");
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(
+            oracle.status.success(),
+            "{}",
+            String::from_utf8_lossy(&oracle.stderr)
+        );
+        let verdicts: Vec<serde_json::Value> = serde_json::from_slice(&oracle.stdout).unwrap();
+        assert_eq!(verdicts.len(), corpus.len());
+
+        let (mut fallback, mut dropped, mut violations) = (0, 0, Vec::new());
+        for (i, ((name, text), verdict)) in corpus.iter().zip(&verdicts).enumerate() {
+            let Some(code) = not_code_walk(text) else {
+                fallback += usize::from(i < repo_files);
+                continue;
+            };
+            let mut allowed = vec![false; text.len()];
+            for range in verdict["ranges"].as_array().unwrap() {
+                let (start, end) = (range[0].as_u64().unwrap(), range[1].as_u64().unwrap());
+                allowed[start as usize..end as usize].fill(true);
+            }
+            if let Some(at) = (0..text.len()).find(|&at| !code[at] && !allowed[at]) {
+                let line = text[..at].matches('\n').count() + 1;
+                violations.push(format!(
+                    "{name}: byte {at} (line {line}) masked, but TypeScript reads it as code (parsed: {})",
+                    verdict["parsed"]
+                ));
+            }
+            let (old, old_process) = unmasked(text);
+            let (new, new_process) = (scan_imports(text, &code), uses_process(text, &code));
+            let mut gone = old.found.clone();
+            for found in &new.found {
+                match gone.iter().position(|o| o == found) {
+                    Some(at) => drop(gone.remove(at)),
+                    None => violations.push(format!("{name}: new finding {found:?}")),
+                }
+            }
+            let mut gone_sites = old.unparseable.clone();
+            for site in &new.unparseable {
+                match gone_sites.iter().position(|o| o == site) {
+                    Some(at) => drop(gone_sites.remove(at)),
+                    None => violations.push(format!("{name}: new site {site:?}")),
+                }
+            }
+            if new_process && !old_process {
+                violations.push(format!("{name}: new process use"));
+            }
+            let gone_process = (old_process && !new_process).then_some("process use".to_string());
+            for finding in gone.into_iter().chain(gone_sites).chain(gone_process) {
+                println!("dropped in {name}: {finding}");
+                dropped += 1;
+            }
+        }
+        println!("{fallback} of {repo_files} repository files fall back to whole-file-is-code");
+        assert!(violations.is_empty(), "{violations:#?}");
+        assert!(dropped > 0, "the corpus must exercise the mask");
     }
 
     #[test]
@@ -1254,7 +1737,7 @@ mod tests {
             &dir,
             vec!["plugins/withThing.ts".to_string()],
             &mut inputs,
-            &mut BTreeSet::new(),
+            &mut BTreeMap::new(),
             &mut incompleteness,
         );
         assert!(inputs.contains("lib/helper.ts"));

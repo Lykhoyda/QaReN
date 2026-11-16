@@ -22,6 +22,51 @@ const end = (stage: TimingEvent['stage'], ms: number, at = 0): TimingEvent => ({
   ms,
 });
 
+test('Tap send facts sum across dispatches and leave the following Wait row unchanged', () => {
+  const timer = createRowTimer(0);
+  const send = {
+    keyboardGuardMs: 0,
+    liveCheckMs: 12.5,
+    gestureMs: 40,
+    runnerMs: 80,
+    settleProbes: 2,
+  };
+  timer.observe({ ...end('settle', 200), send });
+  assert.deepEqual(timer.take(300, 0).send, send);
+  assert.equal(timer.take(400, 0).send, undefined);
+  timer.observe({ ...end('settle', 200), send });
+  timer.observe({ ...end('settle', 200), send });
+  assert.deepEqual(timer.take(1000, 0).send, {
+    keyboardGuardMs: 0,
+    liveCheckMs: 25,
+    gestureMs: 80,
+    runnerMs: 160,
+    settleProbes: 4,
+  });
+});
+
+test('the walker forwards send facts from Tap to its row without changing its action', async () => {
+  const f = walker(
+    [screen([element('@save', 'Save')])],
+    scriptedJudge(() => assert.fail('literal')),
+  );
+  f.deps.timing = () => {};
+  const send = {
+    keyboardGuardMs: 1,
+    liveCheckMs: 12,
+    gestureMs: 40,
+    runnerMs: 80,
+    settleProbes: 2,
+  };
+  f.deps.press = async (_ref, context) => {
+    context.authorize();
+    return { ok: true, proven: true, send, settle: { method: 'snapshot-eq', ms: 200, probes: 2 } };
+  };
+  const ledger = await runPlan(parsePlan('1. Tap "Save"').blocks!, f.deps);
+  assert.equal(ledger.verdict, 'PASS');
+  assert.deepEqual(ledger.steps[0].timing?.send, send);
+});
+
 const row = (line: number, extra: Partial<LedgerRow> = {}): LedgerRow => ({
   block: 'qa',
   line,

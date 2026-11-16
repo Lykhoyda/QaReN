@@ -1,3 +1,4 @@
+import { DISPATCH_ACTIONS, DISPATCH_RESULT_CODES } from './diagnostics.js';
 import {
   hitProbeNote,
   OverlayHits,
@@ -45,7 +46,11 @@ import {
   isNativeInput,
   describe,
   reactOnlyFactsOf,
+  modalCoverDiagnostic,
+  ancestorsOf,
+  isScrollContainer,
 } from './screen.js';
+import { clip } from './native-presence.js';
 import {
   type Resolution,
   type CentreCoverageDiagnostic,
@@ -62,6 +67,7 @@ import {
   clearanceScroll,
   keyboardClearance,
   keyboardFallbackTarget,
+  fillHostInside,
   bindFillIdentity,
   bindDispatchIdentity,
   stepTarget,
@@ -71,6 +77,7 @@ import {
   scrollUntilEvidence,
   scrollTargetCovered,
   scrollUntilContainer,
+  foreignOnBand,
   scrollUntilDirection,
   targetEvidence,
   aggregateTargetVisible,
@@ -155,6 +162,13 @@ import {
   type TargetMissDiagnostic,
 } from './target-miss.js';
 import {
+  buttonId,
+  hiddenFromAccessibility,
+  hiddenTextButton,
+  hiddenTextClause,
+  type HiddenText,
+} from './hidden-text.js';
+import {
   type MediaLatch,
   concealsScreen,
   INPUT_SCREEN_TEXT_WITHHELD,
@@ -212,7 +226,8 @@ import {
 import type { InterruptionReceipt } from './ledger.js';
 
 export interface ActResult {
-  settle?: Pick<TimingEvent, 'method' | 'ms'>;
+  settle?: Pick<TimingEvent, 'method' | 'ms' | 'probes'>;
+  send?: TimingEvent['send'];
   executed?: boolean;
   ok: boolean;
   proven: boolean;
@@ -263,6 +278,7 @@ export interface WalkerDeps {
   captureScreen(options?: {
     observation?: number;
     platformPresence?: boolean;
+    typography?: boolean;
     timing?: TimingObserver;
     // A wait's remaining time: the capture rejects with CaptureDeadline once it is spent.
     budgetMs?: number;
@@ -271,7 +287,7 @@ export interface WalkerDeps {
   press(
     ref: string,
     context: QaDispatchContext,
-    options?: { requireLiveHit: true },
+    options?: { requireLiveHit?: true; deferKeyboardDismissal?: true },
   ): Promise<ActResult>;
   fill(
     ref: string,
@@ -293,6 +309,13 @@ export interface WalkerDeps {
     onPrivateInput?: () => void,
     alwaysRetype?: boolean,
   ): Promise<ActResult>;
+  // iOS only: two exact enabled React reads before a focus tap; no dispatch context.
+  fillAlreadySet?(
+    testID: string,
+    text: string,
+    privateValue: boolean,
+    onPrivateInput?: () => void,
+  ): Promise<boolean>;
   // iOS only: positive React proof that the input with this testID is focused.
   reactFocused?(testID: string): Promise<boolean>;
   // iOS only: hides a visible keyboard, native tier then JS tier; none when neither proved it hidden.
@@ -362,6 +385,10 @@ export interface WalkerTimingDiagnostic {
   acquisitionMs: number;
   observationAgeMs: number;
   authorizations?: number;
+  action?: (typeof DISPATCH_ACTIONS)[number];
+  ok?: boolean;
+  nativeMutation?: 'none' | 'observed' | 'possible';
+  resultCode?: (typeof DISPATCH_RESULT_CODES)[number];
   observation?: number;
   visibilityBlocker?: VisibilityBlockerDiagnostic;
   refusalDiagnostic?: QaDispatchDiagnostic;
@@ -392,6 +419,16 @@ const ITEM_DEADLINE_EXCEEDED = 'VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED';
 const KEYBOARD_DISMISSED = '; the keyboard was dismissed before this tap';
 const OFF_SCREEN_AFTER_SCROLL =
   'stayed off screen after one scroll: its centre is past the visible area or under the keyboard';
+const REACT_ONLY_UNSEEN = 'is known to React but has no element on the visible screen';
+// Why the one clearance drag after a covered iOS refusal was withheld.
+type WithheldDrag = 'no-scroll-area' | 'no-free-part' | 'read-late';
+const WITHHELD_DRAG: Record<WithheldDrag, string> = {
+  'no-scroll-area': 'it is in no scroll area',
+  'no-free-part': 'no part of its scroll area is free of what lies in front or behind',
+  'read-late': 'the read that would name what covers it was late or incomplete',
+};
+const stayedCovered = (phrase: string, why: WithheldDrag): string =>
+  `"${phrase}" stayed covered; ${WITHHELD_DRAG[why]}, so nothing was scrolled`;
 const INFERRED_FILL_UNAVAILABLE =
   'has no proven hit point under the inferred overlay; no clearance scroll was attempted';
 
@@ -829,6 +866,12 @@ async function walkBlockScoped(
   const captured = new WeakMap<Screen, { at: number; id: number }>();
   // The newest observation that passed admission, recovery's captures included.
   let newest: Screen | undefined;
+  // The newest admitted observation of the current line only; `newest` outlives the line.
+  let lineRead: Screen | undefined;
+  // A quoted iOS Tap whose text is hidden from accessibility may press its proven button once per
+  // line: `element` authorizes presses until the runner executes one, then it is gone for good.
+  let hiddenTried = false;
+  let hiddenTap: { id: string; element?: Element; act?: ActResult; unbound?: true } | undefined;
   let dispatchedOn = 0;
   let recoveries = 0;
   let metadataOnly = false;
@@ -882,7 +925,7 @@ async function walkBlockScoped(
     step?: Exclude<Item, { kind: 'check' }>,
     assertion = false,
     recovery = false,
-    purpose: 'resolve' | 'provenance' = 'resolve',
+    purpose: 'resolve' | 'provenance' | 'modal' = 'resolve',
     until?: number,
   ): Promise<Observation> => {
     assertActive();
@@ -918,6 +961,8 @@ async function walkBlockScoped(
       presence: Number(platformPresence),
     });
     let admitted = false;
+    // A capture that admission rejects leaves no older read of the line to speak for it.
+    lineRead = undefined;
     try {
       try {
         const deadline = step?.kind === 'wait' ? itemDeadline : undefined;
@@ -932,6 +977,7 @@ async function walkBlockScoped(
             latest = await captureScreen({
               observation: id,
               ...(platformPresence ? { platformPresence: true } : {}),
+              ...(purpose === 'modal' ? { typography: true } : {}),
               ...(timingObserver ? { timing: timingObserver } : {}),
               ...(until === undefined ? {} : { budgetMs: Math.max(0, until - readStartedAt) }),
             });
@@ -1013,6 +1059,7 @@ async function walkBlockScoped(
         });
       admitted = true;
       newest = latest;
+      lineRead = latest;
       metadataOnly = false;
       emitCaptureDiagnostics(latest);
       const observation = { screen: latest, timing, id, platformPresence };
@@ -1162,6 +1209,7 @@ async function walkBlockScoped(
     visibilityBlocker?: VisibilityBlockerDiagnostic,
     refusalDiagnostic?: QaDispatchDiagnostic,
     clearanceDiagnostic?: WalkerTimingDiagnostic['clearanceDiagnostic'],
+    dispatch?: Pick<WalkerTimingDiagnostic, 'action' | 'ok' | 'nativeMutation' | 'resultCode'>,
   ): void => {
     try {
       const at = deps.now();
@@ -1177,6 +1225,7 @@ async function walkBlockScoped(
         ...(visibilityBlocker ? { visibilityBlocker } : {}),
         ...(refusalDiagnostic ? { refusalDiagnostic } : {}),
         ...(clearanceDiagnostic ? { clearanceDiagnostic } : {}),
+        ...dispatch,
       });
     } catch (error) {
       if (isAbort(error)) throw error;
@@ -1452,9 +1501,10 @@ async function walkBlockScoped(
   };
   let dispatchStarted: number | undefined;
   const observeRowSettle = (result: ActResult): void => {
-    if (deps.rowSettle && result.settle)
+    if (deps.rowSettle && (result.settle || result.send))
       observeTiming(deps.rowSettle, {
         ...result.settle,
+        ...(result.send ? { send: result.send } : {}),
         stage: 'settle',
         edge: 'end',
         outcome: 'ok',
@@ -1464,6 +1514,7 @@ async function walkBlockScoped(
   const mutate = async (
     item: Item,
     observation: Observation,
+    kind: (typeof DISPATCH_ACTIONS)[number],
     send: (context: QaDispatchContext) => Promise<ActResult>,
     deadline = Infinity,
     owner: 'step' | 'recovery' = 'step',
@@ -1477,7 +1528,17 @@ async function walkBlockScoped(
         super.authorize();
         mutationStarted = true;
         if (owner === 'step') stepDispatched = true;
-        diagnostic(item, observation, 'dispatch', 'ACCEPTED', this.authorizations);
+        diagnostic(
+          item,
+          observation,
+          'dispatch',
+          'ACCEPTED',
+          this.authorizations,
+          undefined,
+          undefined,
+          undefined,
+          { action: kind },
+        );
         if (deps.timing)
           metric('authorization', observation, {
             count: this.authorizations,
@@ -1496,7 +1557,27 @@ async function walkBlockScoped(
       observeRowSettle(result);
       if (result.entryMismatch) fillMismatch = result.entryMismatch;
       context.assertComplete();
-      diagnostic(item, observation, 'dispatch', 'COMPLETED', context.authorizations);
+      const resultCode = result.error?.split(':', 1)[0];
+      diagnostic(
+        item,
+        observation,
+        'dispatch',
+        'COMPLETED',
+        context.authorizations,
+        undefined,
+        undefined,
+        undefined,
+        {
+          action: kind,
+          ok: result.ok,
+          ...(['none', 'observed', 'possible'].includes(result.mutation ?? '')
+            ? { nativeMutation: result.mutation }
+            : {}),
+          ...(!result.ok
+            ? { resultCode: DISPATCH_RESULT_CODES.find((code) => code === resultCode) ?? 'OTHER' }
+            : {}),
+        },
+      );
       completed = true;
       return result;
     } catch (error) {
@@ -1518,6 +1599,8 @@ async function walkBlockScoped(
           context.authorizations,
           undefined,
           context.refusalDiagnostic,
+          undefined,
+          { action: kind },
         );
         if (refusal.code === 'EVIDENCE_EXPIRED' && context.authorizations === 0)
           throw new EvidenceExpired(itemExpired);
@@ -1585,14 +1668,17 @@ async function walkBlockScoped(
   };
   // A covered iOS refusal whose ordinary capture could not tie React hosts to native nodes takes the
   // one presence recapture; whatever it fails to prove stays unproven and never adds a refusal.
-  const proveCover = async (item: Exclude<Item, { kind: 'check' }>): Promise<void> => {
+  const proveCover = async (
+    item: Exclude<Item, { kind: 'check' }>,
+    until?: number,
+  ): Promise<Observation | undefined> => {
     const target = coverTargets.get(item.line);
     coverTargets.delete(item.line);
     if (deps.platform !== 'ios' || !target || coverGaps.get(item.line) !== 'no-native-presence')
       return;
     let proven: Observation | undefined;
     try {
-      proven = await presenceRecapture(item);
+      proven = await presenceRecapture(item, until);
     } catch (error) {
       if (isAbort(error)) throw error;
     }
@@ -1607,6 +1693,38 @@ async function walkBlockScoped(
         ? coverOwner(matches[0], proven.screen)
         : { gap: 'target-not-recaptured' },
     );
+    return proven;
+  };
+  // After a proven cover check of a covered iOS refusal: the band of its one clearance drag, or why no
+  // drag may be sent. Only a read proving nothing else takes the touch keeps today's band.
+  const clearanceAfterProof = (
+    item: Exclude<Item, { kind: 'check' }> & { kind: 'press' | 'fill' },
+    element: Element,
+    screen: Screen,
+  ): { band: NativeNode['rect']; direction: 'up' | 'down' } | WithheldDrag => {
+    const cover = targetRows.get(item.line)?.coveredBy;
+    const gap = coverGaps.get(item.line);
+    if (!cover && (gap === 'none' || gap === 'reaches-target'))
+      return { band: clearanceBand(element, screen), direction: clearanceScroll(element, screen) };
+    if (gap === 'presence-recapture-incomplete') return 'read-late';
+    const container = ancestorsOf(element).find(isScrollContainer);
+    if (!container || scrollUntilContainer(item.target, screen) !== container)
+      return 'no-scroll-area';
+    const band = bandFor(item, item.target, screen);
+    const shared = band && cover && clip(band, cover.frame);
+    const onCover = !!shared && shared.width > 0 && shared.height > 0;
+    const frame = elementFrame(element);
+    return !band ||
+      band.width <= 0 ||
+      band.height <= 0 ||
+      onCover ||
+      foreignOnBand(container, band, screen)
+      ? 'no-free-part'
+      : {
+          band,
+          direction:
+            !frame || frame.y + frame.height / 2 >= band.y + band.height / 2 ? 'down' : 'up',
+        };
   };
   // A covered refusal that emits no other decision diagnostic still says why its cover was or was not
   // named; a line whose cover was never looked up emits nothing.
@@ -1789,6 +1907,22 @@ async function walkBlockScoped(
           const detail = `; placeholder pairing was unavailable because React coverage on this screen is ${pairingGap}; target the field by test id`;
           reason = typeof reason === 'string' ? reason + detail : [...segments(reason), detail];
         }
+        // Only this line's newest read speaks for its target: an earlier line's read never does.
+        const hidden =
+          deps.platform === 'ios' &&
+          (item.kind === 'press' || item.kind === 'wait') &&
+          target.quoted !== undefined &&
+          lineRead &&
+          (lineRead === screen
+            ? diagnostic.reason
+            : targetMissDiagnostic(target, lineRead, item.line, false, privacy, item.kind)
+                .reason) === 'absent'
+            ? hiddenFromAccessibility(target, lineRead, 'exact')
+            : undefined;
+        if (hidden) {
+          const detail = hiddenTextClause(hidden, target.quoted!, privacy);
+          reason = typeof reason === 'string' ? reason + detail : [...segments(reason), detail];
+        }
         const seen = captured.get(last);
         if (seen && targetCode) {
           const lastReason =
@@ -1829,13 +1963,34 @@ async function walkBlockScoped(
                       .reverse()
                       .find((earlier) => earlier.kind === 'wait')?.line,
                   )
-                : missSuggestion(subreason, target, last, now, item.line, item.kind),
+                : missSuggestion(
+                    subreason,
+                    target,
+                    last,
+                    now,
+                    item.line,
+                    item.kind,
+                    deps.platform === 'ios',
+                  ),
             subreason,
           };
         }
       } catch {
         // Diagnostics cannot change the failed step's outcome.
       }
+    }
+    // The hidden-text fallback's own press: a tap is named only when the runner executed it.
+    const hiddenAct = item.kind === 'press' ? hiddenTap?.act : undefined;
+    if (hiddenAct && hiddenTap) {
+      const id = buttonId(hiddenTap.id, privacy);
+      const detail =
+        hiddenAct.executed !== false && hiddenAct.mutation !== 'none'
+          ? targetCode === 'TARGET_NOT_FOUND'
+            ? `; its button ${id} was tapped once through that text and the tap showed no change`
+            : ''
+          : `; its button ${id} was not tapped: the runner refused the press: ${hiddenAct.error ?? 'no reason given'}`;
+      if (detail)
+        reason = typeof reason === 'string' ? reason + detail : [...segments(reason), detail];
     }
     if (rejectedCheck) {
       try {
@@ -2262,6 +2417,7 @@ async function walkBlockScoped(
       const result = await mutate(
         item,
         fresh,
+        'fill',
         (context) => {
           fillHandlerAttempted = true;
           return deps.setByHandler!(testID, fillText(item), context, secretFill(item), () =>
@@ -2296,13 +2452,16 @@ async function walkBlockScoped(
       'UNVERIFIED_FILL: set through the change handler; its final value could not be validated';
     return qualifier ? `${unverified}; ${qualifier}` : unverified;
   };
-  // Best effort: the field is not an observable native input, so only the tap and the keyboard prove anything.
+  // Without an observable native input, require React ancestry/value proof or focus and keyboard evidence.
   const keyboardFallback = async (
     item: Item & { kind: 'fill' },
     attempt: number,
     before: Observation,
     target: { element: Element; oracleTestID: string },
     scrolled = false,
+    // Why a clearance drag was withheld: no drag is sent, and a refusal says this instead.
+    withheld?: string,
+    cover?: () => Promise<string>,
   ): Promise<
     | WalkOutcome
     | {
@@ -2316,20 +2475,29 @@ async function walkBlockScoped(
   > => {
     const quoted = item.target.quoted!;
     secretFill(item, target.element);
-    const nothingTyped = (reason: string, screen: Screen, targetCode?: string): WalkOutcome =>
-      failed(
+    let tapped = false;
+    const refuse = async (
+      reason: string,
+      screen: Screen,
+      targetCode?: string,
+      nothingTyped = true,
+    ): Promise<WalkOutcome> => {
+      if (withheld && !tapped)
+        reason = `${reason ? `${reason}; ` : ''}${withheld}${(await cover?.()) ?? ''}`;
+      return failed(
         item,
         attempt,
-        `${reason}; nothing was typed`,
+        nothingTyped ? `${reason}; nothing was typed` : reason,
         screen,
         undefined,
         undefined,
         false,
         targetCode,
       );
+    };
     const proofMode = before.screen.keyboardVisible === true && deps.reactFocused !== undefined;
     if (before.screen.keyboardVisible !== false && !proofMode)
-      return nothingTyped(
+      return refuse(
         before.screen.keyboardVisible
           ? `the keyboard is already up before tapping "${quoted}"`
           : `the keyboard state before tapping "${quoted}" is unknown`,
@@ -2347,26 +2515,67 @@ async function walkBlockScoped(
     const overlay =
       deps.platform === 'ios' && inferredOverlayCoverage(target.element, before.screen);
     if (overlay && (await probeOverlay(item, before, target.element)) !== 'hittable')
-      return nothingTyped(
+      return refuse(
         `"${quoted}" ${INFERRED_FILL_UNAVAILABLE}${cutterText(overlay)}`,
         before.screen,
         'TARGET_NOT_FOUND',
       );
     if (overlay || !centreCovered(target.element, before.screen))
       try {
-        tap = await mutate(item, before, (context) =>
+        const hosts = before.screen.reactHostEvidence;
+        const inputs = hosts?.hosts.filter(
+          (host) =>
+            host.capabilities.fill &&
+            (host.testID === target.oracleTestID || host.nativeID === target.oracleTestID),
+        );
+        if (
+          !item.alwaysRetype &&
+          deps.fillAlreadySet &&
+          target.oracleTestID === item.target.quoted &&
+          hosts?.complete &&
+          inputs?.length === 1 &&
+          !inputs[0].hidden &&
+          !inputs[0].disabled &&
+          !inputs[0].readOnly &&
+          fillHostInside(before.screen, target.oracleTestID, target.element)
+        ) {
+          let alreadySet = false;
+          try {
+            alreadySet = await deps.fillAlreadySet(
+              target.oracleTestID,
+              fillText(item),
+              secretFill(item, target.element),
+              () => promoteFill(item, target.element.testID ?? target.oracleTestID),
+            );
+          } catch (error) {
+            if (isAbort(error)) throw error;
+          }
+          if (alreadySet) {
+            currentInputs()?.expectEcho(target.element.testID ?? target.oracleTestID, item.input);
+            fillMethod = 'already-set';
+            emit({
+              ...base(item, attempt),
+              ref: target.element.ref,
+              ...stored({ id: target.oracleTestID }),
+              outcome: 'pass',
+            });
+            return 'typed';
+          }
+        }
+        tap = await mutate(item, before, 'press', (context) =>
           overlay
             ? deps.press(target.element.ref, context, { requireLiveHit: true })
             : deps.press(target.element.ref, context),
         );
+        if (tap.ok) tapped = true;
       } catch (error) {
         if (isAbort(error)) throw error;
         if (error instanceof EvidenceExpired)
-          return nothingTyped(`the evidence expired before tapping "${quoted}"`, before.screen);
+          return refuse(`the evidence expired before tapping "${quoted}"`, before.screen);
         throw error;
       }
     if (overlay && tap && !tap.ok)
-      return nothingTyped(
+      return refuse(
         `${tap.error ?? 'LIVE_HIT_UNPROVEN'}${cutterText(overlay)}`,
         before.screen,
         'TARGET_NOT_FOUND',
@@ -2376,14 +2585,16 @@ async function walkBlockScoped(
       (!tap.ok && tap.mutation === 'none' && tap.error?.startsWith('FOCUS_TARGET_OCCLUDED:'))
     ) {
       if (scrolled)
-        return nothingTyped(
-          tap
-            ? `${tap.error}; "${quoted}" stayed off screen after one scroll`
-            : `"${quoted}" stayed off screen after one scroll: its centre is past the visible area or under the keyboard`,
+        return refuse(
+          withheld
+            ? (tap?.error ?? '')
+            : tap
+              ? `${tap.error}; "${quoted}" stayed off screen after one scroll`
+              : `"${quoted}" stayed off screen after one scroll: its centre is past the visible area or under the keyboard`,
           before.screen,
           'TARGET_NOT_FOUND',
         );
-      const scroll = await mutate(item, before, (context) =>
+      const scroll = await mutate(item, before, 'scroll', (context) =>
         deps.scroll(
           clearanceScroll(target.element, before.screen),
           context,
@@ -2399,7 +2610,7 @@ async function walkBlockScoped(
         target.element,
       );
       if (!scroll.ok || !('ref' in rebound))
-        return nothingTyped(
+        return refuse(
           'TARGET_NOT_FOUND: the refused wrapper stayed off screen after one scroll',
           afterScroll.screen,
           'TARGET_NOT_FOUND',
@@ -2413,7 +2624,7 @@ async function walkBlockScoped(
       );
     }
     if (!tap.ok)
-      return nothingTyped(
+      return refuse(
         `${tap.error ?? 'the tap was not dispatched'}; tapping "${quoted}" failed`,
         before.screen,
         tap.ambiguous ? 'TARGET_AMBIGUOUS' : undefined,
@@ -2456,7 +2667,7 @@ async function walkBlockScoped(
         let blurred = false;
         try {
           try {
-            await mutate(item, after, async (context) => {
+            await mutate(item, after, 'blur', async (context) => {
               blurred = await deps.blurFocusedInput!(context);
               return { ok: true, proven: false };
             });
@@ -2467,10 +2678,10 @@ async function walkBlockScoped(
               error instanceof QaDispatchError
             )
               throw error;
-            return nothingTyped(`tapping "${quoted}" raised no keyboard`, after.screen);
+            return refuse(`tapping "${quoted}" raised no keyboard`, after.screen);
           }
           if (!blurred)
-            return nothingTyped(
+            return refuse(
               `tapping "${quoted}" raised no keyboard; the focused field could not be blurred`,
               after.screen,
             );
@@ -2482,7 +2693,7 @@ async function walkBlockScoped(
             target.element,
           );
           if (!('ref' in rebound))
-            return nothingTyped(
+            return refuse(
               'TARGET_NOT_FOUND: the focused field no longer resolves uniquely after blur',
               after.screen,
               'TARGET_NOT_FOUND',
@@ -2490,18 +2701,19 @@ async function walkBlockScoped(
           const retryOverlay =
             deps.platform === 'ios' && inferredOverlayCoverage(rebound.element, after.screen);
           if (retryOverlay && (await probeOverlay(item, after, rebound.element)) !== 'hittable')
-            return nothingTyped(
+            return refuse(
               `"${quoted}" ${INFERRED_FILL_UNAVAILABLE}${cutterText(retryOverlay)}`,
               after.screen,
               'TARGET_NOT_FOUND',
             );
-          const retap = await mutate(item, after, (context) =>
+          const retap = await mutate(item, after, 'press', (context) =>
             retryOverlay
               ? deps.press(rebound.ref, context, { requireLiveHit: true })
               : deps.press(rebound.ref, context),
           );
+          if (retap.ok) tapped = true;
           if (!retap.ok)
-            return nothingTyped(
+            return refuse(
               `${retap.error ?? 'the tap was not dispatched'}; tapping "${quoted}" failed`,
               after.screen,
               retap.ambiguous ? 'TARGET_AMBIGUOUS' : undefined,
@@ -2521,7 +2733,7 @@ async function walkBlockScoped(
     if (binding?.kind === 'strict')
       return { ...binding.strict, observation: after, identity: target.oracleTestID, scrolled };
     if (after.screen.keyboardVisible !== true)
-      return nothingTyped(
+      return refuse(
         refocused
           ? 'focus was reported after the first tap and the keyboard stayed hidden after a blur and a second tap'
           : `tapping "${quoted}" raised no keyboard`,
@@ -2529,20 +2741,16 @@ async function walkBlockScoped(
       );
     const again = binding?.kind === 'fallback' ? binding.fallback : undefined;
     if (!again)
-      return nothingTyped(
-        `the tap on "${quoted}" changed the screen`,
-        after.screen,
-        'TARGET_NOT_FOUND',
-      );
+      return refuse(`the tap on "${quoted}" changed the screen`, after.screen, 'TARGET_NOT_FOUND');
     if (proofMode && !(await focusProven('tap', again.oracleTestID)))
-      return nothingTyped(
+      return refuse(
         `the keyboard was already up and focus on "${quoted}" is not proven`,
         after.screen,
       );
     let entry: ActResult;
     currentInputs()?.expectEcho(again.element.testID ?? again.oracleTestID, item.input);
     try {
-      entry = await mutate(item, after, (context) =>
+      entry = await mutate(item, after, 'type', (context) =>
         deps.typeFocused!(
           again.element.ref,
           fillText(item),
@@ -2557,10 +2765,7 @@ async function walkBlockScoped(
     } catch (error) {
       if (isAbort(error)) throw error;
       if (error instanceof EvidenceExpired)
-        return nothingTyped(
-          `the evidence expired before typing after tapping "${quoted}"`,
-          after.screen,
-        );
+        return refuse(`the evidence expired before typing after tapping "${quoted}"`, after.screen);
       throw error;
     }
     fillMethod = entry.method ?? 'keyboard';
@@ -2572,12 +2777,11 @@ async function walkBlockScoped(
         (screen) => bindFillIdentity(item, screen, again.oracleTestID) !== undefined,
       )) ?? entry;
     if (!entry.ok)
-      return failed(
-        item,
-        attempt,
+      return refuse(
         `${entry.error ?? 'typing was not dispatched'}; typing after tapping "${quoted}" was not retried`,
         after.screen,
         undefined,
+        false,
       );
     await capture(item);
     const reason =
@@ -2623,7 +2827,7 @@ async function walkBlockScoped(
     let entry: ActResult;
     currentInputs()?.expectEcho(quoted, item.input);
     try {
-      entry = await mutate(item, before, (context) =>
+      entry = await mutate(item, before, 'type', (context) =>
         deps.typeFocused!(
           quoted,
           fillText(item),
@@ -2983,6 +3187,7 @@ async function walkBlockScoped(
           return (dialogAct = await mutate(
             item,
             fresh,
+            'dialog',
             (context) => deps.dialog(item.kind === 'dialog' ? item.action : 'dismiss', context),
             Infinity,
             'recovery',
@@ -3255,6 +3460,7 @@ async function walkBlockScoped(
       return await mutate(
         item,
         observation,
+        'press',
         (context) => deps.press(ref, context),
         until,
         'recovery',
@@ -3539,6 +3745,11 @@ async function walkBlockScoped(
     itemStartedAt = budget.startedAt;
     itemDeadline = budget.deadline;
     let pixelBaselineTaken = false;
+    // This allowance survives recovery retries of the item.
+    let itemKeyboardAttempted = false;
+    lineRead = undefined;
+    hiddenTried = false;
+    hiddenTap = undefined;
     let pixelBaseline:
       | { target: NonNullable<ReturnType<typeof pixelTarget>>; crop: PixelCrop }
       | undefined;
@@ -3626,7 +3837,27 @@ async function walkBlockScoped(
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
           }
-          const checkFailure = failed(item, 1, reason, before.screen, shot);
+          let hidden: HiddenText | undefined;
+          try {
+            // A literal check matches screen text by containing it, never an identifier.
+            hidden =
+              deps.platform === 'ios' && item.literal && decision.check === 'fail' && lineRead
+                ? hiddenFromAccessibility(
+                    { quoted: item.text, phrase: item.text, exact: 'text' },
+                    lineRead,
+                    'contains',
+                  )
+                : undefined;
+          } catch {
+            // Diagnostics cannot change the check's outcome.
+          }
+          const checkFailure = failed(
+            item,
+            1,
+            hidden ? reason + hiddenTextClause(hidden, item.text, privacy) : reason,
+            before.screen,
+            shot,
+          );
           return decision.check === 'fail' ? judged(checkFailure, before.screen) : checkFailure;
         }
 
@@ -3760,6 +3991,7 @@ async function walkBlockScoped(
                 act = await mutate(
                   item,
                   observation,
+                  'scroll',
                   (context) =>
                     deps.scroll(
                       view.where === 'below' ? 'down' : 'up',
@@ -4017,6 +4249,7 @@ async function walkBlockScoped(
               act = await mutate(
                 item,
                 observation,
+                'scroll',
                 (context) =>
                   deps.scroll(
                     scrollUntilDirection(item.until!, observation.screen, item.direction),
@@ -4096,11 +4329,14 @@ async function walkBlockScoped(
         let typedUnverified = false;
         let again = false;
         let scrolled = 0;
+        // Set once a clearance drag was withheld; the step then sends no scroll of any origin.
+        let withheldDrag: WithheldDrag | undefined;
         let scrollOrigin: NonNullable<
           WalkerTimingDiagnostic['clearanceDiagnostic']
         >['scrollOrigin'] = null;
         let scrollDirection: 'up' | 'down' | null = null;
-        let refusedIdentity: Element | undefined;
+        // The hidden-text fallback's button is pressed through the refused-identity binding.
+        let refusedIdentity: Element | undefined = hiddenTap?.element;
         let moved: { target: Element; error: string } | undefined;
         // Plain-scroll attempts that dispatched cleanly onto complete, unchanged app captures.
         let stillScrolls = 0;
@@ -4131,6 +4367,8 @@ async function walkBlockScoped(
             : capture(item);
         const maxAttempts = recovered.has(item) || opts.singleAttempt ? 1 : 2;
         for (let attempt = 1; attempt <= maxAttempts && !outcome; attempt += 1) {
+          // An executed fallback press authorizes no further press: the step resolves its own target.
+          if (hiddenTap && !hiddenTap.element) refusedIdentity = undefined;
           interruptionWithheld = undefined;
           currentAttempt = attempt;
           pressAct = undefined;
@@ -4209,6 +4447,42 @@ async function walkBlockScoped(
           let scrollPresenceRead = false;
           // The target that settled after this attempt's keyboard dismissal; the tap goes to it or nowhere.
           let keyboardBound: { target: Element; frame: string; scrolled: number } | undefined;
+          const dismissResolvedTarget = async (target: Element): Promise<boolean> => {
+            itemKeyboardAttempted = true;
+            keyboardAttempted = true;
+            const dismissal: { via: 'native-control' | 'js' | 'none' } = { via: 'none' };
+            await mutate(item, before, 'dismiss-keyboard', async (context) => {
+              dismissal.via = await deps.dismissKeyboard!(context);
+              return { ok: true, proven: false };
+            });
+            const settled = await settledTarget(item, target, { nativeOnly: true });
+            if ('frames' in settled) {
+              outcome = failed(
+                item,
+                attempt,
+                [
+                  'the target (',
+                  {
+                    app: identityText(target),
+                    ...(concealsScreen(latest) ? { withheld: MASK } : {}),
+                  },
+                  `) did not settle across ${settled.frames.length} captures (${settled.frames.join(' | ')}); it was not dispatched; keyboard after dismissal: ${latest.keyboardVisible === true ? 'visible' : latest.keyboardVisible === false ? 'hidden' : 'unknown'}${KEYBOARD_DISMISSED}`,
+                ],
+                latest,
+                await shoot(item),
+              );
+              return false;
+            }
+            before = settled.observation;
+            if (dismissal.via !== 'none' && before.screen.keyboardVisible !== true)
+              keyboardCleared = dismissal.via;
+            deps.note?.(
+              `keyboard-clearance ${JSON.stringify({ line: item.line, via: dismissal.via, hidden: before.screen.keyboardVisible === false })}`,
+            );
+            keyboardBound = { target, frame: settled.frame, scrolled };
+            initial = undefined;
+            return true;
+          };
           let act: ActResult;
           for (;;) {
             try {
@@ -4242,7 +4516,54 @@ async function walkBlockScoped(
                               reason: 'the original input identity no longer resolves uniquely',
                             }
                         : decision.target!;
-                const decided = await probeDuplicates(item, before, prepared);
+                let decided = await probeDuplicates(item, before, prepared);
+                if (
+                  item.kind === 'press' &&
+                  item.target.quoted !== undefined &&
+                  deps.platform === 'ios' &&
+                  deps.dismissKeyboard &&
+                  'refuse' in decided &&
+                  decided.refuse === 'TARGET_NOT_FOUND' &&
+                  decided.missing &&
+                  before.screen.keyboardVisible === true &&
+                  before.screen.front === 'app' &&
+                  !launchWait &&
+                  !itemKeyboardAttempted &&
+                  !keyboardAttempted
+                ) {
+                  before = await enrichLabelProvenance(
+                    await captureOnce(item, false, false, 'modal'),
+                    item,
+                  );
+                  const refreshed = await decide(before, undefined, item);
+                  decided = await probeDuplicates(item, before, refreshed.target!);
+                  const modal = modalCoverDiagnostic(before.screen);
+                  if (
+                    'refuse' in decided &&
+                    decided.refuse === 'TARGET_NOT_FOUND' &&
+                    decided.missing &&
+                    before.screen.keyboardVisible === true &&
+                    before.screen.front === 'app' &&
+                    modal?.refused === 'modal-count' &&
+                    modal.modalCount === 0
+                  ) {
+                    itemKeyboardAttempted = true;
+                    keyboardAttempted = true;
+                    const dismissal: { via: 'native-control' | 'js' | 'none' } = { via: 'none' };
+                    await mutate(item, before, 'dismiss-keyboard', async (context) => {
+                      dismissal.via = await deps.dismissKeyboard!(context);
+                      return { ok: true, proven: false };
+                    });
+                    before = await settledCapture(item);
+                    if (dismissal.via !== 'none' && before.screen.keyboardVisible === false)
+                      keyboardCleared = dismissal.via;
+                    deps.note?.(
+                      `keyboard-clearance ${JSON.stringify({ line: item.line, via: dismissal.via, hidden: before.screen.keyboardVisible === false })}`,
+                    );
+                    initial = undefined;
+                    continue;
+                  }
+                }
                 targetRows.set(item.line, {
                   ...targetRows.get(item.line),
                   ...('collapsed' in decided && decided.collapsed
@@ -4289,12 +4610,34 @@ async function walkBlockScoped(
                       break;
                     }
                   }
-                  if (!fallback || item.kind !== 'fill')
+                  // The fallback's binding found no single eligible button: terminal, without recovery.
+                  // After a withheld drag it also says why nothing was scrolled.
+                  if (item.kind === 'press' && hiddenTap?.element && refusedIdentity) {
+                    hiddenTap.unbound = true;
+                    throw new ResolutionError({
+                      refuse: 'TARGET_NOT_FOUND',
+                      reason: `"${item.target.quoted}" is text hidden from accessibility; its button ${buttonId(hiddenTap.id, privacy)} no longer resolved uniquely to an eligible button on the next read, so nothing was tapped${withheldDrag ? `; ${stayedCovered(item.target.phrase, withheldDrag)}${await coverText(item)}` : ''}`,
+                    });
+                  }
+                  if (!fallback || item.kind !== 'fill') {
+                    // After a withheld drag, a refused rebinding says why nothing was scrolled.
+                    const reason = withheldDrag
+                      ? decided.reason.replace(
+                          /stayed off screen after one scroll$/,
+                          `${stayedCovered(item.target.phrase, withheldDrag)}${await coverText(item)}`,
+                        )
+                      : decided.reason;
                     throw new ResolutionError(
                       keyboardBound
-                        ? { ...decided, reason: `${decided.reason}${KEYBOARD_DISMISSED}` }
-                        : decided,
+                        ? { ...decided, reason: `${reason}${KEYBOARD_DISMISSED}` }
+                        : itemKeyboardAttempted
+                          ? {
+                              ...decided,
+                              reason: `${reason}; ${before.screen.keyboardVisible === false ? 'the keyboard was hidden and the target is still not found' : 'the keyboard could not be hidden'}`,
+                            }
+                          : { ...decided, reason },
                     );
+                  }
                   fellBack = true;
                   fillIdentity = fallback.oracleTestID;
                   const result = await keyboardFallback(
@@ -4318,12 +4661,39 @@ async function walkBlockScoped(
                   resolution = result;
                 } else resolution = decided;
                 if ('scroll' in resolution) {
-                  // Only a visible decline hints at an interruption worth one presence read before scrolling.
+                  if (withheldDrag) {
+                    outcome = failed(
+                      item,
+                      attempt,
+                      `${stayedCovered(item.target.phrase, withheldDrag)}${await coverText(item)}`,
+                      before.screen,
+                      await shoot(item),
+                      undefined,
+                      false,
+                      'TARGET_NOT_FOUND',
+                    );
+                    coverDecision(item, before, {
+                      predicate: null,
+                      scrollOrigin,
+                      requestedDirection: scrollDirection,
+                      targetCentreChanged: null,
+                    });
+                    break;
+                  }
+                  const reactOnly = reactOnlyTarget(item.target, before.screen);
+                  // On iOS a target known only through React is never dragged before a presence read places it;
+                  // a system dialog in front keeps its own refusal below.
+                  const placeFirst =
+                    deps.platform === 'ios' && !!reactOnly && before.screen.front !== 'dialog';
+                  const declineVisible = before.screen.elements.some(
+                    (e) => !e.offscreen && isDeclineLabel(e.label),
+                  );
+                  // Elsewhere only a visible decline hints at an interruption worth one presence read.
+                  // A placed target is read again whenever an ordinary read replaced the presence read.
                   if (
-                    !scrollPresenceRead &&
                     !before.platformPresence &&
-                    before.screen.elements.some((e) => !e.offscreen && isDeclineLabel(e.label)) &&
-                    reactOnlyTarget(item.target, before.screen)
+                    reactOnly &&
+                    (placeFirst ? !scrolled : !scrollPresenceRead && declineVisible)
                   ) {
                     scrollPresenceRead = true;
                     const proven = await presenceRecapture(
@@ -4334,11 +4704,25 @@ async function walkBlockScoped(
                       before = proven;
                       continue;
                     }
-                    interruptionWithheld = {
-                      item,
-                      clause:
-                        '; a decline control was visible, but the presence read for it was late or incomplete',
-                    };
+                    if (declineVisible)
+                      interruptionWithheld = {
+                        item,
+                        clause:
+                          '; a decline control was visible, but the presence read for it was late or incomplete',
+                      };
+                    if (placeFirst) {
+                      outcome = failed(
+                        item,
+                        attempt,
+                        `"${item.target.phrase}" ${REACT_ONLY_UNSEEN}; the read that would place it was late or incomplete, so nothing was scrolled`,
+                        before.screen,
+                        await shoot(item),
+                        undefined,
+                        false,
+                        'TARGET_NOT_FOUND',
+                      );
+                      break;
+                    }
                     if (!observationUsable(before.timing, deps.now())) {
                       before = await captureBeforeDispatch();
                       continue;
@@ -4398,22 +4782,71 @@ async function walkBlockScoped(
                     });
                     break;
                   }
+                  const view =
+                    placeFirst && before.platformPresence
+                      ? reactOnlyViewport(reactOnly)
+                      : undefined;
+                  if (
+                    view &&
+                    !(
+                      view.container &&
+                      (view.where === 'below' || view.where === 'above') &&
+                      scrollUntilContainer(item.target, before.screen) === view.container
+                    )
+                  ) {
+                    outcome = failed(
+                      item,
+                      attempt,
+                      `"${item.target.phrase}" ${REACT_ONLY_UNSEEN}; ${
+                        view.where === 'inside'
+                          ? 'it lies inside the visible part of its scroll area and is not exposed there, so scrolling cannot help and nothing was scrolled'
+                          : view.where === 'unknown'
+                            ? 'its place could not be read, so nothing was scrolled'
+                            : 'no scroll area on screen holds it, so nothing was scrolled'
+                      }`,
+                      before.screen,
+                      await shoot(item),
+                      undefined,
+                      false,
+                      'TARGET_NOT_FOUND',
+                    );
+                    break;
+                  }
                   const distance =
                     clearance ??
                     (resolution.element && keyboardClearance(resolution.element, before.screen));
-                  const band =
-                    within ??
-                    (resolution.element && clearanceBand(resolution.element, before.screen));
+                  const band = view
+                    ? bandFor(item, item.target, before.screen)
+                    : (within ??
+                      (resolution.element && clearanceBand(resolution.element, before.screen)));
+                  if (view && (!band || band.width <= 0 || band.height <= 0)) {
+                    outcome = failed(
+                      item,
+                      attempt,
+                      `"${item.target.phrase}" ${REACT_ONLY_UNSEEN}; no part of its scroll area is free of what lies in front, so nothing was scrolled`,
+                      before.screen,
+                      await shoot(item),
+                      undefined,
+                      false,
+                      'TARGET_NOT_FOUND',
+                    );
+                    break;
+                  }
                   clearance = undefined;
                   within = undefined;
                   scrollOrigin ??= 'offscreen-resolution';
-                  scrollDirection = resolution.scroll;
+                  const direction = view
+                    ? view.where === 'below'
+                      ? 'down'
+                      : 'up'
+                    : resolution.scroll;
+                  scrollDirection = direction;
                   if (before.screen.front === 'dialog') throw dialogInFront(item.target.phrase);
                   const preScroll = before;
                   const gaps = (screen: Screen) =>
                     (item.kind === 'fill' ? screen.fillGapCount : screen.pressGapCount) ?? 0;
-                  const result = await mutate(item, before, (context) =>
-                    deps.scroll(resolution.scroll, context, distance, band),
+                  const result = await mutate(item, before, 'scroll', (context) =>
+                    deps.scroll(direction, context, distance, band),
                   );
                   scrolled += 1;
                   scrollNeedsReadback = !result.ok && !result.proven;
@@ -4566,44 +4999,13 @@ async function walkBlockScoped(
                 item.kind === 'press' &&
                 deps.platform === 'ios' &&
                 deps.dismissKeyboard &&
+                !itemKeyboardAttempted &&
                 !keyboardAttempted &&
                 before.screen.keyboardVisible === true &&
                 element !== undefined &&
                 selectionPressCandidate(element, before.screen)
               ) {
-                keyboardAttempted = true;
-                const target = element;
-                const dismissal: { via: 'native-control' | 'js' | 'none' } = { via: 'none' };
-                await mutate(item, before, async (context) => {
-                  dismissal.via = await deps.dismissKeyboard!(context);
-                  return { ok: true, proven: false };
-                });
-                const settled = await settledTarget(item, target, { nativeOnly: true });
-                if ('frames' in settled) {
-                  outcome = failed(
-                    item,
-                    attempt,
-                    [
-                      'the target (',
-                      {
-                        app: identityText(target),
-                        ...(concealsScreen(latest) ? { withheld: MASK } : {}),
-                      },
-                      `) did not settle across ${settled.frames.length} captures (${settled.frames.join(' | ')}); it was not dispatched; keyboard after dismissal: ${latest.keyboardVisible === true ? 'visible' : latest.keyboardVisible === false ? 'hidden' : 'unknown'}${KEYBOARD_DISMISSED}`,
-                    ],
-                    latest,
-                    await shoot(item),
-                  );
-                  break;
-                }
-                before = settled.observation;
-                if (dismissal.via !== 'none' && before.screen.keyboardVisible !== true)
-                  keyboardCleared = dismissal.via;
-                deps.note?.(
-                  `keyboard-clearance ${JSON.stringify({ line: item.line, via: dismissal.via, hidden: before.screen.keyboardVisible === false })}`,
-                );
-                keyboardBound = { target, frame: settled.frame, scrolled };
-                initial = undefined;
+                if (!(await dismissResolvedTarget(element))) break;
                 continue;
               }
               let strictFillFocus = false;
@@ -4650,14 +5052,19 @@ async function walkBlockScoped(
                   break;
                 }
                 strictFillFocus = true;
-              } else if (scrolled && overlay && item.kind === 'press' && deps.platform === 'ios')
+              } else if (
+                (scrolled || withheldDrag) &&
+                overlay &&
+                item.kind === 'press' &&
+                deps.platform === 'ios'
+              )
                 liveHit = overlay;
               else if (centreIsCovered && element !== undefined) {
-                if (scrolled) {
+                if (scrolled || withheldDrag) {
                   outcome = failed(
                     item,
                     attempt,
-                    `"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${await coverText(item)}${cutterText(centreDiagnostic)}${unaskedLiveHit(item.kind, deps.platform, centreDiagnostic)}`,
+                    `${withheldDrag ? stayedCovered(item.target.phrase, withheldDrag) : `"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}`}${await coverText(item)}${cutterText(centreDiagnostic)}${unaskedLiveHit(item.kind, deps.platform, centreDiagnostic)}`,
                     before.screen,
                     await shoot(item),
                     ref,
@@ -4773,7 +5180,7 @@ async function walkBlockScoped(
                   break;
                 }
               }
-              act = await mutate(item, before, async (context) => {
+              act = await mutate(item, before, item.kind, async (context) => {
                 if (item.kind === 'press') {
                   pressBase = before.screen;
                   pressSelector =
@@ -4781,7 +5188,11 @@ async function walkBlockScoped(
                   pressDispatch = pressRecord(before.screen, element);
                   return liveHit
                     ? deps.press(ref!, context, { requireLiveHit: true })
-                    : deps.press(ref!, context);
+                    : item.target.quoted !== undefined &&
+                        deps.platform === 'ios' &&
+                        deps.dismissKeyboard
+                      ? deps.press(ref!, context, { deferKeyboardDismissal: true })
+                      : deps.press(ref!, context);
                 }
                 return item.kind === 'fill'
                   ? deps.fill(
@@ -4813,6 +5224,12 @@ async function walkBlockScoped(
                 pressAct = act;
                 pressNeedsReadback =
                   !!selectionTarget || (!!element && insideAlert(element) && !act.proven);
+              }
+              if (item.kind === 'press' && hiddenTap?.element && refusedIdentity) {
+                hiddenTap.act = act;
+                // A refusal before dispatch keeps the existing once-only retries; an executed press ends them.
+                if (act.executed !== false && act.mutation !== 'none')
+                  hiddenTap.element = undefined;
               }
               if (item.kind === 'fill') fillMethod = act.method ?? 'keyboard';
               if (
@@ -4846,7 +5263,7 @@ async function walkBlockScoped(
                 outcome = failed(
                   item,
                   attempt,
-                  `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}${await coverText(item)}${cutterText(liveHit)}; the live hit read refused the press (${liveHitRefusal(act.error)}); no tap was performed`,
+                  `${scrollError ? `${scrollError}; ` : ''}${withheldDrag ? stayedCovered(item.target.phrase, withheldDrag) : `"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}`}${await coverText(item)}${cutterText(liveHit)}; the live hit read refused the press (${liveHitRefusal(act.error)}); no tap was performed`,
                   before.screen,
                   await shoot(item),
                   ref,
@@ -4885,6 +5302,35 @@ async function walkBlockScoped(
                 break;
               }
               if (
+                item.kind === 'press' &&
+                item.target.quoted !== undefined &&
+                deps.platform === 'ios' &&
+                deps.dismissKeyboard &&
+                !liveHit &&
+                element !== undefined &&
+                !act.ok &&
+                act.mutation === 'none' &&
+                act.error?.startsWith('KEYBOARD_DISMISS_FAILED:')
+              ) {
+                if (itemKeyboardAttempted) {
+                  outcome = failed(
+                    item,
+                    attempt,
+                    `${act.error}; the keyboard covers the target and could not be hidden`,
+                    before.screen,
+                    await shoot(item),
+                    ref,
+                  );
+                  break;
+                }
+                itemKeyboardAttempted = true;
+                // A vanished keyboard cannot count as the later tap's visible effect.
+                pixelBaselineTaken = false;
+                pixelBaseline = undefined;
+                if (!(await dismissResolvedTarget(element))) break;
+                continue;
+              }
+              if (
                 !act.ok &&
                 act.mutation === 'none' &&
                 act.error?.startsWith('OUTSIDE_APP_WINDOW:')
@@ -4906,11 +5352,11 @@ async function walkBlockScoped(
                 act.mutation === 'none' &&
                 act.error?.startsWith('FOCUS_TARGET_OCCLUDED:')
               ) {
-                if (scrolled) {
+                if (scrolled || withheldDrag) {
                   outcome = failed(
                     item,
                     attempt,
-                    `${act.error}; "${item.target.phrase}" stayed off screen after one scroll${await coverText(item)}`,
+                    `${act.error}; ${withheldDrag ? stayedCovered(item.target.phrase, withheldDrag) : `"${item.target.phrase}" stayed off screen after one scroll`}${await coverText(item)}`,
                     before.screen,
                     await shoot(item),
                     ref,
@@ -4926,8 +5372,35 @@ async function walkBlockScoped(
                   break;
                 }
                 refusedIdentity = element;
-                occluded = clearanceScroll(element, before.screen);
-                within = clearanceBand(element, before.screen);
+                let clearing: ReturnType<typeof clearanceAfterProof> | undefined;
+                if (deps.platform === 'ios' && before.screen.keyboardVisible === false) {
+                  const proven = await proveCover(
+                    item,
+                    Math.min(itemDeadline ?? Infinity, deps.now() + NATIVE_PRESENCE_BUDGET_MS),
+                  );
+                  if (proven) {
+                    before = proven;
+                    const target = element;
+                    const matches = before.screen.elements.filter((e) => sameIdentity(e, target));
+                    if (matches.length === 1) element = matches[0];
+                    else clearing = 'no-scroll-area';
+                  }
+                  clearing ??= clearanceAfterProof(item, element, before.screen);
+                  if (typeof clearing === 'string') {
+                    withheldDrag = clearing;
+                    before = await settledCapture(item);
+                    usable(before, item);
+                    continue;
+                  }
+                }
+                occluded =
+                  typeof clearing === 'object'
+                    ? clearing.direction
+                    : clearanceScroll(element, before.screen);
+                within =
+                  typeof clearing === 'object'
+                    ? clearing.band
+                    : clearanceBand(element, before.screen);
                 scrollOrigin = 'native-occlusion';
                 continue;
               }
@@ -4971,7 +5444,15 @@ async function walkBlockScoped(
                   break;
                 }
                 fillIdentity = fallback.oracleTestID;
-                const result = await keyboardFallback(item, attempt, before, fallback, !!scrolled);
+                const result = await keyboardFallback(
+                  item,
+                  attempt,
+                  before,
+                  fallback,
+                  !!scrolled || !!withheldDrag,
+                  withheldDrag && stayedCovered(item.target.phrase, withheldDrag),
+                  () => coverText(item),
+                );
                 if (result === 'typed') {
                   typedUnverified = true;
                   break;
@@ -4980,7 +5461,8 @@ async function walkBlockScoped(
                   outcome = result;
                   break;
                 }
-                scrolled ||= Number(result.scrolled);
+                // A withheld drag sent nothing, so the fallback's clearance flag is no scroll.
+                if (!withheldDrag) scrolled ||= Number(result.scrolled);
                 before = result.observation;
                 fillIdentity = result.identity;
                 continue;
@@ -5242,6 +5724,8 @@ async function walkBlockScoped(
                 : act!.proven || changed || alreadySelected)
           ) {
             const target = stepTarget(item);
+            // This pass is the fallback's own press, not a later resolution of the target.
+            const hiddenPass = hiddenTap?.act === act! ? hiddenTap : undefined;
             if (act!.dialog)
               deps.note?.(
                 `dialog-tap ${JSON.stringify({ v: 1, line: item.line, label: act!.dialog.label, rect: act!.dialog.rect })}`,
@@ -5250,9 +5734,12 @@ async function walkBlockScoped(
               ...base(item, attempt),
               ...(ref ? { ref } : {}),
               ...(shot ? { screenshot: shot } : {}),
+              // A pass through hidden text stores the button actually pressed, never the hidden text.
               ...stored(
-                (target && exactSelector(target)) ??
-                  (element ? elementSelector(element) : undefined),
+                hiddenPass
+                  ? { id: hiddenPass.id }
+                  : ((target && exactSelector(target)) ??
+                      (element ? elementSelector(element) : undefined)),
               ),
               outcome: 'pass',
               ...(act!.dialog ? { dialog: act!.dialog } : {}),
@@ -5284,7 +5771,13 @@ async function walkBlockScoped(
                                 : 'UNVERIFIED_PRESS: the alert or sheet closed and nothing behind it changed; any of its buttons closes it, so the press was not verified',
                             ),
                           }
-                        : {}),
+                        : hiddenPass
+                          ? {
+                              reason: redact(
+                                `resolved through text hidden from accessibility; tapped its button ${buttonId(hiddenPass.id, privacy)}`,
+                              ),
+                            }
+                          : {}),
             });
             break;
           }
@@ -5395,10 +5888,12 @@ async function walkBlockScoped(
         let error = caught instanceof CaptureDeadline ? new EvidenceExpired(true) : caught;
         // A recovery probe that acts on nothing must not cost a polled step its retry budget.
         const priorRecovery = recovered.has(item) ? { state: recovered.get(item)! } : undefined;
+        let recoveryIdle = false;
         if (
           error instanceof ResolutionError &&
           !UNRECOVERABLE.has(error.code) &&
           !postActionTried &&
+          !hiddenTap?.unbound &&
           !deps.cancelled?.()
         ) {
           // Recovery can move `latest` on before a later read throws.
@@ -5416,12 +5911,38 @@ async function walkBlockScoped(
             if (recovering === 'accepted') continue items;
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
+            recoveryIdle = true;
           } catch (recoveryError) {
             if (isAbort(recoveryError)) throw recoveryError;
             error =
               recoveryError instanceof NativeSnapshotIncomplete
                 ? withStepReason(recoveryError, first, held, item)
                 : recoveryError;
+          }
+        }
+        // Recovery found nothing to dismiss: the same read may prove the hidden text's own button.
+        if (
+          recoveryIdle &&
+          !hiddenTried &&
+          !stepDispatched &&
+          item.kind === 'press' &&
+          item.target.quoted !== undefined &&
+          deps.platform === 'ios' &&
+          error instanceof ResolutionError &&
+          error.code === 'TARGET_NOT_FOUND' &&
+          error.missing &&
+          !deps.cancelled?.()
+        ) {
+          hiddenTried = true;
+          // Captures assign lineRead inside closures, which control-flow narrowing cannot see.
+          const read = lineRead as Screen | undefined;
+          const element = read && hiddenTextButton(item.target, read);
+          if (element) {
+            hiddenTap = { id: element.testID!, element };
+            // Recovery returned without acting, so restore its state from before the probe.
+            if (priorRecovery) recovered.set(item, priorRecovery.state);
+            else recovered.delete(item);
+            continue attempts;
           }
         }
         // Only an absent quoted target qualifies; disabled, ambiguous, stored and offscreen misses keep their class.

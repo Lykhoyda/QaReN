@@ -1,0 +1,118 @@
+import { type ConfigPlugin, withAppDelegate, withInfoPlist } from 'expo/config-plugins';
+
+// ponytail: hand-rolled port of Expo SDK 58's ExpoAppSceneDelegate for SDK 56; delete this plugin when the Test App reaches SDK 58.
+export const SCENE_MANIFEST = {
+  UIApplicationSupportsMultipleScenes: false,
+  UISceneConfigurations: {
+    UIWindowSceneSessionRoleApplication: [
+      {
+        UISceneConfigurationName: 'Default Configuration',
+        UISceneDelegateClassName: '$(PRODUCT_MODULE_NAME).SceneDelegate',
+      },
+    ],
+  },
+};
+
+const WINDOW_START = `
+#if os(iOS) || os(tvOS)
+    window = UIWindow(frame: UIScreen.main.bounds)
+    factory.startReactNative(
+      withModuleName: "main",
+      in: window,
+      launchOptions: launchOptions)
+#endif
+`;
+
+const SCENE_DELEGATE = `
+class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+  var window: UIWindow?
+
+  private var appDelegate: AppDelegate? {
+    UIApplication.shared.delegate as? AppDelegate
+  }
+
+  func scene(
+    _ scene: UIScene,
+    willConnectTo session: UISceneSession,
+    options connectionOptions: UIScene.ConnectionOptions
+  ) {
+    guard let windowScene = scene as? UIWindowScene else { return }
+    guard let appDelegate, let factory = appDelegate.reactNativeFactory else {
+      fatalError("SceneDelegate needs the React Native factory created by AppDelegate")
+    }
+    let window = UIWindow(windowScene: windowScene)
+    self.window = window
+    appDelegate.window = window
+
+    // Scene launches carry the cold-start URL in connectionOptions; dev-launcher and Linking read it from launch options.
+    var launchOptions: [UIApplication.LaunchOptionsKey: Any] = [:]
+    if let url = connectionOptions.urlContexts.first?.url {
+      launchOptions[UIApplication.LaunchOptionsKey(rawValue: "UIApplicationLaunchOptionsURLKey")] = url
+    }
+    factory.startReactNative(
+      withModuleName: "main",
+      in: window,
+      launchOptions: launchOptions.isEmpty ? nil : launchOptions)
+
+    self.scene(scene, openURLContexts: connectionOptions.urlContexts)
+    connectionOptions.userActivities.forEach { self.scene(scene, continue: $0) }
+  }
+
+  func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+    for context in URLContexts {
+      var options: [UIApplication.OpenURLOptionsKey: Any] = [.openInPlace: context.options.openInPlace]
+      if let sourceApplication = context.options.sourceApplication {
+        options[.sourceApplication] = sourceApplication
+      }
+      if let annotation = context.options.annotation {
+        options[.annotation] = annotation
+      }
+      _ = appDelegate?.application(UIApplication.shared, open: context.url, options: options)
+    }
+  }
+
+  func scene(_ scene: UIScene, continue userActivity: NSUserActivity) {
+    _ = appDelegate?.application(UIApplication.shared, continue: userActivity) { _ in }
+  }
+
+  func sceneDidBecomeActive(_ scene: UIScene) {
+    appDelegate?.applicationDidBecomeActive(UIApplication.shared)
+  }
+
+  func sceneWillResignActive(_ scene: UIScene) {
+    appDelegate?.applicationWillResignActive(UIApplication.shared)
+  }
+
+  func sceneWillEnterForeground(_ scene: UIScene) {
+    appDelegate?.applicationWillEnterForeground(UIApplication.shared)
+  }
+
+  func sceneDidEnterBackground(_ scene: UIScene) {
+    appDelegate?.applicationDidEnterBackground(UIApplication.shared)
+  }
+}
+`;
+
+export function adoptSceneLifecycle(contents: string): string {
+  if (contents.includes(SCENE_DELEGATE)) return contents;
+  if (contents.split(WINDOW_START).length !== 2) {
+    throw new Error('Cannot locate the window start-up in the iOS AppDelegate');
+  }
+  return contents.replace(WINDOW_START, '').trimEnd() + '\n' + SCENE_DELEGATE;
+}
+
+const withIosSceneLifecycle: ConfigPlugin = (config) => {
+  config = withInfoPlist(config, (plist) => {
+    plist.modResults.UIApplicationSceneManifest = SCENE_MANIFEST;
+    return plist;
+  });
+  return withAppDelegate(config, (appDelegate) => {
+    if (appDelegate.modResults.language !== 'swift') {
+      throw new Error('Scene life cycle adoption expects a Swift AppDelegate');
+    }
+    appDelegate.modResults.contents = adoptSceneLifecycle(appDelegate.modResults.contents);
+    return appDelegate;
+  });
+};
+
+export default withIosSceneLifecycle;

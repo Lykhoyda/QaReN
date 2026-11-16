@@ -64,13 +64,15 @@ applicable or its subject was not assessed, as explained in the row's detail.
 | `corepack`, `cocoapods` | `corepack` and `pod` run (warnings) |
 | `disk` | The volumes holding the current directory and your home have the roughly 10 GiB free a clean iOS build needs (warning) |
 | `host-memory`, `host-devices` | Free memory, memory pressure, booted simulators and running Android emulators; conservative concurrent lane headroom on macOS and Linux |
+| `device-helpers` | Android emulator helper processes whose emulator is gone or that run above 100% CPU, each with the command that stops it; [warns and stops nothing](#emulator-helper-processes) |
 | `simulator-service` | A five-second `simctl list devices -j` probe on macOS; attributable uninterruptible simulator process evidence when unresponsive |
 | `expo-offline` | Metro-only Expo commands start offline by default; warns when `EXPO_OFFLINE=0` enables account lookups |
 | `watchman-health` | A read-only, five-second watch-list probe without starting Watchman |
 | `watchman-volume-probe` | Candidate watch admission and [cookie sync](#ios-simulator-lifecycle); admission timeout, rejection or a confirmed cookie timeout fails, while unavailable or invalid responses warn |
 | `candidate-volume-speed` | A bounded small-file read sample on the candidate volume; warns about slow reads, with unknown results disclosed |
+| `metro-bind` | With a configured candidate: who listens on its `metroPort` and whether `/status` answers on `127.0.0.1` and `[::1]`; passes on `127.0.0.1`, fails when a Metro answers on `[::1]` only, warns for another service or a read that failed or answered nothing, and skips when nothing listens or no candidate is configured |
 | `host-load` | One-, five- and fifteen-minute load averages, logical CPU count and sampled CPU idle; warns about readiness deadlines under load |
-| `native-build-lock` | Read-only iOS [build-lock observation](#native-fingerprint-build-selection); never claims or reclaims the lock |
+| `native-build-lock` | Read-only iOS lock and shared [build-slot observation](#native-fingerprint-build-selection); never claims or reclaims a lock |
 | `android-sdk`, `android-avd` | When `android` is configured: `ANDROID_HOME`, an executable `adb` file (never run; its version is not checked), the emulator binary and the configured AVD via `emulator -list-avds` |
 | `qaren-path` | The first `qaren` on `PATH` is this binary and the installed build; later copies warn, and so does a separate install that `PATH` runs instead (another `QAREN_HOME` or the other release or source-build line) |
 | `installed-build` | The runtime under `$QAREN_HOME/runtime/<version>/` and the runtime `check` would use (`QAREN_RUNTIME` when set) are complete; a binary outside it that `PATH` runs instead of an install fails |
@@ -78,6 +80,8 @@ applicable or its subject was not assessed, as explained in the row's detail.
 | `source-checkout` | From a QaReN checkout: its source version (`<version>-dev.<commit>`) matches this binary |
 | `config` | `.qaren/config.yaml` (or `--config`) loads and validates |
 | `ios-lane` | Only with `--device`: read-only check of that simulator against the [warm-lane contract](#warm-lane) |
+| `ios-simulator-log` | Reports the [simulator system-log policy](#ios-admission-and-cleanup); this policy row does not inspect or clear a log |
+| `ios-lane-log` | Only with `--device`: warns that this simulator keeps typed field text in its system log, with the command that clears its checked log store; it removes nothing |
 | `1x-claude-plugin`, `1x-codex-plugin` | The rn-dev-agent 1.x plugin, marketplace and caches in Claude Code, Codex and Cursor |
 | `1x-mcp` | A hand-registered 1.x MCP server in `~/.claude.json`, `.mcp.json`, `~/.cursor/mcp.json` or `$CODEX_HOME/config.toml` |
 | `1x-binaries`, `1x-home-dirs` | The 1.x npm bins on `PATH`; `~/.rn-dev-agent/`, `~/.cache/rn-dev-agent/`, `~/Library/Caches/rn-dev-agent/`, `~/Library/Application Support/rn-dev-agent/` (or `$XDG_STATE_HOME/rn-dev-agent/`) and `~/.claude/rn-agent/` |
@@ -147,6 +151,31 @@ remote emulator hosts are outside this inventory. A failed inventory probe makes
 `host-devices` report unknown and warn instead of treating it as zero devices;
 the `simulator-service` row separately reports simulator inventory failures below.
 
+#### Emulator helper processes
+
+An Android emulator starts helper processes that can keep running, sometimes at
+several cores' worth of CPU, after the emulator itself has exited. The
+`device-helpers` row on macOS and Linux reads the same process list as
+`host-devices` (pid, CPU, state, name and command line) and looks at
+`netsimd` and `crashpad_handler` processes whose command line starts with an
+absolute path to the helper. A helper is reported when no emulator is running
+or starting, or when it uses more than 100% CPU. Any `qemu-system-*` or
+`emulator*` process of any user, in any state, counts as a running emulator.
+Before naming a helper, doctor reads the first 4 KiB of `source.properties` in
+the helper's folder when it is a regular file (two-second limit, once per
+folder, at most four folders per scan; later folders stay unproven); only the SDK's
+emulator package, with the line `Pkg.Path=emulator`, proves it. Another app's
+program with the same name, or a folder whose package file cannot be read, is
+never reported.
+
+Each helper is named by executable, pid and CPU share, with the `kill <pid>`
+command that stops it. One `netsimd` can serve several emulators, so a helper
+cannot be tied to its own emulator: while any emulator runs or starts, every
+helper counts as served by it, and the row says so. QaReN started none of these
+processes, so the row warns and stops nothing. An unavailable or unreadable
+process list warns as unknown; a list with an unreadable line warns that it may
+hide a running emulator.
+
 Load warns when the one-minute load is at least the logical CPU count or sampled
 CPU idle is below 10%: readiness deadlines may expire, so use fewer concurrent
 lanes and wait for CPU-heavy work to finish. macOS uses the second one-second `top`
@@ -154,9 +183,10 @@ sample; Linux computes idle from two `/proc/stat` samples one second apart, excl
 guest counters from the total and treating I/O wait as busy. Historical five- and
 fifteen-minute load is reported without independently triggering a warning.
 
-Host commands have three-second budgets, except `top` and the simulator inventory
-which have five seconds each; subprocess termination can add up to five seconds
-per timeout. Missing, malformed or timed-out host statistics warn with a manual
+Host commands have three-second budgets, except helper package-file reads
+(two seconds), `top` and the simulator inventory (five seconds each);
+subprocess termination can add up to five seconds per timeout. Missing, malformed
+or timed-out host statistics warn with a manual
 next step. Doctor makes one simulator inventory read and reports measured latency
 for every simulator-service diagnosis, using the shared
 [inventory validity rule](#ios-simulator-lifecycle). An unreadable response warns;
@@ -199,6 +229,10 @@ lease. `--latest` selects the newest `run.json` modification time. It shows
 explicit stages from preflight through cleanup, step outcomes and act/capture/Jev
 timings, recording, and the verdict with its expected check exit code.
 An unobserved stage stays unobserved; a skipped stage says “not needed” in full rows.
+The Build queue row appears only after contention; see the
+[build-slot waiting contract](#native-fingerprint-build-selection). The Host memory
+row appears only when the run waited for memory; see
+[waiting for memory](#waiting-for-memory-before-a-native-build).
 TTY redraws read the current terminal size, keep every stage visible, and fit
 step rows into the remaining space with an omitted-row count. Unfinished rows
 take priority, followed by completed rows with the latest observed event sequence,
@@ -257,7 +291,8 @@ On a TTY, the view redraws every 250 ms; Ctrl-C exits only the viewer.
 The owner's identity is checked at most every two seconds and never after the
 end event, so a finished run's snapshot does not wait on a process probe.
 `--plain`, non-TTY stdout, `CI` or `NO_COLOR` prints each observed final stage
-and passed or failed step attempt once, without escape codes or stdin reads.
+and passed or failed step attempt once, without escape codes or stdin reads;
+build queue updates follow the [waiting contract](#native-fingerprint-build-selection).
 `--json` prints a single folded snapshot and exits without following the run;
 a live snapshot still performs the initial owner check.
 Step text and reasons never come from live events. They appear only after an
@@ -645,6 +680,87 @@ when its size reduction fails. Recording is
 best effort: a recorder, ffmpeg or trim problem never changes the verdict or the
 exit code.
 
+### Host samples in run reports
+
+`check`, `pr` and `prepare` receipts include `host.start` and `host.end`,
+including refusals before setup; command-line errors and failures
+opening the state directory occur before sampling. Each sample contains
+`load_1m`, `cores`, `free_bytes`, `available_bytes`, `total_bytes`, `pressure` (`normal`, `warning` or `critical`)
+and `swap_used_bytes` when readable. Linux pressure follows the same available
+memory estimate as doctor; macOS preserves the system pressure level.
+Unreadable values are absent, never replaced with zero.
+
+The start sample precedes setup commands; the end sample follows teardown and
+any PR-worktree removal. On macOS and Linux, each sample uses two commands, each
+limited to three seconds, without doctor's CPU-idle sampling or its one-second
+wait. Other hosts have empty samples. Missing or malformed statistics do not
+change the run's verdict. Cancellation can leave the end sample unavailable.
+
+The local `report.md` includes one line with both samples, including free and
+available memory and swap in GiB; unreadable values say `unavailable`. A refusal also
+includes the end host state when load reaches the logical CPU count or memory
+is constrained, except `HOST_UNDER_PRESSURE`, which already names its admission
+reading. These end samples are observations, not a diagnosis of the refusal's cause.
+Refusals before a run directory exists carry the samples in the receipt only.
+`qaren publish` does not include these samples in PR comments or descriptions.
+Sampling starts no device or service and introduces no cleanup resource.
+
+Right after the start sample on macOS and Linux, the run reads the process list
+once (three-second limit) for the [emulator helper processes](#emulator-helper-processes) doctor
+reports, plus one package-file read per candidate helper folder. Each finding is
+listed in the receipt's `device_helpers` array with only `name` (`netsimd` or
+`crashpad_handler`) and `pid`, and `report.md` gains one line listing all findings
+with each helper's CPU share, why it was reported and its `kill <pid>` command.
+With no findings, the receipt omits `device_helpers` and the report adds no helper
+line. An unavailable or wholly unreadable process list produces no findings;
+a partially readable list can still report helpers, with a warning that a running
+emulator may be hidden. These observations never change the verdict. The run stops
+nothing.
+
+### Waiting for memory before a native build
+
+Before a native build claims its build lock, `check`, `pr` and `prepare` take
+an admission sample. A run that reuses its build takes no admission sample.
+Memory is constrained when
+pressure is `warning` or `critical`, or less than 4 GiB is available; load
+alone never makes a run wait or refuse. A constrained host waits in the
+`host_wait` stage (code `memory_low` or `memory_critical`), polling every
+5 s with one 10-minute allowance per build admission, including probe time.
+The final sample can overrun that allowance by up to 6 s (two 3 s probes).
+`check` shows the wait as `host-wait` in its live progress.
+The initial admission runs before the build budget starts. A build queued
+behind the platform lock or the machine slot (`native-build-slot`) rechecks
+memory at most every 5 s while the allowance remains; these checks share the
+same allowance, and their actual duration is excluded from the build budget,
+including the iOS build window the slot is claimed in. Once the allowance is
+spent, a queued build takes no further samples. A recheck in the slot queue
+keeps the platform lock, as the slot wait itself does. Lock contention itself
+still counts against each wait's own `deadlines.build_seconds` bound; the
+platform lock wait is outside the build window and the slot wait inside it.
+When memory recovers the build goes on. When memory is still constrained
+but not critical when the allowance is spent, the build goes on with its
+remaining build budget.
+Memory still constrained after 10 minutes, with a readable final reading of `critical`
+pressure (macOS level 4), refuses `HOST_UNDER_PRESSURE` (exit 4). The refusal names load, available memory,
+pressure, swap and the time waited, and says to re-run once pressure clears.
+The pending command claims no build slot and does not start; earlier build
+commands in the run may already have completed. A run that already holds
+resources, such as an iOS device, names `qaren cleanup` as its next action,
+as for any other refusal after allocation. Linux has no critical level, so a Linux host
+waits but never refuses. An unreadable first sample never waits or refuses.
+During each wait, a reading counts only when it reads every memory signal
+(pressure and available bytes) observed so far in that wait, including newly
+readable signals. A probe that fails or times out keeps the last full
+reading and the wait goes on within the remaining allowance. An incomplete final reading
+goes on to the build instead of refusing. An
+unreadable first sample, a wait that recovered and a wait that went on
+constrained each leave a `host_wait` note in the receipt's `outcomes` and a
+line in `report.md`; the refusal's numbers are in its `failure.detail`. The stage event carries no host
+numbers. `qaren watch` shows a **Host memory** row only for a run that waited:
+`waiting <time> (<code>)` while it runs, timed from the event, then the
+outcome; plain output prints `Host memory: waiting (<code>)` when the wait
+starts and the outcome when it ends.
+
 ### Android runner provisioning
 
 The Android runner uses the runtime's shipped source; no published runner APK
@@ -688,11 +804,23 @@ or legacy empty-directory fence, prove all provisioning callers and writers
 for this runner directory stopped before removing that fence and any SQLite
 sidecars. Separate runner directories remain independent.
 
-A runner left
-on the emulator by rn-dev-agent 1.x is
-signed differently and cannot be replaced in place: uninstall
-`dev.lykhoyda.rndevagent.androidrunner` and `dev.lykhoyda.rndevagent.androidrunner.test`
-from that emulator first. The walk's advisory scan on the borrowed emulator refuses
+A runner build is signed with the debug key of the Android user home that built
+it. Runner apps left by rn-dev-agent 1.x, another host or another working home
+block the install when their signing key differs (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`),
+as does a newer runner version (`INSTALL_FAILED_VERSION_DOWNGRADE`). On physical
+Android devices and emulators, provisioning then replaces them once on the
+selected device: it confirms the runner is stopped,
+uninstalls `dev.lykhoyda.rndevagent.androidrunner` and
+`dev.lykhoyda.rndevagent.androidrunner.test`, proves both absent with
+`pm list packages`, installs again and writes `runner-apps-replaced
+reason=signature|downgrade` to `core.log`. It removes whatever is installed under
+those two names, which hold no user data; the device lease is local to this
+host, so another host driving the same device at the same moment is not
+excluded and is unsupported. A surviving runner, an unproven removal or a
+second failed install refuses `DEVICE_UNAVAILABLE` with `subreason:
+runner-install-blocked`, the original install reason and the failed replacement
+step's cause, and manual removal as the next step, to take only if nothing else
+is using the device. The walk's advisory scan on the borrowed emulator refuses
 `BUSY_FOREIGN_FLOW` with the process scan's message when another UIAutomator or
 agent-device process runs there (`adb -s <serial> shell ps -A`). The scan does
 not recognise every driver and fails open when `ps` cannot run, so borrow an
@@ -859,7 +987,69 @@ The refusal lists
 each candidate without its label or value: kind, testID or `no-id`, and the
 rounded frame.
 
+### Text hidden from accessibility on iOS
+
+When a quoted Tap target is absent and interruption recovery takes no action,
+QaReN can resolve one exact hidden text or hidden child's testID to its containing
+button. The same admitted read must prove one hidden host, its nearest non-hidden
+pressable with its own unique testID, and one associated native button that is
+enabled, hittable and on screen; the hidden host's frame must fit inside the
+button's frame. QaReN rebinds that button on the next read before pressing it.
+An executed press spends the fallback's one-tap allowance for that line, and a
+passing step stores the button's testID rather than the hidden child's identity.
+A press still needs the usual verification; dispatch alone does not pass the step.
+
+Without that proof, QaReN does not tap through the hidden text. When the current
+line's latest admitted read proves the hidden text, a failed Tap, quoted Wait or
+literal check explains that the app hides it from accessibility. When known, the
+failure identifies its containing button by frame and testID and suggests the
+button's own label or testID, or adding an `accessibilityLabel` in the app.
+Hidden text alone never makes a Wait or literal check pass. This fallback does
+not support Android or a testID button inside a popup; a button with neither a
+label nor a testID still needs an app change. The
+[hidden-text walker tests](../qaren-core/test/unit/qa/hidden-text-walker.test.ts)
+cover the tap and failure behavior.
+
 ### Occluded taps and focus
+
+On iOS, a quoted Tap whose target is proven absent (`TARGET_NOT_FOUND` carrying
+`missing`) gets one keyboard-dismissal attempt before failing when the keyboard is
+visible, the app is in front, and React capture proves no presented modal. Only
+after an otherwise eligible absent-target refusal does QaReN request an extra
+capture with React typography for modal proof, then recheck target absence,
+keyboard visibility and the front surface before dismissing. This uses the keyboard
+guard's dismissal chain described below, without a native platform-presence read.
+QaReN takes fresh settled captures after dismissal and resolves the target
+again on the same attempt, acting on the resulting screen: blurring the field can
+validate or navigate in the app. This path records `keyboardCleared` only when the
+dismissal reports a successful tier and the settled capture explicitly reports
+`keyboardVisible: false`.
+The absent-target dismissal allowance survives recovery retries and is spent at
+most once per plan item; it also prevents another keyboard dismissal in that attempt.
+
+If the target is still absent, the failure adds “the keyboard was hidden and the
+target is still not found” when the fresh capture proves it hidden, or “the keyboard
+could not be hidden” otherwise. Authorization of the dismissal counts as dispatch;
+ordinary missing-target recovery still requires proof of a separate surface.
+This path does not run while the [launch-target wait](#step-recovery) is armed,
+after another keyboard dismissal in the attempt, or without proof that no modal is
+present. Disabled or otherwise ineligible targets, candidates all set aside,
+name mismatches, ambiguity, stored-selector replay misses, system dialogs, Fill
+and Android keep their existing paths. `RN_KEYBOARD_GUARD=0` disables this clearance.
+The [absent-target regression tests](../qaren-core/test/unit/qa/keyboard-absent-target.test.ts)
+cover these boundaries.
+
+For a resolved quoted iOS Tap, a runner `KEYBOARD_DISMISS_FAILED` refusal with
+`mutation: none` can use the same per-item allowance. QaReN dismisses the keyboard,
+settles the original target, and resolves again. A different identity or a frame
+that changes after settling refuses the Tap. The pixel baseline is taken again
+after dismissal so keyboard disappearance cannot count as the Tap's effect. A
+second refusal keeps the runner's reason and adds “the keyboard covers the target
+and could not be hidden”. Proactive row-choice clearance also spends this allowance,
+so a subsequent keyboard refusal fails without another dismissal. Live-hit presses,
+recovery and dialog presses,
+`KEYBOARD_RELAYOUT_REQUIRED`, and refusals without proof of no mutation retain
+their existing handling.
 
 Before an iOS tap or exact fill, the runner resolves the retained target by
 native type and identifier (or label when unidentified) in the same snapshot
@@ -998,8 +1188,9 @@ another resolution is not dispatched again and fails with its observed frames.
 When the runner instead refuses a sent tap or type because its retained target
 is gone or stale (`NO_TEXT_INPUT_TARGET`, `KEYBOARD_TARGET_STALE`, or an Android
 `exact-target-*` reason) and attests mutation `none`, the step fails as
-`TARGET_MOVED_BEFORE_DISPATCH` without retry or fallback; any other refusal
-after a send stays `ACTION_OUTCOME_UNCERTAIN`.
+`TARGET_MOVED_BEFORE_DISPATCH` without retry or fallback. Apart from the
+[quoted iOS Tap keyboard-refusal handoff](#occluded-taps-and-focus), any other
+refusal after a send stays `ACTION_OUTCOME_UNCERTAIN`.
 Resolution, frame comparison and hit testing share one 300 ms deadline.
 Missing retained identity, a generation mismatch, zero or ambiguous live
 matches, and failed or over-budget checks leave the check unavailable and
@@ -1137,8 +1328,7 @@ the existing explicit tap path and remain subject to trusted clipping and native
 identity guards. An explicit key press performs its normal action, not guaranteed
 keyboard dismissal; QA must freshly prove the keyboard hidden and the intended
 screen preserved before treating the press as clearance. Ordinary covered content
-uses the same recovery as a native occlusion refusal.
-The walker handles this refusal with one directional scroll toward the centre
+uses one directional scroll toward the centre
 of the target's visible clip band: its trusted clipping viewport cut off 48 pt
 above the top of an observed keyboard unless the keyboard is proven hidden, and between
 sticky overlays. A touchable, non-text element at least half the clip's width,
@@ -1149,8 +1339,34 @@ the list, such as a screen's rows under a sheet, never counts; for a target in n
 list, nothing listed before its window counts, such as the app screen behind a modal. A target at
 or below that band's centre scrolls down; one above it scrolls up. Sticky overlays
 can narrow the band even without a keyboard or when the clip is entirely above it.
+
+After an iOS Tap or Fill returns `FOCUS_TARGET_OCCLUDED` with mutation `none`
+and the keyboard is proven hidden, the walker checks the cover before sending
+that recovery drag. If native presence is missing, it takes one bounded presence
+recapture within the remaining step deadline. It rebinds the target on that
+observation and uses its list geometry, band and direction for the drag. When
+the cover check proves no view takes the touch (`none`) or the touch reaches
+the target's own lineage (`reaches-target`), the existing clearance band remains
+eligible, including the window band for a target without a list.
+Otherwise, the target must belong to the selected scroll container, and the
+drag band must avoid both the named cover and every captured hittable non-text
+view outside that container's ancestry and content, regardless of capture order.
+Even a background view overlapping the band withholds the drag. Direction moves
+the target toward the admitted band's centre.
+
+No own list, no free band, or a late or incomplete proof read withholds the drag.
+The walker takes a settled capture and keeps the one retry, with no subsequent
+scroll of any origin for that attempt. If it still refuses before a successful
+fallback tap, the reason explains why nothing was scrolled and includes the
+[cover diagnostic](#clearance-diagnostics), including on terminal Fill fallback
+refusals. A successful retry needs no drag. The
+[cover-before-drag regressions](../qaren-core/test/unit/qa/cover-before-drag.test.ts)
+pin these cases. Visible or unknown keyboards, the initial keyboard-fallback
+wrapper tap path, pre-dispatch clearance, plain Scroll, Scroll until and Android
+retain their existing admission rules; this check adds no wait for a cover to pass.
+
 On iOS, capture order is not paint order. When a press target still resolves
-after that one scroll, or after the scroll was refused with nothing moved (for
+after that one scroll, after a withheld drag, or after the scroll was refused with nothing moved (for
 example `SCROLL_BAND_TOO_SMALL` on a band only a few points tall), and its centre
 is still past the inferred band but inside its clip with the keyboard proven
 hidden, the walker sends the
@@ -1161,7 +1377,7 @@ the captured centre. If native element activation is unavailable, it refuses
 `LIVE_HIT_UNPROVEN` with no tap and never falls back to coordinates.
 A false read, a moved target, or an unavailable read (expired snapshot, no identity, absent or ambiguous match, a
 read that threw or ran out of time) refuses `LIVE_HIT_UNPROVEN` with no tap, and the step fails
-with “stayed off screen after one scroll” and the inferred band cutter described
+with “stayed off screen after one scroll” (or the withheld-drag reason) and the inferred band cutter described
 under [clearance diagnostics](#clearance-diagnostics). The scroll
 that ran before the refusal remains a performed action. Press behavior is unchanged.
 
@@ -1195,8 +1411,8 @@ keep their existing rules.
 
 A missing required capability refuses before dispatch; reopen the device session
 to rebuild the runner. A target hit point never authorizes a drag corridor:
-scroll-until drags retain every static overlay cut, including cuts caused by
-transparent containers. A zero or undersized band still refuses
+scroll-until drags retain the static cuts required by the
+[scroll-until overlay policy](#scroll-until-overlay-policy). A zero or undersized band still refuses
 `SCROLL_BAND_TOO_SMALL`. For scroll-until, the row's `scrollBand.status`
 distinguishes `no-geometry`, `overlay-cut` and `clear`. For plain-scroll band
 selection and refusals, see [the plain-scroll contract](#occluded-taps-and-focus).
@@ -1283,9 +1499,8 @@ letter is still a mismatch. A screen change alone never verifies a fill. A quote
 iOS fill can use keyboard fallback when no observable native input resolves, or
 strict binding refuses `NO_TEXT_INPUT_TARGET` before any text mutation for a
 non-native-input target. Phrase fills and stored text selectors do not use
-this fallback; a stored testID replays through it exactly as the walk did, and
-the saved block stores the field's testID the focus proof used. Ambiguous targets
-and potentially mutated fills still fail.
+this fallback; a stored testID replays through it exactly as the walk did.
+Ambiguous targets and potentially mutated fills still fail.
 
 On iOS, if the bound field disappears after typing (for example, an auto-submitting
 code field), the runner skips its post-type attribute read and stops verification
@@ -1334,7 +1549,8 @@ placeholder. A separate same-label element does not establish forwarding.
 A wrapper echoing its hidden React input's identity counts as that one input
 for fallback, unless complete React ancestry places the input outside the wrapper.
 This does not collapse candidates for strict fills.
-The keyboard-down path requires proof that the keyboard is hidden before the
+The [already-set rules](#fill-ladder) can avoid the fallback focus tap. Otherwise,
+the keyboard-down path requires proof that the keyboard is hidden before the
 tap (with the [one-scroll occlusion recovery](#occluded-taps-and-focus)). Every
 binding after the tap, including refreshed strict bindings,
 must uniquely resolve the original testID or its proven wrapper-to-input
@@ -1352,8 +1568,8 @@ becoming natively observable resumes strict verification; otherwise a
 still-hidden keyboard refuses without typing.
 
 When the keyboard is already up, iOS fallback types only with positive React
-proof that the intended input is focused. With an eligible target, QaReN taps it,
-recaptures with the [settlement check](#occluded-taps-and-focus), rebinds the
+proof that the intended input is focused. With an eligible target that does not
+skip, QaReN taps it, recaptures with the [settlement check](#occluded-taps-and-focus), rebinds the
 same identity and then requires that proof. Without a target, it requires that
 no secure or disabled element carries the quoted
 testID and React reports that exact input focused. The guard and proof use the
@@ -1414,7 +1630,8 @@ field keeps the runner's mutation disposition. The [focused replacement tests](.
 cover these guards and mutation reporting.
 An unverified keyboard step records a passing row with reason `UNVERIFIED_FILL`,
 allowing later plan steps to continue; it does not establish the field's final
-value. Apart from that one replacement recovery and the ladder step below, failed keyboard typing is not retried. Before the fallback tap or
+value. Apart from that one replacement recovery and the ladder step below, failed
+keyboard typing is not retried. Before the pre-focus comparison, fallback tap or
 no-target typing dispatch, the value is protected under the
 [shared masking rules](#input-value-masking), and screenshots follow the
 [declared policy](#video-publication). For block persistence after fallback, see [Saved blocks](#saved-blocks).
@@ -1439,9 +1656,24 @@ shows it as `via <method>`:
 
 A secure field is never pre-read for skipping. Private values are compared inside the app;
 only comparison metadata leaves it. Unreadable, placeholder, formatted, case-only and unstable
-matches keep the existing typing path. Android and keyboard fallback without an observable input
-keep typing. An observable, controlled iOS input reached through fallback can skip after two
-exact comparisons that also prove focus.
+matches keep the existing typing path. Android keeps typing. A controlled iOS input
+reached through fallback can skip after two exact comparisons that also prove focus.
+
+Before a fallback focus tap, iOS can also skip when the plan names the input by its
+own testID. Complete React host evidence in the ordinary capture must prove there is
+exactly one fillable host carrying that ID as its testID or nativeID, neither hidden,
+disabled nor read-only. Exactly one other host must carry the observed tap target's
+testID, which differs from the input's. The target's own React entry must name that
+host as its own and list exactly that one input host beneath it; an input rendered
+through a portal does not count.
+The overlay probe and centre coverage checks still
+run first, including after a clearance scroll. Two exact in-app reads, 150 ms apart,
+must both report a controlled, non-secure, enabled input. Success records
+`already-set` without a tap, keyboard wait or further capture; the field keeps its
+focus state and no focus handler runs. A missing proof, failed comparison or
+non-abort read error keeps the tap-and-type path. See the
+[pre-focus regressions](../qaren-core/test/unit/qa/keyboard-fallback.test.ts).
+
 To require a change event even when the value already matches, add a trailing `(always retype)`,
 for example `Fill "name" with input NAME (secret) (always retype)`. It combines with
 `(any method)` in either order, case-insensitively. Behaviour labels must trail the line;
@@ -1779,7 +2011,8 @@ reported not visible to the user or was outside the viewport;
 explanation prefers hidden literal text, then a visible `other` node, then a
 hidden `other` node. The explanation repeats only the plan's literal, never
 the rest of the node's label. An absent match or uncertain literal evidence
-adds no near-miss explanation.
+adds no node-label near-miss explanation. For iOS text omitted from accessibility,
+see [hidden-text diagnostics](#text-hidden-from-accessibility-on-ios).
 
 The [native geometry model](../qaren-core/src/qa/native-presence.ts) clips nodes
 on both axes against the Application screen and trusted Window, ScrollView,
@@ -1838,6 +2071,24 @@ remaining vertical span supplies the drag band; an exhausted span refuses
 `SCROLL_BAND_TOO_SMALL`. Padding uses four points, scaled by the captured Android
 display density when available. Without a scroll container, the centred window
 drag is retained.
+
+<a id="scroll-until-overlay-policy"></a>
+
+For scroll-until bands and target coverage on iOS, a later-drawn `Other` or
+`Toolbar` is ignored when its frame contains the list's whole clip, its React
+host is not proven touch-opaque, and React supplies no press/fill hint or matched
+interactive entry. A handlerless entry without a testID that supplies only a
+role on a label does not count as interactive. Every captured descendant must
+have a frame wholly outside the list's clip; touching an edge counts as outside,
+and the offscreen flag alone is insufficient. A childless `Toolbar` also qualifies,
+but a childless `Other` remains a potential dim layer. Controls, partial covers,
+touch-opaque hosts, and containers with overlapping or frameless descendants
+remain covers. This exception makes no live hit reads and does not change plain
+Scroll or Android.
+Quoted targets use the ordinary capture and benefit from this rule on iOS 27.2.
+Unquoted phrase targets retain their presence capture: a toolbar containing a
+childless full-size `Other` can still exhaust the band because that child cannot
+be distinguished structurally from a dim layer; support for that case is deferred.
 Quoted scroll-until uses the current ordinary capture for target visibility and
 geometry, with the [iOS inferred-overlay probe](#covered-target-recovery) governing
 completion under an inferred cover. Otherwise, a target whose tap point is covered
@@ -2090,8 +2341,8 @@ The privacy boundary is unchanged: an incomplete native snapshot is never walked
 or masked. A Wait re-reads on its normal poll cadence within its existing deadline;
 if a complete read recovers but the quoted target stays absent, the Wait retains
 `TARGET_NOT_FOUND` with the observed screen, even if a later recovery capture is
-incomplete. Tap,
-Fill, Check and Scroll still refuse immediately. React-side incomplete capture
+incomplete. Other steps refuse incomplete native evidence after any eligible capture
+retries described below. React-side incomplete capture
 and generic private-capture failures retain `PRIVATE_INPUT_CAPTURE_UNKNOWN`.
 
 A required private capture re-reads a canonical empty snapshot (`nodes=[]`,
@@ -2100,10 +2351,21 @@ or dropped nodes), a structurally valid incomplete version-2 snapshot on the
 platform-presence route with no truncation or dropped nodes, a consistent node
 count, a known matching generation and withheld keyboard state, or an iOS
 `RN_FAST_RUNNER_DOWN` failure marked as pending runner relaunch recovery, at
-500 ms intervals within the existing 6-second settle budget and remaining total
-capture budget. These conditions share one retry
-deadline; re-reads on both ordinary and platform-presence routes, including
-readiness probes and snapshot transport, stop waiting at that deadline.
+500 ms intervals until the earlier of six seconds after the first retryable result
+and 22 seconds after capture start. These conditions share one retry deadline.
+Re-reads on both ordinary and platform-presence routes, including readiness probes
+and snapshot transport, stop waiting at that deadline.
+A required private ordinary capture with no caller budget also re-reads a nonempty,
+untruncated snapshot whose only incomplete cause is `dropped=<n>`, within that shared
+deadline. Wait polls and platform-presence captures keep one native read for this
+cause. Each dropped-snapshot re-read emits a
+value-free `native-reread` point in `logs/core-diagnostics.jsonl`, with or without
+runtime inputs. Only a fresh complete read is admitted. Persistent drops refuse
+with their latest node count, dropped count and `retry-deadline`, including when an
+intervening empty read is followed by a read that exceeds the window.
+A truncated replacement or a degraded replacement outside the retry conditions
+above refuses with its own causes and no expiry marker. Native read exceptions
+keep their existing classification.
 After timeout containment relaunches the iOS reader, it waits for an `alive`
 probe with `PLATFORM_PRESENCE_V2` within the remaining `READY_TIMEOUT_MS`
 (30 seconds by default), shared with reader startup;
@@ -2132,9 +2394,9 @@ ordinary privacy admission or lift screenshot withholding. Semantic phrase-actio
 readbacks still require full platform presence and privacy admission.
 Only a fresh, complete snapshot can establish privacy or admit a newly arrived
 system alert; partial presence never authorizes actions, screenshots or model
-evidence. Malformed, truncated, dropped-node and other incomplete captures refuse
-at the capture boundary; Wait handles `NATIVE_SNAPSHOT_INCOMPLETE` as described
-above. The [capture implementation](../qaren-core/src/qa/capture.ts) owns
+evidence. Incomplete captures outside the retry conditions or still incomplete after
+their retry window refuse at the capture boundary; Wait handles
+`NATIVE_SNAPSHOT_INCOMPLETE` as described above. The [capture implementation](../qaren-core/src/qa/capture.ts) owns
 retry eligibility; [settle regressions](../qaren-core/test/unit/qa/private-empty-reread.test.ts)
 cover these boundaries.
 
@@ -2547,8 +2809,8 @@ names possible per-request fingerprint recomputation first and suggests a
 fixed development `runtimeVersion`, or your own dev server from a scratch
 copy with the resolved string. Early watcher refusals keep their own cause.
 
-Before starting iOS Metro, QaReN asks pnpm for its effective `node-options`,
-including workspace, user and global configuration and pnpm's interpolation
+QaReN starts iOS Metro with `--localhost`. Before startup, it asks pnpm for its
+effective `node-options`, including workspace, user and global configuration and pnpm's interpolation
 and escaping. It composes that value (or inherited `NODE_OPTIONS` when unset)
 with IPv4-first DNS and a quoted `--require` of the preload, then passes the
 result through both `NODE_OPTIONS` and `npm_config_node_options` and pnpm's
@@ -2561,6 +2823,39 @@ is left, it uses inherited
 `NODE_OPTIONS` and records a value-free fallback note; cancellation still
 prevents startup.
 A native-side configuration override is not visible in the artifact.
+
+The iOS Metro wait does not trust how `localhost` resolves. Once the port's
+listener is proven to be in QaReN's Metro group, each turn reads the port's
+listeners (`lsof -nP -iTCP:<port> -sTCP:LISTEN`) and probes `/status` on
+`127.0.0.1` and `[::1]` without a proxy. A successful probe requires a 2xx
+response with body `packager-status:running`; Metro is ready when `127.0.0.1`
+passes that probe. When only `[::1]` answers, the listener is QaReN's on `[::1]` with no
+`127.0.0.1` or wildcard listener, `127.0.0.1` stays refused or silent on two
+more looks one second apart, and the listener is unchanged, the Metro is
+`[::1]`-only. The first time an iOS run sees that, QaReN stops its Metro
+through the same process-group stop that cleanup uses, then starts it once more
+without `--localhost`, with the same Node options and preload and with
+`REACT_NATIVE_PACKAGER_HOSTNAME=127.0.0.1`. The restarted Metro listens on all
+network interfaces for that run, as every Android run's Metro does. It logs to
+`logs/metro-restart.log`; the first log is kept. Once the replacement process
+spawns, the receipt's `outcomes.metro_bind_recovery` and the report say
+"Metro was restarted once on all network interfaces during this run", even if
+the run fails before readiness or process identity capture. The notice also
+says whether Metro has been stopped or could not be confirmed stopped; a
+successful prepare that keeps Metro running has no stop qualifier. The wait
+goes on under the same build deadline. A restart that ends past the deadline fails
+`READY_DEADLINE_EXCEEDED` in that turn. A second `[::1]`-only finding, or a
+first Metro whose stop is not proven, refuses `METRO_BIND_IPV6_ONLY` in that
+turn: in the second case nothing else starts, and the record keeps that Metro
+for cleanup. The detail names the listener forms seen (only `127.0.0.1`,
+`[::1]`, `*` and `other`, never another address) and what was tried: "QaReN
+restarted its Metro once on all interfaces" or "the first Metro could not be
+stopped". The next step is the cleanup command, then a check of the project's
+Node DNS result order. Anything less consistent keeps waiting. The run record
+and receipt carry `metro_bind`: `127.0.0.1`, `127.0.0.1 after restart on all
+interfaces`, `[::1]-only`, or `inconclusive` when the
+deadline passed; it survives Metro's cleanup and `status` prints it. Android
+keeps its single `127.0.0.1` probe and never restarts.
 
 A request-handler timeout after `/status` responds names startup or a
 stalled watcher as possible causes; steady answers near 30 seconds also name a
@@ -2656,6 +2951,43 @@ matching simulator crash report, never its paths; only a missing framework the
 app embeds gets the CocoaPods remedy.
 Other manifest and launch errors remain `BUILD_FAILED`; clean up retained
 resources before retrying those errors.
+
+Android APK installs issued directly by QaReN use `adb install -r -d` with a
+300-second first-attempt limit. This covers fresh builds for borrowed or tunnelled
+emulators and cached installs on emulators or USB devices. Fresh USB builds remain
+built and installed by `expo run:android` and do not use this recovery. If the
+first attempt fails or lacks `Success`, an `INSTALL_FAILED_` or
+`INSTALL_PARSE_FAILED_` verdict in either stdout or stderr is final. Otherwise,
+unless cancelled, QaReN waits for the package manager before retrying once.
+
+The recovery wait starts when the first install returns and lasts at most 180
+seconds. It requires three consecutive successful `pm path android` probes with
+a `package:` line. Each probe gets at most 30 seconds, capped to the wait's
+remaining whole seconds; five-second pauses are also capped to the remaining
+wait. Cancellation is checked before each probe and pause and after each probe.
+The second install gets at most 300 seconds, capped to the whole seconds left in
+the install/launch/readiness `build_seconds` window opened at reuse-path entry.
+For a fresh emulator build, that is a new window after Gradle, independent of
+the build's remaining time. With less than one second left, no second install
+starts. The recovery wait itself has its own 180-second limit.
+
+Missing verdicts can mean a dropped transport or a committed install whose
+acknowledgement was lost; three good probes do not prove the first install never
+committed. Replacing the same APK with `-r -d` permits this single retry. Recovery
+never restarts, reboots or wipes the emulator. Success after retry records
+`install_attempts=2` and `install_recovery_wait_ms`; the runner records both
+`adb-install` command events.
+
+Android recovery failures use `ARTIFACT_INSTALL_FAILED` with fixed detail text
+and no device output. A first-attempt verdict is `install-failed`. An exhausted
+recovery wait is also `install-failed`, stating that the first install failed,
+the package manager did not answer for 180 seconds, and no second install was
+tried. If the package manager answers but the preparation window is spent,
+`install-timeout` says no second install was tried. A failed second attempt is
+`install-failed` or `install-timeout`, stating that the install failed twice and
+the package manager answered between attempts. Cancellation remains `RUN_CANCELLED`;
+after an acknowledged retry install, QaReN saves its installation record for
+cleanup ownership proof before honoring cancellation.
 
 Cached dev-client verification and installation failures on either platform
 use `ARTIFACT_INSTALL_FAILED`. `failure.detail` carries `artifact-invalid`,
@@ -3097,12 +3429,15 @@ remains unproven, cleanup retains the resources and lease.
 A failed startup also retains its driver handle until exit is proven; a surviving
 driver blocks replacement with `RUNNER_ADOPTION_REQUIRED`.
 
-After teardown, an iOS check with a recorded runner driver polls
-`~/Library/Logs/DiagnosticReports` for up to 60 seconds, stopping early on a match
-or cancellation. It looks for a SpringBoard `.ips` report whose body `captureTime`
-is at or after core spawn and whose device path or coalition matches the selected
-simulator. File modification time and the header's report-delivery timestamp do
-not establish crash time; a missing or invalid `captureTime` is not attributed.
+After teardown, an iOS check with a recorded runner driver scans
+`~/Library/Logs/DiagnosticReports` once immediately. A pass or a failure marked as
+a plan step's failure does not wait; other outcomes poll for up to 60 seconds,
+stopping early on a match or cancellation. A core execution failure or a surviving
+core process group always keeps that polling window. It looks for a SpringBoard
+`.ips` report whose body `captureTime` is at or after core spawn and whose device
+path or coalition matches the selected simulator. File modification time and the
+header's report-delivery timestamp do not establish crash time; a missing or
+invalid `captureTime` is not attributed.
 A match adds `outcomes.springboard_crash` to the receipt and a lane-health entry to
 `run.json` history, including the crash time in UTC and optionally a sanitized
 exception type; report paths and raw contents are not copied. Attribution to this
@@ -3205,8 +3540,9 @@ before the holder died or re-created by an orphaned build writing its output, do
 count. Before a native build or native suite is let past its start gate, its process
 group is recorded in the holder, as is a `qaren` process's own group when it leads
 one; that group must also have no live members, otherwise the refusal names the lock
-and the `pgrep -g` check to wait on. The iOS native-build lock additionally
-requires that group to have been recorded before the next claim releases it: its
+and the `pgrep -g` check to wait on. The iOS native-build lock and shared
+`native-build-slot` additionally
+require that group to have been recorded before the next claim releases it: its
 holder may have died after starting a build it had not yet recorded, so such an
 orphan is kept until an explicit `qaren cleanup <run-id>` for that run releases it. A `qaren` group whose leader pid now belongs to
 another process is not checked, since a reused pid proves its old group is gone. `qaren cleanup <run-id>` for a run with no
@@ -3244,9 +3580,8 @@ use normal teardown. For eligible failed iOS checks, precedence is:
 | `QAREN_HOLD_ON_FAIL=1` or unset | Hold |
 
 A held Metro keeps its port; another run using that port refuses `METRO_PORT_OCCUPIED`.
-iOS runs start Metro with `--localhost` and the Node options described in the
-[launch readiness contract](#ios-simulator-lifecycle), so a held Metro listens only on
-`127.0.0.1`, where the readiness probes and simulator reach it; Android runs keep
+For iOS Metro startup options, verified loopback readiness and bind refusals, see
+the [launch readiness contract](#ios-simulator-lifecycle); Android runs keep
 their `adb reverse` path.
 
 The iOS runner's XCTest result bundles under `Logs/Test` in both its local
@@ -3255,6 +3590,25 @@ runner stop or reap and before a new runner launch, because XCTest's own
 activity log records the text of fields it queries, including typed values.
 `Build/Products` is preserved for warm launches. If the core is hard-killed,
 bundles can remain on disk until the next runner launch performs this cleanup.
+
+Apple's test automation logs the value of a field it reads or types into,
+including a private `Fill` value, and the simulator's own system log records it
+unredacted (measured on iOS 26.5). That log store is
+`var/db/diagnostics` under the simulator's data directory, which QaReN reads
+from `dataPath` in `xcrun simctl list -j devices`, and checks before removing
+anything. For pool claim and cleanup removal, including retry and lease
+retention when removal fails, see the [iOS simulator pool](#ios-simulator-pool).
+Every run on a pooled or borrowed simulator gets a `simulator_log` cleanup
+leg in its receipt saying what happened. `removed` means the store was deleted;
+`absent` means it was already absent or its cleanup had completed; `kept`
+means no removal was attempted (including a pooled run that never armed its
+stop); `refused` or `unresolved` means removal was not proven. Temporary
+simulators, including `--new`, have no separate log leg: their `simulator`
+cleanup leg reports deletion of the whole simulator instead.
+Every `check`, `pr` and `prepare --device` run borrows its simulator and keeps
+its log (`simulator_log: kept`), even if QaReN originally created that simulator.
+`qaren doctor --device <udid>` prints guidance for clearing the borrowed
+simulator's log; it removes nothing.
 
 ### Saved blocks
 
@@ -3306,7 +3660,7 @@ A step without a `testID` or label, a phrase wait, or a literal fill into a secu
 [keyboard fallback](#fill-verification-and-keyboard-fallback) leaves the block
 unsaved and the ledger says why without naming any value. A [runtime input](#runtime-inputs)
 fill can be saved in those private or fallback paths when it has a stored selector,
-which is the field's testID the focus proof used, even for a passing `UNVERIFIED_FILL`
+which is the bound field's testID, even for a passing `UNVERIFIED_FILL`
 row; the remaining persistence checks still apply. Planned fill literals
 also undergo the [shared masking rules](#input-value-masking), so a protected
 literal withholds a newly discovered or patched block even for an ordinary input.
@@ -3678,10 +4032,17 @@ React hosts outside the one mounted `Modal` are not gaps while every associated 
 sits inside it, so a full-screen promo over a mounted screen still counts as one control.
 Check-first, wait-first and tap/fill-first plans behind a presented full-screen promo
 recover under these guards and retry the step once. Before scrolling for a
-React-only tap or fill target while a decline control is on screen, an ordinary
-capture gets one bounded presence recapture within the step's remaining budget. When it proves the target is behind
-the presented `Modal`, recovery runs instead of scrolling the promo. A recapture that
-runs out of time or returns incomplete evidence leaves the cover unproven, and the
+React-only tap or fill target, an ordinary capture gets one bounded presence
+recapture within the step's remaining budget: on iOS before the target's one drag
+unless a system dialog is in front, elsewhere only while a decline control is on screen. When it proves the target is behind
+the presented `Modal`, recovery runs instead of scrolling the promo. On iOS the drag
+then goes only toward a target that read places below or above an on-screen scroll
+container that is also its scroll-until container, inside the part of that container
+that nothing drawn in front covers; a target inside the visible area, with no matching
+scroll container, with no exposed scroll band or with no readable place refuses `TARGET_NOT_FOUND`
+("is known to React but has no element on the visible screen", with the reason and
+"nothing was scrolled"), and so does a recapture that runs out of time or returns
+incomplete evidence. These refusals run no recovery. Elsewhere such a recapture leaves the cover unproven, and the
 step continues as it would have without it; it never adds a refusal of its own.
 If the ordinary observation expired during that read, it is refreshed before
 continuing, with the modal cover still unproven.
@@ -4014,6 +4375,26 @@ For runs using runtime inputs, see the [runtime-input diagnostics](#runtime-inpu
 for the retained event file and field limits. The `core.log` details below apply
 to runs without runtime inputs.
 
+Every walker dispatch timing event records its `action`. A `COMPLETED` event
+means the handler returned, not that it succeeded: `ok` records the returned
+boolean, `nativeMutation` retains a recognized mutation classification when
+provided, and a non-ok result adds `resultCode`. That code is the leading error
+code when allowlisted, or `OTHER`; error text is never copied into these fields.
+The [diagnostic allowlists](../qaren-core/src/qa/diagnostics.ts) own the action,
+mutation and result-code vocabulary. These fields survive the TypeScript and CLI
+cleaners into runtime-input runs' private `logs/core-diagnostics.jsonl` as well.
+They distinguish a non-ok press, keyboard dismissal and a successful retry in
+order without changing dispatch behavior, refusal diagnostics or ledger rows.
+
+For the [keyboard-refusal handoff](#occluded-taps-and-focus), read the dispatch
+`COMPLETED` events in order: `press` with `ok: false`,
+`resultCode: KEYBOARD_DISMISS_FAILED` and `nativeMutation: none`, then
+`dismiss-keyboard`, then `press` with its returned result. A repeated refusal
+ends after that third dispatch; the absent-target path starts with dismissal,
+without a preceding press. Dismissal's `ok: true` alone does not prove the
+keyboard disappeared: the separate `keyboard-clearance` note in `logs/core.log`
+must report `hidden: true` to establish that observation.
+
 Private `timing` events in `logs/core.log` may include `refusalDiagnostic` when
 an instrumented iOS dispatch boundary records the context's first refusal. This
 bounded, value-free record retains allowlisted refusal, native-response and
@@ -4028,7 +4409,7 @@ diagnostic collection and sink failures preserve the refusal.
 <a id="clearance-diagnostics"></a>
 
 When a press or fill target's centre remains covered after the one-scroll
-allowance, a private `timing` event with code `CENTRE_COVERED` includes the
+allowance or a withheld recovery drag, a private `timing` event with code `CENTRE_COVERED` includes the
 observation ordinal and `clearanceDiagnostic`. It records the viewport, keyboard or
 overlay predicate branch, boolean coverage facts, the scroll's origin and requested
 direction, and whether the target centre changed. For an overlay branch, the
@@ -4052,12 +4433,15 @@ occlusion. Runtime-input suppression follows the contract above.
 The [walker cover result type](../qaren-core/src/qa/walker.ts) owns the fixed gap values.
 `no-native-presence` means the capture carried no native presence, so no React host
 could be tied to a native node. Quoted presses use ordinary captures without native
-presence or React typography. On iOS a covered press or Fill refusal with that gap takes the
+presence or React typography; the [absent-target keyboard clearance](#occluded-taps-and-focus)
+has a separate modal-proof capture. On iOS a covered press or Fill refusal with that gap takes the
 walker's one bounded platform-presence recapture, the same one a plain scroll uses for
 an unproven cover, and looks up the cover again on it, at most once per cover lookup.
-For covered targets, only refusals pay for that read (a presence capture can take
-tens of seconds on device); it never adds a refusal or
-grants a dispatch. An incomplete read leaves the cover unproven
+For covered targets, only native dispatch refusals or terminal step refusals pay
+for that read (a presence capture can take tens of seconds on device). Before
+an eligible post-refusal drag, it supplies the current geometry and can withhold
+the drag under the [recovery contract](#covered-target-recovery); terminal diagnostic
+reads grant no further dispatch. An incomplete read leaves the cover unproven
 (`presence-recapture-incomplete`), and a target the recapture cannot find again leaves
 `target-not-recaptured`.
 In `clearanceDiagnostic`, unread or unavailable facts
@@ -4101,6 +4485,26 @@ available without private-input diagnostics, and omitted when not measured;
 a measured zero is retained. Settle time overlaps `actMs` and preparation
 counts add no time to the partition. Waits and scrolls that only capture can
 carry preparation counts without a client settle.
+
+Optional `timing.send` details measured Tap and Fill dispatch work:
+
+- `keyboardGuardMs`: native keyboard check and dismissal time.
+- `liveCheckMs`: native target movement and live-hit check time.
+- `gestureMs`: native action interval; Fill includes focus, clearing, typing
+  and intervening waits on that path.
+- `runnerMs`: whole native command handling time, excluding transport and
+  client settle.
+- `settleProbes`: number of client settle probe calls, including failed probes.
+
+Each field sums available measurements across dispatches in the row window.
+Durations can be fractional milliseconds; `settleProbes` is an integer count.
+The duration fields overlap `actMs`, and `runnerMs` includes the measured native
+subphases; do not add them together or to `total`. Probe counts add no time.
+These fields are value-free and retained for runtime-input runs. Unmeasured
+fields are omitted, including on older runners or paths that skip native work;
+a measured zero is retained. Focused Fill records zero settle probes when
+client settle is disabled and native send measurements are available. Availability
+depends on the platform and dispatch path; absent fields do not mean zero cost.
 
 The ledger's `speed` summary groups timed action/check rows by operation, keeping
 login-replay steps separate from plan steps that share a line and kind. Every retry,
@@ -4828,7 +5232,13 @@ one, pass it with `--device`.
   the pool is at its cap, each skip reason, including the
   `xcrun simctl shutdown <UUID>` hint, appears in the `device_pool` `fresh:`
   note.
-- **Reset.** A claimed member is booted after dependencies, strict
+- **Reset.** Under the lease, while the member is still proven Shutdown, the
+  claim removes its system log store before any boot. A member whose store
+  cannot be removed (no `dataPath`, a path that fails the check, or a failed
+  removal) is skipped for that run: its lease is released and the run goes on
+  with the next member, a new member or a temporary simulator, and the
+  `device_pool_log_skipped` note names the member and why. The next claim
+  tries it again. A claimed member is booted after dependencies, strict
   foreign-driver admission and a durable pending stop, and is then reset:
   the app is uninstalled and proven absent, which clears its container and
   privacy grants, then `simctl keychain <UUID> reset` runs. An uninstall or
@@ -4851,7 +5261,11 @@ one, pass it with `--device`.
   cleanup. prepare never waits for a device.
 - **Return.** `qaren cleanup <run-id>` stops the run's processes, shuts the
   member down after strict admission with an exact readback, keeps it and
-  releases the lease last. QaReN never deletes a pool member; delete one with
+  releases the lease last. After the proven shutdown and before the lease is
+  released, it reads the inventory again and removes the member's system log
+  store (`simulator_log`). If that read does not prove Shutdown or name the
+  data path, or the removal fails, the stop stays pending and the lease stays
+  held until a later `qaren cleanup <run-id>` succeeds. QaReN never deletes a pool member; delete one with
   `xcrun simctl delete <UUID>` when no run holds it, and the next scan drops
   its record. A creation that crashed before the stop was armed is an owned
   temporary: cleanup deletes it by UUID and name and releases the lock.
@@ -4864,7 +5278,8 @@ one, pass it with `--device`.
 - **`--dry-run`** names the member it would claim and the reset commands, the
   `simctl create qaren-pool-<run-id>` it would run, or, at the cap, the
   temporary `simctl create qaren-<run-id>` with the `fresh:` reason, and
-  claims, writes and prunes nothing. A member whose dead holder's run never reached `ready` is
+  claims, writes and prunes nothing. Reuse is conditional on clearing the
+  member's log store during the real claim. A member whose dead holder's run never reached `ready` is
   reported as reused after reclaiming that run; a Booted one counts only if
   that run armed its stop, since cleanup shuts down nothing else.
 - **Unproven process identity.** When `ps` cannot prove this prepare's own
@@ -5049,6 +5464,12 @@ bound by the lockfile plus the `version` of the package Node resolution finds
 in `node_modules` from the project root up to the worktree root (pnpm symlinks
 included); pure Node built-ins are ignored, and a package that does not resolve to a
 versioned `package.json` makes the fingerprint incomplete.
+Other Node built-ins, including unknown `node:` names, make it incomplete because
+they may read unbound inputs. Their refusal names the first file traced importing
+the specifier, for example: `Node built-in "node:fs" imported by plugins/withX.js
+may read unbound inputs; the input set is unprovably complete`. A specifier that
+is not a resolvable package name also names its importing file. This attribution
+is diagnostic only and is not hashed.
 Local package plugins and bare imports declared through `link:`, `file:` or
 `workspace:`, or resolved into worktree source outside `node_modules`, are not
 traced and always make the fingerprint incomplete; relative plugin files in
@@ -5066,6 +5487,20 @@ dynamic or template-literal arguments, escaped literals and other unsupported
 syntax make the fingerprint **incomplete**, forbidding cached reuse (visible
 in decision evidence). Unresolvable local refs and `workspace:` dependencies
 in any of those sections also make it incomplete.
+
+The import and ambient `process` scans ignore comments, quoted-string content
+and template text when the scanner can identify them confidently; expressions
+inside `${…}` remain code. Strings and template text inside bracket expressions
+remain scanned to preserve computed-key detection, as does string content or a
+template-text segment exactly equal to `require`, `import` or `process`.
+Text later executed through `eval` or `new Function` is not scanned as code.
+If the scanner encounters a non-comment `/` (including division), `<` (including
+JSX), `#!`, `-->`, a raw line break in a quoted string or an unterminated
+comment, string, template or placeholder, the whole file uses the previous
+unmasked scan. U+2028/U+2029 or a carriage return without a following line feed
+anywhere in the file also trigger that fallback. Code-site line numbers are
+preserved.
+
 On iOS the value also binds the selected Xcode (`xcodebuild -version`), so a
 build is never reused across Xcode versions, and an unavailable Xcode makes the
 fingerprint incomplete.
@@ -5096,6 +5531,18 @@ or select a compatible installed Xcode with `DEVELOPER_DIR`.
 
 Receipts report normalized `toolchain` information: selected Xcode, Swift version,
 and observed Expo module linkage. Unknown evidence remains unknown.
+
+**Fingerprint timings.** Successful build-decision and pre-walk re-check
+computations report durations in receipt `timings_ms` and the `end` event's
+`timingsMs`, with prefixes `plan_fp_` and `verify_fp_`, respectively. Each prefix
+has `total` (the whole fingerprint call), `list` (candidate input listing),
+`toolchain` (compiler identity collection) and `hash` (input reading, tracing and
+hashing). The `expo` suffix measures Expo resolution and evaluation and appears
+only when attempted (on iOS for Expo or dynamic configs, and on Android for
+dynamic configs); it is absent otherwise, including on static Android configs.
+For each prefix, the four parts sum to no more than `total`; these are
+subdivisions, not extra time to add to the enclosing stage. Only durations are
+exposed: private fingerprint subprocesses emit no `cmd` events.
 
 **Expo native identity (iOS).** When the app's `package.json` declares `expo` in
 `dependencies`, `devDependencies`, `optionalDependencies` or `peerDependencies`,
@@ -5289,16 +5736,126 @@ state. An ambiguous artifact (zero or several bundles) skips caching with a reco
 reason, never a guess. Only a saved state permits ownership rebinding.
 
 **Build serialization.** Native builds (incremental and clean) take a
-host-level `native-build-<platform>` lock. On iOS the lock covers only the
+host-level `native-build-<platform>` lock, subject to
+[memory admission](#waiting-for-memory-before-a-native-build), followed by one shared
+`native-build-slot` immediately before each build command. This queues iOS
+and Android builds on the same machine. Finite builds release the slot only
+after their process group is proven gone. `expo run:android` releases it on
+a complete Gradle `BUILD SUCCESSFUL in …` or `BUILD FAILED in …` line in this
+run's build log, or after its entire Metro process group is proven absent.
+A dead group leader and a free Metro port do not prove group absence. App readiness,
+cancellation and timeout alone do not release it. The slot uses a private claim
+token saved before acquisition and reused through group recording and cleanup,
+so matching run ids in separate homes cannot release each other's slot. Public
+queue output shows only the run id.
+
+The slot wait polls every second and has one `deadlines.build_seconds` budget
+from its own start. On iOS the wait also consumes the shared build window
+described below. `qaren watch` shows a **Build queue**
+row with the holder, lock, held time and time waited. Plain output records
+each observed holder change and each completed wait. Queue events contain
+only the lock name, a validated run id and durations.
+
+**Build priority and worker cap.** By default, native app builds run under `nice -n 10`:
+finite builds (`expo prebuild`, `expo run:ios`, the workspace `xcodebuild`,
+direct Gradle) through the build gate's `exec`, so the recorded process and
+group stay the build's own, and `expo run:android` through its own command,
+so its Metro runs niced too. Builds whose command line QaReN controls get one
+worker cap, `max(2, min(cores × 3 / 4, (total GiB − 8) / 2))` from the
+machine's core count and memory (integer division, with memory below 8 GiB
+treated as zero before the two-worker minimum): `-Dorg.gradle.workers.max` in `GRADLE_OPTS`
+on both Android paths, and `-jobs` on the workspace `xcodebuild` line.
+`expo run:android` also gets `-Dorg.gradle.daemon=false`; direct Gradle
+already passes `--no-daemon`. The default `expo run:ios` path gets the same
+cap through a wrapper: Expo starts `xcodebuild` by name with a fixed argument
+list, so QaReN writes a short `sh` script named `xcodebuild` into
+`ios-build/.qaren-xcodebuild/` in the run directory and puts that directory
+first on that one command's `PATH`. For a build invocation (one with
+`-destination` and no `-show…`, `-list…`, `-version…`, `-json…` or `-jobs…`
+argument) it appends a marker line beside itself and execs the real
+`xcodebuild` (the absolute path the unchanged `PATH` resolved to) with
+`-jobs <n>`; anything else is passed through unchanged. The receipt claims the
+cap only when that marker exists, and says `uncapped` otherwise. QaReN removes
+the directory when the build command ends, recording any removal failure.
+`build.jobs` overrides the machine's number and works even when the core count
+or memory cannot be read; without it, an unreadable machine size leaves builds
+uncapped. The Expo iOS route is also uncapped if `xcodebuild` does not resolve
+or the wrapper cannot be written. Lower priority still applies. QaReN sets
+`org.gradle.workers.max` for its own builds: it appends the cap after the
+user's `GRADLE_OPTS`, so a value for that property in the user's own
+`GRADLE_OPTS` is overridden for QaReN builds only, and the user's other options
+are kept verbatim. A user who set a lower worker number there gets QaReN's
+number in QaReN builds, possibly more workers, until they set `build.jobs`.
+`build.jobs` is the way to choose the number; the receipt
+says the cap was set over any value in the user's `GRADLE_OPTS`.
+`build.priority: normal` drops `nice`. These settings belong under `build`
+in `.qaren/config.yaml` for `check` and `pr`, or under `build` in the scenario
+for CLI-owned `prepare` builds; they do not control cooperative handoff builds.
+
+On an Apple-silicon Mac (the machine's `sysctl -n hw.optional.arm64` is `1`)
+both iOS build routes get `EXCLUDED_ARCHS=x86_64` in their environment to
+request an arm64-only simulator build. An environment value is the weakest
+source, so a project's own architecture settings still win. It is left out
+when any of `EXCLUDED_ARCHS`, `ARCHS` or `ONLY_ACTIVE_ARCH` is present in the
+user's environment, to any value (including empty), and when
+`.qaren/config.yaml` has `build.arch: all`, which
+an app with an x86_64-only simulator dependency needs.
+
+The receipt's `outcomes` record what each build got as
+`build_policy:<command label>`, for example
+`priority nice 10; jobs 8 (machine: 18 cores, 24 GiB); arch arm64` or
+`priority nice 10; jobs uncapped (the xcodebuild wrapper did not run); arch all (build.arch: all)`.
+The dry-run command list shows the bare build commands. Nothing new is
+refused: a busy machine still builds, slower. `nice` does not bound memory,
+`-jobs` bounds build operations rather than compiler processes one for one,
+and whether the Gradle cap also bounds CMake and Ninja compile jobs is not
+established. The reduction in concurrent compilers and the slowdown on a quiet
+machine have not yet been measured.
+
+On iOS the platform lock covers only the
 build: `prepare`, `check` and `pr` claim it after the device is allocated and
 release it once the artifact is verified, the pre-publication candidate and
 fingerprint checks pass and cache publication is persisted, before
 [run-owned output retirement](#cli-owned-ios-build-routes); Metro, install,
 launch and readiness run afterwards, and the final drift checks still run
-after readiness. A contended iOS claim waits, polling every second, within the
-same build budget (`deadlines.build_seconds`) that the prebuild, build,
-verification and publication then share; see the
+after readiness. A contended iOS claim waits, polling every second, for at most
+`deadlines.build_seconds`; waiting for the lock is not build time. The build
+window starts when the lock is claimed and lasts three times the effective
+compile limit (learned as described below), at most 7200 s; prebuild, the
+build-slot wait (bounded by `build_seconds` from
+its own start), the build, verification and publication share it. Prebuild keeps
+`build_seconds` as its own bound. The compile step (the iOS build, and the
+Android Gradle build on a borrowed emulator, whose ceiling of three times the
+limit counts from the command's start) changes nothing up to the limit; past it
+the build goes on while its log drain counts new output lines (a value-free
+count kept beside the log, also when the output is withheld) within the idle
+window, a quarter of the limit, at least 300 s and at most 600 s. It ends by
+`no_progress` (no new line for the idle window), by `window` (the window ran
+out), or, for prebuild, by `command_limit`. A build that produces no output is
+cut at the limit when the limit is 300 s or more; below that it is cut at the
+earlier of 300 s or three times the limit. The remaining iOS build window can
+stop compilation earlier. Such a cut stays `BUILD_FAILED` and carries a
+`limit` block (`phase`, `setting`, `limit_s`, `window_s`, `idle_s`,
+`elapsed_s`, `ended_by`, `last_progress_age_s`, `next_limit_s`, and `learned`
+when the limit was raised) and the
+`build_time_limit` recovery: after this run's own `qaren cleanup` has
+succeeded, run again; after a `window` end first set `deadlines.build_seconds`
+to `next_limit_s`, or, when the window was already 7200 s and `next_limit_s`
+is absent, build the app with the project's own tools. A passing compile
+records `native_build` in `timings_ms` and the `build_next_limit` outcome, and
+`build_limit` when it went past its limit. Each passing compile's time is kept
+per machine, platform and app in `<runs root>/build-timings/<platform>/<app id>.json`
+(the last five, replaced whole); the next run's compile limit is the larger of
+`build_seconds` and 1.5 times the longest of them, at most 7200 s, noted as
+`build_limit_learned` and as `limit.learned` on a cut. The lock wait, the slot
+wait and prebuild keep `build_seconds`. A missing or unreadable record means
+`build_seconds`; `build_next_limit` is a forecast, since another run may replace
+the record first. See the
 [deadline defaults and validation](src/scenario.rs).
+Build subprocess timeouts are capped to the remaining window, and no new
+build command starts after expiry. Teardown commands and their process-identity
+reads keep their own timeouts so they can stop the build and prove its group gone
+after expiry; unresolved cleanup retains ownership for `qaren cleanup`.
 A synchronous cache copy already in progress is not interrupted; its completion is checked against the window
 before publication. Output retirement
 and readiness run outside this window. Running that budget out while waiting is a refusal (`BUILD_CONTENDED`,
@@ -5307,18 +5864,27 @@ its recorded build group still runs, and how long this run waited, for example
 `BUILD_CONTENDED: native-build-ios is held by run <id> (alive: yes; no build process for 9 min); waited 600 s of the budget. Next: wait for that run or re-run once later; if the holder is dead, run its qaren cleanup from its home (its resources only).`
 After 120 s of a live holder with no build group running the wait notes
 `holder_idle_after_build`; a live or unproven holder is never taken. Running
-the budget out after the claim is `BUILD_FAILED`. The receipt's `build_lock`
-reports `holder`, `waited_s`, `holder_alive`, `holder_build_process`,
+the window out at verification or publication is `BUILD_FAILED` with the
+`build_budget_exhausted` recovery. The receipt's `build_lock`
+keeps the last contended wait, or the latest claim observation if none contended;
+`build_lock_waits` keeps both platform and slot
+observations in order. Each reports `lock`, `holder`, `waited_s`, `holder_alive`, `holder_build_process`,
 `hold_s`, `no_build_observed_s` and `observation` (`none`, `observed` or
 `unreadable`), never a home, lock path, token, PID or command, and failures on
 these paths carry a `recovery` object with the ordered recovery ladder and
 whether this run must clean up its own resources. `qaren doctor` reports the
-lock's current state as `native-build-lock` without claiming it. A run that
+platform lock and slot state as `native-build-lock` without claiming either. A run that
 cannot observe its own process identity refuses `PREREQ_MISSING` before
 claiming. An unresolved release stops the run (`RUN_RECORD_UPDATE_FAILED`)
 and the lock stays recorded for `qaren cleanup`.
 Android claims before allocation, refuses a live holder at once and can adopt
-a provably dead holder's lock. iOS recovery follows the
+a provably dead holder's platform lock. The shared slot follows the stricter
+[orphaned-lock proof rules](#ios-admission-and-cleanup).
+Otherwise only that run's cleanup releases it after group retirement;
+an unproven spawn keeps it recorded. Reused builds never claim the slot.
+Private lock roots isolate their slots too; older versions, runner builds and
+source builds do not participate. An Expo log without a Gradle end line keeps
+the slot until the run's group is retired. iOS recovery follows the
 [cleanup and orphaned-lock proof rules](#ios-admission-and-cleanup).
 The lock is released after publication (iOS), after preparation (Android) or
 by cleanup, only when owned build authority is retired.

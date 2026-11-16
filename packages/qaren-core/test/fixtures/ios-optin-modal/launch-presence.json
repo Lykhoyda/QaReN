@@ -1,0 +1,2421 @@
+{
+  "mode": "platform-presence",
+  "captureCoverage": {
+    "native": "complete",
+    "react": "complete"
+  },
+  "presenceBudgetMs": 20000,
+  "rawBeforeValidation": {
+    "presenceCapture": {
+      "startedUptimeMs": 137148749.0185417,
+      "appliedBudgetMs": 20000,
+      "diagnostics": {
+        "preparationQuietWindowMs": 500,
+        "preparationResets": 0,
+        "phaseMs": {
+          "observation": 271.89862501621246,
+          "preparation": 621.6152499616146,
+          "final-eligibility": 53.21975001692772,
+          "initial-eligibility": 57.809708297252655,
+          "enumeration": 0.4465000033378601,
+          "revalidation": 10.806958317756653
+        },
+        "preparationSamples": 6,
+        "preparationQuietElapsedMs": 609.4072916507721
+      },
+      "source": "xcui-live",
+      "appId": "com.rndevagent.testapp",
+      "generation": 28,
+      "version": 2,
+      "endedUptimeMs": 137149764.85141668,
+      "captureId": "D5AA64C8-9AE6-4D80-BF47-422D2C2BDFB1",
+      "enumeration": "raw-unfiltered",
+      "complete": true
+    },
+    "snapshotGeneration": 28,
+    "surface": "app",
+    "reactHostEvidence": {
+      "hosts": [
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "box-none",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "box-none",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "none",
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "nativeID": "0",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "box-none",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "app-root",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "box-none",
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "qa-reminder-home",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "qa-reminder-loading",
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 2
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "box-none",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "box-none",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "none",
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "qa-reminder-sheet",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 2
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-reminder-accept",
+          "order": 3
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-reminder-decline",
+          "order": 4
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        }
+      ],
+      "complete": true,
+      "typography": {
+        "version": 1,
+        "complete": true,
+        "durationMs": 13,
+        "coordinateSpace": "window-points",
+        "nodes": [
+          {
+            "hostIndex": 0,
+            "parentHostIndex": null,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 1,
+            "parentHostIndex": 0,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 2,
+            "parentHostIndex": 0,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 3,
+            "parentHostIndex": 2,
+            "rootIndex": 0,
+            "hostType": "DebuggingOverlay",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 4,
+            "parentHostIndex": 1,
+            "rootIndex": 0,
+            "hostType": "RNCSafeAreaProvider",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 5,
+            "parentHostIndex": 4,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 6,
+            "parentHostIndex": 5,
+            "rootIndex": 0,
+            "hostType": "KeyboardControllerView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 7,
+            "parentHostIndex": 6,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 8,
+            "parentHostIndex": 7,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 9,
+            "parentHostIndex": 8,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 10,
+            "parentHostIndex": 9,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 11,
+            "parentHostIndex": 10,
+            "rootIndex": 0,
+            "hostType": "RNSScreenStack",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 12,
+            "parentHostIndex": 11,
+            "rootIndex": 0,
+            "hostType": "RNSScreen",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 13,
+            "parentHostIndex": 12,
+            "rootIndex": 0,
+            "hostType": "RNSScreenStackHeaderConfig",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 0
+            }
+          },
+          {
+            "hostIndex": 14,
+            "parentHostIndex": 12,
+            "rootIndex": 0,
+            "hostType": "RNSScreenContentWrapper",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 15,
+            "parentHostIndex": 14,
+            "rootIndex": 0,
+            "hostType": "RNSSafeAreaView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 16,
+            "parentHostIndex": 15,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 17,
+            "parentHostIndex": 16,
+            "rootIndex": 0,
+            "hostType": "RCTText",
+            "text": {
+              "kind": "block",
+              "content": "Reminder demo",
+              "runs": [
+                {
+                  "start": 0,
+                  "end": 13,
+                  "fontSize": 21
+                }
+              ],
+              "scaling": {
+                "allowFontScaling": true,
+                "maxFontSizeMultiplier": 0
+              }
+            },
+            "accessibility": {
+              "accessible": "true",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 21,
+              "y": 86,
+              "width": 360,
+              "height": 28
+            }
+          },
+          {
+            "hostIndex": 18,
+            "parentHostIndex": 16,
+            "rootIndex": 0,
+            "hostType": "RCTText",
+            "text": {
+              "kind": "block",
+              "content": "Loading your items",
+              "runs": [
+                {
+                  "start": 0,
+                  "end": 18,
+                  "fontSize": 14
+                }
+              ],
+              "scaling": {
+                "allowFontScaling": true,
+                "maxFontSizeMultiplier": 0
+              }
+            },
+            "accessibility": {
+              "accessible": "true",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 21,
+              "y": 128,
+              "width": 360,
+              "height": 21
+            }
+          },
+          {
+            "hostIndex": 19,
+            "parentHostIndex": 16,
+            "rootIndex": 0,
+            "hostType": "RCTModalHostView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 20,
+            "parentHostIndex": 19,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 21,
+            "parentHostIndex": 20,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 22,
+            "parentHostIndex": 21,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 23,
+            "parentHostIndex": 21,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 24,
+            "parentHostIndex": 23,
+            "rootIndex": 0,
+            "hostType": "DebuggingOverlay",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 25,
+            "parentHostIndex": 22,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 26,
+            "parentHostIndex": 25,
+            "rootIndex": 0,
+            "hostType": "RCTText",
+            "text": {
+              "kind": "block",
+              "content": "Get reminders?",
+              "runs": [
+                {
+                  "start": 0,
+                  "end": 14,
+                  "fontSize": 21
+                }
+              ],
+              "scaling": {
+                "allowFontScaling": true,
+                "maxFontSizeMultiplier": 0
+              }
+            },
+            "accessibility": {
+              "accessible": "true",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 21,
+              "y": 118,
+              "width": 360,
+              "height": 28
+            }
+          },
+          {
+            "hostIndex": 27,
+            "parentHostIndex": 25,
+            "rootIndex": 0,
+            "hostType": "RCTText",
+            "text": {
+              "kind": "block",
+              "content": "We can remind you before your items are due.",
+              "runs": [
+                {
+                  "start": 0,
+                  "end": 44,
+                  "fontSize": 14
+                }
+              ],
+              "scaling": {
+                "allowFontScaling": true,
+                "maxFontSizeMultiplier": 0
+              }
+            },
+            "accessibility": {
+              "accessible": "true",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 21,
+              "y": 156.3333282470703,
+              "width": 360,
+              "height": 21
+            }
+          },
+          {
+            "hostIndex": 28,
+            "parentHostIndex": 25,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 21,
+              "y": 177.6666717529297,
+              "width": 360,
+              "height": 544
+            }
+          },
+          {
+            "hostIndex": 29,
+            "parentHostIndex": 25,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "true",
+              "authoredLabel": "present"
+            },
+            "rect": {
+              "x": 21,
+              "y": 721.6666870117188,
+              "width": 360,
+              "height": 42
+            }
+          },
+          {
+            "hostIndex": 30,
+            "parentHostIndex": 25,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "true",
+              "authoredLabel": "present"
+            },
+            "rect": {
+              "x": 21,
+              "y": 774,
+              "width": 360,
+              "height": 42
+            }
+          },
+          {
+            "hostIndex": 31,
+            "parentHostIndex": 29,
+            "rootIndex": 0,
+            "hostType": "RCTText",
+            "text": {
+              "kind": "block",
+              "content": "Turn on notifications",
+              "runs": [
+                {
+                  "start": 0,
+                  "end": 21,
+                  "fontSize": 14
+                }
+              ],
+              "scaling": {
+                "allowFontScaling": true,
+                "maxFontSizeMultiplier": 0
+              }
+            },
+            "accessibility": {
+              "accessible": "true",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 129.66666412353516,
+              "y": 732.0000200271606,
+              "width": 142.6666717529297,
+              "height": 21
+            }
+          },
+          {
+            "hostIndex": 32,
+            "parentHostIndex": 30,
+            "rootIndex": 0,
+            "hostType": "RCTText",
+            "text": {
+              "kind": "block",
+              "content": "Not now",
+              "runs": [
+                {
+                  "start": 0,
+                  "end": 7,
+                  "fontSize": 14
+                }
+              ],
+              "scaling": {
+                "allowFontScaling": true,
+                "maxFontSizeMultiplier": 0
+              }
+            },
+            "accessibility": {
+              "accessible": "true",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 173,
+              "y": 784.3333330154419,
+              "width": 55.66667175292969,
+              "height": 21
+            }
+          }
+        ]
+      }
+    }
+  },
+  "joinArgs": {
+    "nodes": [
+      {
+        "ref": "@e0",
+        "type": "Application",
+        "rect": {
+          "y": 0,
+          "width": 402,
+          "height": 874,
+          "x": 0
+        },
+        "index": 0,
+        "depth": 0,
+        "presence": {
+          "captureId": "D5AA64C8-9AE6-4D80-BF47-422D2C2BDFB1",
+          "generation": 28,
+          "status": "unknown",
+          "nodeIndex": 0,
+          "labelSource": "direct"
+        },
+        "label": "rn-dev-agent-test",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e1",
+        "type": "Window",
+        "rect": {
+          "width": 402,
+          "y": 0,
+          "x": 0,
+          "height": 874
+        },
+        "index": 1,
+        "depth": 1,
+        "parentIndex": 0,
+        "presence": {
+          "captureId": "D5AA64C8-9AE6-4D80-BF47-422D2C2BDFB1",
+          "generation": 28,
+          "status": "unknown",
+          "nodeIndex": 1,
+          "labelSource": "descendant"
+        },
+        "label": "Get reminders?",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e2",
+        "type": "Other",
+        "rect": {
+          "y": 0,
+          "height": 874,
+          "x": 0,
+          "width": 402
+        },
+        "index": 2,
+        "depth": 2,
+        "parentIndex": 1,
+        "presence": {
+          "captureId": "D5AA64C8-9AE6-4D80-BF47-422D2C2BDFB1",
+          "generation": 28,
+          "status": "unknown",
+          "nodeIndex": 2,
+          "labelSource": "descendant"
+        },
+        "label": "Get reminders?",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e3",
+        "type": "Other",
+        "rect": {
+          "width": 402,
+          "x": 0,
+          "y": 0,
+          "height": 874
+        },
+        "index": 3,
+        "depth": 3,
+        "parentIndex": 2,
+        "presence": {
+          "nodeIndex": 3,
+          "labelSource": "descendant",
+          "captureId": "D5AA64C8-9AE6-4D80-BF47-422D2C2BDFB1",
+          "generation": 28,
+          "status": "unknown"
+        },
+        "label": "Get reminders?",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e4",
+        "type": "Other",
+        "rect": {
+          "x": 0,
+          "width": 402,
+          "y": 0,
+          "height": 874
+        },
+        "index": 4,
+        "depth": 4,
+        "parentIndex": 3,
+        "presence": {
+          "captureId": "D5AA64C8-9AE6-4D80-BF47-422D2C2BDFB1",
+          "labelSource": "descendant",
+          "generation": 28,
+          "status": "unknown",
+          "nodeIndex": 4
+        },
+        "label": "Get reminders?",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e5",
+        "type": "Other",
+        "rect": {
+          "width": 402,
+          "x": 0,
+          "y": 0,
+          "height": 874
+        },
+        "index": 5,
+        "depth": 5,
+        "parentIndex": 4,
+        "presence": {
+          "observedUptimeMs": 137149483.22225,
+          "captureId": "D5AA64C8-9AE6-4D80-BF47-422D2C2BDFB1",
+          "status": "observed",
+          "generation": 28,
+          "nodeIndex": 5,
+          "labelSource": "none"
+        },
+        "identifier": "qa-reminder-sheet",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e6",
+        "type": "Other",
+        "rect": {
+          "x": 0,
+          "width": 402,
+          "y": 0,
+          "height": 874
+        },
+        "index": 6,
+        "depth": 5,
+        "parentIndex": 4,
+        "presence": {
+          "captureId": "D5AA64C8-9AE6-4D80-BF47-422D2C2BDFB1",
+          "status": "unknown",
+          "generation": 28,
+          "nodeIndex": 6,
+          "labelSource": "none"
+        },
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e7",
+        "type": "Other",
+        "rect": {
+          "height": 874,
+          "width": 402,
+          "x": 0,
+          "y": 0
+        },
+        "index": 7,
+        "depth": 6,
+        "parentIndex": 6,
+        "presence": {
+          "captureId": "D5AA64C8-9AE6-4D80-BF47-422D2C2BDFB1",
+          "status": "unknown",
+          "generation": 28,
+          "nodeIndex": 7,
+          "labelSource": "none"
+        },
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e8",
+        "type": "Other",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "height": 874,
+          "width": 402
+        },
+        "index": 8,
+        "depth": 7,
+        "parentIndex": 7,
+        "presence": {
+          "captureId": "D5AA64C8-9AE6-4D80-BF47-422D2C2BDFB1",
+          "status": "unknown",
+          "generation": 28,
+          "nodeIndex": 8,
+          "labelSource": "none"
+        },
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e9",
+        "type": "StaticText",
+        "rect": {
+          "x": 21,
+          "height": 28,
+          "y": 118,
+          "width": 360
+        },
+        "index": 9,
+        "depth": 5,
+        "parentIndex": 4,
+        "presence": {
+          "observedUptimeMs": 137149539.55895835,
+          "captureId": "D5AA64C8-9AE6-4D80-BF47-422D2C2BDFB1",
+          "status": "observed",
+          "generation": 28,
+          "nodeIndex": 9,
+          "labelSource": "direct"
+        },
+        "label": "Get reminders?",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e10",
+        "type": "StaticText",
+        "rect": {
+          "width": 360,
+          "height": 28,
+          "y": 118,
+          "x": 21
+        },
+        "index": 10,
+        "depth": 6,
+        "parentIndex": 9,
+        "presence": {
+          "observedUptimeMs": 137149539.55895835,
+          "captureId": "D5AA64C8-9AE6-4D80-BF47-422D2C2BDFB1",
+          "status": "observed",
+          "generation": 28,
+          "nodeIndex": 10,
+          "labelSource": "direct"
+        },
+        "label": "Get reminders?",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e11",
+        "type": "StaticText",
+        "rect": {
+          "x": 21,
+          "width": 360,
+          "y": 156.3333282470703,
+          "height": 21
+        },
+        "index": 11,
+        "depth": 5,
+        "parentIndex": 4,
+        "presence": {
+          "observedUptimeMs": 137149595.5666667,
+          "captureId": "D5AA64C8-9AE6-4D80-BF47-422D2C2BDFB1",
+          "status": "observed",
+          "generation": 28,
+          "nodeIndex": 11,
+          "labelSource": "direct"
+        },
+        "label": "We can remind you before your items are due.",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e12",
+        "type": "StaticText",
+        "rect": {
+          "y": 156.3333282470703,
+          "height": 21,
+          "width": 360,
+          "x": 21
+        },
+        "index": 12,
+        "depth": 6,
+        "parentIndex": 11,
+        "presence": {
+          "observedUptimeMs": 137149595.5666667,
+          "captureId": "D5AA64C8-9AE6-4D80-BF47-422D2C2BDFB1",
+          "status": "observed",
+          "generation": 28,
+          "nodeIndex": 12,
+          "labelSource": "direct"
+        },
+        "label": "We can remind you before your items are due.",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e13",
+        "type": "Button",
+        "rect": {
+          "x": 21,
+          "height": 42,
+          "y": 721.6666870117188,
+          "width": 360
+        },
+        "index": 13,
+        "depth": 5,
+        "parentIndex": 4,
+        "presence": {
+          "observedUptimeMs": 137149643.01104167,
+          "captureId": "D5AA64C8-9AE6-4D80-BF47-422D2C2BDFB1",
+          "status": "observed",
+          "generation": 28,
+          "nodeIndex": 13,
+          "labelSource": "direct"
+        },
+        "label": "Turn on notifications",
+        "identifier": "qa-reminder-accept",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e14",
+        "type": "Button",
+        "rect": {
+          "y": 774,
+          "x": 21,
+          "height": 42,
+          "width": 360
+        },
+        "index": 14,
+        "depth": 5,
+        "parentIndex": 4,
+        "presence": {
+          "observedUptimeMs": 137149690.33258337,
+          "captureId": "D5AA64C8-9AE6-4D80-BF47-422D2C2BDFB1",
+          "status": "observed",
+          "generation": 28,
+          "nodeIndex": 14,
+          "labelSource": "direct"
+        },
+        "label": "Not now",
+        "identifier": "qa-reminder-decline",
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e15",
+        "type": "Window",
+        "rect": {
+          "width": 402,
+          "height": 874,
+          "x": 0,
+          "y": 0
+        },
+        "index": 15,
+        "depth": 1,
+        "parentIndex": 0,
+        "presence": {
+          "captureId": "D5AA64C8-9AE6-4D80-BF47-422D2C2BDFB1",
+          "status": "unknown",
+          "generation": 28,
+          "nodeIndex": 15,
+          "labelSource": "none"
+        },
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e16",
+        "type": "Other",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "height": 874,
+          "width": 402
+        },
+        "index": 16,
+        "depth": 2,
+        "parentIndex": 15,
+        "presence": {
+          "captureId": "D5AA64C8-9AE6-4D80-BF47-422D2C2BDFB1",
+          "status": "unknown",
+          "generation": 28,
+          "nodeIndex": 16,
+          "labelSource": "none"
+        },
+        "enabled": true,
+        "hittable": true
+      },
+      {
+        "ref": "@e17",
+        "type": "Other",
+        "rect": {
+          "width": 402,
+          "height": 874,
+          "x": 0,
+          "y": 0
+        },
+        "index": 17,
+        "depth": 3,
+        "parentIndex": 16,
+        "presence": {
+          "captureId": "D5AA64C8-9AE6-4D80-BF47-422D2C2BDFB1",
+          "status": "unknown",
+          "generation": 28,
+          "nodeIndex": 17,
+          "labelSource": "none"
+        },
+        "enabled": true,
+        "hittable": true
+      }
+    ],
+    "digest": [
+      {
+        "role": "button",
+        "testID": "qa-reminder-accept",
+        "text": "Turn on notifications",
+        "label": "Turn on notifications",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        }
+      },
+      {
+        "role": "button",
+        "testID": "qa-reminder-decline",
+        "text": "Not now",
+        "label": "Not now",
+        "capabilities": {
+          "press": true,
+          "fill": false
+        }
+      }
+    ],
+    "front": "app",
+    "coverage": {
+      "native": "complete",
+      "react": "complete"
+    },
+    "reactHostEvidence": {
+      "hosts": [
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "box-none",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "box-none",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "none",
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "nativeID": "0",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "box-none",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "app-root",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "box-none",
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "qa-reminder-home",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "qa-reminder-loading",
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 2
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "box-none",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "box-none",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "pointerEvents": "none",
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "testID": "qa-reminder-sheet",
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 1
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 2
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-reminder-accept",
+          "order": 3
+        },
+        {
+          "role": "button",
+          "roleSource": "accessibilityRole",
+          "capabilities": {
+            "press": true
+          },
+          "testID": "qa-reminder-decline",
+          "order": 4
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        },
+        {
+          "role": null,
+          "roleSource": "none",
+          "capabilities": {},
+          "order": 0
+        }
+      ],
+      "complete": true,
+      "typography": {
+        "version": 1,
+        "complete": true,
+        "durationMs": 13,
+        "coordinateSpace": "window-points",
+        "nodes": [
+          {
+            "hostIndex": 0,
+            "parentHostIndex": null,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 1,
+            "parentHostIndex": 0,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 2,
+            "parentHostIndex": 0,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 3,
+            "parentHostIndex": 2,
+            "rootIndex": 0,
+            "hostType": "DebuggingOverlay",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 4,
+            "parentHostIndex": 1,
+            "rootIndex": 0,
+            "hostType": "RNCSafeAreaProvider",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 5,
+            "parentHostIndex": 4,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 6,
+            "parentHostIndex": 5,
+            "rootIndex": 0,
+            "hostType": "KeyboardControllerView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 7,
+            "parentHostIndex": 6,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 8,
+            "parentHostIndex": 7,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 9,
+            "parentHostIndex": 8,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 10,
+            "parentHostIndex": 9,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 11,
+            "parentHostIndex": 10,
+            "rootIndex": 0,
+            "hostType": "RNSScreenStack",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 12,
+            "parentHostIndex": 11,
+            "rootIndex": 0,
+            "hostType": "RNSScreen",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 13,
+            "parentHostIndex": 12,
+            "rootIndex": 0,
+            "hostType": "RNSScreenStackHeaderConfig",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 0
+            }
+          },
+          {
+            "hostIndex": 14,
+            "parentHostIndex": 12,
+            "rootIndex": 0,
+            "hostType": "RNSScreenContentWrapper",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 15,
+            "parentHostIndex": 14,
+            "rootIndex": 0,
+            "hostType": "RNSSafeAreaView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 16,
+            "parentHostIndex": 15,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 17,
+            "parentHostIndex": 16,
+            "rootIndex": 0,
+            "hostType": "RCTText",
+            "text": {
+              "kind": "block",
+              "content": "Reminder demo",
+              "runs": [
+                {
+                  "start": 0,
+                  "end": 13,
+                  "fontSize": 21
+                }
+              ],
+              "scaling": {
+                "allowFontScaling": true,
+                "maxFontSizeMultiplier": 0
+              }
+            },
+            "accessibility": {
+              "accessible": "true",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 21,
+              "y": 86,
+              "width": 360,
+              "height": 28
+            }
+          },
+          {
+            "hostIndex": 18,
+            "parentHostIndex": 16,
+            "rootIndex": 0,
+            "hostType": "RCTText",
+            "text": {
+              "kind": "block",
+              "content": "Loading your items",
+              "runs": [
+                {
+                  "start": 0,
+                  "end": 18,
+                  "fontSize": 14
+                }
+              ],
+              "scaling": {
+                "allowFontScaling": true,
+                "maxFontSizeMultiplier": 0
+              }
+            },
+            "accessibility": {
+              "accessible": "true",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 21,
+              "y": 128,
+              "width": 360,
+              "height": 21
+            }
+          },
+          {
+            "hostIndex": 19,
+            "parentHostIndex": 16,
+            "rootIndex": 0,
+            "hostType": "RCTModalHostView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 20,
+            "parentHostIndex": 19,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 21,
+            "parentHostIndex": 20,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 22,
+            "parentHostIndex": 21,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 23,
+            "parentHostIndex": 21,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 24,
+            "parentHostIndex": 23,
+            "rootIndex": 0,
+            "hostType": "DebuggingOverlay",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 25,
+            "parentHostIndex": 22,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "width": 402,
+              "height": 874
+            }
+          },
+          {
+            "hostIndex": 26,
+            "parentHostIndex": 25,
+            "rootIndex": 0,
+            "hostType": "RCTText",
+            "text": {
+              "kind": "block",
+              "content": "Get reminders?",
+              "runs": [
+                {
+                  "start": 0,
+                  "end": 14,
+                  "fontSize": 21
+                }
+              ],
+              "scaling": {
+                "allowFontScaling": true,
+                "maxFontSizeMultiplier": 0
+              }
+            },
+            "accessibility": {
+              "accessible": "true",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 21,
+              "y": 118,
+              "width": 360,
+              "height": 28
+            }
+          },
+          {
+            "hostIndex": 27,
+            "parentHostIndex": 25,
+            "rootIndex": 0,
+            "hostType": "RCTText",
+            "text": {
+              "kind": "block",
+              "content": "We can remind you before your items are due.",
+              "runs": [
+                {
+                  "start": 0,
+                  "end": 44,
+                  "fontSize": 14
+                }
+              ],
+              "scaling": {
+                "allowFontScaling": true,
+                "maxFontSizeMultiplier": 0
+              }
+            },
+            "accessibility": {
+              "accessible": "true",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 21,
+              "y": 156.3333282470703,
+              "width": 360,
+              "height": 21
+            }
+          },
+          {
+            "hostIndex": 28,
+            "parentHostIndex": 25,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "absent",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 21,
+              "y": 177.6666717529297,
+              "width": 360,
+              "height": 544
+            }
+          },
+          {
+            "hostIndex": 29,
+            "parentHostIndex": 25,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "true",
+              "authoredLabel": "present"
+            },
+            "rect": {
+              "x": 21,
+              "y": 721.6666870117188,
+              "width": 360,
+              "height": 42
+            }
+          },
+          {
+            "hostIndex": 30,
+            "parentHostIndex": 25,
+            "rootIndex": 0,
+            "hostType": "RCTView",
+            "text": {
+              "kind": "none"
+            },
+            "accessibility": {
+              "accessible": "true",
+              "authoredLabel": "present"
+            },
+            "rect": {
+              "x": 21,
+              "y": 774,
+              "width": 360,
+              "height": 42
+            }
+          },
+          {
+            "hostIndex": 31,
+            "parentHostIndex": 29,
+            "rootIndex": 0,
+            "hostType": "RCTText",
+            "text": {
+              "kind": "block",
+              "content": "Turn on notifications",
+              "runs": [
+                {
+                  "start": 0,
+                  "end": 21,
+                  "fontSize": 14
+                }
+              ],
+              "scaling": {
+                "allowFontScaling": true,
+                "maxFontSizeMultiplier": 0
+              }
+            },
+            "accessibility": {
+              "accessible": "true",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 129.66666412353516,
+              "y": 732.0000200271606,
+              "width": 142.6666717529297,
+              "height": 21
+            }
+          },
+          {
+            "hostIndex": 32,
+            "parentHostIndex": 30,
+            "rootIndex": 0,
+            "hostType": "RCTText",
+            "text": {
+              "kind": "block",
+              "content": "Not now",
+              "runs": [
+                {
+                  "start": 0,
+                  "end": 7,
+                  "fontSize": 14
+                }
+              ],
+              "scaling": {
+                "allowFontScaling": true,
+                "maxFontSizeMultiplier": 0
+              }
+            },
+            "accessibility": {
+              "accessible": "true",
+              "authoredLabel": "absent"
+            },
+            "rect": {
+              "x": 173,
+              "y": 784.3333330154419,
+              "width": 55.66667175292969,
+              "height": 21
+            }
+          }
+        ]
+      }
+    },
+    "nativePresence": {
+      "source": "xcui-live",
+      "nodes": [
+        {
+          "status": "unknown",
+          "labelSource": "direct"
+        },
+        {
+          "status": "unknown",
+          "labelSource": "descendant"
+        },
+        {
+          "status": "unknown",
+          "labelSource": "descendant"
+        },
+        {
+          "status": "unknown",
+          "labelSource": "descendant"
+        },
+        {
+          "status": "unknown",
+          "labelSource": "descendant"
+        },
+        {
+          "status": "observed",
+          "labelSource": "none"
+        },
+        {
+          "status": "unknown",
+          "labelSource": "none"
+        },
+        {
+          "status": "unknown",
+          "labelSource": "none"
+        },
+        {
+          "status": "unknown",
+          "labelSource": "none"
+        },
+        {
+          "status": "observed",
+          "labelSource": "direct"
+        },
+        {
+          "status": "observed",
+          "labelSource": "direct"
+        },
+        {
+          "status": "observed",
+          "labelSource": "direct"
+        },
+        {
+          "status": "observed",
+          "labelSource": "direct"
+        },
+        {
+          "status": "observed",
+          "labelSource": "direct"
+        },
+        {
+          "status": "observed",
+          "labelSource": "direct"
+        },
+        {
+          "status": "unknown",
+          "labelSource": "none"
+        },
+        {
+          "status": "unknown",
+          "labelSource": "none"
+        },
+        {
+          "status": "unknown",
+          "labelSource": "none"
+        }
+      ]
+    },
+    "nativeAcquisition": "complete"
+  }
+}

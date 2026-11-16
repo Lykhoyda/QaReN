@@ -189,6 +189,15 @@ function publicObservation(tree: unknown): ReactObservation {
         throw entryShape();
       result.inputHostIndices = [...entry.inputHostIndices];
     }
+    if (entry.hostIndex !== undefined) {
+      if (
+        !Number.isInteger(entry.hostIndex) ||
+        Number(entry.hostIndex) < 0 ||
+        Number(entry.hostIndex) >= hostEvidence.hosts.length
+      )
+        throw entryShape();
+      result.hostIndex = Number(entry.hostIndex);
+    }
     if (entry.handlerless !== undefined) {
       if (
         entry.handlerless !== true ||

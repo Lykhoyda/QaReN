@@ -5,10 +5,61 @@ use qaren::commands::prepare::{prepare, PrepareArgs};
 use qaren::exec::{CmdOutput, Spawned};
 use qaren::failure::FailureCode;
 use qaren::receipt::ReceiptResult;
-use qaren::runrecord::{Phase, RunRecord};
+use qaren::runrecord::{MetroBind, Phase, RunRecord};
 
 const UDID: &str = "AAAABBBB-1111-2222-3333-444455556666";
 const LSTART: &str = "Wed Aug 12 16:01:00 2026";
+
+#[test]
+fn host_samples_bracket_prepare_and_survive_a_pre_record_refusal() {
+    for refused in [false, true] {
+        let repo = common::temp_repo();
+        let yaml = ios_scenario_yaml(8791);
+        let yaml = if refused {
+            yaml.replace("  dev_client_scheme: rndatest\n", "")
+        } else {
+            yaml
+        };
+        let scenario = write_scenario(&repo, &yaml);
+        let mut inner = MockRunner::new();
+        if !refused {
+            script_ios_prepare(&mut inner, &repo, CmdOutput::success(""));
+        }
+        let mut runner = common::host::HostRunner::new(inner);
+        runner.processes = Some("  4242 960.0 S    netsimd /sdk/emulator/netsimd\n".into());
+        let receipt = prepare(&mut runner, &prepare_args(&scenario, false, None));
+        assert_eq!(
+            receipt.result,
+            if refused {
+                ReceiptResult::Refused
+            } else {
+                ReceiptResult::Ready
+            }
+        );
+        let host = receipt.host.as_ref().unwrap();
+        assert_eq!(host.start.load_1m, Some(1.0));
+        assert_eq!(host.end.load_1m, Some(12.0));
+        assert_eq!(
+            receipt.device_helpers,
+            vec![qaren::device_helpers::Note {
+                name: qaren::device_helpers::HelperName::Netsimd,
+                pid: 4242,
+            }]
+        );
+        assert_eq!(runner.calls[2].label, "device-helpers");
+        assert!(runner.calls[..2].iter().all(|c| c.label == "host-sample"));
+        assert!(runner.calls[runner.calls.len() - 2..]
+            .iter()
+            .all(|c| c.label == "host-sample"));
+        if !refused {
+            let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
+            assert!(report.starts_with("# QaReN prepare: ready\n"));
+            assert!(report.contains("Host at start: load 1.0 on 8 cores"));
+            assert!(report.contains("At end: load 12.0 on 8 cores"));
+            assert!(report.contains("netsimd (pid 4242, 960.0% CPU)"));
+        }
+    }
+}
 
 fn free_port() -> CmdOutput {
     CmdOutput {
@@ -1336,17 +1387,786 @@ fn script_ios_prepare_before_request_probe_reading(
     repo: &std::path::Path,
     read_artifact: impl FnOnce(&mut MockRunner),
 ) {
+    script_ios_prepare_until_metro_owned(mock, repo, read_artifact);
+    common::script_metro_bind_ready(mock);
+}
+
+// Through the first turn's proof that QaReN's Metro owns the port, before the bind observation.
+fn script_ios_prepare_until_metro_owned(
+    mock: &mut MockRunner,
+    repo: &std::path::Path,
+    read_artifact: impl FnOnce(&mut MockRunner),
+) {
     script_ios_prepare_reading_artifact(mock, repo, read_artifact);
     mock.expect_run(
         "simctl list devices -j",
         CmdOutput::success(&common::sim_inventory(common::CREATED_UDID, "Booted")),
     );
     mock.expect_run("simctl install", CmdOutput::success(""));
+    script_metro_turn_owned(mock);
+}
+
+// One wait turn's liveness and port-owner proof.
+fn script_metro_turn_owned(mock: &mut MockRunner) {
     mock.expect_run("ps", CmdOutput::success(LSTART));
     mock.expect_run("ps", CmdOutput::success("S"));
-    mock.expect_run("lsof", CmdOutput::success("6001"));
+    mock.expect_run("-tiTCP:8791", CmdOutput::success("6001"));
     mock.expect_run("ps", CmdOutput::success("6000"));
-    mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+}
+
+// Everything after the Metro wait of a ready iOS prepare.
+fn script_ios_prepare_after_metro_ready(mock: &mut MockRunner) {
+    script_ios_prepare_after_metro_ready_of(mock, LSTART, "6001", "6000");
+}
+
+// The same, naming the recorded Metro's start time, port owner and group.
+fn script_ios_prepare_after_metro_ready_of(
+    mock: &mut MockRunner,
+    started: &str,
+    owner: &str,
+    pgid: &str,
+) {
+    mock.expect_run("qaren-request-probe", CmdOutput::success(""));
+    mock.expect_run("expo-platform", CmdOutput::success(""));
+    mock.expect_run("expo-platform", CmdOutput::success(""));
+    common::script_devmenu_defaults(mock, CmdOutput::success(""));
+    common::script_ios_launch(mock);
+    script_ios_readiness_of(mock, started, owner, pgid);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(mock);
+}
+
+// Each wait turn that reaches the bind observation sends one IPv6 probe.
+fn wait_turns(mock: &MockRunner) -> usize {
+    mock.calls
+        .iter()
+        .filter(|c| c.rendered().contains(common::V6_PROBE))
+        .count()
+}
+
+// R4: a Metro that answers on [::1] only, and that the restart cannot stop, is refused in the turn that sees it,
+// not at the build deadline; the refusal's own cleanup stops it once it can.
+#[test]
+fn ios_metro_answering_only_on_ipv6_is_refused_in_one_turn_with_its_cause() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+    common::script_metro_bind_ipv6_only(&mut mock, 8791);
+    script_metro_group_stop_unresolved(&mut mock, LSTART, "6001", "6000");
+    common::script_ios_metro_cleanup(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    let json = receipt.to_json();
+    assert!(json.contains("\"METRO_BIND_IPV6_ONLY\""), "{json}");
+    // Refused is exit 4.
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(wait_turns(&mock), 1);
+    let failure = receipt.failure.as_ref().unwrap();
+    let detail = failure.detail.to_string();
+    assert!(
+        detail.starts_with(
+            "Metro answered on [::1]:8791 and never on 127.0.0.1:8791, which QaReN and the dev client use"
+        ),
+        "{detail}"
+    );
+    assert!(
+        detail.contains("listeners seen: pid 6001 [::1]:8791"),
+        "{detail}"
+    );
+    assert!(
+        detail.ends_with("the first Metro could not be stopped"),
+        "{detail}"
+    );
+    assert_eq!(expo_starts(&mock).len(), 1);
+    assert_eq!(
+        failure.next_action.to_string(),
+        format!(
+            "qaren cleanup {} --json; then check whether the project sets Node's DNS result order (its Metro configuration, NODE_OPTIONS, or a pnpm node-options setting), then run again",
+            receipt.run_id
+        )
+    );
+    assert_eq!(receipt.metro_bind, Some(MetroBind::V6Only));
+    // The bound address outlives the Metro resource that the refusal's cleanup cleared.
+    let record = RunRecord::load(scenario.parent().unwrap(), &receipt.run_id).unwrap();
+    assert!(record.resources.metro.is_none());
+    assert_eq!(record.metro_bind, Some(MetroBind::V6Only));
+    assert!(!mock.calls.iter().any(|c| c.label == "metro-manifest"));
+}
+
+// The restarted Metro is a different process: another pid, group and start time.
+const RESTART_LSTART: &str = "Wed Aug 12 16:02:00 2026";
+
+// The group stop of one recorded Metro, as the refusal cleanup makes it; the group is proven gone at the end.
+fn script_metro_group_stop(mock: &mut MockRunner, started: &str, owner: &str, pgid: &str) {
+    script_metro_group_signals(mock, started, owner, pgid);
+    mock.expect_run("ps", CmdOutput::failed(1, ""));
+    mock.expect_run("lsof", CmdOutput::failed(1, ""));
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+}
+
+// The same stop whose group leader survives TERM and KILL: unresolved.
+fn script_metro_group_stop_unresolved(
+    mock: &mut MockRunner,
+    started: &str,
+    owner: &str,
+    pgid: &str,
+) {
+    script_metro_group_signals(mock, started, owner, pgid);
+    mock.expect_run("ps", CmdOutput::success(started));
+    mock.expect_run("ps", CmdOutput::success("S"));
+}
+
+fn script_metro_group_signals(mock: &mut MockRunner, started: &str, owner: &str, pgid: &str) {
+    mock.expect_run("ps", CmdOutput::success(started));
+    mock.expect_run("ps", CmdOutput::success("S"));
+    mock.expect_run("lsof", CmdOutput::success(owner));
+    mock.expect_run("ps", CmdOutput::success(pgid));
+    for _ in 0..2 {
+        mock.expect_run("lstart=", CmdOutput::success(started));
+        mock.expect_run("stat=", CmdOutput::success("S"));
+        mock.expect_run(&format!("-- -{pgid}"), CmdOutput::success(""));
+    }
+}
+
+// The second start: the same options read, then one spawn whose identity is captured.
+fn script_metro_restart_spawn(mock: &mut MockRunner) {
+    mock.expect_run(
+        "pnpm config get node-options",
+        CmdOutput::success("undefined\n"),
+    );
+    mock.expect_spawn(
+        "expo start",
+        Spawned {
+            pid: 7000,
+            pgid: 7000,
+        },
+    );
+    mock.expect_run("ps", CmdOutput::success(RESTART_LSTART));
+    mock.expect_run("ps", CmdOutput::success("node expo start"));
+}
+
+// One wait turn's liveness and port-owner proof for the restarted Metro.
+fn script_restarted_metro_turn_owned(mock: &mut MockRunner) {
+    mock.expect_run("ps", CmdOutput::success(RESTART_LSTART));
+    mock.expect_run("ps", CmdOutput::success("S"));
+    mock.expect_run("-tiTCP:8791", CmdOutput::success("7001"));
+    mock.expect_run("ps", CmdOutput::success("7000"));
+}
+
+fn script_restarted_metro_ipv6_only(mock: &mut MockRunner) {
+    let only_v6 = common::listening(&[(7001, "[::1]:8791")]);
+    mock.expect_run(common::LISTEN_READ, only_v6.clone());
+    mock.expect_run(common::V4_PROBE, common::connection_refused());
+    mock.expect_run(common::V6_PROBE, common::packager_running());
+    mock.expect_run(common::V4_PROBE, common::connection_refused());
+    mock.expect_run(common::V4_PROBE, common::connection_refused());
+    mock.expect_run(common::LISTEN_READ, only_v6);
+}
+
+fn names_pid(call: &qaren::exec::CmdSpec, pid: &str) -> bool {
+    call.args
+        .windows(2)
+        .any(|pair| pair[0] == "-p" && pair[1] == pid)
+        || call.args.iter().any(|arg| arg == &format!("-{pid}"))
+}
+
+fn expo_starts(mock: &MockRunner) -> Vec<qaren::exec::CmdSpec> {
+    mock.calls
+        .iter()
+        .filter(|c| c.label == "expo-start")
+        .cloned()
+        .collect()
+}
+
+fn index_of_second_start(mock: &MockRunner) -> usize {
+    mock.calls
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.label == "expo-start")
+        .nth(1)
+        .map(|(i, _)| i)
+        .expect("a second expo start")
+}
+
+fn metro_logs(mock: &MockRunner) -> Vec<String> {
+    mock.spawned_logs
+        .iter()
+        .filter_map(|p| p.file_name()?.to_str().map(str::to_string))
+        .filter(|name| name.starts_with("metro"))
+        .collect()
+}
+
+fn assert_metro_restart_disclosure(receipt: &qaren::receipt::Receipt, ending: &str) {
+    let expected =
+        format!("Metro was restarted once on all network interfaces during this run{ending}.");
+    assert_eq!(receipt.outcomes["metro_bind_recovery"], expected);
+    let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
+    assert!(report.lines().any(|line| line == expected), "{report}");
+}
+
+const HOSTNAME_PIN: (&str, &str) = ("REACT_NATIVE_PACKAGER_HOSTNAME", "127.0.0.1");
+
+// R10: the first [::1]-only finding stops QaReN's Metro, starts it once on all interfaces, and the wait goes on with the second.
+#[test]
+fn ios_metro_answering_only_on_ipv6_is_restarted_once_on_all_interfaces_and_the_run_goes_on() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+    common::script_metro_bind_ipv6_only(&mut mock, 8791);
+    script_metro_group_stop(&mut mock, LSTART, "6001", "6000");
+    script_metro_restart_spawn(&mut mock);
+    script_restarted_metro_turn_owned(&mut mock);
+    mock.expect_run(common::LISTEN_READ, common::listening(&[(7001, "*:8791")]));
+    mock.expect_run(common::V4_PROBE, common::packager_running());
+    mock.expect_run(common::V6_PROBE, common::packager_running());
+    script_ios_prepare_after_metro_ready_of(&mut mock, RESTART_LSTART, "7001", "7000");
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(receipt.metro_bind, Some(MetroBind::V4AfterRestart));
+    assert!(receipt
+        .to_json()
+        .contains("\"metro_bind\": \"127.0.0.1 after restart on all interfaces\""));
+    assert_metro_restart_disclosure(&receipt, "");
+    let starts = expo_starts(&mock);
+    assert_eq!(starts.len(), 2);
+    assert!(starts[0].args.iter().any(|a| a == "--localhost"));
+    assert!(!starts[1].args.iter().any(|a| a == "--localhost"));
+    let pin = (HOSTNAME_PIN.0.to_string(), HOSTNAME_PIN.1.to_string());
+    assert!(!starts[0].env.contains(&pin));
+    assert!(starts[1].env.contains(&pin));
+    assert_eq!(metro_logs(&mock), ["metro.log", "metro-restart.log"]);
+    // The first group was signalled before the second start, and nothing after it names the first.
+    let second = index_of_second_start(&mock);
+    assert!(mock.calls[..second].iter().any(|c| names_pid(c, "6000")));
+    for call in &mock.calls[second..] {
+        assert!(
+            !names_pid(call, "6000") && !names_pid(call, "6001"),
+            "{}",
+            call.rendered()
+        );
+    }
+    assert!(mock.calls[second..].iter().any(|c| names_pid(c, "7000")));
+    assert!(mock.calls[second..].iter().any(|c| names_pid(c, "7001")));
+    let record = RunRecord::load(scenario.parent().unwrap(), &receipt.run_id).unwrap();
+    let metro = record.resources.metro.as_ref().unwrap();
+    assert_eq!(metro.spawned.pid, 7000);
+    assert_eq!(metro.identity.as_ref().unwrap().started_at, RESTART_LSTART);
+    assert!(metro.log.ends_with("logs/metro-restart.log"));
+    assert_eq!(record.metro_bind, Some(MetroBind::V4AfterRestart));
+}
+
+// R10: a run cancelled between the first Metro's stop and the second start starts no second Metro.
+#[test]
+fn ios_metro_restart_cancelled_after_the_stop_starts_no_second_metro() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+    common::script_metro_bind_ipv6_only(&mut mock, 8791);
+    script_metro_group_stop(&mut mock, LSTART, "6001", "6000");
+    mock.cancel_after = Some(("-- -6000".into(), "received SIGTERM".into()));
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::RunCancelled,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(expo_starts(&mock).len(), 1);
+    let record = RunRecord::load(scenario.parent().unwrap(), &receipt.run_id).unwrap();
+    assert!(record.resources.metro.is_none());
+}
+
+// R10: a run cancelled right after the second start has recorded it, and its cleanup stops that Metro.
+#[test]
+fn ios_metro_restart_cancelled_after_the_second_start_cleans_the_second_metro() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+    common::script_metro_bind_ipv6_only(&mut mock, 8791);
+    script_metro_group_stop(&mut mock, LSTART, "6001", "6000");
+    script_metro_restart_spawn(&mut mock);
+    script_metro_group_stop(&mut mock, RESTART_LSTART, "7001", "7000");
+    mock.cancel_after = Some(("-p 7000".into(), "received SIGTERM".into()));
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+    assert_metro_restart_disclosure(&receipt, " and has been stopped");
+
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::RunCancelled,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(expo_starts(&mock).len(), 2);
+    let second = index_of_second_start(&mock);
+    assert!(mock.calls[second..]
+        .iter()
+        .any(|c| c.program == "/bin/kill" && names_pid(c, "7000")));
+    let record = RunRecord::load(scenario.parent().unwrap(), &receipt.run_id).unwrap();
+    assert!(record.resources.metro.is_none());
+}
+
+#[test]
+fn ios_metro_restart_discloses_identity_failure_and_exit_before_readiness() {
+    for identity_captured in [false, true] {
+        let repo = common::temp_repo();
+        let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+        let mut mock = MockRunner::new();
+        script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+        common::script_metro_bind_ipv6_only(&mut mock, 8791);
+        script_metro_group_stop(&mut mock, LSTART, "6001", "6000");
+        if identity_captured {
+            script_metro_restart_spawn(&mut mock);
+            mock.expect_run("ps", CmdOutput::failed(1, ""));
+            mock.expect_run("ps", CmdOutput::failed(1, ""));
+        } else {
+            mock.expect_run(
+                "pnpm config get node-options",
+                CmdOutput::success("undefined\n"),
+            );
+            mock.expect_spawn(
+                "expo start",
+                Spawned {
+                    pid: 7000,
+                    pgid: 7000,
+                },
+            );
+            mock.expect_run("ps", CmdOutput::failed(1, ""));
+            mock.expect_run("ps", CmdOutput::failed(1, ""));
+        }
+        mock.expect_run("lsof", CmdOutput::failed(1, ""));
+        if identity_captured {
+            mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+        }
+
+        let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+        assert_eq!(
+            receipt.failure.as_ref().unwrap().code,
+            FailureCode::BuildFailed
+        );
+        assert_eq!(receipt.metro_bind, Some(MetroBind::V6Only));
+        assert_metro_restart_disclosure(
+            &receipt,
+            if identity_captured {
+                " and has been stopped"
+            } else {
+                " and could not be confirmed stopped"
+            },
+        );
+        assert_eq!(mock.remaining(), 0);
+        assert_eq!(expo_starts(&mock).len(), 2);
+        assert_eq!(receipt.metro.is_some(), !identity_captured);
+    }
+}
+
+#[test]
+fn ios_metro_restart_discloses_unresolved_cleanup_after_cancellation() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+    common::script_metro_bind_ipv6_only(&mut mock, 8791);
+    script_metro_group_stop(&mut mock, LSTART, "6001", "6000");
+    script_metro_restart_spawn(&mut mock);
+    script_metro_group_stop_unresolved(&mut mock, RESTART_LSTART, "7001", "7000");
+    mock.cancel_after = Some(("-p 7000".into(), "received SIGTERM".into()));
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::RunCancelled
+    );
+    assert_metro_restart_disclosure(&receipt, " and could not be confirmed stopped");
+    assert_eq!(mock.remaining(), 0);
+    assert!(receipt.metro.is_some());
+}
+
+// R10: a second start that cannot spawn fails the build and still records why the restart was tried.
+#[test]
+fn ios_metro_restart_that_cannot_spawn_keeps_the_ipv6_only_finding() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+    common::script_metro_bind_ipv6_only(&mut mock, 8791);
+    script_metro_group_stop(&mut mock, LSTART, "6001", "6000");
+    mock.expect_run(
+        "pnpm config get node-options",
+        CmdOutput::success("undefined\n"),
+    );
+    mock.expect_spawn_failure("expo start", "pnpm not found");
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(
+        failure.code,
+        FailureCode::BuildFailed,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(receipt.metro_bind, Some(MetroBind::V6Only));
+    assert!(!receipt.outcomes.contains_key("metro_bind_recovery"));
+    let record = RunRecord::load(scenario.parent().unwrap(), &receipt.run_id).unwrap();
+    assert!(record.resources.metro.is_none());
+    assert_eq!(record.metro_bind, Some(MetroBind::V6Only));
+}
+
+// R11: one restart only; a second [::1]-only finding refuses and names the restart.
+#[test]
+fn ios_metro_still_answering_only_on_ipv6_after_the_restart_is_refused_naming_it() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+    common::script_metro_bind_ipv6_only(&mut mock, 8791);
+    script_metro_group_stop(&mut mock, LSTART, "6001", "6000");
+    script_metro_restart_spawn(&mut mock);
+    script_restarted_metro_turn_owned(&mut mock);
+    script_restarted_metro_ipv6_only(&mut mock);
+    script_metro_group_stop(&mut mock, RESTART_LSTART, "7001", "7000");
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+    assert_metro_restart_disclosure(&receipt, " and has been stopped");
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Refused,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(mock.remaining(), 0);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::MetroBindIpv6Only);
+    let detail = failure.detail.to_string();
+    assert!(
+        detail.contains("listeners seen: pid 7001 [::1]:8791"),
+        "{detail}"
+    );
+    assert!(
+        detail.ends_with("QaReN restarted its Metro once on all interfaces"),
+        "{detail}"
+    );
+    assert_eq!(expo_starts(&mock).len(), 2);
+    assert_eq!(receipt.metro_bind, Some(MetroBind::V6Only));
+    assert_eq!(
+        failure.next_action.to_string(),
+        format!(
+            "qaren cleanup {} --json; then check whether the project sets Node's DNS result order (its Metro configuration, NODE_OPTIONS, or a pnpm node-options setting), then run again",
+            receipt.run_id
+        )
+    );
+}
+
+// R12: a first Metro that cannot be stopped gets no second start and stays recorded while its stop is unresolved.
+#[test]
+fn ios_metro_that_cannot_be_stopped_is_refused_without_a_second_start() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+    common::script_metro_bind_ipv6_only(&mut mock, 8791);
+    script_metro_group_stop_unresolved(&mut mock, LSTART, "6001", "6000");
+    // The refusal's own cleanup tries once more and is unresolved too.
+    script_metro_group_stop_unresolved(&mut mock, LSTART, "6001", "6000");
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Refused,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(mock.remaining(), 0);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::MetroBindIpv6Only);
+    let detail = failure.detail.to_string();
+    assert!(
+        detail.ends_with("the first Metro could not be stopped"),
+        "{detail}"
+    );
+    assert_eq!(expo_starts(&mock).len(), 1);
+    let kills: Vec<_> = mock
+        .calls
+        .iter()
+        .filter(|c| c.program == "/bin/kill")
+        .collect();
+    assert!(!kills.is_empty());
+    assert!(kills.iter().all(|c| names_pid(c, "6000")));
+    let record = RunRecord::load(scenario.parent().unwrap(), &receipt.run_id).unwrap();
+    let metro = record.resources.metro.as_ref().unwrap();
+    assert_eq!(metro.spawned.pid, 6000);
+    assert!(metro.log.ends_with("logs/metro.log"));
+}
+
+// R13: the restart keeps the original deadline. The replacement does not answer, and the clock stands past
+// the original deadline but well before a deadline counted from the restart.
+#[test]
+fn ios_metro_restart_does_not_extend_the_build_deadline() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+    common::script_metro_bind_ipv6_only(&mut mock, 8791);
+    script_metro_group_stop(&mut mock, LSTART, "6001", "6000");
+    script_metro_restart_spawn(&mut mock);
+    script_restarted_metro_turn_owned(&mut mock);
+    mock.expect_run(common::LISTEN_READ, common::listening(&[(7001, "*:8791")]));
+    mock.expect_run(common::V4_PROBE, common::connection_refused());
+    mock.expect_run(common::V6_PROBE, common::connection_refused());
+    script_metro_group_stop(&mut mock, RESTART_LSTART, "7001", "7000");
+    // The wait starts at T; its observation sleeps 2 s and the stop 1.8 s. Each of the stop's two signals
+    // advances the clock so that the restart ends 1 s before T + 2400 s; the next turn stands 1 s past it.
+    mock.advance_on = Some(("-- -6000".into(), (2_400_000 - 4_800) / 2));
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+    assert_metro_restart_disclosure(&receipt, " and has been stopped");
+
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::ReadyDeadlineExceeded,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(expo_starts(&mock).len(), 2);
+    let second = index_of_second_start(&mock);
+    assert_eq!(
+        mock.calls[second..]
+            .iter()
+            .filter(|c| c.rendered().contains(common::V6_PROBE))
+            .count(),
+        1
+    );
+    let detail = receipt.failure.as_ref().unwrap().detail.to_string();
+    assert!(detail.contains("metro-restart.log"), "{detail}");
+    let record = RunRecord::load(scenario.parent().unwrap(), &receipt.run_id).unwrap();
+    assert!(record.resources.metro.is_none());
+}
+
+// R13: a restart that ends past the deadline fails in that same turn; the replacement is never probed or accepted,
+// and no Metro of either start is left running.
+#[test]
+fn ios_metro_restart_ending_past_the_deadline_fails_in_that_turn_and_leaves_no_metro() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+    common::script_metro_bind_ipv6_only(&mut mock, 8791);
+    script_metro_group_stop(&mut mock, LSTART, "6001", "6000");
+    script_metro_restart_spawn(&mut mock);
+    script_metro_group_stop(&mut mock, RESTART_LSTART, "7001", "7000");
+    mock.advance_on = Some(("-- -6000".into(), 1_200_000));
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+    assert_metro_restart_disclosure(&receipt, " and has been stopped");
+
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::ReadyDeadlineExceeded,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(mock.remaining(), 0);
+    let second = index_of_second_start(&mock);
+    assert!(!mock.calls[second..].iter().any(|c| {
+        let rendered = c.rendered();
+        rendered.contains(common::V4_PROBE)
+            || rendered.contains(common::V6_PROBE)
+            || rendered.contains(common::LISTEN_READ)
+    }));
+    // Both groups were stopped and proven gone; the record holds no Metro.
+    assert!(mock.calls[..second]
+        .iter()
+        .any(|c| c.program == "/bin/kill" && names_pid(c, "6000")));
+    assert!(mock.calls[second..]
+        .iter()
+        .any(|c| c.program == "/bin/kill" && names_pid(c, "7000")));
+    let record = RunRecord::load(scenario.parent().unwrap(), &receipt.run_id).unwrap();
+    assert!(record.resources.metro.is_none());
+    assert_ne!(receipt.metro_bind, Some(MetroBind::V4AfterRestart));
+}
+
+// R5: the dual-stack race: IPv4 times out, IPv6 answers, IPv4 answers on the next look.
+#[test]
+fn ios_metro_whose_ipv4_side_answers_on_the_second_look_is_ready() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+    mock.expect_run(
+        common::LISTEN_READ,
+        common::listening(&[(6001, "[::1]:8791")]),
+    );
+    mock.expect_run(common::V4_PROBE, common::probe_timed_out());
+    mock.expect_run(common::V6_PROBE, common::packager_running());
+    mock.expect_run(common::V4_PROBE, common::packager_running());
+    script_ios_prepare_after_metro_ready(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(receipt.metro_bind, Some(MetroBind::V4));
+    assert_eq!(mock.remaining(), 0);
+    // G4: a Metro that answers on 127.0.0.1 is never restarted, even after IPv6 answered first.
+    assert_eq!(expo_starts(&mock).len(), 1);
+    assert!(!receipt.outcomes.contains_key("metro_bind_recovery"));
+}
+
+// R6: the listener's pid changes between the reads: no refusal; the next turn agrees and IPv4 answers.
+#[test]
+fn ios_metro_whose_listener_changes_between_reads_is_not_refused() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+    mock.expect_run(
+        common::LISTEN_READ,
+        common::listening(&[(6001, "[::1]:8791")]),
+    );
+    mock.expect_run(common::V4_PROBE, common::connection_refused());
+    mock.expect_run(common::V6_PROBE, common::packager_running());
+    mock.expect_run(common::V4_PROBE, common::connection_refused());
+    mock.expect_run(common::V4_PROBE, common::connection_refused());
+    mock.expect_run(
+        common::LISTEN_READ,
+        common::listening(&[(6002, "[::1]:8791")]),
+    );
+    script_metro_turn_owned(&mut mock);
+    mock.expect_run(
+        common::LISTEN_READ,
+        common::listening(&[(6001, "[::1]:8791"), (6001, "127.0.0.1:8791")]),
+    );
+    mock.expect_run(common::V4_PROBE, common::packager_running());
+    mock.expect_run(common::V6_PROBE, common::packager_running());
+    script_ios_prepare_after_metro_ready(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(wait_turns(&mock), 2);
+    assert_eq!(mock.remaining(), 0);
+}
+
+// G2: a Metro that exits while it is still pending keeps today's exit detection, not a bind refusal.
+#[test]
+fn ios_metro_that_exits_while_pending_fails_as_metro_exited() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+    common::script_metro_bind_not_ready(&mut mock);
+    mock.expect_run("ps", CmdOutput::failed(1, ""));
+    common::script_ios_metro_cleanup(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::BuildFailed);
+    assert!(failure.detail.to_string().starts_with("metro exited"));
+    assert_eq!(receipt.metro_bind, None);
+    assert_eq!(wait_turns(&mock), 1);
+    assert_eq!(mock.remaining(), 0);
+}
+
+// A Metro that never answers keeps today's deadline refusal and records the bind as inconclusive.
+#[test]
+fn ios_metro_that_never_answers_reaches_the_deadline_with_an_inconclusive_bind() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+    common::script_metro_bind_not_ready(&mut mock);
+    mock.advance_on = Some((common::V6_PROBE.into(), 2_400_000));
+    common::script_ios_metro_cleanup(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::ReadyDeadlineExceeded
+    );
+    assert_eq!(receipt.metro_bind, Some(MetroBind::Inconclusive));
+    let record = RunRecord::load(scenario.parent().unwrap(), &receipt.run_id).unwrap();
+    assert_eq!(record.metro_bind, Some(MetroBind::Inconclusive));
+    assert_eq!(mock.remaining(), 0);
+}
+
+// G1: both addresses answer: ready, with exactly today's later commands.
+// G2: listening but not yet ready, then ready: no refusal.
+#[test]
+fn ios_metro_that_is_still_starting_or_answers_on_both_addresses_is_ready() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
+    mock.expect_run(
+        common::LISTEN_READ,
+        common::listening(&[(6001, "127.0.0.1:8791")]),
+    );
+    mock.expect_run(
+        common::V4_PROBE,
+        CmdOutput {
+            stdout: "\n000".into(),
+            ..CmdOutput::failed(52, "")
+        },
+    );
+    mock.expect_run(common::V6_PROBE, common::connection_refused());
+    script_metro_turn_owned(&mut mock);
+    mock.expect_run(
+        common::LISTEN_READ,
+        common::listening(&[(6001, "127.0.0.1:8791"), (6001, "[::1]:8791")]),
+    );
+    mock.expect_run(common::V4_PROBE, common::packager_running());
+    mock.expect_run(common::V6_PROBE, common::packager_running());
+    script_ios_prepare_after_metro_ready(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(wait_turns(&mock), 2);
+    // R7: a ready run records where Metro answered.
+    assert_eq!(receipt.metro_bind, Some(MetroBind::V4));
+    let record = RunRecord::load(scenario.parent().unwrap(), &receipt.run_id).unwrap();
+    assert_eq!(record.metro_bind, Some(MetroBind::V4));
+    assert_eq!(mock.remaining(), 0);
 }
 
 fn script_volume_sample(mock: &mut MockRunner, slow: bool) {
@@ -2405,10 +3225,14 @@ fn script_ios_prepare_fingerprints(
 }
 
 fn script_ios_readiness(mock: &mut MockRunner) {
-    mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n"))); // liveness probe
+    script_ios_readiness_of(mock, LSTART, "6001", "6000");
+}
+
+fn script_ios_readiness_of(mock: &mut MockRunner, started: &str, owner: &str, pgid: &str) {
+    mock.expect_run("ps", CmdOutput::success(&format!("{started}\n"))); // liveness probe
     mock.expect_run("ps", CmdOutput::success("S\n")); // not a zombie
-    mock.expect_run("lsof", CmdOutput::success("6001\n"));
-    mock.expect_run("ps", CmdOutput::success("6000\n")); // port owner pgid
+    mock.expect_run("lsof", CmdOutput::success(&format!("{owner}\n")));
+    mock.expect_run("ps", CmdOutput::success(&format!("{pgid}\n"))); // port owner pgid
     mock.expect_run("curl", CmdOutput::success("packager-status:running"));
     mock.expect_run(
         "simctl get_app_container",
@@ -2674,6 +3498,24 @@ fn android_prepare_happy_path_leases_tunnels_and_pins_serial() {
         "-s 127.0.0.1:5555 get-state",
         CmdOutput::success("device\n"),
     );
+    // The worker cap comes from the machine: 18 cores and 24 GiB give 8.
+    if cfg!(target_os = "linux") {
+        mock.expect_run(
+            "cat /proc/meminfo",
+            CmdOutput::success("MemTotal: 25165824 kB\n"),
+        );
+        let cpus: String = (0..18).map(|n| format!("cpu{n} 1\n")).collect();
+        mock.expect_run(
+            "cat /proc/loadavg /proc/stat",
+            CmdOutput::success(&format!("0.1 0.2 0.3 1/100 1\ncpu 1 0 0 1\n{cpus}")),
+        );
+    } else {
+        mock.expect_run("vm_stat", CmdOutput::success(""));
+        mock.expect_run(
+            "sysctl",
+            CmdOutput::success("hw.logicalcpu: 18\nhw.memsize: 25769803776\n"),
+        );
+    }
     mock.expect_spawn(
         "expo run:android",
         Spawned {
@@ -2810,6 +3652,18 @@ fn android_prepare_happy_path_leases_tunnels_and_pins_serial() {
         "the build must route adb through the run-owned server"
     );
     assert!(build.args.contains(&"8792".to_string()));
+    // Not a finite build: the spec itself carries nice, once, and Expo's Gradle keeps no daemon.
+    assert_eq!(build.program, "nice");
+    assert_eq!(build.args[..3], ["-n", "10", "pnpm"]);
+    assert_eq!(build.args.iter().filter(|a| *a == "nice").count(), 0);
+    assert!(build.env.contains(&(
+        "GRADLE_OPTS".to_string(),
+        "-Dorg.gradle.workers.max=8 -Dorg.gradle.daemon=false".to_string()
+    )));
+    assert_eq!(
+        receipt.outcomes["build_policy:expo-run-android"],
+        "priority nice 10; jobs 8 (machine: 18 cores, 24 GiB), set as org.gradle.workers.max over any value in the user's GRADLE_OPTS"
+    );
 }
 
 #[test]
@@ -3457,6 +4311,9 @@ impl qaren::exec::Runner for RecordProbeRunner {
     fn sleep(&mut self, duration: std::time::Duration) {
         self.inner.sleep(duration)
     }
+    fn log_lines(&mut self, log: &std::path::Path) -> Option<u64> {
+        self.inner.log_lines(log)
+    }
     fn now_epoch_ms(&self) -> u64 {
         self.inner.now_epoch_ms()
     }
@@ -4011,7 +4868,7 @@ fn ios_reuse_dry_run_lists_each_launch_step_once_in_execution_order() {
             &ios_spec.runtime,
         ),
         ios::bootstatus_spec("<udid>", scenario.deadlines.device_boot_seconds),
-        metro::start_spec(&project, 8791, true, false, None, None),
+        metro::start_spec(&project, 8791, metro::Listen::Loopback, false, None, None),
         ios::install_app_spec("<udid>", &artifact),
         metro::request_probe_spec(8791),
         metro::manifest_spec(8791, "ios"),
@@ -4260,9 +5117,14 @@ fn a_build_that_outlives_the_window_is_still_stopped_and_releases_the_lock() {
     assert_eq!(mock.remaining(), 0);
     let failure = receipt.failure.as_ref().unwrap();
     assert_eq!(failure.code, FailureCode::BuildFailed, "{failure:?}");
+    // A silent build at 30 s: the idle floor of 300 s outlasts the 90 s window, which ends it.
     assert_eq!(
         failure.build_recovery().unwrap().reason,
-        qaren::failure::RecoveryReason::BuildBudgetExhausted
+        qaren::failure::RecoveryReason::BuildTimeLimit
+    );
+    assert_eq!(
+        failure.limit.as_ref().unwrap().ended_by,
+        qaren::failure::LimitEnd::Window
     );
     let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
     assert!(record.resources.build_process().is_none(), "build stopped");
@@ -4280,7 +5142,8 @@ fn build_budget_expiry_after_build_releases_lock_without_publication() {
     mock.expect_run("ps", CmdOutput::success(LSTART));
     mock.expect_run("ps", CmdOutput::success("qaren-build"));
     mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
-    mock.advance_on = Some(("ps -A".into(), 2_400_000));
+    // Spend the whole window (three times the default limit) from the claim.
+    mock.advance_on = Some(("ps -A".into(), 7_200_000));
     let args = prepare_args(&scenario_path, false, None);
     let receipt = prepare(&mut mock, &args);
     assert_eq!(receipt.result, ReceiptResult::Failed);
@@ -5379,7 +6242,8 @@ fn prepare_keeps_scenario_deadlines_when_app_config_disagrees() {
                 .timeout_seconds
         };
         assert_eq!(timeout("pnpm-install"), deps);
-        assert_eq!(timeout("expo-run-ios"), build);
+        // The compile's timeout is the build window: three times the limit, at most 7200 s.
+        assert_eq!(timeout("expo-run-ios"), (build * 3).min(7200));
         assert_eq!(timeout("simctl-bootstatus"), boot);
         assert_eq!(
             std::fs::read_to_string(config_dir.join("config.yaml")).unwrap(),
@@ -5463,7 +6327,7 @@ fn script_borrowed_after_plan(mock: &mut MockRunner, before_install: &str) {
     mock.expect_run("ps", CmdOutput::success("S"));
     mock.expect_run("lsof", CmdOutput::success("6001"));
     mock.expect_run("ps", CmdOutput::success("6000"));
-    mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    common::script_metro_bind_ready(mock);
     mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
@@ -6424,14 +7288,42 @@ fn plant_member(repo: &std::path::Path, udid: &str) {
     .unwrap();
 }
 
+// A real data directory shared by the tests that do not look at the log store: its store is absent.
+fn sims_root() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("qaren-prepare-flow-sims-{}", std::process::id()))
+}
+
+fn sim_data(root: &std::path::Path, udid: &str) -> std::path::PathBuf {
+    let data = root.join("CoreSimulator/Devices").join(udid).join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    data
+}
+
+// A dummy log store under the simulator's data directory in `root`; returns the store path.
+fn plant_log_store(root: &std::path::Path, udid: &str) -> std::path::PathBuf {
+    let store = sim_data(root, udid).join("var/db/diagnostics");
+    std::fs::create_dir_all(store.join("Persist")).unwrap();
+    std::fs::write(store.join("Persist/0.tracev3"), "dummy").unwrap();
+    store
+}
+
 fn pool_inventory(sims: &[(&str, &str, &str)]) -> String {
+    pool_inventory_in(sims, Some(&sims_root()))
+}
+
+// `root` None leaves dataPath out, as an inventory that does not name it.
+fn pool_inventory_in(sims: &[(&str, &str, &str)], root: Option<&std::path::Path>) -> String {
     let devices: Vec<_> = sims
         .iter()
         .map(|(udid, name, state)| {
-            serde_json::json!({
+            let mut device = serde_json::json!({
                 "udid": udid, "name": name, "state": state, "isAvailable": true,
                 "deviceTypeIdentifier": IOS_TYPE,
-            })
+            });
+            if let Some(root) = root {
+                device["dataPath"] = sim_data(root, udid).to_str().unwrap().into();
+            }
+            device
         })
         .collect();
     serde_json::json!({"devices": {IOS_RUNTIME: devices}}).to_string()
@@ -6526,6 +7418,8 @@ fn assert_pool_cleanup_keeps_member(repo: &std::path::Path, run_id: &str) {
         CmdOutput::success(""),
     );
     mock.expect_run("simctl list devices -j", member_inventory("Shutdown"));
+    // The proven Shutdown and the data path the log store removal reads.
+    mock.expect_run("simctl list devices -j", member_inventory("Shutdown"));
     let receipt = qaren::commands::cleanup::cleanup_with_runtime(
         &mut mock,
         repo,
@@ -6543,6 +7437,7 @@ fn assert_pool_cleanup_keeps_member(repo: &std::path::Path, run_id: &str) {
         receipt.to_json()
     );
     assert_eq!(receipt.cleanup["simulator"], "removed", "shut down");
+    assert_eq!(receipt.cleanup["simulator_log"], "absent");
     assert_eq!(receipt.cleanup["device_lease"], "removed");
     assert_eq!(mock.remaining(), 0);
     assert!(!mock
@@ -6551,6 +7446,87 @@ fn assert_pool_cleanup_keeps_member(repo: &std::path::Path, run_id: &str) {
         .any(|c| c.rendered().contains("simctl delete")));
     assert!(!lock.exists());
     assert!(qaren::pool::record_path(&repo.join(".pool"), BORROWED).exists());
+}
+
+// Everything after the claim of BORROWED until a reused member is ready; `member` is the inventory.
+fn script_pool_reuse_tail(mock: &mut MockRunner, member: &dyn Fn(&str) -> CmdOutput) {
+    mock.expect_run("lsof", free_port());
+    mock.expect_run("simctl list devices -j", member("Shutdown"));
+    mock.expect_run("fresh-install-preflight.js", clear_admission());
+    common::script_ios_deps(mock);
+    mock.expect_run("fresh-install-preflight.js", clear_admission());
+    mock.expect_run("simctl list devices -j", member("Shutdown"));
+    mock.expect_run(
+        &format!("simctl bootstatus {BORROWED} -b"),
+        CmdOutput::success("Boot status: finished\n"),
+    );
+    mock.expect_run("simctl list devices -j", member("Booted"));
+    script_app_presence(mock, true);
+    mock.expect_run(
+        &format!("simctl uninstall {BORROWED} com.rndevagent.testapp"),
+        CmdOutput::success(""),
+    );
+    script_app_presence(mock, false);
+    mock.expect_run(
+        &format!("simctl keychain {BORROWED} reset"),
+        CmdOutput::success(""),
+    );
+    script_borrowed_after_boot(mock, &borrowed_inventory("Booted"));
+}
+
+// Records whether `store` exists when the first boot command for BORROWED runs.
+fn store_at_boot(
+    mock: &mut MockRunner,
+    store: std::path::PathBuf,
+) -> std::sync::Arc<std::sync::Mutex<Option<bool>>> {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let at_boot = seen.clone();
+    mock.observe = Some(Box::new(move |spec| {
+        let mut at_boot = at_boot.lock().unwrap();
+        if at_boot.is_none() && spec.label == "simctl-bootstatus" {
+            *at_boot = Some(store.exists());
+        }
+    }));
+    seen
+}
+
+#[test]
+fn pool_claim_removes_the_members_log_store_before_boot() {
+    let repo = common::temp_repo();
+    plant_member(&repo, BORROWED);
+    let store = plant_log_store(&repo, BORROWED);
+    let member = |state: &str| {
+        CmdOutput::success(&pool_inventory_in(
+            &[(BORROWED, POOL_NAME, state)],
+            Some(&repo),
+        ))
+    };
+    let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_validation(&mut mock, &repo, IOS_TOOLS);
+    mock.expect_run("simctl list devices -j", member("Shutdown"));
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
+    mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
+    mock.expect_run("simctl list devices -j", member("Shutdown")); // under the lease
+    script_pool_reuse_tail(&mut mock, &member);
+    let seen = store_at_boot(&mut mock, store.clone());
+
+    let receipt = prepare(&mut mock, &pool_args(&scenario_path));
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(*seen.lock().unwrap(), Some(false), "store removed before boot");
+    assert!(sim_data(&repo, BORROWED).join("var").is_dir());
+    assert!(!receipt.outcomes.contains_key("device_pool_log_skipped"));
+    assert!(RunRecord::load(&repo, &receipt.run_id)
+        .unwrap()
+        .resources
+        .pool_member);
 }
 
 #[test]
@@ -6564,28 +7540,7 @@ fn pool_reuses_a_free_member_under_the_lease_and_resets_the_app() {
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
     mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
     mock.expect_run("simctl list devices -j", member_inventory("Shutdown")); // under the lease
-    mock.expect_run("lsof", free_port());
-    mock.expect_run("simctl list devices -j", member_inventory("Shutdown"));
-    mock.expect_run("fresh-install-preflight.js", clear_admission());
-    common::script_ios_deps(&mut mock);
-    mock.expect_run("fresh-install-preflight.js", clear_admission());
-    mock.expect_run("simctl list devices -j", member_inventory("Shutdown"));
-    mock.expect_run(
-        &format!("simctl bootstatus {BORROWED} -b"),
-        CmdOutput::success("Boot status: finished\n"),
-    );
-    mock.expect_run("simctl list devices -j", member_inventory("Booted"));
-    script_app_presence(&mut mock, true);
-    mock.expect_run(
-        &format!("simctl uninstall {BORROWED} com.rndevagent.testapp"),
-        CmdOutput::success(""),
-    );
-    script_app_presence(&mut mock, false);
-    mock.expect_run(
-        &format!("simctl keychain {BORROWED} reset"),
-        CmdOutput::success(""),
-    );
-    script_borrowed_after_boot(&mut mock, &borrowed_inventory("Booted"));
+    script_pool_reuse_tail(&mut mock, &member_inventory);
 
     let receipt = prepare(&mut mock, &pool_args(&scenario_path));
 
@@ -6687,6 +7642,7 @@ fn pool_creates_a_member_under_the_creation_lock_below_cap() {
         record.resources.fresh_install.is_none(),
         "a new member is not reset"
     );
+    assert!(record.resources.pool_member);
     assert_eq!(
         qaren::buildplan::read_holder(&pool_lease_dir(&repo, BORROWED))
             .unwrap()
@@ -6999,6 +7955,252 @@ fn pool_skips_a_booted_member_with_no_holder() {
     }));
 }
 
+// Sorts before BORROWED, so the claim offers it first.
+const SKIPPED: &str = "0A0E8C1A-0000-4000-8000-00000000000A";
+
+// "file": SKIPPED's store path is a plain file; "no_data_path": the inventory does not name its data path.
+fn skip_inventory(repo: &std::path::Path, case: &str, sims: &[(&str, &str, &str)]) -> CmdOutput {
+    let mut inventory: serde_json::Value =
+        serde_json::from_str(&pool_inventory_in(sims, Some(repo))).unwrap();
+    if case == "no_data_path" {
+        for device in inventory["devices"][IOS_RUNTIME].as_array_mut().unwrap() {
+            if device["udid"] == SKIPPED {
+                device.as_object_mut().unwrap().remove("dataPath");
+            }
+        }
+    }
+    CmdOutput::success(&inventory.to_string())
+}
+
+fn plant_unremovable_store(repo: &std::path::Path, case: &str) {
+    if case == "file" {
+        let store = sim_data(repo, SKIPPED).join("var/db/diagnostics");
+        std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+        std::fs::write(store, "dummy").unwrap();
+    }
+}
+
+fn assert_log_skip(repo: &std::path::Path, receipt: &qaren::receipt::Receipt, case: &str) {
+    let note = &receipt.outcomes["device_pool_log_skipped"];
+    assert!(
+        note.starts_with(&format!(
+            "{SKIPPED}: its log store could not be removed before reuse ("
+        )),
+        "{note}"
+    );
+    assert!(
+        note.contains(if case == "file" {
+            "simulator log store could not be removed"
+        } else {
+            "did not name its data path"
+        }),
+        "{note}"
+    );
+    assert!(!pool_lease_dir(repo, SKIPPED).exists(), "lease released");
+    assert!(qaren::pool::record_path(&repo.join(".pool"), SKIPPED).exists());
+    if case == "file" {
+        assert!(sim_data(repo, SKIPPED).join("var/db/diagnostics").is_file());
+    }
+}
+
+fn assert_never_booted(mock: &MockRunner, udid: &str) {
+    assert!(!mock.calls.iter().any(|c| {
+        let rendered = c.rendered();
+        rendered.contains(udid) && rendered.contains("boot")
+    }));
+}
+
+#[test]
+fn pool_skips_a_member_whose_log_store_cannot_be_removed_and_reuses_the_next() {
+    for case in ["file", "no_data_path"] {
+        let repo = common::temp_repo();
+        plant_member(&repo, SKIPPED);
+        plant_member(&repo, BORROWED);
+        plant_unremovable_store(&repo, case);
+        let both = |state: &str| {
+            skip_inventory(
+                &repo,
+                case,
+                &[(SKIPPED, POOL_NAME, "Shutdown"), (BORROWED, POOL_NAME, state)],
+            )
+        };
+        let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
+        let mut mock = MockRunner::new();
+        script_validation(&mut mock, &repo, IOS_TOOLS);
+        mock.expect_run("simctl list devices -j", both("Shutdown"));
+        mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
+        mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
+        mock.expect_run("simctl list devices -j", both("Shutdown")); // SKIPPED under its lease
+        mock.expect_run("simctl list devices -j", both("Shutdown")); // BORROWED under its lease
+        script_pool_reuse_tail(&mut mock, &both);
+
+        let receipt = prepare(&mut mock, &pool_args(&scenario_path));
+
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Ready,
+            "{case}: {}",
+            receipt.to_json()
+        );
+        assert_eq!(mock.remaining(), 0, "{case}");
+        assert_eq!(
+            receipt.outcomes["device_pool"],
+            format!("reused {BORROWED}")
+        );
+        assert_log_skip(&repo, &receipt, case);
+        assert_never_booted(&mock, SKIPPED);
+    }
+}
+
+#[test]
+fn pool_skips_a_member_whose_log_store_cannot_be_removed_and_creates_one_below_cap() {
+    let repo = common::temp_repo();
+    plant_member(&repo, SKIPPED);
+    plant_unremovable_store(&repo, "file");
+    let skipped = skip_inventory(&repo, "file", &[(SKIPPED, POOL_NAME, "Shutdown")]);
+    let scenario_path = write_scenario(
+        &repo,
+        &format!("{}  max_devices: 2\n", ios_scenario_yaml(8791)),
+    );
+    let mut mock = MockRunner::new();
+    script_validation(&mut mock, &repo, IOS_TOOLS);
+    mock.expect_run("simctl list devices -j", skipped.clone());
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
+    mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
+    mock.expect_run("simctl list devices -j", skipped.clone()); // under the lease
+    mock.expect_run("lsof", free_port());
+    common::script_ios_deps(&mut mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
+    mock.expect_run("simctl list devices -j", skipped); // recount under the creation lock
+    mock.expect_run(
+        "simctl create",
+        CmdOutput::success(&format!("{BORROWED}\n")),
+    );
+    mock.expect_run(
+        &format!("simctl bootstatus {BORROWED} -b"),
+        CmdOutput::success("Boot status: finished\n"),
+    );
+    script_borrowed_after_plan(&mut mock, &borrowed_inventory("Booted"));
+
+    let receipt = prepare(&mut mock, &pool_args(&scenario_path));
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(
+        receipt.outcomes["device_pool"],
+        format!("created {BORROWED}")
+    );
+    assert_log_skip(&repo, &receipt, "file");
+    assert_never_booted(&mock, SKIPPED);
+    assert_eq!(qaren::pool::load_all(&repo.join(".pool")).unwrap().len(), 2);
+}
+
+#[test]
+fn pool_at_cap_falls_back_past_a_member_whose_log_store_cannot_be_removed() {
+    let repo = common::temp_repo();
+    plant_member(&repo, SKIPPED);
+    plant_unremovable_store(&repo, "file");
+    let skipped = skip_inventory(&repo, "file", &[(SKIPPED, POOL_NAME, "Shutdown")]);
+    let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_validation(&mut mock, &repo, IOS_TOOLS);
+    mock.expect_run("simctl list devices -j", skipped.clone());
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
+    mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
+    mock.expect_run("simctl list devices -j", skipped); // under the lease
+    script_cap_fallback_tail(&mut mock);
+
+    let receipt = prepare(&mut mock, &pool_args(&scenario_path));
+
+    assert_eq!(mock.remaining(), 0);
+    // The fixture's temporary simulator create fails by design; the skip itself refused nothing.
+    assert_cap_fallback(
+        &repo,
+        &receipt,
+        "its log store could not be removed before reuse",
+    );
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::SimulatorCreateFailed
+    );
+    assert_log_skip(&repo, &receipt, "file");
+    assert_never_booted(&mock, SKIPPED);
+
+    // The next claim tries the skipped member's store again; repaired, it is removed and the member claimed.
+    let store = sim_data(&repo, SKIPPED).join("var/db/diagnostics");
+    std::fs::remove_file(&store).unwrap();
+    std::fs::create_dir_all(store.join("Persist")).unwrap();
+    std::fs::write(store.join("Persist/0.tracev3"), "dummy").unwrap();
+    std::fs::remove_dir_all(RunRecord::run_dir(&repo, &receipt.run_id)).unwrap();
+    let skipped = skip_inventory(&repo, "file", &[(SKIPPED, POOL_NAME, "Shutdown")]);
+    let mut retry = MockRunner::new();
+    script_validation(&mut retry, &repo, IOS_TOOLS);
+    retry.expect_run("simctl list devices -j", skipped.clone());
+    retry.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
+    retry.expect_run("ps", CmdOutput::success("qaren prepare\n"));
+    retry.expect_run("simctl list devices -j", skipped.clone()); // under the lease
+    retry.expect_run("lsof", free_port());
+    retry.expect_run("simctl list devices -j", skipped);
+    retry.expect_run(
+        "fresh-install-preflight.js",
+        admission_for(SKIPPED, "busy"),
+    );
+
+    let again = prepare(&mut retry, &pool_args(&scenario_path));
+
+    assert_eq!(again.result, ReceiptResult::Refused, "{}", again.to_json());
+    assert_eq!(retry.remaining(), 0);
+    assert!(!again.outcomes.contains_key("device_pool_log_skipped"));
+    let record = RunRecord::load(&repo, &again.run_id).unwrap();
+    assert_eq!(record.resources.ios_simulator.as_ref().unwrap().udid, SKIPPED);
+    assert!(record.resources.pool_member);
+    assert!(!store.exists());
+}
+
+#[test]
+fn device_on_a_pool_member_records_no_pool_ownership_and_keeps_its_log_store() {
+    let repo = common::temp_repo();
+    plant_member(&repo, BORROWED);
+    let store = plant_log_store(&repo, BORROWED);
+    let mut inventory: serde_json::Value =
+        serde_json::from_str(&borrowed_inventory("Booted")).unwrap();
+    inventory["devices"][IOS_RUNTIME][0]["dataPath"] =
+        sim_data(&repo, BORROWED).to_str().unwrap().into();
+    let inventory = CmdOutput::success(&inventory.to_string());
+    let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_validation(&mut mock, &repo, IOS_TOOLS);
+    mock.expect_run("simctl list devices -j", inventory.clone());
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
+    mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
+    mock.expect_run("lsof", free_port());
+    mock.expect_run("simctl list devices -j", inventory);
+    mock.expect_run(
+        "fresh-install-preflight.js",
+        admission_for(BORROWED, "busy"),
+    );
+
+    let receipt = prepare(&mut mock, &borrowed_args(&scenario_path, false));
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Refused,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(mock.remaining(), 0);
+    let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
+    assert!(record.resources.device_borrowed);
+    assert!(!record.resources.pool_member);
+    assert!(store.join("Persist/0.tracev3").is_file());
+}
+
 #[test]
 fn pool_creation_lock_held_refuses() {
     let repo = common::temp_repo();
@@ -7199,7 +8401,7 @@ fn pool_resolves_a_short_runtime_to_its_installed_identifier() {
     assert_eq!(mock.remaining(), 0);
     assert_eq!(
         receipt.outcomes["device_pool"],
-        format!("would reuse {BORROWED}")
+        format!("would reuse {BORROWED} if its log store can be cleared")
     );
 }
 
@@ -7290,7 +8492,7 @@ fn pool_dry_run_reports_reclaiming_a_dead_holder_whose_run_never_reached_ready()
         assert_eq!(
             receipt.outcomes["device_pool"],
             format!(
-                "would reuse {BORROWED} after reclaiming run check-earlier through its cleanup"
+                "would reuse {BORROWED} after reclaiming run check-earlier through its cleanup, if its log store can be cleared"
             )
         );
         let planned = receipt.planned_commands.join("\n");
@@ -7882,7 +9084,8 @@ fn an_unreadable_candidate_at_the_post_build_recheck_refuses_as_unavailable() {
 #[test]
 fn build_probe_timeouts_prioritize_expiry_over_candidate_drift() {
     use qaren::failure::RecoveryReason;
-    for elapsed_ms in [1000, 30_000] {
+    // The window is three times build_seconds from the lock claim: 90 s here.
+    for elapsed_ms in [1000, 90_000] {
         let repo = common::temp_repo();
         let scenario = write_scenario(
             &repo,
@@ -7914,7 +9117,7 @@ fn build_probe_timeouts_prioritize_expiry_over_candidate_drift() {
         mock.advance_on = Some(("status --porcelain".into(), elapsed_ms));
         let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
         let failure = receipt.failure.unwrap();
-        if elapsed_ms == 30_000 {
+        if elapsed_ms == 90_000 {
             assert_eq!(failure.code, FailureCode::BuildFailed);
             assert_eq!(failure.phase, "build");
             assert_eq!(
@@ -8153,4 +9356,375 @@ fn fingerprint_policy_is_not_diagnosed_before_any_manifest_attempt() {
     assert!(!failure.next_action.contains("runtimeVersion"));
     assert!(failure.next_action.contains("Metro answered /status"));
     assert_eq!(mock.remaining(), 0);
+}
+
+// AI-471: the native build's own clock; past its limit, progress decides.
+
+fn growing(reads: u64) -> std::collections::VecDeque<Option<u64>> {
+    (0..=reads).map(Some).collect()
+}
+
+fn script_ios_ready_with_build(
+    mock: &mut MockRunner,
+    repo: &std::path::Path,
+    build: impl FnOnce(&mut MockRunner),
+) {
+    let empty = |m: &mut MockRunner| {
+        m.expect_run("ls-files", CmdOutput::success(""));
+        common::script_xcode(m);
+    };
+    script_ios_prepare_to_claim(mock, repo);
+    build(mock);
+    script_ios_prepublish(mock, "", empty);
+    common::script_ios_after_publish(
+        mock,
+        CmdOutput::success(""),
+        |m| common::script_proven_install(m, CmdOutput::success("")),
+        common::script_ios_launch,
+    );
+    script_ios_readiness(mock);
+    empty(mock);
+}
+
+// A compile that never exits on its own, then its teardown: inventory, TERM, KILL, absence.
+fn timed_out_ios_build(
+    build_seconds: Option<u64>,
+    counts: std::collections::VecDeque<Option<u64>>,
+) -> (qaren::receipt::Receipt, std::path::PathBuf) {
+    timed_out_ios_build_seeded(build_seconds, counts, |_| {})
+}
+
+// `seed` prepares the machine's runs root (the repo here) before the run.
+fn timed_out_ios_build_seeded(
+    build_seconds: Option<u64>,
+    counts: std::collections::VecDeque<Option<u64>>,
+    seed: impl FnOnce(&std::path::Path),
+) -> (qaren::receipt::Receipt, std::path::PathBuf) {
+    let repo = common::temp_repo();
+    seed(&repo);
+    let deadlines = build_seconds
+        .map(|s| format!("deadlines:\n  build_seconds: {s}\n"))
+        .unwrap_or_default();
+    let scenario_path = write_scenario(&repo, &format!("{}{deadlines}", ios_scenario_yaml(8791)));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_to_claim(&mut mock, &repo);
+    mock.expect_spawn_piped("expo run:ios", 5000, "", None);
+    mock.expect_run("ps", CmdOutput::success(LSTART));
+    mock.expect_run("ps", CmdOutput::success("qaren-build"));
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n5000 5000 S\n"));
+    mock.expect_run("ps -p 5000 -o lstart=", CmdOutput::success(LSTART));
+    mock.expect_run("ps -p 5000 -o stat=", CmdOutput::success("S"));
+    mock.expect_run("lstart=", CmdOutput::success(LSTART));
+    mock.expect_run("stat=", CmdOutput::success("S"));
+    mock.expect_run("/bin/kill -TERM -- -5000", CmdOutput::success(""));
+    mock.expect_run("lstart=", CmdOutput::success(LSTART));
+    mock.expect_run("stat=", CmdOutput::success("S"));
+    mock.expect_run("/bin/kill -KILL -- -5000", CmdOutput::success(""));
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    mock.scripted_log_lines = counts;
+    let args = prepare_args(&scenario_path, false, None);
+    let receipt = prepare(&mut mock, &args);
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(receipt.result, ReceiptResult::Failed);
+    let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
+    assert!(record.resources.build_process().is_none(), "build stopped");
+    assert!(record.resources.build_lock.is_none());
+    assert!(!args.lock_root.join("native-build-ios").exists());
+    (receipt, repo)
+}
+
+fn limit_of(receipt: &qaren::receipt::Receipt) -> &qaren::failure::LimitFacts {
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::BuildFailed, "{failure:?}");
+    failure
+        .limit
+        .as_deref()
+        .expect("a cut for time carries its limit")
+}
+
+#[test]
+fn b1_a_build_past_its_limit_that_keeps_writing_passes() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_ready_with_build(&mut mock, &repo, |m| {
+        common::script_finite_ios_build_exiting_after(m, "expo run:ios", 3_300_000)
+    });
+    mock.scripted_log_lines = growing(3400);
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(mock.remaining(), 0);
+    let took = receipt.timings_ms["native_build"];
+    assert!((3_300_000..3_300_200).contains(&took), "{took}");
+    assert_eq!(
+        receipt.outcomes["build_limit"],
+        "limit 2400 s; the build took 3300 s and went on because it kept producing output; window 7200 s"
+    );
+    // The forecast after this build's sample: 1.5 times 3300 s.
+    assert_eq!(receipt.outcomes["build_next_limit"], "4950 s");
+}
+
+#[test]
+fn b2_waiting_for_the_lock_is_not_build_time() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let lock = seed_build_holder(&repo);
+    let mut mock = MockRunner::new();
+    script_ios_ready_with_build(&mut mock, &repo, |m| {
+        script_live_idle_holder_polls(m, 900);
+        // A static log: no line count at all, and it still finishes inside its limit.
+        common::script_finite_ios_build_exiting_after(m, "expo run:ios", 2_000_000);
+    });
+    let released = lock.clone();
+    let mut polls = 0;
+    mock.observe = Some(Box::new(move |spec| {
+        if spec.label == "ps-groups" {
+            polls += 1;
+            if polls == 900 {
+                std::fs::remove_dir_all(&released).unwrap();
+            }
+        }
+    }));
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(receipt.build_lock.unwrap().waited_s, 900);
+    let took = receipt.timings_ms["native_build"];
+    assert!((2_000_000..2_000_200).contains(&took), "{took}");
+}
+
+#[test]
+fn b3_b6_b7_a_build_that_stands_still_is_cut_and_says_what_ran_out() {
+    let (receipt, _repo) = timed_out_ios_build(None, growing(2000));
+    let limit = limit_of(&receipt);
+    assert_eq!(limit.phase, "native_build");
+    assert_eq!(limit.setting, "deadlines.build_seconds");
+    assert_eq!(limit.ended_by, qaren::failure::LimitEnd::NoProgress);
+    assert_eq!((limit.elapsed_s, limit.limit_s), (2600, 2400));
+    assert_eq!((limit.window_s, limit.idle_s), (7200, Some(600)));
+    assert_eq!(limit.last_progress_age_s, Some(600));
+    assert_eq!(limit.next_limit_s, Some(2400));
+    // B6: the cut's own detail and log lines reach the receipt; the window check does not replace it.
+    let failure = receipt.failure.as_ref().unwrap();
+    assert!(failure.detail.to_string().starts_with(
+        "the native build was stopped after 2600 s: it had produced no output for 600 s, past its limit of 2400 s; see "
+    ), "{failure:?}");
+    assert_eq!(failure.evidence.len(), 1);
+    // B7: re-run after the run's own cleanup; the cleanup comes first.
+    let recovery = failure.build_recovery().unwrap();
+    assert_eq!(
+        recovery.reason,
+        qaren::failure::RecoveryReason::BuildTimeLimit
+    );
+    assert_eq!(recovery.next_rung, Some(1));
+    assert_eq!(recovery.action, qaren::failure::RecoveryAction::Rerun);
+    assert!(recovery.ladder[0].applicable);
+    assert!(!recovery.requires_user_ok && !recovery.destroys_state);
+    assert!(recovery.own_cleanup_required);
+    assert_eq!(
+        recovery.own_run_id.as_deref(),
+        Some(receipt.run_id.as_str())
+    );
+    assert_eq!(
+        failure.next_action.to_string(),
+        format!(
+            "qaren cleanup {} --json; only after cleanup completes: run again",
+            receipt.run_id
+        )
+    );
+    let json = receipt.to_json();
+    assert!(json.contains("\"reason\": \"build_time_limit\""), "{json}");
+    assert!(json.contains("\"action\": \"rerun\""));
+    assert!(json.contains("\"ended_by\": \"no_progress\""));
+}
+
+#[test]
+fn b3_the_idle_window_floor_at_small_limits() {
+    // 400 s: the last line at 300 s is 100 s old at the limit; cut 300 s after it.
+    let (receipt, _repo) = timed_out_ios_build(Some(400), growing(300));
+    let limit = limit_of(&receipt);
+    assert_eq!(limit.ended_by, qaren::failure::LimitEnd::NoProgress);
+    assert_eq!((limit.elapsed_s, limit.idle_s), (600, Some(300)));
+    // 100 s: the window (300 s) ends before the idle window can run out after the limit.
+    let (receipt, _repo) = timed_out_ios_build(Some(100), growing(90));
+    let limit = limit_of(&receipt);
+    assert_eq!(limit.ended_by, qaren::failure::LimitEnd::Window);
+    assert_eq!((limit.elapsed_s, limit.window_s), (300, 300));
+    assert_eq!(limit.last_progress_age_s, Some(210));
+    assert_eq!(limit.next_limit_s, Some(300));
+}
+
+#[test]
+fn b4_a_build_with_no_progress_is_cut_at_its_limit_exactly() {
+    for counts in [
+        std::iter::repeat_n(Some(7), 2500).collect(),
+        std::collections::VecDeque::new(),
+    ] {
+        let (receipt, _repo) = timed_out_ios_build(None, counts);
+        let limit = limit_of(&receipt);
+        assert_eq!(limit.ended_by, qaren::failure::LimitEnd::NoProgress);
+        assert_eq!(
+            (limit.elapsed_s, limit.last_progress_age_s),
+            (2400, Some(2400))
+        );
+    }
+}
+
+#[test]
+fn b5_a_build_that_always_writes_ends_with_its_window() {
+    let (receipt, _repo) = timed_out_ios_build(None, growing(7300));
+    let limit = limit_of(&receipt);
+    assert_eq!(limit.ended_by, qaren::failure::LimitEnd::Window);
+    assert_eq!((limit.elapsed_s, limit.window_s), (7200, 7200));
+    assert_eq!(limit.next_limit_s, None);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert!(failure
+        .detail
+        .to_string()
+        .contains("it reached the end of its window of 7200 s"));
+    assert!(failure
+        .next_action
+        .contains("build the app with the project's own tools"));
+    let (receipt, _repo) = timed_out_ios_build(Some(600), growing(1900));
+    let limit = limit_of(&receipt);
+    assert_eq!(
+        (limit.ended_by, limit.elapsed_s),
+        (qaren::failure::LimitEnd::Window, 1800)
+    );
+    assert_eq!(limit.next_limit_s, Some(1800));
+    assert!(receipt
+        .failure
+        .as_ref()
+        .unwrap()
+        .next_action
+        .contains("set deadlines.build_seconds to 1800, then run again"));
+}
+
+// AI-471 slice 2: the build's duration is recorded per machine and raises the next limit.
+
+fn timings_file(runs_root: &std::path::Path) -> std::path::PathBuf {
+    qaren::build_timings::path(runs_root, "ios", "com.rndevagent.testapp").unwrap()
+}
+
+fn seed_timings(runs_root: &std::path::Path, work_s: &[u64]) {
+    for &work_s in work_s {
+        qaren::build_timings::append(
+            &timings_file(runs_root),
+            qaren::build_timings::Sample {
+                work_s,
+                at: "2026-11-15T00:00:00Z".into(),
+            },
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn l1_l3_a_passing_build_is_recorded_and_the_next_run_uses_the_learned_limit() {
+    let first = common::temp_repo();
+    let scenario = write_scenario(&first, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_ready_with_build(&mut mock, &first, |m| {
+        common::script_finite_ios_build_exiting_after(m, "expo run:ios", 3_000_000)
+    });
+    mock.scripted_log_lines = growing(3100);
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{:?}",
+        receipt.failure
+    );
+    let samples = qaren::build_timings::read(&timings_file(&first)).unwrap();
+    assert_eq!(samples.iter().map(|s| s.work_s).collect::<Vec<_>>(), [3000]);
+    assert_eq!(receipt.outcomes["build_next_limit"], "4500 s");
+    // Second run on the same machine: a build that stands still is cut at the learned 4500 s.
+    let recorded = std::fs::read(timings_file(&first)).unwrap();
+    let (receipt, _repo) = timed_out_ios_build_seeded(None, Default::default(), |root| {
+        std::fs::create_dir_all(timings_file(root).parent().unwrap()).unwrap();
+        std::fs::write(timings_file(root), &recorded).unwrap();
+    });
+    let limit = limit_of(&receipt);
+    assert_eq!(limit.ended_by, qaren::failure::LimitEnd::NoProgress);
+    assert_eq!((limit.elapsed_s, limit.limit_s), (4500, 4500));
+    assert!(limit.learned);
+    assert_eq!(limit.next_limit_s, Some(4500));
+    assert_eq!(
+        receipt.outcomes["build_limit_learned"],
+        "limit 4500 s, learned from 1 earlier builds on this machine (configured 2400 s)"
+    );
+}
+
+#[test]
+fn l4_a_cut_with_a_learned_limit_names_the_next_limit_by_its_end() {
+    // Learned 6000 s: the window is the 7200 s maximum, so no setting helps.
+    let (receipt, _repo) =
+        timed_out_ios_build_seeded(None, growing(7300), |root| seed_timings(root, &[4000]));
+    let limit = limit_of(&receipt);
+    assert_eq!(
+        (limit.ended_by, limit.elapsed_s),
+        (qaren::failure::LimitEnd::Window, 7200)
+    );
+    assert!(limit.learned);
+    assert_eq!(limit.next_limit_s, None);
+    // Learned 1200 s over a configured 600 s: the window just used (3600 s) is the next limit.
+    let (receipt, _repo) =
+        timed_out_ios_build_seeded(Some(600), growing(3700), |root| seed_timings(root, &[800]));
+    let limit = limit_of(&receipt);
+    assert_eq!(
+        (limit.ended_by, limit.elapsed_s),
+        (qaren::failure::LimitEnd::Window, 3600)
+    );
+    assert_eq!((limit.limit_s, limit.next_limit_s), (1200, Some(3600)));
+    assert!(limit.learned);
+}
+
+#[test]
+fn l5_a_corrupt_record_leaves_the_configured_limit_and_a_note() {
+    let (receipt, _repo) = timed_out_ios_build_seeded(None, Default::default(), |root| {
+        std::fs::create_dir_all(timings_file(root).parent().unwrap()).unwrap();
+        std::fs::write(timings_file(root), "{half").unwrap();
+    });
+    let limit = limit_of(&receipt);
+    assert_eq!((limit.elapsed_s, limit.limit_s), (2400, 2400));
+    assert!(!limit.learned);
+    assert_eq!(
+        receipt.outcomes["build_timings"],
+        "earlier build times were not used (not a build timings record); the configured limit of 2400 s applies"
+    );
+}
+
+#[test]
+fn l6_a_learned_limit_leaves_the_lock_wait_on_the_configured_limit() {
+    let repo = common::temp_repo();
+    let scenario_path = write_scenario(
+        &repo,
+        &format!(
+            "{}deadlines:\n  build_seconds: 150\n",
+            ios_scenario_yaml(8791)
+        ),
+    );
+    seed_timings(&repo, &[1000]);
+    seed_build_holder(&repo);
+    let mut mock = MockRunner::new();
+    script_ios_prepare_to_claim(&mut mock, &repo);
+    script_live_idle_holder_polls(&mut mock, 150);
+    let receipt = prepare(&mut mock, &prepare_args(&scenario_path, false, None));
+    assert_eq!(mock.remaining(), 0);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::BuildContended);
+    assert!(failure
+        .next_action
+        .to_string()
+        .contains("waited 150 s of the budget"));
 }

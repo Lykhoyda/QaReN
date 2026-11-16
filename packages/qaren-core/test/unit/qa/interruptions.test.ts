@@ -1745,7 +1745,7 @@ for (const [name, presenceRead] of [
     }),
   ],
 ] as const) {
-  test(`a ${name} pre-scroll presence read leaves the cover unproven instead of refusing`, async () => {
+  test(`a ${name} pre-scroll presence read leaves the cover unproven and scrolls nothing`, async () => {
     const f = app(home());
     promoOverHome(f);
     const ordinary = f.deps.captureScreen;
@@ -1754,11 +1754,14 @@ for (const [name, presenceRead] of [
     ticking(f);
     const result = await runPlan(parsePlan('1. Tap "qa-promo-home-target"').blocks!, f.deps);
     assert.equal(result.verdict, 'FAIL');
-    assert.deepEqual(f.actions, ['scroll']);
-    assert.match(result.failure?.seen ?? '', /stayed off screen after one scroll/);
+    assert.deepEqual(f.actions, []);
+    assert.match(
+      result.failure?.seen ?? '',
+      /the read that would place it was late or incomplete, so nothing was scrolled; a decline control was visible, but the presence read for it was late or incomplete/,
+    );
   });
 
-  test(`a ${name} presence read on the second press attempt refreshes expired ordinary evidence`, async () => {
+  test(`a ${name} presence read on the second press attempt scrolls nothing`, async () => {
     const f = app(homeAfterPromo());
     f.deps.platform = 'ios';
     let clock = 0;
@@ -1786,15 +1789,19 @@ for (const [name, presenceRead] of [
       return { ok: true, proven: refreshed, executed: true };
     };
     f.deps.scroll = async () => {
-      assert.ok(refreshed, 'scroll needs a fresh ordinary capture after the optional read');
       f.actions.push('scroll');
       promoUp = false;
       return { ok: true, proven: false, executed: true };
     };
     const result = await runPlan(parsePlan('1. Tap "qa-promo-home-target"').blocks!, f.deps);
-    assert.equal(result.verdict, 'PASS', result.failure?.seen);
+    assert.equal(result.verdict, 'FAIL');
     assert.equal(presenceReads, 1);
-    assert.deepEqual(f.actions, ['press @home-target', 'scroll', 'press @home-target']);
+    assert.equal(refreshed, false, 'no capture follows the unplaced read');
+    assert.deepEqual(f.actions, ['press @home-target']);
+    assert.match(
+      result.failure?.seen ?? '',
+      /the read that would place it was late or incomplete, so nothing was scrolled/,
+    );
     assert.equal(result.recoveries, 0);
   });
 }
@@ -1805,8 +1812,11 @@ test('a React-only tap target without a presented modal is never sent to dismiss
   ticking(f);
   const result = await runPlan(parsePlan('1. Tap "qa-promo-home-target"').blocks!, f.deps);
   assert.equal(result.verdict, 'FAIL');
-  assert.deepEqual(f.actions, ['scroll']);
-  assert.match(result.failure?.seen ?? '', /stayed off screen after one scroll/);
+  assert.deepEqual(f.actions, []);
+  assert.match(
+    result.failure?.seen ?? '',
+    /^"qa-promo-home-target" is known to React but has no element on the visible screen; its place could not be read, so nothing was scrolled;/,
+  );
 });
 
 test('a tap whose target is simply missing never presses the form Cancel', async () => {

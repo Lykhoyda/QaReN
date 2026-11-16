@@ -1,3 +1,4 @@
+use crate::commands::prepare::FailureCodeStr;
 use crate::core::{Ledger, Row};
 use crate::failure::{Failure, FailureCode, ScreenNow};
 use crate::record::{VideoPublication, VideoReason, VideoStatus};
@@ -636,6 +637,46 @@ pub fn write(run_dir: &Path, input: &ReportInput<'_>) -> Result<PathBuf, Failure
         )
     })?;
     Ok(path)
+}
+
+pub(crate) fn write_host(
+    receipt: &mut crate::receipt::Receipt,
+    helpers: Option<String>,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let Some(host) = receipt.host.as_ref() else {
+        return Ok(());
+    };
+    let path = receipt.artifacts.get("report").cloned().or_else(|| {
+        receipt
+            .artifacts
+            .get("run_dir")
+            .map(|dir| dir.join("report.md"))
+    });
+    let Some(path) = path else { return Ok(()) };
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    if file.metadata()?.len() == 0 {
+        let result = format!("{:?}", receipt.result).to_lowercase();
+        writeln!(file, "# QaReN {}: {result}\n", receipt.verb)?;
+        if let Some(failure) = &receipt.failure {
+            writeln!(file, "{}: {}\n", failure.code_str(), failure.detail)?;
+        }
+    }
+    writeln!(file, "\n{}", host.report_line())?;
+    if let Some(wait) = receipt.outcomes.get("host_wait") {
+        writeln!(file, "Host memory before the build: {wait}.")?;
+    }
+    if let Some(notice) = receipt.outcomes.get("metro_bind_recovery") {
+        writeln!(file, "\n{notice}")?;
+    }
+    if let Some(line) = helpers {
+        writeln!(file, "\n{line}")?;
+    }
+    receipt.artifacts.insert("report".into(), path);
+    Ok(())
 }
 
 pub struct PrRun<'a> {

@@ -9,9 +9,8 @@ extension QarenIosRunnerTests {
   }
 
   private func measureGesture(_ action: () -> Void) -> (gestureStartUptimeMs: Double, gestureEndUptimeMs: Double) {
-    let gestureStartUptimeMs = currentUptimeMs()
-    action()
-    return (gestureStartUptimeMs, currentUptimeMs())
+    let timing = DispatchGuard.measure(now: currentUptimeMs, action)
+    return (timing.startMs, timing.endMs)
   }
 
   private func unsupportedResponse(for outcome: RunnerInteractionOutcome) -> Response? {
@@ -26,7 +25,8 @@ extension QarenIosRunnerTests {
     }
   }
 
-  private func executeFocusedType(app: XCUIApplication, text: String, replace: Bool, prepareReplacement: Bool = false, deleteCount: Int = 0) -> Response {
+  private func executeFocusedType(app: XCUIApplication, text: String, replace: Bool, prepareReplacement: Bool = false, deleteCount: Int = 0, handlingStartedAt: Double? = nil) -> Response {
+    let handlingStart = handlingStartedAt ?? currentUptimeMs()
     guard (0...256).contains(deleteCount), prepareReplacement || deleteCount == 0 else {
       return Response(ok: false, error: ErrorPayload(code: "INVALID_ARGUMENT", message: "focused clear exceeds the 256-key budget", mutation: "none"))
     }
@@ -55,6 +55,7 @@ extension QarenIosRunnerTests {
       )
     case .type:
       var synthesis: RunnerSynthesizedTextEntryResult?
+      let gestureStart = currentUptimeMs()
       withTemporaryScrollIdleTimeoutIfSupported(app) {
         gesture {
           if prepareReplacement {
@@ -69,6 +70,7 @@ extension QarenIosRunnerTests {
           }
         }
       }
+      let gestureEnd = currentUptimeMs()
       let result = synthesis!
       switch TypingRecipe.focusedTypeOutcome(
         succeeded: result.status == .succeeded,
@@ -79,6 +81,10 @@ extension QarenIosRunnerTests {
           ok: true,
           data: DataPayload(
             message: prepareReplacement ? "cleared" : "typed",
+            gestureStartUptimeMs: gestureStart,
+            gestureEndUptimeMs: gestureEnd,
+            keyboardGuardMs: 0,
+            handledMs: currentUptimeMs() - handlingStart,
             typingBurst: false,
             keyboardWaitMs: 0,
             inputResolution: "focused-first-responder",
@@ -275,6 +281,13 @@ extension QarenIosRunnerTests {
   }
 
   private func executeOnMain(command: Command) throws -> Response {
+    let handlingStart = currentUptimeMs()
+    var liveCheckMs: Double?
+    func measureLiveCheck(_ read: () -> DispatchGuard.TargetCheck) -> DispatchGuard.TargetCheck {
+      let timing = DispatchGuard.measure(now: currentUptimeMs, read)
+      liveCheckMs = (liveCheckMs ?? 0) + timing.endMs - timing.startMs
+      return timing.value
+    }
     if command.command == .hitProbe { return executeHitProbe(command: command) }
     var readOnlyApp: XCUIApplication?
     if command.qaReadOnly == true {
@@ -419,7 +432,8 @@ extension QarenIosRunnerTests {
             data: DataPayload(
               message: "tapped",
               gestureStartUptimeMs: timing.gestureStartUptimeMs,
-              gestureEndUptimeMs: timing.gestureEndUptimeMs
+              gestureEndUptimeMs: timing.gestureEndUptimeMs,
+              handledMs: currentUptimeMs() - handlingStart
             )
           )
         }
@@ -479,13 +493,16 @@ extension QarenIosRunnerTests {
               gestureStartUptimeMs: timing.gestureStartUptimeMs,
               gestureEndUptimeMs: timing.gestureEndUptimeMs,
               keyboardGuard: "keyboard_target",
-              keyboardGuardMs: keyboardGuardMs
+              keyboardGuardMs: keyboardGuardMs,
+              handledMs: currentUptimeMs() - handlingStart
             )
           )
         case .proceed(let status):
           keyboardGuardStatus = status
         }
-        let liveCheck = liveTargetCheck(app: activeApp, command: command, deadline: ProcessInfo.processInfo.systemUptime + 0.3)
+        let liveCheck = measureLiveCheck {
+          liveTargetCheck(app: activeApp, command: command, deadline: ProcessInfo.processInfo.systemUptime + 0.3)
+        }
         if command.requireLiveHit == true,
            let reason = DispatchGuard.strictRefusal(liveCheck, unavailableReason: lastLiveCheckUnavailable) {
           return Response(
@@ -550,6 +567,8 @@ extension QarenIosRunnerTests {
             referenceHeight: touchFrame.referenceHeight,
             keyboardGuard: keyboardGuardStatus,
             keyboardGuardMs: keyboardGuardMs,
+            handledMs: currentUptimeMs() - handlingStart,
+            liveCheckMs: liveCheckMs,
             occlusionCheck: liveCheck.hittable == nil ? "unavailable" : "hit-tested"
           )
         )
@@ -618,7 +637,8 @@ extension QarenIosRunnerTests {
             x: touchFrame.x,
             y: touchFrame.y,
             referenceWidth: touchFrame.referenceWidth,
-            referenceHeight: touchFrame.referenceHeight
+            referenceHeight: touchFrame.referenceHeight,
+            handledMs: currentUptimeMs() - handlingStart
           )
         )
       }
@@ -644,7 +664,8 @@ extension QarenIosRunnerTests {
           x: touchFrame.x,
           y: touchFrame.y,
           referenceWidth: touchFrame.referenceWidth,
-          referenceHeight: touchFrame.referenceHeight
+          referenceHeight: touchFrame.referenceHeight,
+          handledMs: currentUptimeMs() - handlingStart
         )
       )
     case .longPress:
@@ -824,7 +845,8 @@ extension QarenIosRunnerTests {
         return executeFocusedType(
           app: activeApp, text: text, replace: command.clearFirst == true,
           prepareReplacement: command.prepareReplacement == true,
-          deleteCount: command.replacementDeleteCount ?? 0
+          deleteCount: command.replacementDeleteCount ?? 0,
+          handlingStartedAt: handlingStart
         )
       }
       // Focus and type only into the rebound declared input.
@@ -835,7 +857,10 @@ extension QarenIosRunnerTests {
       withTemporaryScrollIdleTimeoutIfSupported(activeApp) {
         resolved = resolveTypeCommandTarget(app: activeApp, command: command)
       }
-      if liveTargetCheck(app: activeApp, command: command, deadline: hitTestDeadline, checkHittability: false) == .moved {
+      let movementCheck = measureLiveCheck {
+        liveTargetCheck(app: activeApp, command: command, deadline: hitTestDeadline, checkHittability: false)
+      }
+      if movementCheck == .moved {
         return movedDispatchResponse()
       }
       let target: XCUIElement
@@ -848,7 +873,9 @@ extension QarenIosRunnerTests {
         inputResolution = resolution
       }
       if command.requireLiveHit == true {
-        let check = liveTargetCheck(app: activeApp, command: command, deadline: ProcessInfo.processInfo.systemUptime + 0.3)
+        let check = measureLiveCheck {
+          liveTargetCheck(app: activeApp, command: command, deadline: ProcessInfo.processInfo.systemUptime + 0.3)
+        }
         if let reason = DispatchGuard.strictRefusal(check, unavailableReason: lastLiveCheckUnavailable) {
           return Response(ok: false, error: ErrorPayload(
             code: "LIVE_HIT_UNPROVEN", message: "LIVE_HIT_UNPROVEN: \(reason); no focus or typing was performed.", mutation: "none"
@@ -860,6 +887,7 @@ extension QarenIosRunnerTests {
       withTemporaryScrollIdleTimeoutIfSupported(activeApp) {
         alreadyFocused = isExactInputFocused(app: activeApp, element: target)
       }
+      let gestureStart = currentUptimeMs()
       if !alreadyFocused {
         var focusPoint = CGPoint(x: command.focusX ?? 0, y: command.focusY ?? 0)
         if command.focusX == nil || command.focusY == nil {
@@ -979,6 +1007,7 @@ extension QarenIosRunnerTests {
           gesture { target.typeText(text) }
         }
       }
+      let gestureEnd = currentUptimeMs()
       withTemporaryScrollIdleTimeoutIfSupported(activeApp) {
         lastExactTypeTarget = RecordedExactTypeTarget(
           operationToken: command.operationToken,
@@ -992,6 +1021,11 @@ extension QarenIosRunnerTests {
         ok: true,
         data: DataPayload(
           message: "typed",
+          gestureStartUptimeMs: gestureStart,
+          gestureEndUptimeMs: gestureEnd,
+          keyboardGuardMs: 0,
+          handledMs: currentUptimeMs() - handlingStart,
+          liveCheckMs: liveCheckMs,
           typingBurst: usedBurst,
           keyboardWaitMs: keyboardWait.waitedMs,
           inputResolution: inputResolution,

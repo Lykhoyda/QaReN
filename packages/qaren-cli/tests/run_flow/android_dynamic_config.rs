@@ -123,11 +123,32 @@ fn dynamic_android_build_is_reused_then_a_ci_config_change_rebuilds() {
 
     req.runs_root = repo.join("runs-2");
     let mut mock = android_mock();
+    mock.advance_on = Some(("fingerprint:generate".into(), 17));
     script_prepare(&mut mock, &repo, &app, STABLE, false);
     script_fingerprint(&mut mock, STABLE);
     script_walk(&mut mock);
-    let second = run(&mut mock, &req);
+    let (second, events) = run_with_events(&mut mock, &req);
     assert_eq!(second.result, ReceiptResult::Pass, "{}", second.to_json());
+    // E1's public receipt/event contract also applies to Android's two evaluations.
+    for prefix in ["plan", "verify"] {
+        let mut sum = 0;
+        for part in ["total", "list", "expo", "toolchain", "hash"] {
+            let key = format!("{prefix}_fp_{part}");
+            let ms = second.timings_ms[&key];
+            assert_eq!(events.last().unwrap()["payload"]["timingsMs"][&key], ms);
+            if part != "total" {
+                sum += ms;
+            }
+        }
+        assert_eq!(second.timings_ms[&format!("{prefix}_fp_expo")], 34);
+        assert!(sum <= second.timings_ms[&format!("{prefix}_fp_total")]);
+    }
+    assert!(!events.iter().any(|event| {
+        event["event"] == "cmd"
+            && event["payload"]["label"]
+                .as_str()
+                .is_some_and(|label| label.starts_with("expo-fingerprint"))
+    }));
     assert_eq!(
         second.build.as_ref().unwrap().decision,
         BuildDecision::Reuse

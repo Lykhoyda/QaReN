@@ -135,6 +135,15 @@ export function reactInputHostOf(element: Element): number | undefined {
   return reactInputHosts.get(element);
 }
 
+// A native element's own React entry: the host carrying its identity and the input hosts beneath that entry.
+const reactEntryHosts = new WeakMap<Element, { host: number; inputs: readonly number[] }>();
+
+export function reactEntryHostsOf(
+  element: Element,
+): { host: number; inputs: readonly number[] } | undefined {
+  return reactEntryHosts.get(element);
+}
+
 // Value-free React facts for an element absent from the native capture; a missing field was not measured.
 export interface ReactOnlyFacts {
   host?: number;
@@ -172,6 +181,13 @@ const localCapabilities = new WeakMap<
   Element,
   Pick<NonNullable<Element['semantic']>, 'press' | 'fill'>
 >();
+
+// Elements React lists as interactive: any matched entry, except one that is only a role on a label.
+const reactInteractive = new WeakSet<Element>();
+
+export function reactHintsInteractive(element: Element): boolean {
+  return reactInteractive.has(element);
+}
 
 // Touch routing of the React host anchored by the element's own testID, absent when no such host is
 // matched. A box-only ancestor still takes the touch itself, so it never makes a cover transparent.
@@ -248,6 +264,13 @@ const hostPresses = new WeakMap<Element, boolean>();
 
 export function matchedHostPress(element: Element): boolean | undefined {
   return hostPresses.get(element);
+}
+
+// The React host index the join's own association tied to this native element; read only.
+const associatedHostIndices = new WeakMap<Element, number>();
+
+export function associatedHostOf(element: Element): number | undefined {
+  return associatedHostIndices.get(element);
 }
 
 export function keyboardCoversElement(element: Element): boolean {
@@ -368,6 +391,8 @@ export interface DigestEntry {
   // Custom composite with a separately emitted interactive descendant, not a view or declared control.
   compositeWrapper?: true;
   inputHostIndices?: number[];
+  // The host that carries this entry's own identity; withdrawn when an input lies beyond a portal.
+  hostIndex?: number;
   // Under a host view that hides its subtree from accessibility.
   hidden?: boolean;
 }
@@ -846,6 +871,9 @@ export function join(
       reactHostEvidence!.hosts[hostIndex],
     ]),
   );
+  const associatedIndices = new Map(
+    [...associations].map(([hostIndex, { nativeIndex }]) => [nativeIndex, hostIndex]),
+  );
   // React heading evidence wins over a navigation title on the same node.
   const headings = new Map<number, HeadingEvidence>([
     ...navigationTitles(nodes, presence),
@@ -1089,6 +1117,8 @@ export function join(
     };
     if (label) element.label = label;
     if (testID) element.testID = testID;
+    if (uniqueMatch && match?.hostIndex !== undefined && match.inputHostIndices)
+      reactEntryHosts.set(element, { host: match.hostIndex, inputs: match.inputHostIndices });
     if (host && testID !== undefined && host.testID === testID) {
       const hosts = reactHostEvidence!.hosts;
       // Association requires complete typography, so the host's ancestry is always known here.
@@ -1107,6 +1137,8 @@ export function join(
           ? match.capabilities.press
           : undefined;
     if (ownPress !== undefined) hostPresses.set(element, ownPress);
+    const associatedIndex = associatedIndices.get(nodeIndex);
+    if (associatedIndex !== undefined) associatedHostIndices.set(element, associatedIndex);
     const privateNativeLabel = presenceMode && observed?.labelSource !== 'direct';
     // Privacy may over-associate input observations without granting semantic capabilities.
     const possibleDigestInput = reactCandidates.some(
@@ -1179,6 +1211,8 @@ export function join(
       // Diagnostics cannot change host association.
     }
     localCapabilities.set(element, local);
+    if (hints.press || hints.fill || reactCandidates.some((d) => !(d.handlerless && !d.testID)))
+      reactInteractive.add(element);
     return element;
   });
   const nativeInputs = elements.filter((e) => e.kind === 'input');

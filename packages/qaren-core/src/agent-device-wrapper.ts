@@ -1506,6 +1506,7 @@ export async function settleAfterMutationWithOutcome(
         settle: {
           method: outcome.method,
           settled: outcome.settled,
+          ...(outcome.probes !== undefined ? { probes: outcome.probes } : {}),
           ...(outcome.hierarchyChanged !== undefined
             ? { hierarchyChanged: outcome.hierarchyChanged }
             : {}),
@@ -2096,6 +2097,9 @@ export async function runNative(
         }
         if (msg.startsWith('RUNNER_OWNERSHIP_MISMATCH')) {
           return failResult(msg, 'RUNNER_OWNERSHIP_MISMATCH');
+        }
+        if (msg.startsWith('RUNNER_INSTALL_BLOCKED')) {
+          return failResult(msg, 'RUNNER_INSTALL_BLOCKED');
         }
         return failResult(`qaren-android-runner did not start: ${msg}`, 'RN_ANDROID_RUNNER_DOWN');
       }

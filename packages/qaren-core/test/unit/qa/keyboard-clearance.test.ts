@@ -398,6 +398,36 @@ test('the native tier is recorded when it cleared the keyboard', async () => {
   assert.equal(outcome.rows.at(-1)!.keyboardCleared, 'native-control');
 });
 
+test('a resolved chip keeps its existing keyboard dismissal after a recovery retry', async () => {
+  const f = fake([]);
+  let current: Screen = { ...screen({ chipState: 'absent' }), front: 'dialog' };
+  f.deps.captureScreen = async () => current;
+  f.deps.dismissKeyboard = async (context) => {
+    context.authorize();
+    f.calls.push('dismiss');
+    current = screen();
+    return 'js';
+  };
+  f.deps.press = async (ref, context) => {
+    context.authorize();
+    f.calls.push(`press ${ref}`);
+    current = screen({ selected: true });
+    return { ok: true, proven: true };
+  };
+  f.deps.hideDevMenu = async () => {
+    throw new Error('unexpected dev menu');
+  };
+  f.deps.dialog = async (_action, context) => {
+    context.authorize();
+    f.calls.push('dialog');
+    current = screen({ keyboard: true });
+    return { ok: true, proven: true, executed: true };
+  };
+  const outcome = await walkBlock(tap, f.deps);
+  assert.equal(outcome.block.outcome, 'pass', outcome.failure?.seen);
+  assert.deepEqual(f.calls, ['dialog', 'dismiss', 'press @chip']);
+});
+
 for (const [name, shape] of [
   ['no keyboard', {}],
   ['a target outside any scroll container', { inScroll: false }],
@@ -464,6 +494,91 @@ test('a dismissal that cannot prove the keyboard hidden still taps once on the r
   assert.equal(outcome.block.outcome, 'pass', outcome.failure?.seen);
   assert.equal(count(f, 'dismiss'), 1);
   assert.equal(count(f, 'press'), 1);
+  assert.equal(outcome.rows.at(-1)!.keyboardCleared, undefined);
+});
+
+test('K8: proactive selection clearance spends the allowance before a keyboard-refused press', async () => {
+  const error = 'KEYBOARD_DISMISS_FAILED: native control could not hide the keyboard';
+  const refusal: ActResult = { ok: false, proven: false, mutation: 'none', error };
+  const f = withDismissal(fake([screen({ keyboard: true })], [refusal, refusal]), 'none');
+  const outcome = await walkBlock(tap, f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.deepEqual(
+    f.calls.filter((call) => call === 'dismiss' || call.startsWith('press')),
+    ['dismiss', 'press @chip'],
+  );
+  assert.match(
+    JSON.stringify(outcome.failure?.seen),
+    /KEYBOARD_DISMISS_FAILED: native control could not hide the keyboard; the keyboard covers the target and could not be hidden/,
+  );
+  assert.equal(outcome.rows.at(-1)!.keyboardCleared, undefined);
+});
+
+test('K9: absent-target clearance spends the selection allowance across interruption recovery', async () => {
+  const absent = (keyboard: boolean): Screen => ({
+    ...join(
+      [
+        { ref: '@app', type: 'Application', rect: { x: 0, y: 0, width: 400, height: 800 } },
+        {
+          ref: '@window',
+          type: 'Window',
+          parentIndex: 0,
+          rect: { x: 0, y: 0, width: 400, height: 800 },
+        },
+      ],
+      [],
+      'app',
+      { native: 'complete', react: 'complete' },
+      {
+        hosts: [],
+        complete: true,
+        typography: {
+          version: 1,
+          complete: true,
+          durationMs: 1,
+          coordinateSpace: 'window-points',
+          nodes: [],
+        },
+      },
+    ),
+    keyboardVisible: keyboard,
+  });
+  const error = 'KEYBOARD_DISMISS_FAILED: native control could not hide the keyboard';
+  const f = fake([]);
+  let current = absent(true);
+  f.deps.captureScreen = async (options) => {
+    if (options?.platformPresence && !f.calls.includes('dialog'))
+      current = { ...current, front: 'dialog' };
+    return current;
+  };
+  f.deps.dismissKeyboard = async (context) => {
+    context.authorize();
+    f.calls.push('dismiss');
+    current = f.calls.includes('dialog') ? screen({ keyboard: true }) : absent(false);
+    return 'none';
+  };
+  f.deps.press = async (ref, context) => {
+    context.authorize();
+    f.calls.push(`press ${ref}`);
+    return { ok: false, proven: false, mutation: 'none', error };
+  };
+  f.deps.hideDevMenu = async () => {
+    throw new Error('unexpected dev menu');
+  };
+  f.deps.dialog = async (_action, context) => {
+    context.authorize();
+    f.calls.push('dialog');
+    current = screen({ keyboard: true });
+    return { ok: true, proven: true, executed: true };
+  };
+  const outcome = await walkBlock(tap, f.deps);
+  assert.deepEqual(f.calls, ['dismiss', 'dialog', 'press @chip']);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.ok(outcome.rows.some((row) => row.outcome === 'retry'));
+  assert.match(
+    JSON.stringify(outcome.failure?.seen),
+    /KEYBOARD_DISMISS_FAILED: native control could not hide the keyboard; the keyboard covers the target and could not be hidden/,
+  );
   assert.equal(outcome.rows.at(-1)!.keyboardCleared, undefined);
 });
 

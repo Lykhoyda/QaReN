@@ -20,6 +20,7 @@ pub enum FailureCode {
     PnpmProcessGroupUnsupported,
     PnpmProbeTimedOut,
     MetroPortOccupied,
+    MetroBindIpv6Only,
     ManifestNotWarm,
     WatchmanVolumeStalled,
     RunAlreadyExists,
@@ -39,6 +40,7 @@ pub enum FailureCode {
     DepsNotPrewarmed,
     NativeInputUnreadable,
     BuildContended,
+    HostUnderPressure,
     DeviceClaimContended,
     DeviceUnavailable,
     DeviceNotBooted,
@@ -95,6 +97,7 @@ impl FailureCode {
                 | FailureCode::CandidateUnavailable
                 | FailureCode::DepsNotPrewarmed
                 | FailureCode::ManifestNotWarm
+                | FailureCode::MetroBindIpv6Only
                 | FailureCode::WatchmanVolumeStalled
                 | FailureCode::PnpmProcessGroupUnsupported
                 | FailureCode::PnpmProbeTimedOut
@@ -103,6 +106,7 @@ impl FailureCode {
                 | FailureCode::DeviceNotBooted
                 | FailureCode::LaneNotWarm
                 | FailureCode::BuildContended
+                | FailureCode::HostUnderPressure
                 | FailureCode::OwnershipUnproven
                 | FailureCode::HandoffNotPending
                 | FailureCode::HandoffEvidenceMissing
@@ -200,6 +204,52 @@ pub struct Failure {
     // Boxed so every Result<_, Failure> keeps its size.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<Box<FailureRecovery>>,
+    // What ran out when a native build step was stopped for time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<Box<LimitFacts>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LimitEnd {
+    NoProgress,
+    Window,
+    CommandLimit,
+}
+
+// Fixed words and numbers only: never output, paths or values.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LimitFacts {
+    pub phase: String,
+    pub setting: String,
+    pub limit_s: u64,
+    pub window_s: u64,
+    // Absent for prebuild, which has no progress rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_s: Option<u64>,
+    pub elapsed_s: u64,
+    pub ended_by: LimitEnd,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_progress_age_s: Option<u64>,
+    // Absent when no setting can help: the window was already the 7200 s maximum.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_limit_s: Option<u64>,
+    // The limit was raised from this machine's earlier builds.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub learned: bool,
+}
+
+impl LimitFacts {
+    // What to do once the run's own cleanup has succeeded; never names a value that is not there.
+    pub fn remedy(&self) -> String {
+        match (self.ended_by, self.next_limit_s) {
+            (LimitEnd::Window, Some(next)) => {
+                format!("set deadlines.build_seconds to {next}, then run again")
+            }
+            (LimitEnd::Window, None) => "the build window was already 7200 s, so no setting helps: build the app with the project's own tools and hand QaReN the built app".into(),
+            _ => "run again".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -242,6 +292,7 @@ pub enum RecoveryReason {
     BudgetExhausted,
     BuildBudgetExhausted,
     BuildProcessFailed,
+    BuildTimeLimit,
     OwnershipUnresolved,
     PersistenceFailed,
     IdentityUnavailable,
@@ -283,6 +334,7 @@ pub enum RecoveryAction {
     RetainAndReport,
     RepairRecordStorage,
     InspectLastObservedScreen,
+    Rerun,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -349,6 +401,7 @@ impl From<RecoveryReason> for Recovery {
             RunCancelled => ("re-run when ready; nothing resumes automatically", None, cleanup),
             ForeignAdmissionUnresolved => return Self::foreign_admission(),
             PreviousPlanPress => return Self::previous_plan_press(),
+            BuildTimeLimit => return Self::build_time_limit("run again"),
             _ => return Self::ios_runner(reason, "<run-id>", false, false, false),
         };
         let first_applicable = matches!(reason, BudgetExhausted | IdentityUnavailable);
@@ -463,6 +516,36 @@ impl Recovery {
         }
     }
 
+    // A build stopped for time broke nothing: after its own cleanup, running again is safe.
+    pub fn build_time_limit(remedy: &str) -> Self {
+        let first = format!("after `qaren cleanup <own-run-id> --json` has succeeded: {remedy}");
+        let mut rerun = RecoveryRung::step(1, true, false, &first);
+        rerun.action = Some(RecoveryAction::Rerun);
+        Self {
+            key: None,
+            reason: RecoveryReason::BuildTimeLimit,
+            next_rung: Some(1),
+            action: RecoveryAction::Rerun,
+            automatic: false,
+            destroys_state: false,
+            requires_user_ok: false,
+            own_cleanup_required: false,
+            own_run_id: None,
+            ladder: vec![
+                rerun,
+                RecoveryRung::step(2, false, false, CANNOT_HELP),
+                RecoveryRung::step(3, false, false, CANNOT_HELP),
+                RecoveryRung::step(4, false, false, CANNOT_HELP),
+                RecoveryRung::step(
+                    5,
+                    true,
+                    true,
+                    "run qaren cleanup <own-run-id> --json, then prepare again",
+                ),
+            ],
+        }
+    }
+
     // A plan mismatch: inspection only, and no reset can repair it.
     fn previous_plan_press() -> Self {
         Self {
@@ -556,7 +639,17 @@ impl Failure {
             suggestion: None,
             repeat: None,
             recovery: None,
+            limit: None,
         }
+    }
+
+    // A cut for time: its facts and the re-run recovery travel together.
+    pub fn with_limit(mut self, facts: LimitFacts) -> Self {
+        self.recovery = Some(Box::new(FailureRecovery::Build(
+            Recovery::build_time_limit(&facts.remedy()),
+        )));
+        self.limit = Some(Box::new(facts));
+        self
     }
 
     pub fn with_recovery(mut self, reason: impl Into<Recovery>) -> Self {
@@ -595,8 +688,16 @@ impl Failure {
             | "DEV_REDBOX_NO_SAFE_DISMISS"
             | "DEV_REDBOX_CLEARANCE_UNPROVEN" => "restart_app_from_plan_start",
             "DEV_REDBOX_ACTION_UNCERTAIN" => "inspect_app_error_before_rerun",
+            // Replacement could not complete; manual removal requires the user's device coordination.
+            "RUNNER_INSTALL_BLOCKED" =>
+                "QaReN could not replace its own runner apps on the device (adb's reason is in the detail); only if nothing else is using the device, remove them with `adb -s <serial> uninstall dev.lykhoyda.rndevagent.androidrunner` and the same for `dev.lykhoyda.rndevagent.androidrunner.test`, then re-run",
             _ => "resolve the refusal, then re-run",
         }
+    }
+
+    // A core refusal that is a device cause carries it as a machine-readable subreason.
+    pub fn core_refusal_subreason(code: &str) -> Option<String> {
+        (code == "RUNNER_INSTALL_BLOCKED").then(|| "runner-install-blocked".to_string())
     }
 
     // The candidate could not be read; nothing is known to have changed, so no recovery ladder applies.

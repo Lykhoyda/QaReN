@@ -12,6 +12,8 @@ pub const WITHHOLD_ARG: &str = "--private-output-withheld";
 pub const PAIRED_ARG: &str = "--stderr-fd3";
 const KEY_CONTROL_ARG: &str = "--redaction-key-control";
 const BUNDLE_REQUESTS_ARG: &str = "--bundle-requests";
+pub const LINE_COUNT_ARG: &str = "--line-count";
+const LINE_COUNT_INTERVAL: Duration = Duration::from_secs(1);
 // A command whose DEBUG names this namespace gets its bundle requests counted.
 pub const METRO_REQUEST_LOG: &str = "Metro:Server";
 const REQUEST_RECEIVED: &str = "Metro:Server Handling request: ";
@@ -29,8 +31,11 @@ impl LogDrain {
         path: &Path,
         withhold: bool,
         core_log: bool,
+        line_count: Option<&Path>,
     ) -> io::Result<(Self, UnixStream)> {
-        let (drain, output, _) = Self::start(executable, path, false, withhold, false, core_log)?;
+        let (drain, output, _) = Self::start(
+            executable, path, false, withhold, false, core_log, line_count,
+        )?;
         Ok((drain, output))
     }
 
@@ -40,6 +45,7 @@ impl LogDrain {
         path: &Path,
         withhold: bool,
         count_bundle_requests: bool,
+        line_count: Option<&Path>,
     ) -> io::Result<(Self, UnixStream, UnixStream)> {
         let (drain, output, error) = Self::start(
             executable,
@@ -48,6 +54,7 @@ impl LogDrain {
             withhold,
             count_bundle_requests,
             false,
+            line_count,
         )?;
         Ok((
             drain,
@@ -63,6 +70,7 @@ impl LogDrain {
         withhold: bool,
         count_bundle_requests: bool,
         core_log: bool,
+        line_count: Option<&Path>,
     ) -> io::Result<(Self, UnixStream, Option<UnixStream>)> {
         let log = std::fs::OpenOptions::new()
             .create(true)
@@ -137,6 +145,9 @@ impl LogDrain {
                 .arg(BUNDLE_REQUESTS_ARG)
                 .arg(bundle_requests_path(path));
         }
+        if let Some(count) = line_count {
+            command.arg(LINE_COUNT_ARG).arg(count);
+        }
         crate::redact::scrub_secret_env(&mut command, "", &[]);
         let child = command.spawn()?;
         let error = second.map(|(stderr_input, stderr_output)| {
@@ -206,6 +217,20 @@ pub fn read_bundle_requests(log: &Path) -> Option<u64> {
         .trim()
         .parse()
         .ok()
+}
+
+pub fn line_count_path(log: &Path) -> PathBuf {
+    log.with_extension("lines")
+}
+
+// Digits and a line feed, nothing else; anything else, or no file, means unknown.
+pub fn read_line_count(log: &Path) -> Option<u64> {
+    let text = std::fs::read_to_string(line_count_path(log)).ok()?;
+    let digits = text.strip_suffix('\n')?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 pub fn bundle_outcomes_path(log: &Path) -> PathBuf {
@@ -307,15 +332,52 @@ impl BundleRequests {
     }
 }
 
+// A value-free count of drained lines, kept through withholding: a build's progress signal.
+struct LineCount {
+    path: PathBuf,
+    count: u64,
+    written: Option<(u64, Instant)>,
+}
+
+impl LineCount {
+    fn publish(&mut self, now: Instant, last: bool) -> io::Result<()> {
+        if let Some((count, at)) = self.written {
+            if count == self.count || (!last && now.duration_since(at) < LINE_COUNT_INTERVAL) {
+                return Ok(());
+            }
+        }
+        BundleRequests::write(&self.path, format!("{}\n", self.count))?;
+        self.written = Some((self.count, now));
+        Ok(())
+    }
+}
+
 // The whole command's output is withheld once either stream names a private key.
 struct Sink {
     file: std::fs::File,
     start: u64,
     withheld: bool,
     bundles: Option<BundleRequests>,
+    lines: Option<LineCount>,
 }
 
 impl Sink {
+    fn count_line(&mut self, content: bool) {
+        if let (true, Some(lines)) = (content, &mut self.lines) {
+            lines.count += 1;
+        }
+    }
+
+    // An absent count means unknown, so a failed write retires the signal instead of lagging.
+    fn publish_lines(&mut self, last: bool) {
+        if let Some(lines) = &mut self.lines {
+            if lines.publish(Instant::now(), last).is_err() {
+                let _ = std::fs::remove_file(&lines.path);
+                self.lines = None;
+            }
+        }
+    }
+
     fn withhold(&mut self) -> io::Result<()> {
         self.withheld = true;
         self.file.set_len(self.start)?;
@@ -351,7 +413,7 @@ impl Lines {
     // Checked per byte, so a mention still waiting for its newline withholds before any checkpoint.
     fn write(&mut self, bytes: &[u8], sink: &mut Sink) -> io::Result<()> {
         for &byte in bytes {
-            if sink.withheld && sink.bundles.is_none() {
+            if sink.withheld && sink.bundles.is_none() && sink.lines.is_none() {
                 return Ok(());
             }
             self.pending.push(byte);
@@ -368,10 +430,18 @@ impl Lines {
                 self.pending.drain(..MAX_LINE - 10);
             }
             if byte == b'\n' || byte == b'\r' {
+                // A lone delimiter (the second half of CRLF, a blank line) is no update.
+                sink.count_line(self.oversized || self.pending.len() > 1);
                 self.finish(sink)?;
             }
         }
         Ok(())
+    }
+
+    // End of a stream: unterminated output left in the buffer is one more update.
+    fn end(&mut self, sink: &mut Sink) -> io::Result<()> {
+        sink.count_line(self.oversized || !self.pending.is_empty());
+        self.finish(sink)
     }
 
     fn finish(&mut self, sink: &mut Sink) -> io::Result<()> {
@@ -439,11 +509,21 @@ fn drain(paired: bool, mut control: UnixStream, key: Option<String>) -> io::Resu
             count: None,
             outcomes: None,
         });
+    let lines = args
+        .iter()
+        .position(|arg| arg == LINE_COUNT_ARG)
+        .and_then(|at| args.get(at + 1))
+        .map(|path| LineCount {
+            path: PathBuf::from(path),
+            count: 0,
+            written: None,
+        });
     let mut log = Sink {
         start: file.metadata()?.len(),
         file,
         withheld: false,
         bundles,
+        lines,
     };
     if std::env::args().any(|arg| arg == WITHHOLD_ARG) {
         log.withheld = true;
@@ -468,7 +548,7 @@ fn drain(paired: bool, mut control: UnixStream, key: Option<String>) -> io::Resu
                 match input.read(&mut buf) {
                     Ok(0) => {
                         *eof = true;
-                        lines.finish(&mut log)?;
+                        lines.end(&mut log)?;
                     }
                     Ok(n) => {
                         lines.write(&buf[..n], &mut log)?;
@@ -485,6 +565,7 @@ fn drain(paired: bool, mut control: UnixStream, key: Option<String>) -> io::Resu
             }
         }
         let done = streams.iter().all(|(_, _, eof)| *eof);
+        log.publish_lines(done);
         // A checkpoint covers this bounded prefix, not eventual producer silence.
         if checkpoint {
             if let Err(e) = control.write_all(&[1]) {

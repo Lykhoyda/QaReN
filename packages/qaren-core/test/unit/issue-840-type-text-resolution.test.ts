@@ -1694,6 +1694,7 @@ test('a private compare match carries no mismatch facts', async () => {
     secure: false,
     privateValue: true,
     contentLength: 14,
+    disabled: false,
     exact: true,
   });
 });

@@ -116,6 +116,32 @@ fn check_config_rejects_unsupported_environment_injection() {
     assert_eq!(failure.code, FailureCode::ScenarioInvalid);
 }
 
+#[test]
+fn build_jobs_and_priority_load_and_refuse_values_that_cannot_apply() {
+    use qaren::scenario::BuildPriority;
+    let config = load(&config_yaml("")).unwrap();
+    assert_eq!(config.build.jobs, None);
+    assert_eq!(config.build.priority, None);
+    let config = load(&config_yaml("build:\n  jobs: 3\n  priority: normal\n")).unwrap();
+    assert_eq!(config.build.jobs.map(|n| n.get()), Some(3));
+    assert_eq!(config.build.priority, Some(BuildPriority::Normal));
+    let config = load(&config_yaml("build:\n  priority: low\n")).unwrap();
+    assert_eq!(config.build.priority, Some(BuildPriority::Low));
+    assert_eq!(config.build.arch, None);
+    let config = load(&config_yaml("build:\n  arch: all\n")).unwrap();
+    assert_eq!(config.build.arch, Some(qaren::scenario::BuildArch::All));
+    for block in [
+        "build:\n  arch: arm64\n",
+        "build:\n  jobs: 0\n",
+        "build:\n  jobs: -2\n",
+        "build:\n  priority: high\n",
+        "build:\n  workers: 3\n",
+    ] {
+        let failure = load(&config_yaml(block)).unwrap_err();
+        assert_eq!(failure.code, FailureCode::ScenarioInvalid, "{block}");
+    }
+}
+
 fn config_yaml(deadlines: &str) -> String {
     format!("appId: com.example.testapp\ndevClientScheme: testapp\n{deadlines}")
 }

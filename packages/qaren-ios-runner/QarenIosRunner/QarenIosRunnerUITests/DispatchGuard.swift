@@ -3,6 +3,12 @@ import Foundation
 
 // Occlusion is decided at dispatch by the live accessibility hit test of the one target.
 enum DispatchGuard {
+  static func measure<T>(now: () -> Double, _ action: () -> T) -> (value: T, startMs: Double, endMs: Double) {
+    let start = now()
+    let value = action()
+    return (value, start, now())
+  }
+
   enum TargetCheck: Equatable {
     case unavailable
     case moved

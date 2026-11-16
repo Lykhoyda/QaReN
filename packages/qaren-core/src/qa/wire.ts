@@ -1,6 +1,7 @@
 import { cleanAdmissionFacts, type AdmissionFacts } from './admission-facts.js';
 import { RunInputs, withInputs, currentInputs } from './inputs.js';
 import { cleanDiagnostic } from './diagnostics.js';
+import { INPUT_FREE_DIAGNOSTIC_STAGES } from './timing.js';
 import { ObservedPrivacy } from './privacy.js';
 import { assertLoginPolicy, inputInventory } from './input-preflight.js';
 import { readBlock } from './blocks.js';
@@ -404,6 +405,10 @@ export function createWriter(write: (line: string) => void, runId: string): Wire
           !currentInputs()?.hasInputs &&
           !['target-miss', 'media-withheld', 'label-provenance', 'interruption-rejected'].includes(
             String(clean.kind),
+          ) &&
+          !(
+            clean.kind === 'metric' &&
+            INPUT_FREE_DIAGNOSTIC_STAGES.some((stage) => stage === clean.stage)
           )
         )
           return;

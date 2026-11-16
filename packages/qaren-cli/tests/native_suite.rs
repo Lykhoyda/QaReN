@@ -885,21 +885,37 @@ fn pending_recovery_retains_the_lease_when_its_transition_cannot_be_saved() {
 
 #[test]
 fn example_log_helper_supports_control_arguments_and_paired_streams() {
-    assert!(std::process::Command::new(env!("CARGO"))
-        .args(["build", "--locked", "--example", "native-ios-suite"])
+    let build = std::process::Command::new(env!("CARGO"))
+        .args([
+            "build",
+            "--locked",
+            "--example",
+            "native-ios-suite",
+            "--message-format=json",
+        ])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .status()
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let executable = String::from_utf8(build.stdout)
         .unwrap()
-        .success());
-    let executable = std::env::current_exe()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|message| {
+            message["reason"] == "compiler-artifact"
+                && message["target"]["name"] == "native-ios-suite"
+                && message["executable"].is_string()
+        })
+        .expect("Cargo must report the native-ios-suite executable")["executable"]
+        .as_str()
         .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("examples/native-ios-suite");
+        .to_owned();
     let dir = common::temp_repo();
-    let mut runner = RealRunner::with_log_executable(executable);
+    let mut runner = RealRunner::with_log_executable(executable.into());
     let log = dir.join("suite.log");
     let mut child = runner
         .spawn_piped(

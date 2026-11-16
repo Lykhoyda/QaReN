@@ -61,9 +61,11 @@ export function nativeCapture() {
   };
 }
 
-// An iOS presence capture of a full-screen opt-in Modal: the window behind repeats the front
-// window's two buttons in the same place, without their test IDs (so the runner's descriptors
-// differ and neither copy is ambiguous), unobserved and not hittable; no viewport diagnostics.
+// Synthetic, not a device capture: an iOS presence capture of a full-screen opt-in Modal whose
+// window behind repeats the front window's two buttons in the same place, without their test IDs
+// (so the runner's descriptors differ and neither copy is ambiguous), unobserved and not
+// hittable; no viewport diagnostics. Real device captures of the same opt-in, with every in-Modal
+// control in one window, are in test/fixtures/ios-optin-modal/ and test/fixtures/ios-optin-after-tap/.
 export function twoWindowOptInCapture() {
   const base = nativeCapture();
   const full = { x: 0, y: 0, width: 400, height: 800 };

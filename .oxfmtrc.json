@@ -3,6 +3,7 @@
   "ignorePatterns": [
     "node_modules/",
     "dist/",
+    "packages/qaren-core/src/injected-helpers.bundle.ts",
     "WebDriverAgent/",
     ".claude/worktrees/",
     ".next/",

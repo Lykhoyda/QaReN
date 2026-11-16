@@ -40,6 +40,8 @@ test('actual Swift preparation and retry loop cannot activate, retarget or recov
     timeout: 90_000,
     input: `
 import Foundation
+${section(readFileSync(new URL('DispatchGuard.swift', native), 'utf8'), 'enum DispatchGuard {', '  static func hitTest<T>(')}
+}
 ${section(read('Models'), 'enum CommandType:', 'struct Response:')}
 ${section(read('Models'), 'struct SnapshotRect:', 'struct SnapshotNode:')}
 struct ErrorPayload { var code: String? = nil; let message: String; var mutation: String? = nil; var reason: String? = nil }
@@ -67,6 +69,7 @@ enum RunnerObjCExceptionCatcher {
   }
 }
 class Harness {
+  func currentUptimeMs() -> Double { ProcessInfo.processInfo.systemUptime * 1000 }
   let app = XCUIApplication()
   var currentApp: XCUIApplication? = XCUIApplication()
   var currentBundleId: String? = "qa.app"

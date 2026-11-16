@@ -19,6 +19,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2 — Phase 134.5 SHA pin
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0 — Phase 134.5 SHA pin
         with:
@@ -32,6 +34,14 @@ jobs:
 
       - name: Build core and the Observe SPA
         run: corepack yarn build
+
+      - name: Injected helper bundle is current
+        run: node scripts/build-injected-helpers.ts --check
+
+      - name: Injected helper version matches program changes
+        env:
+          HELPERS_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: node scripts/build-injected-helpers.ts --check --base-ref "$HELPERS_BASE_REF"
 
       # GH#437 (audit P0-B): wire-contract drift must fail a NAMED gate, not
       # hide in the unit blob — tri-file command-enum/protocol sync (#418/#383)

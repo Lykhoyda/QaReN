@@ -110,6 +110,18 @@ pub fn redact_secrets(raw: &str) -> String {
 pub fn durable_json<T: serde::Serialize>(value: &T) -> serde_json::Result<String> {
     let mut projected = serde_json::to_value(value)?;
     let mut media = Vec::new();
+    if let Some(value) = projected.get("host") {
+        if let Ok(host) = serde_json::from_value::<crate::host_capacity::RunSamples>(value.clone())
+        {
+            media.push(("/host".into(), serde_json::to_value(host)?));
+        }
+    }
+    if let Some(value) = projected.get("device_helpers") {
+        if let Ok(notes) = serde_json::from_value::<Vec<crate::device_helpers::Note>>(value.clone())
+        {
+            media.push(("/device_helpers".into(), serde_json::to_value(notes)?));
+        }
+    }
     if let Some(value) = projected.get("mediaWithheld") {
         if let Ok(value) = serde_json::from_value::<crate::core::MediaWithheld>(value.clone()) {
             media.push(("/mediaWithheld".to_string(), serde_json::to_value(value)?));
@@ -650,6 +662,59 @@ mod tests {
         let text = durable_json(&leaky).unwrap();
         assert!(!text.contains("FAKEKEYBODY"), "{text}");
         assert!(text.contains("\"plain\""), "{text}");
+    }
+
+    #[test]
+    fn only_valid_typed_host_facts_bypass_input_masking() {
+        let inputs = std::sync::Arc::new(super::InputValues::from_values(vec![
+            "normal".into(),
+            "private-host-canary".into(),
+        ]));
+        super::with_input_scope(inputs, || {
+            let payload = serde_json::json!({
+                "host": {
+                    "start": { "pressure": "normal", "untrusted": "private-host-canary" },
+                    "end": { "pressure": "critical" }
+                },
+                "pressure": "normal"
+            });
+            let text = durable_json(&payload).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(json["host"]["start"]["pressure"], "normal");
+            assert_eq!(json["host"]["end"]["pressure"], "critical");
+            assert_ne!(json["pressure"], "normal");
+            assert!(!text.contains("private-host-canary"));
+            let mut invalid = payload;
+            invalid["host"]["start"]["pressure"] = "private-host-canary".into();
+            assert!(!durable_json(&invalid)
+                .unwrap()
+                .contains("private-host-canary"));
+        });
+    }
+
+    #[test]
+    fn only_valid_typed_device_helper_notes_bypass_input_masking() {
+        let inputs = std::sync::Arc::new(super::InputValues::from_values(vec![
+            "netsimd".into(),
+            "private-helper-canary".into(),
+        ]));
+        super::with_input_scope(inputs, || {
+            let payload = serde_json::json!({
+                "device_helpers": [{ "name": "netsimd", "pid": 4242 }],
+                "name": "netsimd"
+            });
+            let json: serde_json::Value =
+                serde_json::from_str(&durable_json(&payload).unwrap()).unwrap();
+            assert_eq!(json["device_helpers"][0]["name"], "netsimd");
+            assert_eq!(json["device_helpers"][0]["pid"], 4242);
+            assert_ne!(json["name"], "netsimd");
+            let invalid = serde_json::json!({
+                "device_helpers": [{ "name": "private-helper-canary", "pid": 4242 }]
+            });
+            assert!(!durable_json(&invalid)
+                .unwrap()
+                .contains("private-helper-canary"));
+        });
     }
 
     #[test]

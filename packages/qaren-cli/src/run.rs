@@ -229,6 +229,9 @@ pub fn run(runner: &mut dyn Runner, req: &RunRequest) -> Receipt {
 
 fn run_scoped(runner: &mut dyn Runner, req: &RunRequest) -> Receipt {
     let started_ms = runner.now_epoch_ms();
+    let os = runner.host_os();
+    let host_start = crate::host_capacity::sample(runner, os);
+    let helpers = crate::device_helpers::scan(runner, std::env::consts::OS);
     let mut preflight_jev = None;
     // A PR worktree created before the run record owns it; removed here if the run never got that far.
     let mut unowned_worktree = None;
@@ -271,6 +274,7 @@ fn run_scoped(runner: &mut dyn Runner, req: &RunRequest) -> Receipt {
         receipt.commands_executed = runner.commands_executed();
     }
     receipt.preflight_jev = preflight_jev;
+    crate::commands::finish_host(runner, &mut receipt, host_start, &helpers);
     receipt
 }
 
@@ -694,7 +698,9 @@ fn run_inner(
         terminal: None,
         held: None,
         build_lock: None,
+        build_lock_waits: Vec::new(),
         runtime_version: None,
+        metro_bind: None,
     };
     if let Err(f) = record.save(&req.runs_root) {
         return Err(lease::release_or_annotate(&lease, f));
@@ -723,6 +729,8 @@ fn run_inner(
         lane_owned: req.platform == Platform::Ios
             && (req.boot_device || req.restart_device || req.fresh_install),
         build_deadline_ms: None,
+        build_limit: None,
+        host_wait_ms: 0,
     };
     // Returning a receipt prevents ? from escaping this resource-owning scope.
     let held = move |mut ctx: Ctx<'_>| -> Receipt {
@@ -1071,7 +1079,7 @@ fn run_inner(
         if req.platform == Platform::Ios && resolved_inputs.has_inputs() {
             ctx.notes.push((
                 "platform_log".to_string(),
-                "the simulator system log may record displayed field text; see Runtime inputs"
+                "typed and displayed field text is recorded in the simulator system log; the simulator_log cleanup leg says whether QaReN removed it; a simulator QaReN did not create keeps its log, and qaren doctor --device <udid> prints the command that clears it"
                     .to_string(),
             ));
         }
@@ -1156,7 +1164,7 @@ fn run_inner(
         );
         events::stage("attach", StageState::Running, None, None);
         let runner_started_at = ctx.runner.now_epoch_ms();
-        let core_child = match core::spawn_private(
+        let mut core_child = match core::spawn_private(
             ctx.runner,
             &spec,
             &core_log,
@@ -1178,6 +1186,7 @@ fn run_inner(
             return finish_failed(ctx, f);
         }
         let mut driver_notes = Vec::new();
+        core_child.watch_build_slot(&ctx.record);
         let mut outcome = {
             let record = &mut ctx.record;
             let runs_root = &ctx.runs_root;
@@ -1376,7 +1385,10 @@ fn run_inner(
         cleanup.splice(..0, early_cleanup);
         let t = ctx.mark("teardown", t);
         if let Some(udid) = runner_simulator {
-            if let Some(note) = springboard_crash_after(ctx.runner, &udid, runner_started_at) {
+            let wait_seconds = springboard_scan_wait_seconds(&outcome);
+            if let Some(note) =
+                springboard_crash_after(ctx.runner, &udid, runner_started_at, wait_seconds)
+            {
                 let at = timefmt::iso8601_utc(ctx.runner.now_epoch_ms());
                 ctx.record
                     .push_history(at, &format!("lane health: springboard_crash: {note}"));
@@ -1414,8 +1426,9 @@ fn run_inner(
             ),
             Verdict::Refused { code, message } => (
                 ReceiptResult::Refused,
-                Some(boundary(&|| {
-                    Failure::new(
+                Some(boundary(&|| Failure {
+                    subreason: Failure::core_refusal_subreason(code),
+                    ..Failure::new(
                         "prove",
                         refusal_code(code),
                         format!("{code}: {message}"),
@@ -1730,10 +1743,31 @@ fn run_inner(
 // A report lands up to 45 s after the crash; finding one is lane health and never changes the result.
 const SPRINGBOARD_SCAN_SECONDS: u64 = 60;
 
-fn springboard_crash_after(runner: &mut dyn Runner, udid: &str, since_ms: u64) -> Option<String> {
+fn springboard_scan_wait_seconds(outcome: &core::CoreOutcome) -> u64 {
+    if outcome.failure.is_some() || outcome.group_survived {
+        return SPRINGBOARD_SCAN_SECONDS;
+    }
+    match outcome.verdict {
+        Verdict::Pass => 0,
+        Verdict::Fail
+            if outcome.ledger.failure.as_ref().and_then(|f| f.kind)
+                == Some(core::FailureKind::Step) =>
+        {
+            0
+        }
+        _ => SPRINGBOARD_SCAN_SECONDS,
+    }
+}
+
+fn springboard_crash_after(
+    runner: &mut dyn Runner,
+    udid: &str,
+    since_ms: u64,
+    wait_seconds: u64,
+) -> Option<String> {
     let reports = Path::new(&runner.env_var("HOME")?).join("Library/Logs/DiagnosticReports");
     let since = std::time::UNIX_EPOCH + std::time::Duration::from_millis(since_ms);
-    for left in (0..=SPRINGBOARD_SCAN_SECONDS).rev() {
+    for left in (0..=wait_seconds).rev() {
         if let Some(facts) =
             ios::recent_crash_facts(&reports, ios::SPRINGBOARD_BUNDLE_ID, udid, since)
         {
@@ -2020,6 +2054,7 @@ fn refusal_code(code: &str) -> FailureCode {
         "JEV_REQUEST_INVALID" => FailureCode::JevRequestInvalid,
         "JEV_UNREACHABLE" => FailureCode::JevUnreachable,
         "RUN_CANCELLED" => FailureCode::RunCancelled,
+        "RUNNER_INSTALL_BLOCKED" => FailureCode::DeviceUnavailable,
         code if code.starts_with("DEV_REDBOX_") => FailureCode::DevRedbox,
         _ => FailureCode::CoreRefused,
     }
@@ -2172,6 +2207,97 @@ mod block_start_tests {
     }
 
     #[test]
+    fn springboard_scan_stops_polling_when_cancelled() {
+        let home = home_with_reports("springboard-cancelled", &[]);
+        let mut runner = crate::exec::MockRunner::new();
+        runner
+            .environment
+            .insert("HOME".into(), home.display().to_string());
+        let start = runner.now_epoch_ms();
+        runner.cancel_at_ms = Some((start + 2_000, "cancelled".into()));
+        assert_eq!(springboard_crash_after(&mut runner, "AAAA", start, 60), None);
+        assert_eq!(runner.now_epoch_ms(), start + 2_000);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn springboard_scan_without_wait_does_not_advance_the_clock() {
+        let home = home_with_reports("springboard-no-wait", &[]);
+        let mut runner = crate::exec::MockRunner::new();
+        runner
+            .environment
+            .insert("HOME".into(), home.display().to_string());
+        let start = runner.now_epoch_ms();
+        assert_eq!(springboard_crash_after(&mut runner, "AAAA", start, 0), None);
+        assert_eq!(runner.now_epoch_ms(), start);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn springboard_scan_without_wait_finds_an_existing_report() {
+        let home = home_with_reports("springboard-no-wait-found", &["AAAA"]);
+        let mut runner = crate::exec::MockRunner::new();
+        runner
+            .environment
+            .insert("HOME".into(), home.display().to_string());
+        let start = runner.now_epoch_ms();
+        let note = springboard_crash_after(&mut runner, "AAAA", start, 0);
+        assert_eq!(
+            note.as_deref(),
+            Some("Observed a SpringBoard crash at 2026-02-02T02:40:01Z on this simulator (EXC_BAD_ACCESS); attribution to this run is unverified; the result stands")
+        );
+        assert_eq!(runner.now_epoch_ms(), start);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn springboard_scan_waits_only_for_abnormal_outcomes() {
+        let refused = Verdict::Refused {
+            code: "CDP_NOT_CONNECTED".into(),
+            message: "attach refused".into(),
+        };
+        let rows = [
+            (Verdict::Pass, false, false, false, 0),
+            (Verdict::Fail, true, false, false, 0),
+            (Verdict::Fail, false, false, false, 60),
+            (refused.clone(), false, false, false, 60),
+            (refused, true, false, false, 60),
+            (Verdict::Pass, false, true, false, 60),
+            (Verdict::Pass, false, false, true, 60),
+            (Verdict::Fail, true, true, false, 60),
+            (Verdict::Fail, true, false, true, 60),
+        ];
+        for (verdict, step_failure, failure, group_survived, expected) in rows {
+            let mut ledger = core::synthesized_ledger(&[], "FAIL", "failure");
+            if step_failure {
+                ledger.failure.as_mut().unwrap().kind = Some(core::FailureKind::Step);
+            }
+            let outcome = core::CoreOutcome {
+                pid: 1,
+                ledger,
+                verdict,
+                exit: None,
+                failure: failure.then(|| {
+                    Failure::new(
+                        "walk",
+                        FailureCode::CoreResultMissing,
+                        "no result line",
+                        "retry",
+                    )
+                }),
+                group_survived,
+                admitted: true,
+                first_step_start_ms: None,
+            };
+            assert_eq!(
+                springboard_scan_wait_seconds(&outcome),
+                expected,
+                "{outcome:?}"
+            );
+        }
+    }
+
+    #[test]
     fn springboard_report_after_teardown_is_not_attributed_to_this_run() {
         let udid = "AAAABBBB-1111-2222-3333-444455556666";
         let home = home_with_reports("springboard-found", &["FFFF", udid]);
@@ -2188,7 +2314,7 @@ mod block_start_tests {
             .set_times(std::fs::FileTimes::new().set_modified(report_time))
             .unwrap();
         runner.sleep(std::time::Duration::from_secs(92));
-        let note = springboard_crash_after(&mut runner, udid, start);
+        let note = springboard_crash_after(&mut runner, udid, start, 60);
         assert_eq!(
             note.as_deref(),
             Some("Observed a SpringBoard crash at 2026-02-02T02:40:01Z on this simulator (EXC_BAD_ACCESS); attribution to this run is unverified; the result stands")
@@ -2206,7 +2332,7 @@ mod block_start_tests {
             .insert("HOME".into(), home.display().to_string());
         let start = runner.now_epoch_ms();
         runner.sleep(std::time::Duration::from_secs(90));
-        assert_eq!(springboard_crash_after(&mut runner, "AAAA", start), None);
+        assert_eq!(springboard_crash_after(&mut runner, "AAAA", start, 60), None);
         assert_eq!(runner.now_epoch_ms(), start + 150_000);
         let _ = std::fs::remove_dir_all(home);
     }
@@ -2533,6 +2659,10 @@ fn teardown(
         }
         outcomes.push(("metro".to_string(), outcome));
     }
+    if let Some(outcome) = crate::commands::cleanup::cleanup_build_slot(ctx.runner, &mut ctx.record)
+    {
+        outcomes.push(("build_slot".into(), outcome));
+    }
     if let Some(outcome) = crate::commands::cleanup::cleanup_runner_drivers(
         ctx.runner,
         &mut ctx.record,
@@ -2552,11 +2682,13 @@ fn teardown(
     }
     prepare::release_build_lock(ctx);
     if ctx.record.resources.ios_simulator.is_some() {
-        let outcome = if hold {
-            match ctx.record.resources.borrowed_ios_stop() {
+        // check and pr only borrow the simulator, so its log store is always kept.
+        let (outcome, log) = if hold {
+            let outcome = match ctx.record.resources.borrowed_ios_stop() {
                 crate::runrecord::BorrowedIosStop::Pending => held.clone(),
                 _ => Outcome::Kept,
-            }
+            };
+            (outcome, Some(Outcome::Kept))
         } else {
             crate::commands::cleanup::cleanup_borrowed_ios(
                 ctx.runner,
@@ -2568,6 +2700,9 @@ fn teardown(
             )
         };
         outcomes.push(("simulator".to_string(), outcome));
+        if let Some(log) = log {
+            outcomes.push(("simulator_log".to_string(), log));
+        }
     }
     // Released while the lease is still this run's; an unclean leg below retains it.
     outcomes.extend(crate::commands::cleanup::release_borrowed_android(
@@ -3234,6 +3369,9 @@ fn build_scenario(
                 .as_ref()
                 .filter(|_| platform == Platform::Ios)
                 .and_then(|ios| ios.build.clone()),
+            jobs: config.build.jobs,
+            priority: config.build.priority,
+            arch: config.build.arch,
             ..BuildSpec::default()
         },
         deps: DepsSpec {
@@ -3352,7 +3490,10 @@ pub(crate) fn cleanup_first(cleanup: &str, failure: &Failure) -> String {
     if failure.suggestion.is_some()
         || failure.repeat.is_some()
         || failure.subreason.as_deref() == Some(PREVIOUS_PLAN_PRESS)
-        || failure.code == FailureCode::CandidateUnavailable
+        || matches!(
+            failure.code,
+            FailureCode::CandidateUnavailable | FailureCode::MetroBindIpv6Only
+        )
     {
         format!("{cleanup}; then {}", failure.next_action.as_str())
     } else {
@@ -4124,6 +4265,16 @@ mod last_screen_tests {
         assert_eq!(
             cleanup_first(cleanup, &unavailable),
             format!("{cleanup}; then {}", unavailable.next_action.as_str())
+        );
+        let ipv6_only = Failure::new(
+            "build",
+            FailureCode::MetroBindIpv6Only,
+            "Metro answered on [::1]:8081",
+            "check the DNS order",
+        );
+        assert_eq!(
+            cleanup_first(cleanup, &ipv6_only),
+            format!("{cleanup}; then check the DNS order")
         );
     }
 

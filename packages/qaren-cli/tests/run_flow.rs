@@ -1,6 +1,10 @@
 #[path = "run_flow/android_dynamic_config.rs"]
 mod android_dynamic_config;
 mod common;
+#[path = "run_flow/host_memory_wait.rs"]
+mod host_memory_wait;
+#[path = "run_flow/host_numbers.rs"]
+mod host_numbers;
 use common::IosBuildRunner as MockRunner;
 
 use qaren::core::Budgets;
@@ -15,6 +19,57 @@ use std::path::{Path, PathBuf};
 const UDID: &str = "1DC408C4-51DA-4C4F-ACA1-39881C916FDD";
 const LSTART: &str = "Wed Aug 12 16:01:00 2026";
 const TEST_KEY: &str = "hermetic-typesafe-key";
+
+fn assert_finite_build_priority(build: &CmdSpec, increment: i32) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let parent_nice = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
+    let mut child = Command::new(&build.program)
+        .args(&build.args[..5])
+        .args([
+            "/bin/sh",
+            "-c",
+            "/bin/ps -o ni= -p $$; printf '%s\\0' \"$@\"",
+            "priority-probe",
+        ])
+        .args(&build.args[5..])
+        .args(["argument with spaces", "literal 'quote' $value"])
+        .current_dir(build.cwd.as_ref().unwrap())
+        .envs(build.env.iter().cloned())
+        .env("PATH", "/usr/bin:/bin")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"start\n").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty());
+    let mut fields = output.stderr.splitn(2, |b| *b == b'\n');
+    let nice = fields.next().unwrap();
+    let args = fields.next().unwrap();
+    assert_eq!(
+        std::str::from_utf8(nice)
+            .unwrap()
+            .trim()
+            .parse::<i32>()
+            .unwrap(),
+        parent_nice + increment,
+        "the build policy requires one priority adjustment, or none for normal"
+    );
+    let expected = build.args[5..]
+        .iter()
+        .map(String::as_str)
+        .chain(["argument with spaces", "literal 'quote' $value"])
+        .flat_map(|arg| arg.bytes().chain([0]))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        args, expected,
+        "the build gate must forward every argument intact"
+    );
+}
 
 fn probe_json() -> serde_json::Value {
     serde_json::json!({"calls":1,"medianMs":12,"inputTokens":10,"callDetails":[{
@@ -228,6 +283,14 @@ fn workspace_check_uses_a_gated_finite_build_and_persists_the_verified_artifact(
 
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     assert_eq!(mock.remaining(), 0);
+    // A passing check carries the wait's bound address into its receipt, where the report reads it.
+    assert_eq!(
+        receipt.metro_bind,
+        Some(qaren::runrecord::MetroBind::V4)
+    );
+    assert!(std::fs::read_to_string(&receipt.artifacts["report"])
+        .unwrap()
+        .contains("Host at start"));
     assert_direct_ios_launch(&mock);
     let build = mock
         .calls
@@ -235,7 +298,13 @@ fn workspace_check_uses_a_gated_finite_build_and_persists_the_verified_artifact(
         .find(|c| c.label == "xcodebuild-ios")
         .unwrap();
     assert_eq!(build.program, "/bin/bash");
-    assert!(build.args[3].ends_with("exec \"$@\" >&2"));
+    assert_finite_build_priority(build, 10);
+    assert_eq!(build.args[5], "xcrun");
+    assert!(!build.args.iter().any(|a| a == "-jobs"));
+    assert_eq!(
+        receipt.outcomes["build_policy:xcodebuild-ios"],
+        "priority nice 10; jobs uncapped (machine size unknown); arch all (not Apple silicon)"
+    );
     assert_eq!(mock.piped_stdin_text(0), "start\n");
     assert!(build.args.iter().any(|a| a == "Native Debug"));
     assert!(!labels(&mock)
@@ -262,6 +331,45 @@ fn workspace_check_uses_a_gated_finite_build_and_persists_the_verified_artifact(
         assert_eq!(std::fs::read_to_string(path).unwrap(), "keep");
     }
     assert_eq!(receipt.cleanup["device_lease"], "removed");
+}
+
+#[test]
+fn workspace_build_honours_configured_jobs_and_normal_priority() {
+    let (repo, app) = app_repo();
+    common::write_ios_workspace(&app, "ios/Native.xcworkspace");
+    configure_workspace(&app, "ios/Native.xcworkspace", "Native");
+    let config = app.join(".qaren/config.yaml");
+    let yaml = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(
+        &config,
+        format!("{yaml}build:\n  jobs: 3\n  priority: normal\n"),
+    )
+    .unwrap();
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    script_provision_build(&mut mock, "xcodebuild", common::IOS_NATIVE_FILES);
+    script_drift_status(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+    script_core_identity(&mut mock);
+    script_teardown(&mut mock);
+
+    let receipt = run(&mut mock, &request(&repo, &app, 30));
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    let build = mock
+        .calls
+        .iter()
+        .find(|c| c.label == "xcodebuild-ios")
+        .unwrap();
+    assert_finite_build_priority(build, 0);
+    let jobs = build.args.iter().position(|a| a == "-jobs").unwrap();
+    assert_eq!(build.args[jobs + 1], "3");
+    assert_eq!(
+        receipt.outcomes["build_policy:xcodebuild-ios"],
+        "priority normal; jobs 3 (build.jobs); arch all (not Apple silicon)"
+    );
 }
 
 #[test]
@@ -470,6 +578,9 @@ fn a_fresh_clone_reuses_another_clones_build_and_never_overwrites_the_store() {
         let mut mock = MockRunner::new();
         mock.sleep(std::time::Duration::from_secs(60 * index as u64));
         let reuse = case == "second";
+        if reuse {
+            std::fs::create_dir_all(req.lock_root.join("native-build-slot")).unwrap();
+        }
         script_preflight(&mut mock, &repo);
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
         if reuse {
@@ -504,6 +615,10 @@ fn a_fresh_clone_reuses_another_clones_build_and_never_overwrites_the_store() {
             receipt.failure
         );
         assert_eq!(mock.remaining(), 0, "{case}");
+        if reuse {
+            assert!(receipt.build_lock_waits.is_empty());
+            assert!(req.lock_root.join("native-build-slot").is_dir());
+        }
         let plan = receipt.build.unwrap();
         assert_eq!(
             plan.decision == BuildDecision::Reuse,
@@ -700,6 +815,89 @@ fn a_clean_ios_build_refuses_before_building_when_its_volume_is_short_of_space()
 }
 
 #[test]
+fn an_ios_check_refuses_contention_when_its_slot_wait_expires() {
+    let (repo, app) = app_repo();
+    let config = app.join(".qaren/config.yaml");
+    let mut yaml = std::fs::read_to_string(&config).unwrap();
+    yaml.push_str("deadlines:\n  build_seconds: 30\n");
+    std::fs::write(config, yaml).unwrap();
+    let req = request(&repo, &app, 30);
+    let holder = qaren::buildplan::LockHolder {
+        holder: "foreign-build-token".into(),
+        run_id: "check-foreign".into(),
+        identity: Some(qaren::runrecord::PidIdentity {
+            pid: 4242,
+            started_at: LSTART.into(),
+            command: qaren::redact::OutputText::from_output("qaren check"),
+        }),
+        at: qaren::timefmt::iso8601_utc(1_770_000_000_000),
+        home: None,
+        qaren_home: Some(repo.join("foreign")),
+        group: Some(777),
+    };
+    assert!(matches!(
+        qaren::buildplan::claim_lock(
+            &mut qaren::exec::MockRunner::new(),
+            &req.lock_root,
+            "native-build-slot",
+            &holder,
+            qaren::buildplan::LockPolicy::Strict,
+        ),
+        qaren::buildplan::LockOutcome::Claimed { .. }
+    ));
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    common::script_ios_deps(&mut mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_clean_build_plan(&mut mock);
+    for _ in 0..30 {
+        mock.expect_run("ps -p 4242 -o lstart=", CmdOutput::success(LSTART));
+        mock.expect_run("ps -p 4242 -o stat=", CmdOutput::success("S"));
+        mock.expect_run("ps -A", CmdOutput::success("777 777 S\n"));
+    }
+    let platform_lock = req.lock_root.join("native-build-ios");
+    mock.observe = Some(Box::new(move |spec| {
+        if spec.rendered().contains("ps -p 4242") {
+            assert_eq!(
+                qaren::buildplan::read_holder(&platform_lock)
+                    .unwrap()
+                    .run_id,
+                run_id()
+            );
+        }
+    }));
+
+    let (receipt, events) = run_with_events(&mut mock, &req);
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Refused,
+        "{:?}",
+        receipt.failure
+    );
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::BuildContended);
+    assert_eq!(
+        receipt.recovery.as_ref().unwrap().reason,
+        qaren::failure::RecoveryReason::BudgetExhausted
+    );
+    for expected in ["native-build-slot", "check-foreign", "waited 30 s"] {
+        assert!(failure.detail.contains(expected), "{failure:?}");
+    }
+    assert!(stage_trail(&events).contains(&"build_lock_wait failed BUILD_CONTENDED".into()));
+    assert!(mock.spawned_logs.is_empty());
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert!(!req.lock_root.join("native-build-ios").exists());
+    assert_eq!(
+        qaren::buildplan::read_holder(&req.lock_root.join("native-build-slot"))
+            .unwrap()
+            .run_id,
+        "check-foreign"
+    );
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
 fn a_check_whose_candidate_moves_during_the_build_never_publishes_and_releases_the_lock() {
     let (repo, app) = app_repo();
     let req = request(&repo, &app, 30);
@@ -735,6 +933,45 @@ fn a_check_whose_candidate_moves_during_the_build_never_publishes_and_releases_t
         "no machine-store record was published"
     );
     assert!(record.resources.build_lock.is_none());
+    assert!(!req.lock_root.join("native-build-ios").exists());
+    assert_eq!(mock.remaining(), 0);
+}
+
+// AI-471 B6: a build cut for time reaches the check receipt with its limit and log lines.
+#[test]
+fn b6_a_check_whose_build_stands_still_reports_what_ran_out() {
+    let (repo, app) = app_repo();
+    let req = request(&repo, &app, 30);
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    common::script_ios_deps(&mut mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_clean_build_plan(&mut mock);
+    mock.expect_spawn_piped("expo run:ios", 5000, "", None);
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:00:00 2026"));
+    mock.expect_run("ps", CmdOutput::success("qaren-build"));
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Failed);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::BuildFailed);
+    let limit = failure
+        .limit
+        .as_deref()
+        .expect("limit facts reach the receipt");
+    assert_eq!(limit.ended_by, qaren::failure::LimitEnd::NoProgress);
+    assert_eq!(limit.elapsed_s, 2400);
+    assert!(failure
+        .detail
+        .to_string()
+        .starts_with("the native build was stopped after 2400 s"));
+    assert_eq!(failure.evidence.len(), 1);
+    assert_eq!(
+        failure.build_recovery().unwrap().reason,
+        qaren::failure::RecoveryReason::BuildTimeLimit
+    );
     assert!(!req.lock_root.join("native-build-ios").exists());
     assert_eq!(mock.remaining(), 0);
 }
@@ -1032,6 +1269,10 @@ fn failed_spawn_retirement_save_or_interruption_retains_pending_and_both_locks()
                 assert_eq!(receipt.result, ReceiptResult::Failed);
                 assert!(receipt.cleanup["build_process"].starts_with("unresolved"));
                 assert!(receipt.cleanup["device_lease"].starts_with("unresolved"));
+                assert_eq!(
+                    receipt.outcomes["build_policy:expo-run-ios"],
+                    "priority nice 10; jobs uncapped (machine size unknown); arch all (not Apple silicon)"
+                );
             }
         }
         let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
@@ -1659,7 +1900,8 @@ fn script_check_inventory(mock: &mut qaren::exec::MockRunner) {
     );
 }
 
-fn script_check_install_and_launch(mock: &mut qaren::exec::MockRunner) {
+// Install, Metro start and the first wait turn's proof that the port is ours, before the bind observation.
+fn script_check_install_until_metro_owned(mock: &mut qaren::exec::MockRunner) {
     common::script_ios_app_verification(mock);
     common::script_ios_metro_spawn(mock);
     script_check_inventory(mock);
@@ -1668,7 +1910,22 @@ fn script_check_install_and_launch(mock: &mut qaren::exec::MockRunner) {
     mock.expect_run("ps", CmdOutput::success("S"));
     mock.expect_run("lsof", CmdOutput::success("6001"));
     mock.expect_run("ps", CmdOutput::success("6000"));
-    mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+}
+
+// A cold candidate's build, then its Metro wait, whose bind observation the caller scripts.
+fn script_candidate_until_metro_owned(mock: &mut MockRunner, head: &str, status: &str) {
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_clean_build_plan(mock);
+    common::script_finite_ios_build_only(mock, "expo run:ios");
+    mock.expect_run("rev-parse HEAD", CmdOutput::success(head));
+    mock.expect_run("--porcelain", CmdOutput::success(status));
+    script_fingerprint_recheck(mock, "");
+    script_check_install_until_metro_owned(mock);
+}
+
+fn script_check_install_and_launch(mock: &mut qaren::exec::MockRunner) {
+    script_check_install_until_metro_owned(mock);
+    common::script_metro_bind_ready(mock);
     mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
@@ -1734,6 +1991,14 @@ fn script_clean_build_plan(mock: &mut MockRunner) {
 }
 
 fn script_ready_recheck(mock: &mut MockRunner, native_files: &str) {
+    script_ready_recheck_with(mock, native_files, common::script_xcode);
+}
+
+fn script_ready_recheck_with(
+    mock: &mut MockRunner,
+    native_files: &str,
+    fingerprint: impl FnOnce(&mut qaren::exec::MockRunner),
+) {
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n"))); // liveness probe
     mock.expect_run("ps", CmdOutput::success("S\n")); // not a zombie
     mock.expect_run("lsof", CmdOutput::success("6001\n"));
@@ -1749,7 +2014,7 @@ fn script_ready_recheck(mock: &mut MockRunner, native_files: &str) {
     );
     mock.expect_run("simctl spawn", CmdOutput::success(common::APP_RUNNING));
     mock.expect_run("ls-files", CmdOutput::success(native_files)); // fingerprint recheck
-    common::script_xcode(mock);
+    fingerprint(mock);
 }
 
 // The app-root status the walk's worktree drift is measured against, before and after the core.
@@ -2511,6 +2776,72 @@ fn an_unreadable_candidate_after_the_walk_is_a_verify_refusal_whatever_the_walk_
     }
 }
 
+// U3/U4 through a run: the default expo run:ios build compiles arm64 only on Apple silicon
+// and finds the job-capping xcodebuild first on its PATH; the mock never runs the wrapper,
+// so the receipt reports the cap as missing, and the wrapper leaves with the build.
+#[test]
+fn default_ios_build_narrows_to_arm64_and_routes_xcodebuild_through_the_job_cap() {
+    use std::os::unix::fs::PermissionsExt;
+    let (repo, app) = app_repo();
+    let config = app.join(".qaren/config.yaml");
+    let yaml = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(&config, format!("{yaml}build:\n  jobs: 3\n")).unwrap();
+    let bin = repo.join("xcode-bin");
+    std::fs::create_dir(&bin).unwrap();
+    std::fs::write(bin.join("xcodebuild"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(
+        bin.join("xcodebuild"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let mut mock = MockRunner::new();
+    mock.environment
+        .insert("PATH".into(), bin.to_string_lossy().into_owned());
+    script_preflight(&mut mock, &repo);
+    common::script_ios_deps(&mut mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_clean_build_plan(&mut mock);
+    mock.expect_run("hw.optional.arm64", CmdOutput::success("1\n"));
+    script_check_build_with(&mut mock, "expo run:ios", |m| {
+        m.expect_run("rev-parse HEAD", CmdOutput::success(&"b".repeat(40)));
+        m.expect_run("--porcelain", CmdOutput::success(UNTRACKED_PLAN));
+        script_fingerprint_recheck(m, "")
+    });
+    script_ready_recheck(&mut mock, "");
+    script_drift_status(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+    script_core_identity(&mut mock);
+    script_teardown(&mut mock);
+
+    let receipt = run(&mut mock, &request(&repo, &app, 30));
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    let build = mock
+        .calls
+        .iter()
+        .find(|c| c.label == "expo-run-ios")
+        .unwrap();
+    assert!(build
+        .env
+        .contains(&("EXCLUDED_ARCHS".to_string(), "x86_64".to_string())));
+    let wrapper_dir = repo
+        .join("runs")
+        .join(run_id())
+        .join("ios-build")
+        .join(qaren::adapters::ios::JOBS_WRAPPER_DIR);
+    assert!(build.env.contains(&(
+        "PATH".to_string(),
+        format!("{}:{}", wrapper_dir.display(), bin.display())
+    )));
+    assert!(!wrapper_dir.exists());
+    assert_eq!(
+        receipt.outcomes["build_policy:expo-run-ios"],
+        "priority nice 10; jobs uncapped (the xcodebuild wrapper did not run); arch arm64"
+    );
+}
+
 #[test]
 fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
     let (repo, app) = app_repo();
@@ -2542,9 +2873,9 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
     assert_eq!(build.program, "/bin/bash");
     assert_eq!(
         build.timeout_seconds,
-        qaren::scenario::Deadlines::default().build_seconds
+        (qaren::scenario::Deadlines::default().build_seconds * 3).min(7200)
     );
-    assert!(build.args[3].ends_with("exec \"$@\" >&2"));
+    assert_finite_build_priority(build, 10);
     assert!(build.env.contains(&("BASH_ENV".into(), "/dev/null".into())));
     assert!(build.env.contains(&("TYPESAFE_API_KEY".into(), "".into())));
     assert_eq!(receipt.run_id, run_id());
@@ -2582,6 +2913,7 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
         Some("absent")
     );
     assert_eq!(receipt.cleanup["simulator"], "kept");
+    assert_eq!(receipt.cleanup["simulator_log"], "kept");
     assert_eq!(receipt.cleanup["device_lease"], "removed");
     assert_eq!(receipt.outcomes["candidate_drift"], "none");
     assert!(!receipt.outcomes.contains_key("pnpm-group-probe_attempt_1"));
@@ -3428,6 +3760,51 @@ fn an_old_node_refuses_at_preflight() {
 }
 
 #[test]
+fn a_blocked_runner_install_is_a_device_refusal_with_its_cause_and_next_step() {
+    // Session-open refuses during admission, so no `admitted` line precedes the result; the
+    // mapping does not depend on the platform.
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    script_provision(&mut mock);
+    script_drift_status(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    let refusal = serde_json::json!({
+        "verdict": "REFUSED",
+        "code": "RUNNER_INSTALL_BLOCKED",
+        "message": "QaReN's runner apps on the device block the install (signature: INSTALL_FAILED_UPDATE_INCOMPATIBLE) and could not be replaced: the one reinstall failed too: INSTALL_FAILED_UPDATE_INCOMPATIBLE"
+    });
+    mock.expect_spawn_piped(
+        "walk.js",
+        9000,
+        &format!("{}\n", envelope(2, "result", &refusal.to_string())),
+        Some(4),
+    );
+    script_core_identity(&mut mock);
+    script_teardown(&mut mock);
+
+    let receipt = run(&mut mock, &request(&repo, &app, 30));
+
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::DeviceUnavailable);
+    assert_eq!(failure.subreason.as_deref(), Some("runner-install-blocked"));
+    assert!(
+        failure
+            .detail
+            .starts_with("RUNNER_INSTALL_BLOCKED: QaReN's runner apps on the device block the install (signature: INSTALL_FAILED_UPDATE_INCOMPATIBLE)"),
+        "{}",
+        failure.detail
+    );
+    assert_eq!(
+        failure.next_action,
+        "QaReN could not replace its own runner apps on the device (adb's reason is in the detail); only if nothing else is using the device, remove them with `adb -s <serial> uninstall dev.lykhoyda.rndevagent.androidrunner` and the same for `dev.lykhoyda.rndevagent.androidrunner.test`, then re-run"
+    );
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
 fn a_child_refusal_is_a_typed_refusal_with_the_child_code() {
     for admitted in [false, true] {
         let (repo, app) = app_repo();
@@ -3566,6 +3943,8 @@ fn a_failed_ios_check_holds_metro_the_simulator_and_the_lease_for_inspection() {
     let end = events.iter().find(|e| e["event"] == "end").unwrap();
     assert_eq!(end["payload"]["held"], true);
     assert_eq!(end["payload"]["cleanup"]["metro"], "held");
+    assert_eq!(receipt.cleanup["simulator_log"], "kept");
+    assert_eq!(end["payload"]["cleanup"]["simulator_log"], "kept");
 }
 
 #[test]
@@ -4497,10 +4876,12 @@ fn android_check_prebuilds_an_absent_android_dir_before_gradle() {
     req.config_path = repo.join("operator-config.yaml");
     std::fs::write(
         &req.config_path,
-        format!("{config}registryAuthEnv: [PRIVATE_REGISTRY_TOKEN]\n"),
+        format!("{config}registryAuthEnv: [PRIVATE_REGISTRY_TOKEN]\nbuild:\n  jobs: 3\n"),
     )
     .unwrap();
     let mut mock = android_mock();
+    mock.environment
+        .insert("GRADLE_OPTS".into(), "-Xmx2g -Dorg.gradle.workers.max=32".into());
     script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
     mock.expect_run("ls-files", CmdOutput::success(""));
@@ -4547,6 +4928,18 @@ fn android_check_prebuilds_an_absent_android_dir_before_gradle() {
         Some(app.canonicalize().unwrap().join("android").as_path())
     );
     assert!(gradle.env.contains(&("CI".to_string(), "1".to_string())));
+    for build in [prebuild, gradle] {
+        assert_finite_build_priority(build, 10);
+    }
+    assert_eq!(gradle.args[5], "./gradlew");
+    assert!(gradle.env.contains(&(
+        "GRADLE_OPTS".to_string(),
+        "-Xmx2g -Dorg.gradle.workers.max=32 -Dorg.gradle.workers.max=3".to_string()
+    )));
+    assert_eq!(
+        receipt.outcomes["build_policy:gradle-assemble"],
+        "priority nice 10; jobs 3 (build.jobs), set as org.gradle.workers.max over any value in the user's GRADLE_OPTS"
+    );
     assert!(!mock
         .calls
         .iter()
@@ -4944,7 +5337,22 @@ fn android_check_reuse_installs_the_cached_apk_by_serial() {
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_android_launch_walk_teardown(&mut mock);
 
-    let receipt = run(&mut mock, &req);
+    let (receipt, events) = run_with_events(&mut mock, &req);
+
+    for prefix in ["plan", "verify"] {
+        let expo_key = format!("{prefix}_fp_expo");
+        assert!(!receipt.timings_ms.contains_key(&expo_key));
+        assert!(events.last().unwrap()["payload"]["timingsMs"]
+            .get(&expo_key)
+            .is_none());
+        for part in ["total", "list", "toolchain", "hash"] {
+            let key = format!("{prefix}_fp_{part}");
+            assert_eq!(
+                events.last().unwrap()["payload"]["timingsMs"][&key],
+                receipt.timings_ms[&key]
+            );
+        }
+    }
 
     assert_eq!(
         receipt.result,
@@ -5691,6 +6099,9 @@ struct LeaseObservedRunner {
 
 impl LeaseObservedRunner {
     fn observe(&mut self, spec: &CmdSpec) {
+        if spec.label == "host-sample" {
+            return;
+        }
         if spec.label != "fresh-install-admission" && self.wire.is_none() {
             return;
         }
@@ -5765,6 +6176,9 @@ impl Runner for LeaseObservedRunner {
     }
     fn sleep(&mut self, duration: std::time::Duration) {
         self.mock.sleep(duration);
+    }
+    fn log_lines(&mut self, log: &std::path::Path) -> Option<u64> {
+        self.mock.log_lines(log)
     }
     fn now_epoch_ms(&self) -> u64 {
         self.mock.now_epoch_ms()
@@ -6051,7 +6465,12 @@ fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_l
             mock.expect_run("ps", CmdOutput::success("S"));
             mock.expect_run("lsof", CmdOutput::success("6001"));
             mock.expect_run("ps", CmdOutput::success("6000"));
-            mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+            // The Metro wait observes the bind; the later readiness probe does not.
+            if launch {
+                common::script_metro_bind_ready(&mut mock);
+            } else {
+                mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+            }
             if launch {
                 mock.expect_run("qaren-request-probe", CmdOutput::success(""));
                 mock.expect_run("expo-platform", CmdOutput::success(""));
@@ -7062,6 +7481,9 @@ fn external_cleanup_refuses_a_live_restart_only_run_during_dependency_install() 
         fn sleep(&mut self, duration: std::time::Duration) {
             self.mock.sleep(duration)
         }
+        fn log_lines(&mut self, log: &std::path::Path) -> Option<u64> {
+            self.mock.log_lines(log)
+        }
         fn now_epoch_ms(&self) -> u64 {
             self.mock.now_epoch_ms()
         }
@@ -7542,6 +7964,10 @@ fn shutdown_device_on_exit_arms_after_admission_and_stops_simulator_before_relea
             },
             "{mode} {end_state}"
         );
+        assert_eq!(
+            receipt.cleanup["simulator_log"], "kept",
+            "{mode} {end_state}"
+        );
         assert_eq!(receipt.cleanup["device_lease"], "removed");
         assert_eq!(runner.mock.remaining(), 0, "{mode} {end_state}");
         assert_subsequence(
@@ -7702,6 +8128,9 @@ fn shutdown_device_on_exit_keeps_simulator_when_cancelled_before_arm_and_stops_i
         }
         fn sleep(&mut self, d: std::time::Duration) {
             self.0.sleep(d)
+        }
+        fn log_lines(&mut self, log: &std::path::Path) -> Option<u64> {
+            self.0.log_lines(log)
         }
         fn now_epoch_ms(&self) -> u64 {
             self.0.now_epoch_ms()
@@ -8062,6 +8491,9 @@ impl Runner for PrRunner {
     fn sleep(&mut self, d: std::time::Duration) {
         self.inner.sleep(d)
     }
+    fn log_lines(&mut self, log: &std::path::Path) -> Option<u64> {
+        self.inner.log_lines(log)
+    }
     fn now_epoch_ms(&self) -> u64 {
         self.inner.now_epoch_ms()
     }
@@ -8231,7 +8663,7 @@ fn pr_runtime_input_recording_obeys_video_policy_and_secret_inventory() {
         (Some("non-strict"), true, true),
     ] {
         let records = policy == Some("non-strict") && non_secret && !unused;
-        let secret = "synthetic\"slot\\value";
+        let secret = "synthetic\"canarymaterial\\value";
         let (repo, app) = app_repo();
         let annotation = if non_secret { " (test-pii)" } else { "" };
         std::fs::write(
@@ -8298,7 +8730,7 @@ fn pr_runtime_input_recording_obeys_video_policy_and_secret_inventory() {
         assert!(receipt.outcomes["video"].starts_with("unavailable("));
         assert_eq!(
             receipt.outcomes["platform_log"],
-            "the simulator system log may record displayed field text; see Runtime inputs"
+            "typed and displayed field text is recorded in the simulator system log; the simulator_log cleanup leg says whether QaReN removed it; a simulator QaReN did not create keeps its log, and qaren doctor --device <udid> prints the command that clears it"
         );
         assert_eq!(
             events
@@ -8331,12 +8763,12 @@ fn pr_runtime_input_recording_obeys_video_policy_and_secret_inventory() {
         for (path, bytes) in durable {
             let text = String::from_utf8_lossy(&bytes);
             assert!(
-                !text.contains("slot") && !text.contains(escaped),
+                !text.contains("canarymaterial") && !text.contains(escaped),
                 "{}",
                 path.display()
             );
         }
-        assert!(!receipt.to_json().contains("slot"));
+        assert!(!receipt.to_json().contains("canarymaterial"));
     }
 }
 
@@ -9434,6 +9866,9 @@ impl Runner for Encoding {
     fn sleep(&mut self, d: std::time::Duration) {
         self.0.sleep(d)
     }
+    fn log_lines(&mut self, log: &std::path::Path) -> Option<u64> {
+        self.0.log_lines(log)
+    }
     fn now_epoch_ms(&self) -> u64 {
         self.0.now_epoch_ms()
     }
@@ -9829,6 +10264,9 @@ impl<T: Runner> Runner for CancelAfterRunSave<T> {
     fn sleep(&mut self, d: std::time::Duration) {
         self.0.sleep(d)
     }
+    fn log_lines(&mut self, log: &std::path::Path) -> Option<u64> {
+        self.0.log_lines(log)
+    }
     fn now_epoch_ms(&self) -> u64 {
         self.0.now_epoch_ms()
     }
@@ -9942,6 +10380,87 @@ fn a_walk_without_a_result_never_renders_plan_text_into_durable_sinks() {
         report.contains("- ✗ line 1\n") || report.contains("- ✓ line 1\n"),
         "{report}"
     );
+}
+
+#[test]
+fn fingerprint_parts_reach_the_receipt_and_end_event_on_expo_reuse() {
+    let (repo, app) = app_repo();
+    common::write_ios_workspace(&app, "ios/First.xcworkspace");
+    configure_workspace(&app, "ios/First.xcworkspace", "Debug");
+    std::fs::write(
+        app.join("package.json"),
+        r#"{"dependencies":{"expo":"56.0.23"}}"#,
+    )
+    .unwrap();
+    let files = format!("{}test-app/package.json\0", common::IOS_NATIVE_FILES);
+    let expo = |mock: &mut qaren::exec::MockRunner| {
+        common::script_expo_fingerprint(
+            mock,
+            "abcdef0123456789",
+            "Xcode 27.0\nBuild version 27A123\n",
+        );
+    };
+    for reuse in [false, true] {
+        let mut req = request(&repo, &app, 30);
+        req.runs_root = repo.join(if reuse { "runs-reuse" } else { "runs-seed" });
+        let mut mock = MockRunner::new();
+        mock.advance_on = Some(("fingerprint".into(), 17));
+        script_preflight(&mut mock, &repo);
+        mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+        mock.expect_run("ls-files", CmdOutput::success(&files));
+        expo(&mut mock);
+        for package in ["expo-modules-core", "expo-modules-jsi"] {
+            mock.expect_run(package, CmdOutput::success("null"));
+        }
+        if reuse {
+            script_check_install_and_launch(&mut mock);
+        } else {
+            mock.expect_run("df", df_ok());
+            script_check_build_with(&mut mock, "xcodebuild", |m| {
+                script_candidate_recheck(m);
+                m.expect_run("ls-files", CmdOutput::success(&files));
+                expo(m);
+            });
+        }
+        script_ready_recheck_with(&mut mock, &files, expo);
+        script_drift_status(&mut mock);
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+        script_core_identity(&mut mock);
+        script_teardown(&mut mock);
+
+        let (receipt, events) = run_with_events(&mut mock, &req);
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+        assert_eq!(mock.remaining(), 0);
+        assert_eq!(
+            receipt.build.as_ref().unwrap().decision == qaren::buildplan::BuildDecision::Reuse,
+            reuse
+        );
+        for (prefix, stage) in [("plan", "plan"), ("verify", "verify")] {
+            let mut sum = 0;
+            for part in ["total", "list", "expo", "toolchain", "hash"] {
+                let key = format!("{prefix}_fp_{part}");
+                let ms = *receipt
+                    .timings_ms
+                    .get(&key)
+                    .unwrap_or_else(|| panic!("missing {key}"));
+                assert_eq!(events.last().unwrap()["payload"]["timingsMs"][&key], ms);
+                if part != "total" {
+                    sum += ms;
+                }
+            }
+            assert_eq!(receipt.timings_ms[&format!("{prefix}_fp_expo")], 34);
+            assert!(sum <= receipt.timings_ms[&format!("{prefix}_fp_total")]);
+            assert!(receipt.timings_ms[&format!("{prefix}_fp_total")] <= receipt.timings_ms[stage]);
+        }
+        assert!(!events.iter().any(|event| {
+            event["event"] == "cmd"
+                && matches!(
+                    event["payload"]["label"].as_str(),
+                    Some("expo-fingerprint" | "expo-fingerprint-resolve")
+                )
+        }));
+    }
 }
 
 #[test]
@@ -10167,7 +10686,7 @@ fn a_cancel_during_a_cached_ios_install_names_the_substage() {
             mock.expect_run("ps", CmdOutput::success("S"));
             mock.expect_run("lsof", CmdOutput::success("6001"));
             mock.expect_run("ps", CmdOutput::success("6000"));
-            mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+            common::script_metro_bind_ready(&mut mock);
             mock.expect_run("qaren-request-probe", CmdOutput::success(""));
             mock.expect_run("expo-platform", CmdOutput::success(""));
         }
@@ -10254,7 +10773,7 @@ fn check_fails_fast_when_the_launched_ios_app_exits_and_names_the_missing_framew
     mock.expect_run("ps", CmdOutput::success("S"));
     mock.expect_run("lsof", CmdOutput::success("6001"));
     mock.expect_run("ps", CmdOutput::success("6000"));
-    mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    common::script_metro_bind_ready(&mut mock);
     mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
@@ -10301,6 +10820,128 @@ fn check_fails_fast_when_the_launched_ios_app_exits_and_names_the_missing_framew
     assert_eq!(mock.remaining(), 0);
 }
 
+const DNS_ORDER_STEP: &str = "check whether the project sets Node's DNS result order (its Metro configuration, NODE_OPTIONS, or a pnpm node-options setting), then run again";
+
+fn assert_ipv6_only_refusal(receipt: &qaren::receipt::Receipt) {
+    let json = receipt.to_json();
+    assert!(json.contains("\"METRO_BIND_IPV6_ONLY\""), "{json}");
+    assert_eq!(receipt.result, ReceiptResult::Refused, "{json}");
+    let failure = receipt.failure.as_ref().unwrap();
+    assert!(
+        failure
+            .detail
+            .to_string()
+            .contains("Metro answered on [::1]:8791 and never on 127.0.0.1:8791"),
+        "{json}"
+    );
+    let next = format!(
+        "qaren cleanup {} --json; then {DNS_ORDER_STEP}",
+        receipt.run_id
+    );
+    assert_eq!(failure.next_action.to_string(), next);
+    assert_eq!(receipt.next_action, next);
+    assert_eq!(
+        receipt.metro_bind,
+        Some(qaren::runrecord::MetroBind::V6Only)
+    );
+}
+
+// The Metro group survives both signals, so its stop cannot be proven.
+fn script_metro_stop_unresolved(mock: &mut MockRunner) {
+    mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
+    mock.expect_run("ps", CmdOutput::success("S\n"));
+    mock.expect_run("lsof", CmdOutput::success("6001\n"));
+    mock.expect_run("ps", CmdOutput::success("6000\n"));
+    mock.expect_run("lstart=", CmdOutput::success(LSTART));
+    mock.expect_run("stat=", CmdOutput::success("S"));
+    mock.expect_run("/bin/kill", CmdOutput::success(""));
+    mock.expect_run("lstart=", CmdOutput::success(LSTART));
+    mock.expect_run("stat=", CmdOutput::success("S"));
+    mock.expect_run("/bin/kill", CmdOutput::success(""));
+    mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
+    mock.expect_run("ps", CmdOutput::success("S\n"));
+}
+
+// R4 and R12 on check: an [::1]-only Metro that the restart cannot stop is refused in the wait turn that sees it,
+// with no second start; the record keeps it for the cleanup, whose command still comes first.
+#[test]
+fn check_refuses_an_ipv6_only_metro_with_cleanup_first_then_the_dns_order_step() {
+    for unresolved in [false, true] {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        script_preflight(&mut mock, &repo);
+        common::script_ios_deps(&mut mock);
+        script_candidate_until_metro_owned(&mut mock, &"b".repeat(40), UNTRACKED_PLAN);
+        common::script_metro_bind_ipv6_only(&mut mock, 8791);
+        script_metro_stop_unresolved(&mut mock);
+        if unresolved {
+            script_metro_stop_unresolved(&mut mock);
+        } else {
+            script_pr_teardown_resources(&mut mock, false);
+        }
+
+        let receipt = run(&mut mock, &request(&repo, &app, 30));
+
+        assert_ipv6_only_refusal(&receipt);
+        assert_eq!(mock.remaining(), 0, "unresolved={unresolved}");
+        assert!(receipt
+            .failure
+            .as_ref()
+            .unwrap()
+            .detail
+            .to_string()
+            .ends_with("the first Metro could not be stopped"));
+        assert_eq!(
+            labels(&mock).iter().filter(|l| *l == "expo-start").count(),
+            1
+        );
+        assert_eq!(
+            receipt.cleanup["metro"] == "removed",
+            !unresolved,
+            "{:?}",
+            receipt.cleanup
+        );
+        let record = RunRecord::load(&repo.join("runs"), &receipt.run_id).unwrap();
+        assert_eq!(
+            record.resources.metro.as_ref().map(|m| m.spawned.pid),
+            unresolved.then_some(6000)
+        );
+        assert!(!labels(&mock)
+            .iter()
+            .any(|l| l == "metro-manifest" || l == "core-walk"));
+    }
+}
+
+// R4 on pr: the same refusal and next step.
+#[test]
+fn pr_refuses_an_ipv6_only_metro_with_cleanup_first_then_the_dns_order_step() {
+    let (repo, app) = app_repo();
+    let wt = repo.join("runs").join(run_id()).join("wt");
+    let mut runner = PrRunner {
+        inner: MockRunner::new(),
+        app: app.clone(),
+        recorder_persisted_before_spawn: None,
+        fail_core_spawn: false,
+        planted_worktree_config: None,
+        worktree_config_planted: false,
+        fail_host_checkpoint: false,
+    };
+    let mock = &mut runner.inner;
+    script_pr_preflight(mock, &repo, &wt);
+    common::script_ios_deps(mock);
+    script_candidate_until_metro_owned(mock, PR_HEAD, "");
+    common::script_metro_bind_ipv6_only(mock, 8791);
+    script_metro_stop_unresolved(mock);
+    script_pr_teardown_resources(mock, false);
+    mock.expect_run("du -sk", CmdOutput::success("4\n"));
+    mock.expect_run("worktree remove --force", CmdOutput::success(""));
+
+    let receipt = run(&mut runner, &pr_request(&repo, &app));
+
+    assert_ipv6_only_refusal(&receipt);
+    assert_eq!(runner.inner.remaining(), 0);
+}
+
 // Metro answers on the second poll, so the scripted clock advances inside reuse readiness.
 fn script_warm_launch_after_one_metro_retry(mock: &mut MockRunner) {
     common::script_ios_app_verification(mock);
@@ -10324,13 +10965,11 @@ fn script_warm_launch_after_one_metro_retry(mock: &mut MockRunner) {
         mock.expect_run("ps", CmdOutput::success("S"));
         mock.expect_run("lsof", CmdOutput::success("6001"));
         mock.expect_run("ps", CmdOutput::success("6000"));
-        mock.expect_run(
-            "curl",
-            match responding {
-                true => CmdOutput::success("packager-status:running"),
-                false => CmdOutput::failed(7, ""),
-            },
-        );
+        if responding {
+            common::script_metro_bind_ready(mock);
+        } else {
+            common::script_metro_bind_not_ready(mock);
+        }
     }
     mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
@@ -10361,6 +11000,19 @@ fn android_check_waits_out_a_slow_first_app_process() {
 
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     assert_eq!(mock.remaining(), 0);
+    // G4: Android starts expo's default once and never restarts it.
+    let starts: Vec<_> = mock
+        .calls
+        .iter()
+        .filter(|c| c.label == "expo-start")
+        .collect();
+    assert_eq!(starts.len(), 1);
+    assert!(!starts[0].args.iter().any(|a| a == "--localhost"));
+    assert!(!starts[0]
+        .env
+        .iter()
+        .any(|(k, _)| k == "REACT_NATIVE_PACKAGER_HOSTNAME"));
+    assert!(!receipt.outcomes.contains_key("metro_bind_recovery"));
 }
 
 #[test]
@@ -10474,6 +11126,288 @@ fn android_teardown_retries_a_slow_runner_read_and_releases_the_lease() {
     assert_ne!(record.phase, Phase::Walking);
 }
 
+// Recovery contracts exercise check's install, receipt and teardown path through the scripted runner.
+fn android_install_recovery_fixture() -> (RunRequest, MockRunner) {
+    let (repo, app) = app_repo();
+    seed_cached_apk(&repo, &app);
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    (req, mock)
+}
+
+fn script_package_manager_recovery(mock: &mut MockRunner) {
+    for _ in 0..3 {
+        mock.expect_run(
+            "shell pm path android",
+            CmdOutput::success("package:/system/framework/framework-res.apk\n"),
+        );
+    }
+}
+
+fn assert_android_install_recovery_success(first: CmdOutput) {
+    let (req, mut mock) = android_install_recovery_fixture();
+    mock.expect_run("install -r -d", first);
+    script_package_manager_recovery(&mut mock);
+    script_android_launch_walk_teardown(&mut mock);
+    let receipt = run(&mut mock, &req);
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(receipt.outcomes["install_attempts"], "2");
+    assert_eq!(receipt.outcomes["install_recovery_wait_ms"], "10000");
+    assert_eq!(
+        mock.calls
+            .iter()
+            .filter(|c| c.label == "adb-install")
+            .count(),
+        2
+    );
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn android_install_recovery_i1_continues_after_transport_failure() {
+    assert_android_install_recovery_success(CmdOutput::failed(1, "transport sentinel"));
+}
+
+#[test]
+fn android_install_recovery_i7_replaces_an_install_whose_acknowledgement_was_lost() {
+    assert_android_install_recovery_success(CmdOutput::success("Performing Streamed Install\n"));
+}
+
+#[test]
+fn android_install_recovery_i2_and_i3_package_manager_verdicts_are_terminal() {
+    for output in [
+        CmdOutput {
+            exit_code: Some(1),
+            stdout: "Failure [INSTALL_FAILED_INSUFFICIENT_STORAGE] private sentinel".into(),
+            ..Default::default()
+        },
+        CmdOutput::failed(
+            1,
+            "Failure [INSTALL_PARSE_FAILED_NO_CERTIFICATES] private sentinel",
+        ),
+    ] {
+        let (req, mut mock) = android_install_recovery_fixture();
+        mock.expect_run("install -r -d", output);
+        let receipt = run(&mut mock, &req);
+        let failure = receipt.failure.unwrap();
+        assert_eq!(failure.code, FailureCode::ArtifactInstallFailed);
+        assert!(failure.detail.contains("(install-failed):"));
+        assert!(!failure.detail.contains("sentinel"));
+        assert!(!mock.calls.iter().any(|c| c.label == "adb-pm-path"));
+        assert_eq!(
+            mock.calls
+                .iter()
+                .filter(|c| c.label == "adb-install")
+                .count(),
+            1
+        );
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn android_install_recovery_i4_cuts_a_blocked_probe_at_the_wait_deadline() {
+    let (req, mut mock) = android_install_recovery_fixture();
+    mock.expect_run("install -r -d", CmdOutput::failed(1, "transport sentinel"));
+    // The scripted runner holds each probe until its timeout. The last probe must
+    // be cut after 5s, rather than running its normal 30s past the 180s deadline.
+    mock.timeouts = [30_000, 30_000, 30_000, 30_000, 30_000, 5_000]
+        .map(|ms| ("adb-pm-path".into(), ms))
+        .into();
+    let before = mock.now_epoch_ms();
+    let receipt = run(&mut mock, &req);
+    assert_eq!(mock.now_epoch_ms() - before, 180_000);
+    let failure = receipt.failure.unwrap();
+    assert_eq!(failure.code, FailureCode::ArtifactInstallFailed);
+    assert!(failure.detail.contains("(install-failed): the first install failed; the device's package manager did not answer for 180 s; no second install was tried"), "{failure:?}");
+    assert!(!failure.detail.contains("sentinel"));
+    assert_eq!(
+        mock.calls
+            .iter()
+            .filter(|c| c.label == "adb-install")
+            .count(),
+        1
+    );
+    assert_eq!(
+        mock.calls
+            .iter()
+            .filter(|c| c.label == "adb-pm-path")
+            .map(|c| c.timeout_seconds)
+            .collect::<Vec<_>>(),
+        [30, 30, 30, 30, 30, 5]
+    );
+    assert!(mock.timeouts.is_empty());
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn android_install_recovery_i5_second_failure_names_both_attempts() {
+    for timed_out in [false, true] {
+        let (req, mut mock) = android_install_recovery_fixture();
+        mock.expect_run("install -r -d", CmdOutput::failed(1, "first sentinel"));
+        script_package_manager_recovery(&mut mock);
+        mock.expect_run(
+            "install -r -d",
+            CmdOutput {
+                timed_out,
+                ..CmdOutput::failed(1, "second sentinel")
+            },
+        );
+        let receipt = run(&mut mock, &req);
+        let failure = receipt.failure.unwrap();
+        assert_eq!(failure.code, FailureCode::ArtifactInstallFailed);
+        let cause = if timed_out {
+            "install-timeout"
+        } else {
+            "install-failed"
+        };
+        assert!(failure.detail.contains(&format!("({cause}): the install failed twice; the package manager answered between the attempts")), "{failure:?}");
+        assert!(!failure.detail.contains("sentinel"));
+        assert_eq!(
+            mock.calls
+                .iter()
+                .filter(|c| c.label == "adb-install")
+                .count(),
+            2
+        );
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn android_install_recovery_i6_cancellation_during_a_probe_ends_the_run() {
+    let (req, mut mock) = android_install_recovery_fixture();
+    mock.expect_run("install -r -d", CmdOutput::failed(1, "transport sentinel"));
+    mock.timeouts = [("adb-pm-path".into(), 30_000)].into();
+    mock.cancel_after = Some(("shell pm path android".into(), "received SIGTERM".into()));
+    let before = mock.now_epoch_ms();
+    let receipt = run(&mut mock, &req);
+    assert_eq!(receipt.failure.unwrap().code, FailureCode::RunCancelled);
+    assert_eq!(mock.now_epoch_ms() - before, 30_000);
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert_eq!(
+        mock.calls
+            .iter()
+            .filter(|c| c.label == "adb-install")
+            .count(),
+        1
+    );
+    assert!(mock.timeouts.is_empty());
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn android_install_recovery_requires_three_consecutive_successful_package_lines() {
+    let (req, mut mock) = android_install_recovery_fixture();
+    mock.expect_run("install -r -d", CmdOutput::failed(1, "transport failure"));
+    for output in [
+        CmdOutput::success("package:/system/framework/framework-res.apk\n"),
+        CmdOutput::success("package:/system/framework/framework-res.apk\n"),
+        CmdOutput::failed(1, "package:/system/framework/framework-res.apk\n"),
+        CmdOutput::success("package:/system/framework/framework-res.apk\n"),
+        CmdOutput::success("no package line\n"),
+    ] {
+        mock.expect_run("shell pm path android", output);
+    }
+    script_package_manager_recovery(&mut mock);
+    script_android_launch_walk_teardown(&mut mock);
+    let receipt = run(&mut mock, &req);
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(receipt.outcomes["install_recovery_wait_ms"], "35000");
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn android_install_recovery_caps_or_skips_the_retry_at_the_entry_window() {
+    for first_ms in [16_000, 21_000] {
+        let (req, mut mock) = android_install_recovery_fixture();
+        let config = std::fs::read_to_string(&req.config_path).unwrap();
+        std::fs::write(
+            &req.config_path,
+            format!("{config}\ndeadlines:\n  build_seconds: 30\n"),
+        )
+        .unwrap();
+        mock.advance_on = Some(("install -r -d".into(), first_ms));
+        mock.expect_run("install -r -d", CmdOutput::failed(1, "first failure"));
+        script_package_manager_recovery(&mut mock);
+        if first_ms == 16_000 {
+            mock.expect_run("install -r -d", CmdOutput::failed(1, "second failure"));
+        }
+        let receipt = run(&mut mock, &req);
+        assert_eq!(
+            receipt.failure.as_ref().unwrap().code,
+            FailureCode::ArtifactInstallFailed
+        );
+        let installs: Vec<_> = mock
+            .calls
+            .iter()
+            .filter(|c| c.label == "adb-install")
+            .collect();
+        assert_eq!(installs[0].timeout_seconds, 300);
+        if first_ms == 16_000 {
+            assert_eq!(installs.len(), 2);
+            assert_eq!(installs[1].timeout_seconds, 4);
+        } else {
+            assert_eq!(installs.len(), 1);
+            assert!(receipt
+                .failure
+                .unwrap()
+                .detail
+                .contains("no second install was tried"));
+        }
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn android_install_recovery_does_not_probe_after_cancellation_at_the_first_install() {
+    let (req, mut mock) = android_install_recovery_fixture();
+    mock.expect_run("install -r -d", CmdOutput::failed(1, "transport failure"));
+    mock.cancel_after = Some(("install -r -d".into(), "received SIGTERM".into()));
+    let receipt = run(&mut mock, &req);
+    assert_eq!(receipt.failure.unwrap().code, FailureCode::RunCancelled);
+    assert!(!mock.calls.iter().any(|c| c.label == "adb-pm-path"));
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn android_install_recovery_records_success_before_cancellation() {
+    let (req, mut mock) = android_install_recovery_fixture();
+    mock.expect_run("install -r -d", CmdOutput::failed(1, "transport failure"));
+    script_package_manager_recovery(&mut mock);
+    mock.expect_run("install -r -d", CmdOutput::success("Success\n"));
+    mock.advance_on = Some(("install -r -d".into(), 1));
+    mock.cancel_at_ms = Some((mock.now_epoch_ms() + 10_002, "received SIGTERM".into()));
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.failure.unwrap().code, FailureCode::RunCancelled);
+    assert_eq!(receipt.outcomes["install_attempts"], "2");
+    assert_eq!(receipt.outcomes["install_recovery_wait_ms"], "10000");
+    assert_eq!(
+        mock.calls
+            .iter()
+            .filter(|c| c.label == "adb-install")
+            .count(),
+        2
+    );
+    assert!(!adb_calls(&mock).iter().any(|c| c.contains("reverse")));
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert_eq!(mock.remaining(), 0);
+    let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+    let install = record.resources.app_install.as_ref().unwrap();
+    assert_eq!(install.app_id, record.candidate.app_id);
+    assert_eq!(install.serial, EMULATOR);
+    assert_eq!(install.via, "adb-install");
+    let artifact = record.build.as_ref().unwrap().artifact.as_ref().unwrap();
+    assert_eq!(install.artifact.sha256, artifact.sha256);
+    assert_eq!(record.resources.adb_reverse_port, None);
+    assert!(record.resources.lease.is_none());
+}
+
 #[test]
 fn android_check_install_failure_and_timeout_keep_verified_apk_and_release_only_the_lease() {
     for (label, installed) in [
@@ -10500,6 +11434,8 @@ fn android_check_install_failure_and_timeout_keep_verified_apk_and_release_only_
         script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
         mock.expect_run("ls-files", CmdOutput::success(""));
+        mock.expect_run("install -r -d", installed.clone());
+        script_package_manager_recovery(&mut mock);
         mock.expect_run("install -r -d", installed);
 
         let receipt = run(&mut mock, &req);
@@ -10973,6 +11909,71 @@ fn script_pr_pass(mock: &mut MockRunner, repo: &Path, wt: &Path) {
     );
 }
 
+// AI-471 B6: a build cut for time reaches the pr receipt with its limit and log lines.
+#[test]
+fn b6_a_pr_run_whose_build_stands_still_reports_what_ran_out() {
+    let (repo, app) = app_repo();
+    let req = pr_request(&repo, &app);
+    let wt = repo.join("runs").join(run_id()).join("wt");
+    let mut runner = PrRunner {
+        inner: MockRunner::new(),
+        app: app.clone(),
+        recorder_persisted_before_spawn: None,
+        fail_core_spawn: false,
+        planted_worktree_config: None,
+        worktree_config_planted: false,
+        fail_host_checkpoint: false,
+    };
+    script_pr_preflight(&mut runner.inner, &repo, &wt);
+    common::script_ios_deps(&mut runner.inner);
+    runner.inner.expect_run("ls-files", CmdOutput::success(""));
+    script_clean_build_plan(&mut runner.inner);
+    runner
+        .inner
+        .expect_spawn_piped("expo run:ios", 5000, "", None);
+    runner
+        .inner
+        .expect_run("ps", CmdOutput::success("Wed Aug 12 16:00:00 2026"));
+    runner
+        .inner
+        .expect_run("ps", CmdOutput::success("qaren-build"));
+    runner
+        .inner
+        .expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    runner.inner.expect_run("du -sk", CmdOutput::success("4\n"));
+    runner
+        .inner
+        .expect_run("worktree remove --force", CmdOutput::success(""));
+    runner
+        .inner
+        .expect_run("which ffmpeg", CmdOutput::failed(1, ""));
+    runner.inner.expect_run(
+        "gh pr view https://github.com/o/r/pull/12",
+        pr_view_json(PR_HEAD),
+    );
+
+    let receipt = run(&mut runner, &req);
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Failed,
+        "{:?}",
+        receipt.failure
+    );
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::BuildFailed);
+    let limit = failure
+        .limit
+        .as_deref()
+        .expect("limit facts reach the receipt");
+    assert_eq!(limit.ended_by, qaren::failure::LimitEnd::NoProgress);
+    assert!(failure
+        .detail
+        .to_string()
+        .starts_with("the native build was stopped after 2400 s"));
+    assert_eq!(failure.evidence.len(), 1);
+}
+
 #[test]
 fn pr_interruption_receipt_uses_effective_policy_and_records_the_first_signal() {
     let (repo, app) = app_repo();
@@ -11071,7 +12072,11 @@ fn check_persists_configured_deadlines_and_uses_them_as_command_budgets() {
         assert_effective_deadlines(&record, &case, &raw);
         assert_eq!(record.scenario_path, req.config_path);
         assert_eq!(command_timeout(&mock, "pnpm-install"), case.deps);
-        assert_eq!(command_timeout(&mock, "expo-run-ios"), case.build);
+        // The compile's timeout is the build window: three times the limit, at most 7200 s.
+        assert_eq!(
+            command_timeout(&mock, "expo-run-ios"),
+            (case.build * 3).min(7200)
+        );
         assert_eq!(command_timeout(&mock, "simctl-bootstatus"), case.boot);
     }
 }
@@ -11107,7 +12112,10 @@ fn pr_uses_the_operator_config_deadlines_not_the_worktree_config() {
         assert_effective_deadlines(&record, &case, &raw);
         assert_eq!(record.scenario_path, app.join(".qaren/config.yaml"));
         assert_eq!(command_timeout(&runner.inner, "pnpm-install"), case.deps);
-        assert_eq!(command_timeout(&runner.inner, "expo-run-ios"), case.build);
+        assert_eq!(
+            command_timeout(&runner.inner, "expo-run-ios"),
+            (case.build * 3).min(7200)
+        );
     }
 }
 
@@ -11137,7 +12145,11 @@ fn android_check_uses_configured_deadlines_for_dependency_install_and_build() {
     assert_effective_deadlines(&record, &case, &raw);
     assert_eq!(command_timeout(&mock, "pnpm-install"), case.deps);
     assert_eq!(command_timeout(&mock, "expo-prebuild"), case.build);
-    assert_eq!(command_timeout(&mock, "gradle-assemble"), case.build);
+    // Compilation runs to its ceiling while it progresses; prebuild keeps the limit.
+    assert_eq!(
+        command_timeout(&mock, "gradle-assemble"),
+        (case.build * 3).min(7200)
+    );
 }
 
 #[test]
@@ -11873,6 +12885,9 @@ impl Runner for RecordedCheck {
     }
     fn sleep(&mut self, d: std::time::Duration) {
         self.0.sleep(d)
+    }
+    fn log_lines(&mut self, log: &std::path::Path) -> Option<u64> {
+        self.0.log_lines(log)
     }
     fn now_epoch_ms(&self) -> u64 {
         self.0.now_epoch_ms()

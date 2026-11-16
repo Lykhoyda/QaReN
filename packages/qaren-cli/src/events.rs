@@ -17,7 +17,7 @@ pub const EVENTS_VERSION: u32 = 1;
 const QUEUE: usize = 1024;
 const BEFORE_ATTACH: usize = 256;
 const DRAIN: Duration = Duration::from_millis(500);
-const CLEANUP_KEYS: [&str; 11] = [
+const CLEANUP_KEYS: [&str; 12] = [
     "build_process",
     "core",
     "metro",
@@ -25,6 +25,7 @@ const CLEANUP_KEYS: [&str; 11] = [
     "runner_host",
     "recorder",
     "simulator",
+    "simulator_log",
     "device_lease",
     "pr_worktree",
     "adb_reverse",
@@ -213,6 +214,17 @@ impl Events {
         code: Option<&str>,
         ms: Option<u64>,
     ) {
+        self.stage_with_wait(name, state, code, ms, None);
+    }
+
+    fn stage_with_wait(
+        &mut self,
+        name: &'static str,
+        state: StageState,
+        code: Option<&str>,
+        ms: Option<u64>,
+        wait: Option<(&str, Option<&str>, Option<u64>)>,
+    ) {
         let began = self.running.iter().position(|(n, _)| *n == name);
         let began = began.map(|i| self.running.remove(i).1);
         if state == StageState::Running {
@@ -228,6 +240,22 @@ impl Events {
             .map(|b| b.elapsed().as_millis() as u64);
         if let Some(ms) = ms.or(measured) {
             payload["ms"] = ms.into();
+        }
+        if let Some((lock, holder, hold_ms)) = wait {
+            if matches!(
+                lock,
+                "native-build-ios" | "native-build-android" | "native-build-slot"
+            ) {
+                payload["lock"] = lock.into();
+            }
+            if let Some(holder) =
+                holder.filter(|id| id.len() <= 64 && crate::runrecord::validate_run_id(id).is_ok())
+            {
+                payload["holder"] = holder.into();
+            }
+            if let Some(ms) = hold_ms {
+                payload["holdMs"] = ms.into();
+            }
         }
         self.submit("stage", payload);
     }
@@ -497,6 +525,26 @@ pub fn run(run_id: &str, verb: &str, platform: &str, client: &Client, flags: &[&
 pub fn stage(name: &'static str, state: StageState, code: Option<&str>, ms: Option<u64>) {
     crate::progress::stage(name, state);
     with(|e| e.stage(name, state, code, ms));
+}
+
+pub fn build_lock_wait(
+    state: StageState,
+    code: Option<&str>,
+    ms: Option<u64>,
+    lock: &str,
+    holder: Option<&str>,
+    hold_ms: Option<u64>,
+) {
+    crate::progress::stage("build_lock_wait", state);
+    with(|e| {
+        e.stage_with_wait(
+            "build_lock_wait",
+            state,
+            code,
+            ms,
+            Some((lock, holder, hold_ms)),
+        )
+    });
 }
 
 pub fn close_running(state: StageState, code: Option<&str>, except: &[&str]) {
@@ -923,6 +971,7 @@ mod tests {
             "unresolved: pgid 9 at /Users/canary/x".into(),
         );
         r.cleanup.insert("recorder".into(), "canary-weird".into());
+        r.cleanup.insert("simulator_log".into(), "kept".into());
         r.cleanup.insert("canary_key".into(), "removed".into());
         r.failure = Some(Failure::new(
             "build",
@@ -937,7 +986,7 @@ mod tests {
         let end = &lines(&path)[0].payload;
         assert_eq!(
             end["cleanup"],
-            json!({"core": "unresolved", "metro": "removed", "recorder": "other"})
+            json!({"core": "unresolved", "metro": "removed", "recorder": "other", "simulator_log": "kept"})
         );
         assert_eq!(end["failureCode"], "BUILD_FAILED");
         assert_eq!(end["failurePhase"], "build");

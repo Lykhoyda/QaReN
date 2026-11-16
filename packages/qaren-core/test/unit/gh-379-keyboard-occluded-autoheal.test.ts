@@ -63,11 +63,11 @@ test('surfaceKeyboardGuard: merges keyboardGuardMs into existing meta.timings_ms
   assert.equal(envelope.meta.recovered, 'agent-device-runner-leak');
 });
 
-test('surfaceKeyboardGuard: keyboardGuardMs alone (no status string) is not lifted', () => {
-  // The status string is the anchor; a bare ms value without it means the
-  // envelope is not a guarded-verb result.
+test('surfaceKeyboardGuard: keyboardGuardMs is lifted without a status string', () => {
   const result = toolResult({ ok: true, data: { keyboardGuardMs: 5 } });
-  assert.equal(surfaceKeyboardGuard(result), result);
+  const envelope = JSON.parse(surfaceKeyboardGuard(result).content[0].text);
+  assert.deepEqual(envelope.meta.timings_ms, { keyboardGuard: 5 });
+  assert.equal(envelope.meta.keyboardGuard, undefined);
 });
 
 // ── isKeyboardOccludedRefusal ─────────────────────────────────────────

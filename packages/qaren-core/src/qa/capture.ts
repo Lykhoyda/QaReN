@@ -327,6 +327,19 @@ function retryableEmptyCapture(observation: NativeObservation): boolean {
   );
 }
 
+function retryableDroppedCapture(observation: NativeObservation): boolean {
+  const causes = nativeIncompleteCauses(observation);
+  return (
+    Array.isArray(observation.nodes) &&
+    observation.nodes.length > 0 &&
+    observation.truncated === false &&
+    typeof observation.normalizationDroppedNodes === 'number' &&
+    observation.normalizationDroppedNodes > 0 &&
+    causes.length === 1 &&
+    causes[0] === `dropped=${observation.normalizationDroppedNodes}`
+  );
+}
+
 function retryablePresenceCapture(observation: NativeObservation): boolean {
   const verdict = observation.snapshotVerdict;
   const presence = observation.presenceCapture;
@@ -659,6 +672,8 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
       : Math.max(1, Math.min(NATIVE_PRESENCE_BUDGET_MS, Math.floor(deps.budgetMs)));
   let native: NativeObservation = {};
   let retryDeadline: number | undefined;
+  let droppedRead: { nodes: number; causes: string[] } | undefined;
+  let retryExpired = false;
   for (;;) {
     let runnerDown = false;
     const retryRefusal =
@@ -667,7 +682,12 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
             ...nativeIncompleteCauses(native),
             'retry-deadline',
           ])
-        : new NativeCaptureError();
+        : droppedRead
+          ? new NativeSnapshotIncomplete(droppedRead.nodes, [
+              ...droppedRead.causes,
+              'retry-deadline',
+            ])
+          : new NativeCaptureError();
     try {
       native = await measureTiming(deps.timing, now, 'native-total', () =>
         retryDeadline === undefined
@@ -694,11 +714,20 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
         throw new NativeCaptureError();
       runnerDown = true;
     }
+    const retryDropped =
+      !runnerDown &&
+      deps.requirePrivateInputs &&
+      deps.budgetMs === undefined &&
+      deps.platformPresence !== true &&
+      retryableDroppedCapture(native);
+    if (retryDropped)
+      droppedRead = { nodes: native.nodes!.length, causes: nativeIncompleteCauses(native) };
     if (
       !runnerDown &&
       (!deps.requirePrivateInputs ||
         !(
           retryableEmptyCapture(native) ||
+          retryDropped ||
           (deps.platformPresence === true &&
             deps.budgetMs === undefined &&
             retryablePresenceCapture(native))
@@ -710,15 +739,24 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
     const remaining = retryDeadline - at;
     if (!(remaining > 0)) {
       if (runnerDown) throw new NativeCaptureError();
+      retryExpired = true;
       break;
     }
     await sleep(Math.min(WAIT_POLL_MS, remaining));
     const readBudget = Math.floor(retryDeadline - now());
     if (!(readBudget > 0)) {
       if (runnerDown) throw new NativeCaptureError();
+      retryExpired = true;
       break;
     }
     presenceBudgetMs = Math.min(NATIVE_PRESENCE_BUDGET_MS, readBudget);
+    if (retryDropped)
+      observeTiming(deps.timing, {
+        stage: 'native-reread',
+        edge: 'point',
+        outcome: 'ok',
+        at: now(),
+      });
   }
   // A read finishing after its scope ended publishes nothing more.
   throwIfCancelled();
@@ -762,7 +800,12 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
     if (deps.requirePrivateInputs && captureCoverage.native !== 'complete')
       throw new NativeSnapshotIncomplete(
         nodes.length,
-        captureCoverage.native === 'unknown' ? ['unattested'] : nativeIncompleteCauses(native),
+        captureCoverage.native === 'unknown'
+          ? ['unattested']
+          : [
+              ...nativeIncompleteCauses(native),
+              ...(retryExpired && retryableDroppedCapture(native) ? ['retry-deadline'] : []),
+            ],
       );
     const hostEvidence = validateReactHostEvidence(react.hostEvidence);
     const nativePresence =

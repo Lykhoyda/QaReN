@@ -1235,6 +1235,8 @@ pub struct RowTiming {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settle_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send: Option<SendTiming>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preparation_samples: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preparation_resets: Option<u64>,
@@ -1244,6 +1246,21 @@ pub struct RowTiming {
     pub post_capture_ms: u64,
     pub other_ms: u64,
     pub total: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SendTiming {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyboard_guard_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_check_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gesture_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settle_probes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1727,6 +1744,13 @@ pub struct CoreChild {
     child: crate::exec::PipedChild,
     rx: mpsc::Receiver<Msg>,
     diagnostics: diagnostics::Sink,
+    build_completion: Option<crate::native_build_slot::GradleCompletion>,
+}
+
+impl CoreChild {
+    pub(crate) fn watch_build_slot(&mut self, record: &crate::runrecord::RunRecord) {
+        self.build_completion = crate::native_build_slot::GradleCompletion::for_run(record);
+    }
 }
 
 // The caller could not persist the pid, so nothing else will ever find this child: kill its group now.
@@ -1824,6 +1848,7 @@ pub fn spawn_private(
         }
     });
     Ok(CoreChild {
+        build_completion: None,
         pid: child.pid,
         run_id: request.run_id.clone(),
         child,
@@ -2000,9 +2025,11 @@ pub fn wait(
         mut child,
         rx,
         diagnostics,
+        mut build_completion,
     } = core;
     let started = runner.monotonic_ms();
     let mut last_progress = started;
+    let mut last_slot_poll = None;
     let mut inbox = Inbox {
         run_id,
         last_seq: 1,
@@ -2026,6 +2053,14 @@ pub fn wait(
     let mut cancel_deadline: Option<u64> = None;
     // Kill before reaping to keep the pgid from being recycled under us.
     loop {
+        if last_slot_poll.is_none_or(|at: u64| runner.monotonic_ms().saturating_sub(at) >= 1000) {
+            last_slot_poll = Some(runner.monotonic_ms());
+            if let Some(completion) = build_completion.as_mut() {
+                if matches!(completion.poll(), Ok(true)) {
+                    build_completion = None;
+                }
+            }
+        }
         if killed_at.is_none() && cancel_deadline.is_none() {
             if let Some(reason) = runner.cancellation() {
                 deadline_failure = Some(Failure::cancelled("walk", &reason));
