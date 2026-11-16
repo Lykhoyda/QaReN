@@ -2722,7 +2722,9 @@ during teardown, including post-arm cancellation and dead-owner recovery, subjec
 [inspection hold precedence](#ios-admission-and-cleanup). After strict
 admission, the pending stop must be durably saved before lifecycle mutation; a failed
 save or cancellation before arming leaves simulator power unchanged. Shutdown preserves
-the simulator and its installed app and data. See [iOS admission and cleanup](#ios-admission-and-cleanup)
+the simulator and its installed app and data, and then removes the simulator's system
+log store, which holds the log entries of every app on that simulator, not only this
+run's. See [iOS admission and cleanup](#ios-admission-and-cleanup)
 for stop guards, unresolved ownership and recovery.
 
 iOS preparation follows the
@@ -3482,10 +3484,16 @@ When `--shutdown-device-on-exit`
 armed a pending borrowed-simulator stop, teardown and dead-owner cleanup require the
 run's current device lease, proven build/core/Metro/runner-driver/runner-host/recorder
 quiescence, matching canonical simulator UUID/runtime/device type, fresh strict
-foreign-driver admission, and verified `Shutdown` readback before persisting completion
+foreign-driver admission, and verified `Shutdown` readback, then a fresh read that shows
+the simulator `Shutdown` and names its data path and the removal of its system log store,
+before persisting completion
 and releasing the lease (and any `pr` worktree); an already `Shutdown` target completes
-idempotently, and a completed record never re-issues `simctl shutdown`. Unresolved stop
-admission, shutdown, readback or persistence retains the pending state and lease. Missing
+idempotently, and a completed record never re-issues `simctl shutdown` or the removal.
+Unresolved stop
+admission, shutdown, readback, log store removal or persistence retains the pending state
+and lease, and the next cleanup of the same run retries the removal. A pending stop
+recorded by an older QaReN, which did not record the removal request, gets the shutdown
+and keeps the log. Missing
 runtime or candidate-directory evidence also leaves the stop unresolved. Exit shutdown
 cannot be added afterward to a released run. A dead lease
 holder is reclaimed only through that run's cleanup; a live or unprovable holder
@@ -3565,7 +3573,15 @@ stop); `refused` or `unresolved` means removal was not proven. Temporary
 simulators, including `--new`, have no separate log leg: their `simulator`
 cleanup leg reports deletion of the whole simulator instead.
 Every `check`, `pr` and `prepare --device` run borrows its simulator and keeps
-its log (`simulator_log: kept`), even if QaReN originally created that simulator.
+its log (`simulator_log: kept`), even if QaReN originally created that simulator,
+unless a `check` or `pr` was started with `--shutdown-device-on-exit`: that run
+removes the simulator's whole log store, with the entries of every other app on it,
+after the proven shutdown (`simulator_log: removed`, or `absent`). While that
+removal is owed, including a run held for inspection, the leg is `unresolved: log
+store retained with the simulator`. The proof of `Shutdown` is not exclusive
+control: a person or another tool can boot the simulator between that read and the
+removal. A store that cannot be removed ends `qaren cleanup` as failed; a `check`
+keeps its verdict and names that cleanup as its next action.
 `qaren doctor --device <udid>` prints guidance for clearing the borrowed
 simulator's log; it removes nothing.
 

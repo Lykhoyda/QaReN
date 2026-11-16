@@ -853,8 +853,11 @@ fn run_inner(
             if let Err(f) = ctx.record.resources.arm_borrowed_ios_stop() {
                 return finish_failed(ctx, f);
             }
+            // The flag also asks for the simulator's log store to go after the proven shutdown.
+            ctx.record.resources.clear_log_on_stop = true;
             if let Err(f) = ctx.save() {
                 ctx.record.resources.revert_borrowed_ios_stop(prev);
+                ctx.record.resources.clear_log_on_stop = false;
                 return finish_failed(ctx, f);
             }
         }
@@ -1078,7 +1081,7 @@ fn run_inner(
         if req.platform == Platform::Ios && resolved_inputs.has_inputs() {
             ctx.notes.push((
                 "platform_log".to_string(),
-                "typed and displayed field text is recorded in the simulator system log; the simulator_log cleanup leg says whether QaReN removed it; a simulator QaReN did not create keeps its log, and qaren doctor --device <udid> prints the command that clears it"
+                "typed and displayed field text is recorded in the simulator system log; the simulator_log cleanup leg says whether QaReN removed it; a simulator QaReN did not create keeps its log unless the run was started with --shutdown-device-on-exit, which removes it after the shutdown; qaren doctor --device <udid> prints the command that clears it"
                     .to_string(),
             ));
         }
@@ -2681,13 +2684,18 @@ fn teardown(
     }
     prepare::release_build_lock(ctx);
     if ctx.record.resources.ios_simulator.is_some() {
-        // check and pr only borrow the simulator, so its log store is always kept.
+        // check and pr borrow the simulator; its log store goes only after --shutdown-device-on-exit's stop.
         let (outcome, log) = if hold {
             let outcome = match ctx.record.resources.borrowed_ios_stop() {
                 crate::runrecord::BorrowedIosStop::Pending => held.clone(),
                 _ => Outcome::Kept,
             };
-            (outcome, Some(Outcome::Kept))
+            (
+                outcome,
+                Some(crate::commands::cleanup::recorded_log_outcome(
+                    &ctx.record.resources,
+                )),
+            )
         } else {
             crate::commands::cleanup::cleanup_borrowed_ios(
                 ctx.runner,
