@@ -760,13 +760,21 @@ export function associateHosts(
   return associations;
 }
 
+// A frame-only tie: `proven` allows a press; without it the button is only located, which allows one
+// scroll. `covered` is set when React's hit test at the centre lands on a host outside the button.
+export interface FrameMatch {
+  host: number;
+  proven: boolean;
+  covered: boolean;
+}
+
 // Frame-only ties require one native button across all windows and one pressable host.
 export function unnamedFrameMatches(
   nodes: NativeNode[],
   evidence: ReactHostEvidence | undefined,
   presence: NativePresence | undefined,
-): Map<number, number> {
-  const matches = new Map<number, number>();
+): Map<number, FrameMatch> {
+  const matches = new Map<number, FrameMatch>();
   const snapshot = evidence?.typography;
   if (!evidence?.complete || !snapshot?.complete || presence?.source !== 'xcui-live')
     return matches;
@@ -846,14 +854,7 @@ export function unnamedFrameMatches(
     )
       continue;
     const node = nodes[i];
-    if (
-      node.identifier ||
-      node.label ||
-      presence.nodes[i]?.status !== 'observed' ||
-      !node.ref?.trim() ||
-      refs.get(node.ref) !== 1
-    )
-      continue;
+    if (node.identifier || node.label || !node.ref?.trim() || refs.get(node.ref) !== 1) continue;
     if (
       pressable.some((other) => other !== host && sameFrame(other.rect, nodes[i].rect, transform))
     )
@@ -875,9 +876,14 @@ export function unnamedFrameMatches(
     )
       continue;
     // Anything painted over the centre takes the tap: React's own hit test there must reach this button.
+    // Unproven presence or a failed hit test still locates the button, for one scroll only.
     const hit = hitAt(cx, cy);
-    if (typeof hit !== 'number' || !hostPath(snapshot, hit)?.includes(host.hostIndex)) continue;
-    matches.set(i, host.hostIndex);
+    const reached = typeof hit === 'number' && !!hostPath(snapshot, hit)?.includes(host.hostIndex);
+    matches.set(i, {
+      host: host.hostIndex,
+      proven: reached && presence.nodes[i]?.status === 'observed',
+      covered: typeof hit === 'number' && !reached,
+    });
   }
   return matches;
 }

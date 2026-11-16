@@ -977,6 +977,19 @@ nothing is tapped. The runner cannot re-check an unnamed element at the moment o
 the tap, so the proof on that read stands in for it. A passing step stores no
 selector, so its block is reported not saved and later runs walk the step afresh.
 
+When everything holds except that the native button is cut off by its scroll
+area, off screen, not hittable or not proven present, or that something is drawn
+over its centre, the button is only located. That allows a scroll, never a tap.
+QaReN sends the step's one clearance scroll from the button's own scroll area
+under the usual free-ground checks. It then takes a settled full read and proves
+the button again; only then does it press, once. A step gets one such scroll,
+including across recovery passes, and a runner refusal of the press after it
+ends the step. When the button is still not proven, or no scroll is allowed,
+nothing is tapped and the failure names the cause the read shows first: cut off
+by its scroll area, or its centre under another element, with "after one
+scroll" when the scroll was sent. The app change comes second. A card that
+needs two scrolls is refused, so the plan adds a scroll step before the Tap.
+
 Without that proof, QaReN does not tap through the hidden text. When the current
 line's latest admitted read proves the hidden text, a failed Tap, quoted Wait or
 literal check explains that the app hides it from accessibility. When known, the

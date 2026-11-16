@@ -3,6 +3,9 @@ import type { Target } from './plan.js';
 import { MASK, type ObservedPrivacy } from './privacy.js';
 import {
   associatedHostOf,
+  elementFrame,
+  elementViewport,
+  frameLocatedOf,
   frameMatchedHostOf,
   semanticDisabled,
   type Element,
@@ -90,6 +93,8 @@ function provenButton(
   button: NonNullable<HiddenText['button']>,
   screen: Screen,
   tied: (element: Element) => boolean,
+  // Locating only: the element may be cut off, off screen or not hittable.
+  located = false,
 ): Element | undefined {
   const typography = screen.reactHostEvidence?.typography;
   const elements = screen.elements.filter(tied);
@@ -99,8 +104,7 @@ function provenButton(
     elements.length !== 1 ||
     element.ref.startsWith('react:') ||
     element.kind !== 'button' ||
-    !element.hittable ||
-    element.offscreen ||
+    (!located && (!element.hittable || element.offscreen)) ||
     semanticDisabled(element)
   )
     return;
@@ -123,6 +127,42 @@ export function hiddenTextButton(target: Target, screen: Screen): Element | unde
 // The same for a button with neither label nor test id: the join's frame match is its only tie, and
 // only the hidden text's own words, never a hidden child's test id, name it.
 export function hiddenTextUnnamedButton(target: Target, screen: Screen): Element | undefined {
+  const tie = unnamedTie(target, screen);
+  return (
+    tie &&
+    provenButton(tie.found, tie.button, screen, (e) => frameMatchedHostOf(e) === tie.button.host)
+  );
+}
+
+// The weaker answer for the same button: all holds except that it may be cut off by its clip, not
+// proven present, or under another element at its centre. It allows one scroll, never a tap; `cutOff`
+// and `covered` are set only when this read shows that cause.
+export function hiddenTextUnnamedLocated(
+  target: Target,
+  screen: Screen,
+): { element: Element; cutOff: boolean; covered: boolean } | undefined {
+  const tie = unnamedTie(target, screen);
+  const element =
+    tie &&
+    provenButton(
+      tie.found,
+      tie.button,
+      screen,
+      (e) => frameLocatedOf(e)?.host === tie.button.host,
+      true,
+    );
+  if (!element) return;
+  const frame = elementFrame(element);
+  const clip = elementViewport(element);
+  return {
+    element,
+    cutOff: !!frame && !!clip && !within(frame, clip),
+    covered: !!frameLocatedOf(element)?.covered,
+  };
+}
+
+// One hidden text with these exact words inside a pressable host that has neither test id nor label.
+function unnamedTie(target: Target, screen: Screen) {
   const found = hiddenFromAccessibility(target, screen, 'exact');
   const button = found?.hosts.length === 1 ? found.button : undefined;
   const evidence = screen.reactHostEvidence;
@@ -139,7 +179,7 @@ export function hiddenTextUnnamedButton(target: Target, screen: Screen): Element
     evidence?.hosts[button.host]?.disabled
   )
     return;
-  return provenButton(found, button, screen, (e) => frameMatchedHostOf(e) === button.host);
+  return { found, button };
 }
 
 const point = (n: number) => String(Math.round(n * 10) / 10);
