@@ -765,6 +765,7 @@ export function associateHosts(
 export interface FrameMatch {
   host: number;
   proven: boolean;
+  cutOff: boolean;
   covered: boolean;
 }
 
@@ -808,6 +809,7 @@ export function unnamedFrameMatches(
   const links = unmeasured.filter(inline);
   // React rects are window points, the space the centre is taken in; hidden hosts still take touches.
   const hitAt = reactHitTest(evidence, (rect) => rect, true);
+  const viewport = outsideViewport(nodes);
   const duplicates = duplicateNodes(nodes, presence);
   const refs = new Map<string, number>();
   for (const node of nodes) refs.set(node.ref, (refs.get(node.ref) ?? 0) + 1);
@@ -875,15 +877,24 @@ export function unnamedFrameMatches(
       )
     )
       continue;
-    // Anything painted over the centre takes the tap: React's own hit test there must reach this button.
-    // Unproven presence or a failed hit test still locates the button, for one scroll only.
     const hit = hitAt(cx, cy);
     const reached = typeof hit === 'number' && !!hostPath(snapshot, hit)?.includes(host.hostIndex);
-    matches.set(i, {
-      host: host.hostIndex,
-      proven: reached && presence.nodes[i]?.status === 'observed',
-      covered: typeof hit === 'number' && !reached,
-    });
+    const covered = typeof hit === 'number' && !reached;
+    const clip = clippingViewport(viewport, i);
+    const rect = node.rect!;
+    const cutOff =
+      !!clip &&
+      (rect.x < clip.x - 0.01 ||
+        rect.y < clip.y - 0.01 ||
+        rect.x + rect.width > clip.x + clip.width + 0.01 ||
+        rect.y + rect.height > clip.y + clip.height + 0.01 ||
+        cx + transform.x < clip.x ||
+        cx + transform.x >= clip.x + clip.width ||
+        cy + transform.y < clip.y ||
+        cy + transform.y >= clip.y + clip.height);
+    const proven = reached && !cutOff && presence.nodes[i]?.status === 'observed';
+    if (!proven && !cutOff && !covered) continue;
+    matches.set(i, { host: host.hostIndex, proven, cutOff, covered });
   }
   return matches;
 }

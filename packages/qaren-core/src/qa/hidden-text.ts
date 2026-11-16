@@ -3,8 +3,6 @@ import type { Target } from './plan.js';
 import { MASK, type ObservedPrivacy } from './privacy.js';
 import {
   associatedHostOf,
-  elementFrame,
-  elementViewport,
   frameLocatedOf,
   frameMatchedHostOf,
   semanticDisabled,
@@ -93,7 +91,6 @@ function provenButton(
   button: NonNullable<HiddenText['button']>,
   screen: Screen,
   tied: (element: Element) => boolean,
-  // Locating only: the element may be cut off, off screen or not hittable.
   located = false,
 ): Element | undefined {
   const typography = screen.reactHostEvidence?.typography;
@@ -134,9 +131,6 @@ export function hiddenTextUnnamedButton(target: Target, screen: Screen): Element
   );
 }
 
-// The weaker answer for the same button: all holds except that it may be cut off by its clip, not
-// proven present, or under another element at its centre. It allows one scroll, never a tap; `cutOff`
-// and `covered` are set only when this read shows that cause.
 export function hiddenTextUnnamedLocated(
   target: Target,
   screen: Screen,
@@ -152,13 +146,9 @@ export function hiddenTextUnnamedLocated(
       true,
     );
   if (!element) return;
-  const frame = elementFrame(element);
-  const clip = elementViewport(element);
-  return {
-    element,
-    cutOff: !!frame && !!clip && !within(frame, clip),
-    covered: !!frameLocatedOf(element)?.covered,
-  };
+  const match = frameLocatedOf(element);
+  if (!match || (!match.cutOff && !match.covered)) return;
+  return { element, cutOff: match.cutOff, covered: match.covered };
 }
 
 // One hidden text with these exact words inside a pressable host that has neither test id nor label.

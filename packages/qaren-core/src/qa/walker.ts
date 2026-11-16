@@ -4985,6 +4985,7 @@ async function walkBlockScoped(
                     continue;
                   }
                   if (
+                    !unnamedArmed() &&
                     (resolution.origin === 'named-offscreen' || (!result.ok && !result.proven)) &&
                     screenSignature(before.screen) === signature
                   ) {

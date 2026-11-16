@@ -179,7 +179,7 @@ const CUT: ListOptions = {
 async function walkList(
   start: ListOptions,
   after: ListOptions | undefined,
-  options: { acts?: Act[]; screenshots?: boolean; line?: string } = {},
+  options: { acts?: Act[]; scrollResult?: Act; screenshots?: boolean; line?: string } = {},
 ) {
   const log: string[] = [];
   const bands: unknown[] = [];
@@ -212,7 +212,7 @@ async function walkList(
       log.push(`scroll ${direction}`);
       bands.push(band);
       if (after) state = after;
-      return { ok: true, proven: false, executed: true };
+      return options.scrollResult ?? { ok: true, proven: false, executed: true };
     },
     async back() {
       throw new Error('unexpected back');
@@ -437,5 +437,45 @@ test('Q8: on the scroll path no ordinary read or pixel baseline lies between the
     run.log.slice(scroll + 1, press).every((entry) => entry === 'presence'),
     run.log.join(),
   );
+  pressedFromLastRead(run.log);
+});
+
+test('a refused unchanged clearance scroll names centre coverage after one scroll', async () => {
+  const run = await walkList(COVERED, COVERED, { scrollResult: refused('drag refused') });
+  assert.equal(run.outcome.block.outcome, 'fail');
+  assert.equal(run.scrolls.length, 1, run.log.join());
+  assert.deepEqual(run.presses, []);
+  assert.ok(
+    run.reason.startsWith(`TARGET_NOT_FOUND: ${UNDER('14,141,374,90', ' after one scroll')}`),
+    run.reason,
+  );
+});
+
+test('fully visible unnamed buttons need proven presence and a resolved centre hit', async () => {
+  const cases: Array<[string, ListOptions]> = [
+    [
+      'unknown presence',
+      { offset: 159, lima: { presence: { status: 'unknown', labelSource: 'none' } } },
+    ],
+    [
+      'unresolved hit',
+      { offset: 159, extraRows: [[{ ...plain, order: undefined }, 0, 'RCTView', card(1, 159)]] },
+    ],
+    ['not hittable without a cause', { offset: 159, lima: { hittable: false } }],
+  ];
+  for (const [name, start] of cases) {
+    const run = await walkList(start, { offset: 59 });
+    assert.equal(run.outcome.block.outcome, 'fail', name);
+    assert.deepEqual(run.scrolls, [], name);
+    assert.deepEqual(run.presses, [], name);
+    assert.doesNotMatch(run.reason, /cut off by its scroll area|is under another element/, name);
+  }
+});
+
+test('a partially clipped hittable button still needs its one scroll before pressing', async () => {
+  const run = await walkList({ offset: 205 }, { offset: 105 });
+  assert.equal(run.outcome.block.outcome, 'pass', run.reason);
+  assert.equal(run.scrolls.length, 1, run.log.join());
+  assert.equal(run.presses.length, 1, run.log.join());
   pressedFromLastRead(run.log);
 });
