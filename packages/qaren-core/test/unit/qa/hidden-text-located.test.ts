@@ -598,6 +598,43 @@ test('Q9b: a text cover reaching into the band top is trimmed off like a counted
   );
 });
 
+test('Q9b: a hidden middle cover withholds even when another cover trims the top edge', async () => {
+  const edge = { x: 0, y: 190, width: 402, height: 320 };
+  const middle = { x: 0, y: 470, width: 402, height: 60 };
+  const shape: ListOptions = {
+    ...CAPTIONED,
+    offset: -155,
+    extraBefore: CAPTIONED.extraBefore!.map((node) => ({ ...node, rect: edge })),
+    extraRows: [
+      [{ ...plain, testID: 'qa-caption' }, 0, 'RCTText', edge, 'Caption'],
+      [{ ...plain, hidden: true }, 0, 'RCTText', middle, 'Hidden caption'],
+    ],
+  };
+  const run = await walkList(shape, { ...shape, offset: -100 });
+  assert.equal(run.outcome.block.outcome, 'fail', run.reason);
+  assert.deepEqual(run.scrolls, [], run.log.join());
+  assert.deepEqual(run.presses, []);
+  assert.ok(
+    run.reason.startsWith(
+      'TARGET_NOT_FOUND: "Lima" is text hidden from accessibility; the centre of its unnamed button at 14,455,374,90 is under another element, and no part of its scroll area is free of what lies in front or behind, so nothing was tapped',
+    ),
+    run.reason,
+  );
+  const note = run.notes.find((note) => note.startsWith('located-clearance '));
+  assert.ok(note);
+  assert.deepEqual(JSON.parse(note.slice('located-clearance '.length)), {
+    line: 1,
+    located: true,
+    cutOff: false,
+    covered: true,
+    container: true,
+    band: { x: 0, y: 510, width: 402, height: 330 },
+    direction: null,
+    trimmedBy: [{ kind: 'text', frame: edge }],
+    withheld: 'no-free-part',
+  });
+});
+
 for (const hidden of [false, true]) {
   const caption = (rect: Rect): ListOptions => ({
     ...CAPTIONED,

@@ -1770,16 +1770,19 @@ async function walkBlockScoped(
     // cover across the top or bottom edge trims it, one across both withholds, and one across the
     // middle withholds through the unchanged checks below.
     const cover = coverOwner(element, screen);
-    const coverFrame = 'owner' in cover ? cover.frame : reactCover;
-    const onFull = coverFrame ? clip(full, coverFrame) : undefined;
+    const covers = [
+      ...('owner' in cover ? [{ kind: cover.owner.kind, rect: cover.frame }] : []),
+      ...(reactCover ? [{ kind: 'react-cover', rect: reactCover }] : []),
+    ];
     const edges = [
       ...foreignNodesOnBand(container, full, screen).map((node) => ({
         kind: node.kind,
         rect: elementFrame(node)!,
       })),
-      ...(coverFrame && onFull && onFull.width > 0 && onFull.height > 0
-        ? [{ kind: 'owner' in cover ? cover.owner.kind : 'react-cover', rect: coverFrame }]
-        : []),
+      ...covers.filter(({ rect }) => {
+        const shared = clip(full, rect);
+        return shared && shared.width > 0 && shared.height > 0;
+      }),
     ];
     const [top, bottom] = [full.y, full.y + full.height];
     let [from, to] = [top, bottom];
@@ -1808,11 +1811,13 @@ async function walkBlockScoped(
         trimmedBy.push({ kind, frame: rect });
     }
     const band = { ...full, y: from, height: to - from };
-    const shared = coverFrame && clip(band, coverFrame);
     // A band too low for a drag is refused here: the scroll handler must never refuse it after the fact.
     if (
       band.height < MIN_SCROLL_BAND_HEIGHT ||
-      (!!shared && shared.width > 0 && shared.height > 0) ||
+      covers.some(({ rect }) => {
+        const shared = clip(band, rect);
+        return shared && shared.width > 0 && shared.height > 0;
+      }) ||
       foreignOnBand(container, band, screen)
     )
       return { band, trimmedBy, withheld: 'no-free-part' };
