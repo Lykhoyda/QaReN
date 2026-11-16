@@ -961,7 +961,9 @@ by the read. Every native button at that frame is counted, including labelled or
 identified buttons and those whose presence was not proven. Every window is
 counted, each under its own origin. No other pressable host may have that frame,
 and no pressable inside the button, hidden or not, may cover its centre, where
-the tap lands.
+the tap lands. React's own hit test at that centre must also reach the button,
+so nothing painted over it, and no sibling of unknown paint order, takes the
+tap.
 Every non-hidden pressable host must have a measured frame, except inline text
 spans, which are never measured. An unmeasured pressable inline span inside the
 button, in text whose frame overlaps it, or without a measured containing text

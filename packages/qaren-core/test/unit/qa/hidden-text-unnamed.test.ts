@@ -127,7 +127,8 @@ function card(
     { native: 'complete', react: 'complete' },
     {
       complete: true,
-      hosts: rows.map(([host]) => ({ ...plain, ...host })),
+      // Paint order follows the rows: a later sibling is drawn over an earlier one.
+      hosts: rows.map(([host], order) => ({ ...plain, order, ...host })),
       typography: {
         version: 1,
         complete: true,
@@ -213,6 +214,24 @@ test('N2: each missing proof gives nothing', () => {
             'RCTView',
             { x: 150, y: 280, width: 100, height: 60 },
           ],
+        ],
+      }),
+    ],
+    [
+      'a sibling pressable painted over the card centre',
+      card({
+        rows: (r) => [
+          ...r,
+          [pressable(), 0, 'RCTView', { x: 150, y: 280, width: 100, height: 60 }],
+        ],
+      }),
+    ],
+    [
+      'a sibling over the centre whose paint order is unknown',
+      card({
+        rows: (r) => [
+          ...r,
+          [{ ...plain, order: 1 }, 0, 'RCTView', { x: 150, y: 280, width: 100, height: 60 }],
         ],
       }),
     ],
@@ -381,7 +400,7 @@ function equalCards(presence = true): Screen {
     presence
       ? {
           complete: true,
-          hosts: rows.map(([host]) => ({ ...plain, ...host })),
+          hosts: rows.map(([host], order) => ({ ...plain, order, ...host })),
           typography: {
             version: 1,
             complete: true,

@@ -799,6 +799,8 @@ export function unnamedFrameMatches(
   if (unmeasured.some((host) => !inline(host) && !evidence.hosts[host.hostIndex].hidden))
     return matches;
   const links = unmeasured.filter(inline);
+  // React rects are window points, the space the centre is taken in.
+  const hitAt = reactHitTest(evidence, (rect) => rect);
   const duplicates = duplicateNodes(nodes, presence);
   const refs = new Map<string, number>();
   for (const node of nodes) refs.set(node.ref, (refs.get(node.ref) ?? 0) + 1);
@@ -855,6 +857,9 @@ export function unnamedFrameMatches(
       )
     )
       continue;
+    // Anything painted over the centre takes the tap: React's own hit test there must reach this button.
+    const hit = hitAt(cx, cy);
+    if (typeof hit !== 'number' || !hostPath(snapshot, hit)?.includes(host.hostIndex)) continue;
     matches.set(i, host.hostIndex);
   }
   return matches;
