@@ -3948,6 +3948,56 @@ fn a_failed_ios_check_holds_metro_the_simulator_and_the_lease_for_inspection() {
 }
 
 #[test]
+fn a_held_run_with_shutdown_on_exit_reports_its_owed_log_store_as_retained() {
+    let (repo, app) = app_repo();
+    let data = sim_log_store_fixture(&repo);
+    let mut mock = MockRunner::new();
+    script_preflight_inventory(
+        &mut mock,
+        &repo,
+        "simctl list devices -j",
+        &available_inventory("Booted"),
+    );
+    script_admission(&mut mock);
+    common::script_ios_deps(&mut mock);
+    script_admission(&mut mock);
+    script_provision_after_deps(&mut mock);
+    script_drift_status(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    let stdout = format!(
+        "{}\n{}\n",
+        envelope(2, "admitted", "{}"),
+        envelope(3, "result", HELD_FAIL)
+    );
+    mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(1));
+    script_core_identity(&mut mock);
+    script_drift_status(&mut mock);
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
+    mock.expect_run("git", CmdOutput::success(UNTRACKED_PLAN));
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n6000 6000 S\n"));
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    let mut req = request(&repo, &app, 30);
+    req.device = Some(UDID.into());
+    req.shutdown_device_on_exit = true;
+    req.hold = Some(true);
+
+    let (receipt, events) = run_with_events(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0, "{:?}", labels(&mock));
+    assert!(receipt.held.is_some());
+    assert!(receipt.cleanup["simulator"].starts_with("held:"));
+    assert_eq!(
+        receipt.cleanup["simulator_log"],
+        "unresolved: log store retained with the simulator"
+    );
+    let end = events.iter().find(|e| e["event"] == "end").unwrap();
+    assert_eq!(end["payload"]["cleanup"]["simulator_log"], "unresolved");
+    assert!(data.join("var/db/diagnostics/Persist/0.tracev3").is_file());
+    assert!(!mock.calls.iter().any(|c| c.label == "simctl-shutdown"));
+}
+
+#[test]
 fn a_held_target_failure_keeps_its_plan_edit_ahead_of_the_inspection_steps() {
     let (repo, app) = app_repo();
     let mut mock = MockRunner::new();
@@ -7848,16 +7898,41 @@ fn shutdown_only_selection_refuses_unavailable_or_ambiguous_targets_before_claim
     }
 }
 
+// The selected simulator's data directory under the temp repo, holding a dummy log store.
+fn sim_log_store_fixture(repo: &Path) -> PathBuf {
+    let data = repo.join("CoreSimulator/Devices").join(UDID).join("data");
+    let trace = data.join("var/db/diagnostics/Persist/0.tracev3");
+    std::fs::create_dir_all(trace.parent().unwrap()).unwrap();
+    std::fs::write(trace, "dummy").unwrap();
+    data
+}
+
+fn available_inventory_with_data(state: &str, data: &Path) -> String {
+    let mut inventory: serde_json::Value =
+        serde_json::from_str(&available_inventory(state)).unwrap();
+    inventory["devices"]["com.apple.CoreSimulator.SimRuntime.iOS-26-5"][0]["dataPath"] =
+        data.to_str().unwrap().into();
+    inventory.to_string()
+}
+
 #[test]
 fn shutdown_device_on_exit_arms_after_admission_and_stops_simulator_before_releasing_lease() {
     use qaren::runrecord::BorrowedIosStop;
-    for (mode, end_state) in [
-        ("booted_only", "Booted"),
-        ("booted_only", "Shutdown"),
-        ("with_boot_device", "Booted"),
-        ("with_restart_device", "Booted"),
+    for (mode, end_state, unremovable) in [
+        ("booted_only", "Booted", false),
+        ("booted_only", "Shutdown", false),
+        ("with_boot_device", "Booted", false),
+        ("with_restart_device", "Booted", false),
+        // The walk's verdict stands when the store cannot be removed; cleanup is the next action.
+        ("booted_only", "Booted", true),
     ] {
         let (repo, app) = app_repo();
+        let data = sim_log_store_fixture(&repo);
+        let store = data.join("var/db/diagnostics");
+        if unremovable {
+            std::fs::remove_dir_all(&store).unwrap();
+            std::fs::write(&store, "dummy").unwrap();
+        }
         let mut mock = MockRunner::new();
         match mode {
             "booted_only" => {
@@ -7936,6 +8011,11 @@ fn shutdown_device_on_exit_arms_after_admission_and_stops_simulator_before_relea
                 CmdOutput::success(&available_inventory("Shutdown")),
             );
         }
+        // The read before the log store's removal: Shutdown, with the simulator's data path.
+        mock.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&available_inventory_with_data("Shutdown", &data)),
+        );
         let mut runner = LeaseObservedRunner {
             mock,
             repo: repo.clone(),
@@ -7955,6 +8035,30 @@ fn shutdown_device_on_exit_arms_after_admission_and_stops_simulator_before_relea
             "{mode} {end_state}: {:?}",
             receipt.failure
         );
+        assert_eq!(runner.mock.remaining(), 0, "{mode} {end_state}");
+        let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+        assert!(record.resources.clear_log_on_stop, "{mode} {end_state}");
+        if unremovable {
+            assert_eq!(
+                receipt.cleanup["simulator"],
+                "unresolved: simulator shut down but its log store was not removed; stop stays pending"
+            );
+            assert!(
+                receipt.cleanup["simulator_log"]
+                    .starts_with("unresolved: simulator log store could not be removed: "),
+                "{}",
+                receipt.cleanup["simulator_log"]
+            );
+            assert_eq!(
+                receipt.next_action,
+                format!("qaren cleanup {} --json", run_id())
+            );
+            assert!(store.is_file());
+            assert_eq!(record.resources.borrowed_ios_stop(), BorrowedIosStop::Pending);
+            assert!(!record.resources.simulator_log_cleared);
+            assert!(record.resources.lease.is_some());
+            continue;
+        }
         assert_eq!(
             receipt.cleanup["simulator"],
             if end_state == "Booted" {
@@ -7965,11 +8069,12 @@ fn shutdown_device_on_exit_arms_after_admission_and_stops_simulator_before_relea
             "{mode} {end_state}"
         );
         assert_eq!(
-            receipt.cleanup["simulator_log"], "kept",
+            receipt.cleanup["simulator_log"], "removed",
             "{mode} {end_state}"
         );
+        assert!(!store.exists(), "{mode} {end_state}");
+        assert!(record.resources.simulator_log_cleared, "{mode} {end_state}");
         assert_eq!(receipt.cleanup["device_lease"], "removed");
-        assert_eq!(runner.mock.remaining(), 0, "{mode} {end_state}");
         assert_subsequence(
             &runner.observed,
             if end_state == "Booted" {
@@ -8013,6 +8118,7 @@ fn shutdown_device_on_exit_keeps_simulator_when_cancelled_before_arm_and_stops_i
     use qaren::runrecord::BorrowedIosStop;
     for stage in ["before_arm", "after_arm"] {
         let (repo, app) = app_repo();
+        let data = sim_log_store_fixture(&repo);
         let mut mock = MockRunner::new();
         script_preflight_inventory(
             &mut mock,
@@ -8040,6 +8146,10 @@ fn shutdown_device_on_exit_keeps_simulator_when_cancelled_before_arm_and_stops_i
             mock.expect_run(
                 "simctl list devices -j",
                 CmdOutput::success(&available_inventory("Shutdown")),
+            );
+            mock.expect_run(
+                "simctl list devices -j",
+                CmdOutput::success(&available_inventory_with_data("Shutdown", &data)),
             );
         }
         let mut runner = LeaseObservedRunner {
@@ -8070,6 +8180,16 @@ fn shutdown_device_on_exit_keeps_simulator_when_cancelled_before_arm_and_stops_i
             "{stage}"
         );
         assert_eq!(receipt.cleanup["device_lease"], "removed", "{stage}");
+        assert_eq!(
+            receipt.cleanup["simulator_log"],
+            if stage == "before_arm" { "kept" } else { "removed" },
+            "{stage}"
+        );
+        assert_eq!(
+            data.join("var/db/diagnostics").exists(),
+            stage == "before_arm",
+            "{stage}"
+        );
         assert_eq!(runner.mock.remaining(), 0, "{stage}");
         let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
         assert_eq!(
@@ -8178,6 +8298,7 @@ fn shutdown_device_on_exit_keeps_simulator_when_cancelled_before_arm_and_stops_i
         record.resources.borrowed_ios_stop(),
         BorrowedIosStop::NotArmed
     );
+    assert!(!record.resources.clear_log_on_stop);
 }
 
 #[test]
@@ -8730,7 +8851,7 @@ fn pr_runtime_input_recording_obeys_video_policy_and_secret_inventory() {
         assert!(receipt.outcomes["video"].starts_with("unavailable("));
         assert_eq!(
             receipt.outcomes["platform_log"],
-            "typed and displayed field text is recorded in the simulator system log; the simulator_log cleanup leg says whether QaReN removed it; a simulator QaReN did not create keeps its log, and qaren doctor --device <udid> prints the command that clears it"
+            "typed and displayed field text is recorded in the simulator system log; the simulator_log cleanup leg says whether QaReN removed it; a simulator QaReN did not create keeps its log unless the run was started with --shutdown-device-on-exit, which removes it after the shutdown; qaren doctor --device <udid> prints the command that clears it"
         );
         assert_eq!(
             events
