@@ -886,9 +886,7 @@ export function clearanceBand(
   return bottom > top ? { ...viewport, y: top, height: bottom - top } : undefined;
 }
 
-// The centre is "covered" only by the drag margin above a visible keyboard: the band's bottom is that
-// margin itself (no overlay or viewport set it) and the centre lies between it and the keyboard's top,
-// inside the target's own clip.
+// Only the drag margin sets the band's bottom; the centre remains inside its clip above the keyboard.
 export function inKeyboardMarginOnly(element: Element, screen: Screen): boolean {
   const frame = elementFrame(element);
   const viewport = elementViewport(element);

@@ -5024,8 +5024,7 @@ async function walkBlockScoped(
                   );
                   break;
                 }
-                // Covered only by the keyboard's drag margin, with no cover named: one keyboard clearance,
-                // then the press; never the clearance scroll, which cannot move such a target.
+                // Clear the keyboard once: a drag cannot move a target covered only by its drag margin.
                 const unusedClearance = !itemKeyboardAttempted && !keyboardAttempted;
                 if (
                   item.kind === 'press' &&

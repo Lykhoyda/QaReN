@@ -1303,8 +1303,27 @@ its list is cleared with one scroll, the same as under the keyboard. Keyboard-ow
 the existing explicit tap path and remain subject to trusted clipping and native
 identity guards. An explicit key press performs its normal action, not guaranteed
 keyboard dismissal; QA must freshly prove the keyboard hidden and the intended
-screen preserved before treating the press as clearance. Ordinary covered content
-uses one directional scroll toward the centre
+screen preserved before treating the press as clearance.
+
+For an iOS Tap with the keyboard guard enabled, a target inside its trusted clip
+whose centre lies in the 48 pt margin above a visibly open keyboard uses keyboard
+clearance instead of scrolling when that margin still sets the band's bottom
+edge and no cover is named. QaReN first attempts one bounded native-presence
+recapture to check for a cover, then rechecks eligibility on fresh evidence;
+unavailable presence alone does not prevent this clearance. It uses the existing
+per-item keyboard-dismissal allowance, waits for the same target to settle and
+rebinds it before resuming the Tap. Blurring the field can trigger app validation
+or navigation before the press. The keyboard must be proven hidden after a
+successful dismissal; otherwise the step fails naming the keyboard, without a
+scroll or press. An already-spent allowance also refuses without another dismissal.
+Once this margin clearance starts, scroll recovery is forbidden for the rest of
+the step, including across recovery retries: a target that moves out of reach
+refuses instead. Fill, Android, hidden keyboards and runs without the keyboard
+guard retain their existing paths. The
+[keyboard-margin regressions](../qaren-core/test/unit/qa/keyboard-margin-clearance.test.ts)
+cover these boundaries.
+
+Other covered content uses one directional scroll toward the centre
 of the target's visible clip band: its trusted clipping viewport cut off 48 pt
 above the top of an observed keyboard unless the keyboard is proven hidden, and between
 sticky overlays. A touchable, non-text element at least half the clip's width,
@@ -2078,7 +2097,8 @@ One clearance swipe lifts a covered row by at most its list's visible band above
 the keyboard.
 A uniquely name-matched off-screen row further away is scrolled toward again,
 at most six times, stopping on an unchanged screen or the existing deadline;
-covered rows and other scroll origins still get one clearance swipe. See the
+covered rows and other scroll origins still get one clearance swipe, subject to
+the [covered-target recovery exceptions](#covered-target-recovery). See the
 [scroll-until direction regressions](../qaren-core/test/unit/qa/scroll-until-direction.test.ts).
 
 Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`
