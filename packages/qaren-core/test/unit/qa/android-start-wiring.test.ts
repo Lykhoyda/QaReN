@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,7 +13,7 @@ import { parsePlan, preparePlan } from '../../../dist/qa/plan.js';
 import type { WireRequest } from '../../../dist/qa/wire.js';
 
 const root = fileURLToPath(new URL('../../../../../', import.meta.url));
-type Kind = 'G0' | 'W1a' | 'W1b' | 'W1c' | 'W1d' | 'W1e';
+type Kind = 'W2' | 'W1a' | 'W1b' | 'W1c' | 'W1d' | 'W1e';
 async function run(t: TestContext, kind: Kind) {
   const scratch = await mkdtemp(join(tmpdir(), 'qaren-android-start-'));
   const lists: number[] = [];
@@ -27,7 +27,7 @@ async function run(t: TestContext, kind: Kind) {
     response.setHeader('Content-Type', 'application/json');
     response.end(
       JSON.stringify(
-        kind === 'W1b'
+        kind === 'W1b' || kind === 'W2'
           ? [
               {
                 id: 'synthetic-target',
@@ -99,6 +99,31 @@ async function run(t: TestContext, kind: Kind) {
   };
   const walk = new URL('../../../dist/qa/walk.js', import.meta.url);
   const privacy = new URL('../../../dist/qa/privacy.js', import.meta.url);
+  const fixtureBin = join(scratch, 'fixture-bin');
+  if (kind === 'W2') {
+    await mkdir(fixtureBin);
+    const fixtures = new URL('../../fixtures/android-first-views/', import.meta.url);
+    const loading = await readFile(new URL('loading.txt', fixtures), 'utf8');
+    const loaded = await readFile(new URL('first-views.txt', fixtures), 'utf8');
+    const shim = join(fixtureBin, 'adb');
+    await writeFile(
+      shim,
+      `#!${process.execPath}
+      const fs = require('node:fs');
+      const args = process.argv.slice(2);
+      if (JSON.stringify(args) !== JSON.stringify(['-s', 'synthetic-android', 'shell', 'dumpsys', 'activity', 'top'])) {
+        process.stderr.write('fixture adb: refused command\\n');
+        process.exit(1);
+      }
+      const counter = ${JSON.stringify(join(scratch, 'reads'))};
+      const count = fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) : 0;
+      fs.writeFileSync(counter, String(count + 1));
+      fs.appendFileSync(${JSON.stringify(join(scratch, 'reader-events'))}, JSON.stringify({at: Date.now(), answer: count === 0 ? 'loading' : 'loaded'}) + '\\n');
+      process.stdout.write(count === 0 ? ${JSON.stringify(loading)} : ${JSON.stringify(loaded)});
+    `,
+    );
+    await chmod(shim, 0o700);
+  }
   const script = `
     import {mainRequest, openSession} from ${JSON.stringify(walk.href)};
     import {ObservedPrivacy} from ${JSON.stringify(privacy.href)};
@@ -118,7 +143,21 @@ async function run(t: TestContext, kind: Kind) {
     [
       join(root, 'scripts/qaren-sim-sandbox.sh'),
       process.execPath,
-      ...(kind === 'G0' ? [fileURLToPath(walk)] : ['--input-type=module', '-e', script]),
+      ...(kind === 'W2'
+        ? [
+            '--input-type=module',
+            '-e',
+            `
+            import {spawn} from 'node:child_process';
+            const child = spawn(process.execPath, [${JSON.stringify(fileURLToPath(walk))}], {
+              env: {...process.env, PATH: ${JSON.stringify(fixtureBin)} + ':' + process.env.PATH},
+              stdio: 'inherit',
+            });
+            child.on('error', () => process.exit(1));
+            child.on('exit', (code) => process.exit(code ?? 1));
+          `,
+          ]
+        : ['--input-type=module', '-e', script]),
     ],
     {
       cwd: root,
@@ -143,7 +182,7 @@ async function run(t: TestContext, kind: Kind) {
     await closed;
   });
   child.stdin.end(
-    kind === 'G0'
+    kind === 'W2'
       ? `${JSON.stringify({ v: 1, runId: request.runId, seq: 1, type: 'request', payload: request })}\n`
       : '',
   );
@@ -153,6 +192,10 @@ async function run(t: TestContext, kind: Kind) {
   assert.equal(exit, 4, stderr + stdout);
   for (const line of stderr.split('\n'))
     if (line.startsWith('START_READ=')) reads.push(JSON.parse(line.slice('START_READ='.length)));
+  if (kind === 'W2') {
+    const events = await readFile(join(scratch, 'reader-events'), 'utf8').catch(() => '');
+    for (const line of events.trim().split('\n').filter(Boolean)) reads.push(JSON.parse(line));
+  }
   const envelopes = stdout
     .trim()
     .split('\n')
@@ -177,14 +220,26 @@ function spaced(reads: { at: number }[]) {
 }
 
 test(
-  'G0: production Android with no reader immediately lists targets',
+  'W2: production reader holds discovery until the retained first views',
   { timeout: 20_000 },
   async (t) => {
-    const r = await run(t, 'G0');
-    assert.ok(r.lists.length > 0, 'no-reader discovery must run');
-    assert.ok(r.lists[0] - r.started < 2000);
-    assert.doesNotMatch(r.stderr, /android start:/);
-    assert.doesNotMatch(r.result.message, /first.screen/);
+    const r = await run(t, 'W2');
+    assert.equal(r.reads.length, 2, 'production must invoke its reader');
+    assert.deepEqual(
+      r.reads.map(({ answer }) => answer),
+      ['loading', 'loaded'],
+    );
+    assert.ok(r.lists.length > 0);
+    assert.ok(r.lists[0] >= r.reads[1].at, 'production discovery follows first views');
+    assert.ok(r.upgrades.length > 0, 'positive websocket witness after first views');
+    assert.ok(r.upgrades.every((at) => at >= r.reads[1].at));
+    const holding = r.stderr.indexOf(
+      "android start: holding the debugger until the app's first views",
+    );
+    const seen = r.stderr.indexOf('android start: first views seen');
+    const connect = r.stderr.indexOf('android start: debugger connect');
+    assert.ok(holding >= 0 && seen > holding && connect > seen);
+    assert.doesNotMatch(r.result.message, /; the first-views|; the app's first views/);
   },
 );
 test(
@@ -195,13 +250,13 @@ test(
     assert.equal(r.result.code, 'CDP_NOT_CONNECTED');
     assert.ok(
       r.result.message.endsWith(
-        "; the app's first screen had not appeared, so no debugger was attached",
+        "; the app's first views had not appeared, so no debugger was attached",
       ),
     );
     assert.deepEqual(r.lists, []);
     assert.deepEqual(r.upgrades, []);
     spaced(r.reads);
-    assert.equal(r.stderr.match(/holding the debugger until the first screen/g)?.length, 1);
+    assert.equal(r.stderr.match(/holding the debugger until the app's first views/g)?.length, 1);
     assert.doesNotMatch(r.stderr, /android start: debugger connect/);
   },
 );
@@ -217,11 +272,11 @@ test(
     assert.ok(r.upgrades.length > 0, 'positive websocket witness after loading');
     assert.ok(r.upgrades.every((at) => at >= r.reads[1].at));
     const holding = r.stderr.indexOf('holding the debugger');
-    const seen = r.stderr.indexOf('first screen seen');
+    const seen = r.stderr.indexOf('first views seen');
     const connect = r.stderr.indexOf('android start: debugger connect');
     assert.ok(holding >= 0 && seen > holding && connect > seen);
     assert.match(r.stderr, /android start: target listed at \d+ ms/);
-    assert.doesNotMatch(r.result.message, /; the first-screen|; the app's first screen/);
+    assert.doesNotMatch(r.result.message, /; the first-views|; the app's first views/);
   },
 );
 test(
@@ -232,10 +287,10 @@ test(
     assert.ok(r.lists.length > 0);
     assert.ok(r.lists[0] - r.started < 2000);
     assert.equal(r.reads.length, 1);
-    assert.match(r.stderr, /first-screen check unavailable/);
+    assert.match(r.stderr, /first-views check unavailable/);
     assert.ok(
       r.result.message.endsWith(
-        '; the first-screen check could not be read; attaching a debugger was allowed as before',
+        '; the first-views check could not be read; attaching a debugger was allowed as before',
       ),
     );
   },
@@ -249,14 +304,14 @@ test(
     assert.ok(r.lists.length > 0);
     assert.ok(r.lists[0] - r.started < 2000);
     assert.doesNotMatch(r.stderr, /android start:/);
-    assert.doesNotMatch(r.result.message, /first.screen/);
+    assert.doesNotMatch(r.result.message, /first[ -](?:screen|views)/);
   },
 );
 test('W1e: real retries retain one gate and its polling clock', { timeout: 50_000 }, async (t) => {
   const r = await run(t, 'W1e');
   assert.deepEqual(r.lists, []);
   assert.deepEqual(r.upgrades, []);
-  assert.equal(r.stderr.match(/holding the debugger until the first screen/g)?.length, 1);
+  assert.equal(r.stderr.match(/holding the debugger until the app's first views/g)?.length, 1);
   spaced(r.reads);
   assert.ok(r.reads.at(-1)!.at - r.reads[0].at > 30_000, 'reads reach the second readiness window');
   assert.match(r.stderr, /target_readiness_timeout/);

@@ -166,7 +166,7 @@ test('H3: a held start ends at the walk budget with its state note and closes on
   assert.equal(result.error.meta.inner, 'target_readiness_timeout');
   assert.ok(
     result.error.message.endsWith(
-      "; the app's first screen had not appeared, so no debugger was attached",
+      "; the app's first views had not appeared, so no debugger was attached",
     ),
   );
   assert.deepEqual(h.calls, ['close']);
@@ -197,7 +197,7 @@ for (const kind of ['unknown', 'reject', 'loading-unknown', 'invalid'] as const)
     assert.equal(c.now(), kind === 'loading-unknown' ? 122_000 : 120_000);
     assert.ok(
       result.error.message.endsWith(
-        '; the first-screen check could not be read; attaching a debugger was allowed as before',
+        '; the first-views check could not be read; attaching a debugger was allowed as before',
       ),
     );
     assert.equal(h.gate.state(), 'let_through');
@@ -231,7 +231,7 @@ for (const kind of ['pending-stop', 'sleep-stop', 'pending-deadline'] as const) 
     if (kind === 'pending-deadline')
       assert.ok(
         result.error.message.endsWith(
-          '; the first-screen check had not answered, so no debugger was attached',
+          '; the first-views check had not answered, so no debugger was attached',
         ),
       );
   });
@@ -273,7 +273,7 @@ test('H6: a slow pending read can overrun only its current window', async (t) =>
   const gate = androidStartGate({
     read: async () => {
       reads.push(c.now());
-      if (reads.length === 2) await sleep(2800);
+      if (reads.length === 2) await sleep(5000);
       return 'loading';
     },
     log: () => {},
@@ -284,10 +284,10 @@ test('H6: a slow pending read can overrun only its current window', async (t) =>
   await c.advance(2000);
   await c.advance(500);
   assert.equal(result.done, false, 'window end does not abandon an in-flight read');
-  await c.advance(2300);
+  await c.advance(4500);
   assert.ok(result.error instanceof TargetReadinessTimeoutError);
   assert.deepEqual(reads, [0, 2000]);
-  assert.equal(c.now(), 4800);
+  assert.equal(c.now(), 7000);
 });
 
 for (const answer of ['loaded', 'unknown'] as const) {
@@ -338,6 +338,23 @@ for (const kind of ['absent', 'text', 'throws'] as const) {
     assert.equal(reads, kind === 'absent' ? 0 : 1);
   });
 }
+
+test('N1: state notes name the first views and preserve the no-answer state', async (t) => {
+  const c = clock(t);
+  const gate = androidStartGate({ read: async () => 'loading', log: () => {}, at: c.now });
+  assert.equal(
+    gate.note(),
+    '; the first-views check had not answered, so no debugger was attached',
+  );
+  const result = c.watch(withCancellation(c.stop.signal, () => gate.wait(1)));
+  await nextTurn();
+  await c.advance(1);
+  assert.ok(result.error instanceof TargetReadinessTimeoutError);
+  assert.equal(
+    gate.note(),
+    "; the app's first views had not appeared, so no debugger was attached",
+  );
+});
 
 test('N1: refusals built by another owner receive no attach note', async (t) => {
   const c = clock(t);

@@ -24,11 +24,11 @@ export function androidStartGate({
     note(): string {
       switch (current) {
         case 'undecided':
-          return '; the first-screen check had not answered, so no debugger was attached';
+          return '; the first-views check had not answered, so no debugger was attached';
         case 'holding':
-          return "; the app's first screen had not appeared, so no debugger was attached";
+          return "; the app's first views had not appeared, so no debugger was attached";
         case 'let_through':
-          return '; the first-screen check could not be read; attaching a debugger was allowed as before';
+          return '; the first-views check could not be read; attaching a debugger was allowed as before';
         case 'loaded':
           return '';
       }
@@ -52,17 +52,17 @@ export function androidStartGate({
         }
         if (answer === 'loaded') {
           current = 'loaded';
-          log(`android start: first screen seen at ${at()} ms; attaching`);
+          log(`android start: first views seen at ${at()} ms; attaching`);
           return;
         }
         if (answer !== 'loading') {
           current = 'let_through';
-          log('android start: first-screen check unavailable; attaching as before');
+          log('android start: first-views check unavailable; attaching as before');
           return;
         }
         if (current !== 'holding') {
           current = 'holding';
-          log('android start: holding the debugger until the first screen');
+          log("android start: holding the debugger until the app's first views");
         }
         if (performance.now() >= end) throw held();
       }

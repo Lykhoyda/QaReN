@@ -33,7 +33,7 @@ import {
   runAndroid,
   consumePendingAndroidUpgradeNote,
 } from '../runners/qaren-android-runner-client.js';
-import { launchApp } from './app-lifecycle.js';
+import { launchApp, resolveAndroidLifecycleTarget } from './app-lifecycle.js';
 import { markCdpStale } from '../cdp/recovery.js';
 import {
   detectAndroidExternalRunner,
@@ -926,5 +926,41 @@ export type FirstScreenReader = (
   serial: string,
 ) => Promise<'loaded' | 'loading' | 'unknown'>;
 
-// A device-qualified reader is supplied only after its startup evidence is available.
-export const androidFirstScreen: FirstScreenReader | undefined = undefined;
+// Translate only the selected app's activity evidence; another task cannot release the hold.
+export function androidFirstViewsFromActivityTop(
+  output: string,
+  appId: string,
+): Awaited<ReturnType<FirstScreenReader>> {
+  let answer: 'loading' | 'unknown' = 'unknown';
+  for (const section of output.split(/^\s*ACTIVITY\s+/m).slice(1)) {
+    const end = section.indexOf('\n');
+    const header = end < 0 ? section : section.slice(0, end);
+    if (header.split('/')[0] !== appId) continue;
+    const pid = header.match(/\bpid=([1-9]\d*)\s*$/)?.[1];
+    if (!pid || !/^\s*View Hierarchy:\s*$/m.test(section)) continue;
+    if (/^\s*com\.facebook\.react\.views\.[\w.$]+\{/m.test(section)) return 'loaded';
+    answer = 'loading';
+  }
+  return answer;
+}
+
+export const androidFirstScreen: FirstScreenReader = async (appId, serial) => {
+  if (
+    typeof serial !== 'string' ||
+    !serial ||
+    typeof appId !== 'string' ||
+    !/^[A-Za-z0-9._]+$/.test(appId)
+  )
+    return 'unknown';
+  try {
+    const target = resolveAndroidLifecycleTarget(serial);
+    const { stdout } = await execFile('adb', [...target, 'shell', 'dumpsys', 'activity', 'top'], {
+      timeout: 5000,
+      encoding: 'utf8',
+    });
+    return androidFirstViewsFromActivityTop(stdout, appId);
+  } catch (error) {
+    if (isAbort(error)) throw error;
+    return 'unknown';
+  }
+};
