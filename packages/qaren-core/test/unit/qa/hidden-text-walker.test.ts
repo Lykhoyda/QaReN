@@ -693,8 +693,7 @@ for (const [title, fixture] of [
     let answered = false;
     f.deps.captureScreen = async (request) => {
       const screen = await capture(request);
-      if (answered || !f.handoffs.includes('executed') || ++readsAfterTap === 1)
-        return screen;
+      if (answered || !f.handoffs.includes('executed') || ++readsAfterTap === 1) return screen;
       return { ...screen, front: 'dialog' };
     };
     f.deps.dialog = async (action) => {
