@@ -38,6 +38,8 @@ interface Shape {
   rect?: Rect;
   // A full-width touchable toolbar outside the target's scroll area, drawn after it: a band cutter.
   overlay?: Rect;
+  // The target inside a scroll area (implied by an overlay).
+  list?: boolean;
   type?: string;
   target?: boolean;
 }
@@ -46,6 +48,7 @@ function screen({
   keyboard = true,
   rect = EDGE,
   overlay,
+  list = !!overlay,
   type = 'Button',
   target = true,
 }: Shape = {}): Screen {
@@ -58,7 +61,7 @@ function screen({
       rect: { x: 0, y: 0, width: 400, height: 800 },
     },
     // A sibling under the same full-screen window never cuts the band, so a cutter needs its own clip.
-    ...(overlay
+    ...(list
       ? [
           {
             ref: '@list',
@@ -71,7 +74,7 @@ function screen({
     {
       ref: '@submit',
       type,
-      parentIndex: overlay ? 2 : 1,
+      parentIndex: list ? 2 : 1,
       identifier: 'submit',
       label: 'Continue',
       hittable: true,
@@ -491,15 +494,113 @@ test('T3: centre 60 pt above the keyboard is pressed plainly, with no clearance'
   assert.equal(count(f, 'press'), 1);
 });
 
-test('T3: a centre inside the keyboard frame keeps the keyboard branch', async () => {
-  const f = device(screen({ rect: UNDER }));
+// Section 6: a button fully under the keyboard on a form whose scroll does not move it.
+const COVERED = /centre lies inside the keyboard's frame after one scroll/;
+
+for (const list of [false, true]) {
+  test(`${list ? 'V1' : 'V2'}: centre inside the keyboard${list ? ' in a scroll area that does not move it' : ', no scroll area'}: one scroll, one clearance, one press`, async () => {
+    const f = device(
+      screen({ rect: UNDER, list }),
+      screen({ keyboard: false, rect: FOOTER, list }),
+    );
+    const outcome = await walkBlock(tap(), f.deps);
+    assert.equal(
+      outcome.block.outcome,
+      'pass',
+      JSON.stringify({ calls: f.calls, seen: seen(outcome) }),
+    );
+    assert.deepEqual(dispatched(f), ['scroll', 'dismiss-keyboard', 'press']);
+    assert.equal(outcome.rows.at(-1)?.keyboardCleared, 'js');
+  });
+}
+
+test('V3: a scroll that lifts the target clear keeps today: one scroll, no clearance, one press', async () => {
+  const f = device(screen({ rect: UNDER, list: true }));
+  const scroll = f.deps.scroll;
+  f.deps.scroll = async (direction, context) => {
+    const act = await scroll(direction, context);
+    f.show(screen({ rect: ABOVE, list: true }));
+    return act;
+  };
   const outcome = await walkBlock(tap(), f.deps);
+  assert.equal(outcome.block.outcome, 'pass', seen(outcome));
+  assert.equal(count(f, 'scroll'), 1);
   assert.equal(count(f, 'dismiss'), 0);
+  assert.equal(count(f, 'press'), 1);
+});
+
+for (const [name, after] of [
+  ['stays visible', screen({ rect: UNDER })],
+  ['is unknown', screen({ rect: UNDER, keyboard: 'unknown' })],
+] as const) {
+  test(`V4: a keyboard that ${name} after the covered clearance ends the step naming it`, async () => {
+    const f = device(screen({ rect: UNDER }), after);
+    const outcome = await walkBlock(tap(), f.deps);
+    assert.equal(outcome.block.outcome, 'fail');
+    assert.equal(count(f, 'scroll'), 1);
+    assert.equal(count(f, 'dismiss'), 1);
+    assert.equal(count(f, 'press'), 0);
+    assert.match(seen(outcome), COVERED);
+    assert.match(seen(outcome), /keyboard did not hide after one clearance.*no second scroll/);
+  });
+}
+
+test('V4: with the clearance already spent on this step, the covered refusal names it', async () => {
+  const f = device();
+  spendAllowance(f, screen({ rect: UNDER }));
+  const outcome = await walkBlock(tap(), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(count(f, 'dismiss'), 1, JSON.stringify({ calls: f.calls, seen: seen(outcome) }));
   assert.equal(count(f, 'scroll'), 1);
   assert.equal(count(f, 'press'), 0);
-  assert.match(seen(outcome), OFF_SCREEN);
-  assert.doesNotMatch(seen(outcome), MARGIN);
+  assert.match(seen(outcome), COVERED);
+  assert.match(seen(outcome), /already used on this step/);
 });
+
+test('V5: an overlay inferred after the covered clearance takes the live-hit-strict press', async () => {
+  const bar = { x: 0, y: 700, width: 400, height: 100 };
+  const f = device(
+    screen({ rect: UNDER, list: true }),
+    screen({ keyboard: false, rect: FOOTER, overlay: bar }),
+  );
+  const options: unknown[] = [];
+  const press = f.deps.press;
+  f.deps.press = async (ref, context, opts) => {
+    options.push(opts);
+    return press(ref, context, opts);
+  };
+  const outcome = await walkBlock(tap(), f.deps);
+  assert.equal(outcome.block.outcome, 'pass', seen(outcome));
+  assert.equal(count(f, 'scroll'), 1);
+  assert.equal(count(f, 'dismiss'), 1);
+  assert.deepEqual(options, [{ requireLiveHit: true }]);
+});
+
+test('V5: a target moved below its viewport by the covered clearance refuses with no second scroll', async () => {
+  const f = device(
+    screen({ rect: UNDER }),
+    screen({ keyboard: false, rect: { ...FOOTER, y: 820 } }),
+  );
+  const outcome = await walkBlock(tap(), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(count(f, 'scroll'), 1);
+  assert.equal(count(f, 'dismiss'), 1);
+  assert.equal(count(f, 'press'), 0);
+});
+
+for (const shape of ['fill', 'android', 'no keyboard guard'] as const) {
+  test(`V5: ${shape} with the centre inside the keyboard keeps today: one scroll, then the refusal`, async () => {
+    const f = device(screen({ rect: UNDER, type: shape === 'fill' ? 'TextField' : 'Button' }));
+    if (shape === 'android') f.deps.platform = 'android';
+    if (shape === 'no keyboard guard') delete f.deps.dismissKeyboard;
+    const plan = shape === 'fill' ? parsePlan('1. Fill "submit" with "1"\n').blocks![0] : tap();
+    const outcome = await walkBlock(plan, f.deps);
+    assert.equal(outcome.block.outcome, 'fail');
+    assert.equal(count(f, 'dismiss'), 0);
+    assert.equal(count(f, 'scroll'), 1);
+    assert.doesNotMatch(seen(outcome), COVERED);
+  });
+}
 
 for (const [name, after] of [
   ['stays visible', screen()],
@@ -533,9 +634,8 @@ test('T4: a clearance that sends nothing ends the step naming the keyboard', asy
   assert.match(seen(outcome), /keyboard clearance sent nothing/);
 });
 
-test('T4: with the clearance already spent on this step, the refusal names the margin; no second clearance', async () => {
-  const f = device();
-  // An absent target spends the allowance; a dialog then interrupts and the retry finds the margin case.
+// An absent target spends the allowance; a dialog then interrupts and the retry shows `then`.
+function spendAllowance(f: ReturnType<typeof device>, then: Screen) {
   const absent = { ...screen({ keyboard: false, target: false }), keyboardVisible: true };
   f.show(absent);
   f.deps.dismissKeyboard = async (context) => {
@@ -553,9 +653,14 @@ test('T4: with the clearance already spent on this step, the refusal names the m
   const dialog = f.deps.dialog;
   f.deps.dialog = async (action, context) => {
     const act = await dialog(action, context);
-    f.show(screen());
+    f.show(then);
     return act;
   };
+}
+
+test('T4: with the clearance already spent on this step, the refusal names the margin; no second clearance', async () => {
+  const f = device();
+  spendAllowance(f, screen());
   const outcome = await walkBlock(tap(), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
   assert.ok(

@@ -433,6 +433,10 @@ const inferredOverlay = (facts: Readonly<CentreCoverageDiagnostic> | null) =>
     ? facts
     : undefined;
 
+// The centre test found the centre inside a visible keyboard's frame.
+const insideKeyboard = (facts: Readonly<CentreCoverageDiagnostic> | null) =>
+  facts?.branch === 'keyboard';
+
 // Strict focus and an unnamed input's placeholder identity travel together; nothing when neither applies.
 const fillOptions = (strict: boolean, placeholder: string | undefined) =>
   strict || placeholder
@@ -3696,7 +3700,8 @@ async function walkBlockScoped(
     let pixelBaselineTaken = false;
     // This allowance survives recovery retries of the item.
     let itemKeyboardAttempted = false;
-    let keyboardMarginClearance = false;
+    // Set by either keyboard clearance of a covered press; no scroll may follow it on this step.
+    let keyboardClearedOnStep = false;
     let pixelBaseline:
       | { target: NonNullable<ReturnType<typeof pixelTarget>>; crop: PixelCrop }
       | undefined;
@@ -4360,7 +4365,7 @@ async function walkBlockScoped(
             failed(
               item,
               attempt,
-              'keyboard clearance: the target moved out of reach after the keyboard was hidden; nothing was scrolled',
+              'keyboard clearance: the target moved out of reach after the keyboard was hidden; nothing was scrolled after it',
               before.screen,
               await shoot(item),
               ref,
@@ -4588,7 +4593,7 @@ async function walkBlockScoped(
                   resolution = result;
                 } else resolution = decided;
                 if ('scroll' in resolution) {
-                  if (keyboardMarginClearance) {
+                  if (keyboardClearedOnStep) {
                     outcome = await marginScrollRefusal();
                     break;
                   }
@@ -4991,8 +4996,61 @@ async function walkBlockScoped(
               )
                 liveHit = overlay;
               else if (centreIsCovered && element !== undefined) {
-                if (keyboardMarginClearance) {
+                // After a scroll, a remaining cover keeps the existing refusal below, with its cover.
+                if (keyboardClearedOnStep && !scrolled && !withheldDrag) {
                   outcome = await marginScrollRefusal();
+                  break;
+                }
+                // Still inside the visible keyboard's frame after the one scroll: one keyboard
+                // clearance, then the press; never a second scroll.
+                const keyboardUp = before.screen.keyboardVisible === true;
+                if (
+                  (scrolled || withheldDrag) &&
+                  item.kind === 'press' &&
+                  deps.platform === 'ios' &&
+                  deps.dismissKeyboard &&
+                  keyboardUp &&
+                  insideKeyboard(centreDiagnostic)
+                ) {
+                  let why = 'the keyboard clearance was already used on this step';
+                  if (!itemKeyboardAttempted && !keyboardAttempted) {
+                    usable(before, item);
+                    // A vanished keyboard cannot count as the later tap's visible effect.
+                    pixelBaselineTaken = false;
+                    pixelBaseline = undefined;
+                    keyboardClearedOnStep = true;
+                    if (!(await dismissResolvedTarget(element))) break;
+                    if (keyboardCleared !== undefined && before.screen.keyboardVisible === false)
+                      continue;
+                    why =
+                      before.screen.keyboardVisible === false
+                        ? 'the keyboard clearance sent nothing'
+                        : `the keyboard did not hide after one clearance (keyboard after it: ${before.screen.keyboardVisible === true ? 'visible' : 'unknown'})`;
+                  }
+                  outcome = failed(
+                    item,
+                    attempt,
+                    `"${item.target.phrase}" was not pressed: its centre lies inside the keyboard's frame after one scroll, and ${why}; no second scroll was sent`,
+                    before.screen,
+                    await shoot(item),
+                    ref,
+                  );
+                  diagnostic(
+                    item,
+                    before,
+                    'decision',
+                    'CENTRE_COVERED',
+                    undefined,
+                    undefined,
+                    undefined,
+                    {
+                      predicate: centreDiagnostic,
+                      scrollOrigin,
+                      requestedDirection: scrollDirection,
+                      targetCentreChanged: centreChanged(element),
+                      coverGap: coverGaps.get(item.line) ?? null,
+                    },
+                  );
                   break;
                 }
                 if (scrolled || withheldDrag) {
@@ -5052,7 +5110,7 @@ async function walkBlockScoped(
                     // A vanished keyboard cannot count as the later tap's visible effect.
                     pixelBaselineTaken = false;
                     pixelBaseline = undefined;
-                    keyboardMarginClearance = true;
+                    keyboardClearedOnStep = true;
                     if (!(await dismissResolvedTarget(element))) break;
                     if (keyboardCleared !== undefined && before.screen.keyboardVisible === false)
                       continue;
@@ -5344,7 +5402,7 @@ async function walkBlockScoped(
                 act.mutation === 'none' &&
                 act.error?.startsWith('FOCUS_TARGET_OCCLUDED:')
               ) {
-                if (keyboardMarginClearance) {
+                if (keyboardClearedOnStep) {
                   outcome = await marginScrollRefusal();
                   break;
                 }
