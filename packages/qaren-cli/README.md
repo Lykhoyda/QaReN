@@ -1308,8 +1308,10 @@ screen preserved before treating the press as clearance.
 For an iOS Tap with the keyboard guard enabled, a target inside its trusted clip
 whose centre lies in the 48 pt margin above a visibly open keyboard uses keyboard
 clearance instead of scrolling when that margin still sets the band's bottom
-edge and no cover is named. QaReN first attempts one bounded native-presence
-recapture to check for a cover, then rechecks eligibility on fresh evidence;
+edge and no cover is named. An overlay cutting only the band's top edge does
+not disable this path; an overlay setting its bottom edge does. QaReN first
+attempts one bounded native-presence recapture to check for a cover, then
+rechecks eligibility on fresh evidence;
 unavailable presence alone does not prevent this clearance. It uses the existing
 per-item keyboard-dismissal allowance, waits for the same target to settle and
 rebinds it before resuming the Tap. Blurring the field can trigger app validation
@@ -1323,7 +1325,11 @@ QaReN uses the same allowance to dismiss the keyboard and settle and rebind the
 target before resuming the Tap. A target without a recognised scroll area still
 gets the one scroll first. If scrolling lifts the target clear, the keyboard
 stays up and the Tap proceeds normally. If dismissal cannot prove the keyboard
-hidden, the step fails naming the keyboard.
+hidden, the step fails naming the keyboard. This under-keyboard path does not
+check overlays before clearance; covers are checked after the keyboard hides.
+Rebinding after the scroll or refused drag requires a test ID: a label-only
+target still refuses without keyboard clearance. The margin path, which does
+not scroll, supports label-only targets.
 
 Once either clearance starts, scroll recovery is forbidden for the rest of the
 step, including across recovery retries: a target that moves out of reach
@@ -1373,8 +1379,9 @@ wrapper tap path, pre-dispatch clearance, plain Scroll, Scroll until and Android
 retain their existing admission rules; this check adds no wait for a cover to pass.
 
 On iOS, capture order is not paint order. When a press target still resolves
-after that one scroll, after a withheld drag, or after the scroll was refused with nothing moved (for
-example `SCROLL_BAND_TOO_SMALL` on a band only a few points tall), and its centre
+after keyboard clearance, after that one scroll, after a withheld drag, or after
+the scroll was refused with nothing moved (for example `SCROLL_BAND_TOO_SMALL`
+on a band only a few points tall), and its centre
 is still past the inferred band but inside its clip with the keyboard proven
 hidden, the walker sends the
 tap with `requireLiveHit`: only when its fresh, bounded `isHittable` read of the
@@ -1384,8 +1391,9 @@ the captured centre. If native element activation is unavailable, it refuses
 `LIVE_HIT_UNPROVEN` with no tap and never falls back to coordinates.
 A false read, a moved target, or an unavailable read (expired snapshot, no identity, absent or ambiguous match, a
 read that threw or ran out of time) refuses `LIVE_HIT_UNPROVEN` with no tap, and the step fails
-with “stayed off screen after one scroll” (or the withheld-drag reason) and the inferred band cutter described
-under [clearance diagnostics](#clearance-diagnostics). The scroll
+with “stayed covered after keyboard clearance”, “stayed off screen after one
+scroll” or the withheld-drag reason, and the inferred band cutter described
+under [clearance diagnostics](#clearance-diagnostics). Any scroll
 that ran before the refusal remains a performed action. Press behavior is unchanged.
 
 On iOS, quoted waits and scroll-until completion can override that inferred cover

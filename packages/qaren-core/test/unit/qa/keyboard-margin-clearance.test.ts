@@ -323,6 +323,22 @@ test('T1: keyboard up, centre 20 pt above it, nothing on the band: one dismissal
   assert.equal(outcome.rows.at(-1)?.keyboardCleared, 'js');
 });
 
+test('a label-only button in the margin clears the keyboard and presses without scrolling', async () => {
+  const labelOnly = (value: Screen) => {
+    for (const element of value.elements) delete element.testID;
+    return value;
+  };
+  const f = device(
+    labelOnly(screen()),
+    labelOnly(screen({ keyboard: false, rect: FOOTER })),
+  );
+  const outcome = await walkBlock(parsePlan('1. Tap "Continue"\n').blocks![0], f.deps);
+  assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
+  assert.equal(count(f, 'dismiss'), 1);
+  assert.equal(count(f, 'press'), 1);
+  assert.equal(count(f, 'scroll'), 0);
+});
+
 test('T2: a real overlay cutting the band keeps the clearance scroll and its refusal', async () => {
   const f = device(screen({ overlay: { x: 0, y: 440, width: 400, height: 60 } }));
   const outcome = await walkBlock(tap(), f.deps);
