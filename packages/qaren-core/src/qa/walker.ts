@@ -5003,18 +5003,29 @@ async function walkBlockScoped(
                   );
                   break;
                 }
-                // AI-621: covered only by the keyboard's drag margin, with no cover named: one keyboard
-                // clearance, then the press; never the clearance scroll, which cannot move such a target.
+                // Covered only by the keyboard's drag margin, with no cover named: one keyboard clearance,
+                // then the press; never the clearance scroll, which cannot move such a target.
+                const unusedClearance = !itemKeyboardAttempted && !keyboardAttempted;
                 if (
                   item.kind === 'press' &&
                   deps.platform === 'ios' &&
                   deps.dismissKeyboard &&
                   cover !== undefined &&
                   'gap' in cover &&
-                  inKeyboardMarginOnly(element, before.screen)
+                  inKeyboardMarginOnly(element, before.screen) &&
+                  // The ordinary capture cannot name a cover; the one presence recapture can. A named
+                  // cover keeps today's path; a late or incomplete read still clears the keyboard.
+                  !(
+                    unusedClearance &&
+                    (await proveCover(
+                      item,
+                      Math.min(itemDeadline ?? Infinity, deps.now() + NATIVE_PRESENCE_BUDGET_MS),
+                    )) !== undefined &&
+                    targetRows.get(item.line)?.coveredBy
+                  )
                 ) {
                   let why = 'the keyboard clearance was already used on this step';
-                  if (!itemKeyboardAttempted && !keyboardAttempted) {
+                  if (unusedClearance) {
                     // A vanished keyboard cannot count as the later tap's visible effect.
                     pixelBaselineTaken = false;
                     pixelBaseline = undefined;

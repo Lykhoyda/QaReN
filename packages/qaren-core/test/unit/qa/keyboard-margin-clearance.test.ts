@@ -1,5 +1,5 @@
-// AI-621: an iOS press whose centre lies in the 48 pt margin above a visible keyboard, with nothing
-// covering it, hides the keyboard once and presses; it never sends the clearance scroll.
+// An iOS press whose centre lies in the 48 pt margin above a visible keyboard, with nothing covering
+// it, hides the keyboard once and presses; it never sends the clearance scroll.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { captureScreen } from '../../../dist/qa/capture.js';
@@ -120,9 +120,11 @@ function screen({
   };
 }
 
-// A capture whose React hit test runs: the overlay's host takes the touch at the target's centre.
-async function hitTested(overlay: Rect, keyboard = true): Promise<Screen> {
+// A capture whose React hit test runs when it carries native presence: the overlay's host takes the
+// touch at the target's centre. An ordinary capture (presence false) carries no presence.
+async function hitTested(overlay: Rect, keyboard = true, withPresence = true): Promise<Screen> {
   const base = nativeCapture();
+  base.keyboardVisible = keyboard;
   const presence = (nodeIndex: number) => ({ ...base.nodes[1].presence, nodeIndex });
   const views = [
     { id: 'submit', label: 'Continue', rect: keyboard ? EDGE : FOOTER },
@@ -154,7 +156,23 @@ async function hitTested(overlay: Rect, keyboard = true): Promise<Screen> {
       rect: view.rect,
       presence: presence(i + 2),
     })),
+    ...(keyboard
+      ? [
+          {
+            ref: '@e4',
+            index: 4,
+            depth: 1,
+            parentIndex: 0,
+            type: 'Keyboard',
+            enabled: true,
+            rect: KEYBOARD,
+            presence: presence(4),
+          },
+        ]
+      : []),
   ] as typeof base.nodes;
+  if (!withPresence)
+    for (const node of base.nodes) delete (node as { presence?: unknown }).presence;
   base.snapshotVerdict.nodeCount = base.nodes.length;
   const full = { x: 0, y: 0, width: 400, height: 800 };
   const evidence: ReactHostEvidence = {
@@ -194,17 +212,16 @@ async function hitTested(overlay: Rect, keyboard = true): Promise<Screen> {
       ],
     },
   };
-  const captured = await captureScreen({
+  if (!withPresence) delete evidence.typography;
+  return captureScreen({
     appId: 'com.test',
-    native: async () => base,
+    native: async () => (withPresence ? base : { ...base, presenceCapture: undefined }),
     react: async () => ({
       interactive: [],
       hostEvidence: evidence,
       verdict: { state: 'ok', path: 'interactive', complete: true },
     }),
   });
-  // The keyboard window is not part of the app's React tree; only its visibility and frame matter here.
-  return keyboard ? { ...captured, keyboardVisible: true, keyboardFrame: KEYBOARD } : captured;
 }
 
 function device(
@@ -317,19 +334,78 @@ test('T2: a real overlay cutting the band keeps the clearance scroll and its ref
   assert.match(seen(outcome), OFF_SCREEN);
 });
 
-test('T2b: an overlay starting inside the margin, named by the hit test, keeps the clearance scroll', async () => {
-  const bar = { x: 0, y: 470, width: 400, height: 30 };
-  const first = await hitTested(bar);
-  const target = first.elements.find((e) => e.testID === 'submit')!;
-  const cover = coverOwner(target, first);
-  assert.equal('owner' in cover && cover.owner.testID, 'bar', JSON.stringify(cover));
-  const f = device(first, await hitTested(bar, false));
+// A bar that starts inside the margin: it cuts no band edge, only the hit test can name it.
+const INNER_BAR: Rect = { x: 0, y: 470, width: 400, height: 30 };
+
+// Serves the capture mode the walker asks for; the keyboard is up until the first dismissal.
+function modeAware(f: ReturnType<typeof device>, late = false, bar = INNER_BAR): boolean[] {
+  const modes: boolean[] = [];
+  f.deps.captureScreen = async (options) => {
+    f.calls.push('capture');
+    const presence = options?.platformPresence === true;
+    modes.push(presence);
+    const s = await hitTested(bar, count(f, 'dismiss') === 0, presence);
+    if (presence && late) {
+      s.coverage = { ...s.coverage!, native: 'incomplete' };
+      s.captureCoverage = { ...(s.captureCoverage ?? s.coverage), native: 'incomplete' };
+    }
+    return s;
+  };
+  return modes;
+}
+
+test('T2b: an ordinary capture names no cover for a bar inside the margin; a presence capture names it', async () => {
+  for (const [presence, expected] of [
+    [false, 'no-native-presence'],
+    [true, 'owner:bar'],
+  ] as const) {
+    const s = await hitTested(INNER_BAR, true, presence);
+    const cover = coverOwner(s.elements.find((e) => e.testID === 'submit')!, s);
+    assert.equal('gap' in cover ? cover.gap : `owner:${cover.owner.testID}`, expected);
+  }
+});
+
+test('T2b: the one presence recapture names the bar: no clearance, the clearance scroll as today', async () => {
+  const f = device();
+  const modes = modeAware(f);
   const outcome = await walkBlock(tap(), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
+  // The margin check's recapture, then the one today's refusal takes to name its cover.
+  assert.deepEqual(modes, [false, true, false, false, true]);
   assert.equal(count(f, 'dismiss'), 0);
   assert.equal(count(f, 'scroll'), 1);
   assert.equal(count(f, 'press'), 0);
   assert.match(seen(outcome), OFF_SCREEN);
+});
+
+test('T1: on real capture modes, the recapture proves nothing covers the centre: clearance, one press', async () => {
+  const f = device();
+  const modes = modeAware(f, false, { x: 0, y: 100, width: 400, height: 40 });
+  const outcome = await walkBlock(tap(), f.deps);
+  assert.equal(
+    outcome.block.outcome,
+    'pass',
+    JSON.stringify({ calls: f.calls, seen: seen(outcome) }),
+  );
+  assert.equal(modes.filter(Boolean).length, 1, JSON.stringify(modes));
+  assert.equal(count(f, 'dismiss'), 1);
+  assert.equal(count(f, 'scroll'), 0);
+  assert.equal(count(f, 'press'), 1);
+});
+
+test('T2b: a late presence recapture still clears the keyboard, then presses once', async () => {
+  const f = device();
+  const modes = modeAware(f, true);
+  const outcome = await walkBlock(tap(), f.deps);
+  assert.equal(
+    outcome.block.outcome,
+    'pass',
+    JSON.stringify({ calls: f.calls, seen: seen(outcome) }),
+  );
+  assert.equal(modes.filter(Boolean).length, 1, JSON.stringify(modes));
+  assert.equal(count(f, 'dismiss'), 1);
+  assert.equal(count(f, 'scroll'), 0);
+  assert.equal(count(f, 'press'), 1);
 });
 
 test('T3: centre 60 pt above the keyboard is pressed plainly, with no clearance', async () => {
