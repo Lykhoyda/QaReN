@@ -3484,9 +3484,9 @@ When `--shutdown-device-on-exit`
 armed a pending borrowed-simulator stop, teardown and dead-owner cleanup require the
 run's current device lease, proven build/core/Metro/runner-driver/runner-host/recorder
 quiescence, matching canonical simulator UUID/runtime/device type, fresh strict
-foreign-driver admission, and verified `Shutdown` readback, then a fresh read that shows
-the simulator `Shutdown` and names its data path and the removal of its system log store,
-before persisting completion
+foreign-driver admission, and verified `Shutdown` readback. When the run recorded the
+log removal request, cleanup also requires a fresh read proving `Shutdown` and naming
+the simulator's data path, followed by removal of its system log store, before persisting completion
 and releasing the lease (and any `pr` worktree); an already `Shutdown` target completes
 idempotently, and a completed record never re-issues `simctl shutdown` or the removal.
 Unresolved stop
@@ -3574,11 +3574,13 @@ simulators, including `--new`, have no separate log leg: their `simulator`
 cleanup leg reports deletion of the whole simulator instead.
 Every `check`, `pr` and `prepare --device` run borrows its simulator and keeps
 its log (`simulator_log: kept`), even if QaReN originally created that simulator,
-unless a `check` or `pr` was started with `--shutdown-device-on-exit`: that run
+unless a `check` or `pr` recorded the removal request when
+`--shutdown-device-on-exit` armed its stop: that run
 removes the simulator's whole log store, with the entries of every other app on it,
-after the proven shutdown (`simulator_log: removed`, or `absent`). While that
-removal is owed, including a run held for inspection, the leg is `unresolved: log
-store retained with the simulator`. The proof of `Shutdown` is not exclusive
+after the proven shutdown (`simulator_log: removed`, or `absent`). When reporting
+the pending request from the record, including a run held for inspection, the leg
+is `unresolved: log store retained with the simulator`; a cleanup attempt can
+instead report the specific removal failure. The proof of `Shutdown` is not exclusive
 control: a person or another tool can boot the simulator between that read and the
 removal. A store that cannot be removed ends `qaren cleanup` as failed; a `check`
 keeps its verdict and names that cleanup as its next action.
