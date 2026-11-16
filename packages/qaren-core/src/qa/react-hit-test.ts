@@ -23,6 +23,7 @@ function inside(rect: Rect, x: number, y: number): boolean {
  * subtrees skipped, `box-none` passing to its children and `box-only` keeping them out. A sibling without
  * a known paint position (a missing or repeated order) leaves the hit unresolved only when its subtree
  * holds a frame over the point; elsewhere it cannot take the touch.
+ * Hidden subtrees are skipped unless hiddenIntercepts is set.
  */
 export function reactHitTest(
   evidence: ReactHostEvidence,
