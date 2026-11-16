@@ -1316,10 +1316,22 @@ rebinds it before resuming the Tap. Blurring the field can trigger app validatio
 or navigation before the press. The keyboard must be proven hidden after a
 successful dismissal; otherwise the step fails naming the keyboard, without a
 scroll or press. An already-spent allowance also refuses without another dismissal.
-Once this margin clearance starts, scroll recovery is forbidden for the rest of
-the step, including across recovery retries: a target that moves out of reach
-refuses instead. Fill, Android, hidden keyboards and runs without the keyboard
-guard retain their existing paths. The
+
+For a resolved iOS Tap whose centre remains inside the visible keyboard frame
+after its one clearance scroll, or a clearance drag proven not dispatched,
+QaReN uses the same allowance to dismiss the keyboard and settle and rebind the
+target before resuming the Tap. A target without a recognised scroll area still
+gets the one scroll first. If scrolling lifts the target clear, the keyboard
+stays up and the Tap proceeds normally. If dismissal cannot prove the keyboard
+hidden, the step fails naming the keyboard.
+
+Once either clearance starts, scroll recovery is forbidden for the rest of the
+step, including across recovery retries: a target that moves out of reach
+refuses instead. A named cover also refuses; an overlay inferred only from
+capture order uses the existing press that the runner must prove hittable.
+These paths add no press of their own; the ordinary retry after a press with no
+observable effect remains unchanged. Fill, Android, hidden keyboards and runs
+without the keyboard guard retain their existing paths. The
 [keyboard-margin regressions](../qaren-core/test/unit/qa/keyboard-margin-clearance.test.ts)
 cover these boundaries.
 
