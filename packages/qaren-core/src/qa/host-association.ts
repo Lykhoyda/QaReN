@@ -810,9 +810,6 @@ export function unnamedFrameMatches(
       !Object.values(window).every(Number.isFinite) ||
       window.width <= 0 ||
       window.height <= 0 ||
-      presence.nodes[i]?.status !== 'observed' ||
-      !node.ref?.trim() ||
-      refs.get(node.ref) !== 1 ||
       duplicates.has(i)
     )
       return [];
@@ -828,7 +825,16 @@ export function unnamedFrameMatches(
     );
     if (found.length !== 1) continue;
     const [{ i, transform }] = found;
-    if (nodes[i].identifier || nodes[i].label) continue;
+    // Every node at the frame was counted, unproven presence included; only then must the one be proven.
+    const node = nodes[i];
+    if (
+      node.identifier ||
+      node.label ||
+      presence.nodes[i]?.status !== 'observed' ||
+      !node.ref?.trim() ||
+      refs.get(node.ref) !== 1
+    )
+      continue;
     if (
       pressable.some((other) => other !== host && sameFrame(other.rect, nodes[i].rect, transform))
     )

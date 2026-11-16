@@ -189,6 +189,16 @@ test('N2: each missing proof gives nothing', () => {
       card({ extra: [[twin(CARD, { identifier: 'card' })]] }),
     ],
     [
+      'a labelled native button at the same frame whose presence is unknown',
+      card({
+        extra: [[twin(CARD, { label: 'Other' }), { status: 'unknown', labelSource: 'none' }]],
+      }),
+    ],
+    [
+      'a native node at the same frame sharing another node’s ref',
+      card({ extra: [[twin(CARD, { ref: '@app' })]] }),
+    ],
+    [
       'two press-capable hosts with the same frame',
       card({ rows: (r) => [...r, [pressable(), 0, 'RCTView', CARD]] }),
     ],
