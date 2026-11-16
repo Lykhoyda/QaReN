@@ -4368,16 +4368,18 @@ async function walkBlockScoped(
           let scrollNeedsReadback = false;
           let scrollError: string | undefined;
           let scrollPresenceRead = false;
+          let keyboardMarginPresenceRead = false;
+          let keyboardMarginTarget: Element | undefined;
           // The target that settled after this attempt's keyboard dismissal; the tap goes to it or nowhere.
           let keyboardBound: { target: Element; frame: string; scrolled: number } | undefined;
           const dismissResolvedTarget = async (target: Element): Promise<boolean> => {
-            itemKeyboardAttempted = true;
-            keyboardAttempted = true;
             const dismissal: { via: 'native-control' | 'js' | 'none' } = { via: 'none' };
             await mutate(item, before, 'dismiss-keyboard', async (context) => {
               dismissal.via = await deps.dismissKeyboard!(context);
               return { ok: true, proven: false };
             });
+            itemKeyboardAttempted = true;
+            keyboardAttempted = true;
             const settled = await settledTarget(item, target, { nativeOnly: true });
             if ('frames' in settled) {
               outcome = failed(
@@ -4441,6 +4443,19 @@ async function walkBlockScoped(
                         : decision.target!;
                 let decided = await probeDuplicates(item, before, prepared);
                 if (
+                  keyboardMarginTarget &&
+                  (before.screen.elements.filter((candidate) =>
+                    sameIdentity(candidate, keyboardMarginTarget!),
+                  ).length !== 1 ||
+                    ('element' in decided &&
+                      decided.element &&
+                      !sameIdentity(decided.element, keyboardMarginTarget)))
+                )
+                  throw new ResolutionError({
+                    refuse: 'TARGET_NOT_FOUND',
+                    reason: 'the target identity changed after the keyboard presence read',
+                  });
+                if (
                   item.kind === 'press' &&
                   item.target.quoted !== undefined &&
                   deps.platform === 'ios' &&
@@ -4470,13 +4485,13 @@ async function walkBlockScoped(
                     modal?.refused === 'modal-count' &&
                     modal.modalCount === 0
                   ) {
-                    itemKeyboardAttempted = true;
-                    keyboardAttempted = true;
                     const dismissal: { via: 'native-control' | 'js' | 'none' } = { via: 'none' };
                     await mutate(item, before, 'dismiss-keyboard', async (context) => {
                       dismissal.via = await deps.dismissKeyboard!(context);
                       return { ok: true, proven: false };
                     });
+                    itemKeyboardAttempted = true;
+                    keyboardAttempted = true;
                     before = await settledCapture(item);
                     if (dismissal.via !== 'none' && before.screen.keyboardVisible === false)
                       keyboardCleared = dismissal.via;
@@ -5012,18 +5027,21 @@ async function walkBlockScoped(
                   deps.dismissKeyboard &&
                   cover !== undefined &&
                   'gap' in cover &&
-                  inKeyboardMarginOnly(element, before.screen) &&
-                  // The ordinary capture cannot name a cover; the one presence recapture can. A named
-                  // cover keeps today's path; a late or incomplete read still clears the keyboard.
-                  !(
-                    unusedClearance &&
-                    (await proveCover(
+                  inKeyboardMarginOnly(element, before.screen)
+                ) {
+                  if (unusedClearance && !keyboardMarginPresenceRead) {
+                    keyboardMarginPresenceRead = true;
+                    const proven = await proveCover(
                       item,
                       Math.min(itemDeadline ?? Infinity, deps.now() + NATIVE_PRESENCE_BUDGET_MS),
-                    )) !== undefined &&
-                    targetRows.get(item.line)?.coveredBy
-                  )
-                ) {
+                    );
+                    if (proven || !observationUsable(before.timing, deps.now())) {
+                      keyboardMarginTarget = element;
+                      before = proven ?? (await captureBeforeDispatch());
+                      initial = undefined;
+                      continue;
+                    }
+                  }
                   let why = 'the keyboard clearance was already used on this step';
                   if (unusedClearance) {
                     // A vanished keyboard cannot count as the later tap's visible effect.
@@ -5291,7 +5309,6 @@ async function walkBlockScoped(
                   );
                   break;
                 }
-                itemKeyboardAttempted = true;
                 // A vanished keyboard cannot count as the later tap's visible effect.
                 pixelBaselineTaken = false;
                 pixelBaseline = undefined;

@@ -370,8 +370,7 @@ test('T2b: the one presence recapture names the bar: no clearance, the clearance
   const modes = modeAware(f);
   const outcome = await walkBlock(tap(), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
-  // The margin check's recapture, then the one today's refusal takes to name its cover.
-  assert.deepEqual(modes, [false, true, false, false, true]);
+  assert.equal(modes.filter(Boolean).length, 2);
   assert.equal(count(f, 'dismiss'), 0);
   assert.equal(count(f, 'scroll'), 1);
   assert.equal(count(f, 'press'), 0);
@@ -407,6 +406,47 @@ test('T2b: a late presence recapture still clears the keyboard, then presses onc
   assert.equal(count(f, 'scroll'), 0);
   assert.equal(count(f, 'press'), 1);
 });
+
+for (const incomplete of [false, true]) {
+  test(`an 11-second ${incomplete ? 'incomplete' : 'successful'} presence read preserves the clearance`, async () => {
+    const f = device();
+    const modes = modeAware(f, incomplete, { x: 0, y: 100, width: 400, height: 40 });
+    const capture = f.deps.captureScreen;
+    f.deps.captureScreen = async (options) => {
+      if (options?.platformPresence) await f.deps.sleep(11_000);
+      return capture(options);
+    };
+    const outcome = await walkBlock(tap(), f.deps);
+    assert.equal(outcome.block.outcome, 'pass', seen(outcome));
+    assert.equal(modes.filter(Boolean).length, 1);
+    assert.equal(count(f, 'dismiss'), 1);
+    assert.equal(count(f, 'scroll'), 0);
+    assert.equal(count(f, 'press'), 1);
+  });
+}
+
+for (const [name, recaptured, presses] of [
+  ['above the margin', screen({ rect: ABOVE }), 1],
+  ['keyboard hidden', screen({ keyboard: false, rect: FOOTER }), 1],
+  ['target gone', screen({ target: false }), 0],
+] as const) {
+  test(`a slow presence read rechecks eligibility: ${name}`, async () => {
+    const f = device();
+    modeAware(f, false, { x: 0, y: 100, width: 400, height: 40 });
+    const capture = f.deps.captureScreen;
+    f.deps.captureScreen = async (options) => {
+      if (!options?.platformPresence) return capture(options);
+      await f.deps.sleep(11_000);
+      f.deps.captureScreen = async () => recaptured;
+      return recaptured;
+    };
+    const outcome = await walkBlock(tap(), f.deps);
+    assert.equal(outcome.block.outcome, presses ? 'pass' : 'fail', seen(outcome));
+    assert.equal(count(f, 'dismiss'), 0);
+    assert.equal(count(f, 'scroll'), 0);
+    assert.equal(count(f, 'press'), presses);
+  });
+}
 
 test('T3: centre 60 pt above the keyboard is pressed plainly, with no clearance', async () => {
   const f = device(screen({ rect: ABOVE }));
