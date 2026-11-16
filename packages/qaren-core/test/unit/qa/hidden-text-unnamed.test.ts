@@ -211,6 +211,15 @@ test('N2: same-frame native wrappers are accepted only as button ancestors', () 
   }
 });
 
+test('N2: a same-frame node whose window cannot be proven blocks a valid button', () => {
+  for (const type of ['Button', 'Other', 'Cell']) {
+    // Parented to the application itself, outside any window.
+    const outside = card({ extra: [[twin(CARD, { type, parentIndex: 0 })]] });
+    assert.ok(native(outside), type);
+    assert.equal(hiddenTextUnnamedButton(quoted('Plan'), outside), undefined, type);
+  }
+});
+
 test('N2: a native parent chain that does not go strictly upward to a root proves nothing', () => {
   // The button's parent sits after it in the snapshot, so its window cannot be proven.
   const broken = card({

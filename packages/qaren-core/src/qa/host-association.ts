@@ -803,17 +803,21 @@ export function unnamedFrameMatches(
   const duplicates = duplicateNodes(nodes, presence);
   const refs = new Map<string, number>();
   for (const node of nodes) refs.set(node.ref, (refs.get(node.ref) ?? 0) + 1);
+  // Nodes whose window cannot be proven are never pressed, but still block a same-frame match.
+  const unplaced: number[] = [];
   const candidates = nodes.flatMap((node, i) => {
+    if (duplicates.has(i)) return [];
     const windowIndex = nativeWindowIndex(nodes, i);
     const window = windowIndex === undefined ? undefined : nodes[windowIndex].rect;
     if (
       !window ||
       !Object.values(window).every(Number.isFinite) ||
       window.width <= 0 ||
-      window.height <= 0 ||
-      duplicates.has(i)
-    )
+      window.height <= 0
+    ) {
+      unplaced.push(i);
       return [];
+    }
     return [{ i, transform: { scale: 1, x: window.x, y: window.y, tolerance: 0 } }];
   });
   for (const host of pressable) {
@@ -828,6 +832,11 @@ export function unnamedFrameMatches(
     const [{ i, transform }] = found;
     const path = nativePath(nodes, i);
     if (
+      unplaced.some(
+        (other) =>
+          (nodes[other].type === 'Button' || compatible(host.hostType, nodes[other].type)) &&
+          sameFrame(host.rect, nodes[other].rect, transform),
+      ) ||
       atFrame.some(
         ({ i: other }) =>
           nodes[other].type !== 'Button' &&
