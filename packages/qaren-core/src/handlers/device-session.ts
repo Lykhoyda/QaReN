@@ -920,3 +920,11 @@ export async function reopenSessionForRecovery(
     sessionName: recoveryName,
   });
 }
+
+export type FirstScreenReader = (
+  appId: string,
+  serial: string,
+) => Promise<'loaded' | 'loading' | 'unknown'>;
+
+// A device-qualified reader is supplied only after its startup evidence is available.
+export const androidFirstScreen: FirstScreenReader | undefined = undefined;

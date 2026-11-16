@@ -1,0 +1,356 @@
+import assert from 'node:assert/strict';
+import { test, type TestContext } from 'node:test';
+import { syncBuiltinESMExports } from 'node:module';
+import { setImmediate as nextTurn } from 'node:timers/promises';
+import { androidStartGate } from '../../../dist/qa/android-start-gate.js';
+import { admit, type AdmissionSteps } from '../../../dist/qa/admission.js';
+import { createStop } from '../../../dist/qa/stop.js';
+import { sleep, withCancellation } from '../../../dist/domain/cancellation.js';
+import { CDPProbeTimeoutError } from '../../../dist/cdp/connect.js';
+import { TargetReadinessTimeoutError } from '../../../dist/cdp/discovery.js';
+
+const PROVEN = {
+  ok: true,
+  scriptURL: 'http://127.0.0.1:8081/index.bundle',
+  appModules: 3,
+} as const;
+type Outcome = { value?: unknown; error?: any; done: boolean };
+function clock(t: TestContext) {
+  let now = 0;
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  syncBuiltinESMExports();
+  t.mock.method(performance, 'now', () => now);
+  const stop = createStop();
+  const pending: Promise<unknown>[] = [];
+  t.after(async () => {
+    stop.begin();
+    await Promise.allSettled(pending);
+    t.mock.timers.reset();
+    syncBuiltinESMExports();
+  });
+  return {
+    stop,
+    now: () => now,
+    async advance(ms: number) {
+      now += ms;
+      t.mock.timers.tick(ms);
+      await nextTurn();
+    },
+    watch(promise: Promise<unknown>) {
+      const outcome: Outcome = { done: false };
+      pending.push(
+        promise.then(
+          (value) => {
+            outcome.value = value;
+            outcome.done = true;
+          },
+          (error) => {
+            outcome.error = error;
+            outcome.done = true;
+          },
+        ),
+      );
+      return outcome;
+    },
+    async until(outcome: Outcome, end: number) {
+      await nextTurn();
+      while (!outcome.done && now < end) {
+        now += 100;
+        t.mock.timers.tick(100);
+        await nextTurn();
+      }
+      assert.ok(outcome.done, `operation still pending at ${now} ms`);
+    },
+  };
+}
+function harness(c: ReturnType<typeof clock>, read: () => Promise<string>, walkMs = 1_200_000) {
+  const logs: string[] = [];
+  const calls: string[] = [];
+  const observations: any[] = [];
+  const gate = androidStartGate({ read, log: (line) => logs.push(line), at: c.now });
+  const steps: AdmissionSteps = {
+    metroPort: 8081,
+    readinessMs: 30_000,
+    attachBudgetMs: 120_000,
+    remainingMs: () => walkMs - c.now(),
+    waitTargets: async (deadline) => {
+      const window = () => Math.max(1, Math.min(30_000, steps.remainingMs(), deadline - c.now()));
+      await gate.wait(window());
+      calls.push('targets');
+    },
+    attach: async () => {
+      calls.push('attach');
+    },
+    foreignDriver: async () => {
+      calls.push('driver');
+      return undefined;
+    },
+    open: async () => {
+      calls.push('open');
+    },
+    prove: async () => {
+      calls.push('prove');
+      return PROVEN;
+    },
+    close: async () => {
+      calls.push('close');
+    },
+    refusalNote: () => gate.note(),
+    observe: (decision, facts) => observations.push({ decision, ...facts }),
+    load: () => 1,
+  };
+  return { gate, logs, calls, observations, steps };
+}
+
+test('H1: loading holds target discovery and attach for three windows', async (t) => {
+  const c = clock(t);
+  const h = harness(c, async () => (c.now() < 90_000 ? 'loading' : 'loaded'));
+  const result = c.watch(admit(h.steps, c.stop));
+  await nextTurn();
+  while (c.now() < 89_000) {
+    await c.advance(100);
+    assert.deepEqual(h.calls, [], 'no target wait or debugger call during loading');
+  }
+  await c.until(result, 95_000);
+  assert.equal(result.error, undefined);
+  assert.deepEqual(result.value, PROVEN);
+  assert.deepEqual(h.calls, ['targets', 'attach', 'driver', 'open', 'prove']);
+  assert.ok(h.observations.filter((o) => o.decision === 'retry').length >= 2);
+  assert.ok(h.observations.every((o) => o.inner === 'target_readiness_timeout'));
+});
+
+for (const [index, targetMs, openMs, end, refuses] of [
+  [1, 0, 100_000, 260_000, false],
+  [2, 0, 115_000, 270_000, true],
+  [3, 20_000, 100_000, 280_000, false],
+  [4, 20_000, 115_000, 290_000, true],
+] as const) {
+  test(`H2 case ${index}: registration after target wait owns the shared attach budget`, async (t) => {
+    const c = clock(t);
+    const h = harness(c, async () => (c.now() < 150_000 ? 'loading' : 'loaded'));
+    const wait = h.steps.waitTargets!;
+    h.steps.waitTargets = async (deadline) => {
+      await wait(deadline);
+      if (targetMs) await sleep(targetMs);
+    };
+    h.steps.attach = async () => {
+      h.calls.push('attach');
+      await sleep(10_000);
+    };
+    h.steps.open = async () => {
+      h.calls.push('open');
+      await sleep(openMs);
+    };
+    const result = c.watch(admit(h.steps, c.stop));
+    await c.until(result, end + 1000);
+    assert.equal(c.now(), end);
+    if (refuses) {
+      assert.equal(result.error?.code, 'CDP_NOT_CONNECTED');
+      assert.match(result.error.message, /Registered-target attach deadline exceeded/);
+      assert.equal(result.error.meta.lastStarted, 'open');
+      assert.equal(result.error.meta.lastCompleted, 'foreign_driver');
+    } else {
+      assert.equal(result.error, undefined);
+      assert.deepEqual(result.value, PROVEN);
+    }
+  });
+}
+
+test('H3: a held start ends at the walk budget with its state note and closes once', async (t) => {
+  const c = clock(t);
+  const h = harness(c, async () => 'loading', 300_000);
+  const result = c.watch(admit(h.steps, c.stop));
+  await c.until(result, 300_000);
+  assert.equal(c.now(), 300_000);
+  assert.equal(result.error?.code, 'CDP_NOT_CONNECTED');
+  assert.equal(result.error.meta.inner, 'target_readiness_timeout');
+  assert.ok(
+    result.error.message.endsWith(
+      "; the app's first screen had not appeared, so no debugger was attached",
+    ),
+  );
+  assert.deepEqual(h.calls, ['close']);
+});
+
+for (const kind of ['unknown', 'reject', 'loading-unknown', 'invalid'] as const) {
+  test(`H4 ${kind}: unreadable releases the same wait permanently`, async (t) => {
+    const c = clock(t);
+    let reads = 0;
+    let attaches = 0;
+    const h = harness(c, async () => {
+      reads++;
+      if (kind === 'reject') throw new Error('unreadable');
+      if (kind === 'loading-unknown' && reads === 1) return 'loading';
+      return kind === 'invalid' ? 'unexpected' : 'unknown';
+    });
+    h.steps.attach = async () => {
+      attaches++;
+      throw new CDPProbeTimeoutError('not ready');
+    };
+    const result = c.watch(admit(h.steps, c.stop));
+    await nextTurn();
+    if (kind !== 'loading-unknown')
+      assert.equal(attaches, 1, 'unknown permits discovery in this call');
+    await c.until(result, 125_000);
+    assert.equal(reads, kind === 'loading-unknown' ? 2 : 1);
+    assert.ok(attaches >= 6);
+    assert.equal(c.now(), kind === 'loading-unknown' ? 122_000 : 120_000);
+    assert.ok(
+      result.error.message.endsWith(
+        '; the first-screen check could not be read; attaching a debugger was allowed as before',
+      ),
+    );
+    assert.equal(h.gate.state(), 'let_through');
+  });
+}
+
+for (const kind of ['pending-stop', 'sleep-stop', 'pending-deadline'] as const) {
+  test(`H5 ${kind}: abort preserves the gate state and never permits attach`, async (t) => {
+    const c = clock(t);
+    const h = harness(
+      c,
+      async () => (kind === 'sleep-stop' ? 'loading' : new Promise<string>(() => {})),
+      1000,
+    );
+    const result = c.watch(admit(h.steps, c.stop));
+    await nextTurn();
+    const state = h.gate.state();
+    if (kind === 'pending-deadline') await c.advance(1000);
+    else {
+      c.stop.begin();
+      await nextTurn();
+    }
+    assert.ok(result.done);
+    assert.equal(
+      result.error?.code,
+      kind === 'pending-deadline' ? 'CDP_NOT_CONNECTED' : 'RUN_CANCELLED',
+    );
+    assert.equal(h.gate.state(), state);
+    assert.deepEqual(h.calls, ['close']);
+    assert.ok(!h.logs.some((line) => line.includes('unavailable')));
+    if (kind === 'pending-deadline')
+      assert.ok(
+        result.error.message.endsWith(
+          '; the first-screen check had not answered, so no debugger was attached',
+        ),
+      );
+  });
+}
+
+test('H6: poll spacing survives fast reads and retry windows', async (t) => {
+  const c = clock(t);
+  const reads: number[] = [];
+  const gate = androidStartGate({
+    read: async () => {
+      reads.push(c.now());
+      return 'loading';
+    },
+    log: () => {},
+    at: c.now,
+  });
+  const first = c.watch(withCancellation(c.stop.signal, () => gate.wait(2100)));
+  await nextTurn();
+  assert.deepEqual(reads, [0], 'first read has no sleep');
+  await c.advance(2000);
+  await c.advance(100);
+  assert.ok(first.error instanceof TargetReadinessTimeoutError);
+  assert.equal(first.error.constructor, TargetReadinessTimeoutError);
+  assert.equal(first.error.state, undefined);
+  await c.advance(500);
+  const second = c.watch(withCancellation(c.stop.signal, () => gate.wait(2100)));
+  await nextTurn();
+  assert.deepEqual(reads, [0, 2000]);
+  await c.advance(1400);
+  assert.deepEqual(reads, [0, 2000, 4000]);
+  c.stop.begin();
+  await nextTurn();
+  assert.ok(second.done);
+});
+
+test('H6: a slow pending read can overrun only its current window', async (t) => {
+  const c = clock(t);
+  const reads: number[] = [];
+  const gate = androidStartGate({
+    read: async () => {
+      reads.push(c.now());
+      if (reads.length === 2) await sleep(2800);
+      return 'loading';
+    },
+    log: () => {},
+    at: c.now,
+  });
+  const result = c.watch(withCancellation(c.stop.signal, () => gate.wait(2500)));
+  await nextTurn();
+  await c.advance(2000);
+  await c.advance(500);
+  assert.equal(result.done, false, 'window end does not abandon an in-flight read');
+  await c.advance(2300);
+  assert.ok(result.error instanceof TargetReadinessTimeoutError);
+  assert.deepEqual(reads, [0, 2000]);
+  assert.equal(c.now(), 4800);
+});
+
+for (const answer of ['loaded', 'unknown'] as const) {
+  test(`H6 ${answer}: terminal state adds no sleep or later reads`, async (t) => {
+    const c = clock(t);
+    let reads = 0;
+    const gate = androidStartGate({
+      read: async () => {
+        reads++;
+        return answer;
+      },
+      log: () => {},
+      at: c.now,
+    });
+    const result = c.watch(
+      withCancellation(c.stop.signal, async () => {
+        await gate.wait(30_000);
+        await gate.wait(30_000);
+      }),
+    );
+    await nextTurn();
+    assert.equal(result.done, true);
+    assert.equal(c.now(), 0);
+    assert.equal(reads, 1);
+  });
+}
+
+for (const kind of ['absent', 'text', 'throws'] as const) {
+  test(`N1 ${kind}: optional refusal note preserves the refusal type`, async (t) => {
+    const c = clock(t);
+    let reads = 0;
+    const h = harness(c, async () => 'loaded');
+    delete h.steps.refusalNote;
+    h.steps.attach = async () => {
+      throw new Error('synthetic failure');
+    };
+    if (kind !== 'absent')
+      h.steps.refusalNote = () => {
+        reads++;
+        if (kind === 'throws') throw new Error('note failed');
+        return '; synthetic note';
+      };
+    const result = c.watch(admit(h.steps, c.stop));
+    await nextTurn();
+    assert.equal(result.error?.code, 'CDP_NOT_CONNECTED');
+    assert.equal(result.error.meta.inner, 'untyped');
+    assert.equal(result.error.message.endsWith('; synthetic note'), kind === 'text');
+    assert.equal(reads, kind === 'absent' ? 0 : 1);
+  });
+}
+
+test('N1: refusals built by another owner receive no attach note', async (t) => {
+  const c = clock(t);
+  let reads = 0;
+  const h = harness(c, async () => 'loaded');
+  h.steps.foreignDriver = async () => 'foreign driver';
+  h.steps.refusalNote = () => {
+    reads++;
+    return '; should not appear';
+  };
+  const result = c.watch(admit(h.steps, c.stop));
+  await nextTurn();
+  assert.equal(result.error?.code, 'BUSY_FOREIGN_FLOW');
+  assert.equal(reads, 0);
+  assert.equal(result.error.message, 'foreign driver');
+});
