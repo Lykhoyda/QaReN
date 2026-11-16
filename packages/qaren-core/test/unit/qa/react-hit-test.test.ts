@@ -157,25 +157,17 @@ test('pointerEvents none and box-none let the touch through; box-only and auto t
   assert.deepEqual(reaches(over(undefined), 1), { hit: 2, reaches: false });
 });
 
-test('accessibility-hidden overlays and their children still intercept touches', () => {
-  for (const pointerEvents of ['auto', 'box-only', 'box-none', 'none'] as const) {
-    const result = reaches(
-      [
-        { parent: null, rect: full, order: 0, pointerEvents: 'box-none' },
-        { parent: 0, rect: button, order: 0 },
-        { parent: 0, rect: full, order: 1, hidden: true, pointerEvents },
-        { parent: 2, rect: full, order: 0, hidden: true },
-      ],
-      1,
-    );
-    assert.deepEqual(
-      result,
-      pointerEvents === 'none'
-        ? { hit: 1, reaches: true }
-        : { hit: pointerEvents === 'box-only' ? 2 : 3, reaches: false },
-      pointerEvents,
-    );
-  }
+test('an accessibility-hidden overlay is pruned with its subtree', () => {
+  const result = reaches(
+    [
+      { parent: null, rect: full, order: 0, pointerEvents: 'box-none' },
+      { parent: 0, rect: button, order: 0 },
+      { parent: 0, rect: full, order: 1, hidden: true },
+      { parent: 2, rect: full, order: 0, hidden: true },
+    ],
+    1,
+  );
+  assert.deepEqual(result, { hit: 1, reaches: true });
 });
 
 test("the target's own lineage reaches it; a sibling, nothing or a second root does not", () => {

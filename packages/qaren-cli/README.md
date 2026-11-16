@@ -1856,10 +1856,9 @@ On Android, `observed` proves that the native rule above passes at the node's
 centre and that the core's React Native
 [hit test](../qaren-core/src/qa/react-hit-test.ts) reaches the node's associated
 React host, one of its descendants or an ancestor. The hit test orders siblings
-by `zIndex`, then fiber order. Accessibility-hidden hosts still participate
-because they can intercept touches. It skips `pointerEvents="none"` subtrees,
-passes touches through `box-none` views to their children, and keeps a `box-only`
-view's children out. The React capture
+by `zIndex`, then fiber order. It skips accessibility-hidden and
+`pointerEvents="none"` subtrees, passes touches through `box-none` views to
+their children, and keeps a `box-only` view's children out. The React capture
 supplies each host's `pointerEvents`, `zIndex` and fiber-order rank, reading a
 development build's frozen props as it reads other display facts. An unreadable
 `pointerEvents` counts as `auto`, a cover; an unreadable `zIndex` leaves that
@@ -1871,9 +1870,8 @@ reads `unknown` with reason `react-covered`. It keeps its association, so it is
 not a screen-wide gap, but it offers no press or
 fill in that capture. A phrase step naming it refuses, and other targets stay
 usable. Native nodes without a React host rely on the native rule alone. Neither
-rule sees a native touch listener on a non-clickable view or an accessibility-hidden
-cover absent from the React capture; assert a tap's expected result with the
-plan's next step.
+rule sees a native touch listener on a non-clickable view or a cover hidden from
+accessibility; assert a tap's expected result with the plan's next step.
 
 Android phrase steps resolve against these observations. A valid capture whose
 interactive React hosts cannot all be associated (inputs the keyboard covers, or

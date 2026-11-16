@@ -204,7 +204,30 @@ test('N2: same-frame native wrappers are accepted only as button ancestors', () 
       ],
     });
     assert.equal(hiddenTextUnnamedButton(quoted('Plan'), otherWindow), undefined, type);
+
+    // Inside the button natively, at its frame: not a wrapper, so it declines.
+    const descendant = card({ extra: [[twin(CARD, { type, parentIndex: 2 })]] });
+    assert.equal(hiddenTextUnnamedButton(quoted('Plan'), descendant), undefined, type);
   }
+});
+
+test('N2: a native parent chain that does not go strictly upward to a root proves nothing', () => {
+  // The button's parent sits after it in the snapshot, so its window cannot be proven.
+  const broken = card({
+    native: { parentIndex: 3 },
+    extra: [
+      [
+        {
+          ref: '@group',
+          type: 'Other',
+          parentIndex: 1,
+          rect: { x: 0, y: 0, width: 402, height: 874 },
+        },
+      ],
+    ],
+  });
+  assert.ok(native(broken));
+  assert.equal(hiddenTextUnnamedButton(quoted('Plan'), broken), undefined);
 });
 
 test('N2: accessibility-hidden siblings still block the unnamed centre tap', () => {
