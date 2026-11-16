@@ -1026,11 +1026,11 @@ selector, so its block is reported not saved and later runs walk the step afresh
 
 Partial clipping alone does not prevent a press: an observed, hittable button
 whose centre is clear and on screen can still be proven and pressed without a
-scroll. When the press proof fails but everything else holds except that the
-native button is cut off by its scroll area or off screen within its clip, or
-that something is drawn over its centre, the button is only located.
-Unknown presence or a failed hit test alone does not
-locate it. That allows a scroll, never a tap.
+scroll. When the press proof fails, clipping by its scroll area or a centre hit
+on a host outside the button can still locate it. The frame tie, hidden-text
+containment and enabled-button checks must still hold. Clipping can locate it
+even when the centre hit is unresolved; unknown presence or a failed hit test
+alone does not locate it. Locating allows a scroll, never a tap.
 QaReN then sends the step's one clearance scroll from the button's own scroll
 area. When the button's centre lies outside that area, the button gets the same
 scroll a named element in that place gets: toward the area, within its visible

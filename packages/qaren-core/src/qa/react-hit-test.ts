@@ -17,13 +17,7 @@ function inside(rect: Rect, x: number, y: number): boolean {
   );
 }
 
-/**
- * React Native's own hit test over one capture's hosts, at a point in [frame]'s space: siblings from the
- * top of their paint order (zIndex, then fiber order), children before their parent, `none` and hidden
- * subtrees skipped, `box-none` passing to its children and `box-only` keeping them out. A sibling without
- * a known paint position (a missing or repeated order) leaves the hit unresolved only when its subtree
- * holds a frame over the point; elsewhere it cannot take the touch.
- */
+// Hit-test in frame's space; unknown sibling paint order leaves the hit unresolved only over its subtree's frames.
 export function reactHitTest(
   evidence: ReactHostEvidence,
   frame: (rect: Rect) => Rect,
