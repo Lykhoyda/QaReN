@@ -164,8 +164,10 @@ import {
 import {
   buttonId,
   hiddenFromAccessibility,
+  frameText,
   hiddenTextButton,
   hiddenTextClause,
+  hiddenTextUnnamedButton,
   type HiddenText,
 } from './hidden-text.js';
 import {
@@ -870,8 +872,15 @@ async function walkBlockScoped(
   let lineRead: Screen | undefined;
   // A quoted iOS Tap whose text is hidden from accessibility may press its proven button once per
   // line: `element` authorizes presses until the runner executes one, then it is gone for good.
+  // Without a test id (`id`) the button is unnamed: it is proven afresh on a presence read before each
+  // press, and `frame` names it.
   let hiddenTried = false;
-  let hiddenTap: { id: string; element?: Element; act?: ActResult; unbound?: true } | undefined;
+  let hiddenTap:
+    | { id?: string; element?: Element; act?: ActResult; unbound?: true; frame?: string }
+    | undefined;
+  const unnamedArmed = (): boolean => !!hiddenTap?.element && hiddenTap.id === undefined;
+  const hiddenButton = (tap: NonNullable<typeof hiddenTap>): string =>
+    tap.id !== undefined ? `button ${buttonId(tap.id, privacy)}` : `unnamed button at ${tap.frame}`;
   let dispatchedOn = 0;
   let recoveries = 0;
   let metadataOnly = false;
@@ -934,7 +943,8 @@ async function walkBlockScoped(
     const target =
       step && ('target' in step ? step.target : step.kind === 'scroll' ? step.until : undefined);
     const requirePresence = assertion || (!!target && target.quoted === undefined);
-    const platformPresence = requirePresence || purpose === 'provenance';
+    const platformPresence =
+      requirePresence || purpose === 'provenance' || (step?.kind === 'press' && unnamedArmed());
     const startedAt = deps.now();
     let readStartedAt = startedAt;
     if (until !== undefined && startedAt >= until) throw new CaptureDeadline();
@@ -1982,13 +1992,13 @@ async function walkBlockScoped(
     // The hidden-text fallback's own press: a tap is named only when the runner executed it.
     const hiddenAct = item.kind === 'press' ? hiddenTap?.act : undefined;
     if (hiddenAct && hiddenTap) {
-      const id = buttonId(hiddenTap.id, privacy);
+      const button = hiddenButton(hiddenTap);
       const detail =
         hiddenAct.executed !== false && hiddenAct.mutation !== 'none'
           ? targetCode === 'TARGET_NOT_FOUND'
-            ? `; its button ${id} was tapped once through that text and the tap showed no change`
+            ? `; its ${button} was tapped once through that text and the tap showed no change`
             : ''
-          : `; its button ${id} was not tapped: the runner refused the press: ${hiddenAct.error ?? 'no reason given'}`;
+          : `; its ${button} was not tapped: the runner refused the press: ${hiddenAct.error ?? 'no reason given'}`;
       if (detail)
         reason = typeof reason === 'string' ? reason + detail : [...segments(reason), detail];
     }
@@ -4335,8 +4345,8 @@ async function walkBlockScoped(
           WalkerTimingDiagnostic['clearanceDiagnostic']
         >['scrollOrigin'] = null;
         let scrollDirection: 'up' | 'down' | null = null;
-        // The hidden-text fallback's button is pressed through the refused-identity binding.
-        let refusedIdentity: Element | undefined = hiddenTap?.element;
+        // The hidden-text fallback's button with a test id is pressed through the refused-identity binding.
+        let refusedIdentity: Element | undefined = unnamedArmed() ? undefined : hiddenTap?.element;
         let moved: { target: Element; error: string } | undefined;
         // Plain-scroll attempts that dispatched cleanly onto complete, unchanged app captures.
         let stillScrolls = 0;
@@ -4385,7 +4395,8 @@ async function walkBlockScoped(
           let selectionDeadline = Infinity;
           let selectionStartedAt = 0;
           const settling = (item.kind === 'press' || item.kind === 'fill') && sequence.momentum;
-          const held = cached?.item === item && !settling ? cached : undefined;
+          // An armed unnamed press is proven on a read of its own, never on a held one.
+          const held = cached?.item === item && !settling && !unnamedArmed() ? cached : undefined;
           let before: Observation;
           if (moved && item.kind !== 'scroll' && item.kind !== 'back' && item.kind !== 'dialog') {
             const settled = await settledTarget(item, moved.target);
@@ -4455,7 +4466,10 @@ async function walkBlockScoped(
               dismissal.via = await deps.dismissKeyboard!(context);
               return { ok: true, proven: false };
             });
-            const settled = await settledTarget(item, target, { nativeOnly: true });
+            // An unnamed button has no identity to settle; the next presence read proves it afresh.
+            const settled = unnamedArmed()
+              ? { observation: await captureBeforeDispatch() }
+              : await settledTarget(item, target, { nativeOnly: true });
             if ('frames' in settled) {
               outcome = failed(
                 item,
@@ -4479,7 +4493,7 @@ async function walkBlockScoped(
             deps.note?.(
               `keyboard-clearance ${JSON.stringify({ line: item.line, via: dismissal.via, hidden: before.screen.keyboardVisible === false })}`,
             );
-            keyboardBound = { target, frame: settled.frame, scrolled };
+            if ('frame' in settled) keyboardBound = { target, frame: settled.frame, scrolled };
             initial = undefined;
             return true;
           };
@@ -4489,12 +4503,27 @@ async function walkBlockScoped(
               usable(before, item);
               if (item.kind === 'press' || item.kind === 'fill') {
                 if (item.target.quoted === undefined) resolvedBy = 'jev';
-                const decision = refusedIdentity
+                // The unnamed button is pressed by the reference of the presence read just taken, or not at all.
+                const unnamed = unnamedArmed()
+                  ? hiddenTextUnnamedButton(item.target, before.screen)
+                  : undefined;
+                if (unnamed && hiddenTap) hiddenTap.frame = frameText(elementFrame(unnamed)!);
+                const decision = unnamedArmed()
                   ? {
                       resolvedBy,
-                      target: bindDispatchIdentity(item, before.screen, refusedIdentity),
+                      target: unnamed
+                        ? { ref: unnamed.ref, element: unnamed }
+                        : {
+                            refuse: 'TARGET_NOT_FOUND',
+                            reason: 'the unnamed button no longer resolves',
+                          },
                     }
-                  : await decide(before, undefined, item, Infinity, initial);
+                  : refusedIdentity
+                    ? {
+                        resolvedBy,
+                        target: bindDispatchIdentity(item, before.screen, refusedIdentity),
+                      }
+                    : await decide(before, undefined, item, Infinity, initial);
                 initial = undefined;
                 resolvedBy = decision.resolvedBy === 'jev' ? 'jev' : resolvedBy;
                 const binding =
@@ -4506,7 +4535,7 @@ async function walkBlockScoped(
                 const prepared: Resolution =
                   occluded !== undefined
                     ? { scroll: occluded }
-                    : refusedIdentity !== undefined
+                    : refusedIdentity !== undefined || unnamedArmed()
                       ? decision.target!
                       : fillIdentity !== undefined
                         ? binding?.kind === 'strict'
@@ -4612,11 +4641,19 @@ async function walkBlockScoped(
                   }
                   // The fallback's binding found no single eligible button: terminal, without recovery.
                   // After a withheld drag it also says why nothing was scrolled.
-                  if (item.kind === 'press' && hiddenTap?.element && refusedIdentity) {
+                  if (
+                    item.kind === 'press' &&
+                    hiddenTap?.element &&
+                    (refusedIdentity || unnamedArmed())
+                  ) {
                     hiddenTap.unbound = true;
+                    const lost =
+                      hiddenTap.id !== undefined
+                        ? `its button ${buttonId(hiddenTap.id, privacy)} no longer resolved uniquely to an eligible button`
+                        : 'its unnamed button no longer resolved to exactly one element';
                     throw new ResolutionError({
                       refuse: 'TARGET_NOT_FOUND',
-                      reason: `"${item.target.quoted}" is text hidden from accessibility; its button ${buttonId(hiddenTap.id, privacy)} no longer resolved uniquely to an eligible button on the next read, so nothing was tapped${withheldDrag ? `; ${stayedCovered(item.target.phrase, withheldDrag)}${await coverText(item)}` : ''}`,
+                      reason: `"${item.target.quoted}" is text hidden from accessibility; ${lost} on the next read, so nothing was tapped${withheldDrag ? `; ${stayedCovered(item.target.phrase, withheldDrag)}${await coverText(item)}` : ''}`,
                     });
                   }
                   if (!fallback || item.kind !== 'fill') {
@@ -5122,7 +5159,8 @@ async function walkBlockScoped(
               )
                 throw dialogInFront();
               if (item.kind === 'press' && !pixelBaselineTaken) {
-                const target = element && pixelTarget(before.screen, element);
+                // Its two reads would follow the proof, and identity cannot tell unnamed buttons apart.
+                const target = element && !unnamedArmed() && pixelTarget(before.screen, element);
                 if (target) {
                   const shot = await pixelShot(item, target);
                   if (!shot.stable) throw new QaDispatchError('TARGET_MOVED_BEFORE_DISPATCH');
@@ -5225,7 +5263,11 @@ async function walkBlockScoped(
                 pressNeedsReadback =
                   !!selectionTarget || (!!element && insideAlert(element) && !act.proven);
               }
-              if (item.kind === 'press' && hiddenTap?.element && refusedIdentity) {
+              if (
+                item.kind === 'press' &&
+                hiddenTap?.element &&
+                (refusedIdentity || unnamedArmed())
+              ) {
                 hiddenTap.act = act;
                 // A refusal before dispatch keeps the existing once-only retries; an executed press ends them.
                 if (act.executed !== false && act.mutation !== 'none')
@@ -5734,10 +5776,13 @@ async function walkBlockScoped(
               ...base(item, attempt),
               ...(ref ? { ref } : {}),
               ...(shot ? { screenshot: shot } : {}),
-              // A pass through hidden text stores the button actually pressed, never the hidden text.
+              // A pass through hidden text stores the button actually pressed, never the hidden text;
+              // an unnamed button has nothing to store.
               ...stored(
                 hiddenPass
-                  ? { id: hiddenPass.id }
+                  ? hiddenPass.id !== undefined
+                    ? { id: hiddenPass.id }
+                    : undefined
                   : ((target && exactSelector(target)) ??
                       (element ? elementSelector(element) : undefined)),
               ),
@@ -5774,7 +5819,7 @@ async function walkBlockScoped(
                         : hiddenPass
                           ? {
                               reason: redact(
-                                `resolved through text hidden from accessibility; tapped its button ${buttonId(hiddenPass.id, privacy)}`,
+                                `resolved through text hidden from accessibility; tapped ${hiddenPass.id !== undefined ? 'its' : 'the'} ${hiddenButton(hiddenPass)}`,
                               ),
                             }
                           : {}),
@@ -5936,9 +5981,11 @@ async function walkBlockScoped(
           hiddenTried = true;
           // Captures assign lineRead inside closures, which control-flow narrowing cannot see.
           const read = lineRead as Screen | undefined;
-          const element = read && hiddenTextButton(item.target, read);
+          const named = read && hiddenTextButton(item.target, read);
+          // A button with neither label nor test id is armed only; its pass proves it again.
+          const element = named || (read && hiddenTextUnnamedButton(item.target, read));
           if (element) {
-            hiddenTap = { id: element.testID!, element };
+            hiddenTap = named ? { id: named.testID!, element } : { element };
             // Recovery returned without acting, so restore its state from before the probe.
             if (priorRecovery) recovered.set(item, priorRecovery.state);
             else recovered.delete(item);

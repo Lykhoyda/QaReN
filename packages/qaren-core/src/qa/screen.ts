@@ -38,6 +38,7 @@ import {
   type TouchOwnerGap,
   type TouchPointGap,
   type HostAssociationDiagnostic,
+  unnamedFrameMatches,
 } from './host-association.js';
 
 export type Kind = 'button' | 'input' | 'switch' | 'link' | 'cell' | 'text' | 'image' | 'other';
@@ -271,6 +272,13 @@ const associatedHostIndices = new WeakMap<Element, number>();
 
 export function associatedHostOf(element: Element): number | undefined {
   return associatedHostIndices.get(element);
+}
+
+// iOS: the one pressable host with no test id whose frame alone names this unnamed native element.
+const frameHostIndices = new WeakMap<Element, number>();
+
+export function frameMatchedHostOf(element: Element): number | undefined {
+  return frameHostIndices.get(element);
 }
 
 export function keyboardCoversElement(element: Element): boolean {
@@ -874,6 +882,7 @@ export function join(
   const associatedIndices = new Map(
     [...associations].map(([hostIndex, { nativeIndex }]) => [nativeIndex, hostIndex]),
   );
+  const frameIndices = unnamedFrameMatches(nodes, reactHostEvidence, presence);
   // React heading evidence wins over a navigation title on the same node.
   const headings = new Map<number, HeadingEvidence>([
     ...navigationTitles(nodes, presence),
@@ -1139,6 +1148,8 @@ export function join(
     if (ownPress !== undefined) hostPresses.set(element, ownPress);
     const associatedIndex = associatedIndices.get(nodeIndex);
     if (associatedIndex !== undefined) associatedHostIndices.set(element, associatedIndex);
+    const frameIndex = frameIndices.get(nodeIndex);
+    if (frameIndex !== undefined) frameHostIndices.set(element, frameIndex);
     const privateNativeLabel = presenceMode && observed?.labelSource !== 'direct';
     // Privacy may over-associate input observations without granting semantic capabilities.
     const possibleDigestInput = reactCandidates.some(

@@ -1,7 +1,13 @@
 import { hostPath } from './host-association.js';
 import type { Target } from './plan.js';
 import { MASK, type ObservedPrivacy } from './privacy.js';
-import { associatedHostOf, semanticDisabled, type Element, type Screen } from './screen.js';
+import {
+  associatedHostOf,
+  frameMatchedHostOf,
+  semanticDisabled,
+  type Element,
+  type Screen,
+} from './screen.js';
 import { MISS_TEXT } from './target-miss.js';
 
 type Rect = { x: number; y: number; width: number; height: number };
@@ -77,18 +83,20 @@ const within = (inner: Rect, outer: Rect) =>
   inner.x + inner.width <= outer.x + outer.width + EDGE &&
   inner.y + inner.height <= outer.y + outer.height + EDGE;
 
-// The native button a quoted Tap may press for a hidden text, only when this one read proves every link.
-export function hiddenTextButton(target: Target, screen: Screen): Element | undefined {
-  const found = hiddenFromAccessibility(target, screen, 'exact');
-  const button = found?.hosts.length === 1 ? found.button : undefined;
-  const evidence = screen.reactHostEvidence;
-  if (!found || !button?.testID || !evidence?.typography) return;
-  // Hidden hosts count too: a repeated test id names no single button.
-  if (evidence.hosts.filter((host) => host.testID === button.testID).length !== 1) return;
-  const associated = screen.elements.filter((e) => associatedHostOf(e) === button.host);
-  const [element] = associated;
+// The one native element tied to the button host, when it is a button a tap can reach and the hidden
+// text lies inside that host.
+function provenButton(
+  found: HiddenText,
+  button: NonNullable<HiddenText['button']>,
+  screen: Screen,
+  tied: (element: Element) => boolean,
+): Element | undefined {
+  const typography = screen.reactHostEvidence?.typography;
+  const elements = screen.elements.filter(tied);
+  const [element] = elements;
   if (
-    associated.length !== 1 ||
+    !typography ||
+    elements.length !== 1 ||
     element.ref.startsWith('react:') ||
     element.kind !== 'button' ||
     !element.hittable ||
@@ -97,11 +105,48 @@ export function hiddenTextButton(target: Target, screen: Screen): Element | unde
   )
     return;
   // Both rects are React's, in window points; a native frame lives in another space.
-  const text = evidence.typography.nodes[found.hosts[0]]?.rect;
+  const text = typography.nodes[found.hosts[0]]?.rect;
   return text && button.rect && within(text, button.rect) ? element : undefined;
 }
 
+// The native button a quoted Tap may press for a hidden text, only when this one read proves every link.
+export function hiddenTextButton(target: Target, screen: Screen): Element | undefined {
+  const found = hiddenFromAccessibility(target, screen, 'exact');
+  const button = found?.hosts.length === 1 ? found.button : undefined;
+  const evidence = screen.reactHostEvidence;
+  if (!found || !button?.testID || !evidence) return;
+  // Hidden hosts count too: a repeated test id names no single button.
+  if (evidence.hosts.filter((host) => host.testID === button.testID).length !== 1) return;
+  return provenButton(found, button, screen, (e) => associatedHostOf(e) === button.host);
+}
+
+// The same for a button with neither label nor test id: the join's frame match is its only tie, and
+// only the hidden text's own words, never a hidden child's test id, name it.
+export function hiddenTextUnnamedButton(target: Target, screen: Screen): Element | undefined {
+  const found = hiddenFromAccessibility(target, screen, 'exact');
+  const button = found?.hosts.length === 1 ? found.button : undefined;
+  const evidence = screen.reactHostEvidence;
+  const text = found && evidence?.typography?.nodes[found.hosts[0]]?.text;
+  if (
+    !found ||
+    !button ||
+    target.exact === 'id' ||
+    text?.kind !== 'block' ||
+    text.content !== target.quoted ||
+    button.testID !== undefined ||
+    button.labelled !== false ||
+    // No test id carries React's disabled state to the native element here.
+    evidence?.hosts[button.host]?.disabled
+  )
+    return;
+  return provenButton(found, button, screen, (e) => frameMatchedHostOf(e) === button.host);
+}
+
 const point = (n: number) => String(Math.round(n * 10) / 10);
+
+// A frame for output, as x,y,width,height to a tenth of a point.
+export const frameText = (rect: Rect): string =>
+  [rect.x, rect.y, rect.width, rect.height].map(point).join(',');
 
 // A button's test id for output, quoted; as in failure.screen, one holding any private value is masked whole.
 export function buttonId(testID: string, privacy: ObservedPrivacy): string {
@@ -134,7 +179,7 @@ export function hiddenTextClause(
   const id = button.testID === undefined ? undefined : buttonId(button.testID, privacy);
   const inside = `; ${lead}${single ? '' : ','} inside a button that hides its children from accessibility`;
   const at = button.rect
-    ? ` (the button at ${[button.rect.x, button.rect.y, button.rect.width, button.rect.height].map(point).join(',')}${id ? `, testID ${id}` : ''})`
+    ? ` (the button at ${frameText(button.rect)}${id ? `, testID ${id}` : ''})`
     : id
       ? ` (testID ${id})`
       : '';

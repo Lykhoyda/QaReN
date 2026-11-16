@@ -1,0 +1,286 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { hiddenTextButton, hiddenTextUnnamedButton } from '../../../dist/qa/hidden-text.js';
+import {
+  elementFrame,
+  join,
+  type NativeNode,
+  type ReactHostObservation,
+  type Screen,
+} from '../../../dist/qa/screen.js';
+import type { Target } from '../../../dist/qa/plan.js';
+import { hiddenCard } from './ios-hidden-card-captures.ts';
+
+const quoted = (text: string): Target => ({ quoted: text, phrase: text });
+
+test('N1: device reads tie the hidden text to the one unnamed native button by its frame', () => {
+  const alpha = hiddenCard('p1-obs22-presence');
+  const button = hiddenTextUnnamedButton(quoted('Alpha plan'), alpha);
+  assert.equal(button?.ref, '@e25');
+  assert.equal(button?.kind, 'button');
+  assert.deepEqual(button && elementFrame(button), {
+    x: 14,
+    y: 161.66666793823242,
+    width: 374,
+    height: 90,
+  });
+  // Bravo's button has a test id, so slice 2 owns it; Charlie's has a label.
+  assert.equal(hiddenTextUnnamedButton(quoted('Bravo plan'), alpha), undefined);
+  assert.equal(hiddenTextUnnamedButton(quoted('36 EUR'), alpha), undefined);
+  assert.equal(hiddenTextButton(quoted('Alpha plan'), alpha), undefined);
+  const echo = hiddenTextUnnamedButton(quoted('Echo plan'), hiddenCard('p9-obs27-presence'));
+  assert.equal(echo?.ref, '@e11');
+  assert.deepEqual(echo && elementFrame(echo), {
+    x: 14,
+    y: 87.66666412353516,
+    width: 374,
+    height: 90.00000762939453,
+  });
+});
+
+test('N1: device P1 ordinary read proves no unnamed button', () => {
+  assert.equal(
+    hiddenTextUnnamedButton(quoted('Alpha plan'), hiddenCard('p1-obs21-ordinary')),
+    undefined,
+  );
+});
+
+type Rect = { x: number; y: number; width: number; height: number };
+type Row = [Partial<ReactHostObservation>, number | null, string, Rect | undefined, string?];
+type Presence = { status: 'observed' | 'unknown'; labelSource: 'direct' | 'none' };
+
+const plain = { role: null, roleSource: 'none' as const, capabilities: {} };
+const pressable = (testID?: string) => ({
+  ...(testID ? { testID } : {}),
+  role: 'button',
+  roleSource: 'accessibilityRole' as const,
+  capabilities: { press: true as const },
+});
+const CARD: Rect = { x: 14, y: 262, width: 374, height: 90 };
+const TITLE: Rect = { x: 28, y: 286, width: 346, height: 21 };
+
+// A card Pressable with neither label nor test id whose children are hidden, joined as a presence read.
+function card(
+  options: {
+    origin?: number;
+    rows?: (rows: Row[]) => Row[];
+    native?: Partial<NativeNode>;
+    // Extra native nodes, each with its presence; a parentIndex of 1 is the card's window.
+    extra?: Array<[NativeNode, Presence?]>;
+    presence?: Presence;
+    authoredLabel?: 'present' | 'absent' | 'unknown';
+  } = {},
+): Screen {
+  const ox = options.origin ?? 0;
+  const nodes: NativeNode[] = [
+    { ref: '@app', type: 'Application', rect: { x: 0, y: 0, width: 402 + ox, height: 874 } },
+    {
+      ref: '@window',
+      type: 'Window',
+      parentIndex: 0,
+      rect: { x: ox, y: 0, width: 402, height: 874 },
+    },
+    {
+      ref: '@card',
+      type: 'Button',
+      parentIndex: 1,
+      hittable: true,
+      rect: { ...CARD, x: CARD.x + ox },
+      ...options.native,
+    },
+    ...(options.extra ?? []).map(([node]) => node),
+  ];
+  const presence: Presence[] = [
+    { status: 'observed', labelSource: 'direct' },
+    { status: 'observed', labelSource: 'direct' },
+    options.presence ?? { status: 'observed', labelSource: 'none' },
+    ...(options.extra ?? []).map(
+      ([, p]) => p ?? ({ status: 'observed', labelSource: 'none' } as const),
+    ),
+  ];
+  const base: Row[] = [
+    [plain, null, 'RCTRootView', { x: 0, y: 0, width: 402, height: 874 }],
+    [pressable(), 0, 'RCTView', CARD],
+    [{ ...plain, hidden: true }, 1, 'RCTView', { x: 28, y: 286, width: 346, height: 42 }],
+    [{ ...plain, hidden: true }, 2, 'RCTText', TITLE, 'Plan'],
+  ];
+  const rows = options.rows ? options.rows(base) : base;
+  return join(
+    nodes,
+    [{ role: 'button' }],
+    'app',
+    { native: 'complete', react: 'complete' },
+    {
+      complete: true,
+      hosts: rows.map(([host]) => ({ ...plain, ...host })),
+      typography: {
+        version: 1,
+        complete: true,
+        durationMs: 1,
+        coordinateSpace: 'window-points',
+        nodes: rows.map(([, parentHostIndex, hostType, rect, text], hostIndex) => ({
+          hostIndex,
+          parentHostIndex,
+          rootIndex: 0,
+          hostType,
+          ...(rect ? { rect } : {}),
+          accessibility: {
+            accessible: 'true',
+            authoredLabel: hostIndex === 1 ? (options.authoredLabel ?? 'absent') : 'absent',
+          },
+          text: text
+            ? {
+                kind: 'block',
+                content: text,
+                runs: [{ start: 0, end: text.length, fontSize: 17 }],
+                scaling: { allowFontScaling: true, maxFontSizeMultiplier: 0 },
+              }
+            : { kind: 'none' },
+        })),
+      },
+    },
+    { source: 'xcui-live', nodes: presence },
+    'complete',
+  );
+}
+
+const native = (screen: Screen) => screen.elements.find((e) => e.ref === '@card')!;
+const twin = (rect: Rect = CARD, extra: Partial<NativeNode> = {}): NativeNode => ({
+  ref: '@twin',
+  type: 'Button',
+  parentIndex: 1,
+  hittable: true,
+  rect,
+  ...extra,
+});
+
+test('N2: the hand-built unnamed card proves its button', () => {
+  const screen = card();
+  assert.equal(hiddenTextUnnamedButton(quoted('Plan'), screen), native(screen));
+});
+
+test('N2: each missing proof gives nothing', () => {
+  const cases: Array<[string, Screen]> = [
+    ['two unnamed native buttons with the same frame', card({ extra: [[twin()]] })],
+    [
+      'two press-capable hosts with the same frame',
+      card({ rows: (r) => [...r, [pressable(), 0, 'RCTView', CARD]] }),
+    ],
+    [
+      'a hidden press-capable host with the same frame',
+      card({ rows: (r) => [...r, [{ ...pressable(), hidden: true }, 0, 'RCTView', CARD]] }),
+    ],
+    ['the native node has a label', card({ native: { label: 'Plan' } })],
+    ['the native node has an identifier', card({ native: { identifier: 'card' } })],
+    ['an incompatible native type', card({ native: { type: 'Image' } })],
+    ['a frame off by half a point', card({ native: { rect: { ...CARD, x: CARD.x + 0.5 } } })],
+    [
+      'the node not observed in the presence read',
+      card({ presence: { status: 'unknown', labelSource: 'none' } }),
+    ],
+    [
+      'the text outside the button',
+      card({
+        rows: (r) => [...r.slice(0, 3), [r[3][0], 2, 'RCTText', { ...TITLE, y: 400 }, 'Plan']],
+      }),
+    ],
+    [
+      'two hidden texts carry the words',
+      card({ rows: (r) => [...r, [{ ...plain, hidden: true }, 2, 'RCTText', TITLE, 'Plan']] }),
+    ],
+    [
+      'the button host has a test id',
+      card({ rows: (r) => [r[0], [pressable('card'), 0, 'RCTView', CARD], r[2], r[3]] }),
+    ],
+    ['the button host has an authored label', card({ authoredLabel: 'present' })],
+    ['whether the button has a label is unknown', card({ authoredLabel: 'unknown' })],
+    [
+      'another press-capable host that is not hidden has no measured frame',
+      card({ rows: (r) => [...r, [pressable(), 0, 'RCTView', undefined]] }),
+    ],
+    [
+      'the same frame in a second window',
+      card({
+        extra: [
+          [
+            {
+              ref: '@window2',
+              type: 'Window',
+              parentIndex: 0,
+              rect: { x: 0, y: 0, width: 402, height: 874 },
+            },
+            { status: 'observed', labelSource: 'direct' },
+          ],
+          [twin(CARD, { parentIndex: 3 })],
+        ],
+      }),
+    ],
+  ];
+  for (const [name, screen] of cases)
+    assert.equal(hiddenTextUnnamedButton(quoted('Plan'), screen), undefined, name);
+  const titled = card({
+    rows: (r) => [
+      ...r.slice(0, 3),
+      [{ ...plain, hidden: true, testID: 'title' }, 2, 'RCTText', TITLE, 'Plan'],
+    ],
+  });
+  assert.equal(hiddenTextUnnamedButton(quoted('Plan'), titled), native(titled), 'by its words');
+  assert.equal(
+    hiddenTextUnnamedButton(quoted('title'), titled),
+    undefined,
+    "by a hidden child's test id",
+  );
+  const echoed = card({
+    rows: (r) => [
+      ...r.slice(0, 3),
+      [{ ...plain, hidden: true, testID: 'Plan' }, 2, 'RCTText', TITLE, 'Plan'],
+    ],
+  });
+  assert.equal(
+    hiddenTextUnnamedButton(quoted('Plan'), echoed),
+    native(echoed),
+    'words equal to its id',
+  );
+  const disabled = card({
+    rows: (r) => [r[0], [{ ...pressable(), disabled: true }, 0, 'RCTView', CARD], r[2], r[3]],
+  });
+  assert.equal(hiddenTextUnnamedButton(quoted('Plan'), disabled), undefined, 'React says disabled');
+  for (const [name, change] of [
+    ['disabled', { enabled: false }],
+    ['not hittable', { hittable: false }],
+  ] as const) {
+    const screen = card({ native: change });
+    assert.ok(native(screen), name);
+    assert.equal(hiddenTextUnnamedButton(quoted('Plan'), screen), undefined, name);
+  }
+  // An off-screen node is never observed in a presence read; this pins the shared eligibility alone.
+  const offscreen = card();
+  native(offscreen).offscreen = true;
+  assert.equal(hiddenTextUnnamedButton(quoted('Plan'), offscreen), undefined, 'off screen');
+});
+
+test('N2: a second window with no unnamed button at that frame keeps the proof', () => {
+  const screen = card({
+    extra: [
+      [
+        {
+          ref: '@window2',
+          type: 'Window',
+          parentIndex: 0,
+          rect: { x: 0, y: 0, width: 402, height: 874 },
+        },
+        { status: 'observed', labelSource: 'direct' },
+      ],
+      [twin({ ...CARD, y: 500 }, { parentIndex: 3 })],
+    ],
+  });
+  assert.equal(hiddenTextUnnamedButton(quoted('Plan'), screen), native(screen));
+});
+
+test("N2: frames are compared under each window's transform, never as raw numbers", () => {
+  // The window starts at x 30: the native frame is x 44, React's button x 14.
+  const shifted = card({ origin: 30 });
+  assert.equal(hiddenTextUnnamedButton(quoted('Plan'), shifted), native(shifted));
+  const raw = card({ origin: 30, native: { rect: CARD } });
+  assert.equal(hiddenTextUnnamedButton(quoted('Plan'), raw), undefined);
+});

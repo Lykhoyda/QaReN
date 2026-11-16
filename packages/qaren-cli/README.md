@@ -952,14 +952,25 @@ An executed press spends the fallback's one-tap allowance for that line, and a
 passing step stores the button's testID rather than the hidden child's identity.
 A press still needs the usual verification; dispatch alone does not pass the step.
 
+When the button has neither a label nor a testID, its frame is the only tie. The
+read must hold exactly one native button with no label and no identifier whose
+frame equals the button host's frame. Every window is counted, each under its own
+origin. No other pressable host may have that frame, and every pressable host that
+is not hidden must have a measured frame. That press has no identity to find
+again, so QaReN takes a new full read just before each press, proves the button
+on it again, and presses that read's element. If the proof no longer holds,
+nothing is tapped. The runner cannot re-check an unnamed element at the moment of
+the tap, so the proof on that read stands in for it. A passing step stores no
+selector, so its block is reported not saved and later runs walk the step afresh.
+
 Without that proof, QaReN does not tap through the hidden text. When the current
 line's latest admitted read proves the hidden text, a failed Tap, quoted Wait or
 literal check explains that the app hides it from accessibility. When known, the
 failure identifies its containing button by frame and testID and suggests the
 button's own label or testID, or adding an `accessibilityLabel` in the app.
 Hidden text alone never makes a Wait or literal check pass. This fallback does
-not support Android or a testID button inside a popup; a button with neither a
-label nor a testID still needs an app change. The
+not support Android or a testID button inside a popup, and a text carried by more
+than one hidden element presses nothing. The
 [hidden-text walker tests](../qaren-core/test/unit/qa/hidden-text-walker.test.ts)
 cover the tap and failure behavior.
 

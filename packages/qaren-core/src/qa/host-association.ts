@@ -759,3 +759,60 @@ export function associateHosts(
   }
   return associations;
 }
+
+// iOS only, beside the association and never changing it: a pressable host with no test id is tied by
+// its frame alone, so the frame must name exactly one unnamed native node, counted across every window
+// under that window's own transform, and exactly one pressable host. Native index to host index.
+export function unnamedFrameMatches(
+  nodes: NativeNode[],
+  evidence: ReactHostEvidence | undefined,
+  presence: NativePresence | undefined,
+): Map<number, number> {
+  const matches = new Map<number, number>();
+  const snapshot = evidence?.typography;
+  if (!evidence?.complete || !snapshot?.complete || presence?.source !== 'xcui-live')
+    return matches;
+  const pressable = snapshot.nodes.filter(
+    (host) => evidence.hosts[host.hostIndex]?.capabilities.press,
+  );
+  // An unmeasured pressable could share the frame unseen.
+  if (pressable.some((host) => !host.rect && !evidence.hosts[host.hostIndex].hidden))
+    return matches;
+  const duplicates = duplicateNodes(nodes, presence);
+  const refs = new Map<string, number>();
+  for (const node of nodes) refs.set(node.ref, (refs.get(node.ref) ?? 0) + 1);
+  const unnamed = nodes.flatMap((node, i) => {
+    const windowIndex = nativeWindowIndex(nodes, i);
+    const window = windowIndex === undefined ? undefined : nodes[windowIndex].rect;
+    if (
+      !window ||
+      !Object.values(window).every(Number.isFinite) ||
+      window.width <= 0 ||
+      window.height <= 0 ||
+      presence.nodes[i]?.status !== 'observed' ||
+      !node.ref?.trim() ||
+      refs.get(node.ref) !== 1 ||
+      duplicates.has(i) ||
+      node.identifier ||
+      node.label
+    )
+      return [];
+    return [{ i, transform: { scale: 1, x: window.x, y: window.y, tolerance: 0 } }];
+  });
+  for (const host of pressable) {
+    const facts = evidence.hosts[host.hostIndex];
+    if (facts.hidden || facts.testID) continue;
+    const found = unnamed.filter(
+      ({ i, transform }) =>
+        compatible(host.hostType, nodes[i].type) && sameFrame(host.rect, nodes[i].rect, transform),
+    );
+    if (found.length !== 1) continue;
+    const [{ i, transform }] = found;
+    if (
+      pressable.some((other) => other !== host && sameFrame(other.rect, nodes[i].rect, transform))
+    )
+      continue;
+    matches.set(i, host.hostIndex);
+  }
+  return matches;
+}
