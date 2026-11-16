@@ -760,9 +760,7 @@ export function associateHosts(
   return associations;
 }
 
-// iOS only, beside the association and never changing it: a pressable host with no test id is tied by
-// its frame alone, so the frame must name exactly one unnamed native node, counted across every window
-// under that window's own transform, and exactly one pressable host. Native index to host index.
+// Frame-only ties require one native button across all windows and one pressable host.
 export function unnamedFrameMatches(
   nodes: NativeNode[],
   evidence: ReactHostEvidence | undefined,

@@ -948,18 +948,20 @@ button. The same admitted read must prove one hidden host, its nearest non-hidde
 pressable with its own unique testID, and one associated native button that is
 enabled, hittable and on screen; the hidden host's frame must fit inside the
 button's frame. QaReN rebinds that button on the next read before pressing it.
-An executed press spends the fallback's one-tap allowance for that line, and a
-passing step stores the button's testID rather than the hidden child's identity.
+An executed press spends that line's one-tap allowance, including later retries
+if the text becomes accessible. A passing step stores the button's testID rather
+than the hidden child's identity.
 A press still needs the usual verification; dispatch alone does not pass the step.
 
 When the button has neither a label nor a testID, its frame is the only tie. The
 read must hold exactly one native button whose frame equals the button host's
-frame, and that button must have no label and no identifier. Every window is counted,
-each under its own origin. No other pressable host may have that frame, and every pressable host that
-is not hidden must have a measured frame. Pressable inline text spans are never
-measured; one inside the button, or in a text whose frame overlaps it, also
-stops the press. That press has no identity to find
-again, so QaReN takes a new full read just before each press, proves the button
+frame, and that button must have no label and no identifier. Every window is
+counted, each under its own origin. No other pressable host may have that frame.
+Every non-hidden pressable host must have a measured frame, except inline text
+spans, which are never measured. An unmeasured pressable inline span inside the
+button, in text whose frame overlaps it, or without a measured containing text
+also stops the press. That press has no identity to find again, so QaReN takes a
+new full read just before each press, proves the button
 on it again, and presses that read's element. If the proof no longer holds,
 nothing is tapped. The runner cannot re-check an unnamed element at the moment of
 the tap, so the proof on that read stands in for it. A passing step stores no
