@@ -591,7 +591,10 @@ test('dialog recovery after margin clearance preserves the step-wide scroll proh
   };
   const outcome = await walkBlock(tap(), f.deps);
   assert.equal(outcome.block.outcome, 'fail', JSON.stringify({ calls: f.calls, outcome }));
-  assert.ok(outcome.rows.some((row) => row.outcome === 'retry'), JSON.stringify(f.calls));
+  assert.ok(
+    outcome.rows.some((row) => row.outcome === 'retry'),
+    JSON.stringify(f.calls),
+  );
   assert.equal(count(f, 'dialog'), 1);
   assert.equal(count(f, 'dismiss'), 1);
   assert.equal(count(f, 'scroll'), 0);
