@@ -566,6 +566,16 @@ test('fully visible unnamed buttons need proven presence and a resolved centre h
   }
 });
 
+test('an unmeasured plain view painted over a visible unnamed card leaves its centre hit unresolved: nothing is pressed', async () => {
+  // A plain sibling with no measured frame, painted last, could lie over the centre unseen.
+  const overlay: ListOptions = { offset: 159, extraRows: [[plain, 0, 'RCTView', undefined]] };
+  const run = await walkList(overlay, { offset: 59 });
+  assert.equal(run.outcome.block.outcome, 'fail', run.reason);
+  assert.deepEqual(run.scrolls, [], run.log.join());
+  assert.deepEqual(run.presses, [], run.log.join());
+  assert.doesNotMatch(run.reason, /cut off by its scroll area|is under another element/);
+});
+
 test('a partially clipped observed hittable button with a clear centre is pressed without scrolling', async () => {
   const run = await walkList({ offset: 205 }, undefined);
   assert.equal(run.outcome.block.outcome, 'pass', run.reason);

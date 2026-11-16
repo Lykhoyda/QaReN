@@ -808,8 +808,9 @@ export function unnamedFrameMatches(
   const unmeasured = pressable.filter((host) => !host.rect);
   if (unmeasured.some((host) => !inline(host))) return matches;
   const links = unmeasured.filter(inline);
-  // React rects are window points, the space the centre is taken in; hidden hosts still take touches.
-  const hitAt = reactHitTest(evidence, (rect) => rect, true);
+  // React rects are window points, the space the centre is taken in; hidden hosts still take touches,
+  // and an unmeasured non-text host leaves the hit unresolved.
+  const hitAt = reactHitTest(evidence, (rect) => rect, true, true);
   const viewport = outsideViewport(nodes);
   const duplicates = duplicateNodes(nodes, presence);
   const refs = new Map<string, number>();
