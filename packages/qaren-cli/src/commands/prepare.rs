@@ -7,7 +7,7 @@ use crate::cancel::ensure_running;
 use crate::candidate;
 use crate::events::StageState;
 use crate::exec::{CmdSpec, Runner};
-use crate::failure::{Failure, FailureCode, RecoveryReason};
+use crate::failure::{Failure, FailureCode, LimitEnd, LimitFacts, RecoveryReason};
 use crate::fingerprint::{self, NativeFingerprint};
 use crate::handoff::{self, ExpectedReceipt, HandoffDocument, HandoffState, HANDOFF_SCHEMA};
 use crate::pool::{self, PoolMember};
@@ -78,8 +78,10 @@ pub(crate) struct Ctx<'a> {
     pub(crate) manifest_warm: Option<crate::core::ManifestWarm>,
     // The run owns this exact iOS simulator and pins its locale and keyboard before launch.
     pub(crate) lane_owned: bool,
-    // Monotonic end of the iOS build window: lock wait, prebuild, build, verification and publication share it.
+    // Monotonic end of the iOS build window, set when the lock is claimed: prebuild, the slot wait, build, verification and publication share it.
     pub(crate) build_deadline_ms: Option<u64>,
+    // The compile limit learned from this machine's earlier builds, read once per run.
+    pub(crate) build_limit: Option<crate::build_timings::Limit>,
     // Memory-wait time this build admission has spent of its one 10-minute allowance.
     pub(crate) host_wait_ms: u64,
 }
@@ -674,6 +676,7 @@ fn prepare_validated(
         manifest_warm: None,
         lane_owned: scenario.platform == Platform::Ios,
         build_deadline_ms: None,
+        build_limit: None,
         host_wait_ms: 0,
     };
     let t = ctx.mark("validate", started_ms);
@@ -682,8 +685,10 @@ fn prepare_validated(
     }
     // Its own key: a later device_pool note (reused, created or fresh) would overwrite it.
     if !log_skipped.is_empty() {
-        ctx.notes
-            .push(("device_pool_log_skipped".to_string(), log_skipped.join("; ")));
+        ctx.notes.push((
+            "device_pool_log_skipped".to_string(),
+            log_skipped.join("; "),
+        ));
     }
     if let Some(orphan) = ctx.record.resources.lease.as_ref().and_then(|l| {
         l.released_orphan
@@ -2764,8 +2769,16 @@ fn claim_ios_build_lock(
             .build_seconds
             .saturating_mul(1000),
     );
-    ctx.build_deadline_ms = Some(deadline);
-    claim_waiting_build_lock(ctx, lock_root, name, holder, deadline, false)
+    claim_waiting_build_lock(ctx, lock_root, name, holder, deadline, false)?;
+    learn_build_limit(ctx);
+    // Waiting for the lock is not work: the window starts at the claim.
+    let window = build_ceiling_seconds(build_limit_seconds(ctx));
+    ctx.build_deadline_ms = Some(
+        ctx.runner
+            .monotonic_ms()
+            .saturating_add(window.saturating_mul(1000)),
+    );
+    Ok(())
 }
 
 fn claim_build_slot(ctx: &mut Ctx) -> Result<(), Failure> {
@@ -2784,15 +2797,14 @@ fn claim_build_slot(ctx: &mut Ctx) -> Result<(), Failure> {
                 "retain the run for cleanup",
             )
         })?;
-    let deadline = ctx.build_deadline_ms.unwrap_or_else(|| {
-        ctx.runner.monotonic_ms().saturating_add(
-            ctx.record
-                .scenario
-                .deadlines
-                .build_seconds
-                .saturating_mul(1000),
-        )
-    });
+    // Bounded by itself from its own start; the time it takes stays inside the build window.
+    let deadline = ctx.runner.monotonic_ms().saturating_add(
+        ctx.record
+            .scenario
+            .deadlines
+            .build_seconds
+            .saturating_mul(1000),
+    );
     let holder = lock_holder_for(ctx);
     claim_waiting_build_lock(ctx, &lock_root, "native-build-slot", holder, deadline, true)
 }
@@ -2875,9 +2887,10 @@ fn claim_waiting_build_lock(
             deadline = deadline.saturating_add(used);
             wait.deadline_ms = Some(deadline);
             ctx.runner.extend_deadline(used);
-            if ctx.build_deadline_ms.is_some() {
-                ctx.build_deadline_ms = Some(deadline);
-            }
+            // The build window has its own end (the slot wait has its own bound): move it by the same time.
+            ctx.build_deadline_ms = ctx
+                .build_deadline_ms
+                .map(|window| window.saturating_add(used));
             if let Err(f) = result {
                 wait.finish(ctx, start, StageState::Failed, Some(&f.code_str()));
                 return Err(f);
@@ -3372,7 +3385,7 @@ pub(crate) fn run_clean_preparation(ctx: &mut Ctx, plan: &BuildPlan) -> Result<(
             &ctx.record.scenario.deps.registry_auth_env,
         );
         let prebuild = if ctx.record.scenario.platform == Platform::Ios {
-            run_finite_build(ctx, &spec)?;
+            run_finite_build(ctx, &spec, BuildWork::Prebuild)?;
             crate::exec::CmdOutput::success("")
         } else {
             ctx.runner.run(&spec)
@@ -4943,10 +4956,17 @@ fn release_build_slot(ctx: &mut Ctx) -> Result<(), Failure> {
     Ok(())
 }
 
-fn run_finite_build(ctx: &mut Ctx, spec: &CmdSpec) -> Result<(), Failure> {
+// Only compilation gets the progress rule, the timing and the sample; prebuild keeps its bound.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BuildWork {
+    Prebuild,
+    Compile,
+}
+
+fn run_finite_build(ctx: &mut Ctx, spec: &CmdSpec, work: BuildWork) -> Result<(), Failure> {
     claim_build_slot(ctx)?;
     let mut cleanup_attempted = false;
-    let result = run_finite_build_command(ctx, spec, &mut cleanup_attempted);
+    let result = run_finite_build_command(ctx, spec, work, &mut cleanup_attempted);
     if result.is_err() && !cleanup_attempted {
         let _ = super::cleanup::cleanup_build(ctx.runner, &mut ctx.record, &ctx.runs_root);
     }
@@ -5006,6 +5026,7 @@ fn note_build_policy(ctx: &mut Ctx, label: &str, jobs: &str) {
 fn run_finite_build_command(
     ctx: &mut Ctx,
     spec: &CmdSpec,
+    work: BuildWork,
     cleanup_attempted: &mut bool,
 ) -> Result<(), Failure> {
     ensure_running(ctx.runner, "build")?;
@@ -5109,12 +5130,26 @@ fn run_finite_build_command(
     drop(child.stdout);
     let mut exit = None;
     let mut cancelled = ctx.runner.cancellation();
+    let compile = work == BuildWork::Compile;
+    let limit_s = if compile {
+        build_limit_seconds(ctx)
+    } else {
+        spec.timeout_seconds
+    };
+    let work_start = ctx.runner.monotonic_ms();
+    let hard = work_start
+        .saturating_add(spec.timeout_seconds.saturating_mul(1000))
+        .min(ctx.build_deadline_ms.unwrap_or(u64::MAX));
+    let idle_ms = build_idle_seconds(limit_s).saturating_mul(1000);
+    let mut last_count = if compile {
+        ctx.runner.log_lines(&log).unwrap_or(0)
+    } else {
+        0
+    };
+    let mut last_growth = work_start;
+    let mut ended_by = None;
     if started {
-        let deadline = ctx
-            .runner
-            .monotonic_ms()
-            .saturating_add(spec.timeout_seconds.saturating_mul(1000))
-            .min(ctx.build_deadline_ms.unwrap_or(u64::MAX));
+        let mut next_read = work_start.saturating_add(1000);
         loop {
             if let Some(reason) = ctx.runner.cancellation() {
                 cancelled = Some(reason);
@@ -5126,11 +5161,42 @@ fn run_finite_build_command(
                     break;
                 }
                 Err(_) => break,
-                Ok(None) if ctx.runner.monotonic_ms() >= deadline => break,
-                Ok(None) => ctx.runner.sleep(Duration::from_millis(100)),
+                Ok(None) => {}
             }
+            let now = ctx.runner.monotonic_ms();
+            if now >= hard {
+                ended_by = Some(if compile {
+                    LimitEnd::Window
+                } else {
+                    LimitEnd::CommandLimit
+                });
+                break;
+            }
+            if compile {
+                if now >= next_read {
+                    next_read = now.saturating_add(1000);
+                    match ctx.runner.log_lines(&log) {
+                        Some(count) if count > last_count => {
+                            last_count = count;
+                            last_growth = now;
+                        }
+                        // A drain that started again counts from a smaller number: a new baseline.
+                        Some(count) => last_count = count,
+                        None => {}
+                    }
+                }
+                if now.saturating_sub(work_start) >= limit_s.saturating_mul(1000)
+                    && now.saturating_sub(last_growth) >= idle_ms
+                {
+                    ended_by = Some(LimitEnd::NoProgress);
+                    break;
+                }
+            }
+            ctx.runner.sleep(Duration::from_millis(100));
         }
     }
+    let work_end = ctx.runner.monotonic_ms();
+    let work_ms = work_end.saturating_sub(work_start);
     *cleanup_attempted = true;
     let mut outcome = super::cleanup::cleanup_build(ctx.runner, &mut ctx.record, &ctx.runs_root)
         .expect("build recorded");
@@ -5166,6 +5232,60 @@ fn run_finite_build_command(
             ),
         )
         .with_evidence(vec![super::log_tail(&log, 25)]);
+        if let Some(ended_by) = ended_by {
+            let window_s = if compile || ctx.build_deadline_ms.is_some() {
+                build_ceiling_seconds(build_limit_seconds(ctx))
+            } else {
+                spec.timeout_seconds
+            };
+            let facts = LimitFacts {
+                phase: if compile { "native_build" } else { "prebuild" }.into(),
+                setting: "deadlines.build_seconds".into(),
+                limit_s,
+                window_s,
+                idle_s: compile.then_some(idle_ms / 1000),
+                elapsed_s: work_ms / 1000,
+                ended_by,
+                last_progress_age_s: compile.then_some(work_end.saturating_sub(last_growth) / 1000),
+                next_limit_s: match ended_by {
+                    LimitEnd::Window => (window_s < BUILD_CEILING_S).then_some(window_s),
+                    LimitEnd::NoProgress | LimitEnd::CommandLimit => Some(limit_s),
+                },
+                learned: compile
+                    && ctx
+                        .build_limit
+                        .as_ref()
+                        .is_some_and(crate::build_timings::Limit::learned),
+            };
+            let given = if spec.timeout_seconds < ctx.record.scenario.deadlines.build_seconds {
+                "what was left of the build window".to_string()
+            } else {
+                format!("the limit of {limit_s} s")
+            };
+            let age = facts.last_progress_age_s.unwrap_or_default();
+            let detail = match ended_by {
+                LimitEnd::NoProgress => format!(
+                    "the native build was stopped after {} s: it had produced no output for {age} s, past its limit of {limit_s} s; see {}",
+                    facts.elapsed_s,
+                    log.display()
+                ),
+                LimitEnd::Window => format!(
+                    "the native build was stopped after {} s: it reached the end of its window of {window_s} s; its last output came {age} s ago; see {}",
+                    facts.elapsed_s,
+                    log.display()
+                ),
+                LimitEnd::CommandLimit => format!(
+                    "prebuild was stopped after {} s, the time it was given: {given}; see {}",
+                    facts.elapsed_s,
+                    log.display()
+                ),
+            };
+            failure.detail = crate::redact::OutputText::from_output(&detail);
+            failure.next_action = crate::redact::OutputText::from_output(&facts.remedy());
+            ctx.notes
+                .push(("build_failure_next_action".into(), facts.remedy()));
+            return Err(failure.with_limit(facts));
+        }
         if crate::redact::is_registry_child(&spec.label) && !spec.registry_auth_env.is_empty() {
             failure.next_action = crate::redact::OutputText::from_output(&format!("dependency output was withheld; check the declared registry auth environment names and registry setup, then qaren cleanup {} --json", ctx.record.run_id));
         } else if started
@@ -5206,7 +5326,79 @@ fn run_finite_build_command(
         }
         return Err(failure);
     }
+    if compile {
+        // The compile command's own time: no lock wait, slot wait, prebuild or cleanup.
+        ctx.timings.push(("native_build".into(), work_ms));
+        if work_ms > limit_s.saturating_mul(1000) {
+            ctx.notes.push((
+                "build_limit".into(),
+                format!(
+                    "limit {limit_s} s; the build took {} s and went on because it kept producing output; window {} s",
+                    work_ms / 1000,
+                    build_ceiling_seconds(limit_s)
+                ),
+            ));
+        }
+        // A forecast: the next run reads the record again, and another run may replace it first.
+        let next = match build_timings_path(ctx) {
+            Some(path) => {
+                let sample = crate::build_timings::Sample {
+                    work_s: work_ms.div_ceil(1000),
+                    at: timefmt::iso8601_utc(ctx.runner.now_epoch_ms()),
+                };
+                let samples = crate::build_timings::append(&path, sample).unwrap_or_else(
+                    |(samples, kind)| {
+                        ctx.notes.push((
+                            "build_timings".into(),
+                            format!("this build's time could not be recorded: {kind}"),
+                        ));
+                        samples
+                    },
+                );
+                crate::build_timings::learned_limit(
+                    ctx.record.scenario.deadlines.build_seconds,
+                    &samples,
+                )
+            }
+            None => limit_s,
+        };
+        ctx.notes
+            .push(("build_next_limit".into(), format!("{next} s")));
+    }
     Ok(())
+}
+
+fn build_timings_path(ctx: &Ctx) -> Option<PathBuf> {
+    crate::build_timings::path(
+        &ctx.runs_root,
+        platform_dir(ctx.record.scenario.platform),
+        &ctx.record.candidate.app_id,
+    )
+}
+
+// Reads this machine's earlier compile times once per run, before the limit is first used.
+fn learn_build_limit(ctx: &mut Ctx) {
+    if ctx.build_limit.is_some() {
+        return;
+    }
+    let configured = ctx.record.scenario.deadlines.build_seconds;
+    let limit = crate::build_timings::limit(build_timings_path(ctx).as_deref(), configured);
+    if let Some(reason) = &limit.unreadable {
+        ctx.notes.push((
+            "build_timings".into(),
+            format!("earlier build times were not used ({reason}); the configured limit of {configured} s applies"),
+        ));
+    }
+    if limit.learned() {
+        ctx.notes.push((
+            "build_limit_learned".into(),
+            format!(
+                "limit {} s, learned from {} earlier builds on this machine (configured {configured} s)",
+                limit.limit_s, limit.samples
+            ),
+        ));
+    }
+    ctx.build_limit = Some(limit);
 }
 
 fn inspect_interface_failure(
@@ -5312,6 +5504,7 @@ fn with_build_window<T>(
         manifest_warm: ctx.manifest_warm.take(),
         lane_owned: ctx.lane_owned,
         build_deadline_ms: ctx.build_deadline_ms,
+        build_limit: ctx.build_limit.take(),
         host_wait_ms: ctx.host_wait_ms,
     };
     let result = operation(&mut scoped);
@@ -5327,8 +5520,11 @@ fn with_build_window<T>(
     ctx.manifest_warm = scoped.manifest_warm;
     ctx.lane_owned = scoped.lane_owned;
     ctx.build_deadline_ms = scoped.build_deadline_ms;
+    ctx.build_limit = scoped.build_limit;
     ctx.host_wait_ms = scoped.host_wait_ms;
-    if !matches!(&result, Err(failure) if failure.code == FailureCode::BuildContended) {
+    // A cut for time keeps its own facts and log lines over the generic budget failure.
+    if !matches!(&result, Err(failure) if failure.code == FailureCode::BuildContended || failure.limit.is_some())
+    {
         budget?;
     }
     result
@@ -5372,7 +5568,7 @@ fn build_ios(ctx: &mut Ctx) -> Result<(), Failure> {
     let mut build = ios::build_spec(
         &project_root,
         &output,
-        build_seconds_left(ctx),
+        build_work_seconds_left(ctx),
         workspace.as_ref(),
         jobs,
         arm64.is_ok(),
@@ -5388,7 +5584,7 @@ fn build_ios(ctx: &mut Ctx) -> Result<(), Failure> {
             }
         }
     }
-    let built = run_finite_build(ctx, &build);
+    let built = run_finite_build(ctx, &build, BuildWork::Compile);
     if wrapped {
         applied = ios::expo_jobs_applied(&output, &applied);
     }
@@ -5433,6 +5629,38 @@ fn build_ios(ctx: &mut Ctx) -> Result<(), Failure> {
     ensure_build_budget(ctx)?;
     ctx.record.build.as_mut().expect("build planned").artifact = Some(artifact);
     ctx.save()
+}
+
+const BUILD_CEILING_S: u64 = 7200;
+
+// The limit of compilation; the lock wait, the slot wait and prebuild read build_seconds directly.
+pub(crate) fn build_limit_seconds(ctx: &Ctx) -> u64 {
+    ctx.build_limit
+        .as_ref()
+        .map_or(ctx.record.scenario.deadlines.build_seconds, |limit| {
+            limit.limit_s
+        })
+}
+
+pub(crate) fn build_ceiling_seconds(limit: u64) -> u64 {
+    limit.saturating_mul(3).min(BUILD_CEILING_S).max(limit)
+}
+
+// A healthy clean build was measured silent for 93 s, so the floor is 300 s.
+pub(crate) fn build_idle_seconds(limit: u64) -> u64 {
+    (limit / 4).clamp(300, 600)
+}
+
+// A compile's timeout: what is left of the iOS window, or the ceiling where there is none.
+fn build_work_seconds_left(ctx: &Ctx) -> u64 {
+    ctx.build_deadline_ms.map_or_else(
+        || build_ceiling_seconds(build_limit_seconds(ctx)),
+        |deadline| {
+            deadline
+                .saturating_sub(ctx.runner.monotonic_ms())
+                .div_ceil(1000)
+        },
+    )
 }
 
 // Seconds left in the build window, never more than the scenario's own build deadline.
@@ -5518,6 +5746,7 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
                             deadline,
                             &ctx.record.scenario.deps.registry_auth_env,
                         ),
+                        BuildWork::Prebuild,
                     )?;
                 }
                 if !project_root.join("android").join("gradlew").is_file() {
@@ -5529,15 +5758,17 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
                         ),
                     ));
                 }
+                learn_build_limit(ctx);
+                let compile = build_work_seconds_left(ctx);
                 let (gradle_opts, applied) = gradle_build_opts(ctx, false);
                 let gradle = android::gradle_assemble_spec(
                     &project_root,
                     &emulator.abi,
-                    deadline,
+                    compile,
                     gradle_opts.as_deref(),
                 );
                 note_build_policy(ctx, &gradle.label, &applied);
-                run_finite_build(ctx, &gradle)?;
+                run_finite_build(ctx, &gradle, BuildWork::Compile)?;
                 let (path, kind) =
                     locate_built_apk(&project_root).map_err(|e| build_failure(ctx, e))?;
                 let sha256 = buildplan::hash_artifact(&path).map_err(|e| build_failure(ctx, e))?;
@@ -6876,6 +7107,7 @@ mod launch_tests {
                 manifest_warm: None,
                 lane_owned: false,
                 build_deadline_ms: None,
+                build_limit: None,
                 host_wait_ms: 0,
             };
             ctx.save().unwrap();

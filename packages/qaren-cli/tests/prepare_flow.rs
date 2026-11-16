@@ -26,10 +26,7 @@ fn host_samples_bracket_prepare_and_survive_a_pre_record_refusal() {
             script_ios_prepare(&mut inner, &repo, CmdOutput::success(""));
         }
         let mut runner = common::host::HostRunner::new(inner);
-        runner.processes = Some(
-            "  4242 960.0 S    netsimd /sdk/emulator/netsimd\n"
-                .into(),
-        );
+        runner.processes = Some("  4242 960.0 S    netsimd /sdk/emulator/netsimd\n".into());
         let receipt = prepare(&mut runner, &prepare_args(&scenario, false, None));
         assert_eq!(
             receipt.result,
@@ -4314,6 +4311,9 @@ impl qaren::exec::Runner for RecordProbeRunner {
     fn sleep(&mut self, duration: std::time::Duration) {
         self.inner.sleep(duration)
     }
+    fn log_lines(&mut self, log: &std::path::Path) -> Option<u64> {
+        self.inner.log_lines(log)
+    }
     fn now_epoch_ms(&self) -> u64 {
         self.inner.now_epoch_ms()
     }
@@ -5117,9 +5117,14 @@ fn a_build_that_outlives_the_window_is_still_stopped_and_releases_the_lock() {
     assert_eq!(mock.remaining(), 0);
     let failure = receipt.failure.as_ref().unwrap();
     assert_eq!(failure.code, FailureCode::BuildFailed, "{failure:?}");
+    // A silent build at 30 s: the idle floor of 300 s outlasts the 90 s window, which ends it.
     assert_eq!(
         failure.build_recovery().unwrap().reason,
-        qaren::failure::RecoveryReason::BuildBudgetExhausted
+        qaren::failure::RecoveryReason::BuildTimeLimit
+    );
+    assert_eq!(
+        failure.limit.as_ref().unwrap().ended_by,
+        qaren::failure::LimitEnd::Window
     );
     let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
     assert!(record.resources.build_process().is_none(), "build stopped");
@@ -5137,7 +5142,8 @@ fn build_budget_expiry_after_build_releases_lock_without_publication() {
     mock.expect_run("ps", CmdOutput::success(LSTART));
     mock.expect_run("ps", CmdOutput::success("qaren-build"));
     mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
-    mock.advance_on = Some(("ps -A".into(), 2_400_000));
+    // Spend the whole window (three times the default limit) from the claim.
+    mock.advance_on = Some(("ps -A".into(), 7_200_000));
     let args = prepare_args(&scenario_path, false, None);
     let receipt = prepare(&mut mock, &args);
     assert_eq!(receipt.result, ReceiptResult::Failed);
@@ -6236,7 +6242,8 @@ fn prepare_keeps_scenario_deadlines_when_app_config_disagrees() {
                 .timeout_seconds
         };
         assert_eq!(timeout("pnpm-install"), deps);
-        assert_eq!(timeout("expo-run-ios"), build);
+        // The compile's timeout is the build window: three times the limit, at most 7200 s.
+        assert_eq!(timeout("expo-run-ios"), (build * 3).min(7200));
         assert_eq!(timeout("simctl-bootstatus"), boot);
         assert_eq!(
             std::fs::read_to_string(config_dir.join("config.yaml")).unwrap(),
@@ -9077,7 +9084,8 @@ fn an_unreadable_candidate_at_the_post_build_recheck_refuses_as_unavailable() {
 #[test]
 fn build_probe_timeouts_prioritize_expiry_over_candidate_drift() {
     use qaren::failure::RecoveryReason;
-    for elapsed_ms in [1000, 30_000] {
+    // The window is three times build_seconds from the lock claim: 90 s here.
+    for elapsed_ms in [1000, 90_000] {
         let repo = common::temp_repo();
         let scenario = write_scenario(
             &repo,
@@ -9109,7 +9117,7 @@ fn build_probe_timeouts_prioritize_expiry_over_candidate_drift() {
         mock.advance_on = Some(("status --porcelain".into(), elapsed_ms));
         let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
         let failure = receipt.failure.unwrap();
-        if elapsed_ms == 30_000 {
+        if elapsed_ms == 90_000 {
             assert_eq!(failure.code, FailureCode::BuildFailed);
             assert_eq!(failure.phase, "build");
             assert_eq!(
@@ -9348,4 +9356,375 @@ fn fingerprint_policy_is_not_diagnosed_before_any_manifest_attempt() {
     assert!(!failure.next_action.contains("runtimeVersion"));
     assert!(failure.next_action.contains("Metro answered /status"));
     assert_eq!(mock.remaining(), 0);
+}
+
+// AI-471: the native build's own clock; past its limit, progress decides.
+
+fn growing(reads: u64) -> std::collections::VecDeque<Option<u64>> {
+    (0..=reads).map(Some).collect()
+}
+
+fn script_ios_ready_with_build(
+    mock: &mut MockRunner,
+    repo: &std::path::Path,
+    build: impl FnOnce(&mut MockRunner),
+) {
+    let empty = |m: &mut MockRunner| {
+        m.expect_run("ls-files", CmdOutput::success(""));
+        common::script_xcode(m);
+    };
+    script_ios_prepare_to_claim(mock, repo);
+    build(mock);
+    script_ios_prepublish(mock, "", empty);
+    common::script_ios_after_publish(
+        mock,
+        CmdOutput::success(""),
+        |m| common::script_proven_install(m, CmdOutput::success("")),
+        common::script_ios_launch,
+    );
+    script_ios_readiness(mock);
+    empty(mock);
+}
+
+// A compile that never exits on its own, then its teardown: inventory, TERM, KILL, absence.
+fn timed_out_ios_build(
+    build_seconds: Option<u64>,
+    counts: std::collections::VecDeque<Option<u64>>,
+) -> (qaren::receipt::Receipt, std::path::PathBuf) {
+    timed_out_ios_build_seeded(build_seconds, counts, |_| {})
+}
+
+// `seed` prepares the machine's runs root (the repo here) before the run.
+fn timed_out_ios_build_seeded(
+    build_seconds: Option<u64>,
+    counts: std::collections::VecDeque<Option<u64>>,
+    seed: impl FnOnce(&std::path::Path),
+) -> (qaren::receipt::Receipt, std::path::PathBuf) {
+    let repo = common::temp_repo();
+    seed(&repo);
+    let deadlines = build_seconds
+        .map(|s| format!("deadlines:\n  build_seconds: {s}\n"))
+        .unwrap_or_default();
+    let scenario_path = write_scenario(&repo, &format!("{}{deadlines}", ios_scenario_yaml(8791)));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_to_claim(&mut mock, &repo);
+    mock.expect_spawn_piped("expo run:ios", 5000, "", None);
+    mock.expect_run("ps", CmdOutput::success(LSTART));
+    mock.expect_run("ps", CmdOutput::success("qaren-build"));
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n5000 5000 S\n"));
+    mock.expect_run("ps -p 5000 -o lstart=", CmdOutput::success(LSTART));
+    mock.expect_run("ps -p 5000 -o stat=", CmdOutput::success("S"));
+    mock.expect_run("lstart=", CmdOutput::success(LSTART));
+    mock.expect_run("stat=", CmdOutput::success("S"));
+    mock.expect_run("/bin/kill -TERM -- -5000", CmdOutput::success(""));
+    mock.expect_run("lstart=", CmdOutput::success(LSTART));
+    mock.expect_run("stat=", CmdOutput::success("S"));
+    mock.expect_run("/bin/kill -KILL -- -5000", CmdOutput::success(""));
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    mock.scripted_log_lines = counts;
+    let args = prepare_args(&scenario_path, false, None);
+    let receipt = prepare(&mut mock, &args);
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(receipt.result, ReceiptResult::Failed);
+    let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
+    assert!(record.resources.build_process().is_none(), "build stopped");
+    assert!(record.resources.build_lock.is_none());
+    assert!(!args.lock_root.join("native-build-ios").exists());
+    (receipt, repo)
+}
+
+fn limit_of(receipt: &qaren::receipt::Receipt) -> &qaren::failure::LimitFacts {
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::BuildFailed, "{failure:?}");
+    failure
+        .limit
+        .as_deref()
+        .expect("a cut for time carries its limit")
+}
+
+#[test]
+fn b1_a_build_past_its_limit_that_keeps_writing_passes() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_ready_with_build(&mut mock, &repo, |m| {
+        common::script_finite_ios_build_exiting_after(m, "expo run:ios", 3_300_000)
+    });
+    mock.scripted_log_lines = growing(3400);
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(mock.remaining(), 0);
+    let took = receipt.timings_ms["native_build"];
+    assert!((3_300_000..3_300_200).contains(&took), "{took}");
+    assert_eq!(
+        receipt.outcomes["build_limit"],
+        "limit 2400 s; the build took 3300 s and went on because it kept producing output; window 7200 s"
+    );
+    // The forecast after this build's sample: 1.5 times 3300 s.
+    assert_eq!(receipt.outcomes["build_next_limit"], "4950 s");
+}
+
+#[test]
+fn b2_waiting_for_the_lock_is_not_build_time() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let lock = seed_build_holder(&repo);
+    let mut mock = MockRunner::new();
+    script_ios_ready_with_build(&mut mock, &repo, |m| {
+        script_live_idle_holder_polls(m, 900);
+        // A static log: no line count at all, and it still finishes inside its limit.
+        common::script_finite_ios_build_exiting_after(m, "expo run:ios", 2_000_000);
+    });
+    let released = lock.clone();
+    let mut polls = 0;
+    mock.observe = Some(Box::new(move |spec| {
+        if spec.label == "ps-groups" {
+            polls += 1;
+            if polls == 900 {
+                std::fs::remove_dir_all(&released).unwrap();
+            }
+        }
+    }));
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(receipt.build_lock.unwrap().waited_s, 900);
+    let took = receipt.timings_ms["native_build"];
+    assert!((2_000_000..2_000_200).contains(&took), "{took}");
+}
+
+#[test]
+fn b3_b6_b7_a_build_that_stands_still_is_cut_and_says_what_ran_out() {
+    let (receipt, _repo) = timed_out_ios_build(None, growing(2000));
+    let limit = limit_of(&receipt);
+    assert_eq!(limit.phase, "native_build");
+    assert_eq!(limit.setting, "deadlines.build_seconds");
+    assert_eq!(limit.ended_by, qaren::failure::LimitEnd::NoProgress);
+    assert_eq!((limit.elapsed_s, limit.limit_s), (2600, 2400));
+    assert_eq!((limit.window_s, limit.idle_s), (7200, Some(600)));
+    assert_eq!(limit.last_progress_age_s, Some(600));
+    assert_eq!(limit.next_limit_s, Some(2400));
+    // B6: the cut's own detail and log lines reach the receipt; the window check does not replace it.
+    let failure = receipt.failure.as_ref().unwrap();
+    assert!(failure.detail.to_string().starts_with(
+        "the native build was stopped after 2600 s: it had produced no output for 600 s, past its limit of 2400 s; see "
+    ), "{failure:?}");
+    assert_eq!(failure.evidence.len(), 1);
+    // B7: re-run after the run's own cleanup; the cleanup comes first.
+    let recovery = failure.build_recovery().unwrap();
+    assert_eq!(
+        recovery.reason,
+        qaren::failure::RecoveryReason::BuildTimeLimit
+    );
+    assert_eq!(recovery.next_rung, Some(1));
+    assert_eq!(recovery.action, qaren::failure::RecoveryAction::Rerun);
+    assert!(recovery.ladder[0].applicable);
+    assert!(!recovery.requires_user_ok && !recovery.destroys_state);
+    assert!(recovery.own_cleanup_required);
+    assert_eq!(
+        recovery.own_run_id.as_deref(),
+        Some(receipt.run_id.as_str())
+    );
+    assert_eq!(
+        failure.next_action.to_string(),
+        format!(
+            "qaren cleanup {} --json; only after cleanup completes: run again",
+            receipt.run_id
+        )
+    );
+    let json = receipt.to_json();
+    assert!(json.contains("\"reason\": \"build_time_limit\""), "{json}");
+    assert!(json.contains("\"action\": \"rerun\""));
+    assert!(json.contains("\"ended_by\": \"no_progress\""));
+}
+
+#[test]
+fn b3_the_idle_window_floor_at_small_limits() {
+    // 400 s: the last line at 300 s is 100 s old at the limit; cut 300 s after it.
+    let (receipt, _repo) = timed_out_ios_build(Some(400), growing(300));
+    let limit = limit_of(&receipt);
+    assert_eq!(limit.ended_by, qaren::failure::LimitEnd::NoProgress);
+    assert_eq!((limit.elapsed_s, limit.idle_s), (600, Some(300)));
+    // 100 s: the window (300 s) ends before the idle window can run out after the limit.
+    let (receipt, _repo) = timed_out_ios_build(Some(100), growing(90));
+    let limit = limit_of(&receipt);
+    assert_eq!(limit.ended_by, qaren::failure::LimitEnd::Window);
+    assert_eq!((limit.elapsed_s, limit.window_s), (300, 300));
+    assert_eq!(limit.last_progress_age_s, Some(210));
+    assert_eq!(limit.next_limit_s, Some(300));
+}
+
+#[test]
+fn b4_a_build_with_no_progress_is_cut_at_its_limit_exactly() {
+    for counts in [
+        std::iter::repeat_n(Some(7), 2500).collect(),
+        std::collections::VecDeque::new(),
+    ] {
+        let (receipt, _repo) = timed_out_ios_build(None, counts);
+        let limit = limit_of(&receipt);
+        assert_eq!(limit.ended_by, qaren::failure::LimitEnd::NoProgress);
+        assert_eq!(
+            (limit.elapsed_s, limit.last_progress_age_s),
+            (2400, Some(2400))
+        );
+    }
+}
+
+#[test]
+fn b5_a_build_that_always_writes_ends_with_its_window() {
+    let (receipt, _repo) = timed_out_ios_build(None, growing(7300));
+    let limit = limit_of(&receipt);
+    assert_eq!(limit.ended_by, qaren::failure::LimitEnd::Window);
+    assert_eq!((limit.elapsed_s, limit.window_s), (7200, 7200));
+    assert_eq!(limit.next_limit_s, None);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert!(failure
+        .detail
+        .to_string()
+        .contains("it reached the end of its window of 7200 s"));
+    assert!(failure
+        .next_action
+        .contains("build the app with the project's own tools"));
+    let (receipt, _repo) = timed_out_ios_build(Some(600), growing(1900));
+    let limit = limit_of(&receipt);
+    assert_eq!(
+        (limit.ended_by, limit.elapsed_s),
+        (qaren::failure::LimitEnd::Window, 1800)
+    );
+    assert_eq!(limit.next_limit_s, Some(1800));
+    assert!(receipt
+        .failure
+        .as_ref()
+        .unwrap()
+        .next_action
+        .contains("set deadlines.build_seconds to 1800, then run again"));
+}
+
+// AI-471 slice 2: the build's duration is recorded per machine and raises the next limit.
+
+fn timings_file(runs_root: &std::path::Path) -> std::path::PathBuf {
+    qaren::build_timings::path(runs_root, "ios", "com.rndevagent.testapp").unwrap()
+}
+
+fn seed_timings(runs_root: &std::path::Path, work_s: &[u64]) {
+    for &work_s in work_s {
+        qaren::build_timings::append(
+            &timings_file(runs_root),
+            qaren::build_timings::Sample {
+                work_s,
+                at: "2026-11-15T00:00:00Z".into(),
+            },
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn l1_l3_a_passing_build_is_recorded_and_the_next_run_uses_the_learned_limit() {
+    let first = common::temp_repo();
+    let scenario = write_scenario(&first, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_ready_with_build(&mut mock, &first, |m| {
+        common::script_finite_ios_build_exiting_after(m, "expo run:ios", 3_000_000)
+    });
+    mock.scripted_log_lines = growing(3100);
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{:?}",
+        receipt.failure
+    );
+    let samples = qaren::build_timings::read(&timings_file(&first)).unwrap();
+    assert_eq!(samples.iter().map(|s| s.work_s).collect::<Vec<_>>(), [3000]);
+    assert_eq!(receipt.outcomes["build_next_limit"], "4500 s");
+    // Second run on the same machine: a build that stands still is cut at the learned 4500 s.
+    let recorded = std::fs::read(timings_file(&first)).unwrap();
+    let (receipt, _repo) = timed_out_ios_build_seeded(None, Default::default(), |root| {
+        std::fs::create_dir_all(timings_file(root).parent().unwrap()).unwrap();
+        std::fs::write(timings_file(root), &recorded).unwrap();
+    });
+    let limit = limit_of(&receipt);
+    assert_eq!(limit.ended_by, qaren::failure::LimitEnd::NoProgress);
+    assert_eq!((limit.elapsed_s, limit.limit_s), (4500, 4500));
+    assert!(limit.learned);
+    assert_eq!(limit.next_limit_s, Some(4500));
+    assert_eq!(
+        receipt.outcomes["build_limit_learned"],
+        "limit 4500 s, learned from 1 earlier builds on this machine (configured 2400 s)"
+    );
+}
+
+#[test]
+fn l4_a_cut_with_a_learned_limit_names_the_next_limit_by_its_end() {
+    // Learned 6000 s: the window is the 7200 s maximum, so no setting helps.
+    let (receipt, _repo) =
+        timed_out_ios_build_seeded(None, growing(7300), |root| seed_timings(root, &[4000]));
+    let limit = limit_of(&receipt);
+    assert_eq!(
+        (limit.ended_by, limit.elapsed_s),
+        (qaren::failure::LimitEnd::Window, 7200)
+    );
+    assert!(limit.learned);
+    assert_eq!(limit.next_limit_s, None);
+    // Learned 1200 s over a configured 600 s: the window just used (3600 s) is the next limit.
+    let (receipt, _repo) =
+        timed_out_ios_build_seeded(Some(600), growing(3700), |root| seed_timings(root, &[800]));
+    let limit = limit_of(&receipt);
+    assert_eq!(
+        (limit.ended_by, limit.elapsed_s),
+        (qaren::failure::LimitEnd::Window, 3600)
+    );
+    assert_eq!((limit.limit_s, limit.next_limit_s), (1200, Some(3600)));
+    assert!(limit.learned);
+}
+
+#[test]
+fn l5_a_corrupt_record_leaves_the_configured_limit_and_a_note() {
+    let (receipt, _repo) = timed_out_ios_build_seeded(None, Default::default(), |root| {
+        std::fs::create_dir_all(timings_file(root).parent().unwrap()).unwrap();
+        std::fs::write(timings_file(root), "{half").unwrap();
+    });
+    let limit = limit_of(&receipt);
+    assert_eq!((limit.elapsed_s, limit.limit_s), (2400, 2400));
+    assert!(!limit.learned);
+    assert_eq!(
+        receipt.outcomes["build_timings"],
+        "earlier build times were not used (not a build timings record); the configured limit of 2400 s applies"
+    );
+}
+
+#[test]
+fn l6_a_learned_limit_leaves_the_lock_wait_on_the_configured_limit() {
+    let repo = common::temp_repo();
+    let scenario_path = write_scenario(
+        &repo,
+        &format!(
+            "{}deadlines:\n  build_seconds: 150\n",
+            ios_scenario_yaml(8791)
+        ),
+    );
+    seed_timings(&repo, &[1000]);
+    seed_build_holder(&repo);
+    let mut mock = MockRunner::new();
+    script_ios_prepare_to_claim(&mut mock, &repo);
+    script_live_idle_holder_polls(&mut mock, 150);
+    let receipt = prepare(&mut mock, &prepare_args(&scenario_path, false, None));
+    assert_eq!(mock.remaining(), 0);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::BuildContended);
+    assert!(failure
+        .next_action
+        .to_string()
+        .contains("waited 150 s of the budget"));
 }
