@@ -1,5 +1,36 @@
 # qaren
 
+## 2.2.1
+
+### Patch Changes
+
+- d88af82: Allow quoted iOS Taps with an absent target or a proven no-mutation keyboard refusal to dismiss the keyboard once per item and resolve again before failing, refreshing the pixel baseline before retrying a refused Tap.
+- a25dc84: Retry a failed Android APK install once after the device's package manager recovers, unless it returned an explicit install refusal.
+- 9512dbf: A refused build reuse names the config plugin that imports a Node built-in.
+- 6571b49: Guard post-refusal iOS Tap and Fill clearance drags when the keyboard is proven hidden, withholding unsafe drags while preserving the retry and cover diagnostics.
+- 835561d: Name Android emulator helper processes whose emulator is gone or that run above 100% CPU, with the command that stops each, in `qaren doctor` and each run's report, and record each executable name and pid in the run receipt without stopping any processes.
+- d88af82: Record each QA dispatch action and its bounded result fields so keyboard dismissal retries can be verified from the run trace.
+- d605d8a: Re-read private native snapshots whose only incomplete cause is dropped nodes within the existing capture retry window. Wait polls and presence captures keep their current behavior. Persistent dropped snapshots retain their cause with a retry-deadline marker, and each dropped-snapshot re-read emits a value-free native-reread diagnostic.
+- 941100e: An app that still holds the injected helpers of an earlier QaReN version now receives the current ones, so the larger private React capture of 2.2.0 applies without restarting the app.
+- fd89faf: On iOS, a quoted Tap on a text that exists only inside a view the app hides from accessibility now taps that text's button once when the same read proves the button by its own unique test id; otherwise the Tap, a Wait or a literal check fails with the cause: the text, the button that holds it (its frame and test id) and the fix, instead of a bare "not found".
+- 2201223: Use a bounded host memory wait before a native build, rechecked at most every 5 s while the build is queued and shown in `qaren watch`, and refuse `HOST_UNDER_PRESSURE` with load, available memory, pressure and swap only when the final complete reading is critical.
+- 54daaf5: Record host load, free and available memory, pressure and swap at run start and end, and add host context to refusals under load.
+- 0ba063c: Native build reuse ignores confidently identified non-code text in config plugins, including Objective-C `#import` lines in template strings, while preserving conservative scanning for ambiguous syntax and computed keys.
+- 18e2ecc: Refuse an iOS Metro that answers on `[::1]` only with `METRO_BIND_IPV6_ONLY` within seconds instead of at the build deadline, record the bound address as `metro_bind`, and add a `metro-bind` doctor row.
+- 530fac6: When an iOS run's Metro answers only on `[::1]`, QaReN now restarts it once on all network interfaces within the same build deadline and says so in the receipt and report, instead of refusing the run.
+- 26fee64: Give the native build its own clock, so waiting for the build lock no longer uses up build time, a build that keeps producing output goes on past its limit (up to three times it, at most 7200 s), a cut names the limit, the time, the last output and the next limit, and the next run's limit learns from this machine's earlier builds.
+- 25b170a: Serialize iOS and Android native builds through one machine slot and show the waiting run and holder in the build queue.
+- 9ee44b0: On iOS, a quoted Tap or Fill whose target exists only in React's tree takes one presence read before its one drag and drags only toward a target placed below or above its own on-screen scroll container, only inside the part that nothing drawn in front covers, refusing with nothing scrolled when the target is behind a presented modal, elsewhere, has no exposed scroll band, or the read is late or incomplete.
+- 236d1a4: Lower native app build CPU priority, apply machine-sized worker caps including through a wrapper for Expo iOS builds, and request arm64-only iOS simulator builds on Apple silicon, with configurable overrides and receipt evidence.
+- 58a7674: A Fill into a field that already holds the wanted text, named by its own test id, no longer taps the field first.
+- 9512dbf: The receipt's timings show what the build decision and the re-check before the walk are made of.
+- 9304edb: A run on the iOS simulator no longer waits 60 s after cleanup for a crash report unless the run itself ended abnormally.
+- baca87e: Android: when QaReN's own runner apps on the device come from another host or a newer version, `qaren check` now replaces them once by itself instead of refusing as runner-down, and if that fails it refuses `DEVICE_UNAVAILABLE` with `subreason: runner-install-blocked`, adb's reason and the next step.
+- 891b183: On iOS, `Scroll down until "<target>"` no longer refuses with `SCROLL_BAND_TOO_SMALL` because of a full-screen layer with nothing of its own over the list, such as a closed bottom sheet or an empty toolbar node, while controls, dim layers, open sheets and views that take touches still block it.
+- 518669c: Remove a pooled iOS simulator's system log store, which records typed field text including private Fill values, before it is reused and after its cleanup shutdown; report a `simulator_log` cleanup leg for every run on a pooled or borrowed simulator; and add the `ios-simulator-log` doctor policy row and, with `--device`, an `ios-lane-log` row with the command that clears a borrowed simulator's log.
+- 063abb6: Each Tap and Fill row of the ledger records what its send was made of: the keyboard check, the live check, the gesture, the runner's whole handling, and the number of settle probes.
+- 074b496: Generate the injected helper bundle from a text source, with byte parity and version checks. The injected program and helper version are unchanged.
+
 ## 2.2.0
 
 ### Minor Changes
