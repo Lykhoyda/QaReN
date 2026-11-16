@@ -60,12 +60,14 @@ import {
   decideScreen,
   elementSelector,
   centreCovered,
+  inKeyboardMarginOnly,
   inferredOverlayCoverage,
   overlayProbeCoverage,
   overlayProbeCandidates,
   clearanceBand,
   clearanceScroll,
   keyboardClearance,
+  KEYBOARD_EDGE_INSET,
   keyboardFallbackTarget,
   fillHostInside,
   bindFillIdentity,
@@ -4982,6 +4984,55 @@ async function walkBlockScoped(
                     ref,
                     false,
                     'TARGET_NOT_FOUND',
+                  );
+                  diagnostic(
+                    item,
+                    before,
+                    'decision',
+                    'CENTRE_COVERED',
+                    undefined,
+                    undefined,
+                    undefined,
+                    {
+                      predicate: centreDiagnostic,
+                      scrollOrigin,
+                      requestedDirection: scrollDirection,
+                      targetCentreChanged: centreChanged(element),
+                      coverGap: coverGaps.get(item.line) ?? null,
+                    },
+                  );
+                  break;
+                }
+                // AI-621: covered only by the keyboard's drag margin, with no cover named: one keyboard
+                // clearance, then the press; never the clearance scroll, which cannot move such a target.
+                if (
+                  item.kind === 'press' &&
+                  deps.platform === 'ios' &&
+                  deps.dismissKeyboard &&
+                  cover !== undefined &&
+                  'gap' in cover &&
+                  inKeyboardMarginOnly(element, before.screen)
+                ) {
+                  let why = 'the keyboard clearance was already used on this step';
+                  if (!itemKeyboardAttempted && !keyboardAttempted) {
+                    // A vanished keyboard cannot count as the later tap's visible effect.
+                    pixelBaselineTaken = false;
+                    pixelBaseline = undefined;
+                    if (!(await dismissResolvedTarget(element))) break;
+                    if (keyboardCleared !== undefined && before.screen.keyboardVisible === false)
+                      continue;
+                    why =
+                      before.screen.keyboardVisible === false
+                        ? 'the keyboard clearance sent nothing'
+                        : `the keyboard did not hide after one clearance (keyboard after it: ${before.screen.keyboardVisible === true ? 'visible' : 'unknown'})`;
+                  }
+                  outcome = failed(
+                    item,
+                    attempt,
+                    `"${item.target.phrase}" was not pressed: its centre lies within ${KEYBOARD_EDGE_INSET} pt above the keyboard, and ${why}; nothing was scrolled`,
+                    before.screen,
+                    await shoot(item),
+                    ref,
                   );
                   diagnostic(
                     item,
