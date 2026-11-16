@@ -88,7 +88,7 @@ export function assertCheck(
     !removedOrAbsent(r.cleanup.metro) ||
     !removedOrAbsent(r.cleanup.core) ||
     r.cleanup.simulator !== 'kept' ||
-    // check borrows the simulator, so its system log store is kept, never removed.
+    // This gate omits --shutdown-device-on-exit, so the borrowed simulator's log store is kept.
     r.cleanup.simulator_log !== 'kept' ||
     Object.entries(r.cleanup).some(
       ([name, value]) =>

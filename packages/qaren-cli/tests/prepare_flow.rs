@@ -7566,6 +7566,7 @@ fn pool_reuses_a_free_member_under_the_lease_and_resets_the_app() {
         record.resources.borrowed_ios_stop(),
         qaren::runrecord::BorrowedIosStop::Pending
     );
+    assert!(!record.resources.clear_log_on_stop);
     assert_eq!(
         record.resources.ios_simulator.as_ref().unwrap().udid,
         BORROWED
@@ -7643,6 +7644,8 @@ fn pool_creates_a_member_under_the_creation_lock_below_cap() {
         "a new member is not reset"
     );
     assert!(record.resources.pool_member);
+    // A pool member's store is QaReN's through pool_member; the user's removal request is never set.
+    assert!(!record.resources.clear_log_on_stop);
     assert_eq!(
         qaren::buildplan::read_holder(&pool_lease_dir(&repo, BORROWED))
             .unwrap()
