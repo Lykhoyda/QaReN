@@ -886,6 +886,29 @@ export function clearanceBand(
   return bottom > top ? { ...viewport, y: top, height: bottom - top } : undefined;
 }
 
+// Only the drag margin sets the band's bottom; the centre remains inside its clip above the keyboard.
+export function inKeyboardMarginOnly(element: Element, screen: Screen): boolean {
+  const frame = elementFrame(element);
+  const viewport = elementViewport(element);
+  const keyboard = screen.keyboardFrame;
+  const band = clearanceBand(element, screen);
+  if (screen.keyboardVisible !== true || !frame || !viewport || !keyboard || !band) return false;
+  const x = frame.x + frame.width / 2;
+  const y = frame.y + frame.height / 2;
+  if (
+    x < viewport.x ||
+    x >= viewport.x + viewport.width ||
+    y < viewport.y ||
+    y >= viewport.y + viewport.height
+  )
+    return false;
+  const bottom = band.y + band.height;
+  // The band stores top and height, so its bottom can differ from the margin by float rounding.
+  return (
+    Math.abs(bottom - (keyboard.y - KEYBOARD_EDGE_INSET)) < 0.001 && y >= bottom && y < keyboard.y
+  );
+}
+
 // Whether any touchable view outside the list overlaps the band, whatever its list order: a backdrop
 // listed before the list counts, so a harmless background view beside the list counts too.
 export function foreignOnBand(
