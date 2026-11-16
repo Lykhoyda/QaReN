@@ -266,6 +266,13 @@ export function matchedHostPress(element: Element): boolean | undefined {
   return hostPresses.get(element);
 }
 
+// The React host index the join's own association tied to this native element; read only.
+const associatedHostIndices = new WeakMap<Element, number>();
+
+export function associatedHostOf(element: Element): number | undefined {
+  return associatedHostIndices.get(element);
+}
+
 export function keyboardCoversElement(element: Element): boolean {
   return keyboardCoveredElements.has(element);
 }
@@ -864,6 +871,9 @@ export function join(
       reactHostEvidence!.hosts[hostIndex],
     ]),
   );
+  const associatedIndices = new Map(
+    [...associations].map(([hostIndex, { nativeIndex }]) => [nativeIndex, hostIndex]),
+  );
   // React heading evidence wins over a navigation title on the same node.
   const headings = new Map<number, HeadingEvidence>([
     ...navigationTitles(nodes, presence),
@@ -1127,6 +1137,8 @@ export function join(
           ? match.capabilities.press
           : undefined;
     if (ownPress !== undefined) hostPresses.set(element, ownPress);
+    const associatedIndex = associatedIndices.get(nodeIndex);
+    if (associatedIndex !== undefined) associatedHostIndices.set(element, associatedIndex);
     const privateNativeLabel = presenceMode && observed?.labelSource !== 'direct';
     // Privacy may over-associate input observations without granting semantic capabilities.
     const possibleDigestInput = reactCandidates.some(

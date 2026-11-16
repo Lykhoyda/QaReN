@@ -164,6 +164,13 @@ import {
   type TargetMissDiagnostic,
 } from './target-miss.js';
 import {
+  buttonId,
+  hiddenFromAccessibility,
+  hiddenTextButton,
+  hiddenTextClause,
+  type HiddenText,
+} from './hidden-text.js';
+import {
   type MediaLatch,
   concealsScreen,
   INPUT_SCREEN_TEXT_WITHHELD,
@@ -865,6 +872,12 @@ async function walkBlockScoped(
   const captured = new WeakMap<Screen, { at: number; id: number }>();
   // The newest observation that passed admission, recovery's captures included.
   let newest: Screen | undefined;
+  // The newest admitted observation of the current line only; `newest` outlives the line.
+  let lineRead: Screen | undefined;
+  // A quoted iOS Tap whose text is hidden from accessibility may press its proven button once per
+  // line: `element` authorizes presses until the runner executes one, then it is gone for good.
+  let hiddenTried = false;
+  let hiddenTap: { id: string; element?: Element; act?: ActResult; unbound?: true } | undefined;
   let dispatchedOn = 0;
   let recoveries = 0;
   let metadataOnly = false;
@@ -954,6 +967,8 @@ async function walkBlockScoped(
       presence: Number(platformPresence),
     });
     let admitted = false;
+    // A capture that admission rejects leaves no older read of the line to speak for it.
+    lineRead = undefined;
     try {
       try {
         const deadline = step?.kind === 'wait' ? itemDeadline : undefined;
@@ -1050,6 +1065,7 @@ async function walkBlockScoped(
         });
       admitted = true;
       newest = latest;
+      lineRead = latest;
       metadataOnly = false;
       emitCaptureDiagnostics(latest);
       const observation = { screen: latest, timing, id, platformPresence };
@@ -1897,6 +1913,22 @@ async function walkBlockScoped(
           const detail = `; placeholder pairing was unavailable because React coverage on this screen is ${pairingGap}; target the field by test id`;
           reason = typeof reason === 'string' ? reason + detail : [...segments(reason), detail];
         }
+        // Only this line's newest read speaks for its target: an earlier line's read never does.
+        const hidden =
+          deps.platform === 'ios' &&
+          (item.kind === 'press' || item.kind === 'wait') &&
+          target.quoted !== undefined &&
+          lineRead &&
+          (lineRead === screen
+            ? diagnostic.reason
+            : targetMissDiagnostic(target, lineRead, item.line, false, privacy, item.kind)
+                .reason) === 'absent'
+            ? hiddenFromAccessibility(target, lineRead, 'exact')
+            : undefined;
+        if (hidden) {
+          const detail = hiddenTextClause(hidden, target.quoted!, privacy);
+          reason = typeof reason === 'string' ? reason + detail : [...segments(reason), detail];
+        }
         const seen = captured.get(last);
         if (seen && targetCode) {
           const lastReason =
@@ -1937,13 +1969,34 @@ async function walkBlockScoped(
                       .reverse()
                       .find((earlier) => earlier.kind === 'wait')?.line,
                   )
-                : missSuggestion(subreason, target, last, now, item.line, item.kind),
+                : missSuggestion(
+                    subreason,
+                    target,
+                    last,
+                    now,
+                    item.line,
+                    item.kind,
+                    deps.platform === 'ios',
+                  ),
             subreason,
           };
         }
       } catch {
         // Diagnostics cannot change the failed step's outcome.
       }
+    }
+    // The hidden-text fallback's own press: a tap is named only when the runner executed it.
+    const hiddenAct = item.kind === 'press' ? hiddenTap?.act : undefined;
+    if (hiddenAct && hiddenTap) {
+      const id = buttonId(hiddenTap.id, privacy);
+      const detail =
+        hiddenAct.executed !== false && hiddenAct.mutation !== 'none'
+          ? targetCode === 'TARGET_NOT_FOUND'
+            ? `; its button ${id} was tapped once through that text and the tap showed no change`
+            : ''
+          : `; its button ${id} was not tapped: the runner refused the press: ${hiddenAct.error ?? 'no reason given'}`;
+      if (detail)
+        reason = typeof reason === 'string' ? reason + detail : [...segments(reason), detail];
     }
     if (rejectedCheck) {
       try {
@@ -3702,6 +3755,9 @@ async function walkBlockScoped(
     let itemKeyboardAttempted = false;
     // Set by either keyboard clearance of a covered press; no scroll may follow it on this step.
     let keyboardClearedOnStep = false;
+    lineRead = undefined;
+    hiddenTried = false;
+    hiddenTap = undefined;
     let pixelBaseline:
       | { target: NonNullable<ReturnType<typeof pixelTarget>>; crop: PixelCrop }
       | undefined;
@@ -3789,7 +3845,27 @@ async function walkBlockScoped(
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
           }
-          const checkFailure = failed(item, 1, reason, before.screen, shot);
+          let hidden: HiddenText | undefined;
+          try {
+            // A literal check matches screen text by containing it, never an identifier.
+            hidden =
+              deps.platform === 'ios' && item.literal && decision.check === 'fail' && lineRead
+                ? hiddenFromAccessibility(
+                    { quoted: item.text, phrase: item.text, exact: 'text' },
+                    lineRead,
+                    'contains',
+                  )
+                : undefined;
+          } catch {
+            // Diagnostics cannot change the check's outcome.
+          }
+          const checkFailure = failed(
+            item,
+            1,
+            hidden ? reason + hiddenTextClause(hidden, item.text, privacy) : reason,
+            before.screen,
+            shot,
+          );
           return decision.check === 'fail' ? judged(checkFailure, before.screen) : checkFailure;
         }
 
@@ -4267,7 +4343,8 @@ async function walkBlockScoped(
           WalkerTimingDiagnostic['clearanceDiagnostic']
         >['scrollOrigin'] = null;
         let scrollDirection: 'up' | 'down' | null = null;
-        let refusedIdentity: Element | undefined;
+        // The hidden-text fallback's button is pressed through the refused-identity binding.
+        let refusedIdentity: Element | undefined = hiddenTap?.element;
         let moved: { target: Element; error: string } | undefined;
         // Plain-scroll attempts that dispatched cleanly onto complete, unchanged app captures.
         let stillScrolls = 0;
@@ -4298,6 +4375,8 @@ async function walkBlockScoped(
             : capture(item);
         const maxAttempts = recovered.has(item) || opts.singleAttempt ? 1 : 2;
         for (let attempt = 1; attempt <= maxAttempts && !outcome; attempt += 1) {
+          // An executed fallback press authorizes no further press: the step resolves its own target.
+          if (hiddenTap && !hiddenTap.element) refusedIdentity = undefined;
           interruptionWithheld = undefined;
           currentAttempt = attempt;
           pressAct = undefined;
@@ -4550,6 +4629,15 @@ async function walkBlockScoped(
                       outcome = proven;
                       break;
                     }
+                  }
+                  // The fallback's binding found no single eligible button: terminal, without recovery.
+                  // After a withheld drag it also says why nothing was scrolled.
+                  if (item.kind === 'press' && hiddenTap?.element && refusedIdentity) {
+                    hiddenTap.unbound = true;
+                    throw new ResolutionError({
+                      refuse: 'TARGET_NOT_FOUND',
+                      reason: `"${item.target.quoted}" is text hidden from accessibility; its button ${buttonId(hiddenTap.id, privacy)} no longer resolved uniquely to an eligible button on the next read, so nothing was tapped${withheldDrag ? `; ${stayedCovered(item.target.phrase, withheldDrag)}${await coverText(item)}` : ''}`,
+                    });
                   }
                   if (!fallback || item.kind !== 'fill') {
                     // After a withheld drag, a refused rebinding says why nothing was scrolled.
@@ -5295,6 +5383,12 @@ async function walkBlockScoped(
                 pressNeedsReadback =
                   !!selectionTarget || (!!element && insideAlert(element) && !act.proven);
               }
+              if (item.kind === 'press' && hiddenTap?.element && refusedIdentity) {
+                hiddenTap.act = act;
+                // A refusal before dispatch keeps the existing once-only retries; an executed press ends them.
+                if (act.executed !== false && act.mutation !== 'none')
+                  hiddenTap.element = undefined;
+              }
               if (item.kind === 'fill') fillMethod = act.method ?? 'keyboard';
               if (
                 strictFillFocus &&
@@ -5792,6 +5886,8 @@ async function walkBlockScoped(
                 : act!.proven || changed || alreadySelected)
           ) {
             const target = stepTarget(item);
+            // This pass is the fallback's own press, not a later resolution of the target.
+            const hiddenPass = hiddenTap?.act === act! ? hiddenTap : undefined;
             if (act!.dialog)
               deps.note?.(
                 `dialog-tap ${JSON.stringify({ v: 1, line: item.line, label: act!.dialog.label, rect: act!.dialog.rect })}`,
@@ -5800,9 +5896,12 @@ async function walkBlockScoped(
               ...base(item, attempt),
               ...(ref ? { ref } : {}),
               ...(shot ? { screenshot: shot } : {}),
+              // A pass through hidden text stores the button actually pressed, never the hidden text.
               ...stored(
-                (target && exactSelector(target)) ??
-                  (element ? elementSelector(element) : undefined),
+                hiddenPass
+                  ? { id: hiddenPass.id }
+                  : ((target && exactSelector(target)) ??
+                      (element ? elementSelector(element) : undefined)),
               ),
               outcome: 'pass',
               ...(act!.dialog ? { dialog: act!.dialog } : {}),
@@ -5834,7 +5933,13 @@ async function walkBlockScoped(
                                 : 'UNVERIFIED_PRESS: the alert or sheet closed and nothing behind it changed; any of its buttons closes it, so the press was not verified',
                             ),
                           }
-                        : {}),
+                        : hiddenPass
+                          ? {
+                              reason: redact(
+                                `resolved through text hidden from accessibility; tapped its button ${buttonId(hiddenPass.id, privacy)}`,
+                              ),
+                            }
+                          : {}),
             });
             break;
           }
@@ -5945,10 +6050,12 @@ async function walkBlockScoped(
         let error = caught instanceof CaptureDeadline ? new EvidenceExpired(true) : caught;
         // A recovery probe that acts on nothing must not cost a polled step its retry budget.
         const priorRecovery = recovered.has(item) ? { state: recovered.get(item)! } : undefined;
+        let recoveryIdle = false;
         if (
           error instanceof ResolutionError &&
           !UNRECOVERABLE.has(error.code) &&
           !postActionTried &&
+          !hiddenTap?.unbound &&
           !deps.cancelled?.()
         ) {
           // Recovery can move `latest` on before a later read throws.
@@ -5966,12 +6073,38 @@ async function walkBlockScoped(
             if (recovering === 'accepted') continue items;
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
+            recoveryIdle = true;
           } catch (recoveryError) {
             if (isAbort(recoveryError)) throw recoveryError;
             error =
               recoveryError instanceof NativeSnapshotIncomplete
                 ? withStepReason(recoveryError, first, held, item)
                 : recoveryError;
+          }
+        }
+        // Recovery found nothing to dismiss: the same read may prove the hidden text's own button.
+        if (
+          recoveryIdle &&
+          !hiddenTried &&
+          !stepDispatched &&
+          item.kind === 'press' &&
+          item.target.quoted !== undefined &&
+          deps.platform === 'ios' &&
+          error instanceof ResolutionError &&
+          error.code === 'TARGET_NOT_FOUND' &&
+          error.missing &&
+          !deps.cancelled?.()
+        ) {
+          hiddenTried = true;
+          // Captures assign lineRead inside closures, which control-flow narrowing cannot see.
+          const read = lineRead as Screen | undefined;
+          const element = read && hiddenTextButton(item.target, read);
+          if (element) {
+            hiddenTap = { id: element.testID!, element };
+            // Recovery returned without acting, so restore its state from before the probe.
+            if (priorRecovery) recovered.set(item, priorRecovery.state);
+            else recovered.delete(item);
+            continue attempts;
           }
         }
         // Only an absent quoted target qualifies; disabled, ambiguous, stored and offscreen misses keep their class.

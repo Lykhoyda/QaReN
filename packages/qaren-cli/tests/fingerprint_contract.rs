@@ -320,6 +320,26 @@ fn global_process_inputs_forbid_native_reuse() {
 }
 
 #[test]
+fn import_lines_in_a_template_string_keep_the_fingerprint_complete() {
+    let plugin = "// Objective-C source the plugin writes; process and require here are prose.\n\
+                  const SOURCE = `#import <React/RCTView.h>\n#import <React/RCTViewManager.h>\n`;\n\
+                  module.exports = (c) => c;\n";
+    let root = plugin_project(plugin);
+    let fp = fingerprint(&root);
+    assert!(fp.complete, "{:?}", fp.incompleteness);
+    std::fs::remove_dir_all(root).unwrap();
+
+    let root = plugin_project(&format!("{plugin}const helper = require(name);\n"));
+    let fp = fingerprint(&root);
+    assert!(!fp.complete);
+    assert_eq!(
+        fp.incompleteness,
+        vec!["require(…) at line 6 in plugins/withX.js is not a plain string literal; its import cannot be enumerated"]
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn a_spaced_static_require_is_traced_into_the_fingerprint() {
     let root =
         plugin_project("const x = require( '../config/x.json' );\nmodule.exports = (c) => c;\n");

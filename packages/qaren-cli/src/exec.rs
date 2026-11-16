@@ -6,6 +6,7 @@ use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -317,6 +318,10 @@ pub trait Runner {
         stderr_log: &Path,
     ) -> std::io::Result<PipedChild>;
     fn sleep(&mut self, duration: Duration);
+    // Lines a spawn_piped child's drain has counted so far; None is unknown.
+    fn log_lines(&mut self, log: &Path) -> Option<u64> {
+        log::read_line_count(log)
+    }
     fn now_epoch_ms(&self) -> u64;
     // Override with a monotonic source so deadlines survive wall-clock adjustments.
     fn monotonic_ms(&self) -> u64 {
@@ -422,6 +427,9 @@ impl Runner for DeadlineRunner<'_> {
     fn sleep(&mut self, duration: Duration) {
         self.inner.sleep(duration)
     }
+    fn log_lines(&mut self, log: &Path) -> Option<u64> {
+        self.inner.log_lines(log)
+    }
     fn now_epoch_ms(&self) -> u64 {
         self.inner.now_epoch_ms()
     }
@@ -473,6 +481,9 @@ impl Runner for CleanupRunner<'_> {
     }
     fn sleep(&mut self, duration: Duration) {
         self.0.sleep(duration);
+    }
+    fn log_lines(&mut self, log: &Path) -> Option<u64> {
+        self.0.log_lines(log)
     }
     fn now_epoch_ms(&self) -> u64 {
         self.0.now_epoch_ms()
@@ -607,6 +618,7 @@ impl Runner for RealRunner {
                 spec.env
                     .iter()
                     .any(|(key, value)| key == "DEBUG" && value == log::METRO_REQUEST_LOG),
+                None,
             )?;
             let mut cmd = Command::new(&spec.program);
             cmd.args(&spec.args)
@@ -677,13 +689,24 @@ impl Runner for RealRunner {
         crate::events::cmd(&spec.label, crate::events::Edge::Start, None, None);
         let result = (|| {
             let withhold = spec.withholds_registry_output();
+            let count = log::line_count_path(stderr_log);
             let (log, stdout, stderr) = if withhold {
-                let (log, stdout, stderr) =
-                    log::LogDrain::spawn_paired(&self.log_executable, stderr_log, true, false)?;
+                let (log, stdout, stderr) = log::LogDrain::spawn_paired(
+                    &self.log_executable,
+                    stderr_log,
+                    true,
+                    false,
+                    Some(&count),
+                )?;
                 (log, Stdio::from(OwnedFd::from(stdout)), stderr)
             } else {
-                let (log, stderr) =
-                    log::LogDrain::spawn(&self.log_executable, stderr_log, false, spec.core_log)?;
+                let (log, stderr) = log::LogDrain::spawn(
+                    &self.log_executable,
+                    stderr_log,
+                    false,
+                    spec.core_log,
+                    Some(&count),
+                )?;
                 (log, Stdio::piped(), stderr)
             };
             let mut cmd = Command::new(&spec.program);
@@ -953,6 +976,8 @@ pub enum MockResult {
         stdout: String,
         exit: Option<i32>,
         hold: HoldStdout,
+        // (code, ms after the spawn): the child exits once the scripted clock gets there.
+        exit_after: Option<(i32, u64)>,
     },
 }
 
@@ -1003,6 +1028,8 @@ impl BufRead for HeldStdout {
 
 struct MockChildHandle {
     exit: Option<i32>,
+    exit_at: Option<(i32, u64)>,
+    clock: Arc<AtomicU64>,
     killed: Arc<Mutex<bool>>,
     terminated: Arc<Mutex<bool>>,
 }
@@ -1012,6 +1039,12 @@ impl ChildHandle for MockChildHandle {
     fn try_wait(&mut self) -> std::io::Result<Option<i32>> {
         if self.exit.is_some() {
             return Ok(self.exit);
+        }
+        if let Some((code, at)) = self.exit_at {
+            if !*self.killed.lock().unwrap() && self.clock.load(Ordering::SeqCst) >= at {
+                self.exit = Some(code);
+                return Ok(self.exit);
+            }
         }
         if *self.killed.lock().unwrap() {
             return Ok(Some(-9));
@@ -1065,8 +1098,11 @@ pub struct MockRunner {
     pub advance_on: Option<(String, u64)>,
     // (port, version) of the adb servers the scripted host runs; the real probe never runs.
     pub adb_servers: Vec<(u16, u32)>,
+    // Answers to log_lines in read order; once empty, the real count file answers.
+    pub scripted_log_lines: VecDeque<Option<u64>>,
     script: VecDeque<MockExpectation>,
-    now_ms: u64,
+    // Shared with scripted children that exit at a clock time.
+    now_ms: Arc<AtomicU64>,
 }
 
 impl MockRunner {
@@ -1083,9 +1119,30 @@ impl MockRunner {
             cancel_at_ms: None,
             advance_on: None,
             adb_servers: Vec::new(),
+            scripted_log_lines: VecDeque::new(),
             script: VecDeque::new(),
-            now_ms: 1_770_000_000_000,
+            now_ms: Arc::new(AtomicU64::new(1_770_000_000_000)),
         }
+    }
+
+    // A child that runs for `after_ms` on the scripted clock, then exits with `code`.
+    pub fn expect_spawn_piped_exiting_after(
+        &mut self,
+        program_hint: &str,
+        pid: i32,
+        code: i32,
+        after_ms: u64,
+    ) {
+        self.script.push_back(MockExpectation {
+            program_hint: program_hint.to_string(),
+            result: MockResult::SpawnPiped {
+                pid,
+                stdout: String::new(),
+                exit: None,
+                hold: HoldStdout::Close,
+                exit_after: Some((code, after_ms)),
+            },
+        });
     }
 
     pub fn expect_spawn_piped(
@@ -1119,6 +1176,7 @@ impl MockRunner {
                 stdout: stdout.to_string(),
                 exit,
                 hold,
+                exit_after: None,
             },
         });
     }
@@ -1214,7 +1272,7 @@ impl Runner for MockRunner {
         self.calls.push(spec.clone());
         if let Some((hint, ms)) = &self.advance_on {
             if spec.rendered().contains(hint.as_str()) {
-                self.now_ms += ms;
+                self.now_ms.fetch_add(*ms, Ordering::SeqCst);
             }
         }
         match self.next_for(spec).result {
@@ -1248,7 +1306,10 @@ impl Runner for MockRunner {
                 stdout,
                 exit,
                 hold,
+                exit_after,
             } => {
+                let spawned_at = self.now_ms.load(Ordering::SeqCst);
+                let exit_at = exit_after.map(|(code, after)| (code, spawned_at + after));
                 let stdin = Arc::new(Mutex::new(Vec::new()));
                 let killed = Arc::new(Mutex::new(false));
                 self.piped_stdin.push(stdin.clone());
@@ -1265,6 +1326,8 @@ impl Runner for MockRunner {
                     }),
                     handle: Box::new(MockChildHandle {
                         exit,
+                        exit_at,
+                        clock: self.now_ms.clone(),
                         killed,
                         terminated,
                     }),
@@ -1299,11 +1362,19 @@ impl Runner for MockRunner {
     }
 
     fn sleep(&mut self, duration: Duration) {
-        self.now_ms += duration.as_millis() as u64;
+        self.now_ms
+            .fetch_add(duration.as_millis() as u64, Ordering::SeqCst);
+    }
+
+    fn log_lines(&mut self, log: &Path) -> Option<u64> {
+        match self.scripted_log_lines.pop_front() {
+            Some(count) => count,
+            None => log::read_line_count(log),
+        }
     }
 
     fn now_epoch_ms(&self) -> u64 {
-        self.now_ms
+        self.now_ms.load(Ordering::SeqCst)
     }
 
     fn commands_executed(&self) -> u64 {
@@ -1312,7 +1383,7 @@ impl Runner for MockRunner {
 
     fn cancellation(&self) -> Option<String> {
         if let Some((at, reason)) = &self.cancel_at_ms {
-            if self.now_ms >= *at {
+            if self.now_ms.load(Ordering::SeqCst) >= *at {
                 return Some(reason.clone());
             }
         }

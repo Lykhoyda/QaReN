@@ -181,7 +181,8 @@ fn d8_a_ten_minute_wait_leaves_the_whole_build_budget() {
             .unwrap();
         timeouts.push(build.timeout_seconds);
     }
-    assert_eq!(timeouts, [30, 30]);
+    // The compile's timeout is the whole build window: three times build_seconds from the lock claim.
+    assert_eq!(timeouts, [90, 90]);
 }
 
 #[test]
@@ -466,7 +467,8 @@ fn memory_wait_after_lock_contention_preserves_remaining_build_budget() {
         .iter()
         .find(|c| c.label == "expo-run-ios")
         .unwrap();
-    assert_eq!(build.timeout_seconds, 29);
+    // Neither the lock wait nor the memory wait is build time: the whole 90 s window is left.
+    assert_eq!(build.timeout_seconds, 90);
     assert_eq!(runner.inner.remaining(), 0);
 }
 
@@ -499,7 +501,8 @@ fn two_lock_retries_share_one_ten_minute_memory_allowance() {
             .iter()
             .find(|c| c.label == "expo-run-ios")
             .unwrap();
-        assert_eq!(build.timeout_seconds, 28);
+        // Neither the lock wait nor the memory wait is build time: the whole 90 s window is left.
+        assert_eq!(build.timeout_seconds, 90);
         assert_eq!(runner.inner.remaining(), 0);
     }
 }
@@ -553,7 +556,8 @@ fn slow_admission_probes_and_final_overrun_leave_the_build_budget_intact() {
         .iter()
         .find(|c| c.label == "expo-run-ios")
         .unwrap();
-    assert_eq!(build.timeout_seconds, 29);
+    // Neither the lock wait nor the memory wait is build time: the whole 90 s window is left.
+    assert_eq!(build.timeout_seconds, 90);
     assert_eq!(runner.inner.remaining(), 0);
 }
 
@@ -571,7 +575,8 @@ fn slow_first_sample_counts_toward_recovery_and_unavailable_notes() {
             .iter()
             .find(|c| c.label == "expo-run-ios")
             .unwrap();
-        assert_eq!(build.timeout_seconds, 2_400);
+        // The default limit's window: three times 2400 s, at most 7200 s.
+        assert_eq!(build.timeout_seconds, 7_200);
         assert_eq!(runner.inner.remaining(), 0);
     }
 }
@@ -597,7 +602,8 @@ fn slow_healthy_and_unreadable_rechecks_preserve_the_build_budget() {
             .iter()
             .find(|c| c.label == "expo-run-ios")
             .unwrap();
-        assert_eq!(build.timeout_seconds, 29);
+        // Neither the lock wait nor the memory wait is build time: the whole 90 s window is left.
+        assert_eq!(build.timeout_seconds, 90);
         assert_eq!(runner.inner.remaining(), 0);
     }
 }
@@ -634,7 +640,8 @@ fn slow_probes_stop_after_one_allowance_despite_repeated_lock_contention() {
             .iter()
             .find(|c| c.label == "expo-run-ios")
             .unwrap();
-        assert_eq!(build.timeout_seconds, 26);
+        // Neither the lock wait nor the memory wait is build time: the whole 90 s window is left.
+        assert_eq!(build.timeout_seconds, 90);
         assert_eq!(runner.inner.remaining(), 0);
     }
 }
@@ -687,7 +694,8 @@ fn host_memory_wait_in_the_ios_build_slot_queue_leaves_the_build_budget_whole() 
         .iter()
         .find(|c| c.label == "expo-run-ios")
         .unwrap();
-    assert_eq!(build.timeout_seconds, 28);
+    // The 2 s slot wait is inside the 90 s window; the 600 s memory wait moved the window, not shrank it.
+    assert_eq!(build.timeout_seconds, 88);
     assert_eq!(runner.inner.remaining(), 0);
 }
 
