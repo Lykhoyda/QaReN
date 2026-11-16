@@ -669,6 +669,9 @@ pub(crate) fn write_host(
     if let Some(wait) = receipt.outcomes.get("host_wait") {
         writeln!(file, "Host memory before the build: {wait}.")?;
     }
+    if let Some(notice) = receipt.outcomes.get("metro_bind_recovery") {
+        writeln!(file, "\n{notice}")?;
+    }
     if let Some(line) = helpers {
         writeln!(file, "\n{line}")?;
     }

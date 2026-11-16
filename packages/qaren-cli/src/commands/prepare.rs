@@ -3428,7 +3428,7 @@ pub(crate) fn run_clean_preparation(ctx: &mut Ctx, plan: &BuildPlan) -> Result<(
     Ok(())
 }
 
-fn spawn_metro_only(ctx: &mut Ctx) -> Result<(), Failure> {
+fn spawn_metro_only(ctx: &mut Ctx, listen: metro::Listen) -> Result<(), Failure> {
     let port = qaren_metro_port(&ctx.record.scenario);
     let project_root = ctx.record.candidate.project_root.clone();
     let run_dir = RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id);
@@ -3469,12 +3469,19 @@ fn spawn_metro_only(ctx: &mut Ctx) -> Result<(), Failure> {
     let spec = metro::start_spec(
         &project_root,
         port,
-        ios,
+        listen,
         metro::expo_online(ctx.runner),
         preload.as_deref(),
         configured.as_deref().or(inherited.as_deref()),
     );
-    let metro_log = run_dir.join("logs").join("metro.log");
+    // The restart writes its own log, so the first Metro's log is kept.
+    let metro_log = run_dir
+        .join("logs")
+        .join(if listen == metro::Listen::AllPinned {
+            "metro-restart.log"
+        } else {
+            "metro.log"
+        });
     ensure_running(ctx.runner, "build")?;
     let spawned = ctx.runner.spawn_group(&spec, &metro_log).map_err(|e| {
         Failure::new(
@@ -3484,6 +3491,12 @@ fn spawn_metro_only(ctx: &mut Ctx) -> Result<(), Failure> {
             "check pnpm/expo availability, run qaren cleanup, then retry prepare",
         )
     })?;
+    if listen == metro::Listen::AllPinned {
+        ctx.notes.push((
+            "metro_bind_recovery".into(),
+            "restarted-all-interfaces".into(),
+        ));
+    }
     let identity = capture_pid_identity(ctx.runner, spawned.pid);
     ctx.record.resources.metro = Some(MetroResource {
         port,
@@ -3511,10 +3524,12 @@ fn spawn_metro_only(ctx: &mut Ctx) -> Result<(), Failure> {
 
 fn wait_metro_responding(ctx: &mut Ctx) -> Result<(), Failure> {
     let deadline = ctx.runner.monotonic_ms() + ctx.record.scenario.deadlines.build_seconds * 1000;
-    let metro_resource = ctx.record.resources.metro.clone().expect("metro spawned");
-    let identity = metro_resource.identity.clone().expect("identity captured");
+    let mut restarted = false;
     loop {
         ensure_running(ctx.runner, "build")?;
+        // Read every turn: after the restart the recorded Metro is the second one.
+        let metro_resource = ctx.record.resources.metro.clone().expect("metro spawned");
+        let identity = metro_resource.identity.clone().expect("identity captured");
         if probe_pid_identity(ctx.runner, &identity) == PidLiveness::Dead {
             return Err(Failure::new(
                 "build",
@@ -3547,15 +3562,27 @@ fn wait_metro_responding(ctx: &mut Ctx) -> Result<(), Failure> {
                     metro::observe_bind(ctx.runner, metro_resource.port, Some(owner));
                 match class {
                     metro::BindClass::V4 => {
-                        ctx.record.metro_bind = Some(MetroBind::V4);
+                        ctx.record.metro_bind = Some(if restarted {
+                            MetroBind::V4AfterRestart
+                        } else {
+                            MetroBind::V4
+                        });
                         ctx.save()?;
                         ensure_running(ctx.runner, "build")?;
                         return Ok(());
                     }
+                    metro::BindClass::V6Only if !restarted => {
+                        restart_metro_on_all_interfaces(ctx, &metro_resource, &seen.listeners)?;
+                        restarted = true;
+                    }
                     metro::BindClass::V6Only => {
                         ctx.record.metro_bind = Some(MetroBind::V6Only);
                         ctx.save()?;
-                        return Err(ipv6_only_refusal(metro_resource.port, &seen.listeners));
+                        return Err(ipv6_only_refusal(
+                            metro_resource.port,
+                            &seen.listeners,
+                            "QaReN restarted its Metro once on all interfaces",
+                        ));
                     }
                     metro::BindClass::Pending | metro::BindClass::Inconclusive => {}
                 }
@@ -3565,31 +3592,64 @@ fn wait_metro_responding(ctx: &mut Ctx) -> Result<(), Failure> {
             if ctx.record.scenario.platform == Platform::Ios {
                 ctx.record.metro_bind = Some(MetroBind::Inconclusive);
             }
+            // After a restart in this turn the recorded log is the second Metro's.
+            let log = ctx
+                .record
+                .resources
+                .metro
+                .as_ref()
+                .map_or(metro_resource.log, |metro| metro.log.clone());
             return Err(Failure::new(
                 "build",
                 FailureCode::ReadyDeadlineExceeded,
-                format!(
-                    "metro did not become ready in time; see {}",
-                    metro_resource.log.display()
-                ),
+                format!("metro did not become ready in time; see {}", log.display()),
                 format!(
                     "inspect the log, then qaren cleanup {} --json",
                     ctx.record.run_id
                 ),
             )
-            .with_evidence(vec![super::log_tail(&metro_resource.log, 25)]));
+            .with_evidence(vec![super::log_tail(&log, 25)]));
         }
         ctx.runner.sleep(Duration::from_secs(2));
     }
 }
 
+// The one recovery from a [::1]-only Metro: stop it through the group stop and start it again on all
+// interfaces. The caller's deadline still applies.
+fn restart_metro_on_all_interfaces(
+    ctx: &mut Ctx,
+    first: &MetroResource,
+    listeners: &metro::Listeners,
+) -> Result<(), Failure> {
+    // Recorded first, so a restart that cannot stop or start a Metro still names why it was tried.
+    ctx.record.metro_bind = Some(MetroBind::V6Only);
+    let stopped = super::cleanup::cleanup_process_group(
+        ctx.runner,
+        first.identity.as_ref(),
+        first.spawned.pgid,
+        Some(first.port),
+    );
+    if !stopped.clean() {
+        ctx.save()?;
+        return Err(ipv6_only_refusal(
+            first.port,
+            listeners,
+            "the first Metro could not be stopped",
+        ));
+    }
+    ctx.record.resources.metro = None;
+    ctx.save()?;
+    ensure_running(ctx.runner, "build")?;
+    spawn_metro_only(ctx, metro::Listen::AllPinned)
+}
+
 // The listener forms carry only loopback forms, `*` and `other`, never another address.
-fn ipv6_only_refusal(port: u16, listeners: &metro::Listeners) -> Failure {
+fn ipv6_only_refusal(port: u16, listeners: &metro::Listeners, tried: &str) -> Failure {
     Failure::new(
         "build",
         FailureCode::MetroBindIpv6Only,
         format!(
-            "Metro answered on [::1]:{port} and never on 127.0.0.1:{port}, which QaReN and the dev client use; listeners seen: {}; no restart was tried",
+            "Metro answered on [::1]:{port} and never on 127.0.0.1:{port}, which QaReN and the dev client use; listeners seen: {}; {tried}",
             metro::listener_forms(listeners, port)
         ),
         "check whether the project sets Node's DNS result order (its Metro configuration, NODE_OPTIONS, or a pnpm node-options setting), then run again",
@@ -3691,7 +3751,7 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                 &embedded,
             ));
             if ctx.record.resources.metro.is_none() {
-                spawn_metro_only(ctx)?;
+                spawn_metro_only(ctx, metro::Listen::Loopback)?;
             }
             let sim = ctx
                 .record
@@ -3782,7 +3842,12 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
 
     enter_substage(ctx, Some("metro_ready"));
     if ctx.record.resources.metro.is_none() {
-        spawn_metro_only(ctx)?;
+        let listen = if ctx.record.scenario.platform == Platform::Ios {
+            metro::Listen::Loopback
+        } else {
+            metro::Listen::Default
+        };
+        spawn_metro_only(ctx, listen)?;
     }
     wait_metro_responding(ctx)?;
     let t = ctx.mark("metro_ready", t);
@@ -6073,7 +6138,7 @@ fn dry_run_receipt(
             planned.push(metro::start_spec(
                 &cand.project_root,
                 port,
-                true,
+                metro::Listen::Loopback,
                 metro::expo_online(runner),
                 None,
                 None,
@@ -6236,7 +6301,7 @@ fn dry_run_receipt(
                 planned.push(metro::start_spec(
                     &cand.project_root,
                     port,
-                    true,
+                    metro::Listen::Loopback,
                     metro::expo_online(runner),
                     None,
                     None,
@@ -6273,7 +6338,7 @@ fn dry_run_receipt(
                 planned.push(metro::start_spec(
                     &cand.project_root,
                     port,
-                    false,
+                    metro::Listen::Default,
                     metro::expo_online(runner),
                     None,
                     None,
