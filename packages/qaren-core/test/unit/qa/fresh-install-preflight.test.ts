@@ -1800,30 +1800,40 @@ else {
         );
       });
     const android = ['--platform', 'android', '--device', SERIAL];
-    for (const [env, status] of [
-      [{ FAKE_ADB_STDOUT: androidIdle }, 'clear'],
-      [{ FAKE_ADB_STDOUT: `${androidIdle}${androidRow('uiautomator')}` }, 'busy'],
-      [{ FAKE_ADB_STDOUT: `${androidIdle}${androidRow('dev.mobile.maestro')}` }, 'busy'],
-      [{ FAKE_ADB_STDOUT: '' }, 'unknown'],
-      [{ FAKE_ADB_STDOUT: androidIdle, FAKE_ADB_EXIT: '1' }, 'unknown'],
-      [{ FAKE_ADB_MODE: 'timeout' }, 'unknown'],
-    ] as const) {
-      const result = await run(android, env);
-      assert.equal(result.code, status === 'clear' ? 0 : 4, status);
-      assert.equal(result.stderr, '');
-      assert.deepEqual(JSON.parse(result.stdout), {
-        v: 1,
-        platform: 'android',
-        deviceId: SERIAL,
-        status,
-      });
+    // A borrowed USB phone gets the same strict scan as an emulator.
+    for (const device of [SERIAL, '0A1B2C3D']) {
+      for (const [env, status] of [
+        [{ FAKE_ADB_STDOUT: androidIdle }, 'clear'],
+        [{ FAKE_ADB_STDOUT: `${androidIdle}${androidRow('uiautomator')}` }, 'busy'],
+        [{ FAKE_ADB_STDOUT: `${androidIdle}${androidRow('dev.mobile.maestro')}` }, 'busy'],
+        [{ FAKE_ADB_STDOUT: '' }, 'unknown'],
+        [{ FAKE_ADB_STDOUT: androidIdle, FAKE_ADB_EXIT: '1' }, 'unknown'],
+        [{ FAKE_ADB_MODE: 'timeout' }, 'unknown'],
+      ] as const) {
+        const result = await run(['--platform', 'android', '--device', device], env);
+        assert.equal(result.code, status === 'clear' ? 0 : 4, status);
+        assert.equal(result.stderr, '');
+        assert.deepEqual(JSON.parse(result.stdout), {
+          v: 1,
+          platform: 'android',
+          deviceId: device,
+          status,
+        });
+      }
+      for (const call of (await readFile(marker, 'utf8')).trim().split('\n'))
+        assert.deepEqual(JSON.parse(call), ['-s', device, 'shell', 'ps', '-A']);
+      await rm(marker);
     }
-    for (const call of (await readFile(marker, 'utf8')).trim().split('\n'))
-      assert.deepEqual(JSON.parse(call), ['-s', SERIAL, 'shell', 'ps', '-A']);
-    await rm(marker);
     for (const invalid of [
       ['--platform', 'android', '--device', 'emulator-'],
+      ['--platform', 'android', '--device', 'emulator-55a4'],
+      ['--platform', 'android', '--device', '-0A1B2C3D'],
+      ['--platform', 'android', '--device', '????????????'],
       ['--platform', 'android', '--device', '127.0.0.1:5555'],
+      // Wireless adb connections, built from adb's mDNS service types.
+      ['--platform', 'android', '--device', 'adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp'],
+      ['--platform', 'android', '--device', 'adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp.'],
+      ['--platform', 'android', '--device', 'adb-0A1B2C3D._adb._tcp'],
       ['--platform', 'android', '--device', `${SERIAL}\n`],
       ['--platform', 'android', '--device', `${SERIAL} -s other`],
       [...android, '--process-observer', '/usr/bin/true'],

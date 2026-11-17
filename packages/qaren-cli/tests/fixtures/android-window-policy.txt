@@ -1,0 +1,35 @@
+WINDOW MANAGER POLICY STATE (dumpsys window policy)
+    mSafeMode=false mSystemReady=true mSystemBooted=true
+    mCameraLensCoverState=LENS_COVER_ABSENT
+    mWakeGestureEnabledSetting=true
+    mSupportAutoRotation=true mOrientationListener.mEnabled=false
+    mLidState=LID_ABSENT mLidOpenRotation=-1
+    mDockMode=EXTRA_DOCK_STATE_UNDOCKED mLidKeyboardAccessibility=0 mLidNavigationAccessibility=0
+    mShortPressOnPowerBehavior=1 mLongPressOnPowerBehavior=1
+    mScreenOnEarly=true mScreenOnFully=true
+    mKeyguardDrawComplete=true mWindowManagerDrawComplete=true
+    mHomePressed=false
+    mAllowLockscreenWhenOnDisplays=false mLockScreenTimeout=60000 mLockScreenTimerActive=false
+    KeyguardServiceDelegate
+      showing=false
+      showingAndNotOccluded=false
+      inputRestricted=false
+      occluded=false
+      secure=false
+      dreaming=false
+      systemIsReady=true
+      deviceHasKeyguard=true
+      enabled=true
+      offReason=OFF_BECAUSE_OF_USER
+      currentUser=0
+      bootCompleted=true
+      screenState=SCREEN_STATE_ON
+      interactiveState=INTERACTIVE_STATE_AWAKE
+      KeyguardStateMonitor
+        mIsShowing=false
+        mSimSecure=false
+        mInputRestricted=false
+        mTrusted=false
+        mCurrentUserId=0
+    mPendingWakeKey=false
+    mPendingPowerKeyUpCanceled=false

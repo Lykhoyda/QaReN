@@ -45,6 +45,16 @@ impl NativeFingerprint {
         }
         self
     }
+
+    // shortcut: one Android build state per worktree, so alternating emulator and phone rebuilds each time; give each ABI its own state when users alternate.
+    pub fn with_android_abi(mut self, abi: Option<&str>) -> Self {
+        if let Some(abi) = abi {
+            let bytes = serde_json::to_vec(&("qaren-android-abi/1", &self.value, abi))
+                .expect("fingerprint and ABI strings serialize to JSON");
+            self.value = format!("{FINGERPRINT_VERSION}:{}", sha256_hex(&bytes));
+        }
+        self
+    }
 }
 
 // Native inputs are the files git considers part of the candidate (tracked or

@@ -1,7 +1,7 @@
 # Physical USB Android phone by explicit serial. Replace `serial` with the
 # exact adb transport serial from the authoritative allocation record for
 # the device assigned to you (the same value a scoped `adb -s <serial>`
-# would need) — qaren refuses emulator and loopback serial forms here, and
+# would need; see ../README.md#physical-usb-android for serial restrictions). QaReN
 # never discovers or selects a device it was not explicitly given. The
 # placeholder below deliberately fails validation so an unedited scenario
 # refuses before allocating anything. The device claim is exclusive per

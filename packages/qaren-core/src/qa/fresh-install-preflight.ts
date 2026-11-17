@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import {
   isAndroidEmulatorSerial,
+  isAndroidUsbSerial,
   isIosSimulatorUdid,
   probeAndroidExternalRunnerAdmission,
   probeIosExternalRunnerAdmission,
@@ -75,7 +76,7 @@ export async function freshInstallPreflight(args: string[]): Promise<FreshInstal
   if (
     options.get('--platform') === 'android' &&
     deviceId &&
-    isAndroidEmulatorSerial(deviceId) &&
+    (isAndroidEmulatorSerial(deviceId) || isAndroidUsbSerial(deviceId)) &&
     !options.has('--process-observer')
   ) {
     const { status } = await probeAndroidExternalRunnerAdmission(deviceId);
