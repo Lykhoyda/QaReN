@@ -1,0 +1,644 @@
+TASK 1000:com.example.settings id=1 userId=0
+  ACTIVITY com.example.settings/.MainActivity 0000001 pid=(not running)
+
+TASK 1000:com.example.launcher id=2 userId=0
+  ACTIVITY com.example.launcher/.MainActivity 0000001 pid=1002
+    [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+        [redacted unrelated state]
+          [redacted unrelated state]
+          [redacted unrelated state]
+          [redacted unrelated state]
+          [redacted unrelated state]
+          [redacted unrelated state]
+          [redacted unrelated state]
+          [redacted unrelated state]
+          [redacted unrelated state]
+            [redacted unrelated state]
+              [redacted unrelated state]
+              [redacted unrelated state]
+              [redacted unrelated state]
+              [redacted unrelated state]
+      [redacted unrelated state]
+        [redacted unrelated state]
+      [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+    [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+    [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+    
+[redacted unrelated state]
+      [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+    View Hierarchy:
+      [redacted unrelated state]
+        android.widget.FrameLayout{0000001}
+          android.widget.FrameLayout{0000001}
+            androidx.appcompat.widget.FitWindowsFrameLayout{0000001}
+              androidx.appcompat.widget.ContentFrameLayout{0000001}
+                [redacted unrelated state]
+                  [redacted unrelated state]
+                    [redacted unrelated state]
+                      [redacted unrelated state]
+                        [redacted unrelated state]
+                          [redacted unrelated state]
+                            [redacted unrelated state]
+                          [redacted unrelated state]
+                          [redacted unrelated state]
+                          [redacted unrelated state]
+                          [redacted unrelated state]
+                          [redacted unrelated state]
+                            android.widget.FrameLayout{0000001}
+                              android.widget.LinearLayout{0000001}
+                                android.widget.FrameLayout{0000001}
+                                android.widget.FrameLayout{0000001}
+                                android.widget.FrameLayout{0000001}
+                                android.widget.FrameLayout{0000001}
+                                android.widget.FrameLayout{0000001}
+                              android.widget.FrameLayout{0000001}
+                                android.widget.ImageView{0000001}
+                                android.widget.ImageView{0000001}
+                                android.widget.ImageView{0000001}
+                                android.widget.ImageView{0000001}
+                                android.widget.ImageView{0000001}
+                                android.widget.ImageView{0000001}
+                                android.widget.LinearLayout{0000001}
+                                  android.widget.FrameLayout{0000001}
+                                    android.widget.ImageButton{0000001}
+                                    android.widget.ImageButton{0000001}
+                                  android.widget.FrameLayout{0000001}
+                                  android.widget.FrameLayout{0000001}
+                                    android.widget.ImageButton{0000001}
+                                  android.widget.FrameLayout{0000001}
+                                    android.widget.ImageButton{0000001}
+                                  android.widget.FrameLayout{0000001}
+                                    android.widget.ImageButton{0000001}
+                          [redacted unrelated state]
+                            android.widget.RelativeLayout{0000001}
+                              android.widget.TextClock{0000001}
+                              android.widget.TextView{0000001}
+                              android.widget.RelativeLayout{0000001}
+                                [redacted unrelated state]
+                                android.widget.TextView{0000001}
+                                android.widget.TextClock{0000001}
+                      [redacted unrelated state]
+                        [redacted unrelated state]
+                          [redacted unrelated state]
+                            [redacted unrelated state]
+                          [redacted unrelated state]
+                    [redacted unrelated state]
+                      [redacted unrelated state]
+                        [redacted unrelated state]
+                        android.widget.RelativeLayout{0000001}
+                          android.widget.TextView{0000001}
+                          android.widget.ImageView{0000001}
+                        [redacted unrelated state]
+                          android.widget.ImageView{0000001}
+                          android.widget.TextView{0000001}
+                        android.widget.RelativeLayout{0000001}
+                          android.widget.ImageView{0000001}
+                      [redacted unrelated state]
+                        [redacted unrelated state]
+                        android.widget.RelativeLayout{0000001}
+                          android.widget.TextView{0000001}
+                          android.widget.ImageView{0000001}
+                        [redacted unrelated state]
+                          android.widget.ImageView{0000001}
+                          android.widget.TextView{0000001}
+                        android.widget.RelativeLayout{0000001}
+                          android.widget.ImageView{0000001}
+                      [redacted unrelated state]
+                        [redacted unrelated state]
+                        android.widget.RelativeLayout{0000001}
+                          android.widget.TextView{0000001}
+                          android.widget.ImageView{0000001}
+                        [redacted unrelated state]
+                          android.widget.ImageView{0000001}
+                          android.widget.TextView{0000001}
+                        android.widget.RelativeLayout{0000001}
+                          android.widget.ImageView{0000001}
+                    android.widget.RelativeLayout{0000001}
+                      android.widget.RelativeLayout{0000001}
+                        [redacted unrelated state]
+                        [redacted unrelated state]
+                          [redacted unrelated state]
+                          [redacted unrelated state]
+                          [redacted unrelated state]
+                      android.widget.TextView{0000001}
+                    [redacted unrelated state]
+                      android.widget.LinearLayout{0000001}
+                        android.widget.TextView{0000001}
+                        android.widget.ImageView{0000001}
+                    [redacted unrelated state]
+                      android.widget.FrameLayout{0000001}
+                        [redacted unrelated state]
+                        [redacted unrelated state]
+                        android.widget.FrameLayout{0000001}
+                          android.widget.ImageView{0000001}
+                          android.widget.ImageView{0000001}
+                          android.widget.ImageView{0000001}
+                      [redacted unrelated state]
+                    [redacted unrelated state]
+                      [redacted unrelated state]
+                    [redacted unrelated state]
+                    [redacted unrelated state]
+                      [redacted unrelated state]
+                        [redacted unrelated state]
+                          [redacted unrelated state]
+                            android.widget.RelativeLayout{0000001}
+                              android.widget.ImageView{0000001}
+                              android.widget.TextView{0000001}
+                          [redacted unrelated state]
+                            [redacted unrelated state]
+                            android.widget.TextView{0000001}
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            android.widget.ImageView{0000001}
+                          android.widget.ImageView{0000001}
+                          [redacted unrelated state]
+                          [redacted unrelated state]
+                          [redacted unrelated state]
+                        [redacted unrelated state]
+                          [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                          [redacted unrelated state]
+                            android.widget.ImageView{0000001}
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            [redacted unrelated state]
+                            android.widget.ImageView{0000001}
+                          android.widget.ImageView{0000001}
+                          [redacted unrelated state]
+                            android.widget.LinearLayout{0000001}
+                              [redacted unrelated state]
+                                android.widget.FrameLayout{0000001}
+                                  android.widget.LinearLayout{0000001}
+                                    android.widget.LinearLayout{0000001}
+                                      android.view.View{0000001}
+                                      [redacted unrelated state]
+                                        android.widget.FrameLayout{0000001}
+                                          android.widget.TextView{0000001}
+                                        android.widget.FrameLayout{0000001}
+                                          android.widget.TextView{0000001}
+                                        android.widget.FrameLayout{0000001}
+                                          android.widget.TextView{0000001}
+                                        android.widget.FrameLayout{0000001}
+                                          android.widget.TextView{0000001}
+                                        android.widget.FrameLayout{0000001}
+                                          android.widget.TextView{0000001}
+                                        android.widget.FrameLayout{0000001}
+                                          android.widget.TextView{0000001}
+                                        android.widget.FrameLayout{0000001}
+                                          android.widget.TextView{0000001}
+                                        android.widget.FrameLayout{0000001}
+                                          android.widget.TextView{0000001}
+                                        android.widget.FrameLayout{0000001}
+                                          android.widget.TextView{0000001}
+                                  android.view.View{0000001}
+                              [redacted unrelated state]
+                              android.view.View{0000001}
+                            android.widget.LinearLayout{0000001}
+                              android.widget.TextView{0000001}
+                              android.widget.TextView{0000001}
+                          [redacted unrelated state]
+                            [redacted unrelated state]
+                              android.widget.Button{0000001}
+                              android.widget.Button{0000001}
+                          [redacted unrelated state]
+                          [redacted unrelated state]
+                          [redacted unrelated state]
+                        androidx.constraintlayout.widget.ConstraintLayout{0000001}
+                          [redacted unrelated state]
+                          android.widget.TextView{0000001}
+                    [redacted unrelated state]
+                      android.widget.Space{0000001}
+                      android.widget.ImageView{0000001}
+                      android.widget.Space{0000001}
+                      android.widget.LinearLayout{0000001}
+                        android.widget.TextView{0000001}
+                        android.widget.TextView{0000001}
+                        android.widget.TextView{0000001}
+                      android.widget.Space{0000001}
+                    [redacted unrelated state]
+                      [redacted unrelated state]
+                        [redacted unrelated state]
+                        [redacted unrelated state]
+                        [redacted unrelated state]
+                        [redacted unrelated state]
+              androidx.appcompat.widget.ViewStubCompat{0000001}
+          android.view.ViewStub{0000001}
+    [redacted unrelated state]
+      [redacted unrelated state]
+    [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+    [redacted unrelated state]
+    [redacted unrelated state]
+    [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+    [redacted unrelated state]
+      [redacted unrelated state]
+    [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+    [redacted unrelated state]
+      [redacted unrelated state]
+    [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+    [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+    [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+    [redacted unrelated state]
+    	[redacted unrelated state]
+    [redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+    [redacted unrelated state]
+     [redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+     [redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+     [redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+     [redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    	[redacted unrelated state]
+    [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+      [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+
+TASK 1000:com.example.synthetic id=3 userId=0
+  ACTIVITY com.example.synthetic/.MainActivity 0000001 pid=1003
+    [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+        [redacted unrelated state]
+          [redacted unrelated state]
+          [redacted unrelated state]
+          [redacted unrelated state]
+          [redacted unrelated state]
+          [redacted unrelated state]
+          [redacted unrelated state]
+          [redacted unrelated state]
+          [redacted unrelated state]
+            [redacted unrelated state]
+              [redacted unrelated state]
+              [redacted unrelated state]
+              [redacted unrelated state]
+              [redacted unrelated state]
+      [redacted unrelated state]
+        [redacted unrelated state]
+      [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+    [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+    [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+    
+[redacted unrelated state]
+      [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+    View Hierarchy:
+      [redacted unrelated state]
+        android.widget.LinearLayout{0000001}
+          android.view.ViewStub{0000001}
+          android.widget.FrameLayout{0000001}
+            androidx.appcompat.widget.FitWindowsLinearLayout{0000001}
+              androidx.appcompat.widget.ViewStubCompat{0000001}
+              androidx.appcompat.widget.ContentFrameLayout{0000001}
+                expo.modules.devmenu.DevMenuFragment$Companion$createFragmentHost$layout$1{0000001}
+                  com.facebook.react.runtime.ReactSurfaceView{0000001}
+                    [redacted unrelated state]
+                      [redacted unrelated state]
+                        [redacted unrelated state]
+                          com.facebook.react.views.view.ReactViewGroup{0000001}
+                            com.facebook.react.views.view.ReactViewGroup{0000001}
+                            [redacted unrelated state]
+                              [redacted unrelated state]
+                                [redacted unrelated state]
+                                  [redacted unrelated state]
+                                    com.facebook.react.views.view.ReactViewGroup{0000001}
+                                    com.facebook.react.views.scroll.ReactHorizontalScrollView{0000001}
+                                      com.facebook.react.views.view.ReactViewGroup{0000001}
+                                        com.facebook.react.views.view.ReactViewGroup{0000001}
+                                        com.facebook.react.views.view.ReactViewGroup{0000001}
+                                          com.facebook.react.views.view.ReactViewGroup{0000001}
+                                        com.facebook.react.views.view.ReactViewGroup{0000001}
+                                          com.facebook.react.views.text.ReactTextView{0000001}
+                                        com.facebook.react.views.view.ReactViewGroup{0000001}
+                                          com.facebook.react.views.text.ReactTextView{0000001}
+                                        com.facebook.react.views.view.ReactViewGroup{0000001}
+                                        com.facebook.react.views.view.ReactViewGroup{0000001}
+                                          com.facebook.react.views.view.ReactViewGroup{0000001}
+                                        com.facebook.react.views.view.ReactViewGroup{0000001}
+                                          com.facebook.react.views.text.ReactTextView{0000001}
+                                        com.facebook.react.views.view.ReactViewGroup{0000001}
+                                          com.facebook.react.views.text.ReactTextView{0000001}
+                                        com.facebook.react.views.view.ReactViewGroup{0000001}
+                                        com.facebook.react.views.view.ReactViewGroup{0000001}
+                                          com.facebook.react.views.view.ReactViewGroup{0000001}
+                                        com.facebook.react.views.view.ReactViewGroup{0000001}
+                                          com.facebook.react.views.text.ReactTextView{0000001}
+                                        com.facebook.react.views.view.ReactViewGroup{0000001}
+                                          com.facebook.react.views.text.ReactTextView{0000001}
+                                    com.facebook.react.views.view.ReactViewGroup{0000001}
+                                    com.facebook.react.views.view.ReactViewGroup{0000001}
+                                    com.facebook.react.views.view.ReactViewGroup{0000001}
+                                    com.facebook.react.views.view.ReactViewGroup{0000001}
+                                    com.facebook.react.views.view.ReactViewGroup{0000001}
+                                      com.facebook.react.views.text.ReactTextView{0000001}
+                                    com.facebook.react.views.view.ReactViewGroup{0000001}
+                                      com.facebook.react.views.text.ReactTextView{0000001}
+                                  [redacted unrelated state]
+                                [redacted unrelated state]
+                        com.facebook.react.views.view.ReactViewGroup{0000001}
+                    com.facebook.react.views.view.ReactViewGroup{0000001}
+                      com.facebook.react.views.debuggingoverlay.DebuggingOverlay{0000001}
+                  android.widget.LinearLayout{0000001}
+                    androidx.compose.ui.platform.ComposeView{0000001}
+                      androidx.compose.ui.platform.AndroidComposeView{0000001}
+              com.facebook.react.views.view.ReactViewGroup{0000001}
+    [redacted unrelated state]
+      [redacted unrelated state]
+    [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+    [redacted unrelated state]
+    [redacted unrelated state]
+    [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+    [redacted unrelated state]
+      [redacted unrelated state]
+    [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+          [redacted unrelated state]
+          [redacted unrelated state]
+            [redacted unrelated state]
+            [redacted unrelated state]
+            [redacted unrelated state]
+            [redacted unrelated state]
+    [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+        [redacted unrelated state]
+          [redacted unrelated state]
+          [redacted unrelated state]
+            [redacted unrelated state]
+            [redacted unrelated state]
+            [redacted unrelated state]
+            [redacted unrelated state]
+    [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+    [redacted unrelated state]
+    [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
+      [redacted unrelated state]
