@@ -1920,6 +1920,40 @@ mod tests {
     }
 
     #[test]
+    fn ground_proofs_survive_the_ledger_and_drop_untyped_data() {
+        let frame = serde_json::json!({ "x": 0.0, "y": 116.0, "width": 402.0, "height": 758.0 });
+        let mut row = serde_json::json!({
+            "block": "b", "line": 1, "attempt": 1, "kind": "step", "resolvedBy": "exact", "t": 0, "outcome": "pass"
+        });
+        for proof in [
+            serde_json::json!({ "status": "not-needed" }),
+            serde_json::json!({ "status": "proven", "ref": "@e36", "kind": "button" }),
+            serde_json::json!({ "status": "solid-view", "ref": "@e8", "kind": "other", "frame": frame }),
+            serde_json::json!({ "status": "band-too-small" }),
+            serde_json::json!({ "status": "no-witness" }),
+            serde_json::json!({ "status": "witness-not-hittable", "count": 2 }),
+            serde_json::json!({ "status": "witness-unavailable" }),
+        ] {
+            row["groundProof"] = proof.clone();
+            let parsed: crate::core::Row = serde_json::from_value(row.clone()).unwrap();
+            assert_eq!(serde_json::to_value(parsed).unwrap()["groundProof"], proof);
+        }
+        // A label, a non-capture reference or an unknown status never reaches the saved ledger.
+        for proof in [
+            serde_json::json!({ "status": "proven", "ref": "@e36", "kind": "button", "label": "Pay now" }),
+            serde_json::json!({ "status": "proven", "ref": "private-value", "kind": "button" }),
+            serde_json::json!({ "status": "private-value" }),
+        ] {
+            row["groundProof"] = proof;
+            let parsed: crate::core::Row = serde_json::from_value(row.clone()).unwrap();
+            assert!(serde_json::to_value(parsed)
+                .unwrap()
+                .get("groundProof")
+                .is_none());
+        }
+    }
+
+    #[test]
     fn target_facts_survive_large_captures() {
         for count in [65, 1000] {
             let collapsed: Vec<_> = (0..count)

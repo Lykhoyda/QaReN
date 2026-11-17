@@ -60,12 +60,14 @@ import {
   decideScreen,
   elementSelector,
   centreCovered,
+  inKeyboardMarginOnly,
   inferredOverlayCoverage,
   overlayProbeCoverage,
   overlayProbeCandidates,
   clearanceBand,
   clearanceScroll,
   keyboardClearance,
+  KEYBOARD_EDGE_INSET,
   keyboardFallbackTarget,
   fillHostInside,
   bindFillIdentity,
@@ -78,6 +80,12 @@ import {
   scrollTargetCovered,
   scrollUntilContainer,
   foreignOnBand,
+  foreignViewOnBand,
+  groundWitnesses,
+  plainLayersOn,
+  scrollUntilStartBand,
+  type CoveredBy,
+  type GroundProof,
   scrollUntilDirection,
   targetEvidence,
   aggregateTargetVisible,
@@ -99,6 +107,7 @@ import {
 } from './resolve.js';
 import { literalEvidence, type LiteralNearMiss } from './evidence.js';
 import { scrollMotion } from './scroll-motion.js';
+import { scrollBandTooSmall } from '../domain/scroll-gesture.js';
 import { scrollNavigationChange } from './scroll-navigation.js';
 import { applyContainmentFallback, exactIdentities, focusIdentityOf } from './identity.js';
 import {
@@ -420,6 +429,8 @@ const KEYBOARD_DISMISSED = '; the keyboard was dismissed before this tap';
 const OFF_SCREEN_AFTER_SCROLL =
   'stayed off screen after one scroll: its centre is past the visible area or under the keyboard';
 const REACT_ONLY_UNSEEN = 'is known to React but has no element on the visible screen';
+// A witness's hit read starts only with this much of its observation's life left.
+const WITNESS_READ_RESERVE_MS = 300;
 // Why the one clearance drag after a covered iOS refusal was withheld.
 type WithheldDrag = 'no-scroll-area' | 'no-free-part' | 'read-late';
 const WITHHELD_DRAG: Record<WithheldDrag, string> = {
@@ -437,6 +448,10 @@ const inferredOverlay = (facts: Readonly<CentreCoverageDiagnostic> | null) =>
   facts?.branch === 'overlay' && facts.viewportOutside === false && facts.keyboardVisible === false
     ? facts
     : undefined;
+
+// The centre test found the centre inside a visible keyboard's frame.
+const insideKeyboard = (facts: Readonly<CentreCoverageDiagnostic> | null) =>
+  facts?.branch === 'keyboard';
 
 // Strict focus and an unnamed input's placeholder identity travel together; nothing when neither applies.
 const fillOptions = (strict: boolean, placeholder: string | undefined) =>
@@ -1633,6 +1648,7 @@ async function walkBlockScoped(
     return operationId;
   };
   const scrollBands = new Map<number, LedgerRow['scrollBand']>();
+  const groundProofs = new Map<number, GroundProof>();
   const bandFor = (item: Item, target: Target, screen: Screen) =>
     scrollUntilBand(target, screen, (receipt) => scrollBands.set(item.line, receipt));
   const overlayRows = new Map<number, { observation: number; checks: OverlayHitReceipt[] }>();
@@ -1695,36 +1711,103 @@ async function walkBlockScoped(
     );
     return proven;
   };
+  // A list's band that release 2.2.1 finds taken may be taken only by plain layers: empty views holding
+  // the whole band. It is free when one named element of the list, wholly inside the band without them,
+  // reads natively hittable now. Only on a presence read with no keyboard shown; anything solid, and
+  // every read that proves nothing, keeps the refusal. The outcome is recorded either way.
+  const proveGround = async (
+    item: Exclude<Item, { kind: 'check' }> & { kind: 'press' | 'fill' },
+    observation: Observation,
+    container: Element,
+    target: Element | undefined,
+    cover: CoveredBy | undefined,
+  ): Promise<NativeNode['rect']> => {
+    const screen = observation.screen;
+    if (
+      deps.platform !== 'ios' ||
+      !observation.platformPresence ||
+      screen.keyboardVisible !== false
+    )
+      return undefined;
+    const settle = (proof: GroundProof): undefined => {
+      groundProofs.set(item.line, proof);
+      return undefined;
+    };
+    const solid = (view: Element | undefined): undefined => {
+      const frame = view && elementFrame(view);
+      if (view && frame)
+        return settle({ status: 'solid-view', ref: view.ref, kind: view.kind, frame });
+      return settle(
+        cover
+          ? { status: 'solid-view', ref: cover.ref, kind: cover.kind, frame: cover.frame }
+          : { status: 'band-too-small' },
+      );
+    };
+    const start = scrollUntilStartBand(item.target, screen);
+    if (!start) return undefined;
+    const plain = plainLayersOn(container, start, screen);
+    if (!plain.length) return solid(foreignViewOnBand(container, start, screen));
+    const leaveOut = new Set(plain);
+    const band = scrollUntilBand(item.target, screen, undefined, leaveOut);
+    if (!band || scrollBandTooSmall(band)) return settle({ status: 'band-too-small' });
+    const onCover = cover && clip(band, cover.frame);
+    if (onCover && onCover.width > 0 && onCover.height > 0) return solid(undefined);
+    const foreign = foreignViewOnBand(container, band, screen, leaveOut);
+    if (foreign) return solid(foreign);
+    const witnesses = groundWitnesses(container, band, screen, target);
+    if (!witnesses.length) return settle({ status: 'no-witness' });
+    let notHittable = 0;
+    for (const witness of witnesses) {
+      // A read that would outlive the observation never starts.
+      if (observationDeadline(observation.timing) - deps.now() < WITNESS_READ_RESERVE_MS) break;
+      const read = await readHit(item, observation, witness);
+      if (read === 'hittable') {
+        groundProofs.set(item.line, { status: 'proven', ref: witness.ref, kind: witness.kind });
+        return band;
+      }
+      if (read === 'not-hittable') notHittable += 1;
+    }
+    return settle(
+      notHittable
+        ? { status: 'witness-not-hittable', count: notHittable }
+        : { status: 'witness-unavailable' },
+    );
+  };
   // After a proven cover check of a covered iOS refusal: the band of its one clearance drag, or why no
   // drag may be sent. Only a read proving nothing else takes the touch keeps today's band.
-  const clearanceAfterProof = (
+  const clearanceAfterProof = async (
     item: Exclude<Item, { kind: 'check' }> & { kind: 'press' | 'fill' },
     element: Element,
-    screen: Screen,
-  ): { band: NativeNode['rect']; direction: 'up' | 'down' } | WithheldDrag => {
+    observation: Observation,
+  ): Promise<{ band: NativeNode['rect']; direction: 'up' | 'down' } | WithheldDrag> => {
+    const screen = observation.screen;
     const cover = targetRows.get(item.line)?.coveredBy;
     const gap = coverGaps.get(item.line);
-    if (!cover && (gap === 'none' || gap === 'reaches-target'))
+    if (!cover && (gap === 'none' || gap === 'reaches-target')) {
+      groundProofs.set(item.line, { status: 'not-needed' });
       return { band: clearanceBand(element, screen), direction: clearanceScroll(element, screen) };
+    }
     if (gap === 'presence-recapture-incomplete') return 'read-late';
     const container = ancestorsOf(element).find(isScrollContainer);
     if (!container || scrollUntilContainer(item.target, screen) !== container)
       return 'no-scroll-area';
-    const band = bandFor(item, item.target, screen);
-    const shared = band && cover && clip(band, cover.frame);
+    const today = bandFor(item, item.target, screen);
+    const shared = today && cover && clip(today, cover.frame);
     const onCover = !!shared && shared.width > 0 && shared.height > 0;
+    const free =
+      !!today &&
+      today.width > 0 &&
+      today.height > 0 &&
+      !onCover &&
+      !foreignOnBand(container, today, screen);
+    if (free) groundProofs.set(item.line, { status: 'not-needed' });
+    const band = free ? today : await proveGround(item, observation, container, element, cover);
+    if (!band) return 'no-free-part';
     const frame = elementFrame(element);
-    return !band ||
-      band.width <= 0 ||
-      band.height <= 0 ||
-      onCover ||
-      foreignOnBand(container, band, screen)
-      ? 'no-free-part'
-      : {
-          band,
-          direction:
-            !frame || frame.y + frame.height / 2 >= band.y + band.height / 2 ? 'down' : 'up',
-        };
+    return {
+      band,
+      direction: !frame || frame.y + frame.height / 2 >= band.y + band.height / 2 ? 'down' : 'up',
+    };
   };
   // A covered refusal that emits no other decision diagnostic still says why its cover was or was not
   // named; a line whose cover was never looked up emits nothing.
@@ -1766,6 +1849,8 @@ async function walkBlockScoped(
       };
     const scrollBand = scrollBands.get(row.line);
     if (scrollBand) row = { ...row, scrollBand };
+    const groundProof = groundProofs.get(row.line);
+    if (groundProof) row = { ...row, groundProof };
     const interruption = interruptions.get(row.line);
     // A veto on an earlier attempt says nothing about a pass; a dismissal explains it.
     if (interruption && (row.outcome !== 'pass' || interruption.outcome === 'dismissed'))
@@ -3747,6 +3832,8 @@ async function walkBlockScoped(
     let pixelBaselineTaken = false;
     // This allowance survives recovery retries of the item.
     let itemKeyboardAttempted = false;
+    // Set by either keyboard clearance of a covered press; no scroll may follow it on this step.
+    let keyboardClearedOnStep = false;
     lineRead = undefined;
     hiddenTried = false;
     hiddenTap = undefined;
@@ -3757,6 +3844,7 @@ async function walkBlockScoped(
       interruptionWithheld = undefined;
       overlayRows.delete(item.line);
       scrollBands.delete(item.line);
+      groundProofs.delete(item.line);
       targetRows.delete(item.line);
       line = item.line;
       // Support blocks walk without recovery and never spend it; a login replay re-arms it for this retry.
@@ -4376,6 +4464,7 @@ async function walkBlockScoped(
           pressNeedsReadback = false;
           overlayRows.delete(item.line);
           scrollBands.delete(item.line);
+          groundProofs.delete(item.line);
           let plainBand: PlainScrollBand | undefined;
           const { coveredBy: _previousCover, ...selectionFacts } = targetRows.get(item.line) ?? {};
           targetRows.set(item.line, selectionFacts);
@@ -4432,6 +4521,17 @@ async function walkBlockScoped(
             continue items;
           }
           let ref: string | undefined;
+          const marginScrollRefusal = async (): Promise<WalkOutcome> =>
+            failed(
+              item,
+              attempt,
+              `keyboard clearance: the target moved out of reach after the keyboard was hidden; nothing was scrolled after it${await coverText(item)}`,
+              before.screen,
+              await shoot(item),
+              ref,
+              false,
+              'TARGET_NOT_FOUND',
+            );
           let element: Element | undefined;
           let initial = held?.decision;
           let freshness = attempt === 1 ? 1 : 0;
@@ -4445,6 +4545,7 @@ async function walkBlockScoped(
           let scrollNeedsReadback = false;
           let scrollError: string | undefined;
           let scrollPresenceRead = false;
+          let keyboardMarginPresenceRead = false;
           // The target that settled after this attempt's keyboard dismissal; the tap goes to it or nowhere.
           let keyboardBound: { target: Element; frame: string; scrolled: number } | undefined;
           const dismissResolvedTarget = async (target: Element): Promise<boolean> => {
@@ -4661,6 +4762,10 @@ async function walkBlockScoped(
                   resolution = result;
                 } else resolution = decided;
                 if ('scroll' in resolution) {
+                  if (keyboardClearedOnStep) {
+                    outcome = await marginScrollRefusal();
+                    break;
+                  }
                   if (withheldDrag) {
                     outcome = failed(
                       item,
@@ -4815,10 +4920,21 @@ async function walkBlockScoped(
                   const distance =
                     clearance ??
                     (resolution.element && keyboardClearance(resolution.element, before.screen));
-                  const band = view
+                  let band = view
                     ? bandFor(item, item.target, before.screen)
                     : (within ??
                       (resolution.element && clearanceBand(resolution.element, before.screen)));
+                  if (view && (!band || band.width <= 0 || band.height <= 0))
+                    band =
+                      view.container &&
+                      (await proveGround(
+                        item,
+                        before,
+                        view.container,
+                        resolution.element,
+                        undefined,
+                      ));
+                  else if (view) groundProofs.set(item.line, { status: 'not-needed' });
                   if (view && (!band || band.width <= 0 || band.height <= 0)) {
                     outcome = failed(
                       item,
@@ -4867,13 +4983,18 @@ async function walkBlockScoped(
                   )
                     throw new EvidenceExpired(false);
                   const clearing = scrollOrigin === 'centre-covered' ? clearanceCoverage : null;
-                  // A refused clearance drag moved nothing; an inferred iOS overlay still goes to the live hit read.
+                  // A refused clearance drag moved nothing; an inferred iOS overlay goes to the live hit read, a keyboard to its clearance.
                   if (
                     !result.ok &&
                     result.mutation === 'none' &&
                     item.kind === 'press' &&
                     deps.platform === 'ios' &&
-                    inferredOverlay(clearing)
+                    (inferredOverlay(clearing) ||
+                      (deps.dismissKeyboard &&
+                        before.screen.keyboardVisible === true &&
+                        insideKeyboard(clearing) &&
+                        !itemKeyboardAttempted &&
+                        !keyboardAttempted))
                   ) {
                     scrollNeedsReadback = false;
                     continue;
@@ -5025,6 +5146,15 @@ async function walkBlockScoped(
               recordCover(item.line, cover);
               if (cover && element) coverTargets.set(item.line, element);
               else coverTargets.delete(item.line);
+              if (
+                keyboardClearedOnStep &&
+                item.kind === 'press' &&
+                ((cover && 'owner' in cover) ||
+                  (overlay && element && !probeIdentifiable(element, before.screen)))
+              ) {
+                outcome = await marginScrollRefusal();
+                break;
+              }
               // List order is not paint order: an inferred overlay alone never refuses an iOS press.
               if (
                 item.kind === 'fill' &&
@@ -5053,13 +5183,70 @@ async function walkBlockScoped(
                 }
                 strictFillFocus = true;
               } else if (
-                (scrolled || withheldDrag) &&
+                (scrolled || withheldDrag || keyboardClearedOnStep) &&
                 overlay &&
                 item.kind === 'press' &&
                 deps.platform === 'ios'
               )
                 liveHit = overlay;
               else if (centreIsCovered && element !== undefined) {
+                // After a scroll, a remaining cover keeps the existing refusal below, with its cover.
+                if (keyboardClearedOnStep && !scrolled && !withheldDrag) {
+                  outcome = await marginScrollRefusal();
+                  break;
+                }
+                // Still inside the visible keyboard's frame after the one scroll: one keyboard
+                // clearance, then the press; never a second scroll.
+                const keyboardUp = before.screen.keyboardVisible === true;
+                if (
+                  (scrolled || withheldDrag) &&
+                  item.kind === 'press' &&
+                  deps.platform === 'ios' &&
+                  deps.dismissKeyboard &&
+                  keyboardUp &&
+                  insideKeyboard(centreDiagnostic)
+                ) {
+                  let why = 'the keyboard clearance was already used on this step';
+                  if (!itemKeyboardAttempted && !keyboardAttempted) {
+                    usable(before, item);
+                    // A vanished keyboard cannot count as the later tap's visible effect.
+                    pixelBaselineTaken = false;
+                    pixelBaseline = undefined;
+                    keyboardClearedOnStep = true;
+                    if (!(await dismissResolvedTarget(element))) break;
+                    if (keyboardCleared !== undefined && before.screen.keyboardVisible === false)
+                      continue;
+                    why =
+                      before.screen.keyboardVisible === false
+                        ? 'the keyboard clearance sent nothing'
+                        : `the keyboard did not hide after one clearance (keyboard after it: ${before.screen.keyboardVisible === true ? 'visible' : 'unknown'})`;
+                  }
+                  outcome = failed(
+                    item,
+                    attempt,
+                    `"${item.target.phrase}" was not pressed: its centre lies inside the keyboard's frame after one scroll, and ${why}; no second scroll was sent`,
+                    before.screen,
+                    await shoot(item),
+                    ref,
+                  );
+                  diagnostic(
+                    item,
+                    before,
+                    'decision',
+                    'CENTRE_COVERED',
+                    undefined,
+                    undefined,
+                    undefined,
+                    {
+                      predicate: centreDiagnostic,
+                      scrollOrigin,
+                      requestedDirection: scrollDirection,
+                      targetCentreChanged: centreChanged(element),
+                      coverGap: coverGaps.get(item.line) ?? null,
+                    },
+                  );
+                  break;
+                }
                 if (scrolled || withheldDrag) {
                   outcome = failed(
                     item,
@@ -5070,6 +5257,69 @@ async function walkBlockScoped(
                     ref,
                     false,
                     'TARGET_NOT_FOUND',
+                  );
+                  diagnostic(
+                    item,
+                    before,
+                    'decision',
+                    'CENTRE_COVERED',
+                    undefined,
+                    undefined,
+                    undefined,
+                    {
+                      predicate: centreDiagnostic,
+                      scrollOrigin,
+                      requestedDirection: scrollDirection,
+                      targetCentreChanged: centreChanged(element),
+                      coverGap: coverGaps.get(item.line) ?? null,
+                    },
+                  );
+                  break;
+                }
+                // Clear the keyboard once: a drag cannot move a target covered only by its drag margin.
+                const unusedClearance = !itemKeyboardAttempted && !keyboardAttempted;
+                if (
+                  item.kind === 'press' &&
+                  deps.platform === 'ios' &&
+                  deps.dismissKeyboard &&
+                  cover !== undefined &&
+                  'gap' in cover &&
+                  inKeyboardMarginOnly(element, before.screen)
+                ) {
+                  if (unusedClearance && !keyboardMarginPresenceRead) {
+                    keyboardMarginPresenceRead = true;
+                    const proven = await proveCover(
+                      item,
+                      Math.min(itemDeadline ?? Infinity, deps.now() + NATIVE_PRESENCE_BUDGET_MS),
+                    );
+                    // A recapture that yields nothing may have swallowed a veto (an app restart, a
+                    // development error); a fresh ordinary capture raises it before any clearance.
+                    before = proven ?? (await captureBeforeDispatch());
+                    initial = undefined;
+                    continue;
+                  }
+                  let why = 'the keyboard clearance was already used on this step';
+                  if (unusedClearance) {
+                    usable(before, item);
+                    // A vanished keyboard cannot count as the later tap's visible effect.
+                    pixelBaselineTaken = false;
+                    pixelBaseline = undefined;
+                    keyboardClearedOnStep = true;
+                    if (!(await dismissResolvedTarget(element))) break;
+                    if (keyboardCleared !== undefined && before.screen.keyboardVisible === false)
+                      continue;
+                    why =
+                      before.screen.keyboardVisible === false
+                        ? 'the keyboard clearance sent nothing'
+                        : `the keyboard did not hide after one clearance (keyboard after it: ${before.screen.keyboardVisible === true ? 'visible' : 'unknown'})`;
+                  }
+                  outcome = failed(
+                    item,
+                    attempt,
+                    `"${item.target.phrase}" was not pressed: its centre lies within ${KEYBOARD_EDGE_INSET} pt above the keyboard, and ${why}; nothing was scrolled`,
+                    before.screen,
+                    await shoot(item),
+                    ref,
                   );
                   diagnostic(
                     item,
@@ -5263,7 +5513,7 @@ async function walkBlockScoped(
                 outcome = failed(
                   item,
                   attempt,
-                  `${scrollError ? `${scrollError}; ` : ''}${withheldDrag ? stayedCovered(item.target.phrase, withheldDrag) : `"${item.target.phrase}" ${OFF_SCREEN_AFTER_SCROLL}`}${await coverText(item)}${cutterText(liveHit)}; the live hit read refused the press (${liveHitRefusal(act.error)}); no tap was performed`,
+                  `${scrollError ? `${scrollError}; ` : ''}${withheldDrag ? stayedCovered(item.target.phrase, withheldDrag) : `"${item.target.phrase}" ${keyboardClearedOnStep && !scrolled ? 'stayed covered after keyboard clearance' : OFF_SCREEN_AFTER_SCROLL}`}${await coverText(item)}${cutterText(liveHit)}; the live hit read refused the press (${liveHitRefusal(act.error)}); no tap was performed`,
                   before.screen,
                   await shoot(item),
                   ref,
@@ -5352,6 +5602,10 @@ async function walkBlockScoped(
                 act.mutation === 'none' &&
                 act.error?.startsWith('FOCUS_TARGET_OCCLUDED:')
               ) {
+                if (keyboardClearedOnStep) {
+                  outcome = await marginScrollRefusal();
+                  break;
+                }
                 if (scrolled || withheldDrag) {
                   outcome = failed(
                     item,
@@ -5372,7 +5626,7 @@ async function walkBlockScoped(
                   break;
                 }
                 refusedIdentity = element;
-                let clearing: ReturnType<typeof clearanceAfterProof> | undefined;
+                let clearing: Awaited<ReturnType<typeof clearanceAfterProof>> | undefined;
                 if (deps.platform === 'ios' && before.screen.keyboardVisible === false) {
                   const proven = await proveCover(
                     item,
@@ -5385,7 +5639,7 @@ async function walkBlockScoped(
                     if (matches.length === 1) element = matches[0];
                     else clearing = 'no-scroll-area';
                   }
-                  clearing ??= clearanceAfterProof(item, element, before.screen);
+                  clearing ??= await clearanceAfterProof(item, element, before);
                   if (typeof clearing === 'string') {
                     withheldDrag = clearing;
                     before = await settledCapture(item);
@@ -6140,6 +6394,7 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     ...(row.devError ? { devError: row.devError } : {}),
     ...(row.scrollDetail ? { scrollDetail: row.scrollDetail } : {}),
     ...(row.scrollBand ? { scrollBand: row.scrollBand } : {}),
+    ...(row.groundProof ? { groundProof: row.groundProof } : {}),
     ...(row.interruption ? { interruption: row.interruption } : {}),
     ...(row.overlayChecks ? { overlayChecks: row.overlayChecks } : {}),
     ...(row.collapsed ? { collapsed: row.collapsed } : {}),

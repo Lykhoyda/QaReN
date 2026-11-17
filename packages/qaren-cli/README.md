@@ -1327,8 +1327,45 @@ its list is cleared with one scroll, the same as under the keyboard. Keyboard-ow
 the existing explicit tap path and remain subject to trusted clipping and native
 identity guards. An explicit key press performs its normal action, not guaranteed
 keyboard dismissal; QA must freshly prove the keyboard hidden and the intended
-screen preserved before treating the press as clearance. Ordinary covered content
-uses one directional scroll toward the centre
+screen preserved before treating the press as clearance.
+
+For an iOS Tap with the keyboard guard enabled, a target inside its trusted clip
+whose centre lies in the 48 pt margin above a visibly open keyboard uses keyboard
+clearance instead of scrolling when that margin still sets the band's bottom
+edge and no cover is named. An overlay cutting only the band's top edge does
+not disable this path; an overlay setting its bottom edge does. QaReN first
+attempts one bounded native-presence recapture to check for a cover, then
+rechecks eligibility on fresh evidence;
+unavailable presence alone does not prevent this clearance. It uses the existing
+per-item keyboard-dismissal allowance, waits for the same target to settle and
+rebinds it before resuming the Tap. Blurring the field can trigger app validation
+or navigation before the press. The keyboard must be proven hidden after a
+successful dismissal; otherwise the step fails naming the keyboard, without a
+scroll or press. An already-spent allowance also refuses without another dismissal.
+
+For a resolved iOS Tap whose centre remains inside the visible keyboard frame
+after its one clearance scroll, or a clearance drag proven not dispatched,
+QaReN uses the same allowance to dismiss the keyboard and settle and rebind the
+target before resuming the Tap. A target without a recognised scroll area still
+gets the one scroll first. If scrolling lifts the target clear, the keyboard
+stays up and the Tap proceeds normally. If dismissal cannot prove the keyboard
+hidden, the step fails naming the keyboard. This under-keyboard path does not
+check overlays before clearance; covers are checked after the keyboard hides.
+Rebinding after the scroll or refused drag requires a test ID: a label-only
+target still refuses without keyboard clearance. The margin path, which does
+not scroll, supports label-only targets.
+
+Once either clearance starts, scroll recovery is forbidden for the rest of the
+step, including across recovery retries: a target that moves out of reach
+refuses instead. A named cover also refuses; an overlay inferred only from
+capture order uses the existing press that the runner must prove hittable.
+These paths add no press of their own; the ordinary retry after a press with no
+observable effect remains unchanged. Fill, Android, hidden keyboards and runs
+without the keyboard guard retain their existing paths. The
+[keyboard-margin regressions](../qaren-core/test/unit/qa/keyboard-margin-clearance.test.ts)
+cover these boundaries.
+
+Other covered content uses one directional scroll toward the centre
 of the target's visible clip band: its trusted clipping viewport cut off 48 pt
 above the top of an observed keyboard unless the keyboard is proven hidden, and between
 sticky overlays. A touchable, non-text element at least half the clip's width,
@@ -1354,6 +1391,30 @@ view outside that container's ancestry and content, regardless of capture order.
 Even a background view overlapping the band withholds the drag. Direction moves
 the target toward the admitted band's centre.
 
+<a id="free-ground-proof"></a>
+
+A real screen holds empty full-screen views outside the list (screens lower in
+the stack, navigation containers, a second window), and these alone can leave no
+free band. On a presence read with the keyboard proven hidden, the walker then
+sets aside *plain layers*: views of native type `Other`, not windows, outside
+the list's ancestry and content, whose frame holds the whole starting band and
+under which every view is again such a view. Anything else stays solid and keeps
+today's band and refusal with no further read. Without the plain layers, the
+remaining band must host a drag and overlap neither the named cover nor any
+other view outside the list. Then up to four named elements of the list lying
+wholly inside that band (identifiable by the runner, not of kind `other`, rows
+of this list rather than a nested one, apart from the target's lineage),
+nearest its centre first, each get one read-only `hitProbe`, started only with
+at least 300 ms of the observation left. The first `hittable` answer sends the
+drag on that band; `not-hittable`, `moved` or `unavailable` proves nothing. The
+same proof applies when a Tap or Fill target known only to React finds its
+list's band taken. The step row's `groundProof` records `not-needed`, `proven`
+(witness ref and kind), `solid-view` (ref, kind and frame), `band-too-small`,
+`no-witness`, `witness-not-hittable` (count) or `witness-unavailable`. A list
+with no named element in the band keeps the refusal. The
+[free-ground regressions](../qaren-core/test/unit/qa/free-ground-walker.test.ts)
+pin these cases.
+
 No own list, no free band, or a late or incomplete proof read withholds the drag.
 The walker takes a settled capture and keeps the one retry, with no subsequent
 scroll of any origin for that attempt. If it still refuses before a successful
@@ -1366,8 +1427,9 @@ wrapper tap path, pre-dispatch clearance, plain Scroll, Scroll until and Android
 retain their existing admission rules; this check adds no wait for a cover to pass.
 
 On iOS, capture order is not paint order. When a press target still resolves
-after that one scroll, after a withheld drag, or after the scroll was refused with nothing moved (for
-example `SCROLL_BAND_TOO_SMALL` on a band only a few points tall), and its centre
+after keyboard clearance, after that one scroll, after a withheld drag, or after
+the scroll was refused with nothing moved (for example `SCROLL_BAND_TOO_SMALL`
+on a band only a few points tall), and its centre
 is still past the inferred band but inside its clip with the keyboard proven
 hidden, the walker sends the
 tap with `requireLiveHit`: only when its fresh, bounded `isHittable` read of the
@@ -1377,8 +1439,9 @@ the captured centre. If native element activation is unavailable, it refuses
 `LIVE_HIT_UNPROVEN` with no tap and never falls back to coordinates.
 A false read, a moved target, or an unavailable read (expired snapshot, no identity, absent or ambiguous match, a
 read that threw or ran out of time) refuses `LIVE_HIT_UNPROVEN` with no tap, and the step fails
-with “stayed off screen after one scroll” (or the withheld-drag reason) and the inferred band cutter described
-under [clearance diagnostics](#clearance-diagnostics). The scroll
+with “stayed covered after keyboard clearance”, “stayed off screen after one
+scroll” or the withheld-drag reason, and the inferred band cutter described
+under [clearance diagnostics](#clearance-diagnostics). Any scroll
 that ran before the refusal remains a performed action. Press behavior is unchanged.
 
 On iOS, quoted waits and scroll-until completion can override that inferred cover
@@ -2103,7 +2166,8 @@ One clearance swipe lifts a covered row by at most its list's visible band above
 the keyboard.
 A uniquely name-matched off-screen row further away is scrolled toward again,
 at most six times, stopping on an unchanged screen or the existing deadline;
-covered rows and other scroll origins still get one clearance swipe. See the
+covered rows and other scroll origins still get one clearance swipe, subject to
+the [covered-target recovery exceptions](#covered-target-recovery). See the
 [scroll-until direction regressions](../qaren-core/test/unit/qa/scroll-until-direction.test.ts).
 
 Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`
@@ -2747,7 +2811,9 @@ during teardown, including post-arm cancellation and dead-owner recovery, subjec
 [inspection hold precedence](#ios-admission-and-cleanup). After strict
 admission, the pending stop must be durably saved before lifecycle mutation; a failed
 save or cancellation before arming leaves simulator power unchanged. Shutdown preserves
-the simulator and its installed app and data. See [iOS admission and cleanup](#ios-admission-and-cleanup)
+the simulator and its installed app and data, and then removes the simulator's system
+log store, which holds the log entries of every app on that simulator, not only this
+run's. See [iOS admission and cleanup](#ios-admission-and-cleanup)
 for stop guards, unresolved ownership and recovery.
 
 iOS preparation follows the
@@ -3523,10 +3589,16 @@ When `--shutdown-device-on-exit`
 armed a pending borrowed-simulator stop, teardown and dead-owner cleanup require the
 run's current device lease, proven build/core/Metro/runner-driver/runner-host/recorder
 quiescence, matching canonical simulator UUID/runtime/device type, fresh strict
-foreign-driver admission, and verified `Shutdown` readback before persisting completion
+foreign-driver admission, and verified `Shutdown` readback. When the run recorded the
+log removal request, cleanup also requires a fresh read proving `Shutdown` and naming
+the simulator's data path, followed by removal of its system log store, before persisting completion
 and releasing the lease (and any `pr` worktree); an already `Shutdown` target completes
-idempotently, and a completed record never re-issues `simctl shutdown`. Unresolved stop
-admission, shutdown, readback or persistence retains the pending state and lease. Missing
+idempotently, and a completed record never re-issues `simctl shutdown` or the removal.
+Unresolved stop
+admission, shutdown, readback, log store removal or persistence retains the pending state
+and lease, and the next cleanup of the same run retries the removal. A pending stop
+recorded by an older QaReN, which did not record the removal request, gets the shutdown
+and keeps the log. Missing
 runtime or candidate-directory evidence also leaves the stop unresolved. Exit shutdown
 cannot be added afterward to a released run. A dead lease
 holder is reclaimed only through that run's cleanup; a live or unprovable holder
@@ -3606,7 +3678,17 @@ stop); `refused` or `unresolved` means removal was not proven. Temporary
 simulators, including `--new`, have no separate log leg: their `simulator`
 cleanup leg reports deletion of the whole simulator instead.
 Every `check`, `pr` and `prepare --device` run borrows its simulator and keeps
-its log (`simulator_log: kept`), even if QaReN originally created that simulator.
+its log (`simulator_log: kept`), even if QaReN originally created that simulator,
+unless a `check` or `pr` recorded the removal request when
+`--shutdown-device-on-exit` armed its stop: that run
+removes the simulator's whole log store, with the entries of every other app on it,
+after the proven shutdown (`simulator_log: removed`, or `absent`). When reporting
+the pending request from the record, including a run held for inspection, the leg
+is `unresolved: log store retained with the simulator`; a cleanup attempt can
+instead report the specific removal failure. The proof of `Shutdown` is not exclusive
+control: a person or another tool can boot the simulator between that read and the
+removal. A store that cannot be removed ends `qaren cleanup` as failed; a `check`
+keeps its verdict and names that cleanup as its next action.
 `qaren doctor --device <udid>` prints guidance for clearing the borrowed
 simulator's log; it removes nothing.
 
@@ -4038,7 +4120,8 @@ unless a system dialog is in front, elsewhere only while a decline control is on
 the presented `Modal`, recovery runs instead of scrolling the promo. On iOS the drag
 then goes only toward a target that read places below or above an on-screen scroll
 container that is also its scroll-until container, inside the part of that container
-that nothing drawn in front covers; a target inside the visible area, with no matching
+that nothing drawn in front covers, or on a band a [free-ground proof](#free-ground-proof)
+admits; a target inside the visible area, with no matching
 scroll container, with no exposed scroll band or with no readable place refuses `TARGET_NOT_FOUND`
 ("is known to React but has no element on the visible screen", with the reason and
 "nothing was scrolled"), and so does a recapture that runs out of time or returns
@@ -4409,7 +4492,7 @@ diagnostic collection and sink failures preserve the refusal.
 <a id="clearance-diagnostics"></a>
 
 When a press or fill target's centre remains covered after the one-scroll
-allowance or a withheld recovery drag, a private `timing` event with code `CENTRE_COVERED` includes the
+allowance, a withheld recovery drag or an unsuccessful keyboard clearance, a private `timing` event with code `CENTRE_COVERED` includes the
 observation ordinal and `clearanceDiagnostic`. It records the viewport, keyboard or
 overlay predicate branch, boolean coverage facts, the scroll's origin and requested
 direction, and whether the target centre changed. For an overlay branch, the
@@ -4437,8 +4520,10 @@ presence or React typography; the [absent-target keyboard clearance](#occluded-t
 has a separate modal-proof capture. On iOS a covered press or Fill refusal with that gap takes the
 walker's one bounded platform-presence recapture, the same one a plain scroll uses for
 an unproven cover, and looks up the cover again on it, at most once per cover lookup.
-For covered targets, only native dispatch refusals or terminal step refusals pay
-for that read (a presence capture can take tens of seconds on device). Before
+For covered targets, native dispatch refusals or terminal step refusals pay
+for that read, with the pre-clearance exception described in
+[covered-target recovery](#covered-target-recovery) (a presence capture can take
+tens of seconds on device). Before
 an eligible post-refusal drag, it supplies the current geometry and can withhold
 the drag under the [recovery contract](#covered-target-recovery); terminal diagnostic
 reads grant no further dispatch. An incomplete read leaves the cover unproven
