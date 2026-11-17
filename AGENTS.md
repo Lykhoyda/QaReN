@@ -65,7 +65,10 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
   no longer has an `install` subcommand; pin-cache messages that still name `ensure-maestro-runner.sh`
   are rewritten with the Phase 8 install path.
 - Do not create compatibility symlinks or shims for removed paths and names.
-- The injected helper program (`src/runtime/legacy.program.txt`) and the
+- The injected helper program (`src/runtime/legacy.program.txt` plus the
+  typed ES2015 fragment rooted at `src/runtime/index.ts`, spliced into
+  `src/injected-helpers.bundle.ts` by `node scripts/build-injected-helpers.ts`;
+  CI runs it with `--check`) and the
   scripts left in `src/injected-helpers.ts` are evaluated via CDP inside an
   already-bundled Metro/Hermes runtime: `require('<package-name>')` throws
   there. Prove "is X bundled?" with Metro's dev registry
