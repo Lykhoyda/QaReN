@@ -270,7 +270,14 @@ fn e4_run_start_helper_stop_records_typed_outcome_without_private_facts() {
         .collect();
     assert_eq!(
         scans,
-        vec![(2, "ps", 3), (3, "/bin/sh", 2), (4, "/bin/sh", 2), (5, "ps", 3), (6, "/bin/kill", 2), (7, "ps", 3)],
+        vec![
+            (2, "ps", 3),
+            (3, "/bin/sh", 2),
+            (4, "/bin/sh", 2),
+            (5, "ps", 3),
+            (6, "/bin/kill", 2),
+            (7, "ps", 3)
+        ],
         "one initial list, two package reads, a refresh, TERM and the poll"
     );
 
@@ -300,30 +307,43 @@ fn e4_a_clean_or_unreadable_process_list_adds_no_note() {
 
 #[test]
 fn pr_refusal_samples_bracket_the_github_commands() {
-    let (repo, app) = app_repo();
-    let mut inner = MockRunner::new();
-    inner.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
-    inner.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
-    inner.expect_run(
-        "gh pr view",
-        CmdOutput::failed(1, "authentication required"),
-    );
-    inner.expect_run("gh auth status", CmdOutput::failed(1, "not logged in"));
-    let mut runner = HostRunner::new(inner);
-    let receipt = run(&mut runner, &pr_request(&repo, &app));
-    assert_eq!(receipt.result, ReceiptResult::Refused);
-    assert_eq!(receipt.verb, "pr");
-    assert_eq!(
-        receipt.failure.as_ref().unwrap().code,
-        FailureCode::GithubAuthUnavailable
-    );
-    let host = host_json(&receipt);
-    assert_eq!(host["start"]["load_1m"], 1.0);
-    assert_eq!(host["end"]["load_1m"], 12.0);
-    assert!(runner.calls[..2].iter().all(|c| c.label == "host-sample"));
-    assert!(runner.calls[runner.calls.len() - 2..]
-        .iter()
-        .all(|c| c.label == "host-sample"));
-    assert_eq!(runner.calls[2].label, "device-helpers");
-    assert_eq!(runner.calls.len(), 9);
+    for with_helper in [false, true] {
+        let (repo, app) = app_repo();
+        let mut inner = MockRunner::new();
+        inner.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
+        inner.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
+        inner.expect_run(
+            "gh pr view",
+            CmdOutput::failed(1, "authentication required"),
+        );
+        inner.expect_run("gh auth status", CmdOutput::failed(1, "not logged in"));
+        let mut runner = HostRunner::new(inner);
+        if with_helper {
+            runner.processes = Some(helpers());
+        }
+        let receipt = run(&mut runner, &pr_request(&repo, &app));
+        assert_eq!(receipt.result, ReceiptResult::Refused);
+        assert_eq!(receipt.verb, "pr");
+        assert_eq!(
+            receipt.failure.as_ref().unwrap().code,
+            FailureCode::GithubAuthUnavailable
+        );
+        let host = host_json(&receipt);
+        assert_eq!(host["start"]["load_1m"], 1.0);
+        assert_eq!(host["end"]["load_1m"], 12.0);
+        assert!(runner.calls[..2].iter().all(|c| c.label == "host-sample"));
+        assert!(runner.calls[runner.calls.len() - 2..]
+            .iter()
+            .all(|c| c.label == "host-sample"));
+        assert_eq!(runner.calls[2].label, "device-helpers");
+        assert_eq!(runner.calls.len(), if with_helper { 14 } else { 9 });
+        if with_helper {
+            assert_eq!(
+                receipt.device_helpers[0].outcome,
+                Some(qaren::device_helpers::Outcome::StoppedTerm)
+            );
+        } else {
+            assert!(receipt.device_helpers.is_empty());
+        }
+    }
 }

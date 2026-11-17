@@ -54,7 +54,14 @@ fn host_samples_bracket_prepare_and_survive_a_pre_record_refusal() {
             }]
         );
         assert_eq!(runner.calls[2].label, "device-helpers");
-        assert_eq!(runner.calls.iter().filter(|c| matches!(c.label.as_str(), "device-helpers" | "device-helper-signal")).count(), 5);
+        assert_eq!(
+            runner
+                .calls
+                .iter()
+                .filter(|c| matches!(c.label.as_str(), "device-helpers" | "device-helper-signal"))
+                .count(),
+            5
+        );
         assert_eq!(runner.samples(), if refused { 2 } else { 3 });
         assert!(runner.calls[..2].iter().all(|c| c.label == "host-sample"));
         assert!(runner.calls[runner.calls.len() - 2..]
@@ -4766,6 +4773,47 @@ fn tracked_modification_alongside_qaren_state_during_build_fails_prepare() {
         FailureCode::CandidateDrifted,
         "a tracked modification is real drift even next to qaren state"
     );
+}
+
+#[test]
+fn i5_dry_run_lists_orphans_without_signals() {
+    let repo = common::temp_repo();
+    let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut inner = MockRunner::new();
+    script_validation(&mut inner, &repo, IOS_TOOLS);
+    inner.expect_run(
+        "expo run:ios --help",
+        CmdOutput::success(common::IOS_BUILD_HELP),
+    );
+    inner.expect_run("lsof", free_port());
+    inner.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut inner);
+    let mut runner = common::host::HostRunner::new(inner);
+    runner.processes = Some(format!(
+        "4242 1 {} 960.0 S Sun Nov 15 12:34:56 2026 netsimd /sdk/emulator/netsimd\n",
+        unsafe { libc::geteuid() }
+    ));
+    let receipt = prepare(&mut runner, &prepare_args(&scenario_path, true, None));
+    assert_eq!(receipt.result, ReceiptResult::Planned);
+    assert_eq!(
+        receipt.device_helpers[0].outcome,
+        Some(qaren::device_helpers::Outcome::Listed)
+    );
+    assert_eq!(receipt.device_helpers[0].signals, Some(Vec::new()));
+    assert!(runner
+        .calls
+        .iter()
+        .all(|c| c.label != "device-helper-signal"));
+    assert_eq!(
+        runner
+            .calls
+            .iter()
+            .filter(|c| c.label == "device-helpers")
+            .count(),
+        2
+    );
+    assert_eq!(runner.inner.remaining(), 0);
+    assert!(!repo.join(".qaren").exists());
 }
 
 #[test]

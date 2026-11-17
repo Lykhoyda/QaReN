@@ -188,6 +188,33 @@ pub fn cleanup_with_orphan_locks_policy(
     remove_app: Option<&str>,
     policy: RunnerCleanupPolicy,
 ) -> Receipt {
+    let mut receipt =
+        cleanup_with_orphan_locks_inner(runner, runs_root, lock_root, run_id, remove_app, policy);
+    // A refused removal confirmation touches nothing, helpers included.
+    if receipt
+        .failure
+        .as_ref()
+        .is_some_and(|f| f.code == FailureCode::AppRemovalNotConfirmed)
+    {
+        return receipt;
+    }
+    // This entry belongs to command-line cleanup; cleanup invoked by a run stays unchanged.
+    let os = runner.host_os();
+    let mut cleanup_runner = crate::exec::CleanupRunner(runner);
+    let helpers = crate::device_helpers::stop_orphans(&mut cleanup_runner, os, true);
+    super::attach_device_helpers(&mut receipt, &helpers);
+    receipt.commands_executed = cleanup_runner.commands_executed();
+    receipt
+}
+
+fn cleanup_with_orphan_locks_inner(
+    runner: &mut dyn Runner,
+    runs_root: &Path,
+    lock_root: Option<&Path>,
+    run_id: &str,
+    remove_app: Option<&str>,
+    policy: RunnerCleanupPolicy,
+) -> Receipt {
     let mut receipt = cleanup_with_policy(runner, runs_root, run_id, remove_app, None, policy);
     let unavailable = receipt
         .failure

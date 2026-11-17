@@ -66,17 +66,34 @@ impl Class {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum Outcome { Listed, StoppedTerm, StoppedKill, SurvivedKill, LeftAlone, Unknown }
+pub enum Outcome {
+    Listed,
+    StoppedTerm,
+    StoppedKill,
+    SurvivedKill,
+    LeftAlone,
+    Unknown,
+}
 
 impl Outcome {
     fn as_str(self) -> &'static str {
-        match self { Self::Listed => "listed", Self::StoppedTerm => "stopped-term", Self::StoppedKill => "stopped-kill", Self::SurvivedKill => "survived-kill", Self::LeftAlone => "left-alone", Self::Unknown => "unknown" }
+        match self {
+            Self::Listed => "listed",
+            Self::StoppedTerm => "stopped-term",
+            Self::StoppedKill => "stopped-kill",
+            Self::SurvivedKill => "survived-kill",
+            Self::LeftAlone => "left-alone",
+            Self::Unknown => "unknown",
+        }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
-pub enum Signal { Term, Kill }
+pub enum Signal {
+    Term,
+    Kill,
+}
 
 /// Fixed facts only; optional additions keep older saved receipts readable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,7 +192,7 @@ impl Process<'_> {
         } else {
             return None;
         };
-        if self.pid <= 1 || !self.args.starts_with('/') {
+        if self.pid <= 1 || self.pid > i32::MAX as u32 || !self.args.starts_with('/') {
             return None;
         }
         // Cut at the first `/<name>` that ends a word: SDK paths may hold spaces or the name.
@@ -364,90 +381,195 @@ pub fn findings(runner: &mut dyn Runner, label: &str, text: &str) -> Option<Scan
 }
 
 fn read_list(runner: &mut dyn Runner, deadline: u64) -> Option<String> {
-    if runner.monotonic_ms() >= deadline { return None; }
+    if runner.monotonic_ms() >= deadline {
+        return None;
+    }
     let output = runner.run(
         &CmdSpec::new("device-helpers", "ps", &["-axww", "-o", PROCESS_COLUMNS], 3)
-            .cwd(Path::new("/")).env("LC_ALL", "C"),
+            .cwd(Path::new("/"))
+            .env("LC_ALL", "C"),
     );
     output.ok().then_some(output.stdout)
 }
 
 fn same_identity(text: &str, helper: &Finding) -> bool {
-    parse(text).is_some_and(|list| list.rows.iter().any(|row|
-        row.pid == helper.pid && row.start == helper.start
-        && row.helper().is_some_and(|(name, _)| name == helper.name)))
+    parse(text).is_some_and(|list| {
+        list.rows.iter().any(|row| {
+            row.pid == helper.pid
+                && row.start == helper.start
+                && row.helper().is_some_and(|(name, _)| name == helper.name)
+        })
+    })
 }
 
 // Only cached package facts may be consulted between the fresh list and a signal.
-fn refresh(runner: &mut dyn Runner, packages: &mut HashMap<String, bool>, deadline: u64) -> Option<(String, Scan)> {
+fn refresh(
+    runner: &mut dyn Runner,
+    packages: &mut HashMap<String, bool>,
+    deadline: u64,
+) -> Option<(String, Scan)> {
     let text = read_list(runner, deadline)?;
-    let scan = classify(runner, "device-helpers", &text, unsafe { libc::geteuid() }, packages, Some(deadline), false)?;
+    let scan = classify(
+        runner,
+        "device-helpers",
+        &text,
+        unsafe { libc::geteuid() },
+        packages,
+        Some(deadline),
+        false,
+    )?;
     scan.complete.then_some((text, scan))
 }
 
 fn may_signal(text: &str, fresh: &Scan, helper: &Finding) -> bool {
-    same_identity(text, helper) && fresh.helpers.iter().any(|f| f.pid == helper.pid && f.class == Class::Orphan)
+    same_identity(text, helper)
+        && fresh
+            .helpers
+            .iter()
+            .any(|f| f.pid == helper.pid && f.class == Class::Orphan)
 }
 
-fn send_signal(runner: &mut dyn Runner, helper: &mut Finding, signal: Signal, deadline: u64) -> bool {
-    if runner.monotonic_ms() >= deadline { return false; }
-    let kind = match signal { Signal::Term => "-TERM", Signal::Kill => "-KILL" };
+fn send_signal(
+    runner: &mut dyn Runner,
+    helper: &mut Finding,
+    signal: Signal,
+    deadline: u64,
+) -> bool {
+    if runner.monotonic_ms() >= deadline {
+        return false;
+    }
+    let kind = match signal {
+        Signal::Term => "-TERM",
+        Signal::Kill => "-KILL",
+    };
     // No process groups: only the identity just re-read, with a pid proven above 1.
-    let _ = runner.run(&CmdSpec::new("device-helper-signal", "/bin/kill", &[kind, &helper.pid.to_string()], 2)
-        .cwd(Path::new("/")).env("LC_ALL", "C"));
+    let _ = runner.run(
+        &CmdSpec::new(
+            "device-helper-signal",
+            "/bin/kill",
+            &[kind, &helper.pid.to_string()],
+            2,
+        )
+        .cwd(Path::new("/"))
+        .env("LC_ALL", "C"),
+    );
     helper.signals.push(signal);
     true
 }
 
 fn pause(runner: &mut dyn Runner, ms: u64, deadline: u64) -> bool {
-    if runner.monotonic_ms().saturating_add(ms) > deadline { return false; }
+    if runner.monotonic_ms().saturating_add(ms) > deadline {
+        return false;
+    }
     runner.sleep(std::time::Duration::from_millis(ms));
     runner.monotonic_ms() < deadline
 }
 
 /// Bounded recovery of proven SDK orphans. All other classes remain read-only findings.
 pub fn stop_orphans(runner: &mut dyn Runner, os: &str, signal: bool) -> Scan {
-    let nothing = Scan { helpers: Vec::new(), complete: true };
-    if !matches!(os, "macos" | "linux") { return nothing; }
+    let nothing = Scan {
+        helpers: Vec::new(),
+        complete: true,
+    };
+    if !matches!(os, "macos" | "linux") {
+        return nothing;
+    }
     let deadline = runner.monotonic_ms().saturating_add(15_000);
-    let Some(text) = read_list(runner, deadline) else { return nothing; };
+    let Some(text) = read_list(runner, deadline) else {
+        return nothing;
+    };
     let mut packages = HashMap::new();
-    let Some(mut scan) = classify(runner, "device-helpers", &text, unsafe { libc::geteuid() }, &mut packages, Some(deadline), true) else { return nothing; };
-    if !signal { return scan; }
-    let candidates: Vec<_> = scan.helpers.iter().enumerate().filter(|(_, f)| f.class == Class::Orphan).take(4).map(|(i,_)| i).collect();
-    for &i in &candidates { scan.helpers[i].outcome = Outcome::Unknown; }
+    let Some(mut scan) = classify(
+        runner,
+        "device-helpers",
+        &text,
+        unsafe { libc::geteuid() },
+        &mut packages,
+        Some(deadline),
+        true,
+    ) else {
+        return nothing;
+    };
+    if !signal {
+        return scan;
+    }
+    let candidates: Vec<_> = scan
+        .helpers
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.class == Class::Orphan)
+        .take(4)
+        .map(|(i, _)| i)
+        .collect();
+    for &i in &candidates {
+        scan.helpers[i].outcome = Outcome::Unknown;
+    }
     let mut pending = Vec::new();
     for i in candidates {
-        let Some((text, fresh)) = refresh(runner, &mut packages, deadline) else { return scan; };
+        let Some((text, fresh)) = refresh(runner, &mut packages, deadline) else {
+            return scan;
+        };
         let helper = &mut scan.helpers[i];
-        if !may_signal(&text, &fresh, helper) { helper.outcome = Outcome::LeftAlone; continue; }
-        if !send_signal(runner, helper, Signal::Term, deadline) { return scan; }
+        if !may_signal(&text, &fresh, helper) {
+            helper.outcome = Outcome::LeftAlone;
+            continue;
+        }
+        if !send_signal(runner, helper, Signal::Term, deadline) {
+            return scan;
+        }
         pending.push(i);
     }
     for _ in 0..5 {
-        if pending.is_empty() { return scan; }
-        if !pause(runner, 1000, deadline) { return scan; }
-        let Some((text, _)) = refresh(runner, &mut packages, deadline) else { return scan; };
+        if pending.is_empty() {
+            return scan;
+        }
+        if !pause(runner, 1000, deadline) {
+            return scan;
+        }
+        let Some((text, _)) = refresh(runner, &mut packages, deadline) else {
+            return scan;
+        };
         pending.retain(|&i| {
-            if same_identity(&text, &scan.helpers[i]) { true } else {
-                scan.helpers[i].outcome = Outcome::StoppedTerm; false
+            if same_identity(&text, &scan.helpers[i]) {
+                true
+            } else {
+                scan.helpers[i].outcome = Outcome::StoppedTerm;
+                false
             }
         });
     }
     let mut killed = Vec::new();
     for i in pending {
-        let Some((text, fresh)) = refresh(runner, &mut packages, deadline) else { return scan; };
+        let Some((text, fresh)) = refresh(runner, &mut packages, deadline) else {
+            return scan;
+        };
         let helper = &mut scan.helpers[i];
-        if !same_identity(&text, helper) { helper.outcome = Outcome::StoppedTerm; continue; }
-        if !may_signal(&text, &fresh, helper) { helper.outcome = Outcome::LeftAlone; continue; }
-        if !send_signal(runner, helper, Signal::Kill, deadline) { return scan; }
+        if !same_identity(&text, helper) {
+            helper.outcome = Outcome::StoppedTerm;
+            continue;
+        }
+        if !may_signal(&text, &fresh, helper) {
+            helper.outcome = Outcome::LeftAlone;
+            continue;
+        }
+        if !send_signal(runner, helper, Signal::Kill, deadline) {
+            return scan;
+        }
         killed.push(i);
     }
     if !killed.is_empty() {
-        if !pause(runner, 300, deadline) { return scan; }
-        let Some((text, _)) = refresh(runner, &mut packages, deadline) else { return scan; };
+        if !pause(runner, 300, deadline) {
+            return scan;
+        }
+        let Some((text, _)) = refresh(runner, &mut packages, deadline) else {
+            return scan;
+        };
         for i in killed {
-            scan.helpers[i].outcome = if same_identity(&text, &scan.helpers[i]) { Outcome::SurvivedKill } else { Outcome::StoppedKill };
+            scan.helpers[i].outcome = if same_identity(&text, &scan.helpers[i]) {
+                Outcome::SurvivedKill
+            } else {
+                Outcome::StoppedKill
+            };
         }
     }
     scan
@@ -643,6 +765,75 @@ mod tests {
     }
 
     #[test]
+    fn u10_an_unread_network_folder_makes_a_crash_reporter_unproven() {
+        let mut runner = MockRunner::new();
+        package(&mut runner, SDK, CmdOutput::success(PACKAGE));
+        let mut text = owned(4243, 1, uid(), "crashpad_handler", "960.0", SDK);
+        for n in 0..4 {
+            let folder = format!("/sdk{n}/emulator");
+            text += &owned(5000 + n, 1, uid(), "netsimd", "0.5", &folder);
+            if n < 3 {
+                package(&mut runner, &folder, CmdOutput::success(PACKAGE));
+            }
+        }
+        let scan = scan_text(&mut runner, &text).unwrap();
+        assert_eq!(scan.helpers[0].class, Class::Unproven);
+    }
+
+    #[test]
+    fn u15_pids_outside_the_kernel_pid_range_are_not_helpers() {
+        for pid in [0, 1, i64::from(i32::MAX) + 1, i64::from(u32::MAX) + 1, -1] {
+            let mut runner = MockRunner::new();
+            let text = netsimd(pid, "960.0") + &ps_line(2, "0.0", "S", "idle", "/idle");
+            let scan = scan_text(&mut runner, &text).unwrap();
+            assert!(scan.helpers.is_empty());
+        }
+    }
+
+    #[test]
+    fn u13_later_arguments_and_relative_names_cannot_prove_a_helper() {
+        let mut runner = MockRunner::new();
+        let disguised = format!("/bin/tool {SDK}");
+        package(
+            &mut runner,
+            &disguised,
+            CmdOutput::failed(1, "not a folder"),
+        );
+        let text = ps_line(4242, "960.0", "S", "netsimd", "relative/netsimd")
+            + &ps_line(
+                4243,
+                "960.0",
+                "S",
+                "netsimd",
+                &format!("/bin/tool {SDK}/netsimd"),
+            );
+        assert!(scan_text(&mut runner, &text).unwrap().helpers.is_empty());
+    }
+
+    #[test]
+    fn u3_u7_any_owners_emulator_in_any_state_serves_hot_helpers() {
+        for owner in [uid(), uid() + 1] {
+            for stat in ["S", "T", "Z"] {
+                let mut runner = MockRunner::new();
+                package(&mut runner, SDK, CmdOutput::success(PACKAGE));
+                let text = netsimd(4242, "960.0")
+                    + &ps_line_with_identity(
+                        900,
+                        1,
+                        owner,
+                        "Sun Nov 15 12:34:56 2026",
+                        "0.0",
+                        stat,
+                        "qemu-system-aarch64",
+                        "/sdk/qemu -avd Other",
+                    );
+                let scan = scan_text(&mut runner, &text).unwrap();
+                assert_eq!(scan.helpers[0].class, Class::Serving);
+            }
+        }
+    }
+
+    #[test]
     fn i6_report_names_the_outcome_without_a_manual_stop_or_private_facts() {
         let mut runner = MockRunner::new();
         package(&mut runner, SDK, CmdOutput::success(PACKAGE));
@@ -658,6 +849,9 @@ mod tests {
             "4242 1 501 960.0 S Sun Nov 15 12:34:56 2026 netsimd /sdk/emulator/netsimd --flag\n";
         let list = parse(text).unwrap();
         assert_eq!(list.rows[0].ucomm, "netsimd");
+        assert_eq!(list.rows[0].ppid, 1);
+        assert_eq!(list.rows[0].uid, 501);
+        assert_eq!(list.rows[0].start, "Sun Nov 15 12:34:56 2026");
         assert_eq!(list.rows[0].args, "/sdk/emulator/netsimd --flag");
     }
 
@@ -726,6 +920,12 @@ mod tests {
         let mut runner = MockRunner::new();
         package(&mut runner, folder, CmdOutput::success(PACKAGE));
         let text = ps_line(
+            77,
+            "0.0",
+            "S",
+            "Some Program",
+            "/Applications/Some Program/tool",
+        ) + &ps_line(
             4242,
             "0.0",
             "S",
@@ -828,7 +1028,6 @@ mod tests {
         assert_eq!(first.pid, 4242);
         assert!(first.class == Class::Orphan && first.hot());
         assert_eq!(first.describe(), "netsimd (pid 4242, 960.0% CPU): orphan");
-
     }
 
     #[test]
@@ -905,7 +1104,9 @@ mod tests {
                 .is_empty()
         );
         let mut runner = MockRunner::new();
-        assert!(stop_orphans(&mut runner, "windows", false).helpers.is_empty());
+        assert!(stop_orphans(&mut runner, "windows", false)
+            .helpers
+            .is_empty());
         assert!(runner.calls.is_empty());
     }
 }

@@ -124,7 +124,11 @@ pub fn metro_identity(record: &RunRecord) -> Option<MetroIdentity> {
 
 pub(crate) fn attach_device_helpers(receipt: &mut Receipt, helpers: &crate::device_helpers::Scan) {
     receipt.device_helpers = helpers.helpers.iter().map(|f| f.note()).collect();
-    if helpers.helpers.iter().any(|f| f.outcome == crate::device_helpers::Outcome::SurvivedKill) {
+    if helpers
+        .helpers
+        .iter()
+        .any(|f| f.outcome == crate::device_helpers::Outcome::SurvivedKill)
+    {
         receipt.hints.push(crate::receipt::Hint {
             code: "DEVICE_HELPER_SURVIVED".into(),
             text: "the next run tries once more; if it stays, only a restart of this machine removes it; ask the user before restarting".into(),
