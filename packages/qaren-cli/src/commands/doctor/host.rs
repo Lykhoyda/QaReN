@@ -322,7 +322,7 @@ mod tests {
         top: &str,
     ) {
         runner.expect_run(
-            "ps -axww -o pid=,pcpu=,stat=,ucomm=,args=",
+            "ps -axww -o pid=,ppid=,uid=,pcpu=,stat=,lstart=,ucomm=,args=",
             CmdOutput::success(processes),
         );
         runner.expect_run("simctl list devices -j", inventory);

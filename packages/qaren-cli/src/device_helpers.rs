@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 /// `ps -o` columns: the doctor process list and the run-start scan read the same shape.
-pub const PROCESS_COLUMNS: &str = "pid=,pcpu=,stat=,ucomm=,args=";
-const FIXED_WORDS: usize = 3;
+pub const PROCESS_COLUMNS: &str = "pid=,ppid=,uid=,pcpu=,stat=,lstart=,ucomm=,args=";
+const FIXED_WORDS: usize = 10;
 const HOT_CPU: f64 = 100.0;
 // Bounds the scan when other processes name many folders: at most this many 2 s package reads.
 const MAX_PACKAGE_READS: usize = 4;
@@ -89,6 +89,9 @@ impl Finding {
 /// One row of a `PROCESS_COLUMNS` listing.
 pub struct Process<'a> {
     pub pid: u32,
+    pub ppid: u32,
+    pub uid: u32,
+    pub start: String,
     pub cpu: f64,
     pub stat: &'a str,
     pub ucomm: &'a str,
@@ -163,11 +166,14 @@ fn process(line: &str) -> Option<Process<'_>> {
     }
     Some(Process {
         pid: words[0].parse().ok()?,
-        cpu: words[1]
+        ppid: words[1].parse().ok()?,
+        uid: words[2].parse().ok()?,
+        start: words[5..10].join(" "),
+        cpu: words[3]
             .parse()
             .ok()
             .filter(|v: &f64| v.is_finite() && *v >= 0.0)?,
-        stat: words[2],
+        stat: words[4],
         ucomm: words[FIXED_WORDS],
         args: after_columns(line, FIXED_WORDS + 1),
     })
@@ -294,7 +300,31 @@ pub fn report_line(scan: &Scan) -> Option<String> {
 /// One `PROCESS_COLUMNS` line, for fixtures.
 #[cfg(test)]
 pub(crate) fn ps_line(pid: i64, cpu: &str, stat: &str, ucomm: &str, args: &str) -> String {
-    format!("{pid:>6} {cpu:>5} {stat:<4} {ucomm} {args}\n")
+    ps_line_with_identity(
+        pid,
+        1,
+        unsafe { libc::geteuid() },
+        "Sun Nov 15 12:34:56 2026",
+        cpu,
+        stat,
+        ucomm,
+        args,
+    )
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ps_line_with_identity(
+    pid: i64,
+    ppid: u32,
+    uid: u32,
+    start: &str,
+    cpu: &str,
+    stat: &str,
+    ucomm: &str,
+    args: &str,
+) -> String {
+    format!("{pid:>6} {ppid} {uid} {cpu:>5} {stat:<4} {start} {ucomm} {args}\n")
 }
 
 #[cfg(test)]
@@ -321,6 +351,15 @@ mod tests {
             && c.args[..3] == ["-c", PACKAGE_READ, "sh"]
             && c.timeout_seconds == 2));
         scan
+    }
+
+    #[test]
+    fn u16_new_columns_keep_the_process_name_and_arguments() {
+        let text =
+            "4242 1 501 960.0 S Sun Nov 15 12:34:56 2026 netsimd /sdk/emulator/netsimd --flag\n";
+        let list = parse(text).unwrap();
+        assert_eq!(list.rows[0].ucomm, "netsimd");
+        assert_eq!(list.rows[0].args, "/sdk/emulator/netsimd --flag");
     }
 
     #[test]
@@ -465,7 +504,7 @@ mod tests {
                 .unwrap()
                 .contains("a running emulator may be hidden"));
         }
-        let valid = "   632   0.0 S distnoted /usr/sbin/distnoted agent\n";
+        let valid = ps_line(632, "0.0", "S", "distnoted", "/usr/sbin/distnoted agent");
         let mut runner = MockRunner::new();
         package(&mut runner, SDK, CmdOutput::success(PACKAGE));
         let scan = scan_text(&mut runner, &format!("{valid}{}", netsimd(4242, "0.5"))).unwrap();

@@ -232,12 +232,14 @@ fn f7_samples_bracket_every_command_including_teardown() {
     assert_ne!(host["start"], host["end"]);
 }
 
-const HELPERS: &str = "  4242 960.0 S    netsimd /private/helper-canary/emulator/netsimd --token=secret-canary\n  4243   0.0 S    crashpad_handle /Applications/Chrome.app/crashpad_handler\n";
+fn helpers() -> String {
+    format!("4242 1 {0} 960.0 S Sun Nov 15 12:34:56 2026 netsimd /private/helper-canary/emulator/netsimd --token=secret-canary\n4243 1 {0} 0.0 S Sun Nov 15 12:34:56 2026 crashpad_handle /Applications/Chrome.app/crashpad_handler\n", unsafe { libc::geteuid() })
+}
 
 #[test]
 fn e4_run_start_helper_scan_notes_executable_name_and_pid_only() {
     let (mut mock, req) = passing();
-    mock.processes = Some(HELPERS.into());
+    mock.processes = Some(helpers());
     let receipt = run(&mut mock, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     let text = receipt.to_json();
@@ -273,7 +275,7 @@ fn e4_run_start_helper_scan_notes_executable_name_and_pid_only() {
     );
 
     let (mut mock, req) = refusing();
-    mock.processes = Some(HELPERS.into());
+    mock.processes = Some(helpers());
     let receipt = run(&mut mock, &req);
     assert_eq!(receipt.result, ReceiptResult::Refused);
     let json: serde_json::Value = serde_json::from_str(&receipt.to_json()).unwrap();

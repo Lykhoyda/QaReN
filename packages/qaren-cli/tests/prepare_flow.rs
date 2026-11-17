@@ -26,7 +26,10 @@ fn host_samples_bracket_prepare_and_survive_a_pre_record_refusal() {
             script_ios_prepare(&mut inner, &repo, CmdOutput::success(""));
         }
         let mut runner = common::host::HostRunner::new(inner);
-        runner.processes = Some("  4242 960.0 S    netsimd /sdk/emulator/netsimd\n".into());
+        runner.processes = Some(format!(
+            "4242 1 {} 960.0 S Sun Nov 15 12:34:56 2026 netsimd /sdk/emulator/netsimd\n",
+            unsafe { libc::geteuid() }
+        ));
         let receipt = prepare(&mut runner, &prepare_args(&scenario, false, None));
         assert_eq!(
             receipt.result,
