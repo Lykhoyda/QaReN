@@ -1,0 +1,10 @@
+TASK 1000:com.example.settings id=1 userId=0
+  ACTIVITY com.example.settings/.MainActivity 0000001 pid=(not running)
+
+TASK 1000:com.example.launcher id=2 userId=0
+  ACTIVITY com.example.launcher/.MainActivity 0000001 pid=1002
+    View Hierarchy:
+      android.widget.FrameLayout{0000001}
+
+TASK 1000:com.example.synthetic id=3 userId=0
+  ACTIVITY com.example.synthetic/.ErrorActivity 0000001 pid=1003

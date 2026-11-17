@@ -927,6 +927,7 @@ export type FirstScreenReader = (
 ) => Promise<'loaded' | 'loading' | 'unknown'>;
 
 // Translate only the selected app's activity evidence; another task cannot release the hold.
+// A process id anywhere in the app's header means it runs, even while its dump times out.
 export function androidFirstViewsFromActivityTop(
   output: string,
   appId: string,
@@ -936,8 +937,7 @@ export function androidFirstViewsFromActivityTop(
     const end = section.indexOf('\n');
     const header = end < 0 ? section : section.slice(0, end);
     if (header.split('/')[0] !== appId) continue;
-    const pid = header.match(/\bpid=([1-9]\d*)\s*$/)?.[1];
-    if (!pid || !/^\s*View Hierarchy:\s*$/m.test(section)) continue;
+    if (!/\bpid=[1-9]\d*(?:\s|$)/.test(header)) continue;
     if (/^\s*com\.facebook\.react\.views\.[\w.$]+\{/m.test(section)) return 'loaded';
     answer = 'loading';
   }

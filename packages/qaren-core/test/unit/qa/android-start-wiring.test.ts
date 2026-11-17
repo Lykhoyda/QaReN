@@ -80,7 +80,7 @@ async function run(t: TestContext, kind: Kind) {
   const request: WireRequest = {
     runId: 'synthetic-start',
     t0: Date.now(),
-    walkBudgetMs: kind === 'W1e' ? 36_000 : 8000,
+    walkBudgetMs: kind === 'W1e' ? 36_000 : kind === 'W1c' || kind === 'W2' ? 20_000 : 8000,
     attachBudgetMs: 8000,
     plan,
     prepared: preparePlan(plan, parsePlan(plan).blocks),
@@ -103,8 +103,13 @@ async function run(t: TestContext, kind: Kind) {
   if (kind === 'W2') {
     await mkdir(fixtureBin);
     const fixtures = new URL('../../fixtures/android-first-views/', import.meta.url);
-    const loading = await readFile(new URL('loading.txt', fixtures), 'utf8');
-    const loaded = await readFile(new URL('first-views.txt', fixtures), 'utf8');
+    // In launch order: no process yet, a busy process whose dump timed out, loading, first views.
+    const served = ['not-running', 'timeout', 'loading', 'loaded'];
+    const outputs = await Promise.all(
+      ['start-not-running', 'start-timeout', 'loading', 'first-views'].map((name) =>
+        readFile(new URL(`${name}.txt`, fixtures), 'utf8'),
+      ),
+    );
     const shim = join(fixtureBin, 'adb');
     await writeFile(
       shim,
@@ -118,8 +123,9 @@ async function run(t: TestContext, kind: Kind) {
       const counter = ${JSON.stringify(join(scratch, 'reads'))};
       const count = fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) : 0;
       fs.writeFileSync(counter, String(count + 1));
-      fs.appendFileSync(${JSON.stringify(join(scratch, 'reader-events'))}, JSON.stringify({at: Date.now(), answer: count === 0 ? 'loading' : 'loaded'}) + '\\n');
-      process.stdout.write(count === 0 ? ${JSON.stringify(loading)} : ${JSON.stringify(loaded)});
+      const index = Math.min(count, 3);
+      fs.appendFileSync(${JSON.stringify(join(scratch, 'reader-events'))}, JSON.stringify({at: Date.now(), answer: ${JSON.stringify(served)}[index]}) + '\\n');
+      process.stdout.write(${JSON.stringify(outputs)}[index]);
     `,
     );
     await chmod(shim, 0o700);
@@ -175,7 +181,10 @@ async function run(t: TestContext, kind: Kind) {
   child.stdout.on('data', (bytes) => (stdout += bytes));
   child.stderr.on('data', (bytes) => (stderr += bytes));
   const closed = once(child, 'close');
-  const timeout = setTimeout(() => child.kill('SIGKILL'), kind === 'W1e' ? 45_000 : 16_000);
+  const timeout = setTimeout(
+    () => child.kill('SIGKILL'),
+    kind === 'W1e' || kind === 'W1c' || kind === 'W2' ? 45_000 : 16_000,
+  );
   t.after(async () => {
     clearTimeout(timeout);
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
@@ -220,25 +229,27 @@ function spaced(reads: { at: number }[]) {
 }
 
 test(
-  'W2: production reader holds discovery until the retained first views',
-  { timeout: 20_000 },
+  'W2: production reader holds discovery through a launch until the first views',
+  { timeout: 50_000 },
   async (t) => {
     const r = await run(t, 'W2');
-    assert.equal(r.reads.length, 2, 'production must invoke its reader');
     assert.deepEqual(
       r.reads.map(({ answer }) => answer),
-      ['loading', 'loaded'],
+      ['not-running', 'timeout', 'loading', 'loaded'],
+      'production must keep asking its reader until the first views',
     );
     assert.ok(r.lists.length > 0);
-    assert.ok(r.lists[0] >= r.reads[1].at, 'production discovery follows first views');
+    assert.ok(r.lists[0] >= r.reads[3].at, 'production discovery follows the last read');
     assert.ok(r.upgrades.length > 0, 'positive websocket witness after first views');
-    assert.ok(r.upgrades.every((at) => at >= r.reads[1].at));
+    assert.ok(r.upgrades.every((at) => at >= r.reads[3].at));
+    const unanswered = r.stderr.indexOf('android start: first-views check not answered at ');
     const holding = r.stderr.indexOf(
-      "android start: holding the debugger until the app's first views",
+      "android start: holding the debugger until the app's first views at ",
     );
     const seen = r.stderr.indexOf('android start: first views seen');
     const connect = r.stderr.indexOf('android start: debugger connect');
-    assert.ok(holding >= 0 && seen > holding && connect > seen);
+    assert.ok(unanswered >= 0 && holding > unanswered && seen > holding && connect > seen);
+    assert.doesNotMatch(r.stderr, /first-views check unavailable/);
     assert.doesNotMatch(r.result.message, /; the first-views|; the app's first views/);
   },
 );
@@ -280,14 +291,26 @@ test(
   },
 );
 test(
-  'W1c: unreadable immediately releases the real target wait once',
-  { timeout: 20_000 },
+  'W1c: no answer releases the real target wait once, after 15 s',
+  { timeout: 50_000 },
   async (t) => {
     const r = await run(t, 'W1c');
     assert.ok(r.lists.length > 0);
-    assert.ok(r.lists[0] - r.started < 2000);
-    assert.equal(r.reads.length, 1);
-    assert.match(r.stderr, /first-views check unavailable/);
+    assert.ok(r.lists[0] - r.reads[0].at >= 15_000, 'no target list before 15 s');
+    assert.ok(r.lists[0] - r.started < 22_000, 'the first target list before 22 s');
+    spaced(r.reads);
+    assert.ok(
+      r.reads.every(({ at }) => at <= r.lists[0]),
+      'no read after the let-through',
+    );
+    assert.equal(
+      r.stderr.match(/first-views check not answered at \d+ ms; asking again/g)?.length,
+      1,
+    );
+    assert.equal(
+      r.stderr.match(/first-views check unavailable at \d+ ms; attaching as before/g)?.length,
+      1,
+    );
     assert.ok(
       r.result.message.endsWith(
         '; the first-views check could not be read; attaching a debugger was allowed as before',

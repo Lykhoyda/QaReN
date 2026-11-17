@@ -116,11 +116,14 @@ TASK 1000:${foreignApp} id=4 userId=0
   assert.equal(androidFirstViewsFromActivityTop(mixed, appId), 'loading');
 });
 
-test('H7f: no app section, empty output and an unreadable activity are unknown', async () => {
+test('H7f: no app section and empty output are unknown', async () => {
   const output = await fixture('first-views');
   assert.equal(androidFirstViewsFromActivityTop(output, `${appId}.other`), 'unknown');
   assert.equal(androidFirstViewsFromActivityTop('', appId), 'unknown');
-  assert.equal(androidFirstViewsFromActivityTop(await fixture('unreadable'), appId), 'unknown');
+});
+
+test('H7f: an activity with a process whose dump timed out is loading', async () => {
+  assert.equal(androidFirstViewsFromActivityTop(await fixture('unreadable'), appId), 'loading');
 });
 
 test('H7f: an adb error is unknown', async (t) => {
@@ -180,4 +183,59 @@ test('H7g: the complete force-stop-during-load capture has no app section and re
     androidFirstViewsFromActivityTop(await fixture('complete-after-kill'), appId),
     'unknown',
   );
+});
+
+const reactViewLine = /^\s*com\.facebook\.react\.views\.[^\n]*\n/gm;
+const appTaskApi37 = `TASK 10000:${appId} id=2 userId=0 displayId=0(type=INTERNAL)\n`;
+
+test('H7h: an API 37 header with fields after the process id is read', async () => {
+  const output = await fixture('complete-api37');
+  assert.match(output, /^ {2}ACTIVITY com\.example\.synthetic\/\S+ \S+ pid=\d+ userId=0 uid=\d+ /m);
+  assert.equal(androidFirstViewsFromActivityTop(output, appId), 'loaded');
+
+  // Removed by hand: every React view line; the surface and other wrappers stay.
+  const withoutViews = output.replace(reactViewLine, '');
+  assert.doesNotMatch(withoutViews, /com\.facebook\.react\.views\./);
+  assert.match(withoutViews, /com\.facebook\.react\.runtime\.ReactSurfaceView/);
+  assert.equal(androidFirstViewsFromActivityTop(withoutViews, appId), 'loading');
+});
+
+test('H7i: a process whose dump timed out at the start of a launch is loading', async () => {
+  const output = await fixture('start-timeout');
+  const appSection = output.slice(output.indexOf(`TASK 1000:${appId} `));
+  assert.match(
+    appSection,
+    /pid=1003\n {4}Failure while dumping the activity: java\.io\.IOException: Timeout\n$/,
+  );
+  assert.doesNotMatch(appSection, /View Hierarchy:/);
+  assert.equal(androidFirstViewsFromActivityTop(output, appId), 'loading');
+});
+
+test('H7j: the error activity with a process and no further line is loading', async () => {
+  const output = await fixture('crash-error-activity');
+  assert.match(output, /ACTIVITY com\.example\.synthetic\/\.ErrorActivity 0000001 pid=1003\n$/);
+  assert.equal(androidFirstViewsFromActivityTop(output, appId), 'loading');
+});
+
+test('H7k: a header without a process is unknown in both forms', async () => {
+  assert.equal(
+    androidFirstViewsFromActivityTop(await fixture('start-not-running'), appId),
+    'unknown',
+  );
+
+  // The API 37 form, made by hand: the launcher task of the capture, then the
+  // app's header with no process and the trailing fields of that form.
+  const api37 = await fixture('complete-api37');
+  const notRunning = `${api37.slice(0, api37.indexOf(appTaskApi37))}${appTaskApi37}  ACTIVITY ${appId}/.MainActivity 0000001 pid=(not running) userId=0 uid=10002 displayId=0(type=INTERNAL)\n`;
+  assert.equal(androidFirstViewsFromActivityTop(notRunning, appId), 'unknown');
+});
+
+test('H7g2: an output with no section of the app is unknown in the API 37 form', async () => {
+  // Made by hand from the API 37 capture: everything before the app's task.
+  const api37 = await fixture('complete-api37');
+  const start = api37.indexOf(appTaskApi37);
+  assert.ok(start > 0);
+  const withoutApp = api37.slice(0, start);
+  assert.match(withoutApp, /ACTIVITY com\.example\.launcher\/\S+ \S+ pid=\d+ /);
+  assert.equal(androidFirstViewsFromActivityTop(withoutApp, appId), 'unknown');
 });

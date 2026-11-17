@@ -4704,20 +4704,26 @@ to the remaining walk budget.
 On Android, target discovery and every debugger call wait for the app's first
 React views. The [first-views reader](../qaren-core/src/handlers/device-session.ts)
 reads `adb shell dumpsys activity top` on the selected serial, bounded to 5 s,
-and parses only the app's activity section with a running process: a
-`com.facebook.react.views.*` class means loaded, none means loading, and an
-absent section, unreadable output or a failed read means unknown. First views
+and parses only the app's activity sections whose header carries a process ID,
+wherever it stands in the header: a `com.facebook.react.views.*` class means
+loaded, none means loading (also when the dump timed out while the app starts),
+and no such section, an empty output or a failed read means unknown. First views
 can precede visible pixels. One gate per admission reads at most every 2 s
-across readiness windows; loading keeps holding, loaded releases, and unknown
-allows attachment as before, each decision lasting for the rest of the admission.
-The walk budget bounds the hold, and the attach budget starts at the first
-target registration after it; a start still loading at the walk budget refuses
-`CDP_NOT_CONNECTED/target_readiness_timeout`. Admission-built attach refusals
-end with a value-free note on the hold state. `core.log` records value-free
-`android start:` lines for holding, first views seen, check unavailable, target
-listed, debugger connect, the driver check allowing the opening (a decision, not
-proof of a readable driver table), proof start and admission return; the
-post-admission overlay phase is budgeted separately. iOS has no gate.
+across readiness windows; loading keeps holding and loaded releases. Any other
+answer asks again until 15 s pass with no read showing the app's process,
+counted from the last loading answer or, before one, from the first read; then
+attachment is allowed as before for the rest of the admission. While it asks
+again, each readiness window ends as in a hold, so the wait spends no attach
+budget. The walk budget bounds the hold, and the attach budget starts at the
+first target registration after it; a start still loading at the walk budget
+refuses `CDP_NOT_CONNECTED/target_readiness_timeout`. Admission-built attach
+refusals end with a value-free note on the hold state. `core.log` records
+value-free `android start:` lines for holding, first views seen, the first
+unanswered check, check unavailable (holding, unanswered and unavailable carry
+their run time), target listed, debugger connect, the driver check allowing the
+opening (a decision, not proof of a readable driver table), proof start and
+admission return; the post-admission overlay phase is budgeted separately. iOS
+has no gate.
 Target readiness and attachment accept only a runtime Metro reports with the
 requested `appId` bundle identity (and on iOS, under the run's simulator name on
 that same target), so another app on the selected device or another booted

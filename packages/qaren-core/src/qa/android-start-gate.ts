@@ -4,19 +4,25 @@ import { interruptible, isAbort, sleep } from '../domain/cancellation.js';
 type StartState = 'undecided' | 'holding' | 'loaded' | 'let_through';
 
 // One admission owns one gate, including its poll spacing across readiness retries.
+// It steps aside only after giveUpMs with no read showing the app's process.
 export function androidStartGate({
   read,
   log,
   at,
   pollMs = 2000,
+  giveUpMs = 15_000,
 }: {
   read(): Promise<unknown>;
   log(line: string): void;
   at(): number;
   pollMs?: number;
+  giveUpMs?: number;
 }) {
   let current: StartState = 'undecided';
   let nextRead = 0;
+  // The last loading answer; before one, the first ask.
+  let lastSeen: number | undefined;
+  let askedAgain = false;
   const held = () =>
     new TargetReadinessTimeoutError("Timed out waiting for the app's first screen");
   return {
@@ -43,6 +49,7 @@ export function androidStartGate({
           if (performance.now() >= end) throw held();
         }
         nextRead = performance.now() + pollMs;
+        lastSeen ??= performance.now();
         let answer: unknown;
         try {
           answer = await interruptible(read);
@@ -55,14 +62,19 @@ export function androidStartGate({
           log(`android start: first views seen at ${at()} ms; attaching`);
           return;
         }
-        if (answer !== 'loading') {
+        if (answer === 'loading') {
+          lastSeen = performance.now();
+          if (current !== 'holding') {
+            current = 'holding';
+            log(`android start: holding the debugger until the app's first views at ${at()} ms`);
+          }
+        } else if (performance.now() - lastSeen >= giveUpMs) {
           current = 'let_through';
-          log('android start: first-views check unavailable; attaching as before');
+          log(`android start: first-views check unavailable at ${at()} ms; attaching as before`);
           return;
-        }
-        if (current !== 'holding') {
-          current = 'holding';
-          log("android start: holding the debugger until the app's first views");
+        } else if (!askedAgain) {
+          askedAgain = true;
+          log(`android start: first-views check not answered at ${at()} ms; asking again`);
         }
         if (performance.now() >= end) throw held();
       }
