@@ -761,7 +761,7 @@ extension QarenIosRunnerTests {
       var outcome = RunnerInteractionOutcome.performed
       let timing = measureGesture {
         withTemporaryScrollIdleTimeoutIfSupported(activeApp) {
-          outcome = dragAt(app: activeApp, x: x, y: y, x2: x2, y2: y2, holdDuration: holdDuration)
+          outcome = dragAt(app: activeApp, x: x, y: y, x2: x2, y2: y2, holdDuration: holdDuration, endHold: command.dragEndHold)
         }
       }
       if let response = unsupportedResponse(for: outcome) {
@@ -801,9 +801,9 @@ extension QarenIosRunnerTests {
             }
             let reverse = pattern == "ping-pong" && (idx % 2 == 1)
             if reverse {
-              outcome = dragAt(app: activeApp, x: x2, y: y2, x2: x, y2: y, holdDuration: holdDuration)
+              outcome = dragAt(app: activeApp, x: x2, y: y2, x2: x, y2: y, holdDuration: holdDuration, endHold: nil)
             } else {
-              outcome = dragAt(app: activeApp, x: x, y: y, x2: x2, y2: y2, holdDuration: holdDuration)
+              outcome = dragAt(app: activeApp, x: x, y: y, x2: x2, y2: y2, holdDuration: holdDuration, endHold: nil)
             }
           }
         }

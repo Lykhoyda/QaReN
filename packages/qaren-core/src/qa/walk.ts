@@ -157,12 +157,14 @@ export function scrollArgs(
   direction: Parameters<WalkerDeps['scroll']>[0],
   clearance?: number,
   within?: Parameters<WalkerDeps['scroll']>[3],
+  endAtRest?: boolean,
 ) {
   return {
     direction,
     amount: 0.6,
     ...(clearance !== undefined ? { distance: clearance } : {}),
     ...(within ? { within } : {}),
+    ...(endAtRest ? { endAtRest } : {}),
   };
 }
 
@@ -898,8 +900,11 @@ export async function openSession(
           observe: timing,
         },
       ),
-    scroll: (direction, qaContext, clearance, within) =>
-      act(() => scroll({ ...scrollArgs(direction, clearance, within), qaContext }), false),
+    scroll: (direction, qaContext, clearance, within, endAtRest) =>
+      act(
+        () => scroll({ ...scrollArgs(direction, clearance, within, endAtRest), qaContext }),
+        false,
+      ),
     back: (qaContext) => act(() => back({ qaContext }), false),
     dialog: (action, qaContext) =>
       act(
