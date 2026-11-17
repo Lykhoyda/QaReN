@@ -113,7 +113,12 @@ import { literalEvidence, type LiteralNearMiss } from './evidence.js';
 import { scrollMotion } from './scroll-motion.js';
 import { scrollBandTooSmall } from '../domain/scroll-gesture.js';
 import { scrollNavigationChange } from './scroll-navigation.js';
-import { applyContainmentFallback, exactIdentities, focusIdentityOf } from './identity.js';
+import {
+  applyContainmentFallback,
+  exactIdentities,
+  focusIdentityOf,
+  sameIdentity,
+} from './identity.js';
 import {
   type BlockPlatform,
   type StoredBlock,
@@ -1316,11 +1321,6 @@ async function walkBlockScoped(
       reason: 'the target stayed off screen after one scroll: its frame did not settle',
     });
   };
-  // Identity mirrors the runner's live check: testID, else kind and label.
-  const sameIdentity = (e: Element, target: Element): boolean =>
-    target.testID !== undefined
-      ? e.testID === target.testID && e.kind === target.kind
-      : e.testID === undefined && e.kind === target.kind && e.label === target.label;
   const pixelTarget = (screen: Screen, target: Element) => {
     const matches = screen.elements.filter((element) => sameIdentity(element, target));
     const root = applicationFrame(screen);
@@ -4741,6 +4741,7 @@ async function walkBlockScoped(
             return true;
           };
           let act: ActResult;
+          let boundByQuote = false;
           for (;;) {
             try {
               if (item.kind === 'press' && hiddenTap?.act && !hiddenTap.element)
@@ -4809,9 +4810,19 @@ async function walkBlockScoped(
                   : refusedIdentity
                     ? {
                         resolvedBy,
-                        target: bindDispatchIdentity(item, before.screen, refusedIdentity),
+                        target: bindDispatchIdentity(
+                          item,
+                          before.screen,
+                          refusedIdentity,
+                          item.kind === 'press' && !hiddenTap,
+                        ),
                       }
                     : await decide(before, undefined, item, Infinity, initial);
+                // Only the quote branch can successfully bind an identity without a testID.
+                boundByQuote =
+                  refusedIdentity !== undefined &&
+                  refusedIdentity.testID === undefined &&
+                  !('refuse' in decision.target!);
                 initial = undefined;
                 resolvedBy = decision.resolvedBy === 'jev' ? 'jev' : resolvedBy;
                 const binding =
@@ -5716,6 +5727,9 @@ async function walkBlockScoped(
                 pressAct = act;
                 pressNeedsReadback =
                   !!selectionTarget || (!!element && insideAlert(element) && !act.proven);
+                // An executed quote-bound press leaves the next attempt to resolve the line afresh.
+                if (boundByQuote && act.executed !== false && act.mutation !== 'none')
+                  refusedIdentity = undefined;
               }
               if (
                 item.kind === 'press' &&

@@ -81,6 +81,12 @@ export const PRESSABLE_SUFFIX = '-pressable';
 export const withoutPressable = (id: string): string =>
   id.endsWith(PRESSABLE_SUFFIX) ? id.slice(0, -PRESSABLE_SUFFIX.length) : id;
 
+// Identity mirrors the runner's live check: testID, else kind and label.
+export const sameIdentity = (e: Element, target: Element): boolean =>
+  target.testID !== undefined
+    ? e.testID === target.testID && e.kind === target.kind
+    : e.testID === undefined && e.kind === target.kind && e.label === target.label;
+
 export function named(
   e: Element,
   quoted: string,

@@ -324,6 +324,30 @@ test('H6: poll spacing survives fast reads and retry windows', async (t) => {
   assert.ok(second.done);
 });
 
+test('H6: a timer waking just before the window end does not read ahead of the poll clock', async (t) => {
+  const c = clock(t);
+  const reads: number[] = [];
+  const gate = androidStartGate({
+    read: async () => {
+      reads.push(c.now());
+      return 'loading';
+    },
+    log: () => {},
+    at: c.now,
+  });
+  const result = c.watch(withCancellation(c.stop.signal, () => gate.wait(500)));
+  await nextTurn();
+  assert.deepEqual(reads, [0]);
+  await c.advance(499);
+  t.mock.timers.tick(1);
+  await nextTurn();
+  assert.deepEqual(reads, [0], 'an early wake 1 ms short of the window end must not read');
+  assert.equal(result.done, false);
+  await c.advance(500);
+  assert.ok(result.error instanceof TargetReadinessTimeoutError);
+  assert.deepEqual(reads, [0]);
+});
+
 test('H6: a slow pending read can overrun only its current window', async (t) => {
   const c = clock(t);
   const reads: number[] = [];

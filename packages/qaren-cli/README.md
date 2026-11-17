@@ -1529,8 +1529,9 @@ gets the one scroll first. If scrolling lifts the target clear, the keyboard
 stays up and the Tap proceeds normally. If dismissal cannot prove the keyboard
 hidden, the step fails naming the keyboard. This under-keyboard path does not
 check overlays before clearance; covers are checked after the keyboard hides.
-Rebinding after the scroll or refused drag requires a test ID: a label-only
-target still refuses without keyboard clearance. The margin path, which does
+Rebinding after the scroll or refused drag follows the
+[post-scroll rebind rule](#occluded-taps-and-focus): a label-only target that
+cannot rebind refuses without keyboard clearance. The margin path, which does
 not scroll, supports label-only targets.
 
 Once either clearance starts, scroll recovery is forbidden for the rest of the
@@ -1697,8 +1698,18 @@ contains and relaunches the reader. `RN_SETTLE=0` or `false` skips this wait,
 its probes and metadata, but does not disable the walker's frame guard below.
 It then requires a unique rebind to the refused target's testID and kind before
 retrying, including keyboard-fallback wrapper
-taps. A label-only target cannot rebind after scrolling; a missing or nonunique
-identity refuses `TARGET_NOT_FOUND` with “stayed off screen after one scroll”.
+taps. A target without a testID cannot rebind after scrolling, except for an
+ordinary quoted Tap on a button. That Tap rebinds when exactly one button on the
+whole new read, off screen included and alerts excluded, matches the plan's quote
+with the original kind and label, no testID, and width and height each within
+1 pt of the original frame. Position may differ, so a sole same-size replacement
+button receives the press. Two or more such buttons refuse `TARGET_AMBIGUOUS`
+with their count and nothing tapped. Fill, hidden-text presses and stored-selector
+replays keep the strict rule. After an executed quote-bound press, a further
+attempt resolves the plan line afresh. Otherwise a missing or nonunique identity
+refuses `TARGET_NOT_FOUND` with “stayed off screen after one scroll”. The
+[quoted-tap rebind regressions](../qaren-core/test/unit/qa/quoted-tap-rebind.test.ts)
+pin these cases.
 Phrase press/fill steps may scroll toward a uniquely name-matched off-screen target
 up to six times, with a settled re-read and fresh resolution after each scroll;
 an unchanged screen stops the search with “stayed off screen after N scrolls”.
