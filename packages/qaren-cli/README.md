@@ -1548,8 +1548,10 @@ Android, using the snapshot's display density, and 20 pt from the top and 34 pt
 from the bottom on iOS. Callers passing no band
 use the existing keyboard-safe band. When keyboard or overlay clearance requires
 a scroll, it is sized to move the target's centre toward the middle of that band.
-On iOS, when that vertical drag covers the whole distance, the finger rests 250 ms
-before lifting so the list stops where the drag ends; a drag the band cuts short,
+On iOS, when that vertical drag covers the whole distance, it ends at rest: the
+finger moves at 100 pt/s (faster only to finish the move within 4 s), then rests
+250 ms before lifting. The list keeps the speed the finger had while it moved, so the
+slow move is what makes it stop near where the drag ends. A drag the band cuts short,
 even by a rounded point, lifts as before. A runner without `DRAG_END_HOLD_V1` also
 drags as before, and the run log's `scroll drag` line ends `endHold=unsupported`
 (otherwise `endHold=250ms` or `endHold=none`).

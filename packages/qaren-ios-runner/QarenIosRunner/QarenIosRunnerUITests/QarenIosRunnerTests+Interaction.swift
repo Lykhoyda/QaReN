@@ -1211,7 +1211,12 @@ extension QarenIosRunnerTests {
     let end = interactionCoordinate(app: app, x: drag.x2, y: drag.y2)
     gesture {
       if let endHold = drag.endHold {
-        start.press(forDuration: drag.holdDuration, thenDragTo: end, withVelocity: .default, thenHoldForDuration: endHold)
+        start.press(
+          forDuration: drag.holdDuration,
+          thenDragTo: end,
+          withVelocity: XCUIGestureVelocity(rawValue: drag.restingVelocity),
+          thenHoldForDuration: endHold
+        )
       } else {
         start.press(forDuration: drag.holdDuration, thenDragTo: end)
       }

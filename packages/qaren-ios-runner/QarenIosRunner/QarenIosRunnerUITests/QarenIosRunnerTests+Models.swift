@@ -86,7 +86,7 @@ struct Command: Codable {
   var prepareReplacement: Bool? = nil
   var replacementDeleteCount: Int? = nil
   var operationToken: String? = nil
-  // A drag holds still this long at its end before lifting, so the list starts no momentum.
+  // A drag asking an end hold ends at rest: it moves slowly, then holds still this long before lifting.
   var endHoldMs: Double? = nil
 }
 
@@ -108,6 +108,15 @@ struct CoordinateDrag {
   let y2: Double
   let holdDuration: TimeInterval
   let endHold: TimeInterval?
+
+  static let restingPointsPerSecond: Double = 100
+  static let maxRestingMove: TimeInterval = 4
+
+  // XCTest lifts with the move's speed even after the hold, so a drag ending at rest moves slowly;
+  // a long one speeds up only enough to finish its move within four seconds.
+  var restingVelocity: Double {
+    max(Self.restingPointsPerSecond, hypot(x2 - x, y2 - y) / Self.maxRestingMove)
+  }
 }
 
 struct Response: Codable {

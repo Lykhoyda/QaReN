@@ -30,6 +30,7 @@ type Press = {
   holdBefore: number;
   held: boolean;
   endHold: number | null;
+  velocity: number | null;
 };
 type Run = { name: string; ok: boolean; steps: Step[]; presses: Press[] };
 type Results = {
@@ -73,7 +74,11 @@ struct QuiescenceStatus { var capabilities: [String] = []; static func current()
 let capabilities = ${section(transport, 'QuiescenceStatus.current().capabilities', ',\n            commands:')}
 enum RunnerInteractionOutcome { case performed; case unsupported(String) }
 ${section(interaction, 'enum TvRemoteButton {', 'extension QarenIosRunnerTests {')}
-struct XCUIGestureVelocity: Equatable { let rawValue: Double; static let \`default\` = XCUIGestureVelocity(rawValue: 0) }
+struct XCUIGestureVelocity: Equatable {
+  let rawValue: Double
+  static let \`default\` = XCUIGestureVelocity(rawValue: -10)
+  static let slow = XCUIGestureVelocity(rawValue: -20)
+}
 final class XCUIApplication {}
 var presses: [[String: Any]] = []
 func optional(_ value: TimeInterval?) -> Any { value.map { $0 as Any } ?? NSNull() }
@@ -81,11 +86,10 @@ struct XCUICoordinate {
   let x: Double
   let y: Double
   func press(forDuration duration: TimeInterval, thenDragTo other: XCUICoordinate) {
-    presses.append(["from": [x, y], "to": [other.x, other.y], "holdBefore": duration, "held": false, "endHold": NSNull()])
+    presses.append(["from": [x, y], "to": [other.x, other.y], "holdBefore": duration, "held": false, "endHold": NSNull(), "velocity": NSNull()])
   }
   func press(forDuration duration: TimeInterval, thenDragTo other: XCUICoordinate, withVelocity velocity: XCUIGestureVelocity, thenHoldForDuration hold: TimeInterval) {
-    precondition(velocity == .default)
-    presses.append(["from": [x, y], "to": [other.x, other.y], "holdBefore": duration, "held": true, "endHold": hold])
+    presses.append(["from": [x, y], "to": [other.x, other.y], "holdBefore": duration, "held": true, "endHold": hold, "velocity": velocity.rawValue])
   }
 }
 final class Harness {
@@ -131,6 +135,8 @@ func serve(_ name: String, _ json: String) {
 let drag = "\\"command\\":\\"drag\\",\\"x\\":201,\\"y\\":738,\\"x2\\":201,\\"y2\\":556,\\"durationMs\\":300"
 serve("drag", "{\\(drag)}")
 for ms in ["0", "100", "250", "5000"] { serve("drag \\(ms)", "{\\(drag),\\"endHoldMs\\":\\(ms)}") }
+serve("short 250", "{\\"command\\":\\"drag\\",\\"x\\":201,\\"y\\":600,\\"x2\\":201,\\"y2\\":552,\\"durationMs\\":300,\\"endHoldMs\\":250}")
+serve("long 250", "{\\"command\\":\\"drag\\",\\"x\\":201,\\"y\\":850,\\"x2\\":201,\\"y2\\":50,\\"durationMs\\":300,\\"endHoldMs\\":250}")
 for pattern in ["one-way", "ping-pong"] {
   serve("series \\(pattern)", "{\\"command\\":\\"dragSeries\\",\\"x\\":201,\\"y\\":738,\\"x2\\":201,\\"y2\\":556,\\"durationMs\\":300,\\"count\\":2,\\"pattern\\":\\"\\(pattern)\\",\\"endHoldMs\\":250}")
 }
@@ -178,9 +184,44 @@ test('U1 a drag reaches the last step before XCTest with the end hold its comman
     assert.deepEqual(run(name).steps, [at(endHold)], name);
     assert.deepEqual(
       run(`${name} (default step)`).presses,
-      [{ from: [201, 738], to: [201, 556], holdBefore: 0.3, held: endHold !== null, endHold }],
+      [
+        {
+          from: [201, 738],
+          to: [201, 556],
+          holdBefore: 0.3,
+          held: endHold !== null,
+          endHold,
+          velocity: endHold === null ? null : 100,
+        },
+      ],
       `${name} (default step)`,
     );
+  }
+});
+
+// XCTest builds one touch from this call: down, still for holdBefore, a straight move at the
+// velocity in points per second, still for endHold, then lift. The lift carries the move's speed.
+test('U4 a drag that ends at rest travels slowly in the one touch that holds, and lifts within 5 s', (t) => {
+  const r = results();
+  if (!r) return t.skip('Swift toolchain unavailable');
+  const run = (name: string) => r.runs.find((entry) => entry.name === `${name} (default step)`)!;
+  for (const [name, length, velocity, endHold] of [
+    ['drag 100', 182, 100, 0.1],
+    ['drag 250', 182, 100, 0.25],
+    ['drag 5000', 182, 100, 2],
+    ['short 250', 48, 100, 0.25],
+    ['long 250', 800, 200, 0.25],
+  ] as const) {
+    const presses = run(name).presses;
+    assert.equal(presses.length, 1, name);
+    const [press] = presses;
+    assert.equal(press.held, true, name);
+    assert.equal(press.velocity, velocity, name);
+    assert.equal(press.endHold, endHold, name);
+    const travel = Math.hypot(press.to[0] - press.from[0], press.to[1] - press.from[1]);
+    assert.equal(travel, length, name);
+    assert.ok(travel / velocity <= 4, `${name} travels ${travel / velocity}s`);
+    assert.ok(press.holdBefore + travel / velocity + endHold <= 5, `${name} lifts late`);
   }
 });
 
