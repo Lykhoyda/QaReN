@@ -99,3 +99,61 @@ test('Android admission logs an allowed opening after a failed driver read and s
   assert.equal(times.length, 3);
   assert.ok(times[2] >= times[1] && times[1] >= times[0]);
 });
+
+test('Android admission does not log an allowed opening when a foreign driver refuses it', (t) => {
+  const scratch = mkdtempSync(join(tmpdir(), 'qaren-start-observation-'));
+  t.after(() => rmSync(scratch, { recursive: true, force: true }));
+  const script = `
+    import assert from 'node:assert/strict';
+    import {mock} from 'node:test';
+    const deviceUrl = ${JSON.stringify(moduleUrl('handlers/device-session'))};
+    const discoveryUrl = ${JSON.stringify(moduleUrl('cdp/discovery'))};
+    const proofUrl = ${JSON.stringify(moduleUrl('qa/prove'))};
+    const driverUrl = ${JSON.stringify(moduleUrl('runners/external-runner-detect'))};
+    const {okResult} = await import(${JSON.stringify(moduleUrl('utils'))});
+    const device = await import(deviceUrl);
+    const discovery = await import(discoveryUrl);
+    const proof = await import(proofUrl);
+    const driver = await import(driverUrl);
+    let opens = 0; let proofs = 0;
+    mock.module(deviceUrl, {namedExports: {...device, createDeviceSnapshotHandler: () => async args => {
+      if (args.action === 'open') opens++;
+      return okResult({});
+    }}});
+    mock.module(discoveryUrl, {namedExports: {...discovery, waitForExactPortTargets: async () => {}}});
+    mock.module(proofUrl, {namedExports: {...proof, prove: async () => { proofs++; throw new Error('must not prove'); }}});
+    mock.module(driverUrl, {namedExports: {...driver, androidForeignDriverMessage: async () => 'synthetic foreign UIAutomator driver'}});
+    const {CDPClient} = await import(${JSON.stringify(moduleUrl('cdp-client'))});
+    CDPClient.prototype.connectExact = async () => {};
+    CDPClient.prototype.evaluate = async () => ({value: true});
+    CDPClient.prototype.disconnect = async () => {};
+    const {openSession} = await import(${JSON.stringify(moduleUrl('qa/walk'))});
+    const {ObservedPrivacy} = await import(${JSON.stringify(moduleUrl('qa/privacy'))});
+    const request = {runId: 'synthetic-foreign', t0: Date.now(), walkBudgetMs: 8000, attachBudgetMs: 8000, platform: 'android', appId: 'com.example.synthetic', target: {deviceId: 'synthetic-android', deviceName: 'Synthetic Android', metroPort: 8081, metroUrlForDevice: 'http://127.0.0.1:8081', worktree: ${JSON.stringify(root)}}};
+    await assert.rejects(openSession(request, () => {}, () => {}, () => {}, new ObservedPrivacy(), undefined, () => {}, undefined, async () => 'loaded'), {code: 'BUSY_FOREIGN_FLOW'});
+    assert.deepEqual({opens, proofs}, {opens: 0, proofs: 0});
+    process.stdout.write('FOREIGN_OK\\n');
+  `;
+  const child = spawnSync(
+    'bash',
+    [
+      join(root, 'scripts/qaren-sim-sandbox.sh'),
+      process.execPath,
+      '--experimental-test-module-mocks',
+      '--input-type=module',
+      '-e',
+      script,
+    ],
+    {
+      cwd: root,
+      env: { ...process.env, QAREN_SANDBOX_DIR: join(scratch, 'sandbox'), TYPESAFE_API_KEY: '' },
+      encoding: 'utf8',
+      timeout: 15_000,
+    },
+  );
+  assert.equal(child.status, 0, child.stderr + child.stdout);
+  assert.match(child.stdout, /FOREIGN_OK/);
+  assert.match(child.stderr, /android start: debugger connect at \d+ ms/);
+  assert.doesNotMatch(child.stderr, /driver check allowed the opening/);
+  assert.doesNotMatch(child.stderr, /android start: proof starts/);
+});
