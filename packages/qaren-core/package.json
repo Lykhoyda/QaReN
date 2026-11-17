@@ -6,7 +6,7 @@
   "description": "QaReN core: the screen-reading engine spawned by the qaren CLI.",
   "main": "dist/injected-helpers.js",
   "scripts": {
-    "build": "rm -rf dist && tsc && mkdir -p dist/native && cp -R native/. dist/native/",
+    "build": "rm -rf dist && tsc && tsc -p tsconfig.runtime.json && mkdir -p dist/native && cp -R native/. dist/native/",
     "dev": "tsc --watch",
     "test": "yarn build:test && node --test --test-concurrency=2 'test/unit/*.test.js' 'test/unit/**/*.test.js' 'test/unit/*.test.ts' 'test/unit/**/*.test.ts'",
     "test:coverage": "yarn build:test && node --test --test-concurrency=2 --experimental-test-coverage --test-coverage-exclude='test/**' ${UNIT_TEST_SHARD:+--test-shard=$UNIT_TEST_SHARD} 'test/unit/*.test.js' 'test/unit/**/*.test.js' 'test/unit/*.test.ts' 'test/unit/**/*.test.ts'",

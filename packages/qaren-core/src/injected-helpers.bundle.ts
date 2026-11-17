@@ -2,13 +2,157 @@
 import { HELPERS_VERSION } from './runtime/version.js';
 import { PRIVATE_INPUT_LIMITS } from './qa/private-input-limits.js';
 import { TYPOGRAPHY_TEXT_LIMITS } from './qa/host-typography.js';
-import { INPUT_HOST_TYPES } from './qa/input-host-types.js';
 
 export const INJECTED_HELPERS = `
 (function() {
   var __HELPERS_VERSION__ = ${HELPERS_VERSION};
   if (globalThis.__QAREN && globalThis.__QAREN.__v === __HELPERS_VERSION__) return;
   if (globalThis.__QAREN) delete globalThis.__QAREN;
+
+  // Typed modules from src/runtime, compiled here by scripts/build-injected-helpers.ts.
+  var __rt;
+  (() => {
+    // packages/qaren-core/src/qa/input-host-types.ts
+    var INPUT_HOST_TYPES = [
+      "TextInput",
+      "RCTTextInput",
+      "RCTSinglelineTextInputView",
+      "RCTMultilineTextInputView",
+      "AndroidTextInput"
+    ];
+
+    // packages/qaren-core/src/runtime/fiber-access/host-kind.ts
+    var HOST_KIND_NAMES = {
+      text: ["Text", "RCTText"],
+      textinput: INPUT_HOST_TYPES,
+      image: ["Image", "RCTImageView", "RCTImage"],
+      switch: ["Switch", "RCTSwitch"],
+      scrollview: ["ScrollView", "RCTScrollView"],
+      modal: ["Modal", "RCTModalHostView"]
+    };
+    var HOST_KIND_LOOKUP = (function() {
+      const map = {};
+      const kinds = Object.keys(HOST_KIND_NAMES);
+      for (let ki = 0; ki < kinds.length; ki++) {
+        const names = HOST_KIND_NAMES[kinds[ki]];
+        for (let ni = 0; ni < names.length; ni++) map[names[ni]] = kinds[ki];
+      }
+      return map;
+    })();
+    function isHostFiber(fiber) {
+      return !!fiber && (fiber.tag === 5 || typeof fiber.type === "string");
+    }
+    function hostKind(fiber) {
+      if (!fiber || !fiber.type) return null;
+      if (fiber.tag === 6) return null;
+      const name = typeof fiber.type === "string" ? fiber.type : fiber.type.displayName || fiber.type.name || null;
+      if (!name) return null;
+      const kind = HOST_KIND_LOOKUP[name];
+      return kind || null;
+    }
+
+    // packages/qaren-core/src/runtime/fiber-access/read.ts
+    function descriptorValue(object, descriptor) {
+      if (Object.prototype.hasOwnProperty.call(descriptor, "value")) return descriptor.value;
+      const get = descriptor.get;
+      const set = descriptor.set;
+      const getName = typeof get === "function" && Object.getOwnPropertyDescriptor(get, "name");
+      const setName = typeof set === "function" && Object.getOwnPropertyDescriptor(set, "name");
+      if (!Object.isFrozen(object) || !getName || getName.value !== "bound identity" || !setName || setName.value !== "bound throwOnImmutableMutation")
+        throw new Error("Capture refused");
+      return Reflect.apply(get, object, []);
+    }
+    function qaData(object, key, devFrozen) {
+      if (object == null) return void 0;
+      if (typeof object !== "object" && typeof object !== "function")
+        throw new Error("Capture refused");
+      const descriptor = Object.getOwnPropertyDescriptor(object, key);
+      if (!descriptor && !(key in object)) return void 0;
+      if (!descriptor || devFrozen !== true && !Object.prototype.hasOwnProperty.call(descriptor, "value"))
+        throw new Error("Capture refused");
+      return descriptorValue(object, descriptor);
+    }
+    var QA_POINTER_EVENTS = ["auto", "none", "box-none", "box-only"];
+    function qaStyleFact(style, key, depth) {
+      if (style == null || style === false) return void 0;
+      if (depth > 32) throw new Error("Capture refused");
+      if (Array.isArray(style)) {
+        const length = qaData(style, "length", true);
+        for (let i = length - 1; i >= 0; i--) {
+          const value = qaStyleFact(qaData(style, String(i), true), key, depth + 1);
+          if (value !== void 0) return value;
+        }
+        return void 0;
+      }
+      if (typeof style !== "object") throw new Error("Capture refused");
+      return qaData(style, key, true);
+    }
+    function qaHostType(fiber) {
+      const state = qaData(fiber, "stateNode");
+      const canonical = qaData(state, "canonical");
+      const config = qaData(canonical || state, "viewConfig");
+      const name = qaData(config, "uiViewClassName");
+      if (name != null && (typeof name !== "string" || name.length > 200))
+        throw new Error("Capture refused");
+      const type = qaData(fiber, "type");
+      return name || (typeof type === "string" ? type : null);
+    }
+    function imageSourcePlaceholderFacts(fiber, props) {
+      if (qaHostType(fiber) !== "ViewManagerAdapter_ExpoImage") return null;
+      const state = qaData(fiber, "stateNode");
+      const canonical = qaData(state, "canonical");
+      const config = qaData(canonical || state, "viewConfig");
+      if (qaData(config, "uiViewClassName") !== "ViewManagerAdapter_ExpoImage") return null;
+      const attributes = qaData(config, "validAttributes");
+      const source = qaData(attributes, "source");
+      const placeholder = qaData(attributes, "placeholder");
+      const sourceProcess = source === true ? true : qaData(source, "process");
+      const placeholderProcess = placeholder === true ? true : qaData(placeholder, "process");
+      if (sourceProcess !== true && typeof sourceProcess !== "function") return null;
+      if (placeholderProcess !== true && typeof placeholderProcess !== "function") return null;
+      const roles = ["role", "accessibilityRole"];
+      for (let ri = 0; ri < roles.length; ri++) {
+        const role = qaData(props, roles[ri]);
+        if (role != null && (typeof role !== "string" || ["textinput", "textbox", "search", "searchbox"].indexOf(role.toLowerCase()) !== -1))
+          return null;
+      }
+      const inputProps = [
+        "onChangeText",
+        "onChange",
+        "onEndEditing",
+        "onKeyPress",
+        "onSubmitEditing",
+        "editable",
+        "readOnly",
+        "aria-readonly"
+      ];
+      for (let pi = 0; pi < inputProps.length; pi++)
+        if (qaData(props, inputProps[pi]) != null) return null;
+      return [config, attributes, source, placeholder, sourceProcess, placeholderProcess];
+    }
+
+    // packages/qaren-core/src/runtime/index.ts
+    __rt = {
+      qaData,
+      descriptorValue,
+      QA_POINTER_EVENTS,
+      qaStyleFact,
+      qaHostType,
+      imageSourcePlaceholderFacts,
+      HOST_KIND_LOOKUP,
+      isHostFiber,
+      hostKind
+    };
+  })();
+  var qaData = __rt.qaData;
+  var descriptorValue = __rt.descriptorValue;
+  var QA_POINTER_EVENTS = __rt.QA_POINTER_EVENTS;
+  var qaStyleFact = __rt.qaStyleFact;
+  var qaHostType = __rt.qaHostType;
+  var imageSourcePlaceholderFacts = __rt.imageSourcePlaceholderFacts;
+  var HOST_KIND_LOOKUP = __rt.HOST_KIND_LOOKUP;
+  var isHostFiber = __rt.isHostFiber;
+  var hostKind = __rt.hostKind;
 
   // v<=104 buffers: emptied and inert; old wrappers and flags stay, a later patch may sit on top.
   ['__QAREN_CONSOLE__', '__QAREN_ERRORS__'].forEach(function(name) {
@@ -519,46 +663,9 @@ export const INJECTED_HELPERS = `
     return name && name.length <= 200 ? name : null;
   }
 
-  // RN dev renderers deep-freeze host prop values into bound identity accessors.
-  function descriptorValue(object, descriptor) {
-    if (Object.prototype.hasOwnProperty.call(descriptor, 'value')) return descriptor.value;
-    var get = descriptor.get;
-    var set = descriptor.set;
-    var getName = typeof get === 'function' && Object.getOwnPropertyDescriptor(get, 'name');
-    var setName = typeof set === 'function' && Object.getOwnPropertyDescriptor(set, 'name');
-    if (!Object.isFrozen(object) || !getName || getName.value !== 'bound identity'
-      || !setName || setName.value !== 'bound throwOnImmutableMutation') throw new Error('Capture refused');
-    return Reflect.apply(get, object, []);
-  }
-
-  // Only nested public evidence may pass devFrozen; input facts stay data-only.
-  function qaData(object, key, devFrozen) {
-    if (object == null) return undefined;
-    if (typeof object !== 'object' && typeof object !== 'function') throw new Error('Capture refused');
-    var descriptor = Object.getOwnPropertyDescriptor(object, key);
-    if (!descriptor && !(key in object)) return undefined;
-    if (!descriptor || (devFrozen !== true && !Object.prototype.hasOwnProperty.call(descriptor, 'value'))) throw new Error('Capture refused');
-    return descriptorValue(object, descriptor);
-  }
-
   // A host view's touch facts, public and value-free, read like the display facts: devFrozen accepts the
   // dev renderer's frozen prop values. pointerEvents falls back to eligibilityPointerEvents and reads an
   // unknown or invalid value as auto (a cover); zIndexKnown false leaves the host without an order.
-  var QA_POINTER_EVENTS = ['auto', 'none', 'box-none', 'box-only'];
-  function qaStyleFact(style, key, depth) {
-    if (style == null || style === false) return undefined;
-    if (depth > 32) throw new Error('Capture refused');
-    if (Array.isArray(style)) {
-      var length = qaData(style, 'length', true);
-      for (var i = length - 1; i >= 0; i--) {
-        var value = qaStyleFact(qaData(style, String(i), true), key, depth + 1);
-        if (value !== undefined) return value;
-      }
-      return undefined;
-    }
-    if (typeof style !== 'object') throw new Error('Capture refused');
-    return qaData(style, key, true);
-  }
   function qaTouchFacts(fiber) {
     var props = qaData(fiber, 'memoizedProps', true);
     var pointerEvents = null;
@@ -577,39 +684,6 @@ export const INJECTED_HELPERS = `
       else if (typeof zIndex !== 'number' || !isFinite(zIndex)) zIndexKnown = false;
     } catch (_) { zIndexKnown = false; }
     return { pointerEvents: pointerEvents, zIndex: zIndexKnown ? zIndex : null, zIndexKnown: zIndexKnown };
-  }
-
-  function qaHostType(fiber) {
-    var state = qaData(fiber, 'stateNode');
-    var canonical = qaData(state, 'canonical');
-    var config = qaData(canonical || state, 'viewConfig');
-    var name = qaData(config, 'uiViewClassName');
-    if (name != null && (typeof name !== 'string' || name.length > 200)) throw new Error('Capture refused');
-    var type = qaData(fiber, 'type');
-    return name || (typeof type === 'string' ? type : null);
-  }
-
-  function imageSourcePlaceholderFacts(fiber, props) {
-    if (qaHostType(fiber) !== 'ViewManagerAdapter_ExpoImage') return null;
-    var state = qaData(fiber, 'stateNode');
-    var canonical = qaData(state, 'canonical');
-    var config = qaData(canonical || state, 'viewConfig');
-    if (qaData(config, 'uiViewClassName') !== 'ViewManagerAdapter_ExpoImage') return null;
-    var attributes = qaData(config, 'validAttributes');
-    var source = qaData(attributes, 'source');
-    var placeholder = qaData(attributes, 'placeholder');
-    var sourceProcess = source === true ? true : qaData(source, 'process');
-    var placeholderProcess = placeholder === true ? true : qaData(placeholder, 'process');
-    if (sourceProcess !== true && typeof sourceProcess !== 'function') return null;
-    if (placeholderProcess !== true && typeof placeholderProcess !== 'function') return null;
-    var roles = ['role', 'accessibilityRole'];
-    for (var ri = 0; ri < roles.length; ri++) {
-      var role = qaData(props, roles[ri]);
-      if (role != null && (typeof role !== 'string' || ['textinput', 'textbox', 'search', 'searchbox'].indexOf(role.toLowerCase()) !== -1)) return null;
-    }
-    var inputProps = ['onChangeText', 'onChange', 'onEndEditing', 'onKeyPress', 'onSubmitEditing', 'editable', 'readOnly', 'aria-readonly'];
-    for (var pi = 0; pi < inputProps.length; pi++) if (qaData(props, inputProps[pi]) != null) return null;
-    return [config, attributes, source, placeholder, sourceProcess, placeholderProcess];
   }
 
   var qaCaptureSlot = null;
@@ -1813,40 +1887,6 @@ export const INJECTED_HELPERS = `
       return safeStringify({ error: 'Tree too large (' + output.length + ' chars). Use a filter parameter to scope the query.', verdict: buildVerdict('full', fullVerdictOpts) });
     }
     return output;
-  }
-
-  // Known host kinds use platform view names, not composite component names.
-  var HOST_KIND_NAMES = {
-    text: ['Text', 'RCTText'],
-    textinput: ${JSON.stringify(INPUT_HOST_TYPES)},
-    image: ['Image', 'RCTImageView', 'RCTImage'],
-    switch: ['Switch', 'RCTSwitch'],
-    scrollview: ['ScrollView', 'RCTScrollView'],
-    modal: ['Modal', 'RCTModalHostView']
-  };
-  var HOST_KIND_LOOKUP = (function() {
-    var map = {};
-    var kinds = Object.keys(HOST_KIND_NAMES);
-    for (var ki = 0; ki < kinds.length; ki++) {
-      var names = HOST_KIND_NAMES[kinds[ki]];
-      for (var ni = 0; ni < names.length; ni++) map[names[ni]] = kinds[ki];
-    }
-    return map;
-  })();
-
-  function isHostFiber(fiber) {
-    return !!fiber && (fiber.tag === 5 || typeof fiber.type === 'string');
-  }
-
-  function hostKind(fiber) {
-    if (!fiber || !fiber.type) return null;
-    if (fiber.tag === 6) return null;
-    var name = typeof fiber.type === 'string'
-      ? fiber.type
-      : (fiber.type.displayName || fiber.type.name || null);
-    if (!name) return null;
-    var kind = HOST_KIND_LOOKUP[name];
-    return kind || null;
   }
 
   // Navigation State
