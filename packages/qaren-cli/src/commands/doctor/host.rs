@@ -83,19 +83,14 @@ fn helper_row(runner: &mut dyn Runner, processes: &CmdOutput) -> Check {
             format!("no Android emulator helper left behind or above 100% CPU; {HELPER_LIMIT}"),
         );
     }
-    let commands: Vec<_> = scan
-        .helpers
-        .iter()
-        .map(|f| format!("`{}`", f.stop_command()))
-        .collect();
-    let fix = if commands.is_empty() {
+    let mut fixes = Vec::new();
+    for helper in &scan.helpers {
+        let fix = helper.class.fix();
+        if !fixes.contains(&fix) { fixes.push(fix); }
+    }
+    let fix = if fixes.is_empty() {
         "re-run doctor once the process list reads in full".to_string()
-    } else {
-        format!(
-            "QaReN did not start these and stops nothing; stop each one: {}",
-            commands.join(", ")
-        )
-    };
+    } else { fixes.join("; ") };
     Check::warn(
         "device-helpers",
         format!("{}; {HELPER_LIMIT}", detail.join("; ")),
@@ -526,7 +521,7 @@ mod tests {
         runner.expect_run("top -l 2 -s 1 -n 0", CmdOutput::success(IDLE));
         let rows = checks(&mut runner, "macos");
         assert_eq!(runner.remaining(), 0);
-        assert!(runner.calls.iter().all(|c| c.program != "kill"));
+        assert!(runner.calls.iter().all(|c| !matches!(c.program.as_str(), "kill" | "/bin/kill" | "lsof")));
         assert!(runner
             .calls
             .iter()
@@ -536,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn e1_helpers_without_their_emulator_warn_and_are_named_with_their_stop_command() {
+    fn e1_helpers_without_their_emulator_warn_with_automatic_recovery() {
         let processes = [
             helper(4242, "0.5", "netsimd", "netsimd"),
             helper(4243, "0.0", "crashpad_handler", "crashpad_handler"),
@@ -559,11 +554,11 @@ mod tests {
         assert!(check
             .detail
             .contains("crashpad_handler (pid 4243, 0.0% CPU)"));
-        assert!(check.detail.contains("emulator is not running"));
+        assert!(check.detail.contains("orphan"));
         assert!(check.detail.contains("every helper counts as served"));
         let fix = check.fix.unwrap();
         assert!(
-            fix.contains("kill 4242") && fix.contains("kill 4243"),
+            fix.contains("nothing to do by hand") && !fix.contains("stops nothing"),
             "{fix}"
         );
         for text in [&check.detail, &fix] {
@@ -629,10 +624,31 @@ mod tests {
             "{}",
             check.detail
         );
-        assert!(check.detail.contains("above 100% CPU"));
-        assert!(!check.detail.contains("emulator is not running"));
+        assert!(check.detail.contains("serving"));
+        assert!(!check.detail.contains("orphan"));
         assert!(!check.detail.contains("4246"), "{}", check.detail);
-        assert!(check.fix.unwrap().contains("kill 4242"));
+        assert!(check.fix.unwrap().contains("ask the device owner to restart"));
+    }
+
+    #[test]
+    fn i4_each_helper_class_has_its_own_fix_and_doctor_never_signals() {
+        let uid = unsafe { libc::geteuid() };
+        for (parent, owner, extra, class, fix) in [
+            (1, uid, String::new(), "orphan", "nothing to do by hand"),
+            (1, uid+1, String::new(), "other-user", "ask that user to stop it"),
+            (900, uid, String::new(), "has-parent", "stop it from that program"),
+            (1, uid, emulator(), "serving", "ask the device owner to restart"),
+            (900, uid+1, "one two three four five six seven eight nine\n".into(), "unproven", "run `qaren doctor` again"),
+        ] {
+            let text = crate::device_helpers::ps_line_with_identity(4242, parent, owner, "Sun Nov 15 12:34:56 2026", "960.0", "S", "netsimd", &format!("{SDK}/netsimd --private-canary")) + &extra;
+            let check = helper_row(&text, &[(SDK, CmdOutput::success(PACKAGE))]);
+            assert_eq!(check.status, Status::Warn);
+            assert!(check.detail.contains(class), "{check:?}");
+            assert!(check.fix.as_ref().unwrap().contains(fix), "{check:?}");
+            for output in [&check.detail, check.fix.as_ref().unwrap()] {
+                assert!(!output.contains(SDK) && !output.contains("private-canary") && !output.contains("stops nothing"));
+            }
+        }
     }
 
     #[test]

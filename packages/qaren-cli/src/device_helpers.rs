@@ -1,5 +1,4 @@
-//! Android emulator helper processes that outlive their emulator or run hot. QaReN starts none
-//! of them and, here, only reads the process list.
+//! Classify Android SDK emulator helpers and recover only proven same-user orphans.
 use crate::exec::{CmdSpec, Runner};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -51,6 +50,15 @@ impl Class {
             Self::Serving => "serving",
         }
     }
+    pub fn fix(self) -> &'static str {
+        match self {
+            Self::Orphan => "nothing to do by hand: the next `qaren check`, `qaren pr`, `qaren prepare` or `qaren cleanup <run id>` stops it and records it",
+            Self::OtherUser => "it belongs to another user of this machine; ask that user to stop it",
+            Self::Serving => "its emulator is running; ask the device owner to restart that emulator",
+            Self::HasParent => "another running program started it; stop it from that program",
+            Self::Unproven => "QaReN could not read the whole process list, so it leaves this alone; run `qaren doctor` again",
+        }
+    }
     fn listed(self, cpu: f64) -> bool {
         matches!(self, Self::Orphan | Self::Unproven | Self::OtherUser) || cpu > HOT_CPU
     }
@@ -59,6 +67,12 @@ impl Class {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Outcome { Listed, StoppedTerm, StoppedKill, SurvivedKill, LeftAlone, Unknown }
+
+impl Outcome {
+    fn as_str(self) -> &'static str {
+        match self { Self::Listed => "listed", Self::StoppedTerm => "stopped-term", Self::StoppedKill => "stopped-kill", Self::SurvivedKill => "survived-kill", Self::LeftAlone => "left-alone", Self::Unknown => "unknown" }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
@@ -100,10 +114,6 @@ pub struct Scan {
 impl Finding {
     pub fn hot(&self) -> bool {
         self.cpu > HOT_CPU
-    }
-
-    pub fn stop_command(&self) -> String {
-        format!("kill {}", self.pid)
     }
 
     pub fn note(&self) -> Note {
@@ -449,7 +459,7 @@ pub fn report_line(scan: &Scan) -> Option<String> {
         let each: Vec<_> = scan
             .helpers
             .iter()
-            .map(|f| format!("{}; stop it with `{}`", f.describe(), f.stop_command()))
+            .map(|f| format!("{}; {}", f.describe(), f.outcome.as_str()))
             .collect();
         let incomplete = if scan.complete {
             ""
@@ -633,6 +643,16 @@ mod tests {
     }
 
     #[test]
+    fn i6_report_names_the_outcome_without_a_manual_stop_or_private_facts() {
+        let mut runner = MockRunner::new();
+        package(&mut runner, SDK, CmdOutput::success(PACKAGE));
+        let scan = scan_text(&mut runner, &netsimd(4242, "960.0")).unwrap();
+        let text = report_line(&scan).unwrap();
+        assert!(text.contains("listed"));
+        assert!(!text.contains("kill 4242") && !text.contains(SDK) && !text.contains("--flag"));
+    }
+
+    #[test]
     fn u16_new_columns_keep_the_process_name_and_arguments() {
         let text =
             "4242 1 501 960.0 S Sun Nov 15 12:34:56 2026 netsimd /sdk/emulator/netsimd --flag\n";
@@ -808,7 +828,7 @@ mod tests {
         assert_eq!(first.pid, 4242);
         assert!(first.class == Class::Orphan && first.hot());
         assert_eq!(first.describe(), "netsimd (pid 4242, 960.0% CPU): orphan");
-        assert_eq!(first.stop_command(), "kill 4242");
+
     }
 
     #[test]

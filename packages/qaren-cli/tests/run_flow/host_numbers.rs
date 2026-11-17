@@ -237,7 +237,7 @@ fn helpers() -> String {
 }
 
 #[test]
-fn e4_run_start_helper_scan_notes_executable_name_and_pid_only() {
+fn e4_run_start_helper_stop_records_typed_outcome_without_private_facts() {
     let (mut mock, req) = passing();
     mock.processes = Some(helpers());
     let receipt = run(&mut mock, &req);
@@ -256,7 +256,7 @@ fn e4_run_start_helper_scan_notes_executable_name_and_pid_only() {
         .filter(|l| l.contains("netsimd (pid 4242"))
         .collect();
     assert_eq!(lines.len(), 1, "{report}");
-    assert!(lines[0].contains("kill 4242"), "{report}");
+    assert!(lines[0].contains("stopped-term"), "{report}");
     assert!(
         !report.contains("canary") && !report.contains("4243"),
         "{report}"
