@@ -186,6 +186,9 @@ impl Runner for HostRunner {
             std::fs::remove_dir_all(lock).unwrap();
         }
     }
+    fn log_lines(&mut self, log: &Path) -> Option<u64> {
+        self.inner.log_lines(log)
+    }
     fn now_epoch_ms(&self) -> u64 {
         self.inner.now_epoch_ms()
     }

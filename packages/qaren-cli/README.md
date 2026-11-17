@@ -836,7 +836,8 @@ same allowance, and their actual duration is excluded from the build budget,
 including the iOS build window the slot is claimed in. Once the allowance is
 spent, a queued build takes no further samples. A recheck in the slot queue
 keeps the platform lock, as the slot wait itself does. Lock contention itself
-still consumes `deadlines.build_seconds`.
+still counts against each wait's own `deadlines.build_seconds` bound; the
+platform lock wait is outside the build window and the slot wait inside it.
 When memory recovers the build goes on. When memory is still constrained
 but not critical when the allowance is spent, the build goes on with its
 remaining build budget.
@@ -1086,6 +1087,91 @@ subtrees with the same label still refuse as ambiguous. The
 The refusal lists
 each candidate without its label or value: kind, testID or `no-id`, and the
 rounded frame.
+
+### Text hidden from accessibility on iOS
+
+When a quoted Tap target is absent and interruption recovery takes no action,
+QaReN can resolve one exact hidden text or hidden child's testID to its containing
+button. The same admitted read must prove one hidden host, its nearest non-hidden
+pressable with its own unique testID, and one associated native button that is
+enabled, hittable and on screen; the hidden host's frame must fit inside the
+button's frame. QaReN rebinds that button on the next read before pressing it.
+An executed press spends that line's one-tap allowance, including later retries
+if the text becomes accessible. A passing step stores the button's testID rather
+than the hidden child's identity.
+A press still needs the usual verification; dispatch alone does not pass the step.
+
+When the button has neither a label nor a testID, only the hidden text's exact
+words can name it, not a hidden child's testID; its frame is the only tie. The
+read must hold exactly one native button whose frame equals the button host's
+frame, and that button must have no label and no identifier and must be observed
+by the read. Every native button at that frame is counted, including labelled or
+identified buttons and those whose presence was not proven. Every window is
+counted, each under its own origin. A compatible non-button native node at that
+frame is accepted only when it is an ancestor of the button in the native tree;
+a sibling or a node in another window stops the press.
+No other pressable host may have that frame,
+and no pressable inside the button, hidden or not, may cover its centre, where
+the tap lands. React's own hit test at that centre must also reach the button,
+so nothing painted over it, and no sibling of unknown paint order, takes the
+tap. For this frame-only proof, the centre hit test treats a non-text host without
+a measured frame as a possible interceptor, including when its paint position
+is unknown. A measured descendant that takes the hit decides it before its
+unmeasured parent; an unresolved hit cannot authorize a press.
+Every pressable host must have a measured frame, except inline text
+spans, which are never measured. An unmeasured pressable inline span inside the
+button, in text whose frame overlaps it, or without a measured containing text
+also stops the press. That press has no identity to find again, so QaReN takes a
+new full read just before each press, proves the button
+on it again, and presses that read's element. If the proof no longer holds,
+nothing is tapped. The runner cannot re-check an unnamed element at the moment of
+the tap, so the proof on that read stands in for it. A passing step stores no
+selector, so its block is reported not saved and later runs walk the step afresh.
+
+Partial clipping alone does not prevent a press: an observed, hittable button
+whose centre is clear and on screen can still be proven and pressed without a
+scroll. When the press proof fails, clipping by its scroll area or a centre hit
+on a host outside the button can still locate it. The frame tie, hidden-text
+containment and enabled-button checks must still hold. Clipping can locate it
+even when the centre hit is unresolved; unknown presence or a failed hit test
+alone does not locate it. Locating allows a scroll, never a tap.
+QaReN then sends the step's one clearance scroll from the button's own scroll
+area. When the button's centre lies outside that area, the button gets the same
+scroll a named element in that place gets: toward the area, within its visible
+part, with no free-ground check. This holds even when something is also drawn
+over the centre. A drag is not a tap, and the full proof still guards the press.
+When the centre lies inside the area but something is drawn over it, the scroll
+runs under the usual free-ground checks. A view outside the list that crosses
+the top or bottom edge of that area, such as a fixed row reaching a few points
+into it, is trimmed off first. Both the proof's React touch owner at the centre
+and any separately associated native cover count, including text or a
+non-hittable view hidden from accessibility. These trims use
+the original band edges in one pass, so the drag starts and ends on free ground.
+A view across the middle of the area or across both its edges, or an area left
+lower than 50 points, still withholds the scroll. After the scroll, QaReN takes a settled full read and proves
+the button again; only then does it press, once. A step gets one such scroll,
+including across recovery passes, and a runner refusal of the press after it
+ends the step. When the button is still not proven, or no scroll is allowed,
+nothing is tapped and the failure names the cause the read shows first: cut off
+by its scroll area, or its centre under another element, with "after one
+scroll" when the scroll was sent, or why no scroll was sent (no scroll area
+holds it, or no part of its scroll area is free). The app change comes second.
+The run log records each such decision as a value-free `located-clearance` note:
+whether the button was located, the cause, the path taken (offscreen or
+covered), whether a scroll area holds it, the band and direction of the drag, the trimming views by kind and frame (including
+cuts from the shared clearance check), and why it was withheld. A card that
+needs two scrolls is refused, so the plan adds a scroll step before the Tap.
+
+Without that proof, QaReN does not tap through the hidden text. When the current
+line's latest admitted read proves the hidden text, a failed Tap, quoted Wait or
+literal check explains that the app hides it from accessibility. When known, the
+failure identifies its containing button by frame and testID and suggests the
+button's own label or testID, or adding an `accessibilityLabel` in the app.
+Hidden text alone never makes a Wait or literal check pass. This fallback does
+not support Android or a testID button inside a popup, and a text carried by more
+than one hidden element presses nothing. The
+[hidden-text walker tests](../qaren-core/test/unit/qa/hidden-text-walker.test.ts)
+cover the tap and failure behavior.
 
 ### Occluded taps and focus
 
@@ -1404,8 +1490,45 @@ its list is cleared with one scroll, the same as under the keyboard. Keyboard-ow
 the existing explicit tap path and remain subject to trusted clipping and native
 identity guards. An explicit key press performs its normal action, not guaranteed
 keyboard dismissal; QA must freshly prove the keyboard hidden and the intended
-screen preserved before treating the press as clearance. Ordinary covered content
-uses one directional scroll toward the centre
+screen preserved before treating the press as clearance.
+
+For an iOS Tap with the keyboard guard enabled, a target inside its trusted clip
+whose centre lies in the 48 pt margin above a visibly open keyboard uses keyboard
+clearance instead of scrolling when that margin still sets the band's bottom
+edge and no cover is named. An overlay cutting only the band's top edge does
+not disable this path; an overlay setting its bottom edge does. QaReN first
+attempts one bounded native-presence recapture to check for a cover, then
+rechecks eligibility on fresh evidence;
+unavailable presence alone does not prevent this clearance. It uses the existing
+per-item keyboard-dismissal allowance, waits for the same target to settle and
+rebinds it before resuming the Tap. Blurring the field can trigger app validation
+or navigation before the press. The keyboard must be proven hidden after a
+successful dismissal; otherwise the step fails naming the keyboard, without a
+scroll or press. An already-spent allowance also refuses without another dismissal.
+
+For a resolved iOS Tap whose centre remains inside the visible keyboard frame
+after its one clearance scroll, or a clearance drag proven not dispatched,
+QaReN uses the same allowance to dismiss the keyboard and settle and rebind the
+target before resuming the Tap. A target without a recognised scroll area still
+gets the one scroll first. If scrolling lifts the target clear, the keyboard
+stays up and the Tap proceeds normally. If dismissal cannot prove the keyboard
+hidden, the step fails naming the keyboard. This under-keyboard path does not
+check overlays before clearance; covers are checked after the keyboard hides.
+Rebinding after the scroll or refused drag requires a test ID: a label-only
+target still refuses without keyboard clearance. The margin path, which does
+not scroll, supports label-only targets.
+
+Once either clearance starts, scroll recovery is forbidden for the rest of the
+step, including across recovery retries: a target that moves out of reach
+refuses instead. A named cover also refuses; an overlay inferred only from
+capture order uses the existing press that the runner must prove hittable.
+These paths add no press of their own; the ordinary retry after a press with no
+observable effect remains unchanged. Fill, Android, hidden keyboards and runs
+without the keyboard guard retain their existing paths. The
+[keyboard-margin regressions](../qaren-core/test/unit/qa/keyboard-margin-clearance.test.ts)
+cover these boundaries.
+
+Other covered content uses one directional scroll toward the centre
 of the target's visible clip band: its trusted clipping viewport cut off 48 pt
 above the top of an observed keyboard unless the keyboard is proven hidden, and between
 sticky overlays. A touchable, non-text element at least half the clip's width,
@@ -1431,6 +1554,30 @@ view outside that container's ancestry and content, regardless of capture order.
 Even a background view overlapping the band withholds the drag. Direction moves
 the target toward the admitted band's centre.
 
+<a id="free-ground-proof"></a>
+
+A real screen holds empty full-screen views outside the list (screens lower in
+the stack, navigation containers, a second window), and these alone can leave no
+free band. On a presence read with the keyboard proven hidden, the walker then
+sets aside *plain layers*: views of native type `Other`, not windows, outside
+the list's ancestry and content, whose frame holds the whole starting band and
+under which every view is again such a view. Anything else stays solid and keeps
+today's band and refusal with no further read. Without the plain layers, the
+remaining band must host a drag and overlap neither the named cover nor any
+other view outside the list. Then up to four named elements of the list lying
+wholly inside that band (identifiable by the runner, not of kind `other`, rows
+of this list rather than a nested one, apart from the target's lineage),
+nearest its centre first, each get one read-only `hitProbe`, started only with
+at least 300 ms of the observation left. The first `hittable` answer sends the
+drag on that band; `not-hittable`, `moved` or `unavailable` proves nothing. The
+same proof applies when a Tap or Fill target known only to React finds its
+list's band taken. The step row's `groundProof` records `not-needed`, `proven`
+(witness ref and kind), `solid-view` (ref, kind and frame), `band-too-small`,
+`no-witness`, `witness-not-hittable` (count) or `witness-unavailable`. A list
+with no named element in the band keeps the refusal. The
+[free-ground regressions](../qaren-core/test/unit/qa/free-ground-walker.test.ts)
+pin these cases.
+
 No own list, no free band, or a late or incomplete proof read withholds the drag.
 The walker takes a settled capture and keeps the one retry, with no subsequent
 scroll of any origin for that attempt. If it still refuses before a successful
@@ -1443,8 +1590,9 @@ wrapper tap path, pre-dispatch clearance, plain Scroll, Scroll until and Android
 retain their existing admission rules; this check adds no wait for a cover to pass.
 
 On iOS, capture order is not paint order. When a press target still resolves
-after that one scroll, after a withheld drag, or after the scroll was refused with nothing moved (for
-example `SCROLL_BAND_TOO_SMALL` on a band only a few points tall), and its centre
+after keyboard clearance, after that one scroll, after a withheld drag, or after
+the scroll was refused with nothing moved (for example `SCROLL_BAND_TOO_SMALL`
+on a band only a few points tall), and its centre
 is still past the inferred band but inside its clip with the keyboard proven
 hidden, the walker sends the
 tap with `requireLiveHit`: only when its fresh, bounded `isHittable` read of the
@@ -1454,8 +1602,9 @@ the captured centre. If native element activation is unavailable, it refuses
 `LIVE_HIT_UNPROVEN` with no tap and never falls back to coordinates.
 A false read, a moved target, or an unavailable read (expired snapshot, no identity, absent or ambiguous match, a
 read that threw or ran out of time) refuses `LIVE_HIT_UNPROVEN` with no tap, and the step fails
-with “stayed off screen after one scroll” (or the withheld-drag reason) and the inferred band cutter described
-under [clearance diagnostics](#clearance-diagnostics). The scroll
+with “stayed covered after keyboard clearance”, “stayed off screen after one
+scroll” or the withheld-drag reason, and the inferred band cutter described
+under [clearance diagnostics](#clearance-diagnostics). Any scroll
 that ran before the refusal remains a performed action. Press behavior is unchanged.
 
 On iOS, quoted waits and scroll-until completion can override that inferred cover
@@ -2088,7 +2237,8 @@ reported not visible to the user or was outside the viewport;
 explanation prefers hidden literal text, then a visible `other` node, then a
 hidden `other` node. The explanation repeats only the plan's literal, never
 the rest of the node's label. An absent match or uncertain literal evidence
-adds no near-miss explanation.
+adds no node-label near-miss explanation. For iOS text omitted from accessibility,
+see [hidden-text diagnostics](#text-hidden-from-accessibility-on-ios).
 
 The [native geometry model](../qaren-core/src/qa/native-presence.ts) clips nodes
 on both axes against the Application screen and trusted Window, ScrollView,
@@ -2179,7 +2329,8 @@ One clearance swipe lifts a covered row by at most its list's visible band above
 the keyboard.
 A uniquely name-matched off-screen row further away is scrolled toward again,
 at most six times, stopping on an unchanged screen or the existing deadline;
-covered rows and other scroll origins still get one clearance swipe. See the
+covered rows and other scroll origins still get one clearance swipe, subject to
+the [covered-target recovery exceptions](#covered-target-recovery). See the
 [scroll-until direction regressions](../qaren-core/test/unit/qa/scroll-until-direction.test.ts).
 
 Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`
@@ -2823,7 +2974,9 @@ during teardown, including post-arm cancellation and dead-owner recovery, subjec
 [inspection hold precedence](#ios-admission-and-cleanup). After strict
 admission, the pending stop must be durably saved before lifecycle mutation; a failed
 save or cancellation before arming leaves simulator power unchanged. Shutdown preserves
-the simulator and its installed app and data. See [iOS admission and cleanup](#ios-admission-and-cleanup)
+the simulator and its installed app and data, and then removes the simulator's system
+log store, which holds the log entries of every app on that simulator, not only this
+run's. See [iOS admission and cleanup](#ios-admission-and-cleanup)
 for stop guards, unresolved ownership and recovery.
 
 iOS preparation follows the
@@ -2907,15 +3060,31 @@ listeners (`lsof -nP -iTCP:<port> -sTCP:LISTEN`) and probes `/status` on
 response with body `packager-status:running`; Metro is ready when `127.0.0.1`
 passes that probe. When only `[::1]` answers, the listener is QaReN's on `[::1]` with no
 `127.0.0.1` or wildcard listener, `127.0.0.1` stays refused or silent on two
-more looks one second apart, and the listener is unchanged, the run refuses
-`METRO_BIND_IPV6_ONLY` in that turn instead of waiting out the build deadline.
-The detail names the listener forms seen (only `127.0.0.1`, `[::1]`, `*` and
-`other`, never another address) and that no restart was tried; the next step is
-the cleanup command, then a check of the project's Node DNS result order.
-Anything less consistent keeps waiting. The run record and receipt carry
-`metro_bind`: `127.0.0.1`, `[::1]-only`, or `inconclusive` when the deadline
-passed; it survives Metro's cleanup and `status` prints it. Android keeps its
-single `127.0.0.1` probe.
+more looks one second apart, and the listener is unchanged, the Metro is
+`[::1]`-only. The first time an iOS run sees that, QaReN stops its Metro
+through the same process-group stop that cleanup uses, then starts it once more
+without `--localhost`, with the same Node options and preload and with
+`REACT_NATIVE_PACKAGER_HOSTNAME=127.0.0.1`. The restarted Metro listens on all
+network interfaces for that run, as every Android run's Metro does. It logs to
+`logs/metro-restart.log`; the first log is kept. Once the replacement process
+spawns, the receipt's `outcomes.metro_bind_recovery` and the report say
+"Metro was restarted once on all network interfaces during this run", even if
+the run fails before readiness or process identity capture. The notice also
+says whether Metro has been stopped or could not be confirmed stopped; a
+successful prepare that keeps Metro running has no stop qualifier. The wait
+goes on under the same build deadline. A restart that ends past the deadline fails
+`READY_DEADLINE_EXCEEDED` in that turn. A second `[::1]`-only finding, or a
+first Metro whose stop is not proven, refuses `METRO_BIND_IPV6_ONLY` in that
+turn: in the second case nothing else starts, and the record keeps that Metro
+for cleanup. The detail names the listener forms seen (only `127.0.0.1`,
+`[::1]`, `*` and `other`, never another address) and what was tried: "QaReN
+restarted its Metro once on all interfaces" or "the first Metro could not be
+stopped". The next step is the cleanup command, then a check of the project's
+Node DNS result order. Anything less consistent keeps waiting. The run record
+and receipt carry `metro_bind`: `127.0.0.1`, `127.0.0.1 after restart on all
+interfaces`, `[::1]-only`, or `inconclusive` when the
+deadline passed; it survives Metro's cleanup and `status` prints it. Android
+keeps its single `127.0.0.1` probe and never restarts.
 
 A request-handler timeout after `/status` responds names startup or a
 stalled watcher as possible causes; steady answers near 30 seconds also name a
@@ -3587,10 +3756,16 @@ When `--shutdown-device-on-exit`
 armed a pending borrowed-simulator stop, teardown and dead-owner cleanup require the
 run's current device lease, proven build/core/Metro/runner-driver/runner-host/recorder
 quiescence, matching canonical simulator UUID/runtime/device type, fresh strict
-foreign-driver admission, and verified `Shutdown` readback before persisting completion
+foreign-driver admission, and verified `Shutdown` readback. When the run recorded the
+log removal request, cleanup also requires a fresh read proving `Shutdown` and naming
+the simulator's data path, followed by removal of its system log store, before persisting completion
 and releasing the lease (and any `pr` worktree); an already `Shutdown` target completes
-idempotently, and a completed record never re-issues `simctl shutdown`. Unresolved stop
-admission, shutdown, readback or persistence retains the pending state and lease. Missing
+idempotently, and a completed record never re-issues `simctl shutdown` or the removal.
+Unresolved stop
+admission, shutdown, readback, log store removal or persistence retains the pending state
+and lease, and the next cleanup of the same run retries the removal. A pending stop
+recorded by an older QaReN, which did not record the removal request, gets the shutdown
+and keeps the log. Missing
 runtime or candidate-directory evidence also leaves the stop unresolved. Exit shutdown
 cannot be added afterward to a released run. A dead lease
 holder is reclaimed only through that run's cleanup; a live or unprovable holder
@@ -3670,7 +3845,17 @@ stop); `refused` or `unresolved` means removal was not proven. Temporary
 simulators, including `--new`, have no separate log leg: their `simulator`
 cleanup leg reports deletion of the whole simulator instead.
 Every `check`, `pr` and `prepare --device` run borrows its simulator and keeps
-its log (`simulator_log: kept`), even if QaReN originally created that simulator.
+its log (`simulator_log: kept`), even if QaReN originally created that simulator,
+unless a `check` or `pr` recorded the removal request when
+`--shutdown-device-on-exit` armed its stop: that run
+removes the simulator's whole log store, with the entries of every other app on it,
+after the proven shutdown (`simulator_log: removed`, or `absent`). When reporting
+the pending request from the record, including a run held for inspection, the leg
+is `unresolved: log store retained with the simulator`; a cleanup attempt can
+instead report the specific removal failure. The proof of `Shutdown` is not exclusive
+control: a person or another tool can boot the simulator between that read and the
+removal. A store that cannot be removed ends `qaren cleanup` as failed; a `check`
+keeps its verdict and names that cleanup as its next action.
 `qaren doctor --device <udid>` prints guidance for clearing the borrowed
 simulator's log; it removes nothing.
 
@@ -4102,7 +4287,8 @@ unless a system dialog is in front, elsewhere only while a decline control is on
 the presented `Modal`, recovery runs instead of scrolling the promo. On iOS the drag
 then goes only toward a target that read places below or above an on-screen scroll
 container that is also its scroll-until container, inside the part of that container
-that nothing drawn in front covers; a target inside the visible area, with no matching
+that nothing drawn in front covers, or on a band a [free-ground proof](#free-ground-proof)
+admits; a target inside the visible area, with no matching
 scroll container, with no exposed scroll band or with no readable place refuses `TARGET_NOT_FOUND`
 ("is known to React but has no element on the visible screen", with the reason and
 "nothing was scrolled"), and so does a recapture that runs out of time or returns
@@ -4473,7 +4659,7 @@ diagnostic collection and sink failures preserve the refusal.
 <a id="clearance-diagnostics"></a>
 
 When a press or fill target's centre remains covered after the one-scroll
-allowance or a withheld recovery drag, a private `timing` event with code `CENTRE_COVERED` includes the
+allowance, a withheld recovery drag or an unsuccessful keyboard clearance, a private `timing` event with code `CENTRE_COVERED` includes the
 observation ordinal and `clearanceDiagnostic`. It records the viewport, keyboard or
 overlay predicate branch, boolean coverage facts, the scroll's origin and requested
 direction, and whether the target centre changed. For an overlay branch, the
@@ -4501,8 +4687,10 @@ presence or React typography; the [absent-target keyboard clearance](#occluded-t
 has a separate modal-proof capture. On iOS a covered press or Fill refusal with that gap takes the
 walker's one bounded platform-presence recapture, the same one a plain scroll uses for
 an unproven cover, and looks up the cover again on it, at most once per cover lookup.
-For covered targets, only native dispatch refusals or terminal step refusals pay
-for that read (a presence capture can take tens of seconds on device). Before
+For covered targets, native dispatch refusals or terminal step refusals pay
+for that read, with the pre-clearance exception described in
+[covered-target recovery](#covered-target-recovery) (a presence capture can take
+tens of seconds on device). Before
 an eligible post-refusal drag, it supplies the current geometry and can withhold
 the drag under the [recovery contract](#covered-target-recovery); terminal diagnostic
 reads grant no further dispatch. An incomplete read leaves the cover unproven
@@ -5551,6 +5739,20 @@ dynamic or template-literal arguments, escaped literals and other unsupported
 syntax make the fingerprint **incomplete**, forbidding cached reuse (visible
 in decision evidence). Unresolvable local refs and `workspace:` dependencies
 in any of those sections also make it incomplete.
+
+The import and ambient `process` scans ignore comments, quoted-string content
+and template text when the scanner can identify them confidently; expressions
+inside `${…}` remain code. Strings and template text inside bracket expressions
+remain scanned to preserve computed-key detection, as does string content or a
+template-text segment exactly equal to `require`, `import` or `process`.
+Text later executed through `eval` or `new Function` is not scanned as code.
+If the scanner encounters a non-comment `/` (including division), `<` (including
+JSX), `#!`, `-->`, a raw line break in a quoted string or an unterminated
+comment, string, template or placeholder, the whole file uses the previous
+unmasked scan. U+2028/U+2029 or a carriage return without a following line feed
+anywhere in the file also trigger that fallback. Code-site line numbers are
+preserved.
+
 On iOS the value also binds the selected Xcode (`xcodebuild -version`), so a
 build is never reused across Xcode versions, and an unavailable Xcode makes the
 fingerprint incomplete.
@@ -5800,9 +6002,9 @@ token saved before acquisition and reused through group recording and cleanup,
 so matching run ids in separate homes cannot release each other's slot. Public
 queue output shows only the run id.
 
-The slot wait polls every second. On iOS it uses the remaining shared build
-budget; on Android it has one build budget of its own and leaves the existing
-build and readiness budgets unchanged. `qaren watch` shows a **Build queue**
+The slot wait polls every second and has one `deadlines.build_seconds` budget
+from its own start. On iOS the wait also consumes the shared build window
+described below. `qaren watch` shows a **Build queue**
 row with the holder, lock, held time and time waited. Plain output records
 each observed holder change and each completed wait. Queue events contain
 only the lock name, a validated run id and durations.
@@ -5869,9 +6071,39 @@ release it once the artifact is verified, the pre-publication candidate and
 fingerprint checks pass and cache publication is persisted, before
 [run-owned output retirement](#cli-owned-ios-build-routes); Metro, install,
 launch and readiness run afterwards, and the final drift checks still run
-after readiness. A contended iOS claim waits, polling every second, within the
-same build budget (`deadlines.build_seconds`) that the prebuild, build,
-verification and publication then share; see the
+after readiness. A contended iOS claim waits, polling every second, for at most
+`deadlines.build_seconds`; waiting for the lock is not build time. The build
+window starts when the lock is claimed and lasts three times the effective
+compile limit (learned as described below), at most 7200 s; prebuild, the
+build-slot wait (bounded by `build_seconds` from
+its own start), the build, verification and publication share it. Prebuild keeps
+`build_seconds` as its own bound. The compile step (the iOS build, and the
+Android Gradle build on a borrowed emulator, whose ceiling of three times the
+limit counts from the command's start) changes nothing up to the limit; past it
+the build goes on while its log drain counts new output lines (a value-free
+count kept beside the log, also when the output is withheld) within the idle
+window, a quarter of the limit, at least 300 s and at most 600 s. It ends by
+`no_progress` (no new line for the idle window), by `window` (the window ran
+out), or, for prebuild, by `command_limit`. A build that produces no output is
+cut at the limit when the limit is 300 s or more; below that it is cut at the
+earlier of 300 s or three times the limit. The remaining iOS build window can
+stop compilation earlier. Such a cut stays `BUILD_FAILED` and carries a
+`limit` block (`phase`, `setting`, `limit_s`, `window_s`, `idle_s`,
+`elapsed_s`, `ended_by`, `last_progress_age_s`, `next_limit_s`, and `learned`
+when the limit was raised) and the
+`build_time_limit` recovery: after this run's own `qaren cleanup` has
+succeeded, run again; after a `window` end first set `deadlines.build_seconds`
+to `next_limit_s`, or, when the window was already 7200 s and `next_limit_s`
+is absent, build the app with the project's own tools. A passing compile
+records `native_build` in `timings_ms` and the `build_next_limit` outcome, and
+`build_limit` when it went past its limit. Each passing compile's time is kept
+per machine, platform and app in `<runs root>/build-timings/<platform>/<app id>.json`
+(the last five, replaced whole); the next run's compile limit is the larger of
+`build_seconds` and 1.5 times the longest of them, at most 7200 s, noted as
+`build_limit_learned` and as `limit.learned` on a cut. The lock wait, the slot
+wait and prebuild keep `build_seconds`. A missing or unreadable record means
+`build_seconds`; `build_next_limit` is a forecast, since another run may replace
+the record first. See the
 [deadline defaults and validation](src/scenario.rs).
 Build subprocess timeouts are capped to the remaining window, and no new
 build command starts after expiry. Teardown commands and their process-identity
@@ -5885,7 +6117,8 @@ its recorded build group still runs, and how long this run waited, for example
 `BUILD_CONTENDED: native-build-ios is held by run <id> (alive: yes; no build process for 9 min); waited 600 s of the budget. Next: wait for that run or re-run once later; if the holder is dead, run its qaren cleanup from its home (its resources only).`
 After 120 s of a live holder with no build group running the wait notes
 `holder_idle_after_build`; a live or unproven holder is never taken. Running
-the budget out inside the build window outside a lock wait is `BUILD_FAILED`. The receipt's `build_lock`
+the window out at verification or publication is `BUILD_FAILED` with the
+`build_budget_exhausted` recovery. The receipt's `build_lock`
 keeps the last contended wait, or the latest claim observation if none contended;
 `build_lock_waits` keeps both platform and slot
 observations in order. Each reports `lock`, `holder`, `waited_s`, `holder_alive`, `holder_build_process`,

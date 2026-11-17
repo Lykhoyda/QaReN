@@ -390,7 +390,7 @@ pub fn cleanup_with_policy(
         if record.resources.device_borrowed && record.resources.ios_simulator.is_some() {
             legs.push((
                 "simulator_log".to_string(),
-                retained_log_outcome(record.resources.pool_member),
+                recorded_log_outcome(&record.resources),
             ));
         }
         return finish_cleanup(runner, runs_root, run_id, remove_app, &mut record, legs, false);
@@ -2925,16 +2925,22 @@ pub(crate) fn cleanup_process_group(
     }
 }
 
-// The log leg of a borrowed simulator whose stop did not complete: only a pool member's store is QaReN's.
-fn retained_log_outcome(pool_member: bool) -> Outcome {
-    if pool_member {
-        Outcome::Unresolved("log store retained with the simulator".into())
-    } else {
-        Outcome::Kept
+// The log leg as the record states it, without a new look at the disk.
+pub(crate) fn recorded_log_outcome(resources: &crate::runrecord::Resources) -> Outcome {
+    match resources.borrowed_ios_stop() {
+        crate::runrecord::BorrowedIosStop::Pending if resources.log_removal_owed() => {
+            Outcome::Unresolved("log store retained with the simulator".into())
+        }
+        crate::runrecord::BorrowedIosStop::Completed
+            if resources.pool_member || resources.simulator_log_cleared =>
+        {
+            Outcome::Absent
+        }
+        _ => Outcome::Kept,
     }
 }
 
-// The simulator outcome and its system log outcome; a pool member's store goes only after a proven Shutdown.
+// The simulator outcome and its system log outcome; an owed store goes only after a proven Shutdown.
 pub(crate) fn cleanup_borrowed_ios(
     runner: &mut dyn Runner,
     record: &mut RunRecord,
@@ -2945,17 +2951,14 @@ pub(crate) fn cleanup_borrowed_ios(
 ) -> (Outcome, Option<Outcome>) {
     let mut cleanup_runner = crate::exec::CleanupRunner(runner);
     let runner: &mut dyn Runner = &mut cleanup_runner;
-    let pool_member = record.resources.pool_member;
     match record.resources.borrowed_ios_stop() {
         // An unarmed pool member was never booted by this run, and its claim already removed the store.
         crate::runrecord::BorrowedIosStop::NotArmed => return (Outcome::Kept, Some(Outcome::Kept)),
         crate::runrecord::BorrowedIosStop::Completed => {
-            let log = if pool_member {
-                Outcome::Absent
-            } else {
-                Outcome::Kept
-            };
-            return (Outcome::Absent, Some(log));
+            return (
+                Outcome::Absent,
+                Some(recorded_log_outcome(&record.resources)),
+            );
         }
         crate::runrecord::BorrowedIosStop::Pending => {}
     }
@@ -2967,9 +2970,9 @@ pub(crate) fn cleanup_borrowed_ios(
         runtime_context,
     ) {
         Ok(done) => done,
-        Err(outcome) => return (outcome, Some(retained_log_outcome(pool_member))),
+        Err(outcome) => return (outcome, Some(recorded_log_outcome(&record.resources))),
     };
-    let log = if pool_member {
+    let log = if record.resources.log_removal_owed() {
         let retained = || Some(Outcome::Unresolved("log store retained".into()));
         let list = runner.run(&ios::list_devices_spec());
         if !list.ok()
@@ -3022,8 +3025,14 @@ pub(crate) fn cleanup_borrowed_ios(
             Some(log),
         );
     }
+    // Reached with a requested removal only once the store is removed or absent.
+    let prev_cleared = record.resources.simulator_log_cleared;
+    if record.resources.clear_log_on_stop {
+        record.resources.simulator_log_cleared = true;
+    }
     if let Err(failure) = record.save(runs_root) {
         record.resources.revert_borrowed_ios_stop(prev);
+        record.resources.simulator_log_cleared = prev_cleared;
         return (
             Outcome::Unresolved(format!(
                 "simulator stop completed but the run record could not be persisted: {}",

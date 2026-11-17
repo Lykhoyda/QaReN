@@ -144,6 +144,15 @@ pub(crate) fn finish_host(
         }
     }
     receipt.host = Some(crate::host_capacity::RunSamples { start, end });
+    if let Some(notice) = receipt.outcomes.get_mut("metro_bind_recovery") {
+        let ending = match receipt.cleanup.get("metro").map(String::as_str) {
+            Some("removed" | "absent") => " and has been stopped",
+            None if receipt.failure.is_none() && receipt.metro.is_some() => "",
+            _ => " and could not be confirmed stopped",
+        };
+        *notice =
+            format!("Metro was restarted once on all network interfaces during this run{ending}.");
+    }
     if let Err(error) =
         crate::report::write_host(receipt, crate::device_helpers::report_line(helpers))
     {

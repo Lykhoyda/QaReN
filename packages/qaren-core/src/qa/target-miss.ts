@@ -5,6 +5,7 @@ import { scrollUntilBand } from './resolve.js';
 import { FIXED_CONTROL_WORDS } from './recover.js';
 import { isRecord } from './questions.js';
 import { named } from './identity.js';
+import { hiddenFromAccessibility } from './hidden-text.js';
 
 export const MISS_REASONS = [
   'absent',
@@ -275,6 +276,8 @@ export function missSuggestion(
   now: ScreenNow,
   line: number,
   kind: Step['kind'],
+  // Hidden-text advice is iOS only; elsewhere today's advice stands.
+  ios = false,
 ): string {
   const step = `line ${line}`;
   if (target.quoted === undefined)
@@ -298,6 +301,15 @@ export function missSuggestion(
           : `on the last observation the target of ${step} was on screen but could not take this step; compare its role and state in failure.screen with the step`;
     }
     case 'absent': {
+      // A text hidden on a screen behind this one names no button; the plain advice fits it better.
+      const button =
+        ios && (kind === 'press' || kind === 'wait')
+          ? hiddenFromAccessibility(target, screen, 'exact')?.button
+          : undefined;
+      if (button)
+        return button.labelled
+          ? `the target of ${step} is text the app hides from accessibility inside a button with its own label; quote that button's label, or its testID if failure.screen lists one`
+          : `the target of ${step} is text the app hides from accessibility; quote the testID of the button that holds it if failure.screen lists one, or give that button an accessibilityLabel in the app`;
       const enabled = now.controls.filter((c) => c.enabled && !c.offscreen).length;
       return `the target of ${step} was not on the last observed screen, which lists ${enabled} enabled controls in failure.screen; consider reading that screen in source and inserting the missing step before ${step}`;
     }

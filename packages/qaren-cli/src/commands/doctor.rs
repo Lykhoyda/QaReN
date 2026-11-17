@@ -662,11 +662,11 @@ fn build_lock_named_row(
 fn ios_simulator_log() -> Check {
     Check::pass(
         "ios-simulator-log",
-        "policy: a pooled simulator's system log store (var/db/diagnostics under its data directory) is removed after each run's shutdown and again before reuse; the receipt's simulator_log leg says what happened; a --new simulator is deleted; a simulator QaReN did not create keeps its log",
+        "policy: a pooled simulator's system log store (var/db/diagnostics under its data directory) is removed after each run's shutdown and again before reuse; the receipt's simulator_log leg says what happened; a --new simulator is deleted; a simulator QaReN did not create keeps its log unless the run was started with --shutdown-device-on-exit, which removes it after the shutdown",
     )
 }
 
-// Read only: where a simulator QaReN did not create keeps its system log; nothing is removed.
+// Read only: where a simulator QaReN did not create keeps its system log; doctor removes nothing.
 pub fn lane_log_row(runner: &mut dyn Runner, udid: &str) -> Check {
     let list = runner.run(&ios::list_devices_spec());
     // Only a checked path without a quote goes into the printed shell command.
@@ -685,7 +685,7 @@ pub fn lane_log_row(runner: &mut dyn Runner, udid: &str) -> Check {
     };
     Check::warn(
         "ios-lane-log",
-        format!("simulator {udid} keeps typed and displayed field text in its system log; QaReN never removes the log of a simulator it did not create"),
+        format!("simulator {udid} keeps typed and displayed field text in its system log; QaReN removes the log of a simulator it did not create only after a run started with --shutdown-device-on-exit shuts it down"),
         fix,
     )
 }
@@ -3003,7 +3003,7 @@ mod tests {
         assert_eq!(policy.status, Status::Pass);
         assert_eq!(
             policy.detail,
-            "policy: a pooled simulator's system log store (var/db/diagnostics under its data directory) is removed after each run's shutdown and again before reuse; the receipt's simulator_log leg says what happened; a --new simulator is deleted; a simulator QaReN did not create keeps its log"
+            "policy: a pooled simulator's system log store (var/db/diagnostics under its data directory) is removed after each run's shutdown and again before reuse; the receipt's simulator_log leg says what happened; a --new simulator is deleted; a simulator QaReN did not create keeps its log unless the run was started with --shutdown-device-on-exit, which removes it after the shutdown"
         );
         assert!(policy.fix.is_none());
         let ids: Vec<&str> = report.checks.iter().map(|c| c.id).collect();
@@ -4591,7 +4591,7 @@ mod lane_row_tests {
         root.canonicalize().unwrap()
     }
 
-    const DETAIL: &str = "simulator AAAABBBB-1111-2222-3333-444455556666 keeps typed and displayed field text in its system log; QaReN never removes the log of a simulator it did not create";
+    const DETAIL: &str = "simulator AAAABBBB-1111-2222-3333-444455556666 keeps typed and displayed field text in its system log; QaReN removes the log of a simulator it did not create only after a run started with --shutdown-device-on-exit shuts it down";
     const GENERIC_FIX: &str = "find its data directory with xcrun simctl list -j devices (dataPath); with the simulator shut down, remove var/db/diagnostics under it";
 
     #[test]

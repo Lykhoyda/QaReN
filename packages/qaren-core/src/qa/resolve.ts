@@ -98,6 +98,14 @@ export interface CoveredBy {
   label?: string;
 }
 export const MAX_HIT_PROBES = 4;
+// Why a clearance drag across plain layers was or was not proven: refs, kinds and frames only.
+export type GroundProof =
+  | { status: 'not-needed' | 'band-too-small' | 'no-witness' | 'witness-unavailable' }
+  | { status: 'proven'; ref: string; kind: Element['kind'] }
+  | { status: 'solid-view'; ref: string; kind: Element['kind']; frame: Rect }
+  | { status: 'witness-not-hittable'; count: number };
+// Views a band calculation leaves out: plain layers a native witness proved the touch passes through.
+export type LeaveOut = ReadonlySet<Element>;
 export type Resolution =
   | {
       ref: string;
@@ -626,7 +634,7 @@ export function bindFillIdentity(
   return fallback ? { kind: 'fallback', fallback } : undefined;
 }
 
-function scrollTo(element: Element): { scroll: 'up' | 'down'; element: Element } {
+export function scrollTo(element: Element): { scroll: 'up' | 'down'; element: Element } {
   const frame = elementFrame(element);
   return {
     element,
@@ -886,16 +894,61 @@ export function clearanceBand(
   return bottom > top ? { ...viewport, y: top, height: bottom - top } : undefined;
 }
 
+// Only the drag margin sets the band's bottom; the centre remains inside its clip above the keyboard.
+export function inKeyboardMarginOnly(element: Element, screen: Screen): boolean {
+  const frame = elementFrame(element);
+  const viewport = elementViewport(element);
+  const keyboard = screen.keyboardFrame;
+  const band = clearanceBand(element, screen);
+  if (screen.keyboardVisible !== true || !frame || !viewport || !keyboard || !band) return false;
+  const x = frame.x + frame.width / 2;
+  const y = frame.y + frame.height / 2;
+  if (
+    x < viewport.x ||
+    x >= viewport.x + viewport.width ||
+    y < viewport.y ||
+    y >= viewport.y + viewport.height
+  )
+    return false;
+  const bottom = band.y + band.height;
+  // The band stores top and height, so its bottom can differ from the margin by float rounding.
+  return (
+    Math.abs(bottom - (keyboard.y - KEYBOARD_EDGE_INSET)) < 0.001 && y >= bottom && y < keyboard.y
+  );
+}
+
 // Whether any touchable view outside the list overlaps the band, whatever its list order: a backdrop
 // listed before the list counts, so a harmless background view beside the list counts too.
 export function foreignOnBand(
   container: Element,
   band: NonNullable<NativeNode['rect']>,
   screen: Screen,
+  leaveOut?: LeaveOut,
 ): boolean {
+  return foreignViewOnBand(container, band, screen, leaveOut) !== undefined;
+}
+
+// The first touchable view outside the list that overlaps the band.
+export function foreignViewOnBand(
+  container: Element,
+  band: NonNullable<NativeNode['rect']>,
+  screen: Screen,
+  leaveOut?: LeaveOut,
+): Element | undefined {
+  return foreignNodesOnBand(container, band, screen, leaveOut)[0];
+}
+
+// The touchable views outside the list that overlap the band, in list order.
+export function foreignNodesOnBand(
+  container: Element,
+  band: NonNullable<NativeNode['rect']>,
+  screen: Screen,
+  leaveOut?: LeaveOut,
+): Element[] {
   const lineage = ancestorsOf(container);
-  return screen.elements.some((other) => {
+  return screen.elements.filter((other) => {
     if (
+      leaveOut?.has(other) ||
       other === container ||
       other.offscreen ||
       !other.hittable ||
@@ -917,6 +970,7 @@ function frontOverlayFrames(
   band: NonNullable<NativeNode['rect']>,
   screen: Screen,
   touch = false,
+  leaveOut?: LeaveOut,
 ): { element: Element; rect: NonNullable<NativeNode['rect']> }[] {
   const behind = screen.elements.indexOf(container);
   const lineage = ancestorsOf(container);
@@ -927,6 +981,7 @@ function frontOverlayFrames(
   for (const [i, other] of screen.elements.entries()) {
     if (
       i <= behind ||
+      leaveOut?.has(other) ||
       isWindow(other) ||
       other.kind === 'text' ||
       other.offscreen ||
@@ -991,10 +1046,11 @@ function clearOfFrontOverlays(
   screen: Screen,
   touch = false,
   opaqueOnly = false,
+  leaveOut?: LeaveOut,
 ): NativeNode['rect'] {
   let spans = [{ top: band.y, bottom: band.y + band.height }];
   const padding = 4 * (screen.pointScale ?? 1);
-  for (const { element, rect } of frontOverlayFrames(container, band, screen, touch)) {
+  for (const { element, rect } of frontOverlayFrames(container, band, screen, touch, leaveOut)) {
     if (opaqueOnly && touchPolicy(element) !== 'opaque') continue;
     const top = rect.y - padding;
     const bottom = rect.y + rect.height + padding;
@@ -1104,6 +1160,12 @@ export function scrollUntilContainer(target: Target, screen: Screen): Element | 
   return best;
 }
 
+// The visible part of a list's frame above the keyboard.
+function listClip(container: Element, screen: Screen): NativeNode['rect'] {
+  const frame = elementFrame(container);
+  return frame && aboveKeyboard(clip(frame, elementViewport(container)), screen);
+}
+
 export interface ScrollBandReceipt {
   status: 'no-geometry' | 'overlay-cut' | 'clear' | 'unreachable' | 'too-small';
   band?: NonNullable<NativeNode['rect']>;
@@ -1114,11 +1176,11 @@ export function containerBand(
   screen: Screen,
   within?: NativeNode['rect'],
   touch = false,
+  leaveOut?: LeaveOut,
 ): ScrollBandReceipt {
-  const frame = elementFrame(container);
-  const band = within ?? (frame && aboveKeyboard(clip(frame, elementViewport(container)), screen));
+  const band = within ?? listClip(container, screen);
   if (!band) return { status: 'no-geometry' };
-  const clear = clearOfFrontOverlays(container, band, screen, touch);
+  const clear = clearOfFrontOverlays(container, band, screen, touch, false, leaveOut);
   const result = clear ?? { ...band, height: 0 };
   return { status: sameRect(band, result) ? 'clear' : 'overlay-cut', band: result };
 }
@@ -1293,16 +1355,14 @@ function selectPlainScrollBand(
   return through[0] ?? verdict ?? unreachable ?? { status: 'too-small', band: unproven[0].band };
 }
 
-export function scrollUntilBand(
+// Where a scroll-until drag starts before any front-overlay cut: the target's clearance band, or the
+// list's clip; `inferredCut` marks a clearance band its own cutters moved.
+function scrollUntilStart(
   target: Target,
   screen: Screen,
-  observe?: (receipt: ScrollBandReceipt) => void,
-): NativeNode['rect'] {
+): { container: Element; band: NativeNode['rect']; inferredCut: boolean } | undefined {
   const container = scrollUntilContainer(target, screen);
-  if (!container) {
-    observe?.({ status: 'no-geometry' });
-    return undefined;
-  }
+  if (!container) return undefined;
   const matches = exactIdentities(screen, target, 'scroll');
   const element = matches.length === 1 ? matches[0].element : undefined;
   let band: NativeNode['rect'];
@@ -1314,18 +1374,93 @@ export function scrollUntilBand(
         })
       : aboveKeyboard(elementViewport(element), screen);
   }
-  if (!band && (!element || element.offscreen)) {
-    const receipt = containerBand(container, screen);
-    observe?.(receipt);
-    return receipt.band;
-  }
-  if (!band) {
-    observe?.({ status: inferredCut ? 'overlay-cut' : 'no-geometry' });
+  if (!band && (!element || element.offscreen)) band = listClip(container, screen);
+  return { container, band, inferredCut };
+}
+
+// The band a scroll-until drag starts from, before any view in front of the list cuts it.
+export function scrollUntilStartBand(target: Target, screen: Screen): NativeNode['rect'] {
+  return scrollUntilStart(target, screen)?.band;
+}
+
+export function scrollUntilBand(
+  target: Target,
+  screen: Screen,
+  observe?: (receipt: ScrollBandReceipt) => void,
+  leaveOut?: LeaveOut,
+): NativeNode['rect'] {
+  const start = scrollUntilStart(target, screen);
+  if (!start?.band) {
+    observe?.({ status: start?.inferredCut ? 'overlay-cut' : 'no-geometry' });
     return undefined;
   }
-  const receipt = containerBand(container, screen, band);
+  const { container, band, inferredCut } = start;
+  const receipt = containerBand(container, screen, band, false, leaveOut);
   observe?.({ ...receipt, status: inferredCut ? 'overlay-cut' : receipt.status });
   return receipt.band;
+}
+
+// Number noise allowed when one frame must hold another whole.
+const HOLDS_SLACK = 0.01;
+const holds = (outer: NativeNode['rect'], inner: Rect): boolean =>
+  !!outer &&
+  outer.x <= inner.x + HOLDS_SLACK &&
+  outer.y <= inner.y + HOLDS_SLACK &&
+  outer.x + outer.width >= inner.x + inner.width - HOLDS_SLACK &&
+  outer.y + outer.height >= inner.y + inner.height - HOLDS_SLACK;
+
+// Plain layers on a list's band, by native facts only: views outside the list's lineage, not windows,
+// of native type Other, holding the whole band, under which every view anywhere is again such a view.
+// Anything else is solid: a touch area can reach past a frame, and a wrapper passing touches to its
+// children does not treat a touch the same everywhere.
+export function plainLayersOn(container: Element, band: Rect, screen: Screen): Element[] {
+  const lineage = ancestorsOf(container);
+  const fullBand = (element: Element) =>
+    nativeTypeOf(element) === 'Other' && !isWindow(element) && holds(elementFrame(element), band);
+  return screen.elements.filter(
+    (layer) =>
+      layer !== container &&
+      !lineage.includes(layer) &&
+      !ancestorsOf(layer).includes(container) &&
+      fullBand(layer) &&
+      screen.elements.every((other) => !ancestorsOf(other).includes(layer) || fullBand(other)),
+  );
+}
+
+// Elements of the list whose native hit read can prove the band free of plain layers: wholly inside the
+// band, rows of this list and not of a nested one, apart from the target's lineage, findable again by
+// the runner, and never of kind other (the scroll view's own indicators); nearest the band's centre
+// first, at most MAX_HIT_PROBES.
+export function groundWitnesses(
+  container: Element,
+  band: Rect,
+  screen: Screen,
+  target?: Element,
+): Element[] {
+  const targetLineage = target ? [target, ...ancestorsOf(target)] : [];
+  const cx = band.x + band.width / 2;
+  const cy = band.y + band.height / 2;
+  const distance = (element: Element) => {
+    const frame = elementFrame(element)!;
+    return Math.hypot(frame.x + frame.width / 2 - cx, frame.y + frame.height / 2 - cy);
+  };
+  return screen.elements
+    .filter((element) => {
+      const ancestors = ancestorsOf(element);
+      const frame = elementFrame(element);
+      return (
+        !element.offscreen &&
+        element.kind !== 'other' &&
+        ancestors.find(isScrollContainer) === container &&
+        !targetLineage.includes(element) &&
+        !(target && ancestors.includes(target)) &&
+        !!frame &&
+        holds(band, frame) &&
+        probeIdentifiable(element, screen)
+      );
+    })
+    .sort((a, b) => distance(a) - distance(b))
+    .slice(0, MAX_HIT_PROBES);
 }
 
 const GENERIC_TARGET_WORDS = new Set(

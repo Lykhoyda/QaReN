@@ -315,6 +315,15 @@ pub fn script_finite_ios_build_only(mock: &mut MockRunner, command: &str) {
     script_ios_app_verification(mock);
 }
 
+// The same, for a build that runs `after_ms` on the scripted clock before it exits 0.
+pub fn script_finite_ios_build_exiting_after(mock: &mut MockRunner, command: &str, after_ms: u64) {
+    mock.expect_spawn_piped_exiting_after(command, 5000, 0, after_ms);
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:00:00 2026"));
+    mock.expect_run("ps", CmdOutput::success("qaren-build"));
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    script_ios_app_verification(mock);
+}
+
 // After the lock is released: re-verify the published artifact, start Metro, install and launch.
 pub fn script_ios_after_publish(
     mock: &mut MockRunner,
@@ -916,6 +925,9 @@ impl qaren::exec::Runner for IosBuildRunner {
     }
     fn sleep(&mut self, duration: std::time::Duration) {
         self.inner.sleep(duration);
+    }
+    fn log_lines(&mut self, log: &std::path::Path) -> Option<u64> {
+        self.inner.log_lines(log)
     }
     fn now_epoch_ms(&self) -> u64 {
         self.inner.now_epoch_ms()

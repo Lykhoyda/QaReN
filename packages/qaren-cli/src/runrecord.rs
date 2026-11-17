@@ -425,9 +425,15 @@ pub struct Resources {
     // A borrowed device is never deleted; iOS simulator stop requires an explicit bounded intent.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub device_borrowed: bool,
-    // Set only by the pool paths: QaReN owns this simulator's system log store.
+    // Set only by the pool paths: QaReN owns this simulator, so its log store goes at each stop.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pool_member: bool,
+    // Set only where --shutdown-device-on-exit arms the stop: the user asked for the store's removal.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub clear_log_on_stop: bool,
+    // Set with the stop's completion once a requested removal left the store removed or absent.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub simulator_log_cleared: bool,
     #[serde(default, skip_serializing_if = "BorrowedIosStop::is_not_armed")]
     borrowed_ios_stop: BorrowedIosStop,
 }
@@ -537,6 +543,11 @@ impl Resources {
 
     pub fn can_release_borrowed_ios_stop(&self) -> bool {
         self.borrowed_ios_stop != BorrowedIosStop::Pending
+    }
+
+    // A stop's state alone never owes a removal: the store must be QaReN's or the user asked.
+    pub fn log_removal_owed(&self) -> bool {
+        self.pool_member || self.clear_log_on_stop
     }
 
     pub(crate) fn ios_simulator_canonical(sim: &IosSimResource) -> bool {
@@ -677,6 +688,8 @@ pub enum MetroBind {
     V6Only,
     #[serde(rename = "inconclusive")]
     Inconclusive,
+    #[serde(rename = "127.0.0.1 after restart on all interfaces")]
+    V4AfterRestart,
 }
 
 // A failed walk's resources kept in the reached state until qaren cleanup or a reclaim by the next run on the device.
@@ -1166,5 +1179,21 @@ mod tests {
             serde_json::to_value(&pooled).unwrap()["pool_member"],
             serde_json::json!(true)
         );
+    }
+
+    #[test]
+    fn log_removal_fields_default_false_and_round_trip() {
+        let old: Resources = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(!old.clear_log_on_stop && !old.simulator_log_cleared);
+        let written = serde_json::to_value(&old).unwrap();
+        assert_eq!(written.get("clear_log_on_stop"), None);
+        assert_eq!(written.get("simulator_log_cleared"), None);
+        let set: Resources = serde_json::from_value(
+            serde_json::json!({"clear_log_on_stop": true, "simulator_log_cleared": true}),
+        )
+        .unwrap();
+        let written = serde_json::to_value(&set).unwrap();
+        assert_eq!(written["clear_log_on_stop"], serde_json::json!(true));
+        assert_eq!(written["simulator_log_cleared"], serde_json::json!(true));
     }
 }
