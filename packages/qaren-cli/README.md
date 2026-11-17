@@ -176,9 +176,11 @@ state, protects every helper. A crash reporter also follows any SDK `netsimd`
 that is not an orphan, including one below the display threshold.
 
 Doctor reads and explains these classes. It sends no signals. At the start of
-`check`, `pr`, `prepare` (except `--dry-run`), and command-line
-`cleanup <run id>`, QaReN stops up to four proven orphans with TERM, a shared
-five-second wait, then KILL if needed. Every signal requires a fresh complete
+`check`, `pr` and `prepare` (except `--dry-run`), and after the run's own
+teardown in command-line `cleanup <run id>`, even when that teardown refuses,
+QaReN stops up to four proven orphans with TERM, a shared
+five-second wait, then KILL if needed. A refused `--confirm-remove-app` runs no
+command. Every signal requires a fresh complete
 process list, the same pid, name and start time, and a fresh orphan
 classification. The step has a 15-second deadline, plus the last command's
 termination time, and never changes the run's verdict. An unavailable list
@@ -6223,8 +6225,9 @@ simulator can be borrowed instead; see
   [candidate provenance contract](#candidate-provenance) for fingerprint
   inputs, output exclusions and drift failures.
 - `cleanup` is idempotent: a second run re-probes, finds everything absent,
-  and returns `cleaned` again without signalling anything after successful
-  cleanup; app-removal retries follow the persisted-evidence rules above.
+  and returns `cleaned` again without signalling any of the run's processes
+  after successful cleanup ([emulator helper recovery](#emulator-helper-processes)
+  still applies); app-removal retries follow the persisted-evidence rules above.
 
 ## What a worker does
 
