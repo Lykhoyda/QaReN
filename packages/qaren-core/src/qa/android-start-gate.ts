@@ -47,6 +47,7 @@ export function androidStartGate({
         if (nextRead > now) {
           await sleep(Math.min(nextRead - now, end - now));
           if (performance.now() >= end) throw held();
+          continue;
         }
         nextRead = performance.now() + pollMs;
         lastSeen ??= performance.now();
