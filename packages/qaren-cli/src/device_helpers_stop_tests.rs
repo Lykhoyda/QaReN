@@ -156,6 +156,19 @@ fn s1_s10_term_then_one_poll_and_only_one_pid_per_signal() {
     r.done();
     assert_eq!(r.calls.len(), 5);
 }
+#[test]
+fn s1_nobody_listed_as_minus_two_keeps_the_list_complete_and_stops_the_orphan() {
+    let nobody = "  575     1    -2   0.0 S    Thu Nov 12 22:19:35 2026     distnoted        /usr/sbin/distnoted agent\n";
+    let text = format!("{nobody}{}", orphan(4242));
+    let mut r = Strict::default();
+    r.begin(&text);
+    r.term(&text, 4242);
+    r.list(nobody);
+    let scan = stop_orphans(&mut r, "macos", true);
+    assert!(scan.complete);
+    assert_eq!(scan.helpers[0].outcome, Outcome::StoppedTerm);
+    r.done();
+}
 fn kill_script(final_text: &str) -> Strict {
     let text = orphan(4242);
     let mut r = Strict::default();

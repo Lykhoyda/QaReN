@@ -236,7 +236,11 @@ fn process(line: &str) -> Option<Process<'_>> {
     Some(Process {
         pid: words[0].parse().ok()?,
         ppid: words[1].parse().ok()?,
-        uid: words[2].parse().ok()?,
+        // macOS ps prints nobody's uid 4294967294 as -2.
+        uid: words[2]
+            .parse()
+            .or_else(|_| words[2].parse::<i32>().map(|v| v as u32))
+            .ok()?,
         start: words[5..10].join(" "),
         cpu: words[3]
             .parse()
