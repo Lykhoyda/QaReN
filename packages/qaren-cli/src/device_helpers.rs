@@ -64,11 +64,19 @@ pub enum Outcome { Listed, StoppedTerm, StoppedKill, SurvivedKill, LeftAlone, Un
 #[serde(rename_all = "UPPERCASE")]
 pub enum Signal { Term, Kill }
 
-/// What a receipt keeps of a finding: the executable name and pid, nothing else.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Fixed facts only; optional additions keep older saved receipts readable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Note {
     pub name: HelperName,
     pub pid: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<Class>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<Outcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signals: Option<Vec<Signal>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -102,6 +110,10 @@ impl Finding {
         Note {
             name: self.name,
             pid: self.pid,
+            cpu: Some(self.cpu.round() as u64),
+            class: Some(self.class),
+            outcome: Some(self.outcome),
+            signals: Some(self.signals.clone()),
         }
     }
 

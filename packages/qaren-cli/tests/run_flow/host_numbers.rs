@@ -246,7 +246,7 @@ fn e4_run_start_helper_scan_notes_executable_name_and_pid_only() {
     let json: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(
         json["device_helpers"],
-        serde_json::json!([{ "name": "netsimd", "pid": 4242 }]),
+        serde_json::json!([{ "name": "netsimd", "pid": 4242, "cpu": 960, "class": "orphan", "outcome": "stopped-term", "signals": ["TERM"] }]),
         "{text}"
     );
     assert!(!text.contains("canary") && !text.contains("4243"), "{text}");
@@ -281,7 +281,7 @@ fn e4_run_start_helper_scan_notes_executable_name_and_pid_only() {
     let json: serde_json::Value = serde_json::from_str(&receipt.to_json()).unwrap();
     assert_eq!(
         json["device_helpers"],
-        serde_json::json!([{ "name": "netsimd", "pid": 4242 }])
+        serde_json::json!([{ "name": "netsimd", "pid": 4242, "cpu": 960, "class": "orphan", "outcome": "stopped-term", "signals": ["TERM"] }])
     );
 }
 

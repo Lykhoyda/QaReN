@@ -94,6 +94,9 @@ fn s3_survives_kill_is_reported() {
     let mut r = kill_script(&orphan(4242));
     let scan = stop_orphans(&mut r, "macos", true);
     assert_eq!(scan.helpers[0].outcome, Outcome::SurvivedKill); r.done();
+    let mut receipt = crate::receipt::Receipt::new("check", "test", crate::receipt::ReceiptResult::Pass, "complete", String::new());
+    crate::commands::finish_host(&mut crate::exec::MockRunner::new(), &mut receipt, crate::host_capacity::Sample::default(), &scan);
+    assert!(receipt.hints.iter().any(|h| h.code == "DEVICE_HELPER_SURVIVED"));
 }
 #[test]
 fn s4_emulator_appears_at_poll_three() {

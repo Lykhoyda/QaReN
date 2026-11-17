@@ -47,6 +47,10 @@ fn host_samples_bracket_prepare_and_survive_a_pre_record_refusal() {
             vec![qaren::device_helpers::Note {
                 name: qaren::device_helpers::HelperName::Netsimd,
                 pid: 4242,
+                cpu: Some(960),
+                class: Some(qaren::device_helpers::Class::Orphan),
+                outcome: Some(qaren::device_helpers::Outcome::StoppedTerm),
+                signals: Some(vec![qaren::device_helpers::Signal::Term]),
             }]
         );
         assert_eq!(runner.calls[2].label, "device-helpers");
