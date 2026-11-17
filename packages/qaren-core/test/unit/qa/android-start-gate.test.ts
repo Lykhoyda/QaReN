@@ -278,6 +278,24 @@ for (const kind of [
   });
 }
 
+test('H5 asking-again-pending-stop: a read cancelled after 15 s of no answer is not a let-through', async (t) => {
+  const c = clock(t);
+  const h = harness(c, async () =>
+    c.now() < 14_000 ? 'unknown' : new Promise<string>(() => {}),
+  );
+  const result = c.watch(admit(h.steps, c.stop));
+  await nextTurn();
+  while (c.now() < 16_000) await c.advance(1000);
+  assert.equal(result.done, false, 'the read at 14 s is still pending');
+  c.stop.begin();
+  await nextTurn();
+  assert.ok(result.done);
+  assert.equal(result.error?.code, 'RUN_CANCELLED');
+  assert.equal(h.gate.state(), 'undecided');
+  assert.deepEqual(h.calls, ['close']);
+  assert.deepEqual(h.logs, ['android start: first-views check not answered at 0 ms; asking again']);
+});
+
 test('H6: poll spacing survives fast reads and retry windows', async (t) => {
   const c = clock(t);
   const reads: number[] = [];
