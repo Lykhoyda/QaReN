@@ -265,13 +265,13 @@ fn e4_run_start_helper_scan_notes_executable_name_and_pid_only() {
         .calls
         .iter()
         .enumerate()
-        .filter(|(_, c)| c.label == "device-helpers")
+        .filter(|(_, c)| matches!(c.label.as_str(), "device-helpers" | "device-helper-signal"))
         .map(|(index, c)| (index, c.program.as_str(), c.timeout_seconds))
         .collect();
     assert_eq!(
         scans,
-        vec![(2, "ps", 3), (3, "/bin/sh", 2), (4, "/bin/sh", 2)],
-        "one scan right after the start sample, then one package read per helper folder"
+        vec![(2, "ps", 3), (3, "/bin/sh", 2), (4, "/bin/sh", 2), (5, "ps", 3), (6, "/bin/kill", 2), (7, "ps", 3)],
+        "one initial list, two package reads, a refresh, TERM and the poll"
     );
 
     let (mut mock, req) = refusing();

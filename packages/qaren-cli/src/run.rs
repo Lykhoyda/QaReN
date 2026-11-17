@@ -231,7 +231,7 @@ fn run_scoped(runner: &mut dyn Runner, req: &RunRequest) -> Receipt {
     let started_ms = runner.now_epoch_ms();
     let os = runner.host_os();
     let host_start = crate::host_capacity::sample(runner, os);
-    let helpers = crate::device_helpers::scan(runner, std::env::consts::OS);
+    let helpers = crate::device_helpers::stop_orphans(runner, os, true);
     let mut preflight_jev = None;
     // A PR worktree created before the run record owns it; removed here if the run never got that far.
     let mut unowned_worktree = None;

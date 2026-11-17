@@ -56,6 +56,14 @@ impl Class {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Outcome { Listed, StoppedTerm, StoppedKill, SurvivedKill, LeftAlone, Unknown }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum Signal { Term, Kill }
+
 /// What a receipt keeps of a finding: the executable name and pid, nothing else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Note {
@@ -69,6 +77,9 @@ pub struct Finding {
     pub pid: u32,
     pub cpu: f64,
     pub class: Class,
+    pub outcome: Outcome,
+    pub signals: Vec<Signal>,
+    start: String,
 }
 
 /// What one listing found, and whether every line of it could be read.
@@ -287,6 +298,9 @@ fn classify(
             pid: row.pid,
             cpu: row.cpu,
             class,
+            outcome: Outcome::Listed,
+            signals: Vec::new(),
+            start: row.start.clone(),
         });
     }
     let network_class = if network_unproven {
@@ -327,24 +341,94 @@ pub fn findings(runner: &mut dyn Runner, label: &str, text: &str) -> Option<Scan
     )
 }
 
-/// One bounded process-list read at run start; an unavailable or unreadable list finds nothing.
-pub fn scan(runner: &mut dyn Runner, os: &str) -> Scan {
-    let nothing = Scan {
-        helpers: Vec::new(),
-        complete: true,
-    };
-    if !matches!(os, "macos" | "linux") {
-        return nothing;
-    }
+fn read_list(runner: &mut dyn Runner, deadline: u64) -> Option<String> {
+    if runner.monotonic_ms() >= deadline { return None; }
     let output = runner.run(
         &CmdSpec::new("device-helpers", "ps", &["-axww", "-o", PROCESS_COLUMNS], 3)
-            .cwd(Path::new("/"))
-            .env("LC_ALL", "C"),
+            .cwd(Path::new("/")).env("LC_ALL", "C"),
     );
-    if !output.ok() {
-        return nothing;
+    output.ok().then_some(output.stdout)
+}
+
+fn same_identity(text: &str, helper: &Finding) -> bool {
+    parse(text).is_some_and(|list| list.rows.iter().any(|row|
+        row.pid == helper.pid && row.start == helper.start
+        && row.helper().is_some_and(|(name, _)| name == helper.name)))
+}
+
+// Only cached package facts may be consulted between the fresh list and a signal.
+fn refresh(runner: &mut dyn Runner, packages: &mut HashMap<String, bool>, deadline: u64) -> Option<(String, Scan)> {
+    let text = read_list(runner, deadline)?;
+    let scan = classify(runner, "device-helpers", &text, unsafe { libc::geteuid() }, packages, Some(deadline), false)?;
+    scan.complete.then_some((text, scan))
+}
+
+fn may_signal(text: &str, fresh: &Scan, helper: &Finding) -> bool {
+    same_identity(text, helper) && fresh.helpers.iter().any(|f| f.pid == helper.pid && f.class == Class::Orphan)
+}
+
+fn send_signal(runner: &mut dyn Runner, helper: &mut Finding, signal: Signal, deadline: u64) -> bool {
+    if runner.monotonic_ms() >= deadline { return false; }
+    let kind = match signal { Signal::Term => "-TERM", Signal::Kill => "-KILL" };
+    // No process groups: only the identity just re-read, with a pid proven above 1.
+    let _ = runner.run(&CmdSpec::new("device-helper-signal", "/bin/kill", &[kind, &helper.pid.to_string()], 2)
+        .cwd(Path::new("/")).env("LC_ALL", "C"));
+    helper.signals.push(signal);
+    true
+}
+
+fn pause(runner: &mut dyn Runner, ms: u64, deadline: u64) -> bool {
+    if runner.monotonic_ms().saturating_add(ms) > deadline { return false; }
+    runner.sleep(std::time::Duration::from_millis(ms));
+    runner.monotonic_ms() < deadline
+}
+
+/// Bounded recovery of proven SDK orphans. All other classes remain read-only findings.
+pub fn stop_orphans(runner: &mut dyn Runner, os: &str, signal: bool) -> Scan {
+    let nothing = Scan { helpers: Vec::new(), complete: true };
+    if !matches!(os, "macos" | "linux") { return nothing; }
+    let deadline = runner.monotonic_ms().saturating_add(15_000);
+    let Some(text) = read_list(runner, deadline) else { return nothing; };
+    let mut packages = HashMap::new();
+    let Some(mut scan) = classify(runner, "device-helpers", &text, unsafe { libc::geteuid() }, &mut packages, Some(deadline), true) else { return nothing; };
+    if !signal { return scan; }
+    let candidates: Vec<_> = scan.helpers.iter().enumerate().filter(|(_, f)| f.class == Class::Orphan).take(4).map(|(i,_)| i).collect();
+    for &i in &candidates { scan.helpers[i].outcome = Outcome::Unknown; }
+    let mut pending = Vec::new();
+    for i in candidates {
+        let Some((text, fresh)) = refresh(runner, &mut packages, deadline) else { return scan; };
+        let helper = &mut scan.helpers[i];
+        if !may_signal(&text, &fresh, helper) { helper.outcome = Outcome::LeftAlone; continue; }
+        if !send_signal(runner, helper, Signal::Term, deadline) { return scan; }
+        pending.push(i);
     }
-    findings(runner, "device-helpers", &output.stdout).unwrap_or(nothing)
+    for _ in 0..5 {
+        if pending.is_empty() { return scan; }
+        if !pause(runner, 1000, deadline) { return scan; }
+        let Some((text, _)) = refresh(runner, &mut packages, deadline) else { return scan; };
+        pending.retain(|&i| {
+            if same_identity(&text, &scan.helpers[i]) { true } else {
+                scan.helpers[i].outcome = Outcome::StoppedTerm; false
+            }
+        });
+    }
+    let mut killed = Vec::new();
+    for i in pending {
+        let Some((text, fresh)) = refresh(runner, &mut packages, deadline) else { return scan; };
+        let helper = &mut scan.helpers[i];
+        if !same_identity(&text, helper) { helper.outcome = Outcome::StoppedTerm; continue; }
+        if !may_signal(&text, &fresh, helper) { helper.outcome = Outcome::LeftAlone; continue; }
+        if !send_signal(runner, helper, Signal::Kill, deadline) { return scan; }
+        killed.push(i);
+    }
+    if !killed.is_empty() {
+        if !pause(runner, 300, deadline) { return scan; }
+        let Some((text, _)) = refresh(runner, &mut packages, deadline) else { return scan; };
+        for i in killed {
+            scan.helpers[i].outcome = if same_identity(&text, &scan.helpers[i]) { Outcome::SurvivedKill } else { Outcome::StoppedKill };
+        }
+    }
+    scan
 }
 
 /// The report line for run-start findings, or None when there are none.
@@ -789,7 +873,11 @@ mod tests {
                 .is_empty()
         );
         let mut runner = MockRunner::new();
-        assert!(scan(&mut runner, "windows").helpers.is_empty());
+        assert!(stop_orphans(&mut runner, "windows", false).helpers.is_empty());
         assert!(runner.calls.is_empty());
     }
 }
+
+#[cfg(test)]
+#[path = "device_helpers_stop_tests.rs"]
+mod stop_tests;

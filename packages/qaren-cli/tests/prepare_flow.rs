@@ -50,6 +50,8 @@ fn host_samples_bracket_prepare_and_survive_a_pre_record_refusal() {
             }]
         );
         assert_eq!(runner.calls[2].label, "device-helpers");
+        assert_eq!(runner.calls.iter().filter(|c| matches!(c.label.as_str(), "device-helpers" | "device-helper-signal")).count(), 5);
+        assert_eq!(runner.samples(), if refused { 2 } else { 3 });
         assert!(runner.calls[..2].iter().all(|c| c.label == "host-sample"));
         assert!(runner.calls[runner.calls.len() - 2..]
             .iter()
