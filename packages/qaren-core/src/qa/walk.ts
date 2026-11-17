@@ -1,3 +1,4 @@
+import { androidStartGate } from './android-start-gate.js';
 import type { HitProbeIdentity } from './live-hit.js';
 import type { PressEvidence } from './selection-press.js';
 import { devOverlayDeadline } from '../domain/dev-overlay.js';
@@ -42,6 +43,7 @@ import {
 import { captureQaScreenshot } from './screenshot.js';
 import {
   createDeviceSnapshotHandler,
+  androidFirstScreen,
   iosAppProcessId,
   isAppRunning,
 } from '../handlers/device-session.js';
@@ -155,12 +157,14 @@ export function scrollArgs(
   direction: Parameters<WalkerDeps['scroll']>[0],
   clearance?: number,
   within?: Parameters<WalkerDeps['scroll']>[3],
+  endAtRest?: boolean,
 ) {
   return {
     direction,
     amount: 0.6,
     ...(clearance !== undefined ? { distance: clearance } : {}),
     ...(within ? { within } : {}),
+    ...(endAtRest ? { endAtRest } : {}),
   };
 }
 
@@ -499,7 +503,7 @@ function fillMethodOf(meta: Record<string, unknown> | undefined): ActResult['met
 }
 
 // Attach over CDP, prove the bundle, open the device session, then hand the walker plain functions.
-async function openSession(
+export async function openSession(
   request: WireRequest,
   emitRow: (row: LedgerRow) => void,
   emitStart: (start: StepStart) => void,
@@ -508,6 +512,7 @@ async function openSession(
   pinnedLogin: NonNullable<WalkerDeps['login']>['block'],
   diagnostic: (event: unknown) => void,
   apiKey: string | undefined,
+  firstScreen = androidFirstScreen,
 ): Promise<Session> {
   const { target, platform, appId } = request;
   // Run-relative ms on a monotonic clock, anchored once to the CLI's t0.
@@ -559,6 +564,10 @@ async function openSession(
   const bundleRequests =
     target.metroBundleRequests && launchBundleRequests(target.metroBundleRequests);
   const walkDeadline = performance.now() + remainingMs();
+  const gate =
+    platform === 'android' && firstScreen
+      ? androidStartGate({ read: () => firstScreen(appId, target.deviceId), log, at: now })
+      : undefined;
   let attachStage: 'wait_targets' | 'connect_exact' | undefined;
   let pages: AdvertisedPages = {};
   const logRefusal = (error: unknown): never => {
@@ -575,14 +584,17 @@ async function openSession(
         remainingMs,
         waitTargets: async (deadline) => {
           attachStage = 'wait_targets';
-          await waitForExactPortTargets(
-            target.metroPort,
+          const window = () =>
             Math.max(
               1,
               Math.floor(
                 Math.min(REACT_READY_TIMEOUT_MS, remainingMs(), deadline - performance.now()),
               ),
-            ),
+            );
+          if (gate) await gate.wait(window());
+          await waitForExactPortTargets(
+            target.metroPort,
+            window(),
             REACT_READY_POLL_MS,
             stop.signal,
             devicePin,
@@ -592,10 +604,13 @@ async function openSession(
               pages = observed;
             },
           );
+          if (gate) log(`android start: target listed at ${now()} ms`);
         },
         pages: () => pages,
+        ...(gate ? { refusalNote: () => gate.note() } : {}),
         attach: async (deadline) => {
           attachStage = 'connect_exact';
+          if (gate) log(`android start: debugger connect at ${now()} ms`);
           await cdp.connectExact(
             target.metroPort,
             { platform, bundleId: appId, ...(devicePin ? { deviceName: devicePin } : {}) },
@@ -665,8 +680,12 @@ async function openSession(
           : {}),
         // The lease coordinates qaren processes only; a foreign Maestro, XCUITest or UIAutomator driver is a probe.
         foreignDriver: async () => {
-          if (platform === 'android')
-            return interruptible(() => androidForeignDriverMessage(target.deviceId));
+          if (platform === 'android') {
+            const message = await interruptible(() => androidForeignDriverMessage(target.deviceId));
+            if (gate && message === undefined)
+              log(`android start: driver check allowed the opening at ${now()} ms`);
+            return message;
+          }
           if (platform !== 'ios') return undefined;
           const foreign = await interruptible(() => foreignFlowGate.check(target.deviceId));
           return foreign.active
@@ -685,7 +704,10 @@ async function openSession(
           });
         },
         // Opening the session may have relaunched the app: prove the bundle the walk will see.
-        prove: () => prove({ evaluate: (expr) => cdp.evaluate(expr) }, target),
+        prove: () => {
+          if (gate) log(`android start: proof starts at ${now()} ms`);
+          return prove({ evaluate: (expr) => cdp.evaluate(expr) }, target);
+        },
         close,
         observe: (decision, facts) => timing(admissionMetric(decision, facts, attachStage, now())),
         timing: (event) => timing({ ...event, at: now() }),
@@ -693,6 +715,7 @@ async function openSession(
       stop,
     ).catch(logRefusal),
   );
+  if (gate) log(`android start: admission returned at ${now()} ms`);
   const admittedSnapshots = postAdmissionSnapshots(snapshot, appId);
   cancellationSignal();
   log(
@@ -877,8 +900,11 @@ async function openSession(
           observe: timing,
         },
       ),
-    scroll: (direction, qaContext, clearance, within) =>
-      act(() => scroll({ ...scrollArgs(direction, clearance, within), qaContext }), false),
+    scroll: (direction, qaContext, clearance, within, endAtRest) =>
+      act(
+        () => scroll({ ...scrollArgs(direction, clearance, within, endAtRest), qaContext }),
+        false,
+      ),
     back: (qaContext) => act(() => back({ qaContext }), false),
     dialog: (action, qaContext) =>
       act(

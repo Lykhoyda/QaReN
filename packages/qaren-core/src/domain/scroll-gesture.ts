@@ -25,6 +25,24 @@ export function trimScrollBand(
   return { x: within.x, y: top, width: within.width, height: Math.max(0, bottom - top) };
 }
 
+export const PLACING_DRAG_END_HOLD_MS = 250;
+
+// A placing scroll holds still before lifting only when its vertical drag covers the distance asked.
+// A drag the band cuts short, even by a rounded point, keeps today's momentum, which may carry a far
+// target in.
+export function placingDragEndHold(
+  direction: 'up' | 'down' | 'left' | 'right',
+  coords: { y1: number; y2: number },
+  distance: number | undefined,
+  endAtRest: boolean | undefined,
+): number | undefined {
+  if (!endAtRest || distance === undefined || (direction !== 'up' && direction !== 'down'))
+    return undefined;
+  return Math.abs(coords.y2 - coords.y1) >= Math.round(distance)
+    ? PLACING_DRAG_END_HOLD_MS
+    : undefined;
+}
+
 export function scrollBandTooSmall(band: ScrollBand): string | undefined {
   return band.width < 2 || band.height < MIN_SCROLL_BAND_HEIGHT
     ? `the ${Math.round(band.height)}px band cannot host a ${MIN_DRAG_TRAVEL}px drag`

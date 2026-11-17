@@ -1,0 +1,14 @@
+  ACTIVITY com.example.synthetic/.MainActivity abcdef pid=1234
+    View Hierarchy:
+      DecorView@abcdef[MainActivity]
+        android.widget.LinearLayout{abcdef V.E...... ........ 0,0-720,1600}
+          android.view.ViewStub{abcdef G.E...... ......I. 0,0-0,0 #abcdef android:id/action_mode_bar_stub}
+          android.widget.FrameLayout{abcdef V.E...... ........ 0,0-720,1600}
+            androidx.appcompat.widget.FitWindowsLinearLayout{abcdef V.E...... ........ 0,0-720,1600 #abcdef app:id/action_bar_root}
+              androidx.appcompat.widget.ViewStubCompat{abcdef G.E...... ......I. 0,0-0,0 #abcdef app:id/action_mode_bar_stub}
+              androidx.appcompat.widget.ContentFrameLayout{abcdef V.E...... ........ 0,0-720,1600 #abcdef android:id/content}
+                expo.modules.devmenu.DevMenuFragment$Companion$createFragmentHost$layout$1{abcdef V.E...... ........ 0,0-720,1600 #1}
+                  com.facebook.react.runtime.ReactSurfaceView{abcdef V.E...... ........ 0,0-720,1600 #1}
+                  android.widget.LinearLayout{abcdef V.E...... ........ 0,0-720,1600}
+                    androidx.compose.ui.platform.ComposeView{abcdef V.E...... ........ 0,0-720,1600}
+                      androidx.compose.ui.platform.AndroidComposeView{abcdef VFED..... ........ 0,0-720,1600 aid=abcdef}

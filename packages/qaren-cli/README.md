@@ -1549,6 +1549,13 @@ Android, using the snapshot's display density, and 20 pt from the top and 34 pt
 from the bottom on iOS. Callers passing no band
 use the existing keyboard-safe band. When keyboard or overlay clearance requires
 a scroll, it is sized to move the target's centre toward the middle of that band.
+On iOS, when that vertical drag covers the whole distance, it ends at rest: the
+finger moves at 100 pt/s (faster only to finish the move within 4 s), then rests
+250 ms before lifting. The list keeps the speed the finger had while it moved, so the
+slow move is what makes it stop near where the drag ends. A drag the band cuts short,
+even by a rounded point, lifts as before. A runner without `DRAG_END_HOLD_V1` also
+drags as before, and the run log's `scroll drag` line ends `endHold=unsupported`
+(otherwise `endHold=250ms` or `endHold=none`).
 Precise vertical drags normally keep a 10% dead zone at
 touch-down and stop at least one pixel inside the far band edge; short bands shrink the
 start inset to allow at least 48 px of travel. A clearance scroll without
@@ -4774,6 +4781,29 @@ evidence are re-read at that boundary; each relaunch rebases the request count.
 Patient no-target manifest recovery below keeps
 its distinct warming, relaunch and post-relaunch attach deadlines, all clipped
 to the remaining walk budget.
+On Android, target discovery and every debugger call wait for the app's first
+React views. The [first-views reader](../qaren-core/src/handlers/device-session.ts)
+reads `adb shell dumpsys activity top` on the selected serial, bounded to 5 s,
+and parses only the app's activity sections whose header carries a process ID,
+wherever it stands in the header: a `com.facebook.react.views.*` class means
+loaded, none means loading (also when the dump timed out while the app starts),
+and no such section, an empty output or a failed read means unknown. First views
+can precede visible pixels. One gate per admission reads at most every 2 s
+across readiness windows; loading keeps holding and loaded releases. Any other
+answer asks again until 15 s pass with no read showing the app's process,
+counted from the last loading answer or, before one, from the first read; then
+attachment is allowed as before for the rest of the admission. While it asks
+again, each readiness window ends as in a hold, so the wait spends no attach
+budget. The walk budget bounds the hold, and the attach budget starts at the
+first target registration after it; a start still loading at the walk budget
+refuses `CDP_NOT_CONNECTED/target_readiness_timeout`. Admission-built attach
+refusals end with a value-free note on the hold state. `core.log` records
+value-free `android start:` lines for holding, first views seen, the first
+unanswered check, check unavailable (holding, unanswered and unavailable carry
+their run time), target listed, debugger connect, the driver check allowing the
+opening (a decision, not proof of a readable driver table), proof start and
+admission return; the post-admission overlay phase is budgeted separately. iOS
+has no gate.
 Target readiness and attachment accept only a runtime Metro reports with the
 requested `appId` bundle identity (and on iOS, under the run's simulator name on
 that same target), so another app on the selected device or another booted
