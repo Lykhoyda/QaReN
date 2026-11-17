@@ -92,7 +92,29 @@ test('H7d: the retained dev-client launcher remains loading', async () => {
   assert.equal(androidFirstViewsFromActivityTop(await fixture('launcher'), appId), 'loading');
 });
 
-test.todo('H7e: scope to the app section in a complete uncut lane dump; fixture pending');
+test('H7e: complete captures keep foreign React views out of the loading app section', async () => {
+  const loading = await fixture('complete-load');
+  const rendered = await fixture('complete-after-first-screen');
+  assert.equal(androidFirstViewsFromActivityTop(loading, appId), 'loading');
+  assert.equal(androidFirstViewsFromActivityTop(rendered, appId), 'loaded');
+
+  // Keep every task from the complete rendered capture, replacing only the app's
+  // last task with its complete loading task. Neither capture has foreign React
+  // views, so the additional foreign task below is deliberately synthetic.
+  const appTask = `TASK 1000:${appId} id=3 userId=0`;
+  const renderedStart = rendered.indexOf(appTask);
+  const loadingStart = loading.indexOf(appTask);
+  assert.ok(renderedStart > 0 && loadingStart > 0);
+  const foreignApp = 'com.example.foreign';
+  const mixed = `${rendered.slice(0, renderedStart)}${loading.slice(loadingStart)}
+TASK 1000:${foreignApp} id=4 userId=0
+  ACTIVITY ${foreignApp}/.MainActivity 0000001 pid=1004
+    View Hierarchy:
+      com.facebook.react.views.view.ReactViewGroup{0000001}
+`;
+  assert.equal(androidFirstViewsFromActivityTop(mixed, foreignApp), 'loaded');
+  assert.equal(androidFirstViewsFromActivityTop(mixed, appId), 'loading');
+});
 
 test('H7f: no app section, empty output and an unreadable activity are unknown', async () => {
   const output = await fixture('first-views');
@@ -151,4 +173,11 @@ test('H7: invalid or absent targets issue no command', async (t) => {
   assert.equal(calls(), 0);
 });
 
-test.todo('H7g: killed-during-load app is unknown in the complete lane dump; fixture pending');
+test('H7g: the complete force-stop-during-load capture has no app section and reads unknown', async () => {
+  // Taken 4.7 s after force-stop during load. This covers an absent section;
+  // it does not claim to reproduce a spontaneous crash or a retained dead task.
+  assert.equal(
+    androidFirstViewsFromActivityTop(await fixture('complete-after-kill'), appId),
+    'unknown',
+  );
+});
