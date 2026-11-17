@@ -280,9 +280,7 @@ for (const kind of [
 
 test('H5 asking-again-pending-stop: a read cancelled after 15 s of no answer is not a let-through', async (t) => {
   const c = clock(t);
-  const h = harness(c, async () =>
-    c.now() < 14_000 ? 'unknown' : new Promise<string>(() => {}),
-  );
+  const h = harness(c, async () => (c.now() < 14_000 ? 'unknown' : new Promise<string>(() => {})));
   const result = c.watch(admit(h.steps, c.stop));
   await nextTurn();
   while (c.now() < 16_000) await c.advance(1000);
