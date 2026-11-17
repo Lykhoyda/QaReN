@@ -232,19 +232,21 @@ fn f7_samples_bracket_every_command_including_teardown() {
     assert_ne!(host["start"], host["end"]);
 }
 
-const HELPERS: &str = "  4242 960.0 S    netsimd /private/helper-canary/emulator/netsimd --token=secret-canary\n  4243   0.0 S    crashpad_handle /Applications/Chrome.app/crashpad_handler\n";
+fn helpers() -> String {
+    format!("4242 1 {0} 960.0 S Sun Nov 15 12:34:56 2026 netsimd /private/helper-canary/emulator/netsimd --token=secret-canary\n4243 1 {0} 0.0 S Sun Nov 15 12:34:56 2026 crashpad_handle /Applications/Chrome.app/crashpad_handler\n", unsafe { libc::geteuid() })
+}
 
 #[test]
-fn e4_run_start_helper_scan_notes_executable_name_and_pid_only() {
+fn e4_run_start_helper_stop_records_typed_outcome_without_private_facts() {
     let (mut mock, req) = passing();
-    mock.processes = Some(HELPERS.into());
+    mock.processes = Some(helpers());
     let receipt = run(&mut mock, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     let text = receipt.to_json();
     let json: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(
         json["device_helpers"],
-        serde_json::json!([{ "name": "netsimd", "pid": 4242 }]),
+        serde_json::json!([{ "name": "netsimd", "pid": 4242, "cpu": 960, "class": "orphan", "outcome": "stopped-term", "signals": ["TERM"] }]),
         "{text}"
     );
     assert!(!text.contains("canary") && !text.contains("4243"), "{text}");
@@ -254,7 +256,7 @@ fn e4_run_start_helper_scan_notes_executable_name_and_pid_only() {
         .filter(|l| l.contains("netsimd (pid 4242"))
         .collect();
     assert_eq!(lines.len(), 1, "{report}");
-    assert!(lines[0].contains("kill 4242"), "{report}");
+    assert!(lines[0].contains("stopped-term"), "{report}");
     assert!(
         !report.contains("canary") && !report.contains("4243"),
         "{report}"
@@ -263,23 +265,30 @@ fn e4_run_start_helper_scan_notes_executable_name_and_pid_only() {
         .calls
         .iter()
         .enumerate()
-        .filter(|(_, c)| c.label == "device-helpers")
+        .filter(|(_, c)| matches!(c.label.as_str(), "device-helpers" | "device-helper-signal"))
         .map(|(index, c)| (index, c.program.as_str(), c.timeout_seconds))
         .collect();
     assert_eq!(
         scans,
-        vec![(2, "ps", 3), (3, "/bin/sh", 2), (4, "/bin/sh", 2)],
-        "one scan right after the start sample, then one package read per helper folder"
+        vec![
+            (2, "ps", 3),
+            (3, "/bin/sh", 2),
+            (4, "/bin/sh", 2),
+            (5, "ps", 3),
+            (6, "/bin/kill", 2),
+            (7, "ps", 3)
+        ],
+        "one initial list, two package reads, a refresh, TERM and the poll"
     );
 
     let (mut mock, req) = refusing();
-    mock.processes = Some(HELPERS.into());
+    mock.processes = Some(helpers());
     let receipt = run(&mut mock, &req);
     assert_eq!(receipt.result, ReceiptResult::Refused);
     let json: serde_json::Value = serde_json::from_str(&receipt.to_json()).unwrap();
     assert_eq!(
         json["device_helpers"],
-        serde_json::json!([{ "name": "netsimd", "pid": 4242 }])
+        serde_json::json!([{ "name": "netsimd", "pid": 4242, "cpu": 960, "class": "orphan", "outcome": "stopped-term", "signals": ["TERM"] }])
     );
 }
 
@@ -298,30 +307,43 @@ fn e4_a_clean_or_unreadable_process_list_adds_no_note() {
 
 #[test]
 fn pr_refusal_samples_bracket_the_github_commands() {
-    let (repo, app) = app_repo();
-    let mut inner = MockRunner::new();
-    inner.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
-    inner.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
-    inner.expect_run(
-        "gh pr view",
-        CmdOutput::failed(1, "authentication required"),
-    );
-    inner.expect_run("gh auth status", CmdOutput::failed(1, "not logged in"));
-    let mut runner = HostRunner::new(inner);
-    let receipt = run(&mut runner, &pr_request(&repo, &app));
-    assert_eq!(receipt.result, ReceiptResult::Refused);
-    assert_eq!(receipt.verb, "pr");
-    assert_eq!(
-        receipt.failure.as_ref().unwrap().code,
-        FailureCode::GithubAuthUnavailable
-    );
-    let host = host_json(&receipt);
-    assert_eq!(host["start"]["load_1m"], 1.0);
-    assert_eq!(host["end"]["load_1m"], 12.0);
-    assert!(runner.calls[..2].iter().all(|c| c.label == "host-sample"));
-    assert!(runner.calls[runner.calls.len() - 2..]
-        .iter()
-        .all(|c| c.label == "host-sample"));
-    assert_eq!(runner.calls[2].label, "device-helpers");
-    assert_eq!(runner.calls.len(), 9);
+    for with_helper in [false, true] {
+        let (repo, app) = app_repo();
+        let mut inner = MockRunner::new();
+        inner.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
+        inner.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
+        inner.expect_run(
+            "gh pr view",
+            CmdOutput::failed(1, "authentication required"),
+        );
+        inner.expect_run("gh auth status", CmdOutput::failed(1, "not logged in"));
+        let mut runner = HostRunner::new(inner);
+        if with_helper {
+            runner.processes = Some(helpers());
+        }
+        let receipt = run(&mut runner, &pr_request(&repo, &app));
+        assert_eq!(receipt.result, ReceiptResult::Refused);
+        assert_eq!(receipt.verb, "pr");
+        assert_eq!(
+            receipt.failure.as_ref().unwrap().code,
+            FailureCode::GithubAuthUnavailable
+        );
+        let host = host_json(&receipt);
+        assert_eq!(host["start"]["load_1m"], 1.0);
+        assert_eq!(host["end"]["load_1m"], 12.0);
+        assert!(runner.calls[..2].iter().all(|c| c.label == "host-sample"));
+        assert!(runner.calls[runner.calls.len() - 2..]
+            .iter()
+            .all(|c| c.label == "host-sample"));
+        assert_eq!(runner.calls[2].label, "device-helpers");
+        assert_eq!(runner.calls.len(), if with_helper { 14 } else { 9 });
+        if with_helper {
+            assert_eq!(
+                receipt.device_helpers[0].outcome,
+                Some(qaren::device_helpers::Outcome::StoppedTerm)
+            );
+        } else {
+            assert!(receipt.device_helpers.is_empty());
+        }
+    }
 }

@@ -307,7 +307,7 @@ pub fn prepare(runner: &mut dyn Runner, args: &PrepareArgs) -> Receipt {
     let started_ms = runner.now_epoch_ms();
     let os = runner.host_os();
     let host_start = crate::host_capacity::sample(runner, os);
-    let helpers = crate::device_helpers::scan(runner, std::env::consts::OS);
+    let helpers = crate::device_helpers::stop_orphans(runner, os, !args.dry_run);
     let mut receipt = match prepare_validated(runner, args, started_ms) {
         Ok(receipt) => receipt,
         Err(failure) => {

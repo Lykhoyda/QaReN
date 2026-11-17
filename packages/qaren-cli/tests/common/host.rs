@@ -62,6 +62,29 @@ impl Runner for HostRunner {
     }
     fn execute(&mut self, spec: &CmdSpec, interruptible: bool) -> CmdOutput {
         self.calls.push(spec.clone());
+        if spec.label == "device-helper-signal" {
+            assert_eq!(spec.program, "/bin/kill");
+            assert_eq!(spec.args[0], "-TERM");
+            let pid = spec.args[1].parse::<u32>().unwrap();
+            assert!(pid > 1);
+            let text = self
+                .processes
+                .as_mut()
+                .expect("signal without helper fixture");
+            *text = text
+                .lines()
+                .filter(|line| {
+                    line.split_whitespace()
+                        .next()
+                        .and_then(|v| v.parse::<u32>().ok())
+                        != Some(pid)
+                })
+                .map(|line| format!("{line}\n"))
+                .collect();
+            // A complete system list still has non-helper processes after the helper leaves.
+            text.push_str("2 1 0 0.0 S Sun Nov 15 12:34:56 2026 idle /idle\n");
+            return CmdOutput::success("");
+        }
         if let (true, Some(text)) = (spec.label == "device-helpers", &self.processes) {
             // The process list, then each helper folder's SDK package file.
             return match spec.program.as_str() {
@@ -193,7 +216,13 @@ impl Runner for HostRunner {
         self.inner.now_epoch_ms()
     }
     fn commands_executed(&self) -> u64 {
-        self.inner.commands_executed() + self.probes as u64
+        self.inner.commands_executed()
+            + self.probes as u64
+            + self
+                .calls
+                .iter()
+                .filter(|c| matches!(c.label.as_str(), "device-helpers" | "device-helper-signal"))
+                .count() as u64
     }
     fn host_os(&self) -> &'static str {
         self.os.unwrap_or(std::env::consts::OS)

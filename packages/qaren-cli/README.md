@@ -64,7 +64,7 @@ applicable or its subject was not assessed, as explained in the row's detail.
 | `corepack`, `cocoapods` | `corepack` and `pod` run (warnings) |
 | `disk` | The volumes holding the current directory and your home have the roughly 10 GiB free a clean iOS build needs (warning) |
 | `host-memory`, `host-devices` | Free memory, memory pressure, booted simulators and running Android emulators; conservative concurrent lane headroom on macOS and Linux |
-| `device-helpers` | Android emulator helper processes whose emulator is gone or that run above 100% CPU, each with the command that stops it; [warns and stops nothing](#emulator-helper-processes) |
+| `device-helpers` | Android SDK emulator helpers and their safety classes; [explains automatic orphan recovery](#emulator-helper-processes) |
 | `simulator-service` | A five-second `simctl list devices -j` probe on macOS; attributable uninterruptible simulator process evidence when unresponsive |
 | `expo-offline` | Metro-only Expo commands start offline by default; warns when `EXPO_OFFLINE=0` enables account lookups |
 | `watchman-health` | A read-only, five-second watch-list probe without starting Watchman |
@@ -156,10 +156,9 @@ the `simulator-service` row separately reports simulator inventory failures belo
 An Android emulator starts helper processes that can keep running, sometimes at
 several cores' worth of CPU, after the emulator itself has exited. The
 `device-helpers` row on macOS and Linux reads the same process list as
-`host-devices` (pid, CPU, state, name and command line) and looks at
+`host-devices` (pid, parent pid, user id, CPU, state, start time, name and command line) and looks at
 `netsimd` and `crashpad_handler` processes whose command line starts with an
-absolute path to the helper. A helper is reported when no emulator is running
-or starting, or when it uses more than 100% CPU. Any `qemu-system-*` or
+absolute path to the helper. The classes below determine which helpers are listed. Any `qemu-system-*` or
 `emulator*` process of any user, in any state, counts as a running emulator.
 Before naming a helper, doctor reads the first 4 KiB of `source.properties` in
 the helper's folder when it is a regular file (two-second limit, once per
@@ -168,13 +167,31 @@ emulator package, with the line `Pkg.Path=emulator`, proves it. Another app's
 program with the same name, or a folder whose package file cannot be read, is
 never reported.
 
-Each helper is named by executable, pid and CPU share, with the `kill <pid>`
-command that stops it. One `netsimd` can serve several emulators, so a helper
-cannot be tied to its own emulator: while any emulator runs or starts, every
-helper counts as served by it, and the row says so. QaReN started none of these
-processes, so the row warns and stops nothing. An unavailable or unreadable
-process list warns as unknown; a list with an unreadable line warns that it may
-hide a running emulator.
+Each listed helper is named by executable, pid, CPU share and class. A complete
+process list, no running or starting emulator, parent pid 1 and the same user
+prove an `orphan`. An incomplete list is `unproven`; other-user orphans are
+`other-user`. Helpers with a parent (`has-parent`) or a running emulator
+(`serving`) are listed only above 100% CPU. Any emulator, of any user and in any
+state, protects every helper. A crash reporter also follows any SDK `netsimd`
+that is not an orphan, including one below the display threshold.
+
+Doctor reads and explains these classes. It sends no signals. At the start of
+`check`, `pr` and `prepare` (except `--dry-run`), and after the run's own
+teardown in command-line `cleanup <run id>`, even when that teardown refuses,
+QaReN stops up to four proven orphans with TERM, a shared
+five-second wait, then KILL if needed. A refused `--confirm-remove-app` runs no
+command. Every signal requires a fresh complete
+process list, the same pid, name and start time, and a fresh orphan
+classification. The step has a 15-second deadline, plus the last command's
+termination time, and never changes the run's verdict. An unavailable list
+produces no findings for a run and a warning in doctor. An incomplete list
+allows no signal.
+
+Connections are not inspected. An SDK network helper deliberately used without
+an emulator can be stopped if its parent is gone. Processes can also change
+between the final list and the signal; start times have one-second precision.
+`survived-kill` adds `DEVICE_HELPER_SURVIVED`: the next run tries again; a machine
+restart requires the user's approval. Other classes carry their own next step.
 
 Load warns when the one-minute load is at least the logical CPU count or sampled
 CPU idle is below 10%: readiness deadlines may expire, so use fewer concurrent
@@ -705,17 +722,15 @@ Refusals before a run directory exists carry the samples in the receipt only.
 `qaren publish` does not include these samples in PR comments or descriptions.
 Sampling starts no device or service and introduces no cleanup resource.
 
-Right after the start sample on macOS and Linux, the run reads the process list
-once (three-second limit) for the [emulator helper processes](#emulator-helper-processes) doctor
-reports, plus one package-file read per candidate helper folder. Each finding is
-listed in the receipt's `device_helpers` array with only `name` (`netsimd` or
-`crashpad_handler`) and `pid`, and `report.md` gains one line listing all findings
-with each helper's CPU share, why it was reported and its `kill <pid>` command.
-With no findings, the receipt omits `device_helpers` and the report adds no helper
-line. An unavailable or wholly unreadable process list produces no findings;
-a partially readable list can still report helpers, with a warning that a running
-emulator may be hidden. These observations never change the verdict. The run stops
-nothing.
+Right after the start sample on macOS and Linux, the run checks the
+[emulator helper processes](#emulator-helper-processes). Each finding is recorded
+in `device_helpers` with `name`, `pid`, whole-percent `cpu`, `class`, `outcome`
+and the `signals` sent (`TERM` or `KILL`). Outcomes are `listed`, `stopped-term`,
+`stopped-kill`, `survived-kill`, `left-alone` or `unknown`. Older receipts without
+the additional fields remain readable. No helper path or command line is stored.
+`report.md` gains one line naming each finding and outcome. With no findings,
+the array and report line are omitted. Command-line cleanup records the same
+facts in its receipt; dependency-cache cleanup does not inspect helpers.
 
 ### Waiting for memory before a native build
 
@@ -6240,8 +6255,9 @@ simulator can be borrowed instead; see
   [candidate provenance contract](#candidate-provenance) for fingerprint
   inputs, output exclusions and drift failures.
 - `cleanup` is idempotent: a second run re-probes, finds everything absent,
-  and returns `cleaned` again without signalling anything after successful
-  cleanup; app-removal retries follow the persisted-evidence rules above.
+  and returns `cleaned` again without signalling any of the run's processes
+  after successful cleanup ([emulator helper recovery](#emulator-helper-processes)
+  still applies); app-removal retries follow the persisted-evidence rules above.
 
 ## What a worker does
 
