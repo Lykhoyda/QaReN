@@ -73,6 +73,7 @@ export interface AdmissionSteps {
   bundleBuilt?(): BundleBuilt;
   // Value-free counts from the latest target-list read.
   pages?(): AdvertisedPages;
+  refusalNote?(): string;
   foreignDriver(): Promise<string | undefined>;
   open(): Promise<void>;
   prove(): Promise<ProveOutcome>;
@@ -1262,11 +1263,18 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
             : inner === 'dev_runtime_unproven'
               ? `the app's page on port ${steps.metroPort} never proved development mode before the attach deadline; bundle request on the port: ${bundleRequest === 'received' ? 'received' : bundleRequest === 'not_received' ? 'not received' : 'unknown'}; bundle completion on the port: ${bundleBuilt ?? 'unknown'}${relaunchFailure === undefined ? '' : `; relaunch failed: ${relaunchFailure}`}`
               : undefined;
+    let refusalNote = '';
+    try {
+      refusalNote = steps.refusalNote?.() ?? '';
+    } catch {
+      // Diagnostics cannot change the refusal.
+    }
     throw new HandlerError(
       devMissing ? 'DEV_TARGET_MISSING' : 'CDP_NOT_CONNECTED',
       (typedMessage ??
         `cannot attach to the dev client through Metro ${steps.metroPort}: ${describeError(error).message} (observed ${refusal?.lastStarted ?? lastStarted}: ${inner}; app ${liveness}; bundle request ${bundleRequest}${warm ? `; last manifest warm-up ${warm.ms} ms after ${warm.attempts} attempts` : ''}${manifestCause}; host 1-minute load ${load.toFixed(1)}${relaunchFailure === undefined ? '' : `; relaunch failed: ${relaunchFailure}`})`) +
-        foreignPagesNote(readPages(steps)),
+        foreignPagesNote(readPages(steps)) +
+        refusalNote,
       refusal,
     );
   } finally {

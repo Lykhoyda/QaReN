@@ -1,0 +1,61 @@
+  ACTIVITY com.example.synthetic/.MainActivity abcdef pid=1234
+    View Hierarchy:
+      DecorView@abcdef[MainActivity]
+        android.widget.LinearLayout{abcdef V.E...... ........ 0,0-720,1600}
+          android.view.ViewStub{abcdef G.E...... ......I. 0,0-0,0 #abcdef android:id/action_mode_bar_stub}
+          android.widget.FrameLayout{abcdef V.E...... ........ 0,0-720,1600}
+            androidx.appcompat.widget.FitWindowsLinearLayout{abcdef V.E...... ........ 0,0-720,1600 #abcdef app:id/action_bar_root}
+              androidx.appcompat.widget.ViewStubCompat{abcdef G.E...... ......I. 0,0-0,0 #abcdef app:id/action_mode_bar_stub}
+              androidx.appcompat.widget.ContentFrameLayout{abcdef V.E...... ........ 0,0-720,1600 #abcdef android:id/content}
+                expo.modules.devmenu.DevMenuFragment$Companion$createFragmentHost$layout$1{abcdef V.E...... ........ 0,0-720,1600 #1}
+                  com.facebook.react.runtime.ReactSurfaceView{abcdef V.E...... ........ 0,0-720,1600 #1}
+                    com.th3rdwave.safeareacontext.SafeAreaProvider{abcdef V.E...... ........ 0,0-720,1600 #2}
+                      com.swmansion.gesturehandler.react.RNGestureHandlerRootView{abcdef V.E...... ........ 0,0-720,1600 #14}
+                        com.reactnativekeyboardcontroller.views.EdgeToEdgeReactViewGroup{abcdef V.E...... ........ 0,0-720,1600 #10}
+                          com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 0,0-720,1600 #c}
+                            com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 0,0-720,1600 #72}
+                            com.swmansion.rnscreens.ScreenStack{abcdef V.E...... ........ 0,0-720,1600 #6e}
+                              com.swmansion.rnscreens.stack.views.ScreensCoordinatorLayout{abcdef V.E...... ........ 0,0-720,1600}
+                                com.swmansion.rnscreens.Screen{abcdef V.E...... ........ 0,0-720,1600 #6c}
+                                  com.swmansion.rnscreens.ScreenContentWrapper{abcdef V.E...... ........ 0,0-720,1600 #68}
+                                    com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 0,0-720,1600 #66}
+                                    com.facebook.react.views.scroll.ReactHorizontalScrollView{abcdef VFED..... ........ 0,0-720,1380 #4e}
+                                      com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 0,0-2160,1380 #4c}
+                                        com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 0,0-720,1380 #26}
+                                        com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 248,498-473,723 #18}
+                                          com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 0,0-225,225 #16}
+                                        com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 278,723-443,829 #1e}
+                                          com.facebook.react.views.text.ReactTextView{812e V.ED..... ........ 0,52-165,105 #1c}
+                                        com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 939,829-1215,882 #24}
+                                          com.facebook.react.views.text.ReactTextView{abcdef V.ED..... ........ 0,13-276,53 #22}
+                                        com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 720,0-1440,1380 #38}
+                                        com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 968,478-1193,703 #2a}
+                                          com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 0,0-225,225 #28}
+                                        com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 1012,703-1148,809 #30}
+                                          com.facebook.react.views.text.ReactTextView{abcdef V.ED..... ........ 0,52-136,105 #2e}
+                                        com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 1493,809-2108,902 #36}
+                                          com.facebook.react.views.text.ReactTextView{abcdef V.ED..... ........ 0,13-615,93 #34}
+                                        com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 1440,0-2160,1380 #4a}
+                                        com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 1688,478-1913,703 #3c}
+                                          com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 0,0-225,225 #3a}
+                                        com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 1751,703-1850,809 #42}
+                                          com.facebook.react.views.text.ReactTextView{abcdef V.ED..... ........ 0,52-99,105 #40}
+                                        com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 2213,809-2828,902 #48}
+                                          com.facebook.react.views.text.ReactTextView{abcdef V.ED..... ........ 0,13-615,93 #46}
+                                    com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 0,1380-720,1448 #56}
+                                    com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 308,1406-353,1421 #50}
+                                    com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 368,1406-383,1421 #52}
+                                    com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 398,1406-413,1421 #54}
+                                    com.facebook.react.views.view.ReactViewGroup{abcdef VFE...C.. ........ 39,1465-90,1505 #5c}
+                                      com.facebook.react.views.text.ReactTextView{abcdef V.ED..... ........ 0,0-51,40 #5a}
+                                    com.facebook.react.views.view.ReactViewGroup{abcdef VFE...C.. ........ 520,1448-681,1521 #62}
+                                      com.facebook.react.views.text.ReactTextView{abcdef V.ED..... ........ 52,19-108,53 #60}
+                                  com.swmansion.rnscreens.ScreenStackHeaderConfig{abcdef V.E...... ........ 0,0-720,0 #6a}
+                                com.google.android.material.appbar.AppBarLayout{abcdef V.E...... ........ 0,0-720,0}
+                        com.facebook.react.views.view.ReactViewGroup{abcdef I.E...... ......ID 0,0-0,0 #12}
+                    com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 0,0-720,1600 #8}
+                      com.facebook.react.views.debuggingoverlay.DebuggingOverlay{abcdef V.ED..... ........ 0,0-720,1600 #6}
+                  android.widget.LinearLayout{abcdef V.E...... ........ 0,0-720,1600}
+                    androidx.compose.ui.platform.ComposeView{abcdef V.E...... ........ 0,0-720,1600}
+                      androidx.compose.ui.platform.AndroidComposeView{abcdef VFED..... ........ 0,0-720,1600 aid=abcdef}
+              com.facebook.react.views.view.ReactViewGroup{abcdef V.E...... ........ 0,1600-720,1600}

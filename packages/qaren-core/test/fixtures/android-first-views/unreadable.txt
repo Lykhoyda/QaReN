@@ -1,0 +1,2 @@
+  ACTIVITY com.example.synthetic/.MainActivity abcdef pid=1234
+    Failure while dumping the activity: java.io.IOException: Timeout
