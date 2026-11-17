@@ -1,5 +1,13 @@
 # qaren
 
+## 2.2.2
+
+### Patch Changes
+
+- 9b1740b: With `--shutdown-device-on-exit`, a `check` or `pr` on an iOS simulator QaReN did not create now also removes that simulator's system log store, which holds typed field text and the log entries of every app on it, after the proven shutdown, retrying at the next `qaren cleanup` if the removal fails, while borrowed simulators without the flag keep their log as before.
+- cc9c141: On iOS, a clearance drag that empty full-screen views alone withheld is sent again when a named row of the list proves the touch reaches it.
+- c5049be: Use the existing keyboard-clearance allowance instead of scrolling for iOS taps in the 48 pt margin above a visible keyboard, and for taps still under the keyboard after their one scroll; refuse if the keyboard cannot be hidden.
+
 ## 2.2.1
 
 ### Patch Changes
