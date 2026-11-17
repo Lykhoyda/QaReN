@@ -2,6 +2,7 @@ import type {
   CandidateExclusion,
   CollapsedCandidate,
   CoveredBy,
+  GroundProof,
   ScrollBandReceipt,
 } from './resolve.js';
 import type { OverlayHitReceipt } from './live-hit.js';
@@ -37,6 +38,8 @@ export interface EntryMismatch {
 export interface LedgerRow {
   overlayChecks?: OverlayHitReceipt[];
   scrollBand?: ScrollBandReceipt;
+  // Whether a clearance drag across plain layers was proven by a native witness, or why not.
+  groundProof?: GroundProof;
   block: string;
   operationId?: number;
   line: number;
