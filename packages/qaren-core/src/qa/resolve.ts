@@ -634,7 +634,7 @@ export function bindFillIdentity(
   return fallback ? { kind: 'fallback', fallback } : undefined;
 }
 
-function scrollTo(element: Element): { scroll: 'up' | 'down'; element: Element } {
+export function scrollTo(element: Element): { scroll: 'up' | 'down'; element: Element } {
   const frame = elementFrame(element);
   return {
     element,
@@ -935,8 +935,18 @@ export function foreignViewOnBand(
   screen: Screen,
   leaveOut?: LeaveOut,
 ): Element | undefined {
+  return foreignNodesOnBand(container, band, screen, leaveOut)[0];
+}
+
+// The touchable views outside the list that overlap the band, in list order.
+export function foreignNodesOnBand(
+  container: Element,
+  band: NonNullable<NativeNode['rect']>,
+  screen: Screen,
+  leaveOut?: LeaveOut,
+): Element[] {
   const lineage = ancestorsOf(container);
-  return screen.elements.find((other) => {
+  return screen.elements.filter((other) => {
     if (
       leaveOut?.has(other) ||
       other === container ||

@@ -995,9 +995,71 @@ button. The same admitted read must prove one hidden host, its nearest non-hidde
 pressable with its own unique testID, and one associated native button that is
 enabled, hittable and on screen; the hidden host's frame must fit inside the
 button's frame. QaReN rebinds that button on the next read before pressing it.
-An executed press spends the fallback's one-tap allowance for that line, and a
-passing step stores the button's testID rather than the hidden child's identity.
+An executed press spends that line's one-tap allowance, including later retries
+if the text becomes accessible. A passing step stores the button's testID rather
+than the hidden child's identity.
 A press still needs the usual verification; dispatch alone does not pass the step.
+
+When the button has neither a label nor a testID, only the hidden text's exact
+words can name it, not a hidden child's testID; its frame is the only tie. The
+read must hold exactly one native button whose frame equals the button host's
+frame, and that button must have no label and no identifier and must be observed
+by the read. Every native button at that frame is counted, including labelled or
+identified buttons and those whose presence was not proven. Every window is
+counted, each under its own origin. A compatible non-button native node at that
+frame is accepted only when it is an ancestor of the button in the native tree;
+a sibling or a node in another window stops the press.
+No other pressable host may have that frame,
+and no pressable inside the button, hidden or not, may cover its centre, where
+the tap lands. React's own hit test at that centre must also reach the button,
+so nothing painted over it, and no sibling of unknown paint order, takes the
+tap. For this frame-only proof, the centre hit test treats a non-text host without
+a measured frame as a possible interceptor, including when its paint position
+is unknown. A measured descendant that takes the hit decides it before its
+unmeasured parent; an unresolved hit cannot authorize a press.
+Every pressable host must have a measured frame, except inline text
+spans, which are never measured. An unmeasured pressable inline span inside the
+button, in text whose frame overlaps it, or without a measured containing text
+also stops the press. That press has no identity to find again, so QaReN takes a
+new full read just before each press, proves the button
+on it again, and presses that read's element. If the proof no longer holds,
+nothing is tapped. The runner cannot re-check an unnamed element at the moment of
+the tap, so the proof on that read stands in for it. A passing step stores no
+selector, so its block is reported not saved and later runs walk the step afresh.
+
+Partial clipping alone does not prevent a press: an observed, hittable button
+whose centre is clear and on screen can still be proven and pressed without a
+scroll. When the press proof fails, clipping by its scroll area or a centre hit
+on a host outside the button can still locate it. The frame tie, hidden-text
+containment and enabled-button checks must still hold. Clipping can locate it
+even when the centre hit is unresolved; unknown presence or a failed hit test
+alone does not locate it. Locating allows a scroll, never a tap.
+QaReN then sends the step's one clearance scroll from the button's own scroll
+area. When the button's centre lies outside that area, the button gets the same
+scroll a named element in that place gets: toward the area, within its visible
+part, with no free-ground check. This holds even when something is also drawn
+over the centre. A drag is not a tap, and the full proof still guards the press.
+When the centre lies inside the area but something is drawn over it, the scroll
+runs under the usual free-ground checks. A view outside the list that crosses
+the top or bottom edge of that area, such as a fixed row reaching a few points
+into it, is trimmed off first. Both the proof's React touch owner at the centre
+and any separately associated native cover count, including text or a
+non-hittable view hidden from accessibility. These trims use
+the original band edges in one pass, so the drag starts and ends on free ground.
+A view across the middle of the area or across both its edges, or an area left
+lower than 50 points, still withholds the scroll. After the scroll, QaReN takes a settled full read and proves
+the button again; only then does it press, once. A step gets one such scroll,
+including across recovery passes, and a runner refusal of the press after it
+ends the step. When the button is still not proven, or no scroll is allowed,
+nothing is tapped and the failure names the cause the read shows first: cut off
+by its scroll area, or its centre under another element, with "after one
+scroll" when the scroll was sent, or why no scroll was sent (no scroll area
+holds it, or no part of its scroll area is free). The app change comes second.
+The run log records each such decision as a value-free `located-clearance` note:
+whether the button was located, the cause, the path taken (offscreen or
+covered), whether a scroll area holds it, the band and direction of the drag, the trimming views by kind and frame (including
+cuts from the shared clearance check), and why it was withheld. A card that
+needs two scrolls is refused, so the plan adds a scroll step before the Tap.
 
 Without that proof, QaReN does not tap through the hidden text. When the current
 line's latest admitted read proves the hidden text, a failed Tap, quoted Wait or
@@ -1005,8 +1067,8 @@ literal check explains that the app hides it from accessibility. When known, the
 failure identifies its containing button by frame and testID and suggests the
 button's own label or testID, or adding an `accessibilityLabel` in the app.
 Hidden text alone never makes a Wait or literal check pass. This fallback does
-not support Android or a testID button inside a popup; a button with neither a
-label nor a testID still needs an app change. The
+not support Android or a testID button inside a popup, and a text carried by more
+than one hidden element presses nothing. The
 [hidden-text walker tests](../qaren-core/test/unit/qa/hidden-text-walker.test.ts)
 cover the tap and failure behavior.
 

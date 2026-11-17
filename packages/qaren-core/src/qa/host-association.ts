@@ -759,3 +759,152 @@ export function associateHosts(
   }
   return associations;
 }
+
+// A frame-only tie: `proven` allows a press; without it the button is only located, which allows one
+// scroll. `covered` is set when React's hit test at the centre lands on a host outside the button.
+export interface FrameMatch {
+  host: number;
+  proven: boolean;
+  cutOff: boolean;
+  covered: boolean;
+  cover?: Rect;
+}
+
+// Frame-only ties require one native button across all windows and one pressable host.
+export function unnamedFrameMatches(
+  nodes: NativeNode[],
+  evidence: ReactHostEvidence | undefined,
+  presence: NativePresence | undefined,
+): Map<number, FrameMatch> {
+  const matches = new Map<number, FrameMatch>();
+  const snapshot = evidence?.typography;
+  if (!evidence?.complete || !snapshot?.complete || presence?.source !== 'xcui-live')
+    return matches;
+  const pressable = snapshot.nodes.filter(
+    (host) => evidence.hosts[host.hostIndex]?.capabilities.press,
+  );
+  // An unmeasured pressable could share the frame unseen. Inline text is never measured: it is exempt,
+  // but one inside a button, or in a text whose measured frame overlaps it, could take that button's
+  // tap, so it declines that button.
+  const inline = (host: HostTypography['nodes'][number]) =>
+    host.hostType === 'RCTVirtualText' && host.text.kind === 'inline';
+  const mayTake = (
+    link: HostTypography['nodes'][number],
+    button: HostTypography['nodes'][number],
+  ) => {
+    const owner =
+      link.text.kind === 'inline' ? snapshot.nodes[link.text.ownerHostIndex]?.rect : undefined;
+    const rect = button.rect;
+    return (
+      !!hostPath(snapshot, link.hostIndex)?.includes(button.hostIndex) ||
+      !owner ||
+      !rect ||
+      (owner.x < rect.x + rect.width &&
+        rect.x < owner.x + owner.width &&
+        owner.y < rect.y + rect.height &&
+        rect.y < owner.y + owner.height)
+    );
+  };
+  const unmeasured = pressable.filter((host) => !host.rect);
+  if (unmeasured.some((host) => !inline(host))) return matches;
+  const links = unmeasured.filter(inline);
+  // React rects are window points, the space the centre is taken in; hidden hosts still take touches,
+  // and an unmeasured non-text host leaves the hit unresolved.
+  const hitAt = reactHitTest(evidence, (rect) => rect, true, true);
+  const viewport = outsideViewport(nodes);
+  const duplicates = duplicateNodes(nodes, presence);
+  const refs = new Map<string, number>();
+  for (const node of nodes) refs.set(node.ref, (refs.get(node.ref) ?? 0) + 1);
+  // Nodes whose window cannot be proven are never pressed, but still block a same-frame match.
+  const unplaced: number[] = [];
+  const candidates = nodes.flatMap((node, i) => {
+    if (duplicates.has(i)) return [];
+    const windowIndex = nativeWindowIndex(nodes, i);
+    const window = windowIndex === undefined ? undefined : nodes[windowIndex].rect;
+    if (
+      !window ||
+      !Object.values(window).every(Number.isFinite) ||
+      window.width <= 0 ||
+      window.height <= 0
+    ) {
+      unplaced.push(i);
+      return [];
+    }
+    return [{ i, transform: { scale: 1, x: window.x, y: window.y, tolerance: 0 } }];
+  });
+  for (const host of pressable) {
+    const facts = evidence.hosts[host.hostIndex];
+    if (facts.hidden || facts.testID) continue;
+    if (links.some((link) => mayTake(link, host))) continue;
+    const atFrame = candidates.filter(({ i, transform }) =>
+      sameFrame(host.rect, nodes[i].rect, transform),
+    );
+    const found = atFrame.filter(({ i }) => nodes[i].type === 'Button');
+    if (found.length !== 1) continue;
+    const [{ i, transform }] = found;
+    const path = nativePath(nodes, i);
+    if (
+      unplaced.some(
+        (other) =>
+          (nodes[other].type === 'Button' || compatible(host.hostType, nodes[other].type)) &&
+          sameFrame(host.rect, nodes[other].rect, transform),
+      ) ||
+      atFrame.some(
+        ({ i: other }) =>
+          nodes[other].type !== 'Button' &&
+          compatible(host.hostType, nodes[other].type) &&
+          !path.includes(other),
+      )
+    )
+      continue;
+    const node = nodes[i];
+    if (node.identifier || node.label || !node.ref?.trim() || refs.get(node.ref) !== 1) continue;
+    if (
+      pressable.some((other) => other !== host && sameFrame(other.rect, nodes[i].rect, transform))
+    )
+      continue;
+    // The tap lands on the centre; a pressable inside the button there, hidden or not, would take it.
+    const { x, y, width, height } = host.rect!;
+    const [cx, cy] = [x + width / 2, y + height / 2];
+    if (
+      pressable.some(
+        (other) =>
+          other !== host &&
+          !!other.rect &&
+          !!hostPath(snapshot, other.hostIndex)?.includes(host.hostIndex) &&
+          other.rect.x <= cx &&
+          cx <= other.rect.x + other.rect.width &&
+          other.rect.y <= cy &&
+          cy <= other.rect.y + other.rect.height,
+      )
+    )
+      continue;
+    // Anything painted over the centre takes the tap; React's hit test there must reach the button for a proof.
+    const hit = hitAt(cx, cy);
+    const reached = typeof hit === 'number' && !!hostPath(snapshot, hit)?.includes(host.hostIndex);
+    const covered = typeof hit === 'number' && !reached;
+    const clip = clippingViewport(viewport, i);
+    const rect = node.rect!;
+    const cutOff =
+      !!clip &&
+      (rect.x < clip.x - 0.01 ||
+        rect.y < clip.y - 0.01 ||
+        rect.x + rect.width > clip.x + clip.width + 0.01 ||
+        rect.y + rect.height > clip.y + clip.height + 0.01 ||
+        cx + transform.x < clip.x ||
+        cx + transform.x >= clip.x + clip.width ||
+        cy + transform.y < clip.y ||
+        cy + transform.y >= clip.y + clip.height);
+    const proven = reached && presence.nodes[i]?.status === 'observed';
+    if (!proven && !cutOff && !covered) continue;
+    const cover = covered && typeof hit === 'number' ? snapshot.nodes[hit]?.rect : undefined;
+    matches.set(i, {
+      host: host.hostIndex,
+      proven,
+      cutOff,
+      covered,
+      ...(cover ? { cover: { ...cover, x: cover.x + transform.x, y: cover.y + transform.y } } : {}),
+    });
+  }
+  return matches;
+}
