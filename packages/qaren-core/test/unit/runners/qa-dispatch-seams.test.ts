@@ -363,7 +363,7 @@ for (const handler of [createDeviceScrollHandler, createDeviceSwipeHandler]) {
   });
 }
 
-test('an iOS QA scroll logs its drag, band and keyboard top before the send, numbers only', async () => {
+test('an iOS QA scroll logs its drag, band, keyboard top and end hold before the send, numbers only', async () => {
   session();
   updateRefMapFromFlat(
     [
@@ -391,7 +391,9 @@ test('an iOS QA scroll logs its drag, band and keyboard top before the send, num
   assert.deepEqual(sends, ['drag']);
   assert.deepEqual(
     lines.filter((line) => line.includes('scroll drag')),
-    ['qaren-core: scroll drag (195,480)->(195,301) band=(0,300,390,200) kb=508 duration=300ms\n'],
+    [
+      'qaren-core: scroll drag (195,480)->(195,301) band=(0,300,390,200) kb=508 duration=300ms endHold=none\n',
+    ],
   );
 });
 

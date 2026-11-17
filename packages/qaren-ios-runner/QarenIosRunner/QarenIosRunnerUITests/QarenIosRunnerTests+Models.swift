@@ -86,6 +86,28 @@ struct Command: Codable {
   var prepareReplacement: Bool? = nil
   var replacementDeleteCount: Int? = nil
   var operationToken: String? = nil
+  // A drag holds still this long at its end before lifting, so the list starts no momentum.
+  var endHoldMs: Double? = nil
+}
+
+extension Command {
+  static let maxDragEndHold: TimeInterval = 2
+
+  // Only a drag asking a positive end hold gets one, at most two seconds.
+  var dragEndHold: TimeInterval? {
+    guard command == .drag, let endHoldMs, endHoldMs > 0 else { return nil }
+    return min(endHoldMs / 1000.0, Self.maxDragEndHold)
+  }
+}
+
+// What the last step before XCTest receives for one coordinate drag.
+struct CoordinateDrag {
+  let x: Double
+  let y: Double
+  let x2: Double
+  let y2: Double
+  let holdDuration: TimeInterval
+  let endHold: TimeInterval?
 }
 
 struct Response: Codable {

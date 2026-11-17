@@ -201,12 +201,14 @@ async function run(
   };
   const bands: (Rect | undefined)[] = [];
   const distances: (number | undefined)[] = [];
+  const endAtRest: boolean[] = [];
   f.deps.platform = 'ios';
   const dispatch = f.deps.scroll;
-  f.deps.scroll = async (dir, context, clearance, band) => {
+  f.deps.scroll = async (dir, context, clearance, band, atRest) => {
     context!.authorize();
     bands.push(band);
     distances.push(clearance);
+    endAtRest.push(atRest === true);
     return dispatch(dir, context, clearance, band);
   };
   const plan = parsePlan(`1. Scroll ${direction}\n`);
@@ -220,7 +222,14 @@ async function run(
     undefined,
     { singleAttempt },
   );
-  return { ...f, bands, distances, result, presenceCaptures: presenceCaptures.length };
+  return {
+    ...f,
+    bands,
+    distances,
+    endAtRest,
+    result,
+    presenceCaptures: presenceCaptures.length,
+  };
 }
 
 // The executable coordinate builder is the oracle for whether a selected band really hosts a drag.
@@ -236,6 +245,17 @@ function coordinates(band: Rect | undefined, direction: 'up' | 'down' = 'down', 
     clearRefMap();
   }
 }
+
+// Row S7: a plain scroll step carries a distance but places nothing, so it never asks to end at rest.
+test('S7 a plain scroll step sends its distance without asking to end at rest', async () => {
+  const f = await run([screen({ extra: [overlay({ x: 20, y: 0, width: 40, height: 800 })] })]);
+  assert.equal(f.result.block.outcome, 'pass');
+  assert.ok(f.distances.length > 0 && f.distances.every((distance) => distance !== undefined));
+  assert.deepEqual(
+    f.endAtRest,
+    f.distances.map(() => false),
+  );
+});
 
 test('plain scroll chooses the largest positive band and cuts a sticky footer', async () => {
   const s = screen({

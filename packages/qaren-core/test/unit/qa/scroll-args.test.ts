@@ -19,3 +19,20 @@ test('a keyboard clearance scroll passes the visible band of the target clip', (
 test('a scroll without keyboard clearance keeps the fixed amount and omits distance', () => {
   assert.deepEqual(scrollArgs('down'), { direction: 'down', amount: 0.6 });
 });
+
+test('a placing scroll carries end at rest beside its distance; others omit it', () => {
+  const within = { x: 0, y: 476, width: 402, height: 292 };
+  assert.deepEqual(scrollArgs('down', 182, within, true), {
+    direction: 'down',
+    amount: 0.6,
+    distance: 182,
+    within,
+    endAtRest: true,
+  });
+  assert.deepEqual(scrollArgs('down', 182, within, false), {
+    direction: 'down',
+    amount: 0.6,
+    distance: 182,
+    within,
+  });
+});

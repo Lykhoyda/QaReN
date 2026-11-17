@@ -1012,7 +1012,8 @@ extension QarenIosRunnerTests {
     y: Double,
     x2: Double,
     y2: Double,
-    holdDuration: TimeInterval
+    holdDuration: TimeInterval,
+    endHold: TimeInterval?
   ) -> RunnerInteractionOutcome {
     // tvOS has no coordinate drag. Preserve the direction as a focus move.
     let dx = x2 - x
@@ -1023,7 +1024,10 @@ extension QarenIosRunnerTests {
     if pressTvRemote(button) {
       return .performed
     }
-    return performCoordinateDrag(app: app, x: x, y: y, x2: x2, y2: y2, holdDuration: holdDuration)
+    return performCoordinateDrag(
+      app: app,
+      drag: CoordinateDrag(x: x, y: y, x2: x2, y2: y2, holdDuration: holdDuration, endHold: endHold)
+    )
   }
 
   func resolvedTouchVisualizationFrame(app: XCUIApplication, x: Double, y: Double) -> TouchVisualizationFrame {
@@ -1193,20 +1197,25 @@ extension QarenIosRunnerTests {
 #endif
   }
 
-  private func performCoordinateDrag(
-    app: XCUIApplication,
-    x: Double,
-    y: Double,
-    x2: Double,
-    y2: Double,
-    holdDuration: TimeInterval
-  ) -> RunnerInteractionOutcome {
+  private func performCoordinateDrag(app: XCUIApplication, drag: CoordinateDrag) -> RunnerInteractionOutcome {
 #if os(tvOS)
     return .unsupported("coordinate drag is not supported on tvOS")
 #else
-    let start = interactionCoordinate(app: app, x: x, y: y)
-    let end = interactionCoordinate(app: app, x: x2, y: y2)
-    gesture { start.press(forDuration: holdDuration, thenDragTo: end) }
+#if RN_FAST_RUNNER_TEST_FAULTS
+    if let coordinateDragStep {
+      coordinateDragStep(drag)
+      return .performed
+    }
+#endif
+    let start = interactionCoordinate(app: app, x: drag.x, y: drag.y)
+    let end = interactionCoordinate(app: app, x: drag.x2, y: drag.y2)
+    gesture {
+      if let endHold = drag.endHold {
+        start.press(forDuration: drag.holdDuration, thenDragTo: end, withVelocity: .default, thenHoldForDuration: endHold)
+      } else {
+        start.press(forDuration: drag.holdDuration, thenDragTo: end)
+      }
+    }
     return .performed
 #endif
   }

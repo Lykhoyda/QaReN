@@ -1321,6 +1321,41 @@ function recordingClearance(f: ReturnType<typeof fake>) {
   return seen;
 }
 
+// Row S7: only the keyboard fallback and a resolution scroll that carries a distance place a target.
+function recordingEndAtRest(f: ReturnType<typeof fake>) {
+  const seen: { clearance: number | undefined; endAtRest: boolean }[] = [];
+  const scroll = f.deps.scroll;
+  f.deps.scroll = (direction, context, clearance, within, endAtRest) => {
+    seen.push({ clearance, endAtRest: endAtRest === true });
+    return scroll(direction, context, clearance, within);
+  };
+  return seen;
+}
+
+test('S7 the keyboard fallback scroll asks to end at rest', async () => {
+  const f = fake([700, 300].map(keyboardWrapperAt), {});
+  const seen = recordingEndAtRest(f);
+  f.deps.reactFocused = async () => true;
+  f.deps.typeFocused = async () => ({ ok: true, proven: false });
+  const outcome = await walkBlock(block('1. Fill "email" with "x"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(seen, [{ clearance: 496, endAtRest: true }]);
+});
+
+test('S7 the resolution scroll asks to end at rest only when it carries a distance', async () => {
+  const placing = fake(
+    [clipped(700), ...Array.from({ length: 4 }, () => clipped(400)), done()],
+    {},
+  );
+  const placed = recordingEndAtRest(placing);
+  assert.equal((await walkBlock(block('1. Tap "go"\n'), placing.deps)).block.outcome, 'pass');
+  assert.deepEqual(placed, [{ clearance: 722 - 360, endAtRest: true }]);
+  const searching = fake([at(700), at(400), at(400), done()], { press: [OCCLUDED] });
+  const searched = recordingEndAtRest(searching);
+  assert.equal((await walkBlock(block('1. Tap "go"\n'), searching.deps)).block.outcome, 'pass');
+  assert.deepEqual(searched, [{ clearance: undefined, endAtRest: false }]);
+});
+
 function presentTarget(screen: Screen, ref = '@target'): Screen {
   const target = screen.elements.find((element) => element.ref === ref);
   assert.ok(target?.semantic);

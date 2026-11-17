@@ -4,6 +4,7 @@ import {
   trimScrollBand,
   scrollBandTooSmall,
   computeScrollFromDirection,
+  placingDragEndHold,
   type ScrollBand as Band,
 } from '../domain/scroll-gesture.js';
 import { randomUUID } from 'node:crypto';
@@ -2797,6 +2798,8 @@ interface ScrollArgs {
   distance?: number;
   // The visible part of the scrolled view; the drag starts inside it.
   within?: Band;
+  // A scroll that places a target at a distance ends without momentum when its drag covers it.
+  endAtRest?: boolean;
 }
 
 export function createDeviceScrollHandler(): (args: ScrollArgs) => Promise<ToolResult> {
@@ -2818,10 +2821,8 @@ export function createDeviceScrollHandler(): (args: ScrollArgs) => Promise<ToolR
     // live runner before this fast-path gate.
     if (!args.qaContext) adoptPersistedFastRunnerState(getActiveSession()?.deviceId);
     if ((!args.qaContext || getActiveSession()?.platform === 'ios') && isFastRunnerAvailable()) {
-      if (args.qaContext)
-        process.stderr.write(
-          `qaren-core: scroll drag (${x1},${y1})->(${x2},${y2}) band=(${band.x ?? 0},${band.y ?? 0},${band.width},${band.height}) kb=${getKeyboardTop() ?? 'none'} duration=${DEFAULT_SWIPE_DURATION_MS}ms\n`,
-        );
+      const endHoldMs = placingDragEndHold(args.direction, coords, args.distance, args.endAtRest);
+      const keyboardTop = getKeyboardTop() ?? 'none';
       try {
         const bundleId = getActiveSession()?.appId ?? resolveBundleId('ios') ?? undefined;
         const resp = await fastSwipe(
@@ -2833,6 +2834,13 @@ export function createDeviceScrollHandler(): (args: ScrollArgs) => Promise<ToolR
           bundleId,
           args.qaContext,
           getActiveSession()?.deviceId,
+          endHoldMs,
+          args.qaContext
+            ? (endHold) =>
+                process.stderr.write(
+                  `qaren-core: scroll drag (${x1},${y1})->(${x2},${y2}) band=(${band.x ?? 0},${band.y ?? 0},${band.width},${band.height}) kb=${keyboardTop} duration=${DEFAULT_SWIPE_DURATION_MS}ms endHold=${endHold}\n`,
+                )
+            : undefined,
         );
         if (resp.ok) {
           return settleAfterMutation(
