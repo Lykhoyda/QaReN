@@ -1015,7 +1015,8 @@ the tap lands. React's own hit test at that centre must also reach the button,
 so nothing painted over it, and no sibling of unknown paint order, takes the
 tap. For this frame-only proof, the centre hit test treats a non-text host without
 a measured frame as a possible interceptor, including when its paint position
-is unknown; an unresolved hit cannot authorize a press.
+is unknown. A measured descendant that takes the hit decides it before its
+unmeasured parent; an unresolved hit cannot authorize a press.
 Every pressable host must have a measured frame, except inline text
 spans, which are never measured. An unmeasured pressable inline span inside the
 button, in text whose frame overlaps it, or without a measured containing text
