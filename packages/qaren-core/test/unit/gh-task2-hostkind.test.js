@@ -5,7 +5,7 @@
 // ...) because live fibers carry the platform view name, not the JS name.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { INJECTED_HELPERS } from '../../dist/injected-helpers.js';
+import { hostKind } from '../../dist/runtime/fiber-access/host-kind.js';
 import { createSandbox, buildFiber } from './helpers/inject-harness.js';
 
 // Helper: wrap one host/component child under an App root so createSandbox has a
@@ -79,11 +79,18 @@ test('__hostKind: undefined fiber → null (defensive)', () => {
   assert.equal(sb.__QAREN.__hostKind(undefined), null);
 });
 
-// ── source-drift guard: a refactor that drops __hostKind fails CI ──────────
-// Mirrors gh-60-bug-5-label-matching.test.js:422-432.
-test('source guard: __hostKind is defined and exported on the surface', () => {
-  assert.match(INJECTED_HELPERS, /function hostKind\(fiber\)/);
-  assert.match(INJECTED_HELPERS, /__hostKind: hostKind/);
-  assert.match(INJECTED_HELPERS, /RCTSinglelineTextInputView/);
-  assert.match(INJECTED_HELPERS, /RCTModalHostView/);
+// ── drift guard: the typed host-kind module is what __hostKind runs ─────────
+test('module guard: __hostKind is exported and classifies like the host-kind module', () => {
+  const specs = [
+    { hostType: 'RCTSinglelineTextInputView' },
+    { hostType: 'RCTModalHostView' },
+    { hostType: 'View' },
+    { name: 'MyButton' },
+  ];
+  for (const spec of specs) {
+    const root = buildFiber({ name: 'App', children: [spec] });
+    const sb = createSandbox({ fiberRoot: root });
+    assert.equal(typeof sb.__QAREN.__hostKind, 'function');
+    assert.equal(sb.__QAREN.__hostKind(root.child), hostKind(root.child));
+  }
 });

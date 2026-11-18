@@ -8,90 +8,149 @@ import { test } from 'node:test';
 import vm from 'node:vm';
 import ts from 'typescript';
 import {
+  assertFragmentSyntax,
   assertVersionGate,
+  buildRuntimeFragment,
   evaluateHelpers,
   generateBundle,
   INTERPOLATIONS,
+  RUNTIME_MARKER,
 } from '../../../../scripts/build-injected-helpers.ts';
 import { HELPERS_VERSION, INJECTED_HELPERS } from '../../dist/injected-helpers.js';
+import { DECLARED_EDITS } from '../fixtures/helpers/edits.ts';
+import { applyEdits, removeDeclarations } from './helpers/program-edits.ts';
 
 const read = (path: string): string => readFileSync(new URL(path, import.meta.url), 'utf8');
 const legacy = read('../../src/runtime/legacy.program.txt');
 const baseline = JSON.parse(read('../fixtures/helpers/baseline.txt'));
+const fragment = buildRuntimeFragment();
 const sha256 = (program: string): string => createHash('sha256').update(program).digest('hex');
-const originalHash = 'f41041b3c6ce53bbaec15099b93babe634e7e31321c3ab2347f2598a1687dcee';
-const currentHash = '90fef0bbd29b4f9d54ae8ff3140eca74c86f20f0ccf82f848c2794d3f2c19694';
-const baseVersionSite = '__HELPERS_VERSION__ = 105';
-// Each declared edit replaces one unique run of the base program.
-const declaredEdits: Array<[string, string]> = [
-  [baseVersionSite, '__HELPERS_VERSION__ = 107'],
-  [
-    'secure: false,\n        privateValue: options.privateValue === true,',
-    'secure: false,\n        disabled: !!textInputDesignationDisabled(props),\n        privateValue: options.privateValue === true,',
-  ],
-  // An entry names its own host; a portal withdraws it from entries above an input beyond it.
-  ['      var iPruned = 0;\n', '      var iPruned = 0;\n      var beyondPortal = new Set();\n'],
-  [
-    '            ancestor.inputHostIndices.push(hostIndex);\n',
-    '            ancestor.inputHostIndices.push(hostIndex);\n            if (ai < (iframe.portalCut || 0)) { beyondPortal.add(ancestor); delete ancestor.hostIndex; }\n',
-  ],
-  [
-    '            if (entry.hidden) forwarded.hidden = true;\n',
-    '            if (entry.hidden) forwarded.hidden = true;\n            if (hostIndex !== null && forwarded.hostIndex === undefined && !beyondPortal.has(forwarded)) forwarded.hostIndex = hostIndex;\n',
-  ],
-  [
-    'entry.inputHostIndices = [hostIndex];\n',
-    'entry.inputHostIndices = [hostIndex];\n            if (hostIndex !== null) entry.hostIndex = hostIndex;\n',
-  ],
-  [
-    'textOwnerHostIndex: textOwnerHostIndex, rootIndex: iframe.rootIndex,',
-    'textOwnerHostIndex: textOwnerHostIndex, portalCut: ifiber.tag === 4 ? inputAncestors.length : iframe.portalCut, rootIndex: iframe.rootIndex,',
-  ],
-];
 
-// PR 1 only: later extraction PRs replace this fixed-byte oracle with the
-// declared edit list and differential checks, and refresh the base fixture.
-test('A: the generated program is the original evaluated bytes with the declared edits at version 107', () => {
-  assert.equal(HELPERS_VERSION, 107);
-  assert.equal(sha256(INJECTED_HELPERS), currentHash);
-  assert.equal(baseline.revision, 'a3147f7878ebcffbf90879f93d3581e3e9e62b8e');
-  assert.equal(sha256(baseline.program), originalHash);
-  assert.equal(baseline.version, 105);
-  let expected: string = baseline.program;
-  for (const [from, to] of declaredEdits) {
-    assert.equal(expected.split(from).length, 2, from);
-    expected = expected.replace(from, () => to);
-  }
-  assert.equal(INJECTED_HELPERS, expected);
+test('the base fixture is develop at version 107', () => {
+  assert.equal(baseline.revision, '4a9bb464e047151c172c237cc3caddc8e83f806c');
+  assert.equal(baseline.version, 107);
+  assert.equal(
+    sha256(baseline.program),
+    '90fef0bbd29b4f9d54ae8ff3140eca74c86f20f0ccf82f848c2794d3f2c19694',
+  );
+  assert.equal(HELPERS_VERSION, baseline.version + 1);
 });
 
-test('an app holding the base helpers receives the current helpers', () => {
+test('C: the program outside the fragment is the base program with the declared edits', () => {
+  const parts = INJECTED_HELPERS.split(fragment);
+  assert.equal(parts.length, 2, 'the fragment appears once');
+  assert.equal(parts.join(RUNTIME_MARKER), applyEdits(baseline.program, DECLARED_EDITS));
+});
+
+test('C: the replay refuses undeclared or ambiguous edits', () => {
+  assert.throws(
+    () => applyEdits(baseline.program, { ...DECLARED_EDITS, removals: [{ name: 'notDeclared' }] }),
+    /expected one declaration, found 0/,
+  );
+  assert.throws(
+    () => removeDeclarations(baseline.program, [{ name: 'qaData' }, { name: 'qaData' }]),
+    /overlaps another removal/,
+  );
+  assert.throws(
+    () =>
+      applyEdits(baseline.program, {
+        ...DECLARED_EDITS,
+        replacements: [{ from: '= 106;', to: '= 108;', count: 1 }],
+      }),
+    /expected 1 occurrences, found 0/,
+  );
+});
+
+test('L: an app holding the base helpers receives the current helpers', () => {
   const context = vm.createContext({});
   vm.runInContext(baseline.program, context);
   const installed = vm.runInContext('globalThis.__QAREN', context);
-  assert.equal(installed.__v, 105);
+  assert.equal(installed.__v, baseline.version);
   vm.runInContext(INJECTED_HELPERS, context);
   const current = vm.runInContext('globalThis.__QAREN', context);
   assert.notEqual(current, installed);
-  assert.equal(current.__v, 107);
+  assert.equal(current.__v, HELPERS_VERSION);
+  assert.equal(
+    vm.runInContext('typeof __rt', context),
+    'undefined',
+    'the fragment binding stays local',
+  );
+});
+
+test('F: the fragment is one ES2015 script statement without module or strict-mode syntax', () => {
+  assert.match(fragment, /^  \(\(\) => \{\n/);
+  const growth =
+    (Buffer.byteLength(INJECTED_HELPERS) - Buffer.byteLength(baseline.program)) /
+    Buffer.byteLength(baseline.program);
+  console.log(
+    `runtime fragment ${Buffer.byteLength(fragment)} bytes; program growth ${(growth * 100).toFixed(2)}%`,
+  );
+  assert.ok(growth < 0.05, 'stop condition S6: the program grows by less than 5%');
+});
+
+test('F: forbidden constructs fail generation with their cause', () => {
+  for (const [source, cause] of [
+    ['(() => {\n  "use strict";\n})();', /directive "use strict"/],
+    ['(() => { class A {} })();', /a class/],
+    ['(async () => {})();', /async/],
+    ['(() => { function* g() {} })();', /a generator/],
+    ['(() => { require("x"); })();', /require/],
+    ['(() => { import("x"); })();', /import\(\)/],
+    ['(() => { var __defProp = Object.defineProperty; })();', /bundler helper __defProp/],
+    ['(() => {})(); (() => {})();', /one expression statement/],
+    ['(() => {', /does not parse/],
+  ] as const) {
+    assert.throws(() => assertFragmentSyntax(source), cause, source);
+  }
+});
+
+test('the generator refuses a fragment whose exports and aliases disagree', () => {
+  const missing = fragment.replace(/\n\s*hostKind\n/, '\n');
+  assert.notEqual(missing, fragment);
+  assert.throws(
+    () => generateBundle(legacy, missing.replace(/isHostFiber,/, 'isHostFiber')),
+    /Alias hostKind is missing/,
+  );
+  assert.throws(
+    () => generateBundle(legacy.replace('  var hostKind = __rt.hostKind;\n', ''), fragment),
+    /Runtime export hostKind has no alias/,
+  );
+  assert.throws(
+    () => generateBundle(legacy + '\nqaData = null;\n', fragment),
+    /qaData is still declared or assigned in the program text/,
+  );
+  assert.throws(
+    () => generateBundle(legacy + '\nfunction qaData() {}\n', fragment),
+    /qaData is still declared or assigned in the program text/,
+  );
+  assert.throws(
+    () => generateBundle(legacy.replace('  var __rt;\n', ''), fragment),
+    /must follow "var __rt;"/,
+  );
+  assert.throws(() => generateBundle(legacy + RUNTIME_MARKER, fragment), /expected one marker/);
 });
 
 test('B: the committed bundle is the current generator output', () => {
-  assert.equal(generateBundle(legacy), read('../../src/injected-helpers.bundle.ts'));
+  assert.equal(generateBundle(legacy, fragment), read('../../src/injected-helpers.bundle.ts'));
 });
 
 test('the generator rejects missing, duplicated and unknown interpolation sites', () => {
   for (const { token } of INTERPOLATIONS) {
-    assert.throws(() => generateBundle(legacy.replace(token, '')), /expected .* sites/);
-    assert.throws(() => generateBundle(legacy + token), /expected .* sites/);
+    assert.throws(() => generateBundle(legacy.replace(token, ''), fragment), /expected .* sites/);
+    assert.throws(() => generateBundle(legacy + token, fragment), /expected .* sites/);
   }
-  assert.throws(() => generateBundle(legacy + '@@QAREN_UNKNOWN@@'), /Unknown interpolation token/);
+  assert.throws(
+    () => generateBundle(legacy + '@@QAREN_UNKNOWN@@', fragment),
+    /Unknown interpolation token/,
+  );
 });
 
 test('literal backslashes, backticks and interpolation syntax survive generation', () => {
   const literal = '\\n ` ${literal} \\ \\${stillLiteral} café\n';
   const tokens = INTERPOLATIONS.flatMap(({ token, count }) => Array(count).fill(token)).join('|');
-  const source = generateBundle(literal + tokens + literal);
+  const runtime = '  var __rt;\n' + RUNTIME_MARKER + '\n  var value = __rt.value;\n';
+  const literalFragment = '(() => { __rt = { value: "\\\\ ` ${x}" }; })();';
+  const source = generateBundle(runtime + literal + tokens + literal, literalFragment);
   const ast = ts.createSourceFile('bundle.ts', source, ts.ScriptTarget.Latest, true);
   const declaration = ast.statements
     .filter(ts.isVariableStatement)
@@ -102,9 +161,16 @@ test('literal backslashes, backticks and interpolation syntax survive generation
     HELPERS_VERSION: 105,
     TYPOGRAPHY_TEXT_LIMITS: { maxContentChars: 4096, maxTotalChars: 16384 },
     PRIVATE_INPUT_LIMITS: { maxHosts: 1000 },
-    INPUT_HOST_TYPES: ['TextInput'],
   });
-  assert.equal(program, literal + '105|4096|16384|1000|1000|1000|["TextInput"]' + literal);
+  assert.equal(
+    program,
+    '  var __rt;\n' +
+      literalFragment +
+      '\n  var value = __rt.value;\n' +
+      literal +
+      '105|4096|16384|1000|1000|1000' +
+      literal,
+  );
 });
 
 test('K: evaluated source and built exports agree with the base fixture', () => {

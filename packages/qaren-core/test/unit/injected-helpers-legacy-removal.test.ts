@@ -1,8 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 import { HELPERS_VERSION, INJECTED_HELPERS } from '../../dist/injected-helpers.js';
+
+const baseline: { version: number; program: string } = JSON.parse(
+  readFileSync(new URL('../fixtures/helpers/baseline.txt', import.meta.url), 'utf8'),
+);
 
 const REMOVED_KEYS = [
   'getNavGraph',
@@ -195,6 +200,40 @@ function assertCurrentSurface(runtime: Runtime) {
   assert.deepEqual(Object.keys(helpers), KEPT_KEYS);
   for (const key of REMOVED_KEYS) assert.equal(key in helpers, false, key);
 }
+
+function surfaceOf(program: string) {
+  const app = createRuntime();
+  app.run(program);
+  const helpers = app.runtime.__QAREN!;
+  return Object.getOwnPropertyNames(helpers).map((key) => {
+    const { value, get, set, ...flags } = Object.getOwnPropertyDescriptor(helpers, key)!;
+    const shape =
+      typeof value === 'function' ? { name: value.name, length: value.length } : undefined;
+    return {
+      key,
+      ...flags,
+      accessor: get !== undefined || set !== undefined,
+      type: typeof value,
+      shape,
+    };
+  });
+}
+
+test('E: every key keeps its descriptor flags, type and function shape from the base helpers', () => {
+  const base = surfaceOf(baseline.program);
+  const current = surfaceOf(INJECTED_HELPERS);
+  assert.deepEqual(current, base);
+  assert.deepEqual(
+    current.map(({ key }) => key),
+    [...KEPT_KEYS, 'beginQaCapture', 'readQaCapture'],
+  );
+  for (const entry of current) {
+    const hidden = entry.key === 'beginQaCapture' || entry.key === 'readQaCapture';
+    assert.equal(entry.enumerable, !hidden, entry.key);
+    assert.equal(entry.writable, !hidden, entry.key);
+    assert.equal(entry.configurable, !hidden, entry.key);
+  }
+});
 
 test('fresh injection installs no console, error or rejection hooks', () => {
   const app = createRuntime();
