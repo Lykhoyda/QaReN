@@ -1,5 +1,23 @@
 # qaren
 
+## 2.3.0
+
+### Minor Changes
+
+- 4cffdfe: `qaren check` and `qaren pr` run on a physical USB Android phone borrowed on the host's adb server, refuse an unusable or locked phone with the cause and the fix (one cause, the adb server on port 5037, when that server has the phone), never use a wireless adb connection, and start the adb server once, saying so in the receipt, when none answers.
+
+### Patch Changes
+
+- 4cffdfe: `qaren doctor` names attached physical Android devices that cannot be used (`no permissions`, `unauthorized`, `offline`, or held by the adb server on port 5037) with the cause and the fix, read from the running adb server without running adb, counts a wireless adb connection separately and never uses it, and `qaren doctor --device <android-serial>` fails unless that device is a ready USB phone; `qaren prepare` now refuses an `android_usb.serial` that names a wireless adb connection, which it accepted until now.
+- 4cffdfe: A repeat `qaren cleanup` of a borrowed Android run that already cleaned itself reports cleaned instead of refusing `OWNERSHIP_UNPROVEN`.
+- 87a4e4c: Keep the Android first-views check on its 2 s polling clock when a wait window ends: a timer that wakes just short of the window end no longer reads the app again early.
+- d45cafc: On iOS, a scroll that moves a target clear by a set distance now ends at rest: the finger moves slowly and holds still before lifting, so the list stops near where the drag ends instead of gliding on. It needs a runner that lists `DRAG_END_HOLD_V1`; with an older runner the scroll behaves as before and the run log says `endHold=unsupported`.
+- e3a4375: On iOS, a quoted Tap on a text hidden from accessibility now presses its button once even when the button has neither label nor test id, if a full read taken just before the press ties the text to exactly one native button by its frame; when only clipping or centre coverage prevents that proof, the button gets one corrective scroll and is proven again before that press, and such a step stores no selector, so its block is reported not saved.
+- a7d5cf6: Wait for an Android app's first React views before debugger discovery, preserving the existing attach and walk budgets. Startup diagnostics and refusal notes identify the hold; a check that shows no app process for 15 s allows attachment as before. iOS is unchanged.
+- 4a9bb46: Stop Android SDK emulator helpers left behind by the same user when a complete process list proves that no emulator is running or starting and the helper has no parent. Recheck identity and safety before each signal, preserve other helpers, and record recovery outcomes in receipts and reports. Doctor explains each helper class without sending signals.
+- 87a4e4c: Find a quoted button without a testID again after recovery when exactly one button has the same label, kind and size. Refuse ambiguous matches with their count, while keeping Fill and stored-selector replay behavior unchanged.
+- 6326a8b: Build the injected helpers' descriptor-safe reads and host-kind classification from typed modules compiled into the program. Screen reading behaves as before; the helper version rises to 108 so running apps receive the new program.
+
 ## 2.2.2
 
 ### Patch Changes
