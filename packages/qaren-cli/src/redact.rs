@@ -697,16 +697,28 @@ mod tests {
         let inputs = std::sync::Arc::new(super::InputValues::from_values(vec![
             "netsimd".into(),
             "private-helper-canary".into(),
+            "4242".into(),
+            "orphan".into(),
+            "stopped-term".into(),
+            "TERM".into(),
         ]));
         super::with_input_scope(inputs, || {
             let payload = serde_json::json!({
-                "device_helpers": [{ "name": "netsimd", "pid": 4242 }],
+                "device_helpers": [{ "name": "netsimd", "pid": 4242, "cpu": 960, "class": "orphan", "outcome": "stopped-term", "signals": ["TERM"], "extra": "private-helper-canary" }],
                 "name": "netsimd"
             });
             let json: serde_json::Value =
                 serde_json::from_str(&durable_json(&payload).unwrap()).unwrap();
             assert_eq!(json["device_helpers"][0]["name"], "netsimd");
             assert_eq!(json["device_helpers"][0]["pid"], 4242);
+            assert_eq!(json["device_helpers"][0]["cpu"], 960);
+            assert_eq!(json["device_helpers"][0]["class"], "orphan");
+            assert_eq!(json["device_helpers"][0]["outcome"], "stopped-term");
+            assert_eq!(
+                json["device_helpers"][0]["signals"],
+                serde_json::json!(["TERM"])
+            );
+            assert!(json["device_helpers"][0].get("extra").is_none());
             assert_ne!(json["name"], "netsimd");
             let invalid = serde_json::json!({
                 "device_helpers": [{ "name": "private-helper-canary", "pid": 4242 }]
@@ -714,6 +726,26 @@ mod tests {
             assert!(!durable_json(&invalid)
                 .unwrap()
                 .contains("private-helper-canary"));
+        });
+    }
+
+    #[test]
+    fn i3_unknown_helper_class_outcome_and_signal_do_not_bypass_masking() {
+        let inputs = std::sync::Arc::new(super::InputValues::from_values(vec!["netsimd".into()]));
+        super::with_input_scope(inputs, || {
+            for (key, bad) in [
+                ("class", serde_json::json!("unknown-class")),
+                ("outcome", serde_json::json!("unknown-outcome")),
+                ("signals", serde_json::json!(["QUIT"])),
+                ("cpu", serde_json::json!(-1)),
+            ] {
+                let mut payload =
+                    serde_json::json!({"device_helpers": [{"name":"netsimd","pid":4242}]});
+                payload["device_helpers"][0][key] = bad;
+                let json: serde_json::Value =
+                    serde_json::from_str(&durable_json(&payload).unwrap()).unwrap();
+                assert_ne!(json["device_helpers"][0]["name"], "netsimd", "{key}");
+            }
         });
     }
 

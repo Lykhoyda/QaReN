@@ -285,6 +285,20 @@ fn handoff_owner_rejects_clean_strategy_and_scheme_and_usb_port() {
 }
 
 #[test]
+fn android_usb_serial_refuses_a_wireless_adb_connection() {
+    let usb = |serial: &str| {
+        format!("schema: qaren/1\nname: usb\nplatform: android\ncandidate:\n  project_root: test-app\n  app_id: com.rndevagent.testapp\n  revision: HEAD\nmetro:\n  port: 8794\nandroid_usb:\n  serial: {serial}\n  adb_server_port: 15039\n")
+    };
+    assert!(parse(&usb("R5CR20XXYZ")).is_ok());
+    let failure = parse(&usb("adb-R5CR20XXYZ-AbCdEf._adb-tls-connect._tcp")).unwrap_err();
+    assert_eq!(failure.code, FailureCode::ScenarioInvalid);
+    assert_eq!(
+        failure.detail,
+        "android_usb.serial \"adb-R5CR20XXYZ-AbCdEf._adb-tls-connect._tcp\" must name a physical USB device, not an emulator, loopback endpoint or wireless connection"
+    );
+}
+
+#[test]
 fn qaren_owner_usb_still_requires_adb_server_port() {
     let usb = "schema: qaren/1\nname: usb\nplatform: android\ncandidate:\n  project_root: test-app\n  app_id: com.rndevagent.testapp\n  revision: HEAD\nmetro:\n  port: 8794\nandroid_usb:\n  serial: R5CR20XXYZ\n";
     let failure = parse(usb).unwrap_err();
@@ -384,6 +398,81 @@ fn prepare_refuses_a_borrowed_emulator_scenario_before_any_command() {
     );
     assert!(mock.calls.is_empty());
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+fn phone_yaml(serial: &str, model: &str) -> String {
+    emulator_yaml("x", "x").replace(
+        "android_emulator:\n  serial: x\n  avd: x\n",
+        &format!("android_device:\n  serial: {serial}\n  model: {model}\n"),
+    )
+}
+
+#[test]
+fn android_device_matrix_and_emulator_records_keep_their_shape() {
+    for (serial, model) in [
+        ("0A1B2C3D", "Test_Phone_5"),
+        ("R5.CT-1_x", &"m".repeat(128)),
+    ] {
+        let scenario = parse(&phone_yaml(serial, model)).unwrap();
+        let yaml = serde_yaml::to_string(&scenario).unwrap();
+        assert!(
+            yaml.contains("android_device:") && !yaml.contains("android_emulator"),
+            "{yaml}"
+        );
+    }
+    for (serial, model) in [
+        ("emulator-5554", "m"),
+        ("127.0.0.1:5555", "m"),
+        ("-0A1B", "m"),
+        ("????????????", "m"),
+        ("adb-0A1B2C3D-AbCdEf._adb-tls-connect._tcp", "m"),
+        ("adb-0A1B2C3D._adb._tcp", "m"),
+        ("0A1B2C3D", "\"\""),
+        ("0A1B2C3D", "bad/model"),
+        ("0A1B2C3D", &"m".repeat(129)),
+    ] {
+        let failure = parse(&phone_yaml(serial, model)).expect_err("must refuse");
+        assert_eq!(
+            failure.code,
+            FailureCode::ScenarioInvalid,
+            "{serial} {model}"
+        );
+        if serial.contains("._adb") {
+            assert!(
+                failure
+                    .detail
+                    .contains("not an emulator, host:port endpoint or wireless connection"),
+                "{}",
+                failure.detail
+            );
+        }
+    }
+    let phone = phone_yaml("0A1B2C3D", "m");
+    let both = format!("{phone}android_emulator:\n  serial: emulator-5554\n  avd: avd\n");
+    let usb = format!("{phone}android_usb:\n  serial: 0A1B2C3D\n  adb_server_port: 15037\n");
+    let handoff = phone.replace("metro:\n  port: 8791\n", "build:\n  owner: qaren\n");
+    let ios = format!(
+        "{}android_device:\n  serial: 0A1B2C3D\n  model: m\n",
+        valid_ios_yaml()
+    );
+    for yaml in [both, usb, handoff, ios] {
+        assert_eq!(
+            parse(&yaml).expect_err("must refuse").code,
+            FailureCode::ScenarioInvalid,
+            "{yaml}"
+        );
+    }
+    assert_eq!(
+        parse(&phone.replace("  dev_client_scheme: rndatest\n", ""))
+            .unwrap_err()
+            .code,
+        FailureCode::DevClientSchemeRequired
+    );
+    // An emulator scenario serializes exactly as before: no new key.
+    let emulator = parse(&emulator_yaml("emulator-5554", "avd")).unwrap();
+    assert!(!serde_yaml::to_string(&emulator)
+        .unwrap()
+        .contains("android_device"));
 }
 
 #[test]

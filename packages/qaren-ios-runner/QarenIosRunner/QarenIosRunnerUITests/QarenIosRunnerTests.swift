@@ -57,6 +57,8 @@ class QarenIosRunnerTests: XCTestCase {
 #if RN_FAST_RUNNER_TEST_FAULTS
   var testFaultConsumed = false
   var beforeNextGesture: (() -> Void)?
+  // Replaces a coordinate drag's XCTest call with a reader of the value it would receive.
+  var coordinateDragStep: ((CoordinateDrag) -> Void)?
 #endif
   let maxRequestBytes = 2 * 1024 * 1024
   let maxSnapshotElements = 600

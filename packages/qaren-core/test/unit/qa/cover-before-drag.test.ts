@@ -923,17 +923,69 @@ for (const outcome of ['probe-refused', 'press-refused', 'tap-landed'] as const)
   });
 }
 
-test('T8(f): a target with a label and no test id: one press, the withheld reason', async () => {
+for (const withheld of [false, true]) {
+  test(`L5: a quoted label-only tap completes after runner refusal, withheld=${withheld}`, async () => {
+    const unnamed = (withheld ? sheeted() : barred()).map((v) =>
+      v.id === 'go' ? { ...v, id: '' } : v,
+    );
+    const r = await walk({
+      views: unnamed,
+      step: '1. Tap "Go"',
+      platform: withheld ? 'ios' : 'android',
+      dispatches: [OCCLUDED, { ok: true, proven: true, executed: true }],
+    });
+    assert.equal(r.result.verdict, 'PASS', r.reason);
+    assert.equal(dispatches(r.acts).length, 2);
+    assert.equal(scrolls(r.acts).length, withheld ? 0 : 1);
+  });
+
+  test(`L5: a quoted label-only tap reaches the retry after runner refusal, withheld=${withheld}`, async () => {
+    const unnamed = (withheld ? sheeted() : barred()).map((v) =>
+      v.id === 'go' ? { ...v, id: '' } : v,
+    );
+    const r = await walk({
+      views: unnamed,
+      step: '1. Tap "Go"',
+      // Android exercises the shared drag branch without iOS cover-proof withholding.
+      platform: withheld ? 'ios' : 'android',
+      dispatches: [OCCLUDED, OCCLUDED],
+    });
+    assert.equal(r.result.verdict, 'FAIL');
+    assert.equal(dispatches(r.acts).length, 2, r.reason);
+    assert.equal(scrolls(r.acts).length, withheld ? 0 : 1, r.log.join(','));
+    assert.match(r.reason, withheld ? /"Go" stayed covered/ : /stayed off screen after one scroll/);
+    assert.doesNotMatch(r.reason, /refused target identity no longer resolves uniquely/);
+  });
+}
+
+test('L8: ambiguity after a withheld drag names the count and keeps the withheld ending', async () => {
+  const unnamed = sheeted().map((v) => (v.id === 'go' ? { ...v, id: '' } : v));
+  const r = await walk({
+    views: unnamed,
+    retry: [...unnamed, { ...target('Button', { ...ON_SCREEN, y: 600 }, null), id: '' }],
+    step: '1. Tap "Go"',
+  });
+  assert.equal(r.result.verdict, 'FAIL');
+  assert.match(
+    r.reason,
+    /TARGET_AMBIGUOUS: "Go" names 2 buttons of the same size on the next read/,
+  );
+  assert.match(r.reason, /"Go" stayed covered; it is in no scroll area, so nothing was scrolled/);
+  assert.doesNotMatch(r.reason, /after one scroll/);
+  assert.equal(dispatches(r.acts).length, 1);
+  assert.equal(scrolls(r.acts).length, 0);
+});
+
+test('T8(f): a quoted target with a label and no test id: one retry, the withheld reason', async () => {
   const unnamed = sheeted().map((v) => (v.id === 'go' ? { ...v, id: '' } : v));
   const r = await walk({ views: unnamed, step: '1. Tap "Go"' });
   assert.equal(r.result.verdict, 'FAIL');
   assert.deepEqual(scrolls(r.acts), [], r.log.join(','));
-  assert.equal(dispatches(r.acts).length, 1);
+  assert.equal(dispatches(r.acts).length, 2);
   assert.ok(
-    r.reason.includes(
-      'the refused target identity no longer resolves uniquely; "Go" stayed covered; it is in no scroll area, so nothing was scrolled',
-    ),
+    r.reason.includes('"Go" stayed covered; it is in no scroll area, so nothing was scrolled'),
     r.reason,
   );
   assert.doesNotMatch(r.reason, /after (one|a) scroll/);
+  assert.doesNotMatch(r.reason, /refused target identity no longer resolves uniquely/);
 });

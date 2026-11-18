@@ -127,6 +127,7 @@ const BUILD_READY_TIMEOUT_MS = 360_000;
 const HTTP_TIMEOUT_MS = 10_000;
 const STRICT_LIVE_HIT_CAPABILITY = 'STRICT_LIVE_HIT_V1';
 const LIVE_HIT_PROBE_CAPABILITY = 'LIVE_HIT_PROBE_V1';
+const DRAG_END_HOLD_CAPABILITY = 'DRAG_END_HOLD_V1';
 const FAST_RUNNER_PROJECT = resolveNativeRunnerDir('qaren-ios-runner');
 
 // xcodebuild chunks can split handshake lines, so the parser retains incomplete lines.
@@ -1221,6 +1222,9 @@ interface FastRunnerResponse {
   [key: string]: unknown;
 }
 
+// What happened to a drag's requested end hold, decided after the readiness check.
+export type DragEndHold = 'none' | 'unsupported' | `${number}ms`;
+
 export async function fastSwipe(
   x1: number,
   y1: number,
@@ -1230,10 +1234,18 @@ export async function fastSwipe(
   bundleId?: string,
   qaContext?: QaDispatchContext,
   deviceId?: string,
+  endHoldMs?: number,
+  onEndHold?: (endHold: DragEndHold) => void,
 ): Promise<FastRunnerResponse> {
   if (qaContext) await requireQaFastRunner(qaContext, bundleId, deviceId);
   const body: Record<string, unknown> = { command: 'drag', x: x1, y: y1, x2, y2 };
   if (durationMs != null) body.durationMs = durationMs;
+  // An older runner ignores an unknown field and would fling, so the hold is sent only to one that lists it.
+  if (endHoldMs === undefined) onEndHold?.('none');
+  else if (getFastRunnerCapabilities().includes(DRAG_END_HOLD_CAPABILITY)) {
+    body.endHoldMs = endHoldMs;
+    onEndHold?.(`${endHoldMs}ms`);
+  } else onEndHold?.('unsupported');
   // Omitting appBundleId foregrounds the runner host and sends the drag to its blank screen.
   if (bundleId) body.appBundleId = bundleId;
   const authority = captureFastRunnerCommandAuthority();

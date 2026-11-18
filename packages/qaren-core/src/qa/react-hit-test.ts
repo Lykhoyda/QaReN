@@ -23,10 +23,15 @@ function inside(rect: Rect, x: number, y: number): boolean {
  * subtrees skipped, `box-none` passing to its children and `box-only` keeping them out. A sibling without
  * a known paint position (a missing or repeated order) leaves the hit unresolved only when its subtree
  * holds a frame over the point; elsewhere it cannot take the touch.
+ * Hidden subtrees are skipped unless hiddenIntercepts is set.
  */
 export function reactHitTest(
   evidence: ReactHostEvidence,
   frame: (rect: Rect) => Rect,
+  // Hosts hidden from accessibility still take touches; only the iOS frame-only press opts in.
+  hiddenIntercepts = false,
+  // A non-text host with no measured frame may lie over the point: unresolved. Frame-only press only.
+  unmeasuredIntercepts = false,
 ): (x: number, y: number) => ReactHit {
   const nodes = evidence.typography?.nodes ?? [];
   const children = new Map<number | null, number[]>();
@@ -53,6 +58,8 @@ export function reactHitTest(
     ranked.set(parent, result);
     return result;
   };
+  const unmeasured = (i: number) =>
+    unmeasuredIntercepts && !nodes[i].rect && nodes[i].text.kind === 'none';
   return (x, y) => {
     const holds = new Map<number, boolean>();
     const holdsPoint = (i: number): boolean => {
@@ -60,7 +67,9 @@ export function reactHitTest(
         const rect = nodes[i].rect;
         holds.set(
           i,
-          (!!rect && inside(frame(rect), x, y)) || (children.get(i) ?? []).some(holdsPoint),
+          (!!rect && inside(frame(rect), x, y)) ||
+            unmeasured(i) ||
+            (children.get(i) ?? []).some(holdsPoint),
         );
       }
       return holds.get(i)!;
@@ -68,7 +77,7 @@ export function reactHitTest(
     const visit = (i: number): ReactHit => {
       const host = evidence.hosts[i];
       const pointerEvents = host.pointerEvents ?? 'auto';
-      if (host.hidden || pointerEvents === 'none') return 'none';
+      if ((host.hidden && !hiddenIntercepts) || pointerEvents === 'none') return 'none';
       if (pointerEvents !== 'box-only') {
         const { painted, unknown } = rank(i);
         if (unknown.some(holdsPoint)) return 'unresolved';
@@ -78,6 +87,7 @@ export function reactHitTest(
         }
       }
       const rect = nodes[i].rect;
+      if (pointerEvents !== 'box-none' && unmeasured(i)) return 'unresolved';
       return pointerEvents !== 'box-none' && rect && inside(frame(rect), x, y) ? i : 'none';
     };
     // Separate roots carry no paint order between them.

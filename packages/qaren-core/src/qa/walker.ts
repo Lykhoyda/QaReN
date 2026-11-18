@@ -32,6 +32,7 @@ import {
   withEchoScope,
 } from './inputs.js';
 import { isAbort, cancellationSignal, withDeadline } from '../domain/cancellation.js';
+import { MIN_SCROLL_BAND_HEIGHT } from '../domain/scroll-gesture.js';
 import { fillLabels, type Block, type Item, type Target } from './plan.js';
 import {
   type Element,
@@ -42,6 +43,7 @@ import {
   alertPressEffect,
   insideAlert,
   elementFrame,
+  elementViewport,
   applicationFrame,
   isNativeInput,
   describe,
@@ -67,6 +69,7 @@ import {
   clearanceBand,
   clearanceScroll,
   keyboardClearance,
+  scrollTo,
   KEYBOARD_EDGE_INSET,
   keyboardFallbackTarget,
   fillHostInside,
@@ -80,6 +83,7 @@ import {
   scrollTargetCovered,
   scrollUntilContainer,
   foreignOnBand,
+  foreignNodesOnBand,
   foreignViewOnBand,
   groundWitnesses,
   plainLayersOn,
@@ -109,7 +113,12 @@ import { literalEvidence, type LiteralNearMiss } from './evidence.js';
 import { scrollMotion } from './scroll-motion.js';
 import { scrollBandTooSmall } from '../domain/scroll-gesture.js';
 import { scrollNavigationChange } from './scroll-navigation.js';
-import { applyContainmentFallback, exactIdentities, focusIdentityOf } from './identity.js';
+import {
+  applyContainmentFallback,
+  exactIdentities,
+  focusIdentityOf,
+  sameIdentity,
+} from './identity.js';
 import {
   type BlockPlatform,
   type StoredBlock,
@@ -173,8 +182,11 @@ import {
 import {
   buttonId,
   hiddenFromAccessibility,
+  frameText,
   hiddenTextButton,
   hiddenTextClause,
+  hiddenTextUnnamedButton,
+  hiddenTextUnnamedLocated,
   type HiddenText,
 } from './hidden-text.js';
 import {
@@ -343,11 +355,13 @@ export interface WalkerDeps {
   note?(line: string): void;
   // clearance: pixels a keyboard-covered target's centre must travel; an adapter may size the swipe from it.
   // within: the visible part of the target's clip; an adapter starts the drag inside it.
+  // endAtRest: the scroll places a target, so a drag that covers the clearance lifts without momentum.
   scroll(
     direction: 'down' | 'up',
     context: QaDispatchContext,
     clearance?: number,
     within?: NativeNode['rect'],
+    endAtRest?: boolean,
   ): Promise<ActResult>;
   back(context: QaDispatchContext): Promise<ActResult>;
   dialog(action: 'accept' | 'dismiss', context: QaDispatchContext): Promise<ActResult>;
@@ -885,8 +899,23 @@ async function walkBlockScoped(
   let lineRead: Screen | undefined;
   // A quoted iOS Tap whose text is hidden from accessibility may press its proven button once per
   // line: `element` authorizes presses until the runner executes one, then it is gone for good.
+  // Without a test id (`id`) the button is unnamed: it is proven afresh on a presence read before each
+  // press, and `frame` names it.
   let hiddenTried = false;
-  let hiddenTap: { id: string; element?: Element; act?: ActResult; unbound?: true } | undefined;
+  let hiddenTap:
+    | {
+        id?: string;
+        element?: Element;
+        act?: ActResult;
+        unbound?: true;
+        frame?: string;
+        // The step's one scroll was sent; it survives outer retries.
+        scrolled?: true;
+      }
+    | undefined;
+  const unnamedArmed = (): boolean => !!hiddenTap?.element && hiddenTap.id === undefined;
+  const hiddenButton = (tap: NonNullable<typeof hiddenTap>): string =>
+    tap.id !== undefined ? `button ${buttonId(tap.id, privacy)}` : `unnamed button at ${tap.frame}`;
   let dispatchedOn = 0;
   let recoveries = 0;
   let metadataOnly = false;
@@ -949,7 +978,8 @@ async function walkBlockScoped(
     const target =
       step && ('target' in step ? step.target : step.kind === 'scroll' ? step.until : undefined);
     const requirePresence = assertion || (!!target && target.quoted === undefined);
-    const platformPresence = requirePresence || purpose === 'provenance';
+    const platformPresence =
+      requirePresence || purpose === 'provenance' || (step?.kind === 'press' && unnamedArmed());
     const startedAt = deps.now();
     let readStartedAt = startedAt;
     if (until !== undefined && startedAt >= until) throw new CaptureDeadline();
@@ -1291,11 +1321,6 @@ async function walkBlockScoped(
       reason: 'the target stayed off screen after one scroll: its frame did not settle',
     });
   };
-  // Identity mirrors the runner's live check: testID, else kind and label.
-  const sameIdentity = (e: Element, target: Element): boolean =>
-    target.testID !== undefined
-      ? e.testID === target.testID && e.kind === target.kind
-      : e.testID === undefined && e.kind === target.kind && e.label === target.label;
   const pixelTarget = (screen: Screen, target: Element) => {
     const matches = screen.elements.filter((element) => sameIdentity(element, target));
     const root = applicationFrame(screen);
@@ -1809,6 +1834,128 @@ async function walkBlockScoped(
       direction: !frame || frame.y + frame.height / 2 >= band.y + band.height / 2 ? 'down' : 'up',
     };
   };
+  // Match named offscreen scrolling without a free-ground check; the next read must still prove the press.
+  const offscreenClearance = (
+    element: Element,
+    screen: Screen,
+  ):
+    | {
+        band: NonNullable<NativeNode['rect']>;
+        direction: 'up' | 'down';
+        distance?: number;
+        trimmedBy: { kind: string; frame: NonNullable<NativeNode['rect']> }[];
+      }
+    | undefined => {
+    const frame = elementFrame(element);
+    const clip = elementViewport(element);
+    const trimmedBy: { kind: string; frame: NonNullable<NativeNode['rect']> }[] = [];
+    const band = clearanceBand(element, screen, ({ kind, frame }) => {
+      if (
+        !trimmedBy.some(
+          (cut) =>
+            cut.frame.x === frame.x &&
+            cut.frame.y === frame.y &&
+            cut.frame.width === frame.width &&
+            cut.frame.height === frame.height,
+        )
+      )
+        trimmedBy.push({ kind, frame });
+    });
+    if (!frame || !clip || !band) return undefined;
+    const centre = frame.y + frame.height / 2;
+    if (centre >= clip.y && centre < clip.y + clip.height) return undefined;
+    const distance = keyboardClearance(element, screen);
+    return {
+      band,
+      direction: scrollTo(element).scroll,
+      trimmedBy,
+      ...(distance !== undefined ? { distance } : {}),
+    };
+  };
+  const locatedClearance = (
+    element: Element,
+    screen: Screen,
+    reactCover?: NonNullable<NativeNode['rect']>,
+  ): {
+    band: NonNullable<NativeNode['rect']> | null;
+    direction?: 'up' | 'down';
+    distance?: number;
+    trimmedBy: { kind: string; frame: NonNullable<NativeNode['rect']> }[];
+    withheld?: WithheldDrag;
+  } => {
+    const container = ancestorsOf(element).find(isScrollContainer);
+    if (!container) return { band: null, trimmedBy: [], withheld: 'no-scroll-area' };
+    const trimmedBy: { kind: string; frame: NonNullable<NativeNode['rect']> }[] = [];
+    const recordTrim = (kind: string, rect: NonNullable<NativeNode['rect']>) => {
+      if (
+        !trimmedBy.some(
+          ({ frame }) =>
+            frame.x === rect.x &&
+            frame.y === rect.y &&
+            frame.width === rect.width &&
+            frame.height === rect.height,
+        )
+      )
+        trimmedBy.push({ kind, frame: rect });
+    };
+    const full = clearanceBand(element, screen, ({ kind, frame }) => recordTrim(kind, frame));
+    const frame = elementFrame(element);
+    if (!full || !frame || full.width <= 0 || full.height <= 0)
+      return { band: full ?? null, trimmedBy, withheld: 'no-free-part' };
+    // In one pass against the band's own edges, whatever the list order: a counted foreign view or the
+    // cover across the top or bottom edge trims it, one across both withholds, and one across the
+    // middle withholds through the unchanged checks below.
+    const cover = coverOwner(element, screen);
+    const covers = [
+      ...('owner' in cover ? [{ kind: cover.owner.kind, rect: cover.frame }] : []),
+      ...(reactCover ? [{ kind: 'react-cover', rect: reactCover }] : []),
+    ];
+    const edges = [
+      ...foreignNodesOnBand(container, full, screen).map((node) => ({
+        kind: node.kind,
+        rect: elementFrame(node)!,
+      })),
+      ...covers.filter(({ rect }) => {
+        const shared = clip(full, rect);
+        return shared && shared.width > 0 && shared.height > 0;
+      }),
+    ];
+    const [top, bottom] = [full.y, full.y + full.height];
+    let [from, to] = [top, bottom];
+    for (const { kind, rect } of edges) {
+      const [start, end] = [rect.y, rect.y + rect.height];
+      if (end <= top || start >= bottom) continue;
+      if (start <= top && end >= bottom) {
+        recordTrim(kind, rect);
+        return { band: full, trimmedBy, withheld: 'no-free-part' };
+      }
+      if (start > top && end < bottom) continue;
+      if (start <= top) from = Math.max(from, end);
+      else to = Math.min(to, start);
+      recordTrim(kind, rect);
+    }
+    const band = { ...full, y: from, height: to - from };
+    // A band too low for a drag is refused here: the scroll handler must never refuse it after the fact.
+    if (
+      band.height < MIN_SCROLL_BAND_HEIGHT ||
+      covers.some(({ rect }) => {
+        const shared = clip(band, rect);
+        return shared && shared.width > 0 && shared.height > 0;
+      }) ||
+      foreignOnBand(container, band, screen)
+    )
+      return { band, trimmedBy, withheld: 'no-free-part' };
+    // Toward the middle of the trimmed band; a centre outside it travels exactly there.
+    const centre = frame.y + frame.height / 2;
+    const middle = band.y + band.height / 2;
+    const outside = centre < band.y || centre >= band.y + band.height;
+    return {
+      band,
+      direction: centre >= middle ? 'down' : 'up',
+      ...(outside ? { distance: Math.abs(centre - middle) } : {}),
+      trimmedBy,
+    };
+  };
   // A covered refusal that emits no other decision diagnostic still says why its cover was or was not
   // named; a line whose cover was never looked up emits nothing.
   const coverDecision = (
@@ -2067,13 +2214,13 @@ async function walkBlockScoped(
     // The hidden-text fallback's own press: a tap is named only when the runner executed it.
     const hiddenAct = item.kind === 'press' ? hiddenTap?.act : undefined;
     if (hiddenAct && hiddenTap) {
-      const id = buttonId(hiddenTap.id, privacy);
+      const button = hiddenButton(hiddenTap);
       const detail =
         hiddenAct.executed !== false && hiddenAct.mutation !== 'none'
           ? targetCode === 'TARGET_NOT_FOUND'
-            ? `; its button ${id} was tapped once through that text and the tap showed no change`
+            ? `; its ${button} was tapped once through that text and the tap showed no change`
             : ''
-          : `; its button ${id} was not tapped: the runner refused the press: ${hiddenAct.error ?? 'no reason given'}`;
+          : `; its ${button} was not tapped: the runner refused the press: ${hiddenAct.error ?? 'no reason given'}`;
       if (detail)
         reason = typeof reason === 'string' ? reason + detail : [...segments(reason), detail];
     }
@@ -2685,6 +2832,7 @@ async function walkBlockScoped(
           context,
           keyboardClearance(target.element, before.screen),
           clearanceBand(target.element, before.screen),
+          true,
         ),
       );
       const afterScroll = await settledCapture(item);
@@ -4423,8 +4571,8 @@ async function walkBlockScoped(
           WalkerTimingDiagnostic['clearanceDiagnostic']
         >['scrollOrigin'] = null;
         let scrollDirection: 'up' | 'down' | null = null;
-        // The hidden-text fallback's button is pressed through the refused-identity binding.
-        let refusedIdentity: Element | undefined = hiddenTap?.element;
+        // The hidden-text fallback's button with a test id is pressed through the refused-identity binding.
+        let refusedIdentity: Element | undefined = unnamedArmed() ? undefined : hiddenTap?.element;
         let moved: { target: Element; error: string } | undefined;
         // Plain-scroll attempts that dispatched cleanly onto complete, unchanged app captures.
         let stillScrolls = 0;
@@ -4455,8 +4603,6 @@ async function walkBlockScoped(
             : capture(item);
         const maxAttempts = recovered.has(item) || opts.singleAttempt ? 1 : 2;
         for (let attempt = 1; attempt <= maxAttempts && !outcome; attempt += 1) {
-          // An executed fallback press authorizes no further press: the step resolves its own target.
-          if (hiddenTap && !hiddenTap.element) refusedIdentity = undefined;
           interruptionWithheld = undefined;
           currentAttempt = attempt;
           pressAct = undefined;
@@ -4474,7 +4620,8 @@ async function walkBlockScoped(
           let selectionDeadline = Infinity;
           let selectionStartedAt = 0;
           const settling = (item.kind === 'press' || item.kind === 'fill') && sequence.momentum;
-          const held = cached?.item === item && !settling ? cached : undefined;
+          // An armed unnamed press is proven on a read of its own, never on a held one.
+          const held = cached?.item === item && !settling && !unnamedArmed() ? cached : undefined;
           let before: Observation;
           if (moved && item.kind !== 'scroll' && item.kind !== 'back' && item.kind !== 'dialog') {
             const settled = await settledTarget(item, moved.target);
@@ -4548,6 +4695,12 @@ async function walkBlockScoped(
           let keyboardMarginPresenceRead = false;
           // The target that settled after this attempt's keyboard dismissal; the tap goes to it or nowhere.
           let keyboardBound: { target: Element; frame: string; scrolled: number } | undefined;
+          // The unnamed button this read only located, and why no scroll was sent for it.
+          let hiddenStop:
+            | (NonNullable<ReturnType<typeof hiddenTextUnnamedLocated>> & {
+                withheld?: WithheldDrag;
+              })
+            | undefined;
           const dismissResolvedTarget = async (target: Element): Promise<boolean> => {
             itemKeyboardAttempted = true;
             keyboardAttempted = true;
@@ -4556,7 +4709,10 @@ async function walkBlockScoped(
               dismissal.via = await deps.dismissKeyboard!(context);
               return { ok: true, proven: false };
             });
-            const settled = await settledTarget(item, target, { nativeOnly: true });
+            // An unnamed button has no identity to settle on: the screen settles, then its last read proves it.
+            const settled = unnamedArmed()
+              ? { observation: await settledCapture(item) }
+              : await settledTarget(item, target, { nativeOnly: true });
             if ('frames' in settled) {
               outcome = failed(
                 item,
@@ -4580,22 +4736,93 @@ async function walkBlockScoped(
             deps.note?.(
               `keyboard-clearance ${JSON.stringify({ line: item.line, via: dismissal.via, hidden: before.screen.keyboardVisible === false })}`,
             );
-            keyboardBound = { target, frame: settled.frame, scrolled };
+            if ('frame' in settled) keyboardBound = { target, frame: settled.frame, scrolled };
             initial = undefined;
             return true;
           };
           let act: ActResult;
+          let boundByQuote = false;
           for (;;) {
             try {
+              if (item.kind === 'press' && hiddenTap?.act && !hiddenTap.element)
+                throw new ResolutionError({
+                  refuse: 'TARGET_NOT_FOUND',
+                  reason: `"${item.target.quoted}" did not change the screen after one tap`,
+                });
               usable(before, item);
               if (item.kind === 'press' || item.kind === 'fill') {
                 if (item.target.quoted === undefined) resolvedBy = 'jev';
-                const decision = refusedIdentity
+                // The unnamed button is pressed by the reference of the presence read just taken, or not at all.
+                const unnamed = unnamedArmed()
+                  ? hiddenTextUnnamedButton(item.target, before.screen)
+                  : undefined;
+                if (unnamed && hiddenTap) hiddenTap.frame = frameText(elementFrame(unnamed)!);
+                // Only located: the step's one clearance scroll, then the next presence read proves it again.
+                hiddenStop =
+                  unnamedArmed() && !unnamed && occluded === undefined
+                    ? hiddenTextUnnamedLocated(item.target, before.screen)
+                    : undefined;
+                if (hiddenStop && hiddenTap) {
+                  hiddenTap.frame = frameText(elementFrame(hiddenStop.element)!);
+                  const spent = hiddenTap.scrolled || scrolled || withheldDrag;
+                  const offscreen = spent
+                    ? undefined
+                    : offscreenClearance(hiddenStop.element, before.screen);
+                  const clearing = spent
+                    ? undefined
+                    : (offscreen && { ...offscreen, withheld: undefined }) ||
+                      locatedClearance(hiddenStop.element, before.screen, hiddenStop.cover);
+                  if (clearing?.direction && clearing.band) {
+                    occluded = clearing.direction;
+                    within = clearing.band;
+                    clearance = clearing.distance;
+                    scrollOrigin = offscreen ? 'offscreen-resolution' : 'centre-covered';
+                  } else hiddenStop.withheld = clearing?.withheld;
+                  // Value-free: causes, the path, a container's presence, frames and the withheld kind only.
+                  deps.note?.(
+                    `located-clearance ${JSON.stringify({
+                      line: item.line,
+                      located: true,
+                      cutOff: hiddenStop.cutOff,
+                      covered: hiddenStop.covered,
+                      path: spent ? null : offscreen ? 'offscreen' : 'covered',
+                      container: !!ancestorsOf(hiddenStop.element).find(isScrollContainer),
+                      band: clearing?.band ?? null,
+                      direction: clearing?.direction ?? null,
+                      trimmedBy: clearing?.trimmedBy ?? [],
+                      withheld: clearing ? (clearing.withheld ?? null) : 'one-scroll-spent',
+                    })}`,
+                  );
+                } else if (unnamedArmed() && !unnamed)
+                  deps.note?.(
+                    `located-clearance ${JSON.stringify({ line: item.line, located: false })}`,
+                  );
+                const decision = unnamedArmed()
                   ? {
                       resolvedBy,
-                      target: bindDispatchIdentity(item, before.screen, refusedIdentity),
+                      target: unnamed
+                        ? { ref: unnamed.ref, element: unnamed }
+                        : {
+                            refuse: 'TARGET_NOT_FOUND',
+                            reason: 'the unnamed button no longer resolves',
+                          },
                     }
-                  : await decide(before, undefined, item, Infinity, initial);
+                  : refusedIdentity
+                    ? {
+                        resolvedBy,
+                        target: bindDispatchIdentity(
+                          item,
+                          before.screen,
+                          refusedIdentity,
+                          item.kind === 'press' && !hiddenTap,
+                        ),
+                      }
+                    : await decide(before, undefined, item, Infinity, initial);
+                // Only the quote branch can successfully bind an identity without a testID.
+                boundByQuote =
+                  refusedIdentity !== undefined &&
+                  refusedIdentity.testID === undefined &&
+                  !('refuse' in decision.target!);
                 initial = undefined;
                 resolvedBy = decision.resolvedBy === 'jev' ? 'jev' : resolvedBy;
                 const binding =
@@ -4607,7 +4834,7 @@ async function walkBlockScoped(
                 const prepared: Resolution =
                   occluded !== undefined
                     ? { scroll: occluded }
-                    : refusedIdentity !== undefined
+                    : refusedIdentity !== undefined || unnamedArmed()
                       ? decision.target!
                       : fillIdentity !== undefined
                         ? binding?.kind === 'strict'
@@ -4713,11 +4940,33 @@ async function walkBlockScoped(
                   }
                   // The fallback's binding found no single eligible button: terminal, without recovery.
                   // After a withheld drag it also says why nothing was scrolled.
-                  if (item.kind === 'press' && hiddenTap?.element && refusedIdentity) {
+                  if (
+                    item.kind === 'press' &&
+                    hiddenTap?.element &&
+                    (refusedIdentity || unnamedArmed())
+                  ) {
                     hiddenTap.unbound = true;
+                    // Only a cause this read shows is named, cause first and the app change second.
+                    const after = hiddenTap.scrolled ? ' after one scroll' : '';
+                    const unheld =
+                      hiddenStop?.withheld === 'no-scroll-area'
+                        ? ', and no scroll area holds it'
+                        : hiddenStop?.withheld === 'no-free-part'
+                          ? `, and ${WITHHELD_DRAG['no-free-part']}`
+                          : '';
+                    const stop = hiddenStop?.cutOff
+                      ? `its unnamed button at ${hiddenTap.frame} is cut off by its scroll area${after}${unheld}, so nothing was tapped. Scroll it fully into view before this step, or give the button an accessibilityLabel`
+                      : hiddenStop?.covered
+                        ? `the centre of its unnamed button at ${hiddenTap.frame} is under another element${after}${unheld}, so nothing was tapped. Scroll it clear before this step, or give the button an accessibilityLabel`
+                        : undefined;
+                    const lost =
+                      hiddenTap.id !== undefined
+                        ? `its button ${buttonId(hiddenTap.id, privacy)} no longer resolved uniquely to an eligible button on the next read, so nothing was tapped`
+                        : (stop ??
+                          `its unnamed button no longer resolved to exactly one element on the next read${after}, so nothing was tapped`);
                     throw new ResolutionError({
                       refuse: 'TARGET_NOT_FOUND',
-                      reason: `"${item.target.quoted}" is text hidden from accessibility; its button ${buttonId(hiddenTap.id, privacy)} no longer resolved uniquely to an eligible button on the next read, so nothing was tapped${withheldDrag ? `; ${stayedCovered(item.target.phrase, withheldDrag)}${await coverText(item)}` : ''}`,
+                      reason: `"${item.target.quoted}" is text hidden from accessibility; ${lost}${withheldDrag ? `; ${stayedCovered(item.target.phrase, withheldDrag)}${await coverText(item)}` : ''}`,
                     });
                   }
                   if (!fallback || item.kind !== 'fill') {
@@ -4962,9 +5211,11 @@ async function walkBlockScoped(
                   const gaps = (screen: Screen) =>
                     (item.kind === 'fill' ? screen.fillGapCount : screen.pressGapCount) ?? 0;
                   const result = await mutate(item, before, 'scroll', (context) =>
-                    deps.scroll(direction, context, distance, band),
+                    deps.scroll(direction, context, distance, band, distance !== undefined),
                   );
                   scrolled += 1;
+                  // An unnamed press gets one scroll per step, whatever pass sends it.
+                  if (unnamedArmed() && hiddenTap) hiddenTap.scrolled = true;
                   scrollNeedsReadback = !result.ok && !result.proven;
                   scrollError = result.ok
                     ? undefined
@@ -5000,6 +5251,7 @@ async function walkBlockScoped(
                     continue;
                   }
                   if (
+                    !unnamedArmed() &&
                     (resolution.origin === 'named-offscreen' || (!result.ok && !result.proven)) &&
                     screenSignature(before.screen) === signature
                   ) {
@@ -5372,7 +5624,8 @@ async function walkBlockScoped(
               )
                 throw dialogInFront();
               if (item.kind === 'press' && !pixelBaselineTaken) {
-                const target = element && pixelTarget(before.screen, element);
+                // Its two reads would follow the proof, and identity cannot tell unnamed buttons apart.
+                const target = element && !unnamedArmed() && pixelTarget(before.screen, element);
                 if (target) {
                   const shot = await pixelShot(item, target);
                   if (!shot.stable) throw new QaDispatchError('TARGET_MOVED_BEFORE_DISPATCH');
@@ -5474,12 +5727,32 @@ async function walkBlockScoped(
                 pressAct = act;
                 pressNeedsReadback =
                   !!selectionTarget || (!!element && insideAlert(element) && !act.proven);
+                // An executed quote-bound press leaves the next attempt to resolve the line afresh.
+                if (boundByQuote && act.executed !== false && act.mutation !== 'none')
+                  refusedIdentity = undefined;
               }
-              if (item.kind === 'press' && hiddenTap?.element && refusedIdentity) {
+              if (
+                item.kind === 'press' &&
+                hiddenTap?.element &&
+                (refusedIdentity || unnamedArmed())
+              ) {
                 hiddenTap.act = act;
                 // A refusal before dispatch keeps the existing once-only retries; an executed press ends them.
                 if (act.executed !== false && act.mutation !== 'none')
                   hiddenTap.element = undefined;
+                // After the step's one scroll an unnamed press refused by the runner ends the step.
+                else if (hiddenTap.id === undefined && hiddenTap.scrolled) {
+                  hiddenTap.unbound = true;
+                  outcome = failed(
+                    item,
+                    attempt,
+                    act.error ?? 'the runner refused the press',
+                    before.screen,
+                    await shoot(item),
+                    ref,
+                  );
+                  break;
+                }
               }
               if (item.kind === 'fill') fillMethod = act.method ?? 'keyboard';
               if (
@@ -5988,10 +6261,13 @@ async function walkBlockScoped(
               ...base(item, attempt),
               ...(ref ? { ref } : {}),
               ...(shot ? { screenshot: shot } : {}),
-              // A pass through hidden text stores the button actually pressed, never the hidden text.
+              // A pass through hidden text stores the button actually pressed, never the hidden text;
+              // an unnamed button has nothing to store.
               ...stored(
                 hiddenPass
-                  ? { id: hiddenPass.id }
+                  ? hiddenPass.id !== undefined
+                    ? { id: hiddenPass.id }
+                    : undefined
                   : ((target && exactSelector(target)) ??
                       (element ? elementSelector(element) : undefined)),
               ),
@@ -6028,7 +6304,7 @@ async function walkBlockScoped(
                         : hiddenPass
                           ? {
                               reason: redact(
-                                `resolved through text hidden from accessibility; tapped its button ${buttonId(hiddenPass.id, privacy)}`,
+                                `resolved through text hidden from accessibility; tapped ${hiddenPass.id !== undefined ? 'its' : 'the'} ${hiddenButton(hiddenPass)}`,
                               ),
                             }
                           : {}),
@@ -6190,9 +6466,16 @@ async function walkBlockScoped(
           hiddenTried = true;
           // Captures assign lineRead inside closures, which control-flow narrowing cannot see.
           const read = lineRead as Screen | undefined;
-          const element = read && hiddenTextButton(item.target, read);
+          const named = read && hiddenTextButton(item.target, read);
+          // A button with neither label nor test id is armed only; its pass proves it again.
+          // A merely located one arms too: its pass may scroll once and must prove it before any press.
+          const element =
+            named ||
+            (read &&
+              (hiddenTextUnnamedButton(item.target, read) ??
+                hiddenTextUnnamedLocated(item.target, read)?.element));
           if (element) {
-            hiddenTap = { id: element.testID!, element };
+            hiddenTap = named ? { id: named.testID!, element } : { element };
             // Recovery returned without acting, so restore its state from before the probe.
             if (priorRecovery) recovered.set(item, priorRecovery.state);
             else recovered.delete(item);

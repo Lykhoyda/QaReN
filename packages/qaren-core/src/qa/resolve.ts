@@ -56,6 +56,7 @@ import {
   PRESSABLE_SUFFIX,
   encloses,
   exactIdentities,
+  sameIdentity,
   needsLabelProvenance,
   focusIdentityOf,
   withoutPressable,
@@ -565,9 +566,10 @@ export function keyboardFallbackTarget(
 }
 
 export function bindDispatchIdentity(
-  step: Step & { kind: 'press' | 'fill' },
+  step: Step & { kind: 'press' | 'fill'; declared?: Target },
   screen: Screen,
   original: Element,
+  byQuote = false,
 ): Resolution {
   const quoted = original.testID;
   const missing = {
@@ -575,7 +577,41 @@ export function bindDispatchIdentity(
     reason:
       'the refused target identity no longer resolves uniquely; stayed off screen after one scroll',
   };
-  if (!quoted) return missing;
+  if (!quoted) {
+    if (
+      !byQuote ||
+      original.testID !== undefined ||
+      step.kind !== 'press' ||
+      step.target.quoted === undefined ||
+      step.target.exact !== undefined ||
+      step.declared !== undefined ||
+      original.kind !== 'button'
+    )
+      return missing;
+    const frame = elementFrame(original);
+    if (!frame) return missing;
+    // Count the whole read before eligibility or reach can discard a twin.
+    const candidates = exactIdentities(screen, step.target, 'press')
+      .map(({ element }) => element)
+      .filter((element) => {
+        const current = elementFrame(element);
+        return (
+          sameIdentity(element, original) &&
+          current !== undefined &&
+          Math.abs(current.width - frame.width) <= 1 &&
+          Math.abs(current.height - frame.height) <= 1 &&
+          !insideAlert(element)
+        );
+      });
+    if (!candidates.length) return missing;
+    if (candidates.length > 1)
+      return {
+        refuse: 'TARGET_AMBIGUOUS',
+        reason: `"${step.target.phrase}" names ${candidates.length} buttons of the same size on the next read, and the button has no testID to tell them apart, so nothing was tapped. Give the button a testID, or quote text only one of them carries; stayed off screen after one scroll`,
+      };
+    const result = prepareTarget(step, { ...screen, elements: candidates });
+    return 'question' in result || 'refuse' in result ? missing : result;
+  }
   const target: Target = { quoted, phrase: quoted, exact: 'id' };
   const matches = exactIdentities(screen, target, step.kind)
     .map(({ element }) => element)
@@ -634,7 +670,7 @@ export function bindFillIdentity(
   return fallback ? { kind: 'fallback', fallback } : undefined;
 }
 
-function scrollTo(element: Element): { scroll: 'up' | 'down'; element: Element } {
+export function scrollTo(element: Element): { scroll: 'up' | 'down'; element: Element } {
   const frame = elementFrame(element);
   return {
     element,
@@ -935,8 +971,18 @@ export function foreignViewOnBand(
   screen: Screen,
   leaveOut?: LeaveOut,
 ): Element | undefined {
+  return foreignNodesOnBand(container, band, screen, leaveOut)[0];
+}
+
+// The touchable views outside the list that overlap the band, in list order.
+export function foreignNodesOnBand(
+  container: Element,
+  band: NonNullable<NativeNode['rect']>,
+  screen: Screen,
+  leaveOut?: LeaveOut,
+): Element[] {
   const lineage = ancestorsOf(container);
-  return screen.elements.find((other) => {
+  return screen.elements.filter((other) => {
     if (
       leaveOut?.has(other) ||
       other === container ||

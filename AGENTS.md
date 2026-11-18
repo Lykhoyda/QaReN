@@ -18,7 +18,7 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
 - Root workspace: Yarn 4 workspace, managed by `package.json` and `yarn.lock`.
   Use `corepack yarn ...` from the repository root. The Rust crate is driven
   with `cargo` directly.
-- `packages/qaren-cli/`: Rust CLI, library and binary `qaren`, `publish = false`. `src/run.rs` orchestrates `check`; the prototype debug verbs remain. Device lease root selection follows the [lock-root contract](packages/qaren-cli/README.md#ios-admission-and-cleanup). Run evidence follows the [run storage contract](packages/qaren-cli/README.md#ios-admission-and-cleanup). `check` reclaims a lease whose holder is proven dead by running that run's own cleanup (`commands/cleanup.rs`); a live or unprovable holder still refuses `DEVICE_BUSY`. For runner-host ownership and lease retention, follow the [iOS cleanup contract](packages/qaren-cli/README.md#ios-admission-and-cleanup). An external `qaren cleanup` refuses without signaling or saving anything while the run's core is recorded and its recorded qaren owner is proven alive. A signal or a vanished caller ends the run as `RUN_CANCELLED` after normal teardown (`src/cancel.rs`). `src/exec/log.rs` owns redaction before durable subprocess logging, including detached debug runs. `observe/` is the Observe SPA (Vite); `target/` and `observe/dist/` are ignored.
+- `packages/qaren-cli/`: Rust CLI, library and binary `qaren`, `publish = false`. `src/run.rs` orchestrates `check`; the prototype debug verbs remain. Device lease root selection follows the [lock-root contract](packages/qaren-cli/README.md#ios-admission-and-cleanup). Run evidence follows the [run storage contract](packages/qaren-cli/README.md#ios-admission-and-cleanup). `check` reclaims a lease whose holder is proven dead by running that run's own cleanup (`commands/cleanup.rs`); a live or unprovable holder still refuses `DEVICE_BUSY`. For runner-host ownership and lease retention, follow the [iOS cleanup contract](packages/qaren-cli/README.md#ios-admission-and-cleanup). An external `qaren cleanup` refuses run-owned cleanup without signaling its processes or saving its records while the run's core is recorded and its recorded qaren owner is proven alive. A signal or a vanished caller ends the run as `RUN_CANCELLED` after normal teardown (`src/cancel.rs`). `src/exec/log.rs` owns redaction before durable subprocess logging, including detached debug runs. `observe/` is the Observe SPA (Vite); `target/` and `observe/dist/` are ignored.
 - `packages/qaren-core/`: TypeScript screen child, entered through `src/qa/walk.ts`. The `qa/` module owns parsing, judgments, screen projections, walking and the ledger, using the kept handlers, CDP helpers, native runners and learned-action domain. `corepack yarn build:core` generates uncommitted `dist/`; entries run as `node packages/qaren-core/dist/<entry>.js`. The package is private; `scripts/build-qaren-tarball.ts` bundles its spawned entries into the CLI tarball.
 - `packages/qaren-plugin/`: the one host package. Claude, Cursor and Codex
   manifests (`.claude-plugin/`, `.cursor-plugin/`, `.codex-plugin/`), a
@@ -65,7 +65,10 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
   no longer has an `install` subcommand; pin-cache messages that still name `ensure-maestro-runner.sh`
   are rewritten with the Phase 8 install path.
 - Do not create compatibility symlinks or shims for removed paths and names.
-- The injected helper program (`src/runtime/legacy.program.txt`) and the
+- The injected helper program (`src/runtime/legacy.program.txt` plus the
+  typed ES2015 fragment rooted at `src/runtime/index.ts`, spliced into
+  `src/injected-helpers.bundle.ts` by `node scripts/build-injected-helpers.ts`;
+  CI runs it with `--check`) and the
   scripts left in `src/injected-helpers.ts` are evaluated via CDP inside an
   already-bundled Metro/Hermes runtime: `require('<package-name>')` throws
   there. Prove "is X bundled?" with Metro's dev registry

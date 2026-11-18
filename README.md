@@ -1,7 +1,7 @@
 # QaReN
 
 **QaReN (QA for React Native) is a QA engineer for your coding agent.** Claude Code, Codex or Cursor writes the React
-Native change; QaReN tries it in your app on an iOS simulator and comes back with PASS or FAIL,
+Native change; QaReN tries it in your app on an iOS simulator or Android device and comes back with PASS or FAIL,
 and the evidence behind it.
 
 [![CI](https://github.com/Lykhoyda/QaReN/actions/workflows/ci.yml/badge.svg)](https://github.com/Lykhoyda/QaReN/actions/workflows/ci.yml)
@@ -30,7 +30,7 @@ agent. Follow updates on [X](https://x.com/qaren_agent).
 ## How it works
 
 Under the hood, QaReN is the `qaren` command-line tool and a plugin that teaches Claude
-Code, Codex and Cursor to drive it. `qaren check` borrows a booted iOS simulator, builds and
+Code, Codex and Cursor to drive it. `qaren check` borrows a device, builds and
 installs the app from your working tree, starts Metro, walks a plan on the device, writes
 evidence at the artifact paths in its receipt and cleans up owned resources. Failed iOS checks
 can keep the reached state for inspection; see the [iOS cleanup contract](packages/qaren-cli/README.md#ios-admission-and-cleanup).
@@ -58,7 +58,8 @@ A plan names what to do and what to check:
 
 ## Set up QaReN
 
-Choose one of three installation options. QaReN 2.0 supports iOS simulators on Apple silicon.
+Choose one of three installation options. Guided setup prepares an iOS simulator on Apple silicon;
+for Android emulators and USB phones, follow the [Android run contract](packages/qaren-cli/README.md#check-a-plan).
 
 ### Ask your agent to install (recommended)
 
