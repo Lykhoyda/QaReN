@@ -68,6 +68,7 @@ interface SnapshotArgs {
   qaTiming?: TimingContext;
   qaContext?: QaDispatchContext;
   qaReadOnly?: boolean;
+  leakRecovery?: false;
   action: SnapshotAction;
   appId?: string;
   /** Exact authority-bound iOS UDID or Android serial. */
@@ -648,6 +649,12 @@ export function createDeviceSnapshotHandler(
     if (!result.isError && nodes && isAgentDeviceRunnerSentinel(nodes)) {
       if (args.qaContext) args.qaContext.invalidate();
       if (args.qaReadOnly) throw new QaDispatchError('ACTION_CONTEXT_CHANGED');
+      if (args.leakRecovery === false)
+        return failResult("the runner's own app is in front; no recovery attempted", {
+          code: 'RUNNER_LEAK',
+          recoveryReason: 'not-attempted',
+          mutation: 'none',
+        });
       const session = getActiveSession();
       if (args.platformPresence === true && presencePlatform(session?.platform)) {
         return failResult(

@@ -698,6 +698,12 @@ impl Failure {
             // Replacement could not complete; manual removal requires the user's device coordination.
             "RUNNER_INSTALL_BLOCKED" =>
                 "QaReN could not replace its own runner apps on the device (adb's reason is in the detail); only if nothing else is using the device, remove them with `adb -s <serial> uninstall dev.lykhoyda.rndevagent.androidrunner` and the same for `dev.lykhoyda.rndevagent.androidrunner.test`, then re-run",
+            "INSTALLED_APP_OPEN_TIMEOUT" =>
+                "re-run once: a first start on a simulator builds or downloads QaReN's runner, and a later start is faster; if it repeats, report the code with the run id",
+            "INSTALLED_APP_PROCESS_UNPROVEN" =>
+                "start the app by hand on the simulator and check that it stays open, then re-run: installed-app mode needs the launched app to keep running",
+            "INSTALLED_APP_BIND_FAILED" | "INSTALLED_APP_READ_FAILED" =>
+                "re-run once; if it repeats, report the code with the run id: QaReN's runner could not read the installed app",
             _ => "resolve the refusal, then re-run",
         }
     }

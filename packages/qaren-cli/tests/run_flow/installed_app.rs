@@ -62,13 +62,25 @@ fn script_installed_launch(mock: &mut MockRunner, bundle: &Path) {
 
 // The walk and what follows it: the post-walk read of the installed bundle, then core and host teardown.
 fn script_installed_walk(mock: &mut MockRunner, stdout: &str, exit: i32, after: CmdOutput) {
+    script_installed_core(mock, stdout, exit);
+    script_installed_teardown(mock, after, false);
+}
+
+fn script_installed_core(mock: &mut MockRunner, stdout: &str, exit: i32) {
     mock.expect_run("(exclude).qaren/actions", CmdOutput::success(""));
     script_host_probe(mock, UDID, hosts_absent());
     mock.expect_spawn_piped("walk.js", 9000, stdout, Some(exit));
     script_core_identity(mock);
+}
+
+fn script_installed_teardown(mock: &mut MockRunner, after: CmdOutput, driver: bool) {
     mock.expect_run("(exclude).qaren/actions", CmdOutput::success(""));
     mock.expect_run("simctl get_app_container", after);
     mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    if driver {
+        mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+        mock.expect_run("ps -p 9001 -o lstart=", CmdOutput::success(""));
+    }
     script_host_probe(mock, UDID, hosts_absent());
 }
 
@@ -138,6 +150,73 @@ fn installed_app_walks_the_installed_release_build_and_leaves_it_in_place() {
         "none: the app's JavaScript is not proven to come from this checkout"
     );
     assert_eq!(receipt.outcomes["candidate_drift"], "none");
+}
+
+#[test]
+fn installed_app_receipt_keeps_start_refusal_guidance_with_private_output_withheld() {
+    let timeout_next = "re-run once: a first start on a simulator builds or downloads QaReN's runner, and a later start is faster; if it repeats, report the code with the run id";
+    let read_next = "re-run once; if it repeats, report the code with the run id: QaReN's runner could not read the installed app";
+    for (code, expected_next, driver) in [
+        ("INSTALLED_APP_OPEN_TIMEOUT", timeout_next, false),
+        (
+            "INSTALLED_APP_PROCESS_UNPROVEN",
+            "start the app by hand on the simulator and check that it stays open, then re-run: installed-app mode needs the launched app to keep running",
+            false,
+        ),
+        ("INSTALLED_APP_BIND_FAILED", read_next, false),
+        ("INSTALLED_APP_READ_FAILED", read_next, false),
+        ("BUSY_FOREIGN_FLOW", "resolve the refusal, then re-run", false),
+        ("INSTALLED_APP_OPEN_TIMEOUT", timeout_next, true),
+    ] {
+        let (repo, app) = app_repo();
+        let bundle = installed_bundle(&repo, Some("release javascript"));
+        let mut mock = MockRunner::new();
+        script_installed_preflight(&mut mock, &repo);
+        script_installed_launch(&mut mock, &bundle);
+        let result = serde_json::json!({
+            "verdict": "REFUSED",
+            "code": code,
+            "message": "[private output withheld]",
+        });
+        let result = envelope(3, "result", &result.to_string());
+        let stdout = if driver {
+            let resource = envelope(2, "resource", r#"{"kind":"runner_driver","pid":9001}"#);
+            format!("{resource}\n{result}\n")
+        } else {
+            format!("{result}\n")
+        };
+        script_installed_core(&mut mock, &stdout, 4);
+        if driver {
+            mock.expect_run("ps -o pgid= -p 9001", CmdOutput::success("9001\n"));
+            mock.expect_run("ps -p 9001 -o lstart=", CmdOutput::success(LSTART));
+            mock.expect_run(
+                "ps -p 9001 -o command=",
+                CmdOutput::success(&format!("xcodebuild test-without-building -destination id={UDID}")),
+            );
+        }
+        script_installed_teardown(&mut mock, container(&bundle), driver);
+
+        let receipt = run(&mut mock, &installed_request(&repo, &app));
+
+        assert_eq!(receipt.result, ReceiptResult::Refused, "{code}");
+        if driver {
+            assert!(receipt.cleanup.contains_key("runner_driver"), "{receipt:?}");
+        }
+        let failure = receipt.failure.unwrap();
+        assert_eq!(failure.code, FailureCode::CoreRefused);
+        assert_eq!(failure.detail, format!("{code}: [private output withheld]"));
+        assert_eq!(failure.next_action, expected_next, "{code}");
+        assert_eq!(
+            failure.suggestion.as_deref(),
+            (code != "BUSY_FOREIGN_FLOW").then_some(expected_next),
+            "{code}"
+        );
+        assert_eq!(failure.phase, "prove");
+        assert!(failure.recovery.is_none());
+        let launch = mock.calls.iter().find(|call| call.label == "simctl-launch").unwrap();
+        assert_eq!(device_changing(&mock), vec![launch.rendered()]);
+        assert_eq!(mock.remaining(), 0, "{code}");
+    }
 }
 
 #[test]

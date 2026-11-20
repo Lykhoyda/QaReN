@@ -10,6 +10,8 @@ import { InputPrivacyRefusal, withInputs, currentInputs, type RunInputs } from '
 import {
   cancellationSignal,
   interruptible,
+  isAbort,
+  throwIfCancelled,
   withCancellation,
   withDeadline,
   sleep,
@@ -279,26 +281,164 @@ const QAREN_RUNNER_APP_IDS: readonly string[] = [
   RUNNER_TEST_BUNDLE_ID,
 ];
 
-// Installed-app mode replaces the debugger admission: refuse QaReN's own runners and a foreign driver, then open.
-async function openInstalled(
-  appId: string,
-  foreignDriver: () => Promise<string | undefined>,
-  open: () => Promise<void>,
-  close: () => Promise<void>,
-): Promise<void> {
+type InstalledStartStage = 'driver-check' | 'process-read' | 'session-open' | 'bind' | 'proof-read';
+
+async function openInstalled({
+  appId,
+  attachBudgetMs,
+  walkDeadline,
+  foreignDriver,
+  appProcessId,
+  open,
+  close,
+  snapshots,
+}: {
+  appId: string;
+  attachBudgetMs: number;
+  walkDeadline: number;
+  foreignDriver: () => Promise<string | undefined>;
+  appProcessId: () => Promise<number | undefined>;
+  open: () => Promise<void>;
+  close: () => Promise<void>;
+  snapshots: {
+    snapshot: Handler<{ action: 'snapshot'; qaReadOnly?: true; leakRecovery?: false }>;
+    admit: () => void;
+  };
+}): Promise<void> {
   if (QAREN_RUNNER_APP_IDS.includes(appId))
     throw new HandlerError(
       'CORE_REFUSED',
       "installed-app mode cannot test one of QaReN's own runner apps",
     );
-  const foreign = await interruptible(foreignDriver);
-  if (foreign !== undefined) throw new HandlerError('BUSY_FOREIGN_FLOW', foreign);
+
+  const started = performance.now();
+  const startDeadline = devOverlayDeadline(started, attachBudgetMs, walkDeadline);
+  const budgetSeconds = Math.ceil(Math.max(0, startDeadline - started) / 1000);
+  const startTimeout = new Error('installed-app start deadline');
+  let stage: InstalledStartStage = 'driver-check';
+  let opening: Promise<void> | undefined;
+
+  const checkDeadline = () => {
+    if (performance.now() >= startDeadline) throw startTimeout;
+  };
+  const runStage = async <T extends number | void>(
+    name: InstalledStartStage,
+    work: () => Promise<T>,
+  ): Promise<T> => {
+    stage = name;
+    const stageStarted = performance.now();
+    const elapsed = () => performance.now() - stageStarted;
+    const heartbeat = setInterval(() => {
+      const note =
+        name === 'session-open'
+          ? '; a first start on a simulator builds or downloads the runner'
+          : '';
+      log(
+        `installed app: ${name} running for ${Math.floor(elapsed() / 1000)} s of ${budgetSeconds} s${note}`,
+      );
+    }, 10_000);
+    heartbeat.unref?.();
+    try {
+      const result = await interruptible(work);
+      // Synchronous work in an awaited handler can delay the deadline timer.
+      checkDeadline();
+      const process = typeof result === 'number' ? `, process ${result}` : '';
+      log(`installed app: ${name} done in ${Math.round(elapsed())} ms${process}`);
+      return result;
+    } finally {
+      clearInterval(heartbeat);
+    }
+  };
+  const processUnproven = (reason: string) =>
+    new HandlerError(
+      'INSTALLED_APP_PROCESS_UNPROVEN',
+      `the app the run launched could not be proven to be the app in front (${stage}: ${reason})`,
+    );
+  const readProcess = async (): Promise<number> => {
+    let pid: number | undefined;
+    try {
+      pid = await appProcessId();
+    } catch (error) {
+      if (isAbort(error)) throw error;
+      throw processUnproven('process read failed');
+    }
+    if (pid === undefined || !Number.isSafeInteger(pid) || pid <= 0)
+      throw processUnproven('no process');
+    return pid;
+  };
+  const proveProcess = async (launched: number, readOnly: boolean): Promise<number> => {
+    let observed: unknown;
+    try {
+      const { data } = unwrap<{ appProcessIdentifier?: unknown }>(
+        await snapshots.snapshot(
+          readOnly
+            ? { action: 'snapshot', qaReadOnly: true }
+            : { action: 'snapshot', leakRecovery: false },
+        ),
+      );
+      observed = data?.appProcessIdentifier;
+    } catch (error) {
+      if (isAbort(error)) throw error;
+      if (readOnly && error instanceof HandlerError && error.meta?.reason === 'app-not-running')
+        throw processUnproven('app not running');
+      const code =
+        error instanceof HandlerError || error instanceof QaDispatchError ? error.code : '';
+      const inner = /^[A-Z][A-Z0-9_]*$/.test(code) ? code : 'UNKNOWN';
+      throw readOnly
+        ? new HandlerError(
+            'INSTALLED_APP_READ_FAILED',
+            `the first read-only read of the installed app failed (${inner})`,
+          )
+        : new HandlerError(
+            'INSTALLED_APP_BIND_FAILED',
+            `the runner could not bind the installed app (${inner})`,
+          );
+    }
+    if (typeof observed !== 'number' || !Number.isSafeInteger(observed) || observed <= 0)
+      throw processUnproven('no process id in the read');
+    if (observed !== launched) throw processUnproven(`process ${launched} became ${observed}`);
+    return observed;
+  };
+
+  log(`installed app: start (budget ${budgetSeconds} s)`);
   try {
-    await open();
+    await withDeadline(startDeadline, startTimeout, async () => {
+      await runStage('driver-check', async () => {
+        const foreign = await foreignDriver();
+        if (foreign !== undefined) throw new HandlerError('BUSY_FOREIGN_FLOW', foreign);
+      });
+      const launched = await runStage('process-read', readProcess);
+      await runStage('session-open', () => (opening = open()));
+      await runStage('bind', () => proveProcess(launched, false));
+      await runStage('proof-read', () => proveProcess(launched, true));
+    });
+    throwIfCancelled();
+    checkDeadline();
+    snapshots.admit();
   } catch (error) {
-    await close();
+    if (opening) {
+      // A runner can be starting before the handler has a session that close can stop.
+      let timer: NodeJS.Timeout | undefined;
+      const backstop = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, 35_000);
+        timer.unref?.();
+      });
+      try {
+        await Promise.race([opening.catch(() => undefined), backstop]);
+      } finally {
+        clearTimeout(timer);
+      }
+      await close();
+    }
+    throwIfCancelled();
+    if (error === startTimeout)
+      throw new HandlerError(
+        'INSTALLED_APP_OPEN_TIMEOUT',
+        `the installed-app start did not finish within ${budgetSeconds} s; it stopped in stage ${stage}`,
+      );
     throw error;
   }
+  log(`installed app: start done in ${Math.round(performance.now() - started)} ms`);
 }
 
 function act(
@@ -547,6 +687,10 @@ export async function openSession(
   snapshotHandler = createDeviceSnapshotHandler,
   foreignFlowCheck: (udid: string) => Promise<ForeignCheckResult> = (udid) =>
     foreignFlowGate.check(udid),
+  appProcessId: (
+    bundleId: string,
+    deviceId: string,
+  ) => Promise<number | undefined> = iosAppProcessId,
 ): Promise<Session> {
   const { target, platform, appId } = request;
   const installed = request.appSource === 'installed';
@@ -581,6 +725,7 @@ export async function openSession(
     platformPresence?: boolean;
     presenceBudgetMs?: number;
     qaReadOnly?: boolean;
+    leakRecovery?: false;
     qaTiming?: TimingContext;
   }> = snapshotHandler();
   let deviceOpen = false;
@@ -634,7 +779,19 @@ export async function openSession(
       sessionName: `qaren-${request.runId}`,
     });
   };
-  if (installed) await openInstalled(appId, foreignDriver, open, close);
+  const admittedSnapshots = postAdmissionSnapshots(snapshot, appId, { releaseApp: installed });
+  if (installed) {
+    await openInstalled({
+      appId,
+      attachBudgetMs: request.attachBudgetMs,
+      walkDeadline,
+      foreignDriver,
+      appProcessId: () => appProcessId(appId, target.deviceId),
+      open,
+      close,
+      snapshots: admittedSnapshots,
+    });
+  }
   const proof = installed
     ? undefined
     : await cdp.withAttachDeadline(performance.now() + remainingMs(), () =>
@@ -761,7 +918,6 @@ export async function openSession(
         ).catch(logRefusal),
       );
   if (gate) log(`android start: admission returned at ${now()} ms`);
-  const admittedSnapshots = postAdmissionSnapshots(snapshot, appId, { releaseApp: installed });
   cancellationSignal();
   log(
     proof
@@ -858,7 +1014,7 @@ export async function openSession(
     }
   }
   const admittedAtMs = Date.now();
-  admittedSnapshots.admit();
+  if (!installed) admittedSnapshots.admit();
   cancellationSignal();
 
   const press = createDevicePressHandler(getClient);

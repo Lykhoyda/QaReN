@@ -1617,14 +1617,20 @@ fn run_inner(
             ),
             Verdict::Refused { code, message } => (
                 ReceiptResult::Refused,
-                Some(boundary(&|| Failure {
-                    subreason: Failure::core_refusal_subreason(code),
-                    ..Failure::new(
+                Some(boundary(&|| {
+                    let failure = Failure::new(
                         "prove",
                         refusal_code(code),
                         format!("{code}: {message}"),
                         Failure::core_refusal_next_action(code),
-                    )
+                    );
+                    Failure {
+                        subreason: Failure::core_refusal_subreason(code),
+                        suggestion: code
+                            .starts_with("INSTALLED_APP_")
+                            .then(|| failure.next_action.clone()),
+                        ..failure
+                    }
                 })),
             ),
         };
