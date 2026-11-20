@@ -686,3 +686,35 @@ fn record_is_accepted_for_check_and_pr_and_rejected_elsewhere() {
         assert!(stderr.contains("usage: qaren check"), "{stderr}");
     }
 }
+
+#[test]
+fn installed_app_is_a_check_only_flag() {
+    let output = Command::new(env!("CARGO_BIN_EXE_qaren"))
+        .args(["pr", "1", "--plan-file", "p.md", "--installed-app"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--installed-app is only valid for check"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("[--installed-app]"), "{stderr}");
+    let output = Command::new(env!("CARGO_BIN_EXE_qaren"))
+        .args([
+            "check",
+            "--plan-file",
+            "p.md",
+            "--installed-app",
+            "--config",
+            "/nonexistent/qaren-config",
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_ne!(output.status.code(), Some(2), "{stderr}");
+    assert!(!stderr.contains("unknown flag"), "{stderr}");
+    let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_only_host_probes(&receipt);
+}

@@ -54,6 +54,8 @@ pub struct RunRequest {
     pub restart_device: bool,
     pub shutdown_device_on_exit: bool,
     pub fresh_install: bool,
+    // qaren check --installed-app: walk the app already installed on the simulator; never build, install or remove it.
+    pub installed_app: bool,
     pub runtime_dir: PathBuf,
     pub node: Option<PathBuf>,
     pub lock_root: PathBuf,
@@ -306,6 +308,44 @@ fn pr_failure(detail: String) -> Failure {
     )
 }
 
+fn installed_app_unsupported(detail: &str, next: &str) -> Failure {
+    Failure::new(
+        "preflight",
+        FailureCode::InstalledAppUnsupported,
+        detail,
+        next,
+    )
+}
+
+// Returned before a run record exists, so each next step reaches the receipt as written.
+fn refuse_installed_app_pairs(req: &RunRequest) -> Result<(), Failure> {
+    if req.platform != Platform::Ios {
+        return Err(installed_app_unsupported(
+            "installed-app mode supports the iOS simulator only in this version",
+            "run without --installed-app, or use --platform ios with a simulator",
+        ));
+    }
+    if req.fresh_install {
+        return Err(installed_app_unsupported(
+            "--fresh-install uninstalls the app, and installed-app mode never removes the app it tests",
+            "drop --fresh-install; or drop --installed-app to let QaReN install its development build",
+        ));
+    }
+    if req.record {
+        return Err(installed_app_unsupported(
+            "installed-app mode makes no recording",
+            "drop --record",
+        ));
+    }
+    if req.pr.is_some() {
+        return Err(installed_app_unsupported(
+            "installed-app mode is not available for qaren pr",
+            "run qaren check --installed-app instead",
+        ));
+    }
+    Ok(())
+}
+
 // Only pre-record failures may escape without teardown.
 fn run_inner(
     runner: &mut dyn Runner,
@@ -323,8 +363,11 @@ fn run_inner(
         req.restart_device,
         req.shutdown_device_on_exit,
     )?;
-    let (config, config_raw) = CheckConfig::load(&req.config_path)?;
-    let video_policy_source =
+    if req.installed_app {
+        refuse_installed_app_pairs(req)?;
+    }
+    let (mut config, config_raw) = CheckConfig::load(&req.config_path)?;
+    let mut video_policy_source =
         match req
             .config_path
             .strip_prefix(&req.project_root)
@@ -343,6 +386,20 @@ fn run_inner(
                     .to_string_lossy()
             ),
         };
+    let mut login_block_dropped = false;
+    if req.installed_app {
+        if config.video == record::VideoPolicy::NonStrict {
+            eprintln!("▸ installed-app mode: strict video rules apply; `video: non-strict` in the config is not used");
+        }
+        config.video = record::VideoPolicy::Strict;
+        video_policy_source = "installed-app mode".to_string();
+        if config.login_block.is_some() {
+            eprintln!("▸ installed-app mode: the login block is not replayed; write the login steps in the plan");
+            config.login_block = None;
+            config.login_marker = None;
+            login_block_dropped = true;
+        }
+    }
     config.validate_for_platform(req.platform)?;
     if req.platform == Platform::Ios {
         if let Some(workspace) = config.ios.as_ref().and_then(|ios| ios.build.as_ref()) {
@@ -450,6 +507,7 @@ fn run_inner(
         &inventory,
         &resolved_inputs,
         preflight_jev,
+        req.installed_app,
     )?;
     // The parser read the file by path; the walk must use the bytes that passed.
     if read_plan(&req.plan_file)? != plan {
@@ -561,52 +619,59 @@ fn run_inner(
             )));
         }
     }
-    prepare::check_prereqs(runner, &scenario, req.android_home.as_deref())?;
-    let probe = crate::adapters::pnpm::prove_group(
-        runner,
-        &crate::adapters::pnpm::group_probe_spec(&cand.project_root),
-        crate::adapters::pnpm::PROBE_ATTEMPTS,
-        config.deadlines.install_deps_seconds,
-    );
-    ensure_running(runner, "prereqs")?;
-    match probe.outcome {
-        crate::adapters::pnpm::GroupOutcome::Proved => {}
-        crate::adapters::pnpm::GroupOutcome::Unproven => {
-            return Err(Failure::new(
-                "prereqs",
-                FailureCode::PnpmProcessGroupUnsupported,
-                format!(
-                    "{}; its exec launch did not prove that it preserves QaReN's process group ({})",
-                    crate::adapters::pnpm::source_detail(runner),
-                    probe.attempts.last().unwrap().output.summary()
-                ),
-                crate::adapters::pnpm::GROUP_FIX,
-            ));
+    let probe = if req.installed_app {
+        prepare::check_installed_prereqs(runner)?;
+        ensure_running(runner, "prereqs")?;
+        None
+    } else {
+        prepare::check_prereqs(runner, &scenario, req.android_home.as_deref())?;
+        let probe = crate::adapters::pnpm::prove_group(
+            runner,
+            &crate::adapters::pnpm::group_probe_spec(&cand.project_root),
+            crate::adapters::pnpm::PROBE_ATTEMPTS,
+            config.deadlines.install_deps_seconds,
+        );
+        ensure_running(runner, "prereqs")?;
+        match probe.outcome {
+            crate::adapters::pnpm::GroupOutcome::Proved => {}
+            crate::adapters::pnpm::GroupOutcome::Unproven => {
+                return Err(Failure::new(
+                    "prereqs",
+                    FailureCode::PnpmProcessGroupUnsupported,
+                    format!(
+                        "{}; its exec launch did not prove that it preserves QaReN's process group ({})",
+                        crate::adapters::pnpm::source_detail(runner),
+                        probe.attempts.last().unwrap().output.summary()
+                    ),
+                    crate::adapters::pnpm::GROUP_FIX,
+                ));
+            }
+            crate::adapters::pnpm::GroupOutcome::TimedOut => {
+                let durations: Vec<String> = probe
+                    .attempts
+                    .iter()
+                    .map(|a| a.output.duration_ms.to_string())
+                    .collect();
+                let load = match crate::core::host_load_1m() {
+                    Some(load) => format!("host 1-minute load {load:.1}"),
+                    None => "host load unavailable".to_string(),
+                };
+                return Err(Failure::new(
+                    "prereqs",
+                    FailureCode::PnpmProbeTimedOut,
+                    format!(
+                        "{}; its exec probe timed out on {} attempt(s) ({} ms) within {} ms and proved nothing about process groups; the host is likely busy ({load})",
+                        crate::adapters::pnpm::source_detail(runner),
+                        probe.attempts.len(),
+                        durations.join(", "),
+                        probe.elapsed_ms
+                    ),
+                    "re-run qaren check when the machine is less loaded, or run qaren doctor",
+                ));
+            }
         }
-        crate::adapters::pnpm::GroupOutcome::TimedOut => {
-            let durations: Vec<String> = probe
-                .attempts
-                .iter()
-                .map(|a| a.output.duration_ms.to_string())
-                .collect();
-            let load = match crate::core::host_load_1m() {
-                Some(load) => format!("host 1-minute load {load:.1}"),
-                None => "host load unavailable".to_string(),
-            };
-            return Err(Failure::new(
-                "prereqs",
-                FailureCode::PnpmProbeTimedOut,
-                format!(
-                    "{}; its exec probe timed out on {} attempt(s) ({} ms) within {} ms and proved nothing about process groups; the host is likely busy ({load})",
-                    crate::adapters::pnpm::source_detail(runner),
-                    probe.attempts.len(),
-                    durations.join(", "),
-                    probe.elapsed_ms
-                ),
-                "re-run qaren check when the machine is less loaded, or run qaren doctor",
-            ));
-        }
-    }
+        Some(probe)
+    };
     std::fs::create_dir_all(&req.runs_root).map_err(|e| {
         Failure::new(
             "preflight",
@@ -635,6 +700,18 @@ fn run_inner(
     ) {
         Ok(lease) => lease,
         Err(busy) if busy.failure.code == FailureCode::DeviceBusy => {
+            if req.installed_app {
+                if let Some(holder) =
+                    crate::commands::cleanup::dead_holder_owns_simulator(&req.runs_root, &busy)
+                {
+                    return Err(Failure::new(
+                        "lease",
+                        FailureCode::DeviceBusy,
+                        format!("the device lease is held by unfinished run {holder}, which created this simulator; cleaning that run up can delete the simulator and every app on it"),
+                        format!("use a simulator QaReN did not create; or run qaren cleanup {holder} --json yourself if this simulator may be deleted"),
+                    ));
+                }
+            }
             recovered = Some(crate::commands::cleanup::reclaim_dead_holder_with_runtime(
                 runner,
                 &req.runs_root,
@@ -653,8 +730,10 @@ fn run_inner(
         Err(busy) => return Err(busy.failure),
     };
     // After reclaim, so a dead holder's surviving Metro is stopped by its own cleanup first.
-    if let Err(f) = prepare::check_port_free(runner, config.metro_port) {
-        return Err(lease::release_or_annotate(&lease, f));
+    if !req.installed_app {
+        if let Err(f) = prepare::check_port_free(runner, config.metro_port) {
+            return Err(lease::release_or_annotate(&lease, f));
+        }
     }
 
     if pr_state.is_none() {
@@ -760,6 +839,12 @@ fn run_inner(
             ("video_policy_source".into(), video_policy_source.clone()),
         ]
         .into_iter()
+        .chain(login_block_dropped.then(|| {
+            (
+                "login_block".to_string(),
+                "not replayed in installed-app mode".to_string(),
+            )
+        }))
         .chain(adb_server_started.map(adb_server_note))
         .chain(
             device
@@ -782,7 +867,7 @@ fn run_inner(
         let finish_failed = |ctx: Ctx, failure: Failure| {
             finish_failed(ctx, &node, &req.runtime_dir, failure, false)
         };
-        if probe.attempts.len() > 1 {
+        if let Some(probe) = probe.as_ref().filter(|probe| probe.attempts.len() > 1) {
             for (i, attempt) in probe.attempts.iter().enumerate() {
                 let label = format!("pnpm-group-probe_attempt_{}", i + 1);
                 ctx.timings
@@ -869,7 +954,7 @@ fn run_inner(
                 Err(f) => return finish_failed(ctx, f),
             }
         }
-        if req.platform == Platform::Ios {
+        if req.platform == Platform::Ios && !req.installed_app {
             if let Err(f) = install_run_deps(&mut ctx, &config, pr_state.as_ref()) {
                 return finish_failed(ctx, f);
             }
@@ -944,99 +1029,121 @@ fn run_inner(
         }
         let t = ctx.mark("deps", t);
         events::stage("deps", StageState::Passed, None, None);
-        if let Err(f) = ensure_running(&*ctx.runner, "build") {
-            return finish_failed(ctx, f);
-        }
-        events::stage("build_decision", StageState::Running, None, None);
-
-        let plan_decision = match prepare::plan_build(&mut ctx) {
-            Ok(plan) => plan,
-            Err(f) => return finish_failed(ctx, f),
-        };
-        ctx.record.build = Some(plan_decision.clone());
-        if plan_decision.decision == BuildDecision::Clean && req.platform == Platform::Ios {
-            let shortfall = match tightest_volume(ctx.runner, &[&req.runs_root, &project_root]) {
-                Ok((kb, path)) => clean_ios_build_shortfall(kb, path),
-                Err(f) => return finish_failed(ctx, f),
-            };
-            if let Some(detail) = shortfall {
-                // The receipt's next action becomes `qaren cleanup` once resources are owned, so the detail carries the remedy.
-                let detail = format!("{detail}; {FREE_DISK_FIX}");
-                let f = Failure::new(
-                    "build",
-                    FailureCode::DiskBudgetExceeded,
-                    detail,
-                    FREE_DISK_FIX,
-                );
-                return finish_failed(ctx, f);
-            }
-        }
-        // iOS claims its build lock inside build_ios_locked, so the lock covers only the build.
-        let ios_build =
-            plan_decision.decision != BuildDecision::Reuse && req.platform == Platform::Ios;
-        if plan_decision.decision != BuildDecision::Reuse && !ios_build {
-            if let Err(f) = prepare::claim_build_lock(&mut ctx, &req.lock_root) {
-                return finish_failed(ctx, f);
-            }
-        }
-        ctx.record.phase = Phase::ResourcesAllocated;
-        if let Err(f) = ctx.save() {
-            return finish_failed(ctx, f);
-        }
-        let t = ctx.mark("plan", t);
-        let decision = plan_decision.decision.as_str();
-        events::stage("build_decision", StageState::Passed, Some(decision), None);
-
-        if plan_decision.decision == BuildDecision::Reuse {
+        let (t, installed_js) = if req.installed_app {
+            events::stage(
+                "build_decision",
+                StageState::Passed,
+                Some("installed"),
+                None,
+            );
             events::stage("prebuild", StageState::Skipped, None, None);
             events::stage("native_build", StageState::Skipped, None, None);
             events::stage("install_launch_ready", StageState::Running, None, None);
-            if let Err(f) = prepare::run_reuse_path(&mut ctx, &plan_decision, t) {
-                return finish_failed(ctx, f);
-            }
-            events::stage("install_launch_ready", StageState::Passed, None, None);
-        } else if ios_build {
-            let built = match prepare::build_ios_locked(&mut ctx, &plan_decision, &req.lock_root) {
-                Ok(built) => built,
+            let js = match prepare::launch_installed_app(&mut ctx) {
+                Ok(js) => js,
                 Err(f) => return finish_failed(ctx, f),
             };
-            events::stage("install_launch_ready", StageState::Running, None, None);
-            let now = ctx.runner.now_epoch_ms();
-            if let Err(f) = prepare::run_reuse_path(&mut ctx, &built, now) {
+            events::stage("install_launch_ready", StageState::Passed, None, None);
+            events::stage("verify", StageState::Skipped, None, None);
+            (ctx.mark("install_launch_ready", t), Some(js))
+        } else {
+            if let Err(f) = ensure_running(&*ctx.runner, "build") {
                 return finish_failed(ctx, f);
             }
-            events::stage("install_launch_ready", StageState::Passed, None, None);
-        } else {
-            if plan_decision.decision == BuildDecision::Clean {
-                events::stage("prebuild", StageState::Running, None, None);
-                if let Err(f) = prepare::run_clean_preparation(&mut ctx, &plan_decision) {
+            events::stage("build_decision", StageState::Running, None, None);
+
+            let plan_decision = match prepare::plan_build(&mut ctx) {
+                Ok(plan) => plan,
+                Err(f) => return finish_failed(ctx, f),
+            };
+            ctx.record.build = Some(plan_decision.clone());
+            if plan_decision.decision == BuildDecision::Clean && req.platform == Platform::Ios {
+                let shortfall = match tightest_volume(ctx.runner, &[&req.runs_root, &project_root])
+                {
+                    Ok((kb, path)) => clean_ios_build_shortfall(kb, path),
+                    Err(f) => return finish_failed(ctx, f),
+                };
+                if let Some(detail) = shortfall {
+                    // The receipt's next action becomes `qaren cleanup` once resources are owned, so the detail carries the remedy.
+                    let detail = format!("{detail}; {FREE_DISK_FIX}");
+                    let f = Failure::new(
+                        "build",
+                        FailureCode::DiskBudgetExceeded,
+                        detail,
+                        FREE_DISK_FIX,
+                    );
                     return finish_failed(ctx, f);
                 }
-                events::stage("prebuild", StageState::Passed, None, None);
-            } else {
+            }
+            // iOS claims its build lock inside build_ios_locked, so the lock covers only the build.
+            let ios_build =
+                plan_decision.decision != BuildDecision::Reuse && req.platform == Platform::Ios;
+            if plan_decision.decision != BuildDecision::Reuse && !ios_build {
+                if let Err(f) = prepare::claim_build_lock(&mut ctx, &req.lock_root) {
+                    return finish_failed(ctx, f);
+                }
+            }
+            ctx.record.phase = Phase::ResourcesAllocated;
+            if let Err(f) = ctx.save() {
+                return finish_failed(ctx, f);
+            }
+            let t = ctx.mark("plan", t);
+            let decision = plan_decision.decision.as_str();
+            events::stage("build_decision", StageState::Passed, Some(decision), None);
+
+            if plan_decision.decision == BuildDecision::Reuse {
                 events::stage("prebuild", StageState::Skipped, None, None);
+                events::stage("native_build", StageState::Skipped, None, None);
+                events::stage("install_launch_ready", StageState::Running, None, None);
+                if let Err(f) = prepare::run_reuse_path(&mut ctx, &plan_decision, t) {
+                    return finish_failed(ctx, f);
+                }
+                events::stage("install_launch_ready", StageState::Passed, None, None);
+            } else if ios_build {
+                let built =
+                    match prepare::build_ios_locked(&mut ctx, &plan_decision, &req.lock_root) {
+                        Ok(built) => built,
+                        Err(f) => return finish_failed(ctx, f),
+                    };
+                events::stage("install_launch_ready", StageState::Running, None, None);
+                let now = ctx.runner.now_epoch_ms();
+                if let Err(f) = prepare::run_reuse_path(&mut ctx, &built, now) {
+                    return finish_failed(ctx, f);
+                }
+                events::stage("install_launch_ready", StageState::Passed, None, None);
+            } else {
+                if plan_decision.decision == BuildDecision::Clean {
+                    events::stage("prebuild", StageState::Running, None, None);
+                    if let Err(f) = prepare::run_clean_preparation(&mut ctx, &plan_decision) {
+                        return finish_failed(ctx, f);
+                    }
+                    events::stage("prebuild", StageState::Passed, None, None);
+                } else {
+                    events::stage("prebuild", StageState::Skipped, None, None);
+                }
+                events::stage("native_build", StageState::Running, None, None);
+                if let Err(f) = prepare::build_and_ready(&mut ctx) {
+                    return finish_failed(ctx, f);
+                }
+                // build_and_ready splits native_build from install, as on iOS.
+                events::stage("install_launch_ready", StageState::Passed, None, None);
             }
-            events::stage("native_build", StageState::Running, None, None);
-            if let Err(f) = prepare::build_and_ready(&mut ctx) {
-                return finish_failed(ctx, f);
+            let t = ctx.mark("build_and_ready", t);
+            events::stage("verify", StageState::Running, None, None);
+            let fp = match prepare::recheck_fingerprint(&mut ctx, &plan_decision) {
+                Ok(fp) => fp,
+                Err(f) => return finish_failed(ctx, f),
+            };
+            if plan_decision.decision != BuildDecision::Reuse && !ios_build {
+                if let Err(f) = prepare::record_build_result(&mut ctx, &fp) {
+                    return finish_failed(ctx, f);
+                }
+                prepare::release_build_lock(&mut ctx);
             }
-            // build_and_ready splits native_build from install, as on iOS.
-            events::stage("install_launch_ready", StageState::Passed, None, None);
-        }
-        let t = ctx.mark("build_and_ready", t);
-        events::stage("verify", StageState::Running, None, None);
-        let fp = match prepare::recheck_fingerprint(&mut ctx, &plan_decision) {
-            Ok(fp) => fp,
-            Err(f) => return finish_failed(ctx, f),
+            let t = ctx.mark("verify", t);
+            events::stage("verify", StageState::Passed, None, None);
+            (t, None)
         };
-        if plan_decision.decision != BuildDecision::Reuse && !ios_build {
-            if let Err(f) = prepare::record_build_result(&mut ctx, &fp) {
-                return finish_failed(ctx, f);
-            }
-            prepare::release_build_lock(&mut ctx);
-        }
-        let t = ctx.mark("verify", t);
-        events::stage("verify", StageState::Passed, None, None);
         if let Err(f) = ensure_running(&*ctx.runner, "walk") {
             return finish_failed(ctx, f);
         }
@@ -1122,6 +1229,9 @@ fn run_inner(
         // Any exit after this point carries the check's video statement; the normal path replaces it.
         if pr_state.is_none() {
             let provisional = match &video {
+                _ if req.installed_app => {
+                    "not recorded: installed-app mode makes no recording".to_string()
+                }
                 _ if !req.record => {
                     "not recorded; pass --record to qaren check to record this walk".to_string()
                 }
@@ -1165,6 +1275,7 @@ fn run_inner(
             login_block: config.login_block.clone(),
             video_policy: config.video,
             login_marker: config.login_marker.clone(),
+            app_source: req.installed_app.then_some("installed"),
             target: CoreTarget {
                 device_id: device.id.clone(),
                 device_name: device.name.clone(),
@@ -1294,9 +1405,25 @@ fn run_inner(
         }
 
         // Captured before teardown removes the candidate worktree.
-        let verified = candidate::verify_unchanged(ctx.runner, &ctx.record.candidate);
+        let verified = match &installed_js {
+            Some(before) => {
+                let app_id = ctx.record.candidate.app_id.clone();
+                match prepare::installed_js_sha256(ctx.runner, &device.id, &app_id) {
+                    Some(now) if &now == before => Ok(()),
+                    Some(_) => Err(candidate::CandidateCheck::Drifted(
+                        "the installed app's JavaScript changed during the run".to_string(),
+                    )),
+                    None => Err(candidate::CandidateCheck::Unreadable(
+                        "the installed app could not be read after the walk".to_string(),
+                    )),
+                }
+            }
+            None => candidate::verify_unchanged(ctx.runner, &ctx.record.candidate),
+        };
         let final_verification = FinalVerification {
-            tested: ctx.record.candidate.git_sha.clone(),
+            tested: installed_js
+                .clone()
+                .unwrap_or_else(|| ctx.record.candidate.git_sha.clone()),
             matched: verified.is_ok(),
             detail: verified
                 .as_ref()
@@ -1318,7 +1445,16 @@ fn run_inner(
                     .push(("candidate_drift".to_string(), check.detail().to_string()));
             }
             Err(candidate::CandidateCheck::Unreadable(detail)) => {
-                let unavailable = Failure::candidate_unavailable("verify");
+                let unavailable = if installed_js.is_some() {
+                    Failure::new(
+                        "verify",
+                        FailureCode::CandidateUnavailable,
+                        "the installed app could not be read after the walk",
+                        "check that the app is still installed on the simulator, then re-run",
+                    )
+                } else {
+                    Failure::candidate_unavailable("verify")
+                };
                 outcome.verdict = Verdict::Refused {
                     code: "CANDIDATE_UNAVAILABLE".to_string(),
                     message: unavailable.detail.to_string(),
@@ -1481,14 +1617,20 @@ fn run_inner(
             ),
             Verdict::Refused { code, message } => (
                 ReceiptResult::Refused,
-                Some(boundary(&|| Failure {
-                    subreason: Failure::core_refusal_subreason(code),
-                    ..Failure::new(
+                Some(boundary(&|| {
+                    let failure = Failure::new(
                         "prove",
                         refusal_code(code),
                         format!("{code}: {message}"),
                         Failure::core_refusal_next_action(code),
-                    )
+                    );
+                    Failure {
+                        subreason: Failure::core_refusal_subreason(code),
+                        suggestion: code
+                            .starts_with("INSTALLED_APP_")
+                            .then(|| failure.next_action.clone()),
+                        ..failure
+                    }
                 })),
             ),
         };
@@ -4073,6 +4215,7 @@ fn preflight_inputs(
     inventory: &Value,
     inputs: &crate::redact::ResolvedInputs<'_>,
     accounting: &mut Option<core::JevRollup>,
+    quoted_only: bool,
 ) -> Result<Value, Failure> {
     let unavailable = || {
         Failure::new(
@@ -4085,6 +4228,9 @@ fn preflight_inputs(
     let mut request = serde_json::json!({ "v": 1, "phase": "plan-preflight", "plan": plan, "platform": platform_str(platform), "appId": config.app_id });
     if let Some(login) = inventory.get("loginSnapshot") {
         request["loginSnapshot"] = login.clone();
+    }
+    if quoted_only {
+        request["quotedOnly"] = Value::Bool(true);
     }
     let mut bytes = Vec::new();
     inputs

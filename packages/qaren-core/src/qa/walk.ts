@@ -10,6 +10,8 @@ import { InputPrivacyRefusal, withInputs, currentInputs, type RunInputs } from '
 import {
   cancellationSignal,
   interruptible,
+  isAbort,
+  throwIfCancelled,
   withCancellation,
   withDeadline,
   sleep,
@@ -54,11 +56,14 @@ import {
 } from '../handlers/device-system-dialog.js';
 import { foregroundSurfaceFromSnapshot } from '../handlers/expo-dev-menu.js';
 import { compileFlow, FlowCompileError } from '../flow/compile.js';
-import { foreignFlowGate } from '../lifecycle/foreign-flow-gate.js';
+import { type ForeignCheckResult, foreignFlowGate } from '../lifecycle/foreign-flow-gate.js';
+import { LEGACY_BUNDLE_IDS } from '../runners/ensure-single-runner.js';
 import { androidForeignDriverMessage } from '../runners/external-runner-detect.js';
 import {
   readIOSLabelProvenance,
   readIOSHitProbe,
+  RUNNER_HOST_BUNDLE_ID,
+  RUNNER_TEST_BUNDLE_ID,
   observeAppProcess,
   observeRunnerDrivers,
   observeRunnerRelaunches,
@@ -269,6 +274,173 @@ interface Session {
 type Handler<A> = (args: A) => Promise<ToolResult>;
 
 const stop = createStop();
+
+const QAREN_RUNNER_APP_IDS: readonly string[] = [
+  ...LEGACY_BUNDLE_IDS,
+  RUNNER_HOST_BUNDLE_ID,
+  RUNNER_TEST_BUNDLE_ID,
+];
+
+type InstalledStartStage = 'driver-check' | 'process-read' | 'session-open' | 'bind' | 'proof-read';
+
+async function openInstalled({
+  appId,
+  attachBudgetMs,
+  walkDeadline,
+  foreignDriver,
+  appProcessId,
+  open,
+  close,
+  snapshots,
+}: {
+  appId: string;
+  attachBudgetMs: number;
+  walkDeadline: number;
+  foreignDriver: () => Promise<string | undefined>;
+  appProcessId: () => Promise<number | undefined>;
+  open: () => Promise<void>;
+  close: () => Promise<void>;
+  snapshots: {
+    snapshot: Handler<{ action: 'snapshot'; qaReadOnly?: true; leakRecovery?: false }>;
+    admit: () => void;
+  };
+}): Promise<void> {
+  if (QAREN_RUNNER_APP_IDS.includes(appId))
+    throw new HandlerError(
+      'CORE_REFUSED',
+      "installed-app mode cannot test one of QaReN's own runner apps",
+    );
+
+  const started = performance.now();
+  const startDeadline = devOverlayDeadline(started, attachBudgetMs, walkDeadline);
+  const budgetMs = Math.max(0, Math.min(attachBudgetMs, startDeadline - started));
+  const budgetSeconds = Math.ceil(budgetMs / 1000);
+  const startTimeout = new Error('installed-app start deadline');
+  let stage: InstalledStartStage = 'driver-check';
+  let opening: Promise<void> | undefined;
+
+  const checkDeadline = () => {
+    if (performance.now() >= startDeadline) throw startTimeout;
+  };
+  const runStage = async <T extends number | void>(
+    name: InstalledStartStage,
+    work: () => Promise<T>,
+  ): Promise<T> => {
+    stage = name;
+    const stageStarted = performance.now();
+    const elapsed = () => performance.now() - stageStarted;
+    const heartbeat = setInterval(() => {
+      const note =
+        name === 'session-open'
+          ? '; a first start on a simulator builds or downloads the runner'
+          : '';
+      log(
+        `installed app: ${name} running for ${Math.floor(elapsed() / 1000)} s of ${budgetSeconds} s${note}`,
+      );
+    }, 10_000);
+    heartbeat.unref?.();
+    try {
+      const result = await interruptible(work);
+      // Synchronous work in an awaited handler can delay the deadline timer.
+      checkDeadline();
+      const process = typeof result === 'number' ? `, process ${result}` : '';
+      log(`installed app: ${name} done in ${Math.round(elapsed())} ms${process}`);
+      return result;
+    } finally {
+      clearInterval(heartbeat);
+    }
+  };
+  const processUnproven = (reason: string) =>
+    new HandlerError(
+      'INSTALLED_APP_PROCESS_UNPROVEN',
+      `the app the run launched could not be proven to be the app in front (${stage}: ${reason})`,
+    );
+  const readProcess = async (): Promise<number> => {
+    let pid: number | undefined;
+    try {
+      pid = await appProcessId();
+    } catch (error) {
+      if (isAbort(error)) throw error;
+      throw processUnproven('process read failed');
+    }
+    if (pid === undefined || !Number.isSafeInteger(pid) || pid <= 0)
+      throw processUnproven('no process');
+    return pid;
+  };
+  const proveProcess = async (launched: number, readOnly: boolean): Promise<number> => {
+    let observed: unknown;
+    try {
+      const { data } = unwrap<{ appProcessIdentifier?: unknown }>(
+        await snapshots.snapshot(
+          readOnly
+            ? { action: 'snapshot', qaReadOnly: true }
+            : { action: 'snapshot', leakRecovery: false },
+        ),
+      );
+      observed = data?.appProcessIdentifier;
+    } catch (error) {
+      if (isAbort(error)) throw error;
+      if (readOnly && error instanceof HandlerError && error.meta?.reason === 'app-not-running')
+        throw processUnproven('app not running');
+      const code =
+        error instanceof HandlerError || error instanceof QaDispatchError ? error.code : '';
+      const inner = /^[A-Z][A-Z0-9_]*$/.test(code) ? code : 'UNKNOWN';
+      throw readOnly
+        ? new HandlerError(
+            'INSTALLED_APP_READ_FAILED',
+            `the first read-only read of the installed app failed (${inner})`,
+          )
+        : new HandlerError(
+            'INSTALLED_APP_BIND_FAILED',
+            `the runner could not bind the installed app (${inner})`,
+          );
+    }
+    if (typeof observed !== 'number' || !Number.isSafeInteger(observed) || observed <= 0)
+      throw processUnproven('no process id in the read');
+    if (observed !== launched) throw processUnproven(`process ${launched} became ${observed}`);
+    return observed;
+  };
+
+  log(`installed app: start (budget ${budgetSeconds} s)`);
+  try {
+    await withDeadline(startDeadline, startTimeout, async () => {
+      await runStage('driver-check', async () => {
+        const foreign = await foreignDriver();
+        if (foreign !== undefined) throw new HandlerError('BUSY_FOREIGN_FLOW', foreign);
+      });
+      const launched = await runStage('process-read', readProcess);
+      await runStage('session-open', () => (opening = open()));
+      await runStage('bind', () => proveProcess(launched, false));
+      await runStage('proof-read', () => proveProcess(launched, true));
+    });
+    throwIfCancelled();
+    checkDeadline();
+    snapshots.admit();
+  } catch (error) {
+    if (opening) {
+      // A runner can be starting before the handler has a session that close can stop.
+      let timer: NodeJS.Timeout | undefined;
+      const backstop = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, 35_000);
+        timer.unref?.();
+      });
+      try {
+        await Promise.race([opening.catch(() => undefined), backstop]);
+      } finally {
+        clearTimeout(timer);
+      }
+      await close();
+    }
+    throwIfCancelled();
+    if (error === startTimeout)
+      throw new HandlerError(
+        'INSTALLED_APP_OPEN_TIMEOUT',
+        `the installed-app start did not finish within ${budgetSeconds} s; it stopped in stage ${stage}`,
+      );
+    throw error;
+  }
+  log(`installed app: start done in ${Math.round(performance.now() - started)} ms`);
+}
 
 function act(
   handler: () => Promise<ToolResult>,
@@ -513,8 +685,16 @@ export async function openSession(
   diagnostic: (event: unknown) => void,
   apiKey: string | undefined,
   firstScreen = androidFirstScreen,
+  snapshotHandler = createDeviceSnapshotHandler,
+  foreignFlowCheck: (udid: string) => Promise<ForeignCheckResult> = (udid) =>
+    foreignFlowGate.check(udid),
+  appProcessId: (
+    bundleId: string,
+    deviceId: string,
+  ) => Promise<number | undefined> = iosAppProcessId,
 ): Promise<Session> {
   const { target, platform, appId } = request;
+  const installed = request.appSource === 'installed';
   // Run-relative ms on a monotonic clock, anchored once to the CLI's t0.
   const runOffset = Date.now() - request.t0;
   const perfStart = performance.now();
@@ -546,8 +726,9 @@ export async function openSession(
     platformPresence?: boolean;
     presenceBudgetMs?: number;
     qaReadOnly?: boolean;
+    leakRecovery?: false;
     qaTiming?: TimingContext;
-  }> = createDeviceSnapshotHandler();
+  }> = snapshotHandler();
   let deviceOpen = false;
   let closing: Promise<void> | undefined;
   const close = (): Promise<void> =>
@@ -574,152 +755,175 @@ export async function openSession(
     logAdmissionRefusal(error, attachStage, log);
     throw error;
   };
-  const proof = await cdp.withAttachDeadline(performance.now() + remainingMs(), () =>
-    admit(
-      {
-        metroPort: target.metroPort,
-        readinessMs: REACT_READY_TIMEOUT_MS,
-        attachBudgetMs: request.attachBudgetMs,
-        ...(target.manifestWarm ? { launchWarm: target.manifestWarm } : {}),
-        remainingMs,
-        waitTargets: async (deadline) => {
-          attachStage = 'wait_targets';
-          const window = () =>
-            Math.max(
-              1,
-              Math.floor(
-                Math.min(REACT_READY_TIMEOUT_MS, remainingMs(), deadline - performance.now()),
-              ),
-            );
-          if (gate) await gate.wait(window());
-          await waitForExactPortTargets(
-            target.metroPort,
-            window(),
-            REACT_READY_POLL_MS,
-            stop.signal,
-            devicePin,
-            appId,
-            (targets) => cdp.noteDevelopmentTargetCandidates(targets),
-            (observed) => {
-              pages = observed;
-            },
-          );
-          if (gate) log(`android start: target listed at ${now()} ms`);
-        },
-        pages: () => pages,
-        ...(gate ? { refusalNote: () => gate.note() } : {}),
-        attach: async (deadline) => {
-          attachStage = 'connect_exact';
-          if (gate) log(`android start: debugger connect at ${now()} ms`);
-          await cdp.connectExact(
-            target.metroPort,
-            { platform, bundleId: appId, ...(devicePin ? { deviceName: devicePin } : {}) },
-            'qa',
-            1,
-            undefined,
-            deadline,
-            (observed) => {
-              pages = observed;
-            },
-          );
-        },
-        developmentTargets: () => cdp.developmentTargets,
-        observeDevelopmentTargets: (observe) => cdp.observeDevelopmentTargets(observe),
-        bundleReady: (deadline) => awaitBundleReady((expr) => cdp.evaluate(expr), deadline),
-        // Same launch the CLI made: once Metro answers the manifest in time, terminate and open the dev client on its Metro.
-        ...(platform === 'ios'
-          ? {
-              manifest: async (deadline, retry) => {
-                const manifest = await awaitDevClientManifest(
-                  devClientLaunchUrl(target),
-                  deadline,
-                  retry,
+  // The lease coordinates qaren processes only; a foreign Maestro, XCUITest or UIAutomator driver is a probe.
+  const foreignDriver = async (): Promise<string | undefined> => {
+    if (platform === 'android') {
+      const message = await interruptible(() => androidForeignDriverMessage(target.deviceId));
+      if (gate && message === undefined)
+        log(`android start: driver check allowed the opening at ${now()} ms`);
+      return message;
+    }
+    if (platform !== 'ios') return undefined;
+    const foreign = await interruptible(() => foreignFlowCheck(target.deviceId));
+    return foreign.active
+      ? (foreign.warning?.message ?? 'another automation driver holds the device')
+      : undefined;
+  };
+  const open = async (): Promise<void> => {
+    deviceOpen = true;
+    await adapt(snapshot)({
+      action: 'open',
+      appId,
+      deviceId: target.deviceId,
+      platform,
+      attachOnly: false,
+      sessionName: `qaren-${request.runId}`,
+    });
+  };
+  const admittedSnapshots = postAdmissionSnapshots(snapshot, appId, { releaseApp: installed });
+  if (installed) {
+    await openInstalled({
+      appId,
+      attachBudgetMs: request.attachBudgetMs,
+      walkDeadline,
+      foreignDriver,
+      appProcessId: () => appProcessId(appId, target.deviceId),
+      open,
+      close,
+      snapshots: admittedSnapshots,
+    });
+  }
+  const proof = installed
+    ? undefined
+    : await cdp.withAttachDeadline(performance.now() + remainingMs(), () =>
+        admit(
+          {
+            metroPort: target.metroPort,
+            readinessMs: REACT_READY_TIMEOUT_MS,
+            attachBudgetMs: request.attachBudgetMs,
+            ...(target.manifestWarm ? { launchWarm: target.manifestWarm } : {}),
+            remainingMs,
+            waitTargets: async (deadline) => {
+              attachStage = 'wait_targets';
+              const window = () =>
+                Math.max(
+                  1,
+                  Math.floor(
+                    Math.min(REACT_READY_TIMEOUT_MS, remainingMs(), deadline - performance.now()),
+                  ),
                 );
-                log(
-                  `QaReN manifest probe answered in ${manifest.ms} ms (attempt ${manifest.attempts})`,
-                );
-                return manifest;
-              },
-              relaunch: async (deadline) => {
-                await withDeadline(
-                  deadline,
-                  new Error('Dev-client relaunch deadline exceeded'),
-                  async () => {
-                    bundleRequests?.relaunching();
-                    await relaunchIosDevClient(appId, target.deviceId, devClientLaunchUrl(target));
+              if (gate) await gate.wait(window());
+              await waitForExactPortTargets(
+                target.metroPort,
+                window(),
+                REACT_READY_POLL_MS,
+                stop.signal,
+                devicePin,
+                appId,
+                (targets) => cdp.noteDevelopmentTargetCandidates(targets),
+                (observed) => {
+                  pages = observed;
+                },
+              );
+              if (gate) log(`android start: target listed at ${now()} ms`);
+            },
+            pages: () => pages,
+            ...(gate ? { refusalNote: () => gate.note() } : {}),
+            attach: async (deadline) => {
+              attachStage = 'connect_exact';
+              if (gate) log(`android start: debugger connect at ${now()} ms`);
+              await cdp.connectExact(
+                target.metroPort,
+                { platform, bundleId: appId, ...(devicePin ? { deviceName: devicePin } : {}) },
+                'qa',
+                1,
+                undefined,
+                deadline,
+                (observed) => {
+                  pages = observed;
+                },
+              );
+            },
+            developmentTargets: () => cdp.developmentTargets,
+            observeDevelopmentTargets: (observe) => cdp.observeDevelopmentTargets(observe),
+            bundleReady: (deadline) => awaitBundleReady((expr) => cdp.evaluate(expr), deadline),
+            // Same launch the CLI made: once Metro answers the manifest in time, terminate and open the dev client on its Metro.
+            ...(platform === 'ios'
+              ? {
+                  manifest: async (deadline, retry) => {
+                    const manifest = await awaitDevClientManifest(
+                      devClientLaunchUrl(target),
+                      deadline,
+                      retry,
+                    );
+                    log(
+                      `QaReN manifest probe answered in ${manifest.ms} ms (attempt ${manifest.attempts})`,
+                    );
+                    return manifest;
                   },
-                );
-              },
-              appAlive: async () => {
-                const alive = await isAppRunning('ios', appId, undefined, target.deviceId);
-                if (alive) log('app alive without a target');
-                return alive;
-              },
-              bundleRequested: async () => {
-                if (!bundleRequests) {
-                  log('no bundle request signal');
-                  return undefined;
+                  relaunch: async (deadline) => {
+                    await withDeadline(
+                      deadline,
+                      new Error('Dev-client relaunch deadline exceeded'),
+                      async () => {
+                        bundleRequests?.relaunching();
+                        await relaunchIosDevClient(
+                          appId,
+                          target.deviceId,
+                          devClientLaunchUrl(target),
+                        );
+                      },
+                    );
+                  },
+                  appAlive: async () => {
+                    const alive = await isAppRunning('ios', appId, undefined, target.deviceId);
+                    if (alive) log('app alive without a target');
+                    return alive;
+                  },
+                  bundleRequested: async () => {
+                    if (!bundleRequests) {
+                      log('no bundle request signal');
+                      return undefined;
+                    }
+                    const requested = bundleRequests.requested();
+                    log(
+                      requested === false
+                        ? 'Metro received no bundle request since launch'
+                        : requested
+                          ? 'Metro received a bundle request'
+                          : 'bundle request signal unknown',
+                    );
+                    return requested;
+                  },
+                  ...(bundleRequests
+                    ? {
+                        bundleRequestCount: () => bundleRequests.count(),
+                        bundleBuilt: () => bundleRequests.built(),
+                      }
+                    : {}),
                 }
-                const requested = bundleRequests.requested();
-                log(
-                  requested === false
-                    ? 'Metro received no bundle request since launch'
-                    : requested
-                      ? 'Metro received a bundle request'
-                      : 'bundle request signal unknown',
-                );
-                return requested;
-              },
-              ...(bundleRequests
-                ? {
-                    bundleRequestCount: () => bundleRequests.count(),
-                    bundleBuilt: () => bundleRequests.built(),
-                  }
-                : {}),
-            }
-          : {}),
-        // The lease coordinates qaren processes only; a foreign Maestro, XCUITest or UIAutomator driver is a probe.
-        foreignDriver: async () => {
-          if (platform === 'android') {
-            const message = await interruptible(() => androidForeignDriverMessage(target.deviceId));
-            if (gate && message === undefined)
-              log(`android start: driver check allowed the opening at ${now()} ms`);
-            return message;
-          }
-          if (platform !== 'ios') return undefined;
-          const foreign = await interruptible(() => foreignFlowGate.check(target.deviceId));
-          return foreign.active
-            ? (foreign.warning?.message ?? 'another automation driver holds the device')
-            : undefined;
-        },
-        open: async () => {
-          deviceOpen = true;
-          await adapt(snapshot)({
-            action: 'open',
-            appId,
-            deviceId: target.deviceId,
-            platform,
-            attachOnly: false,
-            sessionName: `qaren-${request.runId}`,
-          });
-        },
-        // Opening the session may have relaunched the app: prove the bundle the walk will see.
-        prove: () => {
-          if (gate) log(`android start: proof starts at ${now()} ms`);
-          return prove({ evaluate: (expr) => cdp.evaluate(expr) }, target);
-        },
-        close,
-        observe: (decision, facts) => timing(admissionMetric(decision, facts, attachStage, now())),
-        timing: (event) => timing({ ...event, at: now() }),
-      },
-      stop,
-    ).catch(logRefusal),
-  );
+              : {}),
+            foreignDriver,
+            open,
+            // Opening the session may have relaunched the app: prove the bundle the walk will see.
+            prove: () => {
+              if (gate) log(`android start: proof starts at ${now()} ms`);
+              return prove({ evaluate: (expr) => cdp.evaluate(expr) }, target);
+            },
+            close,
+            observe: (decision, facts) =>
+              timing(admissionMetric(decision, facts, attachStage, now())),
+            timing: (event) => timing({ ...event, at: now() }),
+          },
+          stop,
+        ).catch(logRefusal),
+      );
   if (gate) log(`android start: admission returned at ${now()} ms`);
-  const admittedSnapshots = postAdmissionSnapshots(snapshot, appId);
   cancellationSignal();
   log(
-    `bundle proven: ${proof.scriptURL} (${proof.appModules} app modules under ${target.worktree}) on device ${JSON.stringify(devicePin ?? target.deviceId)}`,
+    proof
+      ? `bundle proven: ${proof.scriptURL} (${proof.appModules} app modules under ${target.worktree}) on device ${JSON.stringify(devicePin ?? target.deviceId)}`
+      : 'installed app: no debugger and no bundle proof; React coverage is unknown for every step',
   );
 
   observeRunnerRelaunches({ now, observe: timing });
@@ -761,13 +965,6 @@ export async function openSession(
       throw error;
     }
   };
-  const devSettings = createDevSettingsHandler(getClient, {
-    probeForegroundSurface: async () =>
-      foregroundSurfaceFromSnapshot(
-        await admittedSnapshots.snapshot({ action: 'snapshot' }),
-        appId,
-      ),
-  });
   const observeDevOverlay = async () => nativeDevOverlayObservation(await rawSnapshot());
   // Android reloads the bundle when hot loading is set: step 1 must read the reloaded, re-proven app.
   const reload =
@@ -779,35 +976,46 @@ export async function openSession(
           remainingMs,
         })
       : undefined;
-  const overlays = {
-    devSettings,
-    observeDevOverlay,
-    log,
-    ...(reload
-      ? {
-          fastRefreshReload: {
-            mark: reload.mark,
-            settled: async () => {
-              await reload.settled();
-              log('Fast Refresh off: the reloaded bundle is proven');
-            },
-          },
-        }
-      : {}),
-  };
-  try {
-    unwrap(
-      await clearDevOverlays({
-        ...overlays,
-        deadline: devOverlayDeadline(performance.now(), request.attachBudgetMs, walkDeadline),
-      }),
-    );
-  } catch (error) {
-    await close();
-    throw error;
+  // A release build has no development surfaces to clear.
+  const overlays = installed
+    ? undefined
+    : {
+        devSettings: createDevSettingsHandler(getClient, {
+          probeForegroundSurface: async () =>
+            foregroundSurfaceFromSnapshot(
+              await admittedSnapshots.snapshot({ action: 'snapshot' }),
+              appId,
+            ),
+        }),
+        observeDevOverlay,
+        log,
+        ...(reload
+          ? {
+              fastRefreshReload: {
+                mark: reload.mark,
+                settled: async () => {
+                  await reload.settled();
+                  log('Fast Refresh off: the reloaded bundle is proven');
+                },
+              },
+            }
+          : {}),
+      };
+  if (overlays) {
+    try {
+      unwrap(
+        await clearDevOverlays({
+          ...overlays,
+          deadline: devOverlayDeadline(performance.now(), request.attachBudgetMs, walkDeadline),
+        }),
+      );
+    } catch (error) {
+      await close();
+      throw error;
+    }
   }
   const admittedAtMs = Date.now();
-  admittedSnapshots.admit();
+  if (!installed) admittedSnapshots.admit();
   cancellationSignal();
 
   const press = createDevicePressHandler(getClient);
@@ -829,8 +1037,9 @@ export async function openSession(
     mediaWithheld: diagnostic,
     videoPolicy: request.videoPolicy ?? 'undeclared',
     privacy,
-    judge: createJev({ apiKey, now, timing }),
-    interruptionVeto: !!apiKey,
+    // An empty key refuses every question before any request; undefined would read the environment.
+    judge: createJev({ apiKey: installed ? '' : apiKey, now, timing }),
+    interruptionVeto: !installed && !!apiKey,
     presenceUnavailable: platform === 'android',
     timing,
     publicationInterrupted: admittedSnapshots.interrupted,
@@ -848,6 +1057,7 @@ export async function openSession(
           captureScreen({
             appId,
             requirePrivateInputs: true,
+            releaseApp: installed,
             observation: options?.observation,
             platformPresence: options?.platformPresence,
             budgetMs: options?.budgetMs,
@@ -860,8 +1070,10 @@ export async function openSession(
                 presenceBudgetMs,
                 options?.timing ? { now, observe: options.timing } : undefined,
               ),
-            react: () =>
-              captureReact(options?.platformPresence === true || options?.typography === true),
+            react: installed
+              ? async () => ({})
+              : () =>
+                  captureReact(options?.platformPresence === true || options?.typography === true),
           }),
         ),
       ),
@@ -959,21 +1171,28 @@ export async function openSession(
     labelProvenanceDiagnostic: diagnostic,
     fillPrivacy: diagnostic,
     loginOutcome: (outcome) => diagnostic({ kind: 'login-outcome', outcome }),
-    hideDevMenu: () =>
-      act(() => {
-        const deadline = devOverlayDeadline(performance.now(), WAIT_BUDGET_MS, walkDeadline);
-        return recoverDevOverlays({
-          ...overlays,
-          deadline,
-          reconnect: () =>
-            cdp.withAttachDeadline(deadline, async () => {
-              while (cdp.reconnectState.active) await sleep(250);
-              cancellationSignal();
-              if (!cdp.isConnected) await cdp.autoConnect();
-              cancellationSignal();
-            }),
-        });
-      }, false),
+    // Kept as a stub in installed-app mode: without it the step loop turns all recovery off.
+    hideDevMenu: !overlays
+      ? async () => ({
+          ok: false,
+          proven: false,
+          error: 'an installed-app run has no dev menu to hide',
+        })
+      : () =>
+          act(() => {
+            const deadline = devOverlayDeadline(performance.now(), WAIT_BUDGET_MS, walkDeadline);
+            return recoverDevOverlays({
+              ...overlays,
+              deadline,
+              reconnect: () =>
+                cdp.withAttachDeadline(deadline, async () => {
+                  while (cdp.reconnectState.active) await sleep(250);
+                  cancellationSignal();
+                  if (!cdp.isConnected) await cdp.autoConnect();
+                  cancellationSignal();
+                }),
+            });
+          }, false),
     ...(login ? { login } : {}),
     sleep,
     row: emitRow,
@@ -981,7 +1200,18 @@ export async function openSession(
       currentLine = start.line;
       emitStart(start);
     },
-    ...(platform === 'ios'
+    ...(platform === 'ios' && installed
+      ? {
+          appProcess: {},
+          ...(resolveKeyboardGuard(process.env)
+            ? {
+                dismissKeyboard: (qaContext: QaDispatchContext) =>
+                  stop.track(() => dismissKeyboardForQa(getClient, qaContext)),
+              }
+            : {}),
+        }
+      : {}),
+    ...(platform === 'ios' && !installed
       ? {
           appProcess: {},
           reactFocused: (testID: string) => reactFocused(cdpClientOrNull(getClient), testID),

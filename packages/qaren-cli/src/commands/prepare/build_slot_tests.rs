@@ -1287,6 +1287,7 @@ fn review_s2_core_wait_releases_a_late_gradle_completion_before_teardown() {
         lease: "fixture".into(),
         login_block: None,
         login_marker: None,
+        app_source: None,
         video_policy: Default::default(),
         target: crate::core::CoreTarget {
             device_id: "fixture-device".into(),

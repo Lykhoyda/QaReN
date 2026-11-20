@@ -99,6 +99,18 @@ pub fn reclaim_dead_holder(
     reclaim_dead_holder_with_runtime(runner, runs_root, busy, None)
 }
 
+// The dead holder's run id when reclaiming it would run a cleanup that can delete its simulator.
+pub fn dead_holder_owns_simulator(runs_root: &Path, busy: &crate::lease::Busy) -> Option<String> {
+    let (Some(holder), Some(PidLiveness::Dead | PidLiveness::AliveForeign)) =
+        (busy.holder.as_ref(), busy.liveness)
+    else {
+        return None;
+    };
+    let record = RunRecord::load(runs_root, &holder.run_id).ok()?;
+    (record.resources.ios_simulator.is_some() && !record.resources.device_borrowed)
+        .then(|| holder.run_id.clone())
+}
+
 pub fn reclaim_dead_holder_with_runtime(
     runner: &mut dyn Runner,
     runs_root: &Path,

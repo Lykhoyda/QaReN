@@ -73,6 +73,8 @@ export interface WireRequest {
   loginBlock?: string;
   loginMarker?: LoginMarker;
   loginSnapshot?: { slug: string; content: string | null };
+  // The app already installed on the simulator: no debugger, no bundle proof, no model.
+  appSource?: 'installed';
 }
 
 // Exactly one of id or text, never empty.
@@ -265,7 +267,8 @@ export function parsePublicRequest(line: string): WireRequest {
     (p.loginBlock !== undefined && (!isValidActionId(p.loginBlock) || !p.loginMarker)) ||
     (p.loginMarker !== undefined && !validMarker(p.loginMarker)) ||
     (p.videoPolicy !== undefined &&
-      !['strict', 'non-strict', 'undeclared'].includes(p.videoPolicy));
+      !['strict', 'non-strict', 'undeclared'].includes(p.videoPolicy)) ||
+    (p.appSource !== undefined && p.appSource !== 'installed');
   if (bad) throw new WireError('the request payload is missing required fields');
   if (p.runId !== envelope.runId) throw new WireError('the request payload names another run');
   const {
@@ -291,6 +294,7 @@ export function parsePublicRequest(line: string): WireRequest {
     'loginBlock',
     'loginMarker',
     'loginSnapshot',
+    'appSource',
   ];
   return Object.fromEntries(
     Object.entries(publicRequest).filter(([key]) => keys.includes(key)),

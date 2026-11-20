@@ -1164,6 +1164,73 @@ test('surface observations retain the existing dev-menu and picker classificatio
   }
 });
 
+// A release build shows no development surface: words or windows shaped like one are the app's own.
+const FULL = { x: 0, y: 0, width: 402, height: 874 };
+const box = (x: number, y: number, width: number, height: number) => ({ x, y, width, height });
+function windowTree(
+  ...windows: Array<Array<Omit<NativeNode, 'ref' | 'parentIndex'> & { parent?: number }>>
+): NativeNode[] {
+  const tree: NativeNode[] = [{ ref: 'e0', index: 0, type: 'Application', rect: FULL }];
+  for (const children of windows) {
+    const window = tree.length;
+    tree.push({ ref: `e${window}`, index: window, parentIndex: 0, type: 'Window', rect: FULL });
+    for (const { parent, ...child } of children)
+      tree.push({
+        ref: `e${tree.length}`,
+        index: tree.length,
+        parentIndex: parent === undefined ? window : window + parent,
+        ...child,
+      });
+  }
+  return tree;
+}
+const releaseContent = [
+  { type: 'Other', rect: FULL },
+  { type: 'StaticText', label: 'Settings', rect: box(16, 120, 220, 24), parent: 1 },
+  { type: 'Button', label: 'Dismiss', rect: box(16, 780, 370, 48), parent: 1 },
+];
+const gearPill = [
+  { type: 'Other', rect: FULL },
+  { type: 'Other', rect: box(314, 700, 72, 94), parent: 1 },
+  { type: 'Image', rect: box(328, 708, 44, 44), parent: 2 },
+  { type: 'StaticText', rect: box(330, 760, 40, 18), parent: 2 },
+];
+const redboxWindow = [
+  { type: 'Other', rect: FULL },
+  { type: 'StaticText', label: 'CANARY_STACK_FRAME', identifier: 'redbox-error', parent: 1 },
+  { type: 'Button', label: 'Dismiss\n(ESC)', identifier: 'redbox-dismiss', parent: 1 },
+  { type: 'Button', label: 'Reload\n(⌘R)', identifier: 'redbox-reload', parent: 1 },
+  { type: 'Button', label: 'Copy\n(⌥⇧⌘C)', identifier: 'redbox-copy', parent: 1 },
+];
+
+test('a release-app capture is never read as a development surface; an alert is still a dialog', async () => {
+  const alert: NativeNode[] = [
+    { ref: '@dialog', type: 'Alert', index: 0, parentIndex: -1, depth: 0 },
+    { ref: '@ok', type: 'Button', label: 'OK', index: 1, parentIndex: 0, depth: 1 },
+  ];
+  const cases: Array<[string, NativeNode[], string | undefined, string, boolean]> = [
+    ['dev menu surface', nodes, 'react_native_dev_menu', 'dev-menu', false],
+    ['dev button window', windowTree(releaseContent, gearPill), undefined, 'dev-fab', false],
+    ['alert', alert, undefined, 'dialog', false],
+    ['RedBox tree', windowTree(releaseContent, redboxWindow), undefined, 'dev-redbox', true],
+    ['dev launcher surface', nodes, 'dev_client_picker', 'picker', false],
+  ];
+  for (const [name, tree, surface, base, baseDevError] of cases) {
+    const read = (releaseApp?: boolean) =>
+      captureScreen({
+        ...(releaseApp ? { releaseApp } : {}),
+        native: async () => ({ nodes: tree, ...(surface ? { surface } : {}) }),
+        react: async () => ({}),
+      });
+    const release = await read(true);
+    assert.equal(release.front, name === 'alert' ? 'dialog' : 'app', name);
+    assert.equal(release.devError, undefined, name);
+    const dev = await read();
+    assert.equal(dev.front, base, `${name} without the option`);
+    assert.equal(dev.devError !== undefined, baseDevError, `${name} without the option`);
+  }
+});
+
 test('native errors propagate unchanged without reading React or logging payloads', async () => {
   const failure = new Error('native capture failed');
   let reads = 0;

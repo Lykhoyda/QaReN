@@ -753,12 +753,24 @@ app and running device: `--remove-app` on a borrowed Android device refuses
 probes the device only through the borrowed adb server, rechecking compatibility
 before device probes and reporting them as inconclusive if that check fails.
 
+### Check an installed release build
+
+`qaren check --installed-app` requires an iOS simulator with a release build of
+the app you installed yourself. The checkout still needs `package.json`, an
+existing `pnpm-lock.yaml`, and `devClientScheme` in `.qaren/config.yaml`.
+QaReN checks for `git`, `node`, `ps`, and `xcrun`.
+
+This mode skips Metro, the app build, and all pnpm commands. The checkout can
+omit `node_modules`.
+
 ### Record a check
 
 `qaren check` records no video by default. Once a check reaches the walk, its
 receipt and stderr summary say
-`video: not recorded; pass --record to qaren check to record this walk`; a check
-refused earlier (preflight, build) carries no video line.
+`video: not recorded; pass --record to qaren check to record this walk`
+(`video: not recorded: installed-app mode makes no recording` with
+`--installed-app`, which refuses `--record`); a check refused earlier
+(preflight, build) carries no video line.
 `qaren check --record` records the walk through the same recorder, start rules,
 encode and trimmed copy as `qaren pr`, including the runtime-input rule and the
 Android API 34 requirement. `--record` on `qaren pr` changes nothing, because `pr`
@@ -3356,6 +3368,9 @@ simulator or `--device <UUID>`), or any `check`/`pr --fresh-install` on its
 resolved simulator, including automatic selection, or `--boot-device` or
 `--restart-device` with an exact `--device`. Plain `check` on the
 booted simulator reads and writes none of its locale or keyboard settings.
+`check --installed-app` never pins the lane, even with `--boot-device` or
+`--restart-device`; its session open still turns off the simulator's
+autocorrection and prediction.
 
 Before launch, on that UUID only, QaReN reads the device's global domain and
 `com.apple.Preferences` with `simctl spawn <UUID> defaults export` and writes
@@ -3802,7 +3817,9 @@ and keeps the log. Missing
 runtime or candidate-directory evidence also leaves the stop unresolved. Exit shutdown
 cannot be added afterward to a released run. A dead lease
 holder is reclaimed only through that run's cleanup; a live or unprovable holder
-refuses `DEVICE_BUSY`. Every holder records its HOME, and the refusal names
+refuses `DEVICE_BUSY`. `check --installed-app` also refuses `DEVICE_BUSY`, instead
+of reclaiming, a dead holder whose run created the simulator, because that run's
+cleanup can delete the simulator and the installed app. Every holder records its HOME, and the refusal names
 `HOME='<holder home>' qaren cleanup <run-id>`, which recovers it from any session.
 A device, native-build or USB lock whose holder is proven dead (its process gone or
 replaced, as after a reboot) and whose run record (`run.json`, or a native suite's

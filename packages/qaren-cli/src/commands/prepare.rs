@@ -160,6 +160,8 @@ impl<'a> Ctx<'a> {
                     | FailureCode::WatchmanVolumeStalled
                     | FailureCode::CandidateUnavailable
                     | FailureCode::DeviceNotBooted
+                    | FailureCode::InstalledAppMissing
+                    | FailureCode::InstalledAppNotStandalone
             ) {
                 format!("{cleanup}; then {}", failure.next_action)
             } else {
@@ -1113,16 +1115,31 @@ pub(crate) fn check_prereqs(
             }
         }
     }
-    let mut missing = Vec::new();
-    for tool in tools {
-        let output = runner.run(&CmdSpec::new("which", "/usr/bin/which", &[tool], 10));
-        if !output.ok() {
-            missing.push(tool.to_string());
-        }
-    }
+    let mut missing = missing_tools(runner, &tools);
     if scenario.platform == Platform::Android && !handoff {
         missing.extend(missing_android_sdk(android_home));
     }
+    prereqs_result(missing)
+}
+
+// Installed-app mode runs no pnpm, Metro or build, so it needs only these tools.
+pub(crate) fn check_installed_prereqs(runner: &mut dyn Runner) -> Result<(), Failure> {
+    prereqs_result(missing_tools(runner, &["git", "node", "ps", "xcrun"]))
+}
+
+fn missing_tools(runner: &mut dyn Runner, tools: &[&str]) -> Vec<String> {
+    tools
+        .iter()
+        .filter(|tool| {
+            !runner
+                .run(&CmdSpec::new("which", "/usr/bin/which", &[**tool], 10))
+                .ok()
+        })
+        .map(|tool| tool.to_string())
+        .collect()
+}
+
+fn prereqs_result(missing: Vec<String>) -> Result<(), Failure> {
     if missing.is_empty() {
         Ok(())
     } else {
@@ -3995,6 +4012,153 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     ctx.mark("ready_probes", t);
     enter_substage(ctx, None);
     Ok(())
+}
+
+// Installed-app mode: admit the build already on the simulator and launch it as installed.
+// Returns the sha256 of its main.jsbundle; nothing here installs, removes or reconfigures the app.
+pub(crate) fn launch_installed_app(ctx: &mut Ctx) -> Result<String, Failure> {
+    ensure_running(ctx.runner, "launch")?;
+    let udid = ctx
+        .record
+        .resources
+        .ios_simulator
+        .as_ref()
+        .expect("ios allocated")
+        .udid
+        .clone();
+    let app_id = ctx.record.candidate.app_id.clone();
+    let unknown = || {
+        Failure::new(
+            "launch",
+            FailureCode::AppPresenceUnknown,
+            "a successful structured app inventory could not prove app presence or absence",
+            "restore simulator inventory access, then re-run",
+        )
+    };
+    match ios::probe_app_presence(ctx.runner, &udid, &app_id) {
+        ios::AppPresence::Installed => {}
+        ios::AppPresence::ProvenAbsent => {
+            return Err(Failure::new(
+                "launch",
+                FailureCode::InstalledAppMissing,
+                format!("{app_id} is not installed on simulator {udid}; installed-app mode tests an app that is already installed and never installs one"),
+                "install the build you want to test on this simulator, then re-run; or drop --installed-app to let QaReN build and install its development build",
+            ));
+        }
+        ios::AppPresence::Unknown => return Err(unknown()),
+    }
+    let bundle = installed_bundle_path(ctx.runner, &udid, &app_id).ok_or_else(unknown)?;
+    let js = bundle.join("main.jsbundle");
+    if !std::fs::symlink_metadata(&js).is_ok_and(|meta| meta.is_file()) {
+        return Err(Failure::new(
+            "launch",
+            FailureCode::InstalledAppNotStandalone,
+            format!("the installed {app_id} has no embedded JavaScript bundle (main.jsbundle), so it needs Metro: it is a development build"),
+            "drop --installed-app to test this development build with Metro; or install a release build and re-run",
+        ));
+    }
+    let info = ctx.runner.run_private(
+        &CmdSpec::new(
+            "ios-app-info",
+            "plutil",
+            &[
+                "-convert",
+                "json",
+                "-o",
+                "-",
+                &bundle.join("Info.plist").to_string_lossy(),
+            ],
+            10,
+        ),
+        &[],
+    );
+    let info: serde_json::Value = if info.clean() {
+        serde_json::from_str(info.stdout()).unwrap_or_default()
+    } else {
+        serde_json::Value::Null
+    };
+    let field = |key: &str| info[key].as_str().map(str::to_string);
+    let unreadable = |what: &str| {
+        Failure::new(
+            "launch",
+            FailureCode::AppPresenceUnknown,
+            format!("the installed {app_id} could not be read: {what}"),
+            "check that the app is still installed on the simulator, then re-run",
+        )
+    };
+    let (Some(version), Some(build), Some(executable)) = (
+        field("CFBundleShortVersionString"),
+        field("CFBundleVersion"),
+        field("CFBundleExecutable"),
+    ) else {
+        return Err(unreadable(
+            "Info.plist has no version, build or executable name",
+        ));
+    };
+    let js_sha256 = file_sha256(&js).ok_or_else(|| unreadable("main.jsbundle"))?;
+    let executable_sha256 =
+        file_sha256(&bundle.join(&executable)).ok_or_else(|| unreadable("the executable"))?;
+    ctx.notes.extend([
+        ("app_source".to_string(), "installed".to_string()),
+        ("installed_app_version".to_string(), version),
+        ("installed_app_build".to_string(), build),
+        ("installed_app_js_sha256".to_string(), js_sha256.clone()),
+        (
+            "installed_app_executable_sha256".to_string(),
+            executable_sha256,
+        ),
+        (
+            "source_proof".to_string(),
+            "none: the app's JavaScript is not proven to come from this checkout".to_string(),
+        ),
+    ]);
+    let deadline = ctx.runner.monotonic_ms() + ctx.record.scenario.deadlines.build_seconds * 1000;
+    let launch = ios::launch_installed_spec(&udid, &app_id);
+    let mut attempts = 0;
+    let mut proven = false;
+    enter_substage(ctx, Some("app_launch"));
+    let launched = run_launch_command(ctx, &launch, deadline, &mut attempts, &mut |ctx| {
+        proven = ios_app_running(ctx, &udid, &app_id);
+        proven
+    })?;
+    let load = launched.timed_out.then(crate::core::host_load_1m).flatten();
+    if !launched.ok() && !proven {
+        return Err(launch_failure(
+            "installed app launch",
+            &launched,
+            load,
+            attempts,
+            &ctx.record.run_id,
+        ));
+    }
+    enter_substage(ctx, None);
+    Ok(js_sha256)
+}
+
+pub(crate) fn installed_bundle_path(
+    runner: &mut dyn Runner,
+    udid: &str,
+    app_id: &str,
+) -> Option<PathBuf> {
+    let container = runner.run(&ios::app_container_spec(udid, app_id));
+    let path = container.stdout.trim();
+    (container.ok() && !path.is_empty()).then(|| PathBuf::from(path))
+}
+
+// The sha256 of the installed app's main.jsbundle now, or None when the app or the file cannot be read.
+pub(crate) fn installed_js_sha256(
+    runner: &mut dyn Runner,
+    udid: &str,
+    app_id: &str,
+) -> Option<String> {
+    let bundle = installed_bundle_path(runner, udid, app_id)?;
+    file_sha256(&bundle.join("main.jsbundle"))
+}
+
+fn file_sha256(path: &Path) -> Option<String> {
+    std::fs::read(path)
+        .ok()
+        .map(|bytes| candidate::sha256_hex(&bytes))
 }
 
 // Pins the owned simulator's locale and keyboard before launch; the readback, not the write, decides.
