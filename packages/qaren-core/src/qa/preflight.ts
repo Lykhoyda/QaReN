@@ -7,6 +7,7 @@ import {
   planDiagnostics,
   parsePlan,
   parsePlanWithJev,
+  planJevLines,
   planNeedsJev,
   preparePlan,
 } from './plan.js';
@@ -30,7 +31,22 @@ const unparseable = (refused: RefusedLine[], judge: Judge): PreflightResult => (
 });
 
 // Quoted targets and literal checks resolve without a model, so only other plans probe Jev first.
-export async function preflightPlan(markdown: string, judge: Judge): Promise<PreflightResult> {
+export async function preflightPlan(
+  markdown: string,
+  judge: Judge,
+  options: { quotedOnly?: boolean } = {},
+): Promise<PreflightResult> {
+  if (options.quotedOnly) {
+    const lines = planJevLines(markdown);
+    if (lines.length > 0)
+      return {
+        ok: false,
+        code: 'PLAN_UNPARSEABLE',
+        message: 'the plan has lines that need the model',
+        refused: planDiagnostics(lines),
+        jev: summarizeJev(judge.calls),
+      };
+  }
   if (!planNeedsJev(markdown)) {
     const parsed = parsePlan(markdown);
     if (parsed.refused) return unparseable(parsed.refused, judge);

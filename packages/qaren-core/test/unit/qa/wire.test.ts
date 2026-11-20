@@ -8,6 +8,7 @@ import {
   exitCodeFor,
   missingResult,
   parseEnvelope,
+  parsePublicRequest,
   parseRequest,
   readRequest,
   startupRow,
@@ -305,6 +306,22 @@ test('the target may mark a pinned warm lane, and only with true', () => {
   assert.equal(parseRequest(line(undefined)).target.warmLane, undefined);
   for (const bad of [false, 'true', 1, null])
     assert.throws(() => parseRequest(line(bad)), /missing required fields/);
+});
+
+test('the request may name the installed app as its source, and only that source', () => {
+  const line = (appSource: unknown) =>
+    JSON.stringify({
+      v: 1,
+      runId: 'check-1',
+      seq: 1,
+      type: 'request',
+      payload: { ...request, appSource },
+    });
+  assert.equal(parsePublicRequest(line('installed')).appSource, 'installed');
+  assert.equal(parseRequest(line('installed')).appSource, 'installed');
+  assert.equal(parsePublicRequest(line(undefined)).appSource, undefined);
+  for (const bad of ['x', 'dev', true, null])
+    assert.throws(() => parsePublicRequest(line(bad)), /missing required fields/);
 });
 
 test('a multibyte character split across chunks still decodes', async () => {

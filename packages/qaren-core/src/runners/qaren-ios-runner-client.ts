@@ -1120,7 +1120,7 @@ export async function stopFastRunner(deviceId?: string, signal?: AbortSignal): P
 }
 
 // Mirrors RN_FAST_RUNNER_APP_BUNDLE_ID in QarenIosRunner.xcodeproj.
-const RUNNER_HOST_BUNDLE_ID = 'dev.lykhoyda.rndevagent.fastrunner';
+export const RUNNER_HOST_BUNDLE_ID = 'dev.lykhoyda.rndevagent.fastrunner';
 
 // The UI-test host app outlives its xcodebuild parent; the next admission would read it as a foreign driver.
 export async function terminateRunnerHost(deviceId?: string): Promise<void> {
@@ -1132,7 +1132,7 @@ export async function terminateRunnerHost(deviceId?: string): Promise<void> {
   });
 }
 
-const RUNNER_TEST_BUNDLE_ID = `${RUNNER_HOST_BUNDLE_ID}.uitests.xctrunner`;
+export const RUNNER_TEST_BUNDLE_ID = `${RUNNER_HOST_BUNDLE_ID}.uitests.xctrunner`;
 const runnerDataContainers = new Map<string, string>();
 
 export async function captureRunnerScreenshot(

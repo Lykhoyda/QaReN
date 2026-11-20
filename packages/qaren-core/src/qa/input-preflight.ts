@@ -181,7 +181,9 @@ async function inputPreflight(value: unknown, judge: Judge): Promise<object> {
     inputs.assertHashSafe(value.appId as string);
     if (loginSnapshot?.content) inputs.assertHashSafe(loginSnapshot.content);
     return {
-      ...(await preflightPlan(value.plan as string, judge)),
+      ...(await preflightPlan(value.plan as string, judge, {
+        quotedOnly: value.quotedOnly === true,
+      })),
       inputProtocol: 1,
       ...inventory,
     };

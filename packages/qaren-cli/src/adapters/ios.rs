@@ -986,6 +986,22 @@ pub fn launch_spec(udid: &str, app_id: &str, metro_port: u16) -> CmdSpec {
     )
 }
 
+// Installed-app mode: the installed build starts from its own first screen, with no Metro URL.
+pub fn launch_installed_spec(udid: &str, app_id: &str) -> CmdSpec {
+    CmdSpec::new(
+        "simctl-launch",
+        "xcrun",
+        &[
+            "simctl",
+            "launch",
+            "--terminate-running-process",
+            udid,
+            app_id,
+        ],
+        60,
+    )
+}
+
 pub fn shutdown_spec(udid: &str) -> CmdSpec {
     CmdSpec::new(
         "simctl-shutdown",

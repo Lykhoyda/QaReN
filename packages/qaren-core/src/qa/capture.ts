@@ -86,9 +86,18 @@ export interface NativeObservation {
   snapshotDiagnostics?: unknown;
 }
 
+// Development surfaces a release app cannot show; words or windows that look like them are the app's own.
+const RELEASE_APP_SURFACES: readonly unknown[] = [
+  'dev_client_picker',
+  'first_run_tutorial',
+  'expo_dev_menu',
+  'react_native_dev_menu',
+];
+
 export function postAdmissionSnapshots<A>(
   snapshot: (args: A) => Promise<ToolResult>,
   appId: string,
+  options: { releaseApp?: boolean } = {},
 ) {
   let admitted = false;
   let appProcess: number | undefined;
@@ -149,7 +158,8 @@ export function postAdmissionSnapshots<A>(
       }
       const meta = isRecord(envelope) && isRecord(envelope.meta) ? envelope.meta : undefined;
       const data = isRecord(envelope) && isRecord(envelope.data) ? envelope.data : undefined;
-      const surface = meta?.foregroundSurface ?? foregroundSurfaceFromSnapshot(result, appId);
+      const read = meta?.foregroundSurface ?? foregroundSurfaceFromSnapshot(result, appId);
+      const surface = options.releaseApp && RELEASE_APP_SURFACES.includes(read) ? 'app' : read;
       const launcher = surface === 'dev_client_picker' || surface === 'first_run_tutorial';
       if (launcher)
         record({
@@ -235,6 +245,8 @@ export interface CaptureDeps {
   timing?: TimingObserver;
   requirePrivateInputs?: boolean;
   appId?: string;
+  // An installed release build: no capture is read as a development surface.
+  releaseApp?: boolean;
   // A wait's remaining time: it caps the presence budget and allows one presence read.
   budgetMs?: number;
   now?(): number;
@@ -830,13 +842,17 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
           : {}),
       });
     }
-    const devError = devErrorOverlay(nodes);
+    const devError = deps.releaseApp ? undefined : devErrorOverlay(nodes);
     const screen = applyNativePrivateInputs(
       {
         ...join(
           nodes,
           digest,
-          frontFromSurface(native.surface, nodes),
+          deps.releaseApp
+            ? nodes[0]?.type === 'Alert'
+              ? 'dialog'
+              : 'app'
+            : frontFromSurface(native.surface, nodes),
           {
             native: nativePresence
               ? 'complete'

@@ -5,6 +5,8 @@ mod common;
 mod host_memory_wait;
 #[path = "run_flow/host_numbers.rs"]
 mod host_numbers;
+#[path = "run_flow/installed_app.rs"]
+mod installed_app;
 use common::IosBuildRunner as MockRunner;
 
 use qaren::core::Budgets;
@@ -214,6 +216,7 @@ fn request(repo: &Path, app: &Path, step_seconds: u64) -> RunRequest {
         restart_device: false,
         shutdown_device_on_exit: false,
         fresh_install: false,
+        installed_app: false,
         runtime_dir: PathBuf::from("/runtime"),
         node: Some(PathBuf::from("/usr/local/bin/node")),
         lock_root: repo.join(".locks"),

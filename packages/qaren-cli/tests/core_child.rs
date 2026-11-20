@@ -575,6 +575,7 @@ fn request() -> CoreRequest {
         lease: format!("{RUN}:abcdef0123456789abcdef0123456789"),
         login_block: None,
         login_marker: None,
+        app_source: None,
         target: CoreTarget {
             device_id: "AAAA-1111".to_string(),
             device_name: "qaren-check".to_string(),

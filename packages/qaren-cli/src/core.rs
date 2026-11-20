@@ -39,6 +39,8 @@ pub struct CoreRequest {
     pub video_policy: crate::record::VideoPolicy,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub login_marker: Option<crate::config::LoginMarker>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_source: Option<&'static str>,
     pub target: CoreTarget,
 }
 

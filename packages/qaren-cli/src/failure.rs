@@ -86,6 +86,9 @@ pub enum FailureCode {
     GithubAuthUnavailable,
     PrWorktreeFailed,
     PublishFailed,
+    InstalledAppUnsupported,
+    InstalledAppMissing,
+    InstalledAppNotStandalone,
 }
 
 impl FailureCode {
@@ -133,6 +136,9 @@ impl FailureCode {
                 | FailureCode::JevAuthFailed
                 | FailureCode::JevRequestInvalid
                 | FailureCode::GithubAuthUnavailable
+                | FailureCode::InstalledAppUnsupported
+                | FailureCode::InstalledAppMissing
+                | FailureCode::InstalledAppNotStandalone
         )
     }
 }
