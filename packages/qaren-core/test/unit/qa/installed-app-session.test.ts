@@ -489,6 +489,8 @@ function captureStartLog(t: TestContext): string[] {
 }
 
 test('installed-app start logs each stage and its process proof', async (t) => {
+  // A fractional clock origin can put the deadline difference just above the budget.
+  t.mock.method(performance, 'now', () => 1000.3);
   const lines = captureStartLog(t);
   const session = await start(
     async () => completeTree(41),
@@ -514,6 +516,7 @@ test('installed-app start logs each stage and its process proof', async (t) => {
 });
 
 test('installed-app start logs while open is pending and stops after admission', async (t) => {
+  t.mock.method(performance, 'now', () => 20_000.2);
   const lines = captureStartLog(t);
   t.mock.timers.enable({ apis: ['setInterval'] });
   const pending = Promise.withResolvers<void>();

@@ -313,7 +313,8 @@ async function openInstalled({
 
   const started = performance.now();
   const startDeadline = devOverlayDeadline(started, attachBudgetMs, walkDeadline);
-  const budgetSeconds = Math.ceil(Math.max(0, startDeadline - started) / 1000);
+  const budgetMs = Math.max(0, Math.min(attachBudgetMs, startDeadline - started));
+  const budgetSeconds = Math.ceil(budgetMs / 1000);
   const startTimeout = new Error('installed-app start deadline');
   let stage: InstalledStartStage = 'driver-check';
   let opening: Promise<void> | undefined;

@@ -753,6 +753,16 @@ app and running device: `--remove-app` on a borrowed Android device refuses
 probes the device only through the borrowed adb server, rechecking compatibility
 before device probes and reporting them as inconclusive if that check fails.
 
+### Check an installed release build
+
+`qaren check --installed-app` requires an iOS simulator with a release build of
+the app you installed yourself. The checkout still needs `package.json`, an
+existing `pnpm-lock.yaml`, and `devClientScheme` in `.qaren/config.yaml`.
+QaReN checks for `git`, `node`, `ps`, and `xcrun`.
+
+This mode skips Metro, the app build, and all pnpm commands. The checkout can
+omit `node_modules`.
+
 ### Record a check
 
 `qaren check` records no video by default. Once a check reaches the walk, its
