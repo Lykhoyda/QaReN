@@ -763,6 +763,16 @@ QaReN checks for `git`, `node`, `ps`, and `xcrun`.
 This mode skips Metro, the app build, and all pnpm commands. The checkout can
 omit `node_modules`.
 
+A default iOS `check` or `pr` still replaces the installed app with QaReN's
+development build. After simulator admission and boot, before any
+`--fresh-install` reset, build or install, it looks the app up once with
+`simctl get_app_container`. When the installed bundle contains a regular
+`main.jsbundle` file, stderr prints a `▸` notice naming
+`qaren check --installed-app`, and the receipt's `outcomes` record the same
+text under `non_development_app_installed`, whether or not the run then
+succeeds. A missing file, a directory of that name, or a failed or timed-out
+lookup gives no notice. `--installed-app` and `qaren prepare` skip the lookup.
+
 ### Record a check
 
 `qaren check` records no video by default. Once a check reaches the walk, its
