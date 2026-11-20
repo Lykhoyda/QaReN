@@ -247,8 +247,8 @@ pub struct ReportInput<'a> {
     pub device: &'a str,
     pub ledger: &'a Ledger,
     pub video: Option<&'a VideoStatus>,
-    // Version and build of an app tested by --installed-app.
-    pub installed_app: Option<(&'a str, &'a str)>,
+    // Version and build at launch, and whether the post-walk check matched.
+    pub installed_app: Option<(&'a str, &'a str, bool)>,
 }
 
 // Dynamic prose comes from the child and the app under test: redacted, one line, no Markdown syntax.
@@ -474,12 +474,19 @@ pub fn render(input: &ReportInput<'_>) -> String {
         prose(input.app_id),
         prose(input.device)
     ));
-    if let Some((version, build)) = input.installed_app {
-        out.push_str(&format!(
-            "Tested the installed app (version {}, build {}): no React evidence, no model, strict media rules, no recording.\n\n",
-            prose(version),
-            prose(build)
-        ));
+    if let Some((version, build, unchanged)) = input.installed_app {
+        let version = prose(version);
+        let build = prose(build);
+        let line = if unchanged {
+            format!(
+                "Tested the installed app (version {version}, build {build}): no React evidence, no model, strict media rules, no recording.\n\n"
+            )
+        } else {
+            format!(
+                "Started on the installed app (version {version}, build {build}); it changed or could not be read before the run ended, so this result does not describe that build.\n\n"
+            )
+        };
+        out.push_str(&line);
     }
     out.push_str("## What was walked\n\n");
     for row in walked(input) {
@@ -2287,13 +2294,35 @@ mod tests {
             installed_app,
         };
         let line = "Tested the installed app (version 9.8.7, build 654): no React evidence, no model, strict media rules, no recording.";
-        let report = render(&input(Some(("9.8.7", "654"))));
+        let report = render(&input(Some(("9.8.7", "654", true))));
         assert_eq!(report.matches(line).count(), 1, "{report}");
         assert!(
             report.find(line).unwrap() < report.find("## What was walked").unwrap(),
             "{report}"
         );
+        let line = "Started on the installed app (version 9.8.7, build 654); it changed or could not be read before the run ended, so this result does not describe that build.";
+        let report = render(&input(Some(("9.8.7", "654", false))));
+        assert_eq!(
+            report.lines().filter(|text| *text == line).count(),
+            1,
+            "{report}"
+        );
+        assert!(
+            report.find(line).unwrap() < report.find("## What was walked").unwrap(),
+            "{report}"
+        );
+        assert!(
+            !report
+                .lines()
+                .any(|text| text.starts_with("Tested the installed app")),
+            "{report}"
+        );
+
         let default = render(&input(None));
         assert!(!default.contains("Tested the installed app"), "{default}");
+        assert!(
+            !default.contains("Started on the installed app"),
+            "{default}"
+        );
     }
 }

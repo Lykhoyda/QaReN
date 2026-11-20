@@ -430,6 +430,19 @@ fn installed_app_fails_when_the_installed_javascript_changes_during_the_walk() {
                 .as_str()
                 .contains("the installed app's JavaScript changed during the run"));
         }
+        let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
+        let line = "Started on the installed app (version 1.4.0, build 42); it changed or could not be read before the run ended, so this result does not describe that build.";
+        assert_eq!(
+            report.lines().filter(|text| *text == line).count(),
+            1,
+            "{report}"
+        );
+        assert!(
+            !report
+                .lines()
+                .any(|text| text.starts_with("Tested the installed app")),
+            "{report}"
+        );
     }
 }
 

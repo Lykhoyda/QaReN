@@ -1744,9 +1744,9 @@ fn run_inner(
             &run_dir,
             &ReportInput {
                 video: published_video.as_ref(),
-                installed_app: installed_app
-                    .as_ref()
-                    .map(|(version, build)| (version.as_str(), build.as_str())),
+                installed_app: installed_app.as_ref().map(|(version, build)| {
+                    (version.as_str(), build.as_str(), final_verification.matched)
+                }),
                 run_id: &run_id,
                 platform: platform_str(req.platform),
                 app_id: &config.app_id,

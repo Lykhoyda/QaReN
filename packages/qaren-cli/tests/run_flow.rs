@@ -2924,6 +2924,7 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
     let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
     assert!(report.starts_with("# QaReN check: PASS"));
     assert!(!report.contains("Tested the installed app"), "{report}");
+    assert!(!report.contains("Started on the installed app"), "{report}");
     assert!(
         report.contains("- ✓ line 1: 1. Tap \"Tasks\"\n"),
         "{report}"
