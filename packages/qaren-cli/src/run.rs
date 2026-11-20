@@ -3937,10 +3937,13 @@ fn walk_failure(
     }
     // Before the repeat note, which wraps the next action rather than replacing it.
     if installed_app && failure.code == FailureCode::PlanStepFailed && !previous_press {
-        let text = OutputText::from_output(&format!(
-            "{}. {INSTALLED_APP_STEP}",
-            failure.next_action.as_str()
-        ));
+        let base = failure.next_action.as_str().trim_end();
+        let stop = if base.ends_with(['.', '!', '?']) {
+            ""
+        } else {
+            "."
+        };
+        let text = OutputText::from_output(&format!("{base}{stop} {INSTALLED_APP_STEP}"));
         failure.next_action = text.clone();
         failure.suggestion = Some(text);
     }
@@ -4819,6 +4822,22 @@ mod last_screen_tests {
             "check-20261030T090000Z",
         );
         let expected = format!("{}. {MODE}", seen.suggestion.as_deref().unwrap());
+        assert_eq!(failure.next_action.as_str(), expected);
+        assert_eq!(failure.suggestion.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn an_installed_app_step_failure_does_not_double_a_suggestion_s_closing_period() {
+        let mut seen = ledger_failure(screen());
+        seen.suggestion = Some(OutputText::from_output(
+            "Add a step after line 1: Tap \"Don't Allow\".",
+        ));
+        let failure = installed_failure(
+            &seen,
+            Path::new("/nonexistent-qaren-runs"),
+            "check-20261030T090000Z",
+        );
+        let expected = format!("Add a step after line 1: Tap \"Don't Allow\". {MODE}");
         assert_eq!(failure.next_action.as_str(), expected);
         assert_eq!(failure.suggestion.as_deref(), Some(expected.as_str()));
     }
