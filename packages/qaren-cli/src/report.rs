@@ -247,6 +247,8 @@ pub struct ReportInput<'a> {
     pub device: &'a str,
     pub ledger: &'a Ledger,
     pub video: Option<&'a VideoStatus>,
+    // Version and build of an app tested by --installed-app.
+    pub installed_app: Option<(&'a str, &'a str)>,
 }
 
 // Dynamic prose comes from the child and the app under test: redacted, one line, no Markdown syntax.
@@ -472,6 +474,13 @@ pub fn render(input: &ReportInput<'_>) -> String {
         prose(input.app_id),
         prose(input.device)
     ));
+    if let Some((version, build)) = input.installed_app {
+        out.push_str(&format!(
+            "Tested the installed app (version {}, build {}): no React evidence, no model, strict media rules, no recording.\n\n",
+            prose(version),
+            prose(build)
+        ));
+    }
     out.push_str("## What was walked\n\n");
     for row in walked(input) {
         out.push_str(&row_line(row));
@@ -1086,6 +1095,7 @@ mod tests {
         for sources in [vec!["replayed", "patched", "discovered"], vec![]] {
             let ledger = block_ledger(&sources);
             let input = ReportInput {
+                installed_app: None,
                 video: None,
                 run_id: "check-test",
                 platform: "ios",
@@ -1132,6 +1142,7 @@ mod tests {
             let video = VideoStatus::unavailable("no admitted app frame was recorded".into());
             let strict = ledger.video_publication.clone().unwrap_or_default();
             let input = ReportInput {
+                installed_app: None,
                 video: Some(&video),
                 run_id: "check-test",
                 platform: "ios",
@@ -1193,6 +1204,7 @@ mod tests {
         }))
         .unwrap();
         let report = render(&ReportInput {
+            installed_app: None,
             video: None,
             run_id: "check-test",
             platform: "ios",
@@ -1231,6 +1243,7 @@ mod tests {
             receipt
         );
         let report = render(&ReportInput {
+            installed_app: None,
             run_id: "check-test",
             platform: "ios",
             app_id: "com.example",
@@ -1294,6 +1307,7 @@ mod tests {
         }))
         .unwrap();
         let report = render(&ReportInput {
+            installed_app: None,
             video: None,
             run_id: "check-test",
             platform: "ios",
@@ -1392,6 +1406,7 @@ mod tests {
             ])
         );
         let input = ReportInput {
+            installed_app: None,
             run_id: "check-test",
             platform: "ios",
             app_id: "com.example",
@@ -1423,6 +1438,7 @@ mod tests {
             serde_json::json!([{ "line": 3, "afterPlannedPress": true }]),
         );
         let one_input = ReportInput {
+            installed_app: None,
             ledger: &one,
             ..input
         };
@@ -1434,6 +1450,7 @@ mod tests {
             serde_json::json!([{ "line": 3, "afterPlannedPress": true }]),
         );
         let failed_input = ReportInput {
+            installed_app: None,
             ledger: &failed,
             ..input
         };
@@ -1450,6 +1467,7 @@ mod tests {
             .get("declinedOptIns")
             .is_none());
         let older_input = ReportInput {
+            installed_app: None,
             ledger: &older,
             ..input
         };
@@ -1474,6 +1492,7 @@ mod tests {
             }))
             .unwrap();
             let input = ReportInput {
+                installed_app: None,
                 video: None,
                 run_id: "check-test",
                 platform: "ios",
@@ -1684,6 +1703,7 @@ mod tests {
         );
         assert_eq!(summarize(&ledger).react_reconnections, vec![3]);
         let input = ReportInput {
+            installed_app: None,
             video: None,
             run_id: "check-test",
             platform: "ios",
@@ -2165,6 +2185,7 @@ mod tests {
                       url: Option<&str>| {
             render_pr_description(
                 &ReportInput {
+                    installed_app: None,
                     video: None,
                     run_id: "check-test",
                     platform,
@@ -2246,5 +2267,33 @@ mod tests {
         assert!(section
             .contains("[QaReN comment](https://github.com/o/transport/pull/12#issuecomment-1)"));
         assert!(section.contains(" on connection-ios · "), "{section}");
+    }
+
+    #[test]
+    fn an_installed_app_run_names_the_tested_build_once_under_the_header() {
+        let ledger: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "PASS", "path": "walk", "blocks": [], "steps": [],
+            "jev": { "calls": 0, "medianMs": 0 },
+            "llmTurns": 0, "escapes": 0, "recoveries": 0,
+        }))
+        .unwrap();
+        let input = |installed_app| ReportInput {
+            video: None,
+            run_id: "check-test",
+            platform: "ios",
+            app_id: "com.example",
+            device: "test-device",
+            ledger: &ledger,
+            installed_app,
+        };
+        let line = "Tested the installed app (version 9.8.7, build 654): no React evidence, no model, strict media rules, no recording.";
+        let report = render(&input(Some(("9.8.7", "654"))));
+        assert_eq!(report.matches(line).count(), 1, "{report}");
+        assert!(
+            report.find(line).unwrap() < report.find("## What was walked").unwrap(),
+            "{report}"
+        );
+        let default = render(&input(None));
+        assert!(!default.contains("Tested the installed app"), "{default}");
     }
 }

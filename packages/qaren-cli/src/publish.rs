@@ -919,6 +919,7 @@ fn describe(
     let video = effective_video(pr, publication.video_attached);
     let section = report::render_pr_description(
         &ReportInput {
+            installed_app: None,
             video: Some(&video),
             run_id,
             platform: &pr.platform,
@@ -1062,6 +1063,7 @@ fn publish_inner(
                 let ledger = publish_ledger(&run_dir, &pr)?;
                 Ok(report::render_pr_comment(
                     &ReportInput {
+                        installed_app: None,
                         video: Some(&video),
                         run_id,
                         platform: &pr.platform,

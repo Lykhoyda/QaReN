@@ -150,6 +150,47 @@ fn installed_app_walks_the_installed_release_build_and_leaves_it_in_place() {
         "none: the app's JavaScript is not proven to come from this checkout"
     );
     assert_eq!(receipt.outcomes["candidate_drift"], "none");
+    let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
+    let line = "Tested the installed app (version 1.4.0, build 42): no React evidence, no model, strict media rules, no recording.";
+    assert_eq!(report.matches(line).count(), 1, "{report}");
+}
+
+const MODE_STEP: &str = "This run used --installed-app: QaReN read the native screen only. A target must carry an accessibility identifier (testID) or an exact visible label; a control known only to React is not found, a name shared by a wrapper and its inner control is ambiguous, and an unplanned app screen or login wall is not handled (add those steps to the plan). Quote the control's own testID, or run without --installed-app.";
+
+#[test]
+fn installed_app_step_failure_leads_the_receipt_with_the_mode_next_step() {
+    let (repo, app) = app_repo();
+    let bundle = installed_bundle(&repo, Some("release javascript"));
+    let mut mock = MockRunner::new();
+    script_installed_preflight(&mut mock, &repo);
+    script_installed_launch(&mut mock, &bundle);
+    let fail = r#"{"verdict":"FAIL","path":"walk","blocks":[{"key":"plan","outcome":"fail","source":"discovered"}],"steps":[],"jev":{"calls":0,"medianMs":0},"llmTurns":0,"escapes":0,"recoveries":0,"failure":{"step":2,"seen":"no Tasks","kind":"step"}}"#;
+    let stdout = format!(
+        "{}\n{}\n",
+        envelope(2, "admitted", "{}"),
+        envelope(3, "result", fail)
+    );
+    script_installed_walk(&mut mock, &stdout, 1, container(&bundle));
+    let mut req = installed_request(&repo, &app);
+    req.hold = Some(false);
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    assert!(receipt.held.is_none());
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    let step = format!("read the report, fix the app or the plan, then re-run. {MODE_STEP}");
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::PlanStepFailed);
+    assert_eq!(failure.next_action.as_str(), step);
+    assert_eq!(
+        receipt.next_action,
+        format!(
+            "{step}; read the report under {}",
+            RunRecord::run_dir(&repo.join("runs"), &run_id()).display()
+        )
+    );
 }
 
 #[test]

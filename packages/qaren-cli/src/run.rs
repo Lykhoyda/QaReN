@@ -1605,6 +1605,7 @@ fn run_inner(
                 outcome.ledger.failure.as_ref(),
                 &ctx.runs_root,
                 &ctx.record,
+                req.installed_app,
             )
         };
         let (mut result, mut failure) = match &outcome.verdict {
@@ -1732,10 +1733,20 @@ fn run_inner(
             );
         }
 
+        let note = |key: &str| {
+            ctx.notes
+                .iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value.clone())
+        };
+        let installed_app = note("installed_app_version").zip(note("installed_app_build"));
         let report_path = match report::write(
             &run_dir,
             &ReportInput {
                 video: published_video.as_ref(),
+                installed_app: installed_app
+                    .as_ref()
+                    .map(|(version, build)| (version.as_str(), build.as_str())),
                 run_id: &run_id,
                 platform: platform_str(req.platform),
                 app_id: &config.app_id,
@@ -3901,6 +3912,7 @@ fn walk_failure(
     ledger: Option<&core::LedgerFailure>,
     runs_root: &Path,
     record: &RunRecord,
+    installed_app: bool,
 ) -> Failure {
     // A CLI-owned cause (deadline, cancellation, candidate drift) supersedes the walk and keeps its own guidance.
     let (mut failure, ledger) = match cli {
@@ -3923,6 +3935,15 @@ fn walk_failure(
         failure.next_action = OutputText::from_output("inspect_last_observed_screen");
         failure = failure.with_recovery(RecoveryReason::PreviousPlanPress);
     }
+    // Before the repeat note, which wraps the next action rather than replacing it.
+    if installed_app && failure.code == FailureCode::PlanStepFailed && !previous_press {
+        let text = OutputText::from_output(&format!(
+            "{}. {INSTALLED_APP_STEP}",
+            failure.next_action.as_str()
+        ));
+        failure.next_action = text.clone();
+        failure.suggestion = Some(text);
+    }
     if let Some(repeat) = repeat_of(runs_root, record, &failure) {
         // The machine next action stays stable on a repeat; failure.repeat still records it.
         if !previous_press {
@@ -3934,6 +3955,8 @@ fn walk_failure(
 }
 
 const PREVIOUS_PLAN_PRESS: &str = "previous-plan-press";
+
+const INSTALLED_APP_STEP: &str = "This run used --installed-app: QaReN read the native screen only. A target must carry an accessibility identifier (testID) or an exact visible label; a control known only to React is not found, a name shared by a wrapper and its inner control is ambiguous, and an unplanned app screen or login wall is not handled (add those steps to the plan). Quote the control's own testID, or run without --installed-app.";
 
 const REPEAT_SCAN: usize = 20;
 
@@ -4372,6 +4395,7 @@ mod last_screen_tests {
             Some(seen),
             Path::new("/nonexistent-qaren-runs"),
             &record,
+            false,
         )
     }
 
@@ -4387,9 +4411,10 @@ mod last_screen_tests {
         assert_eq!(failure.code, FailureCode::PlanStepFailed);
         assert_eq!(failure.step, Some(2));
         assert_eq!(failure.subreason.as_deref(), Some("absent"));
-        assert!(failure
-            .next_action
-            .starts_with("the target of line 2 was not on the last observed screen"));
+        assert_eq!(
+            failure.next_action.as_str(),
+            "the target of line 2 was not on the last observed screen, which lists 1 enabled controls in failure.screen; consider reading that screen in source and inserting the missing step before line 2"
+        );
         let control = &failure.screen.as_ref().unwrap().controls[0];
         assert_eq!(control.id.as_deref(), Some("qa-next"));
         assert!(control.enabled);
@@ -4477,6 +4502,7 @@ mod last_screen_tests {
             Some(&render_error),
             &root,
             &record("check-20261030T082000Z", "abc"),
+            false,
         );
         assert_eq!(failure.code, FailureCode::PlanStepFailed);
         assert_eq!(failure.step, Some(2));
@@ -4501,6 +4527,7 @@ mod last_screen_tests {
             Some(&seen),
             &root,
             &first,
+            false,
         );
         assert_eq!(failure.code, FailureCode::PlanStepFailed);
         assert!(failure.screen.is_some());
@@ -4521,6 +4548,7 @@ mod last_screen_tests {
             Some(&seen),
             &root,
             &record("check-20261030T082000Z", "abc"),
+            false,
         );
         assert!(again.repeat.is_some());
         assert_eq!(again.next_action.as_str(), "inspect_last_observed_screen");
@@ -4535,6 +4563,7 @@ mod last_screen_tests {
             Some(&seen),
             &root,
             &record("check-20261030T083000Z", "abc"),
+            false,
         );
         assert!(kept.recovery.is_none());
         assert_eq!(kept.next_action.as_str(), "re-run");
@@ -4568,7 +4597,7 @@ mod last_screen_tests {
             )
         };
         let mut first = record("check-20261030T081500Z", "abc");
-        let failure = walk_failure(None, &refusal, Some(&seen), &root, &first);
+        let failure = walk_failure(None, &refusal, Some(&seen), &root, &first, false);
         assert_eq!(failure.code, FailureCode::BlockStartMissing);
         assert_eq!(failure.subreason.as_deref(), Some("absent"));
         assert!(failure.screen.is_some());
@@ -4582,6 +4611,7 @@ mod last_screen_tests {
             Some(&seen),
             &root,
             &record("check-20261030T082000Z", "abc"),
+            false,
         );
         assert_eq!(again.code, FailureCode::BlockStartMissing);
         assert_eq!(
@@ -4608,6 +4638,7 @@ mod last_screen_tests {
             Some(&ledger_failure(screen())),
             Path::new("/nonexistent-qaren-runs"),
             &record("check-20261030T090000Z", "abc"),
+            false,
         );
         assert_eq!(failure.code, FailureCode::CandidateDrifted);
         assert_eq!(
@@ -4643,6 +4674,7 @@ mod last_screen_tests {
             Some(&seen),
             &root,
             &current,
+            false,
         );
         assert_eq!(failure.step, Some(3));
         assert_eq!(
@@ -4741,5 +4773,115 @@ mod last_screen_tests {
         let failure = step_failure(&ledger_failure(screen()));
         assert!(repeat_of(&root, &current, &failure).is_none());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    const MODE: &str = "This run used --installed-app: QaReN read the native screen only. A target must carry an accessibility identifier (testID) or an exact visible label; a control known only to React is not found, a name shared by a wrapper and its inner control is ambiguous, and an unplanned app screen or login wall is not handled (add those steps to the plan). Quote the control's own testID, or run without --installed-app.";
+    const GENERAL: &str = "read the report, fix the app or the plan, then re-run";
+
+    fn installed_failure(seen: &core::LedgerFailure, root: &Path, run_id: &str) -> Failure {
+        walk_failure(
+            None,
+            &|| plan_step_failure(Some(seen)),
+            Some(seen),
+            root,
+            &record(run_id, "abc"),
+            true,
+        )
+    }
+
+    fn unsuggested(subreason: &str) -> core::LedgerFailure {
+        let mut seen = ledger_failure(screen());
+        seen.suggestion = None;
+        seen.subreason = Some(subreason.into());
+        seen
+    }
+
+    #[test]
+    fn an_installed_app_step_failure_names_the_mode_after_the_general_line() {
+        let failure = installed_failure(
+            &unsuggested("absent"),
+            Path::new("/nonexistent-qaren-runs"),
+            "check-20261030T090000Z",
+        );
+        let expected = format!("{GENERAL}. {MODE}");
+        assert_eq!(failure.code, FailureCode::PlanStepFailed);
+        assert_eq!(failure.next_action.as_str(), expected);
+        assert_eq!(failure.suggestion.as_deref(), Some(expected.as_str()));
+        assert!(failure.repeat.is_none());
+    }
+
+    #[test]
+    fn an_installed_app_step_failure_names_the_mode_after_the_ledger_suggestion() {
+        let seen = ledger_failure(screen());
+        let failure = installed_failure(
+            &seen,
+            Path::new("/nonexistent-qaren-runs"),
+            "check-20261030T090000Z",
+        );
+        let expected = format!("{}. {MODE}", seen.suggestion.as_deref().unwrap());
+        assert_eq!(failure.next_action.as_str(), expected);
+        assert_eq!(failure.suggestion.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn a_repeated_installed_app_step_failure_keeps_the_same_failure_note_around_the_mode() {
+        for (subreason, name) in [("absent", "d1"), ("evidence-incomplete", "d2")] {
+            let root = runs_root(&format!("repeat-installed-{name}"));
+            let seen = unsuggested(subreason);
+            let mut earlier = record("check-20261030T081500Z", "abc");
+            earlier.failure = Some(installed_failure(&seen, &root, &earlier.run_id));
+            earlier.save(&root).unwrap();
+            let failure = installed_failure(&seen, &root, "check-20261030T082000Z");
+            let mode = format!("{GENERAL}. {MODE}");
+            assert_eq!(
+                failure.repeat.as_ref().unwrap().previous_run_id,
+                "check-20261030T081500Z",
+                "{name}"
+            );
+            assert_eq!(failure.suggestion.as_deref(), Some(mode.as_str()), "{name}");
+            let next = failure.next_action.as_str();
+            if subreason == "absent" {
+                assert!(next.starts_with("same failure, plan unchanged"), "{next}");
+                assert!(next.ends_with(MODE), "{next}");
+            } else {
+                assert_eq!(
+                    next,
+                    format!("{mode}; the same failure was recorded in run check-20261030T081500Z")
+                );
+            }
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn installed_app_leaves_a_previous_press_and_a_cli_owned_failure_without_the_mode() {
+        let pressed = installed_failure(
+            &unsuggested(PREVIOUS_PLAN_PRESS),
+            Path::new("/nonexistent-qaren-runs"),
+            "check-20261030T090000Z",
+        );
+        assert_eq!(pressed.next_action.as_str(), "inspect_last_observed_screen");
+        assert!(pressed.suggestion.is_none());
+        for cli in [
+            Failure::new("verify", FailureCode::CandidateDrifted, "drifted", "re-run"),
+            Failure::new(
+                "walk",
+                FailureCode::WalkDeadlineExceeded,
+                "deadline",
+                "raise the budget",
+            ),
+        ] {
+            let own = cli.next_action.as_str().to_string();
+            let kept = walk_failure(
+                Some(cli),
+                &|| unreachable!("a CLI-owned failure supersedes the walk verdict"),
+                Some(&ledger_failure(screen())),
+                Path::new("/nonexistent-qaren-runs"),
+                &record("check-20261030T090000Z", "abc"),
+                true,
+            );
+            assert_eq!(kept.next_action.as_str(), own);
+            assert!(kept.suggestion.is_none());
+        }
     }
 }

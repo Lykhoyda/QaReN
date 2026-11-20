@@ -2793,6 +2793,7 @@ process.stdout.write(JSON.stringify(ledger));
     qaren::report::write(
         &dir,
         &qaren::report::ReportInput {
+            installed_app: None,
             video: None,
             run_id: RUN,
             platform: "ios",
