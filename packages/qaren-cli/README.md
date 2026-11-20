@@ -3805,7 +3805,9 @@ and keeps the log. Missing
 runtime or candidate-directory evidence also leaves the stop unresolved. Exit shutdown
 cannot be added afterward to a released run. A dead lease
 holder is reclaimed only through that run's cleanup; a live or unprovable holder
-refuses `DEVICE_BUSY`. Every holder records its HOME, and the refusal names
+refuses `DEVICE_BUSY`. `check --installed-app` also refuses `DEVICE_BUSY`, instead
+of reclaiming, a dead holder whose run created the simulator, because that run's
+cleanup can delete the simulator and the installed app. Every holder records its HOME, and the refusal names
 `HOME='<holder home>' qaren cleanup <run-id>`, which recovers it from any session.
 A device, native-build or USB lock whose holder is proven dead (its process gone or
 replaced, as after a reboot) and whose run record (`run.json`, or a native suite's
