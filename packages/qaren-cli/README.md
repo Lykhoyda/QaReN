@@ -765,6 +765,11 @@ existing `pnpm-lock.yaml`, and `devClientScheme` in `.qaren/config.yaml`.
 QaReN checks for `git`, `node`, `ps`, and `xcrun`. It launches the installed
 app without replacing it or attaching a debugger.
 
+QaReN taps and types as the plan directs, so a run can change the app's data,
+including data on its servers. QaReN cannot make the run read-only. Use an account
+and environment where those changes are acceptable. Strict media rules always
+apply in this mode.
+
 Use quoted action targets and quoted `✓` literals. Targets must be readable in
 the native accessibility tree by `testID` or exact visible label. A secure-field
 fill passes with `UNVERIFIED_FILL` because the value reads back masked. Verify
