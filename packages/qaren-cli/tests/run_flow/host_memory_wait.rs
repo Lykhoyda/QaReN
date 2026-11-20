@@ -38,6 +38,7 @@ fn stopping_before_the_build(memory: &[(u8, u64)]) -> (HostRunner, RunRequest) {
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
     let req = request(&repo, &app, 30);
@@ -358,6 +359,7 @@ fn d7_a_run_that_reuses_its_build_takes_no_preflight() {
         let mut mock = MockRunner::new();
         script_preflight(&mut mock, &repo);
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+        script_non_dev_probe(&mut mock);
         mock.expect_run("ls-files", CmdOutput::success(&files));
         expo(&mut mock);
         for package in ["expo-modules-core", "expo-modules-jsi"] {

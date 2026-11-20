@@ -308,6 +308,12 @@ fn pr_failure(detail: String) -> Failure {
     )
 }
 
+// Said when the fact is seen, before any reset or install, so it stays true whatever the run does next.
+fn non_development_notice(runner: &mut dyn Runner, udid: &str, app_id: &str) -> Option<String> {
+    let bundle = prepare::installed_bundle_path(runner, udid, app_id)?;
+    prepare::embedded_js_bundle(&bundle).map(|_| format!("a non-development build of {app_id} was installed when this run started. A default run replaces the installed app with QaReN's development build; --fresh-install removes it first. To test an installed build as it is: qaren check --installed-app"))
+}
+
 fn installed_app_unsupported(detail: &str, next: &str) -> Failure {
     Failure::new(
         "preflight",
@@ -1014,6 +1020,13 @@ fn run_inner(
                     f,
                     restart_shutdown_unresolved && !req.shutdown_device_on_exit,
                 );
+            }
+        }
+        if req.platform == Platform::Ios && !req.installed_app {
+            if let Some(notice) = non_development_notice(ctx.runner, &device.id, &config.app_id) {
+                eprintln!("▸ {notice}");
+                ctx.notes
+                    .push(("non_development_app_installed".to_string(), notice));
             }
         }
         if req.fresh_install {

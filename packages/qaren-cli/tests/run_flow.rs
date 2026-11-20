@@ -7,6 +7,8 @@ mod host_memory_wait;
 mod host_numbers;
 #[path = "run_flow/installed_app.rs"]
 mod installed_app;
+#[path = "run_flow/non_development_notice.rs"]
+mod non_development_notice;
 use common::IosBuildRunner as MockRunner;
 
 use qaren::core::Budgets;
@@ -493,6 +495,7 @@ fn workspace_cache_persistence_reuses_only_the_same_workspace_and_scheme() {
         script_preflight(&mut mock, &repo);
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
         if reuse {
+            script_non_dev_probe(&mut mock);
             mock.expect_run("ls-files", CmdOutput::success(common::IOS_NATIVE_FILES));
             common::script_xcode(&mut mock);
             script_check_install_and_launch(&mut mock);
@@ -500,6 +503,7 @@ fn workspace_cache_persistence_reuses_only_the_same_workspace_and_scheme() {
         } else if index == 0 {
             script_provision_build(&mut mock, "xcodebuild", common::IOS_NATIVE_FILES);
         } else {
+            script_non_dev_probe(&mut mock);
             mock.expect_run("ls-files", CmdOutput::success(common::IOS_NATIVE_FILES));
             common::script_xcode(&mut mock);
             script_check_build_with(&mut mock, "xcodebuild", |m| {
@@ -587,6 +591,7 @@ fn a_fresh_clone_reuses_another_clones_build_and_never_overwrites_the_store() {
         script_preflight(&mut mock, &repo);
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
         if reuse {
+            script_non_dev_probe(&mut mock);
             mock.expect_run("ls-files", CmdOutput::success(common::IOS_NATIVE_FILES));
             common::script_xcode(&mut mock);
             script_check_install_and_launch(&mut mock);
@@ -778,6 +783,7 @@ fn a_clean_ios_build_refuses_before_building_when_its_volume_is_short_of_space()
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     common::script_xcode(&mut mock);
     mock.expect_run(
@@ -851,6 +857,7 @@ fn an_ios_check_refuses_contention_when_its_slot_wait_expires() {
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
     for _ in 0..30 {
@@ -907,6 +914,7 @@ fn a_check_whose_candidate_moves_during_the_build_never_publishes_and_releases_t
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
     common::script_finite_ios_build_only(&mut mock, "expo run:ios");
@@ -948,6 +956,7 @@ fn b6_a_check_whose_build_stands_still_reports_what_ran_out() {
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
     mock.expect_spawn_piped("expo run:ios", 5000, "", None);
@@ -987,6 +996,7 @@ fn pre_spawn_build_error_retires_pending_before_releasing_ownership() {
     mock.build_spawn_fault = Some(common::BuildSpawnFault::Error);
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
 
@@ -1024,6 +1034,7 @@ fn unproven_metro_after_the_build_refuses_install_and_retains_its_lease() {
         } else {
             common::script_ios_deps(&mut mock);
         }
+        script_non_dev_probe(&mut mock);
         mock.expect_run(
             "ls-files",
             CmdOutput::success(if workspace {
@@ -1091,6 +1102,7 @@ fn unreadable_preinstall_inventory_after_build_refuses_without_installing() {
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
     common::script_finite_ios_build_only(&mut mock, "expo run:ios");
@@ -1129,6 +1141,7 @@ fn a_simulator_shut_down_during_the_build_refuses_device_not_booted_before_insta
     let selected_at = qaren::timefmt::iso8601_utc(mock.now_epoch_ms());
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
     common::script_finite_ios_build_only(&mut mock, "expo run:ios");
@@ -1182,6 +1195,7 @@ fn metro_exit_after_install_prevents_launch_and_cleans_up_both_stages() {
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
     common::script_finite_ios_build_only(&mut mock, "expo run:ios");
@@ -1221,6 +1235,7 @@ fn invalid_spawned_build_group_retains_pending_and_both_locks_without_starting()
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
     mock.expect_spawn_piped("expo run:ios", 1, "", Some(0));
@@ -1261,6 +1276,7 @@ fn failed_spawn_retirement_save_or_interruption_retains_pending_and_both_locks()
         mock.build_spawn_fault = Some(fault);
         script_preflight(&mut mock, &repo);
         common::script_ios_deps(&mut mock);
+        script_non_dev_probe(&mut mock);
         mock.expect_run("ls-files", CmdOutput::success(""));
         script_clean_build_plan(&mut mock);
         let outcome =
@@ -1323,6 +1339,7 @@ fn finite_build_failures_never_install_or_walk_and_unproven_groups_retain_both_l
         } else {
             common::script_ios_deps(&mut mock);
         }
+        script_non_dev_probe(&mut mock);
         mock.expect_run(
             "ls-files",
             CmdOutput::success(if workspace {
@@ -1463,6 +1480,7 @@ fn compiler_cause_and_recovery_survive_clean_and_incomplete_check_teardown() {
         mock.build_log = Some(include_str!("fixtures/ios-toolchain-mismatch.txt").into());
         script_preflight(&mut mock, &repo);
         common::script_ios_deps(&mut mock);
+        script_non_dev_probe(&mut mock);
         mock.expect_run("ls-files", CmdOutput::success(""));
         script_clean_build_plan(&mut mock);
         mock.expect_spawn_piped("expo run:ios", 5000, "", Some(65));
@@ -1527,6 +1545,7 @@ fn workspace_changed_by_clean_prebuild_refuses_before_creating_output_or_buildin
         });
         script_preflight(&mut mock, &repo);
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+        script_non_dev_probe(&mut mock);
         mock.expect_run("ls-files", CmdOutput::success(""));
         script_clean_build_plan(&mut mock);
         mock.expect_spawn_piped("expo prebuild", 5000, "", Some(0));
@@ -1917,6 +1936,7 @@ fn script_check_install_until_metro_owned(mock: &mut qaren::exec::MockRunner) {
 
 // A cold candidate's build, then its Metro wait, whose bind observation the caller scripts.
 fn script_candidate_until_metro_owned(mock: &mut MockRunner, head: &str, status: &str) {
+    script_non_dev_probe(mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(mock);
     common::script_finite_ios_build_only(mock, "expo run:ios");
@@ -1960,7 +1980,36 @@ fn script_provision_build(mock: &mut MockRunner, command: &str, native_files: &s
     script_provision_candidate(mock, command, native_files, &"b".repeat(40), UNTRACKED_PLAN);
 }
 
+// A default iOS check's lookup of an installed build before reset or build; this one finds none.
+fn script_non_dev_probe(mock: &mut MockRunner) {
+    mock.expect_run(
+        "simctl get_app_container",
+        CmdOutput::failed(2, "No such file or directory"),
+    );
+}
+
 fn script_provision_candidate(
+    mock: &mut MockRunner,
+    command: &str,
+    native_files: &str,
+    head: &str,
+    status: &str,
+) {
+    script_non_dev_probe(mock);
+    script_provision_candidate_after_probe(mock, command, native_files, head, status);
+}
+
+fn script_provision_after_probe(mock: &mut MockRunner) {
+    script_provision_candidate_after_probe(
+        mock,
+        "expo run:ios",
+        "",
+        &"b".repeat(40),
+        UNTRACKED_PLAN,
+    );
+}
+
+fn script_provision_candidate_after_probe(
     mock: &mut MockRunner,
     command: &str,
     native_files: &str,
@@ -2802,6 +2851,7 @@ fn default_ios_build_narrows_to_arm64_and_routes_xcodebuild_through_the_job_cap(
         .insert("PATH".into(), bin.to_string_lossy().into_owned());
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
     mock.expect_run("hw.optional.arm64", CmdOutput::success("1\n"));
@@ -3344,6 +3394,7 @@ fn a_cancel_during_the_build_stops_it_with_proof_and_releases_both_locks() {
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
     mock.expect_spawn_piped("expo run:ios", 5000, "", None);
@@ -4336,8 +4387,9 @@ fn an_unresolved_metro_group_retains_the_device_lease_for_cleanup() {
     script_admission(&mut mock);
     common::script_ios_deps(&mut mock);
     script_admission(&mut mock);
+    script_non_dev_probe(&mut mock);
     script_app_presence(&mut mock, false);
-    script_provision_after_deps(&mut mock);
+    script_provision_after_probe(&mut mock);
     script_drift_status(&mut mock);
     script_host_probe(&mut mock, UDID, hosts_absent());
     mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
@@ -7270,13 +7322,14 @@ fn fresh_install_reset_build_readiness_walk_and_teardown_share_one_durable_lease
     script_admission(&mut mock);
     common::script_ios_deps(&mut mock);
     script_admission(&mut mock);
+    script_non_dev_probe(&mut mock);
     script_app_presence(&mut mock, true);
     mock.expect_run(
         &format!("simctl uninstall {UDID} com.rndevagent.testapp"),
         CmdOutput::success(""),
     );
     script_app_presence(&mut mock, false);
-    script_provision_after_deps(&mut mock);
+    script_provision_after_probe(&mut mock);
     script_drift_status(&mut mock);
     script_host_probe(&mut mock, UDID, hosts_absent());
     mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
@@ -7398,6 +7451,7 @@ fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_l
         script_admission(&mut mock);
         common::script_ios_deps(&mut mock);
         script_admission(&mut mock);
+        script_non_dev_probe(&mut mock);
         if installed {
             script_app_presence(&mut mock, true);
             mock.expect_run(
@@ -7708,6 +7762,7 @@ fn fresh_install_unknown_inventory_never_authorizes_install_or_build() {
             script_admission(&mut mock);
             common::script_ios_deps(&mut mock);
             script_admission(&mut mock);
+            script_non_dev_probe(&mut mock);
             if after_uninstall {
                 script_app_presence(&mut mock, true);
                 mock.expect_run("simctl uninstall", CmdOutput::success(""));
@@ -7752,6 +7807,7 @@ fn fresh_install_requires_uninstall_success_and_proven_absence() {
         script_admission(&mut mock);
         common::script_ios_deps(&mut mock);
         script_admission(&mut mock);
+        script_non_dev_probe(&mut mock);
         script_app_presence(&mut mock, true);
         let ok = output.ok();
         mock.expect_run("simctl uninstall", output);
@@ -8240,6 +8296,7 @@ fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease()
                 "simctl list devices -j",
                 CmdOutput::success(&available_inventory("Booted")),
             );
+            script_non_dev_probe(&mut mock);
             if fresh {
                 script_app_presence(&mut mock, true);
                 mock.expect_run(
@@ -8248,7 +8305,7 @@ fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease()
                 );
                 script_app_presence(&mut mock, false);
             }
-            script_provision_after_deps(&mut mock);
+            script_provision_after_probe(&mut mock);
             script_drift_status(&mut mock);
             script_host_probe(&mut mock, UDID, hosts_absent());
             mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
@@ -8515,6 +8572,7 @@ fn restart_device_shuts_down_boots_reads_back_and_walks_under_a_durable_borrowed
                 "simctl list devices -j",
                 CmdOutput::success(&available_inventory("Booted")),
             );
+            script_non_dev_probe(&mut mock);
             if fresh {
                 script_app_presence(&mut mock, true);
                 mock.expect_run(
@@ -8523,7 +8581,7 @@ fn restart_device_shuts_down_boots_reads_back_and_walks_under_a_durable_borrowed
                 );
                 script_app_presence(&mut mock, false);
             }
-            script_provision_after_deps(&mut mock);
+            script_provision_after_probe(&mut mock);
             script_drift_status(&mut mock);
             script_host_probe(&mut mock, UDID, hosts_absent());
             mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
@@ -10778,6 +10836,7 @@ fn a_cancel_at_each_pre_walk_effect_boundary_runs_nothing_after_it_and_never_res
             "simctl list devices -j",
             CmdOutput::success(&available_inventory("Booted")),
         );
+        script_non_dev_probe(&mut mock);
         script_app_presence(&mut mock, true);
         mock.expect_run(
             &format!("simctl uninstall {UDID} com.rndevagent.testapp"),
@@ -11455,6 +11514,7 @@ fn fingerprint_parts_reach_the_receipt_and_end_event_on_expo_reuse() {
         mock.advance_on = Some(("fingerprint".into(), 17));
         script_preflight(&mut mock, &repo);
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+        script_non_dev_probe(&mut mock);
         mock.expect_run("ls-files", CmdOutput::success(&files));
         expo(&mut mock);
         for package in ["expo-modules-core", "expo-modules-jsi"] {
@@ -11549,6 +11609,7 @@ fn every_build_decision_reports_fingerprint_completeness_and_reuse_reports_ready
         script_preflight(&mut mock, &repo);
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
         if reuse {
+            script_non_dev_probe(&mut mock);
             mock.expect_run("ls-files", CmdOutput::success(files));
             common::script_xcode(&mut mock);
             script_warm_launch_after_one_metro_retry(&mut mock);
@@ -11723,6 +11784,7 @@ fn a_cancel_during_a_cached_ios_install_names_the_substage() {
         let mut mock = MockRunner::new();
         script_preflight(&mut mock, &repo);
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+        script_non_dev_probe(&mut mock);
         mock.expect_run("ls-files", CmdOutput::success(files));
         common::script_xcode(&mut mock);
         common::script_ios_app_verification(&mut mock);
@@ -11811,6 +11873,7 @@ fn check_fails_fast_when_the_launched_ios_app_exits_and_names_the_missing_framew
         .insert("HOME".into(), home.to_string_lossy().into_owned());
     script_preflight(&mut mock, &repo);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(files));
     common::script_xcode(&mut mock);
     common::script_ios_app_verification(&mut mock);
@@ -13272,6 +13335,7 @@ fn b6_a_pr_run_whose_build_stands_still_reports_what_ran_out() {
     };
     script_pr_preflight(&mut runner.inner, &repo, &wt);
     common::script_ios_deps(&mut runner.inner);
+    script_non_dev_probe(&mut runner.inner);
     runner.inner.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut runner.inner);
     runner
@@ -13512,6 +13576,7 @@ fn unsafe_native_root_fails_check_and_releases_the_existing_device_lease() {
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(common::IOS_NATIVE_FILES));
     common::script_xcode(&mut mock);
     let receipt = run(&mut mock, &req);
