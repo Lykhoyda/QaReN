@@ -683,7 +683,16 @@ fn record_is_accepted_for_check_and_pr_and_rejected_elsewhere() {
             stderr.contains("--record are only valid for check and pr"),
             "{stderr}"
         );
-        assert!(stderr.contains("usage: qaren check"), "{stderr}");
+        let check_usage = stderr
+            .lines()
+            .find(|line| line.starts_with("usage: qaren check "))
+            .unwrap_or_else(|| panic!("missing check usage line: {stderr}"));
+        let pr_usage = stderr
+            .lines()
+            .find(|line| line.trim_start().starts_with("qaren pr "))
+            .unwrap_or_else(|| panic!("missing pr usage line: {stderr}"));
+        assert!(check_usage.contains("[--installed-app]"), "{check_usage}");
+        assert!(!pr_usage.contains("[--installed-app]"), "{pr_usage}");
     }
 }
 
