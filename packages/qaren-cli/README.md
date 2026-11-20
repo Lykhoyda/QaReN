@@ -3356,6 +3356,9 @@ simulator or `--device <UUID>`), or any `check`/`pr --fresh-install` on its
 resolved simulator, including automatic selection, or `--boot-device` or
 `--restart-device` with an exact `--device`. Plain `check` on the
 booted simulator reads and writes none of its locale or keyboard settings.
+`check --installed-app` never pins the lane, even with `--boot-device` or
+`--restart-device`; its session open still turns off the simulator's
+autocorrection and prediction.
 
 Before launch, on that UUID only, QaReN reads the device's global domain and
 `com.apple.Preferences` with `simctl spawn <UUID> defaults export` and writes
