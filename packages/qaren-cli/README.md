@@ -753,12 +753,61 @@ app and running device: `--remove-app` on a borrowed Android device refuses
 probes the device only through the borrowed adb server, rechecking compatibility
 before device probes and reporting them as inconclusive if that check fails.
 
-### Check an installed release build
+### Test an installed release build
+
+```sh
+qaren check --installed-app --plan-file <plan.md>
+```
 
 `qaren check --installed-app` requires an iOS simulator with a release build of
 the app you installed yourself. The checkout still needs `package.json`, an
 existing `pnpm-lock.yaml`, and `devClientScheme` in `.qaren/config.yaml`.
-QaReN checks for `git`, `node`, `ps`, and `xcrun`.
+QaReN checks for `git`, `node`, `ps`, and `xcrun`. It launches the installed
+app without replacing it or attaching a debugger.
+
+Use quoted action targets and quoted `✓` literals. Targets must be readable in
+the native accessibility tree by `testID` or exact visible label. A secure-field
+fill passes with `UNVERIFIED_FILL` because the value reads back masked. Verify
+the result with a subsequent step or check. QaReN can handle system dialogs,
+but an unplanned app screen or login wall stops the step and leaves the app in
+place. Add those screens to the plan, including any sign-in steps.
+
+| Case | Result | Next step |
+| --- | --- | --- |
+| `--installed-app` on a verb other than `check`, including `pr` | Usage error (exit 2) | Use `qaren check`. |
+| Android | `INSTALLED_APP_UNSUPPORTED` | Omit `--installed-app` or use an iOS simulator. |
+| `--fresh-install` | `INSTALLED_APP_UNSUPPORTED` | Omit `--fresh-install` to keep the installed app, or omit `--installed-app`. |
+| `--record` | `INSTALLED_APP_UNSUPPORTED` | Omit `--record`. |
+| A missing `devClientScheme`, `package.json` or `pnpm-lock.yaml` | Standard configuration or checkout refusal | Supply the required configuration and checkout files. |
+| A plan line needs model interpretation or does not match the grammar | `PLAN_UNPARSEABLE`, with an entry per invalid line before device access | Quote each target and `✓` literal, use supported plan syntax, or omit `--installed-app`. |
+| A dead run holds the lease for a simulator it created | `DEVICE_BUSY` | Use a simulator QaReN did not create, or clean up the earlier run if its simulator can be deleted. |
+| The app is missing | `INSTALLED_APP_MISSING` | Install the build to test or omit `--installed-app`. |
+| The bundle has no `main.jsbundle` | `INSTALLED_APP_NOT_STANDALONE` | Install a release build with `main.jsbundle` or omit `--installed-app` to test a development build with Metro. |
+| The selected app is one of QaReN's own runner apps | `CORE_REFUSED` | Choose another app. |
+| The launched app exited or its process identity cannot be proven | `CORE_REFUSED` with `INSTALLED_APP_PROCESS_UNPROVEN` | Start the app by hand on the simulator and check that it stays open, then rerun. |
+| The runner cannot bind or read the app | `CORE_REFUSED` with `INSTALLED_APP_BIND_FAILED` or `INSTALLED_APP_READ_FAILED` | Rerun once. If it repeats, report the code and run ID. |
+| Startup exhausts the attach budget (120 seconds by default) or the remaining walk budget | `CORE_REFUSED` with `INSTALLED_APP_OPEN_TIMEOUT` | Rerun once. A first start may build or download the runner. If it repeats, report the code and run ID. |
+| A quoted target is visible only to React | `PLAN_STEP_FAILED` | Give the control a `testID` or exact visible label. |
+| An unplanned app screen or login wall covers the target | `PLAN_STEP_FAILED` | Add the missing steps to the plan. |
+| A tap target matches a wrapper and its inner control | `TARGET_AMBIGUOUS` | Quote the inner control's own identifier. |
+| A fill target does not appear as an input in the native tree | Fill refusal | Use an input exposed in the native tree, or omit `--installed-app`. |
+| The installed app's JavaScript changes during the walk | `CANDIDATE_DRIFTED` | Rerun against an unchanged build. |
+
+The report identifies the installed version and build when that information
+is available. It identifies that build as tested only when the final check
+proves its JavaScript is unchanged.
+
+Installed-app mode always uses strict media rules and records
+`video_policy_source: installed-app mode`. A `non-strict` declaration produces
+an override notice on stderr. There is no recording and no model call. A plan
+with protected inputs takes no screenshots, and typed values are redacted from
+run text. Without protected inputs, screenshots stop when a secure field or
+input value is observed. App-displayed text, such as a name or balance, can
+still appear in local report text and earlier screenshots. Protected values
+travel locally over the private input channel and in the runner's typing and
+verification commands. The simulator's system log can contain typed and displayed
+field text. For runs with inputs, see `platform_log` for clearing guidance.
+When QaReN taps a system dialog button, its label is written to the run log.
 
 This mode skips Metro, the app build, and all pnpm commands. The checkout can
 omit `node_modules`.
@@ -2956,6 +3005,7 @@ plan preflight -> device selection -> lease + durable run record
 ### Fresh install
 
 `--fresh-install` works with `qaren check` and `qaren pr` on iOS and Android.
+`qaren check --installed-app` refuses it.
 Under the run's device lease, strict admission must succeed before removing the
 selected app and its data. If the app is installed, QaReN uninstalls it and
 reads the app inventory again to prove absence before installation and the walk.
@@ -3375,10 +3425,9 @@ failures.
 
 ### Warm lane
 
-A simulator the run explicitly owns is pinned before launch and, on `check`,
-its first screen is proven before row 1, so the leg starts on a pinned, launched
-app rather than an unknown device. Ownership means `prepare` on iOS (its created
-simulator or `--device <UUID>`), or any `check`/`pr --fresh-install` on its
+Except with `--installed-app`, a simulator the run explicitly owns is pinned
+before launch and `check` proves its first screen before row 1. Ownership means
+`prepare` on iOS (its created simulator or `--device <UUID>`), or any `check`/`pr --fresh-install` on its
 resolved simulator, including automatic selection, or `--boot-device` or
 `--restart-device` with an exact `--device`. Plain `check` on the
 booted simulator reads and writes none of its locale or keyboard settings.
@@ -3478,7 +3527,8 @@ secret despite artifact redaction.
   namespace removed after its spec's environment is applied, including names the spec sets.
 - Before device selection, `check` and `pr` run `walk.js --preflight-stdin` twice: an
   inventory of the names required by the plan and the configured login block, then the plan
-  preflight with only those values on private stdin. Missing or empty names refuse
+  preflight with only those values on private stdin. `check --installed-app` inventories
+  the plan alone. Missing or empty names refuse
   `PLAN_INPUT_MISSING` with run id `none`; invalid values and runtime mismatches refuse
   `CORE_REFUSED`. Neither phase writes a run directory, lease or log.
 - `pr` fetches and verifies the head before inventory, then reads the configured login block
@@ -3487,8 +3537,8 @@ secret despite artifact redaction.
   Inputs that block names must also appear in the inventory of the plan and the invoking
   checkout's login block; any other name refuses `PLAN_INPUT_MISSING`. Effective sensitivities
   must match too, including strict defaults, so a PR cannot downgrade an owner's secret.
-  `check` re-reads its owned login block before device selection, and the core rechecks it
-  before the session opens.
+  Unless `--installed-app` is passed, `check` re-reads its owned login block before device
+  selection, and the core rechecks it before the session opens.
 - The core receives the values only inside its stdin request. The walker types them, saves
   slot fills as `inputText: { input: "PASSWORD" }` and replays saved and login blocks with
   the current run's values. A TEST-PII slot saves as
@@ -5357,9 +5407,9 @@ The receipt, report and PR comment name the policy and the selected config: its 
 
 Feature artwork withheld solely for an ordinary accessibility value without a typed safe path (ANT-664) is eligible in non-strict mode and remains withheld in strict or undeclared mode. The [screenshot publication regression](tests/publish_flow.rs) covers this policy decision with synthetic artwork; it does not establish live device acceptance.
 
-Only the selected config declares the video mode; no flag, environment variable,
-plan annotation or inferred backend selects it. `--record` turns recording on for a
-check; it does not select the video mode.
+The selected config declares the video mode. `qaren check --installed-app` forces
+strict mode. `--record` turns on recording for a standard check and uses the
+configured video mode.
 
 SECRET text masking and no readback apply in both modes. A runtime input displayed in a non-secure field can be marked `(test-pii)` only if it is test data; that annotation cannot exempt secure fields or code rows. Non-strict is an operator declaration, not proof: an undeclared secret prefilled into a non-secure field, real personal data, or a value visible only between captures can appear in published media. QaReN does not mask media regions or identify the backend. Upgrade every CLI/CI runtime before adding the key; older versions refuse it. Removing the key restores strict behavior.
 
