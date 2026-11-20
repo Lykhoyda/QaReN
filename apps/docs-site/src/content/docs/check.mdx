@@ -57,6 +57,7 @@ startup, lock checks, builds and cleanup, follow the authoritative
 | `--platform ios\|android`       | Defaults to `ios`.                                                                 |
 | `--device <id>`                 | A simulator UUID on iOS, an emulator or USB phone serial on Android.                            |
 | `--config <path>`               | Another configuration file. Defaults to `.qaren/config.yaml`.                      |
+| `--installed-app`               | iOS only: tests the release build already installed, without Metro or a build. See [Test an installed release build](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#test-an-installed-release-build). |
 | `--fresh-install`               | See the [fresh-install contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#fresh-install). |
 | `--hold`, `--no-hold`            | Check-only inspection controls; see the [iOS admission and cleanup contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup). |
 | `--boot-device`, `--restart-device`, `--shutdown-device-on-exit` | See the [iOS simulator lifecycle contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle). |
