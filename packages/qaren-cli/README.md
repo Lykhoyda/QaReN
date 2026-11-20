@@ -767,8 +767,10 @@ omit `node_modules`.
 
 `qaren check` records no video by default. Once a check reaches the walk, its
 receipt and stderr summary say
-`video: not recorded; pass --record to qaren check to record this walk`; a check
-refused earlier (preflight, build) carries no video line.
+`video: not recorded; pass --record to qaren check to record this walk`
+(`video: not recorded: installed-app mode makes no recording` with
+`--installed-app`, which refuses `--record`); a check refused earlier
+(preflight, build) carries no video line.
 `qaren check --record` records the walk through the same recorder, start rules,
 encode and trimmed copy as `qaren pr`, including the runtime-input rule and the
 Android API 34 requirement. `--record` on `qaren pr` changes nothing, because `pr`
