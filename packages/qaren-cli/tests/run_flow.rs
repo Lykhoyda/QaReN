@@ -2923,6 +2923,8 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
 
     let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
     assert!(report.starts_with("# QaReN check: PASS"));
+    assert!(!report.contains("Tested the installed app"), "{report}");
+    assert!(!report.contains("Started on the installed app"), "{report}");
     assert!(
         report.contains("- ✓ line 1: 1. Tap \"Tasks\"\n"),
         "{report}"
@@ -11211,6 +11213,7 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
                     .unwrap();
             let comment = qaren::report::render_pr_comment(
                 &qaren::report::ReportInput {
+                    installed_app: None,
                     video: Some(&pr.video),
                     run_id: &run_id(),
                     platform: &pr.platform,
@@ -13722,6 +13725,7 @@ fn video_declaration_reaches_the_child_and_durable_run_outputs() {
             let ledger: qaren::core::Ledger = serde_json::from_value(ledger).unwrap();
             let body = qaren::report::render_pr_comment(
                 &qaren::report::ReportInput {
+                    installed_app: None,
                     video: None,
                     run_id: "check-policy",
                     platform: "ios",

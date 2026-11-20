@@ -405,6 +405,7 @@ fn evidence_documents_and_reports_still_withhold_opaque_output() {
     let report = qaren::report::write(
         &dir,
         &qaren::report::ReportInput {
+            installed_app: None,
             video: None,
             run_id: "evidence",
             platform: "ios",

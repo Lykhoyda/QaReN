@@ -40,6 +40,7 @@ fn render(
 ) -> String {
     render_pr_comment(
         &ReportInput {
+            installed_app: None,
             video: None,
             run_id: "check-20261002T101500Z",
             platform: "ios",
@@ -146,6 +147,7 @@ fn run_details_list_every_field() {
 fn the_verdict_is_structured() {
     let body = render_pr_comment(
         &ReportInput {
+            installed_app: None,
             video: None,
             run_id: "r",
             platform: "ios",
@@ -223,6 +225,7 @@ fn non_strict_secret_causes_get_specific_wording_and_eligible_inputs_get_the_esc
             );
         }
         let local = qaren::report::render(&ReportInput {
+            installed_app: None,
             video: None,
             run_id: "check-policy",
             platform: "ios",
@@ -245,6 +248,7 @@ fn non_strict_secret_causes_get_specific_wording_and_eligible_inputs_get_the_esc
                 &VideoPublication::WithheldFill,
             );
             let local = qaren::report::render(&ReportInput {
+                installed_app: None,
                 video: None,
                 run_id: "check-policy",
                 platform: "ios",
@@ -293,6 +297,7 @@ fn selected_config_wording_keeps_secret_and_machine_redaction() {
 fn a_suspected_video_stall_is_noted_only_beside_an_available_eligible_video() {
     let ledger = failing_ledger();
     let input = ReportInput {
+        installed_app: None,
         video: None,
         run_id: "check-continuity",
         platform: "ios",
