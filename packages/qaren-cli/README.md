@@ -2003,7 +2003,11 @@ age (`ageMs`) and whether a device action ran after it (`afterDispatch`);
 carry `failure.screen` from the newest admitted observation, without target-miss
 `subreason` or `suggestion`; a previous-planned-press veto may supply the
 [recovery suggestion](#step-recovery). Other non-target causes, including render
-errors and failed scroll dispatches, carry none of these three failure fields. Labels follow the
+errors and failed scroll dispatches, carry none of these three failure fields, except
+in `check --installed-app`: there every `PLAN_STEP_FAILED` other than a
+previous-planned-press veto sets `suggestion` and `next_action` to its usual next
+action followed by a fixed sentence naming the mode's native-screen-only limits;
+a repeat notice below wraps that `next_action` rather than replacing it. Labels follow the
 [input value masking contract](#input-value-masking), including its fixed-control-word
 exception when screen text is withheld; testIDs remain unless they hold a
 protected value, in which case they are masked whole. `suggestion` is one plan edit
