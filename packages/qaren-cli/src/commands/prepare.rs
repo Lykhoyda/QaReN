@@ -4048,15 +4048,14 @@ pub(crate) fn launch_installed_app(ctx: &mut Ctx) -> Result<String, Failure> {
         ios::AppPresence::Unknown => return Err(unknown()),
     }
     let bundle = installed_bundle_path(ctx.runner, &udid, &app_id).ok_or_else(unknown)?;
-    let js = bundle.join("main.jsbundle");
-    if !std::fs::symlink_metadata(&js).is_ok_and(|meta| meta.is_file()) {
+    let Some(js) = embedded_js_bundle(&bundle) else {
         return Err(Failure::new(
             "launch",
             FailureCode::InstalledAppNotStandalone,
             format!("the installed {app_id} has no embedded JavaScript bundle (main.jsbundle), so it needs Metro: it is a development build"),
             "drop --installed-app to test this development build with Metro; or install a release build and re-run",
         ));
-    }
+    };
     let info = ctx.runner.run_private(
         &CmdSpec::new(
             "ios-app-info",
@@ -4143,6 +4142,13 @@ pub(crate) fn installed_bundle_path(
     let container = runner.run(&ios::app_container_spec(udid, app_id));
     let path = container.stdout.trim();
     (container.ok() && !path.is_empty()).then(|| PathBuf::from(path))
+}
+
+pub(crate) fn embedded_js_bundle(bundle: &Path) -> Option<PathBuf> {
+    let js = bundle.join("main.jsbundle");
+    std::fs::symlink_metadata(&js)
+        .is_ok_and(|meta| meta.is_file())
+        .then_some(js)
 }
 
 // The sha256 of the installed app's main.jsbundle now, or None when the app or the file cannot be read.

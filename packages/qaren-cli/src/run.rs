@@ -311,9 +311,7 @@ fn pr_failure(detail: String) -> Failure {
 // Said when the fact is seen, before any reset or install, so it stays true whatever the run does next.
 fn non_development_notice(runner: &mut dyn Runner, udid: &str, app_id: &str) -> Option<String> {
     let bundle = prepare::installed_bundle_path(runner, udid, app_id)?;
-    std::fs::symlink_metadata(bundle.join("main.jsbundle"))
-        .is_ok_and(|meta| meta.is_file())
-        .then(|| format!("a non-development build of {app_id} was installed when this run started. A default run replaces the installed app with QaReN's development build; --fresh-install removes it first. To test an installed build as it is: qaren check --installed-app"))
+    prepare::embedded_js_bundle(&bundle).map(|_| format!("a non-development build of {app_id} was installed when this run started. A default run replaces the installed app with QaReN's development build; --fresh-install removes it first. To test an installed build as it is: qaren check --installed-app"))
 }
 
 fn installed_app_unsupported(detail: &str, next: &str) -> Failure {
