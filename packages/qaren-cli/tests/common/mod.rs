@@ -6,6 +6,7 @@ use qaren::candidate::Candidate;
 use qaren::exec::{CmdOutput, MockRunner};
 use qaren::runrecord::{Phase, PidIdentity, RunRecord, RUN_SCHEMA};
 use qaren::scenario::Scenario;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -1000,4 +1001,205 @@ pub fn assert_registry_specs(calls: &[qaren::exec::CmdSpec]) {
 
 pub fn script_swift(mock: &mut MockRunner) {
     mock.expect_run("xcrun swift --version", CmdOutput::success("Apple Swift version 6.4 (swiftlang-fixture clang-fixture)\nTarget: arm64-apple-macosx\n"));
+}
+
+const THUMB_BYTES: usize = 60 * 130;
+const FRAME_S: f64 = 1.0 / 30.0;
+const EDGE_S: f64 = 0.001;
+
+pub fn checked_stdout(command: &mut std::process::Command, path: &Path) -> Vec<u8> {
+    let output = command
+        .output()
+        .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    assert!(
+        output.status.success(),
+        "{}: {}",
+        path.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
+}
+
+fn frame_times(path: &Path) -> Vec<f64> {
+    let stdout = checked_stdout(
+        std::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "frame=pts_time",
+                "-of",
+                "csv=p=0",
+            ])
+            .arg(path),
+        path,
+    );
+    let mut times: Vec<f64> = String::from_utf8_lossy(&stdout)
+        .split_whitespace()
+        .map(|line| line.trim_end_matches(','))
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            line.parse()
+                .unwrap_or_else(|_| panic!("{}: bad time {line}", path.display()))
+        })
+        .collect();
+    times.sort_by(f64::total_cmp);
+    times
+}
+
+fn frame_thumbs(path: &Path, count: usize) -> Vec<Vec<u8>> {
+    let stdout = checked_stdout(
+        std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-i"])
+            .arg(path)
+            .args([
+                "-fps_mode",
+                "passthrough",
+                "-vf",
+                "scale=60:130:flags=area,format=gray",
+                "-f",
+                "rawvideo",
+                "-",
+            ]),
+        path,
+    );
+    assert!(
+        count >= 2 && stdout.len() == count * THUMB_BYTES,
+        "{}: {count} timestamps, {} bytes of decoded frames",
+        path.display(),
+        stdout.len()
+    );
+    stdout.chunks(THUMB_BYTES).map(<[u8]>::to_vec).collect()
+}
+
+fn thumb_distance(a: &[u8], b: &[u8]) -> f64 {
+    let sum: u64 = a
+        .iter()
+        .zip(b)
+        .map(|(x, y)| u64::from(x.abs_diff(*y)))
+        .sum();
+    sum as f64 / a.len() as f64
+}
+
+fn last_at_or_before(times: &[f64], t: f64) -> Option<usize> {
+    times.partition_point(|&x| x <= t).checked_sub(1)
+}
+
+/// Presentation time of the raw capture's first frame.
+pub fn first_frame_time(raw: &Path) -> f64 {
+    frame_times(raw)[0]
+}
+
+/// Compares a converted video with the raw capture it was made from. Returns one line per failure;
+/// an empty list means every check passed. Panics when the two files cannot be compared.
+/// `offset_s`: raw-capture time of the converted video's time 0.
+/// `length_s`: the expected length of the converted video (a publication window); `None` means the
+///             converted video must reach the raw capture's last frame.
+/// `arrivals`: pairs (raw time of a frame that shows the new picture, raw time of a frame that shows
+///             the picture before the change).
+pub fn timeline_failures(
+    raw: &Path,
+    converted: &Path,
+    offset_s: f64,
+    length_s: Option<f64>,
+    arrivals: &[(f64, f64)],
+) -> Vec<String> {
+    let rt = frame_times(raw);
+    let rs = frame_thumbs(raw, rt.len());
+    let ot = frame_times(converted);
+    let os = frame_thumbs(converted, ot.len());
+    let name = converted.display();
+    assert!(
+        ot[0] + offset_s >= rt[0] - FRAME_S,
+        "{name}: the converted video starts before the raw capture"
+    );
+    let mut failures = Vec::new();
+
+    if ot
+        .windows(2)
+        .any(|pair| (pair[1] - pair[0] - FRAME_S).abs() > 0.001)
+    {
+        failures.push(format!("{name}: span: not 30 fps"));
+    }
+    if ot[0] > FRAME_S + 0.001 {
+        failures.push(format!("{name}: span: does not start at 0 ({:.3}s)", ot[0]));
+    }
+    let last = ot[ot.len() - 1];
+    match length_s {
+        Some(length) if (last + FRAME_S - length).abs() > FRAME_S + 0.001 => {
+            failures.push(format!(
+                "{name}: span: ends at {:.3}s, asked {length:.3}s",
+                last + FRAME_S
+            ))
+        }
+        None if last + offset_s < rt[rt.len() - 1] - FRAME_S => failures.push(format!(
+            "{name}: span: ends at raw time {:.3}s, last raw frame {:.3}s",
+            last + offset_s,
+            rt[rt.len() - 1]
+        )),
+        _ => {}
+    }
+
+    let mut wrong: Vec<f64> = Vec::new();
+    for (k, &t0) in ot.iter().enumerate() {
+        let t = t0 + offset_s;
+        let hi = last_at_or_before(&rt, t + FRAME_S + EDGE_S).unwrap_or(0);
+        let lo = last_at_or_before(&rt, t - FRAME_S - EDGE_S).unwrap_or(0);
+        let d = (lo..=hi)
+            .map(|i| thumb_distance(&os[k], &rs[i]))
+            .fold(f64::INFINITY, f64::min);
+        if d <= 0.25 {
+            continue;
+        }
+        if d > 1.0 {
+            wrong.push(t0);
+            continue;
+        }
+        let dj = (lo.saturating_sub(80)..lo)
+            .chain(hi + 1..(hi + 81).min(rt.len()))
+            .map(|j| thumb_distance(&os[k], &rs[j]))
+            .fold(f64::INFINITY, f64::min);
+        if dj.is_finite() && dj * 2.0 + 0.05 < d {
+            wrong.push(t0);
+        }
+    }
+    if let (Some(first), Some(last)) = (wrong.first(), wrong.last()) {
+        failures.push(format!(
+            "{name}: frames: {} wrong frames, {first:.3}s to {last:.3}s",
+            wrong.len()
+        ));
+    }
+
+    for &(new_s, old_s) in arrivals {
+        let (Some(n), Some(o)) = (
+            last_at_or_before(&rt, new_s + 0.0005),
+            last_at_or_before(&rt, old_s + 0.0005),
+        ) else {
+            failures.push(format!(
+                "{name}: arrival {new_s:.3}: before the raw capture"
+            ));
+            continue;
+        };
+        let closer = |thumb: &[u8]| thumb_distance(thumb, &rs[n]) < thumb_distance(thumb, &rs[o]);
+        let raw_at = (o + 1..rt.len()).find(|&j| closer(&rs[j])).map(|j| rt[j]);
+        let conv_at = ot
+            .iter()
+            .zip(&os)
+            .find(|(t0, thumb)| *t0 + offset_s >= rt[o] && closer(thumb))
+            .map(|(t0, _)| t0 + offset_s);
+        match (raw_at, conv_at) {
+            (Some(raw_at), Some(conv_at)) if (conv_at - raw_at).abs() > FRAME_S + 0.001 => failures
+                .push(format!(
+                    "{name}: arrival {new_s:.3}: raw {raw_at:.3}s, converted {conv_at:.3}s, error {:+.0} ms",
+                    (conv_at - raw_at) * 1000.0
+                )),
+            (Some(_), Some(_)) => {}
+            _ => failures.push(format!(
+                "{name}: arrival {new_s:.3}: raw {raw_at:?}, converted {conv_at:?} (never arrives)"
+            )),
+        }
+    }
+    failures
 }

@@ -701,12 +701,13 @@ fn ffmpeg_encode(
 ) -> bool {
     let mut args: Vec<String> = vec!["-y".into(), "-v".into(), "error".into()];
     args.extend(input.iter().map(|a| a.to_string()));
+    // The fps filter builds the 30 fps output from presentation times; "-r 30" held simulator frames for seconds.
     args.extend(
         [
             "-c:v",
             "libx264",
-            "-r",
-            "30",
+            "-vf",
+            "fps=30",
             "-pix_fmt",
             "yuv420p",
             "-movflags",
@@ -1227,9 +1228,14 @@ mod tests {
             .expect_run("ffprobe", CmdOutput::success("12.5\n"));
         assert_eq!(finalize(&mut runner, &run_dir), VideoStatus::Available);
         let encode = &runner.mock.calls[1].args;
-        for arg in ["libx264", "30", "yuv420p", "+faststart"] {
+        for arg in ["libx264", "yuv420p", "+faststart"] {
             assert!(encode.contains(&arg.to_string()), "{arg}: {encode:?}");
         }
+        let input = encode.iter().position(|a| a == "-i").unwrap();
+        let filter = encode.iter().position(|a| a == "-vf").expect("-vf");
+        assert!(filter > input + 1, "{encode:?}");
+        assert_eq!(encode[filter + 1], "fps=30", "{encode:?}");
+        assert!(!encode.contains(&"-r".to_string()), "{encode:?}");
     }
 
     #[test]
