@@ -701,12 +701,13 @@ fn ffmpeg_encode(
 ) -> bool {
     let mut args: Vec<String> = vec!["-y".into(), "-v".into(), "error".into()];
     args.extend(input.iter().map(|a| a.to_string()));
+    // The fps filter builds the 30 fps output from presentation times; "-r 30" held simulator frames for seconds.
     args.extend(
         [
             "-c:v",
             "libx264",
-            "-r",
-            "30",
+            "-vf",
+            "fps=30",
             "-pix_fmt",
             "yuv420p",
             "-movflags",
