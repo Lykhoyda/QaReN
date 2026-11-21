@@ -248,25 +248,23 @@ fn kept_capture_keeps_each_picture_at_its_time() {
                 None,
                 &arrivals,
             ));
-            let inside_every_window: Vec<(f64, f64)> = arrivals
-                .iter()
-                .copied()
-                .filter(|&(new_s, old_s)| {
-                    windows.iter().all(|&(start, end)| {
-                        let from = first + start as f64 / 1000.0;
-                        let to = first + end as f64 / 1000.0;
+            for (start, end) in windows {
+                let from = first + start as f64 / 1000.0;
+                let to = first + end as f64 / 1000.0;
+                let inside_window: Vec<(f64, f64)> = arrivals
+                    .iter()
+                    .copied()
+                    .filter(|&(new_s, old_s)| {
                         [new_s, old_s].iter().all(|t| (from..=to).contains(t))
                     })
-                })
-                .collect();
-            for (start, end) in windows {
+                    .collect();
                 match record::publication_copy(&mut runner, &dir, Some(start), Some(end), false) {
                     VideoStatus::Available => failures.extend(common::timeline_failures(
                         &raw,
                         &record::published_video_path(&dir),
-                        first + start as f64 / 1000.0,
+                        from,
                         Some((end - start) as f64 / 1000.0),
-                        &inside_every_window,
+                        &inside_window,
                     )),
                     other => failures.push(format!("publication {start}-{end}: {other:?}")),
                 }
