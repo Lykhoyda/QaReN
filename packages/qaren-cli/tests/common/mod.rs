@@ -1007,7 +1007,7 @@ const THUMB_BYTES: usize = 60 * 130;
 const FRAME_S: f64 = 1.0 / 30.0;
 const EDGE_S: f64 = 0.001;
 
-fn checked_stdout(command: &mut std::process::Command, path: &Path) -> Vec<u8> {
+pub fn checked_stdout(command: &mut std::process::Command, path: &Path) -> Vec<u8> {
     let output = command
         .output()
         .unwrap_or_else(|error| panic!("{}: {error}", path.display()));

@@ -104,26 +104,22 @@ impl Drop for Remove {
 const BURSTS: &str = "color=c=black:s=320x240:r=60:d=6,geq=lum='if(lt(N,100),20+N*5,if(lt(N,250),85+(N-180)*5,155+(N-300)*5))':cb=128:cr=128,select='lt(t,0.2)+between(t,3,3.2)+between(t,5,5.2)'";
 
 fn stores_more_than_its_gap(raw: &std::path::Path) -> bool {
-    let probe = std::process::Command::new("ffprobe")
-        .args([
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "frame=pts_time,duration_time",
-            "-of",
-            "csv=p=0",
-        ])
-        .arg(raw)
-        .output()
-        .unwrap();
-    assert!(
-        probe.status.success(),
-        "{}",
-        String::from_utf8_lossy(&probe.stderr)
+    let probe = common::checked_stdout(
+        std::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "frame=pts_time,duration_time",
+                "-of",
+                "csv=p=0",
+            ])
+            .arg(raw),
+        raw,
     );
-    let mut frames: Vec<(f64, f64)> = String::from_utf8_lossy(&probe.stdout)
+    let mut frames: Vec<(f64, f64)> = String::from_utf8_lossy(&probe)
         .lines()
         .filter_map(|line| {
             let mut fields = line.trim_end_matches(',').split(',');
@@ -161,31 +157,27 @@ fn bursty_capture_keeps_each_picture_at_its_time() {
     let _remove = Remove(dir.clone());
     std::fs::create_dir_all(dir.join("media")).unwrap();
     let raw = dir.join("media/raw.mov");
-    let generated = std::process::Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-v",
-            "error",
-            "-f",
-            "lavfi",
-            "-i",
-            BURSTS,
-            "-fps_mode",
-            "passthrough",
-            "-c:v",
-            "libx264",
-            "-bf",
-            "2",
-            "-pix_fmt",
-            "yuv420p",
-        ])
-        .arg(&raw)
-        .output()
-        .unwrap();
-    assert!(
-        generated.status.success(),
-        "{}",
-        String::from_utf8_lossy(&generated.stderr)
+    common::checked_stdout(
+        std::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                BURSTS,
+                "-fps_mode",
+                "passthrough",
+                "-c:v",
+                "libx264",
+                "-bf",
+                "2",
+                "-pix_fmt",
+                "yuv420p",
+            ])
+            .arg(&raw),
+        &raw,
     );
     assert!(
         stores_more_than_its_gap(&raw),
