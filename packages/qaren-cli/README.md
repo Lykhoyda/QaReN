@@ -5256,9 +5256,7 @@ but skip recording with the explicit video-unavailable reason that Android
 API <34 stops screen recording at 180 seconds.
 
 Both platforms encode the capture to `media/video.mp4` (H.264, 30 fps), using
-`ffmpeg` and checking playable duration with `ffprobe`. Each picture keeps its
-capture time, so the MP4 and its published copy show a screen change within one
-frame interval of the raw capture. If these tools are
+`ffmpeg` and checking playable duration with `ffprobe`. If these tools are
 unavailable, capture cannot start, or finalization fails, the walk can still
 complete and the receipt's `video` outcome says why, after the published copy is
 prepared, so a failed trim is reported rather than `available`. An unavailable
