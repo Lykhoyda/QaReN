@@ -93,6 +93,198 @@ fn real_publication_of_the_pr1142_timeline_has_no_dark_frame() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+struct Remove(PathBuf);
+
+impl Drop for Remove {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+const BURSTS: &str = "color=c=black:s=320x240:r=60:d=6,geq=lum='if(lt(N,100),20+N*5,if(lt(N,250),85+(N-180)*5,155+(N-300)*5))':cb=128:cr=128,select='lt(t,0.2)+between(t,3,3.2)+between(t,5,5.2)'";
+
+fn stores_more_than_its_gap(raw: &std::path::Path) -> bool {
+    let probe = std::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "frame=pts_time,duration_time",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(raw)
+        .output()
+        .unwrap();
+    assert!(
+        probe.status.success(),
+        "{}",
+        String::from_utf8_lossy(&probe.stderr)
+    );
+    let mut frames: Vec<(f64, f64)> = String::from_utf8_lossy(&probe.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.trim_end_matches(',').split(',');
+            Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
+        })
+        .collect();
+    frames.sort_by(|a, b| a.0.total_cmp(&b.0));
+    frames
+        .windows(2)
+        .any(|pair| pair[0].1 > pair[1].0 - pair[0].0 + 0.05)
+}
+
+fn parse_pairs<T: std::str::FromStr>(value: &str) -> Vec<(T, T)> {
+    value
+        .split(';')
+        .filter(|pair| !pair.trim().is_empty())
+        .map(|pair| {
+            let (a, b) = pair
+                .split_once(',')
+                .unwrap_or_else(|| panic!("expected a,b: {pair}"));
+            let parse = |x: &str| {
+                x.trim()
+                    .parse()
+                    .unwrap_or_else(|_| panic!("not a number: {x}"))
+            };
+            (parse(a), parse(b))
+        })
+        .collect()
+}
+
+#[test]
+#[ignore = "requires ffmpeg and ffprobe on PATH"]
+fn bursty_capture_keeps_each_picture_at_its_time() {
+    let dir = common::temp_repo();
+    let _remove = Remove(dir.clone());
+    std::fs::create_dir_all(dir.join("media")).unwrap();
+    let raw = dir.join("media/raw.mov");
+    let generated = std::process::Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            BURSTS,
+            "-fps_mode",
+            "passthrough",
+            "-c:v",
+            "libx264",
+            "-bf",
+            "2",
+            "-pix_fmt",
+            "yuv420p",
+        ])
+        .arg(&raw)
+        .output()
+        .unwrap();
+    assert!(
+        generated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+    assert!(
+        stores_more_than_its_gap(&raw),
+        "the generated clip no longer contains the fault; this ffmpeg writes other durations"
+    );
+
+    let mut failures = Vec::new();
+    let mut runner = qaren::exec::RealRunner::new();
+    match record::finalize(&mut runner, &dir) {
+        VideoStatus::Available => {
+            failures.extend(common::timeline_failures(
+                &raw,
+                &record::video_path(&dir),
+                0.0,
+                None,
+                &[(3.2, 0.183333), (5.2, 3.2)],
+            ));
+            for (start, end) in [(2_900u64, 5_100u64), (2_917, 5_117)] {
+                match record::publication_copy(&mut runner, &dir, Some(start), Some(end), false) {
+                    VideoStatus::Available => failures.extend(common::timeline_failures(
+                        &raw,
+                        &record::published_video_path(&dir),
+                        start as f64 / 1000.0,
+                        Some((end - start) as f64 / 1000.0),
+                        &[(3.2, 0.183333)],
+                    )),
+                    other => failures.push(format!("publication {start}-{end}: {other:?}")),
+                }
+            }
+        }
+        other => failures.push(format!("finalize: {other:?}")),
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+#[test]
+#[ignore = "requires ffmpeg and ffprobe on PATH"]
+fn kept_capture_keeps_each_picture_at_its_time() {
+    let Ok(kept) = std::env::var("QAREN_TEST_RAW_CAPTURE") else {
+        panic!("set QAREN_TEST_RAW_CAPTURE to a kept raw capture (raw.mov or raw.mp4)");
+    };
+    let kept = PathBuf::from(kept);
+    let dir = common::temp_repo();
+    let _remove = Remove(dir.clone());
+    std::fs::create_dir_all(dir.join("media")).unwrap();
+    let raw = if kept.extension().is_some_and(|ext| ext == "mp4") {
+        dir.join("media/raw.mp4")
+    } else {
+        dir.join("media/raw.mov")
+    };
+    std::fs::copy(&kept, &raw).unwrap();
+    let first = common::first_frame_time(&raw);
+    let arrivals: Vec<(f64, f64)> = std::env::var("QAREN_TEST_ARRIVALS_S")
+        .map(|value| parse_pairs(&value))
+        .unwrap_or_default();
+    let windows: Vec<(u64, u64)> = std::env::var("QAREN_TEST_PUBLICATION_WINDOWS_MS")
+        .map(|value| parse_pairs(&value))
+        .unwrap_or_default();
+
+    let mut failures = Vec::new();
+    let mut runner = qaren::exec::RealRunner::new();
+    match record::finalize(&mut runner, &dir) {
+        VideoStatus::Available => {
+            failures.extend(common::timeline_failures(
+                &raw,
+                &record::video_path(&dir),
+                first,
+                None,
+                &arrivals,
+            ));
+            let inside_every_window: Vec<(f64, f64)> = arrivals
+                .iter()
+                .copied()
+                .filter(|&(new_s, old_s)| {
+                    windows.iter().all(|&(start, end)| {
+                        let from = first + start as f64 / 1000.0;
+                        let to = first + end as f64 / 1000.0;
+                        [new_s, old_s].iter().all(|t| (from..=to).contains(t))
+                    })
+                })
+                .collect();
+            for (start, end) in windows {
+                match record::publication_copy(&mut runner, &dir, Some(start), Some(end), false) {
+                    VideoStatus::Available => failures.extend(common::timeline_failures(
+                        &raw,
+                        &record::published_video_path(&dir),
+                        first + start as f64 / 1000.0,
+                        Some((end - start) as f64 / 1000.0),
+                        &inside_every_window,
+                    )),
+                    other => failures.push(format!("publication {start}-{end}: {other:?}")),
+                }
+            }
+        }
+        other => failures.push(format!("finalize: {other:?}")),
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 fn walking_record() -> (PathBuf, RunRecord) {
     let repo = common::temp_repo();
     let record = common::base_record(

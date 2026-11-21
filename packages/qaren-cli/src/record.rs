@@ -1227,9 +1227,14 @@ mod tests {
             .expect_run("ffprobe", CmdOutput::success("12.5\n"));
         assert_eq!(finalize(&mut runner, &run_dir), VideoStatus::Available);
         let encode = &runner.mock.calls[1].args;
-        for arg in ["libx264", "30", "yuv420p", "+faststart"] {
+        for arg in ["libx264", "yuv420p", "+faststart"] {
             assert!(encode.contains(&arg.to_string()), "{arg}: {encode:?}");
         }
+        let input = encode.iter().position(|a| a == "-i").unwrap();
+        let filter = encode.iter().position(|a| a == "-vf").expect("-vf");
+        assert!(filter > input + 1, "{encode:?}");
+        assert_eq!(encode[filter + 1], "fps=30", "{encode:?}");
+        assert!(!encode.contains(&"-r".to_string()), "{encode:?}");
     }
 
     #[test]
