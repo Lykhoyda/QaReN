@@ -54,9 +54,9 @@ A plan names what to do and what to check:
 
 ## See a run
 
-QAREN_DEMO_CLIP_URL
+https://github.com/user-attachments/assets/377d31dc-7c06-4a56-97b2-7664352132aa
 
-If the player does not load, [download the clip](QAREN_DEMO_CLIP_URL) (MP4, 30 s, 0.65 MB).
+If the player does not load, [download the clip](https://github.com/user-attachments/assets/377d31dc-7c06-4a56-97b2-7664352132aa) (MP4, 30 s, 0.65 MB).
 
 What the clip runs:
 
