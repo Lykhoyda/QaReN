@@ -61,7 +61,7 @@ If the player does not load, [download the clip](QAREN_DEMO_CLIP_URL) (MP4, 30 s
 What the clip runs:
 
 - **Plan:** [`examples/readme-demo.plan.md`](examples/readme-demo.plan.md), the reviewed plan the run walked, unchanged.
-- **Version and platform:** QaReN 2.3.0 on an iOS simulator.
+- **Version and platform:** QaReN 2.3.0 (develop build) on an iOS simulator.
 - **Video policy:** `video: strict`.
 - **Starting state:** a fresh install that opens on the first onboarding page.
 - **Private:** the app's source and the pull request the run tested are not public.
