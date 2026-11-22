@@ -52,6 +52,41 @@ A plan names what to do and what to check:
 ✓ "Welcome"
 ```
 
+## See a run
+
+QAREN_DEMO_CLIP_URL
+
+If the player does not load, [download the clip](QAREN_DEMO_CLIP_URL) (MP4, 30 s, 0.65 MB).
+
+What the clip runs:
+
+- **Plan:** [`examples/readme-demo.plan.md`](examples/readme-demo.plan.md), the reviewed plan the run walked, unchanged.
+- **Version and platform:** QaReN 2.3.0 on an iOS simulator.
+- **Video policy:** `video: strict`.
+- **Starting state:** a fresh install that opens on the first onboarding page.
+- **Private:** the app's source and the pull request the run tested are not public.
+
+<details>
+<summary>Run excerpt: 13 of 13 plan lines passed in 30.2 s</summary>
+
+| Plan line | Outcome | Time (ms) |
+| ---: | --- | ---: |
+| 19 | PASS | 4,196 |
+| 20 | PASS | 433 |
+| 21 | PASS | 3,043 |
+| 22 | PASS | 415 |
+| 23 | PASS | 3,253 |
+| 24 | PASS | 682 |
+| 25 | PASS | 648 |
+| 26 | PASS | 6,460 |
+| 27 | PASS | 1,005 |
+| 28 | PASS | 1,014 |
+| 29 | PASS | 7,236 |
+| 30 | PASS | 971 |
+| 31 | PASS | 892 |
+
+</details>
+
 ## Requirements
 
 - An Apple silicon Mac with Xcode.
