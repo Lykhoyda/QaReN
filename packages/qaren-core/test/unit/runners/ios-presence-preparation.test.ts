@@ -26,6 +26,10 @@ test('actual Swift capture prepares exact raw trees inside one deadline and stil
   const source = readFileSync(new URL('QarenIosRunnerTests+Snapshot.swift', native), 'utf8');
   const predicates = readFileSync(new URL('SnapshotPredicates.swift', native), 'utf8');
   const models = readFileSync(new URL('QarenIosRunnerTests+Models.swift', native), 'utf8');
+  const fastSnapshotLimit = /^ {2}let fastSnapshotLimit = (\d+)$/m.exec(
+    readFileSync(new URL('QarenIosRunnerTests.swift', native), 'utf8'),
+  )?.[1];
+  assert.ok(fastSnapshotLimit, 'missing production fastSnapshotLimit');
   const result = spawnSync('swift', ['-'], {
     encoding: 'utf8',
     timeout: 90_000,
@@ -174,7 +178,7 @@ enum RunnerObjCExceptionCatcher {
   static func catchException(_ read: () -> Void) -> String? { read(); return nil }
 }
 final class Harness {
-  let fastSnapshotLimit = 300
+  let fastSnapshotLimit = ${fastSnapshotLimit}
   var retainedFastSnapshotOptions: SnapshotOptions?
   var maxSnapshotElements = 600
   let currentSnapshotGeneration = 7
@@ -480,6 +484,23 @@ for change in ["card-value", "card-enabled", "container-enabled", "label-source"
     "diagnostic": try JSONSerialization.jsonObject(with: JSONEncoder().encode(result.labelProvenanceDiagnostics!))]
   print(String(data: try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]), encoding: .utf8)!)
 }
+for total in [350, 650, 40] {
+  let h = Harness()
+  let root = XCUIElementSnapshot(); root.elementType = .application; root.identifier = "app"
+  let window = XCUIElementSnapshot(); window.elementType = .window; window.identifier = "window"
+  window.frame = CGRect(x: 0, y: 0, width: 400, height: 800)
+  window.children = (0..<(total - 2)).map { row in
+    let text = XCUIElementSnapshot(); text.elementType = .staticText
+    text.identifier = "row-" + String(row); text.label = ""; text.value = nil
+    return text
+  }
+  root.children = [window]
+  let app = XCUIApplication([root])
+  let result = h.snapshotFast(app: app, options: SnapshotOptions(interactiveOnly: true, compact: false, depth: nil, scope: nil, raw: false))
+  let output: [String: Any] = ["name": "long-list-" + String(total), "nodes": result.nodes?.count ?? -1,
+    "truncated": result.truncated as Any, "reads": app.reads]
+  print(String(data: try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]), encoding: .utf8)!)
+}
 try run("stable", [tree()])
 try run("explicit-budget", [tree()], budget: 1234)
 try run("first-read-cost", [tree()], readDelay: [1: 500])
@@ -556,6 +577,19 @@ do {
         return [row.name, row];
       }),
   );
+  for (const [total, nodes, truncated] of [
+    [350, 350, false],
+    [650, 600, true],
+    [40, 40, false],
+  ] as const) {
+    assert.deepEqual(rows.get(`long-list-${total}`), {
+      name: `long-list-${total}`,
+      nodes,
+      truncated,
+      reads: 1,
+    });
+    rows.delete(`long-list-${total}`);
+  }
   for (const [field, mask] of [
     ['type', 1],
     ['identifier', 2],
