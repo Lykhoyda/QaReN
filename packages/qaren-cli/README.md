@@ -4549,10 +4549,12 @@ step once protection has lapsed. An opt-in declined outside
 protection is declined again when it returns. System permission alerts follow the
 dialog rules above.
 Login replay also clears the withheld-dismissal diagnostic for the retried item.
-While protected, recovery still answers system
-prompts and dev menus and still replays login, but withholds every app decline,
-including the recheck before dispatch, and an ambiguous decline set does not
-refuse. If login replay has not cleared the veto, a failing target-class step reports
+Planned-press protection leaves the usual
+system-prompt, dev-menu and login-replay rules in effect. While protection is
+active, only the strict permission opt-in above is eligible for an app decline,
+including at the pre-dispatch recheck. Multiple decline candidates alone do not
+produce `INTERRUPTION_AMBIGUOUS` while protected.
+If login replay has not cleared the veto, a failing target-class step reports
 subreason `previous-plan-press`, and `failure.seen` includes
 `the previous planned press succeeded; the next target
 was not found; automatic app dismissal was withheld` (or, when later items passed
@@ -4561,11 +4563,14 @@ later steps passed while a decline control stayed on screen; ...`), and the walk
 `next_action` is `inspect_last_observed_screen`, also on a repeat, with a
 `failure.recovery` of reason `previous_plan_press` whose five rungs are all
 inapplicable. A failed check after such a veto
-carries the same `failure.seen` note without a subreason. A sheet that appears while the planned surface
-is still on screen, including one that opens together with it, is therefore not
-dismissed either. When the protected screen is opt-in shaped or has only a decline
-control, the failure names its class even with text withheld and suggests adding
-a step after the planned press that taps the named decline, with privacy masks intact.
+carries the same `failure.seen` note without a subreason. While planned-press
+protection remains active, recovery can decline a sheet over the planned surface,
+including one that appeared with it, only under the strict permission opt-in
+exception. After a planned-press veto, the failure can identify a permission opt-in
+or a screen with only a decline control. When the walker suggests adding a tap after
+the planned press, it uses the decline label if the label passes its privacy check
+or the words "the decline control" otherwise. Output masking can also affect the
+completed suggestion.
 A failed row's reason also says why recovery dismissed nothing when presence evidence
 was unreadable, late or incomplete, when a decline control's visibility or press could
 not be proven after a planned press, or when a protected screen was not a strict opt-in

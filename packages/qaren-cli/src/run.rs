@@ -4599,6 +4599,60 @@ mod last_screen_tests {
     }
 
     #[test]
+    fn a_withheld_dismissal_after_a_planned_press_ladder_states_only_what_was_observed() {
+        let root = runs_root("previous-press-wording");
+        let suggestion = OutputText::from_output("Add a step after line 1: Tap \"Not now\".");
+        let mut seen = ledger_failure(screen());
+        seen.suggestion = Some(suggestion.clone());
+        seen.subreason = Some("previous-plan-press".into());
+        let failure = walk_failure(
+            None,
+            &|| plan_step_failure(Some(&seen)),
+            Some(&seen),
+            &root,
+            &record("check-20261030T081500Z", "abc"),
+            false,
+        );
+        assert_eq!(failure.code, FailureCode::PlanStepFailed);
+        assert_eq!(failure.suggestion, Some(suggestion));
+        assert_eq!(failure.subreason.as_deref(), Some("previous-plan-press"));
+        assert!(failure.screen.is_some());
+        assert_eq!(failure.next_action.as_str(), "inspect_last_observed_screen");
+        let recovery = failure.build_recovery().unwrap();
+        assert_eq!(recovery.reason, RecoveryReason::PreviousPlanPress);
+        assert_eq!(recovery.next_rung, None);
+        assert_eq!(
+            recovery.action,
+            crate::failure::RecoveryAction::InspectLastObservedScreen
+        );
+        assert!(!recovery.destroys_state && !recovery.requires_user_ok);
+        assert_eq!(
+            recovery.ladder.iter().map(|rung| rung.rung).collect::<Vec<_>>(),
+            [1, 2, 3, 4, 5]
+        );
+        assert!(recovery
+            .ladder
+            .iter()
+            .all(|rung| !rung.applicable && !rung.destroys_state));
+        let instructions: Vec<&str> = recovery
+            .ladder
+            .iter()
+            .map(|rung| rung.instruction.as_str())
+            .collect();
+        assert_eq!(
+            instructions,
+            [
+                "inspect the last observed screen before retrying",
+                "no restart of the app, Metro or the runner is indicated by this observation",
+                "no device restart is indicated by this observation",
+                "no native rebuild is indicated by this observation",
+                "no cleanup or fresh prepare is indicated by this observation",
+            ]
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn a_different_platform_is_no_repeat() {
         let root = runs_root("repeat-platform");
         save_failed(&root, "check-20261030T081500Z", "abc");
