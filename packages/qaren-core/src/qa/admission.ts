@@ -73,7 +73,12 @@ export interface AdmissionSteps {
   bundleBuilt?(): BundleBuilt;
   // Value-free counts from the latest target-list read.
   pages?(): AdvertisedPages;
-  refusalNote?(): string;
+  // Android: Metro's request count against its launch value, read now from a local file, without waiting;
+  // with `outcomes`, and a request recorded, also the build outcomes.
+  startCounts?(outcomes: boolean): StartCounts;
+  // Android: the app's process, read now; awaited only while a refusal is built.
+  startProcess?(): Promise<boolean>;
+  refusalNote?(facts?: AdmissionRefusalFacts): string;
   foreignDriver(): Promise<string | undefined>;
   open(): Promise<void>;
   prove(): Promise<ProveOutcome>;
@@ -87,6 +92,10 @@ export interface AdmissionSteps {
 type Proven = Extract<ProveOutcome, { ok: true }>;
 
 export type ManifestWarm = { ms: number; attempts: number };
+export type StartCounts = {
+  bundleRequest: 'received' | 'not_received' | 'unknown';
+  bundleBuilt?: BundleBuilt;
+};
 export type ManifestProbe = { ms: number; outcome: 'ok' | 'failed' | 'timeout' };
 export interface ManifestRetry {
   requestTimeoutMs?: number;
@@ -470,6 +479,24 @@ async function probeLiveness(steps: AdmissionSteps): Promise<AdmissionLiveness> 
   }
 }
 
+function peekCounts(steps: AdmissionSteps, outcomes: boolean): StartCounts | undefined {
+  try {
+    return steps.startCounts?.(outcomes);
+  } catch {
+    return undefined;
+  }
+}
+
+async function readProcess(steps: AdmissionSteps): Promise<AdmissionLiveness> {
+  if (!steps.startProcess) return 'not_probed';
+  try {
+    return (await interruptible(steps.startProcess)) ? 'alive' : 'dead';
+  } catch (error) {
+    if (isAbort(error)) throw error;
+    return 'probe_failed';
+  }
+}
+
 type BundleRequest = 'not_probed' | 'received' | 'not_received' | 'unknown' | 'probe_failed';
 
 async function probeBundleRequest(steps: AdmissionSteps): Promise<BundleRequest> {
@@ -696,6 +723,8 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
   let liveness: AdmissionLiveness = 'not_probed';
   let bundleRequest: BundleRequest = 'not_probed';
   let bundleBuilt: BundleBuilt | undefined;
+  // Android: the failed wait refused on Metro's count, and the count it was refused on.
+  let startDecided: { error: unknown; counts: StartCounts } | undefined;
   // A complete scan whose every page answered `__DEV__` undefined, held continuously since `since`.
   let idle: { since: number; candidates: string; requests: number | undefined } | undefined;
   let idleExtended = false;
@@ -1129,6 +1158,19 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
               lastCompleted = completed;
             }
           }
+          if (
+            steps.startCounts &&
+            !registeredTargetSeen &&
+            stalledAttach &&
+            !(error instanceof TargetListAttemptTimeoutError) &&
+            performance.now() >= refuseStalledAt
+          ) {
+            const counts = peekCounts(steps, false);
+            if (counts?.bundleRequest === 'not_received') {
+              startDecided = { error, counts };
+              throw error;
+            }
+          }
           if (stalledAttach && lastStarted !== 'relaunch' && performance.now() >= patientRefuseAt) {
             if (!probed) {
               liveness = await probeLiveness(steps);
@@ -1199,27 +1241,48 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
               ? 'no_dev_target_unknown'
               : admissionInnerClass(cause);
     // A refusal says whether the app ran and asked Metro for its bundle, whatever stopped the attach.
-    if (inner === 'dev_runtime_unproven') {
-      bundleRequest = await probeBundleRequest(steps);
-      bundleBuilt = readBundleBuilt(steps);
-    }
-    if (
-      attaching &&
-      !['non_dev_bundle', 'no_dev_target_unknown', 'react_readiness_timeout'].includes(inner)
-    ) {
-      const probeDeadline = Math.min(
-        inner === 'dev_runtime_unproven' ? activeDeadline : deadline,
-        performance.now() + steps.remainingMs(),
-      );
-      if (liveness === 'not_probed' && probeDeadline > performance.now()) {
+    if (steps.startCounts) {
+      // Android: one process read inside the time left, then Metro's counts only while no wait has returned a target.
+      liveness = 'not_probed';
+      const until = Math.min(deadline, performance.now() + steps.remainingMs());
+      if (until > performance.now()) {
         try {
-          liveness = await withDeadline(probeDeadline, attachTimeout, () => probeLiveness(steps));
-        } catch (probeError) {
-          if (probeError !== attachTimeout) throw probeError;
+          liveness = await withDeadline(until, attachTimeout, () => readProcess(steps));
+        } catch (processError) {
+          if (processError !== attachTimeout) throw processError;
         }
       }
-      if (liveness !== 'dead' && bundleRequest === 'not_probed' && steps.bundleRequested)
+      const counts =
+        !registeredTargetSeen && startDecided !== undefined && startDecided.error === error
+          ? startDecided.counts
+          : !registeredTargetSeen || inner === 'dev_runtime_unproven'
+            ? peekCounts(steps, true)
+            : undefined;
+      bundleRequest = counts?.bundleRequest ?? 'not_probed';
+      bundleBuilt = counts?.bundleBuilt;
+    } else {
+      if (inner === 'dev_runtime_unproven') {
         bundleRequest = await probeBundleRequest(steps);
+        bundleBuilt = readBundleBuilt(steps);
+      }
+      if (
+        attaching &&
+        !['non_dev_bundle', 'no_dev_target_unknown', 'react_readiness_timeout'].includes(inner)
+      ) {
+        const probeDeadline = Math.min(
+          inner === 'dev_runtime_unproven' ? activeDeadline : deadline,
+          performance.now() + steps.remainingMs(),
+        );
+        if (liveness === 'not_probed' && probeDeadline > performance.now()) {
+          try {
+            liveness = await withDeadline(probeDeadline, attachTimeout, () => probeLiveness(steps));
+          } catch (probeError) {
+            if (probeError !== attachTimeout) throw probeError;
+          }
+        }
+        if (liveness !== 'dead' && bundleRequest === 'not_probed' && steps.bundleRequested)
+          bundleRequest = await probeBundleRequest(steps);
+      }
     }
     let refusal: AdmissionRefusalFacts | undefined;
     try {
@@ -1248,7 +1311,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
       // Diagnostics cannot change the refusal.
     }
     const manifestCause =
-      bundleRequest !== 'not_received'
+      bundleRequest !== 'not_received' || steps.startCounts !== undefined
         ? ''
         : patientUntil !== undefined
           ? `; host contention is the likely cause; QaReN manifest probes ${probeTimings.join(', ')} ms; relaunches ${relaunchTimings.join(', ')} ms`
@@ -1265,7 +1328,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
               : undefined;
     let refusalNote = '';
     try {
-      refusalNote = steps.refusalNote?.() ?? '';
+      refusalNote = steps.refusalNote?.(refusal) ?? '';
     } catch {
       // Diagnostics cannot change the refusal.
     }

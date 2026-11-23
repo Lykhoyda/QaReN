@@ -3988,6 +3988,17 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                 crate::exec::log::read_bundle_outcomes(&metro.log).unwrap_or((0, 0)),
             )
         });
+    } else {
+        ctx.bundle_requests_at_launch = ctx.record.resources.metro.as_ref().and_then(|metro| {
+            android_launch_counts(
+                crate::exec::log::read_bundle_requests(&metro.log),
+                crate::exec::log::read_bundle_outcomes(&metro.log),
+            )
+        });
+        if ctx.bundle_requests_at_launch.is_none() {
+            ctx.notes
+                .push(("bundle_request_count".into(), "unavailable".into()));
+        }
     }
     let launched = run_launch_command(ctx, &launch, deadline, &mut attempts, &mut |ctx| {
         proven = ios_udid
@@ -6834,6 +6845,7 @@ fn dry_run_receipt(
                     None,
                     None,
                 ));
+                planned.push(android_request_probe_spec(port));
                 planned.push(metro::manifest_spec(port, "android"));
                 planned.push(android::am_start_deeplink_spec(
                     adb,
@@ -6863,6 +6875,29 @@ fn dry_run_receipt(
     );
     receipt.next_action = "re-run without --dry-run to allocate resources".to_string();
     Ok(receipt)
+}
+
+// Android arms Metro's request count before launch only with this much warm-up left, with a short limit.
+const ANDROID_REQUEST_PROBE_MIN_LEFT_MS: u64 = 15_000;
+const ANDROID_REQUEST_PROBE_SECONDS: u64 = 5;
+
+fn android_request_probe_spec(port: u16) -> CmdSpec {
+    let mut probe = metro::request_probe_spec(port);
+    probe.timeout_seconds = ANDROID_REQUEST_PROBE_SECONDS;
+    probe
+}
+
+// Both counts or none; the core refuses a count above the largest exact JSON integer.
+pub fn android_launch_counts(
+    requests: Option<u64>,
+    outcomes: Option<(u64, u64)>,
+) -> Option<(u64, (u64, u64))> {
+    const MAX_EXACT: u64 = 9_007_199_254_740_991;
+    let (requests, (completed, failed)) = (requests?, outcomes?);
+    [requests, completed, failed]
+        .iter()
+        .all(|&count| count <= MAX_EXACT)
+        .then_some((requests, (completed, failed)))
 }
 
 fn run_launch_command(
@@ -6916,6 +6951,16 @@ fn run_budgeted_attempt(
     deadline: u64,
     attempts: &mut usize,
 ) -> Result<Option<crate::exec::CmdOutput>, Failure> {
+    Ok(run_budgeted_attempt_limited(ctx, spec, deadline, attempts)?.map(|(output, _)| output))
+}
+
+// The same attempt, with the whole-second limit it was dispatched with.
+fn run_budgeted_attempt_limited(
+    ctx: &mut Ctx,
+    spec: &CmdSpec,
+    deadline: u64,
+    attempts: &mut usize,
+) -> Result<Option<(crate::exec::CmdOutput, u64)>, Failure> {
     ensure_running(ctx.runner, "build")?;
     let Some(remaining_ms) = remaining_budget(ctx, deadline)? else {
         return Ok(None);
@@ -6942,7 +6987,7 @@ fn run_budgeted_attempt(
         ),
     ));
     ensure_running(ctx.runner, "build")?;
-    Ok(Some(output))
+    Ok(Some((output, bounded.timeout_seconds)))
 }
 
 fn run_budgeted_private(
@@ -7055,6 +7100,19 @@ fn warm_dev_client_manifest(ctx: &mut Ctx, port: u16, deadline: u64) -> Result<(
                         return Err(warm.refusal());
                     }
                 }
+            }
+        } else if ctx.record.scenario.platform == Platform::Android
+            && warm.deadline_ms.saturating_sub(ctx.runner.monotonic_ms())
+                >= ANDROID_REQUEST_PROBE_MIN_LEFT_MS
+        {
+            if let Some((probe, limit)) = run_budgeted_attempt_limited(
+                ctx,
+                &android_request_probe_spec(port),
+                warm.deadline_ms,
+                &mut 0,
+            )? {
+                warm.request_probe_limit_ms = limit * 1000;
+                warm.request_probe_timed_out = probe.timed_out;
             }
         }
         let manifest = metro::manifest_spec(port, platform_dir(ctx.record.scenario.platform));

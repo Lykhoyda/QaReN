@@ -1,4 +1,5 @@
 import { androidStartGate } from './android-start-gate.js';
+import { androidStartSteps } from './android-start-steps.js';
 import {
   type HitProbeIdentity,
   type LiveCheckReason,
@@ -846,7 +847,9 @@ export async function openSession(
               if (gate) log(`android start: target listed at ${now()} ms`);
             },
             pages: () => pages,
-            ...(gate ? { refusalNote: () => gate.note() } : {}),
+            ...(platform === 'android'
+              ? androidStartSteps({ appId, serial: target.deviceId, bundleRequests, gate })
+              : {}),
             attach: async (deadline) => {
               attachStage = 'connect_exact';
               if (gate) log(`android start: debugger connect at ${now()} ms`);

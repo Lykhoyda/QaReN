@@ -3649,7 +3649,7 @@ secret despite artifact redaction.
   the attempt count, last started and completed boundary, attach stage (only when the last
   started boundary is `attach`), failure class,
   relaunch count, whether the relaunch failed, app liveness (`probe_failed` when the iOS
-  app-job probe errors or times out), the bundle-request observation when probed
+  app-job probe or the Android `pidof` read errors or times out), the bundle-request observation when probed
   (`received`, `not_received`, `unknown` or `probe_failed`) and elapsed, remaining and budget milliseconds.
   Optional bundle outcomes and advertised-device counts follow the
   [admission contract](#development-target-admission).
@@ -5153,6 +5153,65 @@ their run time), target listed, debugger connect, the driver check allowing the
 opening (a decision, not proof of a readable driver table), proof start and
 admission return; the post-admission overlay phase is budgeted separately. iOS
 has no gate.
+
+On Android, when QaReN installs and launches the app itself and at least 15 s of
+the manifest warm-up are left, it runs Metro's request probe with a 5 s limit
+before the manifest request, so Metro's bundle request count is armed before
+launch. Just before the launch it reads Metro's bundle request and outcome counts
+and passes them to the core when both count files are readable; otherwise the
+receipt notes `bundle_request_count=unavailable`. The `expo run:android` route, or
+a Metro that QaReN did not start, passes no counts: the request reads `unknown`
+and nothing is refused early. Admission refuses a start early on the request count
+alone, when all four hold: no readiness wait has returned a target; a wait failed
+with a readiness timeout of the attach step other than an unanswered target list,
+and the admission would retry it with walk time left; the attach budget has passed
+since the admission started (unlike the registered-target deadline above, this
+clock includes the first-views hold); and the count file is readable and equal to
+its value at launch. That refusal comes at the first such failed wait. A recorded
+bundle request prevents this early refusal even when the app's process has died:
+with no other refusal, such a start is held to the walk budget, where no time is
+left for a process read, so its refusal names Metro's counts and not the process.
+The process is read only after a refusal is decided, to describe it.
+
+Every refusal the Android admission builds itself makes one process probe while
+time is left in the walk budget: an `adb shell pidof` read that prints a process ID
+is `alive`; an empty read is followed one second later by a second read, and two
+empty reads are `dead`; a failed or unexpected read is `probe_failed`. The probe
+is cut at the walk deadline, and with no time left liveness stays `not_probed`. When a refusal carries Metro's counts, they are the count it was
+decided on, or else the counts read at the refusal while no wait has returned a
+target, or those of the idle `dev_runtime_unproven` refusal whose message prints
+them; they are what Metro's log recorded on the port at the count check, for every
+device on that port. After a wait has returned a target the counts are left out,
+except for the idle `dev_runtime_unproven` refusal.
+`elapsedMs` is measured when the refusal is built, after the process read. The
+"likely cause" sentence about the dev client's manifest timeout is iOS-only. On
+Android, the note before the first-views note names the process (`the app's
+process was running`, `was not running` or `could not be checked`), Metro's counts
+(`at the count check Metro had recorded no bundle request on this port since the
+launch`, or a recorded request with a failed, a completed or no completed build,
+or with build outcomes that could not be read) and, for a deadline after the
+debugger was attached and React was ready, the step it ended in. Each Android
+refusal the admission builds itself gets a cause, a `next_action` and the five
+rungs in `failure.recovery`, from the first matching end state:
+
+| End state | Cause | `next_action` |
+| --- | --- | --- |
+| every scoped target answered `__DEV__` false (`DEV_TARGET_MISSING`) | `non_dev_bundle` | `use_development_bundle` |
+| the app's process not running | `app_process_dead` | `inspect_app_crash` |
+| development mode unproven, React not ready | as on iOS | as on iOS |
+| attached; a deadline ended in the driver check, opening or proof | `attach_budget_after_connect` | `retry_attach_once` |
+| a target wait timed out with no bundle request recorded | `bundle_not_requested` | `retry_launch_once` |
+| a target wait timed out with a request and a failed or no completed build | `bundle_not_built` | `inspect_metro_bundle` |
+| any other target wait timeout, including unreadable build outcomes | `no_attachable_target` | `inspect_app_screen` |
+| any other class | `attach_unexplained` | `inspect_admission_evidence` |
+
+`DEV_TARGET_MISSING` keeps its code, message and next step; on Android its facts
+and note carry the process. Refusals that pass the admission by keep their codes
+and next steps, and the CLI's own walk-expiry refusal is unchanged. With a strict
+input the refusal's text is withheld as before, and the facts and the recovery
+carry the state; with a TEST-PII input the text is kept and matching words are
+redacted. An older `qaren` cannot decode these causes and actions in a run folder
+written by this version.
 Target readiness and attachment accept only a runtime Metro reports with the
 requested `appId` bundle identity (and on iOS, under the run's simulator name on
 that same target), so another app on the selected device or another booted
@@ -5240,14 +5299,14 @@ also returns `CDP_NOT_CONNECTED` with measured host load (or an explicit
 unavailable measurement), regardless of load. After admission, deadline
 expiry remains `WALK_DEADLINE_EXCEEDED`.
 The refusal names the observed boundary, typed failure, app liveness and request
-observation, probing liveness within the remaining deadline if this launch had
-not yet done so, and reading an unprobed request signal unless the app is proven
-dead. When available, `warmMs` records the final answer's milliseconds and
+observation; on iOS it probes liveness within the remaining deadline if this launch
+had not yet done so, and reads an unprobed request signal unless the app is proven
+dead (Android's reads are described above). When available, `warmMs` records the final answer's milliseconds and
 `warmAttempts` the total request count from the latest successful manifest warm-up,
 initially the CLI's. A successful admission warm-up replaces them even if the
 subsequent relaunch fails or is skipped; a failed warm-up retains the previous
-measurements. With no bundle request, the likely-cause message follows the
-patient recovery distinction above.
+measurements. With no bundle request, the iOS likely-cause message follows the
+patient recovery distinction above; Android's refusal reads are described above.
 The deadline preserves the latest retry's failure class instead of
 replacing it with a generic probe timeout. Empty target lists, targets on another
 device, another bundle and unanswered list requests have distinct classes.
