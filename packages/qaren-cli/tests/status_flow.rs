@@ -257,6 +257,37 @@ fn a_stored_failure_evidence_entry_is_never_echoed_or_saved_again() {
 }
 
 #[test]
+fn a_status_receipt_discloses_raw_logs_only_when_the_run_has_a_logs_folder() {
+    const RAW_LOGS: &str = "process logs in this run's logs folder may contain private app or tool output, such as the app's own console lines in the Metro log; keep the run folder on this machine";
+    let repo = common::temp_repo();
+    let mut record = common::base_record(
+        &repo,
+        &common::ios_scenario_yaml(8791),
+        "run5",
+        Phase::Failed,
+    );
+    record.failure = Some(qaren::failure::Failure::new(
+        "build",
+        FailureCode::BuildFailed,
+        "xcodebuild exploded",
+        "qaren cleanup run5 --json",
+    ));
+    record.save(&repo).unwrap();
+    let logs = RunRecord::run_dir(&repo, "run5").join("logs");
+    assert!(!logs.exists());
+    let receipt = status(&mut MockRunner::new(), &repo, "run5");
+    assert_eq!(receipt.result, ReceiptResult::Failed);
+    assert!(!receipt.outcomes.contains_key("raw_logs"), "{}", receipt.to_json());
+
+    std::fs::create_dir(&logs).unwrap();
+    let receipt = status(&mut MockRunner::new(), &repo, "run5");
+    assert_eq!(receipt.run_id, "run5");
+    assert_eq!(receipt.result, ReceiptResult::Failed);
+    let json: serde_json::Value = serde_json::from_str(&receipt.to_json()).unwrap();
+    assert_eq!(json["outcomes"]["raw_logs"], RAW_LOGS);
+}
+
+#[test]
 fn interrupted_prepare_is_failed_with_interrupted_code() {
     let repo = common::temp_repo();
     common::base_record(

@@ -156,8 +156,15 @@ pub(crate) fn finish_host(
     receipt.commands_executed = runner.commands_executed();
 }
 
+const RAW_LOGS_NOTICE: &str = "process logs in this run's logs folder may contain private app or tool output, such as the app's own console lines in the Metro log; keep the run folder on this machine";
+
 pub fn attach_artifacts(receipt: &mut Receipt, runs_root: &Path, record: &RunRecord) {
     let run_dir = RunRecord::run_dir(runs_root, &record.run_id);
+    if run_dir.join("logs").is_dir() {
+        receipt
+            .outcomes
+            .insert("raw_logs".to_string(), RAW_LOGS_NOTICE.to_string());
+    }
     receipt
         .artifacts
         .insert("run_dir".to_string(), run_dir.clone());

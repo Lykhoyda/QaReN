@@ -277,6 +277,25 @@ fn ios_prepare_happy_path_produces_ready_receipt_and_record() {
     );
 }
 
+const RAW_LOGS: &str = "process logs in this run's logs folder may contain private app or tool output, such as the app's own console lines in the Metro log; keep the run folder on this machine";
+
+#[test]
+fn ios_prepare_receipt_discloses_what_the_run_logs_folder_may_hold() {
+    let repo = common::temp_repo();
+    let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare(&mut mock, &repo, CmdOutput::success(""));
+    let receipt = prepare(&mut mock, &prepare_args(&scenario_path, false, None));
+    assert_eq!(receipt.result, ReceiptResult::Ready, "{}", receipt.to_json());
+    assert!(receipt.artifacts["run_dir"].join("logs").is_dir());
+    assert_eq!(
+        receipt.outcomes.get("raw_logs").map(String::as_str),
+        Some(RAW_LOGS)
+    );
+    let json: serde_json::Value = serde_json::from_str(&receipt.to_json()).unwrap();
+    assert_eq!(json["outcomes"]["raw_logs"], RAW_LOGS);
+}
+
 #[test]
 fn ios_prepare_proceeds_after_two_launch_timeouts_with_each_attempt_in_the_receipt() {
     let repo = common::temp_repo();

@@ -216,6 +216,7 @@ pub fn doctor(
         ios_toolchain_match(runner, &app_root, cfg!(target_os = "macos").then_some(compiler)),
         ios_runtimes(runner, ios_runtime.as_deref()),
         ios_simulator_log(),
+        raw_logs(),
         node_check(runner, configured_node.as_deref()),
         tool(
             runner,
@@ -663,6 +664,13 @@ fn ios_simulator_log() -> Check {
     Check::pass(
         "ios-simulator-log",
         "policy: a pooled simulator's system log store (var/db/diagnostics under its data directory) is removed after each run's shutdown and again before reuse; the receipt's simulator_log leg says what happened; a --new simulator is deleted; a simulator QaReN did not create keeps its log unless the run was started with --shutdown-device-on-exit, which removes it after the shutdown",
+    )
+}
+
+fn raw_logs() -> Check {
+    Check::pass(
+        "raw-logs",
+        "policy: process logs in a run's logs folder may contain private app or tool output, such as the app's own console lines in the Metro log; keep run folders on this machine",
     )
 }
 
@@ -3012,6 +3020,24 @@ mod tests {
     }
 
     #[test]
+    fn the_raw_logs_policy_row_follows_the_simulator_log_row() {
+        let s = Scratch::new("raw-logs");
+        let mut runner = MockRunner::new();
+        script_toolchain(&mut runner, Some("v24.1.0\n"), RUNTIMES);
+        let report = run_doctor(&mut runner, &s, &s.0, None);
+        let policy = row(&report, "raw-logs");
+        assert_eq!(policy.status, Status::Pass);
+        assert_eq!(
+            policy.detail,
+            "policy: process logs in a run's logs folder may contain private app or tool output, such as the app's own console lines in the Metro log; keep run folders on this machine"
+        );
+        assert!(policy.fix.is_none());
+        let ids: Vec<&str> = report.checks.iter().map(|c| c.id).collect();
+        let at = ids.iter().position(|id| *id == "raw-logs").unwrap();
+        assert_eq!(ids[at - 1], "ios-simulator-log", "{ids:?}");
+    }
+
+    #[test]
     fn disk_warns_below_a_clean_ios_build_and_names_the_tight_volume() {
         let s = Scratch::new("disk");
         let home = s.dir("home");
@@ -3362,7 +3388,7 @@ mod tests {
                 "pass"
             }
         );
-        assert_eq!(parsed["checks"].as_array().unwrap().len(), 38);
+        assert_eq!(parsed["checks"].as_array().unwrap().len(), 39);
     }
 
     #[test]

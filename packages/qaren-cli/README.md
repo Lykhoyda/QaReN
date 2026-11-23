@@ -86,6 +86,7 @@ applicable or its subject was not assessed, as explained in the row's detail.
 | `config` | `.qaren/config.yaml` (or `--config`) loads and validates |
 | `ios-lane` | Only with `--device <simulator-UUID>`: read-only check of that simulator against the [warm-lane contract](#warm-lane) |
 | `ios-simulator-log` | Reports the [simulator system-log policy](#ios-admission-and-cleanup); this policy row does not inspect or clear a log |
+| `raw-logs` | Reports the process-log policy (see **Process logs** under [iOS admission and cleanup](#ios-admission-and-cleanup)); this policy row does not inspect any log |
 | `ios-lane-log` | Only with `--device <simulator-UUID>`: warns that this simulator keeps typed field text in its system log, with the command that clears its checked log store; it removes nothing |
 | `1x-claude-plugin`, `1x-codex-plugin` | The rn-dev-agent 1.x plugin, marketplace and caches in Claude Code, Codex and Cursor |
 | `1x-mcp` | A hand-registered 1.x MCP server in `~/.claude.json`, `.mcp.json`, `~/.cursor/mcp.json` or `$CODEX_HOME/config.toml` |
@@ -3712,6 +3713,11 @@ in recovery; a fresh install requires separate authorization for app-data loss.
 Other recovery reasons retain their existing 1-based rungs.
 
 Runs and evidence live under `$QAREN_HOME/runs/<run-id>/` (`~/.qaren` by default).
+
+**Process logs.** Process logs in a run's `logs/` folder may contain private app or tool output, such as your app's own console lines in the Metro log. For failures that previously quoted the last lines of a process log, newly created failures record the log's location in `failure.log.file` instead; the displayed path passes through receipt redaction. On Unix, the CLI requests mode `0600` when it creates a subprocess capture file in `logs/`. The process umask can restrict it further. If a coding agent reads log lines into its context, those lines can reach its model. A credential printed by your app or an install script can reach your coding agent when it reads a log or a failed-install receipt. QaReN's capture and summary paths mask known values and common secret patterns or withhold output, but an unrecognized credential can pass through. A planned opt-in privacy mode will omit captured install output from new failed-install receipts and direct raw-log inspection to a person. This version has no privacy-mode switch. The comment that `qaren publish` posts can contain a tool's error text, for example when QaReN's Android runner fails to build or install. A run folder is a working folder, not something to share, and QaReN cannot control an upload step you write: uploading a run folder uploads these logs. Run folders made by earlier versions keep their logs, and a failed run's `run.json` may still hold up to 25 log lines under `failure.evidence` until this version next saves that record. Other failure text can contain tool output. For example, a failed dependency install can include the last lines of the captured command. QaReN withholds that summary when the process creating it has any `QAREN_INPUT_*` variable. A later `qaren status` can still display a summary saved by an earlier run.
+
+A receipt that names `artifacts.run_dir` also carries a short form of this notice in `outcomes.raw_logs` when that run has a `logs/` folder; `qaren doctor` reports it as the `raw-logs` policy row.
+
 Device and
 native-build locks are machine-wide by default.
 `QAREN_MACHINE_LOCKS` is on when unset, empty or `1`; `0` opts out to the
@@ -6476,8 +6482,7 @@ packages/qaren-cli/target/debug/qaren cleanup <run-id> --json --remove-app \
   --confirm-remove-app <run-id>/<remote-serial>/<app-id>   # e.g. <run-id>/emulator-5554/com.rndevagent.testapp
 ```
 
-On failure the receipt carries a bounded `failure.code`, log-tail evidence,
-and exactly one safe `next_action` — no invented setup steps.
+Use the top-level `next_action` when it is present. Some newly recorded build and allocation failures also carry `failure.log.file`, whose displayed value passes through receipt redaction.
 
 ## Measured results (2026-08-12, M-series Mac + NUC11TNKi5 over Tailscale)
 
