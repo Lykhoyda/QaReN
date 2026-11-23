@@ -9375,6 +9375,18 @@ fn ios_metro_preserves_effective_pnpm_options_or_inherited_fallback() {
         for key in ["NODE_OPTIONS", "npm_config_node_options"] {
             assert!(metro.env.contains(&(key.into(), expected.clone())));
         }
+        // The macOS smoke (tests/metro_bind_smoke.rs) builds its start from these inputs: this is the run's own call.
+        assert_eq!(
+            metro,
+            &qaren::adapters::metro::start_spec(
+                &repo.join("test-app"),
+                8791,
+                qaren::adapters::metro::Listen::Loopback,
+                false,
+                Some(&preload),
+                Some(base),
+            )
+        );
         assert_eq!(receipt.outcomes.contains_key("pnpm_node_options"), fallback);
         assert!(!receipt.to_json().contains("private-config-error"));
         assert_eq!(mock.remaining(), 0);
