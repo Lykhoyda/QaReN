@@ -306,7 +306,6 @@ jobs:
             echo "::error title=Metro bind smoke::METRO_SMOKE_SETUP: the Expo fixture did not install; next: read this step's log; a registry or network error: re-run once; a lockfile error: regenerate packages/qaren-cli/tests/fixtures/metro-smoke-app/pnpm-lock.yaml with pnpm 11.5.2 (pnpm install --lockfile-only) and commit it"
             exit 1
           }
-          printf '%s\n' "require('dns').setDefaultResultOrder('verbatim');" "module.exports = require('expo/metro-config').getDefaultConfig(__dirname);" > metro.config.js
       # What can move with no diff in this repository; the Expo and Metro versions are the committed lockfile's.
       - name: Versions
         timeout-minutes: 2
