@@ -714,7 +714,7 @@ test('a first-readback capture fault keeps its code and closed one-capture evide
 
 test('a native-incomplete press readback reconstructs its refusal without app text', async () => {
   const f = rowFake([rowChips()]);
-  const error = new NativeSnapshotIncomplete(121, ['verdict=degraded']);
+  const error = new NativeSnapshotIncomplete(121, ['verdict=degraded'], 2, 900);
   error.message = 'synthetic-private-message';
   Reflect.set(error, 'code', 'synthetic-private-message');
   Reflect.set(error, 'causes', ['verdict=degraded', 'synthetic-private-message']);
@@ -726,8 +726,9 @@ test('a native-incomplete press readback reconstructs its refusal without app te
   const outcome = await walkBlock(rowTap, f.deps);
   assert.deepEqual(outcome.refusal, {
     code: 'NATIVE_SNAPSHOT_INCOMPLETE',
-    message: new NativeSnapshotIncomplete(121, ['verdict=degraded']).message,
+    message: new NativeSnapshotIncomplete(121, ['verdict=degraded'], 2, 900).message,
   });
+  assert.ok(outcome.refusal?.message.endsWith('; read 2 times over 900 ms.'));
   assert.doesNotMatch(JSON.stringify(outcome), /synthetic-private-message/);
   assert.equal(presses(f), 1);
   assert.equal(count, 2);

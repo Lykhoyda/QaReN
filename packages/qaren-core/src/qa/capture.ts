@@ -686,16 +686,24 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
   let retryDeadline: number | undefined;
   let droppedRead: { nodes: number; causes: string[] } | undefined;
   let retryExpired = false;
+  const read = deps.platformPresence === true ? 'read=presence' : 'read=ordinary';
+  let nativeReads = 0;
+  const readNative = () => {
+    nativeReads++;
+    return deps.native(presenceBudgetMs);
+  };
   for (;;) {
     let runnerDown = false;
     const retryRefusal =
       retryDeadline !== undefined && retryablePresenceCapture(native)
         ? new NativeSnapshotIncomplete(native.nodes?.length ?? 0, [
+            read,
             ...nativeIncompleteCauses(native),
             'retry-deadline',
           ])
         : droppedRead
           ? new NativeSnapshotIncomplete(droppedRead.nodes, [
+              read,
               ...droppedRead.causes,
               'retry-deadline',
             ])
@@ -703,9 +711,11 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
     try {
       native = await measureTiming(deps.timing, now, 'native-total', () =>
         retryDeadline === undefined
-          ? deps.native(presenceBudgetMs)
-          : withDeadline(performance.now() + Math.max(0, retryDeadline - now()), retryRefusal, () =>
-              deps.native(presenceBudgetMs),
+          ? readNative()
+          : withDeadline(
+              performance.now() + Math.max(0, retryDeadline - now()),
+              retryRefusal,
+              readNative,
             ),
       );
       throwIfCancelled();
@@ -714,7 +724,7 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
       if (isAbort(error)) throw error;
       if (error === retryRefusal && retryRefusal instanceof NativeSnapshotIncomplete) {
         reportPresenceDiagnostics(deps, native);
-        throw retryRefusal;
+        throw retryRefusal.withReads(nativeReads, Math.round(now() - started));
       }
       if (error instanceof AppProcessGoneError) throw error;
       if (!deps.requirePrivateInputs) throw error;
@@ -813,11 +823,14 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
       throw new NativeSnapshotIncomplete(
         nodes.length,
         captureCoverage.native === 'unknown'
-          ? ['unattested']
+          ? [read, 'unattested']
           : [
+              read,
               ...nativeIncompleteCauses(native),
               ...(retryExpired && retryableDroppedCapture(native) ? ['retry-deadline'] : []),
             ],
+        nativeReads,
+        Math.round(now() - started),
       );
     const hostEvidence = validateReactHostEvidence(react.hostEvidence);
     const nativePresence =
