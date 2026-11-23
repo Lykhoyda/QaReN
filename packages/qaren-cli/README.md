@@ -5123,10 +5123,11 @@ approval and ownership proof. Total walk expiry before admission uses
 `inspect_admission_budget`; elapsed time alone does not establish bundle mode.
 A live app with no registered target and a received or unknown bundle-request
 signal keeps waiting within the walk budget; once a target registers, setup uses
-the registered-target deadline. Before any target registers, a no-target wait
-can refuse after the attach limit when the app is proven dead or Metro has
+the registered-target deadline. On iOS, before any target registers, a no-target
+wait can refuse after the attach limit when the app is proven dead or Metro has
 received no bundle request since the latest launch. Liveness and bundle-request
 evidence are re-read at that boundary; each relaunch rebases the request count.
+Android's early refusal is described below.
 Patient no-target manifest recovery below keeps
 its distinct warming, relaunch and post-relaunch attach deadlines, all clipped
 to the remaining walk budget.
