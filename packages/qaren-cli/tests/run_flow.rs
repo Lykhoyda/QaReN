@@ -15000,3 +15000,138 @@ fn a_recorded_android_check_records_on_api_34_and_says_why_not_below() {
         std::fs::remove_dir_all(repo).unwrap();
     }
 }
+
+const RUNNER_SEEN: &str = "qa704.seen@example.test";
+const RUNNER_STEP: &str = "**Failing step** 0: RN\\_ANDROID\\_RUNNER\\_DOWN: QaReN reported a build failure for its Android runner. Check that the Android SDK and a JDK are installed on the machine that ran QaReN, then run it again.";
+
+// A refused Android runner build, run through the wire and then published from the ledger `run` wrote.
+fn publish_runner_refusal(
+    inputs: Option<std::sync::Arc<qaren::redact::InputValues>>,
+    step: &str,
+) -> (qaren::receipt::Receipt, PathBuf) {
+    let build = format!("Failed to start device runner: qaren-android-runner source build failed (gradlew assembleDebug assembleDebugAndroidTest in /opt/r). Ensure the Android SDK + a JDK are installed and on PATH. Command failed: {RUNNER_SEEN}");
+    let result = serde_json::json!({
+        "verdict": "REFUSED", "code": "RN_ANDROID_RUNNER_DOWN", "message": build
+    });
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    script_provision(&mut mock);
+    script_drift_status(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    let stdout = format!("{}\n", envelope(2, "result", &result.to_string()));
+    mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(4));
+    script_core_identity(&mut mock);
+    script_teardown(&mut mock);
+    let req = request(&repo, &app, 30);
+    let receipt = match inputs {
+        Some(inputs) => qaren::redact::with_input_scope(inputs, || run(&mut mock, &req)),
+        None => run(&mut mock, &req),
+    };
+    assert_eq!(mock.remaining(), 0, "{:?}", labels(&mock));
+    let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+    let terminal = record.terminal.as_ref().unwrap();
+    assert!(!terminal.cancelled);
+    assert!(terminal.final_verification.matched);
+    assert!(terminal.ownership_proven);
+
+    let dir = req.runs_root.join(run_id());
+    let pr = qaren::publish::PrRunRecord {
+        video_policy: Default::default(),
+        video_policy_source: None,
+        non_strict_publication: None,
+        number: 12,
+        url: "https://github.com/o/r/pull/12".into(),
+        head_ref_oid: "b".repeat(40),
+        head_ref_name: "feat/tasks".into(),
+        is_cross_repository: false,
+        repo_root: repo.to_path_buf(),
+        app_rel: "test-app".into(),
+        platform: "ios".into(),
+        app_id: "com.rndevagent.testapp".into(),
+        device: "qaren-check".into(),
+        plan_sha256: "e".repeat(64),
+        video: qaren::record::VideoStatus::Available,
+        video_reason: None,
+        video_interruption: None,
+        video_continuity: Vec::new(),
+        video_publication: qaren::record::VideoPublication::Eligible,
+        video_withholding_reason: None,
+        tested_older_commit: false,
+        blocks: Vec::new(),
+        identity_values: Vec::new(),
+        proof_in_description: false,
+    };
+    std::fs::write(dir.join("pr.json"), serde_json::to_vec(&pr).unwrap()).unwrap();
+    let mut publisher = qaren::exec::MockRunner::new();
+    publisher.expect_run(
+        "gh pr comment 12 -R github.com/o/r",
+        CmdOutput::success("https://github.com/o/r/pull/12#issuecomment-1\n"),
+    );
+    publisher.expect_run(
+        "gh pr view https://github.com/o/r/pull/12",
+        pr_view_json(&"b".repeat(40)),
+    );
+    publisher.expect_run(
+        "gh pr edit 12 -R github.com/o/r --remove-label needs-qa",
+        CmdOutput::success(""),
+    );
+    let published = qaren::publish::publish(
+        &mut publisher,
+        &req.runs_root,
+        &run_id(),
+        &qaren::redact::MachineIdentity::default(),
+    );
+    assert_eq!(
+        published.result,
+        ReceiptResult::Published,
+        "{:?}",
+        published.failure
+    );
+    assert_eq!(publisher.remaining(), 0);
+    let calls = &publisher.calls;
+    let comment_calls = calls
+        .iter()
+        .filter(|call| {
+            call.args
+                .windows(2)
+                .any(|pair| pair[0] == "--body-file" && pair[1] == "comment.md")
+        })
+        .count();
+    assert_eq!(comment_calls, 1);
+    for call in calls {
+        assert!(!call.args.join(" ").contains(RUNNER_SEEN), "{call:?}");
+    }
+    let comment = std::fs::read_to_string(dir.join("comment.md")).unwrap();
+    assert!(comment.lines().any(|line| line == step), "{comment}");
+    assert!(!comment.contains(RUNNER_SEEN), "{comment}");
+    (receipt, dir)
+}
+
+#[test]
+fn a_runner_build_refusal_reaches_the_comment_only_as_its_fixed_summary() {
+    let (receipt, dir) = publish_runner_refusal(None, RUNNER_STEP);
+    assert!(receipt.failure.unwrap().detail.contains(RUNNER_SEEN));
+    for file in ["ledger.json", "report.md"] {
+        let local = std::fs::read_to_string(dir.join(file)).unwrap();
+        assert!(local.contains(RUNNER_SEEN), "{file}: {local}");
+    }
+}
+
+#[test]
+fn a_masked_runner_code_publishes_the_omission_notice() {
+    let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries([(
+        std::ffi::OsString::from("QAREN_INPUT_UNUSED"),
+        std::ffi::OsString::from("RUNNER"),
+    )]));
+    let (_, dir) = publish_runner_refusal(
+        Some(inputs),
+        "**Failing step** 0: Details omitted from this comment. Ask the run owner to review the failure locally.",
+    );
+    let ledger = std::fs::read_to_string(dir.join("ledger.json")).unwrap();
+    assert!(
+        ledger.contains("RN_ANDROID_[REDACTED_INPUT]_DOWN"),
+        "{ledger}"
+    );
+    assert!(ledger.contains(RUNNER_SEEN), "{ledger}");
+}
