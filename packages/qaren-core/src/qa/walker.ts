@@ -6086,7 +6086,10 @@ async function walkBlockScoped(
               if (error instanceof NativeCaptureError)
                 return refusePress(error.code, new NativeCaptureError().message);
               if (error instanceof NativeSnapshotIncomplete) {
-                const safe = new NativeSnapshotIncomplete(error.nodes, error.causes);
+                const safe = new NativeSnapshotIncomplete(error.nodes, error.causes).withReads(
+                  error.reads,
+                  error.elapsedMs,
+                );
                 return refusePress(safe.code, safe.message);
               }
               if (error instanceof PrivateInputCaptureError)
@@ -6539,7 +6542,11 @@ async function walkBlockScoped(
                   error.elapsedMs,
                 )
               : new PrivateInputCaptureError();
-          const key = nativeFailure ? 'native-capture' : 'private-input-capture';
+          const key = nativeFailure
+            ? 'native-capture'
+            : error instanceof NativeSnapshotIncomplete
+              ? 'native-snapshot'
+              : 'private-input-capture';
           emit({
             block: key,
             line: item.line,

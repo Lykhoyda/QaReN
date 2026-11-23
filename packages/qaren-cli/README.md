@@ -2674,8 +2674,10 @@ The [screen projection](../qaren-core/src/qa/screen.ts) owns this policy.
 
 The native snapshot is the privacy boundary before walking a screen. Capture
 refuses with `NATIVE_SNAPSHOT_INCOMPLETE` unless native completeness is attested;
-the refusal reports a value-free node count and fixed cause codes, with read count
-and elapsed time when Wait exhausts its retry deadline. Native
+the refusal reports a value-free node count and fixed cause codes, with the read
+taken (ordinary or presence), the number of native reads the capture made and its
+elapsed time, waits and the React read included; a Wait that exhausts its deadline
+reports its own polls and time. Native
 acquisition failures also refuse without reinjection or a public-tree fallback.
 The privacy boundary is unchanged: an incomplete native snapshot is never walked
 or masked. A Wait re-reads on its normal poll cadence within its existing deadline;
