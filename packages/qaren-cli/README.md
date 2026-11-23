@@ -2677,6 +2677,8 @@ refuses with `NATIVE_SNAPSHOT_INCOMPLETE` unless native completeness is attested
 the refusal reports a value-free node count and fixed cause codes, with read count
 and elapsed time when Wait exhausts its retry deadline. Native
 acquisition failures also refuse without reinjection or a public-tree fallback.
+The ordinary iOS app-tree traversal emits at most 600 nodes. A truncated result
+makes the walk's privacy capture refuse with `NATIVE_SNAPSHOT_INCOMPLETE`.
 The privacy boundary is unchanged: an incomplete native snapshot is never walked
 or masked. A Wait re-reads on its normal poll cadence within its existing deadline;
 if a complete read recovers but the quoted target stays absent, the Wait retains
