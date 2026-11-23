@@ -72,10 +72,14 @@ impl LogDrain {
         core_log: bool,
         line_count: Option<&Path>,
     ) -> io::Result<(Self, UnixStream, Option<UnixStream>)> {
-        let log = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let log = options.open(path)?;
         // Withholding truncates this command's output away, which only a regular file allows.
         if !log.metadata()?.is_file() {
             return Err(io::Error::other("command log must be a regular file"));
