@@ -2680,6 +2680,8 @@ taken (ordinary or presence), the number of native reads the capture made and it
 elapsed time, waits and the React read included; a Wait that exhausts its deadline
 reports its own polls and time. Native
 acquisition failures also refuse without reinjection or a public-tree fallback.
+The ordinary iOS app-tree traversal emits at most 600 nodes. A truncated result
+makes the walk's privacy capture refuse with `NATIVE_SNAPSHOT_INCOMPLETE`.
 The privacy boundary is unchanged: an incomplete native snapshot is never walked
 or masked. A Wait re-reads on its normal poll cadence within its existing deadline;
 if a complete read recovers but the quoted target stays absent, the Wait retains
