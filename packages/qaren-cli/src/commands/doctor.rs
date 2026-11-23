@@ -3012,6 +3012,24 @@ mod tests {
     }
 
     #[test]
+    fn the_raw_logs_policy_row_follows_the_simulator_log_row() {
+        let s = Scratch::new("raw-logs");
+        let mut runner = MockRunner::new();
+        script_toolchain(&mut runner, Some("v24.1.0\n"), RUNTIMES);
+        let report = run_doctor(&mut runner, &s, &s.0, None);
+        let policy = row(&report, "raw-logs");
+        assert_eq!(policy.status, Status::Pass);
+        assert_eq!(
+            policy.detail,
+            "policy: process logs in a run's logs folder may contain private app or tool output, such as the app's own console lines in the Metro log; keep run folders on this machine"
+        );
+        assert!(policy.fix.is_none());
+        let ids: Vec<&str> = report.checks.iter().map(|c| c.id).collect();
+        let at = ids.iter().position(|id| *id == "raw-logs").unwrap();
+        assert_eq!(ids[at - 1], "ios-simulator-log", "{ids:?}");
+    }
+
+    #[test]
     fn disk_warns_below_a_clean_ios_build_and_names_the_tight_volume() {
         let s = Scratch::new("disk");
         let home = s.dir("home");

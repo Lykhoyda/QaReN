@@ -140,6 +140,31 @@ fn a_private_key_on_either_stream_withholds_the_whole_command_log_in_any_arrival
 }
 
 #[test]
+fn a_fresh_command_log_is_created_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = common::temp_repo();
+    let control = dir.join("control.txt");
+    std::fs::write(&control, "control\n").unwrap();
+    let log = dir.join("fresh.log");
+    assert!(!log.exists());
+    let mut runner = RealRunner::with_log_executable(env!("CARGO_BIN_EXE_qaren").into());
+    runner
+        .spawn_group(&shell("printf 'line\\n'\n: > done", &dir), &log)
+        .unwrap();
+    until(|| dir.join("done").exists());
+    runner.flush_logs().unwrap();
+    let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    let (log_mode, control_mode) = (mode(&log), mode(&control));
+    if control_mode & 0o077 == 0 {
+        eprintln!(
+            "umask leaves control mode {control_mode:o}: default creation and 0600 look the same here"
+        );
+    }
+    assert_eq!(log_mode, control_mode & 0o600, "log {log_mode:o}, control {control_mode:o}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn a_log_without_a_private_key_keeps_every_line() {
     let stored = spawned_log("printf 'starting\\n'\nprintf 'warn\\n' >&2\nprintf 'tail line\\n'");
     assert!(stored.starts_with("earlier command\n"), "{stored}");
